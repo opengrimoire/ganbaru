@@ -6,6 +6,8 @@ A playlist has a stable identity, a localized or user-authored name, an icon or 
 
 Fresh vaults provide starter playlists for focus, breaks, meditation, exercise, hygiene, chores, cooking, and commute. Built-in playlists have localized names and icons and cannot be renamed or deleted, but their membership and order are the user's. Custom playlists can be created, renamed, reordered, and deleted. Deleting a playlist never deletes library items or media files.
 
+On linked devices, playlists and memberships merge without a visible conflict: the same track added to one playlist on two devices becomes one membership, a removed membership can be added again anywhere, and concurrent moves settle on one order. A playlist deleted on one device while another edits it is deleted everywhere, and the edits are offered in sync recovery, where restoring brings the playlist back as a new playlist with those memberships. Listening counts are kept per device and summed in the library.
+
 ## Membership settings
 
 A membership connects one canonical media item to one playlist and can define:
@@ -42,7 +44,7 @@ Built-in and custom playlists share one stored order. Reordering starts from an 
 Sources is a library explorer, not a configuration dashboard. It has two top-level roots, Local music and YouTube, with user-editable names. Selecting a root, collection, or folder shows its children and tracks; a side panel keeps the full hierarchy.
 
 - Local music mirrors each connected folder's structure without copying or changing files. A fresh vault tries to connect the operating system Music folder; when none is found, the player offers to choose one, and the Builder opens only after a folder is chosen. More folders are added inside Local music.
-- YouTube has one link entry point for videos and playlists. Playlists keep their own collection; single videos go to Saved videos. Link previews are playable, and names resolve through YouTube's keyless metadata surface when possible. One failed video never blocks a playlist, and refreshes keep metadata already resolved.
+- YouTube has one link entry point for videos and playlists. Playlists keep their own collection; single videos go to Saved videos. Link previews are playable, and names resolve through YouTube's keyless metadata surface when possible. One failed video never blocks a playlist, and refreshes keep metadata already resolved and any terminal resolution state; only playback asks to resolve a video again.
 
 Activating a track starts a normal player queue for that source branch. Refresh, rename, repair, and removal are contextual to the selected root or collection. Removal names its scope and consequence explicitly, and disconnecting one device path is distinct from removing a source or unused tracks. Source health appears as an attention marker, with detailed repair in its own workflow.
 

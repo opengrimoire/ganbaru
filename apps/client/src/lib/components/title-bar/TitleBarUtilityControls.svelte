@@ -1,6 +1,6 @@
 <script lang="ts">
   import CircleGauge from "@lucide/svelte/icons/circle-gauge";
-  import MoreHorizontal from "@lucide/svelte/icons/more-horizontal";
+  import MoreHorizontal from "@lucide/svelte/icons/ellipsis";
   import Moon from "@lucide/svelte/icons/moon";
   import Settings from "@lucide/svelte/icons/settings";
   import Sun from "@lucide/svelte/icons/sun";

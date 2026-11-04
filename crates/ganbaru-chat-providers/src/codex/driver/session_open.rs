@@ -5,18 +5,26 @@ impl CodexProviderDriver {
     pub(super) fn open_connection(
         &self,
         working_directory: &Path,
+        project_configuration: ProjectConfigurationAccess,
     ) -> ChatResult<(CodexRpcConnection, CodexHomeLayout)> {
         let inject_internal_mcp = self
             .configuration
             .internal_mcp
             .as_ref()
             .is_some_and(|server| !server.organizational_authority);
-        self.spawn_connection(working_directory, false, &[], inject_internal_mcp)
+        self.spawn_connection(
+            working_directory,
+            project_configuration,
+            false,
+            &[],
+            inject_internal_mcp,
+        )
     }
 
     pub(super) fn spawn_connection(
         &self,
         working_directory: &Path,
+        project_configuration: ProjectConfigurationAccess,
         organizational: bool,
         disabled_mcp_servers: &[String],
         inject_internal_mcp: bool,
@@ -35,6 +43,11 @@ impl CodexProviderDriver {
         arguments.extend(validated_app_server_arguments(
             &self.configuration.launch_arguments,
         )?);
+        append_project_configuration_arguments(
+            &mut arguments,
+            working_directory,
+            project_configuration,
+        )?;
         if organizational {
             append_organizational_base_arguments(&mut arguments);
         }
@@ -91,6 +104,7 @@ impl CodexProviderDriver {
     async fn open_organizational_connection(
         &self,
         working_directory: &Path,
+        project_configuration: ProjectConfigurationAccess,
         context: &DriverOperationContext,
     ) -> ChatResult<(CodexRpcConnection, CodexHomeLayout)> {
         let server = self.configuration.internal_mcp.as_ref().ok_or_else(|| {
@@ -106,18 +120,25 @@ impl CodexProviderDriver {
             ));
         }
         let disabled_mcp_servers = self
-            .organizational_mcp_server_names(working_directory, context)
+            .organizational_mcp_server_names(working_directory, project_configuration, context)
             .await?;
-        self.spawn_connection(working_directory, true, &disabled_mcp_servers, true)
+        self.spawn_connection(
+            working_directory,
+            project_configuration,
+            true,
+            &disabled_mcp_servers,
+            true,
+        )
     }
 
     pub(super) async fn organizational_mcp_server_names(
         &self,
         working_directory: &Path,
+        project_configuration: ProjectConfigurationAccess,
         context: &DriverOperationContext,
     ) -> ChatResult<Vec<String>> {
         let (mut inspection, layout) =
-            self.spawn_connection(working_directory, true, &[], false)?;
+            self.spawn_connection(working_directory, project_configuration, true, &[], false)?;
         let inspection_client = inspection.client();
         let inspection_result = async {
             let initialize = inspection_client
@@ -181,16 +202,17 @@ impl CodexProviderDriver {
             ));
         }
         let workspace = canonical_verified_workspace(input.workspace())?;
+        let project_configuration = input.workspace().project_configuration;
         let organizational = self
             .configuration
             .internal_mcp
             .as_ref()
             .is_some_and(|server| server.organizational_authority);
         let (mut connection, layout) = if organizational {
-            self.open_organizational_connection(&workspace, context)
+            self.open_organizational_connection(&workspace, project_configuration, context)
                 .await?
         } else {
-            self.open_connection(&workspace)?
+            self.open_connection(&workspace, project_configuration)?
         };
         let continuation_group_id = layout.continuation_group_with_authority(organizational)?;
         input.verify_continuation(&continuation_group_id)?;

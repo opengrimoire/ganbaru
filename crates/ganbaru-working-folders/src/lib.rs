@@ -1,7 +1,18 @@
+use chrono::Timelike;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{collections::BTreeMap, fmt};
 
-const MAX_IDENTIFIER_BYTES: usize = 1_024;
+mod managed_folder;
+
+pub use managed_folder::{
+    MANAGED_PROJECTS_DIRECTORY, managed_folder_id, managed_folder_project,
+    managed_project_relative_path, resolve_managed_project_folder, validate_managed_folder_name,
+};
+
+/// Folder ids become sync row keys, so they stay short. Managed folder ids come from
+/// [`managed_folder_id`] and client folder ids are `working-folder:external:{uuid}`, which no
+/// project's managed folder id can equal.
+const MAX_IDENTIFIER_BYTES: usize = 64;
 
 /// Stable identifier for a project working folder.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -74,7 +85,21 @@ fn validate_identifier(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Byte position of the separator between the date and the time.
+const TIMESTAMP_SEPARATOR_INDEX: usize = 10;
+
+/// Offsets the frontend reader accepts.
+const UTC_OFFSET_SUFFIXES: [&str; 3] = ["Z", "+00:00", "-00:00"];
+
+/// Sub-second values from here on represent a leap second in chrono.
+const LEAP_SECOND_NANOSECONDS: u32 = 1_000_000_000;
+
 /// Validated RFC 3339 timestamp whose offset is UTC.
+///
+/// The accepted form is the one `readUtcTimestamp` in the frontend accepts, a subset of what
+/// chrono parses as RFC 3339: an uppercase `T` separator, an offset of `Z`, `+00:00`, or
+/// `-00:00`, and seconds at most 59. A value outside that subset would pass here and then fail
+/// the whole response in the frontend.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UtcTimestamp(String);
 
@@ -86,6 +111,14 @@ impl UtcTimestamp {
             .map_err(|_| "timestamp must use RFC 3339".to_string())?;
         if parsed.offset().local_minus_utc() != 0 {
             return Err("timestamp must use UTC".to_string());
+        }
+        let uppercase_separator = value.as_bytes().get(TIMESTAMP_SEPARATOR_INDEX) == Some(&b'T');
+        let utc_suffix = UTC_OFFSET_SUFFIXES
+            .iter()
+            .any(|suffix| value.ends_with(suffix));
+        let leap_second = parsed.nanosecond() >= LEAP_SECOND_NANOSECONDS;
+        if !uppercase_separator || !utc_suffix || leap_second {
+            return Err("timestamp must use the canonical RFC 3339 UTC form".to_string());
         }
         Ok(Self(value))
     }
@@ -147,12 +180,32 @@ where
     Option::<T>::deserialize(deserializer)
 }
 
+/// Device-local decision about whether a bound folder's repository programs,
+/// hooks, and provider configuration may run.
+///
+/// The decision covers the configuration whose digests it records. When the
+/// folder's configuration changes, the decision no longer applies and the
+/// folder runs untrusted until the user decides again.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingFolderTrustRecord {
+    /// Hexadecimal digest of repository programs and hooks.
+    pub git_configuration_digest: String,
+    /// Hexadecimal digest of project provider configuration.
+    pub provider_configuration_digest: String,
+    pub trusted: bool,
+    pub decided_at: UtcTimestamp,
+}
+
 /// Device-local working-folder bindings and project selections for one scope.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkingFolderDeviceScope {
     pub bindings: BTreeMap<ProjectWorkingFolderId, ProjectWorkingFolderBindingState>,
     pub last_selected_by_project: BTreeMap<String, ProjectWorkingFolderId>,
+    /// Trust decisions by folder. A folder without a record is untrusted.
+    #[serde(default)]
+    pub trust: BTreeMap<ProjectWorkingFolderId, WorkingFolderTrustRecord>,
 }
 
 /// Versioned working-folder device state partitioned by vault and device.
@@ -201,11 +254,34 @@ mod tests {
             "workspace-1"
         );
         assert!(ProjectWorkingFolderId::new("workspace\n1").is_err());
+        let client_id = format!("working-folder:{}", "0".repeat(36));
+        assert!(ProjectWorkingFolderId::new(client_id).is_ok());
+        assert!(ProjectWorkingFolderId::new("w".repeat(MAX_IDENTIFIER_BYTES)).is_ok());
+        assert!(ProjectWorkingFolderId::new("w".repeat(MAX_IDENTIFIER_BYTES + 1)).is_err());
         assert!(UtcTimestamp::new("2026-07-20T12:00:00-06:00").is_err());
         assert_eq!(
             UtcTimestamp::new("2026-07-20T18:00:00Z").unwrap().as_str(),
             "2026-07-20T18:00:00Z"
         );
+    }
+
+    /// The fixture is shared with the frontend reader, so both sides refuse the same text.
+    #[test]
+    fn timestamp_validation_matches_the_frontend_reader() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../apps/client/test-fixtures/utc-timestamps.json"
+        ))
+        .unwrap();
+        let cases = |key: &str| fixture[key].as_array().unwrap().clone();
+
+        for case in cases("accepted") {
+            let text = case.as_str().unwrap();
+            assert_eq!(UtcTimestamp::new(text).unwrap().as_str(), text);
+        }
+        for case in cases("refused") {
+            let text = case.as_str().unwrap();
+            assert!(UtcTimestamp::new(text).is_err(), "{text:?}");
+        }
     }
 
     #[test]

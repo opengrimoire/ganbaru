@@ -6,7 +6,6 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Process
 import android.provider.Settings
-import android.webkit.WebView
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -27,7 +26,6 @@ internal class AcknowledgeEventsArgs {
 @InvokeArg
 internal class AccountingVaultArgs {
   lateinit var vaultId: String
-  var usageOnly: Boolean = false
 }
 
 internal fun launchableAppResponse(name: String, packageName: String): Map<String, String> = mapOf(
@@ -53,16 +51,6 @@ internal fun JournalEvent.toResponse(): Map<String, Any?> = mapOf(
 
 @TauriPlugin
 class MobileDistractionsPlugin(private val activity: Activity) : Plugin(activity) {
-  override fun load(webView: WebView) {
-    super.load(webView)
-    DistractionsNotificationActionStore.capture(activity, activity.intent)
-  }
-
-  override fun onNewIntent(intent: Intent) {
-    super.onNewIntent(intent)
-    DistractionsNotificationActionStore.capture(activity, intent)
-  }
-
   @Command
   fun accessStatus(invoke: Invoke) {
     invoke.resolve(JSObject().apply {
@@ -153,7 +141,7 @@ class MobileDistractionsPlugin(private val activity: Activity) : Plugin(activity
     val args = invoke.parseArgs(AccountingVaultArgs::class.java)
     Thread {
       try {
-        val events = DistractionsGuardianClient(activity).pendingEvents(args.vaultId, args.usageOnly)
+        val events = DistractionsGuardianClient(activity).pendingEvents(args.vaultId)
         invoke.resolveObject(events.map(JournalEvent::toResponse))
       } catch (error: Exception) {
         invoke.reject(error.message ?: "Failed to read mobile Distractions events")

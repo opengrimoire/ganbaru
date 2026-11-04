@@ -2,15 +2,13 @@
 
 use super::{
     GUARDIAN_SYNC, MAX_DRAIN_BATCHES,
-    projection::{GuardianCapture, NotificationCopy},
+    projection::{GuardianCapture, LastGoodUsage, NotificationCopy, fallback_sources},
     synchronize_locked,
 };
-use crate::{db::connect_sqlite, vault};
+use crate::{distractions::limits, vault};
 use ganbaru_mobile_distractions::MobileDistractionsExt;
 use serde_json::Value;
 use std::{
-    io::Read,
-    path::Path,
     sync::{
         Arc, Mutex, MutexGuard, TryLockError,
         atomic::{AtomicBool, Ordering},
@@ -22,7 +20,6 @@ use tauri::{Manager, Runtime};
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_VIEW_AGE: Duration = Duration::from_secs(10);
 const DRAIN_WAIT: Duration = Duration::from_secs(5);
-const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
 struct Frame {
     generation: u64,
@@ -31,8 +28,15 @@ struct Frame {
     view: Option<(Instant, Value)>,
 }
 
+#[derive(Default)]
+struct UsageReadState {
+    last_good: Option<LastGoodUsage>,
+    diagnostics: limits::UsageReadDiagnostics,
+}
+
 struct Control {
     frame: Mutex<Frame>,
+    usage: Mutex<UsageReadState>,
     wake: tokio::sync::Notify,
     stopped: AtomicBool,
 }
@@ -53,30 +57,6 @@ fn current_frame(control: &Control) -> Result<MutexGuard<'_, Frame>, String> {
     })
 }
 
-fn read_config(path: &Path) -> Result<Value, String> {
-    if !path
-        .try_exists()
-        .map_err(|error| format!("inspect Guardian config: {error}"))?
-    {
-        return Ok(serde_json::json!({}));
-    }
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .map_err(|error| format!("open Guardian config: {error}"))?
-        .take(MAX_CONFIG_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("read Guardian config: {error}"))?;
-    if bytes.len() as u64 > MAX_CONFIG_BYTES {
-        return Err("Guardian configuration exceeds its byte limit".into());
-    }
-    let root: Value = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("decode Guardian config: {error}"))?;
-    if !root.is_object() {
-        return Err("Guardian configuration root must be an object".into());
-    }
-    Ok(root)
-}
-
 fn revise(frame: &mut Frame) -> Result<(), String> {
     frame.generation = frame
         .generation
@@ -95,6 +75,7 @@ pub(crate) fn setup<R: Runtime>(app: &tauri::AppHandle<R>) {
             copy: None,
             view: None,
         }),
+        usage: Mutex::new(UsageReadState::default()),
         wake: tokio::sync::Notify::new(),
         stopped: AtomicBool::new(false),
     });
@@ -187,7 +168,7 @@ pub(crate) fn commit_configuration<R: Runtime>(
     result
 }
 
-/// Freeze native publication and revoke Guardian rules before a vault pointer or ownership change.
+/// Freeze native publication and revoke Guardian rules before a vault pointer change.
 pub(crate) fn freeze_for_selection<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     let Some(control) = control(app) else {
         return Ok(());
@@ -285,6 +266,87 @@ pub(super) fn usage_projection<R: Runtime>(app: tauri::AppHandle<R>) -> Result<V
     Ok(view.clone())
 }
 
+/// Reads the budget sources and proves they can be totaled, so a window the engine would refuse
+/// takes the same fallback as a failed read.
+async fn read_usage_window(
+    pool: &sqlx::SqlitePool,
+    device_id: &str,
+    capture: &GuardianCapture,
+    config: limits::LimitsConfig,
+) -> Result<limits::UsageWindow, String> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| format!("begin Guardian native accounting: {error}"))?;
+    let scope = limits::UsageBudgetScope::from_rules(&config);
+    let read = limits::store::read_source_days(
+        &mut tx,
+        device_id,
+        &capture.week_start_local_date,
+        &capture.local_date,
+        &scope,
+    )
+    .await?;
+    let already_imported = super::canonical_pending_ids(&mut tx, capture).await?;
+    let merged = super::projection::include_pending(read.sources, capture, &already_imported)?;
+    tx.commit()
+        .await
+        .map_err(|error| format!("finish Guardian native accounting: {error}"))?;
+    let mut window = limits::UsageWindow {
+        truncated: read.truncated || merged.truncated,
+        sources: merged.sources,
+    };
+    let local_date = capture.local_date.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        window.truncated |= limits::totals(&config, &window.sources, &local_date)?.truncated;
+        Ok(window)
+    })
+    .await
+    .map_err(|error| format!("Guardian accounting worker: {error}"))?
+}
+
+/// Chooses the sources to publish so a failed usage read keeps Guardian's rules enforcing.
+fn settle_usage_read(
+    control: &Control,
+    read: Result<limits::UsageWindow, String>,
+    capture: &GuardianCapture,
+    generation: u64,
+    rules_revision: u64,
+) -> Result<Vec<limits::UsageSourceDay>, String> {
+    let mut usage = control
+        .usage
+        .lock()
+        .map_err(|_| "Guardian usage state is unavailable")?;
+    match read {
+        Ok(window) => {
+            usage.diagnostics.record_success();
+            if window.truncated && usage.diagnostics.record_truncation(&capture.local_date) {
+                eprintln!("Guardian usage window truncated for {}", capture.local_date);
+            }
+            usage.last_good = Some(LastGoodUsage {
+                generation,
+                vault_id: capture.vault_id.clone(),
+                rules_revision,
+                local_date: capture.local_date.clone(),
+                sources: window.sources.clone(),
+                local_usage: capture.local_usage(),
+            });
+            Ok(window.sources)
+        }
+        Err(error) => {
+            if usage.diagnostics.record_failure(&error) {
+                eprintln!("Guardian usage read failed, keeping rules: {error}");
+            }
+            Ok(fallback_sources(
+                usage.last_good.as_ref(),
+                capture,
+                generation,
+                rules_revision,
+            ))
+        }
+    }
+}
+
 async fn refresh<R: Runtime>(
     app: &tauri::AppHandle<R>,
     control: &Arc<Control>,
@@ -292,7 +354,7 @@ async fn refresh<R: Runtime>(
 ) -> Result<(), String> {
     let _sync = GUARDIAN_SYNC.lock().await;
     for _ in 0..MAX_DRAIN_BATCHES {
-        match synchronize_locked(app.clone()).await {
+        match synchronize_locked(app.clone(), false).await {
             Ok(result) if result.full_batch => continue,
             Ok(_) => break,
             Err(error) => {
@@ -303,14 +365,16 @@ async fn refresh<R: Runtime>(
     }
     let vault_id = vault::active_vault_id(app)?;
     let path = vault::active_vault_path(app)?;
-    let status = app
-        .state::<vault::ownership::VaultOwnershipManager>()
-        .status(&vault_id)?;
+    let device_id = vault::ensure_device_id(app)?;
+    let rules = crate::distractions::rule_store::snapshot(app).await?;
+    if rules.vault_id != vault_id {
+        return Err("Guardian vault changed while its rules were read".into());
+    }
+    let rules_revision = rules.revision;
+    let root = rules.root;
     let capture_app = app.clone();
     let capture_vault = vault_id.clone();
-    let config_path = vault::config_path(&path);
-    let read_path = config_path.clone();
-    let (capture, root) = tauri::async_runtime::spawn_blocking(move || {
+    let capture = tauri::async_runtime::spawn_blocking(move || {
         let encoded = capture_app
             .mobile_distractions()
             .accounting_snapshot(&capture_vault)?;
@@ -319,7 +383,7 @@ async fn refresh<R: Runtime>(
             &capture_vault,
             jiff::Timestamp::now().as_millisecond(),
         )?;
-        Ok::<_, String>((capture, read_config(&read_path)?))
+        Ok::<_, String>(capture)
     })
     .await
     .map_err(|error| format!("Guardian capture worker: {error}"))??;
@@ -328,57 +392,16 @@ async fn refresh<R: Runtime>(
         .clone()
         .or_else(|| capture.copy.clone())
         .ok_or("Guardian notification language is not ready")?;
-    let sources = if status.can_write {
-        let _permit = app
-            .state::<vault::ownership::VaultOwnershipManager>()
-            .acquire_managed_write(&vault_id)?;
-        if vault::active_vault_path(app)? != path {
-            return Err("Guardian vault changed before accounting".into());
-        }
-        let pool = connect_sqlite(app.clone(), super::ACTIVE_DB_URL.into()).await?;
-        let mut tx = pool
-            .begin()
-            .await
-            .map_err(|error| format!("begin Guardian native accounting: {error}"))?;
-        let sources = crate::distractions::limits::store::read_source_days(
-            &mut tx,
-            &capture.week_start_local_date,
-            &capture.local_date,
-        )
-        .await?;
-        // Retained peer receipts still cover Guardian identities after this device becomes the writer.
-        let retained = crate::distractions::linked::guardian_acknowledgements(
-            app,
-            &vault_id,
-            &status.device_id,
-        )
-        .await?;
-        let already_imported = super::canonical_pending_ids(&mut tx, &capture, retained).await?;
-        let sources = super::projection::include_pending(sources, &capture, &already_imported)?;
-        tx.commit()
-            .await
-            .map_err(|error| format!("finish Guardian native accounting: {error}"))?;
-        sources
-    } else {
-        let sources = crate::distractions::linked::accounting_source_days(
-            app,
-            &vault_id,
-            &status.device_id,
-            &capture.week_start_local_date,
-            &capture.local_date,
-        )
-        .await?;
-        let accepted = crate::distractions::linked::guardian_acknowledgements(
-            app,
-            &vault_id,
-            &status.device_id,
-        )
-        .await?
-        .into_iter()
-        .collect();
-        super::projection::include_pending(sources, &capture, &accepted)?
-    };
-    // The pure engine enforces the complete bounded source window, including newly pending rows.
+    let config = crate::distractions::limits_or_phase_only(&root);
+    // Other devices' replicated totals, this device's own journal, and Guardian events not yet
+    // imported form one bounded source window; a read needs no write permit.
+    let pool = crate::db::connect_vault(app).await?;
+    if vault::active_vault_path(app)? != path {
+        return Err("Guardian vault changed before accounting".into());
+    }
+    let read = read_usage_window(&pool, &device_id, &capture, config).await;
+    let sources = settle_usage_read(control, read, &capture, generation, rules_revision)?;
+    // The pure engine enforces the bounded source window, including newly pending rows.
     let publication_app = app.clone();
     let publication_control = Arc::clone(control);
     tauri::async_runtime::spawn_blocking(move || {
@@ -390,11 +413,7 @@ async fn refresh<R: Runtime>(
             || frame.generation != generation
             || vault::active_vault_path(&publication_app)? != path
             || vault::active_vault_id(&publication_app)? != vault_id
-            || publication_app
-                .state::<vault::ownership::VaultOwnershipManager>()
-                .status(&vault_id)?
-                != status
-            || read_config(&config_path)?.get("distractions") != root.get("distractions")
+            || !crate::distractions::rule_store::is_current(rules_revision)
         {
             return Err("Guardian publication context changed during accounting".into());
         }

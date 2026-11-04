@@ -7,20 +7,48 @@ use chrono::{Datelike, Days, NaiveDate, NaiveDateTime, Weekday};
 use super::rule::{ByDay, Frequency, Rule, Until};
 
 const MAX_CANDIDATE_DAYS: usize = 500_000;
+/// About 270 years of daily candidates, enough for a century-old COUNT rule that walks from DTSTART.
+const MAX_TEMPLATE_CANDIDATE_DAYS: usize = 100_000;
 const MAX_OCCURRENCES: usize = 10_000;
 
 /// One request shares its work allowance across every source template and override lookup.
+/// Multi-template window reads also give each template its own candidate allowance so one costly
+/// rule cannot spend the request; single-template lookups keep the whole request allowance.
 #[derive(Default)]
 pub(super) struct ExpansionBudget {
     candidates: usize,
+    template_candidates: usize,
+    template_allowance: Option<usize>,
     occurrences: usize,
 }
 
 impl ExpansionBudget {
+    /// Creates a request budget that also bounds each template's candidate days.
+    pub(super) fn per_template() -> Self {
+        Self {
+            template_allowance: Some(MAX_TEMPLATE_CANDIDATE_DAYS),
+            ..Self::default()
+        }
+    }
+
+    /// Starts the per-template allowance for the next template; the request totals carry over.
+    pub(super) fn start_template(&mut self) {
+        self.template_candidates = 0;
+    }
+
     fn candidate(&mut self) -> Result<(), String> {
         self.candidates += 1;
+        self.template_candidates += 1;
         if self.candidates > MAX_CANDIDATE_DAYS {
             return Err("Calendar recurrence request exceeds its candidate budget; narrow the requested window".into());
+        }
+        if self
+            .template_allowance
+            .is_some_and(|allowance| self.template_candidates > allowance)
+        {
+            return Err(
+                "Calendar event recurrence exceeds its per-event candidate allowance".into(),
+            );
         }
         Ok(())
     }
@@ -530,5 +558,28 @@ mod tests {
         assert!(budget.occurrence().is_err());
         budget.candidates = MAX_CANDIDATE_DAYS;
         assert!(budget.candidate().is_err());
+    }
+
+    #[test]
+    fn each_template_has_its_own_candidate_allowance_within_the_request() {
+        let mut budget = ExpansionBudget::per_template();
+        budget.template_candidates = MAX_TEMPLATE_CANDIDATE_DAYS;
+        let error = budget.candidate().unwrap_err();
+        assert!(error.contains("per-event"), "{error}");
+
+        budget.start_template();
+        assert!(budget.candidate().is_ok());
+        assert_eq!(budget.candidates, 2);
+
+        budget.candidates = MAX_CANDIDATE_DAYS;
+        budget.start_template();
+        let error = budget.candidate().unwrap_err();
+        assert!(error.contains("narrow the requested window"), "{error}");
+
+        let mut single = ExpansionBudget {
+            template_candidates: MAX_TEMPLATE_CANDIDATE_DAYS,
+            ..ExpansionBudget::default()
+        };
+        assert!(single.candidate().is_ok());
     }
 }

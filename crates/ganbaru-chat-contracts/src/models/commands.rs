@@ -21,6 +21,116 @@ pub struct VerifiedWorkspaceContext {
     pub canonical_path: String,
     pub repository_kind: RepositoryKind,
     pub repository_identity: Option<String>,
+    /// Whether the provider may load project configuration that can run commands.
+    #[serde(default)]
+    pub project_configuration: ProjectConfigurationAccess,
+}
+
+/// Whether a provider loads the workspace's project configuration, such as
+/// Claude project settings, hooks, skills, and MCP servers.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectConfigurationAccess {
+    /// This device trusts the folder's current project provider configuration.
+    Trusted,
+    /// Project configuration that can run commands stays unloaded.
+    #[default]
+    Restricted,
+}
+
+/// How a provider honors a restricted project configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectConfigurationRestriction {
+    /// The launch arguments keep project configuration out of the run.
+    Enforced,
+    /// No verified switch exists, so restricted folders with configuration cannot run.
+    Unavailable,
+}
+
+/// Project provider configuration path, relative to the folder root, whose
+/// content can run commands when a provider starts there.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ProviderConfigurationPath {
+    /// `.claude/settings.json`.
+    ClaudeSettings,
+    /// `.claude/settings.local.json`.
+    ClaudeLocalSettings,
+    /// `.mcp.json`.
+    ProjectMcp,
+    /// `opencode.json`.
+    OpenCodeJson,
+    /// `opencode.jsonc`.
+    OpenCodeJsonc,
+    /// `.cursorrules`.
+    CursorRules,
+    /// `.claude/skills`.
+    ClaudeSkills,
+    /// `.claude/agents`.
+    ClaudeAgents,
+    /// `.claude/commands`.
+    ClaudeCommands,
+    /// `.codex`, which holds Codex project configuration, hooks, and rules.
+    Codex,
+    /// `.opencode`, which holds OpenCode plugins and the packages they load.
+    OpenCode,
+    /// `.cursor`, which holds Cursor CLI permissions, hooks, MCP servers,
+    /// rules, commands, and skills.
+    Cursor,
+    /// `.grok`, which holds Grok configuration with MCP servers, plugins, and
+    /// permissions, and Grok hooks, skills, and plugins.
+    Grok,
+}
+
+impl ProviderConfigurationPath {
+    /// Every path, files first and then directories.
+    pub const ALL: &'static [Self] = &[
+        Self::ClaudeSettings,
+        Self::ClaudeLocalSettings,
+        Self::ProjectMcp,
+        Self::OpenCodeJson,
+        Self::OpenCodeJsonc,
+        Self::CursorRules,
+        Self::ClaudeSkills,
+        Self::ClaudeAgents,
+        Self::ClaudeCommands,
+        Self::Codex,
+        Self::OpenCode,
+        Self::Cursor,
+        Self::Grok,
+    ];
+
+    /// Path relative to the folder root, with `/` separators.
+    pub const fn relative_path(self) -> &'static str {
+        match self {
+            Self::ClaudeSettings => ".claude/settings.json",
+            Self::ClaudeLocalSettings => ".claude/settings.local.json",
+            Self::ProjectMcp => ".mcp.json",
+            Self::OpenCodeJson => "opencode.json",
+            Self::OpenCodeJsonc => "opencode.jsonc",
+            Self::CursorRules => ".cursorrules",
+            Self::ClaudeSkills => ".claude/skills",
+            Self::ClaudeAgents => ".claude/agents",
+            Self::ClaudeCommands => ".claude/commands",
+            Self::Codex => ".codex",
+            Self::OpenCode => ".opencode",
+            Self::Cursor => ".cursor",
+            Self::Grok => ".grok",
+        }
+    }
+
+    /// True when the path names a directory whose whole tree counts.
+    pub const fn is_directory(self) -> bool {
+        matches!(
+            self,
+            Self::ClaudeSkills
+                | Self::ClaudeAgents
+                | Self::ClaudeCommands
+                | Self::Codex
+                | Self::OpenCode
+                | Self::Cursor
+                | Self::Grok
+        )
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -5,18 +5,18 @@ use std::path::{Path, PathBuf};
 
 mod config;
 mod events;
-mod linked_usage;
 mod rules;
 mod snapshot;
+mod spool;
 
 use config::{is_protected_app_name, normalize_app_name, normalize_host_rule};
 use events::log_block_event;
-use linked_usage::{UsageSample, record_usage_sample};
 use rules::{decide_url_with_limits, feed_fingerprint, host_from_url, rules_fingerprint};
 use snapshot::{
     StateSnapshot, config_dir_candidates, is_valid_local_date, load_snapshot, runtime_status,
     should_enforce,
 };
+use spool::{UsageSample, record_usage_sample};
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -153,11 +153,23 @@ fn run() -> Result<NativeResponse, String> {
     Ok(response)
 }
 
+/// Creates missing directories readable only by the current user, matching the app's own
+/// configuration directory. Existing directories keep their permissions.
+fn create_private_dir_all(path: &Path) -> Result<(), String> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder
+        .create(path)
+        .map_err(|e| format!("create {}: {e}", path.display()))
+}
+
 fn write_text_file_atomically(path: &Path, contents: &str) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "connection status path has no parent".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    create_private_dir_all(parent)?;
     let file_name = path
         .file_name()
         .ok_or_else(|| "connection status path has no file name".to_string())?

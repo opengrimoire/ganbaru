@@ -21,6 +21,21 @@ impl ProviderDriver for ClaudeProviderDriver {
         Self::metadata_read()
     }
 
+    fn project_configuration_restriction(&self) -> ProjectConfigurationRestriction {
+        ProjectConfigurationRestriction::Enforced
+    }
+
+    fn project_configuration_paths(&self) -> &'static [ProviderConfigurationPath] {
+        &[
+            ProviderConfigurationPath::ClaudeSettings,
+            ProviderConfigurationPath::ClaudeLocalSettings,
+            ProviderConfigurationPath::ProjectMcp,
+            ProviderConfigurationPath::ClaudeSkills,
+            ProviderConfigurationPath::ClaudeAgents,
+            ProviderConfigurationPath::ClaudeCommands,
+        ]
+    }
+
     fn instance_configuration(&self) -> &ProviderInstanceConfig {
         &self.configuration
     }
@@ -257,6 +272,7 @@ impl ProviderDriver for ClaudeProviderDriver {
                 state: ChatTurnState::Active,
                 provider_turn_id: Some(provider_turn_id),
                 accepted_at: now_utc()?,
+                sandbox_network_access: None,
             })
         })
     }

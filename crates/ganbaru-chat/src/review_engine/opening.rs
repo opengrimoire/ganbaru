@@ -9,7 +9,9 @@ use super::super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizatio
 use super::ReviewWorkspaceAuthorizer;
 use super::authorization::authorize_review_request;
 use super::contracts::*;
-use super::material::{enrich_working_tree_files, git_files, working_tree_material};
+use super::material::{
+    add_too_large_files, enrich_working_tree_files, git_files, working_tree_material,
+};
 use super::registry::{
     ChatReviewRegistry, ReviewFileInternal, ReviewSnapshot, file_id, review_revision, snapshot_id,
     snapshot_read,
@@ -52,9 +54,9 @@ pub async fn open_review(
     let (before_oid, after_oid, label, files, provider_patches, object_store) =
         match &request.source {
             ReviewDiffSource::WorkingTree { mode } => {
-                let material = working_tree_material(&authorized.canonical_path, *mode).await?;
+                let material = working_tree_material(authorized.git_folder(), *mode).await?;
                 let mut files = git_files(
-                    &authorized.canonical_path,
+                    authorized.git_folder(),
                     &material.before_oid,
                     &material.after_oid,
                     &request.source,
@@ -63,6 +65,12 @@ pub async fn open_review(
                 )
                 .await?;
                 enrich_working_tree_files(&mut files, &material.status, &request.source);
+                add_too_large_files(
+                    &mut files,
+                    &material.status,
+                    &request.source,
+                    &material.too_large_paths,
+                );
                 (
                     Some(material.before_oid),
                     Some(material.after_oid),
@@ -89,7 +97,7 @@ pub async fn open_review(
                 let post = read_stored_checkpoint(pool, &post).await?;
                 verify_checkpoint_pair(&authorized, thread_id, &pre, &post).await?;
                 let files = git_files(
-                    &authorized.canonical_path,
+                    authorized.git_folder(),
                     &pre.git_object_id,
                     &post.git_object_id,
                     &request.source,
@@ -113,13 +121,13 @@ pub async fn open_review(
             ReviewDiffSource::Commit { revision } => {
                 validate_reference(revision, "revision")?;
                 let commit = git_text(
-                    &authorized.canonical_path,
+                    authorized.git_folder(),
                     &["rev-parse", "--verify", &format!("{revision}^{{commit}}")],
                     None,
                 )
                 .await?;
                 let parents = git_text(
-                    &authorized.canonical_path,
+                    authorized.git_folder(),
                     &["rev-list", "--parents", "-n", "1", &commit],
                     None,
                 )
@@ -128,9 +136,9 @@ pub async fn open_review(
                     .split_whitespace()
                     .nth(1)
                     .map(ToOwned::to_owned)
-                    .unwrap_or(empty_tree(&authorized.canonical_path).await?);
+                    .unwrap_or(empty_tree(authorized.git_folder()).await?);
                 let files = git_files(
-                    &authorized.canonical_path,
+                    authorized.git_folder(),
                     &parent,
                     &commit,
                     &request.source,
@@ -156,29 +164,24 @@ pub async fn open_review(
                 validate_reference(base_ref, "baseRef")?;
                 validate_reference(head_ref, "headRef")?;
                 let base = git_text(
-                    &authorized.canonical_path,
+                    authorized.git_folder(),
                     &["rev-parse", "--verify", &format!("{base_ref}^{{commit}}")],
                     None,
                 )
                 .await?;
                 let head = git_text(
-                    &authorized.canonical_path,
+                    authorized.git_folder(),
                     &["rev-parse", "--verify", &format!("{head_ref}^{{commit}}")],
                     None,
                 )
                 .await?;
                 let before = if *comparison == ReviewBranchComparison::MergeBase {
-                    git_text(
-                        &authorized.canonical_path,
-                        &["merge-base", &base, &head],
-                        None,
-                    )
-                    .await?
+                    git_text(authorized.git_folder(), &["merge-base", &base, &head], None).await?
                 } else {
                     base
                 };
                 let files = git_files(
-                    &authorized.canonical_path,
+                    authorized.git_folder(),
                     &before,
                     &head,
                     &request.source,
@@ -329,6 +332,7 @@ pub async fn open_review(
         thread_id: request.thread_id,
         working_folder_id,
         environment_id,
+        git_trust: authorized.git_trust,
         root: authorized.canonical_path,
         source: request.source,
         source_label: label,
@@ -580,6 +584,7 @@ pub fn file_contract(
             pure_rename,
             untracked,
             symlink: false,
+            too_large: false,
             provider_reported: read_only && matches!(source, ReviewDiffSource::ProviderTurn { .. }),
             git_observed: !matches!(source, ReviewDiffSource::ProviderTurn { .. }),
             read_only,

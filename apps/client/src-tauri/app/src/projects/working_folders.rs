@@ -1,6 +1,6 @@
 //! Device-local persistence adapter for project working-folder state.
 
-use crate::vault::{active_vault_id, read_app_state, update_app_state, vault_device_id};
+use crate::vault::{active_vault_id, ensure_device_id, read_app_state, update_app_state};
 use tauri::Runtime;
 
 #[cfg(desktop)]
@@ -13,7 +13,7 @@ pub fn read_active_working_folder_scope<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<WorkingFolderDeviceScope, String> {
     let vault_id = active_vault_id(app)?;
-    let device_id = vault_device_id(app.clone())?;
+    let device_id = ensure_device_id(app)?;
     let state = read_app_state(app)?;
     Ok(state
         .project_working_folders
@@ -27,7 +27,7 @@ pub fn update_active_working_folder_scope<R: Runtime, T>(
     update: impl FnOnce(&mut WorkingFolderDeviceScope) -> Result<T, String>,
 ) -> Result<T, String> {
     let vault_id = active_vault_id(app)?;
-    let device_id = vault_device_id(app.clone())?;
+    let device_id = ensure_device_id(app)?;
     update_app_state(app, |state| {
         if state.project_working_folders.schema_version
             != WORKING_FOLDER_DEVICE_STATE_SCHEMA_VERSION

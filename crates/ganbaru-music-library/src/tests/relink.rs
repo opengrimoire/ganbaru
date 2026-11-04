@@ -49,7 +49,9 @@ async fn pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -64,7 +66,7 @@ async fn seed_root(pool: &SqlitePool) {
     sqlx::query(
         "INSERT INTO music_source_collections
             (id, kind, identity_key, name, local_root_id, created_at_ms, updated_at_ms)
-         VALUES ('collection-1', 'local-root', 'root:1', 'Soundtracks', 'root-1', 1, 1)",
+         VALUES ('collection-1', 'local-root', 'local-root:root-1', 'Soundtracks', 'root-1', 1, 1)",
     )
     .execute(pool)
     .await
@@ -109,8 +111,8 @@ async fn seed_location(
     .unwrap();
     sqlx::query(
         "INSERT INTO music_source_collection_items
-            (collection_id, item_id, first_discovered_at_ms)
-         VALUES ('collection-1', ?, 1)",
+            (collection_id, item_id, first_discovered_at_ms, sync_key)
+         VALUES ('collection-1', ?, 1, lower(hex(randomblob(16))))",
     )
     .bind(item_id)
     .execute(pool)
@@ -161,16 +163,16 @@ fn relink_plan_classifies_and_applies_reorganized_partial_roots() {
         )
         .await;
         sqlx::query(
-            "INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms)
-             VALUES ('playlist-1', 'Focus', 1, 1)",
+            "INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms)
+             VALUES ('playlist-1', 'Focus', 'a0', 1, 1)",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO music_playlist_memberships
-                (id, playlist_id, item_id, position, created_at_ms, updated_at_ms)
-             VALUES ('membership-1', 'playlist-1', 'item-likely', 0, 1, 1)",
+                (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
+             VALUES ('membership-1', 'playlist-1', 'item-likely', 'a0', 1, 1)",
         )
         .execute(&pool)
         .await
@@ -221,6 +223,16 @@ fn relink_plan_classifies_and_applies_reorganized_partial_roots() {
                 ("item-likely".to_string(), "moved/likely.mp3".to_string()),
                 ("item-missing".to_string(), "missing.mp3".to_string()),
             ]
+        );
+        let relinked_location: String = sqlx::query_scalar(
+            "SELECT id FROM music_local_locations WHERE item_id = 'item-likely'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            relinked_location,
+            crate::identity::location_id("root-1", "moved/likely.mp3")
         );
         let membership_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM music_playlist_memberships WHERE item_id = 'item-likely'",
@@ -300,5 +312,70 @@ fn cancelling_a_relink_plan_performs_no_location_writes() {
         .await
         .unwrap();
         assert_eq!(stored_path, "old.mp3");
+    });
+}
+
+#[test]
+fn relink_scan_over_the_entry_limit_fails_without_leaving_a_plan() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        seed_root(&pool).await;
+        let replacement = TestDirectory::new("crowded");
+        for index in 0..4 {
+            replacement.write(&format!("folder-{index}/track.mp3"), b"media bytes");
+        }
+
+        let error = relink::create_plan_with_scan_limit(
+            &pool,
+            plan_request(&replacement, "plan-crowded"),
+            5,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.message.contains("more than 5 files and folders"));
+        let plans: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM music_relink_plans")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(plans, 0);
+
+        let within_limit =
+            relink::create_plan_with_scan_limit(&pool, plan_request(&replacement, "plan-roomy"), 8)
+                .await
+                .unwrap();
+        assert_eq!(within_limit.state, MusicRelinkPlanState::Ready);
+        assert_eq!(within_limit.new_count, 4);
+    });
+}
+
+#[test]
+fn relink_scan_stops_once_its_plan_is_cancelled() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        seed_root(&pool).await;
+        let replacement = TestDirectory::new("cancelled");
+        replacement.write("album/track.mp3", b"media bytes");
+        sqlx::query(
+            "INSERT INTO music_relink_plans (id, root_id, state, created_at_ms, updated_at_ms)
+             VALUES ('plan-cancelled', 'root-1', 'cancelled', 1, 2)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let request = plan_request(&replacement, "plan-cancelled");
+        let summary = relink::scan_plan(&pool, &request, replacement.path(), 100)
+            .await
+            .unwrap();
+
+        assert_eq!(summary.state, MusicRelinkPlanState::Cancelled);
+        let entries: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM music_relink_plan_entries WHERE plan_id = 'plan-cancelled'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(entries, 0);
     });
 }

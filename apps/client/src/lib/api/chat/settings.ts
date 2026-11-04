@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
+import { translate } from "$lib/i18n/translator.svelte";
 import type {
   ChatBehaviorPreferences,
   ChatDiagnosticPreferences,
@@ -29,7 +30,7 @@ import {
   parseChatStopAllResult,
   parseChatRebuildResult,
   parseChatSettingsRead,
-  parseChatVaultConfig,
+  parseChatConfiguration,
   parseProviderInstanceRead,
   parseProviderModelCatalog,
   parseProviderProbeResult,
@@ -99,10 +100,37 @@ export async function setLastSelectedChatThread(threadId: ChatThreadId | null): 
   await invoke("chat_set_last_selected_thread", { threadId });
 }
 
-export async function saveChatProvider(configuration: ProviderInstanceConfig): Promise<ProviderInstanceRead> {
-  return parseProviderInstanceRead(await invoke<unknown>("chat_save_provider", {
+/** Localized text for the native runtime confirmation; the listed values are resolved natively. */
+function providerRuntimePrompt() {
+  return {
+    title: translate("settings.chat.setup.runtimeReviewTitle"),
+    message: translate("settings.chat.setup.runtimeReviewMessage"),
+    allowLabel: translate("settings.chat.setup.runtimeReviewAllow"),
+    cancelLabel: translate("settings.chat.setup.runtimeReviewCancel"),
+    moreLabel: translate("settings.chat.setup.runtimeReviewMore"),
+    sharedProgramLabel: translate("settings.chat.setup.runtimeReviewSharedProgram"),
+  };
+}
+
+/**
+ * Saves a provider. Rust asks natively before applying runtime values that neither a picker nor
+ * this device vouched for, and returns `null` when the user cancels.
+ */
+export async function saveChatProvider(configuration: ProviderInstanceConfig): Promise<ProviderInstanceRead | null> {
+  const value = await invoke<unknown>("chat_save_provider", {
     request: { configuration },
-  }));
+    prompt: providerRuntimePrompt(),
+  });
+  return value === null ? null : parseProviderInstanceRead(value);
+}
+
+/** Confirms a stored provider's imported runtime values on this device; `null` when cancelled. */
+export async function confirmChatProviderRuntime(instanceId: ProviderInstanceId): Promise<ProviderInstanceRead | null> {
+  const value = await invoke<unknown>("chat_confirm_provider_runtime", {
+    instanceId,
+    prompt: providerRuntimePrompt(),
+  });
+  return value === null ? null : parseProviderInstanceRead(value);
 }
 
 export async function setChatProviderEnabled(instanceId: ProviderInstanceId, enabled: boolean): Promise<ProviderInstanceRead> {
@@ -113,10 +141,13 @@ export async function removeChatProvider(instanceId: ProviderInstanceId): Promis
   return parseRemoveProviderResult(await invoke<unknown>("chat_remove_provider", { instanceId }));
 }
 
-export async function testChatProvider(configuration: ProviderInstanceConfig): Promise<ProviderSetupTestRead> {
-  return parseProviderSetupTestRead(await invoke<unknown>("chat_test_provider", {
+/** Tests an unsaved provider after the same native confirmation as saving; `null` when cancelled. */
+export async function testChatProvider(configuration: ProviderInstanceConfig): Promise<ProviderSetupTestRead | null> {
+  const value = await invoke<unknown>("chat_test_provider", {
     request: { configuration },
-  }));
+    prompt: providerRuntimePrompt(),
+  });
+  return value === null ? null : parseProviderSetupTestRead(value);
 }
 
 export async function probeChatProvider(instanceId: ProviderInstanceId): Promise<ProviderProbeResult> {
@@ -140,30 +171,40 @@ export async function updateChatProviderModels(
 }
 
 export async function updateChatBehavior(behavior: ChatBehaviorPreferences): Promise<ChatSettingsRead["configuration"]> {
-  return parseChatVaultConfig(await invoke<unknown>("chat_update_behavior", { behavior }));
+  return parseChatConfiguration(await invoke<unknown>("chat_update_behavior", { behavior }));
 }
 
 export async function updateChatPanels(panels: ChatPanelPreferences): Promise<ChatSettingsRead["configuration"]> {
-  return parseChatVaultConfig(await invoke<unknown>("chat_update_panels", { panels }));
+  return parseChatConfiguration(await invoke<unknown>("chat_update_panels", { panels }));
 }
 
 export async function setChatWorkingFolderProviderPreference(
   workingFolderId: ProjectWorkingFolderId,
   instanceId: ProviderInstanceId | null,
 ): Promise<ChatSettingsRead["configuration"]> {
-  return parseChatVaultConfig(await invoke<unknown>("chat_set_working_folder_provider_preference", { workingFolderId, instanceId }));
+  return parseChatConfiguration(await invoke<unknown>("chat_set_working_folder_provider_preference", { workingFolderId, instanceId }));
 }
 
 export async function rememberChatComposerSelection(selection: RememberedComposerSelection): Promise<ChatSettingsRead["configuration"]> {
-  return parseChatVaultConfig(await invoke<unknown>("chat_remember_composer_selection", { selection }));
+  return parseChatConfiguration(await invoke<unknown>("chat_remember_composer_selection", { selection }));
 }
 
-export async function replaceChatCredential(referenceId: CredentialReferenceId, secret: string): Promise<void> {
-  await invoke("chat_replace_credential", { referenceId, secret });
+/** Store a provider secret; Rust derives and returns the reference bound to this instance and variable. */
+export async function replaceChatCredential(
+  instanceId: ProviderInstanceId,
+  environmentName: string,
+  secret: string,
+): Promise<CredentialReferenceId> {
+  const reference = await invoke<unknown>("chat_replace_credential", { instanceId, environmentName, secret });
+  if (typeof reference !== "string" || reference.length === 0) {
+    throw new Error("chat_replace_credential returned an invalid credential reference");
+  }
+  return reference;
 }
 
-export async function removeChatCredential(referenceId: CredentialReferenceId): Promise<boolean> {
-  return invoke<boolean>("chat_remove_credential", { referenceId });
+/** Remove the secret stored for this provider instance and variable. */
+export async function removeChatCredential(instanceId: ProviderInstanceId, environmentName: string): Promise<boolean> {
+  return invoke<boolean>("chat_remove_credential", { instanceId, environmentName });
 }
 
 export async function pickChatProviderExecutable(title: string): Promise<string | null> {

@@ -1,5 +1,10 @@
 //! Private, cached authority for volatile, process-local decoder deliveries.
 
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use std::sync::OnceLock;
 
 type Checker = dyn Fn(i64) -> bool + Send + Sync;

@@ -12,7 +12,7 @@ const receipt: CalendarCommitReceipt = { commandId: "schedule-1", editedId: iden
 const preview: CalendarEditPreview = { vaultId: "vault", vaultGeneration: 1, commandId: "schedule-1",
   editedId: receipt.editedId, sourceId: receipt.editedId, reviewRevision: "b".repeat(64), changed: true,
   scope: { effectiveScope: "this", selectedStarted: false, selectedHasHistory: false, selectedActive: false },
-  window: { sourceEvents: [], windowEvents: [], diagnostics: [], totalEventCount: null },
+  window: { sourceEvents: [], windowEvents: [], diagnostics: [], totalEventCount: null, omittedTemplateCount: 0 },
   previewedIds: new Set(), editingId: undefined, scheduledTasks: identities };
 
 function setup() {

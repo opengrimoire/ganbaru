@@ -182,7 +182,7 @@ pub async fn apply_dependency_cascade(
     let mut tasks = Vec::with_capacity(preview.items.len());
     let mut events = Vec::new();
     for item in &preview.items {
-        sqlx::query("UPDATE project_tasks SET start_date = ?, due_date = ?, target_end_date = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE project_tasks SET start_date = ?, due_date = ?, target_end_date = ?, revision = revision + 1, updated_at = ? WHERE id = ?")
             .bind(&item.next_start_date).bind(&item.next_due_date).bind(&item.next_target_end_date).bind(&now).bind(&item.task_id)
             .execute(&mut *tx).await.map_err(|error| format!("apply dependency date change: {error}"))?;
         for (field, old, new) in [

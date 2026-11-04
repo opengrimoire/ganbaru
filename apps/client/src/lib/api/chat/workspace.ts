@@ -1,5 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
+import { withWorkingFolderTrust } from "$lib/api/working-folder-trust";
+import { translate } from "$lib/i18n/translator.svelte";
 import type {
   ChatAttachmentRead,
   ProjectWorkingFolderDirectoryRead,
@@ -112,10 +114,10 @@ export async function readChatReviewPatches(
 export async function applyChatReviewAction(
   request: ApplyChatReviewActionRequest,
 ): Promise<ApplyChatReviewActionResult> {
-  const value = await invoke<unknown>("chat_apply_review_action", {
+  const value = await withWorkingFolderTrust(request.workingFolderId, async () => invoke<unknown>("chat_apply_review_action", {
     dbUrl: await ensureDbUrl(),
     request,
-  });
+  }));
   if (typeof value !== "object" || value === null || !("snapshot" in value)) {
     throw new Error("Invalid Chat review action result");
   }
@@ -133,9 +135,9 @@ export async function listChatExecutionEnvironments(
 export async function createChatWorktreeEnvironment(
   request: CreateChatWorktreeRequest,
 ): Promise<ChatExecutionEnvironmentRead> {
-  return parseChatExecutionEnvironment(await invoke<unknown>("chat_create_worktree_environment", {
+  return withWorkingFolderTrust(request.workingFolderId, async () => parseChatExecutionEnvironment(await invoke<unknown>("chat_create_worktree_environment", {
     dbUrl: await ensureDbUrl(), request,
-  }));
+  })));
 }
 
 export async function removeChatWorktreeEnvironment(
@@ -188,9 +190,9 @@ export async function listHostedChangeRequests(
 export async function createHostedChangeRequest(
   request: CreateHostedChangeRequest,
 ): Promise<HostedChangeRequestRead> {
-  return parseHostedChangeRequest(await invoke<unknown>("chat_create_hosted_change_request", {
+  return withWorkingFolderTrust(request.workingFolderId, async () => parseHostedChangeRequest(await invoke<unknown>("chat_create_hosted_change_request", {
     dbUrl: await ensureDbUrl(), request,
-  }));
+  })));
 }
 
 export async function checkoutHostedChangeRequest(
@@ -200,14 +202,14 @@ export async function checkoutHostedChangeRequest(
   reference: string,
   remoteName: string | null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_checkout_hosted_change_request", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_checkout_hosted_change_request", {
     dbUrl: await ensureDbUrl(),
     workingFolderId,
     executionEnvironmentId,
     providerKind,
     reference,
     remoteName,
-  }));
+  })));
 }
 
 export async function configureBitbucketCredential(
@@ -228,6 +230,157 @@ export async function readBrowserStatus(threadId: ChatThreadId): Promise<Browser
   return parseBrowserTabs(await invoke<unknown>("chat_browser_status", {
     dbUrl: await ensureDbUrl(), threadId,
   }));
+}
+
+/** An external site the user lets the model use in one Chat thread. */
+export interface PreviewModelOriginGrant {
+  threadId: string;
+  origin: string;
+}
+
+function parsePreviewModelOriginGrants(value: unknown): PreviewModelOriginGrant[] {
+  if (!Array.isArray(value)) throw new Error("Invalid browser site access list");
+  return value.map((entry: unknown) => {
+    if (typeof entry !== "object" || entry === null) throw new Error("Invalid browser site access");
+    const { threadId, origin } = entry as Record<string, unknown>;
+    if (typeof threadId !== "string" || typeof origin !== "string") {
+      throw new Error("Invalid browser site access");
+    }
+    return { threadId, origin };
+  });
+}
+
+/** Lists every external site the model may use, across threads on this device. */
+export async function readPreviewModelOrigins(): Promise<PreviewModelOriginGrant[]> {
+  return parsePreviewModelOriginGrants(await invoke<unknown>("chat_browser_model_origins"));
+}
+
+/** Lets the model use the site the tab shows now, and returns that site's origin. */
+export async function allowPreviewModelOrigin(threadId: ChatThreadId, tabId: string): Promise<string> {
+  const origin = await invoke<unknown>("chat_browser_allow_model_origin", { threadId, tabId });
+  if (typeof origin !== "string") throw new Error("Invalid browser site access");
+  return origin;
+}
+
+/** Event emitted when a Chat thread gets a new pending browser preview approval. */
+export const CHAT_BROWSER_APPROVAL_EVENT = "chat://browser-approval";
+
+/** Page capabilities a preview page can ask the user for. */
+export const PREVIEW_PAGE_PERMISSIONS = [
+  "camera",
+  "microphone",
+  "cameraAndMicrophone",
+  "screenCapture",
+  "location",
+  "notifications",
+  "clipboard",
+  "pointerLock",
+  "protectedMedia",
+  "storageAccess",
+  "sensors",
+  "fileAccess",
+  "localFonts",
+  "midi",
+  "windowManagement",
+] as const;
+
+/** A page capability a preview page can ask the user for. */
+export type PreviewPagePermission = (typeof PREVIEW_PAGE_PERMISSIONS)[number];
+
+/** Page dialogs a preview page can open. */
+export const PREVIEW_PAGE_DIALOG_KINDS = ["alert", "confirm", "prompt", "beforeUnload"] as const;
+
+/** A page dialog a preview page can open. */
+export type PreviewPageDialogKind = (typeof PREVIEW_PAGE_DIALOG_KINDS)[number];
+
+/** An approval the coding agent or a preview page is waiting on in the Browser panel. */
+export type PreviewApproval =
+  | { kind: "navigation"; origin: string }
+  | { kind: "network" }
+  | { kind: "permission"; requestId: number; origin: string; permission: PreviewPagePermission }
+  | {
+    kind: "dialog";
+    requestId: number;
+    origin: string;
+    dialogKind: PreviewPageDialogKind;
+    message: string;
+    defaultText: string;
+  };
+
+function isOneOf<T extends string>(values: readonly T[], value: unknown): value is T {
+  return typeof value === "string" && (values as readonly string[]).includes(value);
+}
+
+function isRequestId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+/**
+ * Validates the pending approval the backend returns.
+ *
+ * @param value Untrusted command result.
+ * @returns The approval, or `null` when nothing is waiting.
+ * @throws When the result is not a known approval shape.
+ */
+export function parsePreviewApproval(value: unknown): PreviewApproval | null {
+  if (value === null) return null;
+  if (typeof value !== "object") throw new Error("Invalid browser approval");
+  const { kind, origin, requestId, permission, dialogKind, message, defaultText } =
+    value as Record<string, unknown>;
+  if (kind === "network") return { kind };
+  if (typeof origin !== "string") throw new Error("Invalid browser approval");
+  if (kind === "navigation") return { kind, origin };
+  if (kind === "permission" && isRequestId(requestId) && isOneOf(PREVIEW_PAGE_PERMISSIONS, permission)) {
+    return { kind, requestId, origin, permission };
+  }
+  if (
+    kind === "dialog"
+    && isRequestId(requestId)
+    && isOneOf(PREVIEW_PAGE_DIALOG_KINDS, dialogKind)
+    && typeof message === "string"
+    && typeof defaultText === "string"
+  ) {
+    return { kind, requestId, origin, dialogKind, message, defaultText };
+  }
+  throw new Error("Invalid browser approval");
+}
+
+/** Reads the approval a thread's Browser panel should show, if any. */
+export async function readPendingBrowserApproval(threadId: ChatThreadId): Promise<PreviewApproval | null> {
+  return parsePreviewApproval(await invoke<unknown>("chat_browser_pending_approval", { threadId }));
+}
+
+/**
+ * Allows or dismisses a thread's pending approval. Allowing a navigation opens it and returns
+ * the updated tab.
+ *
+ * @param threadId Thread whose Browser panel shows the approval.
+ * @param allow Allow the request, or accept the page dialog.
+ * @param page The page request being answered and, for an accepted prompt, its text.
+ */
+export async function resolveBrowserApproval(
+  threadId: ChatThreadId,
+  allow: boolean,
+  page?: { requestId: number; text?: string },
+): Promise<BrowserTabRead | null> {
+  const value = await invoke<unknown>("chat_browser_resolve_approval", {
+    dbUrl: await ensureDbUrl(),
+    threadId,
+    allow,
+    requestId: page?.requestId ?? null,
+    text: page?.text ?? null,
+  });
+  return value === null ? null : parseBrowserTabRead(value);
+}
+
+/** Clears preview cookies, storage, and caches for every working folder in the active vault. */
+export async function clearBrowserPreviewData(): Promise<void> {
+  await invoke("chat_browser_clear_data");
+}
+
+/** Stops the model from using a site in a thread. */
+export async function revokePreviewModelOrigin(threadId: string, origin: string): Promise<void> {
+  await invoke("chat_browser_revoke_model_origin", { threadId, origin });
 }
 
 export interface DiscoveredPreviewServer {
@@ -363,12 +516,12 @@ export async function stageGitPaths(
   paths: string[],
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_stage", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_stage", {
     dbUrl: await ensureDbUrl(),
     workingFolderId,
     paths,
     executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function unstageGitPaths(
@@ -376,12 +529,12 @@ export async function unstageGitPaths(
   paths: string[],
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_unstage", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_unstage", {
     dbUrl: await ensureDbUrl(),
     workingFolderId,
     paths,
     executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function commitGitChanges(
@@ -389,12 +542,12 @@ export async function commitGitChanges(
   message: string,
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_commit", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_commit", {
     dbUrl: await ensureDbUrl(),
     workingFolderId,
     message,
     executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function fetchGitRemote(
@@ -402,9 +555,9 @@ export async function fetchGitRemote(
   remote: string | null = null,
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_fetch", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_fetch", {
     dbUrl: await ensureDbUrl(), workingFolderId, remote, executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function pullGitBranch(
@@ -413,9 +566,9 @@ export async function pullGitBranch(
   branch: string | null = null,
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_pull", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_pull", {
     dbUrl: await ensureDbUrl(), workingFolderId, remote, branch, executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function pushGitBranch(
@@ -426,10 +579,10 @@ export async function pushGitBranch(
   destructiveConfirmed = false,
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_push", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_push", {
     dbUrl: await ensureDbUrl(),
     request: { workingFolderId, remote, branch, forceWithLease, destructiveConfirmed, executionEnvironmentId },
-  }));
+  })));
 }
 
 export async function initializeGitRepository(
@@ -437,9 +590,9 @@ export async function initializeGitRepository(
   initialBranch: string | null,
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_initialize", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_initialize", {
     dbUrl: await ensureDbUrl(), workingFolderId, initialBranch, executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function cloneGitRepository(
@@ -448,9 +601,9 @@ export async function cloneGitRepository(
   remoteName = "origin",
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_clone", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_clone", {
     dbUrl: await ensureDbUrl(), workingFolderId, remoteUrl, remoteName, executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function discardGitPaths(
@@ -459,23 +612,27 @@ export async function discardGitPaths(
   destructiveConfirmed: boolean,
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_discard", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_discard", {
     dbUrl: await ensureDbUrl(), workingFolderId, paths, destructiveConfirmed, executionEnvironmentId,
-  }));
+  })));
 }
 
-export async function readChatTerminalLayout(threadId: ChatThreadId): Promise<ChatTerminalLayoutRead> {
+export async function readChatTerminalLayout(
+  threadId: ChatThreadId,
+  workingFolderId: ProjectWorkingFolderId,
+): Promise<ChatTerminalLayoutRead> {
   return parseChatTerminalLayout(await invoke<unknown>("chat_read_terminal_layout", {
-    dbUrl: await ensureDbUrl(), threadId,
+    dbUrl: await ensureDbUrl(), threadId, workingFolderId,
   }));
 }
 
 export async function saveChatTerminalPanelLayout(
   threadId: ChatThreadId,
+  workingFolderId: ProjectWorkingFolderId,
   panel: ChatTerminalPanelLayout,
 ): Promise<ChatTerminalLayoutRead> {
   return parseChatTerminalLayout(await invoke<unknown>("chat_save_terminal_panel_layout", {
-    dbUrl: await ensureDbUrl(), threadId, panel,
+    dbUrl: await ensureDbUrl(), threadId, workingFolderId, panel,
   }));
 }
 
@@ -546,12 +703,33 @@ export async function recreateProjectWorkingFolderFile(request: {
   }));
 }
 
+/**
+ * Opens a workspace file with the system default handler. Documents open directly; a type that
+ * could run as a program asks in a native dialog first, and declining rejects with a `cancelled`
+ * Chat error.
+ */
 export async function openProjectWorkingFolderFile(
   workingFolderId: ProjectWorkingFolderId,
   relativePath: string,
   executionEnvironmentId: string | null = null,
 ): Promise<void> {
-  await invoke("projects_open_working_folder_file", { dbUrl: await ensureDbUrl(), workingFolderId, relativePath, executionEnvironmentId });
+  await invoke("projects_open_working_folder_file", {
+    dbUrl: await ensureDbUrl(),
+    workingFolderId,
+    relativePath,
+    executionEnvironmentId,
+    prompt: externalOpenPrompt(),
+  });
+}
+
+/** Localized text for the native open confirmation; Rust appends the file path. */
+function externalOpenPrompt() {
+  return {
+    title: translate("chat.inspector.openExternallyTitle"),
+    message: translate("chat.inspector.openExternallyMessage"),
+    allowLabel: translate("chat.inspector.openExternallyAllow"),
+    cancelLabel: translate("chat.inspector.openExternallyCancel"),
+  };
 }
 
 export async function listChatTerminals(
@@ -565,6 +743,35 @@ export async function listChatTerminals(
   }));
 }
 
+/** Localized text for the native terminal start dialog; Rust appends the folder and shell. */
+function terminalStartPrompt() {
+  return {
+    title: translate("chat.inspector.terminalStartTitle"),
+    message: translate("chat.inspector.terminalStartMessage"),
+    allowLabel: translate("chat.inspector.terminalStartAllow"),
+    cancelLabel: translate("chat.inspector.terminalStartCancel"),
+  };
+}
+
+/**
+ * Binds a thread to its working folder before terminal requests. An unsaved draft thread is
+ * reserved natively; a saved thread is only checked against the folder.
+ */
+export async function reserveChatDraftThread(
+  threadId: ChatThreadId,
+  workingFolderId: ProjectWorkingFolderId,
+): Promise<void> {
+  await invoke<unknown>("chat_reserve_draft_thread", {
+    dbUrl: await ensureDbUrl(),
+    threadId,
+    workingFolderId,
+  });
+}
+
+/**
+ * Starts a terminal. The first terminal for a folder and environment in each app launch asks
+ * for a native confirmation; declining rejects with a `cancelled` Chat error.
+ */
 export async function createChatTerminal(request: {
   terminalId: string;
   threadId: ChatThreadId;
@@ -574,7 +781,7 @@ export async function createChatTerminal(request: {
 }): Promise<ChatTerminalSnapshotRead> {
   return parseChatTerminalSnapshot(await invoke<unknown>("chat_terminal_create", {
     dbUrl: await ensureDbUrl(),
-    request,
+    request: { ...request, startPrompt: terminalStartPrompt() },
   }));
 }
 
@@ -589,6 +796,51 @@ export async function readChatTerminalSnapshot(
     threadId,
     workingFolderId,
   }));
+}
+
+/**
+ * Subscribes one terminal view to live output and returns the scrollback snapshot taken at attach time.
+ *
+ * Live chunks arrive only on `channel` and stop once the view holds a full window of unacknowledged
+ * bytes, so the view must acknowledge what it writes.
+ *
+ * @param subscriptionId - Random identifier for this view, used to acknowledge and detach.
+ * @param channel - Receives live output chunks for this view only.
+ * @returns The terminal state and scrollback at the moment the subscription began.
+ */
+export async function attachChatTerminal(
+  terminalId: string,
+  threadId: ChatThreadId,
+  workingFolderId: ProjectWorkingFolderId,
+  subscriptionId: string,
+  channel: Channel<unknown>,
+): Promise<ChatTerminalSnapshotRead> {
+  return parseChatTerminalSnapshot(await invoke<unknown>("chat_terminal_attach", {
+    dbUrl: await ensureDbUrl(),
+    terminalId,
+    threadId,
+    workingFolderId,
+    subscriptionId,
+    channel,
+  }));
+}
+
+/**
+ * Returns delivery credit for live output bytes the view has finished writing.
+ *
+ * @param bytes - Decoded output bytes received on the subscription since the last acknowledgement.
+ */
+export async function acknowledgeChatTerminalOutput(
+  terminalId: string,
+  subscriptionId: string,
+  bytes: number,
+): Promise<void> {
+  await invoke("chat_terminal_acknowledge", { terminalId, subscriptionId, bytes });
+}
+
+/** Ends one view's live output subscription; detaching from a closed terminal succeeds. */
+export async function detachChatTerminal(terminalId: string, subscriptionId: string): Promise<void> {
+  await invoke("chat_terminal_detach", { terminalId, subscriptionId });
 }
 
 export async function writeChatTerminal(

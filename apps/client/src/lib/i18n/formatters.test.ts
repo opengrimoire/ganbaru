@@ -5,6 +5,7 @@ import {
   formatNumber,
   formatRelativeDays,
   formatRelativeMinutes,
+  isolateText,
   pluralCategory,
 } from "./formatters";
 import { translateFromPartialCatalog, type Translate } from "./translator.svelte";
@@ -70,5 +71,12 @@ describe("locale-aware formatters", () => {
     expect(formatRelativeDays(t, 1)).toBe("in 1 day");
     expect(formatRelativeDays(t, 7)).toBe("in 7 days");
     expect(formatRelativeDays(t, -2)).toBe("2 days ago");
+  });
+});
+
+describe("isolateText", () => {
+  it("wraps peer text in first-strong isolate marks so it cannot reorder the sentence", () => {
+    expect(isolateText("Maryam")).toBe("\u{2068}Maryam\u{2069}");
+    expect(`Remove ${isolateText("\u{0645}\u{0631}\u{064A}\u{0645}")}?`).toBe("Remove \u{2068}\u{0645}\u{0631}\u{064A}\u{0645}\u{2069}?");
   });
 });

@@ -1,6 +1,107 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { PomodoroPhase } from "$lib/pomodoro/rhythm";
-import type { DistractionsLimitTotal, DistractionsDailyLimitEntryTotal } from "$lib/distractions";
+import {
+  parseDistractionsConfig,
+  parseDistractionsRulesEditOutcome,
+  type DistractionsConfig,
+  type DistractionsDailyLimitEntryTotal,
+  type DistractionsHostList,
+  type DistractionsLimitTotal,
+  type DistractionsMode,
+  type DistractionsRuleTarget,
+  type DistractionsRulesEditOutcome,
+} from "$lib/distractions";
+import type { EventColor } from "$lib/calendar/types";
+
+/** A limit entry as the usage limit editor submits it; blank fields mean no source. */
+export interface DistractionsUsageLimitEntryDraft {
+  id: string;
+  name: string;
+  color?: EventColor | null;
+  websiteHost: string;
+  mobileAppName: string;
+  mobileAppPackage: string;
+  desktopAppName: string;
+  desktopAppMatchNames: readonly string[];
+}
+
+/** A usage limit as the editor submits it. */
+export interface DistractionsUsageLimitDraft {
+  name: string;
+  minutesPerDay: number | null;
+  minutesPerWeek: number | null;
+  entries: readonly DistractionsUsageLimitEntryDraft[];
+}
+
+/** Read the rules of the active vault, assembled from SQLite. */
+export async function loadDistractionsRules(): Promise<DistractionsConfig> {
+  return parseDistractionsConfig(await invoke<unknown>("distractions_rules_load"));
+}
+
+async function editRules(command: string, args?: Record<string, unknown>): Promise<DistractionsRulesEditOutcome> {
+  return parseDistractionsRulesEditOutcome(await invoke<unknown>(command, args));
+}
+
+/** Switch between blocking listed sites and allowing only listed sites. */
+export function setDistractionsRulesMode(mode: DistractionsMode): Promise<DistractionsRulesEditOutcome> {
+  return editRules("distractions_rules_set_mode", { mode });
+}
+
+/** Turn a setting or rule on or off; a rule that no longer exists is left alone. */
+export function setDistractionsRuleEnabled(
+  target: DistractionsRuleTarget,
+  enabled: boolean,
+): Promise<DistractionsRulesEditOutcome> {
+  return editRules("distractions_rules_set_enabled", { target, enabled });
+}
+
+/** Add hosts to a global list; hosts already listed keep their state. */
+export function addDistractionsHosts(
+  list: DistractionsHostList,
+  hosts: readonly string[],
+): Promise<DistractionsRulesEditOutcome> {
+  return editRules("distractions_rules_add_hosts", { list, hosts });
+}
+
+/** Block a desktop app under its display name and the process names it matches. */
+export function addDistractionsDesktopApp(
+  name: string,
+  matchNames: readonly string[],
+): Promise<DistractionsRulesEditOutcome> {
+  return editRules("distractions_rules_add_desktop_app", { name, matchNames });
+}
+
+/** Block an Android app by its package. */
+export function addDistractionsMobileApp(name: string, packageName: string): Promise<DistractionsRulesEditOutcome> {
+  return editRules("distractions_rules_add_mobile_app", { name, packageName });
+}
+
+/** Remove a custom category, host, app, or usage limit. */
+export function removeDistractionsRule(target: DistractionsRuleTarget): Promise<DistractionsRulesEditOutcome> {
+  return editRules("distractions_rules_remove", { target });
+}
+
+/** Create a custom category when `id` is null, otherwise rename it and replace its hosts. */
+export function saveDistractionsCustomCategory(
+  id: string | null,
+  name: string,
+  hosts: readonly string[],
+): Promise<DistractionsRulesEditOutcome> {
+  return editRules("distractions_rules_save_custom_category", { id, name, hosts });
+}
+
+/** Create a usage limit when `id` is null, otherwise replace its name, budget, and entries. */
+export function saveDistractionsUsageLimit(
+  id: string | null,
+  draft: DistractionsUsageLimitDraft,
+): Promise<DistractionsRulesEditOutcome> {
+  return editRules("distractions_rules_save_usage_limit", { id, draft });
+}
+
+/** Restore every default rule. */
+export function resetDistractionsRules(): Promise<DistractionsRulesEditOutcome> {
+  return editRules("distractions_rules_reset");
+}
 
 export interface DistractionsRuntimeState {
   active: boolean;

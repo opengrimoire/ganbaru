@@ -22,8 +22,9 @@ pub async fn projects_update_project<R: Runtime>(
     db_url: String,
     project: ProjectUpdate,
 ) -> Result<ProjectsMutationRows, String> {
-    let pool = connect_sqlite(app, db_url).await?;
-    project_commands::update_project(&pool, project).await
+    let pool = connect_sqlite(app.clone(), db_url).await?;
+    let vault_root = vault::active_writable_vault_path(&app)?;
+    project_commands::update_project(&pool, &vault_root, project).await
 }
 
 #[tauri::command]

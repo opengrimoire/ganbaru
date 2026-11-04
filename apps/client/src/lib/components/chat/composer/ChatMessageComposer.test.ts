@@ -43,7 +43,7 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       attachmentIds: [],
       references: [],
       replyThread: null,
-      ordinal: 1,
+      orderKey: "c001",
       editedAt: null,
       createdAt: timestamp,
     },
@@ -60,6 +60,7 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       settledAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
+      localAcceptance: null,
     },
     agentRuns: [],
     previousCursor: null,
@@ -158,5 +159,64 @@ describe("ChatMessageComposer", () => {
 
     await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith(page.assignment?.id));
     expect(post).not.toHaveBeenCalled();
+  });
+
+  function mountWaitingWork(): { notice: HTMLElement; startHere: HTMLButtonElement } {
+    const page = workingReplyThread();
+    if (!page.assignment) throw new Error("The fixture holds an assignment");
+    chat.replyThread = {
+      ...page,
+      assignment: {
+        ...page.assignment,
+        state: "queued",
+        localAcceptance: {
+          digest: "digest-seen",
+          providerInstanceId: "codex-phone",
+          folders: [{ displayName: "Website", capability: "edit", runtimeApproval: "ask" }],
+          scratchRuntimeApproval: "autoApprove",
+        },
+      },
+    };
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatMessageComposer, {
+      target,
+      props: {
+        destination: `reply-thread:${page.thread.id}`,
+        placeholder: "Reply",
+        threadComposer: true,
+      },
+    });
+    const notice = target.querySelector<HTMLElement>(".assignment-notice");
+    const startHere = notice?.querySelector<HTMLButtonElement>("button");
+    if (!notice || !startHere) throw new Error("The waiting work notice did not render");
+    return { notice, startHere };
+  }
+
+  it("names the provider and access of work waiting to start", () => {
+    const { notice } = mountWaitingWork();
+
+    expect(notice.textContent).toContain("It would run with codex-phone");
+    expect(notice.textContent).toContain("Edit in Website (");
+    expect(notice.textContent).toContain("Private scratch (");
+  });
+
+  it("starts waiting work with the digest the user saw", async () => {
+    const accept = vi.spyOn(chat, "acceptAssignmentHere").mockResolvedValue(true);
+    const { startHere } = mountWaitingWork();
+
+    startHere.click();
+
+    await vi.waitFor(() => expect(accept).toHaveBeenCalledWith("assignment:working", "digest-seen"));
+  });
+
+  it("explains a refused start when the work changed after it rendered", async () => {
+    vi.spyOn(chat, "acceptAssignmentHere").mockResolvedValue(false);
+    const { startHere } = mountWaitingWork();
+
+    startHere.click();
+
+    await vi.waitFor(() => expect(target?.textContent).toContain("This work changed before it started"));
   });
 });

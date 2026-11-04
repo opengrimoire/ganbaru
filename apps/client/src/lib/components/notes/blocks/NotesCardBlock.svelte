@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { openNotesExternalUrl } from "$lib/api/notes/knowledge";
   import BookmarkIcon from "@lucide/svelte/icons/bookmark";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import LinkIcon from "@lucide/svelte/icons/link";
@@ -146,7 +146,7 @@
     if (block.type !== "bookmark" || !bookmarkCanOpen) return;
     try {
       bookmarkOpenError = null;
-      await openUrl(block.bookmark.url.trim());
+      await openNotesExternalUrl(block.bookmark.url.trim());
     } catch (error) {
       bookmarkOpenError = error instanceof Error ? error.message : String(error);
     }
@@ -156,7 +156,7 @@
     if (block.type !== "embed" || !embedCanOpen) return;
     try {
       embedOpenError = null;
-      await openUrl(block.embed.url.trim());
+      await openNotesExternalUrl(block.embed.url.trim());
     } catch (error) {
       embedOpenError = error instanceof Error ? error.message : String(error);
     }
@@ -166,7 +166,7 @@
     if (block.type !== "link_preview" || !linkPreviewCanOpen) return;
     try {
       linkPreviewOpenError = null;
-      await openUrl(block.link_preview.url.trim());
+      await openNotesExternalUrl(block.link_preview.url.trim());
     } catch (error) {
       linkPreviewOpenError = error instanceof Error ? error.message : String(error);
     }

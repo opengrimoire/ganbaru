@@ -12,7 +12,7 @@ These documents describe the intended contract. When current code does not meet 
 - [Invariants](invariants.md) lists conditions that must remain true across writes, recovery, imports, and refactors.
 - [Hazards](hazards.md) records cross-cutting failure scenarios that are easy to miss in ordinary feature work.
 - [Security](security/README.md) defines the threat model and security boundaries.
-- [Sync](sync.md) defines the implemented local whole-vault handoff and the separate planned concurrent synchronization contract.
+- [Sync](sync.md) defines device linking, snapshot bootstrap, and the concurrent synchronization contract, implemented for several domains and planned for the rest.
 
 ## Authority map
 
@@ -24,7 +24,7 @@ These documents describe the intended contract. When current code does not meet 
 | What must never become false? | [Invariants](invariants.md) |
 | What failure sequences require explicit handling? | [Hazards](hazards.md) |
 | What is trusted, untrusted, or future security work? | [Security](security/README.md) |
-| How does local handoff work, and how will concurrent sync work later? | [Sync](sync.md) |
+| How do device linking and concurrent sync work? | [Sync](sync.md) |
 
 Feature documents own user-visible behavior. Algorithm documents own pure decision rules. Data documents own durable identity, authority, persistence, migration, and recovery contracts. Avoid copying the same rule into all three layers.
 

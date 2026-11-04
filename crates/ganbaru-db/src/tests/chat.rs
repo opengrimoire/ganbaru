@@ -1,15 +1,17 @@
-use super::helpers::migrated_memory_pool;
-use sqlx::Row;
+use super::helpers::{insert_default_channel, migrated_memory_pool};
+use sqlx::{AssertSqlSafe, Row};
 
 const NOW: &str = "2026-07-20T12:00:00Z";
 
 async fn insert_project(pool: &sqlx::SqlitePool) {
-    sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-1', 'Engineering')")
-        .execute(pool)
-        .await
-        .unwrap();
     sqlx::query(
-        "INSERT INTO projects (id, group_id, name) VALUES ('project-1', 'group-1', 'Ganbaru')",
+        "INSERT INTO project_groups (id, name, order_key) VALUES ('group-1', 'Engineering', 'a0')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO projects (id, group_id, name, order_key) VALUES ('project-1', 'group-1', 'Ganbaru', 'a0')",
     )
     .execute(pool)
     .await
@@ -24,6 +26,19 @@ async fn insert_working_folder(pool: &sqlx::SqlitePool, id: &str, project_id: &s
     )
     .bind(id)
     .bind(project_id)
+    .bind(format!("Workspace {id}"))
+    .bind(NOW)
+    .bind(NOW)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_execution_environments
+            (id, working_folder_id, kind, display_name, lifecycle_state, created_at, updated_at)
+         VALUES (?, ?, 'current_folder', ?, 'available', ?, ?)",
+    )
+    .bind(format!("current-folder:{id}"))
+    .bind(id)
     .bind(format!("Workspace {id}"))
     .bind(NOW)
     .bind(NOW)
@@ -155,6 +170,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_assignment_authorized_folder_sources",
             "chat_host_tool_invocations",
             "chat_host_tool_returned_message_revisions",
+            "chat_preview_tool_invocations",
             "chat_scratch_scopes",
             "chat_scratch_generations",
             "chat_scratch_generation_sources",
@@ -165,7 +181,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_conversation_items",
             "chat_communication_messages",
             "chat_communication_message_revisions",
-            "chat_communication_message_revision_ordinals",
+            "chat_communication_message_revisions_numbered",
             "chat_communication_attachment_references",
             "chat_conversation_read_cursors",
             "chat_reply_thread_read_cursors",
@@ -177,6 +193,8 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_assignment_context_sources",
             "chat_agent_runs",
             "chat_assignment_dispatch_jobs",
+            "chat_assignment_requested_targets",
+            "chat_assignment_input_requested_targets",
             "chat_scheduled_messages",
             "chat_scheduled_message_attachment_references",
             "chat_scheduled_message_references",
@@ -209,29 +227,47 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_resources_workspace_kind",
             "idx_chat_browser_artifacts_thread",
             "idx_chat_provider_cleanup_jobs_retry",
-            "idx_chat_channels_project_name",
             "idx_chat_channels_project_default",
             "idx_chat_channels_active_project",
-            "idx_chat_participants_local_user",
-            "idx_chat_participants_teammate_display_name",
-            "idx_chat_teammate_working_folder_grants_default",
+            "idx_chat_channels_conversation",
+            "chat_participants_local_user_identity",
+            "idx_chat_conversation_memberships_participant",
+            "idx_chat_teammate_working_folder_grants_folder",
             "idx_chat_access_profiles_builtin",
             "idx_chat_teammate_channel_memberships_teammate",
             "idx_chat_assignment_authorization_revisions_active",
             "idx_chat_host_tool_invocations_authorization",
+            "idx_chat_preview_tool_invocations_turn",
             "idx_chat_scratch_generations_active",
             "idx_chat_scratch_promotions_generation",
             "idx_chat_scratch_promotions_destination",
             "idx_chat_scratch_cleanup_jobs_ready",
             "idx_chat_access_revocation_jobs_ready",
-            "idx_chat_conversation_items_root_ordinal",
-            "idx_chat_conversation_items_reply_ordinal",
-            "idx_chat_work_assignments_one_active",
+            "idx_chat_conversation_items_order",
+            "idx_chat_reply_threads_conversation",
+            "idx_chat_message_references_revision",
+            "idx_chat_work_assignments_teammate",
+            "chat_reply_threads_root_item_insert",
+            "chat_conversation_items_reply_thread_insert",
+            "chat_communication_message_current_revision_update",
+            "chat_communication_search_delete",
+            "chat_communication_search_insert",
+            "chat_communication_message_revision_immutable_update",
+            "chat_authorized_channel_source_immutable_delete",
+            "chat_authorized_channel_source_immutable_update",
+            "chat_scratch_generation_source_delete_denied",
+            "chat_scratch_generation_source_monotonic",
+            "idx_chat_work_assignments_thread",
             "idx_chat_assignment_dispatch_jobs_ready",
-            "idx_chat_scheduled_messages_due",
+            "idx_chat_scheduled_messages_device",
             "idx_chat_scheduled_messages_destination",
             "idx_chat_scheduled_message_attachment_references_attachment",
-            "idx_chat_scheduled_message_references_target",
+            "idx_chat_scheduled_message_attachment_references_digest",
+            "idx_chat_communication_attachment_references_attachment",
+            "idx_chat_communication_attachment_references_digest",
+            "idx_chat_attachments_path",
+            "idx_chat_resources_path",
+            "idx_chat_scheduled_message_references_folder",
         ] {
             let exists: Option<i64> =
                 sqlx::query_scalar("SELECT 1 FROM sqlite_schema WHERE name = ?")
@@ -257,13 +293,15 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_scratch_promotions",
             "chat_scratch_cleanup_jobs",
         ] {
-            let columns = sqlx::query(&format!("SELECT name FROM pragma_table_info('{table}')"))
-                .fetch_all(&pool)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.get::<String, _>("name"))
-                .collect::<Vec<_>>();
+            let columns = sqlx::query(AssertSqlSafe(format!(
+                "SELECT name FROM pragma_table_info('{table}')"
+            )))
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<Vec<_>>();
             assert!(!columns.iter().any(|column| {
                 column.contains("absolute_path")
                     || column.contains("canonical_path")
@@ -317,39 +355,50 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
 }
 
 #[test]
-fn fresh_projects_create_general_owner_membership_and_primary_folder() {
+fn fresh_vaults_seed_primary_folders_but_no_chat_conversations_or_pending_keys() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         let projects: i64 = sqlx::query_scalar("SELECT count(*) FROM projects")
             .fetch_one(&pool)
             .await
             .unwrap();
-        let general_channels: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_channels WHERE is_default = 1 AND name = 'general'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let owner_memberships: i64 = sqlx::query_scalar(
-            "SELECT count(*)
-             FROM chat_channels channel
-             JOIN chat_conversation_memberships membership
-               ON membership.conversation_id = channel.conversation_id
-             WHERE channel.is_default = 1
-               AND membership.participant_id = 'participant:local-owner'
-               AND membership.membership_role = 'owner'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
         let primary_folders: i64 =
             sqlx::query_scalar("SELECT count(*) FROM project_primary_working_folders")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(general_channels, projects);
-        assert_eq!(owner_memberships, projects);
+        assert!(projects > 0);
         assert_eq!(primary_folders, projects);
+        // Default channels are created on demand with derived ids, so a fresh vault holds no
+        // conversation rows whose random ids would duplicate across devices.
+        for table in [
+            "chat_conversations",
+            "chat_channels",
+            "chat_conversation_memberships",
+            "chat_conversation_audience_state",
+        ] {
+            let rows: i64 =
+                sqlx::query_scalar(AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(rows, 0, "{table}");
+        }
+        for table in [
+            "chat_conversation_memberships",
+            "chat_teammate_channel_memberships",
+            "chat_teammate_working_folder_grants",
+            "chat_conversation_read_cursors",
+            "chat_reply_thread_read_cursors",
+        ] {
+            let pending: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+                "SELECT count(*) FROM {table} WHERE sync_key GLOB 'pending:*'"
+            )))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(pending, 0, "{table}");
+        }
     });
 }
 
@@ -440,10 +489,22 @@ fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
         .await
         .unwrap();
 
+        let stored_runtime_default: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pragma_table_info('chat_teammate_access_state')
+             WHERE name = 'runtime_approval_policy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
         assert_eq!(access_revision, 0);
         assert_eq!(memberships, 0);
         assert_eq!(ai_access, 0);
         assert_eq!(folder_grants, 0);
+        assert_eq!(
+            stored_runtime_default, 0,
+            "the teammate default runtime approval derives from its approval behavior"
+        );
     });
 }
 
@@ -466,18 +527,18 @@ fn access_profile_revisions_are_immutable_and_do_not_create_memberships() {
         .await;
         let extend_builtin = sqlx::query(
             "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, revision, default_read_history,
+                (id, access_profile_id, default_read_history,
                  default_participate, default_history_boundary,
                  maximum_folder_capability, created_at)
              VALUES ('forbidden-built-in-revision', 'access-profile:conversation-only',
-                     2, 1, 1, 'entire', 'read', ?)",
+                     1, 1, 'entire', 'read', ?)",
         )
         .bind(NOW)
         .execute(&pool)
         .await;
         let rewrite_builtin = sqlx::query(
             "UPDATE chat_access_profiles
-             SET latest_revision = 2, revision = 2
+             SET current_revision_id = 'forbidden-built-in-revision', revision = 2
              WHERE id = 'access-profile:conversation-only'",
         )
         .execute(&pool)
@@ -500,12 +561,7 @@ fn access_profile_revisions_are_immutable_and_do_not_create_memberships() {
 fn live_profile_expansion_preserves_active_access_revision_and_membership_intent() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        let conversation_id: String = sqlx::query_scalar(
-            "SELECT conversation_id FROM chat_channels WHERE is_default = 1 LIMIT 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let (conversation_id, _) = insert_default_channel(&pool).await;
         sqlx::query(
             "INSERT INTO chat_participants
                 (id, participant_kind, display_name, created_at, updated_at)
@@ -538,11 +594,11 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, revision, default_read_history,
+                (id, access_profile_id, default_read_history,
                  default_participate, default_history_boundary,
                  maximum_folder_capability, created_at)
              VALUES ('access-profile-revision:test:1', 'access-profile:test',
-                     1, 1, 1, 'entire', 'read', ?)",
+                     1, 1, 'entire', 'read', ?)",
         )
         .bind(NOW)
         .execute(&pool)
@@ -550,8 +606,9 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_conversation_memberships
-                (conversation_id, participant_id, membership_role, created_at, updated_at)
-             VALUES (?, 'teammate:profile-test', 'member', ?, ?)",
+                (conversation_id, participant_id, sync_key, membership_role, created_at,
+                 updated_at)
+             VALUES (?, 'teammate:profile-test', 'membership:profile-test', 'member', ?, ?)",
         )
         .bind(&conversation_id)
         .bind(NOW)
@@ -561,12 +618,13 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, access_profile_id,
+                (conversation_id, teammate_id, sync_key, access_profile_id,
                  read_history, read_history_inherits_profile,
                  participate, participate_inherits_profile,
                  history_boundary, history_boundary_inherits_profile,
                  created_at, updated_at)
-             VALUES (?, 'teammate:profile-test', 'access-profile:test',
+             VALUES (?, 'teammate:profile-test', 'channel-membership:profile-test',
+                     'access-profile:test',
                      1, 1, 1, 1, 'entire', 1, ?, ?)",
         )
         .bind(&conversation_id)
@@ -588,9 +646,9 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_teammate_working_folder_grants
-                (conversation_id, teammate_id, project_id, working_folder_id,
+                (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
                  capability, capability_inherits_profile, created_at)
-             VALUES (?, 'teammate:profile-test', ?, ?, 'read', 1, ?)",
+             VALUES (?, 'teammate:profile-test', ?, ?, 'grant:profile-test', 'read', 1, ?)",
         )
         .bind(&conversation_id)
         .bind(project_id)
@@ -609,11 +667,11 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, revision, default_read_history,
+                (id, access_profile_id, default_read_history,
                  default_participate, default_history_boundary,
                  maximum_folder_capability, created_at)
              VALUES ('access-profile-revision:test:2', 'access-profile:test',
-                     2, 1, 1, 'entire', 'edit', ?)",
+                     1, 1, 'entire', 'edit', ?)",
         )
         .bind("2026-07-20T12:01:00Z")
         .execute(&pool)
@@ -628,9 +686,10 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .await
         .unwrap();
         let latest_profile_revision: i64 = sqlx::query_scalar(
-            "SELECT profile.latest_revision
+            "SELECT revision.revision
              FROM chat_teammate_channel_memberships membership
-             JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
+             JOIN chat_access_profile_effective_revisions revision
+               ON revision.access_profile_id = membership.access_profile_id
              WHERE membership.teammate_id = 'teammate:profile-test'",
         )
         .fetch_one(&pool)
@@ -660,9 +719,8 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
                ON membership.conversation_id = grant_row.conversation_id
               AND membership.teammate_id = grant_row.teammate_id
              JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
-             JOIN chat_access_profile_revisions revision
+             JOIN chat_access_profile_effective_revisions revision
                ON revision.access_profile_id = profile.id
-              AND revision.revision = profile.latest_revision
              WHERE grant_row.teammate_id = 'teammate:profile-test'",
         )
         .fetch_one(&pool)
@@ -751,6 +809,31 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
             .execute(&mut *connection)
             .await
             .unwrap();
+        sqlx::query(
+            "INSERT INTO project_working_folders
+                (id, project_id, display_name, kind, created_at, updated_at)
+             VALUES ('working-folder:test', 'project:test', 'Test', 'external', ?, ?)",
+        )
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_assignment_authorization_revisions
+                (id, assignment_id, revision, requester_participant_id,
+                 teammate_policy_revision_id, teammate_access_revision,
+                 destination_conversation_id, access_profile_revision_id,
+                 resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
+             VALUES ('authorization:test', 'assignment:test', 1, 'participant:local-owner',
+                     'policy:test', 1, 'conversation:test',
+                     'access-profile-revision:read-only:1', 'ask', ?, 'allowed', ?)",
+        )
+        .bind("d".repeat(64))
+        .bind(NOW)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
 
         let missing_policy = sqlx::query(
             "INSERT INTO chat_assignment_authorized_folder_sources
@@ -779,12 +862,43 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
         sqlx::query(
             "INSERT INTO chat_assignment_authorized_channel_sources
                 (authorization_revision_id, source_handle, message_reference_id,
-                 conversation_id, label_snapshot, lower_ordinal, high_ordinal,
-                 source_revision_cutoff_id, destination_audience_revision, created_at)
+                 conversation_id, label_snapshot, lower_order_key, lower_item_id,
+                 high_order_key, high_item_id, source_revision_cutoff_id,
+                 destination_audience_revision, created_at)
              VALUES ('authorization:test', ?, 'reference:test', 'conversation:test',
-                     'Source', 1, 1, 'revision:test', 1, ?)",
+                     'Source', 'c000', '', 'c000', 'item:test', 'revision:test', 1, ?)",
         )
         .bind("s".repeat(32))
+        .bind(NOW)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        // Delete guards stand down once any parent is gone, so every parent must exist here.
+        sqlx::query(
+            "INSERT INTO chat_conversations
+                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation:test', 'project:test', 'channel', ?1, ?1, ?1)",
+        )
+        .bind(NOW)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_communication_message_revisions
+                (id, message_item_id, normalized_markdown, created_at)
+             VALUES ('revision:test', 'item:test', 'Source', ?)",
+        )
+        .bind(NOW)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_message_references
+                (id, message_revision_id, reference_kind, label_snapshot, plain_text_projection,
+                 start_offset, end_offset, ordinal, created_at)
+             VALUES ('reference:test', 'revision:test', 'working_folder', 'Test', 'Test',
+                     0, 4, 0, ?)",
+        )
         .bind(NOW)
         .execute(&mut *connection)
         .await
@@ -811,9 +925,10 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
 }
 
 #[test]
-fn scheduled_message_schema_retains_attachments_until_the_schedule_is_removed() {
+fn scheduled_message_attachments_are_held_by_value_until_the_schedule_is_removed() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
+        insert_default_channel(&pool).await;
         let (channel_id, working_folder_id): (String, String) = sqlx::query_as(
             "SELECT channel.id, folder.working_folder_id
              FROM chat_channels channel
@@ -840,11 +955,10 @@ fn scheduled_message_schema_retains_attachments_until_the_schedule_is_removed() 
         sqlx::query(
             "INSERT INTO chat_scheduled_messages
                 (id, client_command_id, channel_id, request_data, scheduled_for,
-                 available_at, created_at, updated_at)
-             VALUES ('scheduled-message-1', 'scheduled-command-1', ?, '{}', ?, ?, ?, ?)",
+                 created_at, updated_at)
+             VALUES ('scheduled-message-1', 'scheduled-command-1', ?, '{}', ?, ?, ?)",
         )
         .bind(&channel_id)
-        .bind("2026-08-03T15:00:00Z")
         .bind("2026-08-03T15:00:00Z")
         .bind(NOW)
         .bind(NOW)
@@ -853,28 +967,57 @@ fn scheduled_message_schema_retains_attachments_until_the_schedule_is_removed() 
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_scheduled_message_attachment_references
-                (scheduled_message_id, attachment_id, ordinal, created_at)
-             VALUES ('scheduled-message-1', 'scheduled-attachment', 0, ?)",
+                (scheduled_message_id, ordinal, attachment_id, working_folder_id, kind,
+                 original_display_name, mime_type, byte_size, sha256)
+             SELECT 'scheduled-message-1', 0, id, working_folder_id, kind,
+                    original_display_name, mime_type, byte_size, sha256
+             FROM chat_attachments WHERE id = 'scheduled-attachment'",
         )
-        .bind(NOW)
         .execute(&pool)
         .await
         .unwrap();
 
+        sqlx::query("DELETE FROM chat_attachments WHERE id = 'scheduled-attachment'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let kept: (String, String, i64) = sqlx::query_as(
+            "SELECT original_display_name, mime_type, byte_size
+             FROM chat_scheduled_message_attachment_references
+             WHERE scheduled_message_id = 'scheduled-message-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            kept,
+            ("scheduled.png".to_string(), "image/png".to_string(), 8),
+            "the reference keeps the attachment by value without its row"
+        );
         assert!(
-            sqlx::query("DELETE FROM chat_attachments WHERE id = 'scheduled-attachment'")
-                .execute(&pool)
-                .await
-                .is_err()
+            sqlx::query(
+                "INSERT INTO chat_scheduled_message_attachment_references
+                    (scheduled_message_id, ordinal, attachment_id, working_folder_id, kind,
+                     original_display_name, mime_type, byte_size, sha256)
+                 VALUES ('scheduled-message-1', 20, 'too-many', 'folder', 'image', 'x.png',
+                         'image/png', 1, ?)",
+            )
+            .bind("b".repeat(64))
+            .execute(&pool)
+            .await
+            .is_err(),
+            "a scheduled message names at most 20 attachments"
         );
         sqlx::query("DELETE FROM chat_scheduled_messages WHERE id = 'scheduled-message-1'")
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM chat_attachments WHERE id = 'scheduled-attachment'")
-            .execute(&pool)
-            .await
-            .unwrap();
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chat_scheduled_message_attachment_references")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, 0, "removing the schedule removes its references");
     });
 }
 
@@ -1212,13 +1355,15 @@ fn working_folder_tool_schema_tracks_restore_invalidation_and_exact_cleanup() {
                 vec!["working_folder_id", "expected_object_id"],
             ),
         ] {
-            let columns = sqlx::query(&format!("SELECT name FROM pragma_table_info('{table}')"))
-                .fetch_all(&pool)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.get::<String, _>("name"))
-                .collect::<Vec<_>>();
+            let columns = sqlx::query(AssertSqlSafe(format!(
+                "SELECT name FROM pragma_table_info('{table}')"
+            )))
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<Vec<_>>();
             for column in expected {
                 assert!(
                     columns.iter().any(|value| value == column),
@@ -1259,15 +1404,27 @@ fn working_folder_project_identity_and_delete_policies_are_explicit() {
         .await;
         assert!(mismatched.is_err());
 
-        let project_delete = sqlx::query("DELETE FROM projects WHERE id = 'project-1'")
+        insert_working_folder(&pool, "working-folder-other", "project-1").await;
+        insert_thread(&pool, "thread-other", "working-folder-other", "project-1").await;
+        sqlx::query("DELETE FROM project_working_folders WHERE id = 'working-folder-project'")
             .execute(&pool)
-            .await;
-        assert!(project_delete.is_err());
-        let folder_delete =
-            sqlx::query("DELETE FROM project_working_folders WHERE id = 'working-folder-project'")
-                .execute(&pool)
-                .await;
-        assert!(folder_delete.is_err());
+            .await
+            .unwrap();
+        let remaining: Vec<String> = sqlx::query_scalar("SELECT id FROM chat_threads ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, vec!["thread-other".to_string()]);
+
+        sqlx::query("DELETE FROM projects WHERE id = 'project-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let threads: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_threads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(threads, 0);
     });
 }
 
@@ -1377,5 +1534,81 @@ fn cleanup_queue_survives_thread_deletion_and_requires_exact_refs() {
                 .await
                 .unwrap();
         assert_eq!(target, "refs/ganbaru/chat/thread-1/checkpoint-1");
+    });
+}
+
+#[test]
+fn stored_relative_paths_reject_any_backslash_and_trailing_parent_segments() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project(&pool).await;
+        insert_working_folder(&pool, "folder-1", "project-1").await;
+        insert_thread(&pool, "thread-1", "folder-1", "project-1").await;
+        let shape_error = "Stored relative paths cannot contain a backslash or a parent segment";
+
+        let insert_attachment = |id: &'static str, path: &'static str| {
+            sqlx::query(
+                "INSERT INTO chat_attachments
+                    (id, working_folder_id, kind, original_display_name, mime_type, byte_size,
+                     sha256, managed_relative_path, signature_kind, created_at)
+                 VALUES (?, 'folder-1', 'image', 'screen.png', 'image/png', 8,
+                         'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                         ?, 'png', ?)",
+            )
+            .bind(id)
+            .bind(path)
+            .bind(NOW)
+            .execute(&pool)
+        };
+        for path in ["assets\\chat\\a.png", "assets/chat\\..\\a.png", ".."] {
+            let error = insert_attachment("rejected", path).await.unwrap_err();
+            assert!(error.to_string().contains(shape_error), "{path}: {error}");
+        }
+        insert_attachment("accepted", "assets/chat/attachments/a.png")
+            .await
+            .unwrap();
+        let error = sqlx::query(
+            "UPDATE chat_resources SET managed_relative_path = 'assets\\b.png'
+             WHERE id = 'accepted'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains(shape_error), "{error}");
+
+        let insert_comment = |id: &'static str, path: &'static str| {
+            sqlx::query(
+                "INSERT INTO chat_review_comments
+                    (id, thread_id, relative_path, content_revision, start_line, end_line,
+                     comment_text, created_at, updated_at)
+                 VALUES (?, 'thread-1', ?,
+                         'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                         1, 1, 'Check this', ?, ?)",
+            )
+            .bind(id)
+            .bind(path)
+            .bind(NOW)
+            .bind(NOW)
+            .execute(&pool)
+        };
+        for path in ["src\\main.rs", "src/..", ".."] {
+            let error = insert_comment("rejected", path).await.unwrap_err();
+            assert!(error.to_string().contains(shape_error), "{path}: {error}");
+        }
+        insert_comment("accepted", "src/main..rs").await.unwrap();
+
+        // A folder path is immutable locally, so only an applied change reaches the shape check.
+        sqlx::query("UPDATE sync_apply_state SET applying = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let error = sqlx::query(
+            "UPDATE project_working_folders SET managed_relative_path = 'projects\\x'
+             WHERE id = 'folder-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains(shape_error), "{error}");
     });
 }

@@ -1,60 +1,52 @@
 use super::*;
 use crate::history::{insert_task_change_event, insert_task_update_change_events};
-use crate::mutations::{next_task_sort_order, task_mutation};
+use crate::mutations::{task_mutation, task_section_order, task_status_order};
+use crate::order::OrderPlacement;
+use ganbaru_sync_contracts::OrderKey;
 
 #[test]
-fn next_task_sort_order_handles_empty_project() {
+fn order_key_placement_in_an_empty_task_group_uses_the_first_key() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO project_groups (id, name, icon, sort_order)
-             VALUES ('group-empty', 'Group Empty', 'lucide:folder', 100)",
+            "INSERT INTO project_groups (id, name, icon, order_key)
+             VALUES ('group-empty', 'Group Empty', 'lucide:folder', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name, icon, sort_order)
-             VALUES ('project-empty', 'group-empty', 'Project Empty', 'lucide:folder', 100)",
+            "INSERT INTO projects (id, group_id, name, icon, order_key)
+             VALUES ('project-empty', 'group-empty', 'Project Empty', 'lucide:folder', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_sections (id, project_id, name, sort_order)
-             VALUES ('section-empty', 'project-empty', 'General', 100)",
+            "INSERT INTO project_sections (id, project_id, name, order_key)
+             VALUES ('section-empty', 'project-empty', 'General', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_statuses (id, project_id, name, category, sort_order, terminal)
-             VALUES ('status-empty', 'project-empty', 'To do', 'not_started', 100, 0)",
+            "INSERT INTO project_statuses (id, project_id, name, category, order_key, terminal)
+             VALUES ('status-empty', 'project-empty', 'To do', 'not_started', 'a1', 0)",
         )
         .execute(&pool)
         .await
         .unwrap();
 
         let mut tx = pool.begin().await.unwrap();
-        let section_order = next_task_sort_order(
-            &mut tx,
-            "section_id",
-            "project-empty",
-            "section-empty",
-            "section_sort_order",
-        )
-        .await;
-        let status_order = next_task_sort_order(
-            &mut tx,
-            "status_id",
-            "project-empty",
-            "status-empty",
-            "status_sort_order",
-        )
-        .await;
+        let section_key = task_section_order("project-empty", "section-empty", None)
+            .place(&mut tx, "task-new", &OrderPlacement::End)
+            .await;
+        let status_key = task_status_order("project-empty", "status-empty", None)
+            .place(&mut tx, "task-new", &OrderPlacement::End)
+            .await;
 
-        assert_eq!(section_order, Ok(1000.0));
-        assert_eq!(status_order, Ok(1000.0));
+        assert_eq!(section_key, Ok(OrderKey::first()));
+        assert_eq!(status_key, Ok(OrderKey::first()));
     });
 }
 

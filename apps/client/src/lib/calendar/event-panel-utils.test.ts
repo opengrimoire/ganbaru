@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   commitTimeDraft,
+  createdProjectColorForSave,
   displayTimeDraft,
   moveRovingIndex,
   projectAllDayDefaultForSelection,
@@ -252,5 +253,28 @@ describe("projectAllDayDefaultForSelection", () => {
       defaultEventTimeMode: "all_day",
       defaultEventDurationMinutes: null,
     })).toBe(false);
+  });
+});
+
+describe("createdProjectColorForSave", () => {
+  const base = { createdProjectId: "p1", projectId: "p1", eventColor: 4, projectColor: undefined };
+
+  it("gives a project created in the panel the saved event's color", () => {
+    expect(createdProjectColorForSave(base)).toBe(4);
+    expect(createdProjectColorForSave({ ...base, eventColor: 0 })).toBe(0);
+  });
+
+  it("keeps the default when the event uses the default color", () => {
+    expect(createdProjectColorForSave({ ...base, eventColor: undefined })).toBeNull();
+  });
+
+  it("never replaces a color the project already has", () => {
+    expect(createdProjectColorForSave({ ...base, projectColor: 2 })).toBeNull();
+  });
+
+  it("ignores projects that were not created in the panel", () => {
+    expect(createdProjectColorForSave({ ...base, createdProjectId: undefined })).toBeNull();
+    expect(createdProjectColorForSave({ ...base, projectId: "p2" })).toBeNull();
+    expect(createdProjectColorForSave({ ...base, projectId: undefined })).toBeNull();
   });
 });

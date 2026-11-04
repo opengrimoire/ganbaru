@@ -11,7 +11,7 @@
   import Save from "@lucide/svelte/icons/save";
   import Search from "@lucide/svelte/icons/search";
   import MessageSquarePlus from "@lucide/svelte/icons/message-square-plus";
-  import TextSelect from "@lucide/svelte/icons/text-select";
+  import TextSelect from "@lucide/svelte/icons/square-dashed-text";
   import * as chatApi from "$lib/api/chat";
   import type {
     ChatWorkspaceChangeBatch,
@@ -577,6 +577,12 @@
     onStateChange({ treeWidthPx: renderedTreeWidth });
   }
 
+  function openSelectedExternally(): void {
+    if (!workingFolderId || !selectedPath) return;
+    chatApi.openProjectWorkingFolderFile(workingFolderId, selectedPath, chat.selectedExecutionEnvironmentId)
+      .catch((reason: unknown) => { if (errorCode(reason) !== "cancelled") error = message(reason); });
+  }
+
   function message(reason: unknown): string {
     return chatErrorMessage(reason);
   }
@@ -638,7 +644,7 @@
           <button type="button" class="chat-icon-button" disabled={editorSession.fileDeleted} title={t("chat.inspector.attachFile")} aria-label={t("chat.inspector.attachFile")} onclick={() => selectedPath && attachFileReference(selectedPath)}><Paperclip size={13} /></button>
           <button type="button" class="chat-icon-button" title={t("chat.inspector.attachSelection")} aria-label={t("chat.inspector.attachSelection")} onclick={() => void editorSession.attachSelection()}><TextSelect size={13} /></button>
           <button type="button" class="chat-icon-button" disabled={editorSession.fileDeleted || !editorSession.editorSelection?.text || !editorSession.preview.contentRevision || !chat.selectedThreadId} title={t("chat.review.addComment")} aria-label={t("chat.review.addComment")} onclick={() => { editorSession.reviewComposerOpen = !editorSession.reviewComposerOpen; }}><MessageSquarePlus size={13} /></button>
-          <button type="button" class="chat-icon-button" disabled={editorSession.fileDeleted} title={t("chat.inspector.openExternally")} aria-label={t("chat.inspector.openExternally")} onclick={() => workingFolderId && selectedPath && chatApi.openProjectWorkingFolderFile(workingFolderId, selectedPath, chat.selectedExecutionEnvironmentId)}><ExternalLink size={13} /></button>
+          <button type="button" class="chat-icon-button" disabled={editorSession.fileDeleted} title={t("chat.inspector.openExternally")} aria-label={t("chat.inspector.openExternally")} onclick={openSelectedExternally}><ExternalLink size={13} /></button>
         {:else}
           <span class="min-w-0 flex-1 truncate text-[0.733333rem] text-muted-foreground">{t("chat.inspector.filePreview")}</span>
         {/if}

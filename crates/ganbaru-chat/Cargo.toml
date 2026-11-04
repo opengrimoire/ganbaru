@@ -20,8 +20,10 @@ workspace = true
 
 [dependencies]
 chrono = { workspace = true }
+ganbaru-atomic-files = { workspace = true }
 ganbaru-chat-contracts = { workspace = true }
 ganbaru-chat-providers = { workspace = true, optional = true }
+ganbaru-sync-contracts = { workspace = true }
 ganbaru-working-folders = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
@@ -34,7 +36,8 @@ tokio = { workspace = true }
 libc = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+dunce = { workspace = true }
 windows = { workspace = true }
 
 [dev-dependencies]
-ganbaru-db = { workspace = true }
+ganbaru-db = { workspace = true, features = ["test-support"] }

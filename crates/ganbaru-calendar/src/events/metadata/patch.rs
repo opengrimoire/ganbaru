@@ -63,8 +63,8 @@ impl Metadata {
                 }
                 Field::Geo(value) => {
                     let geo = parse_geo(value)?;
-                    assign!(geo_lat, geo.map(|pair| pair.0));
-                    assign!(geo_lng, geo.map(|pair| pair.1));
+                    assign!(geo_lat, geo.map(|pair| pair.lat));
+                    assign!(geo_lng, geo.map(|pair| pair.lng));
                 }
                 Field::Organizer(value) => {
                     let rows = parse_organizer(value)?
@@ -172,7 +172,7 @@ impl Metadata {
                             phase: value.phase.as_ref().into(),
                             behavior: value.behavior.as_ref().into(),
                             playlist_id: value.playlist_id.clone(),
-                            soundscape_id: value.soundscape_id.clone(),
+                            soundscape_preset_id: value.soundscape_preset_id.clone(),
                             soundscape_behavior: value.soundscape_behavior.as_ref().into(),
                             provenance_kind: value.provenance_kind.as_ref().into(),
                             provenance_id: value.provenance_id.clone(),

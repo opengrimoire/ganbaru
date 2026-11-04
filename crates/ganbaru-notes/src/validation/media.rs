@@ -240,32 +240,29 @@ pub fn validate_bookmark_payload(payload: &Value) -> Result<(), String> {
         _ => return Err("bookmark.caption must be a rich text array".to_string()),
     }
     match payload.get("url") {
-        Some(Value::String(url)) if is_bookmark_url_string(url) => Ok(()),
-        Some(Value::String(_)) => {
-            Err("bookmark.url must not contain control characters".to_string())
-        }
+        Some(Value::String(url)) if is_storable_bookmark_url(url) => Ok(()),
+        Some(Value::String(_)) => Err(
+            "bookmark.url must not contain control characters or a javascript, data, vbscript, or file scheme"
+                .to_string(),
+        ),
         _ => Err("bookmark.url must be a string".to_string()),
     }
 }
 
-pub fn is_bookmark_url_string(url: &str) -> bool {
-    !url.chars().any(char::is_control)
-}
-
 pub fn validate_embed_payload(payload: &Value) -> Result<(), String> {
-    match payload.get("url") {
-        Some(Value::String(url)) if !url.chars().any(char::is_control) => Ok(()),
-        Some(Value::String(_)) => Err("embed.url must not contain control characters".to_string()),
-        _ => Err("embed.url must be a string".to_string()),
-    }
+    validate_web_content_url(payload, "embed")
 }
 
 pub fn validate_link_preview_payload(payload: &Value) -> Result<(), String> {
+    validate_web_content_url(payload, "link_preview")
+}
+
+fn validate_web_content_url(payload: &Value, block_type: &str) -> Result<(), String> {
     match payload.get("url") {
-        Some(Value::String(url)) if !url.chars().any(char::is_control) => Ok(()),
-        Some(Value::String(_)) => {
-            Err("link_preview.url must not contain control characters".to_string())
-        }
-        _ => Err("link_preview.url must be a string".to_string()),
+        Some(Value::String(url)) if is_storable_web_content_url(url) => Ok(()),
+        Some(Value::String(_)) => Err(format!(
+            "{block_type}.url must be an http or https URL without control characters"
+        )),
+        _ => Err(format!("{block_type}.url must be a string")),
     }
 }

@@ -318,6 +318,7 @@ function parseReviewFile(value: unknown, label: string): ChatReviewFileRead {
       pureRename: readBoolean(flags.pureRename, `${label}.flags.pureRename`),
       untracked: readBoolean(flags.untracked, `${label}.flags.untracked`),
       symlink: readBoolean(flags.symlink, `${label}.flags.symlink`),
+      tooLarge: readBoolean(flags.tooLarge, `${label}.flags.tooLarge`),
       providerReported: readBoolean(flags.providerReported, `${label}.flags.providerReported`),
       gitObserved: readBoolean(flags.gitObserved, `${label}.flags.gitObserved`),
       readOnly: readBoolean(flags.readOnly, `${label}.flags.readOnly`),

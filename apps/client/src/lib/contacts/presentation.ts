@@ -3,16 +3,15 @@ import { formatRelativeDays } from "$lib/i18n/formatters";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import { daysUntil, trustStatus, type ContactTrustScope, type ContactTrustStatus } from "./trust";
 
-export type ContactsMutationErrorKey = "revisionConflict" | "readOnly" | "failed";
+export type ContactsMutationErrorKey = "revisionConflict" | "identityPending" | "failed";
 
 /** Which contacts error sentence explains a failed mutation. */
 export function contactsMutationErrorKey(code: ContactsErrorCode): ContactsMutationErrorKey {
   switch (code) {
     case "revision_conflict":
       return "revisionConflict";
-    case "read_only":
     case "identity_unavailable":
-      return "readOnly";
+      return "identityPending";
     default:
       return "failed";
   }

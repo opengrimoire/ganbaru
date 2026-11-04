@@ -15,6 +15,10 @@ workspace = true
 
 [dependencies]
 ammonia = { workspace = true }
+ganbaru-atomic-files = { workspace = true }
+ganbaru-image-metadata = { workspace = true }
+ganbaru-sync = { workspace = true }
+ganbaru-sync-contracts = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 flate2 = { workspace = true }
@@ -24,8 +28,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
+tokio = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]
-ganbaru-db = { workspace = true }
-tokio = { workspace = true }
+ganbaru-db = { workspace = true, features = ["test-support"] }

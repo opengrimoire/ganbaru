@@ -1,8 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import {
+    isPreservedDataOmissionMessage,
+    timingTooLargeImportLabel,
+    valueTooLargeImportLabel,
+  } from "$lib/calendar/bound-errors";
   import Upload from "@lucide/svelte/icons/upload";
   import Download from "@lucide/svelte/icons/download";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { invoke } from "@tauri-apps/api/core";
   import { getCalendars } from "$lib/stores/calendars.svelte";
@@ -114,7 +119,14 @@
   }
 
   function visibleImportWarnings(warnings: string[]): string[] {
-    const uniqueWarnings = Array.from(new Set(warnings));
+    const uniqueWarnings = Array.from(new Set(warnings)).map((warning) => {
+      const timingLabel = timingTooLargeImportLabel(warning);
+      if (timingLabel !== null) return t("settings.calendars.eventTooManyChangedOccurrences", timingLabel);
+      const valueLabel = valueTooLargeImportLabel(warning);
+      if (valueLabel !== null) return t("settings.calendars.eventTooMuchData", valueLabel);
+      if (isPreservedDataOmissionMessage(warning)) return t("settings.calendars.preservedDataTrimmed");
+      return warning;
+    });
     const visibleWarnings = uniqueWarnings.slice(0, MAX_VISIBLE_IMPORT_WARNINGS);
     const hiddenCount = uniqueWarnings.length - visibleWarnings.length;
     if (hiddenCount > 0) {

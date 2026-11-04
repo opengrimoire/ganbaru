@@ -9,14 +9,39 @@ use super::models::{
     ProjectTaskCreate, ProjectTaskRow, ProjectTaskUpdate, ProjectsMutationRows,
 };
 use super::mutations::{
-    checklist_item_mutation, ensure_parent_task_matches_project, ensure_priority_matches_project,
-    ensure_section_and_status_match_project, ensure_task_exists, ensure_task_has_no_children,
-    latest_task_change_events, next_task_sort_order, task_id_for_checklist_item, task_mutation,
+    checklist_item_mutation, ensure_parent_task_matches_project, ensure_priority_is_live,
+    ensure_priority_matches_project, ensure_section_and_status_match_project,
+    ensure_status_is_live, ensure_task_exists, ensure_task_has_no_children,
+    latest_task_change_events, task_id_for_checklist_item, task_mutation, task_section_order,
+    task_status_order,
 };
+use super::order::{OrderGroup, OrderPlacement};
 use super::validation::{
     require_non_empty, validate_checklist_item_create, validate_checklist_item_update,
     validate_task_create, validate_task_update,
 };
+
+fn checklist_order(task_id: &str) -> OrderGroup<'_> {
+    OrderGroup::new("project_checklist_items", "order_key").filter("task_id", Some(task_id))
+}
+
+/// Order key of an updated task on one axis. A named placement wins; a task that changes group goes to its end;
+/// otherwise the task keeps `current_key`.
+async fn task_order_key(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    order: OrderGroup<'_>,
+    task_id: &str,
+    placement: Option<&OrderPlacement>,
+    group_changed: bool,
+    current_key: String,
+) -> Result<String, String> {
+    let placement = match placement {
+        Some(placement) => placement,
+        None if group_changed => &OrderPlacement::End,
+        None => return Ok(current_key),
+    };
+    Ok(order.place(tx, task_id, placement).await?.into_string())
+}
 
 pub async fn create_task(
     pool: &SqlitePool,
@@ -31,29 +56,21 @@ pub async fn create_task(
         &task.status_id,
     )
     .await?;
+    ensure_status_is_live(&mut tx, &task.status_id).await?;
     if let Some(parent_id) = &task.parent_task_id {
         ensure_parent_task_matches_project(&mut tx, &task.project_id, parent_id).await?;
     }
-    let section_sort_order = next_task_sort_order(
-        &mut tx,
-        "section_id",
-        &task.project_id,
-        &task.section_id,
-        "section_sort_order",
-    )
-    .await?;
-    let status_sort_order = next_task_sort_order(
-        &mut tx,
-        "status_id",
-        &task.project_id,
-        &task.status_id,
-        "status_sort_order",
-    )
-    .await?;
+    let parent_task_id = task.parent_task_id.as_deref();
+    let section_order_key = task_section_order(&task.project_id, &task.section_id, parent_task_id)
+        .place(&mut tx, &task.id, &OrderPlacement::End)
+        .await?;
+    let status_order_key = task_status_order(&task.project_id, &task.status_id, parent_task_id)
+        .place(&mut tx, &task.id, &OrderPlacement::End)
+        .await?;
     sqlx::query(
         "INSERT INTO project_tasks (
             id, project_id, section_id, status_id, parent_task_id, title,
-            section_sort_order, status_sort_order
+            section_order_key, status_order_key
          )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -63,8 +80,8 @@ pub async fn create_task(
     .bind(&task.status_id)
     .bind(&task.parent_task_id)
     .bind(task.title.trim())
-    .bind(section_sort_order)
-    .bind(status_sort_order)
+    .bind(section_order_key.as_str())
+    .bind(status_order_key.as_str())
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create project task: {e}"))?;
@@ -101,6 +118,12 @@ pub async fn update_task(
     )
     .await?;
     ensure_priority_matches_project(&mut tx, &project_id, &task.priority).await?;
+    if task.status_id != previous_task.status_id {
+        ensure_status_is_live(&mut tx, &task.status_id).await?;
+    }
+    if task.priority != previous_task.priority {
+        ensure_priority_is_live(&mut tx, &project_id, &task.priority).await?;
+    }
     if let Some(parent_id) = &task.parent_task_id {
         ensure_parent_task_matches_project(&mut tx, &project_id, parent_id).await?;
         if parent_id == &task.id {
@@ -108,6 +131,26 @@ pub async fn update_task(
         }
         ensure_task_has_no_children(&mut tx, &task.id).await?;
     }
+    let parent_task_id = task.parent_task_id.as_deref();
+    let parent_changed = task.parent_task_id != previous_task.parent_task_id;
+    let section_order_key = task_order_key(
+        &mut tx,
+        task_section_order(&project_id, &task.section_id, parent_task_id),
+        &task.id,
+        task.section_placement.as_ref(),
+        parent_changed || task.section_id != previous_task.section_id,
+        previous_task.section_order_key.clone(),
+    )
+    .await?;
+    let status_order_key = task_order_key(
+        &mut tx,
+        task_status_order(&project_id, &task.status_id, parent_task_id),
+        &task.id,
+        task.status_placement.as_ref(),
+        parent_changed || task.status_id != previous_task.status_id,
+        previous_task.status_order_key.clone(),
+    )
+    .await?;
     let terminal_status = status_is_terminal(&mut tx, &task.status_id).await?;
     let completed_at = if terminal_status {
         Some(current_timestamp(&mut tx).await?)
@@ -123,8 +166,8 @@ pub async fn update_task(
              description = ?,
              priority = ?,
              task_type = ?,
-             section_sort_order = ?,
-             status_sort_order = ?,
+             section_order_key = ?,
+             status_order_key = ?,
              estimate_minutes = ?,
              due_date = ?,
              due_time = ?,
@@ -137,6 +180,7 @@ pub async fn update_task(
              archived_at = ?,
              blocker_reason = ?,
              milestone = ?,
+             revision = revision + 1,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ? AND revision = ?",
     )
@@ -147,8 +191,8 @@ pub async fn update_task(
     .bind(&task.description)
     .bind(&task.priority)
     .bind(&task.task_type)
-    .bind(task.section_sort_order)
-    .bind(task.status_sort_order)
+    .bind(section_order_key)
+    .bind(status_order_key)
     .bind(task.estimate_minutes)
     .bind(&task.due_date)
     .bind(&task.due_time)
@@ -181,14 +225,17 @@ pub async fn create_checklist_item(
     validate_checklist_item_create(&item)?;
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
     ensure_task_exists(&mut tx, &item.task_id).await?;
+    let order_key = checklist_order(&item.task_id)
+        .place(&mut tx, &item.id, &item.placement)
+        .await?;
     sqlx::query(
-        "INSERT INTO project_checklist_items (id, task_id, title, sort_order)
+        "INSERT INTO project_checklist_items (id, task_id, title, order_key)
          VALUES (?, ?, ?, ?)",
     )
     .bind(&item.id)
     .bind(&item.task_id)
     .bind(item.title.trim())
-    .bind(item.sort_order)
+    .bind(order_key.as_str())
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create project checklist item: {e}"))?;
@@ -221,17 +268,20 @@ pub async fn update_checklist_item(
         "UPDATE project_checklist_items
          SET title = ?,
              completed_at = ?,
-             sort_order = ?,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
     .bind(item.title.trim())
     .bind(&completed_at)
-    .bind(item.sort_order)
     .bind(&item.id)
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("update project checklist item: {e}"))?;
+    if let Some(placement) = &item.placement {
+        checklist_order(&task_id)
+            .move_row(&mut tx, &item.id, placement)
+            .await?;
+    }
     insert_task_change_event(&mut tx, &task_id, "updated", Some("checklist"), None, None).await?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
     checklist_item_mutation(pool, &item.id, &task_id).await

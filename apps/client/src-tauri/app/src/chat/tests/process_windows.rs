@@ -1,3 +1,8 @@
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use ganbaru_chat_providers::process::{ProviderProcessConfig, spawn_provider_process};
 use std::collections::BTreeMap;
 use std::fs;
@@ -71,6 +76,10 @@ fn provider_process_windows_helper() {
         }
         "tree" | "tree-exit" => {
             let command_shell = std::env::var_os("ComSpec").unwrap();
+            #[allow(
+                clippy::zombie_processes,
+                reason = "The descendant must outlive the helper so the test proves the job object terminates it."
+            )]
             let child = std::process::Command::new(command_shell)
                 .args(["/D", "/S", "/C", "ping -t 127.0.0.1 >NUL"])
                 .spawn()

@@ -65,24 +65,23 @@ fn schema_keeps_pomodoro_foreign_key_targets() {
         let references = [
             (
                 "calendar_event_pomodoro_config_count_rhythms",
-                "calendar_event_pomodoro_configs",
+                "calendar_events",
             ),
             (
                 "calendar_event_pomodoro_config_sequence_steps",
-                "calendar_event_pomodoro_configs",
+                "calendar_events",
             ),
-            ("pomodoro_runs", "pomodoro_runs"),
             ("pomodoro_run_count_rhythms", "pomodoro_runs"),
             ("pomodoro_run_sequence_steps", "pomodoro_runs"),
             ("pomodoro_segments", "pomodoro_runs"),
             ("pomodoro_run_events", "pomodoro_runs"),
             (
                 "calendar_event_archive_pomodoro_config_count_rhythms",
-                "calendar_event_archive_pomodoro_configs",
+                "calendar_event_archives",
             ),
             (
                 "calendar_event_archive_pomodoro_config_sequence_steps",
-                "calendar_event_archive_pomodoro_configs",
+                "calendar_event_archives",
             ),
             ("pomodoro_run_adaptive_snapshots", "pomodoro_runs"),
             ("pomodoro_adaptive_context_snapshots", "pomodoro_runs"),
@@ -98,7 +97,10 @@ fn schema_keeps_pomodoro_foreign_key_targets() {
                  FROM pragma_foreign_key_list('{child_table}')
                  WHERE \"table\" = '{target_table}'",
             );
-            let count: i64 = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
+            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(query.as_str()))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
             assert!(count > 0, "{child_table} should reference {target_table}",);
         }
     });

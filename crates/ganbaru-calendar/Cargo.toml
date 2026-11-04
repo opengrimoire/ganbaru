@@ -21,6 +21,8 @@ ganbaru-db = { workspace = true }
 ganbaru-music = { workspace = true }
 ganbaru-pomodoro = { workspace = true }
 ganbaru-projects = { workspace = true }
+ganbaru-sync = { workspace = true }
+ganbaru-sync-contracts = { workspace = true }
 jiff = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -30,3 +32,4 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true, features = ["clock"] }
+ganbaru-db = { workspace = true, features = ["test-support"] }

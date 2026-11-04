@@ -1,7 +1,10 @@
 use std::collections::HashSet;
+use std::path::Path;
 
 use sqlx::SqlitePool;
 
+use super::icons::required_icon_byte_size;
+use super::keys::priority_key;
 use super::models::{
     GroupProjectReorder, ProjectGroupCreate, ProjectGroupReorder, ProjectGroupRow,
     ProjectGroupUpdate, ProjectMutationRemoval, ProjectPriorityCreate, ProjectPriorityUpdate,
@@ -9,10 +12,12 @@ use super::models::{
     ProjectStatusUpdate, ProjectTagCreate, ProjectTagUpdate, ProjectsMutationRows,
 };
 use super::mutations::{
-    delete_tag_with_history, delete_unused_priority, delete_unused_status,
-    ensure_project_exists_in_pool, group_mutation, latest_task_change_events, priority_mutation,
-    section_mutation, status_mutation, tag_mutation,
+    UniqueName, delete_tag_with_history, delete_unused_priority, delete_unused_status,
+    ensure_name_is_unique, ensure_project_exists_in_pool, group_mutation,
+    latest_task_change_events, priority_mutation, section_mutation, status_mutation, tag_mutation,
 };
+use super::order::{OrderGroup, OrderPlacement};
+use super::project_commands::project_order;
 use super::routine::ROUTINE_GROUP_ID;
 use super::validation::{
     require_non_empty, validate_group_create, validate_group_update, validate_priority_create,
@@ -20,30 +25,82 @@ use super::validation::{
     validate_status_create, validate_status_update, validate_tag_create, validate_tag_update,
 };
 
-const SIDEBAR_ORDER_SPACING: i64 = 1_000;
+fn group_order() -> OrderGroup<'static> {
+    OrderGroup::new("project_groups", "order_key")
+}
 
+/// Order of the rows of `table` within one project.
+fn project_scoped_order<'a>(table: &'static str, project_id: &'a str) -> OrderGroup<'a> {
+    OrderGroup::new(table, "order_key").filter("project_id", Some(project_id))
+}
+
+/// Project that owns the row `id` of a project-scoped table.
+async fn owning_project_id(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    table: &'static str,
+    id: &str,
+    not_found: &str,
+) -> Result<String, String> {
+    let sql = format!("SELECT project_id FROM {table} WHERE id = ?");
+    sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| format!("load {table} project: {e}"))?
+        .ok_or_else(|| not_found.to_string())
+}
+
+/// Moves an existing row when the update names a placement.
+async fn move_if_placed(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    order: OrderGroup<'_>,
+    id: &str,
+    placement: Option<&OrderPlacement>,
+) -> Result<(), String> {
+    if let Some(placement) = placement {
+        order.move_row(tx, id, placement).await?;
+    }
+    Ok(())
+}
+
+/// Creates a group; an icon file under `vault_root` is sized.
 pub async fn create_group(
     pool: &SqlitePool,
+    vault_root: &Path,
     group: ProjectGroupCreate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_group_create(&group)?;
+    let icon_byte_size = required_icon_byte_size(vault_root, &group.icon)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project group create: {e}"))?;
+    let order_key = group_order()
+        .place(&mut tx, &group.id, &group.placement)
+        .await?;
     sqlx::query(
-        "INSERT INTO project_groups (id, name, icon, color, sort_order)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO project_groups (id, name, icon, icon_byte_size, color, order_key)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&group.id)
     .bind(group.name.trim())
     .bind(group.icon.trim())
+    .bind(icon_byte_size)
     .bind(group.color)
-    .bind(group.sort_order)
-    .execute(pool)
+    .bind(order_key.as_str())
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("create project group: {e}"))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project group create: {e}"))?;
     group_mutation(pool, &group.id).await
 }
 
+/// Updates a group. The built-in Routine group keeps its name; an icon file under `vault_root` is sized.
 pub async fn update_group(
     pool: &SqlitePool,
+    vault_root: &Path,
     group: ProjectGroupUpdate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_group_update(&group)?;
@@ -52,41 +109,57 @@ pub async fn update_group(
     } else {
         group.name.trim()
     };
+    let icon_byte_size = required_icon_byte_size(vault_root, &group.icon)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project group update: {e}"))?;
     let result = sqlx::query(
         "UPDATE project_groups
          SET name = ?,
              icon = ?,
+             icon_byte_size = ?,
              color = ?,
-             sort_order = ?,
              collapsed = ?,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
     .bind(group_name)
     .bind(group.icon.trim())
+    .bind(icon_byte_size)
     .bind(group.color)
-    .bind(group.sort_order)
     .bind(if group.collapsed { 1_i64 } else { 0_i64 })
     .bind(&group.id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("update project group: {e}"))?;
     if result.rows_affected() == 0 {
         return Err("project group not found".to_string());
     }
+    move_if_placed(&mut tx, group_order(), &group.id, group.placement.as_ref()).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project group update: {e}"))?;
     group_mutation(pool, &group.id).await
 }
 
+/// Returns the ids of the projects in a group, which deleting the group removes with it.
+pub async fn group_project_ids(pool: &SqlitePool, group_id: &str) -> Result<Vec<String>, String> {
+    sqlx::query_scalar::<_, String>("SELECT id FROM projects WHERE group_id = ?")
+        .bind(group_id.trim())
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("load group projects: {e}"))
+}
+
+/// Deletes a group and, through cascading foreign keys, its projects with their tasks,
+/// working folders, and Chat rows. Files those rows name are left to the caller.
 pub async fn delete_group(
     pool: &SqlitePool,
     group_id: String,
 ) -> Result<ProjectsMutationRows, String> {
     let normalized_group_id = group_id.trim();
-    let project_ids = sqlx::query_scalar::<_, String>("SELECT id FROM projects WHERE group_id = ?")
-        .bind(normalized_group_id)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("load deleted group projects: {e}"))?;
+    let project_ids = group_project_ids(pool, normalized_group_id).await?;
     delete_project_group(pool, normalized_group_id).await?;
     let mut mutation = ProjectsMutationRows::default();
     mutation.removals.push(ProjectMutationRemoval::Group {
@@ -142,7 +215,7 @@ pub async fn set_group_collapsed(
     group_mutation(pool, group_id.trim()).await
 }
 
-/// Rewrites the custom sidebar order of every project group in one transaction.
+/// Rewrites the custom sidebar order of every project group in one transaction, changing as few keys as possible.
 /// Modified times stay, since a sidebar order is not an edit of the group.
 pub async fn reorder_groups(
     pool: &SqlitePool,
@@ -158,20 +231,12 @@ pub async fn reorder_groups(
         .map_err(|e| format!("load project groups to reorder: {e}"))?;
     let requested = complete_sibling_order(&reorder.group_ids, &current)
         .ok_or_else(|| "group order must list each project group once".to_string())?;
-    for (index, group_id) in requested.iter().enumerate() {
-        sqlx::query("UPDATE project_groups SET sort_order = ? WHERE id = ? AND sort_order <> ?")
-            .bind(sidebar_order_at(index))
-            .bind(group_id)
-            .bind(sidebar_order_at(index))
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("reorder project group: {e}"))?;
-    }
+    group_order().reorder(&mut tx, &requested).await?;
     tx.commit()
         .await
         .map_err(|e| format!("commit project group reorder: {e}"))?;
     let groups = sqlx::query_as::<_, ProjectGroupRow>(
-        "SELECT * FROM project_groups ORDER BY sort_order ASC, name ASC",
+        "SELECT * FROM project_groups ORDER BY order_key ASC, id ASC",
     )
     .fetch_all(pool)
     .await
@@ -182,8 +247,8 @@ pub async fn reorder_groups(
     })
 }
 
-/// Rewrites the custom sidebar order of the projects in one group, including hidden and archived ones, in one transaction.
-/// Modified times stay, since a sidebar order is not an edit of the project.
+/// Rewrites the custom sidebar order of the projects in one group, including hidden and archived ones, in one
+/// transaction. Modified times stay, since a sidebar order is not an edit of the project.
 pub async fn reorder_group_projects(
     pool: &SqlitePool,
     reorder: GroupProjectReorder,
@@ -210,20 +275,12 @@ pub async fn reorder_group_projects(
         .map_err(|e| format!("load projects to reorder: {e}"))?;
     let requested = complete_sibling_order(&reorder.project_ids, &current)
         .ok_or_else(|| "project order must list each project of the group once".to_string())?;
-    for (index, project_id) in requested.iter().enumerate() {
-        sqlx::query("UPDATE projects SET sort_order = ? WHERE id = ? AND sort_order <> ?")
-            .bind(sidebar_order_at(index))
-            .bind(project_id)
-            .bind(sidebar_order_at(index))
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("reorder project: {e}"))?;
-    }
+    project_order(group_id).reorder(&mut tx, &requested).await?;
     tx.commit()
         .await
         .map_err(|e| format!("commit project reorder: {e}"))?;
     let projects = sqlx::query_as::<_, ProjectRow>(
-        "SELECT * FROM projects WHERE group_id = ? ORDER BY sort_order ASC, name ASC",
+        "SELECT * FROM projects WHERE group_id = ? ORDER BY order_key ASC, id ASC",
     )
     .bind(group_id)
     .fetch_all(pool)
@@ -246,26 +303,32 @@ fn complete_sibling_order<'a>(requested: &'a [String], current: &[String]) -> Op
     .then_some(requested)
 }
 
-fn sidebar_order_at(index: usize) -> i64 {
-    (index as i64 + 1) * SIDEBAR_ORDER_SPACING
-}
-
 pub async fn create_section(
     pool: &SqlitePool,
     section: ProjectSectionCreate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_section_create(&section)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project section create: {e}"))?;
+    let order_key = project_scoped_order("project_sections", &section.project_id)
+        .place(&mut tx, &section.id, &section.placement)
+        .await?;
     sqlx::query(
-        "INSERT INTO project_sections (id, project_id, name, sort_order)
+        "INSERT INTO project_sections (id, project_id, name, order_key)
          VALUES (?, ?, ?, ?)",
     )
     .bind(&section.id)
     .bind(&section.project_id)
     .bind(section.name.trim())
-    .bind(section.sort_order)
-    .execute(pool)
+    .bind(order_key.as_str())
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("create project section: {e}"))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project section create: {e}"))?;
     section_mutation(pool, &section.id).await
 }
 
@@ -274,10 +337,20 @@ pub async fn update_section(
     section: ProjectSectionUpdate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_section_update(&section)?;
-    let result = sqlx::query(
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project section update: {e}"))?;
+    let project_id = owning_project_id(
+        &mut tx,
+        "project_sections",
+        &section.id,
+        "project section not found",
+    )
+    .await?;
+    sqlx::query(
         "UPDATE project_sections
          SET name = ?,
-             sort_order = ?,
              collapsed = ?,
              hidden_at = ?,
              archived_at = ?,
@@ -285,17 +358,23 @@ pub async fn update_section(
          WHERE id = ?",
     )
     .bind(section.name.trim())
-    .bind(section.sort_order)
     .bind(if section.collapsed { 1_i64 } else { 0_i64 })
     .bind(&section.hidden_at)
     .bind(&section.archived_at)
     .bind(&section.id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("update project section: {e}"))?;
-    if result.rows_affected() == 0 {
-        return Err("project section not found".to_string());
-    }
+    move_if_placed(
+        &mut tx,
+        project_scoped_order("project_sections", &project_id),
+        &section.id,
+        section.placement.as_ref(),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project section update: {e}"))?;
     section_mutation(pool, &section.id).await
 }
 
@@ -305,8 +384,15 @@ pub async fn create_status(
 ) -> Result<ProjectsMutationRows, String> {
     validate_status_create(&status)?;
     ensure_project_exists_in_pool(pool, &status.project_id).await?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project status create: {e}"))?;
+    let order_key = project_scoped_order("project_statuses", &status.project_id)
+        .place(&mut tx, &status.id, &status.placement)
+        .await?;
     sqlx::query(
-        "INSERT INTO project_statuses (id, project_id, name, category, color, sort_order, terminal)
+        "INSERT INTO project_statuses (id, project_id, name, category, color, order_key, terminal)
          VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&status.id)
@@ -314,11 +400,14 @@ pub async fn create_status(
     .bind(status.name.trim())
     .bind(&status.category)
     .bind(status.color)
-    .bind(status.sort_order)
+    .bind(order_key.as_str())
     .bind(if status.terminal { 1_i64 } else { 0_i64 })
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("create project status: {e}"))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project status create: {e}"))?;
     status_mutation(pool, &status.id).await
 }
 
@@ -327,12 +416,22 @@ pub async fn update_status(
     status: ProjectStatusUpdate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_status_update(&status)?;
-    let result = sqlx::query(
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project status update: {e}"))?;
+    let project_id = owning_project_id(
+        &mut tx,
+        "project_statuses",
+        &status.id,
+        "project status not found",
+    )
+    .await?;
+    sqlx::query(
         "UPDATE project_statuses
          SET name = ?,
              category = ?,
              color = ?,
-             sort_order = ?,
              terminal = ?,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
@@ -340,18 +439,25 @@ pub async fn update_status(
     .bind(status.name.trim())
     .bind(&status.category)
     .bind(status.color)
-    .bind(status.sort_order)
     .bind(if status.terminal { 1_i64 } else { 0_i64 })
     .bind(&status.id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("update project status: {e}"))?;
-    if result.rows_affected() == 0 {
-        return Err("project status not found".to_string());
-    }
+    move_if_placed(
+        &mut tx,
+        project_scoped_order("project_statuses", &project_id),
+        &status.id,
+        status.placement.as_ref(),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project status update: {e}"))?;
     status_mutation(pool, &status.id).await
 }
 
+/// Deletes an unused status softly and returns the row with its deletion time.
 pub async fn delete_status(
     pool: &SqlitePool,
     status_id: String,
@@ -360,11 +466,7 @@ pub async fn delete_status(
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
     delete_unused_status(&mut tx, status_id.trim()).await?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
-    let mut mutation = ProjectsMutationRows::default();
-    mutation.removals.push(ProjectMutationRemoval::Status {
-        id: status_id.trim().to_string(),
-    });
-    Ok(mutation)
+    status_mutation(pool, status_id.trim()).await
 }
 
 pub async fn create_priority(
@@ -373,19 +475,32 @@ pub async fn create_priority(
 ) -> Result<ProjectsMutationRows, String> {
     validate_priority_create(&priority)?;
     ensure_project_exists_in_pool(pool, &priority.project_id).await?;
+    let project_id = priority.project_id.trim();
+    let id = priority.id.trim();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project priority create: {e}"))?;
+    let order_key = project_scoped_order("project_priorities", project_id)
+        .place(&mut tx, id, &priority.placement)
+        .await?;
     sqlx::query(
-        "INSERT INTO project_priorities (id, project_id, name, color, sort_order)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO project_priorities (id, project_id, name, color, order_key, sync_key)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
-    .bind(priority.id.trim())
-    .bind(&priority.project_id)
+    .bind(id)
+    .bind(project_id)
     .bind(priority.name.trim())
     .bind(priority.color)
-    .bind(priority.sort_order)
-    .execute(pool)
+    .bind(order_key.as_str())
+    .bind(priority_key(project_id, id)?)
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("create project priority: {e}"))?;
-    priority_mutation(pool, priority.id.trim()).await
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project priority create: {e}"))?;
+    priority_mutation(pool, project_id, id).await
 }
 
 pub async fn update_priority(
@@ -393,28 +508,43 @@ pub async fn update_priority(
     priority: ProjectPriorityUpdate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_priority_update(&priority)?;
+    let project_id = priority.project_id.trim();
+    let id = priority.id.trim();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project priority update: {e}"))?;
     let result = sqlx::query(
         "UPDATE project_priorities
          SET name = ?,
              color = ?,
-             sort_order = ?,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE project_id = ? AND id = ?",
     )
     .bind(priority.name.trim())
     .bind(priority.color)
-    .bind(priority.sort_order)
-    .bind(&priority.project_id)
-    .bind(priority.id.trim())
-    .execute(pool)
+    .bind(project_id)
+    .bind(id)
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("update project priority: {e}"))?;
     if result.rows_affected() == 0 {
         return Err("project priority not found".to_string());
     }
-    priority_mutation(pool, priority.id.trim()).await
+    move_if_placed(
+        &mut tx,
+        project_scoped_order("project_priorities", project_id),
+        id,
+        priority.placement.as_ref(),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project priority update: {e}"))?;
+    priority_mutation(pool, project_id, id).await
 }
 
+/// Deletes an unused priority softly and returns the row with its deletion time.
 pub async fn delete_priority(
     pool: &SqlitePool,
     project_id: String,
@@ -425,11 +555,7 @@ pub async fn delete_priority(
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
     delete_unused_priority(&mut tx, project_id.trim(), priority_id.trim()).await?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
-    let mut mutation = ProjectsMutationRows::default();
-    mutation.removals.push(ProjectMutationRemoval::Priority {
-        id: priority_id.trim().to_string(),
-    });
-    Ok(mutation)
+    priority_mutation(pool, project_id.trim(), priority_id.trim()).await
 }
 
 pub async fn create_tag(
@@ -437,19 +563,31 @@ pub async fn create_tag(
     tag: ProjectTagCreate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_tag_create(&tag)?;
-    ensure_project_exists_in_pool(pool, tag.project_id.trim()).await?;
+    let project_id = tag.project_id.trim();
+    ensure_project_exists_in_pool(pool, project_id).await?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project tag create: {e}"))?;
+    ensure_name_is_unique(&mut tx, UniqueName::Tag(project_id), &tag.name, None).await?;
+    let order_key = project_scoped_order("project_tags", project_id)
+        .place(&mut tx, tag.id.trim(), &tag.placement)
+        .await?;
     sqlx::query(
-        "INSERT INTO project_tags (id, project_id, name, color, sort_order)
+        "INSERT INTO project_tags (id, project_id, name, color, order_key)
          VALUES (?, ?, ?, ?, ?)",
     )
     .bind(tag.id.trim())
-    .bind(tag.project_id.trim())
+    .bind(project_id)
     .bind(tag.name.trim())
     .bind(tag.color)
-    .bind(tag.sort_order)
-    .execute(pool)
+    .bind(order_key.as_str())
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("create project tag: {e}"))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project tag create: {e}"))?;
     tag_mutation(pool, tag.id.trim()).await
 }
 
@@ -458,25 +596,38 @@ pub async fn update_tag(
     tag: ProjectTagUpdate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_tag_update(&tag)?;
-    let result = sqlx::query(
+    let id = tag.id.trim();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project tag update: {e}"))?;
+    let project_id =
+        owning_project_id(&mut tx, "project_tags", id, "project tag not found").await?;
+    ensure_name_is_unique(&mut tx, UniqueName::Tag(&project_id), &tag.name, Some(id)).await?;
+    sqlx::query(
         "UPDATE project_tags
          SET name = ?,
              color = ?,
-             sort_order = ?,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
     .bind(tag.name.trim())
     .bind(tag.color)
-    .bind(tag.sort_order)
-    .bind(tag.id.trim())
-    .execute(pool)
+    .bind(id)
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("update project tag: {e}"))?;
-    if result.rows_affected() == 0 {
-        return Err("project tag not found".to_string());
-    }
-    tag_mutation(pool, tag.id.trim()).await
+    move_if_placed(
+        &mut tx,
+        project_scoped_order("project_tags", &project_id),
+        id,
+        tag.placement.as_ref(),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project tag update: {e}"))?;
+    tag_mutation(pool, id).await
 }
 
 pub async fn delete_tag(pool: &SqlitePool, tag_id: String) -> Result<ProjectsMutationRows, String> {

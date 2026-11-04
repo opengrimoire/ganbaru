@@ -35,6 +35,10 @@ Rust owns recurrence expansion, scope and protection decisions, and every Calend
 - **Distraction blocker:** Pomodoro phase state can activate current blocker snapshots. See [Distraction rule activation](../distractions/rules-and-activation.md).
 - **Work environments:** planned environment context can add portable defaults and platform-specific actions. See [Work environments](../work-environments.md).
 
+## Synchronization
+
+Every linked device edits Calendar offline. Edits to different fields of one event merge; when two devices change the same title, description, or timing, the winning value is shown and the concurrent versions are offered for resolution, and the chosen version replaces the shown one on every device. Start, end, time zone, and recurrence with its excluded dates, added dates, and changed occurrences form one timing value, and while its conflict is open the event stays in the day plan and keeps its reminders at the winning value, but Focus does not start it automatically; an explicit start or an already running session still uses it. An event deleted on one device while another edited it appears in the sync settings recovery list and can be restored as a new event or discarded. See [Device linking and synchronization](../../data/sync.md).
+
 ## Documentation map
 
 - [Views and navigation](views-and-navigation.md)

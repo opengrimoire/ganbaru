@@ -1,16 +1,14 @@
 //! Bounded Markdown filesystem operations for authorized working folders.
 
-use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_SCAN_DEPTH: usize = 16;
 const MAX_SCAN_ENTRIES: usize = 5_000;
 const MAX_RELATIVE_PATH_BYTES: usize = 4_096;
-const MAX_MARKDOWN_FILE_BYTES: u64 = 4 * 1024 * 1024;
+/// Largest Markdown file that project Notes lists, reads, or saves.
+pub const MAX_MARKDOWN_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const EXCLUDED_DIRECTORIES: &[&str] = &[
     ".git",
     ".cache",
@@ -36,7 +34,6 @@ pub enum WorkingMarkdownError {
     SymbolicLink,
     TooLarge,
     Io,
-    StaleRevision,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,14 +56,6 @@ pub struct WorkingMarkdownScan {
     pub truncated: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorkingMarkdownFile {
-    pub relative_path: String,
-    pub content: String,
-    pub revision: String,
-    pub byte_size: u64,
-}
-
 struct ScanBudget {
     visited_entries: usize,
     truncated: bool,
@@ -84,46 +73,11 @@ pub fn scan_markdown(root: &Path) -> Result<WorkingMarkdownScan, WorkingMarkdown
     })
 }
 
-pub fn read_markdown(
-    root: &Path,
-    relative_path: &str,
-) -> Result<WorkingMarkdownFile, WorkingMarkdownError> {
-    let normalized = normalize_relative_path(relative_path)?;
-    let path = resolve_markdown_file(root, &normalized)?;
-    let bytes = read_bounded_markdown(&path)?;
-    let content =
-        String::from_utf8(bytes.clone()).map_err(|_| WorkingMarkdownError::InvalidUtf8)?;
-    Ok(WorkingMarkdownFile {
-        relative_path: normalized,
-        content,
-        revision: revision_digest(&bytes),
-        byte_size: bytes.len() as u64,
-    })
-}
-
-pub fn save_markdown(
-    root: &Path,
-    relative_path: &str,
-    content: &str,
-    expected_revision: &str,
-) -> Result<WorkingMarkdownFile, WorkingMarkdownError> {
-    if content.len() as u64 > MAX_MARKDOWN_FILE_BYTES {
-        return Err(WorkingMarkdownError::TooLarge);
-    }
-    let normalized = normalize_relative_path(relative_path)?;
-    let path = resolve_markdown_file(root, &normalized)?;
-    let current = read_bounded_markdown(&path)?;
-    if revision_digest(&current) != expected_revision {
-        return Err(WorkingMarkdownError::StaleRevision);
-    }
-    write_atomic(&path, content.as_bytes())?;
-    read_markdown(root, &normalized)
-}
-
-pub fn resolve_markdown_file(
-    root: &Path,
-    relative_path: &str,
-) -> Result<PathBuf, WorkingMarkdownError> {
+/// Normalizes a relative Markdown path without touching the filesystem.
+///
+/// Reads and saves pass the result to the descriptor-relative workspace file
+/// helpers, which open every component without following symbolic links.
+pub fn validate_markdown_path(relative_path: &str) -> Result<String, WorkingMarkdownError> {
     let normalized = normalize_relative_path(relative_path)?;
     if !is_markdown_name(
         Path::new(&normalized)
@@ -133,6 +87,16 @@ pub fn resolve_markdown_file(
     ) {
         return Err(WorkingMarkdownError::InvalidExtension);
     }
+    Ok(normalized)
+}
+
+/// Resolves a Markdown file to a canonical path for the system opener, which
+/// can only receive a path.
+pub fn resolve_markdown_file(
+    root: &Path,
+    relative_path: &str,
+) -> Result<PathBuf, WorkingMarkdownError> {
+    let normalized = validate_markdown_path(relative_path)?;
     let mut candidate = root.to_path_buf();
     for component in Path::new(&normalized).components() {
         let Component::Normal(segment) = component else {
@@ -245,49 +209,6 @@ fn normalize_relative_path(relative_path: &str) -> Result<String, WorkingMarkdow
         .ok_or(WorkingMarkdownError::InvalidPath)
 }
 
-fn read_bounded_markdown(path: &Path) -> Result<Vec<u8>, WorkingMarkdownError> {
-    let metadata = fs::metadata(path).map_err(file_error)?;
-    if metadata.len() > MAX_MARKDOWN_FILE_BYTES {
-        return Err(WorkingMarkdownError::TooLarge);
-    }
-    fs::read(path).map_err(file_error)
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), WorkingMarkdownError> {
-    let parent = path.parent().ok_or(WorkingMarkdownError::InvalidPath)?;
-    let file_name = path
-        .file_name()
-        .and_then(OsStr::to_str)
-        .ok_or(WorkingMarkdownError::InvalidPath)?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(file_error)?
-        .as_nanos();
-    let temporary = parent.join(format!(".{file_name}.ganbaru-{nonce}.tmp"));
-    let result = (|| -> Result<(), WorkingMarkdownError> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-            .map_err(file_error)?;
-        file.write_all(bytes).map_err(file_error)?;
-        file.sync_all().map_err(file_error)?;
-        fs::rename(&temporary, path).map_err(file_error)?;
-        if let Ok(directory) = fs::File::open(parent) {
-            let _ = directory.sync_all();
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
-}
-
-fn revision_digest(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
-}
-
 fn is_markdown_name(name: &str) -> bool {
     Path::new(name)
         .extension()
@@ -349,27 +270,23 @@ mod tests {
     }
 
     #[test]
-    fn save_refuses_stale_content_and_replaces_atomically() {
-        let root = test_root("save");
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("notes.md"), "first").unwrap();
-        let read = read_markdown(&root, "notes.md").unwrap();
-
-        let saved = save_markdown(&root, "notes.md", "second", &read.revision).unwrap();
-
-        assert_eq!(saved.content, "second");
+    fn markdown_paths_are_normalized_and_require_the_markdown_extension() {
         assert_eq!(
-            save_markdown(&root, "notes.md", "third", &read.revision),
-            Err(WorkingMarkdownError::StaleRevision)
+            validate_markdown_path("docs/guide.MD"),
+            Ok("docs/guide.MD".to_string())
         );
-        assert!(
-            !fs::read_dir(&root)
-                .unwrap()
-                .filter_map(Result::ok)
-                .any(|entry| entry.file_name().to_string_lossy().contains(".ganbaru-"))
+        assert_eq!(
+            validate_markdown_path("docs/notes.txt"),
+            Err(WorkingMarkdownError::InvalidExtension)
         );
-        fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            validate_markdown_path("/etc/notes.md"),
+            Err(WorkingMarkdownError::InvalidPath)
+        );
+        assert_eq!(
+            validate_markdown_path("docs/../notes.md"),
+            Err(WorkingMarkdownError::InvalidPath)
+        );
     }
 
     #[test]

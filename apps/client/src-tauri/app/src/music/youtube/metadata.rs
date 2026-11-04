@@ -1,14 +1,22 @@
-use reqwest::{Client, redirect::Policy};
+use reqwest::{Client, Response, redirect::Policy};
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
 const YOUTUBE_OEMBED_ENDPOINT: &str = "https://www.youtube.com/oembed";
 const MAX_METADATA_VIDEOS: usize = 250;
 const MAX_CONCURRENT_REQUESTS: usize = 12;
+/// oEmbed documents are a few hundred bytes; larger bodies are refused while streaming.
+const MAX_OEMBED_BYTES: usize = 64 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const METADATA_BATCH_TIMEOUT: Duration = Duration::from_secs(12);
+
+static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+/// Bounds oEmbed requests across concurrent metadata commands and thumbnail lookups.
+static OEMBED_REQUEST_LIMIT: Semaphore = Semaphore::const_new(MAX_CONCURRENT_REQUESTS);
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,20 +81,34 @@ async fn fetch_oembed(client: &Client, source_url: String) -> Option<YouTubeOEmb
         "{YOUTUBE_OEMBED_ENDPOINT}?url={}&format=json",
         percent_encode_query_value(&source_url)
     );
-    let bytes = client
+    let _permit = OEMBED_REQUEST_LIMIT.acquire().await.ok()?;
+    let response = client
         .get(request_url)
         .send()
         .await
         .ok()?
         .error_for_status()
-        .ok()?
-        .bytes()
-        .await
         .ok()?;
-    if bytes.len() > 64 * 1024 {
+    let bytes = read_bounded_body(response, MAX_OEMBED_BYTES).await?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Reads a response body chunk by chunk, abandoning it as soon as it exceeds `limit` bytes.
+async fn read_bounded_body(mut response: Response, limit: usize) -> Option<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
         return None;
     }
-    serde_json::from_slice(&bytes).ok()
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if bytes.len().saturating_add(chunk.len()) > limit {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Some(bytes)
 }
 
 /// Reads the thumbnail URL supplied by YouTube for a validated video ID.
@@ -185,17 +207,26 @@ fn spawn_video_request(
     });
 }
 
+fn metadata_client() -> Result<&'static Client, String> {
+    CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .redirect(Policy::none())
+                .timeout(REQUEST_TIMEOUT)
+                .user_agent("Ganbaru/0.1 YouTube metadata preview")
+                .build()
+                .map_err(|error| format!("Could not prepare the YouTube metadata request: {error}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
 #[tauri::command]
 pub async fn music_youtube_metadata(
     request: MusicYouTubeMetadataRequest,
 ) -> Result<MusicYouTubeMetadataResponse, String> {
     validate_request(&request)?;
-    let client = Client::builder()
-        .redirect(Policy::none())
-        .timeout(REQUEST_TIMEOUT)
-        .user_agent("Ganbaru/0.1 YouTube metadata preview")
-        .build()
-        .map_err(|error| format!("Could not prepare the YouTube metadata request: {error}"))?;
+    let client = metadata_client()?;
     let truncated = request.video_ids.len() > MAX_METADATA_VIDEOS;
     let video_ids = request
         .video_ids
@@ -204,8 +235,8 @@ pub async fn music_youtube_metadata(
         .cloned()
         .collect::<Vec<_>>();
     let (playlist, videos) = tokio::join!(
-        fetch_playlist(&client, request.playlist_id.as_deref()),
-        fetch_videos(&client, &video_ids),
+        fetch_playlist(client, request.playlist_id.as_deref()),
+        fetch_videos(client, &video_ids),
     );
     Ok(MusicYouTubeMetadataResponse {
         playlist,
@@ -245,6 +276,53 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    /// Serves one response whose body is `body_prefix` followed by an endless stream when
+    /// `endless` is set, and returns the URL to request.
+    async fn serve_once(body_prefix: &'static [u8], endless: bool) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await;
+            let head =
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n";
+            if stream.write_all(head.as_bytes()).await.is_err()
+                || stream.write_all(body_prefix).await.is_err()
+            {
+                return;
+            }
+            let filler = [b' '; 16 * 1024];
+            while endless && stream.write_all(&filler).await.is_ok() {}
+        });
+        format!("http://{address}/oembed")
+    }
+
+    async fn read_from(url: String) -> Option<Vec<u8>> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let response = Client::new().get(url).send().await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            read_bounded_body(response, MAX_OEMBED_BYTES),
+        )
+        .await
+        .expect("an oversized body is abandoned instead of buffered")
+    }
+
+    #[tokio::test]
+    async fn oembed_body_without_length_is_abandoned_at_the_cap() {
+        let url = serve_once(b"{\"title\":\"", true).await;
+        assert!(read_from(url).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn oembed_body_within_the_cap_is_read_whole() {
+        let document = br#"{"title":"Song","author_name":"Channel"}"#;
+        let url = serve_once(document, false).await;
+        assert_eq!(read_from(url).await.as_deref(), Some(&document[..]));
     }
 
     #[test]

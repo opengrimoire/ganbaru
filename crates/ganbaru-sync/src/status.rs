@@ -1,12 +1,15 @@
 //! Engine state for status reporting, and re-evaluation of held operations after an update.
 
-use ganbaru_sync_contracts::{Envelope, Seq, TableId, WriterId};
+use std::collections::BTreeMap;
+
+use ganbaru_sync_contracts::hlc::{self, CLOCK_WARNING_AHEAD_MS, Hlc};
+use ganbaru_sync_contracts::{Envelope, OperationKind, Seq, TableId, WriterId};
 use sqlx::{Connection, Row, SqliteConnection};
 
 use crate::error::{SyncResult, corrupt, failpoint};
-use crate::log::{self, WriterState, seq_i64, stored_u64};
+use crate::log::{self, WriterState, clamp_ms, seq_i64, stored_u64};
 use crate::store::{self, Classified, HoldReason};
-use crate::{Engine, OPEN_CONFLICT_MASK_SQL, SpaceContext};
+use crate::{ClockWarning, Engine, OPEN_CONFLICT_MASK_SQL, SpaceContext};
 
 /// One writer of the space.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,14 +76,27 @@ pub struct SyncStatus {
     pub waiting: usize,
     /// Envelope bytes of the waiting operations.
     pub waiting_bytes: u64,
-    /// Held operations by reason.
+    /// Held operations by reason, without the excluded ones.
     pub held: HeldCounts,
+    /// Operations of removed devices past their removal cutoff, stored and forwarded but never
+    /// applied while the removal stays selected.
+    pub excluded: usize,
     /// Local rows with changes that are not sealed yet.
     pub pending_captures: usize,
     /// Live rows with surfaced conflicts, per table name, for tables that have any.
     pub conflicts: Vec<(&'static str, usize)>,
-    /// Deleted rows offered for recovery.
-    pub recovery: usize,
+    /// Recovery offers per table name of their root row, for tables that have any. Each
+    /// offer counts once however many deleted descendants it brings back.
+    pub recovery: Vec<(&'static str, usize)>,
+    /// Change operations of this device the anchor has not confirmed storing yet. They can still
+    /// be excluded if a removal of this device is sequenced before the anchor stores them. Always
+    /// 0 on the anchor itself.
+    pub unconfirmed: usize,
+    /// When the oldest unconfirmed change operation was stored, in Unix milliseconds.
+    pub oldest_unconfirmed_ms: Option<u64>,
+    /// Superseded versions kept until the anchor confirms storing the operations that
+    /// superseded them, so that excluding those operations can restore them.
+    pub displaced: usize,
 }
 
 fn count(value: i64) -> SyncResult<usize> {
@@ -88,8 +104,22 @@ fn count(value: i64) -> SyncResult<usize> {
 }
 
 impl Engine {
-    /// Summarizes writers, pending operations, captures, conflicts, and recovery offers.
+    /// Summarizes writers, pending operations, captures, conflicts, and recovery offers. Recovery
+    /// offers are counted as `recovery_entries` lists them, so the counts match the list. Every
+    /// read runs in one transaction, so the counts describe one database state even while a
+    /// pass applies or seals on another connection.
     pub async fn status(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+    ) -> SyncResult<SyncStatus> {
+        let mut tx = conn.begin().await?;
+        let status = self.read_status(&mut tx, ctx).await?;
+        tx.commit().await?;
+        Ok(status)
+    }
+
+    async fn read_status(
         &self,
         conn: &mut SqliteConnection,
         ctx: &SpaceContext,
@@ -112,8 +142,10 @@ impl Engine {
             ..SyncStatus::default()
         };
         let pending = sqlx::query(
-            "SELECT state, hold_reason, count(*), coalesce(sum(length(envelope)), 0) FROM sync_ops
-             WHERE space_id = ? AND state <> 'applied' GROUP BY state, hold_reason",
+            "SELECT CASE WHEN excluded_revision IS NULL THEN state ELSE 'excluded' END,
+                hold_reason, count(*), coalesce(sum(length(envelope)), 0)
+             FROM sync_ops WHERE space_id = ? AND state <> 'applied'
+             GROUP BY 1, hold_reason",
         )
         .bind(ctx.space.as_bytes().as_slice())
         .fetch_all(&mut *conn)
@@ -128,6 +160,7 @@ impl Engine {
                     status.waiting_bytes = stored_u64(row.try_get(3)?, "waiting bytes")?;
                 }
                 ("held", Some(reason)) => status.held.add(HoldReason::parse(&reason)?, ops),
+                ("excluded", _) => status.excluded += ops,
                 _ => return Err(corrupt("pending operation with an unknown state")),
             }
         }
@@ -140,7 +173,9 @@ impl Engine {
             "SELECT r.table_id, count(*) FROM sync_rows r WHERE {OPEN_CONFLICT_MASK_SQL} <> 0
              GROUP BY r.table_id ORDER BY r.table_id"
         );
-        let conflicts: Vec<(i64, i64)> = sqlx::query_as(&sql).fetch_all(&mut *conn).await?;
+        let conflicts: Vec<(i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .fetch_all(&mut *conn)
+            .await?;
         for (table_id, rows) in conflicts {
             let table = u16::try_from(table_id)
                 .ok()
@@ -148,15 +183,82 @@ impl Engine {
                 .ok_or_else(|| corrupt("conflict on a row of an unknown table"))?;
             status.conflicts.push((table.name, count(rows)?));
         }
-        status.recovery = count(
-            sqlx::query_scalar("SELECT count(*) FROM sync_rows WHERE recovery = 1")
-                .fetch_one(&mut *conn)
-                .await?,
+        let mut offers: BTreeMap<TableId, usize> = BTreeMap::new();
+        for entry in self.recovery_entries(conn, ctx).await? {
+            *offers.entry(entry.table).or_default() += 1;
+        }
+        for (table, offers) in offers {
+            let table = self
+                .manifest()
+                .table(table)
+                .ok_or_else(|| corrupt("recovery offer on a row of an unknown table"))?;
+            status.recovery.push((table.name, offers));
+        }
+        let (unconfirmed, oldest): (i64, Option<i64>) = sqlx::query_as(
+            "SELECT count(*), min(o.stored_at_ms)
+             FROM sync_ops o
+             JOIN sync_spaces s ON s.space_id = o.space_id
+             JOIN sync_writers w ON w.space_id = o.space_id AND w.writer_id = o.writer_id
+             LEFT JOIN sync_anchor_marks m ON m.space_id = o.space_id AND m.writer_id = o.writer_id
+             WHERE o.space_id = ? AND o.kind = ? AND o.excluded_revision IS NULL
+                AND w.device_id = s.local_device_id
+                AND s.anchor_device_id IS NOT NULL AND s.anchor_device_id <> s.local_device_id
+                AND o.seq > coalesce(m.seq, 0)",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(i64::from(OperationKind::Changes.as_u8()))
+        .fetch_one(&mut *conn)
+        .await?;
+        status.unconfirmed = count(unconfirmed)?;
+        status.oldest_unconfirmed_ms = oldest
+            .map(|stored| stored_u64(stored, "unconfirmed stored time"))
+            .transpose()?;
+        status.displaced = count(
+            // Held Creates are merge state no anchor mark releases, not versions in wait.
+            sqlx::query_scalar(
+                "SELECT count(*) FROM sync_displaced_versions
+                 WHERE NOT (writer_id = displaced_by_writer AND seq = displaced_by_seq)",
+            )
+            .fetch_one(&mut *conn)
+            .await?,
         )?;
         Ok(status)
     }
 
-    /// Held operations in writer and sequence order, at most `limit`.
+    /// Writers with merged versions whose clocks are far ahead of `now_ms`, each with its
+    /// greatest such clock, in writer order. Those versions win concurrent edits until local time
+    /// catches up, so the interface names their devices.
+    pub async fn far_ahead_writers(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        now_ms: u64,
+    ) -> SyncResult<Vec<ClockWarning>> {
+        log::ensure_space(conn, ctx.space).await?;
+        let threshold = Hlc::new(now_ms.saturating_add(CLOCK_WARNING_AHEAD_MS), 0);
+        let rows = sqlx::query(
+            "SELECT writer_id, max(clock) FROM sync_register_versions WHERE clock >= ?
+             GROUP BY writer_id ORDER BY writer_id",
+        )
+        .bind(clamp_ms(threshold.as_u64()))
+        .fetch_all(&mut *conn)
+        .await?;
+        let mut warnings = Vec::with_capacity(rows.len());
+        for row in rows {
+            let writer: Vec<u8> = row.try_get(0)?;
+            let clock = Hlc::from_u64(stored_u64(row.try_get(1)?, "version clock")?);
+            if hlc::is_far_ahead(clock, now_ms) {
+                warnings.push(ClockWarning {
+                    writer: log::writer_id(&writer)?,
+                    clock,
+                });
+            }
+        }
+        Ok(warnings)
+    }
+
+    /// Held operations in writer and sequence order, at most `limit`, without the operations
+    /// a removal excludes.
     pub async fn held_ops(
         &self,
         conn: &mut SqliteConnection,
@@ -167,6 +269,7 @@ impl Engine {
         let rows = sqlx::query(
             "SELECT writer_id, seq, hold_reason, stored_at_ms FROM sync_ops
              WHERE space_id = ? AND state <> 'applied' AND state = 'held'
+                AND excluded_revision IS NULL
              ORDER BY writer_id, seq LIMIT ?",
         )
         .bind(ctx.space.as_bytes().as_slice())
@@ -201,10 +304,13 @@ impl Engine {
         let mut tx = conn.begin().await?;
         log::ensure_space(&mut tx, ctx.space).await?;
         let rows = sqlx::query(
-            "SELECT writer_id, seq, hold_reason, envelope FROM sync_ops
-             WHERE space_id = ? AND state <> 'applied' AND state = 'held'
-                AND hold_reason IN ('newer_format', 'newer_manifest')
-             ORDER BY writer_id, seq",
+            "SELECT o.writer_id, o.seq, o.hold_reason, o.envelope, w.device_id
+             FROM sync_ops o JOIN sync_writers w
+                ON w.space_id = o.space_id AND w.writer_id = o.writer_id
+             WHERE o.space_id = ? AND o.state <> 'applied' AND o.state = 'held'
+                AND o.hold_reason IN ('newer_format', 'newer_manifest')
+                AND o.excluded_revision IS NULL
+             ORDER BY o.writer_id, o.seq",
         )
         .bind(ctx.space.as_bytes().as_slice())
         .fetch_all(&mut *tx)
@@ -216,20 +322,29 @@ impl Engine {
             let seq = stored_u64(row.try_get(1)?, "sequence")?;
             let previous: Option<String> = row.try_get(2)?;
             let envelope: Vec<u8> = row.try_get(3)?;
+            let device: String = row.try_get(4)?;
             let classified = match Envelope::decode(&envelope) {
-                Ok(envelope) => store::classify(self, &envelope),
+                Ok(envelope) => store::classify(self, &envelope, &device),
                 Err(_) => Classified::Malformed,
             };
             let reason = match &classified {
-                Classified::Waiting { dependencies, .. } => {
+                Classified::Waiting {
+                    dependencies,
+                    revision,
+                    continues,
+                    ..
+                } => {
                     let context =
                         store::derive_context(&mut tx, ctx, writer, seq, Some(dependencies))
                             .await?;
                     sqlx::query(
-                        "UPDATE sync_ops SET state = 'waiting', hold_reason = NULL, context = ?
+                        "UPDATE sync_ops SET state = 'waiting', hold_reason = NULL, context = ?,
+                            authorization_revision = ?, group_continues = ?
                          WHERE space_id = ? AND writer_id = ? AND seq = ?",
                     )
                     .bind(log::encode_context(context.as_ref()))
+                    .bind(seq_i64(*revision)?)
+                    .bind(*continues)
                     .bind(ctx.space.as_bytes().as_slice())
                     .bind(writer.as_bytes().as_slice())
                     .bind(seq_i64(seq)?)

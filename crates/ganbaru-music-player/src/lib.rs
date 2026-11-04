@@ -673,6 +673,12 @@ fn is_mp4_edit_list_probe_candidate(extension: Option<&str>) -> bool {
     matches!(extension, Some("m4v" | "mov" | "mp4"))
 }
 
+/// Edit list entries read per track. Real files carry one or two; the cap keeps a crafted count from driving the probe.
+const MAX_MP4_EDIT_LIST_ENTRIES: u64 = 4_096;
+
+/// Sibling boxes visited while searching one MP4 container level. Real containers hold a few dozen.
+const MAX_MP4_SIBLING_BOXES: usize = 4_096;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Mp4BoxHeader {
     name: [u8; 4],
@@ -691,7 +697,10 @@ fn probe_mp4_leading_empty_edit_ms(path: &Path) -> Option<u64> {
 
     let mut starts = Vec::new();
     file.seek(SeekFrom::Start(moov.payload_start)).ok()?;
-    while file.stream_position().ok()? < moov.end {
+    for _ in 0..MAX_MP4_SIBLING_BOXES {
+        if file.stream_position().ok()? >= moov.end {
+            break;
+        }
         let Some(child) = read_mp4_box_header(&mut file, moov.end).ok()? else {
             break;
         };
@@ -744,16 +753,27 @@ fn read_mp4_elst_leading_empty_edit_ms(
     file.seek(SeekFrom::Start(elst.payload_start))?;
     let version = read_u8(file)?;
     skip_bytes(file, 3)?;
-    let entry_count = read_be_u32(file)?;
+    let declared_count = u64::from(read_be_u32(file)?);
+    let entry_len: u64 = if version == 1 { 20 } else { 12 };
+    let entries_start = elst.payload_start.saturating_add(8);
+    let room = elst.end.saturating_sub(entries_start) / entry_len;
+    let entry_count = declared_count.min(room).min(MAX_MP4_EDIT_LIST_ENTRIES);
+    let mut entries = vec![0_u8; usize::try_from(entry_count * entry_len).unwrap_or(0)];
+    file.read_exact(&mut entries)?;
     let mut leading_empty_duration = 0_u64;
 
-    for _ in 0..entry_count {
+    for entry in entries.chunks_exact(entry_len as usize) {
         let (segment_duration, media_time) = if version == 1 {
-            (read_be_u64(file)?, read_be_i64(file)?)
+            (
+                u64::from_be_bytes(array_at(entry, 0)),
+                i64::from_be_bytes(array_at(entry, 8)),
+            )
         } else {
-            (u64::from(read_be_u32(file)?), i64::from(read_be_i32(file)?))
+            (
+                u64::from(u32::from_be_bytes(array_at(entry, 0))),
+                i64::from(i32::from_be_bytes(array_at(entry, 4))),
+            )
         };
-        skip_bytes(file, 4)?;
         if media_time == -1 {
             leading_empty_duration = leading_empty_duration.saturating_add(segment_duration);
         } else {
@@ -772,7 +792,10 @@ fn find_mp4_child_box(
     name: [u8; 4],
 ) -> std::io::Result<Option<Mp4BoxHeader>> {
     file.seek(SeekFrom::Start(start))?;
-    while file.stream_position()? < end {
+    for _ in 0..MAX_MP4_SIBLING_BOXES {
+        if file.stream_position()? >= end {
+            break;
+        }
         let Some(child) = read_mp4_box_header(file, end)? else {
             return Ok(None);
         };
@@ -835,22 +858,17 @@ fn read_be_u32(file: &mut File) -> std::io::Result<u32> {
     Ok(u32::from_be_bytes(bytes))
 }
 
-fn read_be_i32(file: &mut File) -> std::io::Result<i32> {
-    let mut bytes = [0_u8; 4];
-    file.read_exact(&mut bytes)?;
-    Ok(i32::from_be_bytes(bytes))
-}
-
 fn read_be_u64(file: &mut File) -> std::io::Result<u64> {
     let mut bytes = [0_u8; 8];
     file.read_exact(&mut bytes)?;
     Ok(u64::from_be_bytes(bytes))
 }
 
-fn read_be_i64(file: &mut File) -> std::io::Result<i64> {
-    let mut bytes = [0_u8; 8];
-    file.read_exact(&mut bytes)?;
-    Ok(i64::from_be_bytes(bytes))
+/// Copies `N` bytes starting at `offset`; callers pass slices sized for every offset they read.
+fn array_at<const N: usize>(bytes: &[u8], offset: usize) -> [u8; N] {
+    let mut array = [0_u8; N];
+    array.copy_from_slice(&bytes[offset..offset + N]);
+    array
 }
 
 fn skip_bytes(file: &mut File, len: u64) -> std::io::Result<()> {
@@ -991,6 +1009,63 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         assert_eq!(start_ms, Some(62_561));
+    }
+
+    #[test]
+    fn mp4_probe_reads_only_the_edit_entries_inside_the_elst_box() {
+        let mut elst = vec![0, 0, 0, 0];
+        elst.extend_from_slice(&u32::MAX.to_be_bytes());
+        for duration in [500_u32, 700] {
+            elst.extend_from_slice(&duration.to_be_bytes());
+            elst.extend_from_slice(&(-1_i32).to_be_bytes());
+            elst.extend_from_slice(&0x0001_0000_u32.to_be_bytes());
+        }
+        let mut trailing = Vec::new();
+        for _ in 0..64 {
+            trailing.extend_from_slice(&9_000_u32.to_be_bytes());
+            trailing.extend_from_slice(&(-1_i32).to_be_bytes());
+            trailing.extend_from_slice(&0x0001_0000_u32.to_be_bytes());
+        }
+        let mut mvhd = vec![0, 0, 0, 0];
+        mvhd.extend_from_slice(&0_u32.to_be_bytes());
+        mvhd.extend_from_slice(&0_u32.to_be_bytes());
+        mvhd.extend_from_slice(&1_000_u32.to_be_bytes());
+        mvhd.extend_from_slice(&128_000_u32.to_be_bytes());
+        let trak = mp4_box(*b"trak", mp4_box(*b"edts", mp4_box(*b"elst", elst)));
+        let movie = [
+            mp4_box(*b"moov", [mp4_box(*b"mvhd", mvhd), trak].concat()),
+            mp4_box(*b"free", trailing),
+        ]
+        .concat();
+        let path = std::env::temp_dir().join(format!(
+            "ganbaru-media-probe-bounded-{}.mp4",
+            std::process::id()
+        ));
+        std::fs::write(&path, movie).unwrap();
+
+        let start_ms = probe_mp4_leading_empty_edit_ms(&path);
+
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(start_ms, Some(1_200));
+    }
+
+    #[test]
+    fn mp4_probe_stops_after_the_sibling_box_cap() {
+        let mut children = Vec::new();
+        for _ in 0..MAX_MP4_SIBLING_BOXES {
+            children.extend_from_slice(&mp4_box(*b"free", Vec::new()));
+        }
+        children.extend_from_slice(&minimal_mp4_with_leading_empty_edit(250));
+        let path = std::env::temp_dir().join(format!(
+            "ganbaru-media-probe-siblings-{}.mp4",
+            std::process::id()
+        ));
+        std::fs::write(&path, children).unwrap();
+
+        let start_ms = probe_mp4_leading_empty_edit_ms(&path);
+
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(start_ms, None);
     }
 
     #[test]

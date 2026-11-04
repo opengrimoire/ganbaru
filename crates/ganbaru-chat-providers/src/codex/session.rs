@@ -18,6 +18,9 @@ use tokio::task::JoinHandle;
 const MAX_REQUEST_TEXT_BYTES: usize = 64 * 1024;
 const MAX_QUESTIONS: usize = 16;
 const MAX_OPTIONS_PER_QUESTION: usize = 32;
+/// Largest write root an approval shows as a session grant. Allow for session is withheld for
+/// longer roots, because the grant could not be shown in full.
+const MAX_GRANT_ROOT_BYTES: usize = 4 * 1024;
 
 #[derive(Clone, Debug)]
 pub enum PendingCodexRequestKind {
@@ -139,7 +142,7 @@ async fn route_server_request(
     method: &str,
     params: Value,
 ) -> ChatResult<()> {
-    let provider_request_id = provider_request_id(&rpc_id)?;
+    let provider_request_id = provider_request_id(&resources.normalizer.session_id(), &rpc_id)?;
     let object = params
         .as_object()
         .ok_or_else(|| protocol_error("server request params"))?;
@@ -180,6 +183,7 @@ async fn route_server_request(
                 CanonicalRequestKind::CommandExecution,
                 title,
                 detail,
+                approval_display(method, object),
                 CodexApprovalResponse::Decision,
                 json!({
                     "hasCommandActions": object.get("commandActions").is_some(),
@@ -192,6 +196,7 @@ async fn route_server_request(
             CanonicalRequestKind::FileChange,
             "Apply file changes".to_string(),
             text(object, "reason").map(|value| bounded_text(value, MAX_REQUEST_TEXT_BYTES)),
+            approval_display(method, object),
             CodexApprovalResponse::Decision,
             json!({ "requestsAdditionalRoot": object.get("grantRoot").is_some() }),
         ),
@@ -206,6 +211,7 @@ async fn route_server_request(
                 CanonicalRequestKind::ToolInput,
                 "Grant requested permissions".to_string(),
                 text(object, "reason").map(|value| bounded_text(value, MAX_REQUEST_TEXT_BYTES)),
+                approval_display(method, object),
                 CodexApprovalResponse::Permissions {
                     requested: requested.clone(),
                 },
@@ -345,15 +351,72 @@ async fn deny_organizational_authority_escalation(
     Ok(true)
 }
 
+/// What a Codex approval panel shows besides the provider's title, and whether Allow for session
+/// may be offered.
+#[derive(Debug, PartialEq)]
+pub(super) struct CodexApprovalDisplay {
+    pub subject: Option<ApprovalSubject>,
+    pub session_grants: Vec<SessionPermissionGrant>,
+    pub allow_session: bool,
+}
+
+/// Builds the subject and session grants of a Codex approval from the request itself.
+///
+/// A command shows its text and working directory. A file change that names `grantRoot` asks for
+/// writes under that root for the rest of the session, so the root is shown as the subject and as
+/// the grant Allow for session gives; when the root cannot be shown in full, Allow for session is
+/// not offered.
+pub(super) fn approval_display(method: &str, object: &Map<String, Value>) -> CodexApprovalDisplay {
+    let mut display = CodexApprovalDisplay {
+        subject: None,
+        session_grants: Vec::new(),
+        allow_session: true,
+    };
+    match method {
+        "item/commandExecution/requestApproval" => {
+            display.subject = text(object, "command")
+                .filter(|command| !command.is_empty())
+                .map(|command| {
+                    let location = text(object, "cwd").filter(|cwd| !cwd.is_empty());
+                    ApprovalSubject {
+                        kind: ApprovalSubjectKind::Command,
+                        text: bounded_text(command, MAX_REQUEST_TEXT_BYTES),
+                        location: location.map(|cwd| bounded_text(cwd, MAX_REQUEST_TEXT_BYTES)),
+                        truncated: command.len() > MAX_REQUEST_TEXT_BYTES
+                            || location.is_some_and(|cwd| cwd.len() > MAX_REQUEST_TEXT_BYTES),
+                    }
+                });
+        }
+        "item/fileChange/requestApproval" => match object.get("grantRoot") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(root)) if !root.is_empty() && root.len() <= MAX_GRANT_ROOT_BYTES => {
+                display.subject = Some(ApprovalSubject {
+                    kind: ApprovalSubjectKind::Path,
+                    text: root.clone(),
+                    location: None,
+                    truncated: false,
+                });
+                display
+                    .session_grants
+                    .push(SessionPermissionGrant::Directory { path: root.clone() });
+            }
+            Some(_) => display.allow_session = false,
+        },
+        _ => {}
+    }
+    display
+}
+
 fn approval_request(
     request_id: &ProviderRequestId,
     kind: CanonicalRequestKind,
     title: String,
     detail: Option<String>,
+    display: CodexApprovalDisplay,
     response: CodexApprovalResponse,
     safe_payload: Value,
 ) -> (PendingCodexRequestKind, CanonicalEvent) {
-    let decisions = vec![
+    let decisions = [
         ("accept", "Allow once", ApprovalDecisionKind::AllowOnce),
         (
             "acceptForSession",
@@ -362,7 +425,12 @@ fn approval_request(
         ),
         ("decline", "Deny", ApprovalDecisionKind::Deny),
         ("cancel", "Cancel turn", ApprovalDecisionKind::Cancel),
-    ];
+    ]
+    .into_iter()
+    .filter(|(_, _, decision_kind)| {
+        display.allow_session || *decision_kind != ApprovalDecisionKind::AllowSession
+    })
+    .collect::<Vec<_>>();
     let allowed_provider_decisions = decisions
         .iter()
         .map(|(id, _, _)| (*id).to_string())
@@ -391,6 +459,8 @@ fn approval_request(
                 schema_version: 1,
                 value: safe_payload,
             },
+            subject: display.subject,
+            session_grants: display.session_grants,
         }),
     )
 }
@@ -629,7 +699,8 @@ async fn resolve_provider_cleared_request(
     let Some(raw_request_id) = object.get("requestId") else {
         return Ok(());
     };
-    let provider_request_id = provider_request_id(raw_request_id)?;
+    let provider_request_id =
+        provider_request_id(&resources.normalizer.session_id(), raw_request_id)?;
     let pending = resources
         .pending_requests
         .lock()
@@ -835,10 +906,17 @@ fn permission_summary(requested: &Value) -> Value {
     })
 }
 
-fn provider_request_id(id: &Value) -> ChatResult<ProviderRequestId> {
+/// Codex numbers server requests per app-server process, so the session keeps
+/// request IDs from different processes apart in the vault's pending requests.
+pub(super) fn provider_request_id(
+    session_id: &ProviderSessionId,
+    id: &Value,
+) -> ChatResult<ProviderRequestId> {
     let serialized = serde_json::to_vec(id).map_err(|_| protocol_error("request ID"))?;
     let mut digest = Sha256::new();
-    digest.update(b"ganbaru-codex-rpc-request-v1\0");
+    digest.update(b"ganbaru-codex-rpc-request-v2\0");
+    digest.update(session_id.as_str().as_bytes());
+    digest.update(b"\0");
     digest.update(serialized);
     ProviderRequestId::new(format!("codex-request-{:x}", digest.finalize()))
         .map_err(|_| protocol_error("request ID"))

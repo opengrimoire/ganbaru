@@ -268,13 +268,7 @@ fn database_buttons_require_confirmation_and_update_current_row_properties() {
         .await
         .unwrap();
 
-        let stored_properties: String =
-            sqlx::query_scalar("SELECT properties FROM notes_pages WHERE id = ?")
-                .bind(PAGE_B)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        let stored_json: serde_json::Value = serde_json::from_str(&stored_properties).unwrap();
+        let stored_json = stored_page_properties(&pool, PAGE_B).await;
         assert!(stored_json.get("Finish").is_none());
 
         let table =

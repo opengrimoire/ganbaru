@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{AssertSqlSafe, Row, Sqlite, SqlitePool, Transaction};
 
 use super::icalendar::load_component_jcal;
 use super::{DbCalendarEventRow, DbFullEventRow, DbFullOverrideRow};
+use crate::geo::{GeoUnits, geo_json};
 
 pub(super) async fn hydrate_window_event_rows(
     transaction: &mut Transaction<'_, Sqlite>,
@@ -42,6 +43,16 @@ pub(super) async fn hydrate_window_event_rows(
     Ok(())
 }
 
+/// Order of a list table: exclusion and added dates are sets keyed and ordered by their date,
+/// other lists keep their stored order.
+fn list_order(table: &str) -> &'static str {
+    match table {
+        "calendar_event_exdates" => "occurrence_date",
+        "calendar_event_rdates" => "occurrence_start",
+        _ => "sort_order",
+    }
+}
+
 async fn load_i64_list_map_tx(
     transaction: &mut Transaction<'_, Sqlite>,
     table: &'static str,
@@ -55,7 +66,7 @@ async fn load_i64_list_map_tx(
         "SELECT event_id, {column} AS value FROM {table}
          WHERE event_id IN ({placeholders}) ORDER BY event_id ASC, sort_order ASC"
     );
-    let mut query = sqlx::query(&query);
+    let mut query = sqlx::query(AssertSqlSafe(query.as_str()));
     for id in ids {
         query = query.bind(id);
     }
@@ -92,11 +103,12 @@ async fn load_string_list_map_tx(
     let placeholders = std::iter::repeat_n("?", ids.len())
         .collect::<Vec<_>>()
         .join(",");
+    let order = list_order(table);
     let query = format!(
         "SELECT event_id, {column} AS value FROM {table}
-         WHERE event_id IN ({placeholders}) ORDER BY event_id ASC, sort_order ASC"
+         WHERE event_id IN ({placeholders}) ORDER BY event_id ASC, {order} ASC"
     );
-    let mut query = sqlx::query(&query);
+    let mut query = sqlx::query(AssertSqlSafe(query.as_str()));
     for id in ids {
         query = query.bind(id);
     }
@@ -199,7 +211,7 @@ async fn load_i64_list_map(
          WHERE event_id IN ({placeholders})
          ORDER BY event_id ASC, sort_order ASC"
     );
-    let mut q = sqlx::query(&query);
+    let mut q = sqlx::query(AssertSqlSafe(query.as_str()));
     for id in ids {
         q = q.bind(id);
     }
@@ -260,12 +272,13 @@ async fn load_ordered_values(
     let placeholders = std::iter::repeat_n("?", ids.len())
         .collect::<Vec<_>>()
         .join(",");
+    let order = list_order(table);
     let query = format!(
         "SELECT event_id, {column} AS value FROM {table}
          WHERE event_id IN ({placeholders})
-         ORDER BY event_id ASC, sort_order ASC"
+         ORDER BY event_id ASC, {order} ASC"
     );
-    let mut q = sqlx::query(&query);
+    let mut q = sqlx::query(AssertSqlSafe(query.as_str()));
     for id in ids {
         q = q.bind(id);
     }
@@ -303,7 +316,7 @@ async fn load_property_map(
          WHERE {owner_column} IN ({placeholders})
          ORDER BY {owner_column} ASC, sort_order ASC"
     );
-    let mut q = sqlx::query(&query);
+    let mut q = sqlx::query(AssertSqlSafe(query.as_str()));
     for id in ids {
         q = q.bind(id);
     }
@@ -363,18 +376,14 @@ async fn load_geo(pool: &SqlitePool, event_id: &str) -> Result<Option<String>, S
     let Some(row) = row else {
         return Ok(None);
     };
-    let lat: Option<f64> = row
+    let lat: Option<i64> = row
         .try_get("geo_lat")
         .map_err(|e| format!("read geo_lat: {e}"))?;
-    let lng: Option<f64> = row
+    let lng: Option<i64> = row
         .try_get("geo_lng")
         .map_err(|e| format!("read geo_lng: {e}"))?;
     match (lat, lng) {
-        (Some(lat), Some(lng)) => {
-            serde_json::to_string(&serde_json::json!({ "lat": lat, "lng": lng }))
-                .map(Some)
-                .map_err(|e| format!("serialize geo: {e}"))
-        }
+        (Some(lat), Some(lng)) => geo_json(GeoUnits { lat, lng }).map(Some),
         _ => Ok(None),
     }
 }

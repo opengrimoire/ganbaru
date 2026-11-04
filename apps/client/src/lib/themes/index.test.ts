@@ -421,21 +421,22 @@ describe("luminance-driven canvas resolution", () => {
 });
 
 describe("generateThemeId", () => {
-  it("returns a unique ID not in the existing registry", () => {
-    const existing = { "theme-aaaaaa": darkTheme };
-    const id = generateThemeId(existing);
-    expect(existing).not.toHaveProperty(id);
-    expect(id.startsWith("theme-")).toBe(true);
+  it("returns distinct lowercase version 4 UUIDs that pass import validation", () => {
+    const first = generateThemeId();
+    const second = generateThemeId();
+    expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(first).not.toBe(second);
+    expect(validateThemeJson(buildV1Input({ id: first })).ok).toBe(true);
   });
 
-  it("uses the provided slug-shaped prefix", () => {
-    const id = generateThemeId({}, "midnight");
-    expect(id.startsWith("midnight-")).toBe(true);
+  it("lowercases the UUID source", () => {
+    expect(generateThemeId(() => "0A1B2C3D-0000-4000-8000-00000000000F")).toBe(
+      "0a1b2c3d-0000-4000-8000-00000000000f",
+    );
   });
 
-  it("falls back to the default prefix when given a non-slug prefix", () => {
-    const id = generateThemeId({}, "not a slug!");
-    expect(id.startsWith("theme-")).toBe(true);
+  it("rejects a source that does not produce a slug", () => {
+    expect(() => generateThemeId(() => "not a slug!")).toThrow();
   });
 });
 

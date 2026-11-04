@@ -80,6 +80,19 @@
 
   onDestroy(clearToastTimer);
 
+  // Report an editor save that became a new theme instead of updating the edited one.
+  $effect(() => {
+    if (!themeEditor.saveNotice) return;
+    const notice = themeEditor.takeSaveNotice();
+    if (!notice) return;
+    showToast(
+      notice.reason === "deleted"
+        ? t("settings.theme.editor.savedAsCopyAfterDelete", notice.displayName)
+        : t("settings.theme.editor.savedAsCopy", notice.displayName),
+      "success",
+    );
+  });
+
   function handleApply(id: ThemeId) {
     themeStore.setTheme(id);
   }
@@ -279,6 +292,7 @@
           {theme}
           isActive={theme.id === themeStore.id}
           isBuiltin={themeStore.isBuiltin(theme.id)}
+          hasConflict={themeStore.hasConflict(theme.id)}
           onApply={() => handleApply(theme.id)}
           onOpen={() => handleOpen(theme.id)}
           onDuplicate={() => handleDuplicate(theme.id)}

@@ -63,7 +63,12 @@ const PROTECTED_DESKTOP_APP_NAMES: &[&str] = &[
 ];
 const PROTECTED_DESKTOP_PROCESS_NAMES: &[&str] = &[
     "Activity Monitor",
+    "alacritty",
+    "awesome",
     "bash",
+    "bspwm",
+    "cinnamon",
+    "cinnamon-session",
     "cmd",
     "cmd.exe",
     "conhost.exe",
@@ -74,33 +79,59 @@ const PROTECTED_DESKTOP_PROCESS_NAMES: &[&str] = &[
     "dbus-daemon",
     "dllhost.exe",
     "Dock",
+    "dwm",
     "dwm.exe",
     "electron",
     "explorer.exe",
     "Finder",
     "fish",
     "flatpak",
+    "fluxbox",
+    "foot",
+    "fvwm",
+    "fvwm3",
+    "ghostty",
     "gnome-control-center",
     "gnome-keyring-daemon",
+    "gnome-session-binary",
     "gnome-shell",
     "gnome-terminal",
     "gnome-terminal-server",
+    "gpg-agent",
+    "herbstluftwm",
+    "Hyprland",
+    "i3",
     "ibus-daemon",
+    "icewm",
+    "icewm-session",
     "java",
     "javaw",
     "javaw.exe",
+    "kgx",
     "kitty",
     "konsole",
     "kwin_wayland",
     "kwin_x11",
+    "labwc",
     "launchd",
     "loginwindow",
+    "lxqt-session",
+    "lxsession",
+    "marco",
+    "mate-session",
+    "mate-terminal",
     "mmc.exe",
     "mutter",
+    "niri",
     "node",
+    "openbox",
+    "pipewire",
+    "pipewire-pulse",
     "plasmashell",
     "PowerShell",
     "powershell.exe",
+    "ptyxis",
+    "pulseaudio",
     "pwsh",
     "pwsh.exe",
     "python",
@@ -108,28 +139,46 @@ const PROTECTED_DESKTOP_PROCESS_NAMES: &[&str] = &[
     "python3.11",
     "python3.12",
     "pythonw.exe",
+    "qtile",
     "regedit.exe",
+    "river",
     "rundll32.exe",
+    "screen",
     "services.exe",
     "sh",
     "ShellExperienceHost.exe",
     "sihost.exe",
     "snap",
+    "ssh-agent",
+    "sshd",
     "StartMenuExperienceHost.exe",
     "svchost.exe",
+    "sway",
     "System Settings",
+    "systemd",
     "SystemUIServer",
     "taskmgr.exe",
     "Terminal",
+    "terminator",
+    "tilix",
+    "tmux",
+    "wayfire",
+    "weston",
     "wezterm",
-    "winlogon.exe",
-    "WindowsTerminal.exe",
     "WindowServer",
-    "wt.exe",
+    "WindowsTerminal.exe",
+    "winlogon.exe",
+    "wireplumber",
     "wscript.exe",
+    "wt.exe",
     "xdg-desktop-portal",
     "xdg-desktop-portal-gnome",
     "xdg-desktop-portal-gtk",
+    "xfce4-session",
+    "xfce4-terminal",
+    "xfdesktop",
+    "xfwm4",
+    "xmonad",
     "Xorg",
     "XTerm",
     "Xwayland",
@@ -146,6 +195,41 @@ pub fn is_protected_desktop_app_name(name: &str) -> bool {
         .iter()
         .chain(PROTECTED_DESKTOP_PROCESS_NAMES.iter())
         .any(|protected_name| app_name_key(protected_name) == key)
+}
+
+/// Linux keeps at most this many bytes of a process name in `/proc/<pid>/comm`.
+pub const LINUX_COMM_NAME_BYTES: usize = 15;
+
+/// Checks a name observed on a running process. A name of exactly [`LINUX_COMM_NAME_BYTES`] bytes
+/// can be a truncated `comm`, so it is protected when a protected name begins with it.
+pub fn is_protected_observed_process_name(name: &str) -> bool {
+    if is_protected_desktop_app_name(name) {
+        return true;
+    }
+    let key = app_name_key(name);
+    key.len() == LINUX_COMM_NAME_BYTES
+        && PROTECTED_DESKTOP_APP_NAMES
+            .iter()
+            .chain(PROTECTED_DESKTOP_PROCESS_NAMES.iter())
+            .any(|protected_name| app_name_key(protected_name).starts_with(&key))
+}
+
+/// Keeps the configured match names a rule can vouch for: aliases of the rule's own name, which
+/// Settings shows, and process names the installed app catalog lists for an app with that name.
+/// Other names are dropped, so a rule cannot target a process hidden behind an unrelated name.
+pub fn trusted_process_match_names(
+    name: &str,
+    configured: Vec<String>,
+    catalog_process_names: &[String],
+) -> Vec<String> {
+    let trusted_keys = normalize_process_match_names(name, catalog_process_names.to_vec())
+        .iter()
+        .map(|trusted| app_name_key(trusted))
+        .collect::<HashSet<_>>();
+    normalize_process_match_names(name, configured)
+        .into_iter()
+        .filter(|configured| trusted_keys.contains(&app_name_key(configured)))
+        .collect()
 }
 
 pub fn is_protected_desktop_app_candidate(app: &DistractionsDesktopAppCandidate) -> bool {
@@ -333,7 +417,10 @@ pub fn validate_foreground_status_is_closeable(
     {
         return Err("refusing to close protected foreground app".to_string());
     }
-    if names.iter().any(|name| is_protected_desktop_app_name(name)) {
+    if names
+        .iter()
+        .any(|name| is_protected_observed_process_name(name))
+    {
         return Err("refusing to close protected foreground app".to_string());
     }
     Ok(())
@@ -351,17 +438,16 @@ pub fn desktop_rule_matchers(
             continue;
         }
         let rule_identity = match &app.rule_identity {
-            DistractionsDesktopRuleIdentity::DesktopApp { rule_id } => {
-                let Some(rule_id) = normalize_app_candidate_name(rule_id) else {
-                    continue;
-                };
-                if app_name_key(&rule_id) != app_name_key(&app_name) {
-                    continue;
+            // The stored identity stays exact because close authorization finds the rule by it,
+            // so only an empty identity is skipped and Settings shows every enforced row.
+            DistractionsDesktopRuleIdentity::DesktopApp { rule_id } if !rule_id.is_empty() => {
+                DistractionsDesktopRuleIdentity::DesktopApp {
+                    rule_id: rule_id.clone(),
                 }
-                DistractionsDesktopRuleIdentity::DesktopApp { rule_id }
             }
+            DistractionsDesktopRuleIdentity::DesktopApp { .. } => continue,
             DistractionsDesktopRuleIdentity::UsageLimit { rule_id, entry_id }
-                if !rule_id.trim().is_empty() && !entry_id.trim().is_empty() =>
+                if !rule_id.is_empty() && !entry_id.is_empty() =>
             {
                 DistractionsDesktopRuleIdentity::UsageLimit {
                     rule_id: rule_id.clone(),

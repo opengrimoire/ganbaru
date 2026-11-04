@@ -4,15 +4,17 @@
   import Bath from "@lucide/svelte/icons/bath";
   import Bed from "@lucide/svelte/icons/bed";
   import Bike from "@lucide/svelte/icons/bike";
+  import BriefcaseBusiness from "@lucide/svelte/icons/briefcase-business";
   import BookOpen from "@lucide/svelte/icons/book-open";
   import Clapperboard from "@lucide/svelte/icons/clapperboard";
   import Folder from "@lucide/svelte/icons/folder";
   import GraduationCap from "@lucide/svelte/icons/graduation-cap";
   import Heart from "@lucide/svelte/icons/heart";
+  import Layers from "@lucide/svelte/icons/layers";
   import Pill from "@lucide/svelte/icons/pill";
   import Repeat from "@lucide/svelte/icons/repeat";
   import ShoppingCart from "@lucide/svelte/icons/shopping-cart";
-  import Smile from "@lucide/svelte/icons/smile";
+  import Smile from "@lucide/svelte/icons/face-slightly-smiling";
   import { projectIconAssetUrl } from "$lib/api/project-icons";
   import { getEventColor } from "$lib/calendar/utils";
   import {
@@ -47,11 +49,13 @@
     bath: Bath,
     bed: Bed,
     bike: Bike,
+    "briefcase-business": BriefcaseBusiness,
     "book-open": BookOpen,
     clapperboard: Clapperboard,
     folder: Folder,
     "graduation-cap": GraduationCap,
     heart: Heart,
+    layers: Layers,
     pill: Pill,
     repeat: Repeat,
     "shopping-cart": ShoppingCart,

@@ -96,4 +96,57 @@ describe("YouTube source resolver", () => {
     )).rejects.toThrow("cancelled");
     expect(mountFrame).not.toHaveBeenCalled();
   });
+
+  it("resolves through a hidden native host without mounting a frame", async () => {
+    const source = youtubeVideoSourceFromId("abcDEF_1234");
+    const mountFrame = vi.fn();
+    const addMessageListener = vi.fn();
+    const close = vi.fn(async () => undefined);
+    let openedUrl = "";
+    let visible: boolean | null = null;
+    const preview = await resolveMusicYouTubeSource(source, new AbortController().signal, 1_000, {
+      ...dependencies({}),
+      mountFrame,
+      addMessageListener,
+      nativeHost: (onData) => ({
+        open: async (url, bounds) => {
+          openedUrl = url;
+          visible = bounds.visible;
+          const load = new URL(url).searchParams.get("load");
+          queueMicrotask(() => {
+            onData({ token: "token-1", load: "0", type: "ganbaru-youtube-state", status: "paused", positionMs: 0, durationMs: 1, videoId: "abcDEF_1234", title: "Stale", channel: "" });
+            onData({ token: "token-1", load, type: "ganbaru-youtube-state", status: "paused", positionMs: 0, durationMs: 95_000, videoId: "abcDEF_1234", title: "Native title", channel: "Composer" });
+          });
+        },
+        setBounds: async () => undefined,
+        post: () => undefined,
+        close,
+      }),
+    });
+    expect(preview).toMatchObject({ title: "Native title", durationMs: 95_000 });
+    expect(new URL(openedUrl).searchParams.get("token")).toBe("token-1");
+    expect(visible).toBe(false);
+    expect(close).toHaveBeenCalledOnce();
+    expect(mountFrame).not.toHaveBeenCalled();
+    expect(addMessageListener).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the native host cannot open", async () => {
+    const close = vi.fn(async () => undefined);
+    await expect(resolveMusicYouTubeSource(
+      youtubeVideoSourceFromId("abcDEF_1234"),
+      new AbortController().signal,
+      1_000,
+      {
+        ...dependencies({}),
+        nativeHost: () => ({
+          open: async () => { throw new Error("WebView messaging is unavailable"); },
+          setBounds: async () => undefined,
+          post: () => undefined,
+          close,
+        }),
+      },
+    )).rejects.toThrow("WebView messaging is unavailable");
+    expect(close).toHaveBeenCalledOnce();
+  });
 });

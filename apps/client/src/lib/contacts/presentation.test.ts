@@ -24,10 +24,9 @@ const contact: Contact = {
 };
 
 describe("contactsMutationErrorKey", () => {
-  it("maps ownership and revision failures to their own sentences", () => {
+  it("maps missing identity and revision failures to their own sentences", () => {
     expect(contactsMutationErrorKey("revision_conflict")).toBe("revisionConflict");
-    expect(contactsMutationErrorKey("read_only")).toBe("readOnly");
-    expect(contactsMutationErrorKey("identity_unavailable")).toBe("readOnly");
+    expect(contactsMutationErrorKey("identity_unavailable")).toBe("identityPending");
     expect(contactsMutationErrorKey("invalid_card")).toBe("failed");
   });
 });

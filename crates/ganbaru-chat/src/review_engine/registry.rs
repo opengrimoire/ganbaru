@@ -10,6 +10,8 @@ use super::contracts::*;
 use super::patch_store::{PatchIndex, ReviewObjectStore, read_patch_page};
 use super::selection::{select_provider_patch_lines, select_text_range};
 use super::{corrupt_data_error, registry_error, review_output};
+use crate::git::GitFolder;
+use crate::git::hardened::GitFolderTrust;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::collections::{HashMap, VecDeque};
@@ -53,6 +55,9 @@ pub struct ReviewSnapshot {
     pub working_folder_id: ProjectWorkingFolderId,
     pub environment_id: String,
     pub root: PathBuf,
+    /// Folder trust when the snapshot was opened. Mutations use the trust
+    /// from their own authorization instead.
+    pub git_trust: GitFolderTrust,
     pub source: ReviewDiffSource,
     pub source_label: String,
     pub before_oid: Option<String>,
@@ -64,6 +69,13 @@ pub struct ReviewSnapshot {
     pub patch_cache: tokio::sync::Mutex<HashMap<String, Arc<PatchIndex>>>,
     pub object_store: Option<Arc<ReviewObjectStore>>,
     pub created_at: Instant,
+}
+
+impl ReviewSnapshot {
+    /// Returns the snapshot folder as a Git run target with its opening trust.
+    pub fn git_folder(&self) -> GitFolder<'_> {
+        GitFolder::new(&self.root, self.git_trust)
+    }
 }
 
 #[derive(Clone)]
@@ -241,7 +253,7 @@ impl ChatReviewRegistry {
             let object = format!("{oid}:{path}");
             let contents = String::from_utf8(
                 review_output(
-                    &snapshot.root,
+                    snapshot.git_folder(),
                     &["cat-file", "blob", &object],
                     None,
                     snapshot.object_store.as_deref(),

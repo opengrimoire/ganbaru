@@ -43,6 +43,16 @@ export const pomodoroNotification = {
   startScheduledSession: "Start scheduled session",
   noCommitmentDue: "No focus session is due. Schedule one in Calendar.",
   startFailed: "The session could not be saved. Try starting it again.",
+  activityOtherDevice: "Another device",
+  activityFocusing: (device: string, event: string | null) =>
+    event ? `${device} is focusing on ${event}` : `${device} is focusing`,
+  activityOnBreak: (device: string, event: string | null) =>
+    event ? `${device} is on a break from ${event}` : `${device} is on a break`,
+  activityPaused: (device: string, event: string | null) =>
+    event ? `${device} paused ${event}` : `${device} paused focus`,
+  startElsewhereQuestion: "Start here as well?",
+  startAnyway: "Start anyway",
+  cancelStart: "Cancel",
   commitmentDueTitle: "Focus session due",
   commitmentDueText: "Your scheduled session is due. Open Ganbaru when you are ready to start.",
   channelName: "Focus sessions",

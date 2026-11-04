@@ -26,8 +26,8 @@ vi.mock("$lib/stores/projects.svelte", () => {
 
 const PROJECT_ID = "project-a";
 
-function view(id: string, viewType: ProjectViewType, sortOrder: number, name?: string): ProjectView {
-  return { id, projectId: PROJECT_ID, viewType, sortOrder, name, createdAt: "", updatedAt: "" };
+function view(id: string, viewType: ProjectViewType, orderKey: string, name?: string): ProjectView {
+  return { id, projectId: PROJECT_ID, viewType, orderKey, name, createdAt: "", updatedAt: "" };
 }
 
 let target: HTMLDivElement;
@@ -57,7 +57,7 @@ function openMenu(): HTMLElement | null {
 beforeEach(() => {
   target = document.createElement("div");
   document.body.append(target);
-  store.views = [view("overview", "dashboard", 1000), view("list", "list", 2000, "Backlog"), view("notes", "notes", 3000)];
+  store.views = [view("overview", "dashboard", "1000"), view("list", "list", "2000", "Backlog"), view("notes", "notes", "3000")];
   store.hostableViewTypes = ["notes", "chat"];
   store.activeViewId = "list";
   store.addView.mockReset();
@@ -155,7 +155,7 @@ describe("ProjectMobileViewSwitcher", () => {
     expect(menu?.querySelector('[data-project-add-view="chat"]')).not.toBeNull();
 
     store.addView.mockImplementation((projectId: string, viewType: ProjectViewType) => {
-      store.views = [...store.views, { ...view("added", viewType, 4000), projectId }];
+      store.views = [...store.views, { ...view("added", viewType, "4000"), projectId }];
       return Promise.resolve("added");
     });
     menu?.querySelector<HTMLButtonElement>('[data-project-add-view="kanban"]')?.click();

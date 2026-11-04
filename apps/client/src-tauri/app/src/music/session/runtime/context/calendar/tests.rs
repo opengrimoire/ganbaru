@@ -111,7 +111,7 @@ async fn native_music_calendar_consumes_canonical_recurrence_without_reintroduci
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO calendar_event_exdates(id, event_id, sort_order, occurrence_date) VALUES ('excluded', 'series', 0, '2026-10-04')")
+    sqlx::query("INSERT INTO calendar_event_exdates(id, event_id, occurrence_date) VALUES ('excluded', 'series', '2026-10-04')")
         .execute(&pool).await.unwrap();
     let projected = project(&pool, window).await;
     assert!(

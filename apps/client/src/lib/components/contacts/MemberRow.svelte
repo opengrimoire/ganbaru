@@ -17,7 +17,7 @@
 
 <li class="member-row">
   {@render avatar()}
-  <span class="member-name">{name}</span>
+  <span class="member-name" dir="auto">{name}</span>
   {#if detail}<span class="member-detail">{detail}</span>{/if}
   {#if trailing}<span class="member-trailing">{@render trailing()}</span>{/if}
 </li>

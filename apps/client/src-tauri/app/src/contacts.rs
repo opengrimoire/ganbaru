@@ -11,7 +11,6 @@ pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 
-use crate::db::connect_sqlite;
 use crate::vault::handoff::protocol::QrMatrix;
 use ganbaru_contacts::TrustKind;
 use serde::{Deserialize, Serialize};
@@ -35,8 +34,6 @@ pub enum ContactsError {
     CardRevoked(String),
     /// The recipient could not be reached through the hint in the card.
     RecipientUnreachable(String),
-    /// The vault is read-only on this device.
-    ReadOnly(String),
     /// The row changed since the frontend last read it.
     RevisionConflict(String),
     Failed(String),
@@ -58,7 +55,6 @@ impl ContactsError {
             | Self::InvalidCard(message)
             | Self::CardRevoked(message)
             | Self::RecipientUnreachable(message)
-            | Self::ReadOnly(message)
             | Self::RevisionConflict(message)
             | Self::Failed(message) => message,
         }
@@ -199,22 +195,65 @@ pub struct UpdateTrustRequest {
 }
 
 pub(crate) async fn contacts_pool<R: Runtime>(app: &AppHandle<R>) -> Result<SqlitePool, String> {
-    connect_sqlite(
-        app.clone(),
-        format!("sqlite:{}", crate::vault::APP_SQLITE_FILE),
-    )
-    .await
+    crate::db::connect_vault(app).await
 }
 
-fn require_writable<R: Runtime>(app: &AppHandle<R>) -> Result<(), ContactsError> {
-    let status = crate::vault::ownership::active_status(app)?;
-    if status.can_write {
-        Ok(())
-    } else {
-        Err(ContactsError::ReadOnly(
-            "the vault is read-only on this device".to_string(),
-        ))
+/// Whether the active vault holds a person identity, so a card handed out earlier may name
+/// this device. Only the identity row is read, never the keyring. A vault database that exists
+/// but cannot be read counts as holding one, so requests keep arriving.
+#[cfg(desktop)]
+pub(crate) async fn person_identity_exists<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let Ok(database) = crate::vault::active_database_path(app) else {
+        return false;
+    };
+    if !database.is_file() {
+        return false;
     }
+    match contacts_pool(app).await {
+        Ok(pool) => identity::load_identity_row(&pool)
+            .await
+            .map_or(true, |row| row.is_some()),
+        Err(_) => true,
+    }
+}
+
+/// Starts the listener a contact card names before the card is signed, on a desktop that
+/// coordinates its own devices. Without a LAN address the card stays unreachable, as before.
+async fn ensure_card_endpoint<R: Runtime>(app: &AppHandle<R>) {
+    #[cfg(desktop)]
+    if let Err(error) = crate::vault::handoff::ensure_desktop_coordinator(app).await {
+        eprintln!("contact card delivery listener is unavailable: {error}");
+    }
+    #[cfg(not(desktop))]
+    let _ = app;
+}
+
+/// Views of the rows that can be shown. A row can arrive through sync, so one that cannot be
+/// read is skipped and logged and leaves the rest of the list usable.
+fn request_views(rows: &[store::RequestRow]) -> Vec<ContactRequestView> {
+    rows.iter()
+        .filter_map(|row| {
+            row.view()
+                .inspect_err(|error| {
+                    eprintln!("skipping unreadable contact request {:?}: {error}", row.id);
+                })
+                .ok()
+        })
+        .collect()
+}
+
+/// Views of the contacts that can be shown. A snapshot copy can hold a row no adapter checked,
+/// so one that cannot be read is skipped and logged and leaves the rest of the list usable.
+/// Authorization reads rows directly, so a skipped block still applies.
+fn contact_views(rows: Vec<store::ContactRow>) -> Vec<ContactView> {
+    rows.into_iter()
+        .filter_map(|row| {
+            let id = row.id.clone();
+            row.view()
+                .inspect_err(|error| eprintln!("skipping unreadable contact {id:?}: {error}"))
+                .ok()
+        })
+        .collect()
 }
 
 async fn snapshot<R: Runtime>(
@@ -224,16 +263,8 @@ async fn snapshot<R: Runtime>(
     let identity = identity::load_identity(app, pool)
         .await?
         .map(|identity| identity.view());
-    let contacts = store::list_contacts(pool)
-        .await?
-        .into_iter()
-        .map(store::ContactRow::view)
-        .collect::<Result<Vec<_>, _>>()?;
-    let requests = store::list_requests(pool)
-        .await?
-        .iter()
-        .map(store::RequestRow::view)
-        .collect::<Result<Vec<_>, _>>()?;
+    let contacts = contact_views(store::list_contacts(pool).await?);
+    let requests = request_views(&store::list_pending_requests(pool, store::now()).await?);
     Ok(ContactsSnapshot {
         identity,
         contacts,
@@ -253,20 +284,21 @@ pub async fn contacts_list<R: Runtime>(
 pub async fn contacts_local_card<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<LocalCardView, ContactsError> {
+    ensure_card_endpoint(&app).await;
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
-    card::local_card_view(&app, &identity)
+    card::local_card_view(&app, &identity).await
 }
 
 #[tauri::command]
 pub async fn contacts_regenerate_card<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<LocalCardView, ContactsError> {
-    require_writable(&app)?;
+    ensure_card_endpoint(&app).await;
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
     let identity = card::rotate_card(&pool, identity).await?;
-    card::local_card_view(&app, &identity)
+    card::local_card_view(&app, &identity).await
 }
 
 #[tauri::command]
@@ -280,16 +312,19 @@ pub async fn contacts_parse_card<R: Runtime>(
     let identity = identity::load_identity(&app, &pool).await?;
     let public_key = signed.card.public_key.to_text();
     let existing = store::contact_by_key(&pool, &public_key).await?;
-    let pending_sent = store::pending_request(&pool, RequestDirection::Sent, &public_key)
-        .await?
-        .is_some();
+    let pending_sent =
+        store::pending_request(&pool, RequestDirection::Sent, &public_key, store::now())
+            .await?
+            .is_some();
     Ok(ParsedCardView {
         display_name: signed.card.display_name.clone(),
         color: signed.card.color,
         verification_code: signed.verification_code(),
         contact_id: signed.card.public_key.contact_id(),
-        has_endpoint: !signed.card.endpoint_hint.is_empty()
-            && signed.card.coordinator_fingerprint.is_some(),
+        has_endpoint: signed.card.coordinator_fingerprint.is_some()
+            && signed.card.endpoint_hint.parse().is_ok_and(|endpoint| {
+                ganbaru_handoff::dial::validate_dial_endpoint(endpoint).is_ok()
+            }),
         is_self: identity.is_some_and(|identity| identity.public_key == signed.card.public_key),
         existing_state: existing.and_then(|row| ContactState::parse(&row.state)),
         pending_sent,
@@ -311,7 +346,7 @@ pub async fn contacts_send_request<R: Runtime>(
     app: AppHandle<R>,
     request: SendContactRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
+    ensure_card_endpoint(&app).await;
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
     requests::send_request(
@@ -331,7 +366,6 @@ pub async fn contacts_accept_request<R: Runtime>(
     app: AppHandle<R>,
     request: AcceptContactRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     requests::accept_request(
         &pool,
@@ -350,7 +384,6 @@ pub async fn contacts_decline_request<R: Runtime>(
     app: AppHandle<R>,
     request: RowRevision,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     requests::close_request(
         &pool,
@@ -368,7 +401,6 @@ pub async fn contacts_cancel_request<R: Runtime>(
     app: AppHandle<R>,
     request: RowRevision,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     requests::close_request(
         &pool,
@@ -386,7 +418,6 @@ pub async fn contacts_block<R: Runtime>(
     app: AppHandle<R>,
     request: BlockPersonRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     requests::block_person(&pool, &request.public_key, store::now()).await?;
     snapshot(&app, &pool).await
@@ -397,7 +428,6 @@ pub async fn contacts_unblock<R: Runtime>(
     app: AppHandle<R>,
     request: RowRevision,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     remove_contact_in_state(
         &pool,
@@ -414,7 +444,6 @@ pub async fn contacts_remove<R: Runtime>(
     app: AppHandle<R>,
     request: RowRevision,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     remove_contact_in_state(
         &pool,
@@ -431,7 +460,6 @@ pub async fn contacts_update_trust<R: Runtime>(
     app: AppHandle<R>,
     request: UpdateTrustRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     let now = store::now();
     let updated = store::update_contact_trust(
@@ -458,7 +486,7 @@ pub async fn contacts_sync_requests<R: Runtime>(
     let pool = contacts_pool(&app).await?;
     if let Some(identity) = identity::load_identity(&app, &pool).await?
         && identity.key.is_some()
-        && crate::vault::ownership::active_status(&app)?.can_write
+        && !requests::follows_coordinator(&app)?
     {
         requests::poll_sent_requests(&pool, &identity).await?;
     }
@@ -516,7 +544,7 @@ async fn remove_contact_in_state(
     expected_revision: i64,
     state: ContactState,
 ) -> Result<(), ContactsError> {
-    let removed = store::delete_contact(pool, id, expected_revision, state).await?;
+    let removed = store::remove_contact(pool, id, expected_revision, state, store::now()).await?;
     if removed {
         Ok(())
     } else {

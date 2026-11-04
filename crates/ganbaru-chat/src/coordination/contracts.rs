@@ -94,7 +94,10 @@ pub struct ChatFolderGrantInput {
 pub struct ChatTeammateChannelAccessInput {
     pub channel_id: ChatChannelId,
     pub access_profile_id: ChatAccessProfileId,
-    pub access_profile_revision: u64,
+    /// Effective profile revision the draft was made against. Saving refuses a draft whose
+    /// profile now has another effective revision, which a synced pointer can name even when it
+    /// is older than the one the draft saw.
+    pub access_profile_revision_id: ChatAccessProfileRevisionId,
     pub capabilities: ChatChannelCapabilities,
     pub history_boundary: ChatHistoryBoundary,
     pub runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
@@ -108,7 +111,6 @@ pub struct ChatTeammateChannelAccessInput {
 pub struct PreviewChatTeammateAccessCommand {
     pub teammate_id: ChatParticipantId,
     pub expected_access_revision: u64,
-    pub teammate_default_runtime_approval: ChatRuntimeApprovalPolicy,
     #[serde(default)]
     pub channels: Vec<ChatTeammateChannelAccessInput>,
     #[serde(default)]
@@ -122,7 +124,6 @@ pub struct PreviewChatTeammateAccessCommand {
 pub struct ReplaceChatTeammateAccessCommand {
     pub teammate_id: ChatParticipantId,
     pub expected_access_revision: u64,
-    pub teammate_default_runtime_approval: ChatRuntimeApprovalPolicy,
     #[serde(default)]
     pub channels: Vec<ChatTeammateChannelAccessInput>,
     #[serde(default)]
@@ -322,7 +323,6 @@ mod tests {
         let payload = json!({
             "teammateId": "teammate:reviewer",
             "expectedAccessRevision": 4,
-            "teammateDefaultRuntimeApproval": "ask",
             "channels": [],
             "teammateProfile": {
                 "teammateId": "teammate:reviewer",

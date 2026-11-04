@@ -1,0 +1,342 @@
+//! The device-local peer book: where the other members of a vault last listened.
+//!
+//! The book only holds address hints. Which devices are members, and which certificate each must
+//! present, always comes from the selected authorization log, so the book is rebuilt against the
+//! log on every pass and a stale or tampered entry can at worst make a dial fail.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+use ganbaru_atomic_files::{
+    FileAccess, FinalSymlink, create_private_directories, read_regular_file_capped,
+    write_file_atomically,
+};
+use ganbaru_handoff::protocol::{
+    MAX_COORDINATOR_ENDPOINTS, MAX_MEMBER_ENDPOINTS, MemberEndpoint, validate_coordinator_endpoint,
+    validate_identifier,
+};
+use serde::{Deserialize, Serialize};
+
+const PEER_BOOK_SCHEMA_VERSION: u32 = 2;
+
+/// Most endpoints the book keeps across all members, the most a sync state reports.
+pub const MAX_PEER_ENDPOINTS: usize = MAX_MEMBER_ENDPOINTS;
+
+/// Most endpoints the book keeps for one member, the most one listener reports.
+pub const MAX_ENDPOINTS_PER_PEER: usize = MAX_COORDINATOR_ENDPOINTS;
+
+/// Largest peer book file this installation writes or reads.
+pub const MAX_PEER_BOOK_BYTES: usize = 16 * 1024;
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PeerBookFile {
+    schema_version: u32,
+    endpoints: Vec<PeerBookEntry>,
+}
+
+/// How much newer an observation of a known endpoint must be to replace the recorded one, so
+/// every hello of a member does not rewrite the file.
+pub const OBSERVATION_STEP_MS: u64 = 60_000;
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PeerBookEntry {
+    device_id: String,
+    endpoint: String,
+    observed_ms: u64,
+    first_hand: bool,
+}
+
+/// When an endpoint was last seen, and whether the member itself announced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Observation {
+    observed_ms: u64,
+    /// The member's own hello named the endpoint, rather than another member's report.
+    first_hand: bool,
+}
+
+/// The member endpoints of one vault, keyed by device and endpoint with the newest observation.
+///
+/// Observation times are local: a member's own hello is recorded at receipt, and a time another
+/// member reports is clamped to when the report arrived, so no reporter can date an endpoint in
+/// the future. Endpoints a member announced itself outrank reported ones when the bounds evict.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PeerEndpoints {
+    entries: BTreeMap<(String, String), Observation>,
+}
+
+impl PeerEndpoints {
+    /// Records that `device_id` itself announced listening on `endpoints`, received at
+    /// `received_ms`. Endpoints that fail the dial policy are dropped. Returns whether the book
+    /// changed.
+    pub fn observe(&mut self, device_id: &str, endpoints: &[String], received_ms: u64) -> bool {
+        let observation = Observation {
+            observed_ms: received_ms,
+            first_hand: true,
+        };
+        self.record_all(
+            endpoints
+                .iter()
+                .take(MAX_ENDPOINTS_PER_PEER)
+                .map(|endpoint| (device_id, endpoint.as_str(), observation)),
+        )
+    }
+
+    /// Records the endpoints a sync state reported for `members`, the live members of the
+    /// selected log, received at `received_ms`. Entries for other devices are dropped before the
+    /// bounds apply, so invented device ids cannot evict real endpoints. A reported time later
+    /// than the receipt is clamped to it, and a report never replaces an endpoint the member
+    /// announced itself. Returns whether the book changed.
+    pub fn observe_reported(
+        &mut self,
+        reported: &[MemberEndpoint],
+        members: &BTreeSet<String>,
+        received_ms: u64,
+    ) -> bool {
+        let live = reported
+            .iter()
+            .filter(|member| members.contains(&member.device_id));
+        self.record_all(live.map(|member| {
+            let observation = Observation {
+                observed_ms: member.observed_ms.min(received_ms),
+                first_hand: false,
+            };
+            (
+                member.device_id.as_str(),
+                member.endpoint.as_str(),
+                observation,
+            )
+        }))
+    }
+
+    /// Records observations, then trims to the bounds. Returns whether the book changed.
+    fn record_all<'a>(
+        &mut self,
+        observations: impl Iterator<Item = (&'a str, &'a str, Observation)>,
+    ) -> bool {
+        let before = self.entries.clone();
+        let mut recorded = false;
+        for (device_id, endpoint, observation) in observations {
+            recorded |= self.record(device_id, endpoint, observation);
+        }
+        if !recorded {
+            return false;
+        }
+        self.trim();
+        self.entries != before
+    }
+
+    /// Records one observation without trimming. Returns whether the entry changed.
+    fn record(&mut self, device_id: &str, endpoint: &str, observation: Observation) -> bool {
+        if validate_identifier("peer device id", device_id).is_err()
+            || validate_coordinator_endpoint(endpoint).is_err()
+        {
+            return false;
+        }
+        let key = (device_id.to_string(), endpoint.to_string());
+        let Some(slot) = self.entries.get_mut(&key) else {
+            self.entries.insert(key, observation);
+            return true;
+        };
+        let replaces = match (slot.first_hand, observation.first_hand) {
+            (true, false) => false,
+            (false, true) => observation.observed_ms >= slot.observed_ms,
+            _ => observation.observed_ms >= slot.observed_ms.saturating_add(OBSERVATION_STEP_MS),
+        };
+        if replaces {
+            *slot = observation;
+        }
+        replaces
+    }
+
+    /// Keeps only the endpoints of `members`, the devices the selected log enrolled and did not
+    /// remove. Returns whether the book changed.
+    pub fn retain_members(&mut self, members: &BTreeSet<String>) -> bool {
+        let before = self.entries.len();
+        self.entries
+            .retain(|(device_id, _), _| members.contains(device_id));
+        self.entries.len() != before
+    }
+
+    /// The endpoints of `device_id` in dial order: those the member announced itself before
+    /// those another member reported, newest first within each.
+    pub fn endpoints(&self, device_id: &str) -> Vec<String> {
+        let mut found: Vec<(&String, Observation)> = self
+            .entries
+            .iter()
+            .filter(|((device, _), _)| device == device_id)
+            .map(|((_, endpoint), observed)| (endpoint, *observed))
+            .collect();
+        found.sort_by(|left, right| {
+            (right.1.first_hand, right.1.observed_ms)
+                .cmp(&(left.1.first_hand, left.1.observed_ms))
+                .then_with(|| left.0.cmp(right.0))
+        });
+        found
+            .into_iter()
+            .map(|(endpoint, _)| endpoint.clone())
+            .collect()
+    }
+
+    /// The members the book holds endpoints for.
+    pub fn devices(&self) -> BTreeSet<String> {
+        self.entries
+            .keys()
+            .map(|(device_id, _)| device_id.clone())
+            .collect()
+    }
+
+    /// The endpoints a hub reports in its sync state: newest first, at most
+    /// [`MAX_PEER_ENDPOINTS`].
+    pub fn report(&self) -> Vec<MemberEndpoint> {
+        self.newest_first()
+            .into_iter()
+            .take(MAX_PEER_ENDPOINTS)
+            .map(|((device_id, endpoint), observed_ms)| MemberEndpoint {
+                device_id: device_id.clone(),
+                endpoint: endpoint.clone(),
+                observed_ms,
+            })
+            .collect()
+    }
+
+    /// Whether the book holds no endpoint.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn newest_first(&self) -> Vec<(&(String, String), u64)> {
+        let mut all: Vec<(&(String, String), u64)> = self
+            .entries
+            .iter()
+            .map(|(key, observed)| (key, observed.observed_ms))
+            .collect();
+        all.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+        all
+    }
+
+    /// Drops endpoints beyond the per member and total bounds: reported ones before those a
+    /// member announced itself, and older ones first.
+    fn trim(&mut self) {
+        let mut ranked: Vec<(&(String, String), &Observation)> = self.entries.iter().collect();
+        ranked.sort_by(|left, right| {
+            (right.1.first_hand, right.1.observed_ms)
+                .cmp(&(left.1.first_hand, left.1.observed_ms))
+                .then_with(|| left.0.cmp(right.0))
+        });
+        let mut per_device: BTreeMap<String, usize> = BTreeMap::new();
+        let mut keep = BTreeSet::new();
+        for (key, _) in ranked {
+            if keep.len() >= MAX_PEER_ENDPOINTS {
+                break;
+            }
+            let count = per_device.entry(key.0.clone()).or_default();
+            if *count < MAX_ENDPOINTS_PER_PEER {
+                *count += 1;
+                keep.insert(key.clone());
+            }
+        }
+        self.entries.retain(|key, _| keep.contains(key));
+    }
+}
+
+/// The peer book file of one vault with the endpoints it holds.
+#[derive(Debug, Clone)]
+pub struct PeerBook {
+    path: PathBuf,
+    endpoints: PeerEndpoints,
+}
+
+impl PeerBook {
+    /// Reads the peer book at `path`, empty when the file does not exist. Refuses a file that is
+    /// too large, does not parse, has another schema version, or holds too many or malformed
+    /// entries.
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let bytes = match read_regular_file_capped(
+            path,
+            u64::try_from(MAX_PEER_BOOK_BYTES).unwrap_or(u64::MAX),
+            FinalSymlink::Refuse,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self {
+                    path: path.to_path_buf(),
+                    endpoints: PeerEndpoints::default(),
+                });
+            }
+            Err(error) => return Err(format!("read sync peer book: {error}")),
+        };
+        let file: PeerBookFile = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("parse sync peer book: {error}"))?;
+        if file.schema_version != PEER_BOOK_SCHEMA_VERSION {
+            return Err("sync peer book has an unsupported schema version".to_string());
+        }
+        if file.endpoints.len() > MAX_PEER_ENDPOINTS {
+            return Err("sync peer book holds too many endpoints".to_string());
+        }
+        let mut entries = BTreeMap::new();
+        let mut per_device: BTreeMap<&str, usize> = BTreeMap::new();
+        for entry in &file.endpoints {
+            validate_identifier("peer device id", &entry.device_id)
+                .and_then(|()| validate_coordinator_endpoint(&entry.endpoint).map(|_| ()))
+                .map_err(|error| format!("sync peer book holds a malformed entry: {error}"))?;
+            let count = per_device.entry(entry.device_id.as_str()).or_default();
+            *count += 1;
+            if *count > MAX_ENDPOINTS_PER_PEER {
+                return Err("sync peer book holds too many endpoints for one device".to_string());
+            }
+            if entries
+                .insert(
+                    (entry.device_id.clone(), entry.endpoint.clone()),
+                    Observation {
+                        observed_ms: entry.observed_ms,
+                        first_hand: entry.first_hand,
+                    },
+                )
+                .is_some()
+            {
+                return Err("sync peer book repeats an endpoint".to_string());
+            }
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            endpoints: PeerEndpoints { entries },
+        })
+    }
+
+    /// The endpoints the book holds.
+    pub fn endpoints(&self) -> &PeerEndpoints {
+        &self.endpoints
+    }
+
+    /// Replaces the endpoints and writes the file when they changed.
+    pub fn store(&mut self, endpoints: PeerEndpoints) -> Result<(), String> {
+        if endpoints == self.endpoints {
+            return Ok(());
+        }
+        let file = PeerBookFile {
+            schema_version: PEER_BOOK_SCHEMA_VERSION,
+            endpoints: endpoints
+                .entries
+                .iter()
+                .map(|((device_id, endpoint), observation)| PeerBookEntry {
+                    device_id: device_id.clone(),
+                    endpoint: endpoint.clone(),
+                    observed_ms: observation.observed_ms,
+                    first_hand: observation.first_hand,
+                })
+                .collect(),
+        };
+        let bytes = serde_json::to_vec_pretty(&file)
+            .map_err(|error| format!("encode sync peer book: {error}"))?;
+        if let Some(parent) = self.path.parent() {
+            create_private_directories(parent)
+                .map_err(|error| format!("create sync peer book directory: {error}"))?;
+        }
+        write_file_atomically(&self.path, &bytes, FileAccess::OwnerOnly)
+            .map_err(|error| format!("write sync peer book: {error}"))?;
+        self.endpoints = endpoints;
+        Ok(())
+    }
+}

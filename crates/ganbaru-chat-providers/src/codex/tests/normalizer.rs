@@ -231,3 +231,39 @@ fn context_compaction_is_a_thread_level_activity() {
             if item.kind == CanonicalItemKind::ContextCompaction
     ));
 }
+
+#[test]
+fn separate_sessions_never_share_event_item_or_request_ids() {
+    let session_ids = ["session-a", "session-b"].map(|id| identifier(id, ProviderSessionId::new));
+    let mut event_ids = BTreeSet::new();
+    let mut item_ids = BTreeSet::new();
+    let mut request_ids = BTreeSet::new();
+    for session_id in &session_ids {
+        let normalizer = CodexEventNormalizer::new(
+            identifier("codex-instance-1", ProviderInstanceId::new),
+            identifier("chat-thread-1", ChatThreadId::new),
+            session_id.clone(),
+        );
+        let mut state = CodexRouteState::new(
+            modes(SafetyMode::AskForApproval, InteractionMode::Build),
+            None,
+        );
+        for event in normalizer
+            .normalize_notification(
+                &mut state,
+                "thread/compacted",
+                json!({ "threadId": "provider-thread-1" }),
+            )
+            .unwrap()
+        {
+            assert!(event_ids.insert(event.event_id.as_str().to_string()));
+            assert!(item_ids.insert(event.provider_item_id.unwrap().as_str().to_string()));
+        }
+        let first = provider_request_id(session_id, &json!(0)).unwrap();
+        assert_eq!(first, provider_request_id(session_id, &json!(0)).unwrap());
+        assert!(request_ids.insert(first.as_str().to_string()));
+    }
+    assert_eq!(event_ids.len(), 2);
+    assert_eq!(item_ids.len(), 2);
+    assert_eq!(request_ids.len(), 2);
+}

@@ -36,12 +36,12 @@ Provider setup is explicit. Ganbaru discovers supported provider families, expla
 
 ## Data ownership
 
-The active vault owns organizational communication, canonical provider events, projections, drafts, attachment metadata, checkpoints, and authorization records. Managed attachment bytes live under the vault. Device-local state owns external paths, executable discovery, provider homes, native credentials, process state, and presentation preferences that should not travel. Authorization rules live in [Chat access control](../../data/access-control.md).
+The active vault owns organizational communication, canonical provider events, projections, drafts, attachment metadata, checkpoints, and authorization records. Organizational content syncs between linked devices and is editable on each of them, while drafts, review history, execution, and provider configuration stay on the device that holds them; see [Device linking and synchronization](../../data/sync.md). Managed attachment bytes live under the vault. Device-local state owns external paths, executable discovery, provider homes, native credentials, process state, and presentation preferences that should not travel. Authorization rules live in [Chat access control](../../data/access-control.md).
 
 Archive is reversible. Permanent deletion first records cleanup work for provider sessions, workspaces, terminals, previews, attachments, and credentials that cannot be removed in the same transaction.
 
 ## Safety and accessibility
 
-Chat never grants the frontend a generic shell or arbitrary filesystem access. Untrusted provider events and file content are validated and bounded before display. Approval prompts state the requested action and effective authority.
+Chat never grants the frontend a generic shell or arbitrary filesystem access. Untrusted provider events and file content are validated and bounded before display. Approval prompts show what the tool acts on, such as the command and its folder or the path. For Claude, Codex, and OpenCode, "Allow for session" lists what it grants for the rest of the session (rules, folders, or accepting edits) and is withheld when that grant cannot be shown in full; Cursor and Grok offer their own session options under the provider's labels.
 
 All conversation, navigation, composer, request, file, review, and terminal controls are keyboard reachable. Responsive layouts render the same canonical conversation; there is no divergent mobile copy.

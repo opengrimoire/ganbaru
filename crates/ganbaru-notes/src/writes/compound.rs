@@ -212,7 +212,7 @@ pub async fn apply_compound_edit(
         }
     }
     for list_id in column_lists {
-        let columns: Vec<String> = sqlx::query_scalar("SELECT id FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0 ORDER BY sort_order, id LIMIT ?")
+        let columns: Vec<String> = sqlx::query_scalar("SELECT id FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0 ORDER BY order_key, id LIMIT ?")
             .bind(list_id).bind((MAX_REFERENCES + 1) as i64).fetch_all(&mut *tx).await
             .map_err(|error| format!("read canonical Notes columns: {error}"))?;
         if columns.len() > MAX_REFERENCES
@@ -470,7 +470,7 @@ pub async fn apply_compound_edit(
     rows.sort_by(|left, right| {
         (&left.parent_page_id, &left.parent_block_id)
             .cmp(&(&right.parent_page_id, &right.parent_block_id))
-            .then(left.sort_order.total_cmp(&right.sort_order))
+            .then(left.order_key.cmp(&right.order_key))
             .then(left.id.cmp(&right.id))
     });
     let mut placements = Vec::new();
@@ -575,8 +575,8 @@ async fn validate_mutation(
     if row.page_id != page_id {
         return Err("Notes compound edits cannot mutate another page".to_string());
     }
-    let ids: Vec<String> = sqlx::query_scalar("WITH RECURSIVE subtree(id) AS (SELECT id FROM notes_blocks WHERE id = ? UNION SELECT b.id FROM notes_blocks b JOIN subtree s ON b.parent_block_id = s.id LIMIT ?) SELECT id FROM subtree")
-        .bind(id).bind(MAX_GRAPH_BLOCKS + 1).fetch_all(&mut **tx).await
+    let ids: Vec<String> = sqlx::query_scalar("WITH RECURSIVE subtree(id, depth) AS (SELECT id, 1 FROM notes_blocks WHERE id = ? UNION SELECT b.id, s.depth + 1 FROM notes_blocks b JOIN subtree s ON b.parent_block_id = s.id WHERE s.depth < ? LIMIT ?) SELECT DISTINCT id FROM subtree")
+        .bind(id).bind(crate::writes::MAX_BLOCK_DEPTH).bind(MAX_GRAPH_BLOCKS + 1).fetch_all(&mut **tx).await
         .map_err(|e| format!("bound Notes edit graph: {e}"))?;
     if ids.len() > MAX_GRAPH_BLOCKS as usize {
         return Err("Notes edit graph exceeds its block limit".to_string());

@@ -13,17 +13,17 @@ import {
   reorderedProjectViewIds,
 } from "./views";
 
-function view(id: string, viewType: ProjectViewType, sortOrder: number, projectId = "project-a"): ProjectView {
-  return { id, projectId, viewType, sortOrder, createdAt: "", updatedAt: "" };
+function view(id: string, viewType: ProjectViewType, orderKey: string, projectId = "project-a"): ProjectView {
+  return { id, projectId, viewType, orderKey, createdAt: "", updatedAt: "" };
 }
 
 const VIEWS = [
-  view("chat", "chat", 4000),
-  view("list", "list", 2000),
-  view("other-list", "list", 1000, "project-b"),
-  view("overview", "dashboard", 1000),
-  view("notes", "notes", 3000),
-  view("week", "list", 3000),
+  view("chat", "chat", "4000"),
+  view("list", "list", "2000"),
+  view("other-list", "list", "1000", "project-b"),
+  view("overview", "dashboard", "1000"),
+  view("notes", "notes", "3000"),
+  view("week", "list", "3000"),
 ];
 
 describe("project views", () => {

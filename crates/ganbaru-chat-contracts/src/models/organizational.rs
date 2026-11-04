@@ -68,7 +68,7 @@ pub enum ChatHistoryBoundary {
     FromGrant {
         /// Captured by the server. Commands may omit this value.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        lower_ordinal: Option<u64>,
+        lower_order_key: Option<String>,
     },
 }
 
@@ -177,6 +177,7 @@ pub struct ChatTeammateChannelAccessRead {
     pub conversation_id: ChatConversationId,
     pub channel_name: String,
     pub access_profile_id: ChatAccessProfileId,
+    pub access_profile_revision_id: ChatAccessProfileRevisionId,
     pub access_profile_revision: u64,
     pub capabilities: ChatChannelCapabilities,
     pub history_boundary: ChatHistoryBoundary,
@@ -346,8 +347,8 @@ pub enum ChatScratchDeviceAvailability {
 pub struct ChatScratchSourceSummaryRead {
     pub channel_id: ChatChannelId,
     pub channel_name: String,
-    pub lower_ordinal: u64,
-    pub high_ordinal: u64,
+    pub lower_order_key: String,
+    pub high_order_key: String,
     pub audience_revision: u64,
 }
 
@@ -544,12 +545,12 @@ mod tests {
     fn tagged_organizational_contracts_use_camel_case_fields() {
         let history = serde_json::from_value::<ChatHistoryBoundary>(json!({
             "kind": "fromGrant",
-            "lowerOrdinal": 7
+            "lowerOrderKey": "c007"
         }))
         .unwrap();
         assert_eq!(
             serde_json::to_value(history).unwrap(),
-            json!({ "kind": "fromGrant", "lowerOrdinal": 7 })
+            json!({ "kind": "fromGrant", "lowerOrderKey": "c007" })
         );
 
         let target = serde_json::from_value::<ChatExecutionTarget>(json!({
@@ -636,7 +637,6 @@ pub struct ChatAiTeammateRead {
     pub latest_policy: Option<ChatTeammatePolicyRead>,
     pub channel_count: u64,
     pub active_assignment_count: u64,
-    pub has_durable_history: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -687,7 +687,8 @@ pub struct ChatChannelMembershipRemovalPreview {
 #[serde(rename_all = "camelCase")]
 pub struct ChatProjectPrimaryWorkingFolderRead {
     pub project_id: String,
-    pub working_folder_id: ProjectWorkingFolderId,
+    /// `None` when the project has no usable folder on this replica.
+    pub working_folder_id: Option<ProjectWorkingFolderId>,
     pub revision: u64,
 }
 
@@ -783,14 +784,16 @@ pub struct ChatMessageRead {
     pub reply_thread_id: Option<ChatReplyThreadId>,
     pub revision_id: ChatMessageRevisionId,
     pub revision: u64,
-    pub author: ChatParticipantRead,
+    /// Author identity, absent when the message carries only its author label snapshot.
+    pub author: Option<ChatParticipantRead>,
     pub author_label_snapshot: String,
     pub normalized_markdown: String,
     pub rich_content: VersionedJson,
     pub attachment_ids: Vec<ChatAttachmentId>,
     pub references: Vec<ChatMessageReference>,
     pub reply_thread: Option<ChatReplyThreadSummaryRead>,
-    pub ordinal: u64,
+    /// Position of the item within its scope; items order by `(order_key, item_id)`.
+    pub order_key: String,
     pub edited_at: Option<UtcTimestamp>,
     pub created_at: UtcTimestamp,
 }
@@ -844,6 +847,42 @@ pub struct ChatWorkAssignmentRead {
     pub settled_at: Option<UtcTimestamp>,
     pub created_at: UtcTimestamp,
     pub updated_at: UtcTimestamp,
+    /// What the reading device would accept by starting this work, present when it waits for a
+    /// local action there. Computed on read and never persisted.
+    pub local_acceptance: Option<ChatAssignmentAcceptanceOfferRead>,
+}
+
+/// One folder a waiting assignment would run in, with the access it would hold there.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentAcceptanceFolderRead {
+    pub display_name: String,
+    pub capability: ChatFolderCapability,
+    pub runtime_approval: ChatRuntimeApprovalPolicy,
+}
+
+/// What a device accepts by starting a waiting assignment.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentAcceptanceOfferRead {
+    /// Acceptance digest of this subject, returned with the Start so a change refuses it.
+    pub digest: String,
+    pub provider_instance_id: String,
+    pub folders: Vec<ChatAssignmentAcceptanceFolderRead>,
+    pub scratch_runtime_approval: ChatRuntimeApprovalPolicy,
+}
+
+/// Work that waits for a local action on the reading device, wherever its reply thread is.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatWaitingAssignmentRead {
+    pub assignment_id: ChatWorkAssignmentId,
+    pub project_id: String,
+    pub channel_id: ChatChannelId,
+    pub channel_name: String,
+    pub reply_thread_id: ChatReplyThreadId,
+    pub teammate_display_name: String,
+    pub created_at: UtcTimestamp,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -886,9 +925,13 @@ pub struct ChatMessageSearchResultRead {
     pub conversation_id: ChatConversationId,
     pub reply_thread_id: Option<ChatReplyThreadId>,
     pub message_item_id: ChatConversationItemId,
-    pub ordinal: u64,
-    pub author_participant_id: ChatParticipantId,
-    pub author_kind: ChatParticipantKind,
+    /// Page cursor of the page that ends with this message.
+    pub anchor_cursor: String,
+    /// Author identity, absent when the message carries only its author label snapshot.
+    pub author_participant_id: Option<ChatParticipantId>,
+    /// Author kind, absent together with the author identity.
+    pub author_kind: Option<ChatParticipantKind>,
+    /// Author display name, or the author label snapshot when the identity is absent.
     pub author_display_name: String,
     pub excerpt: String,
     pub created_at: UtcTimestamp,

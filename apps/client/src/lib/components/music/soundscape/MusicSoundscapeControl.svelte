@@ -1,21 +1,17 @@
 <script lang="ts">
   import AudioLines from "@lucide/svelte/icons/audio-lines";
-  import CloudHail from "@lucide/svelte/icons/cloud-hail";
-  import CloudRain from "@lucide/svelte/icons/cloud-rain";
-  import CloudRainWind from "@lucide/svelte/icons/cloud-rain-wind";
-  import Pause from "@lucide/svelte/icons/pause";
-  import Play from "@lucide/svelte/icons/play";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
-  import Volume2 from "@lucide/svelte/icons/volume-2";
   import { onMount, tick } from "svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
+  import type { MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
+  import { SOUNDSCAPE_CHIP_CLASS } from "$lib/music/soundscape/presentation";
+  import { presetDisplayName } from "$lib/music/soundscape/presets";
   import { centeredSoundscapePanelLeft } from "$lib/music/soundscape/popover-position";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
-  import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
-  import MusicSoundscapeSectionControls from "./MusicSoundscapeSectionControls.svelte";
+  import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
+  import MusicSoundscapeActiveLevel from "./MusicSoundscapeActiveLevel.svelte";
 
   let { onOpenSoundscapes }: { onOpenSoundscapes: () => void } = $props();
   const { t } = getLocalization();
@@ -25,23 +21,15 @@
   let popover = $state<HTMLElement | null>(null);
   let popoverLeft = $state<number | null>(null);
   let open = $state(false);
-  const active = $derived(soundscape.activeDefinition);
-  const selectedIds = $derived(soundscape.persisted?.activeIds ?? []);
-  const activeName = $derived(selectedIds.length > 1 ? t("music.soundscape.selectedCount", selectedIds.length) : active?.generatedKind ? t(`music.soundscape.rainName.${active.generatedKind}`) : active?.name ?? "");
-  const generated = $derived(orderedGeneratedSounds(soundscape.definitions));
-  const local = $derived(soundscape.definitions.filter((entry) => entry.sourceKind === "local-loop"));
-  const ungrouped = $derived(local.filter((entry) => !entry.groupId || !soundscape.groups.some((group) => group.id === entry.groupId)));
-  const volume = $derived(soundscape.snapshot.volume);
   const playing = $derived(soundscape.snapshot.status === "playing");
 
   onMount(() => {
     const close = (event: PointerEvent) => {
       if (!open || !root || root.contains(event.target as Node)) return;
-      if (event.target instanceof Element && event.target.closest('[data-soundscape-subpanel="player-soundscape"]')) return;
       open = false;
     };
     const closeWithKeyboard = (event: KeyboardEvent) => {
-      if (!open || event.key !== "Escape" || document.querySelector('[data-soundscape-subpanel="player-soundscape"]')) return;
+      if (!open || event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
       open = false;
@@ -66,68 +54,64 @@
     await tick();
     positionPopover();
     await tick();
-    (popover?.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled)") ?? popover)?.focus();
+    // The dialog itself takes focus, so the panel's S and Spacebar shortcuts keep working until a control is chosen.
+    popover?.focus();
+  }
+
+  /** Lets go of the level slider after a drag, like the volume slider, so panel shortcuts reach the popover again. */
+  function releaseSliderFocus(event: PointerEvent): void {
+    const focused = document.activeElement;
+    if (focused instanceof HTMLInputElement && focused.type === "range" && event.currentTarget instanceof Node && event.currentTarget.contains(focused)) focused.blur();
   }
 
   function handleFocusOut(event: FocusEvent): void {
     if (!open || !(event.relatedTarget instanceof Node) || root?.contains(event.relatedTarget)) return;
-    if (event.relatedTarget instanceof Element && event.relatedTarget.closest('[data-soundscape-subpanel="player-soundscape"]')) return;
     open = false;
   }
 
-  function toggleActive(): void {
-    if (!active) return;
+  /** Opens or closes the popover, for the panel's keyboard shortcut. */
+  export function toggleOpen(): void {
+    if (open && popover?.contains(document.activeElement)) trigger?.focus();
+    void toggle();
+  }
+
+  /** Whether the popover is open, so the panel sends the Spacebar key to the soundscape instead of Music. */
+  export function isOpen(): boolean {
+    return open;
+  }
+
+  /** Pauses the playing preset or plays the chosen one again. */
+  export function togglePlayback(): void {
     void soundscape.togglePlayback();
+  }
+
+  /** Plays a preset, or pauses it when it is the one already playing. */
+  function choosePreset(preset: MusicSoundscapePreset): void {
+    if (preset.id === soundscape.playingPreset?.id) void soundscape.togglePlayback();
+    else void soundscape.playPreset(preset);
   }
 </script>
 
-<div bind:this={root} class="relative" onfocusout={handleFocusOut}>
-  <button bind:this={trigger} type="button" class="relative inline-flex h-9 w-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors hover:bg-accent" aria-haspopup="dialog" aria-expanded={open} aria-label={t("music.soundscape.controls")} onclick={() => { void toggle(); }}>
+<div bind:this={root} class="relative" data-floating-root onfocusout={handleFocusOut}>
+  <button bind:this={trigger} type="button" class="relative inline-flex h-9 w-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors hover:bg-accent" aria-haspopup="dialog" aria-expanded={open} aria-label={t("music.soundscape.controls")} title={t("music.soundscape.controlsTitle")} onclick={() => { void toggle(); }}>
     <AudioLines size={15} strokeWidth={1.5} />
     {#if playing}<span class="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true"></span>{/if}
   </button>
   {#if open}
-    <div bind:this={popover} tabindex="-1" class="soundscape-popover surface-floating absolute bottom-full z-40 mb-2 flex w-floating-lg max-h-[calc(100vh-1rem)] flex-col overflow-hidden" style={popoverLeft === null ? "visibility:hidden" : `--soundscape-popover-left:${popoverLeft}px`} role="dialog" aria-label={t("music.soundscape.controls")}>
-      <div use:scrollEdgeFadeAction class="min-h-0 flex-1 overflow-y-auto p-3">
-        <div class="flex min-h-9 items-center gap-2 px-1">
-          <Volume2 size={15} class="shrink-0 text-muted-foreground" />
-          <input id="soundscape-volume" class="min-w-0 flex-1 accent-primary disabled:opacity-40" type="range" min="0" max="1" step="0.01" value={volume} aria-label={t("music.soundscape.volume")} disabled={!soundscape.persisted || soundscape.loading} oninput={(event) => { void soundscape.setVolume(Number(event.currentTarget.value)); }} />
-          <span class="w-9 shrink-0 text-right text-panel-detail tabular-nums text-muted-foreground">{Math.round(volume * 100)}%</span>
-          <button type="button" disabled={!active || soundscape.saving} aria-label={playing ? t("music.soundscape.pause") : t("music.soundscape.play", activeName)} class="grid h-8 w-8 shrink-0 place-items-center rounded-floating-item bg-secondary hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40" onclick={toggleActive}>{#if playing}<Pause size={15} />{:else}<Play size={15} />{/if}</button>
-        </div>
-        {#if soundscape.error}<Notice class="mt-1 px-1 text-panel-detail" message={t("music.soundscape.genericError")} />{/if}
-        <div class="mt-3 px-1"><MusicSoundscapeSectionControls title={t("music.soundscape.generated")} section="generated" idPrefix="player-soundscape" compact /></div>
-        <div class="grid grid-cols-3 gap-1.5">
-          {#each generated as definition (definition.id)}
-            {@const selected = selectedIds.includes(definition.id)}
-            <button type="button" aria-pressed={selected} aria-label={selected && soundscape.persisted?.multipleEnabled ? t("music.soundscape.stop", t(`music.soundscape.rainName.${definition.generatedKind ?? "brown"}`)) : selected && playing ? t("music.soundscape.pause") : t("music.soundscape.play", t(`music.soundscape.rainName.${definition.generatedKind ?? "brown"}`))} disabled={soundscape.saving} class={selected ? "flex min-h-16 flex-col items-center justify-center gap-1 rounded-floating-item bg-primary/10 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50" : "flex min-h-16 flex-col items-center justify-center gap-1 rounded-floating-item text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50"} onclick={() => { void soundscape.toggleSelection(definition.id); }}>
-              {#if definition.generatedKind === "brown"}<CloudHail size={19} strokeWidth={1.5} />{:else if definition.generatedKind === "pink"}<CloudRain size={19} strokeWidth={1.5} />{:else}<CloudRainWind size={19} strokeWidth={1.5} />{/if}
-              <span>{t(`music.soundscape.rainName.${definition.generatedKind ?? "brown"}`)}</span>
-            </button>
-          {/each}
-        </div>
-        {#if local.length > 0}
-          <div class="mt-3 px-1"><MusicSoundscapeSectionControls title={t("music.soundscape.localLoops")} section="local" idPrefix="player-soundscape" compact /></div>
-          <div use:scrollEdgeFadeAction class="max-h-40 space-y-0.5 overflow-y-auto" data-music-scrollable="true">
-            {#each soundscape.groups as group (group.id)}
-              {#if local.some((entry) => entry.groupId === group.id)}
-                <p class="flex items-center gap-1.5 px-2 pt-2 text-panel-detail text-muted-foreground"><MusicSoundscapeGroupIcon icon={group.icon} size={12} />{group.name}</p>
-                <div class="grid grid-cols-3 gap-1.5">
-                  {#each local.filter((entry) => entry.groupId === group.id) as definition (definition.id)}
-                    <button type="button" aria-pressed={selectedIds.includes(definition.id)} aria-label={selectedIds.includes(definition.id) && soundscape.persisted?.multipleEnabled ? t("music.soundscape.stop", definition.name) : selectedIds.includes(definition.id) && playing ? t("music.soundscape.pause") : t("music.soundscape.play", definition.name)} disabled={definition.availability !== "available" || soundscape.saving} class={selectedIds.includes(definition.id) ? "flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 rounded-floating-item bg-primary/10 px-1 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50" : "flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 rounded-floating-item px-1 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50"} onclick={() => { void soundscape.toggleSelection(definition.id); }}><MusicSoundscapeGroupIcon icon={definition.icon} size={19} /><span class="max-w-full truncate">{definition.name}</span></button>
-                  {/each}
-                </div>
-              {/if}
+    <div bind:this={popover} tabindex="-1" class="soundscape-popover surface-floating absolute bottom-full z-40 mb-2 flex focus:outline-none w-floating-lg max-h-[calc(100vh-1rem)] flex-col overflow-hidden" style={popoverLeft === null ? "visibility:hidden" : `--soundscape-popover-left:${popoverLeft}px`} role="dialog" aria-label={t("music.soundscape.controls")}>
+      <div use:scrollEdgeFadeAction class="flex min-h-0 flex-1 flex-col overflow-y-auto p-2">
+        <div class="px-2 pt-2 pb-2.5" role="presentation" onpointerup={releaseSliderFocus} onpointercancel={releaseSliderFocus}><MusicSoundscapeActiveLevel idPrefix="player-soundscape" /></div>
+        {#if soundscape.error}<Notice class="px-2 py-1" message={t("music.soundscape.genericError")} />{/if}
+        {#if soundscape.presets.length > 0}
+          <div class="flex flex-wrap gap-1.5">
+            {#each soundscape.presets as preset (preset.id)}
+              {@const selected = preset.id === soundscape.playingPreset?.id}
+              {@const name = presetDisplayName(preset, t)}
+              <button type="button" aria-pressed={selected} aria-label={selected ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} data-app-tooltip={selected ? t("music.soundscape.pauseHint") : undefined} disabled={!soundscape.presetIsPlayable(preset)} class={[SOUNDSCAPE_CHIP_CLASS, selected && "bg-primary/10"]} onclick={() => choosePreset(preset)}><MusicSoundscapeIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
             {/each}
-            {#if ungrouped.length > 0 && soundscape.groups.length > 0}<p class="px-2 pt-2 text-panel-detail text-muted-foreground">{t("music.soundscape.ungrouped")}</p>{/if}
-            <div class="grid grid-cols-3 gap-1.5">
-              {#each ungrouped as definition (definition.id)}
-                <button type="button" aria-pressed={selectedIds.includes(definition.id)} aria-label={selectedIds.includes(definition.id) && soundscape.persisted?.multipleEnabled ? t("music.soundscape.stop", definition.name) : selectedIds.includes(definition.id) && playing ? t("music.soundscape.pause") : t("music.soundscape.play", definition.name)} disabled={definition.availability !== "available" || soundscape.saving} class={selectedIds.includes(definition.id) ? "flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 rounded-floating-item bg-primary/10 px-1 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50" : "flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 rounded-floating-item px-1 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50"} onclick={() => { void soundscape.toggleSelection(definition.id); }}><MusicSoundscapeGroupIcon icon={definition.icon} size={19} /><span class="max-w-full truncate">{definition.name}</span></button>
-              {/each}
-            </div>
           </div>
         {/if}
-        <button type="button" class="menu-item mt-3 justify-between text-muted-foreground hover:text-foreground" onclick={() => { open = false; onOpenSoundscapes(); }}><span>{t("music.soundscape.openBuilder")}</span><ChevronRight size={14} /></button>
+        <button type="button" class="menu-item mt-1.5 justify-between" onclick={() => { open = false; onOpenSoundscapes(); }}><span>{t("music.soundscape.openBuilder")}</span><ChevronRight size={14} /></button>
       </div>
     </div>
   {/if}

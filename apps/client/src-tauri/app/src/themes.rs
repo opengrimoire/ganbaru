@@ -1,6 +1,9 @@
-//! Theme command adapters. Persistence and validation live in `ganbaru-themes`.
+//! Theme command adapters. Persistence, validation, and conflicts live in `ganbaru-themes`.
 
-use ganbaru_themes::{DismissalRow, UserThemeRead, UserThemeWrite};
+use ganbaru_themes::{
+    DismissalRow, ThemeConflictError, ThemeConflictRead, ThemeConflictResolution, UserThemeRead,
+    UserThemeWrite,
+};
 use tauri::{AppHandle, Runtime};
 
 use crate::db::connect_sqlite;
@@ -95,4 +98,31 @@ pub async fn themes_reset_to_seed<R: Runtime>(
 ) -> Result<(), String> {
     let pool = connect_sqlite(app, db_url).await?;
     ganbaru_themes::reset_to_seed(&pool, &id).await
+}
+
+/// The content versions of a theme left by concurrent saves on linked devices, with the device
+/// that wrote each one.
+#[tauri::command]
+pub async fn themes_conflict<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    id: String,
+) -> Result<ThemeConflictRead, ThemeConflictError> {
+    let vault_id = crate::vault::active_vault_id(&app)?;
+    let devices = crate::sync::devices::read(&app)?;
+    let pool = connect_sqlite(app, db_url).await?;
+    ganbaru_themes::conflict_from_pool(&pool, &vault_id, &devices, &id).await
+}
+
+/// Resolves a theme content conflict by keeping the displayed version or using another one.
+#[tauri::command]
+pub async fn themes_resolve_conflict<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    resolution: ThemeConflictResolution,
+) -> Result<UserThemeRead, ThemeConflictError> {
+    let vault_id = crate::vault::active_vault_id(&app)?;
+    let now_ms = crate::sync::now_ms()?;
+    let pool = connect_sqlite(app, db_url).await?;
+    ganbaru_themes::resolve_from_pool(&pool, &vault_id, resolution, now_ms).await
 }

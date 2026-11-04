@@ -13,9 +13,9 @@
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>auth_admin</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/ganbaru</annotate>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/ganbaru/ganbaru-linking-firewall</annotate>
     <annotate key="org.freedesktop.policykit.exec.argv1">--manage-linking-firewall</annotate>
   </action>
 </policyconfig>

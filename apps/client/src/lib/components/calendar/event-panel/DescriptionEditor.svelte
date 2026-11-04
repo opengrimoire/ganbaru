@@ -11,7 +11,7 @@
   import Link from "@lucide/svelte/icons/link";
   import RemoveFormatting from "@lucide/svelte/icons/remove-formatting";
   import Check from "@lucide/svelte/icons/check";
-  import AlignLeft from "@lucide/svelte/icons/align-left";
+  import AlignLeft from "@lucide/svelte/icons/text-align-start";
   import {
     calendarDescriptionPreviewText,
     isSafeCalendarDescriptionUrl,

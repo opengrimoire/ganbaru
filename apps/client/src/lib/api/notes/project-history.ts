@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { publishNotesDatabaseChange } from "$lib/notes/database/window-sync";
 import { ensureDbUrl } from "$lib/api/db";
+import { readTolerantNotesCover, readTolerantNotesIcon } from "$lib/notes/validation/assets";
 import type {
   NotesCommentDisplayName,
   NotesHistoricalPage,
@@ -119,7 +120,7 @@ function pageSummary(value: unknown): NotesHistoricalPageSummary {
     ),
     inTrash: boolean(parsed.inTrash, "historical page summary.inTrash"),
     archived: boolean(parsed.archived, "historical page summary.archived"),
-    icon: (parsed.icon ?? null) as NotesHistoricalPageSummary["icon"],
+    icon: readTolerantNotesIcon(parsed.icon ?? null, "historical page summary.icon"),
   };
 }
 
@@ -202,8 +203,8 @@ export async function loadNotesProjectHistoryPage(
     id: string(parsed.id, "historical page.id"),
     title: string(parsed.title, "historical page.title"),
     properties: record(parsed.properties, "historical page.properties"),
-    icon: (parsed.icon ?? null) as NotesHistoricalPage["icon"],
-    cover: (parsed.cover ?? null) as NotesHistoricalPage["cover"],
+    icon: readTolerantNotesIcon(parsed.icon ?? null, "historical page.icon"),
+    cover: readTolerantNotesCover(parsed.cover ?? null, "historical page.cover"),
     inTrash: boolean(parsed.inTrash, "historical page.inTrash"),
     archived: boolean(parsed.archived, "historical page.archived"),
     blocks: objectArray(parsed.blocks, "historical page.blocks"),

@@ -269,31 +269,13 @@ fn database_view_window_keyset_pages_ten_thousand_rows_with_bounded_payloads() {
         for index in 0..10_000 {
             let id = format!("40000000-0000-4000-8000-{index:012}");
             let title = format!("Task {index:05}");
-            let properties = json!({
-                "Name": {
-                    "id": "title",
-                    "type": "title",
-                    "title": [{
-                        "type": "text",
-                        "text": { "content": title, "link": null },
-                        "annotations": {
-                            "bold": false, "italic": false, "strikethrough": false,
-                            "underline": false, "code": false, "color": "default"
-                        },
-                        "plain_text": title,
-                        "href": null
-                    }]
-                }
-            });
             sqlx::query(
-                "INSERT INTO notes_pages (
-                    id, parent_type, parent_data_source_id, title, properties
-                 ) VALUES (?, 'data_source_id', ?, ?, ?)",
+                "INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title)
+                 VALUES (?, 'data_source_id', ?, ?)",
             )
             .bind(id)
             .bind(DATA_SOURCE_A)
             .bind(&title)
-            .bind(properties.to_string())
             .execute(&mut *tx)
             .await
             .unwrap();
@@ -970,5 +952,53 @@ fn database_date_reminders_follow_the_row_value_and_its_schema() {
         .await
         .unwrap();
         assert!(pending_reminders(&pool).await.is_empty());
+    });
+}
+
+#[test]
+fn row_values_written_under_an_older_property_type_read_with_their_own_type() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        dated_database(&pool).await;
+        let mut connection = pool.acquire().await.unwrap();
+        crate::page_property_storage::write_page_property_value(
+            &mut connection,
+            PAGE_B,
+            "when",
+            "rich_text",
+            &json!([rich_text("next Tuesday")]),
+        )
+        .await
+        .unwrap();
+        drop(connection);
+
+        let page =
+            serde_json::to_value(reads::get_page(&pool, PAGE_B, false).await.unwrap()).unwrap();
+        assert_eq!(page["properties"]["When"]["id"], "when");
+        assert_eq!(page["properties"]["When"]["type"], "rich_text");
+        assert_eq!(
+            page["properties"]["When"]["rich_text"][0]["plain_text"],
+            "next Tuesday"
+        );
+        assert!(page["properties"]["When"].get("date").is_none());
+        let table = serde_json::to_value(
+            data_sources::layouts::table::data_source_table_view(&pool, DATA_SOURCE_A, None, None)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(table["rows"][0]["properties"]["When"]["type"], "rich_text");
+        assert!(pending_reminders(&pool).await.is_empty());
+
+        set_when(&pool, json!("2026-10-05")).await.unwrap();
+        let stored: Vec<(String, String)> = sqlx::query_as(
+            "SELECT value_type, json_extract(value, '$.start') FROM notes_page_property_values
+             WHERE page_id = ? AND property_id = 'when'",
+        )
+        .bind(PAGE_B)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, vec![("date".to_string(), "2026-10-05".to_string())]);
     });
 }

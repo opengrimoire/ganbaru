@@ -13,6 +13,8 @@ pub(super) struct Session {
     pub changed_segments: Vec<String>,
     pub local_time: Option<std::sync::Arc<dyn FocusLocalTimeResolver>>,
     pub planned_blocks: Vec<super::super::PomodoroAdaptivePlannedBlockWrite>,
+    /// Set when oversized adaptive evidence narrowed a decision in this transition.
+    pub adaptive_degraded: Option<String>,
 }
 
 impl Session {
@@ -43,6 +45,7 @@ impl Session {
             segment,
             changed_segments: Vec::new(),
             local_time: context.local_time.clone(),
+            adaptive_degraded: None,
             planned_blocks: context.planned_blocks.clone(),
         })
     }
@@ -122,7 +125,7 @@ impl Session {
             .max(lower_bound)
             .min(detected_at_ms.max(lower_bound));
         let id = segment.id.clone();
-        sqlx::query("INSERT INTO pomodoro_pauses (id, segment_id, started_at, ended_at, reason, detected_at) VALUES (lower(hex(randomblob(16))), ?, ?, NULL, ?, ?)")
+        sqlx::query("INSERT INTO pomodoro_pauses (segment_id, ordinal, started_at, ended_at, reason, detected_at) SELECT ?1, COALESCE(MAX(ordinal) + 1, 0), ?2, NULL, ?3, ?4 FROM pomodoro_pauses WHERE segment_id = ?1")
             .bind(&id).bind(format_timestamp(start_ms)?).bind(reason).bind(format_timestamp(detected_at_ms.max(start_ms))?)
             .execute(&mut **tx).await.map_err(|error| format!("Start Focus pause: {error}"))?;
         self.record_event(tx, "pause_start", start_ms, Some(reason), None)

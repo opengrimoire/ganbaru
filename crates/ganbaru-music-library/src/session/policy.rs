@@ -421,9 +421,32 @@ impl SessionPolicy {
         }
     }
 
-    fn advance(&mut self, automatic: bool, now_ms: i64, transition: &mut Transition) {
+    /// Moves a restored selection to the item after it without starting playback, so a new
+    /// launch continues the queue on a fresh track. A finished pass starts over.
+    pub fn advance_restored(&mut self, now_ms: i64) -> Transition {
+        let mut transition = Transition::default();
         let eligible = self.eligible(now_ms);
-        let next = if automatic
+        let next = self.next_index(false, &eligible).or_else(|| {
+            if self.order == PlaybackOrder::Shuffle {
+                self.rebuild_shuffle(&eligible, self.current);
+                self.shuffle.first().copied()
+            } else {
+                eligible
+                    .iter()
+                    .copied()
+                    .find(|index| Some(*index) != self.current)
+            }
+            .or_else(|| eligible.first().copied())
+        });
+        match next {
+            Some(index) => self.select(index, false, true, false, now_ms, &mut transition),
+            None => self.no_eligible(&mut transition),
+        }
+        self.finish(transition)
+    }
+
+    fn next_index(&mut self, automatic: bool, eligible: &[usize]) -> Option<usize> {
+        if automatic
             && self.repeat_mode == MusicRepeatMode::One
             && self.order != PlaybackOrder::Mix
             && self
@@ -435,7 +458,7 @@ impl SessionPolicy {
             match self.order {
                 PlaybackOrder::Mix => {
                     let draw = self.draw();
-                    select_mix(&self.queue, &eligible, &self.recent, draw)
+                    select_mix(&self.queue, eligible, &self.recent, draw)
                 }
                 PlaybackOrder::Shuffle => {
                     self.shuffle
@@ -443,7 +466,7 @@ impl SessionPolicy {
                     if self.shuffle.is_empty()
                         && (self.current.is_none() || self.repeat_mode != MusicRepeatMode::Off)
                     {
-                        self.rebuild_shuffle(&eligible, self.current);
+                        self.rebuild_shuffle(eligible, self.current);
                     }
                     self.shuffle.first().copied().or_else(|| {
                         (self.repeat_mode != MusicRepeatMode::Off)
@@ -462,8 +485,12 @@ impl SessionPolicy {
                             .flatten()
                     }),
             }
-        };
-        if let Some(index) = next {
+        }
+    }
+
+    fn advance(&mut self, automatic: bool, now_ms: i64, transition: &mut Transition) {
+        let eligible = self.eligible(now_ms);
+        if let Some(index) = self.next_index(automatic, &eligible) {
             // Decoder completion/failure cannot reverse a later Pause or a
             // silently prepared assignment. Explicit navigation still plays.
             let autoplay = !automatic || self.autoplay_requested;
@@ -667,7 +694,11 @@ impl SessionPolicy {
                     if !available {
                         self.pause(&mut transition);
                         self.issue = Some(SessionIssue::BrowserHostUnavailable);
-                    } else if self.issue == Some(SessionIssue::BrowserHostUnavailable) {
+                    } else if matches!(
+                        self.issue,
+                        Some(SessionIssue::BrowserHostUnavailable | SessionIssue::Restored)
+                    ) {
+                        // A restored browser selection was loaded before any host could receive it.
                         self.issue = None;
                         self.generation += 1;
                         self.last_sequence = 0;

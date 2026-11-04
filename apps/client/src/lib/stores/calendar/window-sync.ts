@@ -1,3 +1,5 @@
+import { listenSyncApplied } from "$lib/api/sync";
+import { touchesCalendar } from "$lib/calendar/sync-events";
 import {
   createWindowSyncEnvelope,
   isForeignWindowSyncEnvelope,
@@ -29,15 +31,22 @@ export function publishCalendarWindowSync(): void {
   ).catch((err) => console.warn("calendar window sync failed", err));
 }
 
+/** Reloads this window after another window or a linked device changes Calendar rows. */
 export function initCalendarWindowSync(reloadCurrentWindow: () => Promise<void>): void {
   if (calendarSyncInitialized) return;
   calendarSyncInitialized = true;
+  const reload = (): void => {
+    reloadCurrentWindow().catch((err) => {
+      console.warn("calendar window sync reload failed", err);
+    });
+  };
   listenWindowSync<unknown>(CALENDAR_WINDOW_SYNC_EVENT, (event) => {
     const envelope = event.payload;
     if (!isWindowSyncEnvelope(envelope, isCalendarWindowSyncPayload)) return;
     if (!isForeignWindowSyncEnvelope(envelope)) return;
-    reloadCurrentWindow().catch((err) => {
-      console.warn("calendar window sync reload failed", err);
-    });
+    reload();
   }).catch((err) => console.warn("calendar window sync listener failed", err));
+  listenSyncApplied((tables) => {
+    if (touchesCalendar(tables)) reload();
+  }).catch((err) => console.warn("calendar sync notice listener failed", err));
 }

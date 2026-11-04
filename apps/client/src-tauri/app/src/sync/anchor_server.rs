@@ -1,0 +1,431 @@
+//! Adding an always-on anchor server to the active vault from an admin desktop, and recovering a
+//! vault through such a server on a new desktop after every device was lost.
+//!
+//! A server dials nobody, so both flows run in reverse over a setup conversation this device opens
+//! with the code the operator printed. No admin key or person key leaves this device.
+
+use super::authority;
+use super::commands::run_authority;
+use super::host::{AppHost, SyncHost};
+use super::server::{SyncServerAdded, SyncServerError, admin_context};
+use super::service::{AuthorityAction, SyncRuntime, blocking};
+use super::writer::ensure_device_key;
+use super::{AnsweredKitKeys, RECOVERY_KIT_MISMATCH, RecoveryBinding};
+use crate::vault::handoff::pairing::{PairingManager, PinnedCharter, random_token};
+use crate::vault::handoff::protocol::encode_sync_charter;
+use crate::vault::handoff::receiver::{ReceiveOutcome, receive_recovered};
+use crate::vault::handoff::snapshot::{archive_active_vault, bundle_metadata};
+use crate::vault::quiescence::begin_snapshot_quiescence;
+use ganbaru_handoff::protocol::anchor::{AnchorSetupCode, AnchorSpace};
+use ganbaru_handoff::protocol::decode_sync_admin_key;
+use ganbaru_sync::{AuthorizationView, Engine, EnrolledDevice, local};
+use ganbaru_sync_contracts::authorization::Server;
+use ganbaru_sync_contracts::{DeviceKind, DeviceRole, KitCode, RecoveryPublicKeys};
+use ganbaru_sync_replica::anchor_setup::{
+    AnchorSetupError, SetupConnection, open_setup, setup_target,
+};
+use ganbaru_sync_replica::authority::{
+    Enrollment, ensure_admin_key, kit_public_keys, recovery_enrollment,
+};
+use ganbaru_sync_replica::service::{RELAY_LOOPBACK, ServerEnrollment};
+use sha2::{Digest, Sha256};
+use std::path::Path;
+use std::time::Duration;
+use tauri::{AppHandle, Manager, Runtime};
+
+/// How long a call waits for the anchor to sequence the enrollment before it hands back to the
+/// caller, which repeats the call with the same code.
+const ENROLLMENT_WAIT: Duration = Duration::from_secs(20);
+const ENROLLMENT_POLL: Duration = Duration::from_millis(500);
+/// The label the log records for a desktop enrolled through the recovery kit.
+const RECOVERED_DESKTOP_LABEL: &str = "Recovered desktop";
+
+async fn open<R: Runtime>(
+    app: &AppHandle<R>,
+    code: &AnchorSetupCode,
+    vault_id: Option<&str>,
+) -> Result<SetupConnection, AnchorSetupError> {
+    let version = app.package_info().version.to_string();
+    open_setup(code, &version, vault_id, RELAY_LOOPBACK).await
+}
+
+/// Whether the selected log enrolls the server of `enrollment` and names it in the configuration.
+fn is_enrolled(view: &AuthorizationView, enrollment: &ServerEnrollment) -> bool {
+    names_server(&view.devices, view.server.as_ref(), enrollment)
+}
+
+fn names_server(
+    devices: &[EnrolledDevice],
+    server: Option<&Server>,
+    enrollment: &ServerEnrollment,
+) -> bool {
+    let live = devices.iter().any(|device| {
+        device.device_id == enrollment.device_id
+            && device.removed_revision.is_none()
+            && device.device_key == enrollment.device_key
+            && device.kind == DeviceKind::Server
+            && device.role == DeviceRole::Admin(enrollment.admin_key)
+    });
+    live && server == Some(&enrollment.server)
+}
+
+async fn wait_for_enrollment<R: Runtime>(
+    app: &AppHandle<R>,
+    runtime: &SyncRuntime,
+    enrollment: &ServerEnrollment,
+) -> Result<bool, String> {
+    let deadline = tokio::time::Instant::now() + ENROLLMENT_WAIT;
+    loop {
+        runtime.sync_now();
+        tokio::time::sleep(ENROLLMENT_POLL).await;
+        let view = authority::authorization(app).await?;
+        if view.is_some_and(|view| is_enrolled(&view, enrollment)) {
+            return Ok(true);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+    }
+}
+
+/// The charter of the active vault as a receiver pins it.
+async fn pinned_charter<R: Runtime>(
+    app: &AppHandle<R>,
+    vault_id: &str,
+) -> Result<PinnedCharter, String> {
+    let pool = crate::db::connect_active_vault_for_sync(app).await?;
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|error| format!("acquire sync connection: {error}"))?;
+    let ctx = local::space_context(&mut conn, vault_id)
+        .await
+        .map_err(|error| format!("read sync space: {error}"))?
+        .ok_or_else(|| "this vault has no sync space".to_string())?;
+    let charter = Engine::vault()
+        .charter(&mut conn, &ctx)
+        .await
+        .map_err(|error| format!("read sync charter: {error}"))?
+        .ok_or_else(|| "this vault has no sync charter".to_string())?;
+    Ok(PinnedCharter {
+        charter: encode_sync_charter(&charter),
+        person_key: ctx.person_key.to_text(),
+    })
+}
+
+/// Uploads the snapshot at `archive` over a fresh setup conversation.
+async fn upload_archive<R: Runtime>(
+    app: &AppHandle<R>,
+    code: &AnchorSetupCode,
+    upload: SnapshotUpload<'_>,
+) -> Result<(), SyncServerError> {
+    let SnapshotUpload {
+        vault_id,
+        device_id,
+        transfer_id,
+        archive,
+        charter,
+        take_anchor,
+    } = upload;
+    let metadata = bundle_metadata(app, vault_id.to_string(), device_id, transfer_id, archive)?;
+    open(app, code, Some(vault_id))
+        .await?
+        .upload(metadata, archive, charter, take_anchor)
+        .await?;
+    Ok(())
+}
+
+/// What an upload carries.
+struct SnapshotUpload<'a> {
+    vault_id: &'a str,
+    device_id: String,
+    transfer_id: String,
+    archive: &'a Path,
+    charter: PinnedCharter,
+    take_anchor: bool,
+}
+
+/// Prepares a snapshot of the active vault as a linking device would receive it and uploads it.
+async fn upload_snapshot<R: Runtime>(
+    app: &AppHandle<R>,
+    code: &AnchorSetupCode,
+    vault_id: &str,
+    take_anchor: bool,
+) -> Result<(), SyncServerError> {
+    let pairing = app.state::<PairingManager>().inner().clone();
+    let charter = pinned_charter(app, vault_id).await?;
+    let transfer_id = random_token("transfer")?;
+    let quiescence = begin_snapshot_quiescence(app).await?;
+    let archived = archive_active_vault(app, &pairing, &transfer_id).await;
+    drop(quiescence);
+    let archive = archived?;
+    let upload = SnapshotUpload {
+        vault_id,
+        device_id: pairing.device_id()?,
+        transfer_id,
+        archive: &archive,
+        charter,
+        take_anchor,
+    };
+    let uploaded = upload_archive(app, code, upload).await;
+    if let Err(error) = std::fs::remove_file(&archive) {
+        eprintln!("sync: remove the uploaded snapshot: {error}");
+    }
+    uploaded
+}
+
+/// Adds the server behind `code` to the active vault: proves the code, proposes the server's
+/// enrollment as an admin and its configuration, and uploads a snapshot it activates. With
+/// `take_anchor`, the server takes the anchor once it can. A server that already runs another
+/// vault is refused before anything is written to the log. The code stays valid until it
+/// expires, the server activates, or a newer code replaces it, and only for the first vault a
+/// device proves it for, so a caller answered `WaitingForAnchor` repeats the call with it or a new
+/// one.
+pub(super) async fn add_anchor_server<R: Runtime>(
+    app: &AppHandle<R>,
+    runtime: &SyncRuntime,
+    code: &AnchorSetupCode,
+    take_anchor: bool,
+) -> Result<SyncServerAdded, SyncServerError> {
+    let (view, _) = admin_context(app).await?;
+    let vault_id = AppHost::of(app).active_vault_id()?;
+    let connection = open(app, code, Some(&vault_id)).await?;
+    let identity = connection.identity().clone();
+    drop(connection);
+    let local = pinned_charter(app, &vault_id).await?;
+    ensure_same_space(identity.space.as_ref(), &vault_id, &local)?;
+    let enrollment = identity.enrollment;
+    if view
+        .server
+        .as_ref()
+        .is_some_and(|server| *server != enrollment.server)
+    {
+        return Err(SyncServerError::ServerExists);
+    }
+    if !is_enrolled(&view, &enrollment) {
+        run_authority(runtime, AuthorityAction::EnrollServer(enrollment.clone())).await?;
+        if !wait_for_enrollment(app, runtime, &enrollment).await? {
+            return Ok(SyncServerAdded::WaitingForAnchor);
+        }
+    }
+    upload_snapshot(app, code, &vault_id, take_anchor).await?;
+    Ok(SyncServerAdded::Active)
+}
+
+/// Recovers the vault an anchor server runs on this new desktop: proves the code, derives the
+/// recovery admin key from `kit` in memory, enrolls this desktop as an admin through the server,
+/// and copies the vault into a new folder. The server must name the kit's admin key before the
+/// signed enrollment discloses it, and the copy opens only when its log names the kit through a
+/// key the server answered. A copy that failed after the enrollment is repeated with a fresh code
+/// and the same kit.
+#[tauri::command]
+pub async fn sync_recover_through_server(
+    app: AppHandle,
+    code: String,
+    kit: String,
+) -> Result<ReceiveOutcome, String> {
+    let kit = KitCode::new(kit);
+    let kit_keys = kit_public_keys(&kit)?;
+    let code = AnchorSetupCode::from_text(code.trim())?;
+    let mut connection = open(&app, &code, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    let space = connection
+        .identity()
+        .space
+        .clone()
+        .ok_or_else(|| "this server runs no vault yet".to_string())?;
+    let pinned = PinnedCharter {
+        charter: space.charter.clone(),
+        person_key: space.person_key.clone(),
+    };
+    let (charter, person_key) = super::host::charter_trust(&pinned, &space.vault_id)?;
+    if AppHost::of(&app).active_vault_id()? == space.vault_id {
+        return Err("this vault is already open on this device".to_string());
+    }
+    let answered = server_names_kit(&space, &kit_keys)?;
+    let host = AppHost::of(&app);
+    let marker = host.sync_files(&space.vault_id)?.server_recovery_path();
+    if !marker.exists() {
+        let store = host.key_store()?;
+        let vault_id = space.vault_id.clone();
+        let (device, admin) = blocking(move || {
+            Ok((
+                ensure_device_key(store.as_ref(), &vault_id)?,
+                ensure_admin_key(store.as_ref(), &vault_id)?,
+            ))
+        })
+        .await?;
+        let pairing = app.state::<PairingManager>();
+        let proposal = recovery_enrollment(
+            charter.charter.space,
+            charter.hash(),
+            &kit,
+            Enrollment {
+                device_id: pairing.device_id()?,
+                device_key: device.public_key(),
+                tls_fingerprint: Sha256::digest(pairing.certificate()?.as_ref()).into(),
+                label: RECOVERED_DESKTOP_LABEL.to_string(),
+                device_kind: DeviceKind::Desktop,
+            },
+            admin.public_key(),
+            super::now_ms()?,
+        )?;
+        connection
+            .recover(&proposal)
+            .await
+            .map_err(|error| error.to_string())?;
+        let written = marker.clone();
+        blocking(move || {
+            ganbaru_atomic_files::write_file_atomically(
+                &written,
+                b"",
+                ganbaru_atomic_files::FileAccess::OwnerOnly,
+            )
+            .map_err(|error| format!("record the recovery: {error}"))
+        })
+        .await?;
+    }
+    drop(connection);
+    let binding = RecoveryBinding {
+        charter,
+        person_key,
+        kit: kit_keys,
+        answered,
+    };
+    receive_recovered(app, setup_target(&code), space.vault_id, binding).await
+}
+
+/// The kit keys `space` answered, refused unless one of them is the admin key of `kit`. A server
+/// that never held the vault cannot name that key, because no proposal has disclosed it yet.
+fn server_names_kit(
+    space: &AnchorSpace,
+    kit: &RecoveryPublicKeys,
+) -> Result<AnsweredKitKeys, String> {
+    let answered = AnsweredKitKeys {
+        kit_admin_key: decode_sync_admin_key(&space.kit_admin_key)?,
+        recovery_admin_key: decode_sync_admin_key(&space.recovery_admin_key)?,
+    };
+    if answered.kit_admin_key != kit.admin && answered.recovery_admin_key != kit.admin {
+        return Err(RECOVERY_KIT_MISMATCH.to_string());
+    }
+    Ok(answered)
+}
+
+/// Refuses a server that already runs a vault other than the one this device pins as
+/// `vault_id` with `local`, before anything is written to the log.
+fn ensure_same_space(
+    space: Option<&AnchorSpace>,
+    vault_id: &str,
+    local: &PinnedCharter,
+) -> Result<(), SyncServerError> {
+    match space {
+        Some(space)
+            if space.vault_id != vault_id
+                || space.charter != local.charter
+                || space.person_key != local.person_key =>
+        {
+            Err(SyncServerError::ServerRunsAnotherVault)
+        }
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ganbaru_handoff::protocol::encode_sync_admin_key;
+    use ganbaru_sync_contracts::{AdminKeyPair, AdminPublicKey, RecoverySeed};
+
+    fn kit() -> RecoveryPublicKeys {
+        RecoverySeed::from_bytes([31; 32]).public_keys().unwrap()
+    }
+
+    fn admin(seed: u8) -> AdminPublicKey {
+        AdminKeyPair::from_seed(&[seed; 32]).unwrap().public_key()
+    }
+
+    fn answer(kit_admin_key: &AdminPublicKey, recovery_admin_key: &AdminPublicKey) -> AnchorSpace {
+        AnchorSpace {
+            vault_id: "vault-recovered".to_string(),
+            charter: "charter".to_string(),
+            person_key: "person".to_string(),
+            kit_admin_key: encode_sync_admin_key(kit_admin_key),
+            recovery_admin_key: encode_sync_admin_key(recovery_admin_key),
+        }
+    }
+
+    #[test]
+    fn recovery_refuses_a_server_that_does_not_name_the_kit() {
+        let forged = answer(&admin(32), &admin(33));
+        assert_eq!(
+            server_names_kit(&forged, &kit()),
+            Err(RECOVERY_KIT_MISMATCH.to_string()),
+            "a server that answers keys of its own gets no proposal"
+        );
+    }
+
+    #[test]
+    fn recovery_proceeds_when_the_server_names_the_kit_by_either_key() {
+        let printed = answer(&kit().admin, &admin(33));
+        assert_eq!(
+            server_names_kit(&printed, &kit()),
+            Ok(AnsweredKitKeys {
+                kit_admin_key: kit().admin,
+                recovery_admin_key: admin(33),
+            })
+        );
+        let installed = answer(&admin(32), &kit().admin);
+        assert_eq!(
+            server_names_kit(&installed, &kit()),
+            Ok(AnsweredKitKeys {
+                kit_admin_key: admin(32),
+                recovery_admin_key: kit().admin,
+            })
+        );
+    }
+
+    #[test]
+    fn recovery_refuses_an_answer_with_a_malformed_kit_key() {
+        let mut malformed = answer(&kit().admin, &kit().admin);
+        malformed.kit_admin_key = "not base64!".to_string();
+        assert!(server_names_kit(&malformed, &kit()).is_err());
+    }
+
+    const VAULT_ID: &str = "vault-local";
+
+    fn local() -> PinnedCharter {
+        PinnedCharter {
+            charter: "charter-local".to_string(),
+            person_key: "person-local".to_string(),
+        }
+    }
+
+    fn space(vault_id: &str, charter: &str, person_key: &str) -> AnchorSpace {
+        AnchorSpace {
+            vault_id: vault_id.to_string(),
+            charter: charter.to_string(),
+            person_key: person_key.to_string(),
+            kit_admin_key: encode_sync_admin_key(&admin(32)),
+            recovery_admin_key: encode_sync_admin_key(&admin(33)),
+        }
+    }
+
+    #[test]
+    fn add_anchor_server_refuses_a_server_running_another_vault() {
+        let local = local();
+        assert_eq!(ensure_same_space(None, VAULT_ID, &local), Ok(()));
+        let own = space(VAULT_ID, &local.charter, &local.person_key);
+        assert_eq!(ensure_same_space(Some(&own), VAULT_ID, &local), Ok(()));
+        for foreign in [
+            space("vault-other", &local.charter, &local.person_key),
+            space(VAULT_ID, "charter-forged", &local.person_key),
+            space(VAULT_ID, &local.charter, "person-forged"),
+        ] {
+            assert_eq!(
+                ensure_same_space(Some(&foreign), VAULT_ID, &local),
+                Err(SyncServerError::ServerRunsAnotherVault)
+            );
+        }
+    }
+}

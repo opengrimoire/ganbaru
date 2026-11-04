@@ -33,7 +33,7 @@ function deferred<T>() {
 function settings(sendKey: "enter" | "mod_enter" = "enter"): ChatSettingsRead {
   return {
     configuration: {
-      schemaVersion: 1, providers: [], automaticProviderSetupDisabled: [], rememberedSelections: [],
+      providers: [], automaticProviderSetupDisabled: [], rememberedSelections: [],
       workingFolderProviderPreferences: {}, panels: { inspectorWidthPx: 320 },
       behavior: {
         sendKey, restoreLastSelectedThread: true, showReasoningSummaries: true,
@@ -67,7 +67,7 @@ function message(channelId: string): ChatMessageRead {
     },
     authorLabelSnapshot: "User", normalizedMarkdown: "Saved local history",
     richContent: { schemaVersion: 1, value: {} }, attachmentIds: [], references: [],
-    replyThread: null, ordinal: 1, editedAt: null, createdAt: "2026-09-22T12:00:00Z",
+    replyThread: null, orderKey: "c001", editedAt: null, createdAt: "2026-09-22T12:00:00Z",
   };
 }
 
@@ -83,6 +83,7 @@ beforeEach(() => {
   vi.spyOn(chatApi, "recoverChatAssignmentDispatchJobs").mockResolvedValue(0);
   vi.spyOn(chatApi, "listChatNavigationChannels").mockResolvedValue([channel(), channel("other")]);
   vi.spyOn(chatApi, "listChatTeammates").mockResolvedValue([]);
+  vi.spyOn(chatApi, "listChatWaitingAssignments").mockResolvedValue([]);
   vi.spyOn(chatApi, "readChatProjectPrimaryWorkingFolder").mockRejectedValue(new Error("no working folder"));
   vi.spyOn(chatApi, "readChatChannelPage").mockImplementation(async (channelId) => ({
     channelId, messages: [message(channelId)], previousCursor: null, revision: 1,
@@ -147,7 +148,7 @@ describe("Chat startup", () => {
         environment: {}, credentialReferences: {}, visibleModelIds: [], favoriteModelIds: [],
         providerConfig: { schemaVersion: 1, value: {} },
       },
-      lastProbe: null, lastSuccessfulProbeAt: null, modelCatalog: null,
+      lastProbe: null, lastSuccessfulProbeAt: null, modelCatalog: null, runtimeReview: [],
     });
     discovery.resolve(discovered);
     await vi.waitFor(() => expect(chat.settings?.configuration.behavior.sendKey).toBe("mod_enter"));

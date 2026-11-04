@@ -1,6 +1,6 @@
 //! Projection of provider runtime events into organizational conversations.
 
-use super::super::events::{CanonicalEvent, CanonicalRuntimeEvent};
+use super::super::events::{CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary};
 use super::super::models::{
     ChatError, ChatErrorCode, ChatParticipantId, ChatReplyThreadId, ChatResult, ChatTurnId,
     ChatWorkAssignmentId,
@@ -25,13 +25,21 @@ fn identifier_error(_error: String) -> ChatError {
     )
 }
 
+/// Run states after which provider events no longer project into organizational Chat.
+const SETTLED_RUN_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
+
+/// Projects a provider event into the organizational state of the agent run it belongs to.
+///
+/// Events are matched by provider turn, or by provider thread while a run is active. A run that
+/// has settled (completed, failed, or cancelled by revocation) ignores later events, so a late or
+/// replayed provider event can neither reopen it nor overwrite how it ended.
 pub async fn project_provider_event_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
     runtime: &CanonicalRuntimeEvent,
 ) -> ChatResult<bool> {
     let run = sqlx::query(
-        "SELECT run.id AS run_id, run.assignment_id, assignment.reply_thread_id,
-                assignment.teammate_id
+        "SELECT run.id AS run_id, run.state AS run_state, run.assignment_id,
+                assignment.reply_thread_id, assignment.teammate_id
          FROM chat_agent_runs run
          JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
          WHERE (
@@ -50,6 +58,10 @@ pub async fn project_provider_event_in_transaction(
     let Some(run) = run else {
         return Ok(false);
     };
+    let run_state: String = run.try_get("run_state").map_err(persistence_error)?;
+    if SETTLED_RUN_STATES.contains(&run_state.as_str()) {
+        return Ok(false);
+    }
     let run_id: String = run.try_get("run_id").map_err(persistence_error)?;
     let assignment_id = ChatWorkAssignmentId::new(
         run.try_get::<String, _>("assignment_id")
@@ -102,7 +114,7 @@ pub async fn project_provider_event_in_transaction(
                 }
                 _ => event.title.clone(),
             };
-            update_assignment_and_run_state(
+            if !update_assignment_and_run_state(
                 transaction,
                 &assignment_id,
                 &run_id,
@@ -111,7 +123,10 @@ pub async fn project_provider_event_in_transaction(
                 None,
                 runtime.created_at.as_str(),
             )
-            .await?;
+            .await?
+            {
+                return Ok(false);
+            }
             insert_projected_teammate_message(
                 transaction,
                 runtime,
@@ -134,7 +149,7 @@ pub async fn project_provider_event_in_transaction(
                 .map(|question| question.question.as_str())
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            update_assignment_and_run_state(
+            if !update_assignment_and_run_state(
                 transaction,
                 &assignment_id,
                 &run_id,
@@ -143,7 +158,10 @@ pub async fn project_provider_event_in_transaction(
                 None,
                 runtime.created_at.as_str(),
             )
-            .await?;
+            .await?
+            {
+                return Ok(false);
+            }
             insert_projected_teammate_message(
                 transaction,
                 runtime,
@@ -167,8 +185,7 @@ pub async fn project_provider_event_in_transaction(
                 None,
                 runtime.created_at.as_str(),
             )
-            .await?;
-            true
+            .await?
         }
         CanonicalEvent::TurnCompleted(event) => {
             let markdown: Option<String> = sqlx::query_scalar(
@@ -182,12 +199,13 @@ pub async fn project_provider_event_in_transaction(
             .fetch_optional(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            let state = if event.changed_files.is_empty() {
+            let changed_files = turn_changed_files(transaction, runtime).await?;
+            let state = if changed_files.is_empty() {
                 "completed"
             } else {
                 "ready_for_review"
             };
-            update_assignment_and_run_state(
+            if !update_assignment_and_run_state(
                 transaction,
                 &assignment_id,
                 &run_id,
@@ -196,12 +214,15 @@ pub async fn project_provider_event_in_transaction(
                 None,
                 runtime.created_at.as_str(),
             )
-            .await?;
+            .await?
+            {
+                return Ok(true);
+            }
             insert_projected_teammate_message(
                 transaction,
                 runtime,
                 &target,
-                if event.changed_files.is_empty() {
+                if changed_files.is_empty() {
                     "result"
                 } else {
                     "review"
@@ -213,7 +234,7 @@ pub async fn project_provider_event_in_transaction(
                 json!({
                     "stopReason": event.stop_reason,
                     "usage": event.usage,
-                    "changedFiles": event.changed_files,
+                    "changedFiles": changed_files,
                     "providerExecutionThreadId": runtime.thread_id,
                     "providerExecutionTurnId": runtime.turn_id,
                 }),
@@ -221,7 +242,7 @@ pub async fn project_provider_event_in_transaction(
             .await?
         }
         CanonicalEvent::TurnAborted(event) => {
-            update_assignment_and_run_state(
+            if !update_assignment_and_run_state(
                 transaction,
                 &assignment_id,
                 &run_id,
@@ -230,7 +251,10 @@ pub async fn project_provider_event_in_transaction(
                 Some(&event.reason),
                 runtime.created_at.as_str(),
             )
-            .await?;
+            .await?
+            {
+                return Ok(true);
+            }
             insert_projected_teammate_message(
                 transaction,
                 runtime,
@@ -242,7 +266,7 @@ pub async fn project_provider_event_in_transaction(
             .await?
         }
         CanonicalEvent::RuntimeError(event) if !event.recoverable => {
-            update_assignment_and_run_state(
+            if !update_assignment_and_run_state(
                 transaction,
                 &assignment_id,
                 &run_id,
@@ -251,7 +275,10 @@ pub async fn project_provider_event_in_transaction(
                 Some(&event.message),
                 runtime.created_at.as_str(),
             )
-            .await?;
+            .await?
+            {
+                return Ok(true);
+            }
             insert_projected_teammate_message(
                 transaction,
                 runtime,
@@ -299,24 +326,22 @@ async fn insert_projected_teammate_message(
             .fetch_one(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-    let ordinal: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(ordinal), 0) + 1
-         FROM chat_conversation_items WHERE reply_thread_id = ?",
+    let order_key = crate::timeline::next_order_key(
+        transaction,
+        &conversation_id,
+        Some(target.reply_thread_id.as_str()),
     )
-    .bind(target.reply_thread_id.as_str())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+    .await?;
     let revision_id = format!("organizational-revision:{event_hash}");
     sqlx::query(
         "INSERT INTO chat_conversation_items
-            (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES (?, ?, ?, 'message', ?, ?)",
     )
     .bind(&item_id)
     .bind(&conversation_id)
     .bind(target.reply_thread_id.as_str())
-    .bind(ordinal)
+    .bind(&order_key)
     .bind(runtime.created_at.as_str())
     .execute(&mut **transaction)
     .await
@@ -340,16 +365,17 @@ async fn insert_projected_teammate_message(
         "agentRunId": target.run_id,
         "payload": payload,
     });
+    let bounded = crate::timeline::bounded_projected_revision(markdown, rich_content.clone())?;
     sqlx::query(
         "INSERT INTO chat_communication_message_revisions
-            (id, message_item_id, revision, normalized_markdown,
+            (id, message_item_id, normalized_markdown,
              rich_content_schema_version, rich_content_data, created_at)
-         VALUES (?, ?, 1, ?, 1, ?, ?)",
+         VALUES (?, ?, ?, 1, ?, ?)",
     )
     .bind(&revision_id)
     .bind(&item_id)
-    .bind(markdown)
-    .bind(serde_json::to_string(&rich_content).map_err(serialization_error)?)
+    .bind(&bounded.normalized_markdown)
+    .bind(&bounded.rich_content_data)
     .bind(runtime.created_at.as_str())
     .execute(&mut **transaction)
     .await
@@ -375,7 +401,7 @@ async fn insert_projected_teammate_message(
     .map_err(persistence_error)?;
     sqlx::query(
         "UPDATE chat_reply_threads
-         SET reply_count = reply_count + 1, last_activity_at = ?,
+         SET last_activity_at = ?,
              revision = revision + 1, updated_at = ? WHERE id = ?",
     )
     .bind(runtime.created_at.as_str())
@@ -397,6 +423,11 @@ async fn insert_projected_teammate_message(
     Ok(true)
 }
 
+/// Moves the assignment `assignment_id` to `assignment_state` and its run `run_id` to
+/// `run_state`, reporting whether the assignment changed. An assignment that already settled
+/// keeps its state; its run then records only a settled state, since the provider turn really
+/// ended, and never waits or works again. Callers project no message for an assignment that
+/// did not change, so a settled assignment shows no late approval, question, or review.
 async fn update_assignment_and_run_state(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment_id: &ChatWorkAssignmentId,
@@ -405,12 +436,15 @@ async fn update_assignment_and_run_state(
     run_state: &str,
     reason: Option<&str>,
     occurred_at: &str,
-) -> ChatResult<()> {
+) -> ChatResult<bool> {
     let terminal = matches!(assignment_state, "completed" | "failed" | "cancelled");
-    sqlx::query(
+    // A settled assignment never leaves its state, so provider events that arrive after a
+    // cancel applied from another device cannot reopen it.
+    let assignment = sqlx::query(
         "UPDATE chat_work_assignments
          SET state = ?, state_reason = ?, settled_at = CASE WHEN ? THEN ? ELSE NULL END,
-             revision = revision + 1, updated_at = ? WHERE id = ?",
+             revision = revision + 1, updated_at = ?
+         WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled')",
     )
     .bind(assignment_state)
     .bind(reason)
@@ -421,7 +455,11 @@ async fn update_assignment_and_run_state(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    let run_terminal = matches!(run_state, "completed" | "failed" | "cancelled");
+    let applied = assignment.rows_affected() == 1;
+    let run_terminal = SETTLED_RUN_STATES.contains(&run_state);
+    if !applied && !run_terminal {
+        return Ok(false);
+    }
     sqlx::query(
         "UPDATE chat_agent_runs
          SET state = ?, settled_at = CASE WHEN ? THEN ? ELSE NULL END, updated_at = ?
@@ -435,11 +473,33 @@ async fn update_assignment_and_run_state(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    Ok(())
+    Ok(applied)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Reads the files recorded for the completed turn: every diff update, the completion
+/// report, and the post-turn checkpoint diff merged by the ingestion path.
+async fn turn_changed_files(
+    transaction: &mut Transaction<'_, Sqlite>,
+    runtime: &CanonicalRuntimeEvent,
+) -> ChatResult<Vec<ChangedFileSummary>> {
+    let data: Option<String> = sqlx::query_scalar(
+        "SELECT changed_file_summary_data FROM chat_turns WHERE id = ? AND thread_id = ?",
+    )
+    .bind(runtime.turn_id.as_ref().map(ChatTurnId::as_str))
+    .bind(runtime.thread_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)?
+    .flatten();
+    data.as_deref()
+        .map(serde_json::from_str::<Vec<ChangedFileSummary>>)
+        .transpose()
+        .map_err(serialization_error)
+        .map(Option::unwrap_or_default)
 }
 
 fn serialization_error<T>(_error: T) -> ChatError {

@@ -1,34 +1,69 @@
 use super::*;
 
 #[cfg(target_os = "linux")]
-fn signal_desktop_process(process_id: u32, signal: &str) -> Result<(), String> {
-    let status = std::process::Command::new("kill")
-        .arg(signal)
-        .arg(process_id.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| format!("close app: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("close app failed with status {status}"))
-    }
-}
-
-#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DesktopProcessSignal {
     Term,
     Kill,
 }
 
+/// Desktop process access used by the close flow. A process is pinned before its identity is
+/// checked, and signals go to the pinned process, so a PID reused after the check never
+/// receives them.
 #[cfg(target_os = "linux")]
 pub(super) trait DesktopProcessController {
+    type Pinned;
+
+    /// Pins the process currently using `process_id`, or returns `None` when none does.
+    fn pin(&mut self, process_id: u32) -> Result<Option<Self::Pinned>, String>;
     fn observe(&mut self, process_id: u32) -> Result<Option<ObservedDesktopProcess>, String>;
-    fn signal(&mut self, process_id: u32, signal: DesktopProcessSignal) -> Result<(), String>;
+    fn signal(&mut self, pinned: &Self::Pinned, signal: DesktopProcessSignal)
+    -> Result<(), String>;
     fn wait(&mut self, duration: std::time::Duration);
+    /// The session anchors checked before each signal, or `None` when the name list stands alone.
+    fn session_anchors(&mut self) -> Option<std::sync::Arc<SessionAnchors>>;
+}
+
+/// A Linux process reference that cannot drift to another process.
+#[cfg(target_os = "linux")]
+pub(super) enum PinnedLinuxProcess {
+    /// A pidfd keeps naming the opened process after it exits, even if its PID is reused.
+    Pidfd(rustix::fd::OwnedFd),
+    /// Kernels before 5.3 have no `pidfd_open`; the signal goes by PID right after the same
+    /// identity check.
+    Pid(rustix::process::Pid),
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn pin_linux_process(process_id: u32) -> Result<Option<PinnedLinuxProcess>, String> {
+    let Some(pid) = i32::try_from(process_id)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    else {
+        return Ok(None);
+    };
+    match rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()) {
+        Ok(pidfd) => Ok(Some(PinnedLinuxProcess::Pidfd(pidfd))),
+        Err(rustix::io::Errno::SRCH) => Ok(None),
+        Err(rustix::io::Errno::NOSYS) => Ok(Some(PinnedLinuxProcess::Pid(pid))),
+        Err(error) => Err(format!("close app: open process handle: {error}")),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn signal_linux_process(
+    pinned: &PinnedLinuxProcess,
+    signal: DesktopProcessSignal,
+) -> Result<(), String> {
+    let signal = match signal {
+        DesktopProcessSignal::Term => rustix::process::Signal::TERM,
+        DesktopProcessSignal::Kill => rustix::process::Signal::KILL,
+    };
+    match pinned {
+        PinnedLinuxProcess::Pidfd(pidfd) => rustix::process::pidfd_send_signal(pidfd, signal),
+        PinnedLinuxProcess::Pid(pid) => rustix::process::kill_process(*pid, signal),
+    }
+    .map_err(|error| format!("close app: {error}"))
 }
 
 #[cfg(target_os = "linux")]
@@ -36,6 +71,12 @@ struct SystemDesktopProcessController;
 
 #[cfg(target_os = "linux")]
 impl DesktopProcessController for SystemDesktopProcessController {
+    type Pinned = PinnedLinuxProcess;
+
+    fn pin(&mut self, process_id: u32) -> Result<Option<PinnedLinuxProcess>, String> {
+        pin_linux_process(process_id)
+    }
+
     fn observe(&mut self, process_id: u32) -> Result<Option<ObservedDesktopProcess>, String> {
         let process_path = PathBuf::from("/proc").join(process_id.to_string());
         if !process_path.exists() {
@@ -44,18 +85,20 @@ impl DesktopProcessController for SystemDesktopProcessController {
         Ok(observe_linux_process(&process_path, process_id))
     }
 
-    fn signal(&mut self, process_id: u32, signal: DesktopProcessSignal) -> Result<(), String> {
-        signal_desktop_process(
-            process_id,
-            match signal {
-                DesktopProcessSignal::Term => "-TERM",
-                DesktopProcessSignal::Kill => "-KILL",
-            },
-        )
+    fn signal(
+        &mut self,
+        pinned: &PinnedLinuxProcess,
+        signal: DesktopProcessSignal,
+    ) -> Result<(), String> {
+        signal_linux_process(pinned, signal)
     }
 
     fn wait(&mut self, duration: std::time::Duration) {
         std::thread::sleep(duration);
+    }
+
+    fn session_anchors(&mut self) -> Option<std::sync::Arc<SessionAnchors>> {
+        current_session_anchors(|| false)
     }
 }
 
@@ -86,7 +129,8 @@ pub(super) fn validate_observed_close_process(
         .collect::<Vec<_>>();
     if observed_names
         .iter()
-        .any(|name| is_protected_desktop_app_name(name))
+        .chain(observed.executable_name.iter())
+        .any(|name| is_protected_observed_process_name(name))
     {
         return Err("refusing to close protected process".to_string());
     }
@@ -121,11 +165,15 @@ where
     C: DesktopProcessController,
     A: FnMut(&ObservedDesktopProcess) -> Result<(), String>,
 {
+    let Some(pinned) = controller.pin(request.process_id)? else {
+        return Ok(false);
+    };
     let Some(observed) = observe_exact_close_process(request, controller)? else {
         return Ok(false);
     };
+    refuse_anchored_close(request.process_id, controller.session_anchors().as_deref())?;
     authorize(&observed)?;
-    if let Err(error) = controller.signal(request.process_id, DesktopProcessSignal::Term) {
+    if let Err(error) = controller.signal(&pinned, DesktopProcessSignal::Term) {
         if observe_exact_close_process(request, controller)?.is_none() {
             return Ok(false);
         }
@@ -140,22 +188,30 @@ where
     let Some(observed) = observe_exact_close_process(request, controller)? else {
         return Ok(true);
     };
+    refuse_anchored_close(request.process_id, controller.session_anchors().as_deref())?;
     authorize(&observed)?;
-    controller.signal(request.process_id, DesktopProcessSignal::Kill)?;
+    if let Err(error) = controller.signal(&pinned, DesktopProcessSignal::Kill) {
+        if observe_exact_close_process(request, controller)?.is_none() {
+            return Ok(true);
+        }
+        return Err(error);
+    }
     Ok(true)
 }
 
-/// Recheck runtime authority immediately before each process signal.
+/// Recheck runtime authority, the session guard, and the `config` rules immediately before each
+/// process signal.
 #[cfg(target_os = "linux")]
 pub(super) fn close_desktop_process_checked<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    config: &Value,
     request: DistractionsCloseDesktopAppRequest,
     mut before_close: impl FnMut() -> Result<(), String>,
 ) -> Result<bool, String> {
     let mut controller = SystemDesktopProcessController;
     close_desktop_process_with(&request, &mut controller, |observed| {
         before_close()?;
-        let authorization = load_close_authorization(app, &request.rule_identity)?;
+        let authorization = load_close_authorization(app, config, &request.rule_identity)?;
         validate_names_authorized(observed.match_names.clone(), &authorization)
     })
 }
@@ -163,6 +219,7 @@ pub(super) fn close_desktop_process_checked<R: Runtime>(
 #[cfg(not(target_os = "linux"))]
 pub(super) fn close_desktop_process_checked<R: Runtime>(
     _app: &tauri::AppHandle<R>,
+    _config: &Value,
     _request: DistractionsCloseDesktopAppRequest,
     _before_close: impl FnMut() -> Result<(), String>,
 ) -> Result<bool, String> {

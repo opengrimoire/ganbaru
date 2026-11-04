@@ -28,7 +28,8 @@ const MAX_RECONCILIATION_MESSAGES: usize = 10_000;
 pub struct OpenCodeProviderDriver {
     pub(super) configuration: ProviderInstanceConfig,
     pub(super) settings: OpenCodeProviderSettings,
-    pub(super) password: Option<OpenCodeSecret>,
+    /// Password configured for an external server; owned servers generate their own.
+    pub(super) external_password: Option<OpenCodeSecret>,
     pub(super) live: Option<OpenCodeLiveSession>,
     pub(super) cached_models: Option<ProviderModelCatalog>,
     pub(super) cached_commands: Vec<OpenCodeCommand>,
@@ -155,7 +156,7 @@ impl OpenCodeProviderDriver {
         Ok(Self {
             configuration,
             settings,
-            password,
+            external_password: password,
             live: None,
             cached_models: None,
             cached_commands: Vec::new(),
@@ -240,12 +241,15 @@ impl OpenCodeProviderDriver {
                 let mut server = OwnedOpenCodeServer::start(
                     &self.configuration,
                     workspace,
-                    self.password.as_ref(),
+                    ProjectConfigurationAccess::Restricted,
                 )
                 .await?;
                 let server_probe = async {
-                    let client =
-                        OpenCodeHttpClient::new(&server.origin, workspace, self.password.as_ref())?;
+                    let client = OpenCodeHttpClient::new(
+                        &server.origin,
+                        workspace,
+                        Some(server.password()),
+                    )?;
                     client.health().await?;
                     let commands = client.commands().await?;
                     let lsp = client.lsp_status().await?;
@@ -266,7 +270,8 @@ impl OpenCodeProviderDriver {
             }
             OpenCodeConnectionMode::External { origin, .. } => {
                 self.require_external_workspace_confirmation()?;
-                let client = OpenCodeHttpClient::new(origin, workspace, self.password.as_ref())?;
+                let client =
+                    OpenCodeHttpClient::new(origin, workspace, self.external_password.as_ref())?;
                 let health = client.health().await?;
                 let inventory = client.provider_inventory().await?;
                 let agents = client.agents().await?;
@@ -326,8 +331,12 @@ impl OpenCodeProviderDriver {
         let resume_session_id = input.resume_session_id()?;
         let mut owned_server = match self.settings.connection {
             OpenCodeConnectionMode::Local => Some(
-                OwnedOpenCodeServer::start(&self.configuration, &workspace, self.password.as_ref())
-                    .await?,
+                OwnedOpenCodeServer::start(
+                    &self.configuration,
+                    &workspace,
+                    input.workspace().project_configuration,
+                )
+                .await?,
             ),
             OpenCodeConnectionMode::External { .. } => None,
         };
@@ -336,8 +345,9 @@ impl OpenCodeProviderDriver {
             .map(|server| server.origin.as_str())
             .or_else(|| self.settings.server_origin())
             .ok_or_else(driver_state_error)?;
-        let client = OpenCodeHttpClient::new(origin, &workspace, self.password.as_ref())?;
-        if owned_server.is_some() {
+        let password = server_password(&owned_server, self.external_password.as_ref());
+        let client = OpenCodeHttpClient::new(origin, &workspace, password)?;
+        if registers_internal_mcp(&self.settings.connection, password) {
             if let Some(server) = &self.configuration.internal_mcp {
                 if let Err(error) = client
                     .add_mcp_server(&server.name, &server.url, &server.bearer_token)
@@ -462,8 +472,12 @@ impl OpenCodeProviderDriver {
         self.require_external_workspace_confirmation()?;
         let mut owned_server = match self.settings.connection {
             OpenCodeConnectionMode::Local => Some(
-                OwnedOpenCodeServer::start(&self.configuration, &workspace, self.password.as_ref())
-                    .await?,
+                OwnedOpenCodeServer::start(
+                    &self.configuration,
+                    &workspace,
+                    request.workspace.project_configuration,
+                )
+                .await?,
             ),
             OpenCodeConnectionMode::External { .. } => None,
         };
@@ -473,7 +487,11 @@ impl OpenCodeProviderDriver {
             .or_else(|| self.settings.server_origin())
             .ok_or_else(driver_state_error)?;
         let result = async {
-            let client = OpenCodeHttpClient::new(origin, &workspace, self.password.as_ref())?;
+            let client = OpenCodeHttpClient::new(
+                origin,
+                &workspace,
+                server_password(&owned_server, self.external_password.as_ref()),
+            )?;
             let session = client
                 .fork_session(
                     request.provider_thread_id.as_str(),
@@ -750,4 +768,27 @@ async fn stop_owned_server(server: &mut Option<OwnedOpenCodeServer>) {
     if let Some(server) = server.as_mut() {
         let _ = server.stop().await;
     }
+}
+
+/// Password the client sends: the owned server's ephemeral secret, or the configured external one.
+fn server_password<'a>(
+    owned_server: &'a Option<OwnedOpenCodeServer>,
+    external_password: Option<&'a OpenCodeSecret>,
+) -> Option<&'a OpenCodeSecret> {
+    owned_server
+        .as_ref()
+        .map(OwnedOpenCodeServer::password)
+        .or(external_password)
+}
+
+/// Decides whether the internal MCP endpoint and its bearer token are registered on a server.
+///
+/// Only an owned, password-authenticated loopback server receives the token:
+/// an unauthenticated server would expose it to every local user, and an
+/// external server is outside Ganbaru's process ownership.
+pub(super) fn registers_internal_mcp(
+    connection: &OpenCodeConnectionMode,
+    password: Option<&OpenCodeSecret>,
+) -> bool {
+    matches!(connection, OpenCodeConnectionMode::Local) && password.is_some()
 }

@@ -1,3 +1,8 @@
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 #[cfg(windows)]
 use super::*;
 
@@ -25,18 +30,6 @@ fn windows_foreground_process_id(hwnd: ::windows::Win32::Foundation::HWND) -> Op
     // storage for the duration of the call. Windows does not retain the pointer.
     let thread_id = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id as *mut u32)) };
     validated_window_process_id(thread_id, process_id)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validated_window_process_id;
-
-    #[test]
-    fn foreground_process_identity_requires_api_success_and_nonzero_output() {
-        assert_eq!(validated_window_process_id(7, 11), Some(11));
-        assert_eq!(validated_window_process_id(0, 11), None);
-        assert_eq!(validated_window_process_id(7, 0), None);
-    }
 }
 
 #[cfg(windows)]
@@ -145,4 +138,16 @@ pub(in crate::distractions) fn close_current_foreground_desktop_app(
             .map_err(|e| format!("close foreground window: {e}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validated_window_process_id;
+
+    #[test]
+    fn foreground_process_identity_requires_api_success_and_nonzero_output() {
+        assert_eq!(validated_window_process_id(7, 11), Some(11));
+        assert_eq!(validated_window_process_id(0, 11), None);
+        assert_eq!(validated_window_process_id(7, 0), None);
+    }
 }

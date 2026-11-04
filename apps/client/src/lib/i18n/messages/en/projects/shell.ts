@@ -90,8 +90,6 @@ export const shell = {
     groupName: "Group name",
     groupNamePlaceholder: "Group name",
     projectNamePlaceholder: "Project name",
-    projectTemplate: "Project template",
-    managedFolderCreationHint: "A private folder is created automatically. Add an existing folder later in Project settings.",
     groupColor: "Group color",
     selectGroupColor: "Select group color",
     selectGroupIcon: (icon: string) => `Select ${icon} group icon`,

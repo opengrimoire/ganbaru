@@ -34,13 +34,11 @@ fn table_group_counts_and_calculations_cover_filtered_rows_outside_the_window() 
         for index in 0..325 {
             let title = format!("{} {index:03}", if index >= 100 { "keep" } else { "skip" });
             let category = if index % 2 == 0 { "__all__" } else { "odd" };
-            sqlx::query("INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title, properties) VALUES (?, 'data_source_id', ?, ?, ?)")
-                .bind(format!("60000000-0000-4000-8000-{index:012}"))
-                .bind(DATA_SOURCE_A).bind(&title).bind(json!({
+            insert_row_page(&pool, &format!("60000000-0000-4000-8000-{index:012}"), DATA_SOURCE_A, &title, json!({
                     "Name": { "id": "title", "type": "title", "title": [{ "plain_text": title, "type": "text", "text": { "content": title, "link": null }, "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" }, "href": null }] },
                     "Estimate": { "id": "estimate", "type": "number", "number": index },
                     "Category": { "id": "category", "type": "select", "select": { "id": category, "name": if category == "__all__" { "Even" } else { "Odd" }, "color": "default" } }
-                }).to_string()).execute(&pool).await.unwrap();
+                })).await;
         }
         let update = serde_json::from_value(json!({
             "filter": [{ "property_id": "title", "condition": "contains", "value": "keep" }], "sorts": [],

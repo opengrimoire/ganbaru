@@ -31,7 +31,7 @@ afterEach(async () => {
 
 /** Supply a real query controller with only its native persistence boundaries mocked. */
 async function renderTable() {
-  const field: ProjectCustomField = {id: "points", projectId: "project", name: "Points", fieldType: "number", sortOrder: 100, icon: null, createdAt: "", updatedAt: ""};
+  const field: ProjectCustomField = {id: "points", projectId: "project", name: "Points", fieldType: "number", orderKey: "100", icon: null, createdAt: "", updatedAt: ""};
   const savePresentation = vi.fn<Input["projects"]["saveTaskListPresentation"]>().mockResolvedValue(undefined);
   const addField = vi.fn<Input["projects"]["addCustomField"]>().mockResolvedValue({...field, id: "created", name: "Budget"});
   const saveColumns = vi.fn<Input["projects"]["saveTaskListColumns"]>().mockResolvedValue(undefined);
@@ -166,7 +166,7 @@ describe("Projects table property configuration", () => {
     button("Points").click();
     await tick();
     expect(document.querySelector('[data-app-floating-surface][aria-label="Points"]')).toBeNull();
-    finishCreation({id: "created", projectId: "project", name: "Budget", fieldType: "number", sortOrder: 100, createdAt: "", updatedAt: "", icon: null});
+    finishCreation({id: "created", projectId: "project", name: "Budget", fieldType: "number", orderKey: "100", createdAt: "", updatedAt: "", icon: null});
     await vi.waitFor(() => expect(query.propertySaving).toBe(false));
     expect(saveColumns).toHaveBeenCalledExactlyOnceWith("view-list", ["custom:points", "custom:created", "due"]);
     await vi.waitFor(() => expect(draft.isConnected).toBe(false));

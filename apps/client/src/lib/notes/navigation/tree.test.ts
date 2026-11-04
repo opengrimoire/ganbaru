@@ -8,7 +8,6 @@ import {
   notesPageFolderMoveTargets,
   parseStoredNotesSidebarCollapsedFolderIds,
 } from "./tree";
-import { NOTES_PAGE_PROJECT_ID_PROPERTY } from "$lib/notes/project-membership";
 import type { NotesFolder, NotesPage, NotesParent } from "$lib/notes/types";
 
 const now = "2026-07-10T12:00:00.000Z";
@@ -48,8 +47,8 @@ function page(
     archived: false,
     icon: null,
     cover: null,
+    project_id: projectId,
     properties: {
-      [NOTES_PAGE_PROJECT_ID_PROPERTY]: projectId,
       title: {
         id: "title",
         type: "title",

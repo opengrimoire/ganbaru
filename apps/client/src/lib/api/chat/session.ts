@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
+import { withProviderStartTrust } from "$lib/api/working-folder-trust";
 import type {
   ChatDraftRead,
   ChatAttachmentRead,
@@ -94,10 +95,10 @@ export async function forkChatThread(
   title: string,
   lastProviderTurnId: string | null = null,
 ): Promise<ChatThreadShellRead> {
-  return parseChatThreadShell(await invoke<unknown>("chat_fork_thread", {
+  return withProviderStartTrust(async () => parseChatThreadShell(await invoke<unknown>("chat_fork_thread", {
     dbUrl: await ensureDbUrl(),
     request: { sourceThreadId, newThreadId, title, lastProviderTurnId },
-  }));
+  })));
 }
 
 export async function readChatDraft(draftId: string): Promise<ChatDraftRead | null> {
@@ -279,7 +280,7 @@ export async function stopChatSession(threadId: ChatThreadId, force: boolean): P
 }
 
 export async function sendChatTurn(request: SendChatTurnCommand): Promise<SendChatTurnResult> {
-  const value = await invoke<unknown>("chat_send_turn", { dbUrl: await ensureDbUrl(), request });
+  const value = await withProviderStartTrust(async () => invoke<unknown>("chat_send_turn", { dbUrl: await ensureDbUrl(), request }));
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Chat send response must be an object");
   const record = value as Record<string, unknown>;
   return {

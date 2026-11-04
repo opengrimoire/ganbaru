@@ -31,10 +31,10 @@
     projectPickerSubpanelSide,
   } from "$lib/projects/picker-panels";
   import {
-    PROJECT_TEMPLATE_IDS,
+    DEFAULT_PROJECT_GROUP_ICON,
+    DEFAULT_PROJECT_ICON,
     type Project,
     type ProjectGroup,
-    type ProjectTemplateId,
   } from "$lib/projects/types";
   import { notesFoldersForProject } from "$lib/notes/navigation/tree";
   import { notesHierarchyChildren } from "$lib/notes/navigation/hierarchy-menu";
@@ -56,6 +56,7 @@
   import { cn, type MaybePromise } from "$lib/utils";
   import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
+  import ProjectNameDraftForm from "$lib/components/projects/pickers/ProjectNameDraftForm.svelte";
   import NotesHierarchyPickerPanel from "./NotesHierarchyPickerPanel.svelte";
 
 
@@ -105,10 +106,11 @@
   let projectSearch = $state("");
   let searchedPageQuery = $state("");
   let groupDraft = $state("");
+  let groupIconDraft = $state(DEFAULT_PROJECT_GROUP_ICON);
   let isCreateGroupOpen = $state(false);
   let createProjectGroupId = $state<string | null>(null);
   let projectDraftByGroup = $state<Record<string, string>>({});
-  let projectTemplateDraftByGroup = $state<Record<string, ProjectTemplateId>>({});
+  let projectIconDraftByGroup = $state<Record<string, string>>({});
   let activeGroupId = $state<string | null>(null);
   let activeGroupAnchorElement = $state<HTMLElement | null>(null);
   let activeProjectId = $state<string | null>(null);
@@ -218,15 +220,6 @@
     return showInactiveProjects
       ? projects.projectsForGroupIncludingInactive(group.id)
       : projects.projectsForGroup(group.id);
-  }
-
-  function projectTemplateLabel(templateId: ProjectTemplateId): string {
-    if (templateId === "software") return t("projects.templates.software");
-    if (templateId === "course") return t("projects.templates.course");
-    if (templateId === "routine") return t("projects.templates.routine");
-    if (templateId === "reading") return t("projects.templates.reading");
-    if (templateId === "chores") return t("projects.templates.chores");
-    return t("projects.templates.blank");
   }
 
   function rowHeight(): number {
@@ -645,18 +638,18 @@
   async function submitGroup(): Promise<void> {
     const name = groupDraft.trim();
     if (!name) return;
-    await projects.addGroup(name);
+    await projects.addGroup(name, groupIconDraft);
     groupDraft = "";
+    groupIconDraft = DEFAULT_PROJECT_GROUP_ICON;
     isCreateGroupOpen = false;
   }
 
   async function submitProject(groupId: string): Promise<void> {
     const name = (projectDraftByGroup[groupId] ?? "").trim();
     if (!name) return;
-    const templateId = projectTemplateDraftByGroup[groupId] ?? "blank";
-    await projects.addProject(groupId, name, templateId);
+    await projects.addProject(groupId, name, projectIconDraftByGroup[groupId] ?? DEFAULT_PROJECT_ICON);
     projectDraftByGroup = { ...projectDraftByGroup, [groupId]: "" };
-    projectTemplateDraftByGroup = { ...projectTemplateDraftByGroup, [groupId]: "blank" };
+    projectIconDraftByGroup = { ...projectIconDraftByGroup, [groupId]: DEFAULT_PROJECT_ICON };
     createProjectGroupId = null;
     await onProjectSelected();
   }
@@ -789,6 +782,7 @@
 
 <div
   bind:this={panelRootElement}
+  data-floating-root
   class="project-picker-panel surface-floating flex min-h-0 w-full flex-col overflow-hidden"
   style={panelStyle}
 >
@@ -957,16 +951,13 @@
       <div class="pointer-events-none absolute left-1.5 right-1.5 top-0 border-t border-border/70"></div>
       {#if panelMode === "groups"}
         {#if isCreateGroupOpen}
-          <form class="flex gap-1" onsubmit={(event) => { event.preventDefault(); void submitGroup(); }}>
-            <input
-              bind:value={groupDraft}
-              placeholder={t("projects.navigator.groupNamePlaceholder")}
-              class="field min-w-0 flex-1 text-popover-foreground"
-            />
-            <button type="submit" class="min-h-(--panel-row-height) rounded-floating-item bg-primary px-2 text-panel-detail font-medium text-primary-foreground">
-              {t("common.save")}
-            </button>
-          </form>
+          <ProjectNameDraftForm
+            bind:name={groupDraft}
+            bind:icon={groupIconDraft}
+            placeholder={t("projects.navigator.groupNamePlaceholder")}
+            {iconStrokeWidth}
+            onSubmit={() => void submitGroup()}
+          />
         {:else}
           <button
             type="button"
@@ -979,45 +970,13 @@
         {/if}
       {:else if directProjectGroup}
         {#if createProjectGroupId === directProjectGroup.id}
-          <form class="grid gap-1" onsubmit={(event) => { event.preventDefault(); void submitProject(directProjectGroup.id); }}>
-            <div class="flex gap-1">
-              <input
-                value={projectDraftByGroup[directProjectGroup.id] ?? ""}
-                oninput={(event) => {
-                  projectDraftByGroup = {
-                    ...projectDraftByGroup,
-                    [directProjectGroup.id]: event.currentTarget.value,
-                  };
-                }}
-                placeholder={t("projects.navigator.projectNamePlaceholder")}
-                class="field min-w-0 flex-1 text-popover-foreground"
-              />
-              <button type="submit" class="min-h-(--panel-row-height) rounded-floating-item bg-primary px-2 text-panel-detail font-medium text-primary-foreground">
-                {t("common.save")}
-              </button>
-            </div>
-            <div class="flex flex-wrap gap-1" aria-label={t("projects.navigator.projectTemplate")}>
-              {#each PROJECT_TEMPLATE_IDS as templateId}
-                <button
-                  type="button"
-                  class={cn(
-                    "min-h-6 rounded-floating-item border px-1.5 text-panel-detail",
-                    (projectTemplateDraftByGroup[directProjectGroup.id] ?? "blank") === templateId
-                      ? "border-primary/60 bg-primary/10 text-primary"
-                      : "border-border bg-transparent text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
-                  )}
-                  onclick={() => {
-                    projectTemplateDraftByGroup = {
-                      ...projectTemplateDraftByGroup,
-                      [directProjectGroup.id]: templateId,
-                    };
-                  }}
-                >
-                  {projectTemplateLabel(templateId)}
-                </button>
-              {/each}
-            </div>
-          </form>
+          <ProjectNameDraftForm
+            bind:name={() => projectDraftByGroup[directProjectGroup.id] ?? "", (value) => { projectDraftByGroup = { ...projectDraftByGroup, [directProjectGroup.id]: value }; }}
+            bind:icon={() => projectIconDraftByGroup[directProjectGroup.id] ?? DEFAULT_PROJECT_ICON, (value) => { projectIconDraftByGroup = { ...projectIconDraftByGroup, [directProjectGroup.id]: value }; }}
+            placeholder={t("projects.navigator.projectNamePlaceholder")}
+            {iconStrokeWidth}
+            onSubmit={() => void submitProject(directProjectGroup.id)}
+          />
         {:else}
           <button
             type="button"
@@ -1049,6 +1008,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={projectSubpanelElement}
+    data-floating-root
     class={cn("project-picker-panel surface-floating fixed flex min-h-0 flex-col overflow-hidden", zIndexClass)}
     style={projectSubpanelStyle}
     onpointerenter={projectSubpanelDelay.cancel}
@@ -1093,45 +1053,13 @@
     <div bind:this={projectSubpanelFooterElement} class="relative z-10 shrink-0 bg-popover p-1.5">
       <div class="pointer-events-none absolute left-1.5 right-1.5 top-0 border-t border-border/70"></div>
       {#if createProjectGroupId === activeGroup.id}
-        <form class="grid gap-1" onsubmit={(event) => { event.preventDefault(); void submitProject(activeGroup.id); }}>
-          <div class="flex gap-1">
-            <input
-              value={projectDraftByGroup[activeGroup.id] ?? ""}
-              oninput={(event) => {
-                projectDraftByGroup = {
-                  ...projectDraftByGroup,
-                  [activeGroup.id]: event.currentTarget.value,
-                };
-              }}
-              placeholder={t("projects.navigator.projectNamePlaceholder")}
-              class="field min-w-0 flex-1 text-popover-foreground"
-            />
-            <button type="submit" class="min-h-(--panel-row-height) rounded-floating-item bg-primary px-2 text-panel-detail font-medium text-primary-foreground">
-              {t("common.save")}
-            </button>
-          </div>
-          <div class="flex flex-wrap gap-1" aria-label={t("projects.navigator.projectTemplate")}>
-            {#each PROJECT_TEMPLATE_IDS as templateId}
-              <button
-                type="button"
-                class={cn(
-                  "min-h-6 rounded-floating-item border px-1.5 text-panel-detail",
-                  (projectTemplateDraftByGroup[activeGroup.id] ?? "blank") === templateId
-                    ? "border-primary/60 bg-primary/10 text-primary"
-                    : "border-border bg-transparent text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
-                )}
-                onclick={() => {
-                  projectTemplateDraftByGroup = {
-                    ...projectTemplateDraftByGroup,
-                    [activeGroup.id]: templateId,
-                  };
-                }}
-              >
-                {projectTemplateLabel(templateId)}
-              </button>
-            {/each}
-          </div>
-        </form>
+        <ProjectNameDraftForm
+          bind:name={() => projectDraftByGroup[activeGroup.id] ?? "", (value) => { projectDraftByGroup = { ...projectDraftByGroup, [activeGroup.id]: value }; }}
+          bind:icon={() => projectIconDraftByGroup[activeGroup.id] ?? DEFAULT_PROJECT_ICON, (value) => { projectIconDraftByGroup = { ...projectIconDraftByGroup, [activeGroup.id]: value }; }}
+          placeholder={t("projects.navigator.projectNamePlaceholder")}
+          {iconStrokeWidth}
+          onSubmit={() => void submitProject(activeGroup.id)}
+        />
       {:else}
         <button
           type="button"

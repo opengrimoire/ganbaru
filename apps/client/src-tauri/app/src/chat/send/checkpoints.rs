@@ -2,6 +2,7 @@
 
 use super::support::{corrupt_data_error, persistence_error};
 use crate::chat::workspace::AuthorizedWorkingFolder;
+use ganbaru_chat_contracts::events::ChangedFileSummary;
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ChatTurnId, RepositoryKind, UtcTimestamp,
 };
@@ -73,25 +74,30 @@ pub(super) async fn ensure_pre_turn_checkpoint(
     }
 }
 
+/// Captures the post-turn checkpoint and returns the files that changed since the
+/// thread's previous checkpoint.
+///
+/// Returns `None` when the folder is not a Git repository or the capture failed, so
+/// callers cannot mistake a missing diff for an unchanged folder.
 pub(super) async fn ensure_post_turn_checkpoint(
     pool: &SqlitePool,
     workspace: &AuthorizedWorkingFolder,
     thread_id: &ChatThreadId,
     turn_id: &ChatTurnId,
     now: &UtcTimestamp,
-) {
+) -> Option<Vec<ChangedFileSummary>> {
     if workspace.repository_kind != RepositoryKind::Git {
-        return;
+        return None;
     }
     let ordinal = match turn_ordinal(pool, thread_id, turn_id).await {
         Ok(value) => value,
         Err(error) => {
             record_checkpoint_failure(pool, thread_id, Some(turn_id), "post_turn", &error, now)
                 .await;
-            return;
+            return None;
         }
     };
-    if let Err(error) = ganbaru_chat::checkpoints::capture_and_store(
+    match ganbaru_chat::checkpoints::capture_and_store(
         pool,
         workspace,
         thread_id,
@@ -102,9 +108,13 @@ pub(super) async fn ensure_post_turn_checkpoint(
     )
     .await
     {
-        if error.code != ChatErrorCode::Conflict {
-            record_checkpoint_failure(pool, thread_id, Some(turn_id), "post_turn", &error, now)
-                .await;
+        Ok(checkpoint) => Some(checkpoint.changed_files),
+        Err(error) => {
+            if error.code != ChatErrorCode::Conflict {
+                record_checkpoint_failure(pool, thread_id, Some(turn_id), "post_turn", &error, now)
+                    .await;
+            }
+            None
         }
     }
 }

@@ -2,6 +2,7 @@ import {
   REPOSITORY_KINDS,
   WORKING_FOLDER_KINDS,
   WORKING_FOLDER_BINDING_STATUSES,
+  WORKING_FOLDER_TRUST_STATES,
   type ProjectWorkingFolderRead,
   type ProjectWorkingFolder,
 } from "../contracts";
@@ -48,6 +49,7 @@ export function parseProjectWorkingFolderRead(value: unknown, label = "workingFo
     canonicalPath: readNullable(record.canonicalPath, `${label}.canonicalPath`, readString),
     lastVerifiedAt: readNullable(record.lastVerifiedAt, `${label}.lastVerifiedAt`, readUtcTimestamp),
     currentBranch: readNullable(record.currentBranch, `${label}.currentBranch`, readString),
+    trust: readEnum(record.trust, WORKING_FOLDER_TRUST_STATES, `${label}.trust`),
   };
 }
 

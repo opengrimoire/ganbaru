@@ -18,7 +18,7 @@ function project(overrides: Partial<Project> = {}): Project {
     name: "Launch",
     icon: "lucide:folder",
     color: 2,
-    sortOrder: 1000,
+    orderKey: "1000",
     status: "active",
     defaultEventName: "Deep work",
     defaultEventTimeMode: "timed",

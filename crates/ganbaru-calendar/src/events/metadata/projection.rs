@@ -1,6 +1,7 @@
 //! Project prepared writes through the same slim rows and expander as persisted reads.
 
 use super::{Metadata, PreparedMutation};
+use crate::reads::event_music::{EventMusicAssignment, event_music_flags};
 use crate::reads::native_window::{NativeCalendarWindow, WindowSource};
 use crate::reads::{DbCalendarEventRow, DbOverrideRow, DbWindowAttendeeRow};
 use crate::recurrence::canonical::Window;
@@ -64,7 +65,12 @@ impl PreparedMutation {
             ))
         });
         attendees.sort_by(|a, b| a.event_id.cmp(&b.event_id));
-        WindowSource::from_prepared(events, overrides, attendees).expand(window)
+        let projected = WindowSource::from_prepared(events, overrides, attendees).expand(window)?;
+        // A review of partial rows would approve changes the person cannot see.
+        if projected.omitted_template_count > 0 {
+            return Err("Calendar review does not fit its window bounds".into());
+        }
+        Ok(projected)
     }
 }
 
@@ -79,9 +85,9 @@ impl Metadata {
         let mut notifications: Vec<_> = self.notifications.iter().collect();
         notifications.sort_by_key(|row| (row.sort_order, &row.id));
         let mut exdates: Vec<_> = self.exdates.iter().collect();
-        exdates.sort_by_key(|row| (row.sort_order, &row.id));
+        exdates.sort_by(|a, b| a.occurrence_date.cmp(&b.occurrence_date));
         let mut rdates: Vec<_> = self.rdates.iter().collect();
-        rdates.sort_by_key(|row| (row.sort_order, &row.id));
+        rdates.sort_by(|a, b| a.occurrence_start.cmp(&b.occurrence_start));
         let sequence_steps = if self.sequence_steps.is_empty() {
             None
         } else {
@@ -100,6 +106,20 @@ impl Metadata {
                 .map_err(|error| format!("encode Calendar preview rhythm: {error}"))?,
             )
         };
+        let music_assignments: Vec<_> = self
+            .music_assignments
+            .iter()
+            .map(|row| EventMusicAssignment {
+                owner_id: row.owner_id.clone(),
+                owner_kind: row.owner_kind.clone(),
+                phase: row.phase.clone(),
+                behavior: row.behavior.clone(),
+                has_playlist: row.playlist_id.is_some(),
+                soundscape_behavior: row.soundscape_behavior.clone(),
+                has_soundscape_preset: row.soundscape_preset_id.is_some(),
+            })
+            .collect();
+        let music = event_music_flags(&music_assignments, config.is_some());
         Ok(DbCalendarEventRow {
             id: event.id.clone(),
             title: event.title.clone(),
@@ -121,6 +141,8 @@ impl Metadata {
             location: event.location.clone(),
             has_call_link: i64::from(!event.url.is_empty()),
             meeting_enabled: event.meeting_enabled,
+            has_music_playlist: i64::from(music.playlist),
+            has_soundscape: i64::from(music.soundscape),
             transparency: event.transparency.clone(),
             status: event.status.clone(),
             local_rsvp_status: event.local_rsvp_status.clone(),

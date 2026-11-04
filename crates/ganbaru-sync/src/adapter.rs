@@ -1,9 +1,12 @@
-//! Domain adapters: composite value codecs, intrinsic validation, derived projections, coupled
-//! priorities, and recovery presentation for tables whose manifest names an adapter.
+//! Domain adapters: composite value codecs, intrinsic validation, derived projections, forced
+//! group values, coupled priorities, asset references, and recovery presentation for tables whose
+//! manifest names an adapter.
 
 use std::fmt;
 
-use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
+use ganbaru_sync_contracts::{Field, GroupId, GroupValue, RowKey, TableId, Value};
+
+use crate::assets::AssetRef;
 
 /// A value the adapter refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,6 +19,10 @@ impl fmt::Display for AdapterError {
 }
 
 impl std::error::Error for AdapterError {}
+
+/// Winning values of another deleted row of the same recovery offer, by table and key, or `None`
+/// when that row is not part of it.
+pub type OfferedRows<'f, 'o> = &'f dyn Fn(TableId, &str) -> Option<&'o [(GroupId, Value)]>;
 
 /// Title and preview of a row offered for recovery.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -33,23 +40,56 @@ pub trait DomainAdapter: Send + Sync {
     /// Name the manifest refers to.
     fn name(&self) -> &'static str;
 
-    /// Encodes owned child rows, each given as fields in [`crate::manifest::OwnedTable`] column
-    /// order, into the group value. The encoding must not normalize: a non-canonical list must
-    /// fail [`DomainAdapter::validate`] instead of changing on the way through.
+    /// Encodes the rows of a custom codec owned table, each given as fields in
+    /// [`crate::manifest::OwnedTable`] column order, into its blob field. The encoding must not
+    /// normalize: a list it cannot carry unchanged is refused, so every accepted blob decodes to
+    /// the rows it came from and encodes back to the same bytes.
     fn encode_owned(
         &self,
         table: TableId,
-        group: GroupId,
+        owned: &str,
         rows: Vec<Vec<Field>>,
-    ) -> Result<Value, AdapterError>;
+    ) -> Result<Vec<u8>, AdapterError> {
+        let _ = (table, owned, rows);
+        Err(AdapterError("owned table"))
+    }
 
-    /// Decodes a group value into owned child rows in order.
+    /// Decodes the blob field of a custom codec owned table into its rows in order.
     fn decode_owned(
+        &self,
+        table: TableId,
+        owned: &str,
+        bytes: &[u8],
+    ) -> Result<Vec<Vec<Field>>, AdapterError> {
+        let _ = (table, owned, bytes);
+        Err(AdapterError("owned table"))
+    }
+
+    /// Row lists of a custom codec owned table that the codec round-trip conformance encodes,
+    /// stores, reads back, and decodes. They should reach the codec's bounds.
+    fn owned_samples(&self, table: TableId, owned: &str) -> Vec<Vec<Vec<Field>>> {
+        let _ = (table, owned);
+        Vec::new()
+    }
+
+    /// Groups of a table whose values may reference managed assets, read by
+    /// [`crate::Engine::referenced_assets`].
+    fn asset_groups(&self, table: TableId) -> &'static [GroupId] {
+        let _ = table;
+        &[]
+    }
+
+    /// Assets a group value references, each in a class of the table's domain. Called for the
+    /// groups [`DomainAdapter::asset_groups`] names, with live and retained values.
+    fn asset_refs(
         &self,
         table: TableId,
         group: GroupId,
         value: &Value,
-    ) -> Result<Vec<Vec<Field>>, AdapterError>;
+    ) -> Result<Vec<AssetRef>, AdapterError> {
+        let _ = (table, group, value);
+        Ok(Vec::new())
+    }
 
     /// Derived column values to set when the group materializes.
     fn derived(
@@ -59,14 +99,58 @@ pub trait DomainAdapter: Send + Sync {
         value: &Value,
     ) -> Result<Vec<(&'static str, Field)>, AdapterError>;
 
+    /// Values a row materializes in place of its merge winners, given the winning value of each
+    /// group. The winners stay in merge state and a group left out materializes its winner, so
+    /// every replica stores the same row and none needs to seal a repair.
+    fn forced_groups(
+        &self,
+        table: TableId,
+        winners: &[(GroupId, &Value)],
+    ) -> Result<Vec<(GroupId, Value)>, AdapterError> {
+        let _ = (table, winners);
+        Ok(Vec::new())
+    }
+
     /// Priority of a coupled group value; greater wins before clocks are compared.
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8;
 
     /// Checks rules the column types cannot express. Called for every group of the table.
     fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError>;
 
+    /// Checks rules of a row key that the manifest's key rule cannot express. Called for every
+    /// change of the table, whatever its action.
+    fn validate_key(&self, table: TableId, key: &str) -> Result<(), AdapterError> {
+        let _ = (table, key);
+        Ok(())
+    }
+
+    /// Checks rules that span groups of one row. Called after [`DomainAdapter::validate`] for a
+    /// change that writes every group, with the row's key and the groups in ascending order.
+    fn validate_row(
+        &self,
+        table: TableId,
+        row: &RowKey,
+        groups: &[GroupValue],
+    ) -> Result<(), AdapterError> {
+        let _ = (table, row, groups);
+        Ok(())
+    }
+
     /// Presentation of a retained row from its winning group values.
     fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation;
+
+    /// Whether a deleted row offered for recovery is superseded by another row of the same offer,
+    /// read through `offered`, so the offer leaves its presentation out of the unseen text.
+    fn superseded_in_offer<'o>(
+        &self,
+        table: TableId,
+        key: &str,
+        values: &[(GroupId, Value)],
+        offered: OfferedRows<'_, 'o>,
+    ) -> bool {
+        let _ = (table, key, values, offered);
+        false
+    }
 }
 
 /// Registered adapters by name.
@@ -87,6 +171,11 @@ impl Adapters {
             .retain(|existing| existing.name() != adapter.name());
         self.adapters.push(adapter);
         self
+    }
+
+    /// Names of the registered adapters.
+    pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.adapters.iter().map(|adapter| adapter.name())
     }
 
     /// Adapter by name.

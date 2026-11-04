@@ -3,6 +3,7 @@
 //! Every digest and signature input starts with a domain string and a zero byte, so bytes
 //! produced for one purpose never verify or collide under another.
 
+use ganbaru_contacts::is_small_order_public_key;
 use ring::rand::SystemRandom;
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 use sha2::{Digest, Sha256};
@@ -14,8 +15,22 @@ pub const OPERATION_SIGNATURE_DOMAIN: &[u8] = b"ganbaru-sync/op/v1";
 pub const OPERATION_HASH_DOMAIN: &[u8] = b"ganbaru-sync/op-hash/v1";
 /// Hash of one group value inside an operation.
 pub const VALUE_HASH_DOMAIN: &[u8] = b"ganbaru-sync/value/v1";
-/// Person signature over a writer certificate.
-pub const CERTIFICATE_DOMAIN: &[u8] = b"ganbaru-sync/writer-certificate/v1";
+/// Device signature over a writer certificate.
+pub const CERTIFICATE_DOMAIN: &[u8] = b"ganbaru-sync/writer-certificate/v2";
+/// Person signature over a space charter.
+pub const CHARTER_DOMAIN: &[u8] = b"ganbaru-sync/charter/v1";
+/// Charter hash: the previous entry hash of authorization revision 1.
+pub const CHARTER_HASH_DOMAIN: &[u8] = b"ganbaru-sync/charter-hash/v1";
+/// Admin signature over an authorization proposal.
+pub const PROPOSAL_DOMAIN: &[u8] = b"ganbaru-sync/proposal/v1";
+/// Device signature over a device-signed authorization proposal: a device key or key epoch.
+pub const DEVICE_PROPOSAL_DOMAIN: &[u8] = b"ganbaru-sync/device-proposal/v1";
+/// Proposal hash, the idempotence key of a proposal.
+pub const PROPOSAL_HASH_DOMAIN: &[u8] = b"ganbaru-sync/proposal-hash/v1";
+/// Authorization entry hash that forms the inner chain of the authorization log.
+pub const AUTHORIZATION_ENTRY_DOMAIN: &[u8] = b"ganbaru-sync/auth-entry/v1";
+/// Checksum of a recovery kit code.
+pub const RECOVERY_KIT_DOMAIN: &[u8] = b"ganbaru-sync/recovery-kit/v1";
 /// Derivation of a personal space id from a vault id.
 pub const PERSONAL_SPACE_DOMAIN: &[u8] = b"ganbaru-sync/personal-space/v1";
 /// Derivation of a writer id from a writer public key.
@@ -76,16 +91,19 @@ impl std::error::Error for WriterKeyError {}
 pub struct WriterPublicKey([u8; WRITER_PUBLIC_KEY_BYTES]);
 
 impl WriterPublicKey {
-    /// Wraps raw key bytes. Invalid curve points fail at verification.
+    /// Wraps raw key bytes. Invalid curve points and small-order keys fail at verification.
     pub fn from_bytes(bytes: [u8; WRITER_PUBLIC_KEY_BYTES]) -> Self {
         Self(bytes)
     }
 
-    /// Parses a raw key from a slice.
+    /// Parses a raw key from a slice, refusing small-order keys.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, WriterKeyError> {
-        <[u8; WRITER_PUBLIC_KEY_BYTES]>::try_from(bytes)
-            .map(Self)
-            .map_err(|_| WriterKeyError::InvalidKey)
+        let bytes = <[u8; WRITER_PUBLIC_KEY_BYTES]>::try_from(bytes)
+            .map_err(|_| WriterKeyError::InvalidKey)?;
+        if is_small_order_public_key(&bytes) {
+            return Err(WriterKeyError::InvalidKey);
+        }
+        Ok(Self(bytes))
     }
 
     /// Raw key bytes.
@@ -93,9 +111,10 @@ impl WriterPublicKey {
         &self.0
     }
 
-    /// Whether `signature` is this writer's signature over the signed envelope bytes.
+    /// Whether `signature` is this writer's signature over the signed envelope bytes. A
+    /// small-order key never verifies.
     pub fn verify_operation(&self, signed_bytes: &[u8], signature: &[u8]) -> bool {
-        if signature.len() != WRITER_SIGNATURE_BYTES {
+        if signature.len() != WRITER_SIGNATURE_BYTES || is_small_order_public_key(&self.0) {
             return false;
         }
         UnparsedPublicKey::new(&ED25519, &self.0)

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from "vitest";
-import { boundChatMarkdown, renderChatMarkdown, safeExternalUrl } from "./markdown";
+import { boundChatMarkdown, renderChatMarkdown, safeExternalUrl, sanitizeChatMarkdownHtml } from "./markdown";
 
 describe("Chat Markdown", () => {
   it("renders common Markdown and preserves incomplete streaming fences as inert text", () => {
@@ -26,6 +26,14 @@ describe("Chat Markdown", () => {
     expect(safeExternalUrl("file:///etc/passwd")).toBe(false);
     expect(safeExternalUrl("https://token@example.com")).toBe(false);
     expect(renderChatMarkdown("[Docs](https://example.com)")).toContain('data-chat-external-link="true"');
+  });
+
+  it("drops data attributes other than the external link marker", () => {
+    const html = sanitizeChatMarkdownHtml('<p data-selectable-content data-action="open">text</p><a href="https://example.com" data-chat-external-link="true" data-x="1">link</a>');
+    expect(html).not.toContain("data-selectable-content");
+    expect(html).not.toContain("data-action");
+    expect(html).not.toContain("data-x");
+    expect(html).toContain('data-chat-external-link="true"');
   });
 
   it("bounds adversarial line length and nesting before parsing", () => {

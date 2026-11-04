@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuickNotesTrashPurge } from "$lib/quick-notes/types";
-import { createQuickNotesTrashPurgeScheduler, quickNotesTrashPurgeDeadline } from "./trash-purge";
+import {
+  createQuickNotesTrashPurgeScheduler,
+  quickNotesTrashPurgeDeadline,
+} from "./trash-purge";
 
 const START = Date.parse("2026-10-08T12:00:00.000Z");
 

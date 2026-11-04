@@ -16,7 +16,7 @@ function preview(request: CalendarPreviewRequest): CalendarEditPreview {
   return { ...authority, commandId: request.commandId, sourceId: "source", editedId: request.commandId,
     reviewRevision: "a".repeat(64), changed: true,
     scope: { effectiveScope: "this", selectedActive: false, selectedStarted: false, selectedHasHistory: false },
-    window: { sourceEvents: [], windowEvents: [], totalEventCount: null, diagnostics: [] },
+    window: { sourceEvents: [], windowEvents: [], totalEventCount: null, diagnostics: [], omittedTemplateCount: 0 },
     previewedIds: new Set(), editingId: undefined,
   };
 }

@@ -1,6 +1,7 @@
 import { Temporal } from "@js-temporal/polyfill";
 import type { CalendarEvent } from "$lib/calendar/types";
-import { projectCustomFieldUsesTextValue } from "$lib/projects/custom-fields";
+import { canonicalProjectCustomFieldNumber, projectCustomFieldUsesTextValue } from "$lib/projects/custom-fields";
+import { compareTaskSectionOrder } from "$lib/projects/order";
 import type {
   ProjectCustomField,
   ProjectCustomFieldOption,
@@ -270,7 +271,7 @@ export function projectTaskDetailCustomFieldDrafts(input: {
     const value = input.valueForField(field);
     const optionValues = input.optionValuesForField(field);
     textDrafts[field.id] = value?.textValue ?? "";
-    numberDrafts[field.id] = String(value?.numberValue ?? "");
+    numberDrafts[field.id] = value?.numberValue ?? "";
     dateDrafts[field.id] = value?.dateValue ?? "";
     checkboxDrafts[field.id] = value?.checkboxValue ?? false;
     selectDrafts[field.id] = optionValues[0]?.id ?? "none";
@@ -296,7 +297,7 @@ export function projectTaskDetailCustomFieldDirty(input: {
     return (input.drafts.textDrafts[input.field.id] ?? "") !== (input.value?.textValue ?? "");
   }
   if (input.field.fieldType === "number") {
-    return (input.drafts.numberDrafts[input.field.id] ?? "") !== String(input.value?.numberValue ?? "");
+    return (input.drafts.numberDrafts[input.field.id] ?? "") !== (input.value?.numberValue ?? "");
   }
   if (input.field.fieldType === "date") {
     return (input.drafts.dateDrafts[input.field.id] ?? "") !== (input.value?.dateValue ?? "");
@@ -317,7 +318,7 @@ export function projectTaskDetailCustomFieldSaveDraft(input: {
   drafts: ProjectTaskDetailCustomFieldDrafts;
 }): ProjectTaskDetailCustomFieldSaveDraftResult {
   let textValue: string | null = null;
-  let numberValue: number | null = null;
+  let numberValue: string | null = null;
   let dateValue: string | null = null;
   let checkboxValue: boolean | null = null;
   let optionIds: string[] = [];
@@ -327,11 +328,11 @@ export function projectTaskDetailCustomFieldSaveDraft(input: {
   } else if (input.field.fieldType === "number") {
     const numberText = (input.drafts.numberDrafts[input.field.id] ?? "").trim();
     if (numberText) {
-      const parsed = Number(numberText);
-      if (!Number.isFinite(parsed)) {
+      const canonical = canonicalProjectCustomFieldNumber(numberText);
+      if (canonical === null) {
         return { ok: false, reason: "invalid-number" };
       }
-      numberValue = parsed;
+      numberValue = canonical;
     }
   } else if (input.field.fieldType === "date") {
     const dateText = (input.drafts.dateDrafts[input.field.id] ?? "").trim();
@@ -433,7 +434,7 @@ export function projectTaskDetailMergeSavedCustomFieldDraft(input: {
       ...input.drafts,
       numberDrafts: {
         ...input.drafts.numberDrafts,
-        [fieldId]: input.saved.numberValue === null ? "" : String(input.saved.numberValue),
+        [fieldId]: input.saved.numberValue ?? "",
       },
     };
   }
@@ -516,7 +517,7 @@ export function parentTaskCandidateTasks({
       && candidate.id !== task.id
       && (!query || candidate.title.toLowerCase().includes(query))
     )
-    .sort((a, b) => a.sectionSortOrder - b.sectionSortOrder || a.title.localeCompare(b.title))
+    .sort(compareTaskSectionOrder)
     .slice(0, 8);
 }
 

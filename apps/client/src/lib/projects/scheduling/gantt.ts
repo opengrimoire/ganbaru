@@ -1,4 +1,5 @@
 import { Temporal } from "@js-temporal/polyfill";
+import { compareTaskSectionOrder } from "$lib/projects/order";
 import type { ProjectStatus, ProjectTask, ProjectTaskDependency } from "$lib/projects/types";
 
 export interface ProjectGanttInput {
@@ -243,8 +244,7 @@ export function buildProjectGanttTimeline(input: ProjectGanttInput): ProjectGant
     .sort((a, b) =>
       a.startDate.localeCompare(b.startDate)
       || a.endDate.localeCompare(b.endDate)
-      || a.task.sectionSortOrder - b.task.sectionSortOrder
-      || a.task.title.localeCompare(b.task.title)
+      || compareTaskSectionOrder(a.task, b.task)
     );
   const rowsByTaskId = new Map(rows.map((row) => [row.task.id, row]));
   const dependencyEdges = input.dependencies

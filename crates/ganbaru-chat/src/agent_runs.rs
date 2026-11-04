@@ -58,10 +58,36 @@ pub struct StartingAgentRun<'a> {
     pub now: &'a UtcTimestamp,
 }
 
+/// How a launch ended for the assignment that started it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LaunchSettlement {
+    /// The launch result was recorded on the assignment.
+    Recorded,
+    /// The assignment settled while the provider turn launched, so the run was cancelled and
+    /// the caller must stop the provider session it started.
+    Superseded,
+}
+
+/// Records the starting run of `run`, refusing when its assignment already settled so the
+/// launch aborts before the provider starts. A settle from any device wins, so launch writes
+/// leave a completed, failed, or cancelled assignment untouched.
 pub async fn insert_starting_run(
     transaction: &mut Transaction<'_, Sqlite>,
     run: StartingAgentRun<'_>,
 ) -> ChatResult<()> {
+    let settled: Option<bool> = sqlx::query_scalar(
+        "SELECT state IN ('completed', 'failed', 'cancelled')
+         FROM chat_work_assignments WHERE id = ?",
+    )
+    .bind(run.binding.assignment_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    if settled != Some(false) {
+        return Err(ChatError::invalid_transition(
+            "The work assignment settled before its run started",
+        ));
+    }
     sqlx::query(
         "INSERT INTO chat_agent_runs
             (id, assignment_id, project_id, working_folder_id,
@@ -91,46 +117,78 @@ pub async fn insert_starting_run(
     Ok(())
 }
 
+/// Records the launch result of `binding` on its run, assignment, and dispatch job.
+///
+/// An assignment that settled meanwhile, for example through a cancel applied from another
+/// device, keeps its settled state: the run is cancelled, the dispatch job ends, and the result
+/// reports the launch as superseded so the caller stops the provider session.
 pub async fn settle_launch(
     pool: &sqlx::SqlitePool,
     binding: &AgentRunBinding,
     launch_error: Option<&ChatError>,
     now: &UtcTimestamp,
-) -> ChatResult<()> {
+) -> ChatResult<LaunchSettlement> {
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    if let Some(error) = launch_error {
-        sqlx::query(
-            "UPDATE chat_agent_runs
-             SET state = 'failed', settled_at = ?, updated_at = ? WHERE id = ?",
-        )
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .bind(binding.run_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
-        sqlx::query(
+    let assignment_updated = match launch_error {
+        Some(error) => sqlx::query(
             "UPDATE chat_work_assignments
              SET state = 'failed', state_reason = ?, settled_at = ?,
-                 revision = revision + 1, updated_at = ? WHERE id = ?",
+                 revision = revision + 1, updated_at = ?
+             WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled')",
         )
         .bind(&error.message)
         .bind(now.as_str())
         .bind(now.as_str())
-        .bind(binding.assignment_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
-        sqlx::query(
-            "UPDATE chat_assignment_dispatch_jobs
-             SET state = 'failed', last_error = ?, updated_at = ? WHERE assignment_id = ?",
+        .bind(binding.assignment_id.as_str()),
+        None => sqlx::query(
+            "UPDATE chat_work_assignments
+             SET state = 'working', state_reason = NULL,
+                 revision = revision + 1, updated_at = ?
+             WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled')",
         )
-        .bind(&error.message)
         .bind(now.as_str())
-        .bind(binding.assignment_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
+        .bind(binding.assignment_id.as_str()),
+    }
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?
+    .rows_affected()
+        > 0;
+    let (run_state, job_state, settlement) = match (assignment_updated, launch_error) {
+        (false, _) => ("cancelled", "cancelled", LaunchSettlement::Superseded),
+        (true, Some(_)) => ("failed", "failed", LaunchSettlement::Recorded),
+        (true, None) => ("working", "completed", LaunchSettlement::Recorded),
+    };
+    sqlx::query(
+        "UPDATE chat_agent_runs
+         SET state = ?,
+             started_at = CASE WHEN ? = 'working' THEN ? ELSE started_at END,
+             settled_at = CASE WHEN ? = 'working' THEN settled_at ELSE ? END,
+             updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(run_state)
+    .bind(run_state)
+    .bind(now.as_str())
+    .bind(run_state)
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .bind(binding.run_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    sqlx::query(
+        "UPDATE chat_assignment_dispatch_jobs
+         SET state = ?, last_error = ?, updated_at = ? WHERE assignment_id = ?",
+    )
+    .bind(job_state)
+    .bind(launch_error.map(|error| error.message.as_str()))
+    .bind(now.as_str())
+    .bind(binding.assignment_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    if let (true, Some(error)) = (assignment_updated, launch_error) {
         insert_dispatch_failure_message(
             &mut transaction,
             &binding.assignment_id,
@@ -139,39 +197,9 @@ pub async fn settle_launch(
             now,
         )
         .await?;
-    } else {
-        sqlx::query(
-            "UPDATE chat_agent_runs SET state = 'working', started_at = ?, updated_at = ?
-             WHERE id = ?",
-        )
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .bind(binding.run_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
-        sqlx::query(
-            "UPDATE chat_work_assignments
-             SET state = 'working', state_reason = NULL,
-                 revision = revision + 1, updated_at = ? WHERE id = ?",
-        )
-        .bind(now.as_str())
-        .bind(binding.assignment_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
-        sqlx::query(
-            "UPDATE chat_assignment_dispatch_jobs
-             SET state = 'completed', last_error = NULL, updated_at = ?
-             WHERE assignment_id = ?",
-        )
-        .bind(now.as_str())
-        .bind(binding.assignment_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
     }
-    transaction.commit().await.map_err(persistence_error)
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(settlement)
 }
 
 async fn insert_dispatch_failure_message(
@@ -202,23 +230,18 @@ async fn insert_dispatch_failure_message(
     let hash = sha256_hex(format!("{}:{claim_token}", assignment_id.as_str()).as_bytes());
     let item_id = format!("organizational-item:{hash}");
     let revision_id = format!("organizational-revision:{hash}");
-    let ordinal: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(ordinal), 0) + 1 FROM chat_conversation_items
-         WHERE reply_thread_id = ?",
-    )
-    .bind(&reply_thread_id)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+    let order_key =
+        crate::timeline::next_order_key(transaction, &conversation_id, Some(&reply_thread_id))
+            .await?;
     sqlx::query(
         "INSERT INTO chat_conversation_items
-            (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES (?, ?, ?, 'message', ?, ?)",
     )
     .bind(&item_id)
     .bind(&conversation_id)
     .bind(&reply_thread_id)
-    .bind(ordinal)
+    .bind(&order_key)
     .bind(now.as_str())
     .execute(&mut **transaction)
     .await
@@ -243,16 +266,17 @@ async fn insert_dispatch_failure_message(
         "payload": { "launchFailure": true },
     });
     let rich_content_data = serde_json::to_string(&rich_content).map_err(serialization_error)?;
+    let bounded = crate::timeline::bounded_projected_revision(message, rich_content)?;
     sqlx::query(
         "INSERT INTO chat_communication_message_revisions
-            (id, message_item_id, revision, normalized_markdown,
+            (id, message_item_id, normalized_markdown,
              rich_content_schema_version, rich_content_data, created_at)
-         VALUES (?, ?, 1, ?, 1, ?, ?)",
+         VALUES (?, ?, ?, 1, ?, ?)",
     )
     .bind(&revision_id)
     .bind(&item_id)
-    .bind(message)
-    .bind(&rich_content_data)
+    .bind(&bounded.normalized_markdown)
+    .bind(&bounded.rich_content_data)
     .bind(now.as_str())
     .execute(&mut **transaction)
     .await
@@ -276,8 +300,7 @@ async fn insert_dispatch_failure_message(
     .await
     .map_err(persistence_error)?;
     sqlx::query(
-        "UPDATE chat_reply_threads SET reply_count = reply_count + 1,
-             last_activity_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
+        "UPDATE chat_reply_threads SET last_activity_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
     )
     .bind(now.as_str())
     .bind(now.as_str())

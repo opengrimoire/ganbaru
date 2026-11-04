@@ -2,13 +2,19 @@ import { describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import {
   createQuickNoteTag,
+  downloadQuickNoteImage,
   getQuickNoteConflict,
+  importQuickNoteImage,
   mapQuickNote,
   mapQuickNoteConflict,
+  mapQuickNoteImage,
+  mapQuickNoteImagePick,
   mapQuickNotesTrashPurge,
   mapQuickNoteTag,
   purgeExpiredQuickNotesTrash,
   QuickNoteConflictError,
+  QuickNoteImageError,
+  readQuickNoteImage,
   QuickNoteTagError,
   QuickNoteWriteError,
   resolveQuickNoteConflict,
@@ -18,6 +24,12 @@ import {
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("$lib/api/db", () => ({ ensureDbUrl: async () => "sqlite:test" }));
+
+const DIGEST = "ab".repeat(32);
+
+function validImage(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { sha256: DIGEST, contentType: "image/png", byteSize: 2_048, width: 640, height: 480, ...overrides };
+}
 
 function validQuickNote(): Record<string, unknown> {
   return {
@@ -33,6 +45,7 @@ function validQuickNote(): Record<string, unknown> {
       },
     ],
     previewTruncated: false,
+    images: [validImage()],
     color: 4,
     tagId: "tag-1",
     pinned: true,
@@ -53,6 +66,7 @@ function conflictVersion(overrides: Record<string, unknown>): Record<string, unk
     displayed: true,
     title: "Plan",
     runs: null,
+    images: null,
     ...overrides,
   };
 }
@@ -184,5 +198,99 @@ describe("Quick notes API boundary", () => {
     const result = getQuickNoteConflict("note-1");
     await expect(result).rejects.toBeInstanceOf(QuickNoteConflictError);
     await expect(result).rejects.toMatchObject({ code: "resolved" });
+  });
+
+  it("validates image references on canonical rows", () => {
+    expect(mapQuickNote(validQuickNote()).images).toEqual([validImage()]);
+    expect(() => mapQuickNote({ ...validQuickNote(), images: null })).toThrow("images must be an array");
+    expect(() => mapQuickNote({ ...validQuickNote(), images: [validImage({ sha256: DIGEST.toUpperCase() })] }))
+      .toThrow("images[0].sha256 is invalid");
+    expect(() => mapQuickNote({ ...validQuickNote(), images: [validImage({ contentType: "image/svg+xml" })] }))
+      .toThrow("images[0].contentType is invalid");
+    expect(() => mapQuickNote({ ...validQuickNote(), images: [validImage({ width: 0 })] }))
+      .toThrow("images[0].width must be positive");
+  });
+
+  it("maps image conflict versions and requires the image list for that field", () => {
+    const conflict = mapQuickNoteConflict({
+      id: "note-1",
+      groups: [{ field: "images", versions: [conflictVersion({ title: null, images: [validImage()] })] }],
+    });
+    expect(conflict.groups[0]?.versions[0]?.images).toEqual([validImage()]);
+    expect(() => mapQuickNoteConflict({ id: "note-1", groups: [{ field: "images", versions: [conflictVersion({})] }] }))
+      .toThrow("does not match its field");
+    expect(() => mapQuickNoteConflict({
+      id: "note-1",
+      groups: [{ field: "title", versions: [conflictVersion({ images: [validImage()] })] }],
+    })).toThrow("does not match its field");
+  });
+
+  it("imports raw bytes on desktop and base64 text on Android", async () => {
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    vi.mocked(invoke).mockResolvedValueOnce(validImage());
+    await expect(importQuickNoteImage(bytes)).resolves.toEqual(validImage());
+    expect(invoke).toHaveBeenLastCalledWith("quick_notes_import_image", bytes);
+
+    vi.stubGlobal("__GANBARU_BUILD_PLATFORM__", "android");
+    try {
+      vi.mocked(invoke).mockResolvedValueOnce(validImage());
+      await importQuickNoteImage(bytes);
+      expect(invoke).toHaveBeenLastCalledWith("quick_notes_import_image", { base64: "iVBORw==" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("encodes large Android imports without exceeding argument limits", async () => {
+    const bytes = new Uint8Array(200_000).map((_, index) => index % 251);
+    vi.stubGlobal("__GANBARU_BUILD_PLATFORM__", "android");
+    try {
+      vi.mocked(invoke).mockResolvedValueOnce(validImage());
+      await importQuickNoteImage(bytes);
+      const body = vi.mocked(invoke).mock.lastCall?.[1];
+      if (typeof body !== "object" || body === null || !("base64" in body) || typeof body.base64 !== "string") {
+        throw new Error("expected a base64 body");
+      }
+      expect(Uint8Array.from(atob(body.base64), (char) => char.charCodeAt(0))).toEqual(bytes);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(["unsupported", "too_large", "unavailable"] as const)("preserves the native %s image code", async (code) => {
+    vi.mocked(invoke).mockRejectedValueOnce({ code });
+    const result = readQuickNoteImage(mapQuickNoteImage(validImage()));
+    await expect(result).rejects.toBeInstanceOf(QuickNoteImageError);
+    await expect(result).rejects.toMatchObject({ code });
+  });
+
+  it("reads image bytes as an ArrayBuffer by file reference only", async () => {
+    const buffer = new ArrayBuffer(4);
+    vi.mocked(invoke).mockResolvedValueOnce(buffer);
+    await expect(readQuickNoteImage(mapQuickNoteImage(validImage()))).resolves.toBe(buffer);
+    expect(invoke).toHaveBeenLastCalledWith("quick_notes_read_image", {
+      file: { sha256: DIGEST, contentType: "image/png" },
+    });
+    vi.mocked(invoke).mockResolvedValueOnce([1, 2, 3]);
+    await expect(readQuickNoteImage(mapQuickNoteImage(validImage()))).rejects.toThrow("must be an ArrayBuffer");
+  });
+
+  it("validates picker results and keeps per-file rejection codes", () => {
+    expect(mapQuickNoteImagePick({
+      images: [validImage()],
+      rejected: [{ fileName: "notes.png", error: { code: "unsupported" } }],
+      skipped: 2,
+    })).toEqual({ images: [validImage()], rejected: [{ fileName: "notes.png", code: "unsupported" }], skipped: 2 });
+    expect(() => mapQuickNoteImagePick({ images: [], rejected: [{ fileName: "a", error: "boom" }], skipped: 0 }))
+      .toThrow("error is invalid");
+    expect(() => mapQuickNoteImagePick({ images: [], rejected: [], skipped: -1 })).toThrow("skipped is invalid");
+  });
+
+  it("reports a canceled download as not saved", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(false);
+    await expect(downloadQuickNoteImage(mapQuickNoteImage(validImage()))).resolves.toBe(false);
+    expect(invoke).toHaveBeenLastCalledWith("quick_notes_download_image", {
+      file: { sha256: DIGEST, contentType: "image/png" },
+    });
   });
 });

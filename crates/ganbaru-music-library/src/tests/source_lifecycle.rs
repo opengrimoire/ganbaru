@@ -14,7 +14,9 @@ async fn pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -29,7 +31,7 @@ async fn seed(pool: &SqlitePool) {
     sqlx::query(
         "INSERT INTO music_source_collections
             (id, kind, identity_key, name, local_root_id, created_at_ms, updated_at_ms)
-         VALUES ('source-1', 'local-root', 'root:1', 'Music', 'root-1', 1, 1)",
+         VALUES ('source-1', 'local-root', 'local-root:root-1', 'Music', 'root-1', 1, 1)",
     )
     .execute(pool)
     .await
@@ -37,7 +39,7 @@ async fn seed(pool: &SqlitePool) {
     sqlx::query(
         "INSERT INTO music_source_collections
             (id, kind, identity_key, name, youtube_playlist_id, created_at_ms, updated_at_ms)
-         VALUES ('source-2', 'youtube-playlist', 'youtube:2', 'Online', 'PLsource2', 1, 1)",
+         VALUES ('source-2', 'youtube-playlist', 'youtube-playlist:PLsource2', 'Online', 'PLsource2', 1, 1)",
     )
     .execute(pool)
     .await
@@ -57,8 +59,8 @@ async fn seed(pool: &SqlitePool) {
         .unwrap();
         sqlx::query(
             "INSERT INTO music_source_collection_items
-                (collection_id, item_id, first_discovered_at_ms)
-             VALUES ('source-1', ?, 1)",
+                (collection_id, item_id, first_discovered_at_ms, sync_key)
+             VALUES ('source-1', ?, 1, lower(hex(randomblob(16))))",
         )
         .bind(item_id)
         .execute(pool)
@@ -75,23 +77,23 @@ async fn seed(pool: &SqlitePool) {
     .unwrap();
     sqlx::query(
         "INSERT INTO music_source_collection_items
-            (collection_id, item_id, first_discovered_at_ms)
-         VALUES ('source-2', 'item-shared', 1)",
+            (collection_id, item_id, first_discovered_at_ms, sync_key)
+         VALUES ('source-2', 'item-shared', 1, lower(hex(randomblob(16))))",
     )
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms)
-         VALUES ('playlist-1', 'Focus', 1, 1)",
+        "INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms)
+         VALUES ('playlist-1', 'Focus', 'a0', 1, 1)",
     )
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(
         "INSERT INTO music_playlist_memberships
-            (id, playlist_id, item_id, position, created_at_ms, updated_at_ms)
-         VALUES ('membership-1', 'playlist-1', 'item-member', 0, 1, 1)",
+            (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
+         VALUES ('membership-1', 'playlist-1', 'item-member', 'a0', 1, 1)",
     )
     .execute(pool)
     .await

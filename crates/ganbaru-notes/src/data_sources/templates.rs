@@ -1,3 +1,6 @@
+use crate::block_storage::{
+    BlockRowInsert, SiblingPositions, insert_block_row, replace_block_payload,
+};
 use crate::models::{
     NoteBlockRow, NoteDataSourceTemplateApply, NoteDataSourceTemplateBlockRow,
     NoteDataSourceTemplateCreateFromRow, NoteDataSourceTemplateDto,
@@ -6,7 +9,8 @@ use crate::models::{
 };
 use crate::validation::{plain_text_from_payload, require_uuid, validate_block_payload};
 use crate::{data_sources, reads, writes};
-use serde_json::{Value, json};
+use ganbaru_sync_contracts::OrderKey;
+use serde_json::Value;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::{HashMap, HashSet};
 
@@ -24,15 +28,16 @@ pub async fn list_data_source_templates(
             template.source_page_id,
             template.name,
             template.properties,
-            template.is_default,
+            (source.default_template_id IS template.id) AS is_default,
             COUNT(block.id) AS block_count,
             template.created_time,
             template.last_edited_time
          FROM notes_data_source_templates AS template
+         JOIN notes_data_sources AS source ON source.id = template.data_source_id
          LEFT JOIN notes_data_source_template_blocks AS block ON block.template_id = template.id
          WHERE template.data_source_id = ?
          GROUP BY template.id
-         ORDER BY template.is_default DESC,
+         ORDER BY is_default DESC,
                   template.last_edited_time DESC,
                   template.name COLLATE NOCASE ASC,
                   template.id ASC",
@@ -74,29 +79,27 @@ pub async fn create_data_source_template_from_row(
             &row_properties,
         )?),
     )?;
-    if is_default {
-        clear_default_template_tx(&mut tx, data_source_id).await?;
-    }
     sqlx::query(
         "INSERT INTO notes_data_source_templates (
             id,
             data_source_id,
             source_page_id,
             name,
-            properties,
-            is_default
+            properties
          )
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?)",
     )
     .bind(&template_id)
     .bind(data_source_id)
     .bind(&source_page_id)
     .bind(&name)
     .bind(properties.to_string())
-    .bind(if is_default { 1 } else { 0 })
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create notes data source template: {e}"))?;
+    if is_default {
+        set_default_template_tx(&mut tx, data_source_id, &template_id).await?;
+    }
     replace_template_blocks_from_page(&mut tx, &template_id, &source_page_id).await?;
     touch_data_source_tx(&mut tx, data_source_id, &data_source.database_id).await?;
     tx.commit()
@@ -159,18 +162,17 @@ pub async fn apply_data_source_template(
             id,
             parent_type,
             parent_data_source_id,
-            title,
-            properties
+            title
          )
-         VALUES (?, 'data_source_id', ?, ?, ?)",
+         VALUES (?, 'data_source_id', ?, ?)",
     )
     .bind(&page_id)
     .bind(data_source_id)
     .bind(&title)
-    .bind(properties.to_string())
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create notes row from data source template: {e}"))?;
+    crate::page_property_storage::write_page_properties(&mut tx, &page_id, &properties).await?;
     let mut reserved_ids = HashSet::from([page_id.clone()]);
     if blocks.is_empty() {
         insert_default_row_block(&mut tx, &page_id, &mut reserved_ids).await?;
@@ -184,7 +186,6 @@ pub async fn apply_data_source_template(
         &page_id,
         &schema_properties,
         &properties,
-        true,
     )
     .await?;
     data_sources::rollups::invalidate_rollup_cache_for_data_source_tx(&mut tx, data_source_id)
@@ -227,20 +228,10 @@ pub async fn update_data_source_template(
     load_template_row_tx(&mut tx, data_source_id, &template_id).await?;
     if let Some(is_default) = update.is_default {
         if is_default {
-            clear_default_template_tx(&mut tx, data_source_id).await?;
+            set_default_template_tx(&mut tx, data_source_id, &template_id).await?;
+        } else {
+            clear_default_template_tx(&mut tx, data_source_id, &template_id).await?;
         }
-        sqlx::query(
-            "UPDATE notes_data_source_templates
-             SET is_default = ?,
-                 last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE id = ? AND data_source_id = ?",
-        )
-        .bind(if is_default { 1 } else { 0 })
-        .bind(&template_id)
-        .bind(data_source_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("update notes data source template default: {e}"))?;
     }
     if let Some(name) = &name {
         sqlx::query(
@@ -311,29 +302,27 @@ pub async fn duplicate_data_source_template(
     let data_source = load_active_data_source_tx(&mut tx, data_source_id).await?;
     let source = load_template_row_tx(&mut tx, data_source_id, &template_id).await?;
     let blocks = load_template_block_rows_tx(&mut tx, &template_id).await?;
-    if is_default {
-        clear_default_template_tx(&mut tx, data_source_id).await?;
-    }
     sqlx::query(
         "INSERT INTO notes_data_source_templates (
             id,
             data_source_id,
             source_page_id,
             name,
-            properties,
-            is_default
+            properties
          )
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?)",
     )
     .bind(&duplicate_id)
     .bind(data_source_id)
     .bind(&source.source_page_id)
     .bind(&duplicate_name)
     .bind(&source.properties)
-    .bind(if is_default { 1 } else { 0 })
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("duplicate notes data source template: {e}"))?;
+    if is_default {
+        set_default_template_tx(&mut tx, data_source_id, &duplicate_id).await?;
+    }
     for block in &blocks {
         insert_template_block_snapshot(&mut tx, &duplicate_id, block).await?;
     }
@@ -393,11 +382,12 @@ async fn get_data_source_template(
             template.source_page_id,
             template.name,
             template.properties,
-            template.is_default,
+            (source.default_template_id IS template.id) AS is_default,
             COUNT(block.id) AS block_count,
             template.created_time,
             template.last_edited_time
          FROM notes_data_source_templates AS template
+         JOIN notes_data_sources AS source ON source.id = template.data_source_id
          LEFT JOIN notes_data_source_template_blocks AS block ON block.template_id = template.id
          WHERE template.id = ? AND template.data_source_id = ?
          GROUP BY template.id",
@@ -423,11 +413,12 @@ async fn load_template_row_tx(
             template.source_page_id,
             template.name,
             template.properties,
-            template.is_default,
+            (source.default_template_id IS template.id) AS is_default,
             COUNT(block.id) AS block_count,
             template.created_time,
             template.last_edited_time
          FROM notes_data_source_templates AS template
+         JOIN notes_data_sources AS source ON source.id = template.data_source_id
          LEFT JOIN notes_data_source_template_blocks AS block ON block.template_id = template.id
          WHERE template.id = ? AND template.data_source_id = ?
          GROUP BY template.id",
@@ -459,15 +450,16 @@ async fn load_active_data_source_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<DataSourceTemplateOwner, String> {
-    sqlx::query_as::<_, DataSourceTemplateOwner>(
-        "SELECT data_source.database_id,
-                data_source.properties
+    sqlx::query_as::<_, DataSourceTemplateOwner>(concat!(
+        "SELECT data_source.database_id, ",
+        crate::note_data_source_properties_json!("data_source"),
+        " AS properties
          FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.id = ?
            AND data_source.in_trash = 0
-           AND database.in_trash = 0",
-    )
+           AND database.in_trash = 0"
+    ))
     .bind(data_source_id)
     .fetch_optional(&mut **tx)
     .await
@@ -480,15 +472,16 @@ async fn load_active_row_page_tx(
     data_source_id: &str,
     page_id: &str,
 ) -> Result<NotePageRow, String> {
-    sqlx::query_as::<_, NotePageRow>(
-        "SELECT page.*
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
          FROM notes_pages AS page
          WHERE page.id = ?
            AND page.parent_type = 'data_source_id'
            AND page.parent_data_source_id = ?
            AND page.in_trash = 0
            AND page.archived = 0",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(page_id)
     .bind(data_source_id)
     .fetch_optional(&mut **tx)
@@ -507,55 +500,28 @@ async fn replace_template_blocks_from_page(
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("clear notes data source template blocks: {e}"))?;
-    let source_blocks = load_page_block_rows_tx(tx, source_page_id).await?;
-    for block in &source_blocks {
+    let source_blocks = crate::templates::load_page_block_subtree_rows(tx, source_page_id).await?;
+    for (ordinal, block) in (0_i64..).zip(&source_blocks) {
         validate_block_payload(
             &block.block_type,
             &serde_json::from_str(&block.payload)
                 .map_err(|e| format!("parse notes source block payload: {e}"))?,
         )?;
-        insert_source_block_snapshot(tx, template_id, block).await?;
+        insert_source_block_snapshot(tx, template_id, block, ordinal).await?;
     }
-    Ok(())
-}
-
-async fn load_page_block_rows_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    page_id: &str,
-) -> Result<Vec<NoteBlockRow>, String> {
-    sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                in_trash,
-                type AS block_type,
-                payload,
-                plain_text,
-                sort_order,
-                source_provider,
-                source_object_id,
-                source_last_edited_time,
-                created_time,
-                last_edited_time
-         FROM notes_blocks
-         WHERE page_id = ? AND in_trash = 0
-         ORDER BY CASE parent_type WHEN 'page_id' THEN 0 ELSE 1 END,
-                  sort_order ASC,
-                  id ASC",
+    crate::templates::ensure_template_content_size_tx(
+        tx,
+        crate::templates::TemplateKind::DataSource,
+        template_id,
     )
-    .bind(page_id)
-    .fetch_all(&mut **tx)
     .await
-    .map_err(|e| format!("load notes data source template source blocks: {e}"))
 }
 
 async fn insert_source_block_snapshot(
     tx: &mut Transaction<'_, Sqlite>,
     template_id: &str,
     block: &NoteBlockRow,
+    ordinal: i64,
 ) -> Result<(), String> {
     let mut payload: Value = serde_json::from_str(&block.payload)
         .map_err(|e| format!("parse template source block: {e}"))?;
@@ -585,7 +551,7 @@ async fn insert_source_block_snapshot(
             type,
             payload,
             plain_text,
-            sort_order
+            ordinal
          )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -597,7 +563,7 @@ async fn insert_source_block_snapshot(
     .bind(&block.block_type)
     .bind(payload.to_string())
     .bind(&block.plain_text)
-    .bind(block.sort_order)
+    .bind(ordinal)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("snapshot notes data source template block: {e}"))?;
@@ -619,7 +585,7 @@ async fn insert_template_block_snapshot(
             type,
             payload,
             plain_text,
-            sort_order
+            ordinal
          )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -631,7 +597,7 @@ async fn insert_template_block_snapshot(
     .bind(&block.block_type)
     .bind(&block.payload)
     .bind(&block.plain_text)
-    .bind(block.sort_order)
+    .bind(block.ordinal)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("copy notes data source template block: {e}"))?;
@@ -651,14 +617,12 @@ async fn load_template_block_rows_tx(
                 type AS block_type,
                 payload,
                 plain_text,
-                sort_order,
+                ordinal,
                 created_time,
                 last_edited_time
          FROM notes_data_source_template_blocks
          WHERE template_id = ?
-         ORDER BY CASE parent_type WHEN 'template' THEN 0 ELSE 1 END,
-                  sort_order ASC,
-                  id ASC",
+         ORDER BY ordinal ASC",
     )
     .bind(template_id)
     .fetch_all(&mut **tx)
@@ -741,6 +705,7 @@ async fn insert_template_blocks_as_page_blocks(
             }
         }
     }
+    let mut positions = SiblingPositions::default();
     for block in blocks {
         let duplicate_id = block_ids
             .get(&block.id)
@@ -759,32 +724,26 @@ async fn insert_template_blocks_as_page_blocks(
                 .ok_or_else(|| "template child block parent was not cloned".to_string())?;
             ("block_id", None, Some(duplicate_parent_id))
         };
-        sqlx::query(
-            "INSERT INTO notes_blocks (
-                id,
+        let order_key = positions.next_order_key(parent_block_id.as_deref())?;
+        let payload: Value = serde_json::from_str(&block.payload)
+            .map_err(|e| format!("parse notes data source template block payload: {e}"))?;
+        insert_block_row(
+            tx,
+            BlockRowInsert {
+                id: &duplicate_id,
                 page_id,
                 parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                type,
-                payload,
-                plain_text,
-                sort_order
-             )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                parent_page_id: parent_page_id.as_deref(),
+                parent_block_id: parent_block_id.as_deref(),
+                block_type: &block.block_type,
+                payload: &payload,
+                plain_text: &block.plain_text,
+                order_key: &order_key,
+                source_provider: None,
+                source_object_id: None,
+                source_last_edited_time: None,
+            },
         )
-        .bind(&duplicate_id)
-        .bind(page_id)
-        .bind(parent_type)
-        .bind(parent_page_id)
-        .bind(parent_block_id.as_deref())
-        .bind(block.has_children)
-        .bind(&block.block_type)
-        .bind(&block.payload)
-        .bind(&block.plain_text)
-        .bind(block.sort_order)
-        .execute(&mut **tx)
         .await
         .map_err(|e| format!("apply notes data source template block: {e}"))?;
         if block.block_type == "child_page" && !copied_child_pages.contains(&duplicate_id) {
@@ -804,10 +763,7 @@ async fn insert_template_blocks_as_page_blocks(
         writes::insert_child_page_copy(tx, graph).await?;
     }
     for database in &databases {
-        sqlx::query("UPDATE notes_blocks SET payload = ? WHERE id = ?")
-            .bind(database.payload.to_string())
-            .bind(&database.id)
-            .execute(&mut **tx)
+        replace_block_payload(tx, &database.id, "child_database", &database.payload)
             .await
             .map_err(|e| format!("set applied template database identities: {e}"))?;
         writes::database_copy::insert_database_copy(tx, database).await?;
@@ -849,8 +805,8 @@ async fn insert_applied_child_page(
             parent_type,
             parent_page_id,
             parent_block_id,
-            title,
-            properties
+            child_block_id,
+            title
          )
          VALUES (?, ?, ?, ?, ?, ?)",
     )
@@ -858,8 +814,8 @@ async fn insert_applied_child_page(
     .bind(page_parent_type)
     .bind(parent_page_id)
     .bind(block_parent_block_id.as_deref())
+    .bind(page_id)
     .bind(&title)
-    .bind(page_title_properties(&title).to_string())
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("create data source template child page: {e}"))?;
@@ -873,28 +829,26 @@ async fn insert_default_row_block(
 ) -> Result<(), String> {
     let block_id = next_reserved_uuid(tx, reserved_ids).await?;
     let payload = writes::default_text_payload("");
-    sqlx::query(
-        "INSERT INTO notes_blocks (
-            id,
+    let order_key = OrderKey::first().into_string();
+    insert_block_row(
+        tx,
+        BlockRowInsert {
+            id: &block_id,
             page_id,
-            parent_type,
-            parent_page_id,
-            type,
-            payload,
-            plain_text,
-            sort_order
-         )
-         VALUES (?, ?, 'page_id', ?, 'paragraph', ?, ?, 1000)",
+            parent_type: "page_id",
+            parent_page_id: Some(page_id),
+            parent_block_id: None,
+            block_type: "paragraph",
+            payload: &payload,
+            plain_text: &plain_text_from_payload("paragraph", &payload),
+            order_key: &order_key,
+            source_provider: None,
+            source_object_id: None,
+            source_last_edited_time: None,
+        },
     )
-    .bind(block_id)
-    .bind(page_id)
-    .bind(page_id)
-    .bind(payload.to_string())
-    .bind(plain_text_from_payload("paragraph", &payload))
-    .execute(&mut **tx)
     .await
-    .map_err(|e| format!("create data source template row initial block: {e}"))?;
-    Ok(())
+    .map_err(|e| format!("create data source template row initial block: {e}"))
 }
 
 async fn next_reserved_uuid(
@@ -915,17 +869,38 @@ async fn next_reserved_uuid(
     Err("could not reserve a unique note id".to_string())
 }
 
+/// Names `template_id` as the default template of its data source.
+async fn set_default_template_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    data_source_id: &str,
+    template_id: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE notes_data_sources
+         SET default_template_id = ?
+         WHERE id = ?",
+    )
+    .bind(template_id)
+    .bind(data_source_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| format!("set notes data source default template: {e}"))?;
+    Ok(())
+}
+
+/// Clears the data source default when it names `template_id`.
 async fn clear_default_template_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
+    template_id: &str,
 ) -> Result<(), String> {
     sqlx::query(
-        "UPDATE notes_data_source_templates
-         SET is_default = 0,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE data_source_id = ? AND is_default = 1",
+        "UPDATE notes_data_sources
+         SET default_template_id = NULL
+         WHERE id = ? AND default_template_id = ?",
     )
     .bind(data_source_id)
+    .bind(template_id)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("clear notes data source default template: {e}"))?;
@@ -1047,16 +1022,6 @@ fn normalize_row_title(value: &str) -> Result<String, String> {
         return Err("title must not contain control characters".to_string());
     }
     Ok(trimmed.to_string())
-}
-
-fn page_title_properties(title: &str) -> Value {
-    json!({
-        "title": {
-            "id": "title",
-            "type": "title",
-            "title": [writes::rich_text(title)]
-        }
-    })
 }
 
 fn parse_json(value: &str, label: &str) -> Result<Value, String> {

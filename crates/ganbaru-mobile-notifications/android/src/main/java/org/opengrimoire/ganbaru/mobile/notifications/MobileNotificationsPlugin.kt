@@ -15,7 +15,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
-import android.webkit.WebView
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -182,16 +181,6 @@ class MobileNotificationsPlugin(private val activity: Activity) : Plugin(activit
     } catch (error: Exception) {
       invoke.reject("Read device local time facts: ${error.message}")
     }
-  }
-
-  override fun load(webView: WebView) {
-    super.load(webView)
-    CalendarNotificationScheduler.captureAction(activity, activity.intent)
-  }
-
-  override fun onNewIntent(intent: Intent) {
-    super.onNewIntent(intent)
-    CalendarNotificationScheduler.captureAction(activity, intent)
   }
 
   @Command

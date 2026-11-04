@@ -73,7 +73,7 @@
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import FileText from "@lucide/svelte/icons/file-text";
-  import SmilePlus from "@lucide/svelte/icons/smile-plus";
+  import SmilePlus from "@lucide/svelte/icons/face-slightly-smiling-plus";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import NotesBlockHandle from "./NotesBlockHandle.svelte";
   import NotesTextBlockEditor from "./NotesTextBlockEditor.svelte";

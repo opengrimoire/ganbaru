@@ -1,4 +1,5 @@
 import type {
+  ApprovalSubject,
   ChatPromptCatalogEntry,
   ChatSendKey,
   ProjectWorkingFolderPathRead,
@@ -12,10 +13,14 @@ import type {
   ProviderSessionState,
   RateLimitStatusEvent,
   SafetyMode,
+  SessionPermissionGrant,
   UserInputQuestion,
   VersionedJson,
 } from "$lib/chat/contracts";
+import { parseApprovalSubject, parseSessionPermissionGrant } from "$lib/chat/validation/events";
+import { readArray } from "$lib/utils/readers";
 import { compareCompanyModels, integrationCompany, modelCompany } from "./model-company";
+export { clipboardImageFiles } from "$lib/utils/clipboard-images";
 
 export const CHAT_IMAGE_LIMIT = 8;
 export const CHAT_IMAGE_BYTE_LIMIT = 20 * 1024 * 1024;
@@ -304,6 +309,16 @@ export interface ApprovalChoiceRead {
   description: string | null;
 }
 
+/** Approval panel content read from a pending request's safe display data. */
+export interface ApprovalDisplayRead {
+  title: string | null;
+  detail: string | null;
+  payload: string | null;
+  subject: ApprovalSubject | null;
+  /** Grants an allow-for-session decision forwards, or null when they cannot be read. */
+  sessionGrants: SessionPermissionGrant[] | null;
+}
+
 const ACTIVE_SESSION_STATES: ProviderSessionState[] = [
   "active",
   "waiting_for_approval",
@@ -504,6 +519,36 @@ export function parseApprovalChoices(value: VersionedJson): ApprovalChoiceRead[]
   });
 }
 
+/**
+ * Reads the approval panel content from untrusted safe display data.
+ *
+ * A malformed subject is dropped. Unreadable session grants yield null, and the panel then
+ * withholds allow-for-session because it cannot show what that decision forwards.
+ */
+export function parseApprovalDisplay(value: VersionedJson): ApprovalDisplayRead {
+  const record = value.value;
+  if (typeof record !== "object" || record === null || Array.isArray(record)) {
+    return { title: null, detail: null, payload: null, subject: null, sessionGrants: [] };
+  }
+  return {
+    title: typeof record.title === "string" ? record.title : null,
+    detail: typeof record.detail === "string" ? record.detail : null,
+    payload: record.payload === undefined ? null : JSON.stringify(record.payload, null, 2),
+    subject: readOrNull(() => record.subject == null ? null : parseApprovalSubject(record.subject, "subject")),
+    sessionGrants: readOrNull(() => record.sessionGrants === undefined
+      ? []
+      : readArray(record.sessionGrants, "sessionGrants", parseSessionPermissionGrant)),
+  };
+}
+
+function readOrNull<T>(read: () => T): T | null {
+  try {
+    return read();
+  } catch {
+    return null;
+  }
+}
+
 export function parseUserInputQuestions(value: VersionedJson): UserInputQuestion[] {
   if (!Array.isArray(value.value)) return [];
   return value.value.flatMap((entry) => {
@@ -556,42 +601,6 @@ export function supportsImagePrompt(
   if (model?.capabilities.includes("images")) return true;
   if (providerFamilyId === "codex" && model && !model.custom) return false;
   return supports(capabilities, "images");
-}
-
-/** Returns deduplicated clipboard images from both file and item representations. */
-export function clipboardImageFiles(
-  clipboard: Pick<DataTransfer, "files" | "items"> | null,
-): File[] {
-  if (!clipboard) return [];
-  const images: File[] = [];
-  const add = (file: File | null, advertisedType?: string): void => {
-    if (!file) return;
-    const mimeType = file.type || advertisedType || "";
-    if (!mimeType.startsWith("image/")) return;
-    if (file.name.trim()) {
-      images.push(file);
-      return;
-    }
-    const extension = imageExtension(mimeType);
-    images.push(new File([file], `pasted-image.${extension}`, {
-      type: mimeType,
-      lastModified: file.lastModified,
-    }));
-  };
-  for (const file of Array.from(clipboard.files)) add(file);
-  if (images.length === 0) {
-    for (const item of Array.from(clipboard.items)) {
-      if (item.kind === "file") add(item.getAsFile(), item.type);
-    }
-  }
-  return images;
-}
-
-function imageExtension(mimeType: string): "png" | "jpg" | "gif" | "webp" {
-  if (mimeType === "image/jpeg") return "jpg";
-  if (mimeType === "image/gif") return "gif";
-  if (mimeType === "image/webp") return "webp";
-  return "png";
 }
 
 export function validateUserInputAnswers(

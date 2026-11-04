@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { openNotesExternalUrl } from "$lib/api/notes/knowledge";
   import Copy from "@lucide/svelte/icons/copy";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import Eye from "@lucide/svelte/icons/eye";
@@ -163,7 +163,7 @@
       : null;
     if (!target) return;
     event.preventDefault();
-    void openUrl(target.href).catch((reason) => {
+    void openNotesExternalUrl(target.href).catch((reason) => {
       error = errorMessage(reason);
     });
   }

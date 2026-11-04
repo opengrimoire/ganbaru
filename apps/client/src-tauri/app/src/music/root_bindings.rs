@@ -14,7 +14,8 @@ const MAX_ROOT_ID_BYTES: usize = 200;
 pub enum LocalRootBindingStatus {
     Available,
     Missing,
-    NeedsRelink,
+    /// The root exists in the vault but this device has no folder chosen for it.
+    Unbound,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -90,7 +91,7 @@ fn root_bindings_for_vault<'a>(
 #[cfg(desktop)]
 fn binding_status(path: Option<&str>) -> LocalRootBindingStatus {
     match path {
-        None => LocalRootBindingStatus::NeedsRelink,
+        None => LocalRootBindingStatus::Unbound,
         Some(path) if Path::new(path).is_dir() => LocalRootBindingStatus::Available,
         Some(_) => LocalRootBindingStatus::Missing,
     }
@@ -101,7 +102,7 @@ fn binding_status(path: Option<&str>) -> LocalRootBindingStatus {
     match path {
         Some(path) if path.starts_with("content://") => LocalRootBindingStatus::Available,
         Some(_) => LocalRootBindingStatus::Missing,
-        None => LocalRootBindingStatus::NeedsRelink,
+        None => LocalRootBindingStatus::Unbound,
     }
 }
 
@@ -168,6 +169,14 @@ pub fn music_set_local_root_binding(
 ) -> Result<LocalRootBindingRead, String> {
     let vault_id = require_active_vault(&app, &vault_id)?;
     let root_id = validate_root_id(&root_id)?.to_string();
+    // Only a folder chosen on this device may become a root; this runs before the app state
+    // update because both take the same lock.
+    #[cfg(desktop)]
+    super::path_authority::authorize(
+        &app,
+        folder_path.trim(),
+        super::path_authority::MusicPathKind::Folder,
+    )?;
     let folder_path = canonical_existing_directory(&folder_path)?;
     update_app_state(&app, |state| {
         set_binding(state, &vault_id, &root_id, folder_path);
@@ -201,6 +210,9 @@ mod tests {
             music_root_bindings: BTreeMap::new(),
             project_working_folders: Default::default(),
             chat: Default::default(),
+            music_path_grants: Default::default(),
+            music_soundscape_paths: Default::default(),
+            starter_vault_id: None,
         }
     }
 
@@ -265,7 +277,7 @@ mod tests {
         let app_state = state();
         assert_eq!(
             binding_read(&app_state, "vault-1", "soundtracks").status,
-            LocalRootBindingStatus::NeedsRelink,
+            LocalRootBindingStatus::Unbound,
         );
         assert_eq!(
             binding_status(Some("/a/path/that/does/not/exist")),

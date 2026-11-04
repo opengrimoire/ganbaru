@@ -5,6 +5,8 @@
 
 pub(crate) use ganbaru_chat_contracts::{events, models};
 
+pub mod executable_search;
+mod probe_directory;
 pub mod process;
 
 mod claude;
@@ -13,6 +15,7 @@ mod cursor;
 mod driver;
 mod opencode;
 mod registry;
+pub mod runtime_review;
 mod unsupported;
 
 pub use driver::*;

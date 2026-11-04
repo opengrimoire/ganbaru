@@ -1,3 +1,10 @@
+/// Requires a stored sibling order key to be a well-formed order key.
+pub fn validate_order_key(value: &str) -> Result<(), String> {
+    ganbaru_sync_contracts::OrderKey::parse(value)
+        .map(|_| ())
+        .map_err(|error| format!("order_key is invalid: {error}"))
+}
+
 pub fn validate_sort_order(value: f64) -> Result<(), String> {
     if value.is_finite() && value >= 0.0 {
         Ok(())

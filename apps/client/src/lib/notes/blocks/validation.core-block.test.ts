@@ -68,7 +68,6 @@ describe("notes core-block boundary validation", () => {
         id: "70707070-7070-4070-8070-707070707070",
         display_name: "Alice",
         created_time: "2026-07-01T12:00:00.000Z",
-        last_edited_time: "2026-07-01T12:01:00.000Z",
       });
 
       expect(user.display_name).toBe("Alice");

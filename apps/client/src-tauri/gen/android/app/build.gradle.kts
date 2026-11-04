@@ -29,9 +29,13 @@ val releaseTaskRequested = gradle.startParameter.taskNames.any { taskName ->
     taskName.contains("release", ignoreCase = true)
 }
 
-if (releaseTaskRequested && !releaseSigningPropertiesFile.isFile) {
+// CI builds release artifacts without secrets and signs them in a separate job.
+val unsignedReleaseRequested =
+    providers.environmentVariable("GANBARU_ANDROID_UNSIGNED_RELEASE").orNull == "true"
+
+if (releaseTaskRequested && !releaseSigningPropertiesFile.isFile && !unsignedReleaseRequested) {
     throw GradleException(
-        "Android release builds require gen/android/keystore.properties; see docs/operations/release/signing.md",
+        "Android release builds require gen/android/keystore.properties or GANBARU_ANDROID_UNSIGNED_RELEASE=true; see docs/operations/release/signing.md",
     )
 }
 
@@ -99,6 +103,72 @@ kotlin {
 
 rust {
     rootDirRel = "../../../"
+}
+
+// wry generates RustWebView.kt with Tauri bridge scripts allowed on every origin. Release builds serve only the bundled
+// app, so they restrict the scripts to the app origin; debug builds keep every origin for the development server.
+val rustWebViewSource =
+    layout.projectDirectory.file("src/main/java/org/opengrimoire/ganbaru/generated/RustWebView.kt").asFile
+val anyOriginInitScriptRule = "setOf(\"*\")"
+val appOriginInitScriptRule = "setOf(\"http://tauri.localhost\", \"https://tauri.localhost\")"
+
+fun registerInitScriptOriginTask(profile: String, rule: String) =
+    tasks.register("rustWebViewInitScriptOrigins$profile") {
+        val source = rustWebViewSource
+        mustRunAfter(tasks.matching { it.name.startsWith("rustBuild") && it.name.endsWith(profile) })
+        doLast {
+            val text = source.readText()
+            val updated = text.replace(anyOriginInitScriptRule, rule).replace(appOriginInitScriptRule, rule)
+            if (!updated.contains("addDocumentStartJavaScript(this, script, $rule)")) {
+                throw GradleException("Generated RustWebView.kt no longer matches the init script origin rule; review $source")
+            }
+            if (updated != text) source.writeText(updated)
+        }
+    }
+
+val releaseInitScriptOrigins = registerInitScriptOriginTask("Release", appOriginInitScriptRule)
+val debugInitScriptOrigins = registerInitScriptOriginTask("Debug", anyOriginInitScriptRule)
+
+// AppOriginChromeClient forwards these generated RustWebChromeClient callbacks. A wry update that overrides a different
+// set would silently lose behavior such as file inputs or dialogs, so the build stops until the wrapper is reviewed.
+val rustWebChromeClientSource =
+    layout.projectDirectory.file("src/main/java/org/opengrimoire/ganbaru/generated/RustWebChromeClient.kt").asFile
+val forwardedChromeClientCallbacks = setOf(
+    "onShowCustomView",
+    "onHideCustomView",
+    "onPermissionRequest",
+    "onJsAlert",
+    "onJsConfirm",
+    "onJsPrompt",
+    "onGeolocationPermissionsShowPrompt",
+    "onShowFileChooser",
+    "onConsoleMessage",
+    "onReceivedTitle",
+)
+
+fun registerChromeClientCallbackTask(profile: String) =
+    tasks.register("rustWebChromeClientCallbacks$profile") {
+        val source = rustWebChromeClientSource
+        val expected = forwardedChromeClientCallbacks
+        mustRunAfter(tasks.matching { it.name.startsWith("rustBuild") && it.name.endsWith(profile) })
+        doLast {
+            val overridden = Regex("""(?m)^  override fun (\w+)""").findAll(source.readText()).map { it.groupValues[1] }.toSet()
+            if (overridden != expected) {
+                throw GradleException(
+                    "Generated RustWebChromeClient.kt overrides $overridden; AppOriginChromeClient forwards $expected. Review $source",
+                )
+            }
+        }
+    }
+
+val releaseChromeClientCallbacks = registerChromeClientCallbackTask("Release")
+val debugChromeClientCallbacks = registerChromeClientCallbackTask("Debug")
+
+tasks.matching { it.name.startsWith("compile") && it.name.endsWith("ReleaseKotlin") }.configureEach {
+    dependsOn(releaseInitScriptOrigins, releaseChromeClientCallbacks)
+}
+tasks.matching { it.name.startsWith("compile") && it.name.endsWith("DebugKotlin") }.configureEach {
+    dependsOn(debugInitScriptOrigins, debugChromeClientCallbacks)
 }
 
 dependencies {

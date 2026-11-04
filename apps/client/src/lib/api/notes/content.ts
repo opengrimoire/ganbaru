@@ -124,13 +124,30 @@ export async function openNotesPage(pageId: string): Promise<NotesPageOpenRespon
   );
 }
 
+/** Most parent block IDs one frontier read accepts; mirrors `ganbaru_notes::reads::MAX_BLOCK_FRONTIER_PARENT_IDS`. */
+export const MAX_BLOCK_FRONTIER_PARENT_IDS = 2_000;
+
+/** Splits one frontier level into reads the native cap accepts, keeping the parent order. */
+function frontierParentBatches(parentIds: readonly string[]): string[][] {
+  const batches: string[][] = [];
+  for (let index = 0; index < parentIds.length; index += MAX_BLOCK_FRONTIER_PARENT_IDS) {
+    batches.push(parentIds.slice(index, index + MAX_BLOCK_FRONTIER_PARENT_IDS));
+  }
+  return batches;
+}
+
 export async function getNotesBlockFrontier(
   parentIds: readonly string[],
 ): Promise<NotesBlockFrontier> {
   const dbUrl = await ensureDbUrl();
-  return mapNotesBlockFrontierDto(
-    await invoke<unknown>("notes_block_frontier", { dbUrl, parentIds: [...parentIds] }),
-  );
+  const blocks: NotesBlock[] = [];
+  for (const batch of frontierParentBatches(parentIds)) {
+    const frontier = mapNotesBlockFrontierDto(
+      await invoke<unknown>("notes_block_frontier", { dbUrl, parentIds: batch }),
+    );
+    blocks.push(...frontier.blocks);
+  }
+  return { blocks };
 }
 
 export async function getNotesBlockOutlineFrontier(
@@ -138,13 +155,17 @@ export async function getNotesBlockOutlineFrontier(
   parentIds: readonly string[],
 ): Promise<NotesBlockOutline[]> {
   const dbUrl = await ensureDbUrl();
-  const value = await invoke<unknown>("notes_block_outline_frontier", {
-    dbUrl,
-    pageId,
-    parentIds: [...parentIds],
-  });
-  if (!Array.isArray(value)) throw new Error("notes_block_outline_frontier returned a non-array payload");
-  return value.map(mapNotesBlockOutlineDto);
+  const outlines: NotesBlockOutline[] = [];
+  for (const batch of frontierParentBatches(parentIds)) {
+    const value = await invoke<unknown>("notes_block_outline_frontier", {
+      dbUrl,
+      pageId,
+      parentIds: batch,
+    });
+    if (!Array.isArray(value)) throw new Error("notes_block_outline_frontier returned a non-array payload");
+    outlines.push(...value.map(mapNotesBlockOutlineDto));
+  }
+  return outlines;
 }
 
 export async function hydrateNotesBlocks(

@@ -6,6 +6,7 @@ use super::repository::{
     latest_checkpoint_oid,
 };
 use super::{CapturedCheckpoint, CheckpointKind};
+use crate::git::GitFolder;
 use crate::models::{
     ChatCheckpointId, ChatError, ChatErrorCode, ChatResult, ChatThreadId, ChatTurnId, UtcTimestamp,
 };
@@ -39,11 +40,12 @@ pub async fn capture_and_store(
     let checkpoint_id = checkpoint_id(thread_id, turn_id, turn_count, now)?;
     let previous_oid = latest_checkpoint_oid(pool, thread_id).await?;
     let root = authorized.canonical_path.clone();
+    let trust = authorized.git_trust;
     let thread_for_git = thread_id.clone();
     let checkpoint_for_git = checkpoint_id.clone();
     let captured = tokio::task::spawn_blocking(move || {
         capture_git(
-            &root,
+            GitFolder::new(&root, trust),
             &thread_for_git,
             &checkpoint_for_git,
             previous_oid.as_deref(),
@@ -66,7 +68,7 @@ pub async fn capture_and_store(
     .await;
     if let Err(error) = persistence {
         let _ = delete_exact_ref(
-            &authorized.canonical_path,
+            authorized.git_folder(),
             &captured.hidden_ref_name,
             &captured.git_object_id,
         );

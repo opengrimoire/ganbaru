@@ -50,12 +50,21 @@ pub(crate) async fn save_queued_followup(
         ));
     }
     let pool = chat_pool(app, db_url).await?;
+    persist_queued_followup(&pool, &request).await
+}
+
+/// Saves a queued follow-up for its thread, replacing only that thread's still queued follow-up
+/// with the same ID.
+async fn persist_queued_followup(
+    pool: &SqlitePool,
+    request: &SaveQueuedFollowupRequest,
+) -> ChatResult<ChatQueuedFollowupRead> {
     let thread = sqlx::query(
         "SELECT working_folder_id, provider_instance_id FROM chat_threads
          WHERE id = ? AND archived_at IS NULL",
     )
     .bind(request.thread_id.as_str())
-    .fetch_optional(&pool)
+    .fetch_optional(pool)
     .await
     .map_err(persistence_error)?
     .ok_or_else(|| ChatError::new(ChatErrorCode::NotFound, "Chat thread was not found", true))?;
@@ -74,7 +83,7 @@ pub(crate) async fn save_queued_followup(
     }
     let mut total_attachment_bytes = 0_u64;
     for attachment_id in &request.attachment_ids {
-        let attachment = attachments::read_attachment(&pool, attachment_id)
+        let attachment = attachments::read_attachment(pool, attachment_id)
             .await?
             .ok_or_else(|| {
                 ChatError::new(
@@ -106,7 +115,7 @@ pub(crate) async fn save_queued_followup(
     let mentions = serde_json::to_string(&request.mentions.value).map_err(json_error)?;
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    sqlx::query(
+    let saved = sqlx::query(
         "INSERT INTO chat_queued_followups
             (id, thread_id, text, provider_instance_id, model_selection_schema_version,
              model_selection_data, safety_mode, interaction_mode, attachment_ids_data,
@@ -121,7 +130,9 @@ pub(crate) async fn save_queued_followup(
              attachment_ids_data = excluded.attachment_ids_data,
              mentions_schema_version = excluded.mentions_schema_version,
              mentions_data = excluded.mentions_data, state = 'queued',
-             updated_at = excluded.updated_at",
+             updated_at = excluded.updated_at
+         WHERE chat_queued_followups.thread_id = excluded.thread_id
+           AND chat_queued_followups.state = 'queued'",
     )
     .bind(&request.id)
     .bind(request.thread_id.as_str())
@@ -139,6 +150,13 @@ pub(crate) async fn save_queued_followup(
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
+    if saved.rows_affected() == 0 {
+        return Err(ChatError::new(
+            ChatErrorCode::Conflict,
+            "This queued follow-up was already sent, cancelled, or belongs to another thread",
+            true,
+        ));
+    }
     sqlx::query("DELETE FROM chat_queued_attachment_references WHERE queued_followup_id = ?")
         .bind(&request.id)
         .execute(&mut *transaction)
@@ -157,7 +175,7 @@ pub(crate) async fn save_queued_followup(
         .map_err(persistence_error)?;
     }
     transaction.commit().await.map_err(persistence_error)?;
-    read_queued_followup(&pool, &request.thread_id)
+    read_queued_followup(pool, &request.thread_id)
         .await?
         .ok_or_else(corrupt_data_error)
 }
@@ -326,5 +344,89 @@ fn parse_interaction_mode(value: &str) -> ChatResult<InteractionMode> {
         "build" => Ok(InteractionMode::Build),
         "plan" => Ok(InteractionMode::Plan),
         _ => Err(corrupt_data_error()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::persist_queued_followup;
+    use crate::chat::interaction_commands::SaveQueuedFollowupRequest;
+    use ganbaru_chat_contracts::models::{
+        ChatErrorCode, ChatThreadId, InteractionMode, ProviderInstanceId, SafetyMode, VersionedJson,
+    };
+    use serde_json::json;
+    use sqlx::SqlitePool;
+
+    fn request(thread_id: &str, text: &str) -> SaveQueuedFollowupRequest {
+        SaveQueuedFollowupRequest {
+            id: "followup-1".to_string(),
+            thread_id: ChatThreadId::new(thread_id).unwrap(),
+            text: text.to_string(),
+            provider_instance_id: ProviderInstanceId::new("codex-personal").unwrap(),
+            model_selection: VersionedJson {
+                schema_version: 1,
+                value: json!({ "modelId": "model", "options": [] }),
+            },
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+            attachment_ids: Vec::new(),
+            mentions: VersionedJson {
+                schema_version: 1,
+                value: json!([]),
+            },
+        }
+    }
+
+    async fn stored(pool: &SqlitePool) -> (String, String, String) {
+        sqlx::query_as("SELECT thread_id, text, state FROM chat_queued_followups WHERE id = ?")
+            .bind("followup-1")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn queued_followups_are_rewritten_only_by_their_own_thread_while_queued() {
+        let pool = crate::chat::tests::repository::pool_with_thread().await;
+        sqlx::query(
+            "INSERT INTO chat_threads
+                (id, project_id, working_folder_id, title, provider_family_id,
+                 provider_instance_id, continuation_group_id, safety_mode, interaction_mode,
+                 state, last_activity_at, created_at, updated_at)
+             SELECT 'thread-2', project_id, working_folder_id, 'Other', provider_family_id,
+                    provider_instance_id, continuation_group_id, safety_mode, interaction_mode,
+                    'idle', last_activity_at, created_at, updated_at
+             FROM chat_threads WHERE id = 'thread-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        persist_queued_followup(&pool, &request("thread-1", "First"))
+            .await
+            .unwrap();
+        persist_queued_followup(&pool, &request("thread-1", "Edited"))
+            .await
+            .unwrap();
+
+        let foreign = persist_queued_followup(&pool, &request("thread-2", "Hijacked"))
+            .await
+            .unwrap_err();
+        assert_eq!(foreign.code, ChatErrorCode::Conflict);
+        let owned = ("thread-1".to_string(), "Edited".to_string());
+        assert_eq!(
+            stored(&pool).await,
+            (owned.0.clone(), owned.1.clone(), "queued".into())
+        );
+
+        sqlx::query("UPDATE chat_queued_followups SET state = 'dispatched' WHERE id = ?")
+            .bind("followup-1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let revived = persist_queued_followup(&pool, &request("thread-1", "Again"))
+            .await
+            .unwrap_err();
+        assert_eq!(revived.code, ChatErrorCode::Conflict);
+        assert_eq!(stored(&pool).await, (owned.0, owned.1, "dispatched".into()));
     }
 }

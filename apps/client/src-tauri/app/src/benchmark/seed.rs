@@ -2,7 +2,7 @@ use serde::Deserialize;
 use sqlx::{Row, Sqlite, Transaction};
 use tauri::{AppHandle, Runtime};
 
-use crate::db::connect_sqlite;
+use crate::db::connect_benchmark_database;
 use ganbaru_music_library::fixtures::{DenseMusicFixtureSummary, seed_dense_music_fixture};
 
 #[derive(Deserialize)]
@@ -82,12 +82,11 @@ struct BenchmarkPomodoroPauseSeed {
 #[tauri::command]
 pub async fn benchmark_seed_pomodoro_history<R: Runtime>(
     app: AppHandle<R>,
-    db_url: String,
     payload: BenchmarkPomodoroHistoryPayload,
 ) -> Result<(), String> {
     validate_payload(&payload)?;
 
-    let pool = connect_sqlite(app, db_url).await?;
+    let pool = connect_benchmark_database(app).await?;
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
 
     for config in &payload.configs {
@@ -104,9 +103,8 @@ pub async fn benchmark_seed_pomodoro_history<R: Runtime>(
 #[tauri::command]
 pub async fn benchmark_seed_dense_music_library<R: Runtime>(
     app: AppHandle<R>,
-    db_url: String,
 ) -> Result<DenseMusicFixtureSummary, String> {
-    let pool = connect_sqlite(app, db_url).await?;
+    let pool = connect_benchmark_database(app).await?;
     seed_dense_music_fixture(&pool)
         .await
         .map_err(|error| error.to_string())
@@ -116,11 +114,19 @@ async fn insert_config(
     tx: &mut Transaction<'_, Sqlite>,
     config: &BenchmarkPomodoroConfigSeed,
 ) -> Result<(), String> {
-    sqlx::query("DELETE FROM calendar_event_pomodoro_configs WHERE event_id = ?")
+    for table in [
+        "calendar_event_pomodoro_configs",
+        "calendar_event_pomodoro_config_count_rhythms",
+        "calendar_event_pomodoro_config_sequence_steps",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM {table} WHERE event_id = ?"
+        )))
         .bind(&config.event_id)
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("clear benchmark pomodoro config: {e}"))?;
+    }
 
     sqlx::query(
         "INSERT INTO calendar_event_pomodoro_configs
@@ -323,10 +329,11 @@ async fn insert_segment(
     for (index, pause) in segment.pauses.iter().enumerate() {
         sqlx::query(
             "INSERT INTO pomodoro_pauses
-                (id, segment_id, started_at, ended_at, reason)
-             VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?)",
+                (segment_id, ordinal, started_at, ended_at, reason)
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&segment.id)
+        .bind(i64::try_from(index).map_err(|e| format!("benchmark pause ordinal {index}: {e}"))?)
         .bind(&pause.started_at)
         .bind(&pause.ended_at)
         .bind(&pause.reason)

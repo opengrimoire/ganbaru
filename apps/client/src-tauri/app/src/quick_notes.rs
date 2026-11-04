@@ -1,4 +1,4 @@
-//! Quick notes command adapters. Persistence, ordering, tags, and conflicts live in
+//! Quick notes command adapters. Persistence, images, ordering, tags, and conflicts live in
 //! `ganbaru-quick-notes`; these commands authorize the active vault and the device's write
 //! access before calling it.
 
@@ -12,6 +12,10 @@ use ganbaru_quick_notes::{
 use tauri::{AppHandle, Runtime};
 
 use crate::db::connect_sqlite;
+
+mod images;
+
+pub use images::*;
 
 #[tauri::command]
 pub async fn quick_notes_list<R: Runtime>(
@@ -33,17 +37,12 @@ pub async fn quick_notes_load<R: Runtime>(
     ganbaru_quick_notes::load_note_from_pool(&pool, &id).await
 }
 
-/// Deletes trash past its retention. Devices that cannot write Quick notes, neither as owner
-/// nor as a linked replica, skip the pass and report no deadline.
+/// Deletes trash past its retention.
 #[tauri::command]
 pub async fn quick_notes_purge_expired_trash<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,
 ) -> Result<QuickNotesTrashPurge, String> {
-    let status = crate::vault::ownership::active_status(&app)?;
-    if !status.can_write && !status.replicated_writes {
-        return Ok(QuickNotesTrashPurge::skipped());
-    }
     let pool = connect_sqlite(app, db_url).await?;
     ganbaru_quick_notes::purge_expired_trash(&pool).await
 }

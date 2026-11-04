@@ -1,6 +1,9 @@
 use crate::models::NoteNotionApiImportDiagnosticDto;
 use crate::transfers::import_writer::ImportBlock;
-use crate::validation::{validate_block_payload, validate_icon_value, validate_page_cover_value};
+use crate::validation::{
+    is_storable_bookmark_url, is_storable_web_content_url, validate_block_payload,
+    validate_icon_value, validate_page_cover_value,
+};
 use serde_json::{Map, Value, json};
 
 const LOCAL_COLORS: &[&str] = &[
@@ -250,9 +253,12 @@ fn local_block_payload(
         "column" => ("column", column_payload(payload)),
         "child_page" => ("child_page", child_page_payload(payload)),
         "child_database" => ("child_database", child_database_payload(payload)),
-        "bookmark" => ("bookmark", bookmark_payload(payload, diagnostics)),
-        "embed" => ("embed", url_payload(payload)),
-        "link_preview" => ("link_preview", url_payload(payload)),
+        "bookmark" => (
+            "bookmark",
+            bookmark_payload(payload, source_id, diagnostics),
+        ),
+        "embed" => web_content_block("embed", payload, source_id, diagnostics),
+        "link_preview" => web_content_block("link_preview", payload, source_id, diagnostics),
         "equation" => ("equation", equation_payload(payload)),
         "image" | "video" | "audio" | "file" | "pdf" => media_payload(
             notion_type,
@@ -438,14 +444,16 @@ fn child_database_payload(payload: &Value) -> Value {
 
 fn bookmark_payload(
     payload: &Value,
+    source_id: Option<&str>,
     diagnostics: &mut Vec<NoteNotionApiImportDiagnosticDto>,
 ) -> Value {
+    let mut url = web_reference_url(payload);
+    if !is_storable_bookmark_url(&url) {
+        url.clear();
+        push_dropped_url_diagnostic("bookmark", source_id, diagnostics);
+    }
     json!({
-        "url": payload
-            .get("url")
-            .and_then(Value::as_str)
-            .map(clean_display_text)
-            .unwrap_or_default(),
+        "url": url,
         "caption": payload
             .get("caption")
             .and_then(Value::as_array)
@@ -454,14 +462,49 @@ fn bookmark_payload(
     })
 }
 
-fn url_payload(payload: &Value) -> Value {
-    json!({
-        "url": payload
-            .get("url")
-            .and_then(Value::as_str)
-            .map(clean_display_text)
-            .unwrap_or_default()
-    })
+/// Converts an embed or link preview, which keep only loadable web URLs. Other safe links, such as `mailto:`, become bookmarks so the link survives.
+fn web_content_block(
+    block_type: &'static str,
+    payload: &Value,
+    source_id: Option<&str>,
+    diagnostics: &mut Vec<NoteNotionApiImportDiagnosticDto>,
+) -> (&'static str, Value) {
+    let url = web_reference_url(payload);
+    if is_storable_web_content_url(&url) {
+        return (block_type, json!({ "url": url }));
+    }
+    if is_storable_bookmark_url(&url) {
+        return ("bookmark", json!({ "url": url, "caption": [] }));
+    }
+    push_dropped_url_diagnostic(block_type, source_id, diagnostics);
+    (block_type, json!({ "url": "" }))
+}
+
+fn web_reference_url(payload: &Value) -> String {
+    payload
+        .get("url")
+        .and_then(Value::as_str)
+        .map(|url| {
+            url.chars()
+                .filter(|character| !character.is_control())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn push_dropped_url_diagnostic(
+    block_type: &str,
+    source_id: Option<&str>,
+    diagnostics: &mut Vec<NoteNotionApiImportDiagnosticDto>,
+) {
+    diagnostics.push(NoteNotionApiImportDiagnosticDto::new(
+        "unsafe_web_reference_url_dropped",
+        "warning",
+        source_id,
+        format!(
+            "A Notion {block_type} URL used a scheme that can run script or read local files, so it was removed and the rest of the block was kept."
+        ),
+    ));
 }
 
 fn equation_payload(payload: &Value) -> Value {
@@ -1208,5 +1251,91 @@ mod tests {
         assert_eq!(property["type"], "rich_text");
         let diagnostic = serde_json::to_value(&diagnostics[0]).unwrap();
         assert_eq!(diagnostic["code"], "unsupported_property_type");
+    }
+
+    fn convert_web_reference(notion_type: &str, url: &str) -> (ImportBlock, Vec<Value>) {
+        let raw = json!({
+            "object": "block",
+            "id": "22222222-2222-2222-2222-222222222222",
+            "type": notion_type,
+            notion_type: {
+                "url": url,
+                "caption": [{
+                    "type": "text",
+                    "text": { "content": "Reading list", "link": null },
+                    "plain_text": "Reading list",
+                    "href": null
+                }]
+            }
+        });
+        let mut diagnostics = Vec::new();
+        let mut stats = NotionConvertStats::default();
+        let block = convert_block(
+            FetchedNotionBlock {
+                raw,
+                children: Vec::new(),
+            },
+            &NotionConvertOptions::default(),
+            &mut diagnostics,
+            &mut stats,
+        );
+        let diagnostics = diagnostics
+            .iter()
+            .map(|diagnostic| serde_json::to_value(diagnostic).unwrap())
+            .collect();
+        (block, diagnostics)
+    }
+
+    #[test]
+    fn bookmark_with_script_url_keeps_its_caption_without_the_url() {
+        for url in [
+            "javascript:alert(1)",
+            " JavaScript:alert(1)",
+            "data:text/html,x",
+        ] {
+            let (block, diagnostics) = convert_web_reference("bookmark", url);
+            assert_eq!(block.block_type, "bookmark");
+            assert_eq!(block.payload["url"], "");
+            assert_eq!(block.payload["caption"][0]["plain_text"], "Reading list");
+            assert_eq!(diagnostics.len(), 1);
+            assert_eq!(diagnostics[0]["code"], "unsafe_web_reference_url_dropped");
+            assert_eq!(
+                diagnostics[0]["source_object_id"],
+                "22222222-2222-2222-2222-222222222222"
+            );
+        }
+    }
+
+    #[test]
+    fn bookmark_keeps_email_phone_and_app_links() {
+        for url in [
+            "mailto:me@example.com",
+            "tel:+15550100",
+            "obsidian://open?vault=Work",
+            "zotero://select/items/1",
+        ] {
+            let (block, diagnostics) = convert_web_reference("bookmark", url);
+            assert_eq!(block.block_type, "bookmark");
+            assert_eq!(block.payload["url"], url);
+            assert!(diagnostics.is_empty(), "{url}: {diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn embeds_keep_web_urls_and_turn_other_safe_links_into_bookmarks() {
+        let (block, diagnostics) = convert_web_reference("embed", "https://example.com/video");
+        assert_eq!(block.block_type, "embed");
+        assert_eq!(block.payload["url"], "https://example.com/video");
+        assert!(diagnostics.is_empty());
+
+        let (block, diagnostics) = convert_web_reference("link_preview", "mailto:me@example.com");
+        assert_eq!(block.block_type, "bookmark");
+        assert_eq!(block.payload["url"], "mailto:me@example.com");
+        assert!(diagnostics.is_empty());
+
+        let (block, diagnostics) = convert_web_reference("embed", "vbscript:msgbox(1)");
+        assert_eq!(block.block_type, "embed");
+        assert_eq!(block.payload["url"], "");
+        assert_eq!(diagnostics[0]["code"], "unsafe_web_reference_url_dropped");
     }
 }

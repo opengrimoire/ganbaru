@@ -62,7 +62,7 @@
   import FileText from "@lucide/svelte/icons/file-text";
   import PanelsTopLeft from "@lucide/svelte/icons/panels-top-left";
   import Plus from "@lucide/svelte/icons/plus";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
 
   let {
     dataSourceId,

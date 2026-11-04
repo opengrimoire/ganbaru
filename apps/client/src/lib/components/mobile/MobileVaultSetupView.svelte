@@ -3,7 +3,10 @@
   import ArchiveRestore from "@lucide/svelte/icons/archive-restore";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { onMount } from "svelte";
+  import BackupKitPrompt from "$lib/components/vault/BackupKitPrompt.svelte";
   import VaultSetupContent from "$lib/components/vault/VaultSetupContent.svelte";
+  import { createBackupKitPrompt } from "$lib/vault/backup-kit-prompt.svelte";
+  import { backupRefusalMessage } from "$lib/vault/backup-restore";
   import VaultWelcomeContent from "$lib/components/vault/VaultWelcomeContent.svelte";
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -11,8 +14,8 @@
     formatVaultError,
     getDefaultVaultLocation,
     pickOpenVault,
-    restoreVaultBackup,
     useDefaultVault,
+    type BackupRefusal,
     type VaultDefaultLocation,
     type VaultErrorAction,
     type VaultInfo,
@@ -26,7 +29,9 @@
     onReady: (info: VaultInfo) => void;
   } = $props();
 
-  type SetupError = { raw: unknown; action: VaultErrorAction };
+  type SetupError =
+    | { raw: unknown; action: VaultErrorAction }
+    | { refusal: BackupRefusal };
 
   const { t } = getLocalization();
   const fallbackDefaultPath = import.meta.env.DEV
@@ -36,8 +41,13 @@
   let busy = $state<"default" | "restore" | "import" | null>(null);
   let setupError = $state<SetupError | null>(null);
   let welcomeComplete = $state(false);
+  const kitPrompt = createBackupKitPrompt();
   const error = $derived(
-    setupError ? formatVaultError(setupError.raw, setupError.action, t) : null,
+    !setupError
+      ? null
+      : "refusal" in setupError
+        ? backupRefusalMessage(setupError.refusal, t)
+        : formatVaultError(setupError.raw, setupError.action, t),
   );
 
   onMount(() => {
@@ -54,6 +64,20 @@
     }
   }
 
+  /**
+   * Restores a picked backup, asking for its recovery kit when needed.
+   *
+   * @returns The restored vault, or `null` after a cancel or a refusal shown as the setup error.
+   */
+  async function restoreBackup(): Promise<VaultInfo | null> {
+    const outcome = await kitPrompt.restore();
+    if (outcome.kind === "restored") return outcome.vault;
+    if (outcome.kind === "refused") {
+      setupError = { refusal: outcome.reason };
+    }
+    return null;
+  }
+
   async function chooseVault(mode: "default" | "restore" | "import"): Promise<void> {
     if (busy) return;
     busy = mode;
@@ -62,7 +86,7 @@
       const info = mode === "default"
         ? await useDefaultVault()
         : mode === "restore"
-          ? await restoreVaultBackup()
+          ? await restoreBackup()
           : await pickOpenVault();
       if (info) onReady(info);
     } catch (cause) {
@@ -141,3 +165,11 @@
     />
   {/if}
 </main>
+
+{#if kitPrompt.request}
+  <BackupKitPrompt
+    refusal={kitPrompt.request.refusal}
+    onSubmit={(code) => kitPrompt.answer(code)}
+    onCancel={() => kitPrompt.answer(null)}
+  />
+{/if}

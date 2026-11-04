@@ -19,7 +19,7 @@ function access(channelId: string): ChatTeammateChannelAccessInput {
   return {
     channelId,
     accessProfileId: "profile:build",
-    accessProfileRevision: 1,
+    accessProfileRevisionId: "profile:build:revision:1",
     capabilities: { readHistory: true, participate: true },
     historyBoundary: { kind: "entire" },
     runtimeApprovalOverride: null,
@@ -82,11 +82,11 @@ describe("teammate access", () => {
     const next = applyAccessProfileToScope(
       [inside, outside],
       new Set(["channel:a"]),
-      { id: "profile:read", revision: 4, maximumFolderCapability: "read" },
+      { id: "profile:read", revisionId: "profile:read:revision:4", maximumFolderCapability: "read" },
     );
 
     expect(next[0]?.accessProfileId).toBe("profile:read");
-    expect(next[0]?.accessProfileRevision).toBe(4);
+    expect(next[0]?.accessProfileRevisionId).toBe("profile:read:revision:4");
     expect(next[0]?.folderGrants.map((grant) => grant.workingFolderId)).toEqual(["folder:read"]);
     expect(next[1]).toBe(outside);
   });
@@ -148,7 +148,7 @@ describe("teammate access", () => {
   it("keeps the reviewed profile revision in atomic drafts", () => {
     const first = access("channel:a");
     const second = access("channel:a");
-    second.accessProfileRevision = 2;
+    second.accessProfileRevisionId = "profile:build:revision:2";
 
     expect(teammateAccessDraftSnapshot([first]))
       .not.toBe(teammateAccessDraftSnapshot([second]));

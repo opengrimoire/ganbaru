@@ -365,6 +365,54 @@
           "type": "string",
           "const": "deny-scanMediaTree",
           "markdownDescription": "Denies the scanMediaTree command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the youtubeBounds command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-youtubeBounds",
+          "markdownDescription": "Enables the youtubeBounds command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the youtubeBounds command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-youtubeBounds",
+          "markdownDescription": "Denies the youtubeBounds command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the youtubeClose command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-youtubeClose",
+          "markdownDescription": "Enables the youtubeClose command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the youtubeClose command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-youtubeClose",
+          "markdownDescription": "Denies the youtubeClose command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the youtubeOpen command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-youtubeOpen",
+          "markdownDescription": "Enables the youtubeOpen command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the youtubeOpen command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-youtubeOpen",
+          "markdownDescription": "Denies the youtubeOpen command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the youtubePost command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-youtubePost",
+          "markdownDescription": "Enables the youtubePost command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the youtubePost command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-youtubePost",
+          "markdownDescription": "Denies the youtubePost command without any pre-configured scope."
         }
       ]
     }

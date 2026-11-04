@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { parseNullableNotesIcon, parseNullablePageCover } from "$lib/notes/validation/assets";
 import { parseNotesBlock, parseNotesPage, parseNotesRichTextArray } from "./validation";
 import { baseBlock, basePage, baseRichText } from "./validation.fixtures";
+
+const strictPageIcon = (icon: unknown) => parseNullableNotesIcon(icon, "page.icon");
+const strictPageCover = (cover: unknown) => parseNullablePageCover(cover, "page.cover");
 
 describe("notes asset-rich-text boundary validation", () => {
   it("parses page emoji icons", () => {
@@ -13,12 +17,7 @@ describe("notes asset-rich-text boundary validation", () => {
     });
 
   it("rejects empty page emoji icons", () => {
-      expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: { type: "emoji", emoji: "" },
-        }),
-      ).toThrow("page.icon.emoji must not be empty");
+      expect(() => strictPageIcon({ type: "emoji", emoji: "" })).toThrow("page.icon.emoji must not be empty");
     });
 
   it("parses expanded page icon payloads", () => {
@@ -81,85 +80,64 @@ describe("notes asset-rich-text boundary validation", () => {
 
   it("rejects unsafe expanded page icon payloads", () => {
       expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: { type: "external", external: { url: "http://example.com/icon.png" } },
-        }),
+        strictPageIcon({ type: "external", external: { url: "http://example.com/icon.png" } }),
       ).toThrow("page.icon.external.url must be a supported HTTPS image URL");
 
       expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: { type: "custom_emoji", custom_emoji: { id: "", name: "Missing id" } },
-        }),
+        strictPageIcon({ type: "custom_emoji", custom_emoji: { id: "", name: "Missing id" } }),
       ).toThrow("page.icon.custom_emoji.id must not be empty");
 
       expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: {
-            type: "custom_emoji",
-            custom_emoji: {
-              id: "wrong-directory",
-              url: "ganbaru-asset:notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
-            },
+        strictPageIcon({
+          type: "custom_emoji",
+          custom_emoji: {
+            id: "wrong-directory",
+            url: "ganbaru-asset:notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
           },
         }),
       ).toThrow("page.icon.custom_emoji.url must stay under a managed image asset directory");
 
       expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: {
-            type: "custom_emoji",
-            custom_emoji: {
-              id: "missing-asset-path",
-              url: "ganbaru-asset:project-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
-            },
+        strictPageIcon({
+          type: "custom_emoji",
+          custom_emoji: {
+            id: "missing-asset-path",
+            url: "ganbaru-asset:project-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
           },
         }),
       ).toThrow("page.icon.custom_emoji.url must reference the managed icon asset path");
 
       expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: {
-            type: "file",
-            file: {
-              url: "ganbaru-asset:notes/page-icons/bad.svg",
-              content_type: "image/svg+xml",
-              byte_size: 42,
-              sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-              ganbaru_asset_path: "notes/page-icons/bad.svg",
-            },
+        strictPageIcon({
+          type: "file",
+          file: {
+            url: "ganbaru-asset:notes/page-icons/bad.svg",
+            content_type: "image/svg+xml",
+            byte_size: 42,
+            sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ganbaru_asset_path: "notes/page-icons/bad.svg",
           },
         }),
       ).toThrow("page.icon.file.ganbaru_asset_path must stay under a managed image asset directory");
 
       expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: {
-            type: "file",
-            file: {
-              url: "ganbaru-asset:notes/page-icons/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.webp",
-              content_type: "image/webp",
-              byte_size: 42,
-              sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-              ganbaru_asset_path: "notes/page-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.webp",
-            },
+        strictPageIcon({
+          type: "file",
+          file: {
+            url: "ganbaru-asset:notes/page-icons/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.webp",
+            content_type: "image/webp",
+            byte_size: 42,
+            sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ganbaru_asset_path: "notes/page-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.webp",
           },
         }),
       ).toThrow("page.icon.file.url must reference the managed icon asset path");
 
       expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: {
-            type: "file",
-            file: {
-              url: "ganbaru-asset:notes/page-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.webp",
-            },
+        strictPageIcon({
+          type: "file",
+          file: {
+            url: "ganbaru-asset:notes/page-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.webp",
           },
         }),
       ).toThrow("page.icon.file.url must include managed asset metadata");
@@ -375,70 +353,50 @@ describe("notes asset-rich-text boundary validation", () => {
 
   it("rejects unsafe page cover file objects", () => {
       expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: null,
-          cover: { type: "external", external: { url: "https://example.com/file.pdf" } },
-        }),
+        strictPageCover({ type: "external", external: { url: "https://example.com/file.pdf" } }),
       ).toThrow("page.cover.external.url must be a supported HTTPS image URL");
 
       expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: null,
-          cover: {
-            type: "file",
-            file: {
-              url: "https://example.com/file.pdf",
-              expiry_time: "2026-07-01T12:00:00.000Z",
-            },
+        strictPageCover({
+          type: "file",
+          file: {
+            url: "https://example.com/file.pdf",
+            expiry_time: "2026-07-01T12:00:00.000Z",
           },
         }),
       ).toThrow("page.cover.file.url must be a supported HTTPS image URL");
 
       expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: null,
-          cover: {
-            type: "file",
-            file: {
-              url: "ganbaru-asset:notes/page-covers/bad.svg",
-              content_type: "image/svg+xml",
-              byte_size: 42,
-              sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              ganbaru_asset_path: "notes/page-covers/bad.svg",
-            },
+        strictPageCover({
+          type: "file",
+          file: {
+            url: "ganbaru-asset:notes/page-covers/bad.svg",
+            content_type: "image/svg+xml",
+            byte_size: 42,
+            sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ganbaru_asset_path: "notes/page-covers/bad.svg",
           },
         }),
       ).toThrow("page.cover.file.ganbaru_asset_path must stay under a managed image asset directory");
 
       expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: null,
-          cover: {
-            type: "file",
-            file: {
-              url: "ganbaru-asset:notes/page-covers/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-              content_type: "image/png",
-              byte_size: 42,
-              sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              ganbaru_asset_path: "notes/page-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
-            },
+        strictPageCover({
+          type: "file",
+          file: {
+            url: "ganbaru-asset:notes/page-covers/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
+            content_type: "image/png",
+            byte_size: 42,
+            sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ganbaru_asset_path: "notes/page-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
           },
         }),
       ).toThrow("page.cover.file.url must reference the managed cover asset path");
 
       expect(() =>
-        parseNotesPage({
-          ...basePage,
-          icon: null,
-          cover: {
-            type: "file",
-            file: {
-              url: "ganbaru-asset:notes/page-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
-            },
+        strictPageCover({
+          type: "file",
+          file: {
+            url: "ganbaru-asset:notes/page-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
           },
         }),
       ).toThrow("page.cover.file.url must include managed asset metadata");

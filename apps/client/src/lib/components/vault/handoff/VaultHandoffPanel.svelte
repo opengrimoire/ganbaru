@@ -1,6 +1,5 @@
 <script lang="ts">
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
-  import Download from "@lucide/svelte/icons/download";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Monitor from "@lucide/svelte/icons/monitor";
   import ScanLine from "@lucide/svelte/icons/scan-line";
@@ -16,11 +15,14 @@
     getCachedPairingStatus,
     grantDesktopNetworkAccess,
     enrollWithDesktop,
+    readEnrollmentCode,
     readSuggestedDeviceLabel,
     readPairingStatus,
-    receiveDesktopBundle,
+    pickLinkFolder,
     recoverLocalVaultCopy,
-    requestOwnerBundle,
+    requestVaultBootstrap,
+    resetLinkFolder,
+    respondToEnrollment,
     revokeDesktopNetworkAccess,
     unlinkVaultDevice,
     type PairingInvitation,
@@ -29,16 +31,22 @@
   } from "$lib/api/vault-handoff";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
+  import SyncRecoveryKitSetup from "$lib/components/sync/SyncRecoveryKitSetup.svelte";
   import SyncSection from "$lib/components/sync/SyncSection.svelte";
   import {
     formatHandoffError,
     formatPairingCodeError,
-    formatOwnershipHandoffError,
     hasNewLinkedDevice,
   } from "$lib/vault/handoff-workflow";
+  import EnrollmentApproval from "./EnrollmentApproval.svelte";
+  import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
 
-  type BusyAction = "status" | "invite" | "network" | "pair" | "ownership" | "refresh" | "unlink" | "recover";
+  type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "bootstrap" | "unlink" | "recover" | "linkFolder";
+
+  /** How long onboarding waits for an approved device to appear before it shows a new code. */
+  const APPROVED_ENROLLMENT_SETTLE_ATTEMPTS = 20;
+  const APPROVED_ENROLLMENT_SETTLE_INTERVAL_MS = 500;
 
   let {
     platform,
@@ -79,17 +87,22 @@
   let notice = $state<string | null>(null);
   let error = $state<string | null>(null);
   let codeError = $state<string | null>(null);
-  let ownershipError = $state<string | null>(null);
   let networkError = $state<string | null>(null);
-  let confirmation = $state<"network" | "networkRevoke" | "unlink" | "recover" | "replace" | null>(null);
+  let approvalError = $state<string | null>(null);
+  let enrollmentCode = $state<string | null>(null);
+  let confirmation = $state<"network" | "networkRevoke" | "unlink" | "recover" | "firstCopy" | null>(null);
   let unlinkDeviceId = $state<string | null>(null);
+  /** The folder chosen for the first copy of the linked vault on this computer; null uses the default. */
+  let linkFolder = $state<string | null>(null);
   let networkAccess = $state<DesktopNetworkAccess | null>(
     untrack(() => initialInvitation?.networkAccess ?? status?.networkAccess ?? null),
   );
   let networkStepsVisible = $state(
     untrack(() => {
       const state = initialInvitation?.networkAccess?.state ?? status?.networkAccess?.state;
-      return state === "authorizationRequired" || state === "manualActionRequired";
+      return state === "authorizationRequired"
+        || state === "manualActionRequired"
+        || state === "networkConfirmationRequired";
     }),
   );
 
@@ -118,9 +131,17 @@
       ? t("vaultHandoff.networkAccessNotRequired")
       : networkAccess?.state === "manualActionRequired"
         ? t("vaultHandoff.networkAccessManual")
-        : t("vaultHandoff.networkAccessAllowed"),
+        : networkAccess?.state === "networkConfirmationRequired"
+          ? t("vaultHandoff.networkAccessNetworkConfirmation")
+          : t("vaultHandoff.networkAccessAllowed"),
   );
   const isCoordinatorClient = $derived(status?.coordinatorEndpoint != null);
+  /** A linked device that has not copied the linked vault yet offers that first copy. */
+  const firstCopyPending = $derived(
+    status?.linked === true && status.replicaReady === false && isCoordinatorClient,
+  );
+  /** A linked device whose copy is ready can keep it as a vault of its own. */
+  const recoverAvailable = $derived(status?.replicaReady === true && isCoordinatorClient);
   /** Failures that replace the content they block render in that place instead of the trailing error line. */
   const errorShownInPlace = $derived(
     error !== null
@@ -134,7 +155,11 @@
 
   function applyNetworkAccess(next: DesktopNetworkAccess): void {
     networkAccess = next;
-    if (next.state === "authorizationRequired" || next.state === "manualActionRequired") {
+    if (
+      next.state === "authorizationRequired"
+      || next.state === "manualActionRequired"
+      || next.state === "networkConfirmationRequired"
+    ) {
       networkStepsVisible = true;
     }
   }
@@ -143,8 +168,77 @@
     const next = await readPairingStatus();
     status = next;
     if (next.networkAccess) applyNetworkAccess(next.networkAccess);
+    if (presentation === "settings" && platform === "desktop") {
+      if (next.pendingEnrollment) {
+        qrDialogVisible = true;
+      } else if (qrDialogVisible && !invitation && busy !== "invite" && !error) {
+        // A dialog opened only for a request that ended without an answer has nothing left to show.
+        qrDialogVisible = false;
+      }
+    }
     onStatusChange?.(next);
     return next;
+  }
+
+  /** Answers the waiting enrollment; a decline spends the invitation, so a fresh one replaces it. */
+  async function respondToPendingEnrollment(approve: boolean): Promise<void> {
+    const pending = status?.pendingEnrollment;
+    if (!pending || busy !== null) return;
+    busy = "approval";
+    error = null;
+    approvalError = null;
+    notice = null;
+    let answered = false;
+    try {
+      await respondToEnrollment(pending.requestId, approve);
+      answered = true;
+    } catch (cause) {
+      approvalError = formatHandoffError(cause, t);
+    } finally {
+      busy = null;
+    }
+    if (answered && !approve) {
+      invitation = null;
+      await showInvitation();
+    } else if (answered) {
+      invitation = null;
+      if (presentation === "settings") qrDialogVisible = false;
+    }
+    try {
+      await loadStatus();
+    } catch (cause) {
+      fail(cause);
+    }
+    if (answered && approve && presentation === "onboarding") await settleApprovedEnrollment();
+  }
+
+  /** Gives an approved device time to finish linking before onboarding offers a new code. */
+  async function settleApprovedEnrollment(): Promise<void> {
+    for (let attempt = 0; attempt < APPROVED_ENROLLMENT_SETTLE_ATTEMPTS; attempt += 1) {
+      if (status?.linked || (status && hasNewLinkedDevice(deviceIdsAtInvitation, status.devices))) return;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, APPROVED_ENROLLMENT_SETTLE_INTERVAL_MS));
+      try {
+        await loadStatus();
+      } catch (cause) {
+        fail(cause);
+        return;
+      }
+    }
+    if (!status?.linked && !invitation && busy === null) await showInvitation();
+  }
+
+  /** Closing the dialog while a device waits declines it rather than leaving it to time out. */
+  function closeInvitationDialog(): void {
+    if (busy === "approval") return;
+    if (status?.pendingEnrollment) {
+      // A failed decline means the request already ended, which is the outcome closing asks for.
+      void respondToEnrollment(status.pendingEnrollment.requestId, false)
+        .catch(() => undefined)
+        .finally(() => void loadStatus().catch(() => undefined));
+    }
+    qrDialogVisible = false;
+    invitation = null;
+    approvalError = null;
   }
 
   async function refreshStatus(): Promise<void> {
@@ -167,8 +261,11 @@
     busy = "invite";
     error = null;
     notice = null;
+    approvalError = null;
     try {
       const nextInvitation = await createPairingInvitation();
+      // A new invitation cancels any request that used the previous one.
+      if (status?.pendingEnrollment) status = { ...status, pendingEnrollment: null };
       deviceIdsAtInvitation = new Set(status?.devices.map((device) => device.deviceId) ?? []);
       invitation = nextInvitation;
       if (invitation.networkAccess) applyNetworkAccess(invitation.networkAccess);
@@ -229,6 +326,7 @@
     notice = null;
     try {
       const deviceLabel = await readSuggestedDeviceLabel();
+      enrollmentCode = await readEnrollmentCode(encoded);
       await enrollWithDesktop(encoded, deviceLabel);
       scanning = false;
       const next = await loadStatus();
@@ -238,7 +336,7 @@
         && bootstrapReplicaOnLink
         && !next.replicaReady
       ) {
-        const outcome = await receiveDesktopBundle("bootstrap");
+        const outcome = await requestVaultBootstrap();
         if (outcome.inProgress) throw new Error("initial linked vault activation is already running");
         await loadStatus();
       }
@@ -255,62 +353,28 @@
         }
       }
     } finally {
+      enrollmentCode = null;
       busy = null;
     }
   }
 
-  async function receive(mode: "ownership" | "refresh"): Promise<void> {
-    busy = mode;
+  /** Copies the linked vault to this device for the first time. */
+  async function copyFirst(): Promise<void> {
+    confirmation = null;
+    busy = "bootstrap";
     error = null;
-    if (mode === "ownership") ownershipError = null;
     notice = null;
     try {
-      const outcome = await receiveDesktopBundle(mode);
+      const outcome = await requestVaultBootstrap();
       if (outcome.inProgress) {
-        notice = t("vaultHandoff.requestSent");
+        notice = t("vaultHandoff.copyInProgress");
         return;
       }
       await loadStatus();
-      notice = mode === "ownership" ? t("vaultHandoff.linked") : t("vaultHandoff.refreshed");
+      notice = t("vaultHandoff.copied");
       if (outcome.activated) onActivated?.();
     } catch (cause) {
-      if (mode === "ownership") {
-        ownershipError = formatOwnershipHandoffError(cause, t);
-        notice = null;
-      } else fail(cause);
-    } finally {
-      busy = null;
-    }
-  }
-
-  async function waitForDesktopResult(mode: "ownership" | "refresh"): Promise<void> {
-    let sawPending = false;
-    for (let attempt = 0; attempt < 90; attempt += 1) {
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
-      const next = await loadStatus();
-      sawPending ||= next.pendingTransfer;
-      if (mode === "ownership" && next.canWrite) return;
-      if (mode === "refresh" && sawPending && !next.pendingTransfer) return;
-      await requestOwnerBundle(mode);
-    }
-    throw new Error("coordinator request timed out");
-  }
-
-  async function requestFromAndroid(mode: "ownership" | "refresh"): Promise<void> {
-    busy = mode;
-    error = null;
-    if (mode === "ownership") ownershipError = null;
-    notice = t("vaultHandoff.requestSent");
-    try {
-      await requestOwnerBundle(mode);
-      await waitForDesktopResult(mode);
-      notice = mode === "ownership" ? t("vaultHandoff.linked") : t("vaultHandoff.refreshed");
-      onActivated?.();
-    } catch (cause) {
-      if (mode === "ownership") {
-        ownershipError = formatOwnershipHandoffError(cause, t);
-        notice = null;
-      } else fail(cause);
+      fail(cause);
     } finally {
       busy = null;
     }
@@ -358,20 +422,48 @@
     }
   }
 
-  function beginOwnershipTransfer(): void {
-    void (isCoordinatorClient ? receive("ownership") : requestFromAndroid("ownership"));
-  }
-
-  function handleOwnershipAction(): void {
-    if (presentation === "control" && busy === "ownership" && isCoordinatorClient) {
+  /** Starts the first copy after confirmation, or cancels the copy that is running. */
+  function handleFirstCopyAction(): void {
+    if (busy === "bootstrap") {
       void cancelReceive();
       return;
     }
-    if (status?.replicaReady === false) {
-      confirmation = "replace";
-      return;
+    confirmation = "firstCopy";
+  }
+
+  /** Lets the user choose an empty folder for the first copy of the linked vault on this computer. */
+  async function chooseLinkFolder(): Promise<void> {
+    busy = "linkFolder";
+    error = null;
+    try {
+      const chosen = await pickLinkFolder();
+      if (chosen !== null) linkFolder = chosen;
+    } catch (cause) {
+      fail(cause);
+    } finally {
+      busy = null;
     }
-    beginOwnershipTransfer();
+  }
+
+  async function useDefaultLinkFolder(): Promise<void> {
+    busy = "linkFolder";
+    error = null;
+    try {
+      await resetLinkFolder();
+      linkFolder = null;
+    } catch (cause) {
+      fail(cause);
+    } finally {
+      busy = null;
+    }
+  }
+
+  /** Copies the linked vault here again after sync reported that this copy can no longer catch up. */
+  async function getFreshCopy(): Promise<void> {
+    const outcome = await requestVaultBootstrap();
+    if (outcome.inProgress) throw new Error("finish or retry the current vault transfer first");
+    await loadStatus();
+    if (outcome.activated) onActivated?.();
   }
 
   onMount(() => {
@@ -496,7 +588,7 @@
               <button
                 type="button"
                 class={buttonClass}
-                disabled={controlsBusy || status.pendingTransfer || (device.isOwner && status.replicaReady) || (status.canWrite === true && device.isCoordinator)}
+                disabled={controlsBusy}
                 onclick={() => { unlinkDeviceId = device.deviceId; confirmation = "unlink"; }}
               >
                 {t("vaultHandoff.unlink")}
@@ -534,7 +626,7 @@
           </button>
         {/if}
       </div>
-    {:else if !status.linked && platform === "desktop" && presentation === "onboarding" && !invitation}
+    {:else if !status.linked && platform === "desktop" && presentation === "onboarding" && !invitation && !status.pendingEnrollment}
       {#if error}
         <div class="flex min-h-56">
           <Notice
@@ -549,7 +641,9 @@
         {@render onboardingLoader()}
       {/if}
     {:else if !status.linked && platform === "android"}
-      {#if scanning}
+      {#if enrollmentCode}
+        <EnrollmentCodeWaiting code={enrollmentCode} />
+      {:else if scanning}
         {#key scannerVersion}
           <MobilePairingScanner
             disabled={busy !== null}
@@ -565,13 +659,7 @@
       {/if}
     {/if}
 
-    {#if presentation === "settings" && !status.linked && status.canWrite === false}
-      <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => { confirmation = "recover"; }}>
-        {t("vaultHandoff.recover")}
-      </button>
-    {/if}
-
-    {#if desktopQrAvailable && platform === "desktop" && invitation && presentation === "onboarding"}
+    {#if desktopQrAvailable && platform === "desktop" && (invitation || status.pendingEnrollment) && presentation === "onboarding"}
       <div class={networkStepsVisible
         ? "grid items-start gap-7 min-[800px]:grid-cols-2 min-[800px]:gap-10"
         : "flex flex-col items-center gap-4"}>
@@ -585,7 +673,7 @@
                 {t("vaultHandoff.networkAccessDescription")}
               </p>
             </div>
-            {#if networkAccess?.state === "authorizationRequired" || (developmentLinuxBuild && networkAccess?.state === "manualActionRequired")}
+            {#if networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired" || (developmentLinuxBuild && networkAccess?.state === "manualActionRequired")}
               <button
                 type="button"
                 class={`${buttonClass} bg-background ${developmentLinuxBuild ? "cursor-not-allowed opacity-55" : ""}`}
@@ -611,95 +699,86 @@
         {/if}
 
         <div class="flex min-w-0 flex-col items-center gap-4">
-          <div class="space-y-1 px-1 text-center">
-            {#if networkStepsVisible}
-              <p class="text-base font-semibold text-foreground">
-                {t("vaultHandoff.stepTwo")}
+          {#if status.pendingEnrollment}
+            <EnrollmentApproval
+              pending={status.pendingEnrollment}
+              busy={busy === "approval"}
+              onRespond={(approve) => void respondToPendingEnrollment(approve)}
+            />
+          {:else if invitation}
+            <div class="space-y-1 px-1 text-center">
+              {#if networkStepsVisible}
+                <p class="text-base font-semibold text-foreground">
+                  {t("vaultHandoff.stepTwo")}
+                </p>
+              {/if}
+              <p class="mx-auto max-w-sm text-sm leading-6 text-muted-foreground">
+                {t("vaultHandoff.desktopOnboardingDescription")}
               </p>
-            {/if}
-            <p class="mx-auto max-w-sm text-sm leading-6 text-muted-foreground">
-              {t("vaultHandoff.desktopOnboardingDescription")}
-            </p>
-          </div>
-          {#await import("./PairingQrCode.svelte") then module}
-            {@const PairingQrCode = module.default}
-            <PairingQrCode {invitation} onExpired={() => void showInvitation()} />
-          {/await}
+            </div>
+            {#await import("./PairingQrCode.svelte") then module}
+              {@const PairingQrCode = module.default}
+              <PairingQrCode {invitation} onExpired={() => void showInvitation()} />
+            {/await}
+          {/if}
+          {#if approvalError}
+            <Notice class="w-full max-w-88 justify-center text-[0.8rem] leading-5" message={approvalError} />
+          {/if}
         </div>
       </div>
     {/if}
 
     {#if presentation === "control" || (status.linked && presentation !== "onboarding")}
-      {#if presentation === "control" || !status.canWrite || (platform === "android" && (busy === "ownership" || busy === "refresh"))}
+      {#if presentation === "settings" && firstCopyPending}
+        <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("vaultHandoff.copyHereDescription")}</p>
+        {#if platform === "desktop"}
+          <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-1">
+            <div class="min-w-0 flex-1 text-[0.8rem] leading-5">
+              <div class="text-foreground">{t("vaultHandoff.linkFolder")}</div>
+              <div class="break-all text-muted-foreground">{linkFolder ?? t("vaultHandoff.linkFolderDefault")}</div>
+            </div>
+            <div class="flex shrink-0 gap-2">
+              {#if linkFolder !== null}
+                <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => void useDefaultLinkFolder()}>
+                  {t("vaultHandoff.useDefaultLinkFolder")}
+                </button>
+              {/if}
+              <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => void chooseLinkFolder()}>
+                {t("vaultHandoff.chooseLinkFolder")}
+              </button>
+            </div>
+          </div>
+        {/if}
+      {/if}
+      {#if firstCopyPending || (presentation === "settings" && recoverAvailable)}
       <div class={presentation === "control"
         ? "flex flex-col"
         : "flex flex-wrap gap-2"}>
-        {#if presentation === "control"}<div class="mx-3 my-1.5 border-t border-border"></div>{/if}
-        {#if presentation === "control" || !status.canWrite}
+        {#if firstCopyPending}
+          {#if presentation === "control"}<div class="mx-3 my-1.5 border-t border-border"></div>{/if}
           <button
             type="button"
             class={presentation === "control" ? controlButtonClass : primaryButtonClass}
-            disabled={presentation === "control" && busy === "ownership"
-              ? !isCoordinatorClient
-              : busy !== null || !status.linked || status.pendingTransfer || status.canWrite !== false}
-            onclick={handleOwnershipAction}
+            disabled={busy !== null && busy !== "bootstrap"}
+            onclick={handleFirstCopyAction}
           >
             {#if presentation === "control"}
-              <span class="min-w-0 truncate">{busy === "ownership" && isCoordinatorClient ? t("vaultHandoff.cancel") : t("vaultHandoff.useHere")}</span>
-              {#if busy === "ownership"}
+              <span class="min-w-0 truncate">{busy === "bootstrap" ? t("vaultHandoff.cancel") : t("vaultHandoff.copyHere")}</span>
+              {#if busy === "bootstrap"}
                 <LoaderCircle size={14} strokeWidth={1.8} class="shrink-0 animate-spin opacity-70" aria-hidden="true" />
               {:else}
                 <ArrowRight size={14} strokeWidth={1.8} class="shrink-0 opacity-70" aria-hidden="true" />
               {/if}
             {:else}
-              {#if busy === "ownership"}<LoaderCircle size={14} class="animate-spin" />{/if}
-              {t("vaultHandoff.useHere")}
+              {#if busy === "bootstrap"}<LoaderCircle size={14} class="animate-spin" />{/if}
+              {busy === "bootstrap" ? t("vaultHandoff.cancel") : t("vaultHandoff.copyHere")}
             {/if}
           </button>
-          {#if ownershipError}
-            <p role="status" class={presentation === "control"
-              ? "w-full basis-full px-3 pb-1 text-[0.75rem] leading-5 text-muted-foreground"
-              : "w-full basis-full px-1 text-[0.8rem] leading-5 text-muted-foreground"}>
-              {ownershipError}
-            </p>
-          {/if}
-          {#if presentation === "control" || status.replicaReady}
-            <button
-              type="button"
-              class={presentation === "control" ? controlButtonClass : buttonClass}
-              disabled={presentation === "control" && busy === "refresh"
-                ? !isCoordinatorClient
-                : busy !== null || !status.linked || status.pendingTransfer || status.canWrite !== false || !status.replicaReady}
-              onclick={() => {
-                if (presentation === "control" && busy === "refresh" && isCoordinatorClient) void cancelReceive();
-                else void (isCoordinatorClient ? receive("refresh") : requestFromAndroid("refresh"));
-              }}
-            >
-              {#if presentation === "control"}
-                <span class="min-w-0 truncate">{busy === "refresh" && isCoordinatorClient ? t("vaultHandoff.cancel") : t("vaultHandoff.refreshCopy")}</span>
-                {#if busy === "refresh"}
-                  <LoaderCircle size={14} strokeWidth={1.8} class="shrink-0 animate-spin opacity-70" aria-hidden="true" />
-                {:else}
-                  <Download size={14} strokeWidth={1.8} class="shrink-0 opacity-70" aria-hidden="true" />
-                {/if}
-              {:else}
-                {#if busy === "refresh"}<LoaderCircle size={14} class="animate-spin" />{/if}
-                {t("vaultHandoff.refreshCopy")}
-              {/if}
-            </button>
-          {/if}
         {/if}
-        {#if presentation !== "control" && isCoordinatorClient && (busy === "ownership" || busy === "refresh")}
-          <button type="button" class={buttonClass} onclick={() => void cancelReceive()}>
-            {t("vaultHandoff.cancel")}
+        {#if presentation === "settings" && recoverAvailable}
+          <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => { confirmation = "recover"; }}>
+            {t("vaultHandoff.recover")}
           </button>
-        {/if}
-        {#if presentation === "settings"}
-          {#if !status.canWrite && status.replicaReady && !status.pendingTransfer}
-            <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => { confirmation = "recover"; }}>
-              {t("vaultHandoff.recover")}
-            </button>
-          {/if}
         {/if}
       </div>
       {/if}
@@ -711,8 +790,21 @@
     {/if}
 
     </fieldset>
+    {#if presentation === "settings" && !status.linked}
+      <SyncRecoveryKitSetup {buttonClass} printable={platform === "desktop"} />
+    {/if}
     {#if presentation === "settings" && status.linked}
-      <SyncSection {buttonClass} mobileLayout={platform === "android"} />
+      <SyncSection
+        {buttonClass}
+        mobileLayout={platform === "android"}
+        onAllowNetworkAccess={desktopNetworkAccessSetting
+          && !controlsBusy
+          && (networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired")
+          ? () => setNetworkAccess(true)
+          : undefined}
+        onRecoverLocalCopy={recoverAvailable && busy === null ? () => { confirmation = "recover"; } : undefined}
+        onFreshCopy={isCoordinatorClient && status.replicaReady ? getFreshCopy : undefined}
+      />
     {/if}
   {:else if error}
     {#if presentation === "onboarding"}
@@ -735,12 +827,10 @@
     {/if}
   {/if}
 
-  {#if presentation !== "control" && (busy === "ownership" || busy === "refresh")}
+  {#if presentation !== "control" && busy === "bootstrap"}
     <p role="status" class="flex items-center gap-2 px-1 text-[0.8rem] text-muted-foreground">
       <LoaderCircle size={14} strokeWidth={2} class="animate-spin" aria-hidden="true" />
-      {busy === "ownership"
-          ? t("vaultHandoff.workingOwnership")
-          : t("vaultHandoff.workingRefresh")}
+      {t("vaultHandoff.workingCopy")}
     </p>
   {/if}
   {#if status?.revokedByCoordinator && presentation === "settings"}
@@ -803,10 +893,14 @@
       networkBusy={busy === "network"}
       {networkError}
       invitationError={busy === "invite" ? null : error}
+      pendingEnrollment={status?.pendingEnrollment ?? null}
+      approvalBusy={busy === "approval"}
+      {approvalError}
       onGrantNetworkAccess={() => { confirmation = "network"; }}
       onRefresh={() => void showInvitation()}
       onRetry={() => showInvitation()}
-      onClose={() => { qrDialogVisible = false; invitation = null; }}
+      onRespondEnrollment={(approve) => void respondToPendingEnrollment(approve)}
+      onClose={closeInvitationDialog}
     />
   {/await}
 {/if}
@@ -816,6 +910,7 @@
     {@const PairingCodeDialog = module.default}
     <PairingCodeDialog
       busy={busy === "pair"}
+      {enrollmentCode}
       error={codeError}
       onSubmit={(code) => void acceptInvitation(code)}
       onEdit={() => { codeError = null; }}
@@ -827,7 +922,9 @@
 {#if confirmation === "network"}
   <ConfirmDialog
     title={t("vaultHandoff.networkAccessConfirmTitle")}
-    message={t("vaultHandoff.networkAccessConfirmMessage")}
+    message={networkAccess?.state === "networkConfirmationRequired"
+      ? t("vaultHandoff.networkAccessNetworkConfirmMessage")
+      : t("vaultHandoff.networkAccessConfirmMessage")}
     confirmLabel={t("vaultHandoff.allowNetworkAccess")}
     cancelLabel={t("common.cancel")}
     danger={false}
@@ -862,19 +959,16 @@
     onConfirm={() => void recover()}
     onCancel={() => { confirmation = null; }}
   />
-{:else if confirmation === "replace"}
+{:else if confirmation === "firstCopy"}
   <ConfirmDialog
-    title={t("vaultOwnershipPrompt.replacementTitle")}
+    title={t("vaultHandoff.firstCopyTitle")}
     message={platform === "android"
-      ? t("vaultOwnershipPrompt.replacementAndroid")
-      : t("vaultOwnershipPrompt.replacementDesktop")}
-    confirmLabel={t("vaultOwnershipPrompt.replacementConfirm")}
+      ? t("vaultHandoff.firstCopyAndroid")
+      : t("vaultHandoff.firstCopyDesktop")}
+    confirmLabel={t("vaultHandoff.firstCopyConfirm")}
     cancelLabel={t("common.cancel")}
     danger={false}
-    onConfirm={() => {
-      confirmation = null;
-      beginOwnershipTransfer();
-    }}
+    onConfirm={() => void copyFirst()}
     onCancel={() => { confirmation = null; }}
   />
 {/if}

@@ -1,7 +1,8 @@
-//! Distraction blocking. Desktop modules enforce browser and app rules from local state files;
-//! Android drives the native blocker. Contracts, application rules, budget matching, usage
-//! normalization, and elapsed accounting come from `ganbaru-distractions`; linked-device
-//! accounting is shared.
+//! Distraction blocking. Rules live in the vault's SQLite database; desktop modules enforce
+//! browser and app rules from local state files, and Android drives the native blocker.
+//! Contracts, application rules, budget matching, usage normalization, and elapsed accounting
+//! come from `ganbaru-distractions`. Each device keeps its usage samples and replicates daily
+//! usage totals, so budgets count every linked device.
 
 #[cfg(desktop)]
 use crate::vault;
@@ -15,8 +16,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 #[cfg(desktop)]
 use std::path::{Path, PathBuf};
-#[cfg(all(desktop, target_os = "linux"))]
-use std::process::Stdio;
 #[cfg(desktop)]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(desktop)]
@@ -35,23 +34,60 @@ pub(crate) mod commands;
 mod foreground;
 #[cfg(desktop)]
 pub(crate) mod limits_read;
-pub(crate) mod linked;
 #[cfg(desktop)]
 mod process_control;
 #[cfg(desktop)]
 mod processes;
+pub(crate) mod rule_commands;
+pub(crate) mod rule_store;
 #[cfg(desktop)]
 pub(crate) mod runtime;
+#[cfg(all(desktop, target_os = "linux"))]
+mod session_anchors;
+#[cfg(desktop)]
+pub(crate) mod spool;
 #[cfg(desktop)]
 pub(crate) mod state_files;
+pub(crate) mod usage_totals;
 
 pub(crate) use ganbaru_distractions::limits;
+
+/// The limit parse failure last logged, so reads repeating on a timer report it once.
+#[cfg(any(desktop, target_os = "android"))]
+static LIMIT_PARSE_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The persisted usage limits for an enforcement loop, or limits off when they do not parse, so
+/// a limit failure costs budgets alone and phase enforcement keeps running.
+#[cfg(any(desktop, target_os = "android"))]
+pub(crate) fn limits_or_phase_only(root: &serde_json::Value) -> limits::LimitsConfig {
+    let parsed = limits::parse_config(root);
+    let mut logged = LIMIT_PARSE_FAILURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match parsed {
+        Ok(config) => {
+            *logged = None;
+            config
+        }
+        Err(error) => {
+            if logged.as_deref() != Some(error.as_str()) {
+                eprintln!("Usage limits are off until they parse: {error}");
+                *logged = Some(error);
+            }
+            limits::LimitsConfig {
+                enabled: false,
+                items: Vec::new(),
+            }
+        }
+    }
+}
+
 #[cfg(desktop)]
 use ganbaru_distractions::{contracts, rules, usage};
 
 #[cfg(desktop)]
 use contracts::DistractionsExtensionConnectionFile;
-#[cfg(all(desktop, any(target_os = "linux", test)))]
+#[cfg(all(desktop, target_os = "linux"))]
 use contracts::ObservedDesktopProcess;
 #[cfg(desktop)]
 #[allow(unused_imports)]
@@ -72,15 +108,21 @@ use foreground::{close_current_foreground_desktop_app, foreground_desktop_app_st
 use processes::list_blocked_desktop_app_matches;
 #[cfg(all(desktop, target_os = "linux"))]
 use processes::{observe_linux_process, read_linux_process_names};
-#[cfg(all(desktop, any(target_os = "linux", test)))]
+#[cfg(all(desktop, target_os = "linux"))]
 use rules::desktop_rule_matchers;
+#[cfg(all(desktop, target_os = "linux"))]
+use rules::is_protected_observed_process_name;
 #[cfg(desktop)]
 use rules::{
     app_name_key, foreground_expectation_matches, foreground_status_from_parts,
     foreground_status_match_names, is_protected_desktop_app_candidate,
     is_protected_desktop_app_name, normalize_app_candidate_name, normalize_process_match_name,
-    normalize_process_match_names, unavailable_foreground_desktop_app_status,
-    validate_foreground_status_is_closeable,
+    normalize_process_match_names, trusted_process_match_names,
+    unavailable_foreground_desktop_app_status, validate_foreground_status_is_closeable,
+};
+#[cfg(all(desktop, target_os = "linux"))]
+use session_anchors::{
+    SessionAnchors, current_session_anchors, drop_anchored_matches, refuse_anchored_close,
 };
 #[cfg(desktop)]
 pub use state_files::clear_distractions_enforcement_state;
@@ -92,18 +134,24 @@ use limits::is_valid_local_date;
 
 #[cfg(all(desktop, test))]
 use state_files::{
-    clear_enforcement_state_files, extension_status_from_file_contents, validate_limit_state,
-    validate_state, write_text_file_atomically,
+    clear_enforcement_state_files, extension_status_at, extension_status_from_file_contents,
+    validate_limit_state, validate_state,
 };
 
 #[cfg(all(desktop, test))]
-use catalog::{parse_desktop_entry, sort_and_deduplicate_candidates};
+use catalog::sort_and_deduplicate_candidates;
+
+#[cfg(all(desktop, test, unix))]
+use state_files::write_text_file_atomically;
 
 #[cfg(all(desktop, test, target_os = "linux"))]
-use catalog::process_name_from_exec;
+use catalog::{parse_desktop_entry, process_name_from_exec};
 
 #[cfg(all(desktop, test))]
-use authorization::{configured_close_authorization, read_bounded_authorization_config};
+use authorization::configured_close_authorization;
+
+#[cfg(all(desktop, test))]
+use catalog::DesktopCatalogIndex;
 
 #[cfg(all(desktop, test, target_os = "linux"))]
 use process_control::{
@@ -118,9 +166,7 @@ const EXTENSION_CONNECTION_FILE: &str = "distractions-extension-status.json";
 #[cfg(desktop)]
 const LIMIT_STATE_FILE: &str = "distractions-limit-state.json";
 #[cfg(desktop)]
-const VAULT_CONFIG_FILE: &str = "config.json";
-#[cfg(desktop)]
-const MAX_AUTHORIZATION_CONFIG_BYTES: u64 = 1024 * 1024;
+const RULES_FILE: &str = "distractions-rules.json";
 #[cfg(desktop)]
 const LIMIT_STATE_STALE_SECONDS: i64 = 20;
 #[cfg(desktop)]

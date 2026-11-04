@@ -4,7 +4,7 @@
   import CircleCheck from "@lucide/svelte/icons/circle-check";
   import GripVertical from "@lucide/svelte/icons/grip-vertical";
   import Plus from "@lucide/svelte/icons/plus";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import CollectionMenu from "$lib/components/collections/CollectionMenu.svelte";
   import CollectionMenuItem from "$lib/components/collections/CollectionMenuItem.svelte";
   import CollectionMenuSeparator from "$lib/components/collections/CollectionMenuSeparator.svelte";

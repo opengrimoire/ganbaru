@@ -15,6 +15,12 @@ const CRLF = "\r\n";
 const PRODID = "-//Ganbaru//Calendar//EN";
 const DEFAULT_METHOD = "PUBLISH";
 const METHOD_TOKEN_RE = /^[A-Za-z0-9-]+$/;
+/** Control characters RFC 5545 forbids in content-line values; horizontal tab stays allowed. */
+const CONTENT_LINE_CONTROLS_RE = /[\u0000-\u0008\u000A-\u001F\u007F]/g;
+/** RFC 5545 `iana-token` and `x-name` grammar for property and parameter names. */
+const CONTENT_LINE_NAME_RE = /^[A-Za-z0-9-]+$/;
+/** Extended properties carry only `x-name` properties from import. */
+const EXTENDED_PROPERTY_NAME_RE = /^X-[A-Za-z0-9-]+$/i;
 const textEncoder = new TextEncoder();
 
 type JcalProperty = [string, Record<string, unknown>, string, ...unknown[]];
@@ -124,7 +130,7 @@ function buildVTimezone(zone: string): string[] {
 	const offsetStr = formatUtcOffset(offsetEpoch);
 	return [
 		"BEGIN:VTIMEZONE",
-		`TZID:${zone}`,
+		`TZID:${contentLineValue(zone)}`,
 		"BEGIN:STANDARD",
 		"DTSTART:19700101T000000",
 		`TZOFFSETFROM:${offsetStr}`,
@@ -135,15 +141,27 @@ function buildVTimezone(zone: string): string[] {
 }
 
 /**
- * Escape a TEXT value per RFC 5545 (backslash, semicolon, comma, newline).
+ * Remove the control characters a content-line value cannot carry, so a value
+ * that is not TEXT (UID, URI, calendar address, time zone identifier) can never
+ * end its line and start another property. Browsers drop line breaks from
+ * pasted URLs the same way.
+ */
+function contentLineValue(value: string): string {
+	return value.replace(CONTENT_LINE_CONTROLS_RE, "");
+}
+
+/**
+ * Escape a TEXT value per RFC 5545 (backslash, semicolon, comma, newline) and
+ * drop other control characters.
  */
 function escapeText(value: string): string {
-	return value
-		.replace(/\\/g, "\\\\")
-		.replace(/;/g, "\\;")
-		.replace(/,/g, "\\,")
-		.replace(/\n/g, "\\n")
-		.replace(/\r/g, "");
+	return contentLineValue(
+		value
+			.replace(/\\/g, "\\\\")
+			.replace(/;/g, "\\;")
+			.replace(/,/g, "\\,")
+			.replace(/\r\n|\n/g, "\\n"),
+	);
 }
 
 /**
@@ -151,10 +169,12 @@ function escapeText(value: string): string {
  * separate from TEXT value escaping.
  */
 function escapeParamValue(value: string): string {
-	const encoded = value
-		.replace(/\^/g, "^^")
-		.replace(/"/g, "^'")
-		.replace(/\r\n|\r|\n/g, "^n");
+	const encoded = contentLineValue(
+		value
+			.replace(/\^/g, "^^")
+			.replace(/"/g, "^'")
+			.replace(/\r\n|\r|\n/g, "^n"),
+	);
 	if (/[:;,]/.test(encoded)) return `"${encoded}"`;
 	return encoded;
 }
@@ -234,12 +254,12 @@ function buildAttendee(att: EventAttendee): string {
 	params.push(`ROLE=${ROLE_REVERSE[att.role]}`);
 	params.push(`PARTSTAT=${STATUS_ATTENDEE_REVERSE[att.status]}`);
 	params.push(`RSVP=${att.rsvp ? "TRUE" : "FALSE"}`);
-	return `ATTENDEE;${params.join(";")}:mailto:${att.email}`;
+	return `ATTENDEE;${params.join(";")}:mailto:${contentLineValue(att.email)}`;
 }
 
 function buildOrganizer(org: EventOrganizer): string {
-	if (org.name) return `ORGANIZER;${param("CN", org.name)}:mailto:${org.email}`;
-	return `ORGANIZER:mailto:${org.email}`;
+	if (org.name) return `ORGANIZER;${param("CN", org.name)}:mailto:${contentLineValue(org.email)}`;
+	return `ORGANIZER:mailto:${contentLineValue(org.email)}`;
 }
 
 function buildRecurrenceId(
@@ -252,7 +272,7 @@ function buildRecurrenceId(
 	const rangeParam = recurrenceRange === "this-and-future" ? ";RANGE=THISANDFUTURE" : "";
 	if (isAllDay) return `RECURRENCE-ID${rangeParam};VALUE=DATE:${formatUtcDate(recurrenceIdUtc)}`;
 	if (useTzid && homeZone !== "UTC") {
-		return `RECURRENCE-ID${rangeParam};TZID=${homeZone}:${formatZonedDateTime(recurrenceIdUtc, homeZone)}`;
+		return `RECURRENCE-ID${rangeParam};${param("TZID", homeZone)}:${formatZonedDateTime(recurrenceIdUtc, homeZone)}`;
 	}
 	return `RECURRENCE-ID${rangeParam}:${formatUtcDateTime(recurrenceIdUtc)}`;
 }
@@ -275,7 +295,7 @@ function buildExdate(
 		const exdates = event.exceptions
 			.map((d) => formatDateTimeOnDate(d, localStart))
 			.join(",");
-		return `EXDATE;TZID=${homeZone}:${exdates}`;
+		return `EXDATE;${param("TZID", homeZone)}:${exdates}`;
 	}
 
 	const utcStart = formatUtcDateTime(startUtc);
@@ -311,9 +331,9 @@ function recurrenceToExportRrule(
 }
 
 function buildAlarm(alarm: EventAlarm): string[] {
-	const lines = ["BEGIN:VALARM", `ACTION:${alarm.action.toUpperCase()}`];
+	const lines = ["BEGIN:VALARM", `ACTION:${contentLineValue(alarm.action.toUpperCase())}`];
 	if (alarm.description) lines.push(`DESCRIPTION:${escapeText(alarm.description)}`);
-	lines.push(`TRIGGER:${alarm.triggerValue}`);
+	lines.push(`TRIGGER:${contentLineValue(alarm.triggerValue)}`);
 	lines.push("END:VALARM");
 	return lines;
 }
@@ -407,8 +427,62 @@ function firstJcalValue(component: JcalComponent, name: string): string | undefi
 	return JSON.stringify(value);
 }
 
+/**
+ * Strip control characters from every string inside a jCal value. TEXT values
+ * keep line feeds because ical.js escapes them; other value types are written
+ * verbatim, so a line feed there would start a new property.
+ */
+function sanitizeJcalValue(value: unknown, keepLineFeeds: boolean): unknown {
+	if (typeof value === "string") {
+		return keepLineFeeds
+			? value.replace(/\r\n/g, "\n").split("\n").map(contentLineValue).join("\n")
+			: contentLineValue(value);
+	}
+	if (Array.isArray(value)) return value.map((item) => sanitizeJcalValue(item, keepLineFeeds));
+	if (typeof value === "object" && value !== null) {
+		return Object.fromEntries(
+			Object.entries(value).map(([key, item]) => [key, sanitizeJcalValue(item, keepLineFeeds)]),
+		);
+	}
+	return value;
+}
+
+function sanitizeJcalProperty(property: JcalProperty): JcalProperty | null {
+	const [name, params, type, ...values] = property;
+	if (!CONTENT_LINE_NAME_RE.test(name) || !CONTENT_LINE_NAME_RE.test(type)) return null;
+	const safeParams: Record<string, unknown> = {};
+	for (const [paramName, paramValue] of Object.entries(params)) {
+		if (CONTENT_LINE_NAME_RE.test(paramName)) safeParams[paramName] = sanitizeJcalValue(paramValue, true);
+	}
+	const keepLineFeeds = type.toLowerCase() === "text";
+	return [
+		name,
+		safeParams,
+		type,
+		...values.map((value) => sanitizeJcalValue(value, keepLineFeeds)),
+	];
+}
+
+/**
+ * Rebuild a jCal component with only well-formed names and control-free
+ * values, so preserved or merged data cannot add properties or components
+ * when ical.js writes it out.
+ */
+function sanitizeJcalComponent(component: JcalComponent): JcalComponent {
+	return [
+		component[0],
+		jcalProperties(component)
+			.map(sanitizeJcalProperty)
+			.filter((property): property is JcalProperty => property !== null),
+		jcalSubcomponents(component)
+			.filter((child) => CONTENT_LINE_NAME_RE.test(child[0]))
+			.map(sanitizeJcalComponent),
+	];
+}
+
 function jcalComponentToLines(component: JcalComponent): string[] {
-	const text = ICAL.stringify(component) as string;
+	if (!CONTENT_LINE_NAME_RE.test(component[0])) return [];
+	const text = ICAL.stringify(sanitizeJcalComponent(component)) as string;
 	return text.split(/\r\n|\n|\r/).filter((line) => line.length > 0);
 }
 
@@ -665,14 +739,14 @@ function buildVevent(opts: BuildVeventOptions): string[] {
 	const startUtc = toUtcInstant(event.start, renderZone, isAllDay);
 	const endUtc = toUtcInstant(event.end, renderZone, isAllDay);
 
-	const lines: string[] = ["BEGIN:VEVENT", `UID:${uid}`, `DTSTAMP:${dtStamp}`];
+	const lines: string[] = ["BEGIN:VEVENT", `UID:${contentLineValue(uid)}`, `DTSTAMP:${dtStamp}`];
 
 	if (isAllDay) {
 		lines.push(`DTSTART;VALUE=DATE:${formatDateOnly(event.start)}`);
 		lines.push(`DTEND;VALUE=DATE:${formatDateOnly(addDaysToDateOnly(event.end, 1))}`);
 	} else if (useTzid && homeZone !== "UTC") {
-		lines.push(`DTSTART;TZID=${homeZone}:${formatZonedDateTime(startUtc, homeZone)}`);
-		lines.push(`DTEND;TZID=${homeZone}:${formatZonedDateTime(endUtc, homeZone)}`);
+		lines.push(`DTSTART;${param("TZID", homeZone)}:${formatZonedDateTime(startUtc, homeZone)}`);
+		lines.push(`DTEND;${param("TZID", homeZone)}:${formatZonedDateTime(endUtc, homeZone)}`);
 	} else {
 		lines.push(`DTSTART:${formatUtcDateTime(startUtc)}`);
 		lines.push(`DTEND:${formatUtcDateTime(endUtc)}`);
@@ -685,7 +759,7 @@ function buildVevent(opts: BuildVeventOptions): string[] {
 	lines.push(`SUMMARY:${escapeText(event.title)}`);
 	if (event.description) lines.push(`DESCRIPTION:${escapeText(event.description)}`);
 	if (event.location) lines.push(`LOCATION:${escapeText(event.location)}`);
-	if (event.url) lines.push(`URL:${event.url}`);
+	if (event.url) lines.push(`URL:${contentLineValue(event.url)}`);
 
 	const rrule = recurrenceToExportRrule(event, isAllDay, homeZone);
 	if (rrule) lines.push(`RRULE:${rrule}`);
@@ -725,6 +799,7 @@ function buildVevent(opts: BuildVeventOptions): string[] {
 	}
 	if (event.extendedProperties) {
 		for (const [k, v] of Object.entries(event.extendedProperties)) {
+			if (!EXTENDED_PROPERTY_NAME_RE.test(k)) continue;
 			lines.push(`${k}:${escapeText(v)}`);
 		}
 	}

@@ -23,7 +23,7 @@ export function defaultChannelAccessInput(
   return {
     channelId,
     accessProfileId: profile?.id ?? "",
-    accessProfileRevision: profile?.latestRevision.revision ?? 0,
+    accessProfileRevisionId: profile?.latestRevision.id ?? "",
     capabilities: capabilitiesForPreset("isolatedResponder"),
     historyBoundary: { kind: "entire" },
     runtimeApprovalOverride: null,
@@ -39,7 +39,7 @@ export function channelAccessInput(
   return {
     channelId: access.channelId,
     accessProfileId: access.accessProfileId,
-    accessProfileRevision: access.accessProfileRevision,
+    accessProfileRevisionId: access.accessProfileRevisionId,
     capabilities: { ...access.capabilities },
     historyBoundary: access.historyBoundary.kind === "entire"
       ? { kind: "entire" }

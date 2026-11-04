@@ -1,6 +1,6 @@
 <script lang="ts">
-  import AlertTriangle from "@lucide/svelte/icons/alert-triangle";
-  import Wand2 from "@lucide/svelte/icons/wand-2";
+  import AlertTriangle from "@lucide/svelte/icons/triangle-alert";
+  import Wand2 from "@lucide/svelte/icons/wand-sparkles";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { ThemeSources } from "$lib/themes";
   import { cn } from "$lib/utils";

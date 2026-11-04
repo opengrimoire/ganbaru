@@ -1,4 +1,6 @@
-import { getYouTubeThumbnail, loadArtworkDataUrl, loadEmbeddedArtworkDataUrl } from "$lib/api/music";
+import { getYouTubeThumbnail, loadArtworkDataUrl, loadEmbeddedArtworkDataUrl, loadMusicArtworkAssetDataUrl } from "$lib/api/music";
+import { loadAssetUrl } from "$lib/api/asset-url-cache";
+import { isManagedMusicArtworkReference } from "$lib/music/managed-artwork";
 
 const MAX_CACHED_ARTWORK = 96;
 const MAX_CACHED_EMBEDDED_ARTWORK = 12;
@@ -29,6 +31,20 @@ export function musicArtworkDataUrl(path: string): Promise<string | null> {
     artworkCache.delete(oldest);
   }
   return request;
+}
+
+/** Loads managed artwork of the active vault through the shared vault asset cache. */
+export function musicArtworkAssetDataUrl(reference: string): Promise<string | null> {
+  return Promise.resolve()
+    .then(() => loadAssetUrl("music-artwork", reference, () => loadMusicArtworkAssetDataUrl(reference)))
+    .catch(() => null);
+}
+
+/** Loads artwork named by a managed reference or by a local file path. */
+export function musicArtworkImageDataUrl(pathOrReference: string): Promise<string | null> {
+  return isManagedMusicArtworkReference(pathOrReference)
+    ? musicArtworkAssetDataUrl(pathOrReference)
+    : musicArtworkDataUrl(pathOrReference);
 }
 
 export function clearMusicArtworkCache(): void {

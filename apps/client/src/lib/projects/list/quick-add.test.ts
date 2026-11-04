@@ -15,7 +15,7 @@ function status(id: string, terminal = false): ProjectStatus {
     name: id,
     category: terminal ? "done" : "active",
     color: 0,
-    sortOrder: 1000,
+    orderKey: "1000",
     terminal,
     createdAt: "2026-06-21T00:00:00.000Z",
     updatedAt: "2026-06-21T00:00:00.000Z",
@@ -28,7 +28,7 @@ function priority(id: string): ProjectPriorityConfig {
     projectId: "project-a",
     name: id,
     color: 0,
-    sortOrder: 1000,
+    orderKey: "1000",
     createdAt: "2026-06-21T00:00:00.000Z",
     updatedAt: "2026-06-21T00:00:00.000Z",
   };

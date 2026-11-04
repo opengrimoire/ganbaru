@@ -5,13 +5,14 @@ use serde::{Deserialize, Deserializer};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::config::{DistractionsConfig, default_config, read_config};
+use crate::config::{DistractionsConfig, default_config, read_rules};
 use crate::{NativeResponse, now_utc};
 
 const STATE_FILE: &str = "distractions-state.json";
 const LIMIT_STATE_FILE: &str = "distractions-limit-state.json";
 const APP_STATE_FILE: &str = "app-state.json";
-const CONFIG_FILE: &str = "config.json";
+/// Device-local rules the app publishes from the active vault's SQLite rules.
+const RULES_FILE: &str = "distractions-rules.json";
 const APP_SQLITE_FILE: &str = "ganbaru.sqlite";
 const STALE_STATE_SECONDS: i64 = 75;
 const ACTIVE_STATE_STALE_SECONDS: i64 = 45;
@@ -107,9 +108,10 @@ pub(super) fn load_snapshot() -> StateSnapshot {
         .as_ref()
         .and_then(|dir| read_app_state(&dir.join(APP_STATE_FILE)))
         .and_then(active_vault_path_from_state);
-    let config = vault_path
+    let config = config_dir
         .as_ref()
-        .and_then(|dir| read_config(&dir.join(CONFIG_FILE)))
+        .zip(vault_path.as_ref())
+        .and_then(|(dir, vault)| read_rules(&dir.join(RULES_FILE), vault))
         .unwrap_or_else(default_config);
     let runtime = config_dir
         .as_ref()
@@ -329,13 +331,6 @@ fn database_path_is_allowed(path: &Path, vault_path: Option<&Path>) -> bool {
         Some(vault_path) => path == vault_path.join(APP_SQLITE_FILE),
         None => true,
     }
-}
-
-pub(super) fn usage_db_path(vault_path: &Path, limit_state: Option<&LimitState>) -> PathBuf {
-    limit_state
-        .map(|state| PathBuf::from(&state.database_path))
-        .filter(|path| database_path_is_allowed(path, Some(vault_path)))
-        .unwrap_or_else(|| vault_path.join(APP_SQLITE_FILE))
 }
 
 fn limit_state_is_fresh(state: &LimitState, vault_path: Option<&Path>) -> bool {

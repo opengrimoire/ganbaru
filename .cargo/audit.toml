@@ -1,12 +1,8 @@
 [advisories]
-# Reviewed on May 29, 2026. SQLx locks its optional MySQL backend for macro
-# support, but Ganbaru only uses SQLite and the app target has no active
-# `rsa` path. See docs/data/security/dependency-audits.md before changing this ignore.
 # Reviewed on July 9, 2026. The affected `quick-xml` versions are limited to
 # trusted Wayland protocol XML at compile time and XML escaping on Windows.
 # The vulnerable parsing APIs are not reachable. See docs/data/security/dependency-audits.md.
 ignore = [
-  "RUSTSEC-2023-0071",
   "RUSTSEC-2026-0194",
   "RUSTSEC-2026-0195",
 ]

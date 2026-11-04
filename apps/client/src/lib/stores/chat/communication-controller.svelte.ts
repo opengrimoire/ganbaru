@@ -10,6 +10,7 @@ import type {
 } from "$lib/chat/contracts";
 import { chatErrorMessage } from "$lib/chat/error-presentation";
 import { applyReplyThreadSummary } from "$lib/chat/timeline/organizational-message-model";
+import { compareOrderKeyThenId } from "$lib/utils/order-key";
 
 const CACHE_MAX_ENTRIES = 6;
 const CACHE_MAX_BYTES = 8 * 1024 * 1024;
@@ -249,7 +250,7 @@ export class ChatCommunicationController {
 function mergeMessages(messages: readonly ChatMessageRead[]): ChatMessageRead[] {
   const byId = new Map(messages.map((message) => [message.itemId, message]));
   return [...byId.values()].sort((left, right) => (
-    left.ordinal - right.ordinal || left.itemId.localeCompare(right.itemId)
+    compareOrderKeyThenId(left.orderKey, left.itemId, right.orderKey, right.itemId)
   ));
 }
 

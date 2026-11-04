@@ -1,16 +1,21 @@
 //! Value guard triggers and their agreement with the contract types.
 
 use ganbaru_sync_contracts::bounds::{MAX_ORDER_KEY_BYTES, MAX_ROW_KEY_BYTES};
-use ganbaru_sync_contracts::{OrderKey, RowKey};
-use sqlx::SqlitePool;
+use ganbaru_sync_contracts::{Field, OrderKey, RowKey};
+use sqlx::{AssertSqlSafe, SqlitePool};
 
+use super::holds::{THEME_KEY, narrowed_rows, sealed_create};
+use super::replica::{forge_change, quoted};
 use super::{block_on, execute, migrated_pool, rejects, set_applying};
 use crate::manifest::vault::VAULT_MANIFEST;
+use crate::manifest::vault::themes::THEMES_TABLE;
 use crate::manifest::{ColumnType, MAX_TIMESTAMP_BYTES};
 use crate::triggers::{row_key_rule, value_rule};
+use crate::validate::column_value;
+use crate::{HoldReason, StoreOutcome};
 
 async fn rule_accepts(pool: &SqlitePool, rule: &str, value: &str) -> bool {
-    let accepted: Option<i64> = sqlx::query_scalar(&format!("SELECT ({rule}) IS 1"))
+    let accepted: Option<i64> = sqlx::query_scalar(AssertSqlSafe(format!("SELECT ({rule}) IS 1")))
         .bind(value)
         .fetch_one(pool)
         .await
@@ -164,6 +169,78 @@ fn row_key_rule_agrees_with_the_contract_type() {
     });
 }
 
+/// A theme row whose id the domain refuses to read would stop every linked device from listing
+/// themes, so a signed change naming such a key is held and writes nothing.
+#[test]
+fn theme_with_a_non_slug_key_is_held_invalid() {
+    block_on(async {
+        let mut replicas = narrowed_rows().await;
+        let honest = sealed_create(&mut replicas[1], THEMES_TABLE, THEME_KEY).await;
+        let overlong = "a".repeat(65);
+        for key in ["Evil", overlong.as_str()] {
+            let mut change = honest.clone();
+            change.row = RowKey::new(key).unwrap();
+            let forged = forge_change(&mut replicas[1], change).await;
+            let mut receiver = replicas[0].clone_device().await;
+            assert_eq!(
+                receiver.receive(&[forged]).await,
+                vec![StoreOutcome::Stored {
+                    held: Some(HoldReason::Invalid)
+                }],
+                "theme key {key}"
+            );
+            receiver.apply_all().await.unwrap();
+            assert_eq!(
+                receiver
+                    .count(&format!(
+                        "SELECT count(*) FROM themes WHERE id = {}",
+                        quoted(key)
+                    ))
+                    .await,
+                0,
+                "theme key {key} applied"
+            );
+        }
+    });
+}
+
+/// The insert guard states the theme id rule whether or not the engine is applying, so no write
+/// path leaves a row the domain cannot read.
+#[test]
+fn theme_insert_guard_admits_only_theme_ids() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let insert = |key: &str| {
+            format!(
+                "INSERT INTO themes
+                     (id, display_name, blend_canvas, seed_blend_canvas,
+                      derivation_engine_version, created_at_ms, updated_at_ms, icon_label,
+                      seed_icon_label)
+                 VALUES ('{key}', 'Ocean', '#101010', '#101010', 1, 1, 1, 'dark', 'dark')"
+            )
+        };
+        let overlong = "a".repeat(65);
+        for key in ["Evil", "-theme", "theme_1", "thème", overlong.as_str()] {
+            for applying in [false, true] {
+                set_applying(&pool, applying).await;
+                assert!(
+                    rejects(&pool, &insert(key)).await,
+                    "theme key {key} while applying is {applying}"
+                );
+            }
+        }
+        set_applying(&pool, false).await;
+        let longest = "a".repeat(64);
+        for key in [
+            "0f8fad5b-d9cb-469f-a165-70867728950e",
+            THEME_KEY,
+            longest.as_str(),
+        ] {
+            execute(&pool, &insert(key)).await;
+        }
+    });
+}
+
 #[test]
 fn rules_reject_values_of_other_types() {
     block_on(async {
@@ -180,7 +257,10 @@ fn rules_reject_values_of_other_types() {
             let rule = value_rule("?1", ty);
             for value in ["12", "x'6130'"] {
                 let sql = format!("SELECT ({}) IS 1", rule.replace("?1", value));
-                let accepted: i64 = sqlx::query_scalar(&sql).fetch_one(&pool).await.unwrap();
+                let accepted: i64 = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
                 assert_eq!(accepted, 0, "{ty:?} accepted {value}");
             }
         }
@@ -188,9 +268,52 @@ fn rules_reject_values_of_other_types() {
             let rule = value_rule("?1", ty);
             for value in ["'1'", "1.0", "NULL", "x'01'"] {
                 let sql = format!("SELECT ({}) IS 1", rule.replace("?1", value));
-                let accepted: i64 = sqlx::query_scalar(&sql).fetch_one(&pool).await.unwrap();
+                let accepted: i64 = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
                 assert_eq!(accepted, 0, "{ty:?} accepted {value}");
             }
+        }
+    });
+}
+
+#[test]
+fn optional_integer_rule_and_validation_agree() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let ty = ColumnType::OptionalInteger { min: -5, max: 31 };
+        let rule = value_rule("?1", ty);
+        let samples = [
+            ("NULL", Field::Null, true),
+            ("-5", Field::Integer(-5), true),
+            ("0", Field::Integer(0), true),
+            ("31", Field::Integer(31), true),
+            ("-6", Field::Integer(-6), false),
+            ("32", Field::Integer(32), false),
+            ("'1'", Field::Text("1".to_string()), false),
+            ("x'01'", Field::Blob(vec![1]), false),
+        ];
+        for (sql_value, field, expected) in samples {
+            let sql = format!("SELECT ({}) IS 1", rule.replace("?1", sql_value));
+            let accepted: i64 = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(accepted == 1, expected, "trigger rule on {sql_value}");
+            assert_eq!(
+                column_value(ty, &field),
+                expected,
+                "validation of {field:?}"
+            );
+        }
+        for sql_value in ["1.0", "31.5"] {
+            let sql = format!("SELECT ({}) IS 1", rule.replace("?1", sql_value));
+            let accepted: i64 = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(accepted, 0, "trigger rule accepted {sql_value}");
         }
     });
 }
@@ -272,7 +395,9 @@ fn schema_accepts_every_manifest_boundary_value() {
                             .execute(&mut *transaction)
                             .await
                             .unwrap();
-                        let result = sqlx::raw_sql(&sql).execute(&mut *transaction).await;
+                        let result = sqlx::raw_sql(AssertSqlSafe(sql.as_str()))
+                            .execute(&mut *transaction)
+                            .await;
                         transaction.rollback().await.unwrap();
                         assert!(result.is_ok(), "{sql}: {result:?}");
                     }
@@ -296,6 +421,9 @@ fn boundary_values(ty: ColumnType) -> Vec<String> {
         ColumnType::Text { max_chars } => {
             vec![quote(""), quote(&"é".repeat(max_chars)), quote("  ")]
         }
+        ColumnType::OptionalText { max_chars } => {
+            vec!["NULL".to_string(), quote(&"é".repeat(max_chars))]
+        }
         ColumnType::TrimmedText {
             min_chars,
             max_chars,
@@ -304,6 +432,9 @@ fn boundary_values(ty: ColumnType) -> Vec<String> {
             quote(&format!(" {} ", "é".repeat(max_chars))),
         ],
         ColumnType::Integer { min, max } => vec![min.to_string(), max.to_string()],
+        ColumnType::OptionalInteger { min, max } => {
+            vec!["NULL".to_string(), min.to_string(), max.to_string()]
+        }
         ColumnType::Flag => vec!["0".to_string(), "1".to_string()],
         ColumnType::Timestamp => vec![quote(&"9".repeat(MAX_TIMESTAMP_BYTES)), quote("x")],
         ColumnType::OptionalTimestamp => {
@@ -315,5 +446,6 @@ fn boundary_values(ty: ColumnType) -> Vec<String> {
             quote("A000000000000000000000000001"),
         ],
         ColumnType::OptionalRowKey => vec!["NULL".to_string(), quote("tag-1")],
+        ColumnType::RowKey => vec![quote("tag-1")],
     }
 }

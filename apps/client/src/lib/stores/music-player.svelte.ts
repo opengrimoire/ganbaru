@@ -3,7 +3,8 @@ import type { MusicPlaybackMode, MusicRepeatMode, MusicWeight } from "$lib/music
 import type { MusicActivityPhase, MusicAssignmentBehavior, MusicAssignmentSource } from "$lib/music/context-assignment";
 import { emptyMusicSkipBreakdown, type MusicPlaylistSkipReason, type MusicSavedQueueEntry } from "$lib/music/playlists/playback";
 import { probeLocalMedia, type LocalBackendKind } from "$lib/api/media-player";
-import { pickMediaFolder, registerEmbeddedArtwork, registerMediaFile } from "$lib/api/music";
+import { confirmLocalMusicSources, pickMediaFolder, registerEmbeddedArtwork, registerMediaFile, registerMusicArtworkAsset } from "$lib/api/music";
+import { isManagedMusicArtworkReference } from "$lib/music/managed-artwork";
 import { clampRate, clampVolume, formatVolumePercent, MAX_VOLUME, type PlaybackSnapshot } from "$lib/music/playback";
 import { formatSourceKind, isYouTubeSource, localFileSourceFromPath, parseMusicSourceInput, sourceDisplayLabel, type MusicSource } from "$lib/music/sources";
 import { NativeMusicSessionClient } from "$lib/music/session/native-session-client";
@@ -18,7 +19,9 @@ import { createMusicHostedMediaController, type MusicStaleVisual } from "$lib/st
 import { createDeviceVolume } from "$lib/stores/music-player/device-volume";
 import { createMusicExternalControls } from "$lib/stores/music-player/external-controls";
 import { createMusicYouTubeAdapter } from "$lib/stores/music-player/youtube-adapter";
+import type { NativeYouTubeHost } from "$lib/music/youtube-native-host";
 import { createMusicWebviewLocalAdapter } from "$lib/stores/music-player/webview-local-adapter";
+import { MusicObservationSender } from "$lib/stores/music-player/observation-sender";
 
 export type { MusicStaleVisual } from "$lib/stores/music-player/hosted-media-controller";
 export type MusicPlaybackContextOwner = "manual" | "review" | "calendar-event" | "pomodoro" | "soundscape";
@@ -138,7 +141,7 @@ class MusicPlayerStore {
   private browserSessionId: string | null = null;
   private browserGeneration = -1;
   private browserSequence = 0;
-  private isObserving = false;
+  private readonly observationSender = new MusicObservationSender(() => this.sendBrowserObservation());
   private nativeArtworkGeneration = -1;
   private readonly loadRuntime = new MusicLoadRuntime();
   private readonly surfaceClaims = new MusicSurfaceClaims((element) => { this.surfaceElement = element; });
@@ -181,7 +184,6 @@ class MusicPlayerStore {
     setVolume: (volume) => this.setVolume(volume),
     setRate: (rate) => this.setRate(rate),
     toggleShuffle: () => this.toggleShuffle(),
-    inspectAssignment: () => this.inspectContextAssignment(),
     handleWindowMessage: this.youtubeAdapter.handleMessage,
   });
   get isBusy(): boolean {
@@ -366,7 +368,7 @@ class MusicPlayerStore {
         sourceKind: entry.source.kind === "local-file" ? "local-file" : "youtube-video", availability: entry.availability,
         youtubeResolutionState: entry.embeddingBlocked ? "embedding-blocked" : null, weight: entry.weight, enabled: entry.enabled,
         snoozedUntil: entry.snoozedUntil, snoozedIndefinitely: entry.snoozedIndefinitely,
-        skipRanges: entry.skipRanges.map((range, index) => ({ ...range, id: String(entry.membershipId) + ":" + index, membershipId: entry.membershipId ?? "", sortOrder: index })),
+        skipRanges: entry.skipRanges.map((range, ordinal) => ({ ...range, membershipId: entry.membershipId ?? "", ordinal })),
         volume: entry.volume, rate: entry.rate,
       })) : [];
     }
@@ -408,7 +410,11 @@ class MusicPlayerStore {
     if (source.kind !== "local-file") return;
     const hostedGeneration = this.hostedMediaController.nextGeneration();
     this.hostedMediaController.startVisualTransition();
-    const artwork = source.artworkPath ? await registerMediaFile(source.artworkPath, hostedGeneration) : await registerEmbeddedArtwork(source.path, hostedGeneration);
+    const artwork = !source.artworkPath
+      ? await registerEmbeddedArtwork(source.path, hostedGeneration)
+      : isManagedMusicArtworkReference(source.artworkPath)
+        ? await registerMusicArtworkAsset(source.artworkPath, hostedGeneration)
+        : await registerMediaFile(source.artworkPath, hostedGeneration);
     if (this.native?.generation !== generation) {
       if (artwork) await this.hostedMediaController.unregisterGeneration([artwork], hostedGeneration);
       return;
@@ -462,15 +468,18 @@ class MusicPlayerStore {
     else if (effect.kind === "seek") this.webviewLocalAdapter.seek(effect.positionMs);
   }
 
-  private async observeBrowser(): Promise<void> {
-    if (!this.browserSessionId || !this.currentSource || this.isObserving) return;
-    this.isObserving = true;
+  private observeBrowser(): Promise<void> {
+    if (!this.browserSessionId || !this.currentSource) return Promise.resolve();
+    return this.observationSender.request();
+  }
+
+  private async sendBrowserObservation(): Promise<void> {
+    if (!this.browserSessionId || !this.currentSource) return;
     try {
       await this.client.observe({ sessionId: this.browserSessionId, generation: this.browserGeneration, sequence: ++this.browserSequence,
         sourceIdentity: this.currentSource.identity, status: this.snapshot.status, positionMs: Math.max(0, Math.round(this.snapshot.positionMs)),
         durationMs: this.snapshot.durationMs === null ? null : Math.max(0, Math.round(this.snapshot.durationMs)), error: this.snapshot.error });
     } catch (error) { this.reportError(error); }
-    finally { this.isObserving = false; }
   }
 
   private async command(intent: NativeMusicIntent, origin: MusicPlaybackActionOrigin = "manual"): Promise<NativeMusicSnapshot> {
@@ -498,6 +507,10 @@ class MusicPlayerStore {
     } finally { this.sourceActionBusy = false; }
   }
   async loadSource(source: MusicSource, options: LoadSourceOptions = {}): Promise<void> {
+    const deviceArtworkPaths = source.kind === "local-file" && source.artworkPath && !isManagedMusicArtworkReference(source.artworkPath)
+      ? [source.artworkPath]
+      : [];
+    if (source.kind === "local-file" && !(await confirmLocalMusicSources([source.path, ...deviceArtworkPaths]))) return;
     await this.start({ kind: "sources", sources: [source], selectedIndex: 0, name: source.title }, options.autoplay ?? false, options.resume ?? true);
   }
   async loadReviewItem(itemId: string, autoplay: boolean): Promise<void> { await this.start({ kind: "review-item", itemId }, autoplay); }
@@ -579,6 +592,8 @@ class MusicPlayerStore {
   applyLibraryMetadata(_itemId: string, _identityKey: string, _title: string, _artworkUrl?: string | null): void { this.refreshQueue(); }
   claimSurface(owner: string, element: HTMLElement, priority = 0): () => void { return this.surfaceClaims.claim(owner, element, priority); }
   registerYouTubeFrame(frame: HTMLIFrameElement | null): void { this.youtubeAdapter.registerFrame(frame); }
+  registerYouTubeNativeHost(host: NativeYouTubeHost | null): void { this.youtubeAdapter.registerNativeHost(host); }
+  handleYouTubeNativeData(data: unknown): void { this.youtubeAdapter.handleNativeData(data); }
   registerLocalMedia(element: HTMLMediaElement | null): void { this.webviewLocalAdapter.register(element); }
   resumeSnapshotScheduler(): void { void this.heartbeat(); if (this.isYouTubeActive) this.youtubeAdapter.post({ action: "snapshot" }); }
   handleVolumeWheel(event: WheelEvent): void {

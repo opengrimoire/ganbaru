@@ -10,7 +10,10 @@ use crate::models::{
     NoteBlockRow, NoteCommentAnchorRow, NoteCommentRow, NoteCommentThreadRow,
     NoteMarkdownExportDiagnosticDto, NoteMarkdownExportDto, NoteMarkdownExportRequest,
 };
-use crate::validation::{require_uuid, rich_text_items_plain_text};
+use crate::validation::{
+    is_exportable_web_reference_url, require_uuid, rich_text_items_plain_text,
+    validate_rich_text_url,
+};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -105,29 +108,15 @@ async fn load_active_page_blocks(
     pool: &SqlitePool,
     page_id: &str,
 ) -> Result<Vec<NoteBlockRow>, String> {
-    sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            has_children,
-            in_trash,
-            type AS block_type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id,
-            source_last_edited_time,
-            created_time,
-            last_edited_time
+    sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
          FROM notes_blocks
          WHERE page_id = ?
            AND in_trash = 0
-         ORDER BY sort_order ASC, id ASC",
-    )
+         ORDER BY order_key ASC, id ASC"
+    ))
     .bind(page_id)
     .fetch_all(pool)
     .await
@@ -437,19 +426,14 @@ impl MarkdownRenderer {
     }
 
     fn render_media(&mut self, block: &ExportBlock) -> String {
-        let label = media_label(
-            &block.payload,
-            &block.row.block_type,
-            self,
-            Some(&block.row.id),
-        );
-        let Some(url) = media_url(&block.payload) else {
+        let label = media_label(&block.payload, &block.row.block_type);
+        let Some(url) = media_url(&block.payload).filter(|url| !url.trim().is_empty()) else {
             self.warn_block(
                 block,
                 "markdown_export_media_missing_reference",
                 "Media block has no exportable reference",
             );
-            return format!("[{label}]");
+            return format!("[{}]", escape_link_label(&label));
         };
         if url.starts_with("ganbaru-asset:") {
             self.warn_block(
@@ -457,6 +441,13 @@ impl MarkdownRenderer {
                 "markdown_export_local_asset_reference",
                 "Local managed asset is exported as a Ganbaru asset reference",
             );
+        } else if !is_exportable_web_reference_url(&block.row.block_type, &url) {
+            self.warn_block(
+                block,
+                "markdown_export_unsafe_media_skipped",
+                "Media URL was exported as its label because it is not a safe link",
+            );
+            return format!("[{}]", escape_link_label(&label));
         }
         if block.row.block_type == "image" {
             format!("![{}]({})", escape_link_label(&label), escape_url(&url))
@@ -486,6 +477,14 @@ impl MarkdownRenderer {
             .map(|items| rich_text_items_plain_text(items))
             .filter(|caption| !caption.trim().is_empty())
             .unwrap_or_else(|| url.to_string());
+        if !is_exportable_web_reference_url(&block.row.block_type, url) {
+            self.warn_block(
+                block,
+                "markdown_export_external_reference_not_linked",
+                "External reference URL was exported as text because it is not a safe link",
+            );
+            return escape_inline(&label);
+        }
         format!("[{}]({})", escape_link_label(&label), escape_url(url))
     }
 
@@ -649,7 +648,7 @@ impl MarkdownRenderer {
                 target, thread.row.status, thread.row.created_time
             ));
             for comment in &thread.comments {
-                let author = display_name(&comment.display_name);
+                let author = display_name(comment.display_name.as_deref());
                 let rich_text = parse_json_array(&comment.rich_text).unwrap_or_default();
                 let mut text = self.render_rich_text(&rich_text, None, Some(&comment.id));
                 if text.chars().count() > MAX_EXPORTED_COMMENT_TEXT_CHARS {
@@ -736,7 +735,16 @@ impl MarkdownRenderer {
             .and_then(Value::as_str)
             .or_else(|| item.get("text")?.get("link")?.get("url")?.as_str());
         if let Some(url) = href.filter(|url| !url.trim().is_empty()) {
-            rendered = format!("[{}]({})", escape_link_label(&rendered), escape_url(url));
+            if validate_rich_text_url(url, "rich text href").is_ok() {
+                rendered = format!("[{rendered}]({})", escape_url(url));
+            } else {
+                self.warn_source(
+                    block_id,
+                    comment_id,
+                    "markdown_export_rich_text_link_not_linked",
+                    "Rich text link was exported as text because it is not a safe link",
+                );
+            }
         }
         rendered
     }
@@ -839,12 +847,7 @@ fn apply_annotations(
     rendered
 }
 
-fn media_label(
-    payload: &Value,
-    block_type: &str,
-    renderer: &mut MarkdownRenderer,
-    block_id: Option<&str>,
-) -> String {
+fn media_label(payload: &Value, block_type: &str) -> String {
     let caption = payload
         .get("caption")
         .and_then(Value::as_array)
@@ -857,14 +860,6 @@ fn media_label(
         if !name.trim().is_empty() {
             return name.to_string();
         }
-    }
-    if payload.get("type").and_then(Value::as_str) == Some("file_upload") {
-        renderer.warn_source(
-            block_id,
-            None,
-            "markdown_export_file_upload_reference",
-            "File upload object was exported as an opaque reference",
-        );
     }
     block_type.to_string()
 }
@@ -915,6 +910,7 @@ async fn load_export_comments(
         .await
     }
     .map_err(|e| format!("load notes comment threads for markdown export: {e}"))?;
+    let local_author_name = crate::local_user::local_author_name_from_pool(pool).await?;
 
     let mut threads = Vec::with_capacity(thread_rows.len());
     for row in thread_rows {
@@ -938,6 +934,16 @@ async fn load_export_comments(
         .fetch_all(pool)
         .await
         .map_err(|e| format!("load notes comments for markdown export: {e}"))?;
+        let comments = comments
+            .into_iter()
+            .map(|mut comment| {
+                comment.display_name = Some(crate::local_user::resolved_display_name_json(
+                    comment.display_name.as_deref(),
+                    &local_author_name,
+                ));
+                comment
+            })
+            .collect();
         threads.push(ExportCommentThread {
             row,
             anchor,

@@ -34,11 +34,8 @@ impl OpenCodeEventNormalizer {
                 description: None,
             },
         ];
-        if properties
-            .get("always")
-            .and_then(Value::as_array)
-            .is_some_and(|always| !always.is_empty())
-        {
+        let session_grants = always_grants(permission, properties.get("always"));
+        if !session_grants.is_empty() {
             decisions.insert(
                 1,
                 ApprovalDecisionOption {
@@ -70,6 +67,8 @@ impl OpenCodeEventNormalizer {
                 detail: (!detail.is_empty()).then_some(detail),
                 allowed_decisions: decisions,
                 safe_payload: safe_shape(&Value::Object(properties.clone())),
+                subject: None,
+                session_grants,
             }),
         )?])
     }
@@ -253,4 +252,30 @@ impl OpenCodeEventNormalizer {
             }),
         )?])
     }
+}
+
+/// Session grants that the OpenCode "always" reply approves, one rule per pattern.
+///
+/// Returns no grants, so the prompt withholds Allow for session, when the patterns are absent,
+/// empty, too many to list, or not all short strings that the prompt can show in full.
+fn always_grants(permission: &str, always: Option<&Value>) -> Vec<SessionPermissionGrant> {
+    let Some(patterns) = always.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    if patterns.len() > MAX_SESSION_GRANT_PATTERNS {
+        return Vec::new();
+    }
+    patterns
+        .iter()
+        .map(|pattern| {
+            pattern
+                .as_str()
+                .filter(|pattern| pattern.len() <= MAX_SESSION_GRANT_PATTERN_BYTES)
+                .map(|pattern| SessionPermissionGrant::AllowRule {
+                    tool_name: permission.to_string(),
+                    rule_content: Some(pattern.to_string()),
+                })
+        })
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
 }

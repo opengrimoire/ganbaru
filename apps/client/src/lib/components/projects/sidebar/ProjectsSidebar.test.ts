@@ -17,7 +17,7 @@ const group: ProjectGroup = {
   id: "group-a",
   name: "Work",
   icon: "lucide:folder",
-  sortOrder: 0,
+  orderKey: "0",
   collapsed: false,
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-01T00:00:00Z",
@@ -49,14 +49,14 @@ vi.mock("$lib/stores/projects.svelte", () => {
   return { getProjects, useProjects: getProjects };
 });
 
-function project(id: string, name: string, sortOrder: number): Project {
+function project(id: string, name: string, orderKey: string): Project {
   return {
     id,
     groupId: group.id,
     name,
     icon: "lucide:folder",
     color: 8,
-    sortOrder,
+    orderKey,
     status: "active",
     defaultEventName: null,
     defaultEventTimeMode: "timed",
@@ -112,7 +112,7 @@ beforeEach(() => {
   vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("reduce"), media: query, addEventListener: () => undefined, removeEventListener: () => undefined }));
   store.order = "custom";
   store.starredProjectIds = [];
-  store.projects = [project("project-a", "Alpha", 0), project("project-b", "Beta", 1), project("project-c", "Gamma", 2)];
+  store.projects = [project("project-a", "Alpha", "0"), project("project-b", "Beta", "1"), project("project-c", "Gamma", "2")];
   store.reorderProjectsInGroup.mockClear();
   target = document.createElement("div");
   document.body.append(target);

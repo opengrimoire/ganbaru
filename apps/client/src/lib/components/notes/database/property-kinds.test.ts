@@ -1,11 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { getLocalization } from "$lib/i18n/translator.svelte";
 import { NOTES_DATA_SOURCE_PROPERTY_TYPES } from "$lib/notes/types";
-import { notesPropertyHasSchemaOptions, notesPropertyKind, notesPropertyTypeLabel, notesPropertyTypeOptions } from "./property-kinds";
+import {
+  notesPropertyHasSchemaOptions,
+  notesPropertyKind,
+  notesPropertyTypeLabel,
+  notesPropertyTypeOptions,
+  notesStoredPropertyTypeLabel,
+} from "./property-kinds";
 
 const { t } = getLocalization();
 
 describe("Notes property kinds", () => {
+  it("names a stored type in the reader's language and keeps an unknown one as stored", () => {
+    expect(notesStoredPropertyTypeLabel("multi_select", t)).toBe("Multi-select");
+    expect(notesStoredPropertyTypeLabel("rich_text", t)).toBe("Text");
+    expect(notesStoredPropertyTypeLabel("verification", t)).toBe("verification");
+  });
+
   it("offers every type except the unique title exactly once", () => {
     const offered = notesPropertyTypeOptions(t).map((option) => option.value);
     expect(new Set(offered).size).toBe(offered.length);

@@ -41,7 +41,7 @@ fn comment_attachment_asset_references_follow_local_file_payloads() {
         let first_reference_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*)
              FROM notes_asset_references
-             WHERE asset_id = ?
+             WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?)
                AND owner_type = 'comment'
                AND owner_id = ?
                AND page_id = ?
@@ -68,7 +68,7 @@ fn comment_attachment_asset_references_follow_local_file_payloads() {
         .await
         .unwrap();
         let old_reference_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?)")
                 .bind(first_asset)
                 .fetch_one(&pool)
                 .await
@@ -76,7 +76,7 @@ fn comment_attachment_asset_references_follow_local_file_payloads() {
         assert_eq!(old_reference_count, 0);
 
         let replacement_reference_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?)")
                 .bind(second_asset)
                 .fetch_one(&pool)
                 .await
@@ -94,7 +94,7 @@ fn comment_attachment_asset_references_follow_local_file_payloads() {
         .await
         .unwrap();
         let preserved_reference_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?)")
                 .bind(second_asset)
                 .fetch_one(&pool)
                 .await

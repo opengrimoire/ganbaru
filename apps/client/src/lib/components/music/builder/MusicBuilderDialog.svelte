@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { containMusicDialogFocus } from "$lib/music/builder/dialog-focus";
+  import { createBackdropPress } from "$lib/utils/backdrop-press";
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
@@ -38,6 +39,8 @@
     size === "small" ? "max-w-md" : size === "large" ? "max-w-2xl" : "max-w-xl",
   );
 
+  const backdropPress = createBackdropPress();
+
   function dismiss(): void {
     if (!dismissDisabled) onDismiss();
   }
@@ -49,7 +52,8 @@
   use:portal
   class="fixed z-90 flex items-center justify-center"
   style="left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height); padding: calc(var(--safe-area-top) + 1rem) calc(var(--safe-area-right) + 1rem) calc(var(--safe-area-bottom) + 1rem) calc(var(--safe-area-left) + 1rem);"
-  onclick={(event) => { event.stopPropagation(); dismiss(); }}
+  onpointerdown={backdropPress.start}
+  onclick={(event) => { event.stopPropagation(); if (backdropPress.isClick(event)) dismiss(); }}
 >
   <div class="surface-backdrop absolute inset-0"></div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->

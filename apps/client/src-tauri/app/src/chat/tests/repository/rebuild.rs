@@ -77,6 +77,8 @@ fn canonical_events_rebuild_equivalent_projections() {
                         schema_version: 44,
                         value: serde_json::json!({ "future": "preserved" }),
                     },
+                    subject: None,
+                    session_grants: Vec::new(),
                 }),
             ),
         )

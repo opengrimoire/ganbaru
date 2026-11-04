@@ -236,6 +236,16 @@ describe("mapRow", () => {
     expect(result.hasCallLink).toBe(true);
     expect(result.url).toBeUndefined();
   });
+
+  it("maps music and soundscape markers only when set", () => {
+    expect(mapRow(makeDbRow({ has_music_playlist: 1, has_soundscape: 1 }))).toMatchObject({
+      hasMusicPlaylist: true,
+      hasSoundscape: true,
+    });
+    const quiet = mapRow(makeDbRow({ has_music_playlist: 0, has_soundscape: 0 }));
+    expect(quiet.hasMusicPlaylist).toBeUndefined();
+    expect(quiet.hasSoundscape).toBeUndefined();
+  });
 });
 
 describe("mapOverride", () => {

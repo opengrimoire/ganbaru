@@ -416,7 +416,7 @@ fn page_media_asset_references_follow_local_file_payloads() {
             let reference_count: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*)
                  FROM notes_asset_references
-                 WHERE asset_id = ? AND owner_type = 'page' AND owner_id = ? AND role = ?",
+                 WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?) AND owner_type = 'page' AND owner_id = ? AND role = ?",
             )
             .bind(asset_path)
             .bind(PAGE_A)
@@ -451,6 +451,48 @@ fn page_media_asset_references_follow_local_file_payloads() {
         .await
         .unwrap();
         assert_eq!(recovered_icon, ("available".to_string(), None));
+
+        let file_digest = "c".repeat(64);
+        let file_path = format!("notes/files/{file_digest}.pdf");
+        let file_payload = json!({
+            "caption": [],
+            "type": "file",
+            "file": {
+                "url": format!("ganbaru-asset:{file_path}"),
+                "content_type": "application/pdf",
+                "byte_size": 64,
+                "sha256": file_digest,
+                "ganbaru_asset_path": file_path,
+            }
+        });
+        sqlx::query("UPDATE notes_blocks SET type = 'file', attrs = ? WHERE id = ?")
+            .bind(file_payload.to_string())
+            .bind(BLOCK_A)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        let snapshot = page_history::record_page_snapshot_tx(&mut tx, PAGE_A, "restore")
+            .await
+            .unwrap()
+            .unwrap();
+        tx.commit().await.unwrap();
+        let pinned: String =
+            sqlx::query_scalar("SELECT asset_ids FROM notes_page_history_snapshots WHERE id = ?")
+                .bind(&snapshot)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&pinned).unwrap(),
+            [
+                format!("notes/files:{file_digest}"),
+                format!("notes/page-covers:{}", "a".repeat(64)),
+                format!("notes/page-icons:{}", "b".repeat(64)),
+            ],
+            "a snapshot names the files its page and blocks refer to, so the sweep keeps them"
+        );
 
         writes::update_page(
             &pool,
@@ -568,6 +610,57 @@ fn page_cover_validation_rejects_unsafe_file_objects() {
 }
 
 #[test]
+fn a_file_reference_reads_the_row_of_its_digest_under_another_extension() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let vault = std::env::temp_dir().join(format!("ganbaru-notes-file-alias-{nonce}"));
+        let files = vault.join("assets").join("notes").join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let sha = "c".repeat(64);
+        let other = "d".repeat(64);
+        std::fs::write(files.join(format!("{sha}.txt")), b"hello").unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO notes_assets
+                 (id, asset_path, kind, source_type, content_type, byte_size, sha256)
+             VALUES ('notes/files:{sha}', 'notes/files/{sha}.txt', 'file', 'local_upload',
+                     'text/plain', 5, '{sha}'),
+                    ('notes/files:{other}', 'notes/files/{sha}.md', 'file', 'local_upload',
+                     'text/markdown', 5, '{sha}');"
+        )))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            assets::files::file_asset_data_url(&pool, &vault, format!("notes/files/{sha}.csv"))
+                .await
+                .unwrap(),
+            "data:text/plain;base64,aGVsbG8=",
+            "a reference under another content type reads the bytes the row holds"
+        );
+        assert_eq!(
+            assets::files::file_asset_data_url(&pool, &vault, format!("notes/files/{other}.csv"))
+                .await
+                .unwrap_err(),
+            "notes file asset not found",
+            "a row whose id is not its own class and digest names nothing"
+        );
+        assert_eq!(
+            assets::files::file_asset_data_url(&pool, &vault, format!("notes/files/{sha}.md"))
+                .await
+                .unwrap(),
+            "data:text/plain;base64,aGVsbG8=",
+            "a path held only by an inconsistent row resolves to the row of its digest"
+        );
+        let _ = std::fs::remove_dir_all(&vault);
+    });
+}
+
+#[test]
 fn page_cover_design_and_focal_validation() {
     for pattern in [
         "contours",
@@ -668,6 +761,7 @@ fn page_cover_metadata_survives_templates_duplication_history_and_exports() {
             NotePageTemplateApply {
                 parent: workspace_parent(),
                 title: None,
+                project_id: None,
             },
         )
         .await

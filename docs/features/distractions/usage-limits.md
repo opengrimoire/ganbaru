@@ -20,18 +20,23 @@ Accounting, totals, and enforcement are native and independent of WebView schedu
 
 - **Desktop:** one serialized Rust owner observes selected applications, records intervals, derives exhaustion, publishes browser snapshots, and executes authorized closes. Settings read its cached projection and cannot start observations, submit intervals, or request closes.
 - **Android:** the Guardian service observes and enforces selected packages, even if the app process is gone. A Rust publisher in the app process combines canonical and pending usage into shared totals and rule snapshots for Guardian; Guardian adds only later local observations on top.
-- **Linked read-only devices** compute totals from accepted usage plus applicable pending usage.
+- **Every linked device** adds the other devices' daily totals, which sync, to its own recorded and pending usage. Each device publishes its own totals at most every five minutes while limits are read, and immediately on desktop exit, when Android moves to the background, and before a vault snapshot.
 
-Every exhausted result is bound to the active database, local window, and exact persisted limit configuration. Editing a budget or its sources, changing vaults, crossing midnight, or handoff invalidates older results. Missing, future-dated, or inconsistent results fail open. Vault handoff waits a bounded time for captured usage to reach device-local storage, or cancels.
+Every exhausted result is bound to the active database, local window, and exact persisted limit configuration. Editing a budget or its sources, changing vaults, crossing midnight, or a snapshot bootstrap invalidates older results. Missing, future-dated, or inconsistent results fail open. Vault handoff waits a bounded time for captured usage to reach device-local storage, or cancels.
+
+Reads count only the sources a budget can count, and they cannot fail because of what another device wrote. A read stops at a bounded number of rows, fewer when its website rules have many different lengths, counted before the budget filter so totals for anything else cannot make it slower, which means a very large flood can push out other devices' totals but not this device's usage. Past the read or matching bounds the window keeps this device's usage first, then the most recent days, in a deterministic order, and logs one diagnostic per local date, so totals can run low but never stop enforcing. When a read fails, desktop app closes and Android enforcement continue on the last good totals of the same rules, vault, and date, and Android adds what its own counters gained since that read, once. Without those, desktop limits wait for the next good read and Android counts only its own mobile app usage. Browser limit snapshots and the desktop Settings projection keep their real read time and age out rather than being refreshed from cached totals, so browser limits wait for the next good read and Settings shows budgets as unavailable.
+
+One bad row cannot switch off every budget. Sync admission refuses a limit with no entries, an entry whose id is not a rule id or repeats another, an entry with no usable source (none set, blank text, oversized text, or an invalid package), and a limit with an oversized name, and load skips any that arrive another way, so the other limits keep working. The limit count and entry caps count only the limits load assembles, so skipped rows never stop a new limit from being saved. Sync admission also refuses a usage total dated off the calendar, and the usage read skips any such row. If the configuration still fails to parse, desktop and Android turn limits off, log it once, and keep phase enforcement and valid rules running. Closing a desktop app for a budget stays refused while limits cannot be parsed.
 
 ## Counting integrity
 
 Usage is evidence, so it must never be double-counted or invented:
 
 - Samples carry stable identities. Retried writes, compaction, and acknowledgement keep those identities so a retry cannot count the same usage twice.
-- Applying a linked snapshot and acknowledging the pending samples it includes happen in one transaction; failure retains both for retry.
+- Draining spooled or journaled usage into the device's usage record and acknowledging it are retried until both succeed; the record ignores samples it already holds.
 - Intervals use monotonic elapsed time and split at actual local midnights, including daylight-saving changes. Long gaps and clock discontinuities produce no inferred usage.
 - A full device-local spool or journal fails explicitly and stops capturing new usage rather than dropping or clamping it.
+- A device writes only its own daily totals, and a total never shrinks, so a retried or reordered sync cannot lower or double another device's usage. Samples dated more than one day past the device's UTC date, or before the retention window, are not counted, so a wrong clock cannot displace real days.
 
 ## Browser counting
 
@@ -59,6 +64,6 @@ Each budget shows used and available time with a stacked, labeled source breakdo
 
 ## History and privacy
 
-Usage history is local structured data. It supports totals and configuration guidance without becoming an activity diary, and retention keeps current budgets and useful trends while bounding storage.
+Usage samples stay on the device that recorded them; only one daily total per source and device syncs. Usage history supports totals and configuration guidance without becoming an activity diary. Retention keeps 400 days, far beyond the weekly budget window, so yearly trends survive while storage stays bounded; older samples are pruned when new usage is recorded. Daily totals from other devices are kept, but only the retention window is read.
 
 Status: real desktop lifecycle and Android background and process-restart acceptance are pending.

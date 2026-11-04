@@ -6,5 +6,4 @@ export interface MusicTrayUpdate {
   canPlayPause: boolean;
   canPrevious: boolean;
   canNext: boolean;
-  contextLabel: string | null;
 }

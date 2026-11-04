@@ -64,7 +64,6 @@ impl DeliveryBackend for NativeDelivery {
                 &projection,
                 super::super::now_ms()?,
                 super::super::EFFECT_LEASE_MS,
-                accepted.ownership_generation,
                 accepted.pool.as_ref(),
             )
             .await

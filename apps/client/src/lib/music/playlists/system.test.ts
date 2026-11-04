@@ -32,14 +32,14 @@ describe("system music playlists", () => {
     ]);
   });
 
-  it("orders default and custom playlists by their persisted positions", () => {
-    const playlist = (id: string, name: string, sortOrder: number) => ({ id, name, sortOrder }) as MusicPlaylistSummary;
+  it("orders default and custom playlists by their persisted order keys", () => {
+    const playlist = (id: string, name: string, orderKey: string) => ({ id, name, orderKey }) as MusicPlaylistSummary;
     const ordered = orderMusicPlaylists([
-      playlist("custom-z", "Zen", 4),
-      playlist("playlist-default-commute", "Commute", 1),
-      playlist("custom-a", "Ambient", 0),
-      playlist("playlist-default-start-of-day", "Start of the day!", 2),
-      playlist("playlist-default-work-focus", "Work (focus)", 3),
+      playlist("custom-z", "Zen", "a4"),
+      playlist("playlist-default-commute", "Commute", "a1"),
+      playlist("custom-a", "Ambient", "a0"),
+      playlist("playlist-default-start-of-day", "Start of the day!", "a2"),
+      playlist("playlist-default-work-focus", "Work (focus)", "a3"),
     ]);
 
     expect(ordered.map(({ id }) => id)).toEqual([
@@ -49,5 +49,17 @@ describe("system music playlists", () => {
       "playlist-default-work-focus",
       "custom-z",
     ]);
+  });
+
+  it("compares order keys by code unit and breaks ties by id", () => {
+    const playlist = (id: string, orderKey: string) => ({ id, name: id, orderKey }) as MusicPlaylistSummary;
+    const ordered = orderMusicPlaylists([
+      playlist("lower", "a0V"),
+      playlist("upper", "a0B"),
+      playlist("tie-b", "Zz"),
+      playlist("tie-a", "Zz"),
+    ]);
+
+    expect(ordered.map(({ id }) => id)).toEqual(["tie-a", "tie-b", "upper", "lower"]);
   });
 });

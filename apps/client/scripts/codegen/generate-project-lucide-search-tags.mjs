@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { PIN_NEW_SOURCE_FLAG, fetchPinnedSource } from "./pinned-sources.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const clientDirectory = path.resolve(scriptDirectory, "..", "..");
@@ -66,11 +67,10 @@ if (typeof lucideVersion !== "string" || !/^\d+\.\d+\.\d+$/u.test(lucideVersion)
 }
 
 const sourceUrl = `https://cdn.jsdelivr.net/npm/lucide-static@${lucideVersion}/tags.json`;
-const response = await fetch(sourceUrl, { headers: { accept: "application/json" } });
-if (!response.ok) {
-  throw new Error(`Could not load Lucide ${lucideVersion} tags: HTTP ${response.status}`);
-}
-const tagsBySlug = validateTags(await response.json());
+const tagsBySlug = validateTags(JSON.parse(await fetchPinnedSource(sourceUrl, {
+  allowNewPin: process.argv.slice(2).includes(PIN_NEW_SOURCE_FLAG),
+  accept: "application/json",
+})));
 const source = await readFile(catalogPath, "utf8");
 const missingTags = [];
 let updatedEntryCount = 0;

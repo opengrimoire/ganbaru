@@ -4,6 +4,7 @@ import type {
   ProviderInstanceId,
   VersionedJson,
 } from "./contracts";
+import { isLoopbackHostname } from "./workspace/loopback";
 
 export type ProviderEnvironmentValueType = "text" | "secret" | "inherit";
 
@@ -40,6 +41,38 @@ const DEDICATED_HOME_VARIABLES: Readonly<Record<string, string>> = {
   grok: "GROK_HOME",
   opencode: "OPENCODE_CONFIG_DIR",
 };
+
+/**
+ * Name segments that mark an environment variable as secret-like; mirrors
+ * `ganbaru_chat_contracts::secret_names::SECRET_NAME_SEGMENTS`. Plurals such as `TOKENS` are left out
+ * so limits like `MAX_THINKING_TOKENS` stay ordinary.
+ */
+const SECRET_NAME_SEGMENTS: ReadonlySet<string> = new Set([
+  "APIKEY",
+  "AUTH",
+  "CREDENTIAL",
+  "CREDENTIALS",
+  "KEY",
+  "PASSPHRASE",
+  "PASSWD",
+  "PASSWORD",
+  "PAT",
+  "SECRET",
+  "TOKEN",
+]);
+
+/** Whether an environment variable name looks like it holds a secret, compared per underscore segment. */
+export function isSecretLikeEnvironmentName(name: string): boolean {
+  return name.split("_").some((segment) => SECRET_NAME_SEGMENTS.has(segment.toUpperCase()));
+}
+
+/**
+ * Whether a row stores a secret-like value as plaintext portable config. This only drives a
+ * warning: name matching cannot tell credentials from ordinary settings, so the value stays valid.
+ */
+export function storesPlaintextSecret(row: ProviderEnvironmentDraft): boolean {
+  return row.valueType === "text" && row.value.length > 0 && isSecretLikeEnvironmentName(row.name);
+}
 
 export function createProviderSetupDraft(): ProviderSetupDraft {
   return {
@@ -196,8 +229,7 @@ function parseHttpOrigin(value: string): { secure: boolean; loopback: boolean } 
     ) {
       return null;
     }
-    const hostname = url.hostname.toLowerCase();
-    const loopback = hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+    const loopback = isLoopbackHostname(url.hostname);
     return { secure: url.protocol === "https:", loopback };
   } catch {
     return null;

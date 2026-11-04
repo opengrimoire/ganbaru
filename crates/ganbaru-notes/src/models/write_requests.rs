@@ -7,6 +7,9 @@ pub struct NotePageCreate {
     pub parent: NoteParent,
     #[serde(default)]
     pub folder_id: Option<String>,
+    /// Project for a workspace page; nested pages inherit their parent page project.
+    #[serde(default)]
+    pub project_id: Option<String>,
     pub first_block_id: String,
     pub after_block_id: Option<String>,
     pub properties: Option<Value>,
@@ -399,6 +402,10 @@ pub struct NotePageTemplateCreateFromPage {
 pub struct NotePageTemplateApply {
     pub parent: NoteParent,
     pub title: Option<String>,
+    /// Project of a workspace page created from the template; a subpage derives its project
+    /// from its parent and must leave this empty.
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -662,11 +669,6 @@ pub struct NoteCommentThreadReadUpdate {
 #[derive(Deserialize)]
 pub struct NoteMentionNotificationDeliveryUpdate {
     pub ids: Vec<String>,
-}
-
-#[derive(Deserialize)]
-pub struct NoteLocalUserUpdate {
-    pub display_name: String,
 }
 
 #[derive(Deserialize, Serialize)]

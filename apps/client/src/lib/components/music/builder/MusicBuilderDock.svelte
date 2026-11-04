@@ -1,5 +1,5 @@
 <script lang="ts">
-  import CloudRain from "@lucide/svelte/icons/cloud-rain";
+  import AudioLines from "@lucide/svelte/icons/audio-lines";
   import ListChecks from "@lucide/svelte/icons/list-checks";
   import ListMusic from "@lucide/svelte/icons/list-music";
   import RadioTower from "@lucide/svelte/icons/radio-tower";
@@ -70,7 +70,7 @@
       {#if item.kind === "review"}<ListChecks size={15} />
       {:else if item.kind === "playlists"}<ListMusic size={15} />
       {:else if item.kind === "sources"}<RadioTower size={15} />
-      {:else}<CloudRain size={15} />{/if}
+      {:else}<AudioLines size={15} />{/if}
       {#if item.active || showAllLabels}<span class="active-label truncate text-[0.65rem] font-medium text-foreground">{itemLabel}</span>{/if}
       {#if item.badge !== null}<span class="dock-badge absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-secondary px-1 text-center text-[0.52rem] font-semibold leading-4 tabular-nums">{item.badge > 999 ? "999+" : item.badge}</span>{/if}
     </button>

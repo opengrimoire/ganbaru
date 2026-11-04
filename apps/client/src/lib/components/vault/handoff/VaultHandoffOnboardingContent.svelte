@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { untrack } from "svelte";
-  import type { PairingInvitation, PairingStatus } from "$lib/api/vault-handoff";
-  import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { untrack, type Snippet } from "svelte";
   import {
-    canBootstrapUntouchedVault,
-    completeVaultHandoffOnboarding,
-    markIndependentVaultUsed,
-  } from "$lib/vault/handoff-onboarding";
+    releaseStarterVault,
+    type PairingInvitation,
+    type PairingStatus,
+  } from "$lib/api/vault-handoff";
+  import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { completeVaultHandoffOnboarding } from "$lib/vault/handoff-onboarding";
   import VaultHandoffPanel from "./VaultHandoffPanel.svelte";
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
 
@@ -16,6 +16,7 @@
     initialInvitation = null,
     initialStatus = null,
     bootstrapReplicaOnLink = false,
+    recovery,
     onComplete,
   }: {
     platform: "desktop" | "android";
@@ -23,21 +24,19 @@
     initialInvitation?: PairingInvitation | null;
     initialStatus?: PairingStatus | null;
     bootstrapReplicaOnLink?: boolean;
+    /** A desktop-only way in for an unlinked device, given the call that leaves onboarding. */
+    recovery?: Snippet<[() => void]>;
     onComplete: () => void | Promise<void>;
   } = $props();
 
   const { t } = getLocalization();
   let status = $state<PairingStatus | null>(untrack(() => initialStatus));
   let completing = $state(false);
-  const bootstrapUntouchedVault = untrack(
-    () => bootstrapReplicaOnLink && canBootstrapUntouchedVault(safeStorage()),
-  );
   const readyToContinue = $derived(
     status?.linked === true
       && (platform === "desktop"
         || status.replicaReady
-        || status.canWrite === true
-        || !bootstrapUntouchedVault),
+        || !bootstrapReplicaOnLink),
   );
 
   function safeStorage(): Storage | undefined {
@@ -52,10 +51,7 @@
     if (completing) return;
     completing = true;
     try {
-      if (!persistCompletion) {
-        const storage = safeStorage();
-        if (storage) markIndependentVaultUsed(storage);
-      }
+      if (!persistCompletion) await releaseStarterVault();
       await onComplete();
       const storage = safeStorage();
       if (storage) completeVaultHandoffOnboarding(storage, vaultId);
@@ -112,7 +108,7 @@
       {platform}
       {initialInvitation}
       {initialStatus}
-      bootstrapReplicaOnLink={bootstrapUntouchedVault}
+      {bootstrapReplicaOnLink}
       presentation="onboarding"
       onStatusChange={(next) => { status = next; }}
       onActivated={() => void leave(true)}
@@ -130,6 +126,7 @@
         </button>
       {/if}
       {#if status?.linked !== true}
+        {@render recovery?.(() => void leave(true))}
         <button
           use:onboardingPrimaryAction
           type="button"

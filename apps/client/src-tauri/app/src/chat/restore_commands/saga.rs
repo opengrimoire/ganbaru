@@ -45,7 +45,7 @@ pub(super) async fn execute_restore(
         let target = target.clone();
         tauri::async_runtime::spawn_blocking(move || {
             verify_checkpoint(&authorized, &target)?;
-            let current = current_git_snapshot(&authorized.canonical_path)?;
+            let current = current_git_snapshot(authorized.git_folder())?;
             require_head_context(&current, &target)?;
             Ok::<_, ChatError>(current)
         })
@@ -95,7 +95,7 @@ pub(super) async fn execute_restore(
         let target = target.clone();
         tauri::async_runtime::spawn_blocking(move || {
             verify_checkpoint(&authorized, &target)?;
-            let current = current_git_snapshot(&authorized.canonical_path)?;
+            let current = current_git_snapshot(authorized.git_folder())?;
             require_head_context(&current, &target)?;
             Ok::<_, ChatError>(current)
         })
@@ -151,11 +151,11 @@ pub(super) async fn execute_restore(
     if provider_history_action == "fork_required" {
         failure_phase = RestoreFailurePhase::WorkspaceRestore;
     }
-    let root = authorized.canonical_path.clone();
+    let restore_folder = authorized.clone();
     let current_for_restore = current.clone();
     let target_for_restore = target.clone();
     let restore_result = tauri::async_runtime::spawn_blocking(move || {
-        restore_git_snapshot(&root, &current_for_restore, &target_for_restore)
+        restore_git_snapshot(restore_folder.git_folder(), &current_for_restore, &target_for_restore)
     })
     .await
     .map_err(|_| restore_worker_error())?;

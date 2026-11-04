@@ -71,7 +71,7 @@ GitHub Actions:
 Protected `release` environment:
 
 - Required reviewer: the organization owner, or a dedicated release team if release authority is delegated later.
-- Deployment refs restricted to `main` and `app-v*`.
+- Deployment refs restricted to `main` and `app-v*`. The monthly `package repo refresh` run deploys from `main`.
 - Holds the updater, Android, package repository, and AUR secrets listed in [release signing](release/signing.md). Signing secrets are never exposed to pull request, test, or unsigned build jobs.
 
 Secret values cannot be read back through GitHub, so their presence does not replace the signed-artifact and installation checks required for each release.

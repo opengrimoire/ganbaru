@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ProjectFieldConflict from "$lib/components/projects/conflicts/ProjectFieldConflict.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { moveTextInputCaretToPointer } from "$lib/utils/text-input-caret";
@@ -9,6 +10,7 @@
   type SelectOption = { value: string; label: string };
 
   let {
+    projectId,
     projectNameDraft = $bindable<string>(),
     projectGroupDraft = $bindable<string>(),
     projectStatusDraft = $bindable<ProjectLifecycleStatus>(),
@@ -18,6 +20,7 @@
     identityLocked = false,
     setLifecycleStatus,
   }: {
+    projectId: string;
     projectNameDraft: string;
     projectGroupDraft: string;
     projectStatusDraft: ProjectLifecycleStatus;
@@ -46,6 +49,14 @@
           onpointerdown={moveTextInputCaretToPointer}
         />
       </div>
+
+      <ProjectFieldConflict
+        {projectId}
+        target="project"
+        id={projectId}
+        field="name"
+        onResolved={(text) => { projectNameDraft = text; }}
+      />
 
       <Select
         label={t("projects.settings.group")}

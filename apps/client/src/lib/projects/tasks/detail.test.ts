@@ -27,7 +27,7 @@ function field(id: string, fieldType: ProjectCustomFieldType): ProjectCustomFiel
     projectId: "project-a",
     name: id,
     fieldType,
-    sortOrder: 1000,
+    orderKey: "1000",
     icon: null,
     createdAt: "2026-06-21T00:00:00.000Z",
     updatedAt: "2026-06-21T00:00:00.000Z",
@@ -39,7 +39,7 @@ function option(id: string, fieldId = "field-select"): ProjectCustomFieldOption 
     id,
     fieldId,
     name: id,
-    sortOrder: 1000,
+    orderKey: "1000",
     createdAt: "2026-06-21T00:00:00.000Z",
     updatedAt: "2026-06-21T00:00:00.000Z",
   };
@@ -55,8 +55,8 @@ function task(overrides: Partial<ProjectTask> = {}): ProjectTask {
     description: "Write notes",
     priority: "normal",
     taskType: "task",
-    sectionSortOrder: 1000,
-    statusSortOrder: 1000,
+    sectionOrderKey: "1000",
+    statusOrderKey: "1000",
     estimateMinutes: 30,
     startDate: "2026-06-21",
     dueDate: "2026-06-22",
@@ -234,7 +234,7 @@ describe("project task detail helpers", () => {
           ? {
             taskId: "task-a",
             fieldId: numberField.id,
-            numberValue: 3,
+            numberValue: "3",
             updatedAt: "2026-06-21T00:00:00.000Z",
           }
           : undefined,
@@ -248,7 +248,7 @@ describe("project task detail helpers", () => {
       value: {
         taskId: "task-a",
         fieldId: numberField.id,
-        numberValue: 3,
+        numberValue: "3",
         updatedAt: "2026-06-21T00:00:00.000Z",
       },
       optionValues: [],
@@ -311,6 +311,11 @@ describe("project task detail helpers", () => {
       ok: false,
       reason: "invalid-number",
     });
+    drafts.numberDrafts[numberField.id] = "1.0000001";
+    expect(projectTaskDetailCustomFieldSaveDraft({ field: numberField, drafts })).toEqual({
+      ok: false,
+      reason: "invalid-number",
+    });
     expect(projectTaskDetailCustomFieldSaveDraft({ field: dateField, drafts })).toEqual({
       ok: false,
       reason: "invalid-date",
@@ -337,7 +342,7 @@ describe("project task detail helpers", () => {
       drafts,
       saved: {
         textValue: null,
-        numberValue: 3.5,
+        numberValue: "3.5",
         dateValue: null,
         checkboxValue: null,
         optionIds: [],
@@ -368,7 +373,7 @@ describe("project task detail helpers", () => {
       drafts,
       saved: {
         textValue: null,
-        numberValue: 3.5,
+        numberValue: "3.5",
         dateValue: null,
         checkboxValue: null,
         optionIds: [],
@@ -397,7 +402,7 @@ describe("project task detail helpers", () => {
       drafts,
       saved: {
         textValue: null,
-        numberValue: 3.5,
+        numberValue: "3.5",
         dateValue: null,
         checkboxValue: null,
         optionIds: [],

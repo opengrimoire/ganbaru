@@ -3,6 +3,7 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as chatApi from "$lib/api/chat";
+import * as provenanceApi from "$lib/api/chat/provenance";
 import type {
   ChatAgentRunRead,
   ChatMessageRead,
@@ -44,13 +45,13 @@ function message(
   itemId: string,
   author: ChatParticipantRead,
   markdown: string,
-  ordinal: number,
+  position: number,
   agentRunId: string | null = author.kind === "ai_teammate" ? "run:test" : null,
 ): ChatMessageRead {
   return {
     itemId,
     conversationId: "conversation:test",
-    replyThreadId: ordinal === 0 ? null : "reply-thread:test",
+    replyThreadId: position === 0 ? null : "reply-thread:test",
     revisionId: `revision:${itemId}`,
     revision: 1,
     author,
@@ -65,9 +66,9 @@ function message(
     attachmentIds: [],
     references: [],
     replyThread: null,
-    ordinal,
+    orderKey: `c${String(position).padStart(3, "0")}`,
     editedAt: null,
-    createdAt: `2026-08-04T17:0${ordinal}:00.000Z`,
+    createdAt: `2026-08-04T17:0${position}:00.000Z`,
   };
 }
 
@@ -260,6 +261,83 @@ describe("ChatReplyThreadPanel", () => {
     expect(target.querySelectorAll('button[aria-label="Add reaction"]')).toHaveLength(2);
     expect(target.querySelectorAll('button[aria-label="More Chat actions"]')).toHaveLength(2);
     expect(target.textContent).not.toContain("1 reply");
+  });
+
+  it("shows a failed Sent from lookup above the thread until it is dismissed", async () => {
+    const messageOnlyPage = { ...page, agentRuns: [] };
+    chat.openReplyThreadId = messageOnlyPage.thread.id;
+    chat.replyThread = messageOnlyPage;
+    chat.replyThreadPages = [messageOnlyPage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    vi.spyOn(provenanceApi, "loadChatMessageProvenance").mockRejectedValue({
+      code: "persistence",
+      message: "Read Chat message provenance",
+      retryable: true,
+    });
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+    await tick();
+
+    target.querySelector<HTMLButtonElement>('button[aria-label="More Chat actions"]')?.click();
+
+    await vi.waitFor(() => {
+      expect(target?.querySelector('[role="alert"]')?.textContent).toContain(
+        "Could not read which devices sent this message",
+      );
+    });
+    expect(target.querySelector('.thread-scroll [role="alert"]')).toBeNull();
+
+    target.querySelector<HTMLButtonElement>('[role="alert"] [data-notice-dismiss]')?.click();
+    await tick();
+    expect(target.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("keeps the thread readable when a message action failure closes beside an execution failure", async () => {
+    const activePage: ChatReplyThreadPageRead = {
+      ...page,
+      replies: [],
+      agentRuns: [{ ...run, state: "working" }],
+    };
+    chat.openReplyThreadId = activePage.thread.id;
+    chat.replyThread = activePage;
+    chat.replyThreadPages = [activePage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    vi.spyOn(chat, "selectAssignmentExecution").mockRejectedValue(new Error("The execution could not open"));
+    vi.spyOn(provenanceApi, "loadChatMessageProvenance").mockRejectedValue(new Error("lookup failed"));
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+
+    await vi.waitFor(() => {
+      expect(target?.querySelector('[role="alert"]')?.textContent).toContain("The execution could not open");
+    });
+    expect(target.querySelector("[data-notice-dismiss]")).toBeNull();
+
+    target.querySelector<HTMLButtonElement>('button[aria-label="More Chat actions"]')?.click();
+    await vi.waitFor(() => {
+      expect(target?.textContent).toContain("Could not read which devices sent this message");
+    });
+    const alerts = [...target.querySelectorAll('[role="alert"]')];
+    expect(alerts).toHaveLength(2);
+    expect(target.querySelectorAll("[data-notice-dismiss]")).toHaveLength(1);
+
+    target.querySelector<HTMLButtonElement>("[data-notice-dismiss]")?.click();
+    await tick();
+
+    const remaining = [...target.querySelectorAll('[role="alert"]')];
+    expect(remaining.map((alert) => alert.textContent)).toEqual([expect.stringContaining("The execution could not open")]);
+    expect(target.querySelector('[data-message-item-id="root:test"]')).not.toBeNull();
   });
 
   it("renders exact historical turns across provider thread handoffs", async () => {

@@ -5,6 +5,7 @@ import type {
   ChatChannelId,
   ChatChannelRead,
   ChatChannelPageRead,
+  ChatWaitingAssignmentRead,
   ChatProjectPrimaryWorkingFolderRead,
   ChatReplyThreadId,
   ChatReplyThreadPageRead,
@@ -43,6 +44,9 @@ import type {
 import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
 import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
 import { listenForChatChanges, publishChatChanges, type ChatWindowChanges } from "$lib/chat/window-sync";
+import { onChatSyncChanged } from "$lib/chat/sync-events";
+import { CHAT_SYNC_TABLES } from "$lib/chat/sync-presentation";
+import { listenSyncApplied } from "$lib/api/sync";
 import { ChatPaneStores, chatWindowChanges, type ChatChangeIds } from "$lib/stores/chat/pane-stores";
 import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
 import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
@@ -83,7 +87,11 @@ export type { ChatComposerSendOptions } from "$lib/stores/chat/composer-runtime-
 
 const paneStores = new ChatPaneStores<ChatStore>();
 
-/** Vault-wide Chat state that every pane's store shows, loaded by the primary pane's store. */
+/**
+ * Vault-wide Chat state that every pane's store shows, loaded by the primary pane's store. It lives as long as the
+ * WebView, as pane stores do, so its configuration controller is never disposed and its listener ends with the
+ * WebView.
+ */
 class ChatSharedState {
   teammates = $state<ChatAiTeammateRead[]>([]);
   archivedTeammates = $state<ChatAiTeammateRead[]>([]);
@@ -121,6 +129,8 @@ export class ChatStore {
   selectedWorkingFolderId = $state<ProjectWorkingFolderId | null>(null);
   /** The primary working folder of the selected channel's project. */
   primaryWorkingFolder = $state<ChatProjectPrimaryWorkingFolderRead | null>(null);
+  /** Work that waits for a local action on this device across the vault, newest first. */
+  waitingAssignments = $state<ChatWaitingAssignmentRead[]>([]);
   selectedThreadId = $state<ChatThreadId | null>(null);
   selectedExecutionEnvironmentId = $state<string | null>(null);
   railOpen = $state(true);
@@ -138,6 +148,7 @@ export class ChatStore {
   );
   private vaultGeneration = 0;
   private otherWindowListening = false;
+  private syncListening = false;
   /** Whether this is the primary pane's store, which loads shared state and persists its selection. */
   private readonly owner: boolean;
   /** The Projects store of this pane's scope, whose selection the pane follows. */
@@ -201,6 +212,13 @@ export class ChatStore {
       onComposerChanged: () => this.composerDefaultsCoordinator.schedule(),
     });
     paneStores.add(this);
+  }
+
+  /** Resumes queued local work and takes over work stranded on a device that can no longer write Chat. */
+  private recoverAssignments(): void {
+    void chatApi.recoverChatAssignmentDispatchJobs().catch((error: unknown) => {
+      console.error("Chat assignment recovery failed", error);
+    });
   }
 
   get selectedWorkingFolder(): ProjectWorkingFolderRead | null {
@@ -410,6 +428,7 @@ export class ChatStore {
     this.loadRequest += 1;
     this.channelSelectionRequest += 1;
     this.loaded = false;
+    this.waitingAssignments = [];
     this.communicationController.reset();
     this.channelNavigationController.reset();
     this.organizationalController.reset();
@@ -445,11 +464,7 @@ export class ChatStore {
       this.channelNavigationController.hydrateNavigation(navigationChannels);
       this.threadCollectionController.resetWindow();
       if (discoverProviders) this.startProviderDiscovery();
-      if (this.owner && localExecutionAvailable) {
-        void chatApi.recoverChatAssignmentDispatchJobs().catch((error: unknown) => {
-          console.error("Chat assignment recovery failed", error);
-        });
-      }
+      if (this.owner && localExecutionAvailable) this.recoverAssignments();
       await this.projects.ensureLoaded();
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
       const projectId = this.projects.selectedProjectId;
@@ -474,7 +489,9 @@ export class ChatStore {
       );
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
       this.loaded = true;
+      this.refreshWaitingAssignments();
       this.listenForOtherWindows();
+      this.listenForSync();
       if (!this.owner) return;
       void this.prefetchRememberedProjectChannels(projectId, vaultGeneration);
       void this.configurationController.refreshWorkingFolders().catch((error: unknown) => {
@@ -775,13 +792,12 @@ export class ChatStore {
     await this.projects.selectProject(result.projectId);
     await this.loadProjectChannels(result.projectId);
     await this.selectChannel(result.channelId);
-    const anchorCursor = String(result.ordinal + 1);
     if (result.replyThreadId) {
       this.openReplyThreadId = result.replyThreadId;
       this.selectedExecutionRunId = null;
-      await this.communicationController.loadReplyThreadAtCursor(result.replyThreadId, anchorCursor);
+      await this.communicationController.loadReplyThreadAtCursor(result.replyThreadId, result.anchorCursor);
     } else {
-      await this.communicationController.loadChannelAtCursor(result.channelId, anchorCursor);
+      await this.communicationController.loadChannelAtCursor(result.channelId, result.anchorCursor);
     }
     this.messageAnchorId = result.messageItemId;
   }
@@ -838,6 +854,38 @@ export class ChatStore {
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
   }
 
+  /**
+   * Starts waiting work with the details the user saw and rereads what it changed. Resolves false when the work
+   * changed since then, which started nothing and refreshes the offer instead.
+   */
+  async acceptAssignmentHere(assignmentId: ChatWorkAssignmentId, seenDigest: string): Promise<boolean> {
+    const started = await chatApi.acceptChatAssignmentHere(assignmentId, seenDigest);
+    this.publishChannelChange(this.selectedChannelId);
+    this.refreshWaitingAssignments();
+    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
+    return started !== null;
+  }
+
+  /** Opens the reply thread of waiting work, where its details and Start here live. */
+  async openWaitingAssignment(waiting: ChatWaitingAssignmentRead): Promise<void> {
+    this.messageAnchorId = null;
+    await this.projects.selectProject(waiting.projectId);
+    await this.loadProjectChannels(waiting.projectId);
+    await this.selectChannel(waiting.channelId);
+    await this.openReplyThread(waiting.replyThreadId);
+  }
+
+  /** Rereads the work waiting for a local action here, which only its own reply thread would otherwise reveal. */
+  private refreshWaitingAssignments(): void {
+    if (!localExecutionAvailable) return;
+    const vaultGeneration = this.vaultGeneration;
+    void chatApi.listChatWaitingAssignments().then((waiting) => {
+      if (vaultGeneration === this.vaultGeneration) this.waitingAssignments = waiting;
+    }).catch((error: unknown) => {
+      console.error("Chat waiting work could not be read", error);
+    });
+  }
+
   async archiveChannel(channel: ChatChannelRead): Promise<void> {
     return this.channelNavigationController.archive(channel);
   }
@@ -854,11 +902,15 @@ export class ChatStore {
     this.channelNavigationController.closeArchive();
   }
 
-  async saveProvider(configuration: ProviderInstanceConfig): Promise<ProviderInstanceRead> {
+  async saveProvider(configuration: ProviderInstanceConfig): Promise<ProviderInstanceRead | null> {
     return this.configurationController.saveProvider(configuration);
   }
 
-  async testProvider(configuration: ProviderInstanceConfig): Promise<ProviderSetupTestRead> {
+  async confirmProviderRuntime(instanceId: ProviderInstanceId): Promise<ProviderInstanceRead | null> {
+    return this.configurationController.confirmProviderRuntime(instanceId);
+  }
+
+  async testProvider(configuration: ProviderInstanceConfig): Promise<ProviderSetupTestRead | null> {
     return this.configurationController.testProvider(configuration);
   }
 
@@ -1119,11 +1171,52 @@ export class ChatStore {
     });
   }
 
+  /**
+   * Starts rereading Chat rows that linked devices changed through sync, once per store. Pane stores live as long as
+   * the WebView, so the listeners are never removed and end with it.
+   */
+  private listenForSync(): void {
+    if (this.syncListening) return;
+    this.syncListening = true;
+    const refresh = () => {
+      void this.refreshFromSync().catch((error: unknown) => {
+        console.error("Chat refresh after sync failed", error);
+      });
+    };
+    onChatSyncChanged(refresh);
+    void listenSyncApplied((tables) => {
+      if (tables.some((table) => CHAT_SYNC_TABLES.includes(table))) refresh();
+    }).catch((error: unknown) => {
+      console.error("Chat could not listen for sync", error);
+    });
+  }
+
+  /**
+   * Rereads channels, teammates, and the open conversation after sync changed Chat rows. Sync names tables, not
+   * rows, so this rereads what the pane shows. Receiving never publishes, so windows do not echo each other.
+   */
+  private async refreshFromSync(): Promise<void> {
+    if (!this.loaded) return;
+    const vaultGeneration = this.vaultGeneration;
+    const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
+    const channels = await chatApi.listChatNavigationChannels();
+    if (!isCurrentVault()) return;
+    for (const channel of channels) this.channelNavigationController.upsert(channel);
+    this.refreshWaitingAssignments();
+    if (this.owner) await this.refreshTeammates();
+    const channelId = this.selectedChannelId;
+    if (!isCurrentVault() || !channelId) return;
+    this.organizationalController.scheduledMessagesVersion += 1;
+    await this.loadChannelMessages(channelId, true);
+    if (this.openReplyThreadId && isCurrentVault()) await this.loadReplyThread(this.openReplyThreadId, true);
+  }
+
   /** Rereads what another window changed. Receiving never publishes, so windows do not echo each other. */
   private async refreshFromOtherWindow(changes: ChatWindowChanges): Promise<void> {
     const vaultGeneration = this.vaultGeneration;
     if (!this.loaded) return;
     const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
+    this.refreshWaitingAssignments();
     await Promise.all([
       ...[...changes.threadIds].map((threadId) => this.refreshThreadFromOtherWindow(threadId, isCurrentVault)),
       ...[...changes.channelIds].map((channelId) => this.refreshChannelFromOtherWindow(channelId, isCurrentVault)),

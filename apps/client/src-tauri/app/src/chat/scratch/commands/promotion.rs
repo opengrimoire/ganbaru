@@ -260,8 +260,11 @@ async fn require_destination_channel(
     let storage_folder_id: String = sqlx::query_scalar(
         "SELECT folder.id
          FROM chat_channels channel
+         JOIN chat_conversations conversation
+           ON conversation.id = channel.conversation_id
+          AND conversation.project_id = channel.project_id
          JOIN project_working_folders folder
-           ON folder.project_id = channel.project_id
+           ON folder.project_id = conversation.project_id
           AND folder.kind = 'managed'
           AND folder.archived_at IS NULL
          WHERE channel.id = ? AND channel.conversation_id = ?
@@ -292,16 +295,17 @@ async fn require_edit_folder_grant(
         "SELECT grant_row.capability, revision.maximum_folder_capability,
                 grant_row.capability_inherits_profile
          FROM chat_channels channel
+         JOIN chat_conversations conversation ON conversation.id = channel.conversation_id
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = channel.conversation_id
           AND membership.participant_id = ?
          JOIN chat_teammate_channel_memberships access
            ON access.conversation_id = membership.conversation_id
           AND access.teammate_id = membership.participant_id
+          AND access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = access.access_profile_id
-         JOIN chat_access_profile_revisions revision
+         JOIN chat_access_profile_effective_revisions revision
            ON revision.access_profile_id = profile.id
-          AND revision.revision = profile.latest_revision
          JOIN chat_teammate_working_folder_grants grant_row
            ON grant_row.conversation_id = membership.conversation_id
           AND grant_row.teammate_id = membership.participant_id
@@ -310,7 +314,8 @@ async fn require_edit_folder_grant(
          WHERE channel.id = ? AND channel.conversation_id = ?
            AND channel.archived_at IS NULL AND membership.removed_at IS NULL
            AND grant_row.revoked_at IS NULL AND folder.archived_at IS NULL
-           AND folder.project_id = channel.project_id",
+           AND grant_row.project_id = conversation.project_id
+           AND folder.project_id = conversation.project_id",
     )
     .bind(identity.teammate_id.as_str())
     .bind(working_folder_id.as_str())
@@ -553,6 +558,81 @@ fn vault_error<T>(_error: T) -> ChatError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::scratch::tests::{
+        GENERATION, TEAMMATE, destination_conversation, pool_with_scratch_assignment,
+    };
+
+    /// Gives the scratch teammate edit access through the build profile, grants it the project's
+    /// managed folder in the default channel, and stores what only a sync apply can: a channel of
+    /// the same conversation whose replicated project was rewritten to another project, with a
+    /// grant for that project's folder.
+    async fn pool_with_foreign_channel_grant() -> SqlitePool {
+        let pool = pool_with_scratch_assignment(TEAMMATE).await;
+        let conversation = destination_conversation();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "UPDATE chat_teammate_channel_memberships
+             SET access_profile_id = 'access-profile:build-and-test'
+             WHERE conversation_id = '{conversation}' AND teammate_id = '{TEAMMATE}';
+             INSERT INTO chat_teammate_working_folder_grants
+                 (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+                  capability, capability_inherits_profile, is_default, created_at)
+             VALUES ('{conversation}', '{TEAMMATE}', 'project-chat', 'workspace-1',
+                     'grant:honest', 'edit', 0, 1, '2026-09-18T12:00:00.000Z');
+             UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+             INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project:foreign', 'group-chat', 'Foreign', 'a2');
+             INSERT INTO project_working_folders
+                 (id, project_id, display_name, kind, managed_relative_path)
+             VALUES ('folder:foreign', 'project:foreign', 'Foreign', 'managed',
+                     'projects/foreign');
+             INSERT INTO chat_channels
+                 (id, project_id, conversation_id, name, created_at, updated_at)
+             VALUES ('channel:foreign', 'project-chat', '{conversation}', 'foreign',
+                     '2026-09-18T12:00:00.000Z', '2026-09-18T12:00:00.000Z');
+             UPDATE chat_channels SET project_id = 'project:foreign'
+             WHERE id = 'channel:foreign';
+             INSERT INTO chat_teammate_working_folder_grants
+                 (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+                  capability, capability_inherits_profile, is_default, created_at)
+             VALUES ('{conversation}', '{TEAMMATE}', 'project:foreign', 'folder:foreign',
+                     'grant:foreign', 'edit', 0, 0, '2026-09-18T12:00:00.000Z');
+             UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;"
+        )))
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn promotion_refuses_a_grant_outside_the_conversation_project() {
+        let pool = pool_with_foreign_channel_grant().await;
+        let identity =
+            read_scratch_identity(&pool, &ChatScratchGenerationId::new(GENERATION).unwrap())
+                .await
+                .unwrap();
+        let default_channel = ganbaru_chat::project_defaults::default_channel_ids("project-chat")
+            .unwrap()
+            .1;
+
+        require_edit_folder_grant(
+            &pool,
+            &identity,
+            &ChatChannelId::new(default_channel).unwrap(),
+            &ProjectWorkingFolderId::new("workspace-1").unwrap(),
+        )
+        .await
+        .expect("an honest edit grant in the conversation's project allows promotion");
+        let refused = require_edit_folder_grant(
+            &pool,
+            &identity,
+            &ChatChannelId::new("channel:foreign").unwrap(),
+            &ProjectWorkingFolderId::new("folder:foreign").unwrap(),
+        )
+        .await
+        .expect_err("a channel claiming another project lends its grant no authority");
+        assert_eq!(refused.code, ChatErrorCode::Permission);
+    }
 
     #[test]
     fn managed_attachment_detection_is_closed_world() {

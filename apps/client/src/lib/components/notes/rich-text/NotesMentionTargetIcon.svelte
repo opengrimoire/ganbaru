@@ -4,7 +4,7 @@
   import CalendarDays from "@lucide/svelte/icons/calendar-days";
   import Database from "@lucide/svelte/icons/database";
   import FileText from "@lucide/svelte/icons/file-text";
-  import Folder from "@lucide/svelte/icons/folder";
+  import BriefcaseBusiness from "@lucide/svelte/icons/briefcase-business";
   import ListChecks from "@lucide/svelte/icons/list-checks";
   import UserRound from "@lucide/svelte/icons/user-round";
 
@@ -22,7 +22,7 @@
   {:else if target.kind === "database"}
     <Database class="size-4" aria-hidden="true" />
   {:else if target.kind === "project"}
-    <Folder class="size-4" aria-hidden="true" />
+    <BriefcaseBusiness class="size-4" aria-hidden="true" />
   {:else if target.kind === "project_task"}
     <ListChecks class="size-4" aria-hidden="true" />
   {:else if target.kind === "calendar_event"}

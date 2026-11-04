@@ -1,13 +1,19 @@
+#[cfg(unix)]
 use super::diff::file_diff;
-use super::git::{capture_git, repository_fingerprint};
+#[cfg(unix)]
+use super::diff_files;
+use super::git::{TemporaryIndex, capture_git, repository_fingerprint};
 use super::{
-    CapturedCheckpoint, StoredCheckpoint, current_git_snapshot, delete_exact_ref, diff_files,
+    CapturedCheckpoint, StoredCheckpoint, current_git_snapshot, delete_exact_ref,
     restore_git_snapshot, verify_checkpoint,
 };
+use crate::git::GitFolder;
+use crate::git::hardened::GitFolderTrust;
 use crate::models::{
     ChatCheckpointId, ChatErrorCode, ChatThreadId, ProjectWorkingFolderId, RepositoryKind,
 };
 use crate::workspace::AuthorizedWorkingFolder;
+#[cfg(unix)]
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -55,7 +61,14 @@ impl TestRepository {
             repository_kind: RepositoryKind::Git,
             repository_identity: Some(identity.to_string()),
             repository_storage_identity: Some(identity.to_string()),
+            git_trust: GitFolderTrust::Untrusted,
+            project_configuration:
+                ganbaru_chat_contracts::models::ProjectConfigurationAccess::Restricted,
         }
+    }
+
+    fn folder(&self) -> GitFolder<'_> {
+        GitFolder::untrusted(&self.0)
     }
 }
 
@@ -91,7 +104,7 @@ fn capture(
     let thread = ChatThreadId::new("thread:test").expect("thread ID should be valid");
     let checkpoint = ChatCheckpointId::new(format!("checkpoint:{suffix}"))
         .expect("checkpoint ID should be valid");
-    capture_git(&repository.0, &thread, &checkpoint, previous)
+    capture_git(repository.folder(), &thread, &checkpoint, previous)
         .expect("checkpoint capture should succeed")
 }
 
@@ -118,10 +131,10 @@ fn checkpoint_capture_preserves_head_index_staging_and_worktree() {
     repository.write("tracked.txt", b"staged\n");
     run_git(&repository.0, &["add", "tracked.txt"]);
     repository.write("unstaged.txt", b"untracked\n");
-    let before = repository_fingerprint(&repository.0).expect("fingerprint should succeed");
+    let before = repository_fingerprint(repository.folder()).expect("fingerprint should succeed");
     let head = run_git(&repository.0, &["rev-parse", "HEAD"]);
     let captured = capture(&repository, "preserve", None);
-    let after = repository_fingerprint(&repository.0).expect("fingerprint should succeed");
+    let after = repository_fingerprint(repository.folder()).expect("fingerprint should succeed");
 
     assert_eq!(before, after);
     assert_eq!(head, run_git(&repository.0, &["rev-parse", "HEAD"]));
@@ -170,15 +183,15 @@ fn diff_covers_staged_unstaged_untracked_deleted_renamed_mode_binary_and_whitesp
     repository.write("binary.bin", &[0, 9, 8, 7]);
     repository.write("whitespace.txt", b"whitespace.txt base   \n");
 
-    let before = repository_fingerprint(&repository.0).expect("fingerprint should succeed");
+    let before = repository_fingerprint(repository.folder()).expect("fingerprint should succeed");
     let post = capture(&repository, "post", Some(&pre.git_object_id));
     assert_eq!(
         before,
-        repository_fingerprint(&repository.0).expect("fingerprint should succeed")
+        repository_fingerprint(repository.folder()).expect("fingerprint should succeed")
     );
 
     let files = diff_files(
-        &repository.0,
+        repository.folder(),
         &stored(&pre, "identity", 0),
         &stored(&post, "identity", 1),
     )
@@ -217,7 +230,7 @@ fn diff_covers_staged_unstaged_untracked_deleted_renamed_mode_binary_and_whitesp
     );
 
     let normal = file_diff(
-        &repository.0,
+        repository.folder(),
         &stored(&pre, "identity", 0),
         &stored(&post, "identity", 1),
         "whitespace.txt",
@@ -225,7 +238,7 @@ fn diff_covers_staged_unstaged_untracked_deleted_renamed_mode_binary_and_whitesp
     )
     .expect("normal diff should succeed");
     let ignored = file_diff(
-        &repository.0,
+        repository.folder(),
         &stored(&pre, "identity", 0),
         &stored(&post, "identity", 1),
         "whitespace.txt",
@@ -258,12 +271,18 @@ fn restore_reinstates_worktree_and_real_index_without_moving_head() {
     repository.write("worktree.txt", b"later worktree\n");
     fs::remove_file(repository.0.join("checkpoint-only.txt")).expect("file should be removed");
     repository.write("later-only.txt", b"later\n");
-    let current = current_git_snapshot(&repository.0).expect("current snapshot should succeed");
+    let current =
+        current_git_snapshot(repository.folder()).expect("current snapshot should succeed");
     let head = current.head_oid.clone();
 
-    restore_git_snapshot(&repository.0, &current, &stored(&target, "identity", 0))
-        .expect("restore should succeed");
-    let restored = current_git_snapshot(&repository.0).expect("restored snapshot should succeed");
+    restore_git_snapshot(
+        repository.folder(),
+        &current,
+        &stored(&target, "identity", 0),
+    )
+    .expect("restore should succeed");
+    let restored =
+        current_git_snapshot(repository.folder()).expect("restored snapshot should succeed");
     assert_eq!(restored.worktree_tree_oid, target.worktree_tree_oid);
     assert_eq!(restored.index_tree_oid, target.index_tree_oid);
     assert_eq!(restored.head_oid, head);
@@ -287,11 +306,11 @@ fn ref_validation_rejects_identity_changes_missing_refs_and_wrong_cleanup_oids()
         .expect_err("identity mismatch should fail");
     assert_eq!(identity_error.code, ChatErrorCode::ConfigurationInvalid);
     let wrong_oid = run_git(&repository.0, &["rev-parse", "HEAD"]);
-    assert!(delete_exact_ref(&repository.0, &captured.hidden_ref_name, &wrong_oid).is_err());
+    assert!(delete_exact_ref(repository.folder(), &captured.hidden_ref_name, &wrong_oid).is_err());
     verify_checkpoint(&repository.authorized("identity-a"), &checkpoint)
         .expect("wrong expected OID must retain ref");
     delete_exact_ref(
-        &repository.0,
+        repository.folder(),
         &captured.hidden_ref_name,
         &captured.git_object_id,
     )
@@ -302,20 +321,106 @@ fn ref_validation_rejects_identity_changes_missing_refs_and_wrong_cleanup_oids()
 }
 
 #[test]
+fn verification_binds_stored_trees_to_the_checkpoint_commit() {
+    let repository = TestRepository::new();
+    repository.write("tracked.txt", b"base\n");
+    repository.commit_all();
+    repository.write("tracked.txt", b"staged\n");
+    run_git(&repository.0, &["add", "tracked.txt"]);
+    repository.write("tracked.txt", b"worktree\n");
+    let captured = capture(&repository, "binding", None);
+    let checkpoint = stored(&captured, "identity", 0);
+    let authorized = repository.authorized("identity");
+    verify_checkpoint(&authorized, &checkpoint).expect("a captured checkpoint verifies");
+
+    let head_tree = run_git(&repository.0, &["rev-parse", "HEAD^{tree}"]);
+    let tampered = [
+        StoredCheckpoint {
+            worktree_tree_oid: head_tree.clone(),
+            ..checkpoint.clone()
+        },
+        StoredCheckpoint {
+            index_tree_oid: head_tree,
+            ..checkpoint.clone()
+        },
+        StoredCheckpoint {
+            worktree_tree_oid: checkpoint.index_tree_oid.clone(),
+            index_tree_oid: checkpoint.worktree_tree_oid.clone(),
+            ..checkpoint.clone()
+        },
+        StoredCheckpoint {
+            worktree_tree_oid: "--index-output=planted".to_string(),
+            ..checkpoint.clone()
+        },
+        StoredCheckpoint {
+            index_tree_oid: format!("{}^{{tree}}", checkpoint.git_object_id),
+            ..checkpoint.clone()
+        },
+        StoredCheckpoint {
+            head_oid: Some("HEAD".to_string()),
+            ..checkpoint.clone()
+        },
+        StoredCheckpoint {
+            git_object_id: checkpoint.git_object_id.to_uppercase(),
+            ..checkpoint.clone()
+        },
+    ];
+    for candidate in tampered {
+        let error = verify_checkpoint(&authorized, &candidate)
+            .expect_err("a stored object that capture did not record must fail");
+        assert_eq!(error.code, ChatErrorCode::NotFound);
+    }
+    assert!(!repository.0.join("planted").exists());
+}
+
+#[test]
 fn stale_restore_snapshot_aborts_without_changing_files() {
     let repository = TestRepository::new();
     repository.write("tracked.txt", b"base\n");
     repository.commit_all();
     let target = capture(&repository, "stale-target", None);
     repository.write("tracked.txt", b"preview state\n");
-    let preview = current_git_snapshot(&repository.0).expect("preview should succeed");
+    let preview = current_git_snapshot(repository.folder()).expect("preview should succeed");
     repository.write("tracked.txt", b"changed after preview\n");
 
-    let error = restore_git_snapshot(&repository.0, &preview, &stored(&target, "identity", 0))
-        .expect_err("stale preview should abort");
+    let error = restore_git_snapshot(
+        repository.folder(),
+        &preview,
+        &stored(&target, "identity", 0),
+    )
+    .expect_err("stale preview should abort");
     assert_eq!(error.code, ChatErrorCode::StaleRevision);
     assert_eq!(
         fs::read(repository.0.join("tracked.txt")).expect("file should read"),
         b"changed after preview\n"
     );
+}
+
+#[test]
+fn temporary_indexes_live_in_private_random_directories_removed_on_drop() {
+    let first = TemporaryIndex::new().unwrap();
+    let second = TemporaryIndex::new().unwrap();
+    let directory = first.path().parent().unwrap().to_path_buf();
+    assert_ne!(Some(directory.as_path()), second.path().parent());
+    assert_eq!(directory.parent(), Some(std::env::temp_dir().as_path()));
+    let name = directory
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let suffix = name.strip_prefix("ganbaru-chat-index-").unwrap();
+    assert!(
+        suffix.len() >= 32
+            && suffix
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&directory).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+    drop(first);
+    assert!(!directory.exists());
 }

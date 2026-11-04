@@ -6,9 +6,10 @@ import {
   DEFAULT_CALENDAR_DIM_PAST_EVENTS,
   DEFAULT_PROFILE_DISPLAY_NAME,
   DEFAULT_PROFILE_FULL_NAME,
-  DEFAULT_PROFILE_IMAGE_PATH,
+  DEFAULT_PROFILE_IMAGE,
   DEFAULT_PROFILE_USE_IMAGE,
   DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE,
+  DEFAULT_MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC,
   DEFAULT_CALENDAR_TIME_FORMAT,
   DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
   DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
@@ -46,7 +47,8 @@ import {
   isContactTrustDuration,
   isProfileColor,
   randomProfileColor,
-  isProfileImagePath,
+  isProfileImage,
+  type ProfileImage,
   isTitleBarControlId,
   parseFocusBreakEndEscPresses,
   parseFocusBreakExtensionLimit,
@@ -79,7 +81,7 @@ import {
 
 const PROFILE_DISPLAY_NAME_CONFIG_KEY = "profile.displayName";
 const PROFILE_FULL_NAME_CONFIG_KEY = "profile.fullName";
-const PROFILE_IMAGE_PATH_CONFIG_KEY = "profile.imagePath";
+const PROFILE_IMAGE_CONFIG_KEY = "profile.image";
 const PROFILE_USE_IMAGE_CONFIG_KEY = "profile.useImage";
 const PROFILE_COLOR_CONFIG_KEY = "profile.color";
 const PROFILE_IMAGE_CROP_CONFIG_KEY = "profile.imageCrop";
@@ -102,6 +104,7 @@ const FOCUS_BREAK_EXTENSION_LIMIT_CONFIG_KEY =
 const FOCUS_PAUSE_NOTIFICATION_INTERVAL_MINUTES_CONFIG_KEY =
   "preferences.focusPauseNotificationIntervalMinutes";
 const MUSIC_PAUSE_ON_POMODORO_PAUSE_CONFIG_KEY = "preferences.musicPauseOnPomodoroPause";
+const MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC_CONFIG_KEY = "preferences.musicPauseSoundscapeWithMusic";
 const QUICK_NOTES_DEFAULT_COLOR_CONFIG_KEY = "preferences.quickNotesDefaultColor";
 const NOTES_DEFAULT_OPEN_MODE_CONFIG_KEY = "preferences.notesDefaultOpenMode";
 const NOTES_SIDEBAR_ORDER_CONFIG_KEY = "preferences.notesSidebarOrder";
@@ -158,9 +161,9 @@ function loadSavedProfileFullName(): string {
   return normalized.ok ? normalized.value : DEFAULT_PROFILE_FULL_NAME;
 }
 
-function loadSavedProfileImagePath(): string | null {
-  const saved = getConfigKey<unknown>(PROFILE_IMAGE_PATH_CONFIG_KEY, undefined);
-  return isProfileImagePath(saved) ? saved.trim() : DEFAULT_PROFILE_IMAGE_PATH;
+function loadSavedProfileImage(): ProfileImage | null {
+  const saved = getConfigKey<unknown>(PROFILE_IMAGE_CONFIG_KEY, undefined);
+  return isProfileImage(saved) ? { path: saved.path, byteSize: saved.byteSize } : DEFAULT_PROFILE_IMAGE;
 }
 
 function loadSavedProfileUseImage(): boolean {
@@ -256,6 +259,12 @@ function loadSavedMusicPauseOnPomodoroPause(): boolean {
   return DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE;
 }
 
+function loadSavedMusicPauseSoundscapeWithMusic(): boolean {
+  const saved = getConfigKey<unknown>(MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC_CONFIG_KEY, undefined);
+  if (typeof saved === "boolean") return saved;
+  return DEFAULT_MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC;
+}
+
 function loadSavedQuickNotesDefaultColor(): EventColor {
   const saved = getConfigKey<unknown>(QUICK_NOTES_DEFAULT_COLOR_CONFIG_KEY, undefined);
   return isProfileColor(saved) ? saved : FALLBACK_COLOR_INDEX;
@@ -293,7 +302,7 @@ let fontScale = $state<number>(loadSavedFontScale());
 let eventTimezoneDisplay = $state<EventTimezoneDisplay>(loadSavedEventTimezoneDisplay());
 let profileDisplayName = $state<string>(loadSavedProfileDisplayName());
 let profileFullName = $state<string>(loadSavedProfileFullName());
-let profileImagePath = $state<string | null>(loadSavedProfileImagePath());
+let profileImage = $state<ProfileImage | null>(loadSavedProfileImage());
 let profileUseImage = $state<boolean>(loadSavedProfileUseImage());
 let profileColor = $state<EventColor>(loadSavedProfileColor());
 let profileImageCrop = $state<ProfileImageCrop>(loadSavedProfileImageCrop());
@@ -318,6 +327,7 @@ let focusPauseNotificationIntervalMinutes = $state<FocusPauseNotificationInterva
   loadSavedFocusPauseNotificationIntervalMinutes(),
 );
 let musicPauseOnPomodoroPause = $state<boolean>(loadSavedMusicPauseOnPomodoroPause());
+let musicPauseSoundscapeWithMusic = $state<boolean>(loadSavedMusicPauseSoundscapeWithMusic());
 let quickNotesDefaultColor = $state<EventColor>(loadSavedQuickNotesDefaultColor());
 let notesDefaultOpenMode = $state<NotesPageOpenMode>(loadSavedNotesDefaultOpenMode());
 let notesSidebarOrder = $state<SidebarSortOrder>(loadSavedSidebarOrder(NOTES_SIDEBAR_ORDER_CONFIG_KEY));
@@ -391,7 +401,7 @@ function reloadSavedPreferences(): void {
   eventTimezoneDisplay = loadSavedEventTimezoneDisplay();
   profileDisplayName = loadSavedProfileDisplayName();
   profileFullName = loadSavedProfileFullName();
-  profileImagePath = loadSavedProfileImagePath();
+  profileImage = loadSavedProfileImage();
   profileUseImage = loadSavedProfileUseImage();
   profileColor = loadSavedProfileColor();
   profileImageCrop = loadSavedProfileImageCrop();
@@ -406,6 +416,7 @@ function reloadSavedPreferences(): void {
   focusBreakExtensionLimit = loadSavedFocusBreakExtensionLimit();
   focusPauseNotificationIntervalMinutes = loadSavedFocusPauseNotificationIntervalMinutes();
   musicPauseOnPomodoroPause = loadSavedMusicPauseOnPomodoroPause();
+  musicPauseSoundscapeWithMusic = loadSavedMusicPauseSoundscapeWithMusic();
   quickNotesDefaultColor = loadSavedQuickNotesDefaultColor();
   notesDefaultOpenMode = loadSavedNotesDefaultOpenMode();
   notesSidebarOrder = loadSavedSidebarOrder(NOTES_SIDEBAR_ORDER_CONFIG_KEY);
@@ -488,15 +499,15 @@ function setProfileFullName(value: string): boolean {
 }
 
 /** Set the managed picture and its crop together; removing the picture resets the crop. */
-function setProfileImagePath(
-  value: string | null,
+function setProfileImage(
+  value: ProfileImage | null,
   crop: ProfileImageCrop = PROFILE_IMAGE_DEFAULT_CROP,
 ): boolean {
-  if (value !== null && !isProfileImagePath(value)) return false;
+  if (value !== null && !isProfileImage(value)) return false;
   if (!isProfileImageCrop(crop)) return false;
-  profileImagePath = value?.trim() ?? null;
-  setConfigKey(PROFILE_IMAGE_PATH_CONFIG_KEY, profileImagePath ?? undefined);
-  return setProfileImageCrop(profileImagePath === null ? PROFILE_IMAGE_DEFAULT_CROP : crop);
+  profileImage = value === null ? null : { path: value.path, byteSize: value.byteSize };
+  setConfigKey(PROFILE_IMAGE_CONFIG_KEY, profileImage === null ? undefined : { ...profileImage });
+  return setProfileImageCrop(profileImage === null ? PROFILE_IMAGE_DEFAULT_CROP : crop);
 }
 
 function setProfileImageCrop(value: ProfileImageCrop): boolean {
@@ -610,6 +621,11 @@ function setMusicPauseOnPomodoroPause(value: boolean): void {
   setConfigKey(MUSIC_PAUSE_ON_POMODORO_PAUSE_CONFIG_KEY, value);
 }
 
+function setMusicPauseSoundscapeWithMusic(value: boolean): void {
+  musicPauseSoundscapeWithMusic = value;
+  setConfigKey(MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC_CONFIG_KEY, value);
+}
+
 function setQuickNotesDefaultColor(value: EventColor): void {
   if (!isProfileColor(value)) return;
   quickNotesDefaultColor = value;
@@ -715,15 +731,19 @@ export function getPreferences() {
     get profileFullName(): string {
       return profileFullName;
     },
+    /** Saved profile picture, or null when there is none. */
+    get profileImage(): ProfileImage | null {
+      return profileImage;
+    },
     get profileImagePath(): string | null {
-      return profileImagePath;
+      return profileImage?.path ?? null;
     },
     get profileUseImage(): boolean {
       return profileUseImage;
     },
     /** Picture the avatar shows, or null when there is none or the color is preferred. */
     get profileAvatarImagePath(): string | null {
-      return profileUseImage ? profileImagePath : null;
+      return profileUseImage ? profileImage?.path ?? null : null;
     },
     /** Theme palette slot behind the avatar initials. */
     get profileColor(): EventColor {
@@ -771,6 +791,10 @@ export function getPreferences() {
     },
     get musicPauseOnPomodoroPause(): boolean {
       return musicPauseOnPomodoroPause;
+    },
+    /** Whether pausing Music pauses a playing soundscape, which then resumes with Music. */
+    get musicPauseSoundscapeWithMusic(): boolean {
+      return musicPauseSoundscapeWithMusic;
     },
     /** Palette slot new untagged quick notes start with; existing notes keep theirs when it changes. */
     get quickNotesDefaultColor(): EventColor {
@@ -828,7 +852,7 @@ export function getPreferences() {
     setFontScale,
     setProfileDisplayName,
     setProfileFullName,
-    setProfileImagePath,
+    setProfileImage,
     setProfileUseImage,
     setProfileColor,
     setProfileImageCrop,
@@ -845,6 +869,7 @@ export function getPreferences() {
     setFocusBreakExtensionLimit,
     setFocusPauseNotificationIntervalMinutes,
     setMusicPauseOnPomodoroPause,
+    setMusicPauseSoundscapeWithMusic,
     setQuickNotesDefaultColor,
     setNotesDefaultOpenMode,
     setNotesSidebarOrder,
@@ -904,6 +929,9 @@ export function getPreferences() {
     },
     resetMusicPauseOnPomodoroPause() {
       setMusicPauseOnPomodoroPause(DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE);
+    },
+    resetMusicPauseSoundscapeWithMusic() {
+      setMusicPauseSoundscapeWithMusic(DEFAULT_MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC);
     },
     resetNotesDefaultOpenMode() {
       setNotesDefaultOpenMode(DEFAULT_NOTES_PAGE_OPEN_MODE);

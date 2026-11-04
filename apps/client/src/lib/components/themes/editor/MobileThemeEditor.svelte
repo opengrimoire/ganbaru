@@ -10,6 +10,7 @@
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import { getThemeEditor } from "$lib/stores/theme-editor.svelte";
+  import type { ThemeSaveChoice } from "$lib/themes/editor-save";
   import ThemeEditor from "./ThemeEditor.svelte";
 
   const themeStore = getTheme();
@@ -33,6 +34,7 @@
 
   let panel = $state<HTMLDivElement | null>(null);
   let discardConfirmationOpen = $state(false);
+  let remoteChangeOpen = $state(false);
   let pending = $state(false);
   let operationError = $state("");
   let sessionSettlementStarted = false;
@@ -60,18 +62,28 @@
     }
   }
 
-  async function commit(): Promise<void> {
+  async function commit(choice?: ThemeSaveChoice): Promise<void> {
     if (pending) return;
     pending = true;
     operationError = "";
     sessionSettlementStarted = true;
     try {
-      await themeEditor.commit();
+      const outcome = await themeEditor.commit(choice);
+      if (outcome.kind === "conflict") {
+        sessionSettlementStarted = false;
+        pending = false;
+        remoteChangeOpen = true;
+      }
     } catch (error) {
       sessionSettlementStarted = false;
       operationError = error instanceof Error ? error.message : String(error);
       pending = false;
     }
+  }
+
+  function settleRemoteChange(choice: ThemeSaveChoice): void {
+    remoteChangeOpen = false;
+    void commit(choice);
   }
 
   function resetAllToSeed(): void {
@@ -187,6 +199,21 @@
       }}
       onCancel={() => {
         discardConfirmationOpen = false;
+      }}
+    />
+  {/if}
+
+  {#if remoteChangeOpen}
+    <ConfirmDialog
+      title={t("settings.theme.editor.remoteChangeTitle")}
+      message={t("settings.theme.editor.remoteChangeMessage")}
+      confirmLabel={t("settings.theme.editor.saveAsCopy")}
+      alternateLabel={t("settings.theme.editor.overwrite")}
+      cancelLabel={t("settings.theme.editor.keepEditing")}
+      onConfirm={() => settleRemoteChange("copy")}
+      onAlternate={() => settleRemoteChange("overwrite")}
+      onCancel={() => {
+        remoteChangeOpen = false;
       }}
     />
   {/if}

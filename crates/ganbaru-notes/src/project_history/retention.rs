@@ -199,36 +199,10 @@ pub async fn notes_history_retention_impact(
     }
     .map_err(|e| format!("calculate Notes history retention impact: {e}"))?;
     let page_history_row = if let Some(project_id) = project_filter.as_deref() {
-        sqlx::query(
-            "WITH RECURSIVE ownership(page_id, parent_page_id, project_id) AS (
-                 SELECT page.id,
-                        COALESCE(
-                            page.parent_page_id,
-                            (SELECT block.page_id FROM notes_blocks AS block
-                             WHERE block.id = page.parent_block_id),
-                            (SELECT COALESCE(database.parent_page_id, database_block.page_id)
-                             FROM notes_data_sources AS data_source
-                             JOIN notes_databases AS database ON database.id = data_source.database_id
-                             LEFT JOIN notes_blocks AS database_block ON database_block.id = database.id
-                             WHERE data_source.id = page.parent_data_source_id)
-                        ),
-                        NULLIF(trim(json_extract(properties, '$.__ganbaru_project_id')), '')
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "WITH resolved AS (
+                 SELECT page.id AS page_id, {} AS project_id
                  FROM notes_pages AS page
-                 UNION ALL
-                 SELECT ownership.page_id,
-                        parent.parent_page_id,
-                        COALESCE(
-                            ownership.project_id,
-                            NULLIF(trim(json_extract(parent.properties, '$.__ganbaru_project_id')), '')
-                        )
-                 FROM ownership
-                 JOIN notes_pages AS parent ON parent.id = ownership.parent_page_id
-                 WHERE ownership.project_id IS NULL
-             ),
-             resolved AS (
-                 SELECT page_id, MAX(project_id) AS project_id
-                 FROM ownership
-                 GROUP BY page_id
              )
              SELECT COUNT(*) AS version_count,
                     COALESCE(SUM(
@@ -249,43 +223,18 @@ pub async fn notes_history_retention_impact(
                        '%Y-%m-%dT%H:%M:%fZ', 'now', '-' || ? || ' days'
                    )
                )",
-        )
+            crate::structure::page_project_sql("page")
+        )))
         .bind(project_id)
         .bind(retention_days)
         .bind(retention_days)
         .fetch_one(pool)
         .await
     } else {
-        sqlx::query(
-            "WITH RECURSIVE ownership(page_id, parent_page_id, project_id) AS (
-                 SELECT page.id,
-                        COALESCE(
-                            page.parent_page_id,
-                            (SELECT block.page_id FROM notes_blocks AS block
-                             WHERE block.id = page.parent_block_id),
-                            (SELECT COALESCE(database.parent_page_id, database_block.page_id)
-                             FROM notes_data_sources AS data_source
-                             JOIN notes_databases AS database ON database.id = data_source.database_id
-                             LEFT JOIN notes_blocks AS database_block ON database_block.id = database.id
-                             WHERE data_source.id = page.parent_data_source_id)
-                        ),
-                        NULLIF(trim(json_extract(properties, '$.__ganbaru_project_id')), '')
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "WITH resolved AS (
+                 SELECT page.id AS page_id, {} AS project_id
                  FROM notes_pages AS page
-                 UNION ALL
-                 SELECT ownership.page_id,
-                        parent.parent_page_id,
-                        COALESCE(
-                            ownership.project_id,
-                            NULLIF(trim(json_extract(parent.properties, '$.__ganbaru_project_id')), '')
-                        )
-                 FROM ownership
-                 JOIN notes_pages AS parent ON parent.id = ownership.parent_page_id
-                 WHERE ownership.project_id IS NULL
-             ),
-             resolved AS (
-                 SELECT page_id, MAX(project_id) AS project_id
-                 FROM ownership
-                 GROUP BY page_id
              )
              SELECT COUNT(*) AS version_count,
                     COALESCE(SUM(
@@ -307,7 +256,8 @@ pub async fn notes_history_retention_impact(
                        '%Y-%m-%dT%H:%M:%fZ', 'now', '-' || ? || ' days'
                    )
                )",
-        )
+            crate::structure::page_project_sql("page")
+        )))
         .bind(retention_days)
         .bind(retention_days)
         .fetch_one(pool)

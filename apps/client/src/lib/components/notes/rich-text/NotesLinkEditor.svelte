@@ -11,7 +11,7 @@
   import Database from "@lucide/svelte/icons/database";
   import FileText from "@lucide/svelte/icons/file-text";
   import Link from "@lucide/svelte/icons/link";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
 
   const EDITOR_WIDTH_PX = 360;
   const PREVIEW_WIDTH_PX = 320;

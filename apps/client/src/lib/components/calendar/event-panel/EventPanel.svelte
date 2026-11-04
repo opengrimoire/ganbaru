@@ -3,19 +3,21 @@
     CalendarEvent, EventSurfaceStatus, EventTransparency, EventVisibility, RecurringScope,
   } from "$lib/calendar/types";
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
-  import Notice from "$lib/components/ui/Notice.svelte";
   import TimePicker from "$lib/components/ui/TimePicker.svelte";
   import EventColorPicker from "$lib/components/calendar/EventColorPicker.svelte";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import MeetingSection from "./MeetingSection.svelte";
   import PomodoroSection from "./PomodoroSection.svelte";
+  import EventConflictNotice from "$lib/components/calendar/conflicts/EventConflictNotice.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import { hasTimingConflict } from "$lib/calendar/conflicts";
+  import { calendarConflicts } from "$lib/stores/calendar-conflicts.svelte";
   import NotificationsSection from "./NotificationsSection.svelte";
   import RecurrenceSection from "./RecurrenceSection.svelte";
+  import MusicSection from "./MusicSection.svelte";
   import ProjectSelector from "$lib/components/projects/pickers/ProjectSelector.svelte";
   import { onMount, tick } from "svelte";
   import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
-  import { slide } from "svelte/transition";
-  import { cubicOut } from "svelte/easing";
   import { getTheme } from "$lib/stores/theme.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
   import type { CalendarDeleteOutcome } from "$lib/api/calendar-edit";
@@ -48,23 +50,23 @@
   } from "./actions-controller.svelte";
   import type { PanelSaveData } from "./payloads";
   import { getMusicContextAssignments, getMusicPlaylistSummaries } from "$lib/music/platform-library";
-  import MusicSoundtrackAssignmentEditor from "$lib/components/music/MusicSoundtrackAssignmentEditor.svelte";
   import {
     completeMusicAssignmentDrafts,
     musicAssignmentDraftsEqual,
     persistedMusicAssignmentDrafts,
   } from "$lib/music/assignment-draft";
+  import { eventMusicPhases, eventPlaysMusic } from "$lib/music/event-playlists";
+  import { hasMeetingState } from "$lib/calendar/meeting-state";
   import type { MusicContextAssignmentDraft } from "$lib/music/context-assignment";
   import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
 
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import Archive from "@lucide/svelte/icons/archive";
   import Scissors from "@lucide/svelte/icons/scissors";
-  import Music from "@lucide/svelte/icons/music";
   import Calendar1 from "@lucide/svelte/icons/calendar-1";
   import Clock4 from "@lucide/svelte/icons/clock-4";
   import Ban from "@lucide/svelte/icons/ban";
-  import Smile from "@lucide/svelte/icons/smile";
+  import Smile from "@lucide/svelte/icons/face-slightly-smiling";
   import Eye from "@lucide/svelte/icons/eye";
   import Lock from "@lucide/svelte/icons/lock";
   import X from "@lucide/svelte/icons/x";
@@ -79,6 +81,7 @@
     BUILD_PLATFORM_PROFILE,
     "notifications.native-scheduling",
   );
+  const soundscapesAvailable = platformHasCapability(BUILD_PLATFORM_PROFILE, "music.soundscapes");
   const androidNotificationScheduling = BUILD_PLATFORM_PROFILE.platform === "android";
   const nativeIdleDetectionAvailable = platformHasCapability(
     BUILD_PLATFORM_PROFILE,
@@ -118,6 +121,7 @@
     calendarIdentityEmail,
     loadFullEvent,
     onSave,
+    confirmMeetingMusic,
     onDelete,
     onEndEvent,
     onClose,
@@ -156,7 +160,9 @@
      */
     loadFullEvent?: (id: string) => Promise<CalendarEvent | undefined>;
     onSave: (data: PanelSaveData, scope?: RecurringScope) => boolean | Promise<boolean>;
-    onDelete?: (id: string, scope?: RecurringScope) => void;
+    /** Asks before a save that gives a meeting automatic music; runs `proceed` on confirmation. */
+    confirmMeetingMusic?: (proceed: () => Promise<void>) => void;
+    onDelete?:(id: string, scope?: RecurringScope) => void;
     onEndEvent?: (data: PanelSaveData, scope?: RecurringScope) => void;
     onClose: () => void;
     onChange?: (data: Partial<CalendarEvent>) => void;
@@ -213,6 +219,22 @@
     if (changed && musicAssignmentsAvailable) void adoptProjectMusicSnapshot(projectId);
   };
 
+  const handleProjectCreate = (projectId: string): void => {
+    const changed = session.projectId !== projectId;
+    session.handleProjectCreated(projectId);
+    if (changed && musicAssignmentsAvailable) void adoptProjectMusicSnapshot(projectId);
+  };
+
+  /** Gives a project created from this panel the color of its first saved event. */
+  function adoptCreatedProjectColor(saved: PanelSaveData): void {
+    const color = session.createdProjectColorForSave(saved);
+    const project = projects.projectById(saved.projectId);
+    if (color === null || !project) return;
+    void projects.setProjectColor(project, color).catch((error) => {
+      console.error("set created project color failed", error);
+    });
+  }
+
   let musicSnapshots = $state<MusicContextAssignmentDraft[]>(completeMusicAssignmentDrafts([]));
   let savedMusicSnapshots = $state<MusicContextAssignmentDraft[]>(completeMusicAssignmentDrafts([]));
   let musicOverrides = $state<MusicContextAssignmentDraft[]>(completeMusicAssignmentDrafts([]));
@@ -224,6 +246,8 @@
   let musicLoadGeneration = 0;
   let musicSnapshotGeneration = 0;
   let musicOverrideGeneration = 0;
+  /** Id of the event, or of the series an occurrence belongs to, whose sync conflicts the panel shows. */
+  const conflictEventId = $derived(mode === "edit" && !parked && event ? event.recurringParentId ?? event.id : null);
   const musicAssignmentsDirty = $derived(
     musicAssignmentsReadyKey === session.lastInitKey
       && (!musicAssignmentDraftsEqual(musicSnapshots, savedMusicSnapshots)
@@ -315,6 +339,8 @@
   }
 
   type Section = "meeting" | "pomodoro" | "notifications" | "repeat" | "music";
+  /** Sections whose header toggle the panel owns; Music toggles its own playlist overrides. */
+  type ToggleSection = Exclude<Section, "music">;
   let openSection: Section | null = $state(null);
   let mobileNotificationStatus = $state<MobileCalendarNotificationStatus | null>(null);
   let mobileNotificationStatusBusy = $state(false);
@@ -342,22 +368,20 @@
   const panelCanDrag = $derived(!mobileLayout && geometry.canDrag);
   const isDateTimeStacked = $derived(geometry.isDateTimeStacked);
 
-  function isSectionEnabled(s: Section): boolean {
+  function isSectionEnabled(s: ToggleSection): boolean {
     if (s === "meeting") return session.meetingEnabled;
     if (s === "pomodoro") return session.pomodoroEnabled;
     if (s === "notifications") return session.notificationsEnabled;
-    if (s === "repeat") return !!session.recurrence;
-    return false;
+    return !!session.recurrence;
   }
 
 
-  function handleToggle(s: Section) {
+  function handleToggle(s: ToggleSection) {
     if (s === "pomodoro") {
       if (pomodoroControlsDisabled) return;
     } else if (controlsDisabled) {
       return;
     }
-    if (s === "music") return;
     const enabled = isSectionEnabled(s);
     if (enabled) {
       // Disable: keep the meeting data in memory so a misclick is recoverable.
@@ -525,19 +549,24 @@
   // resolver checks `lastFullKey` again at completion so a stale promise
   // for an event the user already navigated away from can't clobber the
   // current panel.
+  // A failed or empty load is shown with a retry, because a shortened title
+  // or location stays uneditable until the full event arrives.
   $effect(() => {
     if (parked || mode !== "edit" || !event?.id || detailsLoaded || !loadFullEvent) {
       session.cancelHeavyLoad();
       return;
     }
+    void session.heavyLoadAttempt;
     const id = event.id;
     if (id === session.lastFullKey) return;
     const request = session.beginHeavyLoad(id);
     const lookupId = eventPanelHeavyLookupId(event);
     loadFullEvent(lookupId).then((full) => {
       if (full) session.completeHeavyLoad(request, full);
+      else session.failHeavyLoad(request);
     }).catch((e) => {
       console.error("[EventPanel] loadFullEvent failed:", e);
+      session.failHeavyLoad(request);
     });
   });
 
@@ -662,8 +691,14 @@
   // reverting all edits back to the original values disables the button
   // again, matching the click-outside cancellation behavior.
   const saveReady = $derived(mode === "create" || externalDirty || musicAssignmentsDirty || dateTime.hasSaveableTimeDraft);
+  const titleEditBlocked = $derived(!detailsLoaded && session.titleEditBlocked);
+  const locationEditBlocked = $derived(!detailsLoaded && session.locationEditBlocked);
   const saveControlsDisabled = $derived(
-    (controlsDisabled && !pomodoroReadOnlyInteractive) || session.savePending || !saveReady,
+    (controlsDisabled && !pomodoroReadOnlyInteractive)
+      || session.savePending
+      || !saveReady
+      || titleEditBlocked
+      || locationEditBlocked,
   );
   const isBodyConstrained = $derived(mobileLayout || geometry.isBodyConstrained);
 
@@ -698,13 +733,46 @@
     return dt.toLocaleDateString(locale, { weekday: "short", month: "short", day: "numeric" });
   });
 
-  async function handleSave() {
-    if (!canRunEventPanelSave({
+  /** Whether the event starts music in its phases, from the given assignment drafts. */
+  function playsMusic(
+    overrides: readonly MusicContextAssignmentDraft[],
+    snapshots: readonly MusicContextAssignmentDraft[],
+  ): boolean {
+    return musicAssignmentsAvailable
+      && timedSectionsVisible
+      && eventPlaysMusic(overrides, snapshots, eventMusicPhases(session.pomodoroEnabled), soundscapesAvailable);
+  }
+
+  /** Whether this save turns the event into a meeting that starts music, which others may hear. */
+  function saveAddsMeetingMusic(): boolean {
+    if (!session.meetingEnabled || !playsMusic(musicOverrides, musicSnapshots)) return false;
+    if (mode === "create") return true;
+    const savedEvent = session.fullEvent ?? event;
+    const savedMeeting = !!savedEvent && hasMeetingState(savedEvent);
+    return !savedMeeting || !playsMusic(savedMusicOverrides, savedMusicSnapshots);
+  }
+
+  function canSave(): boolean {
+    if (titleEditBlocked || locationEditBlocked) return false;
+    return canRunEventPanelSave({
       parked,
       controlsDisabled,
       pomodoroReadOnlyInteractive,
       savePending: session.savePending,
-    })) return;
+    });
+  }
+
+  async function handleSave() {
+    if (!canSave()) return;
+    if (confirmMeetingMusic && saveAddsMeetingMusic()) {
+      confirmMeetingMusic(performSave);
+      return;
+    }
+    await performSave();
+  }
+
+  async function performSave() {
+    if (!canSave()) return;
     const hadSaveableTimeDraft = dateTime.hasSaveableTimeDraft;
     const committedTimeDraft = dateTime.commitSaveableTimeDrafts();
     if (!externalDirty && !musicAssignmentsDirty && mode !== "create" && (!hadSaveableTimeDraft || !committedTimeDraft)) return;
@@ -721,6 +789,7 @@
     session.savePending = true;
     try {
       if (await onSave(data, s)) {
+        adoptCreatedProjectColor(data);
         savedMusicSnapshots = completeMusicAssignmentDrafts(musicSnapshots);
         savedMusicOverrides = completeMusicAssignmentDrafts(musicOverrides);
       }
@@ -1011,7 +1080,7 @@
         aria-label={t("common.close")}
         onclick={onClose}
         onpointerdown={(event) => event.stopPropagation()}
-        class="flex h-12 w-12 shrink-0 items-center justify-center text-muted-foreground active:bg-accent"
+        class="panel-chrome flex h-12 w-12 shrink-0 items-center justify-center text-muted-foreground active:bg-accent"
       >
         <X size={22} aria-hidden="true" />
       </button>
@@ -1072,7 +1141,7 @@
           type="text"
           bind:value={session.title}
           placeholder={t("calendar.eventPanel.titlePlaceholder")}
-          disabled={controlsDisabled}
+          disabled={controlsDisabled || titleEditBlocked}
           class="w-full bg-transparent py-0.5 text-[1rem] font-semibold text-foreground outline-none placeholder:text-event-panel-placeholder"
           oninput={() => session.emitChange()}
           onkeydown={handleInputKeydown}
@@ -1084,6 +1153,7 @@
           disabled={controlsDisabled}
           {mobileLayout}
           onSelect={handleProjectSelect}
+          onCreate={handleProjectCreate}
         />
         {#if !controlsDisabled}
           <EventColorPicker
@@ -1331,6 +1401,22 @@
   <!-- Feature sections -->
   <div class="shrink-0 flex flex-col gap-1.5 px-4 py-1.5">
 
+      {#if session.heavyLoadFailed}
+        <Notice
+          role="status"
+          tone="warning"
+          copy={false}
+          message={t(titleEditBlocked || locationEditBlocked
+            ? "calendar.eventPanel.detailsLoadFailedSaveBlocked"
+            : "calendar.eventPanel.detailsLoadFailed")}
+          onRetry={() => session.retryHeavyLoad()}
+        />
+      {/if}
+
+      {#if conflictEventId}
+        <EventConflictNotice eventId={conflictEventId} blocked={externalDirty} onResolved={onClose} />
+      {/if}
+
       <!-- 1) Meeting -->
       {#if showHeavySections}
         <MeetingSection
@@ -1348,6 +1434,7 @@
           eventTitle={session.title}
           description={session.description}
           readOnly={controlsDisabled}
+          locationReadOnly={locationEditBlocked}
           allowReadOnlyExpand={readOnly && !parked}
           expanded={openSection === "meeting"}
           onToggle={() => handleToggle("meeting")}
@@ -1375,6 +1462,7 @@
           expanded={openSection === "pomodoro"}
           readonlyInteractive={pomodoroReadOnlyInteractive}
           idleDetectionAvailable={nativeIdleDetectionAvailable}
+          timingConflict={conflictEventId !== null && hasTimingConflict(calendarConflicts.all, conflictEventId)}
           onToggle={() => handleToggle("pomodoro")}
           onExpand={() => handleExpand("pomodoro")}
           onChange={() => session.emitChange()} />
@@ -1408,37 +1496,21 @@
 
       <!-- 5) Music -->
       {#if timedSectionsVisible && musicAssignmentsAvailable}
-        <div class="flex flex-col rounded-none overflow-hidden" style="background-color: var(--panel-contrast);">
-          <div class="section-header flex items-stretch">
-            <div aria-hidden="true" class="flex w-10 shrink-0 items-center justify-center text-muted-foreground/50">
-              <Music size={14} />
-            </div>
-            <button onclick={() => handleExpand("music")}
-              disabled={controlsDisabled}
-              class="flex flex-1 items-center px-3 py-2 text-left">
-              <span class="translate-y-[1.13px] text-[0.8rem] text-muted-foreground">{t("calendar.eventPanel.music")}</span>
-            </button>
-          </div>
-          {#if openSection === "music"}
-            <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="music" class="px-2.5 py-2.5" style="background-color: var(--panel-bg);">
-              {#if musicAssignmentsError}
-                <Notice class="mb-2 px-1 text-[0.65rem]" message={musicAssignmentsError} onRetry={() => initializeMusicAssignments(session.lastInitKey)} />
-              {/if}
-              <MusicSoundtrackAssignmentEditor
-                assignments={musicOverrides}
-                inheritedAssignments={musicSnapshots}
-                playlists={musicPlaylists}
-                onChange={(assignments) => {
-                  musicOverrideGeneration += 1;
-                  musicOverrides = assignments;
-                }}
-                disabled={controlsDisabled || musicAssignmentsReadyKey !== session.lastInitKey}
-                loadingPlaylists={musicAssignmentsLoading}
-                description={t("calendar.eventPanel.musicDescription")}
-              />
-            </div>
-          {/if}
-        </div>
+        <MusicSection
+          overrides={musicOverrides}
+          snapshots={musicSnapshots}
+          playlists={musicPlaylists}
+          pomodoroEnabled={session.pomodoroEnabled}
+          expanded={openSection === "music"}
+          disabled={controlsDisabled || musicAssignmentsReadyKey !== session.lastInitKey}
+          loading={musicAssignmentsLoading}
+          error={musicAssignmentsError}
+          onOverridesChange={(assignments) => {
+            musicOverrideGeneration += 1;
+            musicOverrides = assignments;
+          }}
+          onExpand={() => handleExpand("music")}
+          onRetry={() => initializeMusicAssignments(session.lastInitKey)} />
       {/if}
   </div>
   </div>

@@ -14,7 +14,6 @@ import type {
   NotesCommentThreadReadUpdate,
   NotesCommentUpdate,
   NotesLocalUser,
-  NotesLocalUserUpdate,
   NotesMentionNotification,
   NotesMentionNotificationDeliveryUpdate,
   NotesPageNotificationLevel,
@@ -27,15 +26,6 @@ import { invokeNotesMutation } from "./mutation";
 export async function getNotesLocalUser(): Promise<NotesLocalUser> {
   const dbUrl = await ensureDbUrl();
   return mapNotesLocalUserDto(await invoke<unknown>("notes_local_user", { dbUrl }));
-}
-
-export async function updateNotesLocalUser(
-  update: NotesLocalUserUpdate,
-): Promise<NotesLocalUser> {
-  const dbUrl = await ensureDbUrl();
-  return mapNotesLocalUserDto(
-    await invoke<unknown>("notes_update_local_user", { dbUrl, update }),
-  );
 }
 
 export async function listPendingNotesMentionNotifications():

@@ -9,7 +9,7 @@
   import CollectionQuickAdd from "$lib/components/collections/CollectionQuickAdd.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatDateTime, formatNumber } from "$lib/i18n/formatters";
-  import { projectKanbanDropSortOrder } from "$lib/projects/kanban-drag";
+  import { projectKanbanDropPlacement } from "$lib/projects/kanban-drag";
   import { projectPriorityDisplayColor, projectPriorityDisplayLabel } from "$lib/projects/display";
   import { manualStatusCompare } from "$lib/projects/tasks/view";
   import type { ProjectPriorityConfig, ProjectStatus, ProjectTask, ProjectTaskSortDirection, ProjectTaskSortMode, ProjectTaskColumnCount } from "$lib/projects/types";
@@ -53,8 +53,9 @@
       if (task.statusId !== status.id) await projects.setTaskStatus(task, status.id);
       return;
     }
-    const nextOrder = projectKanbanDropSortOrder({ orderedTasks: tasksForStatus(status), draggedTaskId: task.id, overTaskId: target?.id, position, sortDirection: taskSortDirection });
-    await projects.updateTask(task, { statusId: status.id, statusSortOrder: nextOrder });
+    const statusPlacement = projectKanbanDropPlacement({ orderedTasks: tasksForStatus(status), draggedTaskId: task.id, overTaskId: target?.id, position, sortDirection: taskSortDirection });
+    if (!statusPlacement) return;
+    await projects.updateTask(task, { statusId: status.id, statusPlacement });
   }
 
   async function perform(action: () => Promise<void>): Promise<void> {
@@ -63,7 +64,7 @@
   }
 
   function canMove(task: ProjectTask, status: ProjectStatus): boolean {
-    return !task.archivedAt && !task.parentTaskId && task.projectId === status.projectId;
+    return !task.archivedAt && !task.parentTaskId && (!status.deletedAt || task.statusId === status.id) && task.projectId === status.projectId;
   }
 </script>
 
@@ -87,7 +88,7 @@
       {#snippet actions()}
         <CollectionMenu kind="actions" iconOnly showHeader={false} label={t("projects.actions.openTaskDetails", task.title)}>
           <button type="button" class="menu-item" onclick={() => onOpenTask(task)}>{t("projects.kanban.openDetails")}</button>
-          {#each statuses.filter((entry) => entry.id !== status.id) as destination (destination.id)}
+          {#each statuses.filter((entry) => entry.id !== status.id && !entry.deletedAt) as destination (destination.id)}
             <button type="button" class="menu-item" disabled={!canMove(task, destination)} onclick={() => { void perform(() => projects.setTaskStatus(task, destination.id)); }}>{t("projects.actions.moveTaskToStatus", task.title, destination.name)}</button>
           {/each}
           {#if taskSortMode === "manual"}
@@ -105,7 +106,7 @@
     </CollectionCard>
   {/snippet}
   {#snippet footer(status)}
-    <CollectionQuickAdd label={t("projects.list.addTaskInSection", status.name)} onSubmit={async (title) => Boolean(await projects.addTask(status.projectId, title, undefined, status.id))} />
+    {#if !status.deletedAt}<CollectionQuickAdd label={t("projects.list.addTaskInSection", status.name)} onSubmit={async (title) => Boolean(await projects.addTask(status.projectId, title, undefined, status.id))} />{/if}
     {#if tasksForStatus(status).length < total(status)}<button type="button" class="min-h-9 w-full rounded-md px-2 text-[0.8rem] text-muted-foreground hover:bg-accent" onclick={onNeedMore}>{t("common.loadMore")}</button>{/if}
   {/snippet}
 </CollectionBoard>

@@ -103,7 +103,7 @@ These conditions must remain true across UI actions, imports, migrations, recove
 **Rule.** Every native path is resolved from a validated relative path below the current target. Traversal, symlinks, replaced directories, invalid external bindings, and Git common-directory changes fail closed.
 
 **Why.** Provider-native trust and user-authored repository content must not widen application authority.
-
+ SQLite constraints also reject stored managed, attachment, resource, and review paths that are absolute, contain a backslash, or contain a parent segment.
 **Enforcement.** Rust folder authorization at every file, terminal, preview, attachment, Git, checkpoint, and restore boundary.
 
 **Tests.** Traversal, absolute paths, symlink escape, replacement, stale bindings, ignored directories, and Git indirection.

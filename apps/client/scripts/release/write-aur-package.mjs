@@ -18,6 +18,8 @@ const PACKAGE_NAME = "ganbaru-bin";
 const PACKAGE_DESCRIPTION =
   "Local, privacy-first productivity app for reducing procrastination and burnout";
 const MAINTAINER = "Victor Benito Garcia Rocha <victorbenitogr@gmail.com>";
+const INSTALL_SCRIPT_NAME = `${PACKAGE_NAME}.install`;
+const LINKING_FIREWALL_HELPER_PATH = "/usr/lib/ganbaru/ganbaru-linking-firewall";
 
 /**
  * Reads a required environment variable without exposing its value.
@@ -110,6 +112,7 @@ function writeAurFiles(version, checksum) {
       "provides=('ganbaru')",
       "conflicts=('ganbaru')",
       "options=('!strip' '!debug')",
+      `install=${INSTALL_SCRIPT_NAME}`,
       `source_x86_64=("ganbaru_\${pkgver}_amd64.deb::${sourceUrl}")`,
       `sha256sums_x86_64=('${checksum}')`,
       `noextract=("ganbaru_\${pkgver}_amd64.deb")`,
@@ -138,6 +141,7 @@ function writeAurFiles(version, checksum) {
       `\tpkgver = ${version}`,
       "\tpkgrel = 1",
       `\turl = https://github.com/${RELEASE_REPOSITORY}`,
+      `\tinstall = ${INSTALL_SCRIPT_NAME}`,
       "\tarch = x86_64",
       "\tlicense = AGPL-3.0-only",
       "\tmakedepends = libarchive",
@@ -155,6 +159,20 @@ function writeAurFiles(version, checksum) {
       `\tsha256sums_x86_64 = ${checksum}`,
       "",
       `pkgname = ${PACKAGE_NAME}`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  writeFileSync(
+    path.join(AUR_DIR, INSTALL_SCRIPT_NAME),
+    [
+      "# Removes the device linking firewall rules the app added. Upgrades keep them.",
+      "pre_remove() {",
+      `  if [ -x ${LINKING_FIREWALL_HELPER_PATH} ]; then`,
+      `    ${LINKING_FIREWALL_HELPER_PATH} --manage-linking-firewall revoke-all || true`,
+      "  fi",
+      "}",
       "",
     ].join("\n"),
     "utf8",

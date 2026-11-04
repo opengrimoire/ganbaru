@@ -8,6 +8,7 @@
   } from "$lib/modal-focus";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
+  import { createBackdropPress } from "$lib/utils/backdrop-press";
 
   const { t } = getLocalization();
   const mobileBackStack = getMobileBackStack();
@@ -28,6 +29,8 @@
     onConfirm,
     onCancel,
     onDismiss = onCancel,
+    alternateLabel,
+    onAlternate,
   }: {
     title?: string;
     message: string;
@@ -39,10 +42,15 @@
     onConfirm: () => void;
     onCancel: () => void;
     onDismiss?: () => void;
+    /** Label of an optional third action between cancel and confirm; it has no keyboard shortcut. */
+    alternateLabel?: string;
+    /** Runs the optional third action; the button shows only when `alternateLabel` is also set. */
+    onAlternate?: () => void;
   } = $props();
 
   const displayMessage = $derived(message.replace(/\.\s*$/u, ""));
   let cancelButtonElement = $state<HTMLButtonElement | null>(null);
+  const backdropPress = createBackdropPress();
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === "Tab" && element) {
@@ -98,7 +106,8 @@
 <div
   class="fixed z-90 flex items-center justify-center"
   style="left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height); padding: calc(var(--safe-area-top) + 1rem) calc(var(--safe-area-right) + 1rem) calc(var(--safe-area-bottom) + 1rem) calc(var(--safe-area-left) + 1rem);"
-  onclick={(e) => { e.stopPropagation(); onDismiss(); }}
+  onpointerdown={backdropPress.start}
+  onclick={(e) => { e.stopPropagation(); if (backdropPress.isClick(e)) onDismiss(); }}
 >
   <div class="surface-backdrop absolute inset-0"></div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -129,6 +138,15 @@
       >
         {#if mobileShell}{cancelLabel}{:else}{`${cancelLabel} (${t("common.escapeKey")})`}{/if}
       </button>
+      {#if alternateLabel && onAlternate}
+        <button
+          type="button"
+          onclick={onAlternate}
+          class="min-h-12 rounded-md border border-border bg-card px-3.5 py-2 text-[0.866667rem] font-medium text-foreground transition-colors hover:bg-accent"
+        >
+          {alternateLabel}
+        </button>
+      {/if}
       <button
         type="button"
         onclick={onConfirm}

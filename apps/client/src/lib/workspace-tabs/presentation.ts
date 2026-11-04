@@ -1,6 +1,6 @@
 import Book from "@lucide/svelte/icons/book";
 import Calendar from "@lucide/svelte/icons/calendar";
-import Folder from "@lucide/svelte/icons/folder";
+import BriefcaseBusiness from "@lucide/svelte/icons/briefcase-business";
 import MessageSquare from "@lucide/svelte/icons/message-square";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import type { View } from "$lib/navigation";
@@ -10,7 +10,7 @@ export type WorkspaceTabIcon = typeof Calendar;
 
 const KIND_ICONS: Readonly<Record<View, WorkspaceTabIcon>> = {
   calendar: Calendar,
-  projects: Folder,
+  projects: BriefcaseBusiness,
   notes: Book,
   chat: MessageSquare,
 };

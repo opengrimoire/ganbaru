@@ -1,8 +1,4 @@
-use super::helpers::{memory_pool_migrated_through, migrated_memory_pool};
-use crate::run_migrations;
-
-/// Last migration before Quick notes replicate.
-const BEFORE_REPLICATION: i64 = 20261007120000;
+use super::helpers::migrated_memory_pool;
 
 #[test]
 fn schema_creates_normalized_quick_notes_storage() {
@@ -12,6 +8,7 @@ fn schema_creates_normalized_quick_notes_storage() {
             "quick_note_tags",
             "quick_notes",
             "quick_note_text_runs",
+            "quick_note_images",
             "quick_notes_search_fts",
         ] {
             let exists: i64 =
@@ -74,6 +71,56 @@ fn schema_creates_normalized_quick_notes_storage() {
 }
 
 #[test]
+fn image_rows_reference_content_addressed_files_and_cascade_with_their_note() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::query("INSERT INTO quick_notes (id, order_key) VALUES ('note', 'a0')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let digest = "0123456789abcdef".repeat(4);
+        let insert = |sha256: String, content_type: &'static str, byte_size: i64| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO quick_note_images
+                         (note_id, sort_order, sha256, content_type, byte_size, width, height)
+                     VALUES ('note', (SELECT COUNT(*) FROM quick_note_images), ?, ?, ?, 640, 480)",
+                )
+                .bind(sha256)
+                .bind(content_type)
+                .bind(byte_size)
+                .execute(&pool)
+                .await
+            }
+        };
+        assert!(
+            insert(digest.to_uppercase(), "image/png", 10)
+                .await
+                .is_err()
+        );
+        assert!(
+            insert(digest[1..].to_string(), "image/png", 10)
+                .await
+                .is_err()
+        );
+        assert!(insert(digest.clone(), "image/bmp", 10).await.is_err());
+        assert!(insert(digest.clone(), "image/png", 0).await.is_err());
+        insert(digest.clone(), "image/gif", 10).await.unwrap();
+
+        sqlx::query("DELETE FROM quick_notes WHERE id = 'note'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM quick_note_images")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0);
+    });
+}
+
+#[test]
 fn tags_have_no_count_limit() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
@@ -94,120 +141,26 @@ fn tags_have_no_count_limit() {
 }
 
 #[test]
-fn replication_migration_preserves_quick_notes() {
+fn notes_and_tags_capture_their_columns_index_search_and_clear_deleted_tags() {
     super::block_on(async {
-        let pool = memory_pool_migrated_through(BEFORE_REPLICATION).await;
-        for (id, name, sort_order) in [
-            ("tag-b", "Later", 2),
-            ("tag-a", "Work", 0),
-            ("tag-c", "Home", 1),
-        ] {
-            sqlx::query("INSERT INTO quick_note_tags (id, name, sort_order) VALUES (?, ?, ?)")
-                .bind(id)
-                .bind(name)
-                .bind(sort_order)
-                .execute(&pool)
-                .await
-                .unwrap();
-        }
-        let notes = [
-            ("note-1", Some("tag-a"), 3.5, 0, "alpha"),
-            ("note-2", None, -2048.0, 1, "bravo"),
-            ("note-3", Some("tag-b"), 0.25, 0, "charlie"),
-            ("note-4", Some("tag-a"), 0.25, 0, "delta"),
-        ];
-        for (id, tag_id, manual_order, pinned, body) in notes {
-            sqlx::query(
-                "INSERT INTO quick_notes (id, title, body_plain_text, tag_id, pinned, manual_order)
-                 VALUES (?, ?, ?, ?, ?, ?)",
-            )
-            .bind(id)
-            .bind(format!("Title {id}"))
-            .bind(body)
-            .bind(tag_id)
-            .bind(pinned)
-            .bind(manual_order)
-            .execute(&pool)
-            .await
-            .unwrap();
-            sqlx::query(
-                "INSERT INTO quick_note_text_runs (note_id, sort_order, content, bold)
-                 VALUES (?, 0, ?, 1)",
-            )
-            .bind(id)
-            .bind(body)
-            .execute(&pool)
-            .await
-            .unwrap();
-        }
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO quick_note_tags (id, name, order_key) VALUES ('tag-a', 'Work', 'a0');
+             INSERT INTO quick_notes (id, title, body_plain_text, tag_id, order_key)
+             VALUES ('note-1', 'Title one', 'alpha', 'tag-a', 'a0'),
+                    ('note-2', 'Title two', 'charlie', NULL, 'a1');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
-        run_migrations(&pool).await.unwrap();
-
-        let tags: Vec<(String, String)> =
-            sqlx::query_as("SELECT id, order_key FROM quick_note_tags ORDER BY order_key, id")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
-        assert_eq!(
-            tags,
-            [
-                ("tag-a".to_string(), "c000".to_string()),
-                ("tag-c".to_string(), "c001".to_string()),
-                ("tag-b".to_string(), "c002".to_string()),
-            ]
-        );
-        let converted: Vec<(String, Option<String>, String)> =
-            sqlx::query_as("SELECT id, tag_id, order_key FROM quick_notes ORDER BY order_key")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
-        assert_eq!(
-            converted,
-            [
-                ("note-2".to_string(), None, "c000".to_string()),
-                (
-                    "note-3".to_string(),
-                    Some("tag-b".to_string()),
-                    "c001".to_string()
-                ),
-                (
-                    "note-4".to_string(),
-                    Some("tag-a".to_string()),
-                    "c002".to_string()
-                ),
-                (
-                    "note-1".to_string(),
-                    Some("tag-a".to_string()),
-                    "c003".to_string()
-                ),
-            ]
-        );
-        let runs: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM quick_note_text_runs WHERE bold = 1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(runs, 4);
         let matched: String = sqlx::query_scalar(
             "SELECT note_id FROM quick_notes_search_fts WHERE quick_notes_search_fts MATCH 'charlie'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(matched, "note-3");
-        let foreign_key_errors: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(foreign_key_errors, 0);
-        let manual_order_columns: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pragma_table_info('quick_notes') WHERE name = 'manual_order'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(manual_order_columns, 0);
+        assert_eq!(matched, "note-2");
 
         let captures: Vec<(i64, String, i64, i64)> = sqlx::query_as(
             "SELECT table_id, row_key, mask, created FROM sync_capture ORDER BY table_id, row_key",
@@ -215,23 +168,21 @@ fn replication_migration_preserves_quick_notes() {
         .fetch_all(&pool)
         .await
         .unwrap();
-        assert_eq!(captures.len(), 7);
+        assert_eq!(captures.len(), 3);
         assert!(captures.iter().all(|(table_id, _, mask, created)| {
-            *created == 1 && *mask == if *table_id == 1 { 31 } else { 255 }
+            *created == 1 && *mask == if *table_id == 1 { 31 } else { 511 }
         }));
 
-        // The rebuilt tag table still enforces the reference from notes.
         sqlx::query("DELETE FROM quick_note_tags WHERE id = 'tag-a'")
             .execute(&pool)
             .await
             .unwrap();
-        let untagged: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM quick_notes WHERE id IN ('note-1', 'note-4') AND tag_id IS NULL",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(untagged, 2);
+        let tag: Option<String> =
+            sqlx::query_scalar("SELECT tag_id FROM quick_notes WHERE id = 'note-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(tag, None);
         let dangling = sqlx::query("UPDATE quick_notes SET tag_id = 'missing' WHERE id = 'note-2'")
             .execute(&pool)
             .await;

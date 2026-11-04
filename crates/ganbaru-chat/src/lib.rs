@@ -5,18 +5,22 @@
 
 #[cfg(feature = "native-runtime")]
 pub mod agent_runs;
+pub mod attachment_files;
 #[cfg(feature = "native-runtime")]
 pub mod checkpoints;
 #[cfg(feature = "native-runtime")]
 pub mod composer;
+pub mod conversion;
 pub mod coordination;
 pub mod credentials;
 #[cfg(feature = "native-runtime")]
 pub mod driver_operations;
 #[cfg(feature = "native-runtime")]
 pub mod git;
+pub mod ids;
 #[cfg(feature = "native-runtime")]
 pub mod ingestion;
+pub mod project_defaults;
 #[cfg(feature = "native-runtime")]
 pub mod repository;
 #[cfg(feature = "native-runtime")]
@@ -27,6 +31,8 @@ pub mod runtime;
 pub mod source_control;
 #[cfg(feature = "native-runtime")]
 pub mod state;
+pub mod sync_effects;
+pub mod timeline;
 #[cfg(feature = "native-runtime")]
 pub mod workspace;
 

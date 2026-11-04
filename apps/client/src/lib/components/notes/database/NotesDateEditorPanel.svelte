@@ -1,7 +1,7 @@
 <script lang="ts">
   import Clock from "@lucide/svelte/icons/clock";
   import Eraser from "@lucide/svelte/icons/eraser";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import { tick, untrack, type Snippet } from "svelte";
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";

@@ -49,7 +49,7 @@ fn archive_metadata_keeps_historical_reference_values_and_enforces_constraints()
         // Historical identities survive without their former live task/library.
         sqlx::raw_sql("INSERT INTO calendar_event_archive_task_links VALUES ('older', 'removed-task', 'reference', '2026-05-23T08:00:00Z');
             INSERT INTO calendar_event_archive_music_assignments
-                VALUES ('older', 'event-override', 'short-break', 'play-automatically', 'removed-playlist', 'removed-soundscape', 'copied-project', 'removed-project', 9, 7, 'play-selected');")
+                VALUES ('older', 'event-override', 'short-break', 'play-automatically', 'removed-playlist', 'copied-project', 'removed-project', 9, 7, 'play-selected', 'removed-preset');")
             .execute(&pool).await.unwrap();
         let historical: (String, i64) = sqlx::query_as("SELECT playlist_id, version FROM calendar_event_archive_music_assignments WHERE archive_event_id='older'")
             .fetch_one(&pool).await.unwrap();
@@ -193,5 +193,39 @@ fn deleting_calendar_event_preserves_pomodoro_segments() {
                 .unwrap();
         assert_eq!(segment_count, 1);
         assert_eq!(event_id, None);
+    });
+}
+
+#[test]
+fn deleting_a_calendar_deletes_its_events_and_imported_objects() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO calendars (id, name, source) VALUES ('imported', 'Imported', 'ics');
+             INSERT INTO calendar_events (id, title, start_time, end_time, calendar_id)
+             VALUES ('event-1', 'Plain', '2026-05-23T11:00:00Z', '2026-05-23T12:00:00Z', 'imported');
+             INSERT INTO icalendar_objects
+                (id, import_id, calendar_id, source_kind, source_name, source_fingerprint,
+                 created_at, updated_at)
+             VALUES ('object-1', 'import-1', 'imported', 'import-file', 'a.ics', 'fingerprint-a',
+                     '2026-05-23T00:00:00Z', '2026-05-23T00:00:00Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("DELETE FROM calendars WHERE id = 'imported'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM calendar_events)
+                  + (SELECT COUNT(*) FROM icalendar_objects)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0);
     });
 }

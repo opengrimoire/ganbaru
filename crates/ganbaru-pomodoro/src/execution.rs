@@ -11,6 +11,12 @@ mod service;
 pub use service::{
     focus_apply_observation_tx, focus_execute_command_tx, focus_read_command_receipt_tx,
 };
+mod activity;
+pub use activity::{
+    FOCUS_ACTIVITY_PAUSED_GRACE_MS, FOCUS_ACTIVITY_RUNNING_GRACE_MS, FocusActivityProjection,
+    FocusActivityState, FocusDeviceActivity, focus_activity_projection,
+    focus_read_other_device_activity, focus_write_device_activity_tx,
+};
 mod adaptive;
 mod calendar;
 mod observations;

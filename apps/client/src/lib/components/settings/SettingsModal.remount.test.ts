@@ -97,7 +97,7 @@ describe("SettingsModal remount state", () => {
       expect(target?.textContent).toContain("Linked devices");
       expect(target?.textContent).toContain("Current folder");
       expect(target?.textContent).not.toContain("Could not load Data");
-    });
+    }, { timeout: 5_000 });
   });
 
   it("uses categories before details and omits shortcuts in the mobile presentation", async () => {

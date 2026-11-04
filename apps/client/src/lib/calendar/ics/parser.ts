@@ -265,8 +265,12 @@ function sourceFingerprint(text: string): string {
 	return hash.toString(16).padStart(8, "0");
 }
 
+/**
+ * Splits content lines exactly as ical.js does: only LF ends a line, a CR directly before it is
+ * dropped, and a lone CR stays inside the line, so the budget counts the components ical.js builds.
+ */
 function unfoldContentLines(text: string): { lines: string[] } | { error: string } {
-	const physicalLines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+	const physicalLines = text.split("\n").map((line) => line.endsWith("\r") ? line.slice(0, -1) : line);
 	const lines: string[] = [];
 	let current = "";
 	let hasCurrent = false;
@@ -299,6 +303,37 @@ function inlineBinaryValueLength(line: string): number | null {
 	if (!header.startsWith("ATTACH")) return null;
 	if (!header.includes("VALUE=BINARY") && !header.includes("ENCODING=BASE64")) return null;
 	return line.length - separatorIndex - 1;
+}
+
+/**
+ * Rechecks component nesting and count on the tree ical.js actually built, so no line-splitting
+ * difference between the text pre-scan and the parser can let a deeper tree through.
+ */
+function validateJcalTreeBudget(parsed: unknown): string | null {
+	const roots = isJcalComponent(parsed)
+		? [parsed]
+		: Array.isArray(parsed)
+			? parsed.filter(isJcalComponent)
+			: [];
+	const pending: [JcalComponent, number][] = roots.map((root) => [root, 1]);
+	let componentCount = 0;
+	for (let next = pending.pop(); next; next = pending.pop()) {
+		const [component, depth] = next;
+		componentCount++;
+		if (componentCount > MAX_COMPONENT_COUNT) {
+			return `iCalendar import exceeds the component limit of ${MAX_COMPONENT_COUNT}.`;
+		}
+		if (depth > MAX_NESTING_DEPTH) {
+			return `iCalendar import exceeds the component nesting limit of ${MAX_NESTING_DEPTH}.`;
+		}
+		for (const child of jcalSubcomponents(component)) pending.push([child, depth + 1]);
+	}
+	return null;
+}
+
+/** Keeps a component's own name and properties; preserved children are stored as their own rows. */
+function jcalWithoutSubcomponents(component: JcalComponent): JcalComponent {
+	return [component[0], component[1], []];
 }
 
 function validateIcsTextBudget(text: string): string | null {
@@ -456,7 +491,7 @@ function preservedComponentFromJcal(component: JcalComponent): IcsPreservedCompo
 		recurrenceIdValueType,
 		sequence: firstJcalNumber(component, "sequence"),
 		dtstartKey: firstJcalValue(component, "dtstart"),
-		rawJcal: component,
+		rawJcal: jcalWithoutSubcomponents(component),
 		preservationStatus: preservationStatusFor(componentType),
 		projectionWarnings: projectionWarningsFor(component),
 		components: jcalSubcomponents(component).map(preservedComponentFromJcal),
@@ -469,7 +504,7 @@ function preservedObjectFromJcal(component: JcalComponent, warnings: string[]): 
 		version: firstJcalValue(component, "version"),
 		method: firstJcalValue(component, "method"),
 		calendarScale: firstJcalValue(component, "calscale"),
-		rawJcal: component,
+		rawJcal: jcalWithoutSubcomponents(component),
 		diagnostics: warnings,
 		components: jcalSubcomponents(component).map(preservedComponentFromJcal),
 	};
@@ -964,10 +999,37 @@ function calendarEventBaseFromComponent(
 	return { event, recurrenceId };
 }
 
+/**
+ * Resolves an instance's end so its range is valid for storage. A timed instance without a
+ * positive range, such as one with no DTEND or DURATION, keeps the series duration so the
+ * occurrence stays visible; an all-day end before the start is clamped to the start date.
+ */
+function overrideEnd(
+	parentEvent: CalendarEvent,
+	child: CalendarEvent,
+	deviceZone: string,
+	warnings: string[],
+): string {
+	if (child.allDay) return child.end < child.start ? child.start : child.end;
+	const childStart = Temporal.Instant.from(wallClockToUtcIso(child.start, deviceZone));
+	const childEnd = Temporal.Instant.from(wallClockToUtcIso(child.end, deviceZone));
+	if (Temporal.Instant.compare(childEnd, childStart) > 0) return child.end;
+	const seriesDuration = Temporal.Instant.from(wallClockToUtcIso(parentEvent.end, deviceZone))
+		.since(Temporal.Instant.from(wallClockToUtcIso(parentEvent.start, deviceZone)));
+	if (seriesDuration.sign <= 0) return child.end;
+	pushUnique(
+		warnings,
+		`An instance of "${parentEvent.title}" has no positive duration; it uses the series duration.`,
+	);
+	return utcIsoToWallClock(childStart.add(seriesDuration).toString(), deviceZone);
+}
+
 function buildOverride(
 	parentEvent: CalendarEvent,
 	child: CalendarEvent,
 	recurrenceId: ParsedRecurrenceIdInfo,
+	deviceZone: string,
+	warnings: string[],
 ): EventOverride {
 	const override: EventOverride = {
 		id: crypto.randomUUID(),
@@ -977,7 +1039,8 @@ function buildOverride(
 	if (recurrenceId.recurrenceRange) override.recurrenceRange = recurrenceId.recurrenceRange;
 	if (child.title !== parentEvent.title) override.title = child.title;
 	if (child.start !== parentEvent.start) override.start = child.start;
-	if (child.end !== parentEvent.end) override.end = child.end;
+	const end = overrideEnd(parentEvent, child, deviceZone, warnings);
+	if (end !== parentEvent.end) override.end = end;
 	if (child.description !== parentEvent.description) override.description = child.description;
 	if (child.location !== parentEvent.location) override.location = child.location;
 	if (child.url !== parentEvent.url) override.url = child.url;
@@ -1026,6 +1089,8 @@ export function parseIcs(text: string, calendarId = "local"): IcsParseResult {
 		const msg = err instanceof Error ? err.message : String(err);
 		return { events: [], warnings: [`Failed to parse .ics file: ${msg}`] };
 	}
+	const treeError = validateJcalTreeBudget(jcal);
+	if (treeError) return { events: [], warnings: [treeError] };
 
 	const rootJcal = isJcalComponent(jcal) ? jcal : undefined;
 	const root = new ICAL.Component(jcal as [string, unknown[], unknown[]]);
@@ -1097,7 +1162,7 @@ export function parseIcs(text: string, calendarId = "local"): IcsParseResult {
 			: materializeRecurrenceId(recurrenceId, deviceZone, parent.timezone);
 		parent.overrides = parent.overrides ?? [];
 		if (child) {
-			parent.overrides.push(buildOverride(parent, child, resolvedRecurrenceId));
+			parent.overrides.push(buildOverride(parent, child, resolvedRecurrenceId, deviceZone, warnings));
 		} else {
 			parent.overrides.push(buildCancelledOverride(parent, resolvedRecurrenceId));
 		}

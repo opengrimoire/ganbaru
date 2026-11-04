@@ -50,6 +50,16 @@ export const pomodoroNotification = {
   startScheduledSession: "Iniciar sesión programada",
   noCommitmentDue: "No hay ninguna sesión de enfoque pendiente. Programa una en Calendario.",
   startFailed: "No se pudo guardar la sesión. Intenta iniciarla de nuevo.",
+  activityOtherDevice: "Otro dispositivo",
+  activityFocusing: (device: string, event: string | null) =>
+    event ? `${device} está en una sesión de enfoque: ${event}` : `${device} está en una sesión de enfoque`,
+  activityOnBreak: (device: string, event: string | null) =>
+    event ? `${device} está en un descanso de ${event}` : `${device} está en un descanso`,
+  activityPaused: (device: string, event: string | null) =>
+    event ? `${device} pausó ${event}` : `${device} pausó el enfoque`,
+  startElsewhereQuestion: "¿Iniciar también aquí?",
+  startAnyway: "Iniciar de todos modos",
+  cancelStart: "Cancelar",
   commitmentDueTitle: "Sesión de enfoque pendiente",
   commitmentDueText: "Tu sesión programada está pendiente. Abre Ganbaru cuando quieras comenzar.",
   channelName: "Sesiones de enfoque",

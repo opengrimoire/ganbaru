@@ -1,9 +1,5 @@
 import type { NotesRichText } from "./core";
 
-export interface NotesLocalUserUpdate {
-  display_name: string;
-}
-
 export const NOTES_MENTION_NOTIFICATION_KINDS = [
   "reminder",
   "user_mention",
@@ -86,7 +82,6 @@ export interface NotesLocalUser {
   id: string;
   display_name: string;
   created_time: string;
-  last_edited_time: string;
 }
 
 export type NotesCommentDisplayName =

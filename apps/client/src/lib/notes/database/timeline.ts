@@ -3,6 +3,7 @@ import { notesDateMentionValueWithDates } from "$lib/notes/rich-text/date-mentio
 import { notesDatabaseDateValue } from "./date";
 import { notesDatabaseSerializeFilters } from "./filters";
 import {
+  notesDatabaseMatchingPayload,
   notesDatabaseTableCellText,
   notesDatabaseTableColumns,
   notesDatabaseTableFiltersFromView,
@@ -331,8 +332,7 @@ export function notesDatabaseTimelineResizedDateValue(
   end: string,
 ): Record<string, unknown> {
   const next = notesDatabaseTimelineDateValue(start, end);
-  const property = Object.values(row.properties).find((value) => isRecord(value) && value.id === datePropertyId);
-  const previous = isRecord(property) ? notesDatabaseDateValue(property.date) : null;
+  const previous = notesDatabaseDateValue(notesDatabaseMatchingPayload(row, { id: datePropertyId, type: "date" }));
   const dates = notesDatabaseDateValue(next);
   return previous && dates ? { ...notesDateMentionValueWithDates(previous, dates) } : next;
 }
@@ -432,10 +432,7 @@ function rowPropertyPayload(
   page: NotesPage,
   column: NotesDatabaseTableColumn,
 ): unknown {
-  const property = Object.values(page.properties).find((value) =>
-    isRecord(value) && value.id === column.id && value.type === column.type
-  );
-  return isRecord(property) ? property[column.type] : null;
+  return notesDatabaseMatchingPayload(page, column);
 }
 
 function rowDateRange(

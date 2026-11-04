@@ -1,23 +1,33 @@
-//! Duplicate repair and reference expansion.
+//! Duplicate repair, cascade repair, and reference expansion.
 //!
-//! Live rows whose winning values collide on a declared unique column set form a class. Only the
-//! lowest key of a class is materialized; the others are hidden, and replicas that can seal
-//! repair them with tombstones redirecting to that key. Hiding is a pure function of the merge
-//! state, so replicas that cannot seal still converge on the same domain rows.
+//! Live rows whose winning values collide on a declared unique column set form a class. Rows
+//! hidden for another reason are left out, and the remaining rows are taken in key order: a row
+//! that collides under any rule with a row already shown is hidden behind the lowest such row,
+//! and replicas that can seal repair it with a tombstone redirecting to that row. A live row hidden by cascade from a
+//! deleted root is repaired with a tombstone naming that root as its cause, and a tree row
+//! detached to break a cycle or limit depth with a null write of its parent. Hiding and
+//! detaching are pure functions of the merge state, so replicas that cannot seal still
+//! converge on the same domain rows.
+//!
+//! The class index stores each class as a digest of its folded values under the rule's position.
+//! It records a fingerprint of the duplicate rules it was built for, and is rebuilt from merge
+//! state whenever the engine's rules differ, including when no fingerprint is stored yet.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Change, ChangeAction, Field, GroupId, RowKey, TableId, Value};
+use ganbaru_sync_contracts::signing::{Digest32, domain_digest};
+use ganbaru_sync_contracts::{
+    Cause, Change, ChangeAction, Field, GroupId, GroupValue, RowKey, TableId, Value,
+};
 use sqlx::SqliteConnection;
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{Collation, MergeKind, Resolution, TableSpec};
-use crate::merge::{self, Batch, Version, table_param};
+use crate::manifest::{Collation, Deletion, Manifest, Resolution, TableSpec, TreeSpec};
+use crate::materialize;
+use crate::merge::{self, Batch, RowState, Version, table_param};
 use crate::sql;
-
-/// Hidden live rows per table, each with the key of the row it collides with and is kept.
-pub(crate) type Hidden = BTreeMap<TableId, BTreeMap<String, String>>;
+use crate::visibility::{Duplicates, RowRef, Visibility};
 
 /// Where one unique column lives: its group and its field index in the group value.
 #[derive(Debug, Clone, Copy)]
@@ -48,9 +58,21 @@ fn locate(table: &TableSpec, columns: &[&str]) -> SyncResult<Vec<Location>> {
         .collect()
 }
 
-/// The class a row's unique fields fall in under a collation; `None` when a field is null,
+/// Domain of a class key digest.
+const CLASS_KEY_DOMAIN: &[u8] = b"ganbaru-sync/unique-class/v1";
+
+/// Domain of the duplicate rule fingerprint. Its version changes with the derivation of
+/// [`class_key`], so a changed derivation rebuilds every class index.
+const CLASS_RULES_DOMAIN: &[u8] = b"ganbaru-sync/unique-class-rules/v1";
+
+/// Text whose fold under each collation enters the rule fingerprint, so a changed fold of
+/// ASCII or non-ASCII letters rebuilds the class index.
+const FOLD_PROBE: &str = "AzZa\u{c9}\u{e9}\u{df}\u{130}\u{3a3}\u{2126}";
+
+/// The class a row's unique fields fall in under a collation, as a digest of the folded values,
+/// so every class key has the same size whatever the values hold; `None` when a field is null,
 /// because null never collides.
-pub(crate) fn class_key(fields: &[Field], collation: Collation) -> Option<Vec<u8>> {
+fn class_key(fields: &[Field], collation: Collation) -> Option<Vec<u8>> {
     let folded = fields
         .iter()
         .map(|field| match field {
@@ -59,7 +81,33 @@ pub(crate) fn class_key(fields: &[Field], collation: Collation) -> Option<Vec<u8
             other => Some(other.clone()),
         })
         .collect::<Option<Vec<Field>>>()?;
-    Value::new(folded).ok().map(|value| value.encode())
+    let value = Value::new(folded).ok()?;
+    Some(domain_digest(CLASS_KEY_DOMAIN, &[&value.encode()]).to_vec())
+}
+
+/// Appends a length-prefixed text to a fingerprint input.
+fn push_text(bytes: &mut Vec<u8>, text: &str) {
+    bytes.extend_from_slice(&(text.len() as u64).to_be_bytes());
+    bytes.extend_from_slice(text.as_bytes());
+}
+
+/// A digest of every duplicate rule of a manifest: its table, position, columns, collation, and
+/// the collation's fold. The class index is valid only for the rules it was built under.
+fn rule_fingerprint(manifest: &Manifest) -> Digest32 {
+    let mut bytes = Vec::new();
+    for table in manifest.tables {
+        for (rule, (columns, collation)) in (0_u64..).zip(rules(table)) {
+            bytes.extend_from_slice(&table.id.0.to_be_bytes());
+            bytes.extend_from_slice(&rule.to_be_bytes());
+            push_text(&mut bytes, collation.sql_name());
+            push_text(&mut bytes, &collation.fold(FOLD_PROBE));
+            bytes.extend_from_slice(&(columns.len() as u64).to_be_bytes());
+            for column in columns {
+                push_text(&mut bytes, column);
+            }
+        }
+    }
+    domain_digest(CLASS_RULES_DOMAIN, &[&bytes])
 }
 
 fn rules(table: &TableSpec) -> impl Iterator<Item = (&'static [&'static str], Collation)> + '_ {
@@ -112,7 +160,7 @@ async fn classes(
          WHERE v.table_id = ? AND r.state = 'live' AND v.group_id IN ({placeholders})
          ORDER BY v.row_key"
     );
-    let mut query = sqlx::query(&sql).bind(table_param(table.id));
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(table_param(table.id));
     for group in &groups {
         query = query.bind(i64::from(group.get()));
     }
@@ -137,157 +185,649 @@ async fn classes(
     Ok(classes)
 }
 
-/// Hidden rows of every table with a duplicate rule, marking dirty the rows whose
-/// materialization a dirty row's old or new unique values may change.
-pub(crate) async fn hidden_rows(
+/// One class of a table under the rule at a position in its duplicate rules.
+pub(crate) type ClassId = (i64, i64, Vec<u8>);
+
+/// What the class index must hold, from a full scan of the merge state: every class entry as a
+/// class and its row, and every class of two or more rows.
+pub(crate) async fn recompute_classes(
     engine: &Engine,
     conn: &mut SqliteConnection,
-    batch: &mut Batch,
-) -> SyncResult<Hidden> {
-    let mut hidden = Hidden::new();
+) -> SyncResult<(BTreeSet<(ClassId, String)>, BTreeSet<ClassId>)> {
+    let mut entries = BTreeSet::new();
+    let mut contested = BTreeSet::new();
     for table in engine.manifest().tables {
-        let dirty: Vec<String> = batch
-            .dirty
+        for (rule, (columns, collation)) in (0_i64..).zip(rules(table)) {
+            let locations = locate(table, columns)?;
+            let classes = classes(engine, conn, table, &locations, collation).await?;
+            for (class, members) in classes {
+                let id = (table_param(table.id), rule, class);
+                if members.len() > 1 {
+                    contested.insert(id.clone());
+                }
+                entries.extend(members.into_iter().map(|key| (id.clone(), key)));
+            }
+        }
+    }
+    Ok((entries, contested))
+}
+
+/// Whether the class index was built under the engine's duplicate rules. An index with no
+/// stored fingerprint, as a vault from before the index or a database reset leaves it, was not.
+async fn built_under_engine_rules(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+) -> SyncResult<bool> {
+    let fingerprint = rule_fingerprint(engine.manifest());
+    let stored: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT fingerprint FROM sync_unique_class_rules WHERE singleton = 1")
+            .fetch_optional(&mut *conn)
+            .await?;
+    Ok(stored.as_deref() == Some(fingerprint.as_slice()))
+}
+
+/// Rebuilds the class index from a full scan of the merge state unless it was built under the
+/// engine's duplicate rules. Every row of a contested class before or after the rebuild is
+/// marked dirty, so the materialization and repairs of rows that start or stop colliding follow
+/// the rebuilt classes. Runs only inside an engine write, whose finish consumes the dirty rows.
+async fn ensure_class_rules(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    dirty: &mut BTreeSet<RowRef>,
+) -> SyncResult<()> {
+    if built_under_engine_rules(engine, conn).await? {
+        return Ok(());
+    }
+    for (table, classes) in contested_classes(conn).await? {
+        for members in classes {
+            dirty.extend(members.into_iter().map(|key| (table, key)));
+        }
+    }
+    sqlx::query("DELETE FROM sync_contested_classes")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("DELETE FROM sync_unique_classes")
+        .execute(&mut *conn)
+        .await?;
+    let (entries, contested) = recompute_classes(engine, conn).await?;
+    for ((table, rule, class), key) in &entries {
+        sqlx::query(
+            "INSERT INTO sync_unique_classes (table_id, rule_index, class_key, row_key)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(table)
+        .bind(rule)
+        .bind(class)
+        .bind(key)
+        .execute(&mut *conn)
+        .await?;
+        if contested.contains(&(*table, *rule, class.clone())) {
+            let table = u16::try_from(*table)
+                .map(TableId)
+                .map_err(|_| corrupt("class of a table id out of range"))?;
+            dirty.insert((table, key.clone()));
+        }
+    }
+    for (table, rule, class) in &contested {
+        sqlx::query(
+            "INSERT INTO sync_contested_classes (table_id, rule_index, class_key)
+             VALUES (?, ?, ?)",
+        )
+        .bind(table)
+        .bind(rule)
+        .bind(class)
+        .execute(&mut *conn)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO sync_unique_class_rules (singleton, fingerprint) VALUES (1, ?)
+         ON CONFLICT (singleton) DO UPDATE SET fingerprint = excluded.fingerprint",
+    )
+    .bind(rule_fingerprint(engine.manifest()).as_slice())
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Colliding classes of live rows per table: every class of two or more rows under any duplicate
+/// rule of the table.
+pub(crate) type Contested = BTreeMap<TableId, Vec<BTreeSet<String>>>;
+
+/// The classes of one row of a table, each as its rule position and class key.
+type RowClasses = BTreeSet<(i64, Vec<u8>)>;
+
+/// The classes the class index lists for a row.
+async fn indexed_classes(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+) -> SyncResult<RowClasses> {
+    let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT rule_index, class_key FROM sync_unique_classes
+         WHERE table_id = ? AND row_key = ?",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// The classes a row falls in from its winning versions; none unless it is live. Only the groups
+/// of its unique columns are read.
+async fn winning_classes(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &str,
+) -> SyncResult<RowClasses> {
+    let mut found = RowClasses::new();
+    if merge::row_state(conn, table.id, key).await? != Some(RowState::Live) {
+        return Ok(found);
+    }
+    let rules = rules(table)
+        .map(|(columns, collation)| Ok((locate(table, columns)?, collation)))
+        .collect::<SyncResult<Vec<_>>>()?;
+    let groups: BTreeSet<GroupId> = rules
+        .iter()
+        .flat_map(|(locations, _)| locations.iter().map(|location| location.group))
+        .collect();
+    let placeholders = vec!["?"; groups.len()].join(", ");
+    let sql = format!(
+        "SELECT group_id, writer_id, seq, clock, value_hash, value FROM sync_register_versions
+         WHERE table_id = ? AND row_key = ? AND group_id IN ({placeholders})"
+    );
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(table_param(table.id))
+        .bind(key);
+    for group in &groups {
+        query = query.bind(i64::from(group.get()));
+    }
+    let versions = query
+        .fetch_all(&mut *conn)
+        .await?
+        .iter()
+        .map(|row| merge::version_from_row(row, 0))
+        .collect::<SyncResult<Vec<_>>>()?;
+    for (rule, (locations, collation)) in (0_i64..).zip(&rules) {
+        let Some(fields) = winning_fields(engine, table, locations, &versions)? else {
+            continue;
+        };
+        if let Some(class) = class_key(&fields, *collation) {
+            found.insert((rule, class));
+        }
+    }
+    Ok(found)
+}
+
+/// Lists a class as contested exactly while it has two or more rows.
+async fn settle_contested(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    rule: i64,
+    class: &[u8],
+) -> SyncResult<()> {
+    let members: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM (
+            SELECT 1 FROM sync_unique_classes
+            WHERE table_id = ? AND rule_index = ? AND class_key = ? LIMIT 2
+         )",
+    )
+    .bind(table_param(table))
+    .bind(rule)
+    .bind(class)
+    .fetch_one(&mut *conn)
+    .await?;
+    let sql = if members > 1 {
+        "INSERT INTO sync_contested_classes (table_id, rule_index, class_key) VALUES (?, ?, ?)
+         ON CONFLICT (table_id, rule_index, class_key) DO NOTHING"
+    } else {
+        "DELETE FROM sync_contested_classes
+         WHERE table_id = ? AND rule_index = ? AND class_key = ?"
+    };
+    sqlx::query(sql)
+        .bind(table_param(table))
+        .bind(rule)
+        .bind(class)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Brings the class index up to date with a row's merge state.
+async fn refresh_classes(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &str,
+) -> SyncResult<()> {
+    let listed = indexed_classes(conn, table.id, key).await?;
+    let current = winning_classes(engine, conn, table, key).await?;
+    for (rule, class) in listed.difference(&current) {
+        sqlx::query(
+            "DELETE FROM sync_unique_classes
+             WHERE table_id = ? AND rule_index = ? AND class_key = ? AND row_key = ?",
+        )
+        .bind(table_param(table.id))
+        .bind(*rule)
+        .bind(class)
+        .bind(key)
+        .execute(&mut *conn)
+        .await?;
+    }
+    for (rule, class) in current.difference(&listed) {
+        sqlx::query(
+            "INSERT INTO sync_unique_classes (table_id, rule_index, class_key, row_key)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(table_param(table.id))
+        .bind(*rule)
+        .bind(class)
+        .bind(key)
+        .execute(&mut *conn)
+        .await?;
+    }
+    for (rule, class) in listed.symmetric_difference(&current) {
+        settle_contested(conn, table.id, *rule, class).await?;
+    }
+    Ok(())
+}
+
+/// The classes a row's materialized unique values fall in.
+async fn materialized_classes(
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &str,
+) -> SyncResult<RowClasses> {
+    let mut found = RowClasses::new();
+    for (rule, (columns, collation)) in (0_i64..).zip(rules(table)) {
+        let materialized =
+            sql::read_columns(conn, table.name, table.key_column, key, columns).await?;
+        let class = materialized
+            .and_then(|fields| fields.into_iter().collect::<Option<Vec<Field>>>())
+            .and_then(|fields| class_key(&fields, collation));
+        if let Some(class) = class {
+            found.insert((rule, class));
+        }
+    }
+    Ok(found)
+}
+
+/// Every contested class from the class index, taken per table in rule and class order.
+async fn contested_classes(conn: &mut SqliteConnection) -> SyncResult<Contested> {
+    let rows: Vec<(i64, i64, Vec<u8>, String)> = sqlx::query_as(
+        "SELECT c.table_id, c.rule_index, c.class_key, u.row_key
+         FROM sync_contested_classes c JOIN sync_unique_classes u
+            ON u.table_id = c.table_id AND u.rule_index = c.rule_index
+                AND u.class_key = c.class_key",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut classes: BTreeMap<ClassId, BTreeSet<String>> = BTreeMap::new();
+    for (table, rule, class, key) in rows {
+        classes.entry((table, rule, class)).or_default().insert(key);
+    }
+    by_table(classes)
+}
+
+/// Contested classes per table, taken in rule and class order.
+fn by_table(classes: BTreeMap<ClassId, BTreeSet<String>>) -> SyncResult<Contested> {
+    let mut contested = Contested::new();
+    for ((table, _, _), members) in classes {
+        let table = u16::try_from(table)
+            .map(TableId)
+            .map_err(|_| corrupt("contested class of a table id out of range"))?;
+        contested.entry(table).or_default().push(members);
+    }
+    Ok(contested)
+}
+
+/// The colliding classes for a read outside an engine write, which writes nothing. An index
+/// built under other duplicate rules is left for the next engine write to rebuild, and the
+/// classes come from a full scan of the merge state until then.
+pub(crate) async fn read_contested(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+) -> SyncResult<Contested> {
+    if built_under_engine_rules(engine, conn).await? {
+        return contested_classes(conn).await;
+    }
+    let (entries, contested) = recompute_classes(engine, conn).await?;
+    let mut classes: BTreeMap<ClassId, BTreeSet<String>> = BTreeMap::new();
+    for (class, key) in entries {
+        if contested.contains(&class) {
+            classes.entry(class).or_default().insert(key);
+        }
+    }
+    by_table(classes)
+}
+
+/// Brings the class index up to date with the dirty rows, marks dirty the rows whose
+/// materialization a dirty row's old or new unique values may change, and returns the colliding
+/// classes. The cost follows the dirty and contested rows, not the rows of the tables, except
+/// for the one full scan that rebuilds an index built under other duplicate rules. Only engine
+/// writes call it, since it writes the class index; reads use [`read_contested`].
+pub(crate) async fn contested(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    dirty: &mut BTreeSet<RowRef>,
+) -> SyncResult<Contested> {
+    ensure_class_rules(engine, conn, dirty).await?;
+    for table in engine.manifest().tables {
+        if rules(table).next().is_none() {
+            continue;
+        }
+        let keys: Vec<String> = dirty
             .iter()
             .filter(|(table_id, _)| *table_id == table.id)
             .map(|(_, key)| key.clone())
             .collect();
+        for key in &keys {
+            refresh_classes(engine, conn, table, key).await?;
+        }
+        let mut affected = RowClasses::new();
+        for key in &keys {
+            affected.extend(indexed_classes(conn, table.id, key).await?);
+            affected.extend(materialized_classes(conn, table, key).await?);
+        }
+        for (rule, class) in affected {
+            let members: Vec<String> = sqlx::query_scalar(
+                "SELECT row_key FROM sync_unique_classes
+                 WHERE table_id = ? AND rule_index = ? AND class_key = ?",
+            )
+            .bind(table_param(table.id))
+            .bind(rule)
+            .bind(class)
+            .fetch_all(&mut *conn)
+            .await?;
+            dirty.extend(members.into_iter().map(|key| (table.id, key)));
+        }
+    }
+    contested_classes(conn).await
+}
+
+/// Hidden duplicates of the contested classes, each mapped to a shown row it collides with.
+/// Excluded rows are hidden for other reasons, so they neither keep a class nor count as
+/// duplicates. The other rows are taken in key order: a row that collides under any rule with a
+/// row already shown is hidden behind the lowest such row, and every other row is shown. A row
+/// is therefore never hidden behind a row that is itself hidden, even when several unique rules
+/// chain rows together.
+pub(crate) fn keepers(contested: &Contested, excluded: &BTreeSet<RowRef>) -> Duplicates {
+    let mut hidden = Duplicates::new();
+    for (table, classes) in contested {
+        let mut member_of: BTreeMap<&String, Vec<usize>> = BTreeMap::new();
+        for (index, members) in classes.iter().enumerate() {
+            for key in members {
+                member_of.entry(key).or_default().push(index);
+            }
+        }
+        let mut kept: Vec<Option<&String>> = vec![None; classes.len()];
         let mut table_hidden = BTreeMap::new();
-        for (columns, collation) in rules(table) {
-            let locations = locate(table, columns)?;
-            let classes = classes(engine, conn, table, &locations, collation).await?;
-            let class_of: BTreeMap<&str, &Vec<u8>> = classes
-                .iter()
-                .flat_map(|(class, members)| members.iter().map(move |key| (key.as_str(), class)))
-                .collect();
-            let mut affected: BTreeSet<&Vec<u8>> = BTreeSet::new();
-            for key in &dirty {
-                if let Some(class) = class_of.get(key.as_str()) {
-                    affected.insert(class);
-                }
-                let materialized =
-                    sql::read_columns(conn, table.name, table.key_column, key, columns).await?;
-                let previous = materialized
-                    .and_then(|fields| fields.into_iter().collect::<Option<Vec<Field>>>())
-                    .and_then(|fields| class_key(&fields, collation));
-                if let Some(class) = previous.and_then(|class| classes.get_key_value(&class)) {
-                    affected.insert(class.0);
-                }
+        for (key, indices) in member_of {
+            if excluded.contains(&(*table, key.clone())) {
+                continue;
             }
-            for class in affected {
-                for key in &classes[class] {
-                    batch.dirty.insert((table.id, key.clone()));
+            match indices.iter().filter_map(|index| kept[*index]).min() {
+                Some(keeper) => {
+                    table_hidden.insert(key.clone(), keeper.clone());
                 }
-            }
-            for members in classes.values().filter(|members| members.len() > 1) {
-                let mut members = members.iter();
-                let Some(keeper) = members.next() else {
-                    continue;
-                };
-                for member in members {
-                    table_hidden
-                        .entry(member.clone())
-                        .or_insert_with(|| keeper.clone());
+                None => {
+                    for index in indices {
+                        kept[index] = Some(key);
+                    }
                 }
             }
         }
         if !table_hidden.is_empty() {
-            hidden.insert(table.id, table_hidden);
+            hidden.insert(*table, table_hidden);
         }
     }
-    Ok(hidden)
+    hidden
+}
+
+/// Rows whose references in any retained version name a row, directly or through a tombstone
+/// redirecting to it, rows whose tombstones name it as their cause, and rows of its key-child
+/// tables under the same key.
+pub(crate) async fn referrers(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    target: TableId,
+    key: &str,
+) -> SyncResult<BTreeSet<RowRef>> {
+    let mut found = BTreeSet::new();
+    for child in engine.manifest().tables {
+        if child.key_parent == Some(target)
+            && merge::row_state(conn, child.id, key).await?.is_some()
+        {
+            found.insert((child.id, key.to_string()));
+        }
+    }
+    found.extend(reference_referrers(engine, conn, target, key).await?);
+    Ok(found)
+}
+
+/// The referrers of a row through reference columns, owned references, and tombstone causes.
+async fn reference_referrers(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    target: TableId,
+    key: &str,
+) -> SyncResult<BTreeSet<RowRef>> {
+    let specs: BTreeSet<(TableId, GroupId, usize)> = engine
+        .manifest()
+        .tables
+        .iter()
+        .flat_map(|table| {
+            let columns = table
+                .references()
+                .filter(|(_, _, reference)| reference.table == target)
+                .map(move |(group, field, _)| (table.id, group.id, field));
+            let owned = table
+                .owned_references()
+                .filter(|(_, _, _, reference)| reference.table == target)
+                .map(move |(group, field, _, _)| (table.id, group.id, field));
+            columns.chain(owned)
+        })
+        .collect();
+    let caused: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT DISTINCT table_id, row_key FROM sync_tombstones
+         WHERE cause_table = ? AND cause_row = ?",
+    )
+    .bind(table_param(target))
+    .bind(key)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut found = caused
+        .into_iter()
+        .map(|(table_id, row_key)| {
+            u16::try_from(table_id)
+                .map(|table| (TableId(table), row_key))
+                .map_err(|_| corrupt("table id out of range"))
+        })
+        .collect::<SyncResult<BTreeSet<RowRef>>>()?;
+    if specs.is_empty() {
+        return Ok(found);
+    }
+    let mut pending = vec![key.to_string()];
+    let mut seen: BTreeSet<String> = pending.iter().cloned().collect();
+    while let Some(key) = pending.pop() {
+        let redirected: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT row_key FROM sync_tombstones WHERE table_id = ? AND replaced_by = ?",
+        )
+        .bind(table_param(target))
+        .bind(&key)
+        .fetch_all(&mut *conn)
+        .await?;
+        for source in redirected {
+            if seen.insert(source.clone()) {
+                pending.push(source);
+            }
+        }
+    }
+    for key in seen {
+        let rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(
+            "SELECT DISTINCT table_id, row_key, group_id, field FROM sync_version_refs
+             WHERE ref_key = ?",
+        )
+        .bind(&key)
+        .fetch_all(&mut *conn)
+        .await?;
+        for (table_id, row_key, group_id, field) in rows {
+            let table_id = u16::try_from(table_id)
+                .map(TableId)
+                .map_err(|_| corrupt("table id out of range"))?;
+            let field =
+                usize::try_from(field).map_err(|_| corrupt("reference field out of range"))?;
+            if specs.contains(&(table_id, merge::group_id(group_id)?, field)) {
+                found.insert((table_id, row_key));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Whether the marking continues through a published referrer: it is hidden, so the recovery
+/// state of the rows below it may follow a changed root, or it is shown but missing from the
+/// domain, so materializing it inserts it.
+async fn continues_through(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    (table, key): &RowRef,
+) -> SyncResult<bool> {
+    if visibility.state(engine, conn, *table, key).await?.is_none() {
+        return Ok(false);
+    }
+    if visibility.hidden(engine, conn, *table, key).await? {
+        return Ok(true);
+    }
+    let spec = engine
+        .manifest()
+        .table(*table)
+        .ok_or_else(|| corrupt("dirty row of an unknown table"))?;
+    Ok(!materialize::domain_exists(conn, spec, key).await?)
 }
 
 /// Marks dirty every row whose reference may resolve differently because a referenced row, or
-/// a row redirecting to it, is dirty.
+/// a row redirecting to it, is dirty, and every row whose tombstone names a dirty row as its
+/// cause. The marking continues through referrers that are hidden or become shown, so a
+/// cascade reaches every descendant. It is bounded by the rows reachable that way, not by a
+/// count: a row is planned with every row that follows it.
 pub(crate) async fn expand_references(
     engine: &Engine,
     conn: &mut SqliteConnection,
     batch: &mut Batch,
+    visibility: &mut Visibility,
 ) -> SyncResult<()> {
-    for target in engine.manifest().tables {
-        let referrers: BTreeSet<(TableId, GroupId)> = engine
-            .manifest()
-            .tables
-            .iter()
-            .flat_map(|table| {
-                table
-                    .groups
-                    .iter()
-                    .filter_map(move |group| match group.kind {
-                        MergeKind::Reference { table: referenced } if referenced == target.id => {
-                            Some((table.id, group.id))
-                        }
-                        _ => None,
-                    })
-            })
-            .collect();
-        if referrers.is_empty() {
-            continue;
-        }
-        let mut pending: Vec<String> = batch
-            .dirty
-            .iter()
-            .filter(|(table_id, _)| *table_id == target.id)
-            .map(|(_, key)| key.clone())
-            .collect();
-        let mut seen: BTreeSet<String> = pending.iter().cloned().collect();
-        while let Some(key) = pending.pop() {
-            let redirected: Vec<String> = sqlx::query_scalar(
-                "SELECT DISTINCT row_key FROM sync_tombstones WHERE table_id = ? AND replaced_by = ?",
-            )
-            .bind(table_param(target.id))
-            .bind(&key)
-            .fetch_all(&mut *conn)
-            .await?;
-            for source in redirected {
-                if seen.insert(source.clone()) {
-                    pending.push(source);
-                }
-            }
-        }
-        for key in seen {
-            let rows: Vec<(i64, String, i64)> = sqlx::query_as(
-                "SELECT DISTINCT table_id, row_key, group_id FROM sync_register_versions
-                 WHERE ref_key = ?",
-            )
-            .bind(&key)
-            .fetch_all(&mut *conn)
-            .await?;
-            for (table_id, row_key, group_id) in rows {
-                let table_id = u16::try_from(table_id)
-                    .map(TableId)
-                    .map_err(|_| corrupt("table id out of range"))?;
-                if referrers.contains(&(table_id, merge::group_id(group_id)?)) {
-                    batch.dirty.insert((table_id, row_key));
-                }
+    let mut pending: Vec<RowRef> = batch.dirty.iter().cloned().collect();
+    let mut seen: BTreeSet<RowRef> = pending.iter().cloned().collect();
+    while let Some((table, key)) = pending.pop() {
+        for referrer in referrers(engine, conn, table, &key).await? {
+            batch.dirty.insert(referrer.clone());
+            if seen.insert(referrer.clone())
+                && continues_through(engine, conn, visibility, &referrer).await?
+            {
+                pending.push(referrer);
             }
         }
     }
     Ok(())
 }
 
-/// Tombstones for hidden rows, redirecting to the kept row where the table allows it, with
-/// referencing tables first.
-pub(crate) fn repair_changes(engine: &Engine, hidden: &Hidden) -> SyncResult<Vec<Change>> {
+fn stored_key(key: &str) -> SyncResult<RowKey> {
+    RowKey::new(key).map_err(|_| corrupt("stored row key"))
+}
+
+/// Null writes of the parent group of every detached tree row that is otherwise shown, so the
+/// row stays a root once the repair wins.
+async fn detach_writes(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    table: &TableSpec,
+    tree: TreeSpec,
+    changes: &mut Vec<Change>,
+) -> SyncResult<()> {
+    let detached: Vec<String> = visibility
+        .detached
+        .iter()
+        .filter(|(detached, _)| *detached == table.id)
+        .map(|(_, key)| key.clone())
+        .collect();
+    for key in detached {
+        if visibility.hidden(engine, conn, table.id, &key).await? {
+            continue;
+        }
+        let value = Value::new(vec![Field::Null])
+            .map_err(|_| corrupt("null parent value out of bounds"))?;
+        changes.push(Change {
+            table: table.id,
+            row: stored_key(&key)?,
+            action: ChangeAction::Write,
+            groups: vec![GroupValue::new(table.id, tree.parent_group, value)],
+            replaced_by: None,
+            cause: None,
+        });
+    }
+    Ok(())
+}
+
+/// Repairs for the merge state: null parents for detached tree rows, tombstones for hidden
+/// duplicates, redirecting to the kept row where the table allows it, and tombstones naming
+/// their cause for dirty live rows hidden by cascade from a deleted root, with referencing
+/// tables first. Derived-key rows and rows of never-deleted tables are never tombstoned; a hidden
+/// one stays live in sync state.
+pub(crate) async fn repair_changes(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    dirty: &BTreeSet<RowRef>,
+) -> SyncResult<Vec<Change>> {
     let mut changes = Vec::new();
     for table in engine.manifest().tables.iter().rev() {
-        let Some(rows) = hidden.get(&table.id) else {
+        if table.derived_key.is_some() || table.deletion == Deletion::Never {
             continue;
-        };
-        for (key, keeper) in rows {
-            let row = RowKey::new(key.as_str()).map_err(|_| corrupt("stored row key"))?;
-            let replaced_by = if table.redirects {
-                Some(RowKey::new(keeper.as_str()).map_err(|_| corrupt("stored row key"))?)
-            } else {
-                None
+        }
+        let duplicates = visibility
+            .duplicates
+            .get(&table.id)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(tree) = table.tree {
+            detach_writes(engine, conn, visibility, table, tree, &mut changes).await?;
+        }
+        for (key, keeper) in &duplicates {
+            changes.push(Change {
+                table: table.id,
+                row: stored_key(key)?,
+                action: ChangeAction::Tombstone,
+                groups: Vec::new(),
+                replaced_by: table.redirects.then(|| stored_key(keeper)).transpose()?,
+                cause: None,
+            });
+        }
+        for (_, key) in dirty.iter().filter(|(dirty, _)| *dirty == table.id) {
+            if visibility.state(engine, conn, table.id, key).await? != Some(RowState::Live)
+                || visibility.self_hidden(engine, conn, table.id, key).await?
+            {
+                continue;
+            }
+            let roots = visibility
+                .cascade_roots(engine, conn, table.id, key)
+                .await?;
+            let Some(root) = roots.cause() else {
+                continue;
             };
             changes.push(Change {
                 table: table.id,
-                row,
+                row: stored_key(key)?,
                 action: ChangeAction::Tombstone,
                 groups: Vec::new(),
-                replaced_by,
+                replaced_by: None,
+                cause: Some(Cause {
+                    table: root.table,
+                    row: stored_key(&root.key)?,
+                }),
             });
         }
     }

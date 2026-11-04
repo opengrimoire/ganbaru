@@ -227,7 +227,7 @@ async fn read_generation_sources(
 ) -> ChatResult<Vec<ChatScratchSourceSummaryRead>> {
     let rows = sqlx::query(
         "SELECT channel.id AS channel_id, channel.name AS channel_name,
-                source.lower_ordinal, source.high_ordinal, source.audience_revision
+                source.lower_order_key, source.high_order_key, source.audience_revision
          FROM chat_scratch_generation_sources source
          JOIN chat_channels channel ON channel.conversation_id = source.conversation_id
          WHERE source.scratch_generation_id = ?
@@ -242,8 +242,8 @@ async fn read_generation_sources(
             Ok(ChatScratchSourceSummaryRead {
                 channel_id: parse_id(row.try_get("channel_id").map_err(persistence_error)?)?,
                 channel_name: row.try_get("channel_name").map_err(persistence_error)?,
-                lower_ordinal: u64_value(row.try_get("lower_ordinal").map_err(persistence_error)?)?,
-                high_ordinal: u64_value(row.try_get("high_ordinal").map_err(persistence_error)?)?,
+                lower_order_key: row.try_get("lower_order_key").map_err(persistence_error)?,
+                high_order_key: row.try_get("high_order_key").map_err(persistence_error)?,
                 audience_revision: u64_value(
                     row.try_get("audience_revision")
                         .map_err(persistence_error)?,

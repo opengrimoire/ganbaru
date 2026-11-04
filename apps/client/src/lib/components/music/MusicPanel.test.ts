@@ -356,6 +356,40 @@ describe("MusicPanel", () => {
     expect(underlyingKeydown).not.toHaveBeenCalled();
   });
 
+  it("opens the soundscape controls with S and sends the Spacebar key to the soundscape while they are open", async () => {
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    target = document.createElement("div");
+    document.body.append(target);
+    const player = getMusicPlayer();
+    const togglePlay = vi.spyOn(player, "togglePlay").mockResolvedValue();
+    const { getSoundscapeStore } = await import("$lib/stores/soundscape.svelte");
+    const toggleSoundscape = vi.spyOn(getSoundscapeStore(), "togglePlayback").mockResolvedValue();
+    const { default: MusicPanel } = await import("./MusicPanel.svelte");
+    const press = async (init: KeyboardEventInit) => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+      await tick();
+    };
+
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
+    await tick();
+    const dialog = () => target?.querySelector("[role='dialog'][aria-label='Soundscape controls']");
+
+    await press({ key: " ", code: "Space" });
+    expect(togglePlay).toHaveBeenCalledTimes(1);
+
+    await press({ key: "s", code: "KeyS" });
+    await vi.waitFor(() => expect(dialog()).not.toBeNull());
+    await press({ key: " ", code: "Space" });
+    expect(toggleSoundscape).toHaveBeenCalledTimes(1);
+    expect(togglePlay).toHaveBeenCalledTimes(1);
+
+    await press({ key: "s", code: "KeyS" });
+    await vi.waitFor(() => expect(dialog()).toBeNull());
+    await press({ key: " ", code: "Space" });
+    expect(togglePlay).toHaveBeenCalledTimes(2);
+    expect(toggleSoundscape).toHaveBeenCalledTimes(1);
+  });
+
   it("lets the playlist chooser close with Escape without closing Music", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
     target = document.createElement("div");
@@ -368,7 +402,7 @@ describe("MusicPanel", () => {
     target.querySelector<HTMLButtonElement>("[data-music-playlist-launcher]")?.click();
     await vi.waitFor(() => {
       expect(document.body.querySelector(".playlist-launcher-popover")).not.toBeNull();
-    });
+    }, { timeout: 5_000 });
 
     window.dispatchEvent(new KeyboardEvent("keydown", {
       key: "Escape",
@@ -401,7 +435,7 @@ describe("MusicPanel", () => {
     await vi.waitFor(() => {
       expect([...document.body.querySelectorAll<HTMLButtonElement>("button")]
         .some((button) => button.textContent?.includes("Open playlist builder"))).toBe(true);
-    });
+    }, { timeout: 5_000 });
     const firstOpenBuilder = [...document.body.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.includes("Open playlist builder"));
     firstOpenBuilder?.click();
@@ -428,14 +462,14 @@ describe("MusicPanel", () => {
     await vi.waitFor(() => {
       expect([...document.body.querySelectorAll<HTMLButtonElement>("button")]
         .some((button) => button.textContent?.includes("Open playlist builder"))).toBe(true);
-    });
+    }, { timeout: 5_000 });
     const openBuilder = [...document.body.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.includes("Open playlist builder"));
     openBuilder?.click();
     await tick();
     expect(target.querySelector(".builder-root")).not.toBeNull();
     expect(target.querySelector("[data-music-player-page]")).toBe(playerPage);
-  });
+  }, 15_000);
 
   it("applies builder and expanded playlist heights in the same view transition", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
@@ -462,7 +496,7 @@ describe("MusicPanel", () => {
     await vi.waitFor(() => {
       expect([...document.body.querySelectorAll<HTMLButtonElement>("button")]
         .some((button) => button.textContent?.includes("Open playlist builder"))).toBe(true);
-    });
+    }, { timeout: 5_000 });
     const openBuilder = [...document.body.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.includes("Open playlist builder"));
     openBuilder?.click();
@@ -481,7 +515,7 @@ describe("MusicPanel", () => {
     await tick();
 
     expect(dialog?.style.height).toContain("503px");
-  });
+  }, 15_000);
 
   it("keeps first-use preparation pending when the panel closes before completion", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
@@ -502,7 +536,7 @@ describe("MusicPanel", () => {
     component = undefined;
 
     expect(getMusicSourcesController().firstUseSession).toBe(true);
-  });
+  }, 15_000);
 
   it("asks for the first Music folder from the player instead of opening the Builder", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);

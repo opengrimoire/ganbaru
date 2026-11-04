@@ -1,6 +1,6 @@
 # Time conflict detection
 
-**Status: Implemented.** The native Focus scheduler and the Calendar timeline rail apply the same owner selection. Selecting a scheduled commitment does not authorize execution. Linked-device control and conflict suspension during replication are planned.
+**Status: Implemented.** The native Focus scheduler and the Calendar timeline rail apply the same owner selection. Selecting a scheduled commitment does not authorize execution. While a replicated event's timing is in conflict, automatic admission skips its occurrences.
 
 ## Interval model
 

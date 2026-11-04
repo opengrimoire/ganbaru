@@ -9,7 +9,7 @@
   import Minus from "@lucide/svelte/icons/minus";
   import Plus from "@lucide/svelte/icons/plus";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import * as chatApi from "$lib/api/chat";
   import type { ChatExecutionEnvironmentRead, GitChangedPathRead, GitStatusRead, HostedChangeRequestRead, HostedSourceControlRead } from "$lib/chat/contracts";
   import { subscribeChatWorkspaceChanges } from "$lib/chat/workspace/observer-client";

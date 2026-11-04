@@ -878,6 +878,109 @@ describe("serializeCalendarToIcs", () => {
 		});
 	});
 
+	describe("content-line injection", () => {
+		function propertyNames(ics: string): string[] {
+			return unfold(ics)
+				.split("\r\n")
+				.filter((line) => line.length > 0)
+				.map((line) => line.split(/[;:]/, 1)[0].toUpperCase());
+		}
+
+		it("keeps line breaks in UID, URL, addresses, and alarm triggers from adding properties", () => {
+			const ics = serializeCalendarToIcs(
+				baseCalendar,
+				[
+					makeEvent({
+						sourceUid: "uid-1\r\nX-INJECTED-UID:1",
+						url: "https://example.com/meet\nX-INJECTED-URL:1",
+						organizer: { name: "Alice", email: "alice@example.com\nX-INJECTED-ORGANIZER:1" },
+						attendees: [
+							{
+								id: "a1",
+								name: "Bob\nX-INJECTED-CN:1",
+								email: "bob@example.com\r\nEND:VEVENT",
+								role: "req-participant",
+								status: "accepted",
+								rsvp: false,
+							},
+						],
+						alarms: [
+							{
+								id: "al1",
+								action: "display",
+								triggerType: "relative",
+								triggerValue: "-PT15M\nX-INJECTED-TRIGGER:1",
+							},
+						],
+					}),
+				],
+				"UTC",
+			);
+
+			const names = propertyNames(ics);
+			expect(names.filter((name) => name.startsWith("X-INJECTED"))).toEqual([]);
+			expect(names.filter((name) => name === "END")).toHaveLength(3);
+			expect(unfold(ics)).toContain("UID:uid-1X-INJECTED-UID:1");
+			expect(unfold(ics)).toContain("URL:https://example.com/meetX-INJECTED-URL:1");
+			expect(unfold(ics)).toContain(":mailto:bob@example.comEND:VEVENT");
+		});
+
+		it("skips extended properties whose names are not x-names and keeps the rest", () => {
+			const ics = serializeCalendarToIcs(
+				baseCalendar,
+				[
+					makeEvent({
+						extendedProperties: {
+							"X-KEPT": "value\nwith a line",
+							"END:VEVENT\r\nX-INJECTED": "1",
+							"ATTACH": "https://example.com/a.pdf",
+						},
+					}),
+				],
+				"UTC",
+			);
+
+			const names = propertyNames(ics);
+			expect(unfold(ics)).toContain("X-KEPT:value\\nwith a line");
+			expect(names).not.toContain("X-INJECTED");
+			expect(names).not.toContain("ATTACH");
+			expect(names.filter((name) => name === "END")).toHaveLength(2);
+		});
+
+		it("keeps preserved values that are not text on one content line", () => {
+			const ics = serializeCalendarToIcs(
+				baseCalendar,
+				[
+					makeEvent({
+						description: "First line\nSecond line",
+						icalendarRawJcal: [
+							"vevent",
+							[
+								["uid", {}, "text", "sample-uid@ganbaru"],
+								["dtstamp", {}, "date-time", "20260101T000000Z"],
+								["dtstart", {}, "date-time", "20260601T140000Z"],
+								["dtend", {}, "date-time", "20260601T150000Z"],
+								["summary", {}, "text", "Sample"],
+								["attach", { fmttype: "application/pdf" }, "uri", "https://example.com/a.pdf\nX-INJECTED-ATTACH:1"],
+								["x-note", {}, "unknown", "note\r\nX-INJECTED-NOTE:1"],
+								["bad name\nX-INJECTED-NAME", {}, "text", "1"],
+							],
+							[],
+						],
+					}),
+				],
+				"UTC",
+			);
+
+			const names = propertyNames(ics);
+			expect(names.filter((name) => name.startsWith("X-INJECTED"))).toEqual([]);
+			expect(names).not.toContain("BAD NAME");
+			expect(unfold(ics)).toContain("ATTACH;FMTTYPE=application/pdf:https://example.com/a.pdfX-INJECTED-ATTACH:1");
+			expect(unfold(ics)).toContain("X-NOTE:noteX-INJECTED-NOTE:1");
+			expect(unfold(ics)).toContain("DESCRIPTION:First line\\nSecond line");
+		});
+	});
+
 	describe("line folding", () => {
 		it("folds lines longer than 75 octets", () => {
 			const longTitle = "X".repeat(200);

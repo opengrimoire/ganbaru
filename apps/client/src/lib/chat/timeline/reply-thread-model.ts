@@ -3,6 +3,7 @@ import type {
   ChatMessageRead,
   VersionedJson,
 } from "$lib/chat/contracts";
+import { compareOrderKeyThenId } from "$lib/utils/order-key";
 
 interface RichReply {
   richContent: VersionedJson;
@@ -51,7 +52,7 @@ export function shouldGroupReplyMessages(
   previous: ChatMessageRead | null,
   current: ChatMessageRead,
 ): boolean {
-  if (!previous || previous.author.id !== current.author.id) return false;
+  if (!previous?.author || previous.author.id !== current.author?.id) return false;
   if (projectedAgentRunId(previous) !== null || projectedAgentRunId(current) !== null) return false;
   const elapsedMs = Date.parse(current.createdAt) - Date.parse(previous.createdAt);
   return elapsedMs >= 0 && elapsedMs <= 5 * 60 * 1_000;
@@ -70,23 +71,24 @@ export function replyThreadRenderEntries(
     return replies.map((message) => ({ kind: "message", key: message.itemId, message }));
   }
   const renderedRunIds = new Set(renderedRuns.map((run) => run.id));
-  const positioned: Array<{ position: number; entry: ReplyThreadRenderEntry }> = replies
-    .filter((reply) => {
-      const runId = projectedAgentRunId(reply);
-      return runId === null || !renderedRunIds.has(runId);
-    })
-    .map((message) => ({
-      position: message.ordinal,
-      entry: { kind: "message", key: message.itemId, message },
-    }));
+  // Positions are indexes in thread order, `(orderKey, itemId)`.
+  const ordered = [...replies].sort((left, right) => (
+    compareOrderKeyThenId(left.orderKey, left.itemId, right.orderKey, right.itemId)
+  ));
+  const positioned: Array<{ position: number; entry: ReplyThreadRenderEntry }> = [];
+  ordered.forEach((message, position) => {
+    const runId = projectedAgentRunId(message);
+    if (runId !== null && renderedRunIds.has(runId)) return;
+    positioned.push({ position, entry: { kind: "message", key: message.itemId, message } });
+  });
   for (const run of renderedRuns) {
-    const projectedOrdinals = replies
-      .filter((reply) => projectedAgentRunId(reply) === run.id)
-      .map((reply) => reply.ordinal);
+    const projectedPositions = ordered.flatMap((reply, position) => (
+      projectedAgentRunId(reply) === run.id ? [position] : []
+    ));
     positioned.push({
-      position: projectedOrdinals.length > 0
-        ? Math.max(...projectedOrdinals)
-        : fallbackRunPosition(replies, run.createdAt),
+      position: projectedPositions.length > 0
+        ? Math.max(...projectedPositions)
+        : fallbackRunPosition(ordered, run.createdAt),
       entry: { kind: "execution", key: `execution:${run.id}`, run },
     });
   }
@@ -95,17 +97,18 @@ export function replyThreadRenderEntries(
     .map(({ entry }) => entry);
 }
 
-function fallbackRunPosition(replies: readonly ChatMessageRead[], createdAt: string): number {
-  let precedingOrdinal: number | null = null;
-  let followingOrdinal: number | null = null;
-  for (const reply of replies) {
+/** Places a run without projected replies after the last reply created before it. */
+function fallbackRunPosition(ordered: readonly ChatMessageRead[], createdAt: string): number {
+  let preceding: number | null = null;
+  let following: number | null = null;
+  for (const [position, reply] of ordered.entries()) {
     if (reply.createdAt <= createdAt) {
-      precedingOrdinal = Math.max(precedingOrdinal ?? reply.ordinal, reply.ordinal);
+      preceding = Math.max(preceding ?? position, position);
     } else {
-      followingOrdinal = Math.min(followingOrdinal ?? reply.ordinal, reply.ordinal);
+      following = Math.min(following ?? position, position);
     }
   }
-  if (precedingOrdinal !== null) return precedingOrdinal + 0.5;
-  if (followingOrdinal !== null) return followingOrdinal - 0.5;
-  return 0.5;
+  if (preceding !== null) return preceding + 0.5;
+  if (following !== null) return following - 0.5;
+  return -0.5;
 }

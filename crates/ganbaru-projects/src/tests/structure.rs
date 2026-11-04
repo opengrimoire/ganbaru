@@ -1,5 +1,5 @@
 use super::*;
-use crate::mutations::{delete_tag_with_history, delete_unused_status};
+use crate::mutations::{delete_tag_with_history, delete_unused_priority, delete_unused_status};
 use crate::structure_commands::{delete_project_group, reorder_group_projects, reorder_groups};
 
 #[test]
@@ -15,8 +15,8 @@ fn delete_group_cascades_projects_and_keeps_calendar_events() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_task_event_links (task_id, event_id)
-             VALUES ('task-a', 'event-a')",
+            "INSERT INTO project_task_event_links (task_id, event_id, sync_key)
+             VALUES ('task-a', 'event-a', 'link-a')",
         )
         .execute(&pool)
         .await
@@ -60,13 +60,13 @@ fn delete_group_cascades_projects_and_keeps_calendar_events() {
 }
 
 #[test]
-fn delete_status_removes_empty_status() {
+fn delete_status_soft_deletes_an_empty_status_and_keeps_its_row() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
         sqlx::query(
-            "INSERT INTO project_statuses (id, project_id, name, category, sort_order, terminal)
-             VALUES ('status-empty', 'project-a', 'Later', 'active', 200, 0)",
+            "INSERT INTO project_statuses (id, project_id, name, category, order_key, terminal)
+             VALUES ('status-empty', 'project-a', 'Later', 'active', 'a2', 0)",
         )
         .execute(&pool)
         .await
@@ -77,12 +77,14 @@ fn delete_status_removes_empty_status() {
         tx.commit().await.unwrap();
 
         let status_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM project_statuses WHERE id = 'status-empty'")
+            sqlx::query_scalar("SELECT COUNT(*) FROM project_statuses WHERE id = 'status-empty' AND deleted_at IS NOT NULL")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
 
-        assert_eq!(status_count, 0);
+        assert_eq!(status_count, 1);
+        let mut tx = pool.begin().await.unwrap();
+        assert!(delete_unused_status(&mut tx, "status-empty").await.is_err());
     });
 }
 
@@ -92,8 +94,8 @@ fn delete_status_rejects_status_with_tasks() {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
         sqlx::query(
-            "INSERT INTO project_statuses (id, project_id, name, category, sort_order, terminal)
-             VALUES ('status-empty', 'project-a', 'Later', 'active', 200, 0)",
+            "INSERT INTO project_statuses (id, project_id, name, category, order_key, terminal)
+             VALUES ('status-empty', 'project-a', 'Later', 'active', 'a2', 0)",
         )
         .execute(&pool)
         .await
@@ -114,22 +116,22 @@ fn delete_status_rejects_last_project_status() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO project_groups (id, name, icon, sort_order)
-             VALUES ('group-empty', 'Group Empty', 'lucide:folder', 100)",
+            "INSERT INTO project_groups (id, name, icon, order_key)
+             VALUES ('group-empty', 'Group Empty', 'lucide:folder', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name, icon, sort_order)
-             VALUES ('project-empty', 'group-empty', 'Project Empty', 'lucide:folder', 100)",
+            "INSERT INTO projects (id, group_id, name, icon, order_key)
+             VALUES ('project-empty', 'group-empty', 'Project Empty', 'lucide:folder', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_statuses (id, project_id, name, category, sort_order, terminal)
-             VALUES ('status-empty', 'project-empty', 'To do', 'not_started', 100, 0)",
+            "INSERT INTO project_statuses (id, project_id, name, category, order_key, terminal)
+             VALUES ('status-empty', 'project-empty', 'To do', 'not_started', 'a1', 0)",
         )
         .execute(&pool)
         .await
@@ -145,23 +147,107 @@ fn delete_status_rejects_last_project_status() {
     });
 }
 
+async fn insert_priorities(pool: &SqlitePool, rows: &[(&str, Option<&str>)]) {
+    for (index, (priority_id, deleted_at)) in rows.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO project_priorities
+                (id, project_id, name, color, order_key, deleted_at, sync_key)
+             VALUES (?1, 'project-a', ?1, 1, ?2, ?3, 'priority-key-' || ?1)",
+        )
+        .bind(priority_id)
+        .bind(format!("a{index}"))
+        .bind(deleted_at)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
+async fn priority_deleted_at(pool: &SqlitePool, priority_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT deleted_at FROM project_priorities WHERE id = ?")
+        .bind(priority_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn delete_priority_rejects_priority_used_by_a_task() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        insert_priorities(&pool, &[("priority-high", None), ("priority-low", None)]).await;
+        sqlx::query("UPDATE project_tasks SET priority = 'priority-high' WHERE id = 'task-a'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        let result = delete_unused_priority(&mut tx, "project-a", "priority-high").await;
+        drop(tx);
+
+        assert_eq!(
+            result,
+            Err("move or delete tasks before deleting this task priority".to_string())
+        );
+        assert_eq!(priority_deleted_at(&pool, "priority-high").await, None);
+    });
+}
+
+#[test]
+fn delete_priority_soft_deletes_an_unused_priority_and_keeps_the_last_live_one() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        insert_priorities(
+            &pool,
+            &[
+                ("priority-high", None),
+                ("priority-low", None),
+                ("priority-retired", Some("2026-10-23T00:00:00.000Z")),
+            ],
+        )
+        .await;
+
+        let mut tx = pool.begin().await.unwrap();
+        delete_unused_priority(&mut tx, "project-a", "priority-low")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(priority_deleted_at(&pool, "priority-low").await.is_some());
+
+        let mut tx = pool.begin().await.unwrap();
+        let last = delete_unused_priority(&mut tx, "project-a", "priority-high").await;
+        let retired = delete_unused_priority(&mut tx, "project-a", "priority-retired").await;
+        drop(tx);
+
+        assert_eq!(
+            last,
+            Err("project must keep at least one task priority".to_string())
+        );
+        assert_eq!(retired, Err("project priority not found".to_string()));
+        assert_eq!(priority_deleted_at(&pool, "priority-high").await, None);
+    });
+}
+
 #[test]
 fn delete_tag_removes_links_and_records_task_history() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
         sqlx::query(
-            "INSERT INTO project_tags (id, project_id, name, sort_order)
-             VALUES ('tag-a', 'project-a', 'Backend', 100)",
+            "INSERT INTO project_tags (id, project_id, name, order_key)
+             VALUES ('tag-a', 'project-a', 'Backend', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         for task_id in ["task-a", "task-b"] {
             sqlx::query(
-                "INSERT INTO project_task_tag_links (task_id, tag_id)
-                 VALUES (?, 'tag-a')",
+                "INSERT INTO project_task_tag_links (task_id, tag_id, sync_key)
+                 VALUES (?, 'tag-a', ?)",
             )
+            .bind(task_id)
             .bind(task_id)
             .execute(&pool)
             .await
@@ -206,14 +292,14 @@ fn reordering_groups_requires_every_group_and_keeps_modified_times() {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
         sqlx::query(
-            "INSERT INTO project_groups (id, name, icon, sort_order, updated_at)
-             VALUES ('group-b', 'Group B', 'lucide:folder', 200, '2026-01-01T00:00:00.000Z')",
+            "INSERT INTO project_groups (id, name, icon, order_key, updated_at)
+             VALUES ('group-b', 'Group B', 'lucide:folder', 'a2', '2026-01-01T00:00:00.000Z')",
         )
         .execute(&pool)
         .await
         .unwrap();
         let mut group_ids: Vec<String> =
-            sqlx::query_scalar("SELECT id FROM project_groups ORDER BY sort_order, name")
+            sqlx::query_scalar("SELECT id FROM project_groups ORDER BY order_key, name")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -237,7 +323,12 @@ fn reordering_groups_requires_every_group_and_keeps_modified_times() {
             .collect();
         let expected: Vec<&str> = group_ids.iter().map(|id| id.trim()).collect();
         assert_eq!(returned, expected);
-        assert_eq!(mutation.groups[0].sort_order, 1_000);
+        assert!(
+            mutation
+                .groups
+                .windows(2)
+                .all(|pair| (&pair[0].order_key, &pair[0].id) < (&pair[1].order_key, &pair[1].id))
+        );
         let updated_at: String =
             sqlx::query_scalar("SELECT updated_at FROM project_groups WHERE id = 'group-b'")
                 .fetch_one(&pool)
@@ -254,8 +345,8 @@ fn reordering_group_projects_covers_inactive_projects_of_that_group_only() {
         insert_project_graph_fixture(&pool).await;
         for (id, status) in [("project-b", "hidden"), ("project-c", "archived")] {
             sqlx::query(
-                "INSERT INTO projects (id, group_id, name, icon, sort_order, status, updated_at)
-                 VALUES (?, 'group-a', ?, 'lucide:folder', 100, ?, '2026-01-01T00:00:00.000Z')",
+                "INSERT INTO projects (id, group_id, name, icon, order_key, status, updated_at)
+                 VALUES (?, 'group-a', ?, 'lucide:folder', 'a1', ?, '2026-01-01T00:00:00.000Z')",
             )
             .bind(id)
             .bind(id)
@@ -291,18 +382,17 @@ fn reordering_group_projects_covers_inactive_projects_of_that_group_only() {
         )
         .await
         .unwrap();
-        let returned: Vec<(&str, i64)> = mutation
+        let returned: Vec<&str> = mutation
             .projects
             .iter()
-            .map(|project| (project.id.as_str(), project.sort_order))
+            .map(|project| project.id.as_str())
             .collect();
-        assert_eq!(
-            returned,
-            [
-                ("project-c", 1_000),
-                ("project-a", 2_000),
-                ("project-b", 3_000)
-            ]
+        assert_eq!(returned, ["project-c", "project-a", "project-b"]);
+        assert!(
+            mutation
+                .projects
+                .windows(2)
+                .all(|pair| (&pair[0].order_key, &pair[0].id) < (&pair[1].order_key, &pair[1].id))
         );
         let updated_at: String =
             sqlx::query_scalar("SELECT updated_at FROM projects WHERE id = 'project-c'")

@@ -1,0 +1,21 @@
+[package]
+name = "ganbaru-atomic-files"
+version = "0.1.0"
+description = "Ganbaru atomic file replacement through no-follow temporary files and bounded regular-file reads"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ring = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+rustix = { workspace = true }

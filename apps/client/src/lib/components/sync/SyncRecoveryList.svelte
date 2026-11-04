@@ -4,11 +4,13 @@
     listSyncRecovery,
     restoreSyncRecovery,
     type SyncRecoveryEntry,
+    type SyncRecoveryText,
   } from "$lib/api/sync";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { publishQuickNotesChanged, touchesQuickNotes } from "$lib/quick-notes/window-sync";
+  import { syncPresentations } from "$lib/sync/presentations";
   import { formatSyncTime, syncDeviceName } from "$lib/sync/status";
+  import { writeTextToClipboard } from "$lib/utils/clipboard";
 
   let {
     buttonClass,
@@ -69,16 +71,31 @@
     try {
       if (restore) await restoreSyncRecovery(target);
       else await discardSyncRecovery(target);
-      if (restore && touchesQuickNotes([entry.table])) publishQuickNotesChanged();
-      message = restore ? t("sync.recovery.restored") : t("sync.recovery.discarded");
+      if (restore) syncPresentations.notifyChanged([entry.table]);
+      message = restore ? syncPresentations.recoveryRestored(t, entry.table) : t("sync.recovery.discarded");
       await load();
     } catch (cause: unknown) {
       console.warn("sync recovery action failed", cause);
       failed = true;
-      message = restore ? t("sync.recovery.failed") : t("sync.recovery.discardFailed");
+      message = restore ? syncPresentations.recoveryRestoreFailed(t, entry.table) : t("sync.recovery.discardFailed");
       await load();
     } finally {
       busyKey = null;
+    }
+  }
+
+  /** Copies the text of a deleted row the offer may not bring back. */
+  async function copyUnseen(text: SyncRecoveryText): Promise<void> {
+    message = "";
+    failed = false;
+    loadFailed = false;
+    try {
+      await writeTextToClipboard(text.title && text.preview ? `${text.title}\n\n${text.preview}` : text.title || text.preview);
+      message = t("sync.recovery.copied");
+    } catch (cause: unknown) {
+      console.warn("sync recovery text could not be copied", cause);
+      failed = true;
+      message = t("sync.recovery.copyFailed");
     }
   }
 
@@ -96,8 +113,14 @@
   {#each entries as entry (entryKey(entry))}
     <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 px-1">
       <div class="min-w-0 flex-1 basis-48">
-        <div class="truncate text-[0.866667rem] font-medium text-foreground">{entry.title || t("sync.recovery.untitled")}</div>
+        <div class="truncate text-[0.866667rem] font-medium text-foreground">{entry.title || syncPresentations.recoveryUntitled(t, entry.table)}</div>
         {#if entry.preview}<div class="truncate text-[0.8rem] text-muted-foreground">{entry.preview}</div>{/if}
+        {#if syncPresentations.recoveryNote(t, entry.table)}
+          <div class="text-[0.75rem] text-muted-foreground">{syncPresentations.recoveryNote(t, entry.table)}</div>
+        {/if}
+        {#if entry.descendants > 0}
+          <div class="text-[0.75rem] text-muted-foreground">{t("sync.recovery.descendants", entry.descendants)}</div>
+        {/if}
         <div class="text-[0.75rem] text-muted-foreground">
           {t(
             "sync.recovery.editedBy",
@@ -105,11 +128,34 @@
             formatSyncTime(t, localization.locale, entry.editedAtMs, now),
           )}
         </div>
+        {#if entry.unseen.length > 0}
+          <div class="mt-1 text-[0.75rem] text-muted-foreground">{t("sync.recovery.unseen")}</div>
+          <ul class="mt-1 flex min-w-0 flex-col gap-1">
+            {#each entry.unseen as text, index (index)}
+              <li class="flex min-w-0 items-start gap-2">
+                <div class="min-w-0 flex-1 text-[0.8rem] break-words whitespace-pre-wrap text-foreground">
+                  {#if text.title}<div class="font-medium">{text.title}</div>{/if}
+                  {#if text.preview}<div class="line-clamp-4">{text.preview}</div>{/if}
+                </div>
+                <button type="button" class={actionClass} onclick={() => void copyUnseen(text)}>
+                  {t("sync.recovery.copy")}
+                </button>
+              </li>
+            {/each}
+          </ul>
+          {#if entry.unseenOmitted > 0}
+            <div class="mt-1 text-[0.75rem] text-muted-foreground">
+              {t("sync.recovery.unseenOmitted", entry.unseenOmitted)}
+            </div>
+          {/if}
+        {/if}
       </div>
       <div class="flex shrink-0 gap-2">
-        <button type="button" class={actionClass} disabled={busyKey !== null} onclick={() => void act(entry, true)}>
-          {t("sync.recovery.restore")}
-        </button>
+        {#if syncPresentations.recoveryRestorable(entry.table)}
+          <button type="button" class={actionClass} disabled={busyKey !== null} onclick={() => void act(entry, true)}>
+            {t("sync.recovery.restore")}
+          </button>
+        {/if}
         <button type="button" class={actionClass} disabled={busyKey !== null} onclick={() => void act(entry, false)}>
           {t("sync.recovery.discard")}
         </button>

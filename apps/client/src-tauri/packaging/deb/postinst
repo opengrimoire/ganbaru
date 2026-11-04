@@ -6,17 +6,32 @@ keyring="/usr/share/keyrings/ganbaru-package-repo.asc"
 source_list="/etc/apt/sources.list.d/ganbaru.sources"
 repo_url="https://opengrimoire.github.io/ganbaru/packages/apt"
 
-if [ -r "$source_key" ]; then
+# Prints the Enabled value to write: "no" when the existing source list disables the repository.
+enabled_value() {
+  if [ -f "$source_list" ] && grep -Eiq '^[[:space:]]*Enabled:[[:space:]]*(no|false|off|without|disable|0)[[:space:]]*$' "$source_list"; then
+    echo "no"
+  else
+    echo "yes"
+  fi
+}
+
+# "configure" carries the previously configured version in $2 on upgrades and reinstalls. The
+# source list is removed only on purge, so a missing one then means the user removed it.
+if [ "${1:-}" = "configure" ] && [ -r "$source_key" ]; then
   install -D -m 0644 "$source_key" "$keyring"
-  mkdir -p /etc/apt/sources.list.d
-  cat > "$source_list" <<EOF
+  if [ -z "${2:-}" ] || [ -e "$source_list" ]; then
+    enabled="$(enabled_value)"
+    mkdir -p /etc/apt/sources.list.d
+    cat > "$source_list" <<EOF
 Types: deb
 URIs: $repo_url
 Suites: stable
 Components: main
 Architectures: amd64
 Signed-By: $keyring
+Enabled: $enabled
 EOF
+  fi
 fi
 
 exit 0

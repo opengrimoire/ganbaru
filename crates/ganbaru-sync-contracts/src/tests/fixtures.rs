@@ -1,10 +1,16 @@
 use crate::signing::Digest32;
 use crate::{
-    Change, ChangeAction, Content, Envelope, Field, GroupId, GroupValue, Header, Hlc, Operation,
-    OperationKind, Revocation, RevokeReason, RowKey, SignedCertificate, SpaceId, TableId, Value,
-    WriterCertificate, WriterId, WriterKeyPair, WriterPublicKey, sign_certificate,
+    AdminKeyPair, AdminPublicKey, AuthorizationRecord, Cause, ChainLink, Change, ChangeAction,
+    Charter, Content, DeviceKey, DeviceKeyPair, DeviceKind, DeviceRole, EncryptionKeyPair,
+    EncryptionPublicKey, Enroll, Entry, Envelope, Field, GroupId, GroupValue, Handover, Header,
+    Hlc, KeyEnvelope, KeyEpoch, LateResolution, LateRow, Operation, OperationKind, Proposal,
+    RecoveryKey, RecoverySeed, RelayAccessKeyPair, Remove, ResolveLate, RowKey, Sequencing, Server,
+    ServerConfig, ServerMode, SetRole, SignedCertificate, SignedCharter, SignedProposal, SpaceId,
+    TableId, Value, WriterCertificate, WriterId, WriterKeyPair, WriterPublicKey, sign_certificate,
+    sign_charter, sign_device_proposal, sign_proposal,
 };
 use ganbaru_contacts::PersonKeyPair;
+use zeroize::Zeroizing;
 
 pub const PERSON_SEED: [u8; 32] = [0x11; 32];
 pub const WRITER_SEED: [u8; 32] = [0x22; 32];
@@ -40,12 +46,12 @@ pub fn space() -> SpaceId {
 pub fn certificate_for(key: &WriterPublicKey, predecessor: Option<WriterId>) -> SignedCertificate {
     let certificate = WriterCertificate {
         writer_key: *key,
-        person_key: person().public_key(),
         device_id: GOLDEN_DEVICE_ID.to_string(),
+        device_key: device_key().public_key(),
         created_at_ms: GOLDEN_CREATED_AT_MS,
         predecessor,
     };
-    sign_certificate(&certificate, &person()).unwrap()
+    sign_certificate(&certificate, &device_key()).unwrap()
 }
 
 pub fn header(clock_ms: u64, dependencies: Vec<(WriterId, u64)>) -> Header {
@@ -54,6 +60,7 @@ pub fn header(clock_ms: u64, dependencies: Vec<(WriterId, u64)>) -> Header {
         manifest_version: 1,
         authorization_revision: 0,
         key_epoch: 0,
+        group_continues: false,
         dependencies,
     }
 }
@@ -111,6 +118,7 @@ pub fn changes_operation(previous_hash: Digest32) -> Operation {
                     group_value(1, 3, vec![Field::Text("2026-10-08T12:00:00.000Z".into())]),
                 ],
                 replaced_by: None,
+                cause: None,
             },
             Change {
                 table: TableId(2),
@@ -125,6 +133,7 @@ pub fn changes_operation(previous_hash: Digest32) -> Operation {
                     ),
                 ],
                 replaced_by: None,
+                cause: None,
             },
             Change {
                 table: TableId(1),
@@ -132,39 +141,90 @@ pub fn changes_operation(previous_hash: Digest32) -> Operation {
                 action: ChangeAction::Tombstone,
                 groups: Vec::new(),
                 replaced_by: Some(row("tag-work")),
+                cause: None,
             },
         ]),
     }
 }
 
-pub fn revoke_operation(previous_hash: Digest32) -> Operation {
+/// A tombstone naming its cause beside one without a successor, the version 2 vector.
+pub fn cause_operation(previous_hash: Digest32) -> Operation {
+    Operation {
+        space: space(),
+        writer: writer_id(),
+        seq: 2,
+        previous_hash,
+        header: header(GOLDEN_CREATED_AT_MS as u64 + 1_000, Vec::new()),
+        content: Content::Changes(vec![
+            Change {
+                table: TableId(60_000),
+                row: row("parent-1"),
+                action: ChangeAction::Tombstone,
+                groups: Vec::new(),
+                replaced_by: None,
+                cause: None,
+            },
+            Change {
+                table: TableId(60_001),
+                row: row("child-1"),
+                action: ChangeAction::Tombstone,
+                groups: Vec::new(),
+                replaced_by: None,
+                cause: Some(Cause {
+                    table: TableId(60_000),
+                    row: row("parent-1"),
+                }),
+            },
+        ]),
+    }
+}
+
+/// The version 2 golden operation, sealed after the golden genesis.
+pub fn golden_cause() -> (Operation, Vec<u8>) {
+    let key = writer_key();
+    let genesis = genesis_operation().seal(&key).unwrap();
+    let operation = cause_operation(genesis.hash());
+    let sealed = operation.seal(&key).unwrap();
+    (operation, sealed.into_bytes())
+}
+
+/// The cause operation marked as continuing its apply group, which seals at version 4.
+pub fn golden_group() -> (Operation, Vec<u8>) {
+    let key = writer_key();
+    let genesis = genesis_operation().seal(&key).unwrap();
+    let mut operation = cause_operation(genesis.hash());
+    operation.header.group_continues = true;
+    let sealed = operation.seal(&key).unwrap();
+    (operation, sealed.into_bytes())
+}
+
+pub fn acknowledgement_operation(previous_hash: Digest32) -> Operation {
     Operation {
         space: space(),
         writer: writer_id(),
         seq: 3,
         previous_hash,
-        header: header(GOLDEN_CREATED_AT_MS as u64 + 2_000, Vec::new()),
-        content: Content::Revoke(Revocation {
-            writer: other_writer_id(),
-            cutoff: 41,
-            reason: RevokeReason::Forked,
-        }),
+        header: header(
+            GOLDEN_CREATED_AT_MS as u64 + 3_000,
+            vec![(other_writer_id(), 42)],
+        ),
+        content: Content::Acknowledgement,
     }
 }
 
-/// The three golden operations as a chain: genesis, changes, revoke.
+/// The three golden operations as a chain: genesis, changes, acknowledgement.
 pub fn golden_chain() -> Vec<(Operation, Vec<u8>)> {
     let key = writer_key();
     let genesis = genesis_operation();
     let genesis_sealed = genesis.seal(&key).unwrap();
     let changes = changes_operation(genesis_sealed.hash());
     let changes_sealed = changes.seal(&key).unwrap();
-    let revoke = revoke_operation(changes_sealed.hash());
-    let revoke_sealed = revoke.seal(&key).unwrap();
+    let acknowledgement = acknowledgement_operation(changes_sealed.hash());
+    let acknowledgement_sealed = acknowledgement.seal(&key).unwrap();
     vec![
         (genesis, genesis_sealed.into_bytes()),
         (changes, changes_sealed.into_bytes()),
-        (revoke, revoke_sealed.into_bytes()),
+        (acknowledgement, acknowledgement_sealed.into_bytes()),
     ]
 }
 
@@ -177,6 +237,311 @@ pub fn fully_verifies(bytes: &[u8], key: &WriterPublicKey) -> bool {
         return envelope.genesis().is_ok();
     }
     envelope.verify(key) && envelope.operation().is_ok()
+}
+
+pub const DEVICE_SEED: [u8; 32] = [0x44; 32];
+pub const ADMIN_SEED: [u8; 32] = [0x55; 32];
+pub const RECOVERY_SEED: [u8; 32] = [0x66; 32];
+pub const ENROLLED_DEVICE_ID: &str = "device-b.phone";
+pub const NEXT_ANCHOR_DEVICE_ID: &str = "device-c.desktop";
+
+pub fn device_key() -> DeviceKeyPair {
+    DeviceKeyPair::from_seed(&DEVICE_SEED).unwrap()
+}
+
+pub fn admin_key() -> AdminKeyPair {
+    AdminKeyPair::from_seed(&ADMIN_SEED).unwrap()
+}
+
+pub fn recovery_seed() -> RecoverySeed {
+    RecoverySeed::from_bytes(RECOVERY_SEED)
+}
+
+pub fn golden_charter() -> SignedCharter {
+    let charter = Charter {
+        space: space(),
+        anchor_device_id: GOLDEN_DEVICE_ID.to_string(),
+        anchor_device_key: device_key().public_key(),
+        anchor_tls_fingerprint: [0xa1; 32],
+        anchor_admin_key: admin_key().public_key(),
+        recovery_admin_key: recovery_seed().recovery_admin_key().unwrap().public_key(),
+        discovery_key: [0xd1; 32],
+        created_at_ms: GOLDEN_CREATED_AT_MS,
+    };
+    sign_charter(&charter, &person()).unwrap()
+}
+
+/// A proposal signed by the golden admin key, or for a device-signed entry by the golden anchor
+/// device key.
+pub fn proposal(entry: Entry, created_at_offset_ms: i64) -> SignedProposal {
+    let device_signed = entry.device_signed();
+    let author = if device_signed {
+        AdminPublicKey::from_bytes(*device_key().public_key().as_bytes())
+    } else {
+        admin_key().public_key()
+    };
+    let proposal = Proposal {
+        space: space(),
+        charter: golden_charter().hash(),
+        author,
+        created_at_ms: GOLDEN_CREATED_AT_MS + created_at_offset_ms,
+        entry,
+    };
+    if device_signed {
+        sign_device_proposal(&proposal, &device_key()).unwrap()
+    } else {
+        sign_proposal(&proposal, &admin_key()).unwrap()
+    }
+}
+
+/// A fixed X25519 public key derived from `seed`.
+pub fn encryption_key(seed: u8) -> EncryptionPublicKey {
+    EncryptionKeyPair::from_secret(Zeroizing::new([seed; 32]))
+        .unwrap()
+        .public_key()
+}
+
+/// A key envelope with fixed bytes addressed to `recipient`. Its contents do not open; it
+/// freezes the encoding only.
+pub fn fixed_envelope(recipient: &EncryptionPublicKey, fill: u8) -> KeyEnvelope {
+    KeyEnvelope {
+        recipient: recipient.key_id(),
+        encapsulated: [fill; 32],
+        sealed: [fill.wrapping_add(1); 48],
+    }
+}
+
+/// The golden key epoch 2 entry: a chain link and envelopes to two device keys and the recovery
+/// key, ascending by key id.
+pub fn golden_key_epoch() -> KeyEpoch {
+    let mut envelopes: Vec<KeyEnvelope> = [0x71, 0x72, 0x73]
+        .iter()
+        .map(|seed| fixed_envelope(&encryption_key(*seed), *seed))
+        .collect();
+    envelopes.sort_by_key(|envelope| envelope.recipient);
+    KeyEpoch {
+        key_epoch: 2,
+        wrapped_previous: Some(ChainLink {
+            nonce: [0x74; 24],
+            sealed: [0x75; 48],
+        }),
+        envelopes,
+        relay_access_key: RelayAccessKeyPair::from_seed(&[0x76; 32])
+            .unwrap()
+            .public_key(),
+    }
+}
+
+/// One golden entry of every space key kind, with its sequencing.
+pub fn golden_key_entries() -> Vec<(&'static str, Entry, Sequencing)> {
+    let device_encryption_key = encryption_key(0x71);
+    vec![
+        (
+            "authorization-device-key",
+            Entry::DeviceKey(DeviceKey {
+                device_id: GOLDEN_DEVICE_ID.to_string(),
+                encryption_key: device_encryption_key,
+            }),
+            Sequencing::DeviceKey {
+                envelope: Some(fixed_envelope(&device_encryption_key, 0x77)),
+            },
+        ),
+        (
+            "authorization-key-epoch",
+            Entry::KeyEpoch(golden_key_epoch()),
+            Sequencing::Empty,
+        ),
+        (
+            "authorization-recovery-key",
+            Entry::RecoveryKey(RecoveryKey {
+                encryption_key: encryption_key(0x73),
+            }),
+            Sequencing::Empty,
+        ),
+        (
+            "authorization-server-config",
+            Entry::ServerConfig(ServerConfig {
+                server: Some(Server {
+                    mode: ServerMode::Relay,
+                    endpoints: vec![
+                        "relay.example.org:7443".to_string(),
+                        "[2001:db8::1]:7443".to_string(),
+                    ],
+                    certificate_fingerprint: [0x78; 32],
+                }),
+            }),
+            Sequencing::Empty,
+        ),
+        (
+            "authorization-server-config-removed",
+            Entry::ServerConfig(ServerConfig { server: None }),
+            Sequencing::Empty,
+        ),
+    ]
+}
+
+pub fn enroll_entry() -> Entry {
+    Entry::Enroll(Enroll {
+        device_id: ENROLLED_DEVICE_ID.to_string(),
+        device_key: DeviceKeyPair::from_seed(&[0x45; 32]).unwrap().public_key(),
+        tls_fingerprint: [0xb2; 32],
+        label: "Ana's phone".to_string(),
+        device_kind: DeviceKind::Mobile,
+        role: DeviceRole::Member,
+    })
+}
+
+/// One golden entry of every known kind, with its sequencing, in log order.
+pub fn golden_entries() -> Vec<(&'static str, Entry, Sequencing)> {
+    vec![
+        ("authorization-enroll", enroll_entry(), Sequencing::Empty),
+        (
+            "authorization-set-role",
+            Entry::SetRole(SetRole::Device {
+                device_id: GOLDEN_DEVICE_ID.to_string(),
+                role: DeviceRole::Admin(admin_key().public_key()),
+            }),
+            Sequencing::Empty,
+        ),
+        (
+            "authorization-set-recovery",
+            Entry::SetRole(SetRole::Recovery {
+                recovery_admin_key: AdminKeyPair::from_seed(&[0x56; 32]).unwrap().public_key(),
+            }),
+            Sequencing::Empty,
+        ),
+        (
+            "authorization-remove",
+            Entry::Remove(Remove {
+                device_id: ENROLLED_DEVICE_ID.to_string(),
+            }),
+            Sequencing::Removal {
+                cutoffs: vec![(writer_id_for_index(1), 12), (writer_id_for_index(2), 3)],
+                discovery_key: [0xd2; 32],
+            },
+        ),
+        (
+            "authorization-resolve-late",
+            Entry::ResolveLate(ResolveLate {
+                removal_revision: 4,
+                rows: vec![
+                    LateRow {
+                        table: TableId(1),
+                        row: row("tag-late"),
+                        resolution: LateResolution::Restore,
+                    },
+                    LateRow {
+                        table: TableId(2),
+                        row: row("note-late"),
+                        resolution: LateResolution::Discard,
+                    },
+                ],
+            }),
+            Sequencing::Empty,
+        ),
+    ]
+}
+
+pub fn writer_id_for_index(index: u16) -> WriterId {
+    let mut bytes = [0u8; 16];
+    bytes[14..].copy_from_slice(&index.to_be_bytes());
+    WriterId::from_bytes(bytes)
+}
+
+pub fn authorization_operation(
+    writer: WriterId,
+    seq: u64,
+    previous_hash: Digest32,
+    record: AuthorizationRecord,
+) -> Operation {
+    let mut operation_header = header(
+        GOLDEN_CREATED_AT_MS as u64 + 10_000 + record.revision * 1_000,
+        Vec::new(),
+    );
+    operation_header.authorization_revision = record.revision - 1;
+    Operation {
+        space: space(),
+        writer,
+        seq,
+        previous_hash,
+        header: operation_header,
+        content: Content::Authorization(Box::new(record)),
+    }
+}
+
+/// The golden authorization log after the golden charter: one operation per known entry kind
+/// sealed by the anchor's writer after its genesis, then a handover sealed by the next anchor's
+/// writer after its own genesis. Each item is the vector name, the operation, its bytes, and the
+/// sealing writer key.
+pub fn golden_authorization_log() -> Vec<(&'static str, Operation, Vec<u8>, WriterPublicKey)> {
+    let anchor = writer_key();
+    let mut previous_operation = genesis_operation().seal(&anchor).unwrap().hash();
+    let mut previous_entry = golden_charter().hash();
+    let mut log = Vec::new();
+    for (index, (name, entry, sequencing)) in golden_entries().into_iter().enumerate() {
+        let revision = index as u64 + 1;
+        let record = AuthorizationRecord {
+            epoch: 0,
+            revision,
+            previous_entry_hash: previous_entry,
+            anchor_device_id: GOLDEN_DEVICE_ID.to_string(),
+            proposal: proposal(entry, revision as i64),
+            sequencing,
+        };
+        previous_entry = record.hash();
+        let operation =
+            authorization_operation(writer_id(), revision + 1, previous_operation, record);
+        let sealed = operation.seal(&anchor).unwrap();
+        previous_operation = sealed.hash();
+        log.push((name, operation, sealed.into_bytes(), anchor.public_key()));
+    }
+
+    let next = other_writer_key();
+    let next_genesis = Operation {
+        space: space(),
+        writer: other_writer_id(),
+        seq: 1,
+        previous_hash: [0u8; 32],
+        header: header(GOLDEN_CREATED_AT_MS as u64, Vec::new()),
+        content: Content::Genesis(certificate_for(&next.public_key(), None)),
+    };
+    let revision = log.len() as u64 + 1;
+    let record = AuthorizationRecord {
+        epoch: 1,
+        revision,
+        previous_entry_hash: previous_entry,
+        anchor_device_id: NEXT_ANCHOR_DEVICE_ID.to_string(),
+        proposal: proposal(
+            Entry::Handover(Handover {
+                new_anchor_device_id: NEXT_ANCHOR_DEVICE_ID.to_string(),
+                epoch: 1,
+                continues_from_revision: revision - 1,
+                continues_from_hash: previous_entry,
+            }),
+            revision as i64,
+        ),
+        sequencing: Sequencing::Handover {
+            old_anchor_vector: Some(
+                [(writer_id(), revision), (other_writer_id(), 1)]
+                    .into_iter()
+                    .collect(),
+            ),
+        },
+    };
+    let operation = authorization_operation(
+        other_writer_id(),
+        2,
+        next_genesis.seal(&next).unwrap().hash(),
+        record,
+    );
+    let sealed = operation.seal(&next).unwrap();
+    log.push((
+        "authorization-handover",
+        operation,
+        sealed.into_bytes(),
+        next.public_key(),
+    ));
+    log
 }
 
 /// Deterministic xorshift generator for mutation and fuzz tests.

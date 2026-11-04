@@ -70,10 +70,8 @@ export const titleBar = {
     next: "Música siguiente",
     open: "Abrir música",
     volume: "Volumen",
-    volumeLabel: "Volumen de música",
+    volumeLabel: "Volumen",
     volumeTooltip: (volume: string) => `Volumen: ${volume}`,
-    contextual: (phase: string, event: string) => `Banda sonora de ${phase.toLocaleLowerCase()} para ${event}`,
-    inspectAssignment: "Inspeccionar asignación de banda sonora",
     status: {
       playing: "Reproduciendo",
       paused: "Pausado",
@@ -101,7 +99,7 @@ export const titleBar = {
   resetSequenceConfirm: "Continuar",
   resetDatabaseTitle: "¿Reiniciar datos locales?",
   resetDatabaseMessage:
-    "El archivo de datos local de la carpeta activa de Ganbaru se eliminará permanentemente",
+    "El archivo de datos local de la carpeta activa de Ganbaru se reemplazará por uno vacío. Se guarda una copia que puedes restaurar desde Ajustes > Datos",
   resetDatabaseConfirm: "Reiniciar datos locales",
   closeAppTitle: "¿Cerrar la app?",
   closeAppMessage: "Todas las funciones de productividad dejarán de funcionar",

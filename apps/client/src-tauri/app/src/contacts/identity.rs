@@ -10,6 +10,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ganbaru_contacts::{
     CARD_NONCE_BYTES, PersonKeyPair, PersonPublicKey, decode_nonce, encode_nonce, random_bytes,
 };
+#[cfg(any(mobile, test))]
+use ganbaru_handoff::key_wrap::{self, KeyWrapper};
 use sqlx::{FromRow, SqlitePool};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, Runtime};
@@ -17,21 +19,24 @@ use tauri::{AppHandle, Manager, Runtime};
 #[cfg(desktop)]
 const KEYRING_SERVICE: &str = "com.ganbaru.contacts";
 const KEY_REFERENCE_PREFIX: &str = "person-key:";
-#[cfg(mobile)]
-const KEY_DIRECTORY: &str = "contacts";
+/// Directory under the app config directory that holds the sealed person key copies on mobile.
+pub(crate) const KEY_DIRECTORY: &str = "contacts";
 #[cfg(desktop)]
 const KEY_UNAVAILABLE_CODE: &str = "key_unavailable";
 
 /// Vault whose key copy this device has already confirmed, so reconnect polls skip the lookup.
 static KEY_CONFIRMED_FOR_VAULT: Mutex<Option<String>> = Mutex::new(None);
 
-/// Serializes identity creation between Contacts commands and the sync service.
+/// Serializes identity creation and card nonce repair between Contacts commands and the sync
+/// service.
 static IDENTITY_CREATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The person identity as this device knows it.
 pub(crate) struct LocalIdentity {
     pub public_key: PersonPublicKey,
-    pub card_nonce: [u8; CARD_NONCE_BYTES],
+    /// `None` while the stored nonce does not decode: a snapshot copy skips sync admission, so
+    /// the row can hold one, and the rest of the identity stays usable until it is rotated.
+    pub card_nonce: Option<[u8; CARD_NONCE_BYTES]>,
     pub card_revision: i64,
     /// Present only when this device holds a copy of the private key.
     pub key: Option<PersonKeyPair>,
@@ -54,6 +59,12 @@ impl LocalIdentity {
             )
         })
     }
+
+    /// The nonce a card can carry, refused until an unreadable stored nonce is rotated.
+    pub(crate) fn readable_nonce(&self) -> Result<[u8; CARD_NONCE_BYTES], ContactsError> {
+        self.card_nonce
+            .ok_or_else(|| ContactsError::Failed("the stored card nonce is unreadable".to_string()))
+    }
 }
 
 #[derive(Debug, FromRow)]
@@ -63,24 +74,30 @@ pub(crate) struct IdentityRow {
     pub card_revision: i64,
 }
 
+/// The person identity with the current card state. An identity whose card row is missing reads
+/// as no identity; creation always writes both rows together.
 pub(crate) async fn load_identity_row(pool: &SqlitePool) -> Result<Option<IdentityRow>, String> {
     sqlx::query_as(
-        "SELECT public_key, card_nonce, card_revision FROM contacts_local_identity WHERE singleton = 1",
+        "SELECT i.public_key, c.card_nonce, c.card_revision
+         FROM contacts_local_identity i
+         JOIN contact_card c ON c.key = 'card'
+         WHERE i.singleton = 1",
     )
     .fetch_optional(pool)
     .await
     .map_err(|error| format!("read person identity: {error}"))
 }
 
-/// Combines the identity row with a key copy, which is kept only when it matches the row.
+/// Combines the identity row with a key copy, which is kept only when it matches the row. Only
+/// the public key can fail: the card row replicates, so its nonce never decides whether the
+/// person identity loads.
 pub(crate) fn identity_from_row(
     row: IdentityRow,
     key_pkcs8: Option<&[u8]>,
 ) -> Result<LocalIdentity, String> {
     let public_key = PersonPublicKey::from_text(&row.public_key)
         .map_err(|_| "stored person public key is invalid".to_string())?;
-    let card_nonce =
-        decode_nonce(&row.card_nonce).ok_or_else(|| "stored card nonce is invalid".to_string())?;
+    let card_nonce = decode_nonce(&row.card_nonce);
     let key = key_pkcs8
         .and_then(|bytes| PersonKeyPair::from_pkcs8(bytes).ok())
         .filter(|key| key.public_key() == public_key);
@@ -109,33 +126,99 @@ pub(crate) async fn load_identity<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
 ) -> Result<Option<LocalIdentity>, String> {
+    let identity = read_identity(pool, &|| load_key(app)).await?;
+    Ok(identity.map(|(identity, _)| identity))
+}
+
+/// Reads the identity row, then the key copy `load_key` returns, and pairs the identity with the
+/// card nonce text exactly as stored.
+async fn read_identity<L, K>(
+    pool: &SqlitePool,
+    load_key: &L,
+) -> Result<Option<(LocalIdentity, String)>, String>
+where
+    L: Fn() -> K,
+    K: Future<Output = Result<Option<Vec<u8>>, String>>,
+{
     let Some(row) = load_identity_row(pool).await? else {
         return Ok(None);
     };
-    let key = load_key(app).await?;
-    identity_from_row(row, key.as_deref()).map(Some)
+    let stored_nonce = row.card_nonce.clone();
+    let key = load_key().await?;
+    identity_from_row(row, key.as_deref()).map(|identity| Some((identity, stored_nonce)))
 }
 
-/// Loads the identity, creating it on the first writable use of a vault that has none.
+/// The identity as found before any creation step.
+pub(crate) enum ExistingIdentity {
+    /// An identity whose card nonce is readable, after a repair when the stored one was not.
+    Ready(LocalIdentity),
+    /// No identity exists. The guard keeps creation to one caller until it is dropped.
+    Missing(tokio::sync::MutexGuard<'static, ()>),
+}
+
+/// Loads the identity and heals an unreadable card nonce. A readable identity returns without
+/// waiting on the creation lock. Otherwise the lock is taken and the row is read again, so a racing
+/// caller never repairs or creates over what another caller just wrote.
+pub(crate) async fn existing_identity<L, K>(
+    pool: &SqlitePool,
+    load_key: L,
+) -> Result<ExistingIdentity, ContactsError>
+where
+    L: Fn() -> K,
+    K: Future<Output = Result<Option<Vec<u8>>, String>>,
+{
+    if let Some((identity, _)) = read_identity(pool, &load_key).await?
+        && identity.card_nonce.is_some()
+    {
+        return Ok(ExistingIdentity::Ready(identity));
+    }
+    let creating = IDENTITY_CREATION.lock().await;
+    if let Some((identity, stored_nonce)) = read_identity(pool, &load_key).await? {
+        return super::card::heal_unreadable_nonce(pool, identity, &stored_nonce)
+            .await
+            .map(ExistingIdentity::Ready);
+    }
+    Ok(ExistingIdentity::Missing(creating))
+}
+
+/// Writes the identity and its first card in one transaction.
+async fn insert_identity(
+    pool: &SqlitePool,
+    public_key: &str,
+    card_nonce: &str,
+    now: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO contacts_local_identity (singleton, public_key, created_at) VALUES (1, ?, ?)",
+    )
+    .bind(public_key)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO contact_card (key, card_nonce, card_revision, updated_at)
+         VALUES ('card', ?, 1, ?)",
+    )
+    .bind(card_nonce)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
+}
+
+/// Loads the identity, creating it on the first writable use of a vault that has none and
+/// rotating a card nonce that does not decode.
 pub(crate) async fn ensure_identity<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
 ) -> Result<LocalIdentity, ContactsError> {
-    if let Some(identity) = load_identity(app, pool).await? {
-        return Ok(identity);
-    }
     // Callers race on a fresh vault, and a losing insert removes the stored key, so creation
-    // runs one at a time and rechecks the row.
-    let _creating = IDENTITY_CREATION.lock().await;
-    if let Some(identity) = load_identity(app, pool).await? {
-        return Ok(identity);
-    }
-    let status = crate::vault::ownership::active_status(app)?;
-    if !status.can_write {
-        return Err(ContactsError::IdentityUnavailable(
-            "the vault owner creates the person identity".to_string(),
-        ));
-    }
+    // runs under the guard `existing_identity` returns.
+    let _creating = match existing_identity(pool, || load_key(app)).await? {
+        ExistingIdentity::Ready(identity) => return Ok(identity),
+        ExistingIdentity::Missing(creating) => creating,
+    };
     if app.state::<PairingManager>().coordinator_pin()?.is_some() {
         return Err(ContactsError::IdentityUnavailable(
             "the coordinator creates the person identity".to_string(),
@@ -149,15 +232,12 @@ pub(crate) async fn ensure_identity<R: Runtime>(
     let public_key = key.public_key();
     store_key(app, pkcs8).await?;
     let now = super::store::format_time(super::store::now());
-    let inserted = sqlx::query(
-        "INSERT INTO contacts_local_identity (singleton, public_key, card_nonce, created_at, updated_at)
-         VALUES (1, ?, ?, ?, ?)",
+    let inserted = insert_identity(
+        pool,
+        &public_key.to_text(),
+        &encode_nonce(&card_nonce),
+        &now,
     )
-    .bind(public_key.to_text())
-    .bind(encode_nonce(&card_nonce))
-    .bind(&now)
-    .bind(&now)
-    .execute(pool)
     .await;
     if let Err(error) = inserted {
         let _ = remove_key(app).await;
@@ -167,7 +247,7 @@ pub(crate) async fn ensure_identity<R: Runtime>(
     }
     Ok(LocalIdentity {
         public_key,
-        card_nonce,
+        card_nonce: Some(card_nonce),
         card_revision: 1,
         key: Some(key),
     })
@@ -216,42 +296,99 @@ fn key_path<R: Runtime>(app: &AppHandle<R>, vault_id: &str) -> Result<std::path:
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
-    Ok(directory
+    Ok(person_key_path_in(&directory, vault_id))
+}
+
+/// The file that holds the device-local person key copy of `vault_id` on Android, inside the
+/// app config directory `config_dir`.
+#[cfg(any(mobile, test))]
+pub(crate) fn person_key_path_in(
+    config_dir: &std::path::Path,
+    vault_id: &str,
+) -> std::path::PathBuf {
+    config_dir
         .join(KEY_DIRECTORY)
-        .join(format!("{}.key", key_reference(vault_id).replace(':', "-"))))
+        .join(format!("{}.key", key_reference(vault_id).replace(':', "-")))
 }
 
-#[cfg(mobile)]
-fn read_key_sync(path: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("read person key: {error}")),
-    }
+/// The person key of `vault_id` sealed in the file at `path` when it matches `public_key`. It
+/// reads no vault database, so it is usable while the vault is quiesced.
+#[cfg(any(mobile, test))]
+pub(crate) fn person_key_file_matching(
+    wrapper: &dyn KeyWrapper,
+    path: &std::path::Path,
+    vault_id: &str,
+    public_key: &PersonPublicKey,
+) -> Result<Option<PersonKeyPair>, String> {
+    Ok(read_key_file(wrapper, path, vault_id)?
+        .and_then(|bytes| PersonKeyPair::from_pkcs8(&bytes).ok())
+        .filter(|key| key.public_key() == *public_key))
 }
 
-#[cfg(mobile)]
-fn write_key_sync(path: &std::path::Path, pkcs8: &[u8]) -> Result<(), String> {
-    crate::vault::handoff::pairing::write_private_file_atomically(path, pkcs8)
+/// The person key of `vault_id` sealed in the file at `path`, sealed with the vault's platform
+/// key.
+#[cfg(any(mobile, test))]
+fn read_key_file(
+    wrapper: &dyn KeyWrapper,
+    path: &std::path::Path,
+    vault_id: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    key_wrap::read_protected_file(
+        wrapper,
+        &key_wrap::vault_keys_alias(vault_id),
+        &key_reference(vault_id),
+        path,
+    )
+    .map_err(|error| format!("read person key: {error}"))
+}
+
+/// Seals the person key `pkcs8` of `vault_id` into the file at `path`.
+#[cfg(any(mobile, test))]
+pub(crate) fn write_key_file(
+    wrapper: &dyn KeyWrapper,
+    path: &std::path::Path,
+    vault_id: &str,
+    pkcs8: &[u8],
+) -> Result<(), String> {
+    key_wrap::write_protected_file(
+        wrapper,
+        &key_wrap::vault_keys_alias(vault_id),
+        &key_reference(vault_id),
+        path,
+        pkcs8,
+    )
+    .map_err(|error| format!("store person key: {error}"))
 }
 
 #[cfg(mobile)]
 fn remove_key_sync(path: &std::path::Path) -> Result<(), String> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("remove person key: {error}")),
-    }
+    key_wrap::remove_key_file(path).map_err(|error| format!("remove person key: {error}"))
+}
+
+/// The platform key that seals the person key on mobile.
+#[cfg(mobile)]
+fn platform_wrapper() -> std::sync::Arc<dyn KeyWrapper> {
+    crate::vault::process_managers::process_managers().key_wrapper()
 }
 
 async fn load_key<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Vec<u8>>, String> {
-    let vault_id = crate::vault::active_vault_id(app)?;
+    load_key_for_vault(app, &crate::vault::active_vault_id(app)?).await
+}
+
+async fn load_key_for_vault<R: Runtime>(
+    #[cfg_attr(desktop, allow(unused_variables))] app: &AppHandle<R>,
+    vault_id: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let vault_id = vault_id.to_string();
     #[cfg(desktop)]
     let task = tauri::async_runtime::spawn_blocking(move || read_key_sync(&vault_id));
     #[cfg(mobile)]
     let task = {
         let path = key_path(app, &vault_id)?;
-        tauri::async_runtime::spawn_blocking(move || read_key_sync(&path))
+        let wrapper = platform_wrapper();
+        tauri::async_runtime::spawn_blocking(move || {
+            read_key_file(wrapper.as_ref(), &path, &vault_id)
+        })
     };
     task.await
         .map_err(|error| format!("person key task: {error}"))?
@@ -264,7 +401,10 @@ async fn store_key<R: Runtime>(app: &AppHandle<R>, pkcs8: Vec<u8>) -> Result<(),
     #[cfg(mobile)]
     let task = {
         let path = key_path(app, &vault_id)?;
-        tauri::async_runtime::spawn_blocking(move || write_key_sync(&path, &pkcs8))
+        let wrapper = platform_wrapper();
+        tauri::async_runtime::spawn_blocking(move || {
+            write_key_file(wrapper.as_ref(), &path, &vault_id, &pkcs8)
+        })
     };
     task.await
         .map_err(|error| format!("person key task: {error}"))?
@@ -283,21 +423,40 @@ async fn remove_key<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .map_err(|error| format!("person key task: {error}"))?
 }
 
-/// Coordinator side: hands the key to a linked device that already proved its membership.
+/// Coordinator side: hands the key of `vault_id` to a device that already proved its
+/// membership of that vault. The caller checks that `vault_id` is the active vault; the key is
+/// still read for `vault_id` itself and must match the identity row, so a vault switch in
+/// between yields a refusal instead of another vault's key.
 #[cfg(desktop)]
 pub(crate) async fn release_key_for_coordinator<R: Runtime>(
     app: &AppHandle<R>,
+    vault_id: &str,
+) -> Result<CoordinatorResponse, String> {
+    let pool = super::contacts_pool(app).await?;
+    let row = load_identity_row(&pool).await?;
+    let pkcs8 = match row {
+        Some(_) => load_key_for_vault(app, vault_id).await?,
+        None => None,
+    };
+    key_release_response(row, pkcs8)
+}
+
+/// The coordinator's answer to a key request, given the active identity row and the key copy
+/// stored for the requested vault.
+#[cfg(desktop)]
+fn key_release_response(
+    row: Option<IdentityRow>,
+    pkcs8: Option<Vec<u8>>,
 ) -> Result<CoordinatorResponse, String> {
     let unavailable = |message: &str| CoordinatorResponse::Rejected {
         code: KEY_UNAVAILABLE_CODE.to_string(),
         message: message.to_string(),
         retryable: true,
     };
-    let pool = super::contacts_pool(app).await?;
-    let Some(row) = load_identity_row(&pool).await? else {
+    let Some(row) = row else {
         return Ok(unavailable("the vault has no person identity yet"));
     };
-    let Some(pkcs8) = load_key(app).await? else {
+    let Some(pkcs8) = pkcs8 else {
         return Ok(unavailable("the coordinator holds no person key copy"));
     };
     let identity = identity_from_row(row, Some(&pkcs8))?;
@@ -371,5 +530,68 @@ pub(crate) async fn try_release<R: Runtime>(app: &AppHandle<R>) -> bool {
 fn confirm_key(vault_id: String) {
     if let Ok(mut confirmed) = KEY_CONFIRMED_FOR_VAULT.lock() {
         *confirmed = Some(vault_id);
+    }
+}
+
+#[cfg(all(test, desktop))]
+mod tests {
+    use super::*;
+
+    fn row_for(public_key: &PersonPublicKey) -> IdentityRow {
+        IdentityRow {
+            public_key: public_key.to_text(),
+            card_nonce: encode_nonce(&[7; CARD_NONCE_BYTES]),
+            card_revision: 1,
+        }
+    }
+
+    #[test]
+    fn key_release_survives_an_unreadable_card_nonce() {
+        let (pkcs8, key) = PersonKeyPair::generate().unwrap();
+        let mut row = row_for(&key.public_key());
+        row.card_nonce = "!".repeat(22);
+
+        let released = key_release_response(Some(row), Some(pkcs8));
+
+        assert!(
+            matches!(
+                released,
+                Ok(CoordinatorResponse::PersonKeyReleased { ref public_key, .. })
+                    if *public_key == key.public_key().to_text()
+            ),
+            "the key is released whatever the card nonce holds"
+        );
+    }
+
+    #[test]
+    fn key_release_refuses_a_key_copy_that_does_not_match_the_open_vault() {
+        let (pkcs8, key) = PersonKeyPair::generate().unwrap();
+        let (_, other) = PersonKeyPair::generate().unwrap();
+
+        let released =
+            key_release_response(Some(row_for(&key.public_key())), Some(pkcs8.clone())).unwrap();
+        assert!(matches!(
+            released,
+            CoordinatorResponse::PersonKeyReleased { ref public_key, .. }
+                if *public_key == key.public_key().to_text()
+        ));
+
+        // The key stored for the requested vault belongs to another identity than the open one.
+        let mismatched =
+            key_release_response(Some(row_for(&other.public_key())), Some(pkcs8)).unwrap();
+        assert!(matches!(
+            mismatched,
+            CoordinatorResponse::Rejected { ref code, .. } if code == KEY_UNAVAILABLE_CODE
+        ));
+
+        for refused in [
+            key_release_response(None, None).unwrap(),
+            key_release_response(Some(row_for(&key.public_key())), None).unwrap(),
+        ] {
+            assert!(matches!(
+                refused,
+                CoordinatorResponse::Rejected { ref code, .. } if code == KEY_UNAVAILABLE_CODE
+            ));
+        }
     }
 }

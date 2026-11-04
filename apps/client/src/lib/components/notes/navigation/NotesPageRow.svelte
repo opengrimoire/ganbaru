@@ -39,12 +39,12 @@
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Copy from "@lucide/svelte/icons/copy";
-  import FilePlus2 from "@lucide/svelte/icons/file-plus-2";
+  import FilePlus2 from "@lucide/svelte/icons/file-plus-corner";
   import FolderInput from "@lucide/svelte/icons/folder-input";
   import FolderTree from "@lucide/svelte/icons/folder-tree";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Star from "@lucide/svelte/icons/star";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";

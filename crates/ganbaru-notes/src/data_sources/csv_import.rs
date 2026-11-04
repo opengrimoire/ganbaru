@@ -1,3 +1,4 @@
+use crate::block_storage::{BlockRowInsert, insert_block_row};
 use crate::models::{
     NoteDataSourceCsvImportColumnDto, NoteDataSourceCsvImportDiagnosticDto,
     NoteDataSourceCsvImportDto, NoteDataSourceCsvImportRequest, NoteDataSourceCsvImportRowDto,
@@ -5,6 +6,7 @@ use crate::models::{
 };
 use crate::validation::{plain_text_from_payload, require_uuid};
 use crate::{assets, data_sources, writes};
+use ganbaru_sync_contracts::OrderKey;
 use serde_json::{Map, Value, json};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::{HashMap, HashSet};
@@ -251,7 +253,6 @@ async fn write_valid_rows_tx(
             &page_id,
             schema_properties,
             properties,
-            true,
         )
         .await?;
         imported_page_ids.push(page_id);
@@ -285,20 +286,19 @@ async fn insert_row_page_tx(
             parent_type,
             parent_data_source_id,
             title,
-            properties,
             source_provider,
             source_object_id
          )
-         VALUES (?, 'data_source_id', ?, ?, ?, 'csv', ?)",
+         VALUES (?, 'data_source_id', ?, ?, 'csv', ?)",
     )
     .bind(page_id)
     .bind(data_source_id)
     .bind(&row.title)
-    .bind(properties.to_string())
     .bind(format!("row:{}", row.row_number))
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert CSV data source row page: {e}"))?;
+    crate::page_property_storage::write_page_properties(tx, page_id, properties).await?;
     Ok(())
 }
 
@@ -310,31 +310,27 @@ async fn insert_initial_block_tx(
 ) -> Result<(), String> {
     let payload = writes::default_text_payload("");
     let plain_text = plain_text_from_payload("paragraph", &payload);
-    sqlx::query(
-        "INSERT INTO notes_blocks (
-            id,
+    let source_object_id = format!("row:{row_number}");
+    let order_key = OrderKey::first().into_string();
+    insert_block_row(
+        tx,
+        BlockRowInsert {
+            id: block_id,
             page_id,
-            parent_type,
-            parent_page_id,
-            type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id
-         )
-         VALUES (?, ?, 'page_id', ?, 'paragraph', ?, ?, 1000, 'csv', ?)",
+            parent_type: "page_id",
+            parent_page_id: Some(page_id),
+            parent_block_id: None,
+            block_type: "paragraph",
+            payload: &payload,
+            plain_text: &plain_text,
+            order_key: &order_key,
+            source_provider: Some("csv"),
+            source_object_id: Some(&source_object_id),
+            source_last_edited_time: None,
+        },
     )
-    .bind(block_id)
-    .bind(page_id)
-    .bind(page_id)
-    .bind(payload.to_string())
-    .bind(plain_text)
-    .bind(format!("row:{}", row_number))
-    .execute(&mut **tx)
     .await
-    .map_err(|e| format!("insert CSV data source row block: {e}"))?;
-    Ok(())
+    .map_err(|e| format!("insert CSV data source row block: {e}"))
 }
 
 async fn property_value_from_csv(
@@ -806,14 +802,16 @@ async fn load_active_data_source_and_database_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<(NoteDataSourceRow, NoteDatabaseRow), String> {
-    let data_source = sqlx::query_as::<_, NoteDataSourceRow>(
-        "SELECT data_source.*
+    let data_source = sqlx::query_as::<_, NoteDataSourceRow>(concat!(
+        "SELECT ",
+        crate::note_data_source_row_columns!("data_source"),
+        "
          FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.id = ?
            AND data_source.in_trash = 0
            AND database.in_trash = 0",
-    )
+    ))
     .bind(data_source_id.trim())
     .fetch_optional(&mut **tx)
     .await

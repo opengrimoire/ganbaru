@@ -132,6 +132,8 @@ pub struct ReviewFileFlagsRead {
     pub pure_rename: bool,
     pub untracked: bool,
     pub symlink: bool,
+    /// The file was left out of the snapshot because it is too large to review.
+    pub too_large: bool,
     pub provider_reported: bool,
     pub git_observed: bool,
     pub read_only: bool,

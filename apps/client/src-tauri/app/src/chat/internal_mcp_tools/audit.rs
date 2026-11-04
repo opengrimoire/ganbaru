@@ -138,9 +138,9 @@ pub(super) async fn complete_audit_allowed(
         for source in queried_channel_sources {
             let recorded = sqlx::query(
                 "INSERT INTO chat_scratch_generation_sources
-                (scratch_generation_id, conversation_id, lower_ordinal,
-                 high_ordinal, audience_revision, created_at)
-             SELECT ?, ?, ?, ?, audience.revision, ?
+                (scratch_generation_id, conversation_id, lower_order_key, lower_item_id,
+                 high_order_key, high_item_id, audience_revision, created_at)
+             SELECT ?, ?, ?, ?, ?, ?, audience.revision, ?
              FROM chat_scratch_generations generation
              JOIN chat_conversation_audience_state audience
                ON audience.conversation_id = ?
@@ -148,14 +148,30 @@ pub(super) async fn complete_audit_allowed(
                AND generation.lifecycle_state = 'active'
                AND generation.removed_at IS NULL
              ON CONFLICT(scratch_generation_id, conversation_id) DO UPDATE SET
-               lower_ordinal = min(lower_ordinal, excluded.lower_ordinal),
-               high_ordinal = max(high_ordinal, excluded.high_ordinal),
+               lower_order_key = CASE
+                 WHEN (excluded.lower_order_key, excluded.lower_item_id)
+                   < (lower_order_key, lower_item_id)
+                 THEN excluded.lower_order_key ELSE lower_order_key END,
+               lower_item_id = CASE
+                 WHEN (excluded.lower_order_key, excluded.lower_item_id)
+                   < (lower_order_key, lower_item_id)
+                 THEN excluded.lower_item_id ELSE lower_item_id END,
+               high_order_key = CASE
+                 WHEN (excluded.high_order_key, excluded.high_item_id)
+                   > (high_order_key, high_item_id)
+                 THEN excluded.high_order_key ELSE high_order_key END,
+               high_item_id = CASE
+                 WHEN (excluded.high_order_key, excluded.high_item_id)
+                   > (high_order_key, high_item_id)
+                 THEN excluded.high_item_id ELSE high_item_id END,
                audience_revision = excluded.audience_revision",
             )
             .bind(scratch_generation_id)
             .bind(&source.conversation_id)
-            .bind(i64::try_from(source.lower_ordinal).map_err(|_| generic_denial_error())?)
-            .bind(i64::try_from(source.high_ordinal).map_err(|_| generic_denial_error())?)
+            .bind(&source.lower_order_key)
+            .bind(&source.lower_item_id)
+            .bind(&source.high_order_key)
+            .bind(&source.high_item_id)
             .bind(&created_at)
             .bind(scope.destination_conversation_id.as_str())
             .bind(scratch_generation_id)

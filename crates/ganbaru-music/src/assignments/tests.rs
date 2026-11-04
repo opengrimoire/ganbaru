@@ -20,7 +20,9 @@ async fn pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -32,7 +34,7 @@ fn draft(
         phase,
         behavior,
         playlist_id: Some("playlist-1".to_string()),
-        soundscape_id: None,
+        soundscape_preset_id: None,
         soundscape_behavior: MusicSoundscapeBehavior::Inherit,
         provenance_kind: MusicAssignmentProvenanceKind::Explicit,
         provenance_id: None,
@@ -91,6 +93,55 @@ fn context_assignments_replace_all_phases_atomically_and_increment_versions() {
         assert_eq!(replaced[0].version, 2);
         assert_eq!(replaced[1].phase, MusicActivityPhase::LongBreak);
         assert_eq!(replaced[1].version, 1);
+    });
+}
+
+#[test]
+fn context_assignments_keep_unchanged_phases_and_change_only_edited_ones() {
+    block_on(async {
+        let pool = pool().await;
+        let set = |focus: MusicAssignmentBehavior, updated_at_ms: i64| MusicContextAssignmentSet {
+            owner_kind: MusicAssignmentOwnerKind::ProjectDefault,
+            owner_id: "project-1".to_string(),
+            assignments: vec![
+                draft(MusicActivityPhase::Focus, focus),
+                draft(
+                    MusicActivityPhase::ShortBreak,
+                    MusicAssignmentBehavior::PauseMusic,
+                ),
+            ],
+            updated_at_ms,
+        };
+        let initial = super::replace_assignments(
+            &pool,
+            set(
+                MusicAssignmentBehavior::PlayAutomatically,
+                1_700_000_000_000,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let unchanged = super::replace_assignments(
+            &pool,
+            set(
+                MusicAssignmentBehavior::PlayAutomatically,
+                1_700_000_000_100,
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(unchanged, initial);
+
+        let edited = super::replace_assignments(
+            &pool,
+            set(MusicAssignmentBehavior::PrepareSilently, 1_700_000_000_200),
+        )
+        .await
+        .unwrap();
+        assert_eq!(edited[0].version, 2);
+        assert_eq!(edited[0].updated_at_ms, 1_700_000_000_200);
+        assert_eq!(edited[1], initial[1]);
     });
 }
 
@@ -175,5 +226,38 @@ fn work_environment_contract_round_trips_without_a_settings_surface() {
             saved[0].provenance_kind,
             MusicAssignmentProvenanceKind::WorkEnvironment
         );
+    });
+}
+
+#[test]
+fn context_assignments_select_only_presets() {
+    block_on(async {
+        let pool = pool().await;
+        let mut preset = draft(MusicActivityPhase::Focus, MusicAssignmentBehavior::Inherit);
+        preset.soundscape_behavior = MusicSoundscapeBehavior::PlaySelected;
+        preset.soundscape_preset_id = Some("preset-1".to_string());
+        let saved = super::replace_assignments(
+            &pool,
+            MusicContextAssignmentSet {
+                owner_kind: MusicAssignmentOwnerKind::ProjectDefault,
+                owner_id: "project-1".to_string(),
+                assignments: vec![preset.clone()],
+                updated_at_ms: 1_700_000_000_000,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved[0].soundscape_preset_id.as_deref(), Some("preset-1"));
+
+        let mut neither = preset.clone();
+        neither.soundscape_preset_id = None;
+        let mut paused_with_preset = preset;
+        paused_with_preset.soundscape_behavior = MusicSoundscapeBehavior::PauseSoundscape;
+        for invalid in [neither, paused_with_preset] {
+            let error =
+                super::validate_drafts(MusicAssignmentOwnerKind::ProjectDefault, &[invalid])
+                    .unwrap_err();
+            assert_eq!(error.field.as_deref(), Some("soundscapePresetId"));
+        }
     });
 }

@@ -26,7 +26,7 @@ function folder(
     bindingStatus,
     canonicalPath: bindingStatus === "available" ? `/work/${id}` : null,
     lastVerifiedAt: null,
-    currentBranch: null,
+    currentBranch: null, trust: "undecided",
   };
 }
 

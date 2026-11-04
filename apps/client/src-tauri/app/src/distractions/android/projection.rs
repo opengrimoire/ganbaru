@@ -1,15 +1,18 @@
 //! Typed Guardian capture and rule projection derived from persisted native policy.
 
-use super::{MAX_JOURNAL_EVENTS, PendingEvent, is_valid_package_name, normalize_event};
-use crate::distractions::limits::{self as limits, BudgetTotal, UsageSourceDay};
+use super::{MAX_JOURNAL_EVENTS, PendingEvent, normalize_event};
+use crate::distractions::limits::{self as limits, BudgetTotal, UsageSourceDay, UsageWindow};
+use ganbaru_sync::domains::distractions::is_android_package_name;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(super) const MAX_CAPTURE_BYTES: usize = 512 * 1024;
 pub(super) const MAX_CAPTURE_AGE_MS: i64 = 10_000;
-const MAX_MOBILE_RULES: usize = 256;
-const MAX_MOBILE_LIMITS: usize = 128;
+const MAX_MOBILE_RULES: usize = ganbaru_distractions::config::MAX_MOBILE_APP_RULES;
+const MAX_RULE_NAME_CHARS: usize = 120;
+const MAX_LIMIT_NAME_CHARS: usize = 80;
+const MAX_MOBILE_LIMITS: usize = ganbaru_distractions::config::MAX_GUARDIAN_USAGE_LIMITS;
 const MAX_SAFE_SECONDS: i64 = 9_007_199_254_740_991;
 
 /// Localized notification text is the only frontend input to native policy publication.
@@ -95,7 +98,7 @@ impl GuardianCapture {
         for source in &mut capture.local_sources {
             source.source_key = source.source_key.to_ascii_lowercase();
             if source.source_type != "mobile-app"
-                || !is_valid_package_name(&source.source_key)
+                || !is_android_package_name(&source.source_key)
                 || !limits::is_valid_local_date(&source.local_date)
                 || source.local_date < capture.week_start_local_date
                 || source.local_date > capture.local_date
@@ -136,6 +139,19 @@ impl GuardianCapture {
         Ok(())
     }
 
+    /// This device's counters at capture, in the source window's row form.
+    pub(super) fn local_usage(&self) -> Vec<UsageSourceDay> {
+        self.local_sources
+            .iter()
+            .map(|source| UsageSourceDay {
+                source_type: source.source_type.clone(),
+                source_key: source.source_key.clone(),
+                local_date: source.local_date.clone(),
+                elapsed_seconds: source.elapsed_seconds,
+            })
+            .collect()
+    }
+
     fn local_baseline(&self, packages: &HashSet<String>, start: &str) -> Result<i64, String> {
         self.local_sources
             .iter()
@@ -158,45 +174,87 @@ fn enabled() -> bool {
 }
 
 /// Merge complete pending evidence once per immutable identity into bounded source/day groups.
+/// This device's pending rows come first, so a truncated window keeps them and then `sources` in
+/// their given order.
 pub(super) fn include_pending(
     sources: Vec<UsageSourceDay>,
     capture: &GuardianCapture,
     excluded: &HashSet<String>,
-) -> Result<Vec<UsageSourceDay>, String> {
-    let mut groups = std::collections::BTreeMap::new();
-    for row in sources.into_iter().chain(
-        capture
-            .pending
+) -> Result<UsageWindow, String> {
+    let pending = capture
+        .pending
+        .iter()
+        .filter(|event| !excluded.contains(&event.id))
+        .map(|event| UsageSourceDay {
+            source_type: "mobile-app".into(),
+            source_key: event.package_name.clone(),
+            local_date: event.local_date.clone(),
+            elapsed_seconds: event.elapsed_seconds,
+        });
+    limits::merge_source_groups(pending.chain(sources))
+}
+
+/// What the last accepted usage window was computed for, and its sources with pending rows merged.
+#[derive(Clone, Debug)]
+pub(super) struct LastGoodUsage {
+    pub generation: u64,
+    pub vault_id: String,
+    pub rules_revision: u64,
+    pub local_date: String,
+    pub sources: Vec<UsageSourceDay>,
+    /// This device's counters when the window was read, already counted in `sources`.
+    pub local_usage: Vec<UsageSourceDay>,
+}
+
+impl LastGoodUsage {
+    /// The accepted window plus what this device's counters gained since it was read, so usage
+    /// counts once. Growth rows come first, so a window at its bound keeps them.
+    fn with_local_growth(&self, capture: &GuardianCapture) -> Vec<UsageSourceDay> {
+        let accepted: HashMap<(&str, &str), i64> = self
+            .local_usage
             .iter()
-            .filter(|event| !excluded.contains(&event.id))
-            .map(|event| UsageSourceDay {
-                source_type: "mobile-app".into(),
-                source_key: event.package_name.clone(),
-                local_date: event.local_date.clone(),
-                elapsed_seconds: event.elapsed_seconds,
-            }),
-    ) {
-        let key = (row.source_type, row.source_key, row.local_date);
-        let total = groups.entry(key).or_insert(0_i64);
-        *total = total
-            .checked_add(row.elapsed_seconds)
-            .filter(|value| (0..=MAX_SAFE_SECONDS).contains(value))
-            .ok_or("Guardian source aggregate exceeds the integer limit")?;
-        if groups.len() > limits::MAX_SOURCE_GROUPS {
-            return Err("Guardian accounting sources exceed their limit".into());
+            .map(|row| {
+                (
+                    (row.source_key.as_str(), row.local_date.as_str()),
+                    row.elapsed_seconds,
+                )
+            })
+            .collect();
+        let growth = capture.local_usage().into_iter().filter_map(|mut row| {
+            let key = (row.source_key.as_str(), row.local_date.as_str());
+            let counted = accepted.get(&key).copied().unwrap_or(0);
+            row.elapsed_seconds = row.elapsed_seconds.saturating_sub(counted);
+            (row.elapsed_seconds > 0).then_some(row)
+        });
+        match limits::merge_source_groups(growth.chain(self.sources.iter().cloned())) {
+            Ok(window) => window.sources,
+            Err(error) => {
+                eprintln!("Guardian kept the last usage window without local growth: {error}");
+                self.sources.clone()
+            }
         }
     }
-    Ok(groups
-        .into_iter()
-        .map(
-            |((source_type, source_key, local_date), elapsed_seconds)| UsageSourceDay {
-                source_type,
-                source_key,
-                local_date,
-                elapsed_seconds,
-            },
-        )
-        .collect())
+}
+
+/// Sources Guardian keeps enforcing with after a failed read: the last accepted window of the same
+/// generation, vault, rules, and date with this device's later usage added, or else this device's
+/// own captured usage alone. Other devices' usage since that read stays out, which can only delay
+/// a limit.
+pub(super) fn fallback_sources(
+    last_good: Option<&LastGoodUsage>,
+    capture: &GuardianCapture,
+    generation: u64,
+    rules_revision: u64,
+) -> Vec<UsageSourceDay> {
+    match last_good.filter(|usage| {
+        usage.generation == generation
+            && usage.vault_id == capture.vault_id
+            && usage.rules_revision == rules_revision
+            && usage.local_date == capture.local_date
+    }) {
+        Some(usage) => usage.with_local_growth(capture),
+        None => capture.local_usage(),
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -233,6 +291,68 @@ impl Default for MobileSchedule {
     }
 }
 
+/// Whether Guardian's decoder may trim `c` from the ends of a name. Kotlin `trim()` removes the
+/// Unicode separators and the ASCII controls 9 to 13 and 28 to 31, and older Android Unicode data
+/// counts U+180E as a separator; this set covers all of them.
+fn is_guardian_trimmed(c: char) -> bool {
+    c.is_whitespace() || c.is_control() || c == '\u{180E}'
+}
+
+/// A display name Guardian's decoder accepts: `name` without leading or trailing whitespace or
+/// control characters, cut to `max_chars`, or `fallback` when nothing remains. Display names come
+/// from a replicated group that sync admission cannot check against Guardian's rule, and one
+/// refused name would fail the whole publication. `fallback` must start and end with a character
+/// Guardian keeps, as package names and limit identities do.
+fn guardian_label(name: &str, fallback: &str, max_chars: usize) -> String {
+    let trimmed = name.trim_matches(is_guardian_trimmed);
+    let source = if trimmed.is_empty() {
+        fallback
+    } else {
+        trimmed
+    };
+    let cut: String = source.chars().take(max_chars).collect();
+    cut.trim_end_matches(is_guardian_trimmed).to_owned()
+}
+
+/// The rules Guardian enforces: rows with a package, one per lowercase package, up to
+/// [`MAX_MOBILE_RULES`], each under a name Guardian accepts. Enabled rows rank before disabled
+/// ones, keeping their order otherwise, so the cap never displaces an enforced rule with a disabled
+/// one. A row with an invalid package or a surplus row is dropped with a diagnostic, because
+/// failing publication would revoke every rule Guardian holds.
+fn publishable_rules(mut rules: Vec<MobileRule>) -> Vec<MobileRule> {
+    rules.sort_by_key(|rule| !rule.enabled);
+    let mut skipped = 0_usize;
+    let mut packages_seen = HashSet::new();
+    let mut publishable = Vec::new();
+    for mut rule in rules {
+        let Some(package) = rule.package_name.take() else {
+            continue;
+        };
+        if !is_android_package_name(&package) {
+            skipped += 1;
+            eprintln!("Guardian skipped an invalid application rule: {package:?}");
+            continue;
+        }
+        let package = package.to_ascii_lowercase();
+        if packages_seen.insert(package.clone()) {
+            rule.name = guardian_label(&rule.name, &package, MAX_RULE_NAME_CHARS);
+            rule.package_name = Some(package);
+            publishable.push(rule);
+        }
+    }
+    if skipped > 0 {
+        eprintln!("Guardian skipped {skipped} invalid application rules");
+    }
+    if publishable.len() > MAX_MOBILE_RULES {
+        eprintln!(
+            "Guardian publishes the first {MAX_MOBILE_RULES} of {} application rules",
+            publishable.len()
+        );
+        publishable.truncate(MAX_MOBILE_RULES);
+    }
+    publishable
+}
+
 /// Build enforcement and display views from one accepted source window and one captured baseline.
 pub(super) fn build(
     root: &Value,
@@ -242,55 +362,17 @@ pub(super) fn build(
     revision: &str,
 ) -> Result<(Value, Value), String> {
     copy.validate()?;
-    let config = limits::parse_config(root)?;
-    let budgets = limits::totals(&config, sources, &capture.local_date)?;
+    let config = crate::distractions::limits_or_phase_only(root);
+    let budgets = limits::totals(&config, sources, &capture.local_date)?.budgets;
     let mut mobile: MobileSchedule = serde_json::from_value(
         root.pointer("/distractions/mobile")
             .cloned()
             .unwrap_or_else(|| json!({})),
     )
     .map_err(|error| format!("invalid persisted Guardian schedule: {error}"))?;
-    if mobile.blocked_apps.len() > MAX_MOBILE_RULES {
-        return Err("too many Guardian application rules".into());
-    }
-    let mut packages_seen = HashSet::new();
-    mobile
-        .blocked_apps
-        .retain(|rule| rule.package_name.is_some());
-    for rule in &mut mobile.blocked_apps {
-        let package = rule
-            .package_name
-            .as_mut()
-            .ok_or("Guardian application package is missing")?;
-        if !is_valid_package_name(package)
-            || rule.name.trim().is_empty()
-            || rule.name.chars().count() > 120
-        {
-            return Err("persisted Guardian application identity is invalid".into());
-        }
-        *package = package.to_ascii_lowercase();
-    }
-    mobile
-        .blocked_apps
-        .retain(|rule| packages_seen.insert(rule.package_name.clone()));
+    mobile.blocked_apps = publishable_rules(mobile.blocked_apps);
     let mut items = Vec::new();
-    for limit in &config.items {
-        let packages: HashSet<String> = limit
-            .entries
-            .iter()
-            .filter_map(|entry| entry.mobile_app_package.as_ref())
-            .map(|package| package.to_ascii_lowercase())
-            .collect();
-        if packages.is_empty() {
-            continue;
-        }
-        if packages.len() > MAX_MOBILE_RULES
-            || packages
-                .iter()
-                .any(|package| !is_valid_package_name(package))
-        {
-            return Err("persisted Guardian limit packages are invalid".into());
-        }
+    for PackageLimit { limit, packages } in publishable_limits(&config.items) {
         let accepted = |period: &str| -> Result<Value, String> {
             let Some(budget) = budgets
                 .iter()
@@ -306,33 +388,109 @@ pub(super) fn build(
         };
         let mut sorted: Vec<_> = packages.iter().cloned().collect();
         sorted.sort();
-        let name = if limit.name.trim().is_empty() {
-            &limit.id
-        } else {
-            &limit.name
-        };
-        items.push(
-            json!({"id": limit.id, "name": name.chars().take(80).collect::<String>(),
+        let name = guardian_label(&limit.name, &limit.id, MAX_LIMIT_NAME_CHARS);
+        items.push(json!({"id": limit.id, "name": name,
             "enabled": limit.enabled, "minutesPerDay": limit.minutes_per_day,
             "minutesPerWeek": limit.minutes_per_week, "packages": sorted,
-            "acceptedUsage": {"day": accepted("day")?, "week": accepted("week")?}}),
-        );
+            "acceptedUsage": {"day": accepted("day")?, "week": accepted("week")?}}));
     }
-    if items.len() > MAX_MOBILE_LIMITS {
-        return Err("too many Guardian package limits".into());
-    }
-    let rules = json!({"schemaVersion": 1, "vaultId": capture.vault_id, "revision": revision,
+    let mut rules = json!({"schemaVersion": 1, "vaultId": capture.vault_id, "revision": revision,
         "generatedAtEpochMs": capture.observed_at_epoch_ms, "mobile": mobile,
-        "limits": {"enabled": config.enabled, "items": items}, "copy": copy});
-    if serde_json::to_vec(&rules)
-        .map_err(|error| error.to_string())?
-        .len()
-        > MAX_CAPTURE_BYTES
-    {
+        "limits": {"enabled": config.enabled, "items": []}, "copy": copy});
+    rules["limits"]["items"] = Value::Array(fit_limit_items(encoded_len(&rules)?, items)?);
+    if encoded_len(&rules)? > MAX_CAPTURE_BYTES {
         return Err("native Guardian rules exceed their byte limit".into());
     }
     let view = usage_view(capture, &budgets);
     Ok((rules, view))
+}
+
+fn encoded_len(value: &Value) -> Result<usize, String> {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .map_err(|error| error.to_string())
+}
+
+/// One usage limit as Guardian enforces it, with its distinct lowercase packages.
+struct PackageLimit<'a> {
+    limit: &'a limits::UsageLimit,
+    packages: HashSet<String>,
+}
+
+/// The usage limits Guardian enforces: limits with at least one valid package, each with its
+/// first [`MAX_MOBILE_RULES`] distinct packages in entry order, enabled limits ranked before
+/// disabled ones and then in their given order, up to [`MAX_MOBILE_LIMITS`]. An invalid package
+/// or a surplus package or limit is dropped with a diagnostic, because failing publication would
+/// revoke every rule Guardian holds.
+fn publishable_limits(items: &[limits::UsageLimit]) -> Vec<PackageLimit<'_>> {
+    let mut skipped = 0_usize;
+    let mut capped = 0_usize;
+    let mut publishable = Vec::new();
+    for limit in items {
+        let mut packages = HashSet::new();
+        for package in limit
+            .entries
+            .iter()
+            .filter_map(|entry| entry.mobile_app_package.as_deref())
+        {
+            if !is_android_package_name(package) {
+                skipped += 1;
+                continue;
+            }
+            let package = package.to_ascii_lowercase();
+            if packages.len() < MAX_MOBILE_RULES {
+                packages.insert(package);
+            } else if !packages.contains(&package) {
+                capped += 1;
+            }
+        }
+        if !packages.is_empty() {
+            publishable.push(PackageLimit { limit, packages });
+        }
+    }
+    if skipped > 0 {
+        eprintln!("Guardian skipped {skipped} invalid usage limit packages");
+    }
+    if capped > 0 {
+        eprintln!(
+            "Guardian dropped {capped} usage limit packages past {MAX_MOBILE_RULES} per limit"
+        );
+    }
+    publishable.sort_by_key(|item| !item.limit.enabled);
+    if publishable.len() > MAX_MOBILE_LIMITS {
+        eprintln!(
+            "Guardian publishes {MAX_MOBILE_LIMITS} of {} package limits",
+            publishable.len()
+        );
+        publishable.truncate(MAX_MOBILE_LIMITS);
+    }
+    publishable
+}
+
+/// The limit items that fit beside the rest of the rules, whose encoding without items takes
+/// `base_len` bytes: in rank order, each item that fits within [`MAX_CAPTURE_BYTES`] is kept and
+/// one that does not is dropped with a diagnostic, so one oversized limit never displaces the
+/// smaller limits after it.
+fn fit_limit_items(base_len: usize, items: Vec<Value>) -> Result<Vec<Value>, String> {
+    let mut used = base_len;
+    let mut dropped = 0_usize;
+    let mut kept = Vec::with_capacity(items.len());
+    for item in items {
+        let separator = usize::from(!kept.is_empty());
+        let next = used
+            .saturating_add(encoded_len(&item)?)
+            .saturating_add(separator);
+        if next <= MAX_CAPTURE_BYTES {
+            used = next;
+            kept.push(item);
+        } else {
+            dropped += 1;
+        }
+    }
+    if dropped > 0 {
+        eprintln!("Guardian dropped {dropped} usage limits past its byte limit");
+    }
+    Ok(kept)
 }
 
 fn usage_view(capture: &GuardianCapture, budgets: &[BudgetTotal]) -> Value {
@@ -420,6 +578,324 @@ mod tests {
         assert_eq!(view["totals"][0]["entries"][1]["usedSeconds"], 0);
     }
 
+    fn published_packages(rules: &Value) -> Vec<&str> {
+        rules["mobile"]["blockedApps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rule| rule["packageName"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn projection_skips_invalid_rule_and_keeps_valid_rules() {
+        let mut config = root();
+        config["distractions"]["mobile"]["blockedApps"] = json!([
+            {"name": "Video", "packageName": "com.example.video", "enabled": true},
+            {"name": "Hostile", "packageName": "not a package", "enabled": true},
+            {"name": "   ", "packageName": "com.example.blank", "enabled": true},
+            {"name": "n".repeat(MAX_RULE_NAME_CHARS + 1), "packageName": "com.example.long", "enabled": true},
+            {"name": "Unpicked", "enabled": true},
+            {"name": "Feed", "packageName": "Com.Example.Feed", "enabled": true},
+        ]);
+        let built = build(&config, &capture(), &[], &copy(), "native-skip");
+        assert!(built.is_ok(), "one row stopped publication: {built:?}");
+        let (rules, _) = built.unwrap();
+        assert_eq!(
+            published_packages(&rules),
+            [
+                "com.example.video",
+                "com.example.blank",
+                "com.example.long",
+                "com.example.feed"
+            ]
+        );
+        let names = &rules["mobile"]["blockedApps"];
+        assert_eq!(names[1]["name"], "com.example.blank");
+        assert_eq!(names[2]["name"], "n".repeat(MAX_RULE_NAME_CHARS));
+    }
+
+    /// Reads the bound Kotlin's decoder applies to the `name` field in `marker`'s line.
+    fn kotlin_name_bound(source: &str, marker: &str) -> usize {
+        let line = source
+            .lines()
+            .find(|line| line.contains("bounded(item.getString(\"name\")") && line.contains(marker))
+            .unwrap_or_else(|| panic!("Kotlin decoder has no {marker} bound"));
+        let arguments: Vec<&str> = line.split(',').map(str::trim).collect();
+        assert_eq!(arguments[1], "1", "{marker} minimum");
+        arguments[2].parse().unwrap()
+    }
+
+    #[test]
+    fn name_normalization_matches_the_kotlin_decoder() {
+        let source = include_str!(
+            "../../../../../../../crates/ganbaru-mobile-distractions/android/src/main/java/org/opengrimoire/ganbaru/mobile/distractions/DistractionsModels.kt"
+        );
+        assert_eq!(
+            kotlin_name_bound(source, "\"app name\""),
+            MAX_RULE_NAME_CHARS
+        );
+        assert_eq!(
+            kotlin_name_bound(source, "\"limit name\""),
+            MAX_LIMIT_NAME_CHARS
+        );
+        assert!(
+            source.contains("value.trim().also {")
+                && source.contains("it.codePointCount(0, it.length) in minimum..maximum"),
+            "Kotlin bounded() no longer trims and counts code points"
+        );
+        let hostile = [
+            "\u{1F}",
+            "\u{1C}\u{1D}\u{1E}\u{1F}",
+            "\u{85}",
+            "\u{180E}",
+            "\u{A0}\u{2007}\u{202F}\u{3000}",
+            "\t\n\u{B}\u{C}\r",
+            "",
+        ];
+        for name in hostile {
+            let label = guardian_label(name, "com.example.app", MAX_RULE_NAME_CHARS);
+            assert_eq!(label, "com.example.app", "{name:?}");
+        }
+        let padded = format!("{}x", " ".repeat(MAX_LIMIT_NAME_CHARS));
+        assert_eq!(guardian_label(&padded, "id", MAX_LIMIT_NAME_CHARS), "x");
+        let wide = format!("a{}b", "\u{3000}".repeat(MAX_LIMIT_NAME_CHARS));
+        let label = guardian_label(&wide, "id", MAX_LIMIT_NAME_CHARS);
+        assert_eq!(label, "a");
+        assert!(kotlin_accepts(&label, 1, MAX_LIMIT_NAME_CHARS));
+        let long_package = format!("com.{}", "a".repeat(250));
+        let label = guardian_label("\u{1F}", &long_package, MAX_RULE_NAME_CHARS);
+        assert!(kotlin_accepts(&label, 1, MAX_RULE_NAME_CHARS));
+        assert_eq!(guardian_label(" a\u{1F}b ", "id", 80), "a\u{1F}b");
+    }
+
+    /// Kotlin `Char.isWhitespace` on Android: `Character.isWhitespace` or `Character.isSpaceChar`,
+    /// which covers the ASCII controls 9 to 13 and 28 to 31 and the space, line, and paragraph
+    /// separators.
+    fn is_kotlin_whitespace(c: char) -> bool {
+        matches!(
+            c,
+            '\t'..='\r'
+                | '\u{1C}'..='\u{1F}'
+                | ' '
+                | '\u{A0}'
+                | '\u{1680}'
+                | '\u{2000}'..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+        )
+    }
+
+    /// Kotlin `DistractionsRuleCodec.bounded`: trims, then requires a code point count in range.
+    fn kotlin_accepts(value: &str, minimum: usize, maximum: usize) -> bool {
+        let count = value.trim_matches(is_kotlin_whitespace).chars().count();
+        (minimum..=maximum).contains(&count)
+    }
+
+    fn published_names(rules: &Value, pointer: &str) -> Vec<(String, String)> {
+        rules
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|item| {
+                let key = item
+                    .get("packageName")
+                    .or_else(|| item.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_owned();
+                (key, item["name"].as_str().unwrap().to_owned())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn names_kotlin_refuses_are_normalized_before_publication() {
+        let mut config = root();
+        config["distractions"]["mobile"]["blockedApps"] = json!([
+            {"name": "Video", "packageName": "com.example.video", "enabled": true},
+            {"name": "\u{1F}", "packageName": "com.example.control", "enabled": true},
+            {"name": "\u{1C}\u{2007}Feed\u{3000}", "packageName": "com.example.feed", "enabled": true},
+        ]);
+        config["distractions"]["limits"]["items"] = json!([
+            {"id": "control", "name": "\u{1F}", "minutesPerDay": 10,
+                "entries": [{"id": "one", "mobileAppPackage": "com.example.video"}]},
+            {"id": "padded", "name": format!("{}x", " ".repeat(80)), "minutesPerDay": 10,
+                "entries": [{"id": "one", "mobileAppPackage": "com.example.feed"}]},
+        ]);
+        let (rules, _) = build(&config, &capture(), &[], &copy(), "native-names").unwrap();
+        let apps = published_names(&rules, "/mobile/blockedApps");
+        let limits = published_names(&rules, "/limits/items");
+        for (key, name) in apps.iter() {
+            assert!(
+                kotlin_accepts(name, 1, MAX_RULE_NAME_CHARS),
+                "Kotlin refuses rule {key} named {name:?}"
+            );
+        }
+        for (key, name) in limits.iter() {
+            assert!(
+                kotlin_accepts(name, 1, MAX_LIMIT_NAME_CHARS),
+                "Kotlin refuses limit {key} named {name:?}"
+            );
+        }
+        let keys = |names: &[(String, String)]| -> Vec<String> {
+            names.iter().map(|(key, _)| key.clone()).collect()
+        };
+        assert_eq!(
+            keys(&apps),
+            [
+                "com.example.video",
+                "com.example.control",
+                "com.example.feed"
+            ]
+        );
+        assert_eq!(keys(&limits), ["control", "padded"]);
+    }
+
+    #[test]
+    fn limit_parse_failure_keeps_guardian_rules() {
+        let mut config = root();
+        config["distractions"]["limits"]["items"][0]["entries"][2]["websiteHost"] = json!(" ");
+        let built = build(&config, &capture(), &[], &copy(), "native-parse");
+        assert!(built.is_ok(), "one limit stopped publication: {built:?}");
+        let (rules, _) = built.unwrap();
+        assert_eq!(published_packages(&rules), ["com.example.video"]);
+        assert_eq!(rules["limits"], json!({"enabled": false, "items": []}));
+    }
+
+    #[test]
+    fn projection_keeps_publishing_past_the_rule_cap() {
+        let mut config = root();
+        config["distractions"]["mobile"]["blockedApps"] = (0..=MAX_MOBILE_RULES)
+            .map(|index| json!({"name": "App", "packageName": format!("com.flood.app{index}")}))
+            .collect();
+        let built = build(&config, &capture(), &[], &copy(), "native-cap");
+        assert!(built.is_ok(), "the flood stopped publication: {built:?}");
+        let (rules, _) = built.unwrap();
+        let packages = published_packages(&rules);
+        assert_eq!(packages.len(), MAX_MOBILE_RULES);
+        assert_eq!(packages[0], "com.flood.app0");
+    }
+
+    #[test]
+    fn rule_cap_keeps_enabled_rules_before_disabled_ones() {
+        let mut config = root();
+        let mut apps: Vec<Value> = (0..MAX_MOBILE_RULES)
+            .map(|index| {
+                json!({"name": "Off", "packageName": format!("com.off.app{index}"), "enabled": false})
+            })
+            .collect();
+        apps.push(json!({"name": "On", "packageName": "com.on.app", "enabled": true}));
+        config["distractions"]["mobile"]["blockedApps"] = json!(apps);
+        let (rules, _) = build(&config, &capture(), &[], &copy(), "native-rank").unwrap();
+        let packages = published_packages(&rules);
+        assert_eq!(packages.len(), MAX_MOBILE_RULES);
+        assert_eq!(packages[0], "com.on.app");
+        assert_eq!(packages[1], "com.off.app0");
+    }
+
+    fn package_limit(id: &str, enabled: bool, packages: impl IntoIterator<Item = String>) -> Value {
+        let entries: Vec<Value> = packages
+            .into_iter()
+            .enumerate()
+            .map(|(index, package)| json!({"id": format!("e{index}"), "mobileAppPackage": package}))
+            .collect();
+        json!({"id": id, "name": id, "enabled": enabled, "minutesPerDay": 10, "entries": entries})
+    }
+
+    fn published_limit_ids(rules: &Value) -> Vec<&str> {
+        rules["limits"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn limit_publication_keeps_enabled_limits_past_the_count_cap() {
+        let mut config = root();
+        let mut items = vec![package_limit("off", false, ["com.example.off".to_owned()])];
+        items.extend((0..MAX_MOBILE_LIMITS).map(|index| {
+            package_limit(
+                &format!("on{index}"),
+                true,
+                [format!("com.example.on{index}")],
+            )
+        }));
+        config["distractions"]["limits"]["items"] = json!(items);
+        let built = build(&config, &capture(), &[], &copy(), "native-limit-count");
+        assert!(
+            built.is_ok(),
+            "the limit count stopped publication: {built:?}"
+        );
+        let (rules, _) = built.unwrap();
+        let ids = published_limit_ids(&rules);
+        assert_eq!(ids.len(), MAX_MOBILE_LIMITS);
+        assert_eq!(ids[0], "on0");
+        assert!(!ids.contains(&"off"));
+    }
+
+    #[test]
+    fn limit_publication_caps_the_packages_of_one_limit() {
+        let mut config = root();
+        let packages = (0..=MAX_MOBILE_RULES).map(|index| format!("com.wide.app{index:03}"));
+        config["distractions"]["limits"]["items"] = json!([package_limit("wide", true, packages)]);
+        let built = build(&config, &capture(), &[], &copy(), "native-limit-wide");
+        assert!(
+            built.is_ok(),
+            "one wide limit stopped publication: {built:?}"
+        );
+        let (rules, _) = built.unwrap();
+        let published = rules["limits"]["items"][0]["packages"].as_array().unwrap();
+        assert_eq!(published.len(), MAX_MOBILE_RULES);
+        assert!(published.contains(&json!("com.wide.app000")));
+        assert!(!published.contains(&json!(format!("com.wide.app{MAX_MOBILE_RULES:03}"))));
+    }
+
+    #[test]
+    fn limit_publication_fits_the_byte_budget_and_keeps_small_limits() {
+        let mut config = root();
+        let wide_name = "\u{10348}".repeat(MAX_RULE_NAME_CHARS);
+        config["distractions"]["mobile"]["blockedApps"] = (0..MAX_MOBILE_RULES)
+            .map(|index| {
+                json!({"name": wide_name, "packageName": format!("com.r{index:03}.{}", "a".repeat(246))})
+            })
+            .collect();
+        let mut items: Vec<Value> = (0..7)
+            .map(|limit| {
+                package_limit(
+                    &format!("flood{limit}"),
+                    true,
+                    (0..250)
+                        .map(move |index| format!("com.l{limit}p{index:03}.{}", "b".repeat(243))),
+                )
+            })
+            .collect();
+        items.push(package_limit(
+            "honest",
+            true,
+            ["com.example.video".to_owned()],
+        ));
+        config["distractions"]["limits"]["items"] = json!(items);
+        let built = build(&config, &capture(), &[], &copy(), "native-limit-bytes");
+        assert!(
+            built.is_ok(),
+            "the byte flood stopped publication: {built:?}"
+        );
+        let (rules, _) = built.unwrap();
+        assert!(serde_json::to_vec(&rules).unwrap().len() <= MAX_CAPTURE_BYTES);
+        let ids = published_limit_ids(&rules);
+        assert!(ids.contains(&"honest"));
+        assert!(ids.contains(&"flood0"));
+        assert!(ids.len() < 8);
+        assert_eq!(published_packages(&rules).len(), MAX_MOBILE_RULES);
+    }
+
     #[test]
     fn capture_rejects_future_stale_mixed_vault_and_inconsistent_week_evidence() {
         let original = serde_json::to_value(json!({"vaultId": "vault", "journalVaultId": "vault",
@@ -474,7 +950,8 @@ mod tests {
             &capture,
             &excluded,
         )
-        .unwrap();
+        .unwrap()
+        .sources;
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].elapsed_seconds, 1_800);
         let (_, view) = build(&root(), &capture, &sources, &copy(), "native-full-window").unwrap();
@@ -588,8 +1065,182 @@ mod tests {
         assert!(include_pending(vec![source.clone()], &capture, &HashSet::new()).is_err());
         let excluded = HashSet::from(["pending".into()]);
         assert_eq!(
-            include_pending(vec![source], &capture, &excluded).unwrap()[0].elapsed_seconds,
+            include_pending(vec![source], &capture, &excluded)
+                .unwrap()
+                .sources[0]
+                .elapsed_seconds,
             MAX_SAFE_SECONDS
         );
+    }
+
+    #[test]
+    fn failed_read_reuses_only_a_matching_window_and_else_local_usage() {
+        let mut capture = capture();
+        capture.local_sources = vec![CapturedSource {
+            source_type: "mobile-app".into(),
+            source_key: "com.example.local".into(),
+            local_date: capture.local_date.clone(),
+            elapsed_seconds: 45,
+        }];
+        let usage = LastGoodUsage {
+            generation: 3,
+            vault_id: capture.vault_id.clone(),
+            rules_revision: 7,
+            local_date: capture.local_date.clone(),
+            sources: vec![UsageSourceDay {
+                source_type: "website".into(),
+                source_key: "example.com".into(),
+                local_date: capture.local_date.clone(),
+                elapsed_seconds: 600,
+            }],
+            local_usage: capture.local_usage(),
+        };
+        let keys = |sources: Vec<UsageSourceDay>| {
+            sources
+                .into_iter()
+                .map(|source| source.source_key)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(fallback_sources(Some(&usage), &capture, 3, 7)),
+            ["example.com"]
+        );
+        assert_eq!(
+            keys(fallback_sources(None, &capture, 3, 7)),
+            ["com.example.local"]
+        );
+        assert_eq!(
+            keys(fallback_sources(Some(&usage), &capture, 4, 7)),
+            ["com.example.local"]
+        );
+        assert_eq!(
+            keys(fallback_sources(Some(&usage), &capture, 3, 8)),
+            ["com.example.local"]
+        );
+        for mismatch in [
+            LastGoodUsage {
+                vault_id: "other".into(),
+                ..usage.clone()
+            },
+            LastGoodUsage {
+                local_date: "2026-01-01".into(),
+                ..usage.clone()
+            },
+        ] {
+            assert_eq!(
+                keys(fallback_sources(Some(&mismatch), &capture, 3, 7)),
+                ["com.example.local"]
+            );
+        }
+    }
+
+    fn local_row(package: &str, local_date: &str, elapsed_seconds: i64) -> UsageSourceDay {
+        UsageSourceDay {
+            source_type: "mobile-app".into(),
+            source_key: package.into(),
+            local_date: local_date.into(),
+            elapsed_seconds,
+        }
+    }
+
+    fn captured_row(package: &str, local_date: &str, elapsed_seconds: i64) -> CapturedSource {
+        CapturedSource {
+            source_type: "mobile-app".into(),
+            source_key: package.into(),
+            local_date: local_date.into(),
+            elapsed_seconds,
+        }
+    }
+
+    #[test]
+    fn failed_read_counts_local_usage_since_the_last_good_read_once() {
+        const VIDEO: &str = "com.example.video";
+        const TODAY: &str = "2026-10-02";
+        const YESTERDAY: &str = "2026-10-01";
+        let website = UsageSourceDay {
+            source_type: "website".into(),
+            source_key: "video.example".into(),
+            local_date: TODAY.into(),
+            elapsed_seconds: 880,
+        };
+        let mut capture = capture();
+        capture.local_sources = vec![
+            captured_row("com.example.earlier", YESTERDAY, 10),
+            captured_row(VIDEO, TODAY, 70),
+            captured_row("com.example.new", TODAY, 5),
+        ];
+        let usage = LastGoodUsage {
+            generation: 3,
+            vault_id: capture.vault_id.clone(),
+            rules_revision: 7,
+            local_date: capture.local_date.clone(),
+            // Own counters plus 100 seconds another device reported for the same package.
+            sources: vec![
+                local_row("com.example.earlier", YESTERDAY, 10),
+                local_row(VIDEO, TODAY, 120),
+                website.clone(),
+            ],
+            local_usage: vec![
+                local_row("com.example.earlier", YESTERDAY, 10),
+                local_row(VIDEO, TODAY, 20),
+            ],
+        };
+
+        let sources = fallback_sources(Some(&usage), &capture, 3, 7);
+        let mut sorted = sources.clone();
+        sorted.sort_by(|left, right| left.source_key.cmp(&right.source_key));
+        assert_eq!(
+            sorted,
+            [
+                local_row("com.example.earlier", YESTERDAY, 10),
+                local_row("com.example.new", TODAY, 5),
+                local_row(VIDEO, TODAY, 170),
+                website.clone(),
+            ]
+        );
+        let (rules, _) = build(&root(), &capture, &sources, &copy(), "native-growth").unwrap();
+        let day = &rules["limits"]["items"][0]["acceptedUsage"]["day"];
+        assert_eq!(day["usedSeconds"], 1_050);
+        assert_eq!(day["localUsedSecondsAtCapture"], 70);
+
+        capture.local_sources = vec![captured_row(VIDEO, TODAY, 15)];
+        let mut unchanged = fallback_sources(Some(&usage), &capture, 3, 7);
+        unchanged.sort_by(|left, right| left.source_key.cmp(&right.source_key));
+        assert_eq!(
+            unchanged,
+            [
+                local_row("com.example.earlier", YESTERDAY, 10),
+                local_row(VIDEO, TODAY, 120),
+                website,
+            ]
+        );
+    }
+
+    #[test]
+    fn include_pending_stops_at_cap_keeping_local() {
+        let mut capture = capture();
+        capture.pending = vec![serde_json::from_value(pending_value()).unwrap()];
+        let own = UsageSourceDay {
+            source_type: "mobile-app".into(),
+            source_key: "com.example.own".into(),
+            local_date: "2026-09-28".into(),
+            elapsed_seconds: 30,
+        };
+        let flood = (0..limits::MAX_SOURCE_GROUPS).map(|index| UsageSourceDay {
+            source_type: "mobile-app".into(),
+            source_key: format!("com.flood.app{index}"),
+            local_date: "2026-10-02".into(),
+            elapsed_seconds: 60,
+        });
+        let sources = std::iter::once(own.clone()).chain(flood).collect();
+        let window = include_pending(sources, &capture, &HashSet::new());
+        assert!(window.is_ok(), "the flood failed the merge: {window:?}");
+        let window = window.unwrap();
+        assert!(window.truncated);
+        assert_eq!(window.sources.len(), limits::MAX_SOURCE_GROUPS);
+        assert_eq!(window.sources[1], own);
+        assert!(window.sources.iter().any(|row| {
+            row.source_key == "com.example.video" && row.local_date == "2026-10-02"
+        }));
     }
 }

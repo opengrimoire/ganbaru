@@ -15,7 +15,7 @@ The native adapter (`pomodoro/idle.rs`) returns elapsed idle milliseconds when t
 | macOS | `ioreg` `HIDIdleTime` for `IOHIDSystem` | Known camera helper processes running |
 | Android and others | Unavailable | None |
 
-Platforms without a source report unavailable. Mobile lifecycle recovery is separate and never infers idle from missing foreground activity.
+Platforms without a source report unavailable. Mobile lifecycle recovery is separate and never infers idle from missing foreground activity. Command-backed sources read bounded output and are killed at a fixed deadline, so a stalled session bus or probe reports unavailable instead of holding the Focus runtime.
 
 ## Webcam suppression
 

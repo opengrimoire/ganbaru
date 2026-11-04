@@ -3,7 +3,7 @@
   import Check from "@lucide/svelte/icons/check";
   import Crop from "@lucide/svelte/icons/crop";
   import ImagePlus from "@lucide/svelte/icons/image-plus";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import type { EventColor } from "$lib/calendar/types";
   import { EVENT_COLOR_OPTIONS, getEventColor } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";

@@ -1,6 +1,6 @@
 # Notes links and collaboration
 
-Status: implemented for local links, backlinks, comments, suggestions, mentions, and notifications. Shared access control and sync are planned.
+Status: implemented for local links, backlinks, comments, suggestions, mentions, and notifications. Comments and suggestions replicate with the Notes structure between linked devices; shared access control is planned.
 
 ## Inline links
 
@@ -12,7 +12,7 @@ Local links persist as `#notes?page=UUID` with an optional `block=UUID`; a link 
 
 Page and database mentions render as compact inline references. Hovering shows the current title with its route above it, from project group and project through folders and parent notes; a database's route ends with the note that holds it, and its card adds a schematic preview that fetches no rows. Metadata loads only on hover intent or activation. Clicking a database mention opens its database surface. Within the vault, rich clipboard paste keeps mention identities without duplicating their destinations; missing or invalid metadata degrades to readable text or an ordinary hyperlink.
 
-External links open through a Notes-owned native command that allows only HTTP, HTTPS, and email destinations, rejects embedded credentials, fetches nothing, and does not widen the generic opener allowlist. Local references stay within Notes navigation.
+External links, including bookmark, embed, link preview, and media block URLs and links in working-folder Markdown previews, open through a Notes-owned native command that allows only HTTP, HTTPS, and email destinations, rejects embedded credentials, fetches nothing, and does not widen the generic opener allowlist. Local references stay within Notes navigation.
 
 ## Stable links and aliases
 
@@ -60,9 +60,7 @@ Notification previews and deep links obey the same effective page access as dire
 
 ## Collaboration operations
 
-Comment and suggestion mutations append local operation records with actor snapshots, entity versions, and explicit state transitions. Comment body edits currently use last-writer-wins metadata because there is no multi-author rich-text merge for comment bodies.
-
-Resolve, reopen, accept, and reject operations validate base versions. Future sync must surface conflicting stale decisions rather than silently applying them.
+Comment and suggestion mutations write their rows directly with explicit state transitions, and resolve, reopen, accept, and reject validate the version they were based on. Across devices, comment threads, comments, reactions, and suggestions replicate as described in [Notes and Projects](../../data/schema/notes-and-projects.md#sync): concurrent edits, resolves, and deletes of one comment all apply, an accepted suggestion outranks a concurrent reject, and two devices editing one comment body or one discussion's status surface a conflict on the page. Read and mute state stays on each device.
 
 ## Access
 
@@ -74,7 +72,7 @@ Inviting a participant requires an explicit history-visibility choice when prior
 
 ## Sync direction
 
-Local editing remains SQLite-canonical. Planned encrypted CRDT sync may coordinate changes over the same page and block graph, but it must preserve local canonical data, explicit access, conflict semantics, and derivative Markdown boundaries.
+Local editing remains SQLite-canonical. One person's linked devices replicate the page and block graph, databases, comments, suggestions, and assets as signed operations, as described in [Device linking and synchronization](../../data/sync.md). **Planned:** multi-person sharing with encrypted operations and character-level text merging over the same graph, preserving explicit access, conflict semantics, and derivative Markdown boundaries.
 
 Exact encryption, key distribution, offline revocation, and multi-author conflict behavior belong to the [sync](../../data/sync.md) and [access-control](../../data/access-control.md) specifications.
 

@@ -18,17 +18,16 @@ pub struct NoteLocalUserDto {
     id: String,
     display_name: String,
     created_time: String,
-    last_edited_time: String,
 }
 
 impl NoteLocalUserDto {
-    pub fn new(row: NoteLocalUserRow) -> Self {
+    /// Builds the local user with the name read from the profile preference.
+    pub fn new(row: NoteLocalUserRow, display_name: String) -> Self {
         Self {
             object: "user",
             id: row.id,
-            display_name: row.display_name,
+            display_name,
             created_time: row.created_time,
-            last_edited_time: row.last_edited_time,
         }
     }
 }
@@ -85,7 +84,12 @@ impl NoteCommentDto {
         thread: &NoteCommentThreadRow,
         row: NoteCommentRow,
         reactions: Vec<NoteCommentReactionDto>,
+        local_author_name: &str,
     ) -> Result<Self, String> {
+        let display_name = crate::local_user::resolved_display_name_json(
+            row.display_name.as_deref(),
+            local_author_name,
+        );
         Ok(Self {
             object: "comment",
             id: row.id,
@@ -101,7 +105,7 @@ impl NoteCommentDto {
             created_by: NotePartialUserDto::new(row.created_by),
             rich_text: parse_json(row.rich_text, "comment rich_text")?,
             attachments: parse_json(row.attachments, "comment attachments")?,
-            display_name: parse_json(row.display_name, "comment display name")?,
+            display_name: parse_json(display_name, "comment display name")?,
             deleted_at: row.deleted_at,
             reactions,
         })
@@ -238,14 +242,18 @@ pub struct NoteSuggestionDto {
 }
 
 impl NoteSuggestionDto {
-    pub fn new(row: NoteSuggestionRow) -> Result<Self, String> {
+    pub fn new(row: NoteSuggestionRow, local_author_name: &str) -> Result<Self, String> {
+        let display_name = crate::local_user::resolved_display_name_json(
+            row.display_name.as_deref(),
+            local_author_name,
+        );
         Ok(Self {
             object: "suggestion",
             id: row.id,
             page_id: row.page_id,
             block_id: row.block_id,
             created_by: NotePartialUserDto::new(row.created_by),
-            display_name: parse_json(row.display_name, "suggestion display name")?,
+            display_name: parse_json(display_name, "suggestion display name")?,
             status: row.status,
             range_start: row.range_start,
             range_end: row.range_end,

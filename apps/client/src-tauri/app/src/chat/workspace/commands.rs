@@ -1,28 +1,42 @@
 //! Tauri commands for project-owned working-folder management.
 
 use super::{
-    AuthorizedWorkingFolder, CreateProjectWorkingFolderRequest, ProjectWorkingFolder,
-    ProjectWorkingFolderRead, WorkingFolderAuthorizationOperation, WorkingFolderKind,
-    authorize_workspace, ensure_managed_working_folder_binding, filesystem_identity,
-    initialized_repository_identity, open_authorized_workspace, prepare_workspace_binding,
-    probe_repository, remove_active_device_binding, store_active_device_binding,
-    validate_external_folder_outside_vault, workspace_read,
+    AuthorizedWorkingFolder, CreateProjectWorkingFolderRequest, ProjectConfigurationCheck,
+    ProjectWorkingFolder, ProjectWorkingFolderRead, TrustDecisionCheck,
+    WorkingFolderAuthorizationOperation, WorkingFolderKind, authorize_workspace,
+    automatic_trust_record, check_project_configuration, check_trust_decision,
+    ensure_managed_working_folder_binding, exceeded_project_configuration_error,
+    filesystem_identity, initialized_repository_identity, open_authorized_workspace,
+    prepare_workspace_binding, probe_repository, project_configuration_trust_required_error,
+    remove_active_device_binding, store_active_device_binding, trust_decision_required_error,
+    trust_record, validate_external_folder_outside_vault, workspace_read,
+    worktree_project_configuration_refused_error,
 };
+use crate::chat::revocation::ActiveRunSelector;
 use crate::db;
 use crate::projects::working_folders::{
-    read_active_working_folder_scope, update_active_working_folder_scope,
+    WorkingFolderDeviceScope, read_active_working_folder_scope, update_active_working_folder_scope,
 };
 use chrono::{SecondsFormat, Utc};
+use ganbaru_chat::git::hardened::{
+    GitFolderTrust, ProviderConfigurationEntries, folder_configuration,
+    provider_configuration_entries,
+};
 use ganbaru_chat::repository::workspaces as repository;
 use ganbaru_chat_contracts::models::{
-    ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, UtcTimestamp,
+    ChatError, ChatErrorCode, ChatResult, ProjectConfigurationAccess,
+    ProjectConfigurationRestriction, ProjectWorkingFolderId, ProviderConfigurationPath,
+    UtcTimestamp,
 };
+use ganbaru_working_folders::WorkingFolderTrustRecord;
 use sqlx::SqlitePool;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{Manager, Runtime};
-use tauri_plugin_dialog::{DialogExt, FilePath};
+use tauri_plugin_dialog::{
+    DialogExt, FilePath, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
+};
 
 const MAX_PENDING_FOLDER_SELECTIONS: usize = 64;
 
@@ -218,7 +232,7 @@ pub async fn projects_list_working_folders(
     let workspaces = repository::list_workspaces(&pool).await?;
     let mut reconciled = Vec::with_capacity(workspaces.len());
     for workspace in workspaces {
-        ensure_managed_working_folder_binding(&app, &workspace)?;
+        bind_managed_folders_for_listing(&app, [&workspace]);
         reconciled.push(reconcile_working_folder_binding(&app, &pool, workspace).await?);
     }
     let scope = read_active_working_folder_scope(&app).map_err(device_state_error)?;
@@ -240,7 +254,7 @@ pub async fn projects_list_working_folders_cached(
         if workspace.kind == WorkingFolderKind::Managed
             && !scope.bindings.contains_key(&workspace.id)
         {
-            ensure_managed_working_folder_binding(&app, workspace)?;
+            bind_managed_folders_for_listing(&app, [workspace]);
             scope = read_active_working_folder_scope(&app).map_err(device_state_error)?;
         }
     }
@@ -248,6 +262,32 @@ pub async fn projects_list_working_folders_cached(
         .into_iter()
         .map(|workspace| workspace_read(workspace, &scope))
         .collect()
+}
+
+/// Binds managed folders while listing. A folder that cannot be bound stays unbound and is
+/// listed with that state, so one unusable row never hides the others.
+pub(crate) fn bind_managed_folders_for_listing<'folder, R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    folders: impl IntoIterator<Item = &'folder ProjectWorkingFolder>,
+) {
+    bind_active_folders(folders, |folder| {
+        ensure_managed_working_folder_binding(app, folder)
+    });
+}
+
+/// Applies `bind` to every folder, logging a failure and moving on to the next folder.
+pub(crate) fn bind_active_folders<'folder>(
+    folders: impl IntoIterator<Item = &'folder ProjectWorkingFolder>,
+    bind: impl Fn(&ProjectWorkingFolder) -> ChatResult<()>,
+) {
+    for folder in folders {
+        if let Err(error) = bind(folder) {
+            eprintln!(
+                "Managed working folder {} was left unbound: {}",
+                folder.id, error.message
+            );
+        }
+    }
 }
 
 pub(crate) async fn reconcile_working_folder_binding_for_id(
@@ -269,7 +309,179 @@ pub(crate) async fn authorize_working_folder<R: Runtime>(
     let workspace = repository::read_workspace(pool, working_folder_id).await?;
     let workspace = reconcile_working_folder_binding(app, pool, workspace).await?;
     let scope = read_active_working_folder_scope(app).map_err(device_state_error)?;
-    authorize_workspace(&workspace, &scope, operation)
+    let authorized = authorize_workspace(&workspace, &scope, operation)?;
+    if operation != WorkingFolderAuthorizationOperation::GitUser {
+        return Ok(authorized);
+    }
+    require_trust_decision(app, &scope, authorized).await
+}
+
+/// Lets a user Git action run only after this device decided whether to trust
+/// the folder's current Git configuration. A folder with nothing to decide is
+/// recorded as trusted without asking, so ordinary repositories never prompt.
+async fn require_trust_decision<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    scope: &WorkingFolderDeviceScope,
+    mut authorized: AuthorizedWorkingFolder,
+) -> ChatResult<AuthorizedWorkingFolder> {
+    let configuration = folder_configuration(authorized.canonical_path.clone()).await?;
+    match check_trust_decision(scope, &authorized.working_folder_id, &configuration) {
+        TrustDecisionCheck::Decided => Ok(authorized),
+        TrustDecisionCheck::Required => {
+            Err(trust_decision_required_error(&authorized.working_folder_id))
+        }
+        TrustDecisionCheck::NothingToDecide => {
+            store_trust_record(
+                app,
+                &authorized.working_folder_id,
+                automatic_trust_record(&configuration, now_timestamp()?),
+            )?;
+            authorized.git_trust = GitFolderTrust::Trusted(configuration.git);
+            Ok(authorized)
+        }
+    }
+}
+
+/// Settles whether a provider started in `launch` may load project provider
+/// configuration. `root` is the bound folder the trust record describes; for a
+/// worktree environment `launch` differs from it. When no decision covers the
+/// folder's current provider configuration, `undecided` chooses between
+/// failing with [`trust_decision_required_error`] so the user can decide and
+/// retry, and starting restricted for turns nobody is present to answer. A
+/// provider whose `restriction` is unavailable never starts restricted in a
+/// launch folder that holds configuration. `reads` lists the covered paths the
+/// provider loads; one of them past the digest bounds refuses the start
+/// whenever the provider would load it.
+pub async fn settle_project_configuration<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    root: &Path,
+    mut launch: AuthorizedWorkingFolder,
+    undecided: UndecidedProjectConfiguration,
+    restriction: ProjectConfigurationRestriction,
+    reads: &[ProviderConfigurationPath],
+) -> ChatResult<AuthorizedWorkingFolder> {
+    let root_entries = provider_configuration_entries(root.to_path_buf()).await?;
+    let launch_entries = if launch.canonical_path == root {
+        root_entries.clone()
+    } else {
+        provider_configuration_entries(launch.canonical_path.clone()).await?
+    };
+    let scope = read_active_working_folder_scope(app).map_err(device_state_error)?;
+    launch.project_configuration = resolve_loaded_project_configuration(
+        &scope,
+        &launch.working_folder_id,
+        &root_entries,
+        &launch_entries,
+        undecided,
+        restriction,
+        reads,
+    )?;
+    Ok(launch)
+}
+
+/// Resolves the access of one provider start as
+/// [`resolve_project_configuration`] does, and refuses it when the provider
+/// would load a path of `reads` that passed the digest bounds in `launch`. No
+/// decision covers that content, so a provider with no restricted launch is
+/// refused before any question, and an enforcing one only when trusted.
+fn resolve_loaded_project_configuration(
+    scope: &WorkingFolderDeviceScope,
+    working_folder_id: &ProjectWorkingFolderId,
+    root: &ProviderConfigurationEntries,
+    launch: &ProviderConfigurationEntries,
+    undecided: UndecidedProjectConfiguration,
+    restriction: ProjectConfigurationRestriction,
+    reads: &[ProviderConfigurationPath],
+) -> ChatResult<ProjectConfigurationAccess> {
+    if restriction == ProjectConfigurationRestriction::Unavailable {
+        refuse_exceeded_project_configuration(launch, reads)?;
+    }
+    let access = resolve_project_configuration(
+        scope,
+        working_folder_id,
+        root,
+        launch,
+        undecided,
+        restriction,
+    )?;
+    if access == ProjectConfigurationAccess::Trusted {
+        refuse_exceeded_project_configuration(launch, reads)?;
+    }
+    Ok(access)
+}
+
+fn refuse_exceeded_project_configuration(
+    launch: &ProviderConfigurationEntries,
+    reads: &[ProviderConfigurationPath],
+) -> ChatResult<()> {
+    let exceeded = launch
+        .exceeded_paths(reads)
+        .map(ProviderConfigurationPath::relative_path)
+        .collect::<Vec<_>>();
+    if exceeded.is_empty() {
+        Ok(())
+    } else {
+        Err(exceeded_project_configuration_error(&exceeded))
+    }
+}
+
+/// Decides the project configuration access of one provider start from this
+/// device's trust record, refusing a restricted start the provider cannot
+/// enforce while `launch` holds configuration. A worktree holding entries
+/// `root` does not cover is refused before any question, because no decision
+/// about the bound folder can admit them.
+fn resolve_project_configuration(
+    scope: &WorkingFolderDeviceScope,
+    working_folder_id: &ProjectWorkingFolderId,
+    root: &ProviderConfigurationEntries,
+    launch: &ProviderConfigurationEntries,
+    undecided: UndecidedProjectConfiguration,
+    restriction: ProjectConfigurationRestriction,
+) -> ChatResult<ProjectConfigurationAccess> {
+    if restriction == ProjectConfigurationRestriction::Unavailable && !launch.is_covered_by(root) {
+        return Err(worktree_project_configuration_refused_error(root, launch));
+    }
+    let access = match check_project_configuration(scope, working_folder_id, root, launch) {
+        ProjectConfigurationCheck::Decided(access) => access,
+        ProjectConfigurationCheck::Required => match undecided {
+            UndecidedProjectConfiguration::Ask => {
+                return Err(trust_decision_required_error(working_folder_id));
+            }
+            UndecidedProjectConfiguration::Restrict => ProjectConfigurationAccess::Restricted,
+        },
+    };
+    if access == ProjectConfigurationAccess::Restricted
+        && restriction == ProjectConfigurationRestriction::Unavailable
+        && !launch.is_empty()
+    {
+        return Err(project_configuration_trust_required_error(
+            working_folder_id,
+            launch,
+        ));
+    }
+    Ok(access)
+}
+
+/// What a provider start does when no decision covers the folder's project
+/// provider configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UndecidedProjectConfiguration {
+    /// A user started the turn and can decide before it retries.
+    Ask,
+    /// An unattended turn starts without project configuration.
+    Restrict,
+}
+
+fn store_trust_record<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    working_folder_id: &ProjectWorkingFolderId,
+    record: WorkingFolderTrustRecord,
+) -> ChatResult<()> {
+    update_active_working_folder_scope(app, |scope| {
+        scope.trust.insert(working_folder_id.clone(), record);
+        Ok(())
+    })
+    .map_err(device_state_error)
 }
 
 async fn reconcile_working_folder_binding<R: Runtime>(
@@ -444,7 +656,16 @@ pub async fn projects_unbind_working_folder(
     }
     app.state::<crate::chat::terminal::ChatTerminalRegistry>()
         .shutdown_workspace(&working_folder_id)?;
+    app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
+        .clear_folder(&working_folder_id)?;
     remove_active_device_binding(&app, &working_folder_id)?;
+    crate::chat::revocation::revoke_and_stop_active_runs(
+        &app,
+        &pool,
+        ActiveRunSelector::WorkingFolder(&working_folder_id),
+        "The working folder was unbound",
+    )
+    .await?;
     read_workspace(&app, workspace)
 }
 
@@ -485,6 +706,7 @@ pub async fn projects_open_working_folder(
     open_authorized_workspace(&authorized)
 }
 
+/// Removes an external working folder. The removal cascades into Projects and Chat rows.
 #[tauri::command]
 pub async fn projects_remove_working_folder(
     app: tauri::AppHandle,
@@ -494,6 +716,8 @@ pub async fn projects_remove_working_folder(
     let pool = chat_pool(app.clone(), db_url).await?;
     app.state::<crate::chat::terminal::ChatTerminalRegistry>()
         .shutdown_workspace(&working_folder_id)?;
+    app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
+        .clear_folder(&working_folder_id)?;
     repository::remove_external_working_folder(&pool, &working_folder_id).await?;
     remove_active_device_binding(&app, &working_folder_id)
 }
@@ -556,6 +780,18 @@ pub fn projects_last_working_folder(
         .cloned())
 }
 
+/// Refuses archiving a managed working folder. Restoring stays allowed for every kind, so a
+/// managed folder archived by an older replica can still be recovered.
+fn validate_archive_change(kind: WorkingFolderKind, archived: bool) -> ChatResult<()> {
+    if archived && kind == WorkingFolderKind::Managed {
+        return Err(ChatError::validation(
+            "workingFolderId",
+            "Managed project working folders cannot be archived",
+        ));
+    }
+    Ok(())
+}
+
 async fn set_workspace_archived(
     app: tauri::AppHandle,
     db_url: String,
@@ -565,12 +801,7 @@ async fn set_workspace_archived(
 ) -> ChatResult<ProjectWorkingFolderRead> {
     let pool = chat_pool(app.clone(), db_url).await?;
     let existing = repository::read_workspace(&pool, &working_folder_id).await?;
-    if existing.kind == WorkingFolderKind::Managed {
-        return Err(ChatError::validation(
-            "workingFolderId",
-            "Managed project working folders cannot be archived",
-        ));
-    }
+    validate_archive_change(existing.kind, archived)?;
     let workspace = repository::set_workspace_archived(
         &pool,
         &working_folder_id,
@@ -579,6 +810,19 @@ async fn set_workspace_archived(
         &now_timestamp()?,
     )
     .await?;
+    if archived {
+        app.state::<crate::chat::terminal::ChatTerminalRegistry>()
+            .shutdown_workspace(&working_folder_id)?;
+        app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
+            .clear_folder(&working_folder_id)?;
+        crate::chat::revocation::revoke_and_stop_active_runs(
+            &app,
+            &pool,
+            ActiveRunSelector::WorkingFolder(&working_folder_id),
+            "The working folder was archived",
+        )
+        .await?;
+    }
     read_workspace(&app, workspace)
 }
 
@@ -630,6 +874,8 @@ async fn bind_workspace(
     .await?;
     app.state::<crate::chat::terminal::ChatTerminalRegistry>()
         .shutdown_workspace(working_folder_id)?;
+    app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
+        .clear_folder(working_folder_id)?;
     let (probe, binding) = prepare_workspace_binding(&workspace, selection)?;
     let workspace = if workspace.repository_kind
         == ganbaru_chat_contracts::models::RepositoryKind::None
@@ -646,7 +892,15 @@ async fn bind_workspace(
     } else {
         workspace
     };
-    store_active_device_binding(app, &workspace.id, binding)?;
+    if store_active_device_binding(app, &workspace.id, binding)? {
+        crate::chat::revocation::revoke_and_stop_active_runs(
+            app,
+            pool,
+            ActiveRunSelector::WorkingFolder(&workspace.id),
+            "The working folder was moved to another directory",
+        )
+        .await?;
+    }
     read_workspace(app, workspace)
 }
 
@@ -753,6 +1007,181 @@ fn read_workspace(
     workspace_read(workspace, &scope)
 }
 
+/// Localized text for the native trust dialog. The folder path and the
+/// configuration digests are always resolved natively, never by the webview.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkingFolderTrustPrompt {
+    pub title: String,
+    pub message: String,
+    pub trust_label: String,
+    pub untrusted_label: String,
+    pub cancel_label: String,
+}
+
+/// The user's answer to the native trust dialog.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TrustAnswer {
+    Trust,
+    Untrusted,
+    Cancel,
+}
+
+/// Records this device's trust decision for a folder's repository programs,
+/// hooks, and provider configuration. A folder that defines none of them is
+/// trusted without asking, and a trusted record that still matches returns
+/// without asking again. Returns `None` when the user cancels the dialog, which
+/// leaves the previous decision in place.
+#[tauri::command]
+pub async fn projects_decide_working_folder_trust(
+    app: tauri::AppHandle,
+    db_url: String,
+    working_folder_id: ProjectWorkingFolderId,
+    prompt: WorkingFolderTrustPrompt,
+) -> ChatResult<Option<ProjectWorkingFolderRead>> {
+    validate_trust_prompt(&prompt)?;
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let (workspace, authorized) = authorize_for_trust(&app, &pool, &working_folder_id).await?;
+    let configuration = folder_configuration(authorized.canonical_path.clone()).await?;
+    let scope = read_active_working_folder_scope(&app).map_err(device_state_error)?;
+    let current = trust_record(&configuration, true, now_timestamp()?);
+    let already_trusted = scope.trust.get(&working_folder_id).is_some_and(|record| {
+        record.trusted
+            && record.git_configuration_digest == current.git_configuration_digest
+            && record.provider_configuration_digest == current.provider_configuration_digest
+    });
+    if !already_trusted {
+        let trusted = if configuration.git_is_empty && configuration.provider_is_empty {
+            true
+        } else {
+            match ask_trust(&app, &prompt, &authorized.canonical_path).await? {
+                TrustAnswer::Trust => true,
+                TrustAnswer::Untrusted => false,
+                TrustAnswer::Cancel => return Ok(None),
+            }
+        };
+        store_trust_record(
+            &app,
+            &working_folder_id,
+            trust_record(&configuration, trusted, now_timestamp()?),
+        )?;
+    }
+    read_workspace(&app, workspace).map(Some)
+}
+
+/// Revokes trust for a folder on this device. User Git actions then run
+/// without repository programs or hooks until the user trusts it again.
+#[tauri::command]
+pub async fn projects_revoke_working_folder_trust(
+    app: tauri::AppHandle,
+    db_url: String,
+    working_folder_id: ProjectWorkingFolderId,
+) -> ChatResult<ProjectWorkingFolderRead> {
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let (workspace, authorized) = authorize_for_trust(&app, &pool, &working_folder_id).await?;
+    let configuration = folder_configuration(authorized.canonical_path.clone()).await?;
+    store_trust_record(
+        &app,
+        &working_folder_id,
+        trust_record(&configuration, false, now_timestamp()?),
+    )?;
+    read_workspace(&app, workspace)
+}
+
+async fn authorize_for_trust(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    working_folder_id: &ProjectWorkingFolderId,
+) -> ChatResult<(ProjectWorkingFolder, AuthorizedWorkingFolder)> {
+    let workspace = repository::read_workspace(pool, working_folder_id).await?;
+    let workspace = reconcile_working_folder_binding(app, pool, workspace).await?;
+    let scope = read_active_working_folder_scope(app).map_err(device_state_error)?;
+    let authorized =
+        authorize_workspace(&workspace, &scope, WorkingFolderAuthorizationOperation::Git)?;
+    Ok((workspace, authorized))
+}
+
+fn validate_trust_prompt(prompt: &WorkingFolderTrustPrompt) -> ChatResult<()> {
+    let fields = [
+        ("title", prompt.title.as_str(), 160),
+        ("message", prompt.message.as_str(), 2_000),
+        ("trustLabel", prompt.trust_label.as_str(), 80),
+        ("untrustedLabel", prompt.untrusted_label.as_str(), 80),
+        ("cancelLabel", prompt.cancel_label.as_str(), 80),
+    ];
+    for (field, value, limit) in fields {
+        let text = value.trim();
+        let invalid_character = text
+            .chars()
+            .any(|character| character.is_control() && character != '\n');
+        if text.is_empty() || text.len() > limit || invalid_character {
+            return Err(ChatError::validation(field, "Trust prompt text is invalid"));
+        }
+    }
+    let labels = [
+        prompt.trust_label.trim(),
+        prompt.untrusted_label.trim(),
+        prompt.cancel_label.trim(),
+    ];
+    if labels[0] == labels[1] || labels[0] == labels[2] || labels[1] == labels[2] {
+        return Err(ChatError::validation(
+            "trustLabel",
+            "Trust prompt buttons need distinct labels",
+        ));
+    }
+    Ok(())
+}
+
+async fn ask_trust(
+    app: &tauri::AppHandle,
+    prompt: &WorkingFolderTrustPrompt,
+    folder: &Path,
+) -> ChatResult<TrustAnswer> {
+    let trust_label = prompt.trust_label.trim().to_string();
+    let untrusted_label = prompt.untrusted_label.trim().to_string();
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    app.dialog()
+        .message(format!(
+            "{}\n\n{}",
+            prompt.message.trim(),
+            folder.to_string_lossy()
+        ))
+        .title(prompt.title.trim())
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::YesNoCancelCustom(
+            trust_label.clone(),
+            untrusted_label.clone(),
+            prompt.cancel_label.trim().to_string(),
+        ))
+        .show_with_result(move |result| {
+            let _ = sender.try_send(trust_answer(&result, &trust_label, &untrusted_label));
+        });
+    receiver.recv().await.ok_or_else(|| {
+        ChatError::new(
+            ChatErrorCode::Internal,
+            "Trust dialog closed without a result",
+            true,
+        )
+    })
+}
+
+/// Maps a dialog result to an answer. Platforms report custom buttons either
+/// by label or as yes and no; anything else, including closing the dialog,
+/// cancels.
+fn trust_answer(
+    result: &MessageDialogResult,
+    trust_label: &str,
+    untrusted_label: &str,
+) -> TrustAnswer {
+    match result {
+        MessageDialogResult::Yes => TrustAnswer::Trust,
+        MessageDialogResult::No => TrustAnswer::Untrusted,
+        MessageDialogResult::Custom(label) if label == trust_label => TrustAnswer::Trust,
+        MessageDialogResult::Custom(label) if label == untrusted_label => TrustAnswer::Untrusted,
+        _ => TrustAnswer::Cancel,
+    }
+}
+
 async fn chat_pool(app: tauri::AppHandle, db_url: String) -> ChatResult<SqlitePool> {
     db::connect_sqlite(app, db_url)
         .await
@@ -781,11 +1210,427 @@ fn device_state_error(_error: String) -> ChatError {
 #[cfg(test)]
 mod tests {
     use super::{
-        FolderSelectionReceipt, MAX_PENDING_FOLDER_SELECTIONS, ProjectWorkingFolderSelections,
-        preferred_workspace_picker_directory,
+        FolderSelectionReceipt, MAX_PENDING_FOLDER_SELECTIONS, MessageDialogResult,
+        ProjectWorkingFolderSelections, TrustAnswer, UndecidedProjectConfiguration,
+        WorkingFolderDeviceScope, WorkingFolderKind, WorkingFolderTrustPrompt,
+        preferred_workspace_picker_directory, resolve_loaded_project_configuration,
+        resolve_project_configuration, trust_answer, validate_archive_change,
+        validate_trust_prompt,
     };
-    use ganbaru_chat_contracts::models::ProjectWorkingFolderId;
-    use std::path::Path;
+    use ganbaru_chat::git::hardened::{
+        ProviderConfigurationEntries, provider_configuration_entries_blocking,
+    };
+    use ganbaru_chat_contracts::models::{
+        ChatError, ChatErrorCode, ProjectConfigurationAccess, ProjectConfigurationRestriction,
+        ProjectWorkingFolderId, ProviderConfigurationPath, UtcTimestamp,
+    };
+    use ganbaru_working_folders::WorkingFolderTrustRecord;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// A folder holding provider configuration files, removed when dropped.
+    struct ConfigurationFolder(PathBuf);
+
+    impl ConfigurationFolder {
+        fn with_files(files: &[&str]) -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock should be valid")
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "ganbaru-chat-project-configuration-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir(&root).expect("test folder should be created");
+            for relative in files {
+                let path = root.join(relative);
+                fs::create_dir_all(path.parent().expect("file should have a parent"))
+                    .expect("file folder should be created");
+                fs::write(path, "{}").expect("configuration should write");
+            }
+            Self(root)
+        }
+
+        fn entries(&self) -> ProviderConfigurationEntries {
+            provider_configuration_entries_blocking(&self.0).expect("entries should read")
+        }
+    }
+
+    impl Drop for ConfigurationFolder {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn trust_folder_id() -> ProjectWorkingFolderId {
+        ProjectWorkingFolderId::new("working-folder").unwrap()
+    }
+
+    /// A device scope holding a decision about `entries`.
+    fn scope_deciding(
+        entries: &ProviderConfigurationEntries,
+        trusted: bool,
+    ) -> WorkingFolderDeviceScope {
+        let mut scope = WorkingFolderDeviceScope::default();
+        scope.trust.insert(
+            trust_folder_id(),
+            WorkingFolderTrustRecord {
+                git_configuration_digest: String::new(),
+                provider_configuration_digest: entries.digest().to_hex(),
+                trusted,
+                decided_at: UtcTimestamp::new("2026-10-18T12:00:00.000Z").unwrap(),
+            },
+        );
+        scope
+    }
+
+    fn assert_refused_naming(error: ChatError, file: &str) {
+        assert_eq!(error.code, ChatErrorCode::TrustDecisionRequired);
+        assert!(
+            error.message.contains(file),
+            "{file} must be named in: {}",
+            error.message
+        );
+        let details = error.details.expect("the error must name the folder");
+        assert_eq!(details["workingFolderId"], trust_folder_id().as_str());
+    }
+
+    #[test]
+    fn restricted_run_refuses_unenforced_provider_with_configuration() {
+        for file in [".mcp.json", "opencode.json", ".cursor/mcp.json"] {
+            let folder = ConfigurationFolder::with_files(&[file]);
+            let entries = folder.entries();
+
+            let unattended = resolve_project_configuration(
+                &WorkingFolderDeviceScope::default(),
+                &trust_folder_id(),
+                &entries,
+                &entries,
+                UndecidedProjectConfiguration::Restrict,
+                ProjectConfigurationRestriction::Unavailable,
+            );
+            assert_refused_naming(
+                unattended.expect_err("an unattended run must be refused"),
+                file,
+            );
+
+            let declined = resolve_project_configuration(
+                &scope_deciding(&entries, false),
+                &trust_folder_id(),
+                &entries,
+                &entries,
+                UndecidedProjectConfiguration::Ask,
+                ProjectConfigurationRestriction::Unavailable,
+            );
+            assert_refused_naming(
+                declined.expect_err("a declined folder must be refused"),
+                file,
+            );
+        }
+    }
+
+    #[test]
+    fn restricted_run_refuses_exceeded_configuration_only_for_providers_loading_it() {
+        const CLAUDE: &[ProviderConfigurationPath] = &[
+            ProviderConfigurationPath::ClaudeSettings,
+            ProviderConfigurationPath::ClaudeSkills,
+        ];
+        const OPENCODE: &[ProviderConfigurationPath] = &[
+            ProviderConfigurationPath::OpenCodeJson,
+            ProviderConfigurationPath::OpenCode,
+        ];
+        let folder = ConfigurationFolder::with_files(&[
+            ".claude/settings.json",
+            ".opencode/node_modules/a/b/c/d/e/f/g/h/index.js",
+        ]);
+        let entries = folder.entries();
+        let resolve = |scope: &WorkingFolderDeviceScope,
+                       undecided: UndecidedProjectConfiguration,
+                       restriction: ProjectConfigurationRestriction,
+                       reads: &[ProviderConfigurationPath]| {
+            resolve_loaded_project_configuration(
+                scope,
+                &trust_folder_id(),
+                &entries,
+                &entries,
+                undecided,
+                restriction,
+                reads,
+            )
+        };
+        let trusted = scope_deciding(&entries, true);
+
+        for scope in [&trusted, &WorkingFolderDeviceScope::default()] {
+            let error = resolve(
+                scope,
+                UndecidedProjectConfiguration::Ask,
+                ProjectConfigurationRestriction::Unavailable,
+                OPENCODE,
+            )
+            .expect_err("OpenCode must not load an unchecked tree");
+            assert_eq!(error.code, ChatErrorCode::ConfigurationInvalid);
+            assert!(error.message.contains(".opencode"), "{}", error.message);
+            assert!(error.details.is_none(), "trusting cannot settle it");
+        }
+        assert_eq!(
+            resolve(
+                &trusted,
+                UndecidedProjectConfiguration::Ask,
+                ProjectConfigurationRestriction::Enforced,
+                CLAUDE,
+            )
+            .expect("Claude does not load the oversized tree"),
+            ProjectConfigurationAccess::Trusted
+        );
+        assert_eq!(
+            resolve(
+                &WorkingFolderDeviceScope::default(),
+                UndecidedProjectConfiguration::Restrict,
+                ProjectConfigurationRestriction::Enforced,
+                ProviderConfigurationPath::ALL,
+            )
+            .expect("a restricted enforcing start loads no project configuration"),
+            ProjectConfigurationAccess::Restricted
+        );
+        assert_eq!(
+            resolve(
+                &trusted,
+                UndecidedProjectConfiguration::Ask,
+                ProjectConfigurationRestriction::Enforced,
+                ProviderConfigurationPath::ALL,
+            )
+            .expect_err("a trusted start loading the tree must be refused")
+            .code,
+            ChatErrorCode::ConfigurationInvalid
+        );
+    }
+
+    #[test]
+    fn restricted_run_refuses_worktree_configuration_the_trusted_folder_lacks() {
+        let root = ConfigurationFolder::with_files(&[".mcp.json"]);
+        let worktree = ConfigurationFolder::with_files(&[".mcp.json", "opencode.json"]);
+        let result = resolve_project_configuration(
+            &scope_deciding(&root.entries(), true),
+            &trust_folder_id(),
+            &root.entries(),
+            &worktree.entries(),
+            UndecidedProjectConfiguration::Restrict,
+            ProjectConfigurationRestriction::Unavailable,
+        );
+        assert_worktree_refusal(
+            result.expect_err("an uncovered worktree must be refused"),
+            "opencode.json",
+            Some(".mcp.json"),
+        );
+    }
+
+    #[test]
+    fn restricted_run_keeps_folder_guidance_for_a_covered_worktree() {
+        let root = ConfigurationFolder::with_files(&[".cursor/mcp.json"]);
+        let worktree = ConfigurationFolder::with_files(&[".cursor/mcp.json"]);
+        let result = resolve_project_configuration(
+            &scope_deciding(&root.entries(), false),
+            &trust_folder_id(),
+            &root.entries(),
+            &worktree.entries(),
+            UndecidedProjectConfiguration::Ask,
+            ProjectConfigurationRestriction::Unavailable,
+        );
+        assert_refused_naming(
+            result.expect_err("a declined folder must be refused"),
+            ".cursor/mcp.json",
+        );
+    }
+
+    #[test]
+    fn restricted_run_still_asks_for_an_enforced_provider_in_an_uncovered_worktree() {
+        let root = ConfigurationFolder::with_files(&[".mcp.json"]);
+        let worktree = ConfigurationFolder::with_files(&[".mcp.json", ".claude/settings.json"]);
+        let error = resolve_project_configuration(
+            &WorkingFolderDeviceScope::default(),
+            &trust_folder_id(),
+            &root.entries(),
+            &worktree.entries(),
+            UndecidedProjectConfiguration::Ask,
+            ProjectConfigurationRestriction::Enforced,
+        )
+        .expect_err("an interactive start must ask");
+        assert!(error.details.is_some(), "the folder must stay decidable");
+    }
+
+    /// A refusal only worktree changes can settle: it names the worktree and
+    /// the uncovered file, and leaves no folder for the caller to ask about.
+    fn assert_worktree_refusal(error: ChatError, uncovered: &str, covered: Option<&str>) {
+        assert_eq!(error.code, ChatErrorCode::TrustDecisionRequired);
+        assert!(
+            error.message.contains("worktree"),
+            "the worktree must be named in: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains(uncovered),
+            "{uncovered} must be named in: {}",
+            error.message
+        );
+        if let Some(covered) = covered {
+            assert!(
+                !error.message.contains(covered),
+                "{covered} must not be named in: {}",
+                error.message
+            );
+        }
+        assert!(
+            !error.message.contains("Project settings"),
+            "a trust action cannot help: {}",
+            error.message
+        );
+        assert!(
+            error.details.is_none(),
+            "a folder decision cannot settle this refusal"
+        );
+    }
+
+    #[test]
+    fn worktree_refusal_names_the_worktree() {
+        let trusted_root = ConfigurationFolder::with_files(&[".mcp.json"]);
+        let added = ConfigurationFolder::with_files(&[".mcp.json", ".cursor/mcp.json"]);
+        for undecided in [
+            UndecidedProjectConfiguration::Ask,
+            UndecidedProjectConfiguration::Restrict,
+        ] {
+            let refused = resolve_project_configuration(
+                &scope_deciding(&trusted_root.entries(), true),
+                &trust_folder_id(),
+                &trusted_root.entries(),
+                &added.entries(),
+                undecided,
+                ProjectConfigurationRestriction::Unavailable,
+            );
+            assert_worktree_refusal(
+                refused.expect_err("an uncovered worktree must be refused"),
+                ".cursor/mcp.json",
+                Some(".mcp.json"),
+            );
+        }
+
+        let empty_root = ConfigurationFolder::with_files(&[]);
+        let refused = resolve_project_configuration(
+            &WorkingFolderDeviceScope::default(),
+            &trust_folder_id(),
+            &empty_root.entries(),
+            &added.entries(),
+            UndecidedProjectConfiguration::Ask,
+            ProjectConfigurationRestriction::Unavailable,
+        );
+        assert_worktree_refusal(
+            refused.expect_err("a root without configuration covers nothing"),
+            ".cursor/mcp.json",
+            None,
+        );
+
+        let undecided = resolve_project_configuration(
+            &WorkingFolderDeviceScope::default(),
+            &trust_folder_id(),
+            &trusted_root.entries(),
+            &added.entries(),
+            UndecidedProjectConfiguration::Ask,
+            ProjectConfigurationRestriction::Unavailable,
+        );
+        assert_worktree_refusal(
+            undecided.expect_err("no folder decision can cover this worktree"),
+            ".cursor/mcp.json",
+            None,
+        );
+    }
+
+    #[test]
+    fn restricted_run_allows_unenforced_provider_without_configuration() {
+        let empty = ConfigurationFolder::with_files(&[]);
+        for undecided in [
+            UndecidedProjectConfiguration::Ask,
+            UndecidedProjectConfiguration::Restrict,
+        ] {
+            assert_eq!(
+                resolve_project_configuration(
+                    &WorkingFolderDeviceScope::default(),
+                    &trust_folder_id(),
+                    &empty.entries(),
+                    &empty.entries(),
+                    undecided,
+                    ProjectConfigurationRestriction::Unavailable,
+                )
+                .expect("a folder without configuration must run"),
+                ProjectConfigurationAccess::Trusted
+            );
+        }
+
+        let root = ConfigurationFolder::with_files(&[".mcp.json"]);
+        assert_eq!(
+            resolve_project_configuration(
+                &WorkingFolderDeviceScope::default(),
+                &trust_folder_id(),
+                &root.entries(),
+                &empty.entries(),
+                UndecidedProjectConfiguration::Restrict,
+                ProjectConfigurationRestriction::Unavailable,
+            )
+            .expect("a launch folder without configuration must run"),
+            ProjectConfigurationAccess::Restricted
+        );
+    }
+
+    #[test]
+    fn restricted_run_keeps_enforced_provider_with_configuration() {
+        let folder = ConfigurationFolder::with_files(&[".mcp.json"]);
+        let entries = folder.entries();
+        assert_eq!(
+            resolve_project_configuration(
+                &WorkingFolderDeviceScope::default(),
+                &trust_folder_id(),
+                &entries,
+                &entries,
+                UndecidedProjectConfiguration::Restrict,
+                ProjectConfigurationRestriction::Enforced,
+            )
+            .expect("an enforced provider must start restricted"),
+            ProjectConfigurationAccess::Restricted
+        );
+    }
+
+    #[test]
+    fn restricted_run_asks_before_refusing_an_undecided_folder() {
+        let folder = ConfigurationFolder::with_files(&[".mcp.json"]);
+        let entries = folder.entries();
+        let error = resolve_project_configuration(
+            &WorkingFolderDeviceScope::default(),
+            &trust_folder_id(),
+            &entries,
+            &entries,
+            UndecidedProjectConfiguration::Ask,
+            ProjectConfigurationRestriction::Unavailable,
+        )
+        .expect_err("an interactive start must ask");
+        assert_eq!(error.code, ChatErrorCode::TrustDecisionRequired);
+        assert!(!error.message.contains(".mcp.json"));
+    }
+
+    #[test]
+    fn trusted_folder_runs_cursor_with_configuration() {
+        let folder = ConfigurationFolder::with_files(&[".cursor/mcp.json", "opencode.json"]);
+        let entries = folder.entries();
+        assert_eq!(
+            resolve_project_configuration(
+                &scope_deciding(&entries, true),
+                &trust_folder_id(),
+                &entries,
+                &entries,
+                UndecidedProjectConfiguration::Ask,
+                ProjectConfigurationRestriction::Unavailable,
+            )
+            .expect("a trusted folder must run"),
+            ProjectConfigurationAccess::Trusted
+        );
+    }
 
     #[test]
     fn staged_folder_selections_are_bound_to_the_project_target_and_vault() {
@@ -908,5 +1753,97 @@ mod tests {
             preferred_workspace_picker_directory(None, Some(Path::new("missing-documents"))),
             None,
         );
+    }
+
+    fn trust_prompt() -> WorkingFolderTrustPrompt {
+        WorkingFolderTrustPrompt {
+            title: "Trust this folder?".to_string(),
+            message: "Hooks can run programs.\nDecide once.".to_string(),
+            trust_label: "Trust".to_string(),
+            untrusted_label: "Run without hooks".to_string(),
+            cancel_label: "Cancel".to_string(),
+        }
+    }
+
+    #[test]
+    fn trust_prompts_accept_bounded_multiline_text() {
+        assert!(validate_trust_prompt(&trust_prompt()).is_ok());
+    }
+
+    #[test]
+    fn trust_prompts_reject_blank_oversized_or_control_text() {
+        let mut blank = trust_prompt();
+        blank.title = "  ".to_string();
+        assert!(validate_trust_prompt(&blank).is_err());
+
+        let mut oversized = trust_prompt();
+        oversized.trust_label = "x".repeat(81);
+        assert!(validate_trust_prompt(&oversized).is_err());
+
+        let mut control = trust_prompt();
+        control.message = "Trust\u{1b}[2J".to_string();
+        assert!(validate_trust_prompt(&control).is_err());
+    }
+
+    #[test]
+    fn trust_prompts_need_distinct_buttons() {
+        let mut duplicate = trust_prompt();
+        duplicate.cancel_label = " Trust ".to_string();
+        assert!(validate_trust_prompt(&duplicate).is_err());
+    }
+
+    #[test]
+    fn trust_answers_map_labels_and_treat_anything_else_as_cancel() {
+        let answer = |result| trust_answer(&result, "Trust", "Run without hooks");
+        assert_eq!(answer(MessageDialogResult::Yes), TrustAnswer::Trust);
+        assert_eq!(answer(MessageDialogResult::No), TrustAnswer::Untrusted);
+        assert_eq!(
+            answer(MessageDialogResult::Custom("Trust".to_string())),
+            TrustAnswer::Trust
+        );
+        assert_eq!(
+            answer(MessageDialogResult::Custom("Run without hooks".to_string())),
+            TrustAnswer::Untrusted
+        );
+        assert_eq!(
+            answer(MessageDialogResult::Custom("Cancel".to_string())),
+            TrustAnswer::Cancel
+        );
+        assert_eq!(answer(MessageDialogResult::Cancel), TrustAnswer::Cancel);
+        assert_eq!(answer(MessageDialogResult::Ok), TrustAnswer::Cancel);
+    }
+
+    #[test]
+    fn archiving_a_working_folder_stops_its_terminals() {
+        let source = include_str!("commands.rs");
+        let start = source
+            .find("async fn set_workspace_archived(")
+            .expect("archive command exists");
+        let end = start + source[start..].find("\n}\n").expect("archive command ends");
+        let archived_branch = &source[start..end];
+        let archived_branch = &archived_branch[archived_branch
+            .find("if archived {")
+            .expect("archive has an archived branch")..];
+        assert!(
+            archived_branch.contains(".shutdown_workspace(&working_folder_id)?;"),
+            "archiving a folder must stop the terminals started in it"
+        );
+    }
+
+    #[test]
+    fn managed_folders_refuse_archive_but_allow_restore() {
+        let refused = validate_archive_change(WorkingFolderKind::Managed, true)
+            .expect_err("archiving a managed folder is refused");
+        assert_eq!(refused.code, ChatErrorCode::Validation);
+        assert!(
+            validate_archive_change(WorkingFolderKind::Managed, false).is_ok(),
+            "restoring an archived managed folder must stay allowed"
+        );
+    }
+
+    #[test]
+    fn external_folders_allow_archive_and_restore() {
+        assert!(validate_archive_change(WorkingFolderKind::External, true).is_ok());
+        assert!(validate_archive_change(WorkingFolderKind::External, false).is_ok());
     }
 }

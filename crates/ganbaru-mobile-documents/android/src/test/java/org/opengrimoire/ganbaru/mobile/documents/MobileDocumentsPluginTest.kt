@@ -122,4 +122,15 @@ class MobileDocumentsPluginTest {
     val depth = VaultTreeCopyBudget(VaultTreeCopyLimits(maxFiles = 2, maxBytes = 4, maxDepth = 1))
     assertThrows(IllegalArgumentException::class.java) { depth.enter(2) }
   }
+
+  @Test
+  fun pickerResultsMustBeContentFromAnotherApp() {
+    val own = "org.opengrimoire.ganbaru"
+    assertEquals(true, DocumentTextCodec.isAcceptedPickerResult("content", "com.android.providers.downloads.documents", "com.android.providers.downloads", own))
+    assertEquals(true, DocumentTextCodec.isAcceptedPickerResult("content", "com.example.files", null, own))
+    assertEquals(false, DocumentTextCodec.isAcceptedPickerResult("content", "$own.fileprovider", own, own))
+    assertEquals(false, DocumentTextCodec.isAcceptedPickerResult("file", null, null, own))
+    assertEquals(false, DocumentTextCodec.isAcceptedPickerResult("content", null, null, own))
+    assertEquals(false, DocumentTextCodec.isAcceptedPickerResult(null, "com.example.files", "com.example", own))
+  }
 }

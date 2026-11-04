@@ -294,6 +294,10 @@ export function prepareEventUpdatePayload(
         break;
       }
       case "hasCallLink":
+      case "hasMusicPlaylist":
+      case "hasSoundscape":
+      case "windowTitleShortened":
+      case "windowLocationShortened":
       case "surfaceStatus":
       case "surfaceAttendees":
       case "linkedTaskIds":

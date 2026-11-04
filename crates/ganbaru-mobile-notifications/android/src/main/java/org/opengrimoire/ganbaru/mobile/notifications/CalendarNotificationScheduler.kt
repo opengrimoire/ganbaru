@@ -89,19 +89,15 @@ internal object CalendarNotificationScheduler {
     body: String,
     eventId: String?,
   ) {
-    val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-      ?.apply {
-        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        if (eventId != null) putExtra(EXTRA_EVENT_ID, eventId)
-      }
-    val contentIntent = launchIntent?.let {
-      PendingIntent.getActivity(
-        context,
-        id,
-        it,
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-      )
+    val routeIntent = Intent(context, CalendarNotificationRouteActivity::class.java).apply {
+      if (eventId != null) putExtra(EXTRA_EVENT_ID, eventId)
     }
+    val contentIntent = PendingIntent.getActivity(
+      context,
+      id,
+      routeIntent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
     val icon = context.resources.getIdentifier(
       "ic_notification_calendar",
       "drawable",

@@ -33,6 +33,7 @@
     iconColorPanelOpen = $bindable(false),
     skinTonePanelOpen = $bindable(false),
     askIconColorEveryTime,
+    showColorControl,
     colorSelectionBorder,
     gridScrollable,
     gridCanScrollUp,
@@ -67,6 +68,7 @@
     iconColorPanelOpen: boolean;
     skinTonePanelOpen: boolean;
     askIconColorEveryTime: boolean;
+    showColorControl: boolean;
     colorSelectionBorder: string;
     gridScrollable: boolean;
     gridCanScrollUp: boolean;
@@ -117,19 +119,21 @@
   >
     <Shuffle size={14} strokeWidth={1.75} />
   </button>
-  <IconPickerColorControl
-    bind:open={iconColorPanelOpen}
-    color={iconColor}
-    label={t("projects.iconPicker.iconColor")}
-    askEveryTime={askIconColorEveryTime}
-    {colorSelectionBorder}
-    automaticColor={automaticIconColor}
-    colorLabel={iconColorLabel}
-    colorSwatch={iconColorSwatch}
-    onSelect={onSelectIconColor}
-    onOpen={() => { onDefaultIconColorPanelOpen(); skinTonePanelOpen = false; }}
-    onAskEveryTimeChange={onAskIconColorEveryTimeChange}
-  />
+  {#if showColorControl}
+    <IconPickerColorControl
+      bind:open={iconColorPanelOpen}
+      color={iconColor}
+      label={t("projects.iconPicker.iconColor")}
+      askEveryTime={askIconColorEveryTime}
+      {colorSelectionBorder}
+      automaticColor={automaticIconColor}
+      colorLabel={iconColorLabel}
+      colorSwatch={iconColorSwatch}
+      onSelect={onSelectIconColor}
+      onOpen={() => { onDefaultIconColorPanelOpen(); skinTonePanelOpen = false; }}
+      onAskEveryTimeChange={onAskIconColorEveryTimeChange}
+    />
+  {/if}
 </div>
 
 <div

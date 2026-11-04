@@ -1,9 +1,9 @@
 use super::provider_not_found_error;
-use ganbaru_chat_contracts::config::{ChatVaultConfig, RememberedComposerSelection};
+use ganbaru_chat_contracts::config::{ChatDeviceConfig, RememberedComposerSelection};
 use ganbaru_chat_contracts::models::{ChatResult, ProjectWorkingFolderId, ProviderInstanceId};
 
 pub(crate) fn set_working_folder_provider_preference(
-    config: &mut ChatVaultConfig,
+    config: &mut ChatDeviceConfig,
     working_folder_id: ProjectWorkingFolderId,
     instance_id: Option<ProviderInstanceId>,
 ) -> ChatResult<()> {
@@ -30,7 +30,7 @@ pub(crate) fn set_working_folder_provider_preference(
 }
 
 pub(crate) fn remember_composer_selection(
-    config: &mut ChatVaultConfig,
+    config: &mut ChatDeviceConfig,
     selection: RememberedComposerSelection,
 ) -> ChatResult<()> {
     if !config

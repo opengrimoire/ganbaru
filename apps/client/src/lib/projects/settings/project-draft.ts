@@ -10,10 +10,11 @@ import {
   PROJECT_MAX_DURATION_MINUTES,
   type ProjectDefaultEventTimeMode,
 } from "./duration";
-import type {
-  Project,
-  ProjectLifecycleStatus,
-  ProjectUpdate,
+import {
+  DEFAULT_PROJECT_ICON,
+  type Project,
+  type ProjectLifecycleStatus,
+  type ProjectUpdate,
 } from "$lib/projects/types";
 import {
   DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
@@ -57,14 +58,13 @@ export interface ProjectDraftUpdateInput {
   project: Project;
   draft: ProjectDraft;
   visibleGroupIds: ReadonlySet<string>;
-  nextSortOrderForGroup: (groupId: string, excludeProjectId: string) => number;
 }
 
 export function emptyProjectDraft(): ProjectDraft {
   return {
     groupId: "",
     name: "",
-    icon: "lucide:folder",
+    icon: DEFAULT_PROJECT_ICON,
     status: "active",
     color: undefined,
     defaultEventName: "",
@@ -147,9 +147,7 @@ export function projectUpdateFromDraft(
       name,
       icon: input.draft.icon,
       color: input.draft.color ?? null,
-      sortOrder: groupId === input.project.groupId
-        ? input.project.sortOrder
-        : input.nextSortOrderForGroup(groupId, input.project.id),
+      placement: groupId === input.project.groupId ? undefined : { kind: "end" },
       status: input.draft.status,
       defaultEventName: normalizeOptionalText(input.draft.defaultEventName),
       defaultEventTimeMode: input.draft.defaultEventTimeMode,

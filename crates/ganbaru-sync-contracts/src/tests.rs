@@ -1,9 +1,15 @@
+mod authorization;
+mod backup;
 mod bounds;
 mod certificates;
 mod clock;
+mod crypto;
 mod fixtures;
 mod golden;
 mod ids;
+mod key_entries;
 mod mutation;
 mod order_keys;
+mod recovery;
+mod relay;
 mod vectors;

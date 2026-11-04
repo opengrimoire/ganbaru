@@ -1,0 +1,648 @@
+//! Connection admission bounds for the coordinator, member, and server listeners.
+//!
+//! A connection is pending from accept until its TLS handshake shows a linked, unrevoked device
+//! certificate. Pending connections (handshakes, enrollment, contact requests, revoked devices)
+//! have a small global budget and a smaller per-source budget, so one LAN host cannot exhaust
+//! file descriptors or crowd out linked devices. Authenticated connections draw from their own
+//! larger budget, again bounded per source. Contact messages, which reach the vault database
+//! without authentication, also spend a per-source token bucket. Every bound sits far above what
+//! a household of linked devices uses.
+//!
+//! An Internet-facing listener can also keep part of the pending budget for sources that
+//! authenticated recently, so a flood from unknown addresses does not lock out enrolled devices,
+//! and can move a connection that proved a setup secret to a setup budget of its own, so a long
+//! upload does not hold a pending slot.
+
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::{Arc, Mutex, MutexGuard};
+#[cfg(desktop)]
+use std::time::{Duration, Instant};
+
+/// Connections still in the handshake or without a linked certificate, across all sources.
+pub const MAX_PENDING_CONNECTIONS: usize = 32;
+/// Pending connections from one IPv4 address or one IPv6 /64 prefix.
+pub const MAX_PENDING_CONNECTIONS_PER_SOURCE: usize = 8;
+/// Concurrent connections from linked devices, which are capped at 32 per vault.
+pub const MAX_AUTHENTICATED_CONNECTIONS: usize = 64;
+/// Authenticated connections from one IPv4 address or one IPv6 /64 prefix, so one linked device
+/// cannot hold the whole authenticated budget. A device needs only a few at once.
+pub const MAX_AUTHENTICATED_CONNECTIONS_PER_SOURCE: usize = 16;
+/// Contact messages one source may send at once. A requester sends one request and then polls
+/// about once a minute, so even a household behind one address stays far below it.
+#[cfg(desktop)]
+pub const CONTACT_MESSAGE_BURST: u32 = 16;
+/// Time in which one source earns another contact message.
+#[cfg(desktop)]
+pub const CONTACT_MESSAGE_REFILL: Duration = Duration::from_secs(1);
+/// Sources whose contact budget is tracked at once. Sources with a full budget are forgotten
+/// first, so the map only fills when that many sources are sending at the same time.
+#[cfg(desktop)]
+const MAX_CONTACT_SOURCES: usize = 1_024;
+/// Sources remembered as having authenticated, when a listener keeps a known source reserve. The
+/// least recently authenticated source is forgotten first.
+const MAX_KNOWN_SOURCES: usize = 1_024;
+
+/// Groups addresses one host can cheaply rotate through: IPv6 hosts pick any address in their
+/// /64, and IPv4-mapped IPv6 addresses count as the IPv4 host.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum SourceKey {
+    V4([u8; 4]),
+    V6Prefix([u8; 8]),
+}
+
+impl SourceKey {
+    fn from_address(address: IpAddr) -> Self {
+        match address {
+            IpAddr::V4(address) => Self::V4(address.octets()),
+            IpAddr::V6(address) => match address.to_ipv4_mapped() {
+                Some(mapped) => Self::V4(mapped.octets()),
+                None => {
+                    let mut prefix = [0_u8; 8];
+                    prefix.copy_from_slice(&address.octets()[..8]);
+                    Self::V6Prefix(prefix)
+                }
+            },
+        }
+    }
+}
+
+/// Token bucket for the contact messages of one source.
+#[cfg(desktop)]
+#[derive(Clone, Copy, Debug)]
+struct ContactBudget {
+    tokens: u32,
+    refilled_at: Instant,
+}
+
+#[cfg(desktop)]
+impl ContactBudget {
+    fn full(now: Instant) -> Self {
+        Self {
+            tokens: CONTACT_MESSAGE_BURST,
+            refilled_at: now,
+        }
+    }
+
+    fn refill(&mut self, now: Instant) {
+        let elapsed = now.saturating_duration_since(self.refilled_at);
+        let earned = elapsed.as_nanos() / CONTACT_MESSAGE_REFILL.as_nanos();
+        if earned == 0 {
+            return;
+        }
+        let tokens = u128::from(self.tokens) + earned;
+        match u32::try_from(tokens) {
+            Ok(tokens) if tokens < CONTACT_MESSAGE_BURST => {
+                self.tokens = tokens;
+                // `earned` is below the burst here, so it fits a u32.
+                self.refilled_at += CONTACT_MESSAGE_REFILL * u32::try_from(earned).unwrap_or(0);
+            }
+            _ => *self = Self::full(now),
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.tokens >= CONTACT_MESSAGE_BURST
+    }
+}
+
+#[derive(Default)]
+struct Counts {
+    pending: usize,
+    pending_by_source: HashMap<SourceKey, usize>,
+    authenticated: usize,
+    authenticated_by_source: HashMap<SourceKey, usize>,
+    setup: usize,
+    setup_by_source: HashMap<SourceKey, usize>,
+    /// Sources that authenticated, with the tick of their latest authentication.
+    known_sources: HashMap<SourceKey, u64>,
+    known_tick: u64,
+    #[cfg(desktop)]
+    contact_budgets: HashMap<SourceKey, ContactBudget>,
+}
+
+impl Counts {
+    /// Remembers that `source` authenticated, forgetting the least recent source when full.
+    fn remember(&mut self, source: SourceKey) {
+        self.known_tick += 1;
+        if !self.known_sources.contains_key(&source)
+            && self.known_sources.len() >= MAX_KNOWN_SOURCES
+        {
+            let oldest = self
+                .known_sources
+                .iter()
+                .min_by_key(|(_, tick)| **tick)
+                .map(|(key, _)| *key);
+            if let Some(oldest) = oldest {
+                self.known_sources.remove(&oldest);
+            }
+        }
+        self.known_sources.insert(source, self.known_tick);
+    }
+}
+
+/// Takes one slot of a budget counted by `total` and `by_source`, or returns false when the
+/// global or per-source bound is reached.
+fn take_slot(
+    total: &mut usize,
+    by_source: &mut HashMap<SourceKey, usize>,
+    source: SourceKey,
+    max_total: usize,
+    max_per_source: usize,
+) -> bool {
+    let from_source = by_source.get(&source).copied().unwrap_or(0);
+    if *total >= max_total || from_source >= max_per_source {
+        return false;
+    }
+    *total += 1;
+    by_source.insert(source, from_source + 1);
+    true
+}
+
+/// Releases one slot that [`take_slot`] took.
+fn release_slot(total: &mut usize, by_source: &mut HashMap<SourceKey, usize>, source: SourceKey) {
+    *total = total.saturating_sub(1);
+    if let Some(from_source) = by_source.get_mut(&source) {
+        *from_source = from_source.saturating_sub(1);
+        if *from_source == 0 {
+            by_source.remove(&source);
+        }
+    }
+}
+
+/// Shared admission state for one listener.
+#[derive(Clone)]
+pub struct ConnectionLimits {
+    counts: Arc<Mutex<Counts>>,
+    max_pending: usize,
+    max_pending_per_source: usize,
+    max_authenticated: usize,
+    max_authenticated_per_source: usize,
+    known_source_reserve: usize,
+    max_setup: usize,
+    max_setup_per_source: usize,
+}
+
+impl Default for ConnectionLimits {
+    fn default() -> Self {
+        Self::new(
+            MAX_PENDING_CONNECTIONS,
+            MAX_PENDING_CONNECTIONS_PER_SOURCE,
+            MAX_AUTHENTICATED_CONNECTIONS,
+            MAX_AUTHENTICATED_CONNECTIONS_PER_SOURCE,
+        )
+    }
+}
+
+impl ConnectionLimits {
+    pub fn new(
+        max_pending: usize,
+        max_pending_per_source: usize,
+        max_authenticated: usize,
+        max_authenticated_per_source: usize,
+    ) -> Self {
+        Self {
+            counts: Arc::default(),
+            max_pending,
+            max_pending_per_source,
+            max_authenticated,
+            max_authenticated_per_source,
+            known_source_reserve: 0,
+            max_setup: 0,
+            max_setup_per_source: 0,
+        }
+    }
+
+    /// Keeps `reserve` pending slots for sources that authenticated or proved a setup secret
+    /// recently: a source not among them is admitted only while fewer than
+    /// `max_pending - reserve` connections are pending. The default reserve is 0.
+    pub fn with_known_source_reserve(mut self, reserve: usize) -> Self {
+        self.known_source_reserve = reserve;
+        self
+    }
+
+    /// Gives connections that proved a setup secret a budget of their own, `max_total` in all
+    /// and `max_per_source` per source, see [`PendingPermit::setup`]. The default is none.
+    pub fn with_setup_slots(mut self, max_total: usize, max_per_source: usize) -> Self {
+        self.max_setup = max_total;
+        self.max_setup_per_source = max_per_source;
+        self
+    }
+
+    /// Admits a newly accepted connection as pending, or returns `None` when the global or
+    /// per-source pending budget is full and the socket should be closed.
+    pub fn admit(&self, source: IpAddr) -> Option<PendingPermit> {
+        let source = SourceKey::from_address(source);
+        let mut counts = self.lock();
+        let max_pending =
+            if self.known_source_reserve == 0 || counts.known_sources.contains_key(&source) {
+                self.max_pending
+            } else {
+                self.max_pending.saturating_sub(self.known_source_reserve)
+            };
+        let counts = &mut *counts;
+        if !take_slot(
+            &mut counts.pending,
+            &mut counts.pending_by_source,
+            source,
+            max_pending,
+            self.max_pending_per_source,
+        ) {
+            return None;
+        }
+        Some(PendingPermit {
+            limits: self.clone(),
+            source,
+        })
+    }
+
+    /// Spends one contact message from the budget of `source`. Returns false when the source
+    /// sent too many recently, or when too many sources are sending at once, and the requester
+    /// should be told to retry later.
+    #[cfg(desktop)]
+    pub fn take_contact_message(&self, source: IpAddr, now: Instant) -> bool {
+        let source = SourceKey::from_address(source);
+        let mut counts = self.lock();
+        let budgets = &mut counts.contact_budgets;
+        if !budgets.contains_key(&source) && budgets.len() >= MAX_CONTACT_SOURCES {
+            budgets.retain(|_, budget| {
+                budget.refill(now);
+                !budget.is_full()
+            });
+            if budgets.len() >= MAX_CONTACT_SOURCES {
+                return false;
+            }
+        }
+        let budget = budgets
+            .entry(source)
+            .or_insert_with(|| ContactBudget::full(now));
+        budget.refill(now);
+        if budget.tokens == 0 {
+            return false;
+        }
+        budget.tokens -= 1;
+        true
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Counts> {
+        // Counts stay consistent under poisoning because every update is a single step.
+        self.counts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Holds a pending slot until dropped or exchanged for an authenticated slot.
+pub struct PendingPermit {
+    limits: ConnectionLimits,
+    source: SourceKey,
+}
+
+impl PendingPermit {
+    /// Moves the connection to the authenticated budget and releases its pending slot. Returns
+    /// `None` when the global or per-source authenticated budget is full; the pending slot is
+    /// released either way. The source is remembered as known when the listener keeps a known
+    /// source reserve.
+    pub fn authenticate(self) -> Option<AuthenticatedPermit> {
+        let limits = self.limits.clone();
+        let source = self.source;
+        // Build the permit only when admitted, since dropping one releases an authenticated slot.
+        limits
+            .promote(source, Promotion::Authenticated)
+            .then(|| AuthenticatedPermit { limits, source })
+    }
+
+    /// Moves a connection that proved a setup secret to the setup budget and releases its
+    /// pending slot, so a long upload does not hold pre-authentication budget. Returns `None`
+    /// when the setup budget is full or the listener has none; the pending slot is released
+    /// either way. The source is remembered as known, like an authenticated one.
+    pub fn setup(self) -> Option<SetupPermit> {
+        let limits = self.limits.clone();
+        let source = self.source;
+        limits
+            .promote(source, Promotion::Setup)
+            .then(|| SetupPermit { limits, source })
+    }
+}
+
+/// The budget a pending connection moves to.
+#[derive(Clone, Copy)]
+enum Promotion {
+    Authenticated,
+    Setup,
+}
+
+impl ConnectionLimits {
+    /// Takes a slot of the `promotion` budget for `source` and remembers the source as known.
+    /// The lock is released on return, before the caller's pending permit drops and locks again.
+    fn promote(&self, source: SourceKey, promotion: Promotion) -> bool {
+        let mut guard = self.lock();
+        let counts = &mut *guard;
+        if self.known_source_reserve > 0 {
+            counts.remember(source);
+        }
+        match promotion {
+            Promotion::Authenticated => take_slot(
+                &mut counts.authenticated,
+                &mut counts.authenticated_by_source,
+                source,
+                self.max_authenticated,
+                self.max_authenticated_per_source,
+            ),
+            Promotion::Setup => take_slot(
+                &mut counts.setup,
+                &mut counts.setup_by_source,
+                source,
+                self.max_setup,
+                self.max_setup_per_source,
+            ),
+        }
+    }
+}
+
+impl Drop for PendingPermit {
+    fn drop(&mut self) {
+        let mut counts = self.limits.lock();
+        let counts = &mut *counts;
+        release_slot(
+            &mut counts.pending,
+            &mut counts.pending_by_source,
+            self.source,
+        );
+    }
+}
+
+/// Holds an authenticated slot until dropped.
+pub struct AuthenticatedPermit {
+    limits: ConnectionLimits,
+    source: SourceKey,
+}
+
+impl Drop for AuthenticatedPermit {
+    fn drop(&mut self) {
+        let mut counts = self.limits.lock();
+        let counts = &mut *counts;
+        release_slot(
+            &mut counts.authenticated,
+            &mut counts.authenticated_by_source,
+            self.source,
+        );
+    }
+}
+
+/// Holds a setup slot until dropped.
+pub struct SetupPermit {
+    limits: ConnectionLimits,
+    source: SourceKey,
+}
+
+impl Drop for SetupPermit {
+    fn drop(&mut self) {
+        let mut counts = self.limits.lock();
+        let counts = &mut *counts;
+        release_slot(&mut counts.setup, &mut counts.setup_by_source, self.source);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    fn v4(last: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(192, 168, 1, last))
+    }
+
+    #[test]
+    fn pending_connections_are_bounded_per_source_and_globally() {
+        let limits = ConnectionLimits::new(5, 2, 4, 4);
+        let first = limits.admit(v4(10)).expect("first from source");
+        let _second = limits.admit(v4(10)).expect("second from source");
+        assert!(limits.admit(v4(10)).is_none(), "per-source bound");
+        let _third = limits.admit(v4(11)).expect("other source");
+        let _fourth = limits.admit(v4(11)).expect("other source");
+        let _fifth = limits.admit(v4(12)).expect("third source");
+        assert!(limits.admit(v4(13)).is_none(), "global bound");
+        drop(first);
+        assert!(limits.admit(v4(10)).is_some(), "released slot is reusable");
+    }
+
+    #[test]
+    fn ipv6_sources_are_grouped_by_prefix_and_mapped_ipv4_by_host() {
+        let limits = ConnectionLimits::new(10, 1, 4, 4);
+        let _held = limits
+            .admit("fd00:1:2:3::1".parse().expect("address"))
+            .expect("first in prefix");
+        assert!(
+            limits
+                .admit("fd00:1:2:3:ffff::9".parse().expect("address"))
+                .is_none(),
+            "another address in the same /64"
+        );
+        assert!(
+            limits
+                .admit("fd00:1:2:4::1".parse().expect("address"))
+                .is_some()
+        );
+        let _mapped = limits
+            .admit(IpAddr::V6(Ipv4Addr::new(10, 0, 0, 5).to_ipv6_mapped()))
+            .expect("mapped IPv4");
+        assert!(
+            limits
+                .admit(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)))
+                .is_none()
+        );
+        assert!(limits.admit(IpAddr::V6(Ipv6Addr::LOCALHOST)).is_some());
+    }
+
+    #[test]
+    fn contact_messages_spend_a_per_source_budget_that_refills() {
+        let limits = ConnectionLimits::default();
+        let start = Instant::now();
+        for _ in 0..CONTACT_MESSAGE_BURST {
+            assert!(limits.take_contact_message(v4(10), start));
+        }
+        assert!(!limits.take_contact_message(v4(10), start), "burst spent");
+        assert!(
+            limits.take_contact_message(v4(11), start),
+            "other sources keep their own budget"
+        );
+        let almost = start + CONTACT_MESSAGE_REFILL - Duration::from_millis(1);
+        assert!(!limits.take_contact_message(v4(10), almost));
+        let refilled = start + CONTACT_MESSAGE_REFILL;
+        assert!(limits.take_contact_message(v4(10), refilled));
+        assert!(!limits.take_contact_message(v4(10), refilled), "one earned");
+        let rested = refilled + CONTACT_MESSAGE_REFILL * (CONTACT_MESSAGE_BURST * 4);
+        for _ in 0..CONTACT_MESSAGE_BURST {
+            assert!(limits.take_contact_message(v4(10), rested));
+        }
+        assert!(
+            !limits.take_contact_message(v4(10), rested),
+            "a long rest refills only to the burst"
+        );
+    }
+
+    #[test]
+    fn contact_budgets_forget_rested_sources_when_many_are_tracked() {
+        let limits = ConnectionLimits::default();
+        let start = Instant::now();
+        let source = |index: usize| {
+            let [.., high, low] = u32::try_from(index).expect("index").to_be_bytes();
+            IpAddr::V4(Ipv4Addr::new(10, 1, high, low))
+        };
+        for index in 0..MAX_CONTACT_SOURCES {
+            assert!(limits.take_contact_message(source(index), start));
+        }
+        let newcomer = source(MAX_CONTACT_SOURCES);
+        assert!(
+            !limits.take_contact_message(newcomer, start),
+            "every tracked source is still active"
+        );
+        assert!(
+            limits.take_contact_message(source(0), start),
+            "tracked sources keep sending"
+        );
+        let rested = start + CONTACT_MESSAGE_REFILL;
+        assert!(limits.take_contact_message(newcomer, rested));
+        assert!(limits.lock().contact_budgets.len() <= MAX_CONTACT_SOURCES);
+    }
+
+    #[test]
+    fn authentication_frees_the_pending_slot_and_respects_its_own_bound() {
+        let limits = ConnectionLimits::new(1, 1, 1, 1);
+        let authenticated = limits
+            .admit(v4(10))
+            .expect("pending")
+            .authenticate()
+            .expect("authenticated slot");
+        let pending = limits.admit(v4(10)).expect("pending slot was released");
+        assert!(pending.authenticate().is_none(), "authenticated bound");
+        assert!(
+            limits.admit(v4(10)).is_some(),
+            "rejected upgrade releases its slot"
+        );
+        drop(authenticated);
+        assert!(
+            limits
+                .admit(v4(10))
+                .and_then(PendingPermit::authenticate)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn known_source_keeps_a_slot_during_a_flood() {
+        let limits = ConnectionLimits::new(4, 4, 8, 8).with_known_source_reserve(2);
+        let known = v4(10);
+        drop(
+            limits
+                .admit(known)
+                .and_then(PendingPermit::authenticate)
+                .expect("the known source authenticates once"),
+        );
+        let flood: Vec<PendingPermit> =
+            (20..40).filter_map(|last| limits.admit(v4(last))).collect();
+        assert_eq!(
+            flood.len(),
+            2,
+            "unknown sources fill only the unreserved part"
+        );
+        let first = limits
+            .admit(known)
+            .expect("a known source is admitted during a flood");
+        let _second = limits.admit(known).expect("the reserve holds two slots");
+        assert!(
+            limits.admit(known).is_none(),
+            "the global bound still holds"
+        );
+        drop(first);
+        assert!(
+            limits.admit(v4(41)).is_none(),
+            "a freed reserved slot stays reserved"
+        );
+        drop(flood);
+        assert!(
+            limits.admit(v4(41)).is_some(),
+            "the flood's slots are released"
+        );
+    }
+
+    #[test]
+    fn a_proven_setup_frees_its_pending_slot_and_has_its_own_bound() {
+        let lan = ConnectionLimits::new(4, 4, 4, 4);
+        assert!(
+            lan.admit(v4(10)).and_then(PendingPermit::setup).is_none(),
+            "a listener without setup slots admits no setup"
+        );
+        let limits = ConnectionLimits::new(1, 1, 4, 4).with_setup_slots(2, 1);
+        let setup = limits
+            .admit(v4(10))
+            .and_then(PendingPermit::setup)
+            .expect("setup slot");
+        let pending = limits.admit(v4(10)).expect("the pending slot was released");
+        assert!(pending.setup().is_none(), "per-source setup bound");
+        let other = limits
+            .admit(v4(11))
+            .and_then(PendingPermit::setup)
+            .expect("another source");
+        assert!(
+            limits
+                .admit(v4(12))
+                .and_then(PendingPermit::setup)
+                .is_none(),
+            "global setup bound"
+        );
+        drop((setup, other));
+        let counts = limits.lock();
+        assert_eq!((counts.pending, counts.setup), (0, 0));
+        assert!(counts.pending_by_source.is_empty() && counts.setup_by_source.is_empty());
+    }
+
+    #[test]
+    fn known_sources_are_bounded_and_forget_the_oldest() {
+        let limits = ConnectionLimits::new(4, 4, 4, 4).with_known_source_reserve(1);
+        let source = |index: usize| {
+            let [.., high, low] = u32::try_from(index).expect("index").to_be_bytes();
+            IpAddr::V4(Ipv4Addr::new(10, 2, high, low))
+        };
+        for index in 0..=MAX_KNOWN_SOURCES {
+            drop(
+                limits
+                    .admit(source(index))
+                    .and_then(PendingPermit::authenticate),
+            );
+        }
+        let counts = limits.lock();
+        assert_eq!(counts.known_sources.len(), MAX_KNOWN_SOURCES);
+        assert!(
+            !counts
+                .known_sources
+                .contains_key(&SourceKey::from_address(source(0)))
+        );
+        assert!(
+            counts
+                .known_sources
+                .contains_key(&SourceKey::from_address(source(MAX_KNOWN_SOURCES)))
+        );
+    }
+
+    #[test]
+    fn one_source_cannot_hold_the_whole_authenticated_budget() {
+        let limits = ConnectionLimits::new(10, 10, 4, 2);
+        let authenticate = |source| limits.admit(source).and_then(PendingPermit::authenticate);
+        let first = authenticate(v4(10)).expect("first from source");
+        let _second = authenticate(v4(10)).expect("second from source");
+        assert!(authenticate(v4(10)).is_none(), "per-source bound");
+        let _other = authenticate(v4(11)).expect("other source");
+        let _mapped = authenticate(IpAddr::V6(Ipv4Addr::new(192, 168, 1, 11).to_ipv6_mapped()))
+            .expect("mapped address of the other source");
+        assert!(
+            authenticate(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11))).is_none(),
+            "mapped and plain addresses share a source"
+        );
+        assert!(authenticate(v4(12)).is_none(), "global bound");
+        drop(first);
+        assert!(authenticate(v4(10)).is_some(), "released slot is reusable");
+        assert!(limits.lock().authenticated <= 4);
+    }
+}

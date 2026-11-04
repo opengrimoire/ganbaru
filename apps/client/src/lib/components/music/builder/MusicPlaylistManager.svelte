@@ -1,7 +1,7 @@
 <script lang="ts">
   import GripVertical from "@lucide/svelte/icons/grip-vertical";
   import Pencil from "@lucide/svelte/icons/pencil";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";

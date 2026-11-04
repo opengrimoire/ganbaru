@@ -71,6 +71,8 @@ Table rows support sub-items within one source. Parents must be active rows in t
 
 Supported types are title, rich text, text, number, select, multi-select, status, date, checkbox, URL, email, phone, files, people, place, created and edited metadata, unique ID, relation, rollup, formula, and button. The title cannot be hidden, deleted, or converted. Select-like properties own stable option identities, labels, colors, and status groups. System metadata, computed values, and local people edits are read-only.
 
+Between linked devices, each property, option, and cell value merges on its own: edits to different properties or cells, and options added to one property on two devices, all survive. Two devices that give properties the same name keep both, the later one by id shown as `Name (id)` until renamed. A cell written on one device while another changes the property's type keeps its written value; until it is edited, the cell shows a mismatch (empty in filters, sorts, and reminders) with Convert, which converts the value to the current type or its empty value when it cannot be represented and warns beforehand when it would lose the value, and Discard, which clears it after a confirmation; the next edit also stores the current type. The mismatch shows in table cells and on the row page, which board, list, and gallery views open.
+
 ## Layouts
 
 - **Table:** inline cell editing, keyboard navigation, column order and width (one saved update per resize gesture), visible and hidden columns, sub-items, and full-page or preview opening.
@@ -86,7 +88,7 @@ A relation targets one data source. Values are also normalized into link rows fo
 
 Rollups compute from current related rows and may use a rebuildable cache; they are never stored as row values. Unsupported combinations and computed-property cycles are rejected.
 
-Formulas are bounded expressions evaluated by a checked Rust engine (literals, property reads, arithmetic, comparison, boolean logic, conditionals, text and numeric helpers). They never use JavaScript evaluation. Unknown properties, cycles, type errors, and runtime failures produce typed errors, and results are read-only.
+Formulas are bounded expressions evaluated by a checked Rust engine (literals, property reads, arithmetic, comparison, boolean logic, conditionals, text and numeric helpers). They never use JavaScript evaluation. Unknown properties, cycles, type errors, and runtime failures produce typed errors, and results are read-only. Parsing refuses expressions nested more than 64 levels deep (parentheses, unary operators, or call arguments) so hostile formulas cannot exhaust the stack.
 
 ## Templates and buttons
 

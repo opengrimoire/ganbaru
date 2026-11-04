@@ -1,5 +1,6 @@
 import {
   importNotesHtmlPage,
+  cancelNotesNotionApiImport,
   importNotesNotionApi,
   importNotesNotionExportFolder,
   saveNotesAgentBridge,
@@ -73,14 +74,19 @@ export function createNotesTransferActions(context: NotesTransferActionsContext)
     return result;
   }
 
+  /** Stops the Notion API import started with `importId`; its finished sources are kept. */
+  function stopNotionApiImport(importId: string): Promise<boolean> {
+    return cancelNotesNotionApiImport(importId);
+  }
+
   async function importNotionExportFolder(
     input: Omit<NotesNotionExportImportRequest, "parent"> & { parent?: NotesParent },
-  ): Promise<NotesNotionExportImportResult> {
+  ): Promise<NotesNotionExportImportResult | null> {
     const result = await importNotesNotionExportFolder({
       ...input,
       parent: input.parent ?? { type: "workspace", workspace: true },
     });
-    await refreshAfterMultiPageImport(result.imported_pages);
+    if (result) await refreshAfterMultiPageImport(result.imported_pages);
     return result;
   }
 
@@ -109,6 +115,7 @@ export function createNotesTransferActions(context: NotesTransferActionsContext)
   return {
     importHtmlPage,
     importNotionApi,
+    stopNotionApiImport,
     importNotionExportFolder,
     exportHtmlArchive,
     exportJsonGraph,

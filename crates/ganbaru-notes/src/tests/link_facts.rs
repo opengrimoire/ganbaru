@@ -119,7 +119,7 @@ fn link_facts_rebuild_payload_and_file_references() {
             "block",
             BLOCK_D,
             "file",
-            block_asset_path,
+            &crate::assets::managed_asset_id(block_asset_path, &"a".repeat(64)).unwrap(),
             "block_file",
         )
         .await;
@@ -128,7 +128,7 @@ fn link_facts_rebuild_payload_and_file_references() {
             "block",
             BLOCK_F,
             "file",
-            callout_icon_path,
+            &crate::assets::managed_asset_id(callout_icon_path, &"c".repeat(64)).unwrap(),
             "callout_icon",
         )
         .await;
@@ -137,7 +137,7 @@ fn link_facts_rebuild_payload_and_file_references() {
             "comment",
             COMMENT_A,
             "file",
-            comment_asset_path,
+            &crate::assets::managed_asset_id(comment_asset_path, &"b".repeat(64)).unwrap(),
             "comment_attachment",
         )
         .await;

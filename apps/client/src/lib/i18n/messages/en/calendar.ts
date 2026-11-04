@@ -150,6 +150,8 @@ export const calendar = {
       `${count}-step sequence preserved`,
     convertSequenceToSimple: "Convert to simple rhythm",
     pauseOnInactivity: "Pause on inactivity",
+    timingConflictNote:
+      "Focus does not start this event by itself while its time is in conflict between devices. You can still start it yourself.",
   },
   meeting: {
     title: "Meeting",
@@ -258,7 +260,17 @@ export const calendar = {
     removeLinkedTask: (task: string) => `Remove linked task ${task}`,
     taskLinksRecurring: "Task links are available for single events.",
     music: "Music",
-    musicDescription: "Override the project soundtrack for this event. Inherited choices remain visible and every phase boundary starts a fresh track when playback is automatic.",
+    musicPlaylist: "Playlist",
+    musicSound: "Soundscape",
+    musicPhasePlaylist: (phase: string) => `${phase} playlist`,
+    musicPhaseSound: (phase: string) => `${phase} soundscape`,
+    musicPhases: (focus: boolean, shortBreak: boolean, longBreak: boolean) => {
+      if (focus && shortBreak && longBreak) return "Focus, short and long break";
+      if (focus && (shortBreak || longBreak)) return `Focus and ${shortBreak ? "short" : "long"} break`;
+      if (focus) return "Focus only";
+      if (shortBreak && longBreak) return "Breaks only";
+      return shortBreak ? "Short break only" : "Long break only";
+    },
     comingSoon: "Coming soon",
     readOnly: "Read only",
     readOnlyHyphen: "Read-only",
@@ -278,6 +290,55 @@ export const calendar = {
     readOnlyShortcut: (shortcut: string, action: string) =>
       `Read-only (${shortcut} to ${action})`,
     saveShortcut: (shortcut: string) => `Save (${shortcut})`,
+    detailsLoadFailed: "Event details could not be loaded.",
+    detailsLoadFailedSaveBlocked: "Event details could not be loaded. The long title or location stays read only until they load.",
+  },
+  conflict: {
+    badge: "Edited on two devices",
+    noticeTitle: "This event was edited on two devices",
+    noticeFields: (fields: string) => `Needs a choice: ${fields}.`,
+    fieldTitle: "title",
+    fieldDescription: "description",
+    fieldTiming: "time and repeat",
+    review: "Review",
+    saveFirst: "Save or discard your changes to review this conflict.",
+    dialogTitle: "Choose what to keep",
+    close: "Close",
+    titleTitle: "The title was edited on two devices",
+    descriptionTitle: "The description was edited on two devices",
+    timingTitle: "The time was edited on two devices",
+    hint: "Choose the version to keep.",
+    empty: "Empty",
+    shown: "Shown now",
+    keepThis: "Keep this",
+    useOther: "Use this",
+    versionFrom: (device: string, time: string) => `${device}, ${time}`,
+    thisDevice: "This device",
+    otherDevice: "Another device",
+    resolved: "This conflict was already resolved",
+    failed: "The conflict could not be resolved",
+    starts: (value: string) => `Starts ${value}`,
+    ends: (value: string) => `Ends ${value}`,
+    timezone: (name: string) => `Time zone ${name}`,
+    allDay: "All day",
+    doesNotRepeat: "Does not repeat",
+    excludedDates: (count: number) => `${count} skipped ${count === 1 ? "date" : "dates"}`,
+    addedDates: (count: number) => `${count} added ${count === 1 ? "date" : "dates"}`,
+    overrides: (count: number) => `${count} changed ${count === 1 ? "occurrence" : "occurrences"}`,
+  },
+  sync: {
+    eventConflicts: (count: number) =>
+      `${count} ${count === 1 ? "event was" : "events were"} edited on two devices. Open ${count === 1 ? "it" : "them"} in the Calendar to choose what to keep.`,
+    eventUntitled: "Untitled event",
+    eventRecoveryNote: "Restoring creates the event again as a new event.",
+    eventRestored: "Event restored",
+    eventRestoreFailed: "Could not restore the event",
+    calendarUntitled: "Untitled calendar",
+    calendarRecoveryNote: "Restoring creates the calendar again. Its events return to the Local calendar.",
+    calendarRestored: "Calendar restored",
+    calendarRestoreFailed: "Could not restore the calendar",
+    preservedUntitled: "Preserved iCalendar data",
+    preservedNote: "This imported data cannot be restored into the Calendar. It can only be discarded.",
   },
   view: {
     saving: "Saving...",
@@ -287,9 +348,18 @@ export const calendar = {
     deleteFailed: (message: string) => `Delete or Undo failed: ${message}`,
     previewFailed: "Could not preview this change",
     historyUnavailable: "The recorded Focus timeline could not be loaded. Try a shorter Calendar range or retry.",
+    eventsUnreadable: (count: number) =>
+      `${count} ${count === 1 ? "event" : "events"} could not be shown in this range because ${count === 1 ? "its" : "their"} saved repetition could not be expanded.`,
+    eventsOmitted: (count: number) =>
+      `${count} ${count === 1 ? "event" : "events"} in this range ${count === 1 ? "is" : "are"} not shown because the range holds more than the Calendar can display.`,
+    eventsLoadFailed: "Calendar events could not be loaded.",
     saved: "Saved",
     unknownSaveError: "Unknown save error",
     saveFailed: (message: string) => `Save failed: ${message}`,
+    tooManyChangedOccurrences:
+      "This event has too many changed occurrences. Remove some changes to repeated occurrences and try again.",
+    valueTooLarge:
+      "This event has too much attached data, such as alarms, attendees, or categories, to sync. Remove some and try again.",
     changesLost: "Your changes will be lost",
     discardUnsavedTitle: "Discard unsaved changes?",
     discard: "Discard",
@@ -297,6 +367,9 @@ export const calendar = {
     saveAndStopTitle: "Save and stop the focus session?",
     stopAndSave: "Stop and save",
     keepEditing: "Keep editing",
+    meetingMusicTitle: "Save a meeting with music?",
+    meetingMusicMessage: "Music or a soundscape will start automatically when this event begins, which others may hear during the meeting.",
+    saveWithMusic: "Save with music",
     stopFocusSessionTitle: "Stop the focus session?",
     endEventConfirm: "End event",
     keepSession: "Keep session",

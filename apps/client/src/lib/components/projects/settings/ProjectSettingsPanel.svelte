@@ -860,6 +860,7 @@
   bind:scrollElement={settingsScrollElement}
 >
           <ProjectSettingsIdentitySection
+            projectId={selectedProject.id}
             bind:projectNameDraft={sessionState.projectDraft.name}
             bind:projectGroupDraft={sessionState.projectDraft.groupId}
             bind:projectStatusDraft={sessionState.projectDraft.status}

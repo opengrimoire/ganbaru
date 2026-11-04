@@ -46,7 +46,10 @@ use schedule::{
 pub use schedule::{notes_flush_due_project_history, notes_initialize_project_history};
 
 use crate::{NoteParent, local_user, writes};
-use bundles::{garbage_collect_bundles_tx, load_bundle_tx, store_bundle_tx};
+use bundles::{
+    MAX_HISTORY_VERSION_ROW_BYTES, garbage_collect_bundles_tx, load_bundle_tx,
+    load_bundle_within_tx, store_bundle_tx,
+};
 use scope::{ProjectHistoryGraph, load_project_graph};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -54,7 +57,12 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::{BTreeMap, HashSet};
 
 const DEFAULT_RETENTION_DAYS: i64 = 30;
-const HISTORY_SCHEMA_VERSION: i64 = 1;
+/// Version of the project history manifest and row shape. Versions saved before the current Notes
+/// structure are refused instead of restored into the new columns.
+const HISTORY_SCHEMA_VERSION: i64 = 4;
+/// Refusal shown when a saved version predates the current Notes format.
+pub(crate) const OLDER_NOTES_FORMAT_ERROR: &str =
+    "This version was saved in an older Notes format and can no longer be opened or restored";
 const ACTIVE_CHECKPOINT_MINUTES: i64 = 10;
 const IDLE_CHECKPOINT_MINUTES: i64 = 2;
 const DEFAULT_PAGE_SIZE: i64 = 40;

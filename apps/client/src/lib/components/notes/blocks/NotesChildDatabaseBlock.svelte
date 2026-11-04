@@ -59,7 +59,7 @@
   } from "$lib/notes/types";
   import Database from "@lucide/svelte/icons/database";
   import Settings2 from "@lucide/svelte/icons/settings-2";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import ArrowUpRight from "@lucide/svelte/icons/arrow-up-right";
   import Copy from "@lucide/svelte/icons/copy";
   import { buildNotesBlockLink, buildNotesDatabaseViewLink } from "$lib/notes/links/block-link";

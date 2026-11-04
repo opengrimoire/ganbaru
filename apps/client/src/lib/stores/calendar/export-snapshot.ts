@@ -48,6 +48,7 @@ const fullEvent = record<DbFullEvent>({
   project_id: nullableText, environment_id: nullableText, playlist_id: nullableText,
   color: nullableNumber, rrule: nullableText, notifications: nullableText, exceptions: nullableText,
   repeat_until: nullableText, all_day: number, location: text, has_call_link: optional(number),
+  has_music_playlist: optional(number), has_soundscape: optional(number),
   meeting_enabled: number, transparency: text, status: text, local_rsvp_status: nullableText,
   created_at: text, rdate: nullableText, rhythm_kind: nullableText, rhythm_source: nullableText,
   preset_key: nullableText, count_focus_duration_minutes: nullableNumber,

@@ -1,0 +1,726 @@
+manifest 18
+table 1 quick_note_tags replicated key id redirects
+  group 0 immutable created_at:timestamp
+  group 1 register name:trimmed_text(1..=40)
+  group 2 position order_key:order_key
+  group 3 max updated_at:timestamp
+  group 4 register color:integer(0..=31)
+  unique name nocase
+table 2 quick_notes replicated key id
+  group 0 immutable created_at:timestamp
+  group 1 register surfaced recoverable title:text(..=200)
+  group 2 register surfaced recoverable
+    owned quick_note_text_runs parent note_id ordinal sort_order rows 4096 codec custom content:text(..=65536) bold:flag italic:flag underline:flag
+  group 3 register recoverable color:integer(0..=31)
+  group 4 reference 1 set_null recoverable tag_id:optional_row_key
+  group 5 coupled recoverable pinned:flag archived:flag trashed_at:optional_timestamp
+  group 6 position order_key:order_key
+  group 7 max updated_at:timestamp
+  group 8 register surfaced recoverable
+    owned quick_note_images parent note_id ordinal sort_order rows 24 codec custom sha256:text(..=64) content_type:text(..=10) byte_size:integer(1..=26214400) width:integer(1..=16384) height:integer(1..=16384)
+  check pinned,archived,trashed_at within 5
+table 16 vault_preferences replicated key key
+  derived key exists 2 inputs 
+  group 0 register value:text(..=65536)
+  group 1 max updated_at:timestamp
+  group 2 register
+table 17 themes replicated key id
+  group 0 immutable created_at_ms:integer(0..=9223372036854775807)
+  group 1 immutable seed_blend_canvas:text(..=9) seed_icon_label:text(..=5) seed_calendar_default_mode:text(..=10) seed_calendar_default_custom:text(..=9)
+    owned theme_seed_tokens parent theme_id key kind,key rows 256 codec custom kind:text(..=8) key:text(..=64) value:text(..=9) isolated:flag
+    owned theme_seed_event_palette parent theme_id key slot rows 32 codec custom slot:integer(0..=31) value:text(..=9)
+  group 2 register recoverable display_name:trimmed_text(1..=60)
+  group 3 register recoverable icon_label:text(..=5)
+  group 4 register surfaced recoverable blend_canvas:text(..=9) derivation_engine_version:integer(0..=9223372036854775807) calendar_default_mode:text(..=10) calendar_default_custom:text(..=9)
+    owned theme_tokens parent theme_id key kind,key rows 256 codec custom kind:text(..=8) key:text(..=64) value:text(..=9) isolated:flag
+    owned theme_event_palette parent theme_id key slot rows 32 codec custom slot:integer(0..=31) value:text(..=9)
+  group 5 max upgrade_dismissed_engine_version:integer(0..=9223372036854775807)
+  group 6 max updated_at_ms:integer(0..=9223372036854775807)
+table 32 contacts replicated key public_key
+  derived key exists 4 inputs 
+  group 0 register created_at:timestamp
+  group 1 register display_name:trimmed_text(1..=160) color:integer(0..=31)
+  group 2 coupled state:text(..=7) accepted_at:optional_timestamp blocked_at:optional_timestamp invite_trust:text(..=13) invite_trust_expires_at:optional_timestamp message_trust:text(..=13) message_trust_expires_at:optional_timestamp
+  group 3 max updated_at:timestamp
+  group 4 register
+table 33 contact_requests replicated key id
+  group 0 immutable direction:text(..=8) public_key:text(..=43) peer_request_id:optional_text(..=160) display_name:trimmed_text(1..=160) color:integer(0..=31) card:text(..=1024) card_digest:text(..=64) endpoint_hint:text(..=64) coordinator_fingerprint:text(..=64) expires_at:timestamp created_at:timestamp
+  group 1 coupled state:text(..=8) invite_trust:text(..=13) message_trust:text(..=13)
+  group 2 max updated_at:timestamp
+table 34 contact_card replicated key key
+  group 0 coupled card_nonce:text(..=22) card_revision:integer(1..=9223372036854775807)
+  group 1 max updated_at:timestamp
+table 48 music_local_roots replicated key id
+  group 0 immutable created_at_ms:integer(1..=9223372036854775807)
+  group 1 register name:trimmed_text(1..=200)
+  group 2 max updated_at_ms:integer(1..=9223372036854775807)
+table 49 music_library_items replicated key id redirects
+  group 0 immutable source_kind:text(..=32) identity_key:trimmed_text(1..=8192) youtube_video_id:optional_text(..=128)
+  group 1 register discovered_at_ms:integer(1..=9223372036854775807)
+  group 2 coupled media_kind:text(..=32) original_title:text(..=500) original_artist:text(..=500) original_album:text(..=500) original_track_number:optional_integer(1..=9223372036854775807) duration_ms:optional_integer(0..=9223372036854775807) metadata_resolved:flag
+  group 3 register title_override:optional_text(..=500)
+  group 4 register artist_override:optional_text(..=500)
+  group 5 register album_override:optional_text(..=500)
+  group 6 register artwork_override:optional_text(..=128) artwork_override_byte_size:optional_integer(1..=10485760)
+  group 7 register review_state:text(..=32) review_changed_at_ms:optional_integer(-9223372036854775808..=9223372036854775807) review_deferred_until_ms:optional_integer(1..=9223372036854775807)
+  group 8 max updated_at_ms:integer(1..=9223372036854775807)
+  group 9 coupled youtube_resolution_state:optional_text(..=32)
+  unique identity_key binary
+  unique youtube_video_id binary
+  check source_kind,youtube_video_id within 0
+  check artwork_override,artwork_override_byte_size within 6
+table 50 music_item_signals replicated key sync_key
+  derived key exists 2 inputs item_id,signal prefix music-signal
+  group 0 immutable item_id:optional_row_key->49:cascade signal:text(..=32)
+  group 1 register created_at_ms:integer(1..=9223372036854775807)
+  group 2 register
+table 51 music_listening_statistics replicated key sync_key
+  derived key exists 6 inputs device_id,item_id prefix music-statistics
+  group 0 immutable device_id:trimmed_text(1..=128) item_id:optional_row_key->49:cascade
+  group 1 max last_played_at_ms:optional_integer(-9223372036854775808..=9223372036854775807)
+  group 2 max play_count:integer(0..=9223372036854775807)
+  group 3 max completion_count:integer(0..=9223372036854775807)
+  group 4 max skip_count:integer(0..=9223372036854775807)
+  group 5 max updated_at_ms:integer(1..=9223372036854775807)
+  group 6 register
+table 52 music_local_locations replicated key id redirects
+  group 0 immutable root_id:optional_row_key->48:cascade relative_path:trimmed_text(1..=4096)
+  group 1 reference 49 cascade item_id:optional_row_key
+  group 2 register first_seen_at_ms:integer(1..=9223372036854775807)
+  group 3 register lightweight_fingerprint:optional_text(..=1024) strong_fingerprint:optional_text(..=1024)
+  group 4 max updated_at_ms:integer(1..=9223372036854775807)
+  unique root_id,relative_path binary
+  unique root_id,item_id,relative_path binary
+table 53 music_source_collections replicated key id redirects
+  group 0 immutable kind:text(..=32) identity_key:trimmed_text(1..=8192) local_root_id:optional_row_key->48:cascade youtube_playlist_id:optional_text(..=128)
+  group 1 register created_at_ms:integer(1..=9223372036854775807)
+  group 2 register name:trimmed_text(1..=500)
+  group 3 register discovery_enabled:flag
+  group 4 register removed_at_ms:optional_integer(-9223372036854775808..=9223372036854775807)
+  group 5 max updated_at_ms:integer(1..=9223372036854775807)
+  unique identity_key binary
+  unique youtube_playlist_id binary
+  check kind,identity_key,local_root_id,youtube_playlist_id within 0
+table 54 music_source_collection_items replicated key sync_key
+  derived key exists 3 inputs collection_id,item_id prefix music-collection-item
+  group 0 immutable collection_id:optional_row_key->53:cascade item_id:optional_row_key->49:cascade
+  group 1 register first_discovered_at_ms:integer(1..=9223372036854775807)
+  group 2 register source_position:optional_integer(0..=9223372036854775807)
+  group 3 register
+table 55 music_playlists replicated key id
+  group 0 immutable created_at_ms:integer(-9223372036854775808..=9223372036854775807)
+  group 1 register recoverable name:trimmed_text(1..=200)
+  group 2 register recoverable icon:text(..=500)
+  group 3 register recoverable shuffle_enabled:flag repeat_mode:text(..=32) mix_enabled:flag
+  group 4 position order_key:order_key
+  group 5 max updated_at_ms:integer(-9223372036854775808..=9223372036854775807)
+table 56 music_playlist_intended_uses replicated key sync_key
+  derived key exists 1 inputs playlist_id,intended_use prefix music-intended-use
+  group 0 immutable recoverable playlist_id:optional_row_key->55:cascade intended_use:text(..=32)
+  group 1 register
+table 57 music_playlist_memberships replicated key id
+  derived key exists 10 inputs playlist_id,item_id prefix music-membership
+  group 0 immutable playlist_id:optional_row_key->55:cascade item_id:optional_row_key->49:cascade
+  group 1 register created_at_ms:integer(1..=9223372036854775807)
+  group 2 position order_key:order_key
+  group 3 register recoverable weight:text(..=32)
+  group 4 register recoverable enabled:flag
+  group 5 register recoverable start_ms:optional_integer(0..=9223372036854775807) end_ms:optional_integer(0..=9223372036854775807) volume_milli:optional_integer(0..=1000) rate_milli:optional_integer(250..=2000)
+  group 6 reference 49 set_null recoverable break_item_id:optional_row_key
+  group 7 register recoverable break_start_ms:optional_integer(0..=9223372036854775807) break_end_ms:optional_integer(0..=9223372036854775807) break_volume_milli:optional_integer(0..=1000) break_rate_milli:optional_integer(250..=2000)
+  group 8 register recoverable
+    owned music_membership_skip_ranges parent membership_id ordinal ordinal rows 64 codec generic start_ms:integer(0..=9223372036854775807) end_ms:integer(0..=9223372036854775807)
+  group 9 max updated_at_ms:integer(1..=9223372036854775807)
+  group 10 register
+  check start_ms,end_ms within 5
+  check break_start_ms,break_end_ms within 7
+table 58 music_snoozes replicated key id
+  group 0 immutable item_id:optional_row_key->49:cascade scope:text(..=32) playlist_id:optional_row_key->55:cascade
+  group 1 register created_at_ms:integer(1..=9223372036854775807)
+  group 2 register starts_at_ms:integer(1..=9223372036854775807) ends_at_ms:optional_integer(1..=9223372036854775807)
+  group 3 register reason:text(..=500)
+  check scope,playlist_id within 0
+  check starts_at_ms,ends_at_ms within 2
+table 59 music_soundscapes replicated key id
+  group 0 immutable source_kind:text(..=32) generated_kind:optional_text(..=32) bundled_identity:optional_text(..=8192)
+  group 1 register created_at_ms:integer(1..=9223372036854775807)
+  group 2 register name:trimmed_text(1..=200)
+  group 3 register icon:trimmed_text(1..=500)
+  group 4 max updated_at_ms:integer(1..=9223372036854775807)
+  check source_kind,generated_kind,bundled_identity within 0
+table 60 music_soundscape_presets replicated key id
+  group 0 immutable created_at_ms:integer(1..=9223372036854775807)
+  group 1 register name:trimmed_text(1..=80)
+  group 2 register icon:trimmed_text(1..=500)
+  group 3 register level_milli:integer(0..=2000)
+  group 4 max updated_at_ms:integer(1..=9223372036854775807)
+table 61 music_soundscape_preset_sounds replicated key sync_key
+  derived key exists 3 inputs preset_id,soundscape_id prefix music-preset-sound
+  group 0 immutable preset_id:optional_row_key->60:cascade soundscape_id:optional_row_key->59:cascade
+  group 1 position order_key:order_key
+  group 2 register level_milli:integer(0..=1000)
+  group 3 register
+table 62 music_context_assignments replicated key sync_key
+  derived key exists 7 inputs owner_kind,owner_id,phase prefix music-assignment
+  group 0 immutable owner_kind:text(..=32) owner_id:trimmed_text(1..=128) phase:text(..=32)
+  group 1 register behavior:text(..=32)
+  group 2 register playlist_id:optional_text(..=128)
+  group 3 register soundscape_behavior:text(..=32)
+  group 4 register soundscape_preset_id:optional_text(..=128)
+  group 5 register provenance_kind:text(..=32) provenance_id:optional_text(..=128)
+  group 6 max updated_at_ms:integer(1..=9223372036854775807)
+  group 7 register
+table 96 project_groups replicated key id
+  group 0 immutable created_at:timestamp
+  group 1 register name:trimmed_text(1..=1000)
+  group 2 register icon:trimmed_text(1..=500) icon_byte_size:optional_integer(1..=3145728)
+  group 3 register color:optional_integer(0..=31)
+  group 4 position order_key:order_key
+  group 5 coupled hidden_at:optional_timestamp archived_at:optional_timestamp
+  group 6 max updated_at:timestamp
+  check icon,icon_byte_size within 2
+table 97 projects replicated key id
+  group 0 immutable created_at:timestamp
+  group 1 reference 96 cascade group_id:optional_row_key
+  group 2 register surfaced recoverable name:trimmed_text(1..=1000)
+  group 3 register icon:trimmed_text(1..=500) icon_byte_size:optional_integer(1..=3145728)
+  group 4 register color:optional_integer(0..=31)
+  group 5 position order_key:order_key
+  group 6 register status:text(..=32)
+  group 7 coupled default_event_duration_minutes:optional_integer(1..=1440) default_event_name:optional_text(..=1000) default_event_time_mode:text(..=32)
+  group 8 coupled default_pomodoro_mode:text(..=32) default_pomodoro_preset_key:optional_text(..=32) default_pomodoro_focus_minutes:optional_integer(1..=120) default_pomodoro_short_break_minutes:optional_integer(1..=30) default_pomodoro_long_break_minutes:optional_integer(1..=60) default_pomodoro_long_break_after_focus_count:optional_integer(1..=12)
+  group 9 coupled default_idle_settings_source:text(..=32) default_idle_pause_enabled:flag default_idle_threshold_minutes:integer(1..=15)
+  group 10 register focus_playlist_id:optional_text(..=128)
+  group 11 register break_playlist_id:optional_text(..=128)
+  group 12 register work_environment_id:optional_text(..=128)
+  group 13 register blocker_ruleset_id:optional_text(..=128)
+  group 14 coupled notes_default_open_mode:optional_text(..=32) notes_history_retention_days:optional_integer(0..=365)
+  group 15 max updated_at:timestamp
+  check icon,icon_byte_size within 3
+  check default_pomodoro_mode,default_pomodoro_preset_key,default_pomodoro_focus_minutes,default_pomodoro_short_break_minutes,default_pomodoro_long_break_minutes,default_pomodoro_long_break_after_focus_count within 8
+table 98 project_working_folders replicated key id
+  group 0 immutable project_id:optional_row_key->97:cascade kind:text(..=32) managed_relative_path:optional_text(..=2048) sort_order:integer(0..=9223372036854775807) created_at:timestamp
+  group 1 register display_name:trimmed_text(1..=240)
+  group 2 coupled repository_kind:text(..=32) repository_identity:optional_text(..=1024)
+  group 3 register archived_at:optional_timestamp
+  group 4 max updated_at:timestamp
+  check kind,managed_relative_path within 0
+  check repository_kind,repository_identity within 2
+table 99 project_primary_working_folders replicated key project_id
+  group 0 immutable created_at:timestamp
+  group 1 register working_folder_id:text(..=1024)
+  group 2 max updated_at:timestamp
+table 100 project_sections replicated key id
+  group 0 immutable project_id:optional_row_key->97:cascade created_at:timestamp
+  group 1 register name:trimmed_text(1..=1000)
+  group 2 position order_key:order_key
+  group 3 coupled hidden_at:optional_timestamp archived_at:optional_timestamp
+  group 4 max updated_at:timestamp
+table 101 project_statuses replicated key id
+  group 0 immutable project_id:optional_row_key->97:cascade created_at:timestamp
+  group 1 register name:trimmed_text(1..=1000)
+  group 2 register category:text(..=32)
+  group 3 register terminal:flag
+  group 4 register color:integer(0..=31)
+  group 5 position order_key:order_key
+  group 6 register deleted_at:optional_timestamp
+  group 7 max updated_at:timestamp
+table 102 project_priorities replicated key sync_key
+  group 0 immutable project_id:optional_row_key->97:cascade id:trimmed_text(1..=128)
+  group 1 register created_at:timestamp
+  group 2 register name:trimmed_text(1..=1000)
+  group 3 register color:integer(0..=31)
+  group 4 position order_key:order_key
+  group 5 register deleted_at:optional_timestamp
+  group 6 max updated_at:timestamp
+table 103 project_tags replicated key id
+  group 0 immutable project_id:optional_row_key->97:cascade created_at:timestamp
+  group 1 register name:trimmed_text(1..=1000)
+  group 2 register color:optional_integer(0..=31)
+  group 3 position order_key:order_key
+  group 4 max updated_at:timestamp
+table 104 project_tasks replicated key id
+  tree parent 1 position none depth 1
+  group 0 immutable project_id:optional_row_key->97:cascade created_at:timestamp
+  group 1 reference 104 cascade parent_task_id:optional_row_key
+  group 2 coupled section_id:optional_row_key->100:cascade section_order_key:order_key
+  group 3 coupled status_id:optional_row_key->101:cascade completed_at:optional_timestamp status_order_key:order_key
+  group 4 register surfaced recoverable title:trimmed_text(1..=2000)
+  group 5 register surfaced recoverable description:text(..=65536)
+  group 6 register priority:trimmed_text(1..=128)
+  group 7 coupled task_type:text(..=32) milestone:flag
+  group 8 register estimate_minutes:optional_integer(1..=9223372036854775807)
+  group 9 coupled start_date:optional_text(..=32) start_time:optional_text(..=5) start_reminder_minutes:optional_integer(0..=40320) due_date:optional_text(..=32) due_time:optional_text(..=5) due_reminder_minutes:optional_integer(0..=40320) target_end_date:optional_text(..=32)
+  group 10 register archived_at:optional_timestamp
+  group 11 register blocker_reason:optional_text(..=65536)
+  group 12 max updated_at:timestamp
+  check start_time,start_date within 9
+  check due_time,due_date within 9
+  check start_reminder_minutes,start_date within 9
+  check due_reminder_minutes,due_date within 9
+  check start_date,target_end_date within 9
+table 105 project_checklist_items replicated key id
+  group 0 immutable task_id:optional_row_key->104:cascade created_at:timestamp
+  group 1 register surfaced title:trimmed_text(1..=2000)
+  group 2 register completed_at:optional_timestamp
+  group 3 position order_key:order_key
+  group 4 max updated_at:timestamp
+table 106 project_task_dependencies replicated key id
+  derived key exists 3 inputs blocking_task_id,blocked_task_id prefix dependency
+  acyclic blocking_task_id->blocked_task_id
+  group 0 immutable blocking_task_id:optional_row_key->104:cascade blocked_task_id:optional_row_key->104:cascade
+  group 1 register dependency_type:text(..=32)
+  group 2 register created_at:timestamp
+  group 3 register
+  check blocking_task_id,blocked_task_id within 0
+table 107 project_task_tag_links replicated key sync_key
+  derived key exists 2 inputs task_id,tag_id prefix task-tag
+  group 0 immutable task_id:optional_row_key->104:cascade tag_id:optional_row_key->103:cascade
+  group 1 register created_at:timestamp
+  group 2 register
+table 108 project_custom_fields replicated key id
+  group 0 immutable project_id:optional_row_key->97:cascade field_type:text(..=32) created_at:timestamp
+  group 1 register name:trimmed_text(1..=1000)
+  group 2 register icon:optional_text(..=500)
+  group 3 position order_key:order_key
+  group 4 max updated_at:timestamp
+table 109 project_custom_field_options replicated key id
+  group 0 immutable field_id:optional_row_key->108:cascade created_at:timestamp
+  group 1 register name:trimmed_text(1..=1000)
+  group 2 position order_key:order_key
+  group 3 max updated_at:timestamp
+table 110 project_custom_field_values replicated key sync_key
+  derived key exists 3 inputs task_id,field_id prefix custom-field-value
+  group 0 immutable task_id:optional_row_key->104:cascade field_id:optional_row_key->108:cascade
+  group 1 coupled text_value:optional_text(..=65536) number_value:optional_integer(-9223372036854775808..=9223372036854775807) date_value:optional_text(..=32) checkbox_value:optional_integer(0..=1)
+    owned project_custom_field_option_values parent value_key ordinal ordinal rows 1000 codec generic option_id:optional_row_key->109:cascade
+  group 2 max updated_at:timestamp
+  group 3 register
+  check text_value,number_value,date_value,checkbox_value within 1
+table 111 project_task_change_events replicated key id
+  group 0 immutable task_id:optional_row_key->104:cascade event_type:text(..=32) field_name:optional_text(..=32) old_value:optional_text(..=65536) new_value:optional_text(..=65536) reason:optional_text(..=65536) occurred_at:timestamp
+table 112 project_views replicated key id
+  group 0 immutable project_id:optional_row_key->97:cascade view_type:trimmed_text(1..=32) created_at:timestamp
+  group 1 register name:optional_text(..=1000)
+  group 2 position order_key:order_key
+  group 3 max updated_at:timestamp
+table 113 project_view_preferences replicated key sync_key
+  derived key exists 3 inputs view_id,preference_key prefix view-preference
+  group 0 immutable view_id:optional_row_key->112:cascade preference_key:trimmed_text(1..=32)
+  group 1 register preference_value:text(..=20000)
+  group 2 max updated_at:timestamp
+  group 3 register
+table 114 project_custom_emojis replicated key id
+  group 0 immutable created_at:timestamp
+  group 1 register name:trimmed_text(1..=1000)
+  group 2 register asset_path:trimmed_text(1..=500) asset_byte_size:optional_integer(1..=3145728)
+  group 3 position order_key:order_key
+  group 4 max updated_at:timestamp
+table 160 calendars replicated key id
+  group 0 immutable created_at:timestamp
+  group 1 register recoverable name:trimmed_text(1..=262144)
+  group 2 register recoverable color:text(..=262144)
+  group 3 coupled recoverable source:text(..=32) read_only:flag source_url:optional_text(..=262144)
+  group 4 max updated_at:timestamp
+table 161 icalendar_objects replicated key id
+  group 0 immutable import_id:trimmed_text(1..=262144) source_kind:text(..=32) source_name:text(..=262144) source_fingerprint:text(..=262144) prodid:optional_text(..=262144) version:optional_text(..=262144) method:optional_text(..=262144) calendar_scale:optional_text(..=262144) created_at:timestamp
+  group 1 immutable
+    owned icalendar_object_diagnostics parent object_id key id rows 65535 codec custom id:trimmed_text(1..=262144) message:text(..=262144) sort_order:integer(0..=9223372036854775807) bound domain
+  group 2 reference 160 cascade recoverable calendar_id:optional_row_key
+  group 3 max updated_at:timestamp
+table 162 icalendar_components replicated key id
+  group 0 immutable object_id:optional_row_key->161:cascade
+  group 1 immutable parent_component_id:optional_row_key->162:cascade
+  group 2 immutable component_type:text(..=262144) uid:optional_text(..=262144) recurrence_id:optional_text(..=262144) recurrence_id_value_type:optional_text(..=262144) sequence:optional_integer(-9223372036854775808..=9223372036854775807) dtstart_key:optional_text(..=262144) preservation_status:text(..=32) sort_order:integer(-9223372036854775808..=9223372036854775807) created_at:timestamp
+  group 3 immutable
+    owned icalendar_component_projection_warnings parent component_id key id rows 65535 codec custom id:trimmed_text(1..=262144) message:text(..=262144) sort_order:integer(0..=9223372036854775807) bound domain
+    owned icalendar_component_properties parent component_id key id rows 65535 codec custom id:trimmed_text(1..=262144) name:text(..=262144) value_type:text(..=262144) sort_order:integer(0..=9223372036854775807) bound domain
+    owned icalendar_property_parameters parent component_id key id rows 65535 codec custom id:trimmed_text(1..=262144) property_id:trimmed_text(1..=262144) name:text(..=262144) sort_order:integer(0..=9223372036854775807) bound domain
+    owned icalendar_value_nodes parent component_id key id rows 65535 codec custom id:trimmed_text(1..=262144) property_id:trimmed_text(1..=262144) parameter_id:optional_text(..=262144) parent_node_id:optional_text(..=262144) sort_order:integer(0..=9223372036854775807) value_kind:text(..=32) object_key:optional_text(..=262144) text_value:optional_text(..=262144) number_value:optional_text(..=262144) boolean_value:optional_integer(-9223372036854775808..=9223372036854775807) bound domain
+  group 4 reference 160 cascade recoverable calendar_id:optional_row_key
+  group 5 max updated_at:timestamp
+table 163 calendar_events replicated key id redirects
+  group 0 immutable created_at:timestamp
+  group 1 register recoverable source_uid:optional_text(..=262144)
+  group 2 reference 162 set_null recoverable icalendar_component_id:optional_row_key
+  group 3 register surfaced recoverable title:text(..=262144)
+  group 4 register surfaced recoverable description:text(..=262144)
+  group 5 coupled surfaced recoverable start_time:trimmed_text(1..=262144) end_time:trimmed_text(1..=262144) timezone:trimmed_text(1..=262144) all_day:flag rrule:optional_text(..=262144) repeat_until:optional_text(..=262144)
+    owned calendar_event_exdates parent event_id key occurrence_date rows 65535 codec custom occurrence_date:trimmed_text(1..=262144) id:trimmed_text(1..=262144) bound domain
+    owned calendar_event_rdates parent event_id key occurrence_start rows 65535 codec custom occurrence_start:trimmed_text(1..=262144) id:trimmed_text(1..=262144) bound domain
+    owned calendar_event_overrides parent parent_event_id key recurrence_id rows 65535 codec custom id:trimmed_text(1..=262144) recurrence_id:trimmed_text(1..=262144) title:optional_text(..=262144) start_time:optional_text(..=262144) end_time:optional_text(..=262144) description:optional_text(..=262144) location:optional_text(..=262144) url:optional_text(..=262144) color:optional_integer(0..=31) status:optional_text(..=32) transparency:optional_text(..=32) visibility:optional_text(..=32) created_at:timestamp updated_at:timestamp icalendar_component_id:optional_text(..=262144) recurrence_range:optional_text(..=32) bound domain
+    owned calendar_event_override_extended_properties parent event_id key override_id,property_key rows 65535 codec custom override_id:trimmed_text(1..=262144) property_key:trimmed_text(1..=262144) id:trimmed_text(1..=262144) property_value:text(..=262144) sort_order:integer(0..=9223372036854775807) bound domain
+  group 6 reference 160 cascade recoverable calendar_id:optional_row_key
+  group 7 reference 97 set_null recoverable project_id:optional_row_key
+  group 8 coupled recoverable location:text(..=262144) geo_lat:optional_integer(-90000000..=90000000) geo_lng:optional_integer(-180000000..=180000000)
+  group 9 register recoverable color:optional_integer(0..=31)
+  group 10 register recoverable transparency:text(..=32) status:text(..=32)
+  group 11 register recoverable visibility:text(..=32)
+  group 12 register recoverable priority:optional_integer(0..=9)
+  group 13 register recoverable url:text(..=262144) meeting_enabled:flag
+  group 14 register recoverable guest_can_modify:flag guest_can_invite_others:flag guest_can_see_other_guests:flag
+  group 15 register recoverable local_rsvp_status:optional_text(..=32)
+  group 16 max sequence:integer(0..=9223372036854775807)
+  group 17 register recoverable playlist_id:optional_text(..=262144)
+  group 18 register recoverable environment_id:optional_text(..=262144)
+  group 19 register recoverable
+    owned calendar_event_alarms parent event_id key id rows 65535 codec custom id:trimmed_text(1..=262144) action:text(..=32) trigger_type:text(..=32) trigger_value:trimmed_text(1..=262144) description:optional_text(..=262144) sort_order:integer(0..=9223372036854775807) icalendar_component_id:optional_text(..=262144) bound domain
+  group 20 register recoverable
+    owned calendar_event_attendees parent event_id key id rows 65535 codec custom id:trimmed_text(1..=262144) name:optional_text(..=262144) email:trimmed_text(1..=262144) role:text(..=32) status:text(..=32) rsvp:flag sort_order:integer(0..=9223372036854775807) icalendar_component_id:optional_text(..=262144) icalendar_property_index:optional_integer(0..=9223372036854775807) bound domain
+  group 21 register recoverable
+    owned calendar_event_organizers parent event_id ordinal ordinal rows 1 codec custom name:optional_text(..=262144) email:trimmed_text(1..=262144) bound domain
+  group 22 register recoverable
+    owned calendar_event_categories parent event_id key id rows 65535 codec custom id:trimmed_text(1..=262144) category:trimmed_text(1..=262144) sort_order:integer(0..=9223372036854775807) bound domain
+  group 23 register recoverable
+    owned calendar_event_notifications parent event_id key id rows 65535 codec custom id:trimmed_text(1..=262144) offset_minutes:integer(-9223372036854775808..=9223372036854775807) sort_order:integer(0..=9223372036854775807) bound domain
+  group 24 register recoverable
+    owned calendar_event_extended_properties parent event_id key property_key rows 65535 codec custom property_key:trimmed_text(1..=262144) id:trimmed_text(1..=262144) property_value:text(..=262144) sort_order:integer(0..=9223372036854775807) bound domain
+  group 25 register recoverable
+    owned calendar_event_pomodoro_configs parent event_id ordinal ordinal rows 1 codec custom rhythm_kind:text(..=32) rhythm_source:text(..=32) preset_key:optional_text(..=32) idle_timeout_minutes:optional_integer(1..=9223372036854775807) bound domain
+    owned calendar_event_pomodoro_config_count_rhythms parent event_id ordinal ordinal rows 1 codec custom focus_duration_minutes:integer(1..=9223372036854775807) short_break_minutes:integer(1..=9223372036854775807) long_break_minutes:integer(1..=9223372036854775807) long_break_after_focus_count:integer(1..=12) bound domain
+    owned calendar_event_pomodoro_config_sequence_steps parent event_id key step_index rows 12 codec custom step_index:integer(0..=11) focus_duration_minutes:integer(1..=9223372036854775807) break_phase:text(..=32) break_duration_minutes:integer(1..=9223372036854775807) bound domain
+  group 26 max updated_at:timestamp
+  unique calendar_id,source_uid binary
+  check geo_lat,geo_lng within 8
+table 164 calendar_event_archives replicated key id
+  group 0 immutable source_event_id:trimmed_text(1..=262144) archived_at:timestamp original_occurrence_id:optional_text(..=262144) recurrence_date:optional_text(..=262144) calendar_id:trimmed_text(1..=262144) project_id:optional_text(..=262144) playlist_id:optional_text(..=262144) environment_id:optional_text(..=262144) source_uid:optional_text(..=262144) icalendar_component_id:optional_text(..=262144) sequence:integer(0..=9223372036854775807) created_at:timestamp updated_at:timestamp
+  group 1 immutable title:text(..=262144) start_time:trimmed_text(1..=262144) end_time:trimmed_text(1..=262144) timezone:trimmed_text(1..=262144) all_day:flag rrule:optional_text(..=262144) repeat_until:optional_text(..=262144)
+  group 2 immutable description:text(..=262144) location:text(..=262144) url:text(..=262144) color:optional_integer(0..=31) transparency:text(..=32) status:text(..=32) visibility:text(..=32) priority:optional_integer(0..=9) geo_lat:optional_integer(-90000000..=90000000) geo_lng:optional_integer(-180000000..=180000000) local_rsvp_status:optional_text(..=32) meeting_enabled:flag
+  group 3 immutable guest_can_modify:flag guest_can_invite_others:flag guest_can_see_other_guests:flag
+  group 4 immutable
+    owned calendar_event_archive_alarms parent archive_event_id key id rows 65535 codec custom id:trimmed_text(1..=262144) source_alarm_id:trimmed_text(1..=262144) action:text(..=32) trigger_type:text(..=32) trigger_value:trimmed_text(1..=262144) description:optional_text(..=262144) sort_order:integer(0..=9223372036854775807) icalendar_component_id:optional_text(..=262144) bound domain
+  group 5 immutable
+    owned calendar_event_archive_attendees parent archive_event_id key id rows 65535 codec custom id:trimmed_text(1..=262144) source_attendee_id:trimmed_text(1..=262144) name:optional_text(..=262144) email:trimmed_text(1..=262144) role:text(..=32) status:text(..=32) rsvp:flag sort_order:integer(0..=9223372036854775807) icalendar_component_id:optional_text(..=262144) icalendar_property_index:optional_integer(0..=9223372036854775807) bound domain
+  group 6 immutable
+    owned calendar_event_archive_categories parent archive_event_id key id rows 65535 codec custom id:trimmed_text(1..=262144) category:trimmed_text(1..=262144) sort_order:integer(0..=9223372036854775807) bound domain
+  group 7 immutable
+    owned calendar_event_archive_exdates parent archive_event_id key id rows 65535 codec custom id:trimmed_text(1..=262144) occurrence_date:trimmed_text(1..=262144) sort_order:integer(0..=9223372036854775807) bound domain
+  group 8 immutable
+    owned calendar_event_archive_extended_properties parent archive_event_id key id rows 65535 codec custom id:trimmed_text(1..=262144) property_key:trimmed_text(1..=262144) property_value:text(..=262144) sort_order:integer(0..=9223372036854775807) bound domain
+  group 9 immutable
+    owned calendar_event_archive_music_assignments parent archive_event_id key owner_kind,phase rows 6 codec custom owner_kind:text(..=32) phase:text(..=32) behavior:text(..=32) playlist_id:optional_text(..=262144) provenance_kind:text(..=32) provenance_id:optional_text(..=262144) updated_at_ms:integer(1..=9223372036854775807) version:integer(1..=9223372036854775807) soundscape_behavior:text(..=32) soundscape_preset_id:optional_text(..=262144) bound domain
+  group 10 immutable
+    owned calendar_event_archive_notifications parent archive_event_id key id rows 65535 codec custom id:trimmed_text(1..=262144) offset_minutes:integer(-9223372036854775808..=9223372036854775807) sort_order:integer(0..=9223372036854775807) bound domain
+  group 11 immutable
+    owned calendar_event_archive_organizers parent archive_event_id ordinal ordinal rows 1 codec custom name:optional_text(..=262144) email:trimmed_text(1..=262144) bound domain
+  group 12 immutable
+    owned calendar_event_archive_overrides parent archive_event_id key source_override_id rows 65535 codec custom source_override_id:trimmed_text(1..=262144) recurrence_id:trimmed_text(1..=262144) title:optional_text(..=262144) start_time:optional_text(..=262144) end_time:optional_text(..=262144) description:optional_text(..=262144) location:optional_text(..=262144) url:optional_text(..=262144) color:optional_integer(0..=31) status:optional_text(..=32) transparency:optional_text(..=32) visibility:optional_text(..=32) created_at:timestamp updated_at:timestamp icalendar_component_id:optional_text(..=262144) recurrence_range:optional_text(..=32) bound domain
+    owned calendar_event_archive_override_extended_properties parent archive_event_id key source_override_id,property_key rows 65535 codec custom source_override_id:trimmed_text(1..=262144) property_key:trimmed_text(1..=262144) id:trimmed_text(1..=262144) property_value:text(..=262144) sort_order:integer(0..=9223372036854775807) bound domain
+  group 13 immutable
+    owned calendar_event_archive_pomodoro_configs parent archive_event_id ordinal ordinal rows 1 codec custom rhythm_kind:text(..=32) rhythm_source:text(..=32) preset_key:optional_text(..=32) idle_timeout_minutes:optional_integer(1..=9223372036854775807) bound domain
+    owned calendar_event_archive_pomodoro_config_count_rhythms parent archive_event_id ordinal ordinal rows 1 codec custom focus_duration_minutes:integer(1..=9223372036854775807) short_break_minutes:integer(1..=9223372036854775807) long_break_minutes:integer(1..=9223372036854775807) long_break_after_focus_count:integer(1..=12) bound domain
+    owned calendar_event_archive_pomodoro_config_sequence_steps parent archive_event_id key step_index rows 12 codec custom step_index:integer(0..=11) focus_duration_minutes:integer(1..=9223372036854775807) break_phase:text(..=32) break_duration_minutes:integer(1..=9223372036854775807) bound domain
+  group 14 immutable
+    owned calendar_event_archive_rdates parent archive_event_id key id rows 65535 codec custom id:trimmed_text(1..=262144) occurrence_start:trimmed_text(1..=262144) sort_order:integer(0..=9223372036854775807) bound domain
+  group 15 immutable
+    owned calendar_event_archive_task_links parent archive_event_id key task_id rows 65535 codec custom task_id:trimmed_text(1..=262144) link_kind:text(..=32) created_at:timestamp bound domain
+  check geo_lat,geo_lng within 2
+table 165 calendar_event_archive_import_objects replicated key sync_key
+  derived key exists 1 inputs archive_event_id,object_id prefix archive-import-object
+  group 0 immutable archive_event_id:optional_row_key->164:cascade object_id:optional_row_key->161:cascade
+  group 1 register
+table 166 project_task_event_links replicated key sync_key
+  derived key exists 3 inputs task_id,event_id prefix task-event
+  group 0 immutable task_id:optional_row_key->104:cascade event_id:optional_row_key->163:cascade
+  group 1 register created_at:timestamp
+  group 2 register recoverable link_kind:text(..=32)
+  group 3 register
+table 224 pomodoro_runs replicated key id
+  publish when ended_at IS NOT NULL
+  group 0 register original_event_id:text(..=262144) event_date:text(..=262144) planned_start:timestamp planned_end:timestamp rhythm_kind:text(..=32) rhythm_source:text(..=32) preset_key:optional_text(..=32) idle_timeout_minutes:optional_integer(-9223372036854775808..=9223372036854775807) event_title_snapshot:optional_text(..=262144) start_trigger:text(..=32) created_at:timestamp
+  group 1 register started_at:timestamp ended_at:optional_timestamp end_reason:optional_text(..=32) last_heartbeat:timestamp
+  group 2 register inherited_focus_minutes:integer(-9223372036854775808..=9223372036854775807) inherited_rhythm_position:integer(-9223372036854775808..=9223372036854775807) inherited_focus_milliseconds:optional_integer(0..=9223372036854775807) inherited_phase_milliseconds:optional_integer(0..=9223372036854775807)
+  group 3 immutable inherited_from_run_id:optional_text(..=128)
+  group 4 immutable
+    owned pomodoro_run_count_rhythms parent run_id ordinal ordinal rows 1 codec generic focus_duration_minutes:integer(1..=9223372036854775807) short_break_minutes:integer(1..=9223372036854775807) long_break_minutes:integer(1..=9223372036854775807) long_break_after_focus_count:integer(1..=12)
+    owned pomodoro_run_sequence_steps parent run_id ordinal step_index rows 12 codec generic focus_duration_minutes:integer(1..=9223372036854775807) break_phase:text(..=32) break_duration_minutes:integer(1..=9223372036854775807)
+  group 5 coupled event_id:optional_row_key->163:set_null current_occurrence_id:optional_text(..=262144) current_event_date:optional_text(..=262144) current_event_title:optional_text(..=262144) calendar_archive_id:optional_row_key->164:set_null
+table 225 pomodoro_segments replicated key id
+  published with run_id 224
+  group 0 immutable run_id:optional_row_key->224:cascade
+  group 1 register rhythm_position:integer(1..=9223372036854775807) phase:text(..=32) planned_start:timestamp planned_end:timestamp actual_start:timestamp actual_end:optional_timestamp status:text(..=32) end_reason:optional_text(..=32) event_date:text(..=262144) chosen_duration_ms:optional_integer(1..=9223372036854775807) created_at:timestamp
+  group 2 reference 163 set_null event_id:optional_row_key
+  group 3 register
+    owned pomodoro_pauses parent segment_id ordinal ordinal rows 1024 codec generic started_at:timestamp ended_at:optional_timestamp reason:text(..=32) detected_at:optional_timestamp created_at:timestamp bound domain
+table 226 pomodoro_run_events replicated key id
+  published with run_id 224
+  group 0 immutable run_id:optional_row_key->224:cascade
+  group 1 reference 225 set_null segment_id:optional_row_key
+  group 2 immutable event_type:text(..=32) occurred_at:timestamp phase:optional_text(..=32) reason:optional_text(..=262144) duration_seconds:optional_integer(-9223372036854775808..=9223372036854775807) created_at:timestamp
+table 227 pomodoro_device_activity replicated key device_id
+  group 0 coupled state:text(..=32) run_id:optional_text(..=128) occurrence_id:optional_text(..=262144) event_title:optional_text(..=262144) phase_started_at_ms:optional_integer(0..=9223372036854775807) phase_ends_at_ms:optional_integer(0..=9223372036854775807) expires_at_ms:integer(0..=9223372036854775807) updated_at_ms:integer(0..=9223372036854775807)
+table 272 distractions_settings replicated key id
+  group 0 register recoverable mode:text(..=16)
+  group 1 register recoverable enabled:flag
+  group 2 coupled recoverable block_during_focus:flag block_during_short_breaks:flag block_during_long_breaks:flag pause_during_focus_pause:flag
+  group 3 coupled recoverable desktop_enabled:flag desktop_block_during_focus:flag desktop_block_during_short_breaks:flag desktop_block_during_long_breaks:flag desktop_pause_during_focus_pause:flag
+  group 4 coupled recoverable mobile_enabled:flag mobile_block_during_focus:flag mobile_block_during_short_breaks:flag mobile_block_during_long_breaks:flag mobile_pause_during_focus_pause:flag
+  group 5 register recoverable limits_enabled:flag
+table 273 distractions_category_rules replicated key id
+  derived key exists 1 inputs 
+  group 0 register recoverable enabled:flag
+  group 1 register
+table 274 distractions_custom_categories replicated key id
+  group 0 immutable created_at_ms:integer(1..=9223372036854775807)
+  group 1 register recoverable name:trimmed_text(1..=60)
+  group 2 register recoverable enabled:flag
+table 275 distractions_host_rules replicated key id
+  derived key exists 4 inputs list_kind,scope,host prefix host
+  group 0 immutable list_kind:text(..=16) scope:text(..=80) host:trimmed_text(1..=253)
+  group 1 reference 274 cascade category_id:optional_row_key
+  group 2 register recoverable enabled:flag
+  group 3 register created_at_ms:integer(1..=9223372036854775807)
+  group 4 register
+table 276 distractions_app_rules replicated key id
+  derived key exists 4 inputs platform,identity prefix app
+  group 0 immutable platform:text(..=16) identity:trimmed_text(1..=255)
+  group 1 coupled recoverable display_name:trimmed_text(1..=80) match_names_json:text(..=10434)
+  group 2 register recoverable enabled:flag
+  group 3 register created_at_ms:integer(1..=9223372036854775807)
+  group 4 register
+table 277 distractions_usage_limits replicated key id
+  group 0 immutable created_at_ms:integer(1..=9223372036854775807)
+  group 1 register recoverable name:trimmed_text(1..=80)
+  group 2 register recoverable enabled:flag
+  group 3 coupled recoverable minutes_per_day:optional_integer(1..=1440) minutes_per_week:optional_integer(1..=10080)
+  group 4 register recoverable
+    owned distractions_usage_limit_entries parent limit_id ordinal ordinal rows 2000 codec generic id:trimmed_text(1..=80) name:optional_text(..=80) color:optional_integer(0..=31) website_host:optional_text(..=253) mobile_app_name:optional_text(..=80) mobile_app_package:optional_text(..=255) desktop_app_name:optional_text(..=80) desktop_app_match_names_json:text(..=10434) bound domain
+table 278 distractions_usage_totals replicated key id
+  group 0 immutable device_id:trimmed_text(1..=160) source_type:text(..=16) source_key:trimmed_text(1..=255) local_date:text(..=10)
+  group 1 max elapsed_seconds:integer(1..=90000)
+  group 2 register display_name:optional_text(..=120)
+table 279 distractions_block_events replicated key id
+  published with run_id 224 null publishes
+  group 0 immutable occurred_at:timestamp source_type:text(..=32) source_key:trimmed_text(1..=1024) display_name:optional_text(..=1024) phase:optional_text(..=32) decision:text(..=32) rule_id:optional_text(..=1024) category_id:optional_text(..=1024) created_at:timestamp
+  group 1 immutable run_id:optional_row_key->224:cascade
+  group 2 reference 225 set_null segment_id:optional_row_key
+  group 3 immutable
+    owned distractions_block_event_rule_snapshots parent block_event_id ordinal ordinal rows 1 codec generic rule_id:optional_text(..=1024) rule_kind:optional_text(..=32) rule_label:optional_text(..=1024) environment_id:optional_text(..=1024) blocker_mode:optional_text(..=32)
+table 288 notes_local_users replicated key id
+  group 0 immutable created_time:timestamp
+table 289 notes_folders replicated key id
+  tree parent 2 position none depth 64
+  group 0 immutable project_id:optional_row_key->97:cascade created_time:timestamp
+  group 1 register name:text(..=200)
+  group 2 reference 289 set_null parent_folder_id:optional_row_key
+  group 3 max last_edited_time:timestamp
+table 290 notes_pages replicated key id
+  tree parent 5 position none depth 32
+  group 0 immutable created_time:timestamp
+  group 1 register source_provider:optional_text(..=262144) source_object_id:optional_text(..=262144) source_workspace_id:optional_text(..=262144) source_last_edited_time:optional_text(..=262144) url:optional_text(..=262144) public_url:optional_text(..=262144)
+  group 2 register surfaced recoverable title:text(..=262144)
+  group 3 register child_block_id:optional_row_key->292:cascade parent_data_source_id:optional_row_key->294:cascade folder_id:optional_row_key->289:set_null
+  group 4 reference 97 set_null project_id:optional_row_key
+  group 5 reference 290 set_null parent_row_page_id:optional_row_key
+  group 6 register icon:optional_text(..=262144) cover:optional_text(..=262144)
+  group 7 coupled in_trash:flag trashed_time:optional_timestamp trash_owner:optional_text(..=262144)
+  group 8 register archived:flag
+  group 9 max last_edited_time:timestamp
+  check child_block_id,parent_data_source_id within 3
+  check folder_id,child_block_id,parent_data_source_id within 3
+table 292 notes_blocks replicated key id
+  group 0 register created_time:timestamp source_provider:optional_text(..=262144) source_object_id:optional_text(..=262144) source_last_edited_time:optional_text(..=262144)
+  group 1 register parent_page_id:optional_row_key->290:cascade parent_block_id:optional_row_key->292:cascade
+  group 2 position order_key:order_key
+  group 3 register type:text(..=200) attrs:text(..=65536)
+  group 4 register surfaced recoverable text:text(..=262144)
+  group 5 coupled in_trash:flag trash_owner:optional_text(..=262144)
+  group 6 max last_edited_time:timestamp
+  check parent_page_id,parent_block_id within 1
+table 293 notes_databases replicated key id
+  group 0 immutable block_id:optional_row_key->292:cascade created_time:timestamp
+  group 1 register source_provider:optional_text(..=262144) source_object_id:optional_text(..=262144) source_workspace_id:optional_text(..=262144) source_last_edited_time:optional_text(..=262144) url:optional_text(..=262144) public_url:optional_text(..=262144)
+  group 2 register title:text(..=262144) title_rich_text:text(..=262144)
+  group 3 register description:text(..=262144)
+  group 4 register icon:optional_text(..=262144) cover:optional_text(..=262144)
+  group 5 register is_inline:flag
+  group 6 coupled in_trash:flag
+  group 7 max last_edited_time:timestamp
+table 294 notes_data_sources replicated key id
+  group 0 immutable database_id:optional_row_key->293:cascade created_time:timestamp
+  group 1 register source_provider:optional_text(..=262144) source_object_id:optional_text(..=262144) source_workspace_id:optional_text(..=262144) source_last_edited_time:optional_text(..=262144)
+  group 2 register title:text(..=262144) title_rich_text:text(..=262144)
+  group 3 register description:text(..=262144)
+  group 4 register icon:optional_text(..=262144)
+  group 5 coupled in_trash:flag
+  group 6 reference 302 set_null default_template_id:optional_row_key
+  group 7 max last_edited_time:timestamp
+table 302 notes_data_source_templates replicated key id
+  group 0 immutable data_source_id:optional_row_key->294:cascade created_time:timestamp
+  group 1 reference 290 set_null source_page_id:optional_row_key
+  group 2 register name:text(..=200)
+  group 3 register surfaced recoverable properties:text(..=262144)
+    owned notes_data_source_template_blocks parent template_id ordinal ordinal rows 1024 codec generic id:trimmed_text(1..=200) parent_type:text(..=200) parent_block_id:optional_text(..=200) has_children:flag type:text(..=200) payload:text(..=262144) plain_text:text(..=262144) created_time:timestamp last_edited_time:timestamp bound domain
+  group 4 max last_edited_time:timestamp
+table 291 notes_page_aliases replicated key id redirects
+  group 0 immutable page_id:optional_row_key->290:cascade created_time:timestamp
+  group 1 register alias:text(..=200) normalized_alias:text(..=262144)
+  group 2 max last_edited_time:timestamp
+  unique normalized_alias binary
+table 295 notes_data_source_properties replicated key sync_key
+  derived key exists 4 inputs data_source_id,property_id prefix notes-property
+  group 0 immutable data_source_id:optional_row_key->294:cascade property_id:trimmed_text(1..=200)
+  group 1 register name:trimmed_text(1..=200)
+  group 2 register surfaced recoverable type:trimmed_text(1..=200) config:text(..=262144)
+  group 3 position order_key:order_key
+  group 4 register
+table 296 notes_data_source_property_options replicated key sync_key
+  derived key exists 6 inputs data_source_id,property_id,option_id prefix notes-property-option
+  group 0 immutable data_source_id:text(..=200) property_id:text(..=200) option_id:trimmed_text(1..=200)
+  group 1 reference 295 cascade property_key:optional_row_key
+  group 2 register name:text(..=200)
+  group 3 register color:text(..=200)
+  group 4 register status_group:optional_text(..=200)
+  group 5 position position:order_key
+  group 6 register
+table 297 notes_page_property_values replicated key sync_key
+  derived key exists 2 inputs page_id,property_id prefix notes-property-value
+  group 0 immutable page_id:optional_row_key->290:cascade property_id:trimmed_text(1..=200)
+  group 1 register surfaced recoverable value_type:trimmed_text(1..=200) value:text(..=262144)
+  group 2 register
+table 298 notes_relation_edges replicated key sync_key
+  derived key exists 2 inputs source_page_id,source_property_id,target_page_id prefix notes-relation-edge
+  group 0 immutable source_page_id:optional_row_key->290:cascade source_property_id:trimmed_text(1..=200) target_page_id:optional_row_key->290:cascade
+  group 1 register created_time:timestamp
+  group 2 register
+table 299 notes_database_views replicated key id
+  group 0 immutable database_id:optional_row_key->293:cascade data_source_id:optional_row_key->294:cascade created_time:timestamp
+  group 1 register source_provider:optional_text(..=262144) source_object_id:optional_text(..=262144) source_workspace_id:optional_text(..=262144) source_last_edited_time:optional_text(..=262144) url:optional_text(..=262144)
+  group 2 register name:text(..=200)
+  group 3 coupled type:text(..=200) filter:optional_text(..=262144) sorts:text(..=262144) configuration:optional_text(..=262144)
+  group 4 position order_key:order_key
+  group 5 max last_edited_time:timestamp
+table 300 notes_page_templates replicated key id
+  group 0 immutable created_time:timestamp
+  group 1 reference 290 set_null source_page_id:optional_row_key
+  group 2 register name:trimmed_text(1..=200)
+  group 3 register surfaced recoverable properties:text(..=262144) icon:optional_text(..=262144) cover:optional_text(..=262144)
+    owned notes_page_template_blocks parent template_id ordinal ordinal rows 1024 codec generic id:trimmed_text(1..=200) parent_type:text(..=200) parent_block_id:optional_text(..=200) has_children:flag type:text(..=200) payload:text(..=262144) plain_text:text(..=262144) created_time:timestamp last_edited_time:timestamp bound domain
+  group 4 max last_edited_time:timestamp
+table 304 notes_comment_threads replicated key id
+  group 0 immutable parent_type:text(..=200) parent_page_id:optional_row_key->290:cascade parent_block_id:optional_row_key->292:cascade created_time:timestamp
+  group 1 register source_provider:optional_text(..=262144) source_object_id:optional_text(..=262144) source_workspace_id:optional_text(..=262144) source_last_edited_time:optional_text(..=262144)
+  group 2 coupled surfaced recoverable status:text(..=200) resolved_at:optional_timestamp resolved_by:optional_text(..=262144)
+  group 3 max last_edited_time:timestamp
+  check parent_type,parent_page_id,parent_block_id within 0
+  check status,resolved_at,resolved_by within 2
+table 305 notes_comment_thread_anchors replicated key thread_id
+  group 0 immutable created_time:timestamp
+  group 1 reference 292 cascade block_id:optional_row_key
+  group 2 register start_offset:integer(0..=9223372036854775807) end_offset:integer(1..=9223372036854775807) anchor_text:text(..=2000) prefix_text:text(..=120) suffix_text:text(..=120)
+  group 3 max last_edited_time:timestamp
+  check start_offset,end_offset within 2
+table 306 notes_comments replicated key id
+  group 0 immutable thread_id:optional_row_key->304:cascade created_by:text(..=200) display_name:optional_text(..=262144) created_time:timestamp
+  group 1 register source_provider:optional_text(..=262144) source_object_id:optional_text(..=262144) source_workspace_id:optional_text(..=262144) source_last_edited_time:optional_text(..=262144)
+  group 2 register surfaced recoverable rich_text:text(..=262144) plain_text:text(..=262144) attachments:text(..=262144)
+  group 3 coupled deleted_at:optional_timestamp
+  group 4 max last_edited_time:timestamp
+table 309 notes_comment_reactions replicated key sync_key
+  derived key exists 2 inputs comment_id,created_by,emoji prefix notes-comment-reaction
+  group 0 immutable comment_id:optional_row_key->306:cascade created_by:text(..=200) emoji:text(..=16)
+  group 1 register created_time:timestamp display_name:optional_text(..=262144)
+  group 2 register
+table 307 notes_suggestions replicated key id
+  group 0 immutable block_id:optional_row_key->292:cascade created_by:optional_row_key->288:cascade display_name:optional_text(..=262144) range_start:integer(0..=9223372036854775807) range_end:integer(1..=9223372036854775807) original_text:text(..=2000) proposed_text:text(..=2000) prefix_text:text(..=120) suffix_text:text(..=120) created_time:timestamp
+  group 1 coupled status:text(..=200) accepted_at:optional_timestamp accepted_by:optional_row_key->288:set_null rejected_at:optional_timestamp rejected_by:optional_row_key->288:set_null
+  group 2 max last_edited_time:timestamp
+  check range_start,range_end within 0
+  check status,accepted_at,accepted_by,rejected_at,rejected_by within 1
+table 352 chat_participants replicated key id
+  group 0 immutable participant_kind:text(..=32) created_at:timestamp
+  group 1 register surfaced recoverable display_name:trimmed_text(1..=160) avatar_schema_version:integer(1..=9223372036854775807) avatar_data:text(..=16384)
+  group 2 register archived_at:optional_timestamp
+  group 3 max updated_at:timestamp
+table 353 chat_teammates replicated key participant_id
+  group 0 immutable created_at:timestamp
+  group 1 register surfaced recoverable role:trimmed_text(1..=1000) instructions:text(..=65536)
+  group 2 coupled current_policy_revision_id:optional_row_key current_policy_safety_mode:optional_text(..=32)
+  group 3 register home_device_id:optional_text(..=160)
+  group 4 max updated_at:timestamp
+  check current_policy_revision_id,current_policy_safety_mode within 2
+table 354 chat_teammate_policy_revisions replicated key id
+  group 0 immutable teammate_id:optional_row_key->353:cascade provider_instance_id:text(..=1024) model_selection_schema_version:integer(1..=9223372036854775807) model_selection_data:text(..=16384) effort:optional_text(..=32) speed:optional_text(..=32) provider_options_schema_version:integer(1..=9223372036854775807) provider_options_data:text(..=16384) interaction_mode:text(..=32) created_at:timestamp safety_mode:text(..=32)
+table 355 chat_access_profiles replicated key id redirects
+  group 0 immutable builtin_key:optional_text(..=32) created_at:timestamp
+  group 1 register display_name:trimmed_text(1..=160)
+  group 2 coupled current_revision_id:optional_row_key current_maximum_folder_capability:optional_text(..=32)
+  group 3 register archived_at:optional_timestamp
+  group 4 max updated_at:timestamp
+  unique builtin_key binary
+  check current_revision_id,current_maximum_folder_capability within 2
+table 356 chat_access_profile_revisions replicated key id
+  group 0 immutable access_profile_id:optional_row_key->355:cascade default_read_history:flag default_participate:flag default_history_boundary:text(..=32) maximum_folder_capability:text(..=32) created_at:timestamp
+table 360 chat_conversations replicated key id
+  group 0 immutable project_id:optional_row_key->97:cascade conversation_kind:text(..=32) created_at:timestamp
+  group 1 max last_activity_at:timestamp
+  group 2 coupled archived_at:optional_timestamp
+  group 3 max updated_at:timestamp
+table 361 chat_conversation_memberships replicated key sync_key
+  derived key exists 4 inputs conversation_id,participant_id prefix conversation-membership
+  group 0 immutable conversation_id:optional_row_key->360:cascade participant_id:optional_row_key->352:cascade
+  group 1 coupled membership_role:text(..=32) removed_at:optional_timestamp
+  group 2 register created_at:timestamp
+  group 3 max updated_at:timestamp
+  group 4 register
+table 362 chat_teammate_channel_memberships replicated key sync_key
+  derived key exists 4 inputs conversation_id,teammate_id prefix ai-channel-membership
+  group 0 immutable conversation_id:optional_row_key->360:cascade teammate_id:optional_row_key->353:cascade
+  group 1 coupled access_profile_id:optional_row_key->355:cascade read_history:flag read_history_inherits_profile:flag participate:flag participate_inherits_profile:flag history_boundary:text(..=32) history_boundary_inherits_profile:flag history_from_order_key:optional_text(..=128) runtime_approval_policy:optional_text(..=32) scratch_runtime_approval_policy:optional_text(..=32) removed_at:optional_timestamp
+  group 2 register created_at:timestamp
+  group 3 max updated_at:timestamp
+  group 4 register
+  check history_boundary,history_from_order_key within 1
+table 363 chat_teammate_working_folder_grants replicated key sync_key
+  derived key exists 3 inputs conversation_id,teammate_id,working_folder_id prefix folder-grant
+  group 0 immutable conversation_id:optional_row_key->360:cascade teammate_id:optional_row_key->353:cascade working_folder_id:optional_row_key->98:cascade
+  group 1 coupled capability:text(..=32) capability_inherits_profile:flag is_default:flag runtime_approval_policy:optional_text(..=32) revoked_at:optional_timestamp
+  group 2 register project_id:optional_row_key created_at:timestamp
+  group 3 register
+table 364 chat_channels replicated key id
+  group 0 immutable project_id:optional_row_key->97:cascade conversation_id:optional_row_key->360:cascade is_default:flag created_at:timestamp
+  group 1 register surfaced recoverable name:text(..=80) topic:text(..=250)
+  group 2 coupled archived_at:optional_timestamp
+  group 3 max updated_at:timestamp
+table 370 chat_reply_threads replicated key id
+  derived key exists 4 inputs root_item_id prefix reply-thread
+  group 0 immutable root_item_id:optional_row_key
+  group 1 register conversation_id:optional_row_key->360:cascade created_at:timestamp
+  group 2 max last_activity_at:timestamp
+  group 3 max updated_at:timestamp
+  group 4 register
+table 371 chat_conversation_items replicated key id
+  group 0 immutable conversation_id:optional_row_key->360:cascade reply_thread_id:optional_row_key->370:cascade item_kind:text(..=32) order_key:order_key created_at:timestamp
+table 372 chat_communication_messages replicated key item_id
+  group 0 immutable author_label_snapshot:trimmed_text(1..=160) created_at:timestamp
+  group 1 register author_participant_id:optional_row_key->352:set_null
+  group 2 register surfaced recoverable current_revision_id:optional_row_key edited_at:optional_timestamp
+  group 3 coupled deleted_at:optional_timestamp
+table 373 chat_communication_message_revisions replicated key id
+  group 0 immutable message_item_id:optional_row_key->372:cascade normalized_markdown:text(..=131072) rich_content_schema_version:integer(1..=9223372036854775807) rich_content_data:text(..=196608) created_at:timestamp
+table 374 chat_message_references replicated key id
+  group 0 immutable message_revision_id:optional_row_key->373:cascade reference_kind:text(..=32) label_snapshot:text(..=4096) plain_text_projection:text(..=4096) start_offset:integer(0..=9223372036854775807) end_offset:integer(1..=9223372036854775807) ordinal:integer(0..=9223372036854775807) created_at:timestamp
+  check start_offset,end_offset within 0
+table 375 chat_channel_reference_targets replicated key reference_id
+  group 0 immutable channel_id:optional_row_key source_conversation_id:optional_row_key destination_conversation_id:optional_row_key source_lower_order_key:optional_text(..=128) source_lower_item_id:optional_text(..=1024) source_high_order_key:optional_text(..=128) source_high_item_id:optional_row_key source_revision_cutoff_id:optional_row_key
+  check source_lower_order_key,source_lower_item_id,source_high_order_key,source_high_item_id,source_revision_cutoff_id within 0
+table 376 chat_execution_environment_reference_targets replicated key reference_id
+  group 0 immutable execution_environment_id:text(..=2048)
+table 377 chat_participant_reference_targets replicated key reference_id
+  group 0 immutable participant_id:optional_row_key
+table 378 chat_working_folder_reference_targets replicated key reference_id
+  group 0 immutable working_folder_id:optional_row_key
+table 379 chat_workspace_path_reference_targets replicated key reference_id
+  group 0 immutable working_folder_id:optional_row_key path_kind:text(..=32) relative_path:text(..=4096)
+table 380 chat_conversation_read_cursors replicated key sync_key
+  derived key exists 3 inputs conversation_id,participant_id prefix conversation-read-cursor
+  group 0 immutable conversation_id:optional_row_key->360:cascade participant_id:optional_row_key->352:cascade
+  group 1 max last_read_order_key:text(..=128) last_read_item_id:text(..=1024)
+  group 2 max updated_at:timestamp
+  group 3 register
+table 381 chat_reply_thread_read_cursors replicated key sync_key
+  derived key exists 3 inputs reply_thread_id,participant_id prefix reply-thread-read-cursor
+  group 0 immutable reply_thread_id:optional_row_key->370:cascade participant_id:optional_row_key->352:cascade
+  group 1 max last_read_order_key:text(..=128) last_read_item_id:text(..=1024)
+  group 2 max updated_at:timestamp
+  group 3 register

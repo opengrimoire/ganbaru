@@ -130,6 +130,33 @@ pub struct ThreadRuntimeSnapshot {
 }
 
 impl ThreadRuntimeSnapshot {
+    /// Returns the state of a thread that has no provider session.
+    pub fn stopped() -> Self {
+        Self {
+            session_id: None,
+            session_state: ProviderSessionState::Stopped,
+            capabilities: crate::models::ProviderCapabilities::default(),
+            active_turn_id: None,
+            turn_active: false,
+            pending_request: false,
+            terminal_linked_operation: false,
+            accepting_commands: true,
+            generation: 0,
+            last_activity: Instant::now(),
+        }
+    }
+
+    /// Reports whether an owner in this state holds nothing a fresh owner would not recreate.
+    fn can_evict(&self, now: Instant, idle_timeout: Duration) -> bool {
+        self.accepting_commands
+            && self.session_id.is_none()
+            && self.session_state == ProviderSessionState::Stopped
+            && !self.turn_active
+            && !self.pending_request
+            && !self.terminal_linked_operation
+            && now.saturating_duration_since(self.last_activity) >= idle_timeout
+    }
+
     pub fn can_idle_stop(&self, now: Instant, idle_timeout: Duration) -> bool {
         self.accepting_commands
             && self.session_state == ProviderSessionState::Ready
@@ -405,6 +432,17 @@ impl ThreadRuntimeOwner {
         Ok(())
     }
 
+    /// Reports whether the registry holds the only reference, no command is queued, and the
+    /// worker has stayed stopped for the idle timeout, so dropping the owner loses no state.
+    fn can_evict(self: &Arc<Self>, now: Instant, idle_timeout: Duration) -> bool {
+        Arc::strong_count(self) == 1
+            && self.command_sender.capacity() == self.command_sender.max_capacity()
+            && self
+                .snapshot
+                .lock()
+                .is_ok_and(|snapshot| snapshot.can_evict(now, idle_timeout))
+    }
+
     fn abort_worker(&self) -> ChatResult<()> {
         if let Some(task) = self
             .worker_task
@@ -433,8 +471,31 @@ impl Default for ChatRuntimeRegistry {
 }
 
 impl ChatRuntimeRegistry {
+    /// Returns the thread's owner, creating it and its worker when none exists.
+    ///
+    /// Callers create owners only for threads that exist or that the same command is creating;
+    /// paths that only read or stop a runtime use [`Self::existing_owner`].
     pub fn owner(&self, thread_id: ChatThreadId) -> ChatResult<Arc<ThreadRuntimeOwner>> {
         self.owner_with_capacity(thread_id, DEFAULT_COMMAND_CAPACITY)
+    }
+
+    /// Returns the thread's owner without creating one.
+    pub fn existing_owner(
+        &self,
+        thread_id: &ChatThreadId,
+    ) -> ChatResult<Option<Arc<ThreadRuntimeOwner>>> {
+        self.owners
+            .lock()
+            .map(|owners| owners.get(thread_id).cloned())
+            .map_err(|_| runtime_state_error())
+    }
+
+    /// Returns the thread's runtime state, or the stopped state when it has no owner.
+    pub fn snapshot(&self, thread_id: &ChatThreadId) -> ChatResult<ThreadRuntimeSnapshot> {
+        match self.existing_owner(thread_id)? {
+            Some(owner) => owner.snapshot(),
+            None => Ok(ThreadRuntimeSnapshot::stopped()),
+        }
     }
 
     fn owner_with_capacity(
@@ -455,19 +516,10 @@ impl ChatRuntimeRegistry {
         if let Some(owner) = owners.get(&thread_id) {
             return Ok(Arc::clone(owner));
         }
+        let now = Instant::now();
+        owners.retain(|_, owner| !owner.can_evict(now, self.idle_timeout));
         let (sender, receiver) = mpsc::channel(capacity.max(1));
-        let snapshot = Arc::new(Mutex::new(ThreadRuntimeSnapshot {
-            session_id: None,
-            session_state: ProviderSessionState::Stopped,
-            capabilities: crate::models::ProviderCapabilities::default(),
-            active_turn_id: None,
-            turn_active: false,
-            pending_request: false,
-            terminal_linked_operation: false,
-            accepting_commands: true,
-            generation: 0,
-            last_activity: Instant::now(),
-        }));
+        let snapshot = Arc::new(Mutex::new(ThreadRuntimeSnapshot::stopped()));
         let generation = Arc::new(AtomicU64::new(0));
         let worker_thread_id = thread_id.clone();
         let worker_snapshot = Arc::clone(&snapshot);

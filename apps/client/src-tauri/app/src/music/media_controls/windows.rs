@@ -1,5 +1,10 @@
 //! Windows system media transport integration.
 
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use super::{
     MediaControlsUpdate, MusicHardwareControlPayload, clamp_playback_rate, control, control_delta,
     control_position, control_rate, control_shuffle, emit_control, ms_to_windows_ticks,

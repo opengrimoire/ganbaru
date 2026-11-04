@@ -30,6 +30,16 @@ fn coverage_merge_and_dominance() {
     );
     assert!(merged.delta_since(&merged).is_empty());
 
+    let mut met = merged.clone();
+    met.meet(&right);
+    assert_eq!(met, right);
+    let mut disjoint = left.clone();
+    disjoint.meet(&[(writer(3), 5)].into_iter().collect());
+    assert!(disjoint.is_empty());
+    let mut partial = left.clone();
+    partial.meet(&right);
+    assert_eq!(partial, [(writer(2), 1)].into_iter().collect());
+
     left.set(writer(1), 0);
     assert_eq!(left.len(), 1);
 }

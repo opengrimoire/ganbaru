@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::artwork::{extract_embedded_artwork, find_track_artwork};
+use crate::validation::bounded_item_description;
 
 use super::super::MusicMediaKind;
 use super::metadata::{LocalTags, read_container_duration_ms, read_tags};
@@ -85,6 +86,34 @@ pub(super) fn next_discovery_batch(
     Ok(entries)
 }
 
+/// Size and modification time of one discovered media file, read without opening it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct MediaStat {
+    pub file_size_bytes: i64,
+    pub modified_at_ms: Option<i64>,
+}
+
+/// Reads the size and modification time of a media file. Returns `None` when the file cannot
+/// be read, so inspection reports the failure.
+pub(super) fn stat_media(root: &Path, relative_path: &str) -> Option<MediaStat> {
+    let metadata = fs::metadata(join_relative(root, relative_path).ok()?).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    Some(MediaStat {
+        file_size_bytes: i64::try_from(metadata.len()).ok()?,
+        modified_at_ms: modified_at_ms(&metadata),
+    })
+}
+
+fn modified_at_ms(metadata: &fs::Metadata) -> Option<i64> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .and_then(|value| i64::try_from(value.as_millis()).ok())
+}
+
 pub(crate) fn inspect_media(
     root: &Path,
     relative_path: &str,
@@ -98,11 +127,7 @@ pub(crate) fn inspect_media(
     }
     let file_size_bytes = i64::try_from(metadata.len())
         .map_err(|_| format!("'{relative_path}' is too large to catalog"))?;
-    let modified_at_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-        .and_then(|value| i64::try_from(value.as_millis()).ok());
+    let modified_at_ms = modified_at_ms(&metadata);
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -269,7 +294,7 @@ fn fallback_title(path: &Path) -> String {
     path.file_stem()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
-        .unwrap_or("Untitled media")
+        .map_or("Untitled media", bounded_item_description)
         .to_string()
 }
 

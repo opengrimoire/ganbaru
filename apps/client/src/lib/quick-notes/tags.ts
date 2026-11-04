@@ -1,4 +1,5 @@
 import { PALETTE_SIZE, type EventColor } from "$lib/calendar/types";
+import { compareOrderKeyThenId } from "$lib/utils/order-key";
 import { movedToIndex } from "$lib/utils/sidebar-order";
 import type { QuickNoteTagReorderRequest } from "./types";
 
@@ -17,20 +18,12 @@ export function quickNoteViewIndexForKey(key: string): number | null {
   return Number(key) - 1;
 }
 
-function compareCodeUnits(left: string, right: string): number {
-  if (left === right) return 0;
-  return left < right ? -1 : 1;
-}
-
-/**
- * Orders tags like the native list: by order key, then id. Order keys are ASCII, so code unit
- * comparison matches the database's byte order.
- */
+/** Orders tags like the native list: by order key, then id, compared by code unit. */
 export function compareQuickNoteTags(
   left: { orderKey: string; id: string },
   right: { orderKey: string; id: string },
 ): number {
-  return compareCodeUnits(left.orderKey, right.orderKey) || compareCodeUnits(left.id, right.id);
+  return compareOrderKeyThenId(left.orderKey, left.id, right.orderKey, right.id);
 }
 
 /**

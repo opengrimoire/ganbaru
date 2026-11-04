@@ -14,7 +14,7 @@
     NOTES_COMMENT_MENTION_LIMITS,
     type NotesCommentMentionGroup,
   } from "$lib/notes/collaboration/comment-mentions";
-  import { notesCommentIsEmpty } from "$lib/notes/collaboration/comments";
+  import { isNotesCommentTooLargeMessage, notesCommentIsEmpty } from "$lib/notes/collaboration/comments";
   import {
     notesPlainTextFromEditableRoot,
     notesTextSelectionFromEditableRoot,
@@ -361,7 +361,10 @@
         void placeCaret({ start: 0, end: 0 }, false);
       }
     } catch (error) {
-      errorMessage = t("notes.commentSendFailed", error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      errorMessage = isNotesCommentTooLargeMessage(message)
+        ? t("notes.commentTooLarge")
+        : t("notes.commentSendFailed", message);
     } finally {
       submitting = false;
     }

@@ -8,7 +8,7 @@
   import HardDrive from "@lucide/svelte/icons/hard-drive";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Search from "@lucide/svelte/icons/search";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import Upload from "@lucide/svelte/icons/upload";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
@@ -410,7 +410,7 @@
                 </div>
                 <div class="source-summary">
                   <strong>{t("settings.chat.teammates.scratchManager.sources")}</strong>
-                  {#if generation.retainedSources.length === 0}<small>{t("settings.chat.teammates.scratchManager.noSources")}</small>{:else}{#each generation.retainedSources as source (source.channelId)}<small>{t("settings.chat.teammates.scratchManager.sourceRange", source.channelName, source.lowerOrdinal, source.highOrdinal)}</small>{/each}{/if}
+                  {#if generation.retainedSources.length === 0}<small>{t("settings.chat.teammates.scratchManager.noSources")}</small>{:else}{#each generation.retainedSources as source (source.channelId)}<small>{t("settings.chat.teammates.scratchManager.sourceRange", source.channelName)}</small>{/each}{/if}
                 </div>
               </article>
             {/each}

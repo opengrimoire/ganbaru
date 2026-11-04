@@ -312,6 +312,7 @@ async fn insert_database_objects(
     sqlx::query(
         "INSERT INTO notes_databases (
             id,
+            block_id,
             parent_type,
             parent_page_id,
             parent_block_id,
@@ -326,7 +327,7 @@ async fn insert_database_objects(
             source_last_edited_time,
             url
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'notion', ?, ?, ?, ?)",
+         VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 'notion', ?9, ?10, ?11, ?12)",
     )
     .bind(&block.id)
     .bind(&block.parent_type)
@@ -352,13 +353,12 @@ async fn insert_database_objects(
             title_rich_text,
             description,
             icon,
-            properties,
             source_provider,
             source_object_id,
             source_workspace_id,
             source_last_edited_time
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'notion', ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, 'notion', ?, ?, ?)",
     )
     .bind(data_source_id)
     .bind(&block.id)
@@ -366,13 +366,18 @@ async fn insert_database_objects(
     .bind(title_rich_text.to_string())
     .bind(description.to_string())
     .bind(icon)
-    .bind(data_source.properties.to_string())
     .bind(&data_source.source_id)
     .bind(source_workspace_id)
     .bind(data_source.last_edited_time.as_deref())
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert imported Notion data source: {e}"))?;
+    crate::property_storage::write_data_source_properties(
+        tx,
+        data_source_id,
+        &data_source.properties,
+    )
+    .await?;
 
     sqlx::query(
         "INSERT INTO notes_database_views (
@@ -383,14 +388,13 @@ async fn insert_database_objects(
             type,
             sorts,
             configuration,
-            sort_order,
             source_provider,
             source_object_id,
             source_workspace_id,
             source_last_edited_time,
             url
          )
-         VALUES (?, ?, ?, 'Table', 'table', ?, ?, 1000, 'notion', ?, ?, ?, ?)",
+         VALUES (?, ?, ?, 'Table', 'table', ?, ?, 'notion', ?, ?, ?, ?)",
     )
     .bind(view_id)
     .bind(&block.id)
@@ -422,20 +426,9 @@ async fn update_child_database_payload(
     });
     validate_block_payload("child_database", &payload)?;
     let plain_text = plain_text_from_payload("child_database", &payload);
-    sqlx::query(
-        "UPDATE notes_blocks
-         SET payload = ?,
-             plain_text = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?",
-    )
-    .bind(payload.to_string())
-    .bind(plain_text)
-    .bind(block_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("update imported Notion database block: {e}"))?;
-    Ok(())
+    crate::block_storage::write_block_content(tx, block_id, "child_database", &payload, &plain_text)
+        .await
+        .map_err(|e| format!("update imported Notion database block: {e}"))
 }
 
 async fn refresh_data_source_after_rows(

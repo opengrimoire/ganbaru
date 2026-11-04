@@ -1,6 +1,39 @@
 use super::*;
 use sqlx::SqlitePool;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+/// Appends a default membership of `item_id` after `tail` unless the playlist already holds the
+/// item, advancing `tail` when a row is inserted. Returns whether a row was inserted.
+async fn append_membership(
+    connection: &mut sqlx::SqliteConnection,
+    playlist_id: &str,
+    item_id: &str,
+    tail: &mut Option<String>,
+    updated_at_ms: i64,
+) -> MusicLibraryResult<bool> {
+    let order_key = super::order::key_after(tail.as_deref())?;
+    let result = sqlx::query(
+        "INSERT INTO music_playlist_memberships
+            (id, playlist_id, item_id, order_key, weight, enabled,
+             created_at_ms, updated_at_ms, version)
+         VALUES (?, ?, ?, ?, 'normal', 1, ?, ?, 1)
+         ON CONFLICT(playlist_id, item_id) DO NOTHING",
+    )
+    .bind(super::identity::membership_id(playlist_id, item_id)?)
+    .bind(playlist_id)
+    .bind(item_id)
+    .bind(order_key.as_str())
+    .bind(updated_at_ms)
+    .bind(updated_at_ms)
+    .execute(connection)
+    .await
+    .map_err(|error| MusicLibraryError::database("add playlist membership", error))?;
+    let inserted = result.rows_affected() > 0;
+    if inserted {
+        *tail = Some(order_key.as_str().to_string());
+    }
+    Ok(inserted)
+}
 
 pub async fn bulk_edit_memberships(
     pool: &SqlitePool,
@@ -13,34 +46,18 @@ pub async fn bulk_edit_memberships(
         .map_err(|error| MusicLibraryError::database("begin bulk playlist edit", error))?;
     let mut changed_count = 0_i64;
     for playlist_id in &request.add_playlist_ids {
-        let mut next_position: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(position), -1) + 1 FROM music_playlist_memberships WHERE playlist_id = ?",
-        )
-        .bind(playlist_id)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("load next playlist position", error))?;
-        for (item_index, item_id) in request.item_ids.iter().enumerate() {
-            let membership_id = format!("{}:{}:{}", request.action_id, item_index, playlist_id);
-            let result = sqlx::query(
-                "INSERT INTO music_playlist_memberships
-                    (id, playlist_id, item_id, position, weight, enabled,
-                     created_at_ms, updated_at_ms, version)
-                 VALUES (?, ?, ?, ?, 'normal', 1, ?, ?, 1)
-                 ON CONFLICT(playlist_id, item_id) DO NOTHING",
+        let mut tail = super::order::membership_tail(&mut transaction, playlist_id).await?;
+        for item_id in &request.item_ids {
+            let inserted = append_membership(
+                &mut transaction,
+                playlist_id,
+                item_id,
+                &mut tail,
+                request.updated_at_ms,
             )
-            .bind(membership_id)
-            .bind(playlist_id)
-            .bind(item_id)
-            .bind(next_position)
-            .bind(request.updated_at_ms)
-            .bind(request.updated_at_ms)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| MusicLibraryError::database("bulk add playlist membership", error))?;
-            if result.rows_affected() > 0 {
-                next_position += 1;
-                changed_count += result.rows_affected() as i64;
+            .await?;
+            if inserted {
+                changed_count += 1;
                 super::search::refresh_item(&mut transaction, item_id).await?;
             }
         }
@@ -69,12 +86,13 @@ pub async fn bulk_edit_memberships(
                 let result = sqlx::query(
                     "UPDATE music_playlist_memberships
                      SET weight = ?, updated_at_ms = ?, version = version + 1
-                     WHERE playlist_id = ? AND item_id = ?",
+                     WHERE playlist_id = ? AND item_id = ? AND weight IS NOT ?",
                 )
                 .bind(weight.as_ref())
                 .bind(request.updated_at_ms)
                 .bind(playlist_id)
                 .bind(item_id)
+                .bind(weight.as_ref())
                 .execute(&mut *transaction)
                 .await
                 .map_err(|error| {
@@ -100,100 +118,131 @@ pub async fn reorder_playlist(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin playlist reorder", error))?;
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT id, item_id FROM music_playlist_memberships
-         WHERE playlist_id = ? ORDER BY position, id",
+    let mut item_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT item_id FROM music_playlist_memberships
+         WHERE playlist_id = ? ORDER BY order_key, id",
     )
     .bind(&request.playlist_id)
     .fetch_all(&mut *transaction)
     .await
     .map_err(|error| MusicLibraryError::database("load playlist order", error))?;
-    let Some(source_index) = rows
+    let Some(source_index) = item_ids
         .iter()
-        .position(|(_, item_id)| item_id == &request.item_id)
+        .position(|item_id| item_id == &request.item_id)
     else {
         return Err(MusicLibraryError::not_found(
             "playlist membership item",
             &request.item_id,
         ));
     };
-    if request.target_index as usize >= rows.len() {
+    if request.target_index as usize >= item_ids.len() {
         return Err(MusicLibraryError::validation(
             "targetIndex",
-            format!("must be less than {}", rows.len()),
+            format!("must be less than {}", item_ids.len()),
         ));
     }
-    let mut reordered = rows;
-    let moved = reordered.remove(source_index);
-    reordered.insert(request.target_index as usize, moved);
-    for (position, (membership_id, _)) in reordered.iter().enumerate() {
-        sqlx::query(
-            "UPDATE music_playlist_memberships
-             SET position = ?, updated_at_ms = ?, version = version + 1 WHERE id = ?",
-        )
-        .bind(position as i64)
-        .bind(request.updated_at_ms)
-        .bind(membership_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("persist playlist order", error))?;
-    }
+    let moved = item_ids.remove(source_index);
+    item_ids.insert(request.target_index as usize, moved);
+    let desired = item_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    super::order::order_memberships(
+        &mut transaction,
+        &request.playlist_id,
+        &desired,
+        request.updated_at_ms,
+    )
+    .await?;
     super::writes::commit(transaction, "commit playlist reorder").await?;
-    Ok(MusicPlaylistReorderResult {
-        item_ids: reordered.into_iter().map(|(_, item_id)| item_id).collect(),
-    })
+    Ok(MusicPlaylistReorderResult { item_ids })
 }
 
 pub async fn reorder_playlists(
     pool: &SqlitePool,
     request: MusicPlaylistsReorder,
-) -> MusicLibraryResult<Vec<MusicWriteReceipt>> {
+) -> MusicLibraryResult<Vec<MusicOrderReceipt>> {
     validate_playlists_reorder(&request)?;
     let mut transaction = pool
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin playlists reorder", error))?;
-    let existing: Vec<String> = sqlx::query_scalar("SELECT id FROM music_playlists ORDER BY id")
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("load playlists for reorder", error))?;
+    let existing: Vec<(String, String, i64)> =
+        sqlx::query_as("SELECT id, order_key, version FROM music_playlists ORDER BY order_key, id")
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("load playlists for reorder", error))?;
+    let mut stored_ids = existing
+        .iter()
+        .map(|(id, _, _)| id.as_str())
+        .collect::<Vec<_>>();
+    stored_ids.sort_unstable();
     let mut requested = request
         .playlists
         .iter()
         .map(|playlist| playlist.playlist_id.as_str())
         .collect::<Vec<_>>();
     requested.sort_unstable();
-    if existing.iter().map(String::as_str).collect::<Vec<_>>() != requested {
+    if stored_ids != requested {
         return Err(MusicLibraryError::conflict(
             "the playlist collection changed while it was being reordered",
         ));
     }
+    let versions = existing
+        .iter()
+        .map(|(id, _, version)| (id.as_str(), *version))
+        .collect::<HashMap<_, _>>();
+    if let Some(playlist) = request.playlists.iter().find(|playlist| {
+        versions.get(playlist.playlist_id.as_str()) != Some(&playlist.expected_version)
+    }) {
+        return Err(MusicLibraryError::conflict(format!(
+            "playlist {} changed while it was being reordered",
+            playlist.playlist_id
+        )));
+    }
 
-    let mut receipts = Vec::with_capacity(request.playlists.len());
-    for (position, playlist) in request.playlists.iter().enumerate() {
-        let result = sqlx::query(
+    let current = existing
+        .iter()
+        .map(|(id, order_key, _)| (id.clone(), order_key.clone()))
+        .collect::<Vec<_>>();
+    let desired = request
+        .playlists
+        .iter()
+        .map(|playlist| playlist.playlist_id.as_str())
+        .collect::<Vec<_>>();
+    let moved = super::order::reorder(&current, &desired)?;
+    for (playlist_id, order_key) in &moved {
+        sqlx::query(
             "UPDATE music_playlists
-             SET sort_order = ?, updated_at_ms = ?, version = version + 1
-             WHERE id = ? AND version = ?",
+             SET order_key = ?, updated_at_ms = ?, version = version + 1 WHERE id = ?",
         )
-        .bind(position as i64)
+        .bind(order_key.as_str())
         .bind(request.updated_at_ms)
-        .bind(&playlist.playlist_id)
-        .bind(playlist.expected_version)
+        .bind(playlist_id)
         .execute(&mut *transaction)
         .await
         .map_err(|error| MusicLibraryError::database("persist playlist order", error))?;
-        if result.rows_affected() != 1 {
-            return Err(MusicLibraryError::conflict(format!(
-                "playlist {} changed while it was being reordered",
-                playlist.playlist_id
-            )));
-        }
-        receipts.push(MusicWriteReceipt {
-            id: playlist.playlist_id.clone(),
-            version: playlist.expected_version + 1,
-        });
     }
+    let moved_keys = moved
+        .iter()
+        .map(|(playlist_id, order_key)| (playlist_id.as_str(), order_key.as_str()))
+        .collect::<HashMap<_, _>>();
+    let current_keys = current
+        .iter()
+        .map(|(playlist_id, order_key)| (playlist_id.as_str(), order_key.as_str()))
+        .collect::<HashMap<_, _>>();
+    let receipts = request
+        .playlists
+        .iter()
+        .map(|playlist| {
+            let id = playlist.playlist_id.as_str();
+            let moved_key = moved_keys.get(id);
+            MusicOrderReceipt {
+                id: playlist.playlist_id.clone(),
+                order_key: moved_key
+                    .or_else(|| current_keys.get(id))
+                    .map_or_else(String::new, |key| (*key).to_string()),
+                version: playlist.expected_version + i64::from(moved_key.is_some()),
+            }
+        })
+        .collect();
     super::writes::commit(transaction, "commit playlists reorder").await?;
     Ok(receipts)
 }
@@ -282,36 +331,18 @@ pub async fn apply_review_selection(
     let mut membership_changed_count = 0_i64;
     let mut changed_item_ids = HashSet::new();
     for playlist_id in &request.add_playlist_ids {
-        let mut next_position: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(position), -1) + 1 FROM music_playlist_memberships WHERE playlist_id = ?",
-        )
-        .bind(playlist_id)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("load review playlist position", error))?;
-        for (item_index, item) in request.items.iter().enumerate() {
-            let membership_id = format!("{}:{}:{}", request.action_id, item_index, playlist_id);
-            let result = sqlx::query(
-                "INSERT INTO music_playlist_memberships
-                    (id, playlist_id, item_id, position, weight, enabled,
-                     created_at_ms, updated_at_ms, version)
-                 VALUES (?, ?, ?, ?, 'normal', 1, ?, ?, 1)
-                 ON CONFLICT(playlist_id, item_id) DO NOTHING",
+        let mut tail = super::order::membership_tail(&mut transaction, playlist_id).await?;
+        for item in &request.items {
+            let inserted = append_membership(
+                &mut transaction,
+                playlist_id,
+                &item.item_id,
+                &mut tail,
+                request.updated_at_ms,
             )
-            .bind(membership_id)
-            .bind(playlist_id)
-            .bind(&item.item_id)
-            .bind(next_position)
-            .bind(request.updated_at_ms)
-            .bind(request.updated_at_ms)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| {
-                MusicLibraryError::database("add review playlist membership", error)
-            })?;
-            if result.rows_affected() > 0 {
-                next_position += 1;
-                membership_changed_count += result.rows_affected() as i64;
+            .await?;
+            if inserted {
+                membership_changed_count += 1;
                 changed_item_ids.insert(item.item_id.clone());
             }
         }

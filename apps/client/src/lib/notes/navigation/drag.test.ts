@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { NOTES_PAGE_PROJECT_ID_PROPERTY } from "$lib/notes/project-membership";
 import type { NotesFolder, NotesPage } from "$lib/notes/types";
 import {
   canDropNotesNavigationItem,
@@ -35,7 +34,8 @@ function page(
     in_trash: false,
     icon: null,
     cover: null,
-    properties: { title: id, [NOTES_PAGE_PROJECT_ID_PROPERTY]: "project-1" },
+    project_id: "project-1",
+    properties: { title: id },
     url: null,
     public_url: null,
     source_provider: null,

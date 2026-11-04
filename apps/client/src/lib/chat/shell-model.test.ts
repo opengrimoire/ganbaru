@@ -37,6 +37,7 @@ function workspace(id = "workspace", projectId = "project"): ProjectWorkingFolde
     canonicalPath: "/workspace",
     lastVerifiedAt: timestamp,
     currentBranch: "feat/chat",
+    trust: "trusted",
   };
 }
 
@@ -57,6 +58,7 @@ function provider(state: ProviderInstanceRead["lastProbe"] extends infer _Probe 
       favoriteModelIds: [],
       providerConfig: { schemaVersion: 1, value: {} },
     },
+    runtimeReview: [],
     lastProbe: {
       instanceId: "codex",
       state,

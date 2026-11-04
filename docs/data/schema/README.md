@@ -16,7 +16,9 @@ The authoritative schema is the ordered migration set in `crates/ganbaru-db/migr
 
 ## Migration policy
 
-The app has no external users yet. `20261004220000_baseline_schema.sql` is the fresh-start schema, and later changes are additive migrations named `YYYYMMDDHHMMSS_description.sql` with a UTC timestamp. SQLx discovers them at compile time, so they are never registered manually. Older development databases, internal exports, and device state are unsupported when their contracts change and must be recreated explicitly; do not keep compatibility readers or upgrade shims for them, and never delete local vaults automatically. Once a user-capable release can have applied a migration, it is immutable. A schema squash requires explicit maintainer approval.
+The app has no external users yet. `20261031060000_baseline_schema.sql` is the fresh-start schema, and later changes are additive migrations named `YYYYMMDDHHMMSS_description.sql` with a UTC timestamp. SQLx discovers them at compile time, so they are never registered manually. Older development databases, internal exports, and device state are unsupported when their contracts change and must be recreated explicitly; do not keep compatibility readers or upgrade shims for them, and never delete local vaults automatically. Once a user-capable release can have applied a migration, it is immutable. A schema squash requires explicit maintainer approval.
+
+Every migration slows each first vault open on a new version and every test process that builds the schema, and a table rebuild costs far more than an added column because SQLite reparses the whole schema after each `ALTER TABLE`. Prefer `ADD COLUMN` over rebuilding a table, and group unavoidable rebuilds into one migration. Adding or changing a migration also requires regenerating `crates/ganbaru-db/schema-catalog.txt`, the committed catalog that read-write opens compare against (see [test authoring](../../testing/test-authoring.md#rust-and-sqlite)).
 
 Before changing persistent state, check:
 

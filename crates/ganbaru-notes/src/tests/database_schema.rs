@@ -182,12 +182,7 @@ fn update_local_data_source_schema() {
             json!([])
         );
 
-        let stored_properties: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(DATA_SOURCE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let stored_properties = stored_schema(&pool, DATA_SOURCE_A).await.to_string();
         let stored_properties_json: serde_json::Value =
             serde_json::from_str(&stored_properties).unwrap();
         assert_eq!(stored_properties_json["Place"]["type"], "place");

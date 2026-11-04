@@ -1,8 +1,12 @@
 //! Bounded process-local Calendar preimages, independent of execution history.
 
+use ganbaru_sync::hold::release_hold;
+use ganbaru_sync::manifest::vault::calendar::EVENTS_TABLE;
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};
 use std::sync::Arc;
+
+use super::super::commit::DeletionLease;
 
 use super::super::metadata::{Metadata, PreparedMutation, revision};
 use super::super::occurrence::ReadBudget;
@@ -244,10 +248,25 @@ impl UndoPreimage {
 impl PreparedUndo {
     /// Restore original rows and nullable references only. The stopped run and
     /// its accepted interruption, pauses, segments and suppression remain intact.
+    /// With a `lease`, a removed source that sync had published must still have its held
+    /// delete, so Undo never recreates an event whose deletion sync already published.
     pub(in crate::events) async fn write(
         self,
         tx: &mut Transaction<'_, Sqlite>,
+        lease: Option<DeletionLease>,
     ) -> Result<(), String> {
+        if let Some(lease) = lease
+            && self.preimage.source_removed
+        {
+            let held = release_hold(tx, EVENTS_TABLE, &[&self.preimage.source_id], lease.now_ms)
+                .await
+                .map_err(|error| format!("release Calendar deletion hold: {error}"))?;
+            if !held && published_event(tx, &self.preimage.source_id).await? {
+                return Err(
+                    "Calendar deletion already synced; restore the event from sync recovery".into(),
+                );
+            }
+        }
         self.rows.write(tx).await?;
         for run in &self.preimage.references.runs {
             let result = sqlx::query("UPDATE pomodoro_runs SET event_id=?1, calendar_archive_id=?2
@@ -271,4 +290,14 @@ impl PreparedUndo {
         }
         Ok(())
     }
+}
+
+/// Whether sync published the event, so its key cannot be created again without a live hold.
+async fn published_event(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<bool, String> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sync_rows WHERE table_id=?1 AND row_key=?2)")
+        .bind(i64::from(EVENTS_TABLE.0))
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|error| format!("read Calendar sync publication: {error}"))
 }

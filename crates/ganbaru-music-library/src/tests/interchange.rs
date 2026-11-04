@@ -22,7 +22,7 @@ pub(super) fn request(conflict: MusicImportPlaylistConflict) -> MusicInterchange
     MusicInterchangeImportRequest {
         document: MusicInterchangeDocument {
             format: "ganbaru/music-playlists".to_string(),
-            version: 1,
+            version: 2,
             exported_at: 1_700_000_000_000,
             roots: vec![MusicInterchangeRoot {
                 id: "root-1".to_string(),
@@ -38,13 +38,12 @@ pub(super) fn request(conflict: MusicImportPlaylistConflict) -> MusicInterchange
                 intended_uses: vec![MusicIntendedUse::Focus],
                 memberships: vec![MusicInterchangeMembership {
                     item: item("local:fingerprint-1"),
-                    position: 0,
                     weight: MusicWeight::LessOften,
                     enabled: true,
                     start_ms: Some(1_000),
                     end_ms: Some(50_000),
-                    volume: Some(0.8),
-                    rate: Some(1.0),
+                    volume_milli: Some(800),
+                    rate_milli: Some(1_000),
                     skip_ranges: vec![MusicInterchangeRange {
                         start_ms: 10_000,
                         end_ms: 12_000,
@@ -87,8 +86,8 @@ fn interchange_import_commits_full_playlist_state_transactionally() {
                 .mix_enabled
         );
 
-        let row: (String, String, Option<i64>, Option<i64>, f64) = sqlx::query_as(
-            "SELECT weight, p.name, start_ms, end_ms, volume
+        let row: (String, String, Option<i64>, Option<i64>, i64) = sqlx::query_as(
+            "SELECT weight, p.name, start_ms, end_ms, volume_milli
              FROM music_playlist_memberships AS m
              JOIN music_playlists AS p ON p.id = m.playlist_id",
         )
@@ -102,7 +101,7 @@ fn interchange_import_commits_full_playlist_state_transactionally() {
                 "Focus".to_string(),
                 Some(1_000),
                 Some(50_000),
-                0.8,
+                800,
             )
         );
         let signals: Vec<String> =
@@ -207,5 +206,125 @@ fn interchange_conflict_policy_never_overwrites_without_replace() {
             .unwrap(),
             "Focus"
         );
+    });
+}
+
+#[test]
+fn interchange_import_truncates_item_descriptions_that_the_schema_caps() {
+    crate::test_support::block_on(async {
+        let pool = super::pool().await;
+        let mut import_request = request(MusicImportPlaylistConflict::ImportCopy);
+        let item = &mut import_request.document.playlists[0].memberships[0].item;
+        item.title = "é".repeat(MAX_ITEM_DESCRIPTION_CHARS * 20);
+        item.artist = "a".repeat(MAX_ITEM_DESCRIPTION_CHARS + 1);
+
+        super::super::interchange::import(&pool, import_request)
+            .await
+            .unwrap();
+        let stored: (i64, i64, i64) = sqlx::query_as(
+            "SELECT length(original_title), length(original_artist), length(original_album)
+             FROM music_library_items",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let limit = MAX_ITEM_DESCRIPTION_CHARS as i64;
+        assert_eq!(stored, (limit, limit, "Soundtrack".len() as i64));
+
+        super::seed_item(&pool, "item-direct", "local:direct").await;
+        for column in ["original_title", "original_artist", "original_album"] {
+            let update = format!("UPDATE music_library_items SET {column} = ? WHERE id = ?");
+            assert!(
+                sqlx::query(sqlx::AssertSqlSafe(update))
+                    .bind("x".repeat(MAX_ITEM_DESCRIPTION_CHARS + 1))
+                    .bind("item-direct")
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{column} accepts text past the cap"
+            );
+        }
+    });
+}
+
+#[test]
+fn interchange_replace_keeps_derived_rows_and_removes_absent_memberships() {
+    crate::test_support::block_on(async {
+        let pool = super::pool().await;
+        super::super::interchange::import(&pool, request(MusicImportPlaylistConflict::ImportCopy))
+            .await
+            .unwrap();
+        let item_id = crate::identity::import_item_id("local:fingerprint-1");
+        let membership_id = crate::identity::membership_id("playlist-1", &item_id).unwrap();
+        let first: (String, i64, i64) = sqlx::query_as(
+            "SELECT id, version, updated_at_ms FROM music_playlist_memberships WHERE item_id = ?",
+        )
+        .bind(&item_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(first.0, membership_id);
+        let location: String =
+            sqlx::query_scalar("SELECT id FROM music_local_locations WHERE item_id = ?")
+                .bind(&item_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            location,
+            crate::identity::location_id("root-1", "Album/Quiet rain.flac")
+        );
+
+        let mut replace = request(MusicImportPlaylistConflict::ReplaceExisting);
+        replace.imported_at += 1;
+        let mut added = replace.document.playlists[0].memberships[0].clone();
+        added.item = item("local:fingerprint-2");
+        added.item.locations[0].relative_path = "Album/Second.flac".to_string();
+        replace.document.playlists[0].memberships.push(added);
+        super::super::interchange::import(&pool, replace.clone())
+            .await
+            .unwrap();
+        let kept: (String, i64, i64) = sqlx::query_as(
+            "SELECT id, version, updated_at_ms FROM music_playlist_memberships WHERE item_id = ?",
+        )
+        .bind(&item_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(kept, first);
+
+        replace.imported_at += 1;
+        replace.document.playlists[0].memberships.reverse();
+        super::super::interchange::import(&pool, replace.clone())
+            .await
+            .unwrap();
+        let ordered: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT item_id, version FROM music_playlist_memberships
+             WHERE playlist_id = 'playlist-1' ORDER BY order_key, id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            ordered,
+            vec![
+                (crate::identity::import_item_id("local:fingerprint-2"), 2),
+                (item_id.clone(), first.1),
+            ],
+            "only the moved membership takes a new key"
+        );
+
+        replace.imported_at += 1;
+        replace.document.playlists[0].memberships.remove(0);
+        super::super::interchange::import(&pool, replace)
+            .await
+            .unwrap();
+        let remaining: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM music_playlist_memberships WHERE playlist_id = 'playlist-1'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, vec![membership_id]);
     });
 }

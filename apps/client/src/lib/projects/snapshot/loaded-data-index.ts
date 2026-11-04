@@ -19,6 +19,7 @@ import type {
   ProjectTaskTagLink,
   ProjectViewPreference,
 } from "$lib/projects/types";
+import { compareProjectOrder, compareTaskSectionOrder, compareTaskStatusOrder } from "$lib/projects/order";
 
 export type ProjectLoadedDataIndexSource = ProjectsSnapshot | ProjectLoadedDataIndex;
 
@@ -34,11 +35,17 @@ export interface ProjectLoadedDataIndex {
   readonly sectionsByProject: ReadonlyMap<string, readonly ProjectSection[]>;
   readonly activeSectionsByProject: ReadonlyMap<string, readonly ProjectSection[]>;
   readonly statusById: ReadonlyMap<string, ProjectStatus>;
+  /** Live statuses only, for pickers, settings, and defaults. */
   readonly statusesByProject: ReadonlyMap<string, readonly ProjectStatus[]>;
+  /** Live statuses plus deleted ones that a task still uses, for task views and labels. */
+  readonly taskStatusesByProject: ReadonlyMap<string, readonly ProjectStatus[]>;
   readonly defaultStatusByProject: ReadonlyMap<string, ProjectStatus>;
   readonly doneStatusByProject: ReadonlyMap<string, ProjectStatus>;
   readonly reopenStatusByProject: ReadonlyMap<string, ProjectStatus>;
+  /** Live priorities only, for pickers, settings, and defaults. */
   readonly prioritiesByProject: ReadonlyMap<string, readonly ProjectPriorityConfig[]>;
+  /** Live priorities plus deleted ones that a task still uses, for task views and labels. */
+  readonly taskPrioritiesByProject: ReadonlyMap<string, readonly ProjectPriorityConfig[]>;
   readonly priorityById: ReadonlyMap<string, ProjectPriorityConfig>;
   readonly taskById: ReadonlyMap<string, ProjectTask>;
   readonly taskIdsByProject: ReadonlyMap<string, ReadonlySet<string>>;
@@ -80,26 +87,30 @@ export interface ProjectLoadedDataIndex {
   readonly viewPreferenceByKey: ReadonlyMap<string, ProjectViewPreference>;
   readonly customEmojis: readonly ProjectCustomEmoji[];
   readonly customEmojiById: ReadonlyMap<string, ProjectCustomEmoji>;
-  readonly maxGroupSortOrder: number;
-  readonly maxCustomEmojiSortOrder: number;
 }
 
-function sortByOrderAndName<T extends { sortOrder: number; name: string }>(a: T, b: T): number {
-  return a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
-}
+const sortByOrder = compareProjectOrder;
+const sortTasksBySectionOrder = compareTaskSectionOrder;
+const sortTasksByStatusOrder = compareTaskStatusOrder;
 
-function sortTasksBySectionOrder(a: ProjectTask, b: ProjectTask): number {
-  return a.sectionSortOrder - b.sectionSortOrder || a.createdAt.localeCompare(b.createdAt);
-}
-
-function sortTasksByStatusOrder(a: ProjectTask, b: ProjectTask): number {
-  return a.statusSortOrder - b.statusSortOrder || a.createdAt.localeCompare(b.createdAt);
+/** Live rows, plus deleted rows that a task in the project still uses. */
+function rowsInUse<T extends { id: string; deletedAt?: string }>(
+  rows: readonly T[],
+  usedIds: ReadonlySet<string> | undefined,
+): T[] {
+  return rows.filter((row) => !row.deletedAt || usedIds?.has(row.id));
 }
 
 function append<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   const values = map.get(key);
   if (values) values.push(value);
   else map.set(key, [value]);
+}
+
+function addToSet<K, V>(map: Map<K, Set<V>>, key: K, value: V): void {
+  const values = map.get(key);
+  if (values) values.add(value);
+  else map.set(key, new Set([value]));
 }
 
 function sortGroups<K, V>(map: Map<K, V[]>, compare: (a: V, b: V) => number): void {
@@ -120,12 +131,12 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
     append(projectsByGroup, project.groupId, project);
     if (project.status === "active") append(activeProjectsByGroup, project.groupId, project);
   }
-  sortGroups(projectsByGroup, sortByOrderAndName);
-  sortGroups(activeProjectsByGroup, sortByOrderAndName);
-  const activeProjects = source.projects.filter((project) => project.status === "active").sort(sortByOrderAndName);
+  sortGroups(projectsByGroup, sortByOrder);
+  sortGroups(activeProjectsByGroup, sortByOrder);
+  const activeProjects = source.projects.filter((project) => project.status === "active").sort(sortByOrder);
   const visibleGroups = source.groups
     .filter((group) => !group.hiddenAt && !group.archivedAt)
-    .sort(sortByOrderAndName);
+    .sort(sortByOrder);
 
   const sectionById = new Map<string, ProjectSection>();
   const sectionsByProject = new Map<string, ProjectSection[]>();
@@ -135,16 +146,29 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
     append(sectionsByProject, section.projectId, section);
     if (!section.archivedAt && !section.hiddenAt) append(activeSectionsByProject, section.projectId, section);
   }
-  sortGroups(sectionsByProject, sortByOrderAndName);
-  sortGroups(activeSectionsByProject, sortByOrderAndName);
+  sortGroups(sectionsByProject, sortByOrder);
+  sortGroups(activeSectionsByProject, sortByOrder);
+
+  const usedStatusIdsByProject = new Map<string, Set<string>>();
+  const usedPriorityIdsByProject = new Map<string, Set<string>>();
+  for (const task of source.tasks) {
+    addToSet(usedStatusIdsByProject, task.projectId, task.statusId);
+    addToSet(usedPriorityIdsByProject, task.projectId, task.priority);
+  }
 
   const statusById = new Map<string, ProjectStatus>();
-  const statusesByProject = new Map<string, ProjectStatus[]>();
+  const allStatusesByProject = new Map<string, ProjectStatus[]>();
   for (const status of source.statuses) {
     statusById.set(status.id, status);
-    append(statusesByProject, status.projectId, status);
+    append(allStatusesByProject, status.projectId, status);
   }
-  sortGroups(statusesByProject, sortByOrderAndName);
+  sortGroups(allStatusesByProject, sortByOrder);
+  const statusesByProject = new Map<string, ProjectStatus[]>();
+  const taskStatusesByProject = new Map<string, ProjectStatus[]>();
+  for (const [projectId, statuses] of allStatusesByProject) {
+    statusesByProject.set(projectId, statuses.filter((status) => !status.deletedAt));
+    taskStatusesByProject.set(projectId, rowsInUse(statuses, usedStatusIdsByProject.get(projectId)));
+  }
   const defaultStatusByProject = new Map<string, ProjectStatus>();
   const doneStatusByProject = new Map<string, ProjectStatus>();
   const reopenStatusByProject = new Map<string, ProjectStatus>();
@@ -160,13 +184,19 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
     if (doneStatus) doneStatusByProject.set(projectId, doneStatus);
     if (reopenStatus) reopenStatusByProject.set(projectId, reopenStatus);
   }
-  const prioritiesByProject = new Map<string, ProjectPriorityConfig[]>();
+  const allPrioritiesByProject = new Map<string, ProjectPriorityConfig[]>();
   const priorityById = new Map<string, ProjectPriorityConfig>();
   for (const priority of source.priorities) {
     priorityById.set(priority.id, priority);
-    append(prioritiesByProject, priority.projectId, priority);
+    append(allPrioritiesByProject, priority.projectId, priority);
   }
-  sortGroups(prioritiesByProject, sortByOrderAndName);
+  sortGroups(allPrioritiesByProject, sortByOrder);
+  const prioritiesByProject = new Map<string, ProjectPriorityConfig[]>();
+  const taskPrioritiesByProject = new Map<string, ProjectPriorityConfig[]>();
+  for (const [projectId, priorities] of allPrioritiesByProject) {
+    prioritiesByProject.set(projectId, priorities.filter((priority) => !priority.deletedAt));
+    taskPrioritiesByProject.set(projectId, rowsInUse(priorities, usedPriorityIdsByProject.get(projectId)));
+  }
 
   const taskById = new Map<string, ProjectTask>();
   const mutableTaskIdsByProject = new Map<string, Set<string>>();
@@ -207,10 +237,7 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
     checklistItemById.set(item.id, item);
     append(checklistItemsByTask, item.taskId, item);
   }
-  sortGroups(
-    checklistItemsByTask,
-    (a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt),
-  );
+  sortGroups(checklistItemsByTask, sortByOrder);
 
   const tagById = new Map<string, ProjectTag>();
   const tagsByProject = new Map<string, ProjectTag[]>();
@@ -221,7 +248,7 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
     const nameKey = projectPairKey(tag.projectId, tag.name.trim().toLowerCase());
     if (!tagByProjectAndName.has(nameKey)) tagByProjectAndName.set(nameKey, tag);
   }
-  sortGroups(tagsByProject, sortByOrderAndName);
+  sortGroups(tagsByProject, sortByOrder);
   const taskTagLinksByTask = new Map<string, ProjectTaskTagLink[]>();
   const taskTagLinkByKey = new Map<string, ProjectTaskTagLink>();
   for (const link of source.taskTagLinks) {
@@ -234,7 +261,7 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
       const tag = tagById.get(link.tagId);
       return tag ? [tag] : [];
     });
-    tags.sort(sortByOrderAndName);
+    tags.sort(sortByOrder);
     tagsByTask.set(taskId, tags);
   }
   const unlinkedTagsByTask = new Map<string, readonly ProjectTag[]>();
@@ -256,7 +283,7 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
     const nameKey = projectPairKey(field.projectId, field.name.trim().toLowerCase());
     if (!customFieldByProjectAndName.has(nameKey)) customFieldByProjectAndName.set(nameKey, field);
   }
-  sortGroups(customFieldsByProject, sortByOrderAndName);
+  sortGroups(customFieldsByProject, sortByOrder);
   const customFieldOptionsByField = new Map<string, ProjectCustomFieldOption[]>();
   const customFieldOptionById = new Map<string, ProjectCustomFieldOption>();
   const customFieldOptionByFieldAndName = new Map<string, ProjectCustomFieldOption>();
@@ -268,7 +295,7 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
       customFieldOptionByFieldAndName.set(nameKey, option);
     }
   }
-  sortGroups(customFieldOptionsByField, sortByOrderAndName);
+  sortGroups(customFieldOptionsByField, sortByOrder);
   const customFieldValueByTaskAndField = new Map<string, ProjectCustomFieldValue>();
   for (const value of source.customFieldValues) {
     customFieldValueByTaskAndField.set(projectPairKey(value.taskId, value.fieldId), value);
@@ -344,10 +371,12 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
     activeSectionsByProject,
     statusById,
     statusesByProject,
+    taskStatusesByProject,
     defaultStatusByProject,
     doneStatusByProject,
     reopenStatusByProject,
     prioritiesByProject,
+    taskPrioritiesByProject,
     priorityById,
     taskById,
     taskIdsByProject: mutableTaskIdsByProject,
@@ -389,11 +418,6 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
     viewPreferenceByKey,
     customEmojis: source.customEmojis,
     customEmojiById: new Map(source.customEmojis.map((emoji) => [emoji.id, emoji])),
-    maxGroupSortOrder: source.groups.reduce((maximum, group) => Math.max(maximum, group.sortOrder), 0),
-    maxCustomEmojiSortOrder: source.customEmojis.reduce(
-      (maximum, emoji) => Math.max(maximum, emoji.sortOrder),
-      0,
-    ),
   };
 }
 

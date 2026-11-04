@@ -21,7 +21,10 @@
     if (!selected) return;
     replacementPath = selected.selection.folderPath;
     step = "planning";
-    try { await controller.planRelink(collection.localRootId!, replacementPath); step = "review"; }
+    try {
+      const plan = await controller.planRelink(collection.localRootId!, replacementPath);
+      step = plan.state === "ready" ? "review" : "choose";
+    }
     catch (cause) { error = cause instanceof Error ? cause.message : String(cause); step = "choose"; }
   }
 
@@ -36,7 +39,7 @@
   }
 
   async function close(): Promise<void> {
-    if (controller.relinkPlan?.state === "ready") await controller.cancelRelink();
+    if (controller.relinkCancellable) await controller.cancelRelink();
     onClose();
   }
 </script>

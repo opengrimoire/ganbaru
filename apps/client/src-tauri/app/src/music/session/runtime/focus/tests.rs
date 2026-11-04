@@ -4,7 +4,6 @@ fn lease(start: Instant) -> FocusLease {
     let effect = CommittedFocusEffect {
         vault_id: "vault".into(),
         vault_generation: 7,
-        ownership_generation: 3,
         execution_revision: 10,
         run_id: Some("run".into()),
         segment_id: Some("segment".into()),

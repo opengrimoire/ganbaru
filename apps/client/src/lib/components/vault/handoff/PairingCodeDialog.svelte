@@ -8,14 +8,19 @@
     trapModalTabKey,
   } from "$lib/modal-focus";
 
+  import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
+
   let {
     busy,
+    enrollmentCode,
     error,
     onSubmit,
     onEdit,
     onClose,
   }: {
     busy: boolean;
+    /** The code to compare with the coordinator while it decides whether to link this device. */
+    enrollmentCode: string | null;
     error: string | null;
     onSubmit: (code: string) => void;
     onEdit: () => void;
@@ -103,6 +108,11 @@
       disabled={busy}
       oninput={onEdit}
     />
+    {#if busy && enrollmentCode}
+      <div class="mt-5">
+        <EnrollmentCodeWaiting code={enrollmentCode} />
+      </div>
+    {/if}
     {#if error}
       <p id="pairing-code-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{error}</p>
     {/if}

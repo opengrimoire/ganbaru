@@ -24,6 +24,28 @@ fn launch_arguments_are_configuration_only() {
 }
 
 #[test]
+fn restricted_launches_mark_folders_with_codex_configuration_untrusted() {
+    let workspace = TestDirectory::new("codex-project-configuration");
+    let arguments_for = |access| {
+        let mut arguments = Vec::new();
+        append_project_configuration_arguments(&mut arguments, workspace.path(), access).unwrap();
+        arguments
+    };
+    assert!(arguments_for(ProjectConfigurationAccess::Restricted).is_empty());
+
+    std::fs::create_dir_all(workspace.path().join(".codex")).unwrap();
+    assert!(arguments_for(ProjectConfigurationAccess::Trusted).is_empty());
+    let key = serde_json::to_string(workspace.path().to_str().unwrap()).unwrap();
+    assert_eq!(
+        arguments_for(ProjectConfigurationAccess::Restricted),
+        vec![
+            "-c".to_string(),
+            format!("projects={{{key}={{trust_level=\"untrusted\"}}}}"),
+        ]
+    );
+}
+
+#[test]
 fn only_confirmed_thread_not_found_errors_allow_fresh_fallback() {
     assert!(confirmed_resume_not_found(&CodexRpcFailure::Remote {
         code: -32602,
@@ -105,4 +127,21 @@ fn shadow_home_links_shared_state_but_keeps_auth_private() {
             .file_type()
             .is_symlink()
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn shadow_home_folders_created_for_codex_are_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let shared = TestDirectory::new("private-shared");
+    let shadow_parent = TestDirectory::new("private-shadow");
+    let shadow = shadow_parent.path().join("effective");
+    let config = configuration(shared.path(), Some(&shadow));
+    let settings = CodexProviderSettings::parse(&config).unwrap();
+    let mut layout = resolve_codex_home_layout(&config, &settings).unwrap();
+
+    materialize_codex_shadow_home(&mut layout).unwrap();
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&shadow), 0o700);
+    assert_eq!(mode(&shared.path().join("sessions")), 0o700);
 }

@@ -12,7 +12,7 @@ pub(crate) use runtime::{
 };
 
 #[cfg(desktop)]
-pub(crate) use runtime::dispatch_control;
+pub(crate) use runtime::{calendar_changed, dispatch_control};
 
 #[cfg(desktop)]
 pub(crate) use models::{PlaybackOrder, SessionIntent, SessionProjection, SourceKind};

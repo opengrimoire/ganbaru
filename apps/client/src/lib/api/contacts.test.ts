@@ -63,6 +63,25 @@ describe("parseContactsSnapshot", () => {
     expect(snapshot.requests[0]?.lastErrorCode).toBe("recipient_unreachable");
   });
 
+  it("reads every stored time form the native side lets through", async () => {
+    const { parseContactsSnapshot } = await import("./contacts");
+    for (const at of ["0000-01-01T00:00:00.000Z", "2028-02-29T23:59:59.999Z", "9999-12-31T23:59:59.999Z"]) {
+      const snapshot = parseContactsSnapshot({
+        identity,
+        contacts: [{ ...contact, createdAt: at, updatedAt: at }],
+        requests: [{ ...request, expiresAt: at, createdAt: at, updatedAt: at }],
+      });
+      expect(snapshot.requests[0]?.createdAt).toBe(at);
+    }
+  });
+
+  it("refuses the stored time forms the native side filters out", async () => {
+    const { parseContactsSnapshot } = await import("./contacts");
+    for (const at of ["+10000-01-01T00:00:00.000Z", "2026-10-22T10:51:60.000Z", "z".repeat(24)]) {
+      expect(() => parseContactsSnapshot({ identity, contacts: [], requests: [{ ...request, createdAt: at }] })).toThrow();
+    }
+  });
+
   it("rejects trust scopes, states, and colors outside the contract", async () => {
     const { parseContactsSnapshot } = await import("./contacts");
     expect(() => parseContactsSnapshot({ identity, contacts: [{ ...contact, inviteTrust: "forever" }], requests: [] })).toThrow();
@@ -102,7 +121,8 @@ describe("normalizeContactsError", () => {
     expect(normalizeContactsError({ code: "teapot", message: "no" }).code).toBe("failed");
     expect(normalizeContactsError(new Error("boom")).code).toBe("failed");
     expect(normalizeContactsError("plain").message).toBe("plain");
-    const typed = new ContactsError("read_only", "ro");
+    expect(normalizeContactsError({ code: "read_only", message: "ro" }).code).toBe("failed");
+    const typed = new ContactsError("identity_unavailable", "pending");
     expect(normalizeContactsError(typed)).toBe(typed);
   });
 });

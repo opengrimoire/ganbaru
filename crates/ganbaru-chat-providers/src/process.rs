@@ -1,8 +1,13 @@
 //! Shell-free provider process spawning and bounded diagnostics.
 
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -278,24 +283,227 @@ fn validate_config(config: &ProviderProcessConfig) -> ChatResult<()> {
     Ok(())
 }
 
-#[cfg(unix)]
-fn configure_process_tree(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    command.as_std_mut().process_group(0);
+/// Process tree of one short-lived helper command, such as Git.
+///
+/// The tree is stopped only through [`ProcessTree::terminate`], so descendants
+/// that a successful command leaves behind (credential caches, signing agents)
+/// keep running after the handle is dropped.
+pub struct ProcessTree {
+    #[cfg(unix)]
+    process_group_id: libc::pid_t,
+    #[cfg(windows)]
+    process_job: std::os::windows::io::OwnedHandle,
 }
 
-#[cfg(windows)]
-fn configure_process_tree(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED};
+impl ProcessTree {
+    /// Claims the tree of a child spawned from a command prepared with
+    /// [`configure_std_process_tree`]. On failure the child is killed.
+    pub fn claim_std(child: &mut std::process::Child) -> ChatResult<Self> {
+        #[cfg(unix)]
+        {
+            let process_group_id = libc::pid_t::try_from(child.id())
+                .ok()
+                .filter(|id| *id > 1)
+                .ok_or_else(|| {
+                    let _ = child.kill();
+                    process_state_error()
+                })?;
+            Ok(Self { process_group_id })
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            let raw_handle = child.as_raw_handle();
+            match claim_windows_job(raw_handle, child.id(), false) {
+                Ok(process_job) => Ok(Self { process_job }),
+                Err(error) => {
+                    let _ = child.kill();
+                    Err(spawn_error(error))
+                }
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = child;
+            Ok(Self {})
+        }
+    }
 
-    command
-        .as_std_mut()
-        .creation_flags(CREATE_NEW_PROCESS_GROUP.0 | CREATE_SUSPENDED.0);
+    /// Claims the tree of a child spawned from a command prepared with
+    /// `configure_process_tree`. On failure the child is killed.
+    fn claim_tokio(child: &mut Child) -> ChatResult<Self> {
+        #[cfg(unix)]
+        {
+            let process_group_id = child
+                .id()
+                .and_then(|id| libc::pid_t::try_from(id).ok())
+                .filter(|id| *id > 1)
+                .ok_or_else(|| {
+                    let _ = child.start_kill();
+                    process_state_error()
+                })?;
+            Ok(Self { process_group_id })
+        }
+        #[cfg(windows)]
+        {
+            let (Some(raw_handle), Some(process_id)) = (child.raw_handle(), child.id()) else {
+                let _ = child.start_kill();
+                return Err(process_state_error());
+            };
+            match claim_windows_job(raw_handle, process_id, false) {
+                Ok(process_job) => Ok(Self { process_job }),
+                Err(error) => {
+                    let _ = child.start_kill();
+                    Err(spawn_error(error))
+                }
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = child;
+            Ok(Self {})
+        }
+    }
+
+    /// Forcefully stops every process in the tree. Already stopped trees are
+    /// not an error.
+    pub fn terminate(&self) {
+        #[cfg(unix)]
+        let _ = signal_process_group(self.process_group_id, libc::SIGKILL);
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows::Win32::Foundation::HANDLE;
+            use windows::Win32::System::JobObjects::TerminateJobObject;
+
+            // SAFETY: `process_job` owns a live job handle for the duration of
+            // the call. Termination does not transfer or close that handle.
+            unsafe {
+                let _ = TerminateJobObject(HANDLE(self.process_job.as_raw_handle()), 1);
+            }
+        }
+    }
 }
 
-#[cfg(not(any(unix, windows)))]
-fn configure_process_tree(_command: &mut Command) {}
+/// One short-lived provider probe, such as a version or account query.
+pub struct BoundedCommand<'a> {
+    pub executable: &'a Path,
+    pub arguments: &'a [&'a str],
+    pub working_directory: &'a Path,
+    pub environment: &'a BTreeMap<String, String>,
+    /// Largest stdout or stderr the probe may write; more stops the process tree.
+    pub output_limit_bytes: usize,
+    pub timeout: Duration,
+}
+
+/// Complete output of a probe that finished within its limits.
+#[derive(Debug)]
+pub struct BoundedCommandOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub successful: bool,
+}
+
+/// Why a probe produced no usable output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundedCommandFailure {
+    /// The executable could not be started or its output could not be read.
+    Unavailable,
+    TimedOut,
+    Oversized,
+}
+
+/// Runs a probe with a null stdin and a clean environment, reading each output
+/// stream only up to its limit. A probe that writes more or runs past its
+/// timeout has its whole process tree stopped, so a hostile or broken
+/// executable cannot make the app buffer unbounded output.
+pub async fn run_bounded_command(
+    command: BoundedCommand<'_>,
+) -> Result<BoundedCommandOutput, BoundedCommandFailure> {
+    let mut process = Command::new(command.executable);
+    process
+        .args(command.arguments)
+        .current_dir(command.working_directory)
+        .env_clear()
+        .envs(command.environment)
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    configure_process_tree(&mut process);
+    let mut child = process
+        .spawn()
+        .map_err(|_| BoundedCommandFailure::Unavailable)?;
+    let tree =
+        ProcessTree::claim_tokio(&mut child).map_err(|_| BoundedCommandFailure::Unavailable)?;
+    let limit = command.output_limit_bytes;
+    let result = tokio::time::timeout(command.timeout, async {
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or(BoundedCommandFailure::Unavailable)?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or(BoundedCommandFailure::Unavailable)?;
+        let (stdout, stderr) =
+            tokio::try_join!(read_capped(stdout, limit), read_capped(stderr, limit))?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|_| BoundedCommandFailure::Unavailable)?;
+        Ok(BoundedCommandOutput {
+            stdout,
+            stderr,
+            successful: status.success(),
+        })
+    })
+    .await
+    .unwrap_or(Err(BoundedCommandFailure::TimedOut));
+    if result.is_err() {
+        tree.terminate();
+    }
+    result
+}
+
+async fn read_capped(
+    reader: impl tokio::io::AsyncRead + Unpin,
+    limit: usize,
+) -> Result<Vec<u8>, BoundedCommandFailure> {
+    let mut output = Vec::new();
+    reader
+        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut output)
+        .await
+        .map_err(|_| BoundedCommandFailure::Unavailable)?;
+    if output.len() > limit {
+        return Err(BoundedCommandFailure::Oversized);
+    }
+    Ok(output)
+}
+
+/// Prepares a standard-library command so its descendants form one process
+/// tree that [`ProcessTree::claim_std`] can claim after spawning.
+pub fn configure_std_process_tree(command: &mut std::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED};
+
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP.0 | CREATE_SUSPENDED.0);
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = command;
+}
+
+fn configure_process_tree(command: &mut Command) {
+    configure_std_process_tree(command.as_std_mut());
+}
 
 #[cfg(unix)]
 fn signal_process_group(process_group_id: libc::pid_t, signal: libc::c_int) -> std::io::Result<()> {
@@ -330,6 +538,31 @@ fn signal_process_group(process_group_id: libc::pid_t, signal: libc::c_int) -> s
 
 #[cfg(windows)]
 fn claim_windows_process_tree(child: &mut Child) -> ChatResult<std::os::windows::io::OwnedHandle> {
+    let Some(raw_handle) = child.raw_handle() else {
+        let _ = child.start_kill();
+        return Err(process_state_error());
+    };
+    let Some(process_id) = child.id() else {
+        let _ = child.start_kill();
+        return Err(process_state_error());
+    };
+    claim_windows_job(raw_handle, process_id, true).map_err(|error| {
+        let _ = child.start_kill();
+        spawn_error(error)
+    })
+}
+
+/// Assigns a suspended child to a new job object and resumes its main thread.
+///
+/// `child_handle` must be the live process handle of the suspended child whose
+/// ID is `process_id`. With `kill_on_close`, closing the returned handle stops
+/// every process in the job.
+#[cfg(windows)]
+fn claim_windows_job(
+    child_handle: std::os::windows::io::RawHandle,
+    process_id: u32,
+    kill_on_close: bool,
+) -> Result<std::os::windows::io::OwnedHandle, windows::core::Error> {
     use std::ffi::c_void;
     use std::mem::size_of;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -348,7 +581,7 @@ fn claim_windows_process_tree(child: &mut Child) -> ChatResult<std::os::windows:
     };
     use windows::core::HRESULT;
 
-    let setup = || -> Result<OwnedHandle, windows::core::Error> {
+    {
         // SAFETY: Null security attributes and name request a private job object.
         // The returned noninvalid handle is immediately transferred to OwnedHandle.
         let raw_job = unsafe { CreateJobObjectW(None, None) }?;
@@ -356,25 +589,26 @@ fn claim_windows_process_tree(child: &mut Child) -> ChatResult<std::os::windows:
         // other Rust owner exists. OwnedHandle will close it exactly once.
         let job = unsafe { OwnedHandle::from_raw_handle(raw_job.0) };
         let job_handle = HANDLE(job.as_raw_handle());
-        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        // SAFETY: `job_handle` and the child process handle are live for the
-        // calls. `limits` has the exact type and byte size required by Windows;
-        // neither call retains the supplied pointer or transfers handle ownership.
-        unsafe {
-            SetInformationJobObject(
-                job_handle,
-                JobObjectExtendedLimitInformation,
-                &limits as *const _ as *const c_void,
-                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            )?;
-            let child_handle = child
-                .raw_handle()
-                .ok_or_else(windows::core::Error::from_win32)?;
-            AssignProcessToJobObject(job_handle, HANDLE(child_handle))?;
+        if kill_on_close {
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // SAFETY: `job_handle` is live for the call. `limits` has the exact
+            // type and byte size required by Windows, and the call neither
+            // retains the supplied pointer nor transfers handle ownership.
+            unsafe {
+                SetInformationJobObject(
+                    job_handle,
+                    JobObjectExtendedLimitInformation,
+                    &limits as *const _ as *const c_void,
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )?;
+            }
         }
+        // SAFETY: The caller guarantees `child_handle` is the live process
+        // handle of the suspended child, and `job_handle` is live. The call does
+        // not transfer ownership of either handle.
+        unsafe { AssignProcessToJobObject(job_handle, HANDLE(child_handle)) }?;
 
-        let process_id = child.id().ok_or_else(windows::core::Error::from_win32)?;
         // SAFETY: This requests a read-only system thread snapshot and returns a
         // new handle on success.
         let raw_snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }?;
@@ -448,17 +682,15 @@ fn claim_windows_process_tree(child: &mut Child) -> ChatResult<std::os::windows:
             // buffer whose dwSize field was reset to the full structure size.
             unsafe { Thread32Next(HANDLE(snapshot.as_raw_handle()), &mut entry) }?;
         }
-    };
-
-    setup().map_err(|error| {
-        let _ = child.start_kill();
-        spawn_error(error)
-    })
+    }
 }
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::signal_process_group;
+    use super::{BoundedCommand, BoundedCommandFailure, run_bounded_command, signal_process_group};
+    use std::collections::BTreeMap;
+    use std::path::Path;
+    use std::time::Duration;
 
     #[test]
     fn process_group_signaling_rejects_broad_targets() {
@@ -476,6 +708,102 @@ mod tests {
                 signal_process_group(1, signal).expect_err("unapproved signals must be rejected");
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         }
+    }
+
+    fn shell_probe<'a>(
+        script: &'a [&'a str],
+        environment: &'a BTreeMap<String, String>,
+        output_limit_bytes: usize,
+        timeout: Duration,
+    ) -> BoundedCommand<'a> {
+        BoundedCommand {
+            executable: Path::new("/bin/sh"),
+            arguments: script,
+            working_directory: Path::new("/"),
+            environment,
+            output_limit_bytes,
+            timeout,
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_probes_return_complete_output_and_exit_status() {
+        let environment = BTreeMap::from([("PROBE_VALUE".to_string(), "visible".to_string())]);
+        let output = run_bounded_command(shell_probe(
+            &["-c", "printf \"$PROBE_VALUE\"; printf warning >&2; exit 3"],
+            &environment,
+            64,
+            Duration::from_secs(10),
+        ))
+        .await
+        .expect("probe within limits");
+        assert_eq!(output.stdout, b"visible");
+        assert_eq!(output.stderr, b"warning");
+        assert!(!output.successful);
+
+        let exact = run_bounded_command(shell_probe(
+            &["-c", "printf 12345678"],
+            &environment,
+            8,
+            Duration::from_secs(10),
+        ))
+        .await
+        .expect("output exactly at the limit");
+        assert_eq!(exact.stdout, b"12345678");
+    }
+
+    #[tokio::test]
+    async fn bounded_probes_stop_endless_output_on_either_stream() {
+        let environment = BTreeMap::new();
+        for script in ["yes", "yes >&2"] {
+            let started = std::time::Instant::now();
+            let failure = run_bounded_command(shell_probe(
+                &["-c", script],
+                &environment,
+                16 * 1024,
+                Duration::from_secs(30),
+            ))
+            .await
+            .expect_err("endless output must be rejected");
+            assert_eq!(failure, BoundedCommandFailure::Oversized);
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_probes_stop_the_whole_tree_after_the_timeout() {
+        let environment = BTreeMap::new();
+        let marker =
+            std::env::temp_dir().join(format!("ganbaru-bounded-probe-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let script = format!("(sleep 2; touch '{}') & sleep 30", marker.display());
+        let failure = run_bounded_command(shell_probe(
+            &["-c", &script],
+            &environment,
+            64,
+            Duration::from_millis(300),
+        ))
+        .await
+        .expect_err("a hung probe must time out");
+        assert_eq!(failure, BoundedCommandFailure::TimedOut);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(!marker.exists(), "a descendant outlived the stopped probe");
+    }
+
+    #[tokio::test]
+    async fn bounded_probes_report_missing_executables_as_unavailable() {
+        let environment = BTreeMap::new();
+        let failure = run_bounded_command(BoundedCommand {
+            executable: Path::new("/nonexistent/ganbaru-probe"),
+            arguments: &[],
+            working_directory: Path::new("/"),
+            environment: &environment,
+            output_limit_bytes: 64,
+            timeout: Duration::from_secs(5),
+        })
+        .await
+        .expect_err("missing executable");
+        assert_eq!(failure, BoundedCommandFailure::Unavailable);
     }
 }
 

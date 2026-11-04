@@ -4,7 +4,7 @@ import { MusicPlaylistSummaryCache } from "./summary-cache.svelte";
 
 const playlist = (id: string): MusicPlaylistSummary => ({
   id,
-  sortOrder: 0,
+  orderKey: "a0",
   name: id,
   icon: "lucide:list-music",
   shuffleEnabled: false,

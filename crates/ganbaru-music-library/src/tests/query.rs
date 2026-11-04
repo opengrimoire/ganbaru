@@ -171,7 +171,6 @@ fn playlist_window_uses_manual_order_and_returns_membership_state() {
             .await;
             let mut entry = membership(index);
             entry.item_id = format!("item-{index}");
-            entry.position = 2 - index as i64;
             super::writes::upsert_memberships(
                 &pool,
                 MusicBulkMembershipWrite {
@@ -181,9 +180,11 @@ fn playlist_window_uses_manual_order_and_returns_membership_state() {
             .await
             .unwrap();
             sqlx::query(
-                "UPDATE music_playlist_memberships SET created_at_ms = ? WHERE item_id = ?",
+                "UPDATE music_playlist_memberships SET created_at_ms = ?, order_key = ?
+                 WHERE item_id = ?",
             )
             .bind(1_700_000_000_000_i64 + index as i64)
+            .bind(format!("a{}", 2 - index))
             .bind(format!("item-{index}"))
             .execute(&pool)
             .await
@@ -199,9 +200,13 @@ fn playlist_window_uses_manual_order_and_returns_membership_state() {
             result
                 .items
                 .iter()
-                .map(|item| item.membership_position)
+                .map(|item| (item.id.as_str(), item.membership_order_key.as_deref()))
                 .collect::<Vec<_>>(),
-            vec![Some(0), Some(1), Some(2)],
+            vec![
+                ("item-2", Some("a0")),
+                ("item-1", Some("a1")),
+                ("item-0", Some("a2"))
+            ],
         );
         assert!(result.items.iter().all(|item| item.membership_id.is_some()));
 
@@ -244,7 +249,7 @@ fn source_order_and_artwork_overrides_are_projected_in_library_rows() {
         sqlx::query(
             "INSERT INTO music_source_collections
                 (id, kind, identity_key, name, youtube_playlist_id, created_at_ms, updated_at_ms)
-             VALUES ('source-1', 'youtube-playlist', 'youtube:list', 'Source', 'list', ?, ?)",
+             VALUES ('source-1', 'youtube-playlist', 'youtube-playlist:list', 'Source', 'list', ?, ?)",
         )
         .bind(1_700_000_000_000_i64)
         .bind(1_700_000_000_000_i64)
@@ -254,8 +259,8 @@ fn source_order_and_artwork_overrides_are_projected_in_library_rows() {
         for (item_id, position) in [("item-0", 2_i64), ("item-1", 0), ("item-2", 1)] {
             sqlx::query(
                 "INSERT INTO music_source_collection_items
-                    (collection_id, item_id, source_position, first_discovered_at_ms)
-                 VALUES ('source-1', ?, ?, ?)",
+                    (collection_id, item_id, source_position, first_discovered_at_ms, sync_key)
+                 VALUES ('source-1', ?, ?, ?, lower(hex(randomblob(16))))",
             )
             .bind(item_id)
             .bind(position)
@@ -264,10 +269,16 @@ fn source_order_and_artwork_overrides_are_projected_in_library_rows() {
             .await
             .unwrap();
         }
-        sqlx::query("UPDATE music_library_items SET artwork_override = '/art/cover.png' WHERE id = 'item-2'")
-            .execute(&pool)
-            .await
-            .unwrap();
+        let artwork = format!("music/artwork/{}.png", "c".repeat(64));
+        sqlx::query(
+            "UPDATE music_library_items
+             SET artwork_override = ?, artwork_override_byte_size = 1024
+             WHERE id = 'item-2'",
+        )
+        .bind(&artwork)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let mut request = library_window();
         request.sort = MusicItemSort::SourceOrder;
@@ -288,7 +299,7 @@ fn source_order_and_artwork_overrides_are_projected_in_library_rows() {
         );
         assert_eq!(
             result.items[1].artwork_override.as_deref(),
-            Some("/art/cover.png")
+            Some(artwork.as_str())
         );
     });
 }
@@ -329,7 +340,7 @@ fn summaries_issues_and_inspector_return_composed_data_without_row_queries() {
         sqlx::query(
             "INSERT INTO music_source_collections
                 (id, kind, identity_key, name, local_root_id, created_at_ms, updated_at_ms)
-             VALUES ('source-1', 'local-root', 'root:root-1', 'Soundtracks', 'root-1',
+             VALUES ('source-1', 'local-root', 'local-root:root-1', 'Soundtracks', 'root-1',
                  1700000000000, 1700000000000)",
         )
         .execute(&pool)
@@ -337,8 +348,8 @@ fn summaries_issues_and_inspector_return_composed_data_without_row_queries() {
         .unwrap();
         sqlx::query(
             "INSERT INTO music_source_collection_items
-                (collection_id, item_id, first_discovered_at_ms)
-             VALUES ('source-1', 'item-1', 1700000000000)",
+                (collection_id, item_id, first_discovered_at_ms, sync_key)
+             VALUES ('source-1', 'item-1', 1700000000000, lower(hex(randomblob(16))))",
         )
         .execute(&pool)
         .await
@@ -355,8 +366,8 @@ fn summaries_issues_and_inspector_return_composed_data_without_row_queries() {
             assert_eq!(window.groups[0].count, 1);
         }
         sqlx::query(
-            "INSERT INTO music_item_signals (item_id, signal, created_at_ms)
-             VALUES ('item-1', 'calm', 1700000000000)",
+            "INSERT INTO music_item_signals (item_id, signal, created_at_ms, sync_key)
+             VALUES ('item-1', 'calm', 1700000000000, lower(hex(randomblob(16))))",
         )
         .execute(&pool)
         .await
@@ -429,7 +440,7 @@ fn review_and_membership_queries_use_purpose_built_indexes() {
             "EXPLAIN QUERY PLAN
              SELECT id FROM music_playlist_memberships
              WHERE playlist_id = 'playlist-1'
-             ORDER BY position, id LIMIT 50",
+             ORDER BY order_key, id LIMIT 50",
         )
         .fetch_all(&pool)
         .await
@@ -555,6 +566,91 @@ fn search_rebuild_repairs_stale_rows_and_incremental_membership_metadata() {
                 .unwrap()
                 .total_count,
             1,
+        );
+    });
+}
+
+#[test]
+fn youtube_counts_and_issues_follow_the_replicated_resolution_state_not_device_availability() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        super::writes::create_playlist(&pool, playlist("playlist-1"))
+            .await
+            .unwrap();
+        let videos = [
+            ("item-0", Some("ready"), "unknown"),
+            ("item-1", Some("resolving"), "unknown"),
+            ("item-2", None, "unknown"),
+            ("item-3", Some("timed-out"), "available"),
+            ("item-4", Some("unavailable"), "available"),
+            ("item-5", Some("embedding-blocked"), "available"),
+        ];
+        for (id, state, availability) in videos {
+            sqlx::query(
+                "INSERT INTO music_library_items
+                    (id, identity_key, source_kind, youtube_video_id, original_title,
+                     youtube_resolution_state, availability, review_state,
+                     discovered_at_ms, updated_at_ms)
+                 VALUES (?, ?, 'youtube-video', ?, ?, ?, ?, 'unreviewed',
+                     1700000000000, 1700000000000)",
+            )
+            .bind(id)
+            .bind(format!("youtube:{id}"))
+            .bind(id)
+            .bind(id)
+            .bind(state)
+            .bind(availability)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        seed_item(&pool, "item-6", "local:item-6").await;
+        sqlx::query("UPDATE music_library_items SET availability = 'unknown' WHERE id = 'item-6'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        super::writes::upsert_memberships(
+            &pool,
+            MusicBulkMembershipWrite {
+                memberships: (0..7).map(membership).collect(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let summary = super::queries::playlist_summaries(&pool, 1_700_000_100_000, 0, 20)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|playlist| playlist.id == "playlist-1")
+            .unwrap();
+        assert_eq!(summary.total_count, 7);
+        assert_eq!(summary.eligible_count, 4);
+        assert_eq!(summary.unavailable_count, 3);
+
+        let mut issues = super::queries::issues(&pool, 0, 20)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|issue| (issue.id, issue.issue_kind))
+            .collect::<Vec<_>>();
+        issues.sort();
+        assert_eq!(
+            issues,
+            vec![
+                (
+                    "availability:item-3".to_string(),
+                    "youtube-timed-out".to_string()
+                ),
+                (
+                    "availability:item-4".to_string(),
+                    "youtube-unavailable".to_string()
+                ),
+                (
+                    "availability:item-5".to_string(),
+                    "youtube-embedding-blocked".to_string()
+                ),
+            ]
         );
     });
 }

@@ -1,8 +1,8 @@
 <script lang="ts">
-  import Music2 from "@lucide/svelte/icons/music-2";
-  import Youtube from "@lucide/svelte/icons/youtube";
+  import Music2 from "@lucide/svelte/icons/eighth-note";
+  import SquarePlay from "@lucide/svelte/icons/square-play";
   import type { LocalRootBinding, MusicItemListEntry } from "$lib/music/library/contracts";
-  import { musicArtworkDataUrl, musicEmbeddedArtworkDataUrl, musicYouTubeThumbnailDataUrl } from "$lib/music/library/artwork-cache";
+  import { musicArtworkAssetDataUrl, musicArtworkDataUrl, musicEmbeddedArtworkDataUrl, musicYouTubeThumbnailDataUrl } from "$lib/music/library/artwork-cache";
   import { musicListArtworkSource } from "$lib/music/builder/list-artwork";
   import { youtubeVideoIdFromIdentity } from "$lib/music/sources";
 
@@ -29,9 +29,11 @@
     const request = ++requestVersion;
     currentUrl = null;
     const load = source
-      ? source.kind === "file"
-        ? musicArtworkDataUrl(source.path)
-        : musicEmbeddedArtworkDataUrl(source.path, source.identity)
+      ? source.kind === "asset"
+        ? musicArtworkAssetDataUrl(source.reference)
+        : source.kind === "file"
+          ? musicArtworkDataUrl(source.path)
+          : musicEmbeddedArtworkDataUrl(source.path, source.identity)
       : youtubeVideoId
         ? musicYouTubeThumbnailDataUrl(youtubeVideoId)
         : null;
@@ -54,7 +56,7 @@
 {#if currentUrl}
   <img src={currentUrl} alt="" aria-hidden="true" class={item.sourceKind === "youtube-video" && !item.artworkOverride ? "h-full w-full object-contain" : "h-full w-full object-cover"} />
 {:else if item.sourceKind === "youtube-video"}
-  <Youtube size={17} strokeWidth={1.5} />
+  <SquarePlay size={17} strokeWidth={1.5} />
 {:else}
   <Music2 size={16} strokeWidth={1.5} />
 {/if}

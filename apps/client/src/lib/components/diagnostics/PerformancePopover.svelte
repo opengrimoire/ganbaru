@@ -8,7 +8,7 @@
   import Play from "@lucide/svelte/icons/play";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
-  import CircleHelp from "@lucide/svelte/icons/circle-help";
+  import CircleHelp from "@lucide/svelte/icons/circle-question-mark";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";

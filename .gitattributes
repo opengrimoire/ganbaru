@@ -1,1 +1,2 @@
 *.sql text eol=lf
+crates/ganbaru-db/schema-catalog.txt text eol=lf

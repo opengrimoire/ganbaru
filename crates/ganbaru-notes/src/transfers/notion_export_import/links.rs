@@ -65,13 +65,23 @@ pub(super) fn is_external_url(value: &str) -> bool {
         || lower.starts_with("ganbaru-asset:")
 }
 
-pub(super) fn html_media_block_type(prefix: &str) -> Option<&'static str> {
-    let tag_start = prefix.rfind('<')?;
-    let name = prefix[tag_start + 1..]
-        .trim_start_matches('/')
-        .split_whitespace()
-        .next()?
-        .to_ascii_lowercase();
+/// Longest tag name inspected when deciding whether an attribute belongs to a
+/// media element.
+pub(super) const MAX_TAG_NAME_BYTES: usize = 32;
+
+/// Maps the tag that owns an attribute to a media block type. `tag` is the
+/// markup after the opening `<`, bounded by the caller.
+pub(super) fn html_media_block_type(tag: &str) -> Option<&'static str> {
+    let tag = tag.trim_start_matches('/');
+    let name_len = tag
+        .bytes()
+        .take(MAX_TAG_NAME_BYTES + 1)
+        .take_while(|byte| !byte.is_ascii_whitespace() && *byte != b'>' && *byte != b'/')
+        .count();
+    if name_len == 0 || name_len > MAX_TAG_NAME_BYTES {
+        return None;
+    }
+    let name = tag[..name_len].to_ascii_lowercase();
     match name.as_str() {
         "img" => Some("image"),
         "video" => Some("video"),

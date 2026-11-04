@@ -60,7 +60,7 @@ const customEmojis: readonly ProjectCustomEmoji[] = [
     id: "launch",
     name: "Launch badge",
     assetPath: "project-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
-    sortOrder: 0,
+    orderKey: "0",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
   },
@@ -68,7 +68,7 @@ const customEmojis: readonly ProjectCustomEmoji[] = [
     id: "focus",
     name: "Focus mark",
     assetPath: "project-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-    sortOrder: 1,
+    orderKey: "1",
     createdAt: "2026-01-02T00:00:00.000Z",
     updatedAt: "2026-01-02T00:00:00.000Z",
   },
@@ -328,6 +328,29 @@ describe("icon picker helpers", () => {
 
     expect(placement.top).toBe(316);
     expect(placement.top + placement.height).toBeLessThanOrEqual(pickerBoundary.bottom - 8);
+  });
+
+  it("opens the icon picker panel above when it does not fit below and there is more room above", () => {
+    const placement = iconPickerPanelPlacement({
+      triggerRect: pickerTrigger({ top: 540, bottom: 572 }),
+      boundaryRect: pickerBoundary,
+      preferredWidth: 360,
+      preferredHeight: 440,
+    });
+
+    expect(placement).toEqual({ left: 280, top: 96, width: 360, height: 440 });
+  });
+
+  it("caps an upward icon picker panel at the upper boundary", () => {
+    const placement = iconPickerPanelPlacement({
+      triggerRect: pickerTrigger({ top: 400, bottom: 432 }),
+      boundaryRect: pickerBoundary,
+      preferredWidth: 360,
+      preferredHeight: 440,
+    });
+
+    expect(placement.top).toBe(48);
+    expect(placement.height).toBe(348);
   });
 
   it("keeps the icon picker panel inside the viewport width", () => {

@@ -169,10 +169,29 @@ fn linux_desktop_entry_is_system_utility(name: &str, categories: &[String], deta
         ])
 }
 
+/// Which desktop entries a scan keeps.
 #[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::distractions) enum DesktopEntryScope {
+    /// Entries the app picker offers in the current desktop session.
+    Picker,
+    /// Every application entry, so a rule picked in one desktop session still resolves in another.
+    Trust,
+}
+
+#[cfg(all(test, target_os = "linux"))]
 pub(in crate::distractions) fn parse_desktop_entry(
     contents: &str,
     detail: String,
+) -> Option<DistractionsDesktopAppCandidate> {
+    parse_desktop_entry_in(contents, detail, DesktopEntryScope::Picker)
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::distractions) fn parse_desktop_entry_in(
+    contents: &str,
+    detail: String,
+    scope: DesktopEntryScope,
 ) -> Option<DistractionsDesktopAppCandidate> {
     let mut in_desktop_entry = false;
     let mut entry_type: Option<String> = None;
@@ -212,17 +231,23 @@ pub(in crate::distractions) fn parse_desktop_entry(
         }
     }
 
-    if hidden
-        || no_display
-        || entry_type
-            .as_deref()
-            .is_some_and(|value| value != "Application")
-        || !linux_entry_matches_current_desktop(&only_show_in, &not_show_in)
+    if entry_type
+        .as_deref()
+        .is_some_and(|value| value != "Application")
+    {
+        return None;
+    }
+    if scope == DesktopEntryScope::Picker
+        && (hidden
+            || no_display
+            || !linux_entry_matches_current_desktop(&only_show_in, &not_show_in))
     {
         return None;
     }
     let name = normalize_app_candidate_name(name.as_deref()?)?;
-    if linux_desktop_entry_is_system_utility(&name, &categories, &detail) {
+    if scope == DesktopEntryScope::Picker
+        && linux_desktop_entry_is_system_utility(&name, &categories, &detail)
+    {
         return None;
     }
     let mut process_names = exec
@@ -295,6 +320,17 @@ fn linux_application_dirs() -> Vec<PathBuf> {
 
 #[cfg(target_os = "linux")]
 pub(super) fn list_installed_desktop_apps() -> Vec<DistractionsDesktopAppCandidate> {
+    list_desktop_entries(DesktopEntryScope::Picker)
+}
+
+/// Lists every installed application entry, including ones the picker hides in this session.
+#[cfg(target_os = "linux")]
+pub(super) fn list_trusted_desktop_apps() -> Vec<DistractionsDesktopAppCandidate> {
+    list_desktop_entries(DesktopEntryScope::Trust)
+}
+
+#[cfg(target_os = "linux")]
+fn list_desktop_entries(scope: DesktopEntryScope) -> Vec<DistractionsDesktopAppCandidate> {
     let mut files = Vec::new();
     for dir in linux_application_dirs() {
         collect_desktop_entry_files(&dir, 0, &mut files);
@@ -314,7 +350,7 @@ pub(super) fn list_installed_desktop_apps() -> Vec<DistractionsDesktopAppCandida
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string_lossy().to_string());
-        if let Some(app) = parse_desktop_entry(&contents, detail) {
+        if let Some(app) = parse_desktop_entry_in(&contents, detail, scope) {
             candidates.push(app);
         }
     }

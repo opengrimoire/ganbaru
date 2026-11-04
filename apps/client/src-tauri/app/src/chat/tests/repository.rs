@@ -1,5 +1,7 @@
 use crate::chat::ingestion::{ChatChangeEmitter, ChatEventIngestor};
 use crate::chat::workspace::CreateProjectWorkingFolderRequest;
+#[cfg(unix)]
+use ganbaru_chat::repository::attachments::read_managed_attachment_bytes;
 use ganbaru_chat::repository::attachments::{
     ChatAttachmentKind, import_attachment, run_due_attachment_cleanup,
 };
@@ -22,22 +24,22 @@ use ganbaru_chat::repository::receipts::{
 };
 use ganbaru_chat::repository::recovery::recover_orphaned_turns;
 use ganbaru_chat::repository::resources::{
-    ChatResourceKind, StoreBrowserArtifact, list_thread_resources, read_thread_resource_bytes,
-    store_browser_artifact,
+    BrowserArtifactQuota, ChatResourceKind, StoreBrowserArtifact, list_thread_resources,
+    read_thread_resource_bytes, store_browser_artifact,
 };
 use ganbaru_chat::repository::workspaces::{create_workspace, list_workspaces, rename_workspace};
 use ganbaru_chat_contracts::events::{
     CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary, ContentDeltaEvent, DiffUpdatedEvent,
-    ItemLifecycleEvent, RequestOpenedEvent, SessionExitedEvent, ThreadRevertedEvent,
-    TurnAbortedEvent, TurnCompletedEvent, TurnStartedEvent, UserInputQuestion,
+    ItemLifecycleEvent, ProposedPlanDeltaEvent, RequestOpenedEvent, SessionExitedEvent,
+    ThreadRevertedEvent, TurnAbortedEvent, TurnCompletedEvent, TurnStartedEvent, UserInputQuestion,
     UserInputRequestedEvent,
 };
 use ganbaru_chat_contracts::models::{
     ActivityStatus, CanonicalItemKind, CanonicalRequestKind, ChatAttachmentId, ChatCheckpointId,
-    ChatCommandId, ChatEventId, ChatThreadId, ChatTurnId, ChatTurnState, ContentStreamKind,
-    InteractionMode, ProjectWorkingFolderId, ProviderFamilyId, ProviderInstanceId,
-    ProviderRequestId, ProviderSessionId, SafetyMode, TurnModeSnapshot, UtcTimestamp,
-    VersionedJson,
+    ChatCommandId, ChatErrorCode, ChatEventId, ChatThreadId, ChatTurnId, ChatTurnState,
+    ContentStreamKind, InteractionMode, ProjectWorkingFolderId, ProviderFamilyId,
+    ProviderInstanceId, ProviderRequestId, ProviderSessionId, SafetyMode, TurnModeSnapshot,
+    UtcTimestamp, VersionedJson,
 };
 use ganbaru_chat_contracts::models::{ChatChangeNotification, ChatError, ChatResult};
 use sqlx::Row;
@@ -80,13 +82,17 @@ pub(crate) async fn pool_with_thread() -> sqlx::SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
-    sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-chat', 'Chat')")
-        .execute(&pool)
+    ganbaru_db::test_support::apply_migrated_template(&pool)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO projects (id, group_id, name) VALUES ('project-chat', 'group-chat', 'Chat')",
+        "INSERT INTO project_groups (id, name, order_key) VALUES ('group-chat', 'Chat', 'a1')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO projects (id, group_id, name, order_key) VALUES ('project-chat', 'group-chat', 'Chat', 'a1')",
     )
     .execute(&pool)
     .await
@@ -103,6 +109,15 @@ pub(crate) async fn pool_with_thread() -> sqlx::SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    ganbaru_chat::project_defaults::ensure_project_chat_defaults(
+        &mut connection,
+        "project-chat",
+        &UtcTimestamp::new(NOW).unwrap(),
+    )
+    .await
+    .unwrap();
+    drop(connection);
     sqlx::query(
         "INSERT INTO chat_threads
             (id, project_id, working_folder_id, title, provider_family_id, provider_instance_id,
@@ -148,7 +163,7 @@ fn content_event(event_id: &str, delta: &str) -> AppendCanonicalEventRequest {
     }
 }
 
-fn canonical_request(
+pub(crate) fn canonical_request(
     event_id: &str,
     turn_id: Option<&str>,
     event: CanonicalEvent,

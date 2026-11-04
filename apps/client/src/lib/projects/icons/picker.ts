@@ -539,12 +539,14 @@ export function iconPickerPanelPlacement({
   const width = Math.min(finiteOrZero(preferredWidth), maxWidth);
   const preferredLeft = align === "start" ? triggerRect.left : triggerRect.right - width;
   const left = clamp(preferredLeft, leftBound, rightBound - width);
-  const preferredTop = triggerRect.bottom + safeGap;
-  const top = Math.max(topBound, preferredTop);
-  const height = Math.min(
-    finiteOrZero(preferredHeight),
-    finiteOrZero(bottomBound - top),
-  );
+  const safePreferredHeight = finiteOrZero(preferredHeight);
+  const belowTop = Math.max(topBound, triggerRect.bottom + safeGap);
+  const spaceBelow = finiteOrZero(bottomBound - belowTop);
+  const spaceAbove = finiteOrZero(triggerRect.top - safeGap - topBound);
+  // Opens above only when the panel does not fit below and there is more room above.
+  const openAbove = spaceBelow < safePreferredHeight && spaceAbove > spaceBelow;
+  const height = Math.min(safePreferredHeight, openAbove ? spaceAbove : spaceBelow);
+  const top = openAbove ? triggerRect.top - safeGap - height : belowTop;
 
   return {
     left,

@@ -1,4 +1,5 @@
 import type { ChatTerminalOutputChunk } from "$lib/chat/contracts";
+import { safeExternalUrl } from "$lib/chat/timeline/markdown";
 
 export interface TerminalOutputState {
   generation: number;
@@ -24,6 +25,64 @@ export function applyTerminalOutput(
     state: { generation: chunk.generation, lastSequence: chunk.sequence },
     bytes: decodeBase64(chunk.dataBase64),
   };
+}
+
+/** Live output bytes a terminal view writes before returning them as delivery credit, well below the native window. */
+export const TERMINAL_OUTPUT_ACK_INTERVAL_BYTES = 64 * 1024;
+
+/** Batches delivery credit for live terminal output so acknowledgements stay infrequent. */
+export class TerminalOutputAcknowledger {
+  #pending = 0;
+
+  constructor(private readonly intervalBytes = TERMINAL_OUTPUT_ACK_INTERVAL_BYTES) {}
+
+  /**
+   * Records written output bytes.
+   *
+   * @returns The bytes to acknowledge now, or zero while the batch is below the interval.
+   */
+  record(bytes: number): number {
+    this.#pending += Math.max(0, bytes);
+    if (this.#pending < this.intervalBytes) return 0;
+    const released = this.#pending;
+    this.#pending = 0;
+    return released;
+  }
+}
+
+/** Returns the decoded size of a terminal output chunk without decoding it. */
+export function terminalOutputByteLength(chunk: ChatTerminalOutputChunk): number {
+  const encoded = chunk.dataBase64;
+  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor(encoded.length * 3 / 4) - padding);
+}
+
+/** C0 controls except tab, line feed, and carriage return, plus DEL and the C1 range (8-bit CSI included). */
+const TERMINAL_PASTE_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
+
+/**
+ * Removes escape and control characters from clipboard text before it reaches the shell.
+ *
+ * Removing ESC itself, rather than matching a bracketed-paste end sequence, means no removal can
+ * form a new escape sequence from the remaining text.
+ *
+ * @param text - Clipboard text.
+ * @returns The text to paste and whether any character was removed.
+ */
+export function sanitizeTerminalPaste(text: string): { text: string; removedControls: boolean } {
+  const clean = text.replace(TERMINAL_PASTE_CONTROLS, "");
+  return { text: clean, removedControls: clean.length !== text.length };
+}
+
+/**
+ * Resolves the target of a terminal hyperlink (OSC 8). Terminal output is untrusted, so only
+ * credential-free HTTP and HTTPS targets are opened; anything else is ignored.
+ *
+ * @param uri - The link target the output declared, which can differ from the visible text.
+ * @returns The normalized target to show and open, or null when the link must not open.
+ */
+export function terminalLinkTarget(uri: string): string | null {
+  return safeExternalUrl(uri) ? new URL(uri).href : null;
 }
 
 export function terminalPasteNeedsConfirmation(text: string, confirmationEnabled: boolean): boolean {

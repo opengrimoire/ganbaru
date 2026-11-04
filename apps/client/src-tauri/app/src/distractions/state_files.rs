@@ -4,17 +4,29 @@ use std::io::{Read, Write};
 static STATE_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
 const MAX_DEVICE_STATE_BYTES: u64 = 1024 * 1024;
 
-fn read_bounded_state(path: &Path) -> Option<String> {
+/// Reads a device state file of at most `MAX_DEVICE_STATE_BYTES`. A larger file is refused with
+/// `InvalidData` after reading one byte past the bound, never read whole.
+fn read_state_file(path: &Path) -> std::io::Result<String> {
     let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .ok()?
+    std::fs::File::open(path)?
         .take(MAX_DEVICE_STATE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
+        .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_DEVICE_STATE_BYTES {
-        return None;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "device state file exceeds its size bound",
+        ));
     }
-    String::from_utf8(bytes).ok()
+    String::from_utf8(bytes).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "device state file is not UTF-8",
+        )
+    })
+}
+
+fn read_bounded_state(path: &Path) -> Option<String> {
+    read_state_file(path).ok()
 }
 
 pub(super) fn state_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
@@ -38,6 +50,26 @@ pub(super) fn limit_state_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<
     std::fs::create_dir_all(&path).map_err(|e| format!("create app config dir: {e}"))?;
     path.push(LIMIT_STATE_FILE);
     Ok(path)
+}
+
+pub(super) fn rules_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    let mut path = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&path).map_err(|e| format!("create app config dir: {e}"))?;
+    path.push(RULES_FILE);
+    Ok(path)
+}
+
+/// The rules file the browser host reads: the vault they belong to and the assembled rules of
+/// `root`. The host ignores rules of a vault that is no longer active.
+pub(super) fn rules_file_contents(vault_path: &Path, root: &Value) -> Result<String, String> {
+    let vault_path = vault_path
+        .to_str()
+        .ok_or("vault path is not UTF-8 for the browser rules file")?;
+    serde_json::to_string(&serde_json::json!({
+        "vaultPath": vault_path,
+        "distractions": root.get("distractions").unwrap_or(&Value::Null),
+    }))
+    .map_err(|error| format!("encode browser rules file: {error}"))
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), String> {
@@ -208,6 +240,10 @@ pub(super) fn validate_limit_state(state: &DistractionsLimitState) -> Result<(),
     }
     DateTime::parse_from_rfc3339(&state.updated_at)
         .map_err(|e| format!("parse updated_at: {e}"))?;
+    if let Some(confirmed_at) = &state.confirmed_at {
+        DateTime::parse_from_rfc3339(confirmed_at)
+            .map_err(|e| format!("parse confirmed_at: {e}"))?;
+    }
     if let Some(database_path) = &state.database_path {
         let path = Path::new(database_path);
         if !path.is_absolute() {
@@ -271,9 +307,34 @@ pub(super) fn read_fresh_limit_state(
     let updated_at = DateTime::parse_from_rfc3339(&state.updated_at)
         .ok()?
         .with_timezone(&Utc);
-    let age = checked_at - updated_at;
-    (age >= chrono::Duration::zero() && age <= chrono::Duration::seconds(LIMIT_STATE_STALE_SECONDS))
-        .then_some(state)
+    let confirmed_at = match &state.confirmed_at {
+        Some(confirmed_at) => DateTime::parse_from_rfc3339(confirmed_at)
+            .ok()?
+            .with_timezone(&Utc),
+        None => updated_at,
+    };
+    let age = checked_at - confirmed_at;
+    (updated_at <= checked_at
+        && age >= chrono::Duration::zero()
+        && age <= chrono::Duration::seconds(LIMIT_STATE_STALE_SECONDS))
+    .then_some(state)
+}
+
+/// Writes last good totals to `path` as confirmed at `confirmed_at`, so closes keep authorizing
+/// while reads fail. `updated_at` keeps the real read time, so the browser host still ages the
+/// snapshot out.
+pub(super) fn republish_limit_state(
+    path: &Path,
+    state: &DistractionsLimitState,
+    confirmed_at: DateTime<Utc>,
+) -> Result<(), String> {
+    let state = DistractionsLimitState {
+        confirmed_at: Some(confirmed_at.to_rfc3339_opts(SecondsFormat::Millis, true)),
+        ..state.clone()
+    };
+    validate_limit_state(&state)?;
+    let json = serde_json::to_string(&state).map_err(|error| error.to_string())?;
+    write_text_file_atomically(path, &json)
 }
 
 pub(super) fn disconnected_extension_status(
@@ -358,20 +419,14 @@ pub(super) fn write_text_file_atomically(
     write_result
 }
 
-#[tauri::command]
-pub fn distractions_extension_status<R: Runtime>(
-    app: tauri::AppHandle<R>,
-    fresh_after: Option<String>,
+/// Extension connection status recorded at `path` by the native messaging host. An oversized or
+/// unreadable record reads as disconnected, like any other invalid record.
+pub(super) fn extension_status_at(
+    path: &Path,
+    checked_at: DateTime<Utc>,
+    fresh_after: Option<DateTime<Utc>>,
 ) -> Result<DistractionsExtensionStatus, String> {
-    let checked_at = now_utc();
-    let fresh_after = fresh_after
-        .as_deref()
-        .map(DateTime::parse_from_rfc3339)
-        .transpose()
-        .map_err(|e| format!("parse fresh_after: {e}"))?
-        .map(|date| date.with_timezone(&Utc));
-    let path = extension_connection_path(&app)?;
-    match std::fs::read_to_string(path) {
+    match read_state_file(path) {
         Ok(contents) => Ok(extension_status_from_file_contents(
             &contents,
             checked_at,
@@ -380,6 +435,28 @@ pub fn distractions_extension_status<R: Runtime>(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(
             disconnected_extension_status(checked_at, "no extension connection has been recorded"),
         ),
+        Err(err) if err.kind() == std::io::ErrorKind::InvalidData => Ok(
+            disconnected_extension_status(checked_at, "connection status file is invalid"),
+        ),
         Err(err) => Err(format!("read extension connection status: {err}")),
     }
+}
+
+#[tauri::command]
+pub async fn distractions_extension_status<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    fresh_after: Option<String>,
+) -> Result<DistractionsExtensionStatus, String> {
+    let fresh_after = fresh_after
+        .as_deref()
+        .map(DateTime::parse_from_rfc3339)
+        .transpose()
+        .map_err(|e| format!("parse fresh_after: {e}"))?
+        .map(|date| date.with_timezone(&Utc));
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = extension_connection_path(&app)?;
+        extension_status_at(&path, now_utc(), fresh_after)
+    })
+    .await
+    .map_err(|error| format!("extension status worker failed: {error}"))?
 }

@@ -1,8 +1,17 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Save from "@lucide/svelte/icons/save";
+  import X from "@lucide/svelte/icons/x";
   import type { ProviderFileRead, ProviderInstanceId } from "$lib/chat/contracts";
-  import { readChatProviderFiles, saveChatProviderFile } from "$lib/api/chat";
+  import {
+    clearBrowserPreviewData,
+    readChatProviderFiles,
+    readPreviewModelOrigins,
+    revokePreviewModelOrigin,
+    saveChatProviderFile,
+    type PreviewModelOriginGrant,
+  } from "$lib/api/chat";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
@@ -19,6 +28,12 @@
   let saving = $state(false);
   let error = $state<string | null>(null);
   let loadGeneration = 0;
+  let siteGrants = $state<PreviewModelOriginGrant[]>([]);
+  let siteError = $state<string | null>(null);
+  let revoking = $state(false);
+  let clearingPreviewData = $state(false);
+  let previewDataCleared = $state(false);
+  let previewDataError = $state<string | null>(null);
 
   const providers = $derived(chat.settings?.providerInstances ?? []);
   const selectedProvider = $derived(
@@ -130,6 +145,53 @@
     return file.name;
   }
 
+  async function loadSiteGrants(): Promise<void> {
+    siteError = null;
+    try {
+      siteGrants = await readPreviewModelOrigins();
+    } catch (cause: unknown) {
+      siteError = errorMessage(cause);
+      throw cause;
+    }
+  }
+
+  async function revokeSite(grant: PreviewModelOriginGrant): Promise<void> {
+    if (revoking) return;
+    revoking = true;
+    siteError = null;
+    try {
+      await revokePreviewModelOrigin(grant.threadId, grant.origin);
+      siteGrants = siteGrants.filter((entry) => entry.threadId !== grant.threadId || entry.origin !== grant.origin);
+    } catch (cause: unknown) {
+      siteError = errorMessage(cause);
+    } finally {
+      revoking = false;
+    }
+  }
+
+  async function clearPreviewData(): Promise<void> {
+    if (clearingPreviewData) return;
+    clearingPreviewData = true;
+    previewDataCleared = false;
+    previewDataError = null;
+    try {
+      await clearBrowserPreviewData();
+      previewDataCleared = true;
+    } catch (cause: unknown) {
+      previewDataError = errorMessage(cause);
+    } finally {
+      clearingPreviewData = false;
+    }
+  }
+
+  function threadLabel(threadId: string): string {
+    return [...chat.activeThreads, ...chat.archivedThreads].find((thread) => thread.id === threadId)?.title || threadId;
+  }
+
+  onMount(() => {
+    void loadSiteGrants().catch(() => undefined);
+  });
+
   function errorMessage(cause: unknown): string {
     return cause instanceof Error ? cause.message : String(cause);
   }
@@ -215,4 +277,39 @@
       </div>
     {/if}
   {/if}
+
+  <div class="flex flex-col gap-2 px-1">
+    <h3 class="text-[0.8rem] font-semibold text-foreground">{t("settings.chat.permissions.siteAccessHeading")}</h3>
+    <p class="text-[0.7rem] text-muted-foreground">{t("settings.chat.permissions.siteAccessDescription")}</p>
+    {#if siteError}
+      <Notice class="text-[0.733333rem]" message={siteError} onRetry={loadSiteGrants} />
+    {/if}
+    {#if siteGrants.length === 0}
+      <p class="text-[0.7rem] text-muted-foreground">{t("settings.chat.permissions.siteAccessEmpty")}</p>
+    {:else}
+      <ul class="flex flex-col">
+        {#each siteGrants as grant (`${grant.threadId} ${grant.origin}`)}
+          <li class="flex items-center justify-between gap-2 py-1">
+            <div class="min-w-0">
+              <p class="truncate font-mono text-[0.733333rem] text-foreground">{grant.origin}</p>
+              <p class="truncate text-[0.666667rem] text-muted-foreground">{t("settings.chat.permissions.siteAccessThread", threadLabel(grant.threadId))}</p>
+            </div>
+            <button type="button" class="chat-settings-button" disabled={revoking} aria-label={t("settings.chat.permissions.siteAccessRevoke", grant.origin)} title={t("settings.chat.permissions.siteAccessRevoke", grant.origin)} onclick={() => void revokeSite(grant)}><X size={13} /></button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+
+  <div class="flex flex-col gap-2 px-1">
+    <h3 class="text-[0.8rem] font-semibold text-foreground">{t("settings.chat.permissions.previewDataHeading")}</h3>
+    <p class="text-[0.7rem] text-muted-foreground">{t("settings.chat.permissions.previewDataDescription")}</p>
+    {#if previewDataError}
+      <Notice class="text-[0.733333rem]" message={previewDataError} />
+    {/if}
+    <div class="flex flex-wrap items-center gap-2">
+      <button type="button" class="chat-settings-button" disabled={clearingPreviewData} onclick={() => void clearPreviewData()}>{t("settings.chat.permissions.previewDataClear")}</button>
+      {#if previewDataCleared}<p role="status" class="text-[0.7rem] text-muted-foreground">{t("settings.chat.permissions.previewDataCleared")}</p>{/if}
+    </div>
+  </div>
 </section>

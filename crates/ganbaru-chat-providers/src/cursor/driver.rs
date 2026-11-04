@@ -270,7 +270,7 @@ impl CursorProviderDriver {
         &self,
         context: &DriverOperationContext,
     ) -> ChatResult<(AcpStartedSession, AcpProviderAbout)> {
-        let workspace = canonical_current_directory()?;
+        let workspace = crate::probe_directory::ProbeDirectory::create()?;
         let (mut connection, about) = self.open_connection(&workspace).await?;
         let result = initialize_provider_session(AcpSessionInitialization {
             flavor: self.flavor,
@@ -540,23 +540,6 @@ fn canonical_verified_workspace(input: &VerifiedWorkspaceContext) -> ChatResult<
         ChatError::validation(
             "workspace.canonicalPath",
             "ACP provider workspace is unavailable",
-        )
-    })
-}
-
-pub(super) fn canonical_current_directory() -> ChatResult<PathBuf> {
-    let current = std::env::current_dir().map_err(|_| {
-        ChatError::new(
-            ChatErrorCode::ConfigurationInvalid,
-            "ACP provider probe directory is unavailable",
-            true,
-        )
-    })?;
-    std::fs::canonicalize(current).map_err(|_| {
-        ChatError::new(
-            ChatErrorCode::ConfigurationInvalid,
-            "ACP provider probe directory is unavailable",
-            true,
         )
     })
 }

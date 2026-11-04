@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import FolderX from "@lucide/svelte/icons/folder-x";
+  import SquareDashedPlus from "@lucide/svelte/icons/square-dashed-plus";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
   import { cn } from "$lib/utils";
@@ -15,11 +15,14 @@
     disabled = false,
     mobileLayout = false,
     onSelect,
+    onCreate = undefined,
   }: {
     selectedProjectId?: string;
     disabled?: boolean;
     mobileLayout?: boolean;
     onSelect: (projectId: string | undefined) => void;
+    /** Receives a project created from the picker instead of `onSelect`. */
+    onCreate?: (projectId: string) => void;
   } = $props();
 
   const projects = useProjects();
@@ -163,8 +166,9 @@
     closeDropdown();
   }
 
-  async function handleProjectCreated(): Promise<void> {
-    onSelect(projects.selectedProjectId ?? undefined);
+  async function handleProjectCreated(projectId: string | null): Promise<void> {
+    if (projectId && onCreate) onCreate(projectId);
+    else onSelect(projectId ?? undefined);
     closeDropdown();
   }
 
@@ -205,7 +209,7 @@
         emojiScale={PROJECT_EMOJI_SCALE}
       />
     {:else}
-      <FolderX size={PROJECT_ICON_SIZE} strokeWidth={EMPTY_ICON_STROKE_WIDTH} />
+      <SquareDashedPlus size={PROJECT_ICON_SIZE} strokeWidth={EMPTY_ICON_STROKE_WIDTH} />
     {/if}
   </button>
 

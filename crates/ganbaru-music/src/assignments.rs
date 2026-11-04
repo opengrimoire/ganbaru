@@ -1,10 +1,11 @@
 //! Portable music-assignment contracts shared by desktop and mobile planning.
 
 use crate::error::{MusicLibraryError, MusicLibraryResult};
+use crate::sync_keys::assignment_key;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use sqlx::{Sqlite, Transaction};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 macro_rules! string_enum {
     ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
@@ -72,7 +73,7 @@ pub struct MusicContextAssignment {
     pub phase: MusicActivityPhase,
     pub behavior: MusicAssignmentBehavior,
     pub playlist_id: Option<String>,
-    pub soundscape_id: Option<String>,
+    pub soundscape_preset_id: Option<String>,
     pub soundscape_behavior: MusicSoundscapeBehavior,
     pub provenance_kind: MusicAssignmentProvenanceKind,
     pub provenance_id: Option<String>,
@@ -86,7 +87,7 @@ pub struct MusicContextAssignmentDraft {
     pub phase: MusicActivityPhase,
     pub behavior: MusicAssignmentBehavior,
     pub playlist_id: Option<String>,
-    pub soundscape_id: Option<String>,
+    pub soundscape_preset_id: Option<String>,
     pub soundscape_behavior: MusicSoundscapeBehavior,
     pub provenance_kind: MusicAssignmentProvenanceKind,
     pub provenance_id: Option<String>,
@@ -124,7 +125,7 @@ pub async fn load_assignments(
 ) -> MusicLibraryResult<Vec<MusicContextAssignment>> {
     validate_id(owner_id, "ownerId")?;
     let rows = sqlx::query_as::<_, AssignmentRow>(
-        "SELECT owner_kind, owner_id, phase, behavior, playlist_id, soundscape_id, soundscape_behavior,
+        "SELECT owner_kind, owner_id, phase, behavior, playlist_id, soundscape_preset_id, soundscape_behavior,
                 provenance_kind, provenance_id, updated_at_ms, version
          FROM music_context_assignments
          WHERE owner_kind = ? AND owner_id = ?
@@ -161,8 +162,8 @@ async fn replace_assignments(
     load_assignments(pool, request.owner_kind, &request.owner_id).await
 }
 
-/// Replaces every phase assignment of one owner inside the caller's transaction, advancing each
-/// phase's version.
+/// Replaces the phase assignments of one owner inside the caller's transaction: removes absent
+/// phases and advances the version of each phase whose values changed.
 pub async fn replace_assignments_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
     owner_kind: MusicAssignmentOwnerKind,
@@ -176,52 +177,85 @@ pub async fn replace_assignments_in_transaction(
         assignments: assignments.clone(),
         updated_at_ms,
     })?;
-    let prior_versions = sqlx::query_as::<_, (String, i64)>(
-        "SELECT phase, version FROM music_context_assignments
+    let kept_phases = assignments
+        .iter()
+        .map(|assignment| assignment.phase.as_ref())
+        .collect::<HashSet<_>>();
+    let prior_phases = sqlx::query_scalar::<_, String>(
+        "SELECT phase FROM music_context_assignments
          WHERE owner_kind = ? AND owner_id = ?",
     )
     .bind(owner_kind.as_ref())
     .bind(owner_id)
     .fetch_all(&mut **transaction)
     .await
-    .map_err(|error| MusicLibraryError::database("load music context assignment versions", error))?
-    .into_iter()
-    .collect::<HashMap<_, _>>();
-    sqlx::query("DELETE FROM music_context_assignments WHERE owner_kind = ? AND owner_id = ?")
-        .bind(owner_kind.as_ref())
-        .bind(owner_id)
-        .execute(&mut **transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("replace music context assignments", error))?;
-    for assignment in assignments {
-        let version = prior_versions
-            .get(assignment.phase.as_ref())
-            .copied()
-            .unwrap_or(0)
-            + 1;
+    .map_err(|error| MusicLibraryError::database("load music context assignment phases", error))?;
+    for phase in prior_phases
+        .iter()
+        .filter(|phase| !kept_phases.contains(phase.as_str()))
+    {
         sqlx::query(
-            "INSERT INTO music_context_assignments
-                (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_id, soundscape_behavior,
-                 provenance_kind, provenance_id, updated_at_ms, version)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "DELETE FROM music_context_assignments
+             WHERE owner_kind = ? AND owner_id = ? AND phase = ?",
         )
         .bind(owner_kind.as_ref())
         .bind(owner_id)
-        .bind(assignment.phase.as_ref())
-        .bind(assignment.behavior.as_ref())
-        .bind(assignment.playlist_id)
-        .bind(assignment.soundscape_id)
-        .bind(assignment.soundscape_behavior.as_ref())
-        .bind(assignment.provenance_kind.as_ref())
-        .bind(assignment.provenance_id)
-        .bind(updated_at_ms)
-        .bind(version)
+        .bind(phase)
         .execute(&mut **transaction)
         .await
-        .map_err(|error| {
-            MusicLibraryError::database("write music context assignment", error)
-        })?;
+        .map_err(|error| MusicLibraryError::database("remove music context assignment", error))?;
     }
+    for assignment in assignments {
+        upsert_assignment(transaction, owner_kind, owner_id, assignment, updated_at_ms).await?;
+    }
+    Ok(())
+}
+
+/// Inserts one phase assignment, or updates it and advances its version only when a value
+/// changed, so an unchanged phase keeps its timestamp and version.
+async fn upsert_assignment(
+    transaction: &mut Transaction<'_, Sqlite>,
+    owner_kind: MusicAssignmentOwnerKind,
+    owner_id: &str,
+    assignment: MusicContextAssignmentDraft,
+    updated_at_ms: i64,
+) -> MusicLibraryResult<()> {
+    let sync_key = assignment_key(owner_kind.as_ref(), owner_id, assignment.phase.as_ref())?;
+    sqlx::query(
+        "INSERT INTO music_context_assignments
+            (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_preset_id, soundscape_behavior,
+             provenance_kind, provenance_id, updated_at_ms, version, sync_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+         ON CONFLICT (owner_kind, owner_id, phase) DO UPDATE SET
+            behavior = excluded.behavior,
+            playlist_id = excluded.playlist_id,
+            soundscape_preset_id = excluded.soundscape_preset_id,
+            soundscape_behavior = excluded.soundscape_behavior,
+            provenance_kind = excluded.provenance_kind,
+            provenance_id = excluded.provenance_id,
+            updated_at_ms = excluded.updated_at_ms,
+            version = music_context_assignments.version + 1
+         WHERE (music_context_assignments.behavior, music_context_assignments.playlist_id,
+                music_context_assignments.soundscape_preset_id,
+                music_context_assignments.soundscape_behavior,
+                music_context_assignments.provenance_kind, music_context_assignments.provenance_id)
+            IS NOT (excluded.behavior, excluded.playlist_id, excluded.soundscape_preset_id,
+                    excluded.soundscape_behavior, excluded.provenance_kind, excluded.provenance_id)",
+    )
+    .bind(owner_kind.as_ref())
+    .bind(owner_id)
+    .bind(assignment.phase.as_ref())
+    .bind(assignment.behavior.as_ref())
+    .bind(assignment.playlist_id)
+    .bind(assignment.soundscape_preset_id)
+    .bind(assignment.soundscape_behavior.as_ref())
+    .bind(assignment.provenance_kind.as_ref())
+    .bind(assignment.provenance_id)
+    .bind(updated_at_ms)
+    .bind(sync_key)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("write music context assignment", error))?;
     Ok(())
 }
 
@@ -257,8 +291,9 @@ pub fn validate_drafts(
             ));
         }
         validate_optional_id(&assignment.playlist_id, "playlistId")?;
-        validate_optional_id(&assignment.soundscape_id, "soundscapeId")?;
+        validate_optional_id(&assignment.soundscape_preset_id, "soundscapePresetId")?;
         validate_optional_id(&assignment.provenance_id, "provenanceId")?;
+        validate_soundscape_choice(assignment)?;
         let expected_provenance = match owner_kind {
             MusicAssignmentOwnerKind::EventSnapshot => MusicAssignmentProvenanceKind::CopiedProject,
             MusicAssignmentOwnerKind::WorkEnvironment => {
@@ -280,6 +315,24 @@ pub fn validate_drafts(
         }
     }
     Ok(())
+}
+
+/// A selected soundscape names one preset; other behaviors name none.
+fn validate_soundscape_choice(assignment: &MusicContextAssignmentDraft) -> MusicLibraryResult<()> {
+    match (
+        assignment.soundscape_behavior,
+        assignment.soundscape_preset_id.is_some(),
+    ) {
+        (MusicSoundscapeBehavior::PlaySelected, false) => Err(MusicLibraryError::validation(
+            "soundscapePresetId",
+            "play-selected requires a preset",
+        )),
+        (MusicSoundscapeBehavior::PlaySelected, true) | (_, false) => Ok(()),
+        (_, true) => Err(MusicLibraryError::validation(
+            "soundscapePresetId",
+            "only play-selected may name a preset",
+        )),
+    }
 }
 
 fn validate_id(value: &str, field: &str) -> MusicLibraryResult<()> {
@@ -315,7 +368,7 @@ pub fn decode(row: AssignmentRow) -> MusicLibraryResult<MusicContextAssignment> 
         behavior: MusicAssignmentBehavior::try_from(row.3.as_str())
             .map_err(|message| MusicLibraryError::runtime("decode assignment behavior", message))?,
         playlist_id: row.4,
-        soundscape_id: row.5,
+        soundscape_preset_id: row.5,
         soundscape_behavior: MusicSoundscapeBehavior::try_from(row.6.as_str())
             .map_err(|message| MusicLibraryError::runtime("decode soundscape behavior", message))?,
         provenance_kind: MusicAssignmentProvenanceKind::try_from(row.7.as_str()).map_err(

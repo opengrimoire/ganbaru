@@ -163,15 +163,15 @@ pub(crate) async fn attachment_data_url(
         ));
     }
     let path = managed_attachment_path(&app, &attachment.managed_relative_path)?;
-    let metadata = fs::symlink_metadata(&path).map_err(attachment_io_error)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() != attachment.byte_size
-        || metadata.len() > MAX_IMAGE_BYTES as u64
-    {
+    let bytes = ganbaru_atomic_files::read_regular_file_capped(
+        &path,
+        attachment.byte_size.min(MAX_IMAGE_BYTES as u64),
+        ganbaru_atomic_files::FinalSymlink::Refuse,
+    )
+    .map_err(attachment_io_error)?;
+    if bytes.len() as u64 != attachment.byte_size {
         return Err(attachment_io_error(()));
     }
-    let bytes = fs::read(path).map_err(attachment_io_error)?;
     Ok(format!(
         "data:{};base64,{}",
         attachment.mime_type,

@@ -119,13 +119,14 @@ pub(crate) async fn list_prompt_catalog(
     })
     .await
     .map_err(prompt_catalog_worker_error)?;
-    if let Some(thread_id) = thread_id {
-        let live = app
+    let owner = match thread_id {
+        Some(thread_id) => app
             .state::<ChatRuntimeRegistry>()
-            .owner(thread_id)?
-            .prompt_catalog()
-            .await?;
-        entries.extend(live);
+            .existing_owner(&thread_id)?,
+        None => None,
+    };
+    if let Some(owner) = owner {
+        entries.extend(owner.prompt_catalog().await?);
     }
     Ok(merge_prompt_entries(entries))
 }

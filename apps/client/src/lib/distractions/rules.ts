@@ -21,6 +21,8 @@ export type DistractionsCategoryId = (typeof DISTRACTIONS_CATEGORY_IDS)[number];
 interface DistractionsCategoryDefinition {
   id: DistractionsCategoryId;
   label: string;
+  /** Whether the category blocks until the vault records a choice; native assembly reads the same file. */
+  defaultEnabled: boolean;
   hosts: readonly string[];
   domainKeywords?: readonly string[];
   redditSubredditKeywords?: readonly string[];
@@ -81,7 +83,12 @@ export const DISTRACTIONS_PROTECTED_DESKTOP_APP_NAMES = [
 
 export const DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES = [
   "Activity Monitor",
+  "alacritty",
+  "awesome",
   "bash",
+  "bspwm",
+  "cinnamon",
+  "cinnamon-session",
   "cmd",
   "cmd.exe",
   "conhost.exe",
@@ -92,33 +99,59 @@ export const DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES = [
   "dbus-daemon",
   "dllhost.exe",
   "Dock",
+  "dwm",
   "dwm.exe",
   "electron",
   "explorer.exe",
   "Finder",
   "fish",
   "flatpak",
+  "fluxbox",
+  "foot",
+  "fvwm",
+  "fvwm3",
+  "ghostty",
   "gnome-control-center",
   "gnome-keyring-daemon",
+  "gnome-session-binary",
   "gnome-shell",
   "gnome-terminal",
   "gnome-terminal-server",
+  "gpg-agent",
+  "herbstluftwm",
+  "Hyprland",
+  "i3",
   "ibus-daemon",
+  "icewm",
+  "icewm-session",
   "java",
   "javaw",
   "javaw.exe",
+  "kgx",
   "kitty",
   "konsole",
   "kwin_wayland",
   "kwin_x11",
+  "labwc",
   "launchd",
   "loginwindow",
+  "lxqt-session",
+  "lxsession",
+  "marco",
+  "mate-session",
+  "mate-terminal",
   "mmc.exe",
   "mutter",
+  "niri",
   "node",
+  "openbox",
+  "pipewire",
+  "pipewire-pulse",
   "plasmashell",
   "PowerShell",
   "powershell.exe",
+  "ptyxis",
+  "pulseaudio",
   "pwsh",
   "pwsh.exe",
   "python",
@@ -126,28 +159,46 @@ export const DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES = [
   "python3.11",
   "python3.12",
   "pythonw.exe",
+  "qtile",
   "regedit.exe",
+  "river",
   "rundll32.exe",
+  "screen",
   "services.exe",
   "sh",
   "ShellExperienceHost.exe",
   "sihost.exe",
   "snap",
+  "ssh-agent",
+  "sshd",
   "StartMenuExperienceHost.exe",
   "svchost.exe",
+  "sway",
   "System Settings",
+  "systemd",
   "SystemUIServer",
   "taskmgr.exe",
   "Terminal",
+  "terminator",
+  "tilix",
+  "tmux",
+  "wayfire",
+  "weston",
   "wezterm",
-  "winlogon.exe",
-  "WindowsTerminal.exe",
   "WindowServer",
-  "wt.exe",
+  "WindowsTerminal.exe",
+  "winlogon.exe",
+  "wireplumber",
   "wscript.exe",
+  "wt.exe",
   "xdg-desktop-portal",
   "xdg-desktop-portal-gnome",
   "xdg-desktop-portal-gtk",
+  "xfce4-session",
+  "xfce4-terminal",
+  "xfdesktop",
+  "xfwm4",
+  "xmonad",
   "Xorg",
   "XTerm",
   "Xwayland",
@@ -204,10 +255,15 @@ function loadDistractionsCategoryDefinitions(value: unknown): readonly Distracti
     if (typeof label !== "string" || label.trim() === "") {
       throw new Error(`Distractions category ${id} has an invalid label`);
     }
+    const defaultEnabled = item.defaultEnabled ?? true;
+    if (typeof defaultEnabled !== "boolean") {
+      throw new Error(`Distractions category ${id} has an invalid default`);
+    }
     seenIds.add(id);
     definitions.push({
       id,
       label,
+      defaultEnabled,
       hosts: parseCategoryStringList(item.hosts, id, "hosts"),
       domainKeywords: parseCategoryStringList(item.domainKeywords, id, "domainKeywords"),
       redditSubredditKeywords: parseCategoryStringList(
@@ -235,6 +291,8 @@ export interface DistractionsHostRule {
 }
 
 export interface DistractionsAppRule {
+  /** Stored row identity that actions address; a synced row's identity can differ from its name. */
+  identity: string;
   name: string;
   enabled: boolean;
   matchNames: string[];
@@ -348,7 +406,7 @@ const MAX_WEEKLY_LIMIT_MINUTES = 7 * 24 * 60;
 function defaultCategoryRules(): DistractionsCategoryRule[] {
   return DISTRACTIONS_CATEGORY_DEFINITIONS.map((category) => ({
     id: category.id,
-    enabled: category.id !== "news",
+    enabled: category.defaultEnabled,
   }));
 }
 
@@ -548,10 +606,14 @@ function normalizeAppRuleValue(value: unknown): DistractionsAppRule | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (typeof record.name !== "string") return null;
+  // Only an empty identity is dropped, matching native enforcement, which skips only empty
+  // identities. Every enforced row therefore stays visible and removable in Settings.
+  if (typeof record.identity !== "string" || record.identity === "") return null;
   const name = normalizeDistractionsAppName(record.name);
   if (!name) return null;
   const matchNames = normalizeAppRuleMatchNames(name, record.matchNames);
   return {
+    identity: record.identity,
     name,
     enabled: record.enabled !== false,
     matchNames,
@@ -581,10 +643,9 @@ function normalizeAppRules(value: unknown, includeProtectedApps = false): Distra
   for (const item of value) {
     const rule = normalizeAppRuleValue(item);
     if (!rule) continue;
-    const key = appRuleKey(rule.name);
-    if (!includeProtectedApps && protectedDesktopAppKeys().has(key)) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (!includeProtectedApps && protectedDesktopAppKeys().has(appRuleKey(rule.name))) continue;
+    if (seen.has(rule.identity)) continue;
+    seen.add(rule.identity);
     rules.push(rule);
   }
   return rules;
@@ -928,6 +989,138 @@ export function normalizeDistractionsConfig(value: unknown): DistractionsConfig 
     desktop: normalizeDesktopConfig(record.desktop),
     limits: normalizeUsageLimitsConfig(record.limits),
   };
+}
+
+/** A switch of the rules settings, as the native rule commands name it. */
+export type DistractionsSettingFlag =
+  | "enabled"
+  | "blockDuringFocus"
+  | "blockDuringShortBreaks"
+  | "blockDuringLongBreaks"
+  | "pauseDuringFocusPause"
+  | "desktopEnabled"
+  | "desktopBlockDuringFocus"
+  | "desktopBlockDuringShortBreaks"
+  | "desktopBlockDuringLongBreaks"
+  | "desktopPauseDuringFocusPause"
+  | "mobileEnabled"
+  | "mobileBlockDuringFocus"
+  | "mobileBlockDuringShortBreaks"
+  | "mobileBlockDuringLongBreaks"
+  | "mobilePauseDuringFocusPause"
+  | "limitsEnabled";
+
+/** A global host list. */
+export type DistractionsHostList = "blocked" | "exception" | "allowed";
+
+/** The rule a toggle or removal names. */
+export type DistractionsRuleTarget =
+  | { kind: "setting"; setting: DistractionsSettingFlag }
+  | { kind: "category"; id: DistractionsCategoryId }
+  | { kind: "customCategory"; id: string }
+  | { kind: "host"; list: DistractionsHostList; host: string }
+  | { kind: "desktopApp"; identity: string }
+  | { kind: "mobileApp"; packageName: string }
+  | { kind: "usageLimit"; id: string };
+
+/** Why the native rules refused an edit without changing anything. */
+export const DISTRACTIONS_RULE_REFUSALS = [
+  "missing",
+  "invalid-target",
+  "invalid-category",
+  "invalid-name",
+  "invalid-hosts",
+  "duplicate-name",
+  "invalid-app",
+  "protected-source",
+  "invalid-minutes",
+  "invalid-budget",
+  "invalid-sources",
+  "duplicate-source",
+  "too-large",
+] as const;
+
+export type DistractionsRuleRefusal = (typeof DISTRACTIONS_RULE_REFUSALS)[number];
+
+/** Result of a native rule edit: the rules after it, or why nothing changed. */
+export type DistractionsRulesEditOutcome =
+  | { status: "saved"; config: DistractionsConfig }
+  | { status: "refused"; reason: DistractionsRuleRefusal };
+
+const DISTRACTIONS_SETTINGS_SHAPE = [
+  "enabled",
+  "blockDuringFocus",
+  "blockDuringShortBreaks",
+  "blockDuringLongBreaks",
+  "pauseDuringFocusPause",
+] as const;
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error(`Invalid native Distractions ${label}`);
+  return value;
+}
+
+function requireBooleans(record: Record<string, unknown>, keys: readonly string[], label: string): void {
+  for (const key of keys) {
+    if (typeof record[key] !== "boolean") throw new Error(`Invalid native Distractions ${label}.${key}`);
+  }
+}
+
+function requireArrays(record: Record<string, unknown>, keys: readonly string[], label: string): void {
+  for (const key of keys) {
+    if (!Array.isArray(record[key])) throw new Error(`Invalid native Distractions ${label}.${key}`);
+  }
+}
+
+/**
+ * Validate the assembled rules a native command returned. The top-level shape must match exactly, so a broken
+ * response fails instead of silently showing defaults; rows inside the lists then go through the same normalization
+ * as every other reader.
+ *
+ * @param value Untrusted command response.
+ * @returns The normalized rules.
+ * @throws Error when a required section or switch is missing or has the wrong type.
+ */
+export function parseDistractionsConfig(value: unknown): DistractionsConfig {
+  const record = requireRecord(value, "rules");
+  if (record.mode !== "blacklist" && record.mode !== "whitelist") {
+    throw new Error("Invalid native Distractions rules.mode");
+  }
+  requireBooleans(record, DISTRACTIONS_SETTINGS_SHAPE, "rules");
+  requireArrays(
+    record,
+    ["blockedCategories", "customCategoryStacks", "blockedHosts", "exceptionHosts", "allowedHosts"],
+    "rules",
+  );
+  for (const section of ["desktop", "mobile"] as const) {
+    const platform = requireRecord(record[section], section);
+    requireBooleans(platform, DISTRACTIONS_SETTINGS_SHAPE, section);
+    requireArrays(platform, ["blockedApps"], section);
+  }
+  const limits = requireRecord(record.limits, "limits");
+  requireBooleans(limits, ["enabled"], "limits");
+  requireArrays(limits, ["items"], "limits");
+  return normalizeDistractionsConfig(record);
+}
+
+function isDistractionsRuleRefusal(value: unknown): value is DistractionsRuleRefusal {
+  return DISTRACTIONS_RULE_REFUSALS.some((refusal) => refusal === value);
+}
+
+/**
+ * Validate the outcome of a native rule edit.
+ *
+ * @param value Untrusted command response.
+ * @returns The saved rules or the refusal reason.
+ * @throws Error when the status, rules, or reason is not valid.
+ */
+export function parseDistractionsRulesEditOutcome(value: unknown): DistractionsRulesEditOutcome {
+  const record = requireRecord(value, "edit outcome");
+  if (record.status === "saved") return { status: "saved", config: parseDistractionsConfig(record.config) };
+  if (record.status === "refused" && isDistractionsRuleRefusal(record.reason)) {
+    return { status: "refused", reason: record.reason };
+  }
+  throw new Error("Invalid native Distractions edit outcome");
 }
 
 export function distractionsHostMatchesRule(host: string, ruleHost: string): boolean {

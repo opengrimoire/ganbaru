@@ -2,10 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
 import { invalidateAssetUrl, loadAssetUrl } from "$lib/api/asset-url-cache";
 import type { NotesFileAssetMetadata, NotesMediaBlockType } from "$lib/notes/block-types/media";
-import type {
-  NotesImportFileDiagnostic,
-  NotesImportFileAction,
-} from "$lib/notes/import-file-policy";
 
 interface NotesFileAssetDto {
   relativePath: string;
@@ -14,13 +10,6 @@ interface NotesFileAssetDto {
   byteSize: number;
   sha256: string;
   kind: NotesMediaBlockType;
-}
-
-interface NotesImportFileReferenceDto {
-  action: NotesImportFileAction;
-  asset: NotesFileAssetDto | null;
-  externalUrl: string | null;
-  diagnostics: NotesImportFileDiagnostic[];
 }
 
 function mapNotesFileAssetDto(value: NotesFileAssetDto): NotesFileAssetMetadata {

@@ -37,12 +37,13 @@ fn move_block_nests_and_outdents_with_parent_state() {
                 .await
                 .unwrap();
         assert_eq!(nested_parent, BLOCK_B);
-        let has_children: i64 =
-            sqlx::query_scalar("SELECT has_children FROM notes_blocks WHERE id = ?")
-                .bind(BLOCK_B)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let has_children: i64 = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0)",
+        )
+        .bind(BLOCK_B)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(has_children, 1);
 
         writes::move_block(
@@ -99,7 +100,7 @@ fn move_block_can_place_before_first_sibling() {
         .unwrap();
 
         let ids = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM notes_blocks WHERE parent_page_id = ? ORDER BY sort_order ASC, id ASC",
+            "SELECT id FROM notes_blocks WHERE parent_page_id = ? ORDER BY order_key ASC, id ASC",
         )
         .bind(PAGE_A)
         .fetch_all(&pool)
@@ -505,8 +506,10 @@ fn duplicate_block_clones_nested_subtree_after_source() {
         .unwrap();
 
         let duplicate_root = sqlx::query(
-            "SELECT parent_type, parent_page_id, has_children, type, payload, sort_order
-             FROM notes_blocks
+            "SELECT parent_type, parent_page_id,
+                EXISTS (SELECT 1 FROM notes_blocks AS child WHERE child.parent_block_id = block.id) AS has_children,
+                type, json_patch(attrs, text) AS payload, order_key
+             FROM notes_blocks AS block
              WHERE id = ?",
         )
         .bind(BLOCK_E)
@@ -521,7 +524,7 @@ fn duplicate_block_clones_nested_subtree_after_source() {
         assert!(duplicate_payload.contains("Parent"));
 
         let duplicate_child = sqlx::query(
-            "SELECT parent_type, parent_block_id, type, payload
+            "SELECT parent_type, parent_block_id, type, json_patch(attrs, text) AS payload
              FROM notes_blocks
              WHERE id = ?",
         )
@@ -535,15 +538,15 @@ fn duplicate_block_clones_nested_subtree_after_source() {
         let child_payload: String = duplicate_child.get("payload");
         assert!(child_payload.contains("\"checked\":true"));
 
-        let source_order: f64 =
-            sqlx::query_scalar("SELECT sort_order FROM notes_blocks WHERE id = ?")
+        let source_order: String =
+            sqlx::query_scalar("SELECT order_key FROM notes_blocks WHERE id = ?")
                 .bind(BLOCK_B)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        let duplicate_order: f64 = duplicate_root.get("sort_order");
-        let next_order: f64 =
-            sqlx::query_scalar("SELECT sort_order FROM notes_blocks WHERE id = ?")
+        let duplicate_order: String = duplicate_root.get("order_key");
+        let next_order: String =
+            sqlx::query_scalar("SELECT order_key FROM notes_blocks WHERE id = ?")
                 .bind(BLOCK_C)
                 .fetch_one(&pool)
                 .await

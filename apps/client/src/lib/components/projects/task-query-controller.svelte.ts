@@ -194,11 +194,11 @@ export class ProjectTaskQueryController {
   }
 
   get statuses() {
-    return this.#projects.statusesForProject(this.projectId);
+    return this.#projects.taskStatusesForProject(this.projectId);
   }
 
   get priorities() {
-    return this.#projects.prioritiesForProject(this.projectId);
+    return this.#projects.taskPrioritiesForProject(this.projectId);
   }
 
   get projectTags() {

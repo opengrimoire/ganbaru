@@ -1,12 +1,12 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import AlertTriangle from "@lucide/svelte/icons/alert-triangle";
+  import AlertTriangle from "@lucide/svelte/icons/triangle-alert";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronUp from "@lucide/svelte/icons/chevron-up";
   import Moon from "@lucide/svelte/icons/moon";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Sun from "@lucide/svelte/icons/sun";
-  import Wand2 from "@lucide/svelte/icons/wand-2";
+  import Wand2 from "@lucide/svelte/icons/wand-sparkles";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import { cn } from "$lib/utils";
   import {
@@ -24,6 +24,7 @@
   import ThemeContrastNotice from "./ThemeContrastNotice.svelte";
   import ThemeEventPaletteSection from "./ThemeEventPaletteSection.svelte";
   import ThemeJsonSection from "./ThemeJsonSection.svelte";
+  import ThemeConflictBanner from "./ThemeConflictBanner.svelte";
   import ThemeRebakeBanner from "./ThemeRebakeBanner.svelte";
   import ThemeEditorNavigation from "./ThemeEditorNavigation.svelte";
   import ThemeSourcePairRow from "./ThemeSourcePairRow.svelte";
@@ -623,6 +624,14 @@
         )}
       >
         <!-- Body: grouped editor for user themes and read-only built-in views. -->
+        {#if userTheme && themeStore.hasConflict(userTheme.id)}
+          <ThemeConflictBanner
+            themeId={userTheme.id}
+            displayName={userTheme.displayName}
+            iconLabel={userTheme.iconLabel}
+            onResolve={(choice) => themeStore.resolveConflict({ id: userTheme.id, choice })}
+          />
+        {/if}
         {#if userTheme && offerRebake}
           <ThemeRebakeBanner
             savedVersion={userTheme.derivationEngineVersion}

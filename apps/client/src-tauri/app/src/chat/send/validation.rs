@@ -265,6 +265,9 @@ pub(super) fn validate_mentions(mentions: &[WorkspaceMentionReference]) -> ChatR
             !matches!(mention.kind.as_str(), "file" | "directory")
                 || mention.relative_path.is_empty()
                 || mention.relative_path.len() > 4_096
+                || ganbaru_chat_contracts::protected_paths::text_has_control_characters(
+                    &mention.relative_path,
+                )
                 || crate::chat::interaction_commands::workspace_mention_is_safety_excluded(
                     &mention.relative_path,
                 )

@@ -32,8 +32,8 @@
     errorText: string;
     apps: () => readonly DistractionsAppRule[];
     add: (text: string) => boolean;
-    remove: (name: string) => void;
-    setEnabled: (name: string, enabled: boolean) => void;
+    remove: (identity: string) => void;
+    setEnabled: (identity: string, enabled: boolean) => void;
   }
 
   interface RuleListItem {
@@ -47,6 +47,7 @@
   interface PendingDesktopAppAction {
     type: "disable" | "delete";
     kind: DesktopListKind;
+    identity: string;
     name: string;
   }
 
@@ -69,8 +70,8 @@
       errorText: t("settings.distractions.desktop.invalidApp"),
       apps: () => distractions.blockedApps,
       add: (text: string) => distractions.addBlockedAppsText(text),
-      remove: (name: string) => distractions.removeBlockedApp(name),
-      setEnabled: (name: string, enabled: boolean) => distractions.setBlockedAppEnabled(name, enabled),
+      remove: (identity: string) => distractions.removeBlockedApp(identity),
+      setEnabled: (identity: string, enabled: boolean) => distractions.setBlockedAppEnabled(identity, enabled),
     },
   } satisfies Record<DesktopListKind, DesktopListSection>;
 
@@ -82,7 +83,7 @@
     const apps = section.apps()
       .filter((rule) => !isProtectedDistractionsDesktopAppName(rule.name))
       .map((rule) => ({
-        id: rule.name.toLowerCase(),
+        id: rule.identity,
         label: rule.name,
         enabled: rule.enabled,
       }));
@@ -110,9 +111,23 @@
     return section ? distractions.addBlockedApp(app.name, app.matchNames) : false;
   }
 
-  function requestAppEnabledChange(section: DesktopListSection, name: string, enabled: boolean): void {
+  /** The picker lists apps by name, so it removes every row showing that name. */
+  function removePickedApp(name: string): void {
+    const section = pickerSection();
+    if (!section) return;
+    const key = name.toLowerCase();
+    for (const item of appItems(section)) {
+      if (item.label.toLowerCase() === key) section.remove(item.id);
+    }
+  }
+
+  function appLabel(section: DesktopListSection, identity: string): string {
+    return appItems(section).find((item) => item.id === identity)?.label ?? identity;
+  }
+
+  function requestAppEnabledChange(section: DesktopListSection, identity: string, enabled: boolean): void {
     if (enabled) {
-      section.setEnabled(name, true);
+      section.setEnabled(identity, true);
       return;
     }
     pendingAction = {
@@ -120,18 +135,20 @@
       action: {
         type: "disable",
         kind: section.kind,
-        name,
+        identity,
+        name: appLabel(section, identity),
       },
     };
   }
 
-  function requestAppDelete(section: DesktopListSection, name: string): void {
+  function requestAppDelete(section: DesktopListSection, identity: string): void {
     pendingAction = {
       target: "app",
       action: {
         type: "delete",
         kind: section.kind,
-        name,
+        identity,
+        name: appLabel(section, identity),
       },
     };
   }
@@ -169,12 +186,12 @@
     if (pendingAction.target === "desktopConfiguration") {
       setDesktopConfigurationToggle(pendingAction.action.toggle, false);
     } else {
-      const { type, kind, name } = pendingAction.action;
+      const { type, kind, identity } = pendingAction.action;
       const section = appSections[kind];
       if (type === "disable") {
-        section.setEnabled(name, false);
+        section.setEnabled(identity, false);
       } else {
-        section.remove(name);
+        section.remove(identity);
       }
     }
     pendingAction = null;
@@ -271,8 +288,8 @@
         onAdd={appSections.blocked.add}
         onOpenSelector={() => openAppPicker("blocked")}
         selectorLabel={t("settings.distractions.desktop.addApp")}
-        onEnabledChange={(name, enabled) => requestAppEnabledChange(appSections.blocked, name, enabled)}
-        onDelete={(name) => requestAppDelete(appSections.blocked, name)}
+        onEnabledChange={(identity, enabled) => requestAppEnabledChange(appSections.blocked, identity, enabled)}
+        onDelete={(identity) => requestAppDelete(appSections.blocked, identity)}
       />
     </section>
   </fieldset>
@@ -284,7 +301,7 @@
     existingNames={existingAppNames(activePickerSection)}
     protectAppSelf
     onAdd={addPickedApp}
-    onRemove={appSections.blocked.remove}
+    onRemove={removePickedApp}
     onCancel={closeAppPicker}
   />
 {/if}

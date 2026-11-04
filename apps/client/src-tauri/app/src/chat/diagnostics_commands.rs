@@ -6,7 +6,9 @@ use super::device_state::{
     update_active_device_scope,
 };
 use super::terminal::ChatTerminalRegistry;
+use crate::native_dialogs::on_dialog_thread;
 use chrono::{SecondsFormat, Utc};
+use ganbaru_chat::repository::lifecycle::STALE_RUNNING_CLEANUP_SECONDS;
 use ganbaru_chat::repository::rebuild::rebuild_thread_projections;
 use ganbaru_chat::runtime::ChatRuntimeRegistry;
 use ganbaru_chat_contracts::models::{
@@ -26,6 +28,8 @@ const STOP_CONFIRMATION: &str = "STOP ALL CHAT PROCESSES";
 const REBUILD_CONFIRMATION: &str = "REBUILD CHAT PROJECTIONS";
 const MAINTENANCE_TIMEOUT: Duration = Duration::from_secs(8);
 const DIAGNOSTIC_SCHEMA_VERSION: u32 = 1;
+const MAX_PROTOCOL_LABEL_BYTES: usize = 128;
+const REDACTED_PROTOCOL_LABEL: &str = "[redacted]";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -131,16 +135,16 @@ pub async fn chat_export_redacted_diagnostics(
     let pool = connect_pool(app.clone(), db_url).await?;
     delete_expired_diagnostics(&pool).await?;
     let export = build_redacted_export(&pool).await?;
-    let Some(path) = app
+    let picker = app
         .dialog()
         .file()
         .set_title(picker_title)
         .set_file_name("ganbaru-chat-diagnostics.json")
-        .add_filter("JSON", &["json"])
-        .blocking_save_file()
-        .map(dialog_path)
-        .transpose()?
-    else {
+        .add_filter("JSON", &["json"]);
+    let picked = on_dialog_thread(move || picker.blocking_save_file())
+        .await
+        .map_err(|message| ChatError::new(ChatErrorCode::Internal, message, true))?;
+    let Some(path) = picked.map(dialog_path).transpose()? else {
         return Ok(false);
     };
     write_restrictive(&path, export.as_bytes())?;
@@ -216,11 +220,20 @@ pub fn attach_opt_in_diagnostic<R: tauri::Runtime>(
     let preferences = read_active_device_scope(app)
         .map_err(device_state_error)?
         .diagnostics;
+    attach_diagnostic_with_preferences(&preferences, event)
+}
+
+/// Replaces any diagnostic on `event` with a redacted one when capture is enabled, and clears it
+/// otherwise, so nothing a provider adapter attached survives without the device's opt-in.
+fn attach_diagnostic_with_preferences(
+    preferences: &ChatDiagnosticPreferences,
+    event: &mut ganbaru_chat_contracts::events::CanonicalRuntimeEvent,
+) -> ChatResult<Option<ganbaru_chat_contracts::models::UtcTimestamp>> {
     if !preferences.capture_enabled {
         event.redacted_diagnostic = None;
         return Ok(None);
     }
-    validate_preferences(&preferences)?;
+    validate_preferences(preferences)?;
     let event_type = serde_json::to_value(&event.event)
         .ok()
         .and_then(|value| {
@@ -297,13 +310,23 @@ async fn read_diagnostics(
             .await
             .map_err(persistence_error)?;
     let cleanup_row = sqlx::query(
-        "SELECT
-            COALESCE(SUM(CASE WHEN cleanup_kind = 'checkpoint_ref' AND state IN ('pending', 'running') THEN 1 ELSE 0 END), 0) AS pending,
-            COALESCE(SUM(CASE WHEN cleanup_kind = 'checkpoint_ref' AND state = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
-            COALESCE(SUM(CASE WHEN cleanup_kind = 'attachment_file' AND state IN ('pending', 'running') THEN 1 ELSE 0 END), 0) AS attachment_pending,
-            COALESCE(SUM(CASE WHEN cleanup_kind = 'attachment_file' AND state = 'failed' THEN 1 ELSE 0 END), 0) AS attachment_failed
-         FROM chat_cleanup_jobs",
-    ).fetch_one(pool).await.map_err(persistence_error)?;
+        "WITH jobs AS (
+            SELECT cleanup_kind,
+                CASE WHEN state = 'running' AND unixepoch(updated_at) <= unixepoch('now') - ?
+                     THEN 'failed' ELSE state END AS effective_state
+            FROM chat_cleanup_jobs
+         )
+         SELECT
+            COALESCE(SUM(CASE WHEN cleanup_kind = 'checkpoint_ref' AND effective_state IN ('pending', 'running') THEN 1 ELSE 0 END), 0) AS pending,
+            COALESCE(SUM(CASE WHEN cleanup_kind = 'checkpoint_ref' AND effective_state = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+            COALESCE(SUM(CASE WHEN cleanup_kind = 'attachment_file' AND effective_state IN ('pending', 'running') THEN 1 ELSE 0 END), 0) AS attachment_pending,
+            COALESCE(SUM(CASE WHEN cleanup_kind = 'attachment_file' AND effective_state = 'failed' THEN 1 ELSE 0 END), 0) AS attachment_failed
+         FROM jobs",
+    )
+    .bind(STALE_RUNNING_CLEANUP_SECONDS)
+    .fetch_one(pool)
+    .await
+    .map_err(persistence_error)?;
     let (live_provider_processes, active_turns) = runtimes.process_counts()?;
     let mut healthy_provider_probes = 0u64;
     let mut unhealthy_provider_probes = 0u64;
@@ -434,18 +457,34 @@ fn redacted_protocol_envelope(reference: Option<&VersionedJson>) -> Value {
     let retained = ["method", "source", "type"]
         .into_iter()
         .filter_map(|key| {
-            fields.get(key).and_then(Value::as_str).and_then(|value| {
-                let normalized = value.to_ascii_lowercase();
-                let safe = value.len() <= 256
-                    && !value.chars().any(char::is_control)
-                    && !normalized.contains("bearer ")
-                    && !normalized.contains("/home/")
-                    && !normalized.contains("\\users\\");
-                safe.then(|| (key.to_string(), Value::String(value.to_string())))
+            fields.get(key).and_then(Value::as_str).map(|value| {
+                let label = if is_protocol_label(value) {
+                    value
+                } else {
+                    REDACTED_PROTOCOL_LABEL
+                };
+                (key.to_string(), Value::String(label.to_string()))
             })
         })
         .collect();
     Value::Object(retained)
+}
+
+/// Accepts only protocol method and event names such as `item/commandExecution/outputDelta`.
+///
+/// Anything outside this grammar (spaces, absolute or drive paths, URLs, backslashes, quotes, or
+/// long values) may carry provider output, paths, or credentials and is stored as a fixed marker.
+fn is_protocol_label(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let drive_path = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    !value.is_empty()
+        && value.len() <= MAX_PROTOCOL_LABEL_BYTES
+        && !value.starts_with('/')
+        && !value.contains("//")
+        && !drive_path
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'/' | b':' | b'-')
+        })
 }
 
 fn require_confirmation(value: &str, expected: &str) -> ChatResult<()> {
@@ -555,6 +594,54 @@ mod tests {
     const SENTINEL_SECRET: &str = "ganbaru-chat-secret-sentinel-diagnostics-93c7";
 
     #[test]
+    fn provider_diagnostics_are_kept_only_with_the_device_opt_in() {
+        use ganbaru_chat_contracts::events::{CanonicalEvent, TurnAbortedEvent};
+        let mut event = crate::chat::tests::repository::canonical_request(
+            "event:diagnostic",
+            Some("turn-1"),
+            CanonicalEvent::TurnAborted(TurnAbortedEvent {
+                state: ganbaru_chat_contracts::models::ChatTurnState::Failed,
+                reason: "stopped".to_string(),
+                recoverable: false,
+            }),
+        )
+        .runtime;
+        event.provider_reference = Some(VersionedJson {
+            schema_version: 1,
+            value: json!({ "method": "turn/started", "payload": SENTINEL_SECRET }),
+        });
+        let provider_attached = VersionedJson {
+            schema_version: 1,
+            value: json!({ "raw": SENTINEL_SECRET }),
+        };
+
+        event.redacted_diagnostic = Some(provider_attached.clone());
+        let disabled = ChatDiagnosticPreferences {
+            capture_enabled: false,
+            retention_days: 7,
+        };
+        assert_eq!(
+            attach_diagnostic_with_preferences(&disabled, &mut event).unwrap(),
+            None
+        );
+        assert_eq!(event.redacted_diagnostic, None);
+
+        event.redacted_diagnostic = Some(provider_attached);
+        let enabled = ChatDiagnosticPreferences {
+            capture_enabled: true,
+            retention_days: 7,
+        };
+        assert!(
+            attach_diagnostic_with_preferences(&enabled, &mut event)
+                .unwrap()
+                .is_some()
+        );
+        let diagnostic = serde_json::to_string(&event.redacted_diagnostic).unwrap();
+        assert!(diagnostic.contains("turn/started"));
+        assert!(!diagnostic.contains(SENTINEL_SECRET));
+    }
+
+    #[test]
     fn maintenance_confirmations_and_retention_are_exact() {
         assert!(require_confirmation(STOP_CONFIRMATION, STOP_CONFIRMATION).is_ok());
         assert!(require_confirmation("stop all chat processes", STOP_CONFIRMATION).is_err());
@@ -589,6 +676,41 @@ mod tests {
         assert!(redacted.contains("item/commandExecution/outputDelta"));
         assert!(!redacted.contains(SENTINEL_SECRET));
         assert!(!redacted.contains("/home/"));
+    }
+
+    #[test]
+    fn protocol_labels_outside_the_label_grammar_become_a_fixed_marker() {
+        for label in [
+            "/Users/person/project",
+            "C:/Users/person",
+            "C:\\Users\\person",
+            "~/project",
+            "file:///home/person",
+            "https://example.com/token",
+            "token=abc",
+            "two words",
+            "",
+            &"a".repeat(MAX_PROTOCOL_LABEL_BYTES + 1),
+        ] {
+            let reference = VersionedJson {
+                schema_version: 1,
+                value: json!({ "source": label }),
+            };
+            assert_eq!(
+                redacted_protocol_envelope(Some(&reference)),
+                json!({ "source": REDACTED_PROTOCOL_LABEL }),
+                "{label}"
+            );
+        }
+        for label in [
+            "item/commandExecution/outputDelta",
+            "acp/session_update/agent_message_chunk",
+            "claude/stream/content_block_delta",
+            "session.updated",
+            "mcp:tool-call",
+        ] {
+            assert!(is_protocol_label(label), "{label}");
+        }
     }
 
     #[test]

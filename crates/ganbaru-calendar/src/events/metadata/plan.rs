@@ -7,6 +7,7 @@ use super::copy::copied_id;
 use super::rows::*;
 use super::{Metadata, revision};
 use crate::recurrence::canonical::{EditGeometryPlan, EditKind, PlannedSeries};
+use crate::value_bound::{OverrideColumns, ValueSize};
 use chrono::{DateTime, SecondsFormat};
 use serde::Serialize;
 
@@ -35,6 +36,9 @@ impl PreparedMutation {
 
     /// Task scheduling shares the complete aggregate creation budget.
     pub(in crate::events) fn creations(metadata: Vec<Metadata>) -> Result<Self, String> {
+        for source in &metadata {
+            source.check_value_bounds()?;
+        }
         if metadata.iter().map(Metadata::record_count).sum::<usize>() > MAX_WRITE_ROWS {
             return Err("Calendar creation exceeds its row budget".into());
         }
@@ -119,6 +123,12 @@ impl PreparedMutation {
     }
 }
 
+/// Advances an event sequence, holding at the top value. Sync merges sequences by
+/// maximum, so a replicated top value cannot be lowered and must not block edits.
+fn next_sequence(sequence: i64) -> i64 {
+    sequence.saturating_add(1)
+}
+
 struct MeasuredBytes(usize);
 impl Write for MeasuredBytes {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -142,6 +152,7 @@ impl Metadata {
         existing: bool,
     ) -> Result<PreparedMutation, String> {
         self.reserve_deletion_copies(1)?;
+        self.check_value_bounds()?;
         let id = self
             .events
             .first()
@@ -205,10 +216,7 @@ impl Metadata {
         event.updated_at = DateTime::from_timestamp_millis(now_ms)
             .ok_or("Calendar deletion clock is invalid")?
             .to_rfc3339_opts(SecondsFormat::Millis, true);
-        event.sequence = event
-            .sequence
-            .checked_add(1)
-            .ok_or("Calendar sequence overflow")?;
+        event.sequence = next_sequence(event.sequence);
         let id = event.id.clone();
         metadata
             .overrides
@@ -222,8 +230,7 @@ impl Metadata {
         metadata.exdates = side
             .exceptions
             .iter()
-            .enumerate()
-            .map(|(index, date)| {
+            .map(|date| {
                 let existing = self.exdates.iter().find(|row| row.occurrence_date == *date);
                 Ok(Exdate {
                     id: existing
@@ -231,13 +238,13 @@ impl Metadata {
                         .unwrap_or_else(|| copied_id(&id, "exdate", date))?,
                     event_id: id.clone(),
                     occurrence_date: date.clone(),
-                    sort_order: index as i64,
                 })
             })
             .collect::<Result<_, String>>()?;
         metadata
             .rdates
             .retain(|row| side.rdates.contains(&row.occurrence_start));
+        metadata.check_value_bounds()?;
         Ok(PreparedMutation {
             sides: vec![PreparedSide {
                 metadata,
@@ -401,7 +408,106 @@ impl Metadata {
         {
             return Err("Prepared Calendar write exceeds its aggregate row budget".into());
         }
+        for side in &result.sides {
+            side.metadata.check_value_bounds()?;
+        }
         Ok(result)
+    }
+
+    /// Upper bound of this source event's encoded timing value: its timing columns, excluded
+    /// and added dates, and every override row with its extended properties.
+    pub(crate) fn timing_size(&self) -> ValueSize {
+        let mut size = ValueSize::default();
+        if let Some(event) = self.events.first() {
+            size.add_event(
+                &event.start_time,
+                &event.end_time,
+                &event.timezone,
+                event.rrule.as_deref(),
+                event.repeat_until.as_deref(),
+            );
+        }
+        for row in &self.exdates {
+            size.add_date_row(Some(&row.id), &row.occurrence_date);
+        }
+        for row in &self.rdates {
+            size.add_date_row(Some(&row.id), &row.occurrence_start);
+        }
+        for row in &self.overrides {
+            size.add_override(&OverrideColumns {
+                id: &row.id,
+                recurrence_id: &row.recurrence_id,
+                recurrence_range: row.recurrence_range.as_deref(),
+                title: row.title.as_deref(),
+                start_time: row.start_time.as_deref(),
+                end_time: row.end_time.as_deref(),
+                description: row.description.as_deref(),
+                location: row.location.as_deref(),
+                url: row.url.as_deref(),
+                color: row.color,
+                status: row.status.as_deref(),
+                transparency: row.transparency.as_deref(),
+                visibility: row.visibility.as_deref(),
+                icalendar_component_id: row.icalendar_component_id.as_deref(),
+            });
+        }
+        for row in &self.override_properties {
+            size.add_override_property(
+                Some(&row.id),
+                &row.override_id,
+                &row.property_key,
+                &row.property_value,
+            );
+        }
+        size
+    }
+
+    /// Refuses a source whose timing value, or any other value it replicates as one group of
+    /// rows, is over the sync bound. Archive groups copy these rows, so they stay within it too.
+    pub(crate) fn check_value_bounds(&self) -> Result<(), String> {
+        self.timing_size().check()?;
+        for (name, size) in self.group_sizes() {
+            size.check_group(name)?;
+        }
+        Ok(())
+    }
+
+    /// Upper bounds of every value this source replicates as one group of rows apart from its
+    /// timing, by group name. Music assignments and task links are archived as groups.
+    pub(crate) fn group_sizes(&self) -> [(&'static str, ValueSize); 9] {
+        fn sized<'a, R: 'a>(
+            rows: impl IntoIterator<Item = &'a R>,
+            charge: impl Fn(&R, &mut ValueSize),
+        ) -> ValueSize {
+            let mut size = ValueSize::default();
+            for row in rows {
+                charge(row, &mut size);
+            }
+            size
+        }
+        let mut focus = sized(&self.focus_configs, FocusConfig::charge);
+        focus.absorb(&sized(&self.count_rhythms, CountRhythm::charge));
+        focus.absorb(&sized(&self.sequence_steps, SequenceStep::charge));
+        [
+            ("alarms", sized(&self.alarms, Alarm::charge)),
+            ("attendees", sized(&self.attendees, Attendee::charge)),
+            ("organizer", sized(&self.organizers, Organizer::charge)),
+            ("categories", sized(&self.categories, Category::charge)),
+            (
+                "notifications",
+                sized(&self.notifications, Notification::charge),
+            ),
+            (
+                "extended properties",
+                sized(&self.properties, Property::charge),
+            ),
+            ("Focus settings", focus),
+            (
+                "music assignments",
+                sized(&self.music_assignments, MusicAssignment::charge),
+            ),
+            ("task links", sized(&self.task_links, TaskLink::charge)),
+        ]
     }
 
     fn prepare_side(
@@ -434,10 +540,7 @@ impl Metadata {
         event.all_day = i64::from(series.all_day);
         event.updated_at.clone_from(&now);
         event.sequence = if existing {
-            source
-                .sequence
-                .checked_add(1)
-                .ok_or("Calendar sequence overflow")?
+            next_sequence(source.sequence)
         } else {
             0
         };
@@ -478,13 +581,11 @@ impl Metadata {
             .fields
             .exceptions
             .iter()
-            .enumerate()
-            .map(|(index, date)| {
+            .map(|date| {
                 Ok(Exdate {
                     id: copied_id(target, "exdate", date)?,
                     event_id: source.id.clone(),
                     occurrence_date: date.clone(),
-                    sort_order: index as i64,
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -492,13 +593,11 @@ impl Metadata {
             .fields
             .rdates
             .iter()
-            .enumerate()
-            .map(|(index, value)| {
+            .map(|value| {
                 Ok(Rdate {
                     id: copied_id(target, "rdate", value)?,
                     event_id: source.id.clone(),
                     occurrence_start: value.clone(),
-                    sort_order: index as i64,
                 })
             })
             .collect::<Result<_, String>>()?;

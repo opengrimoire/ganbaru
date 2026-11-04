@@ -1,7 +1,7 @@
 //! Authorized Tauri commands for the local Git workspace service.
 
-use super::workspace::WorkingFolderAuthorizationOperation;
 use super::workspace::mutation::ChatWorkspaceMutationRegistry;
+use super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation};
 use crate::db;
 use ganbaru_chat::git::{self, GitStatusRead};
 use ganbaru_chat_contracts::models::{
@@ -27,14 +27,16 @@ pub async fn chat_git_status(
     working_folder_id: ProjectWorkingFolderId,
     execution_environment_id: Option<String>,
 ) -> ChatResult<GitStatusRead> {
-    let root = authorized_root(
+    let authorized = authorized_folder(
         &app,
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::Git,
     )
     .await?;
-    git::status(&root).await
+    let folder = authorized.git_folder();
+    git::status(folder).await
 }
 
 #[tauri::command]
@@ -47,16 +49,18 @@ pub async fn chat_git_stage(
     execution_environment_id: Option<String>,
 ) -> ChatResult<GitStatusRead> {
     validate_paths(&paths)?;
-    let root = authorized_root(
+    let authorized = authorized_folder(
         &app,
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
-    let _guard = mutations.try_mutation(&root)?;
-    git::stage(&root, &paths).await?;
-    git::status(&root).await
+    let folder = authorized.git_folder();
+    let _guard = mutations.try_mutation(&authorized.canonical_path)?;
+    git::stage(folder, &paths).await?;
+    git::status(folder).await
 }
 
 #[tauri::command]
@@ -69,16 +73,18 @@ pub async fn chat_git_unstage(
     execution_environment_id: Option<String>,
 ) -> ChatResult<GitStatusRead> {
     validate_paths(&paths)?;
-    let root = authorized_root(
+    let authorized = authorized_folder(
         &app,
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
-    let _guard = mutations.try_mutation(&root)?;
-    git::unstage(&root, &paths).await?;
-    git::status(&root).await
+    let folder = authorized.git_folder();
+    let _guard = mutations.try_mutation(&authorized.canonical_path)?;
+    git::unstage(folder, &paths).await?;
+    git::status(folder).await
 }
 
 #[tauri::command]
@@ -97,16 +103,18 @@ pub async fn chat_git_commit(
             "Commit message is invalid",
         ));
     }
-    let root = authorized_root(
+    let authorized = authorized_folder(
         &app,
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
-    let _guard = mutations.try_mutation(&root)?;
-    git::commit(&root, message).await?;
-    git::status(&root).await
+    let folder = authorized.git_folder();
+    let _guard = mutations.try_mutation(&authorized.canonical_path)?;
+    git::commit(folder, message).await?;
+    git::status(folder).await
 }
 
 #[tauri::command]
@@ -119,16 +127,18 @@ pub async fn chat_git_fetch(
     execution_environment_id: Option<String>,
 ) -> ChatResult<GitStatusRead> {
     let remote = remote.as_deref().map(validate_ref_name).transpose()?;
-    let root = authorized_root(
+    let authorized = authorized_folder(
         &app,
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
-    let _guard = mutations.try_mutation(&root)?;
-    git::fetch(&root, remote).await?;
-    git::status(&root).await
+    let folder = authorized.git_folder();
+    let _guard = mutations.try_mutation(&authorized.canonical_path)?;
+    git::fetch(folder, remote).await?;
+    git::status(folder).await
 }
 
 #[tauri::command]
@@ -143,16 +153,18 @@ pub async fn chat_git_pull(
 ) -> ChatResult<GitStatusRead> {
     let remote = remote.as_deref().map(validate_ref_name).transpose()?;
     let branch = branch.as_deref().map(validate_ref_name).transpose()?;
-    let root = authorized_root(
+    let authorized = authorized_folder(
         &app,
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
-    let _guard = mutations.try_mutation(&root)?;
-    git::pull(&root, remote, branch).await?;
-    git::status(&root).await
+    let folder = authorized.git_folder();
+    let _guard = mutations.try_mutation(&authorized.canonical_path)?;
+    git::pull(folder, remote, branch).await?;
+    git::status(folder).await
 }
 
 #[tauri::command]
@@ -179,16 +191,18 @@ pub async fn chat_git_push(
         .as_deref()
         .map(validate_ref_name)
         .transpose()?;
-    let root = authorized_root(
+    let authorized = authorized_folder(
         &app,
         &db_url,
         &request.working_folder_id,
         request.execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
-    let _guard = mutations.try_mutation(&root)?;
-    git::push(&root, remote, branch, request.force_with_lease).await?;
-    git::status(&root).await
+    let folder = authorized.git_folder();
+    let _guard = mutations.try_mutation(&authorized.canonical_path)?;
+    git::push(folder, remote, branch, request.force_with_lease).await?;
+    git::status(folder).await
 }
 
 #[tauri::command]
@@ -204,22 +218,24 @@ pub async fn chat_git_initialize(
         .as_deref()
         .map(validate_ref_name)
         .transpose()?;
-    let root = authorized_root(
+    let authorized = authorized_folder(
         &app,
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
-    let _guard = mutations.try_mutation(&root)?;
-    git::initialize(&root, initial_branch).await?;
+    let folder = authorized.git_folder();
+    let _guard = mutations.try_mutation(&authorized.canonical_path)?;
+    git::initialize(folder, initial_branch).await?;
     super::workspace::commands::reconcile_working_folder_binding_for_id(
         &app,
         &db_url,
         &working_folder_id,
     )
     .await?;
-    git::status(&root).await
+    git::status(folder).await
 }
 
 #[tauri::command]
@@ -234,15 +250,17 @@ pub async fn chat_git_clone(
 ) -> ChatResult<GitStatusRead> {
     validate_remote_url(&remote_url)?;
     let remote_name = validate_ref_name(&remote_name)?;
-    let root = authorized_root(
+    let authorized = authorized_folder(
         &app,
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
-    let _guard = mutations.try_mutation(&root)?;
-    let mut entries = std::fs::read_dir(&root).map_err(|_| {
+    let folder = authorized.git_folder();
+    let _guard = mutations.try_mutation(&authorized.canonical_path)?;
+    let mut entries = std::fs::read_dir(&authorized.canonical_path).map_err(|_| {
         ChatError::new(
             ChatErrorCode::Permission,
             "Working folder could not be inspected before cloning",
@@ -267,14 +285,14 @@ pub async fn chat_git_clone(
             true,
         ));
     }
-    git::clone_into(&root, &remote_url, remote_name).await?;
+    git::clone_into(folder, &remote_url, remote_name).await?;
     super::workspace::commands::reconcile_working_folder_binding_for_id(
         &app,
         &db_url,
         &working_folder_id,
     )
     .await?;
-    git::status(&root).await
+    git::status(folder).await
 }
 
 #[tauri::command]
@@ -295,15 +313,17 @@ pub async fn chat_git_discard(
         ));
     }
     validate_paths(&paths)?;
-    let root = authorized_root(
+    let authorized = authorized_folder(
         &app,
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
-    let _guard = mutations.try_mutation(&root)?;
-    let current = git::status(&root).await?;
+    let folder = authorized.git_folder();
+    let _guard = mutations.try_mutation(&authorized.canonical_path)?;
+    let current = git::status(folder).await?;
     let selected = paths
         .iter()
         .map(String::as_str)
@@ -327,16 +347,17 @@ pub async fn chat_git_discard(
             true,
         ));
     }
-    git::discard_paths(&root, &tracked, &untracked).await?;
-    git::status(&root).await
+    git::discard_paths(folder, &tracked, &untracked).await?;
+    git::status(folder).await
 }
 
-async fn authorized_root(
+async fn authorized_folder(
     app: &tauri::AppHandle,
     db_url: &str,
     working_folder_id: &ProjectWorkingFolderId,
     execution_environment_id: Option<&str>,
-) -> ChatResult<std::path::PathBuf> {
+    operation: WorkingFolderAuthorizationOperation,
+) -> ChatResult<AuthorizedWorkingFolder> {
     let pool = db::connect_sqlite(app.clone(), db_url.to_string())
         .await
         .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "open Chat database", true))?;
@@ -344,17 +365,16 @@ async fn authorized_root(
         app,
         &pool,
         working_folder_id,
-        WorkingFolderAuthorizationOperation::Git,
+        operation,
     )
     .await?;
-    Ok(super::execution_environment::resolve_environment_workspace(
+    super::execution_environment::resolve_environment_workspace(
         app,
         &pool,
         authorized,
         execution_environment_id,
     )
-    .await?
-    .canonical_path)
+    .await
 }
 
 fn validate_paths(paths: &[String]) -> ChatResult<()> {

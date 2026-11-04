@@ -19,6 +19,7 @@ import {
   projectDefaultPomodoroConfig,
 } from "$lib/projects/default-pomodoro";
 import {
+  createdProjectColorForSave,
   projectAllDayDefaultForSelection,
   projectDefaultEventTitleForSelection,
   projectDurationDefaultForSelection,
@@ -77,6 +78,8 @@ export class EventPanelSessionController {
   endDate = $state("");
   color = $state<EventColor>();
   projectId = $state<string>();
+  /** Project created from this panel's picker; it takes the event color on save while it has none. */
+  createdProjectId = $state<string>();
   environmentId = $state<string>();
   playlistId = $state<string>();
   description = $state("");
@@ -117,6 +120,11 @@ export class EventPanelSessionController {
   lastFullKey = "";
   lastHeavyAppliedKey = "";
   private heavyLoadGeneration = 0;
+  private heavyLoadFailedState = $state(false);
+  private titleShortened = $state(false);
+  private locationShortened = $state(false);
+  private titleRestored = false;
+  private locationRestored = false;
 
   readonly dateTime: EventPanelDateTimeController;
 
@@ -129,6 +137,16 @@ export class EventPanelSessionController {
       timeFormat: options.timeFormat,
       emitChange: () => this.emitChange(),
     });
+  }
+
+  /** Whether the title draft is a shortened window value the full event has yet to replace. */
+  get titleEditBlocked(): boolean {
+    return this.titleShortened;
+  }
+
+  /** Whether the location draft is a shortened window value the full event has yet to replace. */
+  get locationEditBlocked(): boolean {
+    return this.locationShortened;
   }
 
   get timedSectionsVisible(): boolean {
@@ -217,15 +235,20 @@ export class EventPanelSessionController {
 
   initializeEdit(event: CalendarEvent): void {
     this.title = event.title;
+    this.titleShortened = event.windowTitleShortened === true;
+    this.titleRestored = false;
     this.assignTimes(event.start, event.end);
     this.color = event.color;
     this.projectId = event.projectId;
+    this.createdProjectId = undefined;
     this.environmentId = event.environmentId;
     this.playlistId = event.playlistId;
     this.recurrence = event.recurrence ? { ...event.recurrence } : undefined;
     this.allDay = event.allDay ?? false;
     this.dateTime.resetAllDayStash();
     this.location = event.location ?? "";
+    this.locationShortened = event.windowLocationShortened === true;
+    this.locationRestored = false;
     this.transparency = event.transparency ?? "opaque";
     this.eventStatus = event.status ?? "confirmed";
     this.rdate = event.rdate;
@@ -252,10 +275,15 @@ export class EventPanelSessionController {
   ): void {
     const initialStart = createData.start ?? fallbackStart;
     const initialEnd = createData.end ?? fallbackEnd;
+    this.titleShortened = false;
+    this.locationShortened = false;
+    this.titleRestored = false;
+    this.locationRestored = false;
     this.title = createData.title ?? "";
     this.assignTimes(initialStart, initialEnd);
     this.color = createData.color;
     this.projectId = createData.projectId;
+    this.createdProjectId = undefined;
     this.environmentId = createData.environmentId;
     this.playlistId = createData.playlistId;
     this.description = createData.description ?? "";
@@ -284,6 +312,7 @@ export class EventPanelSessionController {
     this.heavyLoadGeneration += 1;
     this.lastFullKey = openedEventId;
     this.fullEvent = null;
+    this.heavyLoadFailedState = false;
     return {
       generation: this.heavyLoadGeneration,
       openedEventId,
@@ -295,17 +324,54 @@ export class EventPanelSessionController {
     this.heavyLoadGeneration += 1;
     this.lastFullKey = "";
     this.fullEvent = null;
+    this.heavyLoadFailedState = false;
+  }
+
+  /** Increments on each retry request so the panel restarts the full load for the same event. */
+  heavyLoadAttempt = $state(0);
+
+  /** Whether the current full load failed, which leaves the heavy sections and any shortened text unavailable. */
+  get heavyLoadFailed(): boolean {
+    return this.heavyLoadFailedState;
+  }
+
+  /** Records a failed full load when the token is still current. */
+  failHeavyLoad(token: EventPanelHeavyLoadToken): boolean {
+    if (!this.isCurrentHeavyLoad(token)) return false;
+    this.heavyLoadFailedState = true;
+    return true;
+  }
+
+  /** Requests a new full load for the open event. */
+  retryHeavyLoad(): void {
+    this.heavyLoadFailedState = false;
+    this.lastFullKey = "";
+    this.heavyLoadAttempt += 1;
+  }
+
+  private isCurrentHeavyLoad(token: EventPanelHeavyLoadToken): boolean {
+    return token.generation === this.heavyLoadGeneration && token.openedEventId === this.lastFullKey;
   }
 
   completeHeavyLoad(token: EventPanelHeavyLoadToken, fullEvent: CalendarEvent): boolean {
-    if (token.generation !== this.heavyLoadGeneration
-      || token.openedEventId !== this.lastFullKey) return false;
+    if (!this.isCurrentHeavyLoad(token)) return false;
     this.fullEvent = fullEvent;
     this.applyHeavyEvent(fullEvent, this.projectId !== token.projectId);
     return true;
   }
 
   applyHeavyEvent(fullEvent: CalendarEvent, preserveProjectSelection = false): void {
+    if (this.titleShortened) {
+      this.titleRestored = fullEvent.title !== this.title;
+      this.title = fullEvent.title;
+    }
+    this.titleShortened = false;
+    const fullLocation = fullEvent.location ?? "";
+    if (this.locationShortened) {
+      this.locationRestored = fullLocation !== this.location;
+      this.location = fullLocation;
+    }
+    this.locationShortened = false;
     this.description = fullEvent.description ?? "";
     if (!preserveProjectSelection) {
       this.projectId = fullEvent.projectId;
@@ -329,6 +395,22 @@ export class EventPanelSessionController {
     this.assignTimes(start, end);
   }
 
+  /** Selects a project just created from the picker, keeping the event color the person already chose. */
+  handleProjectCreated(projectId: string): void {
+    this.createdProjectId = projectId;
+    this.handleProjectSelect(projectId);
+  }
+
+  /** The color to give the panel's created project after a save of `saved`, or null to leave it unchanged. */
+  createdProjectColorForSave(saved: { projectId?: string; color?: EventColor }): EventColor | null {
+    return createdProjectColorForSave({
+      createdProjectId: this.createdProjectId,
+      projectId: saved.projectId,
+      eventColor: saved.color,
+      projectColor: this.options.projects.projectById(saved.projectId)?.color,
+    });
+  }
+
   handleProjectSelect(nextProjectId: string | undefined): void {
     this.projectId = nextProjectId;
     const selectedProject = this.options.projects.projectById(nextProjectId);
@@ -342,7 +424,9 @@ export class EventPanelSessionController {
       currentTitle: this.title,
       defaultEventName: effectiveProjectDefaultEventName(selectedProject),
     });
-    this.color = selectedProject.color;
+    if (nextProjectId !== this.createdProjectId || selectedProject.color !== undefined) {
+      this.color = selectedProject.color;
+    }
     if (projectAllDayDefaultForSelection({
       mode: this.options.mode(),
       allDay: this.allDay,
@@ -426,8 +510,14 @@ export class EventPanelSessionController {
     return buildEventPanelChangesPayload(this.currentPayloadInput());
   }
 
+  /** Restored text was uneditable until now, so it joins the baseline with the heavy fields. */
   heavyPayload(): Partial<CalendarEvent> {
-    return buildEventPanelHeavyInitPayload(this.currentPayloadInput());
+    const changes = this.changesPayload();
+    return {
+      ...buildEventPanelHeavyInitPayload(this.currentPayloadInput()),
+      ...(this.titleRestored ? { title: changes.title } : {}),
+      ...(this.locationRestored ? { location: changes.location } : {}),
+    };
   }
 
   saveData(): PanelSaveData {

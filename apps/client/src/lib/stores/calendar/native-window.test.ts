@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import type { DbCalendarEvent } from "$lib/calendar/db-rows";
+import { WINDOW_TEXT_CHARS, type DbCalendarEvent } from "$lib/calendar/db-rows";
 import { loadNativeCalendarWindow, mapNativeCalendarWindow, parseNativeCalendarWindow } from "./native-window";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -26,6 +26,8 @@ function snapshot() {
       start_time: "2024-03-11T13:00:00.000Z", end_time: "2024-03-11T14:00:00.000Z", override_id: null,
     }],
     diagnostics: [],
+    omitted_template_count: 0,
+    shortened_text: [] as { event_id: string; title: boolean; location: boolean }[],
   };
 }
 
@@ -94,8 +96,38 @@ describe("native Calendar window boundary", () => {
     (input: ReturnType<typeof snapshot>) => ({ ...input, occurrences: [{ ...input.occurrences[0], recurrence_date: "2024-02-30" }] }),
     (input: ReturnType<typeof snapshot>) => ({ ...input, attendees: [{ event_id: "foreign", email: "guest@example.test", status: "accepted" }] }),
     (input: ReturnType<typeof snapshot>) => ({ ...input, total_event_count: 0 }),
+    (input: ReturnType<typeof snapshot>) => ({ ...input, shortened_text: [{ event_id: "foreign", title: true, location: false }] }),
+    (input: ReturnType<typeof snapshot>) => ({ ...input, shortened_text: [{ event_id: "series", title: 1, location: false }] }),
+    (input: ReturnType<typeof snapshot>) => ({ ...input, shortened_text: undefined }),
   ])("rejects invalid child ownership, identities, dates, or ranges before rendering", (corrupt) => {
     expect(() => parseNativeCalendarWindow(corrupt(snapshot()))).toThrow();
+  });
+
+  it("marks only the values the native window reports as shortened", () => {
+    const long = "T".repeat(WINDOW_TEXT_CHARS);
+    const input = { ...snapshot(), events: [{ ...event(), title: long, location: long }],
+      shortened_text: [{ event_id: "series", title: true, location: true }] };
+    const mapped = mapNativeCalendarWindow(input, "UTC");
+    expect(mapped.sourceEvents[0]).toMatchObject({ windowTitleShortened: true, windowLocationShortened: true });
+    expect(mapped.windowEvents[0]).toMatchObject({ windowTitleShortened: true, windowLocationShortened: true });
+
+    const whole = mapNativeCalendarWindow({ ...input, shortened_text: [] }, "UTC");
+    expect(whole.sourceEvents[0]).not.toHaveProperty("windowTitleShortened");
+    expect(whole.windowEvents[0]).not.toHaveProperty("windowLocationShortened");
+  });
+
+  it("clears the title marker of an occurrence whose override supplies the title", () => {
+    const input = snapshot();
+    const override = {
+      id: "renamed", parent_event_id: "series", recurrence_id: "2024-03-11", recurrence_range: null,
+      title: "T".repeat(WINDOW_TEXT_CHARS), start_time: null, end_time: null, color: null, status: null, transparency: null,
+    };
+    const mapped = mapNativeCalendarWindow({ ...input, overrides: [override],
+      occurrences: [{ ...input.occurrences[0], override_id: "renamed" }],
+      shortened_text: [{ event_id: "series", title: true, location: true }] }, "UTC").windowEvents[0];
+    expect(mapped.title).toBe(override.title);
+    expect(mapped).not.toHaveProperty("windowTitleShortened");
+    expect(mapped.windowLocationShortened).toBe(true);
   });
 
   it("retains explicit unsupported-projection diagnostics with canonical rows", () => {
@@ -104,5 +136,24 @@ describe("native Calendar window boundary", () => {
     expect(mapped.windowEvents).toEqual([]);
     expect(mapped.sourceEvents).toHaveLength(1);
     expect(mapped.diagnostics).toEqual(input.diagnostics);
+  });
+
+  it.each([-1, 1.5, "3", null, undefined])("rejects an omitted template count of %s", (count) => {
+    expect(() => parseNativeCalendarWindow(JSON.stringify({ ...snapshot(), omitted_template_count: count })))
+      .toThrow();
+  });
+
+  it("parses a window at the native text budget with its omitted template count", () => {
+    const events = Array.from({ length: 10_000 }, (_, index) => ({
+      ...event(), id: `event-${index}`, rrule: null, title: "T".repeat(WINDOW_TEXT_CHARS), location: "L".repeat(653),
+    }));
+    const occurrences = events.map((row) => ({
+      template_id: row.id, id: row.id, recurring_parent_id: null, recurrence_date: "2024-03-09",
+      start_time: "2024-03-09T14:00:00.000Z", end_time: "2024-03-09T15:00:00.000Z", override_id: null,
+    }));
+    const input = { ...snapshot(), events, occurrences, total_event_count: 10_003, omitted_template_count: 3 };
+    const mapped = mapNativeCalendarWindow(input, "UTC");
+    expect(mapped.windowEvents).toHaveLength(10_000);
+    expect(mapped.omittedTemplateCount).toBe(3);
   });
 });

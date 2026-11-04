@@ -4,13 +4,13 @@
 
 use std::collections::HashMap;
 
-use ganbaru_sync_contracts::{GroupId, GroupMask, Hlc, TableId, Value, WriterId};
-use sqlx::{Connection, SqliteConnection};
+use ganbaru_sync_contracts::{GroupId, GroupMask, Hlc, SpaceId, TableId, Value, WriterId};
+use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
 use crate::error::{SyncResult, corrupt};
 use crate::merge::{self, RowState, table_param};
 use crate::seal::force_capture;
-use crate::{Engine, SpaceContext, SyncError, log, sql};
+use crate::{Engine, SyncError, log, sql};
 
 /// SQL expression for the open conflict mask of the `sync_rows` row aliased `r`: its groups in
 /// conflict, less the groups a local resolution forced for the next seal. A resolution waiting
@@ -53,7 +53,42 @@ pub struct ConflictDetail {
     pub versions: Vec<ConflictVersion>,
 }
 
+/// A live row with open conflicts and the competing versions of each conflicted group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenConflict {
+    /// Row key.
+    pub row_key: String,
+    /// Conflicted groups in manifest order.
+    pub groups: Vec<ConflictDetail>,
+}
+
 impl Engine {
+    /// Every live row of a table with open conflicts, by row key, each with the competing
+    /// versions of its conflicted groups. Domains present them without reading sync state
+    /// row by row.
+    pub async fn open_conflicts(
+        &self,
+        conn: &mut SqliteConnection,
+        space: SpaceId,
+        table: TableId,
+    ) -> SyncResult<Vec<OpenConflict>> {
+        if self.manifest().table(table).is_none() {
+            return Err(SyncError::InvalidRequest("unknown table"));
+        }
+        let rows = self.conflicts(conn, table).await?;
+        let mut open = Vec::with_capacity(rows.len());
+        for row in rows {
+            let groups = self
+                .conflict_details(conn, space, table, &row.row_key)
+                .await?;
+            open.push(OpenConflict {
+                row_key: row.row_key,
+                groups,
+            });
+        }
+        Ok(open)
+    }
+
     /// Live rows of a table with surfaced conflicts, by row key.
     pub async fn conflicts(
         &self,
@@ -64,7 +99,7 @@ impl Engine {
             "SELECT row_key, {OPEN_CONFLICT_MASK_SQL} AS open_mask FROM sync_rows r
              WHERE r.table_id = ? AND open_mask <> 0 ORDER BY row_key"
         );
-        let rows: Vec<(String, i64)> = sqlx::query_as(&sql)
+        let rows: Vec<(String, i64)> = sqlx::query_as(AssertSqlSafe(sql.as_str()))
             .bind(table_param(table))
             .fetch_all(&mut *conn)
             .await?;
@@ -83,7 +118,7 @@ impl Engine {
     pub async fn conflict_details(
         &self,
         conn: &mut SqliteConnection,
-        ctx: &SpaceContext,
+        space: SpaceId,
         table: TableId,
         key: &str,
     ) -> SyncResult<Vec<ConflictDetail>> {
@@ -93,7 +128,7 @@ impl Engine {
         let sql = format!(
             "SELECT {OPEN_CONFLICT_MASK_SQL} FROM sync_rows r WHERE r.table_id = ? AND r.row_key = ?"
         );
-        let mask: Option<i64> = sqlx::query_scalar(&sql)
+        let mask: Option<i64> = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
             .bind(table_param(table))
             .bind(key)
             .fetch_optional(&mut *conn)
@@ -102,12 +137,12 @@ impl Engine {
         if mask == GroupMask::EMPTY {
             return Ok(Vec::new());
         }
-        let devices: HashMap<WriterId, String> = log::writers(conn, ctx.space)
+        let devices: HashMap<WriterId, String> = log::writers(conn, space)
             .await?
             .into_iter()
             .map(|writer| (writer.id, writer.device_id))
             .collect();
-        let versions = merge::versions(conn, table, key).await?;
+        let versions = merge::versions(self, conn, table, key).await?;
         let winners = merge::winners(self, spec, &versions);
         let mut details = Vec::new();
         for group in spec.groups.iter().filter(|group| mask.contains(group.id)) {

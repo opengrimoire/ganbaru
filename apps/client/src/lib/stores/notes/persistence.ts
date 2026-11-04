@@ -1,13 +1,36 @@
-import { updateNotesBlock } from "$lib/api/notes";
+import { appendNotesBlockChildren, trashNotesBlock, updateNotesBlock } from "$lib/api/notes";
 import { isNotesEditConflict } from "$lib/api/notes/mutation";
-import { applyBlockUpdate } from "$lib/notes/blocks/factory";
-import type { NotesBlock, NotesBlockUpdate } from "$lib/notes/types";
+import { applyBlockUpdate, blockUpdateFromBlock } from "$lib/notes/blocks/factory";
+import { rebaseNotesBlockEdit } from "$lib/notes/editor/block-rebase";
+import { NotesHeldEditError } from "./held-edit-notice.svelte";
+import type { NotesBlock, NotesBlockUpdate, NotesBlockWrite } from "$lib/notes/types";
 
 interface PendingBlockSave {
   timer: ReturnType<typeof setTimeout>;
   update: NotesBlockUpdate;
   revision: number;
 }
+
+/** An unsaved block edit that cannot be replayed on the block's canonical content without the user choosing. */
+export interface NotesBlockEditConflict {
+  blockId: string;
+  /** The page the block was open on when its edit was held, so its canonical content is read from that page. */
+  pageId: string | null;
+  /** `text` when both sides changed the text differently; `removed` when the block was trashed or deleted elsewhere. */
+  kind: "text" | "removed";
+  /** The editor's unsaved content. */
+  mine: NotesBlockUpdate;
+  /** The canonical block, or `null` when it was removed. */
+  theirs: NotesBlock | null;
+}
+
+/**
+ * How the user settles a held block edit: keep the editor's content, take the canonical content, or keep the
+ * canonical block and insert the editor's content as a new block after it.
+ */
+export type NotesBlockConflictChoice = "mine" | "theirs" | "both";
+
+export { NotesHeldEditError };
 
 export interface NotesBlockPersistenceContext {
   reconcileCanonicalBlocks?: (blocks: readonly NotesBlock[]) => void;
@@ -19,6 +42,17 @@ export interface NotesBlockPersistenceContext {
   onCommitted?: () => void;
   /** Called when a queued write was refused because another window changed its base first. */
   onConflict?: () => void;
+  /**
+   * Reads one block's canonical content, or `null` when it is trashed or gone. With it, a refused save is replayed
+   * on the canonical content instead of being abandoned.
+   */
+  readCanonicalBlock?: (blockId: string, pageId: string | null) => Promise<NotesBlock | null>;
+  /** The page the editor shows now; a held edit keeps the page it was made on. */
+  currentPageId?: () => string | null;
+  /** Called when a refused save is held for the user to choose, and with `null` once that choice settles it. */
+  onBlockConflict?: (blockId: string, conflict: NotesBlockEditConflict | null) => void;
+  /** Called after a settled choice changed which blocks exist, so the page reloads its canonical tree. */
+  onCanonicalChanged?: () => void;
   debounceMs: number;
 }
 
@@ -36,6 +70,15 @@ export interface NotesBlockPersistence {
   discardPendingEditorWrites: () => void;
   enqueueEditorMutation: (mutation: () => Promise<void>) => Promise<void>;
   runBetweenWrites: <T>(read: () => Promise<T>) => Promise<T>;
+  /** The held conflict of a block, if its edit waits for the user to choose. */
+  readBlockConflict: (blockId: string) => NotesBlockEditConflict | undefined;
+  /**
+   * Throws {@link NotesHeldEditError} while any block edit waits for the user to choose.
+   *
+   * @throws NotesHeldEditError when an edit is held.
+   */
+  assertNoHeldEdits: () => void;
+  resolveBlockConflict: (blockId: string, choice: NotesBlockConflictChoice) => Promise<void>;
 }
 
 /**
@@ -54,6 +97,9 @@ export function createNotesBlockPersistence(
   const queuedMutations: Array<() => Promise<void>> = [];
   const dirtyBlocks = new Set<string>();
   const saveChains = new Map<string, Promise<void>>();
+  /** The canonical content each dirty block's edit started from, to replay the edit when its save is refused. */
+  const baseContents = new Map<string, NotesBlockUpdate>();
+  const heldConflicts = new Map<string, NotesBlockEditConflict>();
 
   function readCanonicalRevision(blockId: string): string | undefined {
     return context.readBlock(blockId)?.edit_revision ?? canonicalRevisions.get(blockId);
@@ -76,9 +122,15 @@ export function createNotesBlockPersistence(
     if (pending) clearTimeout(pending.timer);
     pendingBlockSaves.delete(blockId);
     dirtyBlocks.delete(blockId);
+    baseContents.delete(blockId);
   }
 
   function markBlockLocallyChanged(blockId: string): void {
+    if (!dirtyBlocks.has(blockId)) {
+      const block = context.readBlock(blockId);
+      if (block) baseContents.set(blockId, blockUpdateFromBlock(block));
+      else baseContents.delete(blockId);
+    }
     dirtyBlocks.add(blockId);
     blockRevisions.set(blockId, (blockRevisions.get(blockId) ?? 0) + 1);
   }
@@ -96,26 +148,40 @@ export function createNotesBlockPersistence(
 
   async function saveBlockNow(blockId: string, update: NotesBlockUpdate, revision = blockRevisions.get(blockId) ?? 0): Promise<void> {
     const saveGeneration = queueGeneration;
+    const pageId = context.currentPageId?.() ?? null;
     const save = enqueue(async () => {
       await context.beforeSave(blockId);
-      if (saveGeneration !== queueGeneration) return;
+      if (saveGeneration !== queueGeneration || heldConflicts.has(blockId)) return;
+      const base = baseContents.get(blockId);
       let saved: NotesBlock;
+      let rebased = false;
       try {
         saved = await updateNotesBlock(blockId, update, readCanonicalContentRevision(blockId));
       } catch (error) {
-        if (isNotesEditConflict(error)) abandonConflictedBlock(blockId);
-        throw error;
+        const readCanonicalBlock = context.readCanonicalBlock;
+        if (!isNotesEditConflict(error) || !readCanonicalBlock) {
+          if (isNotesEditConflict(error)) abandonConflictedBlock(blockId);
+          throw error;
+        }
+        const replayed = await replayRefusedSave(blockId, pageId, base, update, readCanonicalBlock);
+        if (!replayed) return;
+        saved = replayed;
+        rebased = true;
       }
       if (saveGeneration !== queueGeneration) return;
       acknowledgeCanonicalBlocks([saved]);
       context.reconcileCanonicalBlocks?.([saved]);
       if ((blockRevisions.get(blockId) ?? 0) === revision) {
         dirtyBlocks.delete(blockId);
+        baseContents.delete(blockId);
         if (context.readBlock(blockId)) context.replaceBlock(saved);
       } else {
+        baseContents.set(blockId, blockUpdateFromBlock(saved));
         const current = context.readBlock(blockId);
         if (current) {
-          context.replaceBlock({ ...current, edit_revision: saved.edit_revision, content_revision: saved.content_revision });
+          const revisions = { edit_revision: saved.edit_revision, content_revision: saved.content_revision };
+          context.replaceBlock({ ...current, ...revisions });
+          if (rebased) replayLaterTyping(blockId, pageId, update, current, saved);
         }
       }
     });
@@ -125,6 +191,121 @@ export function createNotesBlockPersistence(
     } finally {
       if (saveChains.get(blockId) === save) saveChains.delete(blockId);
     }
+  }
+
+  /**
+   * Replays a save refused because the block's canonical content changed meanwhile. Returns the saved block, or
+   * `null` when the edit is held for the user because both sides changed the text or the block was removed.
+   */
+  async function replayRefusedSave(
+    blockId: string,
+    pageId: string | null,
+    base: NotesBlockUpdate | undefined,
+    update: NotesBlockUpdate,
+    readCanonicalBlock: (blockId: string, pageId: string | null) => Promise<NotesBlock | null>,
+  ): Promise<NotesBlock | null> {
+    const canonical = await readCanonicalBlock(blockId, pageId);
+    const result = rebaseNotesBlockEdit(base, update, canonical ? blockUpdateFromBlock(canonical) : null);
+    if (result.kind === "rebased" && canonical) {
+      try {
+        return await updateNotesBlock(blockId, result.update, canonical.content_revision);
+      } catch (error) {
+        if (isNotesEditConflict(error)) abandonConflictedBlock(blockId);
+        throw error;
+      }
+    }
+    holdConflict({ blockId, pageId, kind: canonical ? "text" : "removed", mine: update, theirs: canonical });
+    return null;
+  }
+
+  /** Holds a block edit for the user to choose; its scheduled save would only overwrite the canonical content. */
+  function holdConflict(conflict: NotesBlockEditConflict): void {
+    const pending = pendingBlockSaves.get(conflict.blockId);
+    if (pending) clearTimeout(pending.timer);
+    pendingBlockSaves.delete(conflict.blockId);
+    heldConflicts.set(conflict.blockId, conflict);
+    context.onBlockConflict?.(conflict.blockId, conflict);
+  }
+
+  /**
+   * Carries typing made while a replayed save was in flight onto the merged content it saved, so the next save keeps
+   * the canonical changes the replay took. Typing that clashes with what the replay took is held for the user.
+   */
+  function replayLaterTyping(
+    blockId: string,
+    pageId: string | null,
+    sent: NotesBlockUpdate,
+    current: NotesBlock,
+    saved: NotesBlock,
+  ): void {
+    const later = blockUpdateFromBlock(current);
+    const result = rebaseNotesBlockEdit(sent, later, blockUpdateFromBlock(saved));
+    if (result.kind !== "rebased") {
+      holdConflict({ blockId, pageId, kind: "text", mine: later, theirs: saved });
+      return;
+    }
+    context.replaceBlock(applyBlockUpdate({ ...current, edit_revision: saved.edit_revision, content_revision: saved.content_revision }, result.update));
+    scheduleBlockSave(blockId, result.update);
+  }
+
+  function readBlockConflict(blockId: string): NotesBlockEditConflict | undefined {
+    return heldConflicts.get(blockId);
+  }
+
+  function assertNoHeldEdits(): void {
+    if (heldConflicts.size === 0) return;
+    const pageIds = new Set<string>();
+    for (const held of heldConflicts.values()) if (held.pageId) pageIds.add(held.pageId);
+    throw new NotesHeldEditError([...heldConflicts.keys()], [...pageIds]);
+  }
+
+  /** Releases a held block once the user's choice is saved. */
+  function settleBlockConflict(blockId: string): void {
+    const pending = pendingBlockSaves.get(blockId);
+    if (pending) clearTimeout(pending.timer);
+    pendingBlockSaves.delete(blockId);
+    heldConflicts.delete(blockId);
+    dirtyBlocks.delete(blockId);
+    baseContents.delete(blockId);
+    context.onBlockConflict?.(blockId, null);
+  }
+
+  /** Saves the user's choice for a held block edit in the write queue, on the block's current canonical content. */
+  function resolveBlockConflict(blockId: string, choice: NotesBlockConflictChoice): Promise<void> {
+    const held = heldConflicts.get(blockId);
+    if (!held) return Promise.resolve();
+    return enqueue(async () => {
+      const local = context.readBlock(blockId);
+      const mine = local ? blockUpdateFromBlock(local) : held.mine;
+      const canonical = context.readCanonicalBlock
+        ? await context.readCanonicalBlock(blockId, held.pageId)
+        : held.theirs;
+      if (choice === "theirs") {
+        settleBlockConflict(blockId);
+        if (canonical) {
+          acknowledgeCanonicalBlocks([canonical]);
+          context.replaceBlock(canonical);
+        }
+        context.onCanonicalChanged?.();
+        return;
+      }
+      if (choice === "both" && canonical) {
+        const write = { ...mine, id: crypto.randomUUID() } as NotesBlockWrite;
+        await appendNotesBlockChildren({ parent: canonical.parent, after: blockId, children: [write] });
+        settleBlockConflict(blockId);
+        acknowledgeCanonicalBlocks([canonical]);
+        context.replaceBlock(canonical);
+        context.onCanonicalChanged?.();
+        return;
+      }
+      const revision = canonical ? canonical.content_revision : (await trashNotesBlock(blockId, false)).content_revision;
+      const saved = await updateNotesBlock(blockId, mine, revision);
+      settleBlockConflict(blockId);
+      acknowledgeCanonicalBlocks([saved]);
+      context.reconcileCanonicalBlocks?.([saved]);
+      if (context.readBlock(blockId)) context.replaceBlock(saved);
+      if (!canonical) context.onCanonicalChanged?.();
+    });
   }
 
   function scheduleBlockSave(blockId: string, update: NotesBlockUpdate): void {
@@ -224,6 +405,9 @@ export function createNotesBlockPersistence(
     blockRevisions.clear();
     canonicalRevisions.clear();
     canonicalContentRevisions.clear();
+    baseContents.clear();
+    for (const blockId of heldConflicts.keys()) context.onBlockConflict?.(blockId, null);
+    heldConflicts.clear();
     saveChains.clear();
     mutationChain = Promise.resolve();
     failed = false;
@@ -253,6 +437,9 @@ export function createNotesBlockPersistence(
     retryEditorMutations,
     enqueueEditorMutation,
     runBetweenWrites,
+    readBlockConflict,
+    assertNoHeldEdits,
+    resolveBlockConflict,
     hasLocalChanges,
     localApplyBlockUpdate,
     markBlockLocallyChanged,

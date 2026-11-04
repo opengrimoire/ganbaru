@@ -1,7 +1,7 @@
 <script lang="ts">
   import GripVertical from "@lucide/svelte/icons/grip-vertical";
   import Plus from "@lucide/svelte/icons/plus";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import EventColorPicker from "$lib/components/calendar/EventColorPicker.svelte";
   import type { EventColor } from "$lib/calendar/types";
   import Select from "$lib/components/ui/Select.svelte";

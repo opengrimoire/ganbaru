@@ -2,7 +2,7 @@
 
 Ganbaru is an anti-procrastination and anti-burnout productivity app. It is free, local, open-source (AGPL 3.0), privacy-first, and lightweight, with opt-in AI. It is built with Tauri v2 (Rust) and Svelte 5 for Linux, Windows, and a pre-release Android implementation. macOS and iOS are future platform work.
 
-Features are highly interconnected. Calendar, Pomodoro, Projects, Notes, Chat with local coding agents, the distraction blocker, Music, Quick notes, themes, localization, and the Android shell exist and are still being completed. Concurrent sync covers Quick notes so far. The diary, sleep alarm, and work environments are planned; gamification is deferred. [docs/features/README.md](docs/features/README.md) owns the current status of each feature.
+Features are highly interconnected. Calendar, Pomodoro, Projects, Notes, Chat with local coding agents, the distraction blocker, Music, Quick notes, themes, localization, and the Android shell exist and are still being completed. Concurrent sync covers Quick notes, portable preferences, user themes, contacts, the Music library, Projects with working folder bindings, Calendar, distraction rules, daily distraction usage totals, distraction block history, Focus history with device activity, Chat organizational content, and Notes in full (structure, databases, comments and suggestions, and assets), editable on every linked device. The diary, sleep alarm, and work environments are planned; gamification is deferred. [docs/features/README.md](docs/features/README.md) owns the current status of each feature.
 
 ## Documentation
 
@@ -67,65 +67,70 @@ apps/
         utils/, vault/, windows/: shared helpers, vault state, and detached window and cross-window sync helpers
         workspace-tabs/: workspace tab model, location mapping, and presentation helpers
     static/: static assets
-    scripts/: repo-owned scripts grouped by purpose (release/, bundle-contracts/, checks/, provider-protocols/, codegen/, browser-extension/); tauri-cli.mjs wraps the Tauri CLI
+    scripts/: repo-owned scripts grouped by purpose (release/, bundle-contracts/, checks/, provider-protocols/, codegen/, browser-extension/, validation/); tauri-cli.mjs wraps the Tauri CLI
     test-fixtures/: shared test fixtures such as sample .ics files
     src-tauri/: Tauri package (crate ganbaru), configuration, and platform entries
       src/main.rs, src/lib.rs: thin desktop entry and mobile library entry
       app/: ganbaru-tauri-app library with Tauri commands, managed state, and platform integrations
         build.rs: emits the `desktop` and `mobile` cfg aliases used for platform gating
         src/runtime.rs, runtime/: desktop and mobile composition roots and handler registration tests
-        src/db.rs, vault.rs, vault/: active-folder authorization, SQLite adapter boundary, vault config, document transfer, Android backup and restore
-        src/vault/handoff/: LAN device linking and single-writer whole-vault handoff
+        src/db.rs, vault.rs, vault/: active-folder authorization, SQLite adapter boundary, vault config, portable and device preferences, document transfer, encrypted backup and restore
+        src/vault/handoff/: LAN device linking and snapshot bootstrap
         src/calendar.rs, calendar/: Calendar command adapters and the platform device-date source
         src/chat.rs, chat/: Chat command adapters, coordination, access profiles, internal MCP tools, checkpoints, previews, and provider settings
         src/notes.rs, notes/: Notes command adapters, working-Markdown composition, and asset authorization
         src/pomodoro.rs, pomodoro/: Focus command adapters, native execution runtime, idle probes, and timer overlays with enforcement
         src/projects.rs, projects/: Projects command adapters, icon assets, and working-folder device state
-        src/distractions.rs, distractions/: browser, desktop, Android, and linked-device blocking, observation, close authorization, and the usage spool
-        src/music.rs, music/: Music library command adapters, Android media inspection, native Music session, media controls, YouTube host, and soundscapes
+        src/distractions.rs, distractions/: browser, desktop, and Android blocking, observation, close authorization, the usage and block event spool ingestion, and replicated usage totals and block history
+        src/music.rs, music/: Music library command adapters, Android media inspection, native Music session, media controls, YouTube host, soundscapes, and post-apply sync hooks
         src/notifications.rs, notifications/: desktop native notifications and Android notification capabilities
         src/sound_effects.rs, system_command.rs: app sound effects and bounded fixed-command execution
         src/contacts.rs, contacts/: person identity storage, contact card assembly, contact and request persistence, and LAN request delivery
-        src/sync.rs, sync/: sync service lifecycle, paired transport, recovery listing, status, and sync commands
-        src/quick_notes.rs: Quick notes command adapters
+        src/sync.rs, sync/: sync service host on the Tauri app, dialers, vault assets, recovery listing, status, and sync commands
+        src/quick_notes.rs, quick_notes/: Quick notes command adapters and image file commands
         src/tray.rs, app_windows.rs, themes.rs, updates.rs, profile_images.rs: tray, window raising, theme command adapters, updates, and profile images
         src/benchmark.rs, benchmark/, first_use_contracts.rs: benchmark state, seed data, memory reports, and first-use query contracts
       capabilities/: permission declarations (desktop and mobile)
+      permissions/: app command permission sets granted by capabilities
       gen/android/: generated Android project and native platform integration
       gen/schemas/: generated Tauri schema files
-      package-repo/: generated package repository public key staging (ignored)
+      release-keys/: committed Tauri updater and package repository public keys
       packaging/: Linux package lifecycle scripts (deb/, rpm/), desktop entry template, and polkit policy (linux/)
       icons/, build.rs, tauri.conf.json, tauri.dev.conf.json, tauri.android.conf.json, Cargo.toml
 crates/
   ganbaru-db/: Tauri-free SQLite pool registry, connection configuration, migrations, and schema tests
     migrations/: embedded SQLx SQLite migrations
   ganbaru-civil-time/: Tauri-free conversion between instants and zoned wall times, with explicit gap and fold rules
+  ganbaru-atomic-files/: Tauri-free atomic file replacement through exclusive random temporary files and symlink-refusing managed folder creation, and bounded regular-file reads
+  ganbaru-image-metadata/: Tauri-free bounded image header parsing, type detection, and dimension limits shared by Notes and Quick notes
   ganbaru-pomodoro/: Tauri-free Focus persistence, validation, recovery, activity admission, transactional execution, and adaptive policy
-  ganbaru-quick-notes/: Tauri-free Quick notes persistence, search, lifecycle and trash retention, ordering, tags, and conflict resolution
+  ganbaru-quick-notes/: Tauri-free Quick notes persistence, search, lifecycle and trash retention, ordering, tags, images, and conflict resolution
   ganbaru-music/: Tauri-free Music context assignments per Focus phase and the Music library error shape
   ganbaru-music-library/: Tauri-free Music library persistence, queries, playlists, review, transfer, soundscapes, local media refresh and artwork, and session policy
   ganbaru-music-player/: Tauri-free desktop local media inspection and decoding worker that executes committed Music session effects
   ganbaru-projects/: Tauri-free Projects persistence, structure, tasks, history, custom fields, dependency cascades, reordering, Calendar scheduling rows, and validation
   ganbaru-calendar/: Tauri-free Calendar persistence, iCalendar import and export, native reads, scoped edits, deletion and Undo, and recurrence expansion
-  ganbaru-distractions/: Tauri-free distraction blocker contracts, application rules, usage limits, usage normalization, and elapsed accounting
+  ganbaru-distractions/: Tauri-free distraction blocker contracts, rule persistence, application rules, usage limits, usage normalization, elapsed accounting, daily usage totals, and block history
   ganbaru-notes/: Notes domain, persistence, transfers, history, assets, and bounded filesystem operations
-  ganbaru-chat-contracts/: provider-neutral Chat IDs, commands, events, DTOs, and errors
+  ganbaru-chat-contracts/: provider-neutral Chat IDs, commands, events, DTOs, errors, and protected workspace path rules
   ganbaru-chat-providers/: provider processes, transports, drivers, cancellation, and registry
   ganbaru-chat/: Chat persistence, runtime, Git workspaces, checkpoints, review, and application services
   ganbaru-working-folders/: Tauri-free working-folder IDs, bindings, and device-state operations
   ganbaru-contacts/: Tauri-free person key pairs, signed contact cards, request signatures, and trust kinds
-  ganbaru-handoff/: Tauri-free LAN handoff control protocol, message bounds, compatibility, QR encoding, staged bundle validation, device pairing identity, membership, and transfer state, and Linux firewall authorization
-  ganbaru-sync-contracts/: Tauri-free sync identifiers, clocks, version vectors, writer certificates, order keys, and the signed operation format
-  ganbaru-sync/: Tauri-free sync engine with the replication manifest, capture triggers, sealing, apply and merge, conflicts, recovery, and the simulation harness
-  ganbaru-sync-replica/: Tauri-free replica sync with guarded vault access, installation writer keys and record, carry-forward, recovery offers, and the LAN hub and client exchange
-  ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, and row validation
+  ganbaru-handoff/: Tauri-free LAN handoff control protocol, message bounds, TLS pin verifiers, LAN-only dial targets, DNS-SD discovery records and hourly member tags, compatibility, QR encoding, staged bundle validation, device pairing identity, membership, and snapshot copy state, and Linux firewall authorization
+  ganbaru-sync-contracts/: Tauri-free sync identifiers, clocks, version vectors, device-signed writer certificates, the space charter, authorization log entries, recovery kit codes, order keys, the signed operation format, space key envelopes and chain links, and the encrypted backup format
+  ganbaru-sync/: Tauri-free sync engine with the domain manifest registry and domain adapters, capture triggers, sealing, apply and merge, conflicts, recovery, the authorization record store with chain selection and contests, removal exclusion and late changes, fork evidence, and the simulation harness
+  ganbaru-sync-replica/: Tauri-free replica sync with commit-signaling vault access, installation device and writer keys and record, the proposal outbox, quarantine, the peer book, anchor pin, and discovery keys, carry-forward, recovery offers, LAN hub, member, and client exchange of operations, authorization records, and managed assets, the relay client pass, managed asset collection, whole-vault archives, encrypted backup files, the pinned TLS listeners, and the sync service loop over a host trait
+  ganbaru-sync-relay/: self-hosted server binary: relay mode stores sealed records and asset chunks it cannot open, and anchor mode runs one vault as an always-on enrolled replica
+  ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, row validation, and sync conflict resolution and recovery
   ganbaru-native-messaging/: ganbaru-native-messaging browser host binary
-  ganbaru-mobile-*/: Android plugins for documents, the distraction blocker, media, and notifications
+  ganbaru-linking-firewall/: root-run Linux helper binary for the device linking firewall rules, installed under /usr/lib/ganbaru/ and named by the PolicyKit policy
+  ganbaru-mobile-*/: Android plugins for documents, the distraction blocker, media, notifications, and background sync with Android Keystore key wrapping
 extensions/chromium/: Chromium extension (manifest v3); chromium-dev/ is a generated, ignored dev copy
 Cargo.toml, rust-toolchain.toml, rustfmt.toml, turbo.json, pnpm-workspace.yaml, package.json: workspace configuration and root scripts
 ```
 
-Planned work without source directories yet includes the self-hosted sync relay, the Firefox extension, the diary, BYOK assistant, edge panel, sleep alarm, work environments, and gamification.
+Planned work without source directories yet includes the Firefox extension, the diary, BYOK assistant, edge panel, sleep alarm, work environments, and gamification.
 
 ## Ganbaru folder structure
 
@@ -134,21 +139,21 @@ Planned work without source directories yet includes the self-hosted sync relay,
 ```
 Ganbaru/
   vault.json: folder marker, id, display name, and schema version
-  config.json: folder-local preferences, UI state, and anti-distraction settings
-  ganbaru.sqlite: SQLite source of truth for structured data, Notes, and indexes
+  vault.lock: device-local advisory lock that keeps a second Ganbaru process out of the vault; never archived
+  ganbaru.sqlite: SQLite source of truth for structured data, portable preferences, Notes, and indexes
+  .database-rollbacks/: device-local copies kept by Reset local data, rollback restores, and snapshot copy replacements, bounded and restorable from Settings > Data
   notes/daily/, notes/projects/: reserved note document directories
   notes/exports/: derivative Markdown exports (planned, not authoritative)
   diary/morning/, diary/evening/: dated diary entries (planned feature)
   projects/{project-id}/: managed working folder created for every project
   reports/: generated project status reports (planned feature)
-  assets/: managed user assets (profile/, chat/attachments/, chat/browser-artifacts/, notes/page-icons/, notes/page-covers/, notes/files/, project-icons/)
+  assets/: managed user assets (profile/, chat/attachments/, chat/browser-artifacts/, notes/page-icons/, notes/page-covers/, notes/files/, project-icons/, quick-notes/images/, music/artwork/)
   templates/: reserved file-based project and methodology templates
-  .yjs/: reserved Yjs document state cache
 ```
 
-Music files stay wherever the user keeps them; the vault stores library metadata, source identities, playlists, assignments, and playback state, not media bytes. Desktop backups go to a user-selected path outside the vault. Android portable backups are exported to shared Downloads and restored through the system document picker.
+Music files stay wherever the user keeps them; the vault stores library metadata, source identities, playlists, assignments, and playback state, not media bytes. Backups are encrypted and open with the recovery kit. Desktop backups go to a user-selected path outside the vault. Android backups are exported to shared Downloads and restored through the system document picker.
 
-Tauri's platform app config directory stores device-local bootstrap and runtime state only (`app-state.json`, benchmark state and SQLite, anti-distraction runtime snapshots). Production and dev builds keep separate app config directories and therefore separate active-folder pointers.
+Tauri's platform app config directory stores device-local bootstrap and runtime state only (`app-state.json`, benchmark state and SQLite, device preferences per vault, anti-distraction runtime snapshots, Chat preview web data per working folder). Production and dev builds keep separate app config directories and therefore separate active-folder pointers.
 
 ## Key conventions
 
@@ -156,9 +161,9 @@ Tauri's platform app config directory stores device-local bootstrap and runtime 
 - **State management:** Svelte 5 runes (`$state`, `$derived`, `$effect`), no external state manager. Durable runtime authority (Calendar recurrence and mutations, Focus execution, Music sessions) lives in Rust; the frontend renders native projections.
 - **Data architecture:** documents (diary entries, project docs, reports, attachments) are files on disk and the file is the source of truth where its format is canonical; SQLite may index them. Structured data and document graphs (Notes pages and blocks, Calendar events, project tasks, Focus configs and runs) live in SQLite as the source of truth. Markdown for Notes is derivative import, export, or bridge output only.
 - **AI integration:** three opt-in paths. (1) Implemented: local coding-agent Chat in project channels over Rust-owned native provider sessions (Codex, Claude, Cursor, Grok, OpenCode), with durable SQLite history, project working folders, and a scoped ephemeral loopback MCP endpoint for application-owned host tools. That endpoint is infrastructure, not a participant identity. (2) Planned: a BYOK assistant for hosted and local user-configured providers. (3) Planned: a separately authorized MCP service for external AI clients. See `docs/features/ai/` and `docs/features/chat/`.
-- **Chat storage boundary:** organizational Chat state (channels, sessions, events, drafts, checkpoints, access profiles, authorization revisions, scratch scopes) lives in the vault SQLite database. Managed attachment bytes live under `assets/chat/attachments/`. Absolute folder paths, scratch paths, executables, provider homes, diagnostics, provider-native trust, and process state are device-local. Provider-native trust never widens organizational authority. Provider secrets live only behind operating-system credential references. See `docs/data/schema/chat.md` and `docs/data/security/chat.md`.
+- **Chat storage boundary:** organizational Chat state (channels, sessions, events, drafts, checkpoints, access profiles, authorization revisions, scratch scopes) lives in the vault SQLite database. Managed attachment bytes live under `assets/chat/attachments/`. Provider configuration, absolute folder paths, scratch paths, executables, provider homes, diagnostics, provider-native trust, and process state are device-local; Chat behavior is a portable preference, apart from the device-scoped multiline terminal paste confirmation. Provider-native trust never widens organizational authority. Provider secrets live only behind operating-system credential references. See `docs/data/schema/chat.md` and `docs/data/security/chat.md`.
 - **Localization:** user-facing UI text must use the typed i18n catalog. Language selectors show languages as autonyms (`English`, `Español`), while non-language options like system preference are localized. Dates, times, numbers, plurals, relative minutes, and lists use the locale helpers.
-- **Sync:** LAN device linking, single-writer whole-vault handoff, and concurrent Quick notes replication through the coordinator desktop (signed operation logs, installation writers, deterministic merges, conflicts, and recovery) are implemented in source, with physical multi-device acceptance pending. The rest of the vault stays single-writer on replicas. Concurrent sync of other domains, Yrs/Yjs text, anchored authority with LAN peer exchange, operation encryption, and the encrypted relay are planned. See `docs/data/sync.md`.
+- **Sync:** LAN device linking with snapshot bootstrap, and concurrent Quick notes, portable preferences, user themes, contacts, Music library, Projects with working folder bindings, Calendar, distraction rules, daily distraction usage totals, distraction block history, Focus history with device activity, and Notes replication (structure, databases, comments and suggestions, and assets) through the coordinator desktop and directly between members on the LAN (signed operation logs, installation writers, deterministic merges, conflicts, and recovery), with anchored authority (an anchor-sequenced authorization log with admin keys, a recovery kit, removal cutoffs, late changes, quarantine, fork evidence, and anchor handover) and Android Keystore key wrapping, are implemented in source, with physical multi-device acceptance pending. Chat organizational content (identity, policy, conversations, memberships, working folder grants, messages, scheduled messages, and work assignments) also replicates and is editable on every linked device, with a concurrent removal, revocation, or narrowing winning over a concurrent widening; execution stays on one device. Every linked device writes every domain; there is no vault owner or read-only copy. Yrs/Yjs text is planned; the optional relay, with records encrypted end to end, and the always-on anchor are implemented in source. See `docs/data/sync.md`.
 - **Focus evidence:** Android Calendar alarms are reminders and cannot start runs or record later phases. Recovery uses only committed SQLite execution. Desktop automatic admission requires fresh local activity; explicit starts remain available.
 - **Branching and releases:** topic branches from `dev`, PRs back to `dev`. Direct pushes to `dev` or `main` are not normal workflow. `main`, `app-v*` tags, release approval, published releases, and package publication are controlled by organization admins for supply-chain safety. See `CONTRIBUTING.md`, `docs/operations/release/README.md`, and `docs/operations/repository-policy.md`.
 - **Pull requests:** for review work, create a neutral topic branch from current `dev` (for example `docs/github-templates` or `fix/calendar-import`; never tool, assistant, or vanity names in branches, commits, or PR titles). Open PRs into `dev` unless the user asks for a release PR. Creating a PR does not imply merging. Merge only when the user explicitly asks, or asks to complete the whole PR flow after checks pass; first confirm the PR is mergeable, required checks passed, and the branch is up to date. Release PRs from `dev` to `main` go through the `main` merge queue: do not update `dev` with `main`, do not enable auto-merge, and if `gh pr merge` tries auto-merge, use GitHub's queue action or the GraphQL `enqueuePullRequest` mutation. If a non-release branch is out of date, update it once, then merge if already authorized. After merging into `dev`, sync local `dev` to `origin/dev` and delete the merged topic branch locally and remotely. After merging into `main`, sync local `main` to `origin/main`. Do not keep backup branches unless asked.
@@ -177,11 +182,11 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 
 **UI changes:** agents cannot manually verify the real Tauri app UI. Do not start a dev server, launch Tauri, or run HTTP smoke checks as a substitute. During iterative UI work, use the narrowest relevant checks and rely on the user's manual inspection for visual confirmation. Add focused tests when a UI behavior needs more confidence than existing checks provide.
 
-**Resource limits:** the machine is memory-limited, so validation is deliberately serialized.
+**Resource limits:** validation concurrency comes from a profile. The default `standard` profile, also used by CI, needs about 5 GB of free memory. Machines that cannot spare that while other applications run set `GANBARU_VALIDATE_PROFILE=low-memory` in their environment, which serializes Cargo builds and Vitest workers.
 
-- Use the root `check`, `test`, and `validate` scripts for broad verification instead of direct full-suite `turbo`, `vitest`, or `cargo` commands. They run Rust before frontend work, use one Cargo build job and two Rust test threads, and split Vitest into sequential one-worker shards. `validate:ci` and its `validate:ci:rust` and `validate:ci:frontend` halves (four Cargo jobs and test threads, two-worker Vitest shards) are for hosted Linux CI only. Do not raise concurrency, combine stages, or remove sharding without measuring peak memory and confirming coverage.
+- Use the root `check`, `test`, and `validate` scripts (and the `validate:rust` and `validate:frontend` halves) for broad verification instead of direct full-suite `turbo`, `vitest`, or `cargo` commands. They run Rust before frontend work. The standard profile uses four Cargo build jobs and test threads and two sequential two-worker Vitest shards; the low-memory profile uses one Cargo job, two test threads, and four sequential one-worker shards. Do not raise concurrency, combine stages, or remove sharding without measuring peak memory and confirming coverage.
 - Never run Cargo work concurrently with Vitest, Svelte checks, Turbo, or another Node validation command, and never start another validation command while a root `check`, `test`, `validate`, or `validate:full` is running.
-- For focused checks, use one Vitest worker and one Cargo job and test thread. Add `--lib` when the filtered Rust test is in the library; use `--bin <name>` only when testing that binary. Confirm focused Vitest runs report only the requested files.
+- For focused checks, use one Vitest worker and four Cargo jobs, or one Cargo job and test thread when `GANBARU_VALIDATE_PROFILE=low-memory` is set. Add `--lib` when the filtered Rust test is in the library; use `--bin <name>` only when testing that binary. Confirm focused Vitest runs report only the requested files.
 - The workspace test profile inherits the development profile's line-tables-only debug information so both share dependency artifacts; do not restore full test debug information unless a debugger session needs it.
 - Keep Cargo commands portable across Linux, Windows, and macOS. Do not require an external linker; optional linker optimizations must fall back to the standard toolchain and be benchmarked before adoption.
 
@@ -196,16 +201,16 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 
 **Commands (always use `-w` for root scripts):**
 
-- `pnpm -w run check`: Rust formatting and clippy, then provider protocol snapshot checks and Svelte and TypeScript checks through Turbo.
+- `pnpm -w run check`: Rust formatting and clippy, then the workflow signing-isolation and unsafe inventory checks, provider protocol snapshot checks, and Svelte and TypeScript checks through Turbo.
 - `pnpm --dir apps/client run check`: client-only Svelte and TypeScript checks.
 - `pnpm -w run editor-check`: editor diagnostics, including Tailwind canonical class checks.
-- `pnpm -w run test`: serialized Rust tests followed by sequential one-worker Vitest shards.
+- `pnpm -w run test`: Rust tests followed by sequential Vitest shards.
 - `pnpm --dir apps/client exec vitest run path/to/file.test.ts --maxWorkers=1`: focused frontend test file.
-- `cargo test -p ganbaru-chat --lib -j 1 test_name -- --test-threads=1`: focused core crate test (substitute `ganbaru-notes`, `ganbaru-db`, `ganbaru-civil-time`, `ganbaru-distractions`, `ganbaru-chat-contracts`, `ganbaru-chat-providers`, `ganbaru-pomodoro`, `ganbaru-quick-notes`, `ganbaru-music`, `ganbaru-music-library`, `ganbaru-music-player`, `ganbaru-projects`, `ganbaru-calendar`, `ganbaru-working-folders`, `ganbaru-contacts`, `ganbaru-handoff`, `ganbaru-sync-contracts`, `ganbaru-sync`, `ganbaru-sync-replica`, or `ganbaru-themes`).
-- `cargo test -p ganbaru-tauri-app --lib -j 1 test_name -- --test-threads=1`: focused Tauri composition or command-adapter test.
-- `cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 1 test_name -- --test-threads=1`: focused native messaging host test.
-- `cargo check -p ganbaru --bin ganbaru -j 1`: focused desktop composition check.
-- `cargo fmt --check` and `cargo clippy --workspace -j 1 -- -D warnings`: Rust formatting and linting only.
+- `cargo test -p ganbaru-chat --lib -j 4 test_name -- --test-threads=4`: focused core crate test (substitute `ganbaru-notes`, `ganbaru-atomic-files`, `ganbaru-db`, `ganbaru-civil-time`, `ganbaru-distractions`, `ganbaru-chat-contracts`, `ganbaru-chat-providers`, `ganbaru-pomodoro`, `ganbaru-quick-notes`, `ganbaru-music`, `ganbaru-music-library`, `ganbaru-music-player`, `ganbaru-projects`, `ganbaru-calendar`, `ganbaru-working-folders`, `ganbaru-contacts`, `ganbaru-handoff`, `ganbaru-sync-contracts`, `ganbaru-sync`, `ganbaru-sync-replica`, or `ganbaru-themes`).
+- `cargo test -p ganbaru-tauri-app --lib -j 4 test_name -- --test-threads=4`: focused Tauri composition or command-adapter test.
+- `cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 4 test_name -- --test-threads=4`: focused native messaging host test. Use `-p ganbaru-linking-firewall --bin ganbaru-linking-firewall` for the firewall helper.
+- `cargo check -p ganbaru --bin ganbaru -j 4`: focused desktop composition check.
+- `cargo fmt --check` and `cargo clippy --workspace -j 4 -- -D warnings`: Rust formatting and linting only.
 - `pnpm -w run audit:deps`, `audit:rust`, `audit`: npm and RustSec audits. Run for dependency or lockfile changes, before PRs and releases, and when investigating security alerts. Reviewed Rust ignores live in `.cargo/audit.toml` and must be documented in `docs/data/security/dependency-audits.md`.
 - `pnpm -w run validate`: full normal gate (check, test, editor-check, bundle contracts). All errors must be fixed before treating it as passed.
 - `pnpm -w run validate:full`: audit plus validate.
@@ -223,7 +228,7 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 - There are no external users yet. Old development vaults, internal exports, and device state need no compatibility, migration shims, or fallback readers. Keep one current internal format and require an explicit development reset for unsupported state. Preserve crash recovery, transaction rollback, external standards support, and platform-specific behavior.
 - Remove obsolete internal readers, writers, and unused code together. Keep fresh-vault schema construction and current schema invariants covered. Never delete or reset local vaults automatically as part of source cleanup.
 - Migrations live in `crates/ganbaru-db/migrations/` and are embedded by `ganbaru-db` through `sqlx::migrate!` (no manual registration). Name them `YYYYMMDDHHMMSS_description.sql` with a UTC timestamp.
-- `20261004220000_baseline_schema.sql` is the final pre-user baseline, approved by the maintainer on 2026-10-04 and edited in place on 2026-10-16 for the product rename. Earlier development databases are unsupported and must be recreated. Once a user-capable release can apply it, never edit it; add new timestamped migrations instead. Future baseline squashes require explicit maintainer approval.
+- `20261031060000_baseline_schema.sql` is the final pre-user baseline, approved by the maintainer on 2026-10-30. Earlier development databases are unsupported and must be recreated. Once a user-capable release can apply it, never edit it; add new timestamped migrations instead. Future baseline squashes require explicit maintainer approval.
 - SQLx validates applied migration checksums, so never rewrite an applied migration to fix a live install. Keep migrations idempotent and narrowly scoped when practical. Preserve user-authored values that still have meaning; only delete data that is obsolete or derivable from canonical data.
 - Keep `crates/ganbaru-db/src/lib.rs` focused on pool and migration services, schema and migration invariant tests in `crates/ganbaru-db/src/tests/`, and active-folder path authorization in `apps/client/src-tauri/app/src/db.rs`.
 - Never hardcode Ganbaru folder paths; read them from user configuration.
@@ -245,7 +250,7 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 - Sentence case in headings, list items, comments, documentation, branch names, and commit messages. Every list item starts with a capital letter unless it begins with code or a literal identifier. Correct nearby violations when editing a file.
 - Do not hard-wrap markdown paragraphs or list items; keep each on one line.
 - Comments describe current code and its reasons in a neutral voice. Do not narrate changes or history ("previously", "no longer", "new approach"), restate the code, or keep commented-out code. Doc comments use rustdoc in Rust, JSDoc in TypeScript and JavaScript, and KDoc in Kotlin.
-- Use the current domain vocabulary consistently, for example vault (not data folder) and Calendar occurrence (not block). Renames never change persisted or wire names (SQLite columns, config keys, i18n keys, Tauri command names, serde fields) unless a deliberate migration does. File naming and placement rules live in `docs/architecture/frontend.md`; timestamp naming lives in `docs/data/schema/README.md`.
+- Use the current domain vocabulary consistently, for example vault (not data folder), Calendar occurrence (not block), and soundscape (not background sound). Renames never change persisted or wire names (SQLite columns, config keys, i18n keys, Tauri command names, serde fields) unless a deliberate migration does. File naming and placement rules live in `docs/architecture/frontend.md`; timestamp naming lives in `docs/data/schema/README.md`.
 - Prefer Tailwind canonical utilities over arbitrary values unless the value is genuinely custom.
 
 ### Responsive UI

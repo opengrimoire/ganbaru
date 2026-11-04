@@ -50,7 +50,7 @@ fn block_json_omits_payload_fields_for_other_block_types() {
         block_type: "paragraph".to_string(),
         payload: json!({ "rich_text": [], "color": "default" }).to_string(),
         plain_text: String::new(),
-        sort_order: 0.0,
+        order_key: "a0".to_string(),
         source_provider: None,
         source_object_id: None,
         source_last_edited_time: None,

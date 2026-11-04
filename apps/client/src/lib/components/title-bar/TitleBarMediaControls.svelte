@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Music from "@lucide/svelte/icons/music";
+  import Music from "@lucide/svelte/icons/eighth-notes";
   import StickyNote from "@lucide/svelte/icons/sticky-note";
   import PomodoroMenuContent from "$lib/components/pomodoro/PomodoroMenuContent.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
@@ -54,7 +54,7 @@
     `${isActive ? t("titleBar.pomodoro.remaining", pomodoro.formattedTime) : t("titleBar.control.pomodoro")}\n${musicVolumeTooltipLine}`,
   );
   const musicButtonTooltip = $derived(
-    `${t("titleBar.tab.withShortcut", t("titleBar.control.music"), formatShortcut("Mod + Shift + M"))}\n${musicVolumeTooltipLine}${musicPlayer.contextPlayback && musicPlayer.contextPlayback.state !== "overridden" ? `\n${t("titleBar.music.contextual", t(`music.assignment.phase.${musicPlayer.contextPlayback.phase}`), musicPlayer.contextPlayback.eventTitle)}` : ""}`,
+    `${t("titleBar.tab.withShortcut", t("titleBar.control.music"), formatShortcut("Mod + Shift + M"))}\n${musicVolumeTooltipLine}`,
   );
 
   function toggleMenu(): void {
@@ -171,9 +171,6 @@
         aria-expanded={musicPanelOpen}
       >
         <Music size={TITLE_BAR_ICON_SIZE} strokeWidth={TITLE_BAR_ICON_STROKE_WIDTH} />
-        {#if musicPlayer.contextPlayback && musicPlayer.contextPlayback.state !== "overridden"}
-          <span class="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-primary ring-2 ring-sidebar" aria-hidden="true"></span>
-        {/if}
       </button>
     {/if}
 

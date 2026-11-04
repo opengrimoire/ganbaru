@@ -12,10 +12,23 @@ pub(crate) use ganbaru_music_player::{
 /// Inspect a local media file without mutating decoder or session state.
 #[cfg(desktop)]
 #[tauri::command]
-pub(crate) fn media_player_probe(
+pub(crate) async fn media_player_probe(
+    app: tauri::AppHandle,
     path: String,
 ) -> Result<ganbaru_music_player::MediaProbe, MediaPlayerError> {
-    ganbaru_music_player::probe_local_file(&path)
+    tauri::async_runtime::spawn_blocking(move || {
+        super::path_authority::authorize(&app, &path, super::path_authority::MusicPathKind::File)
+            .map_err(|error| MediaPlayerError {
+            code: "invalidSource".to_string(),
+            message: error.message().to_string(),
+        })?;
+        ganbaru_music_player::probe_local_file(&path)
+    })
+    .await
+    .map_err(|error| MediaPlayerError {
+        code: "backendUnavailable".to_string(),
+        message: format!("media probe task failed: {error}"),
+    })?
 }
 
 /// Inspect a selected document without mutating decoder or session state.

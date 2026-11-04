@@ -166,6 +166,7 @@ export function parseCalendarEditPreview(value: unknown, request: CalendarPrevie
   if (!/^[0-9a-f]{64}$/u.test(reviewRevision)) throw new Error("Invalid Calendar review revision");
   const window = mapNativeCalendarWindow(row.window, request.window.renderZone);
   if (window.diagnostics.length > 0) throw new Error("Calendar review contains an expansion failure");
+  if (window.omittedTemplateCount > 0) throw new Error("Calendar review omits an event");
   const editedId = text(row.editedId);
   const sourceId = text(row.sourceId);
   if (creating && (sourceId !== editedId || !/^calendar-create-[0-9a-f]{64}$/u.test(sourceId))) {

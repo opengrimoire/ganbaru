@@ -26,16 +26,10 @@ declare global {
     setLevel(level: number): string;
   }
 
-  interface GanbaruAndroidTransitionBridge {
-    holdCurrentFrame(): void;
-    releaseHeldFrame(): void;
-  }
-
   interface Window {
     GanbaruAndroidInsets?: GanbaruAndroidInsetsBridge;
     GanbaruAndroidAppearance?: GanbaruAndroidAppearanceBridge;
     GanbaruAndroidMediaVolume?: GanbaruAndroidMediaVolumeBridge;
-    GanbaruAndroidTransition?: GanbaruAndroidTransitionBridge;
   }
 
   const __GANBARU_BUILD_REF__: string;

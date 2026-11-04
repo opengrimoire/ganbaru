@@ -5,7 +5,7 @@ use crate::workspace::load_optional_data;
 
 async fn view_order(pool: &SqlitePool, project_id: &str) -> Vec<(String, String, Option<String>)> {
     sqlx::query_as(
-        "SELECT id, view_type, name FROM project_views WHERE project_id = ? ORDER BY sort_order, id",
+        "SELECT id, view_type, name FROM project_views WHERE project_id = ? ORDER BY order_key, id",
     )
     .bind(project_id)
     .fetch_all(pool)
@@ -144,8 +144,15 @@ fn reordering_views_requires_the_complete_order() {
             .unwrap();
         let ids: Vec<&str> = mutation.views.iter().map(|view| view.id.as_str()).collect();
         assert_eq!(ids, ["view-c", "view-a", "view-b"]);
-        let orders: Vec<i64> = mutation.views.iter().map(|view| view.sort_order).collect();
-        assert_eq!(orders, [1000, 2000, 3000]);
+        let orders: Vec<&str> = mutation
+            .views
+            .iter()
+            .map(|view| view.order_key.as_str())
+            .collect();
+        assert!(
+            orders.windows(2).all(|pair| pair[0] < pair[1]),
+            "{orders:?}"
+        );
     });
 }
 
@@ -223,34 +230,5 @@ fn view_preferences_belong_to_one_view_and_leave_with_it() {
                 .unwrap();
         assert_eq!(remaining, ["view-b"]);
         assert!(delete_view(&pool, "view-a").await.is_err());
-    });
-}
-
-#[test]
-fn restored_routine_projects_get_default_views_without_refilling_removed_ones() {
-    block_on(async {
-        let pool = migrated_memory_pool().await;
-        sqlx::query("DELETE FROM project_views WHERE project_id = 'project-routine-learning'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM projects WHERE id = 'project-routine-reading'")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        ensure_built_in_routine_defaults(&pool).await.unwrap();
-
-        let restored: Vec<String> = view_order(&pool, "project-routine-reading")
-            .await
-            .into_iter()
-            .map(|(_, view_type, _)| view_type)
-            .collect();
-        assert_eq!(restored, ["dashboard", "list", "notes", "chat"]);
-        assert!(
-            view_order(&pool, "project-routine-learning")
-                .await
-                .is_empty()
-        );
     });
 }

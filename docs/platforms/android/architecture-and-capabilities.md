@@ -22,7 +22,7 @@ Exclusion at build time, rather than hiding controls in the UI, reduces artifact
 
 | Domain | Shared contract | Android adapter or restriction |
 | --- | --- | --- |
-| Vault | Marker, configuration, SQLite, managed assets, single-writer ownership | Application-private default, document-tree import, portable backup and restore, secure LAN handoff and read-only refresh |
+| Vault | Marker, configuration, SQLite, managed assets | Application-private default, document-tree import, portable backup and restore, secure LAN linking with snapshot bootstrap and concurrent sync |
 | Calendar | Events, recurrence, reminders, projects, active runs | Native notification and alarm projection |
 | Projects | Full local planning and task views | Responsive UI, no local coding working-folder execution |
 | Notes | Pages, blocks, databases, history, links, assets | Responsive UI, document picker for bounded files, no working-folder Markdown |

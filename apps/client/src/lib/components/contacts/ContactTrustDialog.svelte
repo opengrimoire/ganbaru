@@ -4,6 +4,7 @@
   import Select from "$lib/components/ui/Select.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { isolateText } from "$lib/i18n/formatters";
   import { contactsMutationErrorKey, type ContactsMutationErrorKey } from "$lib/contacts/presentation";
   import { trustDurationForKind, trustKindForDuration } from "$lib/contacts/trust";
   import { isContactTrustDuration, CONTACT_TRUST_DURATIONS, type ContactTrustDuration } from "$lib/stores/preference-options";
@@ -47,7 +48,7 @@
 
 <ContactsDialog
   title={t("contacts.list.editTrust")}
-  description={t("contacts.list.editTrustDescription", contact.displayName)}
+  description={t("contacts.list.editTrustDescription", isolateText(contact.displayName))}
   cancelLabel={t("contacts.invite.cancel")}
   confirmLabel={t("contacts.list.save")}
   confirmDisabled={saving}

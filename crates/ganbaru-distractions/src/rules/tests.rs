@@ -52,6 +52,179 @@ fn recognizes_protected_desktop_app_and_process_names() {
 }
 
 #[test]
+fn protects_session_services_multiplexers_terminals_and_compositors() {
+    for name in [
+        "systemd",
+        "pipewire",
+        "wireplumber",
+        "pulseaudio",
+        "ssh-agent",
+        "gpg-agent",
+        "sshd",
+        "tmux",
+        "screen",
+        "alacritty",
+        "foot",
+        "gnome-session-binary",
+        "sway",
+        "Hyprland",
+    ] {
+        assert!(super::is_protected_desktop_app_name(name), "{name}");
+    }
+}
+
+#[test]
+fn is_protected_observed_process_name_covers_session_managers() {
+    for name in [
+        "i3",
+        "sway",
+        "awesome",
+        "openbox",
+        "bspwm",
+        "cinnamon",
+        "cinnamon-session",
+        "cinnamon-sessio",
+        "xfce4-session",
+        "xfwm4",
+        "xfdesktop",
+        "mate-session",
+        "marco",
+        "mate-terminal",
+        "lxsession",
+        "lxqt-session",
+    ] {
+        assert!(super::is_protected_observed_process_name(name), "{name}");
+    }
+}
+
+#[test]
+fn is_protected_observed_process_name_covers_x11_window_managers() {
+    for name in [
+        "dwm",
+        "herbstluftwm",
+        "qtile",
+        "fluxbox",
+        "icewm",
+        "icewm-session",
+        "xmonad",
+        "fvwm",
+        "fvwm3",
+    ] {
+        assert!(super::is_protected_observed_process_name(name), "{name}");
+    }
+}
+
+#[test]
+fn protects_truncated_comm_names_of_protected_processes() {
+    assert!(super::is_protected_observed_process_name("gnome-terminal-"));
+    assert!(super::is_protected_observed_process_name("gnome-session-b"));
+    assert!(super::is_protected_observed_process_name("xdg-desktop-por"));
+    assert!(super::is_protected_observed_process_name("gnome-terminal"));
+    assert!(!super::is_protected_observed_process_name("gnome-chess"));
+    assert!(!super::is_protected_observed_process_name(
+        "steam-runtime-l"
+    ));
+    assert!(!super::is_protected_observed_process_name("gnome-ter"));
+}
+
+#[test]
+fn trusted_match_names_keep_own_aliases_and_catalog_names_only() {
+    let catalog = vec![
+        "firefox".to_string(),
+        "firefox.desktop".to_string(),
+        "firefox-bin".to_string(),
+    ];
+    let trusted = super::trusted_process_match_names(
+        "Firefox",
+        vec![
+            "firefox".to_string(),
+            "/usr/lib/firefox/firefox-bin".to_string(),
+            "pipewire-media".to_string(),
+            "code".to_string(),
+        ],
+        &catalog,
+    );
+    assert_eq!(trusted, vec!["Firefox", "firefox-bin"]);
+
+    let typed = super::trusted_process_match_names("steam", vec!["steam".to_string()], &[]);
+    assert_eq!(typed, vec!["steam"]);
+    let hidden = super::trusted_process_match_names(
+        "Solitaire",
+        vec!["Solitaire".to_string(), "obsidian".to_string()],
+        &[],
+    );
+    assert_eq!(hidden, vec!["Solitaire"]);
+}
+
+#[test]
+fn desktop_rule_matchers_keep_a_stored_identity_that_differs_from_the_name() {
+    let rule_identity = super::DistractionsDesktopRuleIdentity::DesktopApp {
+        rule_id: "stored  Identity".to_string(),
+    };
+    let matchers = super::desktop_rule_matchers(vec![DistractionsDesktopAppRuleInput {
+        rule_identity: rule_identity.clone(),
+        name: "Steam".to_string(),
+        match_names: vec!["steam".to_string()],
+    }]);
+
+    assert_eq!(
+        matchers.get("steam").map(|matcher| &matcher.rule_identity),
+        Some(&rule_identity)
+    );
+}
+
+#[test]
+fn desktop_rule_matchers_enforce_a_whitespace_identity_and_skip_only_an_empty_one() {
+    let desktop_identity = super::DistractionsDesktopRuleIdentity::DesktopApp {
+        rule_id: "\t".to_string(),
+    };
+    let limit_identity = super::DistractionsDesktopRuleIdentity::UsageLimit {
+        rule_id: "\u{00A0}".to_string(),
+        entry_id: "\t".to_string(),
+    };
+    let matchers = super::desktop_rule_matchers(vec![
+        DistractionsDesktopAppRuleInput {
+            rule_identity: desktop_identity.clone(),
+            name: "Steam".to_string(),
+            match_names: vec!["steam".to_string()],
+        },
+        DistractionsDesktopAppRuleInput {
+            rule_identity: limit_identity.clone(),
+            name: "Discord".to_string(),
+            match_names: vec!["discord".to_string()],
+        },
+        DistractionsDesktopAppRuleInput {
+            rule_identity: super::DistractionsDesktopRuleIdentity::DesktopApp {
+                rule_id: String::new(),
+            },
+            name: "Spotify".to_string(),
+            match_names: vec!["spotify".to_string()],
+        },
+        DistractionsDesktopAppRuleInput {
+            rule_identity: super::DistractionsDesktopRuleIdentity::UsageLimit {
+                rule_id: "limit".to_string(),
+                entry_id: String::new(),
+            },
+            name: "Slack".to_string(),
+            match_names: vec!["slack".to_string()],
+        },
+    ]);
+
+    assert_eq!(
+        matchers.get("steam").map(|matcher| &matcher.rule_identity),
+        Some(&desktop_identity)
+    );
+    assert_eq!(
+        matchers
+            .get("discord")
+            .map(|matcher| &matcher.rule_identity),
+        Some(&limit_identity)
+    );
+    assert!(!matchers.contains_key("spotify"));
+    assert!(!matchers.contains_key("slack"));
+}
+
+#[test]
 fn desktop_rule_matchers_skip_protected_process_names() {
     let matchers = super::desktop_rule_matchers(vec![
         DistractionsDesktopAppRuleInput {

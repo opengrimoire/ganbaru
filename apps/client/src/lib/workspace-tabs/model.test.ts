@@ -75,9 +75,9 @@ const pageOne: WorkspaceTabLocation = {
 };
 
 describe("workspace tab defaults", () => {
-  it("opens Calendar and Projects on first use", () => {
+  it("opens only Calendar on first use", () => {
     const initial = defaultWorkspaceTabsState(ALL_KINDS, idFactory());
-    expect(initial.tabs.map((entry) => entry.location.kind)).toEqual(["calendar", "projects"]);
+    expect(initial.tabs.map((entry) => entry.location.kind)).toEqual(["calendar"]);
     expect(initial.activeTabId).toBe(initial.tabs[0].id);
   });
 

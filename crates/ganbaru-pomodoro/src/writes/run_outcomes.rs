@@ -306,7 +306,7 @@ async fn load_pauses_by_segment_tx(
          WHERE segment_id IN ({placeholders})
          ORDER BY started_at ASC"
     );
-    let mut q = sqlx::query(&query);
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(query.as_str()));
     for id in segment_ids {
         q = q.bind(id);
     }

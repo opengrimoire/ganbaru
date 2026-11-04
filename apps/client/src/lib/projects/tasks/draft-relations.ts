@@ -9,6 +9,13 @@ import {
 } from "$lib/projects/types";
 import type { ProjectTaskDetailDraft } from "./detail";
 
+const DRAFT_ORDER_KEY_WIDTH = 10;
+
+/** Display-only order key that keeps draft entries in array order; native code assigns real keys on save. */
+function draftOrderKey(index: number): string {
+  return index.toString(36).padStart(DRAFT_ORDER_KEY_WIDTH, "0");
+}
+
 /** Checklist item composed on a task draft. */
 export interface ProjectTaskDraftChecklistItem {
   id: string;
@@ -109,8 +116,8 @@ export function projectTaskDraftPreview(input: {
     description: input.draft.description,
     priority: input.draft.priority,
     taskType: input.draft.taskType,
-    sectionSortOrder: 0,
-    statusSortOrder: 0,
+    sectionOrderKey: "",
+    statusOrderKey: "",
     milestone: input.draft.milestone,
     createdAt: input.timestamp,
     updatedAt: input.timestamp,
@@ -129,7 +136,7 @@ export function projectTaskDraftChecklistItems(
     taskId,
     title: item.title,
     completedAt: item.completed ? timestamp : undefined,
-    sortOrder: index,
+    orderKey: draftOrderKey(index),
     createdAt: timestamp,
     updatedAt: timestamp,
   }));
@@ -149,7 +156,7 @@ export function projectTaskDraftSubtaskTasks(
     description: "",
     priority: "normal",
     taskType: "task",
-    sectionSortOrder: index,
+    sectionOrderKey: draftOrderKey(index),
     milestone: false,
   }));
 }
@@ -185,7 +192,7 @@ export function projectTaskDraftTags(input: {
     projectId: input.projectId,
     name,
     color: PROJECT_TAG_DEFAULT_COLOR,
-    sortOrder: index,
+    orderKey: draftOrderKey(index),
     createdAt: input.timestamp,
     updatedAt: input.timestamp,
   }));

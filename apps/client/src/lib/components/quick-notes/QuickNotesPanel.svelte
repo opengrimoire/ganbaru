@@ -3,7 +3,7 @@
   import Archive from "@lucide/svelte/icons/archive";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Search from "@lucide/svelte/icons/search";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
   import type { EventColor } from "$lib/calendar/types";
   import {
@@ -392,6 +392,7 @@
         expectedRevision: full.revision,
         title: full.title,
         runs: full.runs,
+        images: full.images,
         color,
         tagId: full.tagId,
         pinned: full.pinned,
@@ -409,6 +410,7 @@
         expectedRevision: full.revision,
         title: full.title,
         runs: full.runs,
+        images: full.images,
         color: tag?.color ?? full.color,
         tagId,
         pinned: full.pinned,

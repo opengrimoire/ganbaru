@@ -1,5 +1,4 @@
 import { createRichText } from "$lib/notes/blocks/factory";
-import { NOTES_PAGE_PROJECT_ID_PROPERTY } from "$lib/notes/project-membership";
 import { mapNotesPageDto } from "$lib/notes/validation/response-mappers";
 import type { NotesNavigationDatabase, NotesPage } from "$lib/notes/types";
 import { isNotesUuid } from "$lib/notes/links/block-link";
@@ -66,12 +65,16 @@ function parsePageSummaryIcon(value: string | null, pageId: string): unknown {
   if (value === null) return null;
   try {
     return JSON.parse(value) as unknown;
-  } catch {
-    throw new Error(`page.icon for page "${pageId}" must contain valid JSON`);
+  } catch (error) {
+    console.warn(`Ignoring unusable synced page.icon for page "${pageId}"`, error);
+    return null;
   }
 }
 
-/** Parse the compact persisted page row returned by Notes list commands. */
+/**
+ * Parse the compact persisted page row returned by Notes list commands. An unusable icon
+ * maps to null through the tolerant page reader, so the page stays listed and reachable.
+ */
 export function mapPageSummary(value: unknown): NotesPage {
   const row = notesWorkspaceShellRecord(value, "page");
   const parentType = shellString(row.parent_type, "page.parent_type");
@@ -101,13 +104,13 @@ export function mapPageSummary(value: unknown): NotesPage {
     last_edited_time: shellString(row.last_edited_time, "page.last_edited_time"),
     parent,
     folder_id: shellNullableString(row.folder_id, "page.folder_id"),
+    project_id: projectId,
     in_trash: row.in_trash === undefined ? false : shellBoolean(row.in_trash, "page.in_trash"),
     archived: row.archived === undefined ? false : shellBoolean(row.archived, "page.archived"),
     icon: parsePageSummaryIcon(rawIcon, pageId),
     cover: null,
     properties: {
       title: { id: "title", type: "title", title: title ? [createRichText(title)] : [] },
-      ...(projectId ? { [NOTES_PAGE_PROJECT_ID_PROPERTY]: projectId } : {}),
     },
     url: null,
     public_url: null,

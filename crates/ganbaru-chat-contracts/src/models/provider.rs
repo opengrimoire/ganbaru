@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ProviderInternalMcpConfig {
     pub name: String,
     pub url: String,
@@ -17,6 +17,18 @@ pub struct ProviderInternalMcpConfig {
     /// The internal MCP endpoint also serves personal Chat resources, so its
     /// presence alone must never imply an organizational assignment.
     pub organizational_authority: bool,
+}
+
+impl std::fmt::Debug for ProviderInternalMcpConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderInternalMcpConfig")
+            .field("name", &self.name)
+            .field("url", &self.url)
+            .field("bearer_token", &"[REDACTED]")
+            .field("organizational_authority", &self.organizational_authority)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

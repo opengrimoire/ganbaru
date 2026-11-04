@@ -1,9 +1,19 @@
-//! Conversions between engine values and the sync wire forms of protocol 5.
+//! Conversions between engine values and their sync wire forms.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ganbaru_handoff::protocol::SyncSeq;
-use ganbaru_sync_contracts::{Digest32, VersionVector, WriterId};
+use ganbaru_handoff::protocol::ControlMessage;
+use ganbaru_handoff::protocol::{SyncAsset, SyncAssetKey, SyncSeq};
+use ganbaru_sync::assets::AssetRef;
+use ganbaru_sync_contracts::{Digest32, ProposalRejection, Seq, VersionVector, WriterId};
+
+/// Error code of a pull the hub can no longer answer because it compacted operations the peer
+/// lacks. The peer stops pulling until it bootstraps from a fresh copy of the vault.
+pub const BOOTSTRAP_REQUIRED: &str = "bootstrap_required";
+
+/// Error code of a request refused because a frozen anchor handover contest holds the device.
+/// The hold ends when the contest resolves, so the device may ask again then.
+pub const DEVICE_HELD: &str = "device_held";
 
 /// Wire entries of a version vector, in writer order.
 pub fn vector_to_wire(vector: &VersionVector) -> Vec<SyncSeq> {
@@ -23,6 +33,25 @@ pub fn vector_from_wire(entries: &[SyncSeq]) -> Result<VersionVector, String> {
         vector.advance(writer_from_wire(&entry.writer)?, entry.seq);
     }
     Ok(vector)
+}
+
+/// Wire entries of forked writers with their fork sequences.
+pub fn forked_to_wire(forked: &[(WriterId, Seq)]) -> Vec<SyncSeq> {
+    forked
+        .iter()
+        .map(|(writer, seq)| SyncSeq {
+            writer: writer.to_hex(),
+            seq: *seq,
+        })
+        .collect()
+}
+
+/// Reads wire forked writers. Protocol validation already checked the text forms.
+pub fn forked_from_wire(entries: &[SyncSeq]) -> Result<Vec<(WriterId, Seq)>, String> {
+    entries
+        .iter()
+        .map(|entry| Ok((writer_from_wire(&entry.writer)?, entry.seq)))
+        .collect()
 }
 
 pub fn writer_from_wire(text: &str) -> Result<WriterId, String> {
@@ -57,6 +86,77 @@ pub fn ops_from_wire(ops: &[String]) -> Result<Vec<Vec<u8>>, String> {
                 .map_err(|_| "sync operation text is invalid".to_string())
         })
         .collect()
+}
+
+pub fn asset_to_wire(asset: &AssetRef) -> SyncAsset {
+    SyncAsset {
+        class: asset.class().name.to_string(),
+        sha256: asset.sha256().to_string(),
+        content_type: asset.content_type().to_string(),
+        byte_size: asset.byte_size(),
+    }
+}
+
+/// The class and digest that identify an asset on the wire.
+pub fn asset_key(asset: &AssetRef) -> SyncAssetKey {
+    SyncAssetKey {
+        class: asset.class().name.to_string(),
+        sha256: asset.sha256().to_string(),
+    }
+}
+
+/// Reads a wire asset against the classes the manifest registers, which bound its size and own
+/// its path.
+pub fn asset_from_wire(
+    asset: &SyncAsset,
+    manifest: &ganbaru_sync::manifest::Manifest,
+) -> Result<AssetRef, String> {
+    let (_, class) = manifest
+        .asset_class(&asset.class)
+        .ok_or_else(|| format!("sync asset class {} is not registered", asset.class))?;
+    AssetRef::new(
+        class,
+        asset.sha256.clone(),
+        asset.content_type.clone(),
+        asset.byte_size,
+    )
+    .map_err(|error| format!("sync asset is invalid: {error}"))
+}
+
+pub fn bytes_to_wire(bytes: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub fn bytes_from_wire(text: &str) -> Result<Vec<u8>, String> {
+    URL_SAFE_NO_PAD
+        .decode(text)
+        .map_err(|_| "sync asset chunk is invalid".to_string())
+}
+
+/// The answer to a proposal: the revision that holds it, or the wire value of its rejection.
+pub fn proposed_to_wire(outcome: Result<u64, ProposalRejection>) -> ControlMessage {
+    match outcome {
+        Ok(revision) => ControlMessage::SyncProposed {
+            revision: Some(revision),
+            rejection: None,
+        },
+        Err(rejection) => ControlMessage::SyncProposed {
+            revision: None,
+            rejection: Some(rejection.as_u8()),
+        },
+    }
+}
+
+/// The outcome an answer to a proposal names.
+pub fn proposed_from_wire(
+    revision: Option<u64>,
+    rejection: Option<u8>,
+) -> Result<Result<u64, ProposalRejection>, String> {
+    match (revision, rejection.map(ProposalRejection::from_u8)) {
+        (Some(revision), None) => Ok(Ok(revision)),
+        (None, Some(Some(rejection))) => Ok(Err(rejection)),
+        _ => Err("the hub answered a proposal without one outcome".to_string()),
+    }
 }
 
 #[cfg(test)]

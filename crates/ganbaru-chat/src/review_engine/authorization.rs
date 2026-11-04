@@ -7,6 +7,7 @@ use super::contracts::{
 };
 use super::registry::ReviewSnapshot;
 use super::{ReviewWorkspaceAuthorizer, default_context_lines, persistence_error};
+use crate::git::hardened::GitFolderTrust;
 use sqlx::SqlitePool;
 
 pub async fn require_request_ownership(
@@ -69,7 +70,7 @@ pub async fn authorize_snapshot(
     pool: &SqlitePool,
     snapshot: &ReviewSnapshot,
     operation: WorkingFolderAuthorizationOperation,
-) -> ChatResult<()> {
+) -> ChatResult<GitFolderTrust> {
     let request = OpenChatReviewRequest {
         thread_id: snapshot.thread_id.clone(),
         working_folder_id: snapshot.working_folder_id.clone(),
@@ -91,7 +92,7 @@ pub async fn authorize_snapshot(
             false,
         ));
     }
-    Ok(())
+    Ok(authorized.git_trust)
 }
 
 pub async fn authorize_completed_action(

@@ -52,9 +52,10 @@ impl Read for SecureWorkspaceFile {
 pub(super) fn revision_and_permissions(
     file: &mut File,
     relative_path: &str,
+    max_bytes: u64,
 ) -> ChatResult<(String, fs::Permissions)> {
     let before = file.metadata().map_err(|_| workspace_file_write_error())?;
-    if !before.is_file() || before.len() > MAX_PREVIEW_BYTES {
+    if !before.is_file() || before.len() > max_bytes {
         return Err(ChatError::validation(
             "relativePath",
             "Workspace path is not bounded editable text",
@@ -65,7 +66,7 @@ pub(super) fn revision_and_permissions(
         .map_err(|_| workspace_file_write_error())?;
     let mut bytes = Vec::with_capacity(usize::try_from(before.len()).unwrap_or_default());
     (&mut *file)
-        .take(MAX_PREVIEW_BYTES + 1)
+        .take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| workspace_file_write_error())?;
     let after = file.metadata().map_err(|_| workspace_file_write_error())?;

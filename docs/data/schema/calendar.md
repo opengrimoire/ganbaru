@@ -36,7 +36,17 @@ iCalendar import is staged: parsing and validation produce a bounded plan before
 
 Preservation data is not a second editable event model. Editing an imported event updates the canonical projection while keeping enough provenance to export source values according to the interoperability policy.
 
+Every iCalendar value node carries the `property_id` of the property it belongs to, including nodes of a parameter, and every component written for an event, alarm, or override is projected (`projected_kind`, `projected_id`) in the same transaction that inserts it.
+
+Sync carries each Calendar group that owns rows (an event's timing, alarms, attendees, organizer, categories, notifications, extended properties, Focus settings, music assignments, and task links, and an iCalendar component's property graph) as one value, so every such value is bounded to 256 KiB by a deterministic upper-bound estimate (`ganbaru-calendar::value_bound`). Ids are charged at no less than the generated id allowance, so an archive or split copy, which replaces ids with derived ones, fits wherever its source fit. An edit, creation, split, or Undo over the bound is refused; timing over the bound reports "too many changed occurrences". An import does not project an event with an oversized value: the iCalendar object keeps the full source and a diagnostic names the event. Oversized preserved properties of a component are dropped with a counted warning. A calendar event links at most 100 tasks, which keeps the task link value well inside the bound when links are added concurrently.
+
 Import deduplication uses source identities and explicit replacement behavior; titles, timestamps, or display order are not identity. A failed import leaves the previous calendar intact.
+
+## Replication
+
+Calendar is a sync domain (tables 160 to 166). A table is a replicated row when anything outside its owner points at it; every other Calendar table is owned by its event, archive, or iCalendar object and travels inside the owner's value, keyed by the owner key and an `ordinal` (a nested table by its parent row's key and `ordinal`). Owned rows keep their `id` as a unique data column because patches, archives, and export address rows by id, and a writer that rewrites an owner keeps the ids of unchanged rows. The archive import object and task link tables use a derived `sync_key`.
+
+The same file imported on two devices gives two events with one `(calendar_id, source_uid)`; duplicate repair keeps the lower key, so every device shows one event. Focus runs follow it to the kept event. Task links name the event in their identity, so a link to the hidden duplicate stays hidden, and Music assignments carry the event as an opaque owner id, so the duplicate's assignments keep pointing at it. `calendars.visible` and `last_synced` are device-local, so hiding a calendar is a per-device choice. `icalendar_components.projected_kind` and `projected_id` are derived columns rebuilt after apply from the event and override component links. No replicated column is a real number: event and archive `geo_lat` and `geo_lng` are integer millionths of a degree, the precision RFC 5545 `GEO` allows, and `icalendar_value_nodes.number_value` is text holding the parsed JSON number literal, so preservation stays lossless. Group and merge kinds are in the Calendar domain manifest of `crates/ganbaru-sync/`.
 
 ## Notifications
 

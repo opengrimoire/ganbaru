@@ -9,50 +9,42 @@ use super::models::{
     ProjectViewRow, ProjectsMutationRows,
 };
 use super::mutations::ensure_project_exists_in_pool;
+use super::order::{OrderGroup, OrderPlacement, rank_key};
 use super::validation::{
     SINGLE_PROJECT_VIEW_TYPES, require_non_empty, validate_view_create, validate_view_reorder,
 };
 
-const ORDER_SPACING: i64 = 1_000;
-
 /// Views a new project starts with, in sidebar order. Other types are added from the sidebar.
 const DEFAULT_VIEW_TYPES: &[&str] = &["dashboard", "list", "notes", "chat"];
 
-/// Adds the default views to new projects inside the caller's transaction.
+fn view_order(project_id: &str) -> OrderGroup<'_> {
+    OrderGroup::new("project_views", "order_key").filter("project_id", Some(project_id))
+}
+
+/// Adds the default views to a new project inside the caller's transaction.
 pub(super) async fn insert_default_views(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    project_ids: &[&str],
+    project_id: &str,
 ) -> Result<(), String> {
-    if project_ids.is_empty() {
-        return Ok(());
-    }
-    let rows = project_ids.iter().flat_map(|project_id| {
-        DEFAULT_VIEW_TYPES
-            .iter()
-            .enumerate()
-            .map(move |(index, view_type)| (*project_id, *view_type, index))
-    });
-    let mut insert = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-        "INSERT INTO project_views (id, project_id, view_type, sort_order) ",
-    );
-    insert.push_values(rows, |mut row, (project_id, view_type, index)| {
-        row.push_bind(format!("view-{project_id}-{view_type}"))
-            .push_bind(project_id)
-            .push_bind(view_type)
-            .push_bind(order_at(index));
-    });
-    insert
-        .build()
+    for (index, view_type) in DEFAULT_VIEW_TYPES.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO project_views (id, project_id, view_type, order_key) VALUES (?, ?, ?, ?)",
+        )
+        .bind(format!("view-{project_id}-{view_type}"))
+        .bind(project_id)
+        .bind(view_type)
+        .bind(rank_key(index)?.as_str())
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("create default project views: {e}"))?;
+    }
     Ok(())
 }
 
 /// Loads every view of every project, in sidebar order.
 pub(super) async fn load_all_views(pool: &SqlitePool) -> Result<Vec<ProjectViewRow>, String> {
     sqlx::query_as::<_, ProjectViewRow>(
-        "SELECT * FROM project_views ORDER BY project_id ASC, sort_order ASC, id ASC",
+        "SELECT * FROM project_views ORDER BY project_id ASC, order_key ASC, id ASC",
     )
     .fetch_all(pool)
     .await
@@ -65,7 +57,7 @@ pub(super) async fn load_project_views(
     project_id: &str,
 ) -> Result<Vec<ProjectViewRow>, String> {
     sqlx::query_as::<_, ProjectViewRow>(
-        "SELECT * FROM project_views WHERE project_id = ? ORDER BY sort_order ASC, id ASC",
+        "SELECT * FROM project_views WHERE project_id = ? ORDER BY order_key ASC, id ASC",
     )
     .bind(project_id)
     .fetch_all(pool)
@@ -73,7 +65,8 @@ pub(super) async fn load_project_views(
     .map_err(|e| format!("load project views: {e}"))
 }
 
-/// Adds a view after the project's last view. Notes and Chat can appear once per project.
+/// Adds a view after the project's last view. A project keeps one Notes and one Chat view locally; concurrent adds
+/// from two devices may keep two, which open the same pages and channels.
 pub async fn create_view(
     pool: &SqlitePool,
     view: ProjectViewCreate,
@@ -82,34 +75,40 @@ pub async fn create_view(
     let project_id = view.project_id.trim();
     let view_type = view.view_type.trim();
     ensure_project_exists_in_pool(pool, project_id).await?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project view create: {e}"))?;
     if SINGLE_PROJECT_VIEW_TYPES.contains(&view_type) {
         let existing: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM project_views WHERE project_id = ? AND view_type = ?",
         )
         .bind(project_id)
         .bind(view_type)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| format!("check project view type: {e}"))?;
         if existing > 0 {
             return Err(format!("project already has a {view_type} view"));
         }
     }
+    let order_key = view_order(project_id)
+        .place(&mut tx, view.id.trim(), &OrderPlacement::End)
+        .await?;
     sqlx::query(
-        "INSERT INTO project_views (id, project_id, view_type, name, sort_order)
-         VALUES (?, ?, ?, ?, (
-            SELECT COALESCE(MAX(sort_order), 0) + ? FROM project_views WHERE project_id = ?
-         ))",
+        "INSERT INTO project_views (id, project_id, view_type, name, order_key) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(view.id.trim())
     .bind(project_id)
     .bind(view_type)
     .bind(normalized_view_name(view.name.as_deref()))
-    .bind(ORDER_SPACING)
-    .bind(project_id)
-    .execute(pool)
+    .bind(order_key.as_str())
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("create project view: {e}"))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project view create: {e}"))?;
     view_mutation(pool, view.id.trim()).await
 }
 
@@ -162,19 +161,7 @@ pub async fn reorder_views(
     {
         return Err("view order must list each view of the project once".to_string());
     }
-    for (index, view_id) in requested.iter().enumerate() {
-        sqlx::query(
-            "UPDATE project_views
-             SET sort_order = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE id = ? AND sort_order <> ?",
-        )
-        .bind(order_at(index))
-        .bind(view_id)
-        .bind(order_at(index))
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("reorder project view: {e}"))?;
-    }
+    view_order(project_id).reorder(&mut tx, &requested).await?;
     tx.commit()
         .await
         .map_err(|e| format!("commit project view reorder: {e}"))?;
@@ -216,8 +203,4 @@ async fn view_mutation(pool: &SqlitePool, id: &str) -> Result<ProjectsMutationRo
 fn normalized_view_name(name: Option<&str>) -> Option<String> {
     name.map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|value| !value.is_empty())
-}
-
-fn order_at(index: usize) -> i64 {
-    (index as i64 + 1) * ORDER_SPACING
 }

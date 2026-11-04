@@ -3,16 +3,16 @@ use super::requests::{
     self, CARD_REVOKED_CODE, INVALID_REQUEST_CODE, MAX_PENDING_RECEIVED, PeerReply, StatusOutcome,
 };
 use super::store::{self, ContactState, RequestDirection, RequestState, TrustGrant};
+use crate::vault::handoff::protocol::{ContactRequestOutcome, ControlMessage};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ganbaru_contacts::{
     CARD_NONCE_BYTES, ContactCard, PersonKeyPair, SignedCard, TrustKind, encode_nonce,
     random_bytes, request_signature_payload, sign_card, status_signature_payload,
 };
-use ganbaru_db::run_migrations;
 use sqlx::SqlitePool;
 
-async fn migrated_memory_pool() -> SqlitePool {
+pub(super) async fn migrated_memory_pool() -> SqlitePool {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -22,7 +22,9 @@ async fn migrated_memory_pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -39,7 +41,7 @@ impl Person {
         random_bytes(&mut card_nonce).unwrap();
         let identity = LocalIdentity {
             public_key: key.public_key(),
-            card_nonce,
+            card_nonce: Some(card_nonce),
             card_revision: 1,
             key: None,
         };
@@ -50,13 +52,18 @@ impl Person {
         }
     }
 
+    /// The nonce of the card this person hands out.
+    fn nonce(&self) -> [u8; CARD_NONCE_BYTES] {
+        self.identity.card_nonce.unwrap()
+    }
+
     fn card(&self) -> SignedCard {
         sign_card(
             &ContactCard {
                 public_key: self.key.public_key(),
                 display_name: self.name.to_string(),
                 color: 7,
-                nonce: self.identity.card_nonce,
+                nonce: self.nonce(),
                 endpoint_hint: "127.0.0.1:43821".to_string(),
                 coordinator_fingerprint: Some([9u8; 32]),
                 issued_at_ms: 1_700_000_000_000,
@@ -91,11 +98,22 @@ async fn deliver(
         pool,
         &recipient.identity,
         store::now(),
-        &encode_nonce(&recipient.identity.card_nonce),
+        &encode_nonce(&recipient.nonce()),
         &requester.card().text(),
         request_id,
-        &requester.request_signature(&recipient.identity.card_nonce, request_id),
+        &requester.request_signature(&recipient.nonce(), request_id),
     )
+    .await
+    .unwrap()
+}
+
+/// The requester-chosen ids of stored received rows, newest first.
+async fn peer_ids(pool: &SqlitePool) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT peer_request_id FROM contact_requests WHERE peer_request_id IS NOT NULL
+         ORDER BY created_at DESC, id",
+    )
+    .fetch_all(pool)
     .await
     .unwrap()
 }
@@ -162,6 +180,37 @@ async fn stale_nonce_is_rejected_as_revoked_without_a_row() {
 }
 
 #[tokio::test]
+async fn unreadable_own_nonce_is_rejected_as_revoked_without_a_row() {
+    let pool = migrated_memory_pool().await;
+    let mut recipient = Person::new("Recipient");
+    let requester = Person::new("Requester");
+    let handed_out = recipient.nonce();
+    recipient.identity.card_nonce = None;
+
+    let reply = requests::receive_request(
+        &pool,
+        &recipient.identity,
+        store::now(),
+        &encode_nonce(&handed_out),
+        &requester.card().text(),
+        "contact-old",
+        &requester.request_signature(&handed_out, "contact-old"),
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        reply,
+        PeerReply::Rejected {
+            code: CARD_REVOKED_CODE,
+            retryable: false,
+            ..
+        }
+    ));
+    assert!(store::list_requests(&pool).await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn request_signed_for_another_id_is_invalid() {
     let pool = migrated_memory_pool().await;
     let recipient = Person::new("Recipient");
@@ -171,10 +220,10 @@ async fn request_signed_for_another_id_is_invalid() {
         &pool,
         &recipient.identity,
         store::now(),
-        &encode_nonce(&recipient.identity.card_nonce),
+        &encode_nonce(&recipient.nonce()),
         &requester.card().text(),
         "contact-b",
-        &requester.request_signature(&recipient.identity.card_nonce, "contact-a"),
+        &requester.request_signature(&recipient.nonce(), "contact-a"),
     )
     .await
     .unwrap();
@@ -236,13 +285,11 @@ async fn newer_request_from_the_same_person_replaces_the_pending_one() {
     deliver(&pool, &recipient, &requester, "contact-first").await;
     deliver(&pool, &recipient, &requester, "contact-second").await;
 
-    let rows = store::list_requests(&pool).await.unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].id, "contact-second");
+    assert_eq!(peer_ids(&pool).await, ["contact-second"]);
 }
 
 #[tokio::test]
-async fn request_id_owned_by_another_person_is_invalid() {
+async fn a_request_id_reused_by_another_person_gets_its_own_row() {
     let pool = migrated_memory_pool().await;
     let recipient = Person::new("Recipient");
     let first = Person::new("First");
@@ -251,16 +298,49 @@ async fn request_id_owned_by_another_person_is_invalid() {
     deliver(&pool, &recipient, &first, "contact-shared").await;
     let reply = deliver(&pool, &recipient, &second, "contact-shared").await;
 
-    assert!(matches!(
-        reply,
-        PeerReply::Rejected {
-            code: INVALID_REQUEST_CODE,
-            ..
-        }
-    ));
+    assert_eq!(reply, received("contact-shared"));
     let rows = store::list_requests(&pool).await.unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].public_key, first.key.public_key().to_text());
+    assert_eq!(rows.len(), 2);
+    assert_ne!(rows[0].id, rows[1].id);
+    assert_eq!(peer_ids(&pool).await, ["contact-shared", "contact-shared"]);
+    for person in [&first, &second] {
+        let row = store::received_request_by_peer(
+            &pool,
+            &person.key.public_key().to_text(),
+            "contact-shared",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(row.display_name, person.name);
+    }
+}
+
+#[tokio::test]
+async fn a_request_delivered_again_after_its_row_was_deleted_gets_a_fresh_local_row() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let requester = Person::new("Requester");
+    let key = requester.key.public_key().to_text();
+
+    deliver(&pool, &recipient, &requester, "contact-one").await;
+    let first = store::received_request_by_peer(&pool, &key, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("DELETE FROM contact_requests")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let reply = deliver(&pool, &recipient, &requester, "contact-one").await;
+
+    assert_eq!(reply, received("contact-one"));
+    let again = store::received_request_by_peer(&pool, &key, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(again.id, first.id, "a deleted row's id is never reused");
+    assert_eq!(again.state, "pending");
 }
 
 #[tokio::test]
@@ -279,19 +359,98 @@ async fn pending_received_requests_are_capped() {
     }
 
     let rows = store::list_requests(&pool).await.unwrap();
-    assert_eq!(rows.len(), total);
-    let pending = rows.iter().filter(|row| row.state == "pending").count();
-    let expired: Vec<&str> = rows
-        .iter()
-        .filter(|row| row.state == "expired")
-        .map(|row| row.id.as_str())
-        .collect();
-    assert_eq!(pending, usize::try_from(MAX_PENDING_RECEIVED).unwrap());
-    assert_eq!(expired.len(), 3);
+    assert_eq!(rows.len(), usize::try_from(MAX_PENDING_RECEIVED).unwrap());
+    assert!(rows.iter().all(|row| row.state == "pending"));
+    let ids = peer_ids(&pool).await;
+    let newest = format!("contact-{:03}", total - 1);
+    assert!(ids.contains(&newest), "the newest request is kept");
+    for evicted in ["contact-000", "contact-001", "contact-002"] {
+        assert!(
+            !ids.iter().any(|id| id == evicted),
+            "the oldest requests are deleted"
+        );
+    }
+}
+
+#[tokio::test]
+async fn handled_requests_are_deleted_after_the_retention_window() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let old = Person::new("Old");
+    let newer = Person::new("Newer");
+    let start = store::now();
+    deliver(&pool, &recipient, &old, "contact-old").await;
+    let expired_at = start + chrono::Duration::days(requests::REQUEST_TTL_DAYS + 1);
+    store::expire_stale_requests(&pool, expired_at)
+        .await
+        .unwrap();
     assert!(
-        expired.contains(&"contact-000"),
-        "the oldest rows expire first"
+        store::list_pending_requests(&pool, start)
+            .await
+            .unwrap()
+            .is_empty(),
+        "handled requests are never listed"
     );
+
+    let later = expired_at + chrono::Duration::days(requests::HANDLED_REQUEST_RETENTION_DAYS + 1);
+    let reply = requests::receive_request(
+        &pool,
+        &recipient.identity,
+        later,
+        &encode_nonce(&recipient.nonce()),
+        &newer.card().text(),
+        "contact-new",
+        &newer.request_signature(&recipient.nonce(), "contact-new"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply, received("contact-new"));
+
+    assert_eq!(peer_ids(&pool).await, ["contact-new"]);
+}
+
+#[tokio::test]
+async fn handled_requests_are_capped_with_the_oldest_deleted_first() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let handled = usize::try_from(requests::MAX_HANDLED_REQUESTS).unwrap() + 3;
+    let now = store::now();
+    for index in 0..handled {
+        let id = format!("contact-{index:03}");
+        let requester = Person::new("Many");
+        deliver(&pool, &recipient, &requester, &id).await;
+        let row =
+            store::received_request_by_peer(&pool, &requester.key.public_key().to_text(), &id)
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(
+            store::set_request_state(&pool, &row.id, None, RequestState::Declined, None, now)
+                .await
+                .unwrap()
+        );
+    }
+    deliver(&pool, &recipient, &Person::new("Last"), "contact-last").await;
+
+    let rows = store::list_requests(&pool).await.unwrap();
+    let declined = rows.iter().filter(|row| row.state == "declined").count();
+    assert_eq!(
+        declined,
+        usize::try_from(requests::MAX_HANDLED_REQUESTS).unwrap()
+    );
+    let ids = peer_ids(&pool).await;
+    assert!(
+        ids.iter().any(|id| id == "contact-last"),
+        "the new request is kept"
+    );
+    let newest_handled = format!("contact-{:03}", handled - 1);
+    assert!(ids.contains(&newest_handled));
+    for pruned in ["contact-000", "contact-001", "contact-002"] {
+        assert!(
+            !ids.iter().any(|id| id == pruned),
+            "the oldest handled requests are deleted"
+        );
+    }
 }
 
 #[tokio::test]
@@ -377,15 +536,19 @@ async fn accepting_creates_an_active_contact_with_the_chosen_trust() {
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
     deliver(&pool, &recipient, &requester, "contact-one").await;
-    let row = store::request_by_id(&pool, "contact-one")
-        .await
-        .unwrap()
-        .unwrap();
+    let row = store::received_request_by_peer(
+        &pool,
+        &requester.key.public_key().to_text(),
+        "contact-one",
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let now = store::now();
 
     requests::accept_request(
         &pool,
-        "contact-one",
+        &row.id,
         row.revision,
         TrustKind::SevenDays,
         TrustKind::UntilRevoked,
@@ -427,14 +590,18 @@ async fn accepting_with_a_stale_revision_is_a_conflict() {
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
     deliver(&pool, &recipient, &requester, "contact-one").await;
-    let row = store::request_by_id(&pool, "contact-one")
-        .await
-        .unwrap()
-        .unwrap();
+    let row = store::received_request_by_peer(
+        &pool,
+        &requester.key.public_key().to_text(),
+        "contact-one",
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     let error = requests::accept_request(
         &pool,
-        "contact-one",
+        &row.id,
         row.revision + 1,
         TrustKind::Once,
         TrustKind::Once,
@@ -453,14 +620,18 @@ async fn declining_answers_declined_and_cancel_only_touches_sent_rows() {
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
     deliver(&pool, &recipient, &requester, "contact-one").await;
-    let row = store::request_by_id(&pool, "contact-one")
-        .await
-        .unwrap()
-        .unwrap();
+    let row = store::received_request_by_peer(
+        &pool,
+        &requester.key.public_key().to_text(),
+        "contact-one",
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     let cancel = requests::close_request(
         &pool,
-        "contact-one",
+        &row.id,
         row.revision,
         RequestDirection::Sent,
         RequestState::Expired,
@@ -473,7 +644,7 @@ async fn declining_answers_declined_and_cancel_only_touches_sent_rows() {
 
     requests::close_request(
         &pool,
-        "contact-one",
+        &row.id,
         row.revision,
         RequestDirection::Received,
         RequestState::Declined,
@@ -499,14 +670,18 @@ async fn trust_updates_and_removal_respect_revisions() {
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
     deliver(&pool, &recipient, &requester, "contact-one").await;
-    let row = store::request_by_id(&pool, "contact-one")
-        .await
-        .unwrap()
-        .unwrap();
+    let row = store::received_request_by_peer(
+        &pool,
+        &requester.key.public_key().to_text(),
+        "contact-one",
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let now = store::now();
     requests::accept_request(
         &pool,
-        "contact-one",
+        &row.id,
         row.revision,
         TrustKind::NotAllowed,
         TrustKind::NotAllowed,
@@ -546,32 +721,63 @@ async fn trust_updates_and_removal_respect_revisions() {
     assert_eq!(updated.invite_trust, "thirty_days");
     assert_eq!(updated.revision, contact.revision + 1);
 
-    let wrong_state =
-        store::delete_contact(&pool, &contact.id, updated.revision, ContactState::Blocked)
-            .await
-            .unwrap();
-    let removed = store::delete_contact(&pool, &contact.id, updated.revision, ContactState::Active)
-        .await
-        .unwrap();
+    let wrong_state = store::remove_contact(
+        &pool,
+        &contact.id,
+        updated.revision,
+        ContactState::Blocked,
+        now,
+    )
+    .await
+    .unwrap();
+    let removed = store::remove_contact(
+        &pool,
+        &contact.id,
+        updated.revision,
+        ContactState::Active,
+        now,
+    )
+    .await
+    .unwrap();
     assert!(!wrong_state);
     assert!(removed);
     assert!(store::list_contacts(&pool).await.unwrap().is_empty());
+    assert!(
+        store::contact_by_key(&pool, &contact.public_key)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let kept = store::contact_by_id(&pool, &contact.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.state, "removed");
+    assert_eq!(
+        (kept.invite_trust.as_str(), kept.message_trust.as_str()),
+        ("not_allowed", "not_allowed")
+    );
+    assert!(kept.accepted_at.is_none());
 }
 
 #[tokio::test]
-async fn blocking_an_active_contact_clears_trust_and_unblocking_removes_the_row() {
+async fn blocking_an_active_contact_clears_trust_and_unblocking_removes_the_contact() {
     let pool = migrated_memory_pool().await;
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
     deliver(&pool, &recipient, &requester, "contact-one").await;
-    let row = store::request_by_id(&pool, "contact-one")
-        .await
-        .unwrap()
-        .unwrap();
+    let row = store::received_request_by_peer(
+        &pool,
+        &requester.key.public_key().to_text(),
+        "contact-one",
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let now = store::now();
     requests::accept_request(
         &pool,
-        "contact-one",
+        &row.id,
         row.revision,
         TrustKind::UntilRevoked,
         TrustKind::UntilRevoked,
@@ -588,12 +794,37 @@ async fn blocking_an_active_contact_clears_trust_and_unblocking_removes_the_row(
     assert_eq!(blocked.message_trust, "not_allowed");
     assert!(blocked.blocked_at.is_some());
 
-    let removed =
-        store::delete_contact(&pool, &blocked.id, blocked.revision, ContactState::Blocked)
-            .await
-            .unwrap();
+    let removed = store::remove_contact(
+        &pool,
+        &blocked.id,
+        blocked.revision,
+        ContactState::Blocked,
+        now,
+    )
+    .await
+    .unwrap();
     assert!(removed);
     assert!(store::contact_by_key(&pool, &key).await.unwrap().is_none());
+
+    // A removed person can send a new request and be accepted again.
+    deliver(&pool, &recipient, &requester, "contact-two").await;
+    let again = store::received_request_by_peer(&pool, &key, "contact-two")
+        .await
+        .unwrap()
+        .unwrap();
+    requests::accept_request(
+        &pool,
+        &again.id,
+        again.revision,
+        TrustKind::Once,
+        TrustKind::NotAllowed,
+        now,
+    )
+    .await
+    .unwrap();
+    let readded = store::contact_by_key(&pool, &key).await.unwrap().unwrap();
+    assert_eq!(readded.state, "active");
+    assert!(readded.blocked_at.is_none());
 }
 
 #[tokio::test]
@@ -602,13 +833,585 @@ async fn expired_requests_stop_being_pending() {
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
     deliver(&pool, &recipient, &requester, "contact-one").await;
-
+    let key = requester.key.public_key().to_text();
     let later = store::now() + chrono::Duration::days(requests::REQUEST_TTL_DAYS + 1);
+
+    let pending = store::received_request_by_peer(&pool, &key, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store::list_pending_requests(&pool, later)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a request past its deadline is not listed before a poll expires it"
+    );
+    assert!(
+        store::pending_request(&pool, RequestDirection::Received, &key, later)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let late_accept = requests::accept_request(
+        &pool,
+        &pending.id,
+        pending.revision,
+        TrustKind::Once,
+        TrustKind::Once,
+        later,
+    )
+    .await;
+    assert!(matches!(
+        late_accept,
+        Err(super::ContactsError::RevisionConflict(_))
+    ));
+    assert!(store::list_contacts(&pool).await.unwrap().is_empty());
+
     store::expire_stale_requests(&pool, later).await.unwrap();
 
+    let row = store::received_request_by_peer(
+        &pool,
+        &requester.key.public_key().to_text(),
+        "contact-one",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(row.state, "expired");
+}
+
+async fn insert_sent_request(pool: &SqlitePool, recipient: &Person, request_id: &str) {
+    let card = recipient.card();
+    let now = store::now();
+    store::insert_request(
+        pool,
+        store::NewRequest {
+            id: request_id,
+            direction: RequestDirection::Sent,
+            public_key: &recipient.key.public_key().to_text(),
+            peer_request_id: None,
+            display_name: recipient.name,
+            color: 7,
+            card: &card.text(),
+            card_digest: &store::encode_hex(&card.digest),
+            endpoint_hint: "127.0.0.1:43821",
+            coordinator_fingerprint: &store::encode_hex(&[9u8; 32]),
+            invite_trust: TrustKind::UntilRevoked,
+            message_trust: TrustKind::UntilRevoked,
+            expires_at: now + chrono::Duration::days(requests::REQUEST_TTL_DAYS),
+        },
+        now,
+    )
+    .await
+    .unwrap();
+}
+
+fn accepted_by(recipient: &Person) -> Result<ControlMessage, String> {
+    Ok(ControlMessage::ContactRequestState {
+        state: ContactRequestOutcome::Accepted,
+        recipient_card: Some(recipient.card().text()),
+    })
+}
+
+#[tokio::test]
+async fn an_accepted_poll_does_not_reopen_a_request_cancelled_while_in_flight() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    insert_sent_request(&pool, &recipient, "contact-one").await;
+    let in_flight = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    requests::close_request(
+        &pool,
+        "contact-one",
+        in_flight.revision,
+        RequestDirection::Sent,
+        RequestState::Expired,
+    )
+    .await
+    .unwrap();
+
+    let resolved =
+        requests::apply_status_response(&pool, &in_flight, accepted_by(&recipient), store::now())
+            .await
+            .unwrap();
+
+    assert!(resolved);
     let row = store::request_by_id(&pool, "contact-one")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(row.state, "expired");
+    let key = recipient.key.public_key().to_text();
+    assert!(store::contact_by_key(&pool, &key).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn an_accepted_poll_never_clears_a_block() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let key = recipient.key.public_key().to_text();
+    insert_sent_request(&pool, &recipient, "contact-one").await;
+    let in_flight = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    requests::block_person(&pool, &key, store::now())
+        .await
+        .unwrap();
+
+    requests::apply_status_response(&pool, &in_flight, accepted_by(&recipient), store::now())
+        .await
+        .unwrap();
+    let blocked = store::contact_by_key(&pool, &key).await.unwrap().unwrap();
+    assert_eq!(blocked.state, "blocked");
+    assert_eq!(blocked.invite_trust, "not_allowed");
+
+    insert_sent_request(&pool, &recipient, "contact-two").await;
+    let pending = store::request_by_id(&pool, "contact-two")
+        .await
+        .unwrap()
+        .unwrap();
+    let resolved =
+        requests::apply_status_response(&pool, &pending, accepted_by(&recipient), store::now())
+            .await
+            .unwrap();
+    assert!(resolved);
+    let blocked = store::contact_by_key(&pool, &key).await.unwrap().unwrap();
+    assert_eq!(blocked.state, "blocked");
+    assert!(blocked.blocked_at.is_some());
+    let row = store::request_by_id(&pool, "contact-two")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "expired");
+}
+
+#[tokio::test]
+async fn a_repeated_delivery_of_a_pending_request_writes_nothing() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let requester = Person::new("Requester");
+    let key = requester.key.public_key().to_text();
+
+    deliver(&pool, &recipient, &requester, "contact-one").await;
+    let first = store::received_request_by_peer(&pool, &key, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    let reply = deliver(&pool, &recipient, &requester, "contact-one").await;
+
+    assert_eq!(reply, received("contact-one"));
+    let rows = store::list_requests(&pool).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, first.id, "the pending row keeps its id");
+    assert_eq!(rows[0].revision, first.revision);
+}
+
+#[tokio::test]
+async fn duplicate_pending_sent_rows_list_once_and_an_answer_closes_them_all() {
+    for (outcome, answered) in [
+        (ContactRequestOutcome::Declined, "declined"),
+        (ContactRequestOutcome::Accepted, "accepted"),
+    ] {
+        let pool = migrated_memory_pool().await;
+        let recipient = Person::new("Recipient");
+        insert_sent_request(&pool, &recipient, "contact-one").await;
+        insert_sent_request(&pool, &recipient, "contact-two").await;
+
+        let listed = store::list_pending_requests(&pool, store::now())
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1, "one pending row per direction and person");
+
+        let first = store::request_by_id(&pool, "contact-one")
+            .await
+            .unwrap()
+            .unwrap();
+        let recipient_card =
+            matches!(outcome, ContactRequestOutcome::Accepted).then(|| recipient.card().text());
+        let response = Ok(ControlMessage::ContactRequestState {
+            state: outcome,
+            recipient_card,
+        });
+        let resolved = requests::apply_status_response(&pool, &first, response, store::now())
+            .await
+            .unwrap();
+
+        assert!(resolved);
+        let states: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, state FROM contact_requests ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            states,
+            [
+                ("contact-one".to_owned(), answered.to_owned()),
+                ("contact-two".to_owned(), "expired".to_owned()),
+            ]
+        );
+        assert!(
+            store::list_pending_requests(&pool, store::now())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn accepting_rechecks_the_stored_card_before_granting_trust() {
+    let pool = migrated_memory_pool().await;
+    let requester = Person::new("Requester");
+    let impostor = Person::new("Impostor");
+    let key = requester.key.public_key().to_text();
+    let genuine = requester.card();
+    let foreign = impostor.card();
+    // Rows as a linked device could replicate them: another person's card, a card that does
+    // not decode, and the right card with a digest that does not match it.
+    let tampered = [
+        (
+            "contact-foreign",
+            foreign.text(),
+            store::encode_hex(&foreign.digest),
+        ),
+        (
+            "contact-garbage",
+            "not-a-card".to_owned(),
+            store::encode_hex(&genuine.digest),
+        ),
+        (
+            "contact-digest",
+            genuine.text(),
+            store::encode_hex(&[1u8; 32]),
+        ),
+    ];
+    let now = store::now();
+    for (id, card, digest) in &tampered {
+        store::insert_request(
+            &pool,
+            store::NewRequest {
+                id,
+                direction: RequestDirection::Received,
+                public_key: &key,
+                peer_request_id: Some(id),
+                display_name: "Someone else",
+                color: 3,
+                card,
+                card_digest: digest,
+                endpoint_hint: "",
+                coordinator_fingerprint: "",
+                invite_trust: TrustKind::NotAllowed,
+                message_trust: TrustKind::NotAllowed,
+                expires_at: now + chrono::Duration::days(requests::REQUEST_TTL_DAYS),
+            },
+            now,
+        )
+        .await
+        .unwrap();
+    }
+
+    for (id, _, _) in &tampered {
+        let row = store::request_by_id(&pool, id).await.unwrap().unwrap();
+        let accepted = requests::accept_request(
+            &pool,
+            id,
+            row.revision,
+            TrustKind::UntilRevoked,
+            TrustKind::UntilRevoked,
+            now,
+        )
+        .await;
+
+        assert!(accepted.is_err(), "{id} must not be accepted");
+        assert!(store::contact_by_key(&pool, &key).await.unwrap().is_none());
+        let unchanged = store::request_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(unchanged.state, "pending");
+    }
+}
+
+/// Stores a pending request as a synced row can hold it, whatever its key or creation time.
+async fn insert_stored_request(
+    pool: &SqlitePool,
+    id: &str,
+    public_key: &str,
+    created_at: chrono::DateTime<chrono::Utc>,
+) {
+    store::insert_request(
+        pool,
+        store::NewRequest {
+            id,
+            direction: RequestDirection::Received,
+            public_key,
+            peer_request_id: None,
+            display_name: "Ada",
+            color: 7,
+            card: "card",
+            card_digest: &store::encode_hex(&[0u8; 32]),
+            endpoint_hint: "",
+            coordinator_fingerprint: "",
+            invite_trust: TrustKind::NotAllowed,
+            message_trust: TrustKind::NotAllowed,
+            expires_at: created_at + chrono::Duration::days(requests::REQUEST_TTL_DAYS),
+        },
+        created_at,
+    )
+    .await
+    .unwrap();
+}
+
+/// A person public key that is not base64url and fits the stored length.
+fn unparsable_key() -> String {
+    "!".repeat(ganbaru_contacts::PUBLIC_KEY_TEXT_LENGTH)
+}
+
+#[tokio::test]
+async fn request_views_skips_a_malformed_stored_row() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let honest = Person::new("Honest").key.public_key().to_text();
+    insert_stored_request(&pool, "contact-honest", &honest, now).await;
+    insert_stored_request(&pool, "contact-malformed", &unparsable_key(), now).await;
+
+    let rows = store::list_pending_requests(&pool, now).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    let views = super::request_views(&rows);
+
+    let ids: Vec<_> = views.iter().map(|view| view.id.as_str()).collect();
+    assert_eq!(ids, ["contact-honest"]);
+}
+
+#[tokio::test]
+async fn expiry_closes_pending_rows_no_reader_can_use() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let key = |name| Person::new(name).key.public_key().to_text();
+    let small_order = "A".repeat(ganbaru_contacts::PUBLIC_KEY_TEXT_LENGTH);
+    insert_stored_request(&pool, "contact-unparsable", &unparsable_key(), now).await;
+    insert_stored_request(&pool, "contact-small-order", &small_order, now).await;
+    let far_ahead = now + chrono::Duration::days(30);
+    insert_stored_request(&pool, "contact-far-ahead", &key("Far"), far_ahead).await;
+    let slightly_ahead = now + chrono::Duration::hours(12);
+    insert_stored_request(&pool, "contact-skewed", &key("Skewed"), slightly_ahead).await;
+    insert_stored_request(&pool, "contact-honest", &key("Honest"), now).await;
+
+    store::expire_stale_requests(&pool, now).await.unwrap();
+
+    for (id, state) in [
+        ("contact-unparsable", "expired"),
+        ("contact-small-order", "expired"),
+        ("contact-far-ahead", "expired"),
+        ("contact-skewed", "pending"),
+        ("contact-honest", "pending"),
+    ] {
+        let row = store::request_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.state, state, "{id}");
+    }
+}
+
+#[tokio::test]
+async fn pending_list_leaves_out_a_row_created_far_ahead() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let key = |name| Person::new(name).key.public_key().to_text();
+    let far_ahead = now + chrono::Duration::days(30);
+    insert_stored_request(&pool, "contact-far-ahead", &key("Far"), far_ahead).await;
+    let slightly_ahead = now + chrono::Duration::hours(12);
+    insert_stored_request(&pool, "contact-skewed", &key("Skewed"), slightly_ahead).await;
+
+    let listed = store::list_pending_requests(&pool, now).await.unwrap();
+
+    let ids: Vec<_> = listed.iter().map(|row| row.id.as_str()).collect();
+    assert_eq!(ids, ["contact-skewed"]);
+}
+
+const FAR_EXPIRY: &str = "9999-12-31T23:59:59.000Z";
+const LEAP_SECOND: &str = "2026-10-22T10:51:60.000Z";
+const FIVE_DIGIT_YEAR: &str = "+10000-01-01T00:00:00.000Z";
+const JUNK_TIME: &str = "zzzzzzzzzzzzzzzzzzzzzzzz";
+
+/// Stores a pending request as a snapshot copy can hold it, with times no adapter has checked.
+async fn insert_request_times(
+    pool: &SqlitePool,
+    id: &str,
+    public_key: &str,
+    created_at: &str,
+    expires_at: &str,
+    updated_at: &str,
+) {
+    sqlx::query(
+        "INSERT INTO contact_requests
+         (id, direction, public_key, display_name, card, card_digest, expires_at, created_at,
+          updated_at)
+         VALUES (?, 'received', ?, 'Ada', 'card', ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(public_key)
+    .bind(store::encode_hex(&[0u8; 32]))
+    .bind(expires_at)
+    .bind(created_at)
+    .bind(updated_at)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Stores one pending request for each form of unreadable time, keyed after the form.
+async fn insert_unreadable_requests(pool: &SqlitePool, now: chrono::DateTime<chrono::Utc>) {
+    let key = |name| Person::new(name).key.public_key().to_text();
+    let honest = store::format_time(now);
+    let deadline = store::format_time(now + chrono::Duration::days(requests::REQUEST_TTL_DAYS));
+    insert_request_times(
+        pool,
+        "contact-year",
+        &key("Year"),
+        FIVE_DIGIT_YEAR,
+        FAR_EXPIRY,
+        &honest,
+    )
+    .await;
+    insert_request_times(
+        pool,
+        "contact-leap",
+        &key("Leap"),
+        LEAP_SECOND,
+        FAR_EXPIRY,
+        &honest,
+    )
+    .await;
+    insert_request_times(
+        pool,
+        "contact-junk",
+        &key("Junk"),
+        &honest,
+        &deadline,
+        JUNK_TIME,
+    )
+    .await;
+}
+
+/// Stores an active contact as a snapshot copy can hold it, with times no adapter has checked.
+async fn insert_contact_times(
+    pool: &SqlitePool,
+    public_key: &str,
+    created_at: &str,
+    updated_at: &str,
+    accepted_at: Option<&str>,
+) {
+    sqlx::query(
+        "INSERT INTO contacts (id, public_key, display_name, accepted_at, created_at, updated_at)
+         VALUES ('contact-' || ?1, ?1, 'Ada', ?2, ?3, ?4)",
+    )
+    .bind(public_key)
+    .bind(accepted_at)
+    .bind(created_at)
+    .bind(updated_at)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn request_views_skips_rows_with_unreadable_times() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let honest = Person::new("Honest").key.public_key().to_text();
+    insert_stored_request(&pool, "contact-honest", &honest, now).await;
+    insert_unreadable_requests(&pool, now).await;
+
+    let rows = store::list_pending_requests(&pool, now).await.unwrap();
+    assert_eq!(rows.len(), 4);
+    let views = super::request_views(&rows);
+
+    let ids: Vec<_> = views.iter().map(|view| view.id.as_str()).collect();
+    assert_eq!(ids, ["contact-honest"]);
+}
+
+#[tokio::test]
+async fn contact_views_skips_rows_with_unreadable_times() {
+    let pool = migrated_memory_pool().await;
+    let at = store::format_time(store::now());
+    let key = |name| Person::new(name).key.public_key().to_text();
+    let honest = key("Honest");
+    insert_contact_times(&pool, &honest, &at, &at, Some(&at)).await;
+    insert_contact_times(&pool, &key("Year"), FIVE_DIGIT_YEAR, &at, None).await;
+    insert_contact_times(&pool, &key("Junk"), &at, JUNK_TIME, None).await;
+    insert_contact_times(&pool, &key("Leap"), &at, &at, Some(LEAP_SECOND)).await;
+
+    let rows = store::list_contacts(&pool).await.unwrap();
+    assert_eq!(rows.len(), 4);
+    let views = super::contact_views(rows);
+
+    let keys: Vec<_> = views.iter().map(|view| view.public_key.as_str()).collect();
+    assert_eq!(keys, [honest.as_str()]);
+}
+
+#[tokio::test]
+async fn expiry_closes_pending_rows_with_unreadable_times() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let honest = Person::new("Honest").key.public_key().to_text();
+    insert_stored_request(&pool, "contact-honest", &honest, now).await;
+    insert_unreadable_requests(&pool, now).await;
+
+    store::expire_stale_requests(&pool, now).await.unwrap();
+
+    for (id, state) in [
+        ("contact-year", "expired"),
+        ("contact-leap", "expired"),
+        ("contact-junk", "expired"),
+        ("contact-honest", "pending"),
+    ] {
+        let row = store::request_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.state, state, "{id}");
+    }
+}
+
+#[tokio::test]
+async fn follower_leaves_clock_judged_rows_to_the_coordinator() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let key = |name| Person::new(name).key.public_key().to_text();
+    let lapsed = now - chrono::Duration::days(requests::REQUEST_TTL_DAYS + 1);
+    insert_stored_request(&pool, "contact-lapsed", &key("Lapsed"), lapsed).await;
+    let far_ahead = now + chrono::Duration::days(30);
+    insert_stored_request(&pool, "contact-far-ahead", &key("Far"), far_ahead).await;
+    insert_stored_request(&pool, "contact-honest", &key("Honest"), now).await;
+    insert_stored_request(&pool, "contact-malformed", &unparsable_key(), now).await;
+    insert_unreadable_requests(&pool, now).await;
+    let state = async |id: &str| {
+        let row = store::request_by_id(&pool, id).await.unwrap().unwrap();
+        row.state
+    };
+
+    requests::sweep_pending_requests(&pool, true, now)
+        .await
+        .unwrap();
+
+    for id in ["contact-lapsed", "contact-far-ahead", "contact-honest"] {
+        assert_eq!(state(id).await, "pending", "{id}");
+    }
+    for id in [
+        "contact-malformed",
+        "contact-year",
+        "contact-leap",
+        "contact-junk",
+    ] {
+        assert_eq!(state(id).await, "expired", "{id}");
+    }
+    let listed = store::list_pending_requests(&pool, now).await.unwrap();
+    let ids: Vec<_> = listed.iter().map(|row| row.id.as_str()).collect();
+    assert_eq!(ids, ["contact-honest"]);
+
+    requests::sweep_pending_requests(&pool, false, now)
+        .await
+        .unwrap();
+
+    for id in ["contact-lapsed", "contact-far-ahead"] {
+        assert_eq!(state(id).await, "expired", "{id}");
+    }
+    assert_eq!(state("contact-honest").await, "pending");
 }

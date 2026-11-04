@@ -12,7 +12,10 @@
   import { isThemeCalendarDark, type Theme } from "$lib/themes";
   import { getEventIndicatorState } from "./event-indicators";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Music from "@lucide/svelte/icons/eighth-notes";
   import Repeat from "@lucide/svelte/icons/repeat";
+  import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
+  import { calendarConflicts } from "$lib/stores/calendar-conflicts.svelte";
   import Video from "@lucide/svelte/icons/video";
   import MapPin from "@lucide/svelte/icons/map-pin";
   import Users from "@lucide/svelte/icons/users";
@@ -61,7 +64,7 @@
       "compact",
     ),
   );
-  const indicators = $derived(getEventIndicatorState(positioned.event));
+  const indicators = $derived(getEventIndicatorState(positioned.event, undefined, calendarConflicts.isConflicted(positioned.event)));
   const hasIcons = $derived(indicators.iconCount > 0);
   const isCancelled = $derived(isEventSurfaceCancelled(positioned.event));
   const eventTitle = $derived(positioned.event.title || t("calendar.event.noTitle"));
@@ -153,6 +156,12 @@
   <div class="relative z-10 min-w-0 flex-1 overflow-hidden px-1 py-0.5">
     {#if hasIcons}
       <div class="event-icons absolute right-1 flex items-center gap-0.5" style="top: 5px; color: {iconColor};">
+        {#if indicators.hasConflict}
+          <TriangleAlert size={9} class="shrink-0" role="img" aria-label={t("calendar.conflict.badge")} />
+        {/if}
+        {#if indicators.hasMusic}
+          <Music size={9} class="shrink-0" />
+        {/if}
         {#if indicators.hasRepeat}
           <Repeat size={9} class="shrink-0" />
         {/if}
@@ -170,7 +179,8 @@
     <div
       class="event-title truncate font-medium"
       class:pr-5={indicators.iconCount > 0 && indicators.iconCount <= 2}
-      class:pr-8={indicators.iconCount > 2}
+      class:pr-8={indicators.iconCount === 3}
+      class:pr-11={indicators.iconCount > 3}
       style={isCancelled ? 'text-decoration: line-through;' : ''}
     >
       {eventTitle}

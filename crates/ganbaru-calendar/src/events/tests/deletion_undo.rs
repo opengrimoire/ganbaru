@@ -1,5 +1,5 @@
 use super::fixtures::*;
-use crate::events::commit::CommitRequest;
+use crate::events::commit::{CommitRequest, DeletionLease};
 use crate::events::deletion::{UndoPreimage, prepare, prepare_commit};
 use crate::events::metadata::Metadata;
 use crate::events::occurrence::ReadBudget;
@@ -18,6 +18,10 @@ fn clock() -> ScopeClock {
 }
 
 async fn deleted(pool: &sqlx::SqlitePool) -> Arc<UndoPreimage> {
+    deleted_with(pool, None).await
+}
+
+async fn deleted_with(pool: &sqlx::SqlitePool, lease: Option<DeletionLease>) -> Arc<UndoPreimage> {
     let mut tx = pool.begin().await.unwrap();
     let clock = clock();
     let review = prepare(
@@ -43,7 +47,10 @@ async fn deleted(pool: &sqlx::SqlitePool) -> Arc<UndoPreimage> {
     .unwrap();
     let (rows, undo) = rows.into_write();
     let mut undo = undo.unwrap();
-    let receipt = rows.write(&mut tx).await.unwrap();
+    let receipt = match lease {
+        Some(lease) => rows.write_held(&mut tx, lease).await.unwrap(),
+        None => rows.write(&mut tx).await.unwrap(),
+    };
     assert_eq!(
         receipt.undo_review_revision.as_deref(),
         Some(undo.review_revision.as_str())
@@ -123,8 +130,8 @@ fn hard_deleted_future_source_has_only_a_process_local_preimage_and_restores_its
             INSERT INTO calendar_event_pomodoro_configs (event_id, rhythm_kind, rhythm_source) VALUES ('source', 'sequence', 'custom');
             INSERT INTO calendar_event_pomodoro_config_sequence_steps (event_id, step_index, focus_duration_minutes, break_phase, break_duration_minutes)
                 VALUES ('source', 0, 25, 'short_break', 5);
-            INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms, version)
-                VALUES ('event-snapshot', 'source', 'focus', 'pause-music', 'explicit', 8, 4);")
+            INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms, version, sync_key)
+                VALUES ('event-snapshot', 'source', 'focus', 'pause-music', 'explicit', 8, 4, lower(hex(randomblob(16))));")
             .execute(&pool).await.unwrap();
         let mut tx = pool.begin().await.unwrap();
         let before = Metadata::read(&mut tx, "source", &mut ReadBudget::default())
@@ -192,6 +199,7 @@ fn calendar_undo_restores_active_run_projections_without_restarting_or_rewinding
             foreground: true,
             commitment: calendar.commitment,
             planned_blocks: Vec::new(),
+            device_id: None,
             local_time: None,
         };
         let before = focus_execute_command_tx(
@@ -396,5 +404,97 @@ fn late_undo_failure_rolls_back_restored_metadata_references_and_archive_cleanup
             .await
             .unwrap();
         tx.commit().await.unwrap();
+    });
+}
+
+const LEASE: DeletionLease = DeletionLease {
+    now_ms: 1_000,
+    until_ms: 6_000,
+};
+
+/// A hard-deletable source that sync already published, with no pending captures.
+async fn published_source() -> sqlx::SqlitePool {
+    let pool = in_memory_pool().await;
+    insert_test_event_at(
+        &pool,
+        "source",
+        "2099-05-10T10:00:00Z",
+        "2099-05-10T11:00:00Z",
+        None,
+    )
+    .await;
+    sqlx::raw_sql(
+        "DELETE FROM sync_capture;
+        INSERT INTO sync_rows (table_id, row_key, state) VALUES (163, 'source', 'live');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool
+}
+
+async fn event_capture(pool: &sqlx::SqlitePool) -> Option<(i64, Option<i64>)> {
+    sqlx::query_as(
+        "SELECT deleted, held_until_ms FROM sync_capture WHERE table_id=163 AND row_key='source'",
+    )
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+}
+
+async fn undo_with(undo: Arc<UndoPreimage>, pool: &sqlx::SqlitePool) -> Result<(), String> {
+    let mut tx = pool.begin().await.unwrap();
+    let rows = undo.prepare(&mut tx, "undo").await?;
+    rows.write_held(&mut tx, LEASE).await?;
+    tx.commit().await.unwrap();
+    Ok(())
+}
+
+async fn expire_holds(pool: &sqlx::SqlitePool) {
+    let mut connection = pool.acquire().await.unwrap();
+    ganbaru_sync::hold::expire_holds(&mut connection)
+        .await
+        .unwrap();
+}
+
+#[test]
+fn a_held_deletion_undone_inside_its_lease_leaves_an_ordinary_write() {
+    crate::test_support::block_on(async {
+        let pool = published_source().await;
+        let undo = deleted_with(&pool, Some(LEASE)).await;
+        assert_eq!(event_capture(&pool).await, Some((1, Some(6_000))));
+        undo_with(undo, &pool).await.unwrap();
+        assert_eq!(event_capture(&pool).await, Some((0, None)));
+    });
+}
+
+#[test]
+fn undo_refuses_a_published_deletion_whose_hold_ended() {
+    crate::test_support::block_on(async {
+        let pool = published_source().await;
+        let undo = deleted_with(&pool, Some(LEASE)).await;
+        expire_holds(&pool).await;
+        let refused = undo_with(undo, &pool).await.unwrap_err();
+        assert!(refused.contains("already synced"), "{refused}");
+        let restored: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM calendar_events WHERE id='source'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(restored, 0);
+    });
+}
+
+#[test]
+fn undo_of_an_unpublished_deletion_needs_no_hold() {
+    crate::test_support::block_on(async {
+        let pool = published_source().await;
+        sqlx::query("DELETE FROM sync_rows")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let undo = deleted_with(&pool, Some(LEASE)).await;
+        expire_holds(&pool).await;
+        undo_with(undo, &pool).await.unwrap();
     });
 }

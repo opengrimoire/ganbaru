@@ -1,6 +1,24 @@
-//! Capture triggers and the key, creation time, and re-create guards.
+//! Capture triggers and the key, creation time, and re-create guards, and the roots local
+//! cascades name.
 
 use sqlx::SqlitePool;
+
+#[test]
+fn local_cascades_name_the_lowest_row_of_each_deleted_sink_component() {
+    // 0 and 1 form a cycle with no edge out; 2 reaches it; 3 reaches both 2 and the lone sink 4;
+    // 5 reaches nothing.
+    let adjacency = vec![vec![1], vec![0], vec![1], vec![2, 4], vec![], vec![]];
+    assert_eq!(
+        crate::seal::sink_roots(&adjacency),
+        [None, Some(0), Some(0), Some(0), None, None]
+    );
+    // A cycle with an edge out is not a sink, so both members name the row it reaches.
+    let adjacency = vec![vec![1], vec![0, 2], vec![]];
+    assert_eq!(
+        crate::seal::sink_roots(&adjacency),
+        [Some(2), Some(2), None]
+    );
+}
 
 use super::{block_on, execute, migrated_pool, rejects, set_applying};
 
@@ -51,7 +69,7 @@ fn inserts_capture_created_rows_with_every_group() {
             captures(&pool).await,
             [
                 (1, "tag-1".to_string(), 31, 1, 0),
-                (2, "note-1".to_string(), 255, 1, 0),
+                (2, "note-1".to_string(), 511, 1, 0),
             ]
         );
     });
@@ -147,7 +165,7 @@ fn updates_merge_into_pending_captures() {
         .await;
         assert_eq!(
             captures(&pool).await,
-            [(2, "note-1".to_string(), 255, 1, 0)]
+            [(2, "note-1".to_string(), 511, 1, 0)]
         );
         clear(&pool).await;
         execute(
@@ -208,7 +226,7 @@ fn deleting_then_recreating_an_unpublished_row_keeps_one_capture() {
         .await;
         assert_eq!(
             captures(&pool).await,
-            [(2, "note-2".to_string(), 255, 1, 0)]
+            [(2, "note-2".to_string(), 511, 1, 0)]
         );
     });
 }

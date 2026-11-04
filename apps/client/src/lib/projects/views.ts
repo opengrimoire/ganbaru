@@ -1,3 +1,4 @@
+import { compareProjectOrder } from "./order";
 import {
   PROJECT_HOSTED_VIEW_TYPES,
   PROJECT_VIEW_IDS,
@@ -23,7 +24,7 @@ export function isProjectHostedViewType(value: unknown): value is ProjectHostedV
 }
 
 function compareViews(first: ProjectView, second: ProjectView): number {
-  return first.sortOrder - second.sortOrder || first.id.localeCompare(second.id);
+  return compareProjectOrder(first, second);
 }
 
 /**

@@ -17,10 +17,94 @@ function isConnectivityFailure(message: string): boolean {
     || message.includes("network");
 }
 
+/** Whether startup disabled linking because saved pairing state could not be loaded. */
+function isLinkingDisabled(message: string): boolean {
+  return message.includes("vault linking is disabled");
+}
+
+/** Whether the coordinator refused the connection because its connection budget is full. */
+function isCoordinatorBusy(message: string): boolean {
+  return message.includes("handling too many connections");
+}
+
+/** Guidance when this device's linking key is missing from or unreadable in the system keyring. */
+function deviceKeyMessage(
+  message: string,
+): "vaultHandoff.deviceKeyMissing" | "vaultHandoff.deviceKeyUnavailable" | null {
+  if (message.includes("linking key is missing")) return "vaultHandoff.deviceKeyMissing";
+  if (message.includes("linking key could not be read")) {
+    return "vaultHandoff.deviceKeyUnavailable";
+  }
+  return null;
+}
+
+/** Guidance for an enrollment the coordinator user declined, missed, or could not answer. */
+function enrollmentApprovalMessage(
+  message: string,
+):
+  | "vaultHandoff.enrollmentDeclined"
+  | "vaultHandoff.enrollmentUnanswered"
+  | "vaultHandoff.enrollmentBusy"
+  | "vaultHandoff.enrollmentReplaced"
+  | "vaultHandoff.enrollmentGone"
+  | null {
+  if (message.includes("the coordinator declined this device")) {
+    return "vaultHandoff.enrollmentDeclined";
+  }
+  if (
+    message.includes("did not approve this device in time")
+    || message.includes("did not answer the enrollment")
+  ) {
+    return "vaultHandoff.enrollmentUnanswered";
+  }
+  if (message.includes("waiting for approval on the coordinator")) {
+    return "vaultHandoff.enrollmentBusy";
+  }
+  if (message.includes("pairing code on the coordinator was replaced")) {
+    return "vaultHandoff.enrollmentReplaced";
+  }
+  if (message.includes("no longer waiting for approval")) {
+    return "vaultHandoff.enrollmentGone";
+  }
+  return null;
+}
+
+/** Guidance when copying the linked vault to this device is refused or cannot keep the replaced vault. */
+function bootstrapRefusalMessage(
+  message: string,
+):
+  | "vaultHandoff.replacedVaultBackupFailed"
+  | "vaultHandoff.linkFolderNotEmpty"
+  | "vaultHandoff.linkFolderInsideVault"
+  | null {
+  if (message.includes("vault this link replaces could not be backed up")) {
+    return "vaultHandoff.replacedVaultBackupFailed";
+  }
+  if (message.includes("folder chosen for the linked vault is not empty")) {
+    return "vaultHandoff.linkFolderNotEmpty";
+  }
+  if (message.includes("folder chosen for the linked vault is inside another vault")) {
+    return "vaultHandoff.linkFolderInsideVault";
+  }
+  return null;
+}
+
 /** Converts native handoff failures into concise localized recovery guidance. */
 export function formatHandoffError(cause: unknown, t: Translate): string {
   const raw = errorText(cause);
   const lower = raw.toLowerCase();
+  if (isLinkingDisabled(lower)) {
+    return t("vaultHandoff.linkingDisabled");
+  }
+  const keyMessage = deviceKeyMessage(lower);
+  if (keyMessage) return t(keyMessage);
+  const enrollmentMessage = enrollmentApprovalMessage(lower);
+  if (enrollmentMessage) return t(enrollmentMessage);
+  const bootstrapMessage = bootstrapRefusalMessage(lower);
+  if (bootstrapMessage) return t(bootstrapMessage);
+  if (lower.includes("chat terminals")) {
+    return t("vaultHandoff.blockerTerminal");
+  }
   if (lower.includes("chat") && (lower.includes("active") || lower.includes("running"))) {
     return t("vaultHandoff.blockerChat");
   }
@@ -39,6 +123,18 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   if (lower.includes("already linked to another coordinator")) {
     return t("vaultHandoff.differentCoordinator");
   }
+  if (lower.includes("linked vault is not active on this device")) {
+    return t("vaultHandoff.linkedVaultInactive");
+  }
+  if (lower.includes("requested the vault too often")) {
+    return t("vaultHandoff.bundleRequestLimit");
+  }
+  if (isCoordinatorBusy(lower)) {
+    return t("vaultHandoff.coordinatorBusy");
+  }
+  if (lower.includes("vault is not active on the coordinator")) {
+    return t("vaultHandoff.coordinatorVaultInactive");
+  }
   if (isConnectivityFailure(lower)) {
     return t("vaultHandoff.unreachable");
   }
@@ -53,15 +149,6 @@ export function formatPairingCodeError(cause: unknown, t: Translate): string {
   }
   if (lower.includes("pairing invitation")) {
     return t("vaultHandoff.codeInvalid");
-  }
-  return formatHandoffError(cause, t);
-}
-
-/** Converts ownership connectivity failures into main-device guidance. */
-export function formatOwnershipHandoffError(cause: unknown, t: Translate): string {
-  const raw = errorText(cause);
-  if (isConnectivityFailure(raw.toLowerCase())) {
-    return t("vaultHandoff.ownerUnreachable");
   }
   return formatHandoffError(cause, t);
 }

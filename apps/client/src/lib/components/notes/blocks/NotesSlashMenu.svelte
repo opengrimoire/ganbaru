@@ -46,14 +46,14 @@
   import MessageSquareWarning from "@lucide/svelte/icons/message-square-warning";
   import Minus from "@lucide/svelte/icons/minus";
   import MousePointerClick from "@lucide/svelte/icons/mouse-pointer-click";
-  import Music from "@lucide/svelte/icons/music";
+  import Music from "@lucide/svelte/icons/eighth-notes";
   import Pilcrow from "@lucide/svelte/icons/pilcrow";
   import Quote from "@lucide/svelte/icons/quote";
   import Route from "@lucide/svelte/icons/route";
   import Sigma from "@lucide/svelte/icons/sigma";
   import SquareCheck from "@lucide/svelte/icons/square-check";
   import Table2 from "@lucide/svelte/icons/table-2";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import Video from "@lucide/svelte/icons/video";
 
   let {

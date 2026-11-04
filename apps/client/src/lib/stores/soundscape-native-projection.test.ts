@@ -1,76 +1,120 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { MusicSoundscapeSnapshot, MusicSoundscapeState } from "$lib/music/soundscape/contracts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  MusicSoundscapeDefinition,
+  MusicSoundscapePreset,
+  MusicSoundscapePresetWrite,
+  MusicSoundscapeSnapshot,
+  MusicSoundscapeState,
+  MusicSoundscapeStateWrite,
+} from "$lib/music/soundscape/contracts";
 
 const api = vi.hoisted(() => ({
-  getDeviceId: vi.fn<() => Promise<string>>(),
   getMusicSoundscapes: vi.fn(),
-  getMusicSoundscapeGroups: vi.fn(),
+  getMusicSoundscapePresets: vi.fn(),
   getMusicSoundscapeState: vi.fn<() => Promise<MusicSoundscapeState>>(),
   getSoundscapeSnapshot: vi.fn<() => Promise<MusicSoundscapeSnapshot>>(),
   startSoundscape: vi.fn(),
   updateMusicSoundscapeState: vi.fn(),
   stopSoundscape: vi.fn(),
+  pauseSoundscape: vi.fn(),
+  resumeSoundscape: vi.fn(),
+  setSoundscapeLevels: vi.fn(),
+  setSoundscapePresetLevel: vi.fn(),
+  saveMusicSoundscapePresetLevel: vi.fn(),
+  upsertMusicSoundscapePreset: vi.fn(),
+  removeMusicSoundscapePreset: vi.fn(),
 }));
 vi.mock("$lib/api/soundscape", () => api);
 
 const state: MusicSoundscapeState = {
-  activeSoundscapeId: "noise", activeIds: ["noise"], multipleEnabled: false,
-  generatedLevel: null, localLevel: null, desiredPlaying: true, automaticIntent: true,
-  volume: 0.4, updatedAtMs: 1, version: 2,
+  automaticIntent: true, activePresetId: "calm", desiredPlaying: true, updatedAtMs: 1, version: 2,
 };
-const idle: MusicSoundscapeSnapshot = { status: "idle", sourceId: null, volume: 0.4, errorCode: null };
+const idle: MusicSoundscapeSnapshot = { status: "idle", sourceId: null, errorCode: null };
+const playing: MusicSoundscapeSnapshot = { ...idle, status: "playing", sourceId: "noise" };
+
+function definition(id: string, overrides: Partial<MusicSoundscapeDefinition> = {}): MusicSoundscapeDefinition {
+  return {
+    id, sourceKind: "local-loop", generatedKind: null, availability: "available", localPath: `/${id}.ogg`,
+    bundledIdentity: null, name: id, icon: "lucide:audio-lines", createdAtMs: 1, updatedAtMs: 1, version: 1,
+    ...overrides,
+  };
+}
+
+function preset(id: string, sounds: [string, number][], level = 0.5): MusicSoundscapePreset {
+  return {
+    id, name: id, icon: "lucide:layers", level, sounds: sounds.map(([soundscapeId, soundLevel]) => ({ soundscapeId, level: soundLevel })),
+    createdAtMs: 1, updatedAtMs: 1, version: 1,
+  };
+}
+
+const noise = definition("noise", { sourceKind: "generated-noise", generatedKind: "white", localPath: null });
+const rain = definition("rain");
+const fire = definition("fire", { availability: "missing", localPath: null });
+const calm = preset("calm", [["noise", 1], ["fire", 1], ["rain", 0.4]], 0.8);
 
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
-  api.getDeviceId.mockResolvedValue("device");
-  api.getMusicSoundscapes.mockResolvedValue([{
-    id: "noise", sourceKind: "generated-noise", generatedKind: "white", availability: "available",
-    localPath: null, bundledIdentity: null, name: "Noise", icon: "lucide:audio-lines",
-    groupId: null, createdAtMs: 1, updatedAtMs: 1, version: 1,
-  }]);
-  api.getMusicSoundscapeGroups.mockResolvedValue([]);
+  api.getMusicSoundscapes.mockResolvedValue([noise, rain, fire]);
+  api.getMusicSoundscapePresets.mockResolvedValue([calm]);
   api.getMusicSoundscapeState.mockResolvedValue(state);
   api.getSoundscapeSnapshot.mockResolvedValue(idle);
+  api.startSoundscape.mockImplementation(async (request: { sourceId: string }) => ({ ...playing, sourceId: request.sourceId }));
+  api.pauseSoundscape.mockResolvedValue({ ...playing, status: "paused" });
+  api.resumeSoundscape.mockResolvedValue(playing);
+  api.stopSoundscape.mockResolvedValue(idle);
+  api.updateMusicSoundscapeState.mockImplementation(async (write: MusicSoundscapeStateWrite) => ({
+    ...state, activePresetId: write.activePresetId, desiredPlaying: write.desiredPlaying, automaticIntent: false, version: write.expectedVersion + 1,
+  }));
+  api.saveMusicSoundscapePresetLevel.mockImplementation(async (id: string, level: number, updatedAtMs: number) => ({ ...calm, id, level, updatedAtMs, version: 2 }));
+  api.upsertMusicSoundscapePreset.mockImplementation(async (write: MusicSoundscapePresetWrite) => ({
+    id: write.id, name: write.name, icon: write.icon, level: write.level, sounds: write.sounds,
+    createdAtMs: write.updatedAtMs, updatedAtMs: write.updatedAtMs, version: 1,
+  }));
 });
 
-describe("native background playback projection", () => {
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+async function loadedStore() {
+  const { getSoundscapeStore } = await import("$lib/stores/soundscape.svelte");
+  const store = getSoundscapeStore();
+  await store.initialize();
+  return store;
+}
+
+describe("native soundscape playback projection", () => {
   it("does not replay a persisted automatic selection when native phase admission has not started it", async () => {
-    const { getSoundscapeStore } = await import("$lib/stores/soundscape.svelte");
-    const store = getSoundscapeStore();
-    await store.initialize();
+    const store = await loadedStore();
     expect(store.persisted?.automaticIntent).toBe(true);
     expect(store.snapshot.status).toBe("idle");
     expect(api.startSoundscape).not.toHaveBeenCalled();
     expect(api.updateMusicSoundscapeState).not.toHaveBeenCalled();
   });
 
-  it("projects accepted output without replaying even a legacy manual selection already playing natively", async () => {
+  it("projects output that is already playing natively without starting it again", async () => {
     api.getMusicSoundscapeState.mockResolvedValue({ ...state, automaticIntent: false });
-    api.getSoundscapeSnapshot.mockResolvedValue({ ...idle, status: "playing", sourceId: "noise" });
-    const { getSoundscapeStore } = await import("$lib/stores/soundscape.svelte");
-    const store = getSoundscapeStore();
-    await store.initialize();
+    api.getSoundscapeSnapshot.mockResolvedValue(playing);
+    const store = await loadedStore();
     expect(store.snapshot.sourceId).toBe("noise");
+    expect(store.activePreset?.id).toBe("calm");
     expect(api.startSoundscape).not.toHaveBeenCalled();
   });
 
-  it("reports a multi-sound selection as an error when multiple sounds are disabled", async () => {
-    api.getMusicSoundscapeState.mockResolvedValue({ ...state, activeIds: ["noise", "rain"], automaticIntent: false, desiredPlaying: false });
-    const { getSoundscapeStore } = await import("$lib/stores/soundscape.svelte");
-    const store = getSoundscapeStore();
-    await store.initialize();
-    await expect(store.togglePlayback()).resolves.toBeUndefined();
-    expect(store.error).toBe("Multiple background sounds are disabled.");
-    expect(store.playbackPending).toBe(false);
+  it("keeps a manual preset chosen but silent after a launch and saves it as not playing", async () => {
+    api.getMusicSoundscapeState.mockResolvedValue({ ...state, automaticIntent: false });
+    const store = await loadedStore();
     expect(api.startSoundscape).not.toHaveBeenCalled();
+    expect(api.updateMusicSoundscapeState).toHaveBeenCalledWith(expect.objectContaining({ activePresetId: "calm", desiredPlaying: false }));
+    expect(store.activePreset?.id).toBe("calm");
+    expect(store.persisted?.desiredPlaying).toBe(false);
+    expect(store.error).toBeNull();
   });
 
   it("drops an old native read after a vault switch and leaves output shutdown with the native owner", async () => {
-    const { getSoundscapeStore } = await import("$lib/stores/soundscape.svelte");
-    const store = getSoundscapeStore();
-    await store.initialize();
+    const store = await loadedStore();
     let finish: ((value: MusicSoundscapeState) => void) | undefined;
     api.getMusicSoundscapeState.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     const refresh = store.refreshAcceptedOutput();
@@ -81,5 +125,244 @@ describe("native background playback projection", () => {
     expect(store.snapshot.status).toBe("idle");
     expect(api.stopSoundscape).not.toHaveBeenCalled();
     expect(api.startSoundscape).not.toHaveBeenCalled();
+  });
+
+  it("layers the available sounds of a preset with their mix levels and saves it as the active preset", async () => {
+    const store = await loadedStore();
+    await store.playPreset(calm);
+    expect(api.startSoundscape).toHaveBeenCalledWith(expect.objectContaining({
+      sourceId: "noise", level: 1, presetLevel: 0.8, extraSources: [expect.objectContaining({ sourceId: "rain", level: 0.4 })],
+    }));
+    expect(api.updateMusicSoundscapeState).toHaveBeenCalledWith(expect.objectContaining({ activePresetId: "calm", desiredPlaying: true }));
+    expect(store.activePreset?.id).toBe("calm");
+  });
+
+  it("reports a preset with no playable sound without starting output", async () => {
+    const store = await loadedStore();
+    await store.playPreset(preset("gone", [["gone", 1]]));
+    expect(store.error).toBe("This preset needs to be repaired before it can play.");
+    expect(api.startSoundscape).not.toHaveBeenCalled();
+  });
+});
+
+describe("preset level relative to the Music volume", () => {
+  it("moves the playing output at once and saves the settled level into the preset once", async () => {
+    api.getMusicSoundscapeState.mockResolvedValue({ ...state, automaticIntent: false });
+    api.getSoundscapeSnapshot.mockResolvedValue(playing);
+    const store = await loadedStore();
+    vi.useFakeTimers();
+    await store.setPresetLevel(calm, 1.2);
+    await store.setPresetLevel(calm, 1.5);
+    expect(api.setSoundscapePresetLevel).toHaveBeenLastCalledWith(1.5);
+    expect(store.activePreset?.level).toBe(1.5);
+    expect(api.saveMusicSoundscapePresetLevel).not.toHaveBeenCalled();
+    await vi.runAllTimersAsync();
+    expect(api.saveMusicSoundscapePresetLevel).toHaveBeenCalledOnce();
+    expect(api.saveMusicSoundscapePresetLevel).toHaveBeenCalledWith("calm", 1.5, expect.any(Number));
+    expect(store.activePreset?.version).toBe(2);
+  });
+
+  it("clamps the level to the slider range", async () => {
+    const store = await loadedStore();
+    vi.useFakeTimers();
+    await store.setPresetLevel(calm, 5);
+    expect(store.presets[0].level).toBe(2);
+    await store.setPresetLevel(calm, -1);
+    expect(store.presets[0].level).toBe(0);
+  });
+
+  it("saves a preset that is not playing without touching output", async () => {
+    const store = await loadedStore();
+    vi.useFakeTimers();
+    await store.setPresetLevel(calm, 0.3);
+    await vi.runAllTimersAsync();
+    expect(api.setSoundscapePresetLevel).not.toHaveBeenCalled();
+    expect(api.saveMusicSoundscapePresetLevel).toHaveBeenCalledWith("calm", 0.3, expect.any(Number));
+  });
+});
+
+describe("layers on their own", () => {
+  async function storeWithSoundscapePlaying() {
+    api.getMusicSoundscapeState.mockResolvedValue({ ...state, automaticIntent: false });
+    api.getSoundscapeSnapshot.mockResolvedValue(playing);
+    return loadedStore();
+  }
+
+  it("plays a layer at the default levels without creating or choosing a soundscape, and stops it on the next press", async () => {
+    const store = await storeWithSoundscapePlaying();
+    await store.playLayer(rain);
+    expect(api.startSoundscape).toHaveBeenCalledWith(expect.objectContaining({ sourceId: "rain", level: 1, extraSources: [], presetLevel: 1 }));
+    expect(api.upsertMusicSoundscapePreset).not.toHaveBeenCalled();
+    expect(api.updateMusicSoundscapeState).toHaveBeenCalledWith(expect.objectContaining({ activePresetId: "calm", desiredPlaying: false }));
+    expect(store.playingLayerId).toBe("rain");
+    expect(store.playingPreset).toBeNull();
+    await store.playLayer(rain);
+    expect(api.stopSoundscape).toHaveBeenCalledOnce();
+    expect(api.pauseSoundscape).not.toHaveBeenCalled();
+    expect(store.playingLayerId).toBeNull();
+  });
+
+  it("stops a playing layer instead of pausing it, so the chosen soundscape never resumes in its place", async () => {
+    const store = await storeWithSoundscapePlaying();
+    await store.playLayer(rain);
+    await store.togglePlayback();
+    expect(api.stopSoundscape).toHaveBeenCalledOnce();
+    expect(api.pauseSoundscape).not.toHaveBeenCalled();
+    expect(api.resumeSoundscape).not.toHaveBeenCalled();
+    expect(store.persisted?.desiredPlaying).toBe(false);
+  });
+
+  it("lets a soundscape replace a playing layer", async () => {
+    const store = await storeWithSoundscapePlaying();
+    await store.playLayer(rain);
+    await store.playPreset(calm);
+    expect(store.playingLayerId).toBeNull();
+    expect(store.playingPreset?.id).toBe("calm");
+  });
+
+  it("stops a playing layer when a preview begins and does not bring it back", async () => {
+    const store = await storeWithSoundscapePlaying();
+    await store.playLayer(rain);
+    await store.beginPreview();
+    await store.endPreview();
+    expect(api.stopSoundscape).toHaveBeenCalledOnce();
+    expect(api.startSoundscape).toHaveBeenCalledOnce();
+    expect(api.resumeSoundscape).not.toHaveBeenCalled();
+    expect(store.playingLayerId).toBeNull();
+  });
+
+  it("keeps showing the stopping layer until output is silent and never shows the chosen soundscape meanwhile", async () => {
+    const store = await storeWithSoundscapePlaying();
+    await store.playLayer(rain);
+    let finish: ((snapshot: MusicSoundscapeSnapshot) => void) | undefined;
+    api.stopSoundscape.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const stopping = store.playLayer(rain);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    expect(store.playingLayerId).toBe("rain");
+    expect(store.playingPreset).toBeNull();
+    finish?.(idle);
+    await stopping;
+    expect(store.playingLayerId).toBeNull();
+    expect(store.playingPreset).toBeNull();
+  });
+
+  it("keeps a layer playing when the chosen soundscape is removed", async () => {
+    const store = await storeWithSoundscapePlaying();
+    await store.playLayer(rain);
+    await store.removePreset(calm);
+    expect(api.stopSoundscape).not.toHaveBeenCalled();
+    expect(store.playingLayerId).toBe("rain");
+    expect(store.playingPreset).toBeNull();
+  });
+});
+
+describe("isolated preset preview", () => {
+  async function playingStore(snapshot: MusicSoundscapeSnapshot = playing) {
+    api.getMusicSoundscapeState.mockResolvedValue({ ...state, automaticIntent: false, desiredPlaying: snapshot.status === "playing" });
+    api.getSoundscapeSnapshot.mockResolvedValue(snapshot);
+    return loadedStore();
+  }
+
+  const rainOnly = { sounds: [{ soundscapeId: "rain", level: 1 }], level: 0.5 };
+
+  it("plays the draft and then restores the saved preset without writing it", async () => {
+    const store = await playingStore();
+    const saved = store.persisted;
+    await store.beginPreview();
+    expect(api.pauseSoundscape).toHaveBeenCalledOnce();
+    await store.previewMix(rainOnly);
+    expect(api.startSoundscape).toHaveBeenLastCalledWith(expect.objectContaining({ sourceId: "rain", extraSources: [], presetLevel: 0.5 }));
+    await store.endPreview();
+    expect(api.startSoundscape).toHaveBeenLastCalledWith(expect.objectContaining({ sourceId: "noise", presetLevel: 0.8 }));
+    expect(api.updateMusicSoundscapeState).not.toHaveBeenCalled();
+    expect(store.persisted).toBe(saved);
+    expect(store.previewing).toBe(false);
+  });
+
+  it("shows no soundscape or layer as playing while the draft plays", async () => {
+    const store = await playingStore();
+    expect(store.playingPreset?.id).toBe("calm");
+    await store.beginPreview();
+    await store.previewMix(rainOnly);
+    expect(store.playingPreset).toBeNull();
+    expect(store.playingLayerId).toBeNull();
+    await store.endPreview();
+    expect(store.playingPreset?.id).toBe("calm");
+  });
+
+  it("shows the saved soundscape again only once its output is back", async () => {
+    const store = await playingStore();
+    await store.beginPreview();
+    await store.previewMix(rainOnly);
+    let finish: ((snapshot: MusicSoundscapeSnapshot) => void) | undefined;
+    api.startSoundscape.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const ending = store.endPreview();
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    expect(store.playingPreset).toBeNull();
+    finish?.(playing);
+    await ending;
+    expect(store.playingPreset?.id).toBe("calm");
+  });
+
+  it("adjusts levels of the same sounds without restarting the preview", async () => {
+    const store = await playingStore();
+    await store.beginPreview();
+    await store.previewMix({ sounds: [{ soundscapeId: "noise", level: 1 }, { soundscapeId: "rain", level: 1 }], level: 0.5 });
+    await store.previewMix({ sounds: [{ soundscapeId: "noise", level: 1 }, { soundscapeId: "rain", level: 0.2 }], level: 0.5 });
+    await store.previewMix({ sounds: [{ soundscapeId: "noise", level: 1 }, { soundscapeId: "rain", level: 0.2 }], level: 1.1 });
+    expect(api.startSoundscape).toHaveBeenCalledOnce();
+    expect(api.setSoundscapeLevels).toHaveBeenCalledExactlyOnceWith([1, 0.2]);
+    expect(api.setSoundscapePresetLevel).toHaveBeenCalledExactlyOnceWith(1.1);
+  });
+
+  it("changes the playing preview in place when the layers change", async () => {
+    const store = await playingStore();
+    await store.beginPreview();
+    await store.previewMix(rainOnly);
+    expect(api.startSoundscape).toHaveBeenLastCalledWith(expect.not.objectContaining({ keepPlayingLayers: true }));
+    await store.previewMix({ sounds: [{ soundscapeId: "rain", level: 1 }, { soundscapeId: "noise", level: 1 }], level: 0.5 });
+    expect(api.startSoundscape).toHaveBeenCalledTimes(2);
+    expect(api.startSoundscape).toHaveBeenLastCalledWith(expect.objectContaining({ sourceId: "rain", keepPlayingLayers: true }));
+  });
+
+  it("resumes the paused output when the preview never played anything", async () => {
+    const store = await playingStore();
+    await store.beginPreview();
+    await store.previewMix(null);
+    await store.endPreview();
+    expect(api.startSoundscape).not.toHaveBeenCalled();
+    expect(api.resumeSoundscape).toHaveBeenCalledOnce();
+  });
+
+  it("stays silent afterwards when nothing was playing before", async () => {
+    const store = await playingStore(idle);
+    await store.beginPreview();
+    expect(api.pauseSoundscape).not.toHaveBeenCalled();
+    await store.previewMix({ sounds: [{ soundscapeId: "noise", level: 1 }, { soundscapeId: "rain", level: 1 }], level: 0.5 });
+    await store.endPreview();
+    expect(api.startSoundscape).toHaveBeenCalledOnce();
+    expect(api.stopSoundscape).toHaveBeenCalledOnce();
+    expect(api.resumeSoundscape).not.toHaveBeenCalled();
+  });
+
+  it("plays a request made before the preview began and coalesces rapid changes to the latest", async () => {
+    const store = await playingStore();
+    void store.previewMix({ sounds: [{ soundscapeId: "noise", level: 1 }], level: 0.5 });
+    const begun = store.beginPreview();
+    void store.previewMix({ sounds: [{ soundscapeId: "noise", level: 1 }, { soundscapeId: "rain", level: 1 }], level: 0.5 });
+    void store.previewMix(rainOnly);
+    await store.previewMix(rainOnly);
+    await begun;
+    expect(api.startSoundscape).toHaveBeenCalledOnce();
+    expect(api.startSoundscape).toHaveBeenCalledWith(expect.objectContaining({ sourceId: "rain" }));
+  });
+
+  it("keeps preset level changes away from the output while a preview plays", async () => {
+    const store = await playingStore();
+    await store.beginPreview();
+    await store.previewMix(rainOnly);
+    vi.useFakeTimers();
+    await store.setPresetLevel(calm, 1.6);
+    expect(api.setSoundscapePresetLevel).not.toHaveBeenCalled();
   });
 });

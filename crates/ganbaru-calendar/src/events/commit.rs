@@ -94,6 +94,14 @@ impl From<&str> for CommitFailure {
     }
 }
 
+/// The sync lease a deletion holds its event delete and archive inserts for, so Undo inside it
+/// restores the event without publishing a tombstone or the archive. Times are wall-clock milliseconds, the clock sync seals by.
+#[derive(Clone, Copy, Debug)]
+pub struct DeletionLease {
+    pub now_ms: u64,
+    pub until_ms: u64,
+}
+
 pub struct PreparedCommit {
     rows: PreparedWrite,
     receipt: CommitReceipt,
@@ -653,11 +661,31 @@ impl PreparedCommit {
             .transpose()
     }
 
+    /// Writes the prepared rows without a sync deletion hold.
     pub async fn write(self, tx: &mut Transaction<'_, Sqlite>) -> Result<CommitReceipt, String> {
+        self.write_with(tx, None).await
+    }
+
+    /// Writes like [`Self::write`], holding a deletion's event delete for `lease`. Undo
+    /// requires the hold to be live at `lease.now_ms` and refuses once sync published the
+    /// delete.
+    pub async fn write_held(
+        self,
+        tx: &mut Transaction<'_, Sqlite>,
+        lease: DeletionLease,
+    ) -> Result<CommitReceipt, String> {
+        self.write_with(tx, Some(lease)).await
+    }
+
+    async fn write_with(
+        self,
+        tx: &mut Transaction<'_, Sqlite>,
+        lease: Option<DeletionLease>,
+    ) -> Result<CommitReceipt, String> {
         match self.rows {
             PreparedWrite::Mutation(rows) => rows.write(tx).await?,
-            PreparedWrite::Deletion(deletion) => (*deletion).write(tx).await?,
-            PreparedWrite::Undo(undo) => undo.write(tx).await?,
+            PreparedWrite::Deletion(deletion) => (*deletion).write(tx, lease).await?,
+            PreparedWrite::Undo(undo) => undo.write(tx, lease).await?,
         }
         ganbaru_projects::scheduling::write(tx, self.scheduled_tasks).await?;
         for (run_id, expected, target) in self.historical {

@@ -12,19 +12,6 @@ export const MUSIC_ACTIVITY_PHASES: readonly MusicActivityPhase[] = [
   "long-break",
 ];
 
-export type MusicPhaseNavigationKey = "ArrowLeft" | "ArrowRight" | "Home" | "End";
-
-export function nextMusicAssignmentPhase(
-  phase: MusicActivityPhase,
-  key: MusicPhaseNavigationKey,
-): MusicActivityPhase {
-  const current = MUSIC_ACTIVITY_PHASES.indexOf(phase);
-  if (key === "Home") return MUSIC_ACTIVITY_PHASES[0];
-  if (key === "End") return MUSIC_ACTIVITY_PHASES[MUSIC_ACTIVITY_PHASES.length - 1];
-  const offset = key === "ArrowRight" ? 1 : -1;
-  return MUSIC_ACTIVITY_PHASES[(current + offset + MUSIC_ACTIVITY_PHASES.length) % MUSIC_ACTIVITY_PHASES.length];
-}
-
 export function emptyMusicAssignmentDraft(
   phase: MusicActivityPhase,
   provenanceKind: MusicAssignmentProvenanceKind = "explicit",
@@ -34,7 +21,7 @@ export function emptyMusicAssignmentDraft(
     phase,
     behavior: "inherit",
     playlistId: null,
-    soundscapeId: null,
+    soundscapePresetId: null,
     soundscapeBehavior: "inherit",
     provenanceKind,
     provenanceId,
@@ -59,7 +46,7 @@ export function toMusicAssignmentDraft(
     phase: assignment.phase,
     behavior: assignment.behavior,
     playlistId: assignment.playlistId,
-    soundscapeId: assignment.soundscapeId,
+    soundscapePresetId: assignment.soundscapePresetId,
     soundscapeBehavior: assignment.soundscapeBehavior,
     provenanceKind: assignment.provenanceKind,
     provenanceId: assignment.provenanceId,
@@ -69,12 +56,15 @@ export function toMusicAssignmentDraft(
 export function updateMusicAssignmentDraft(
   assignments: readonly MusicContextAssignmentDraft[],
   phase: MusicActivityPhase,
-  update: Partial<Pick<MusicContextAssignmentDraft, "behavior" | "playlistId" | "soundscapeId" | "soundscapeBehavior">>,
+  update: Partial<Pick<MusicContextAssignmentDraft, "behavior" | "playlistId" | "soundscapePresetId" | "soundscapeBehavior">>,
 ): MusicContextAssignmentDraft[] {
   return completeMusicAssignmentDrafts(assignments).map((assignment) => {
     if (assignment.phase !== phase) return assignment;
     const next = { ...assignment, ...update };
     if (!behaviorUsesPlaylist(next.behavior)) next.playlistId = null;
+    if (next.soundscapeBehavior !== "play-selected") {
+      next.soundscapePresetId = null;
+    }
     return next;
   });
 }
@@ -85,7 +75,7 @@ export function persistedMusicAssignmentDrafts(
   return completeMusicAssignmentDrafts(assignments)
     .filter((assignment) => assignment.behavior !== "inherit"
       || assignment.playlistId !== null
-      || assignment.soundscapeId !== null
+      || assignment.soundscapePresetId !== null
       || assignment.soundscapeBehavior !== "inherit");
 }
 
@@ -100,7 +90,7 @@ export function musicAssignmentDraftsEqual(
     return assignment.phase === other.phase
       && assignment.behavior === other.behavior
       && assignment.playlistId === other.playlistId
-      && assignment.soundscapeId === other.soundscapeId
+      && assignment.soundscapePresetId === other.soundscapePresetId
       && assignment.soundscapeBehavior === other.soundscapeBehavior
       && assignment.provenanceKind === other.provenanceKind
       && assignment.provenanceId === other.provenanceId;

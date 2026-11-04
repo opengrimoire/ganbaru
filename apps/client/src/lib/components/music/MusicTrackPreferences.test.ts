@@ -97,7 +97,7 @@ describe("MusicTrackPreferences", () => {
     }
   });
 
-  it("applies Everywhere Mix frequency to every membership and lets the selector target one playlist", async () => {
+  it("applies all-playlists Mix frequency to every membership and lets the selector target one playlist", async () => {
     const player = getMusicPlayer();
     const source = localFileSourceFromPath("/music/test.flac", "Test");
     player.currentSource = source;
@@ -130,8 +130,8 @@ describe("MusicTrackPreferences", () => {
     });
 
     await vi.waitFor(() => expect(target?.querySelector<HTMLButtonElement>("[data-music-weight='much-more-often']")?.getAttribute("aria-disabled")).toBe("false"));
-    target.querySelector<HTMLButtonElement>("button[aria-label='Apply to']")?.click();
-    await vi.waitFor(() => expect(document.querySelector("[role='option']")?.textContent).toContain("Everywhere"));
+    target.querySelector<HTMLButtonElement>("button[aria-label='For this track in']")?.click();
+    await vi.waitFor(() => expect(document.querySelector("[role='option']")?.textContent).toContain("All playlists"));
     const morning = [...document.querySelectorAll<HTMLButtonElement>("[role='option']")]
       .find((button) => button.textContent?.includes("Morning"));
     morning?.click();
@@ -166,7 +166,7 @@ describe("MusicTrackPreferences", () => {
 
     target.querySelector<HTMLButtonElement>("button[aria-label='Mix and snooze']")?.click();
     await vi.waitFor(() => expect(target?.querySelector("[data-music-weight='rarely']")).not.toBeNull());
-    expect(target.querySelector<HTMLButtonElement>("button[aria-label='Apply to']")?.disabled).toBe(true);
+    expect(target.querySelector<HTMLButtonElement>("button[aria-label='For this track in']")?.disabled).toBe(true);
     expect(target.querySelectorAll("[role='group'][aria-label='Mix frequency'] button:disabled")).toHaveLength(5);
     const day = [...target.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.trim() === "1 day");
@@ -256,7 +256,7 @@ describe("MusicTrackPreferences", () => {
     expect(target.textContent).toContain("Much more");
     expect(target.textContent).not.toContain("Much more (2x)");
     expect(target.querySelectorAll("[role='group'][aria-label='Mix frequency'] button:disabled")).toHaveLength(0);
-    expect(target.querySelector<HTMLButtonElement>("button[aria-label='Apply to']")?.disabled).toBe(false);
+    expect(target.querySelector<HTMLButtonElement>("button[aria-label='For this track in']")?.disabled).toBe(false);
     finishSave?.();
     await vi.waitFor(() => expect(target?.querySelector<HTMLButtonElement>("[data-music-weight='much-more-often']")?.getAttribute("aria-disabled")).toBe("false"));
   });

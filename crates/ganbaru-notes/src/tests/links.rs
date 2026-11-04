@@ -109,11 +109,12 @@ fn resolving_unresolved_links_rewrites_source_urls() {
         .unwrap();
 
         assert!(remaining.is_empty());
-        let payload: String = sqlx::query_scalar("SELECT payload FROM notes_blocks WHERE id = ?")
-            .bind(BLOCK_C)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let payload: String =
+            sqlx::query_scalar("SELECT json_patch(attrs, text) FROM notes_blocks WHERE id = ?")
+                .bind(BLOCK_C)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert!(payload.contains(&format!("#notes?page={PAGE_B}")));
         assert!(!payload.contains("Missing%20Target"));
 

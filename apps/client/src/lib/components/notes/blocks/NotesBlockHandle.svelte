@@ -36,7 +36,7 @@
   import LinkIcon from "@lucide/svelte/icons/link";
   import MessageSquare from "@lucide/svelte/icons/message-square";
   import Pilcrow from "@lucide/svelte/icons/pilcrow";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import { onDestroy } from "svelte";
   import {
     loadNotesEditorPanel,

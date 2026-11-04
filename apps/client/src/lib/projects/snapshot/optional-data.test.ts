@@ -21,8 +21,8 @@ function task(id: string, projectId: string): ProjectTask {
     description: "",
     priority: "normal",
     taskType: "task",
-    sectionSortOrder: 0,
-    statusSortOrder: 0,
+    sectionOrderKey: "0",
+    statusOrderKey: "0",
     milestone: false,
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -39,8 +39,8 @@ function snapshot(): ProjectsSnapshot {
     tasks: [task("task-a", "project-a"), task("task-b", "project-b")],
     checklistItems: [],
     tags: [
-      { id: "tag-a-old", projectId: "project-a", name: "Old", sortOrder: 0, createdAt: timestamp, updatedAt: timestamp },
-      { id: "tag-b", projectId: "project-b", name: "Keep", sortOrder: 0, createdAt: timestamp, updatedAt: timestamp },
+      { id: "tag-a-old", projectId: "project-a", name: "Old", orderKey: "0", createdAt: timestamp, updatedAt: timestamp },
+      { id: "tag-b", projectId: "project-b", name: "Keep", orderKey: "0", createdAt: timestamp, updatedAt: timestamp },
     ],
     taskTagLinks: [
       { taskId: "task-a", tagId: "tag-a-old", createdAt: timestamp },
@@ -71,7 +71,7 @@ function relationships(): ProjectsOptionalData {
     projectId: "project-a",
     checklistItems: [],
     tags: [
-      { id: "tag-a-new", projectId: "project-a", name: "New", sortOrder: 0, createdAt: timestamp, updatedAt: timestamp },
+      { id: "tag-a-new", projectId: "project-a", name: "New", orderKey: "0", createdAt: timestamp, updatedAt: timestamp },
     ],
     taskTagLinks: [{ taskId: "task-a", tagId: "tag-a-new", createdAt: timestamp }],
     customFields: [],

@@ -16,7 +16,7 @@ On a project, project view, note, or Chat channel row, a middle click or Ctrl+cl
 
 Each tab shows its kind icon and one name: an item tab shows the view, note, or channel name followed by its project in parentheses, shortened when long; a kind or project tab inside a project shows just the project name; and Calendar and tabs outside a project show the kind name. The icon tells kinds apart, so the strip skips the kind name; tooltips, the launcher, and screen readers still name it. Names stay current across renames. Any kind, Calendar included, can have several tabs, so the same place can be open twice when the user asks for it.
 
-A fresh vault opens with Calendar and Projects. Closing the last tab of a window closes that window, and in the last window open it asks to close the app, the same confirmation as closing the window, so the app is never left without a tab.
+A fresh vault opens with Calendar only. Closing the last tab of a window closes that window, and in the last window open it asks to close the app, the same confirmation as closing the window, so the app is never left without a tab.
 
 Tabs, their order, the active tab, and the recently closed list persist per device, per vault, and per window. They are device-local interface state, not vault data, because another device may have a different window size and different working context.
 

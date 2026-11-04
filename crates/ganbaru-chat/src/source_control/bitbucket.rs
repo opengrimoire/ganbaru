@@ -155,15 +155,17 @@ pub async fn bitbucket_authenticated_request(
     if let Some(body) = body {
         request = request.json(&body);
     }
-    let response = request.send().await.map_err(|_| transport_error())?;
+    let mut response = request.send().await.map_err(|_| transport_error())?;
     let status = response.status();
-    let bytes = response.bytes().await.map_err(|_| transport_error())?;
-    if bytes.len() > MAX_OPERATION_OUTPUT_BYTES {
-        return Err(ChatError::new(
-            ChatErrorCode::Protocol,
-            "Bitbucket response exceeded the supported limit",
-            true,
-        ));
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_OPERATION_OUTPUT_BYTES as u64)
+    {
+        return Err(bitbucket_response_limit_error());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| transport_error())? {
+        append_bounded_response(&mut bytes, &chunk, MAX_OPERATION_OUTPUT_BYTES)?;
     }
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
         return Err(ChatError::new(
@@ -183,6 +185,28 @@ pub async fn bitbucket_authenticated_request(
         ));
     }
     serde_json::from_slice(&bytes).map_err(|_| protocol_error())
+}
+
+/// Appends a response chunk, refusing the response as soon as it would pass
+/// `limit`, so an oversized body is never buffered whole.
+pub(super) fn append_bounded_response(
+    body: &mut Vec<u8>,
+    chunk: &[u8],
+    limit: usize,
+) -> ChatResult<()> {
+    if chunk.len() > limit.saturating_sub(body.len()) {
+        return Err(bitbucket_response_limit_error());
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn bitbucket_response_limit_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Protocol,
+        "Bitbucket response exceeded the supported limit",
+        true,
+    )
 }
 
 fn require_bitbucket_credential(

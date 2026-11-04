@@ -1,8 +1,8 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import Code2 from "@lucide/svelte/icons/code-2";
+  import Code2 from "@lucide/svelte/icons/code-xml";
   import FileText from "@lucide/svelte/icons/file-text";
-  import CircleHelp from "@lucide/svelte/icons/circle-help";
+  import CircleHelp from "@lucide/svelte/icons/circle-question-mark";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     unsupportedBlockHasRawPayload,

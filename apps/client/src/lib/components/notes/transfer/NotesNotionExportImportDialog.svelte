@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import {
@@ -20,7 +19,6 @@
     description = null,
   }: {
     onImport: (input: {
-      exportRootPath: string;
       sourceWorkspaceId: string | null;
       keepExternalFileReferences: boolean;
       copyLocalFileReferences: boolean;
@@ -28,29 +26,26 @@
       importHtml: boolean;
       importCsv: boolean;
       projectId: string | null;
-    }) => Promise<NotesNotionExportImportResult>;
+    }) => Promise<NotesNotionExportImportResult | null>;
     onCancel: () => void;
     embedded?: boolean;
     description?: string | null;
   } = $props();
 
   const { t } = getLocalization();
-  let exportRootPath = $state("");
   let sourceWorkspaceId = $state("");
   let projectId = $state<string | null>(null);
   let keepExternalFileReferences = $state(false);
-  let copyLocalFileReferences = $state(true);
+  let copyLocalFileReferences = $state(false);
   let importMarkdown = $state(true);
   let importHtml = $state(true);
   let importCsv = $state(true);
   let importing = $state(false);
   let error = $state<string | null>(null);
   let result = $state<NotesNotionExportImportResult | null>(null);
-  let pathInputEl = $state<HTMLInputElement | null>(null);
 
   const canImport = $derived(
-    exportRootPath.trim().length > 0
-      && (importMarkdown || importHtml || importCsv)
+    (importMarkdown || importHtml || importCsv)
       && projectId !== null
       && !importing,
   );
@@ -110,12 +105,6 @@
       : [],
   );
 
-  onMount(() => {
-    void tick().then(() => {
-      pathInputEl?.focus();
-    });
-  });
-
   async function submit(): Promise<void> {
     if (!canImport) return;
     importing = true;
@@ -123,7 +112,6 @@
     result = null;
     try {
       result = await onImport({
-        exportRootPath,
         sourceWorkspaceId: sourceWorkspaceId.trim() || null,
         keepExternalFileReferences,
         copyLocalFileReferences,
@@ -196,20 +184,6 @@
     <div class={embedded ? "px-4 py-3" : "min-h-0 flex-1 overflow-auto px-4 py-3"} use:scrollEdgeFadeAction>
       <div class="grid gap-3">
         <NotesImportDestinationRow bind:projectId />
-
-        <NotesTransferFieldRow
-          label={t("notes.notionExportImportFolderLabel")}
-          description={t("notes.notionExportImportFolderDescription")}
-          forId="notes-notion-export-folder-path"
-        >
-          <input
-            id="notes-notion-export-folder-path"
-            bind:this={pathInputEl}
-            class="field w-72 max-w-full text-panel text-foreground max-[560px]:w-full"
-            bind:value={exportRootPath}
-            spellcheck="false"
-          />
-        </NotesTransferFieldRow>
 
         <NotesTransferFieldRow
           label={t("notes.notionExportImportWorkspaceLabel")}

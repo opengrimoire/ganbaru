@@ -1,7 +1,9 @@
 use super::fixtures::{other_writer_key, writer_key};
 use crate::bounds::MAX_ROW_KEY_BYTES;
-use crate::ids::{hex, parse_hex};
-use crate::{GroupId, GroupMask, RowKey, SpaceId, WriterId};
+use crate::ids::{MAX_DERIVED_KEY_PREFIX_BYTES, hex, parse_hex};
+use crate::{
+    DerivedKeyError, GroupId, GroupMask, PENDING_KEY_PREFIX, RowKey, SpaceId, WriterId, derived_key,
+};
 
 #[test]
 fn personal_space_ids_are_deterministic_per_vault() {
@@ -59,4 +61,56 @@ fn group_masks_iterate_in_ascending_order() {
     assert_eq!(GroupMask::first(8).0, 0xff);
     assert_eq!(GroupMask::first(64).0, u64::MAX);
     assert!(GroupMask::EMPTY.is_empty());
+}
+
+#[test]
+fn derived_keys_match_their_vectors() {
+    let cases: [(&str, &[&str], &str); 5] = [
+        ("m", &["a"], "m:ca978112ca1bbdcafac231b39a23dc4d"),
+        (
+            "membership",
+            &["item-1", "end-1"],
+            "membership:e03f0ce26f0252325e779592dc48e1f9",
+        ),
+        (
+            "edge_2",
+            &["a", "b", "c"],
+            "edge_2:8badde10c760e9b702defb4b5e225de7",
+        ),
+        ("x", &["a", "", "b"], "x:2d8dbcddf40617a662bcf1f1c70eb523"),
+        ("u-n", &["\u{e9}"], "u-n:4a99557e4033c3539de2eb65472017ca"),
+    ];
+    for (prefix, parts, expected) in cases {
+        assert_eq!(derived_key(prefix, parts).unwrap().as_str(), expected);
+    }
+}
+
+#[test]
+fn derived_key_parts_are_separated_and_ordered() {
+    let joined = derived_key("k", &["ab", "c"]).unwrap();
+    assert_ne!(joined, derived_key("k", &["a", "bc"]).unwrap());
+    assert_ne!(joined, derived_key("k", &["c", "ab"]).unwrap());
+    assert_ne!(joined, derived_key("j", &["ab", "c"]).unwrap());
+    assert_eq!(
+        derived_key("k", &[""]).unwrap().as_str(),
+        "k:e3b0c44298fc1c149afbf4c8996fb924"
+    );
+}
+
+#[test]
+fn derived_key_refuses_bad_prefixes_and_parts() {
+    let long = "p".repeat(MAX_DERIVED_KEY_PREFIX_BYTES + 1);
+    for prefix in ["", "Upper", "with space", "a:b", "pending", long.as_str()] {
+        assert_eq!(
+            derived_key(prefix, &["a"]),
+            Err(DerivedKeyError::Prefix),
+            "{prefix}"
+        );
+    }
+    let longest = "p".repeat(MAX_DERIVED_KEY_PREFIX_BYTES);
+    let key = derived_key(&longest, &["a"]).unwrap();
+    assert!(key.as_str().len() <= MAX_ROW_KEY_BYTES);
+    assert!(!key.as_str().starts_with(PENDING_KEY_PREFIX));
+    assert_eq!(derived_key("k", &[]), Err(DerivedKeyError::NoParts));
+    assert_eq!(derived_key("k", &["a\0b"]), Err(DerivedKeyError::Part));
 }

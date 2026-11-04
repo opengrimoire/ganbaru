@@ -157,6 +157,11 @@ describe("notesDatabaseRowPageValueIsEmpty", () => {
     expect(notesDatabaseRowPageValueIsEmpty(page, column("links", "relation"))).toBe(false);
   });
 
+  it("treats a value stored under another type as filled, so it stays reachable", () => {
+    const page = rowPage({ Score: { id: "score", type: "rich_text", rich_text: [{ type: "text", plain_text: "High" }] } });
+    expect(notesDatabaseRowPageValueIsEmpty(page, column("score", "select"))).toBe(false);
+  });
+
   it("never treats buttons or timestamps as empty", () => {
     for (const type of ["button", "created_time", "last_edited_time"] as const) {
       expect(notesDatabaseRowPageValueIsEmpty(rowPage({}), column(type, type))).toBe(false);

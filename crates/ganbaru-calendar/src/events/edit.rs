@@ -177,11 +177,7 @@ impl EventDraft {
                     }
                 }
                 Field::Geo(value) => {
-                    if parse_geo(value)?.is_some_and(|(lat, lng)| {
-                        !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng)
-                    }) {
-                        return Err("Calendar coordinates are outside geographic bounds".into());
-                    }
+                    parse_geo(value)?;
                 }
                 Field::Organizer(value) => {
                     parse_organizer(value)?;

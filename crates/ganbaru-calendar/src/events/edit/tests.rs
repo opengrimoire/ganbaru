@@ -83,7 +83,7 @@ fn duplicate_fields_children_and_music_phases_are_rejected() {
             .unwrap_err()
             .contains("alarm identity")
     );
-    let assignment = json!({"phase":"focus","behavior":"inherit","playlistId":null,"soundscapeId":null,"soundscapeBehavior":"inherit","provenanceKind":"explicit","provenanceId":null});
+    let assignment = json!({"phase":"focus","behavior":"inherit","playlistId":null,"soundscapePresetId":null,"soundscapeBehavior":"inherit","provenanceKind":"explicit","provenanceId":null});
     assert!(
         draft(
             json!({"fields":[{"field":"musicOverrideAssignments","value":[assignment,assignment]}]})

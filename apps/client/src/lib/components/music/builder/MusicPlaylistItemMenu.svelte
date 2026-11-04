@@ -8,7 +8,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import MoreHorizontal from "@lucide/svelte/icons/ellipsis";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import type { Component } from "svelte";
   import { getMusicInspectorDetail } from "$lib/api/music-library";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";

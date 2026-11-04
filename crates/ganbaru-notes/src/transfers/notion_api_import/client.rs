@@ -1,3 +1,4 @@
+use super::cancellation::{NotionImportCancellation, NotionImportStop};
 use reqwest::{
     Method, StatusCode, Url,
     header::{CONTENT_TYPE, HeaderMap},
@@ -19,6 +20,8 @@ const MAX_PAGINATED_OBJECTS: usize = 10_000;
 const MAX_CURSOR_BYTES: usize = 2 * 1024;
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
 const MAX_TOTAL_RETRY_DELAY: Duration = Duration::from_secs(20);
+/// Requests one import may send, retries included, about five hours at the pacing interval.
+pub(crate) const MAX_IMPORT_REQUESTS: i64 = 50_000;
 
 #[derive(Default)]
 pub(crate) struct NotionApiStats {
@@ -35,6 +38,9 @@ pub(crate) struct NotionApiClient {
     request_interval: Duration,
     last_request_at: Option<Instant>,
     stats: NotionApiStats,
+    cancellation: NotionImportCancellation,
+    max_requests: i64,
+    stop: Option<NotionImportStop>,
 }
 
 #[derive(Debug)]
@@ -59,8 +65,43 @@ impl NotionApiError {
     }
 }
 
+/// Canonical lowercase hyphenated form of a Notion object ID, or `None` unless the value is
+/// exactly 32 hex digits with optional hyphens. Every ID placed in an API path or query goes
+/// through this, so response or input text cannot add path segments or query parameters.
+pub(crate) fn canonical_notion_id(value: &str) -> Option<String> {
+    let compact = value
+        .chars()
+        .filter(|character| *character != '-')
+        .collect::<String>();
+    if compact.len() != 32
+        || !compact
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let compact = compact.to_ascii_lowercase();
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        &compact[..8],
+        &compact[8..12],
+        &compact[12..16],
+        &compact[16..20],
+        &compact[20..]
+    ))
+}
+
+fn api_path_id(value: &str) -> Result<String, NotionApiError> {
+    canonical_notion_id(value)
+        .ok_or_else(|| NotionApiError::request("Notion object ID is not a valid UUID"))
+}
+
 impl NotionApiClient {
-    pub(crate) fn new(token: String, page_size: i64) -> Result<Self, String> {
+    pub(crate) fn new(
+        token: String,
+        page_size: i64,
+        cancellation: NotionImportCancellation,
+    ) -> Result<Self, String> {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -77,6 +118,9 @@ impl NotionApiClient {
             request_interval: MIN_REQUEST_INTERVAL,
             last_request_at: None,
             stats: NotionApiStats::default(),
+            cancellation,
+            max_requests: MAX_IMPORT_REQUESTS,
+            stop: None,
         })
     }
 
@@ -84,7 +128,41 @@ impl NotionApiClient {
         &self.stats
     }
 
+    /// Builds an unpaced client against a local test server.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        base_url: Url,
+        page_size: i64,
+        cancellation: NotionImportCancellation,
+        max_requests: i64,
+    ) -> Self {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        Self {
+            http,
+            base_url,
+            token: "bearer_secret".to_string(),
+            page_size,
+            request_interval: Duration::ZERO,
+            last_request_at: None,
+            stats: NotionApiStats::default(),
+            cancellation,
+            max_requests,
+            stop: None,
+        }
+    }
+
+    /// Why requests stopped, when the import was canceled or spent its request budget.
+    pub(crate) fn stop_reason(&self) -> Option<NotionImportStop> {
+        self.stop
+    }
+
     pub(crate) async fn retrieve_page(&mut self, page_id: &str) -> Result<Value, NotionApiError> {
+        let page_id = api_path_id(page_id)?;
         self.send_json(Method::GET, &format!("/pages/{page_id}"), None, None)
             .await
     }
@@ -93,6 +171,7 @@ impl NotionApiClient {
         &mut self,
         data_source_id: &str,
     ) -> Result<Value, NotionApiError> {
+        let data_source_id = api_path_id(data_source_id)?;
         self.send_json(
             Method::GET,
             &format!("/data_sources/{data_source_id}"),
@@ -107,6 +186,7 @@ impl NotionApiClient {
         block_id: &str,
         max_results: usize,
     ) -> Result<Vec<Value>, NotionApiError> {
+        let block_id = api_path_id(block_id)?;
         self.paginated_get(
             &format!("/blocks/{block_id}/children"),
             "block children",
@@ -121,11 +201,12 @@ impl NotionApiClient {
         &mut self,
         block_id: &str,
     ) -> Result<Vec<Value>, NotionApiError> {
+        let block_id = api_path_id(block_id)?;
         self.paginated_get(
             "/comments",
             "comments",
             Some("comment"),
-            &[("block_id", block_id)],
+            &[("block_id", &block_id)],
             MAX_PAGINATED_OBJECTS,
         )
         .await
@@ -140,6 +221,7 @@ impl NotionApiClient {
         &mut self,
         data_source_id: &str,
     ) -> Result<Vec<Value>, NotionApiError> {
+        let data_source_id = api_path_id(data_source_id)?;
         let mut results = Vec::new();
         let mut start_cursor: Option<String> = None;
         let mut pagination = PaginationGuard::new(MAX_PAGINATED_OBJECTS);
@@ -228,8 +310,10 @@ impl NotionApiClient {
         }
         let mut retry_count = 0;
         let mut total_retry_delay = Duration::ZERO;
+        let cancellation = self.cancellation.clone();
         loop {
-            self.pace_request().await;
+            self.admit_request()?;
+            self.pace_request().await?;
             self.stats.request_count += 1;
             let mut request = self
                 .http
@@ -240,26 +324,35 @@ impl NotionApiClient {
             if let Some(payload) = body.clone() {
                 request = request.json(&payload);
             }
-            let response = request.send().await.map_err(|error| {
-                let message = if error.is_timeout() {
-                    "Notion API request timed out"
-                } else if error.is_connect() {
-                    "Notion API connection failed"
-                } else {
-                    "Notion API request failed"
-                };
-                NotionApiError::request(message)
-            })?;
-            let mut response = response;
-            let status = response.status();
-            let headers = response.headers().clone();
-            let (response_cap, response_label) = if status.is_success() {
-                (MAX_SUCCESS_RESPONSE_BYTES, "success")
-            } else {
-                (MAX_ERROR_RESPONSE_BYTES, "error")
+            let exchange = cancellation
+                .unless_canceled(async {
+                    let mut response = request.send().await.map_err(|error| {
+                        let message = if error.is_timeout() {
+                            "Notion API request timed out"
+                        } else if error.is_connect() {
+                            "Notion API connection failed"
+                        } else {
+                            "Notion API request failed"
+                        };
+                        NotionApiError::request(message)
+                    })?;
+                    let status = response.status();
+                    let headers = response.headers().clone();
+                    let (response_cap, response_label) = if status.is_success() {
+                        (MAX_SUCCESS_RESPONSE_BYTES, "success")
+                    } else {
+                        (MAX_ERROR_RESPONSE_BYTES, "error")
+                    };
+                    let body =
+                        read_capped_response_body(&mut response, response_cap, response_label)
+                            .await?;
+                    Ok::<_, NotionApiError>((status, headers, body))
+                })
+                .await;
+            let Some(exchange) = exchange else {
+                return Err(self.stopped(NotionImportStop::Canceled));
             };
-            let body =
-                read_capped_response_body(&mut response, response_cap, response_label).await?;
+            let (status, headers, body) = exchange?;
             if !response_content_type_is_json(&headers) {
                 return Err(NotionApiError::response(
                     status,
@@ -279,21 +372,51 @@ impl NotionApiClient {
                 }
                 retry_count += 1;
                 total_retry_delay += delay;
-                sleep(delay).await;
+                if cancellation.unless_canceled(sleep(delay)).await.is_none() {
+                    return Err(self.stopped(NotionImportStop::Canceled));
+                }
                 continue;
             }
             return Err(NotionApiError::response(status, message));
         }
     }
 
-    async fn pace_request(&mut self) {
+    /// Refuses the next request once the import is canceled or has spent its request budget.
+    fn admit_request(&mut self) -> Result<(), NotionApiError> {
+        if self.cancellation.is_canceled() {
+            return Err(self.stopped(NotionImportStop::Canceled));
+        }
+        if self.stats.request_count >= self.max_requests {
+            return Err(self.stopped(NotionImportStop::RequestLimit));
+        }
+        Ok(())
+    }
+
+    /// Records the first stop reason and returns the error that ends the current request.
+    fn stopped(&mut self, stop: NotionImportStop) -> NotionApiError {
+        let stop = *self.stop.get_or_insert(stop);
+        NotionApiError::request(match stop {
+            NotionImportStop::Canceled => "Notion import was canceled".to_string(),
+            NotionImportStop::RequestLimit => format!(
+                "Notion import reached the limit of {} API requests",
+                self.max_requests
+            ),
+            NotionImportStop::BlockLimit => "Notion import reached its block limit".to_string(),
+        })
+    }
+
+    async fn pace_request(&mut self) -> Result<(), NotionApiError> {
         if let Some(last_request_at) = self.last_request_at {
             let elapsed = last_request_at.elapsed();
             if elapsed < self.request_interval {
-                sleep(self.request_interval - elapsed).await;
+                let wait = sleep(self.request_interval - elapsed);
+                if self.cancellation.unless_canceled(wait).await.is_none() {
+                    return Err(self.stopped(NotionImportStop::Canceled));
+                }
             }
         }
         self.last_request_at = Some(Instant::now());
+        Ok(())
     }
 }
 
@@ -515,113 +638,23 @@ fn is_rate_limited(status: StatusCode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_server::{ScriptedResponse, read_http_request, start_scripted_server};
     use super::*;
     use reqwest::header::{HeaderMap, HeaderValue};
     use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
-    use std::sync::mpsc::{self, Receiver};
-    use std::thread::JoinHandle;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
 
-    struct ScriptedResponse {
-        status: &'static str,
-        content_type: Option<&'static str>,
-        body: Vec<u8>,
-        declared_length: Option<usize>,
-    }
-
-    impl ScriptedResponse {
-        fn json(status: &'static str, body: Value) -> Self {
-            Self {
-                status,
-                content_type: Some("application/json"),
-                body: serde_json::to_vec(&body).unwrap(),
-                declared_length: None,
-            }
-        }
-    }
-
-    fn read_http_request(stream: &mut TcpStream) -> String {
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let mut request = Vec::new();
-        let mut expected_length = None;
-        loop {
-            let mut buffer = [0_u8; 4096];
-            let read = stream.read(&mut buffer).unwrap_or(0);
-            if read == 0 {
-                break;
-            }
-            request.extend_from_slice(&buffer[..read]);
-            if request.len() > 64 * 1024 {
-                break;
-            }
-            if expected_length.is_none() {
-                if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
-                    let header_length = header_end + 4;
-                    let headers = String::from_utf8_lossy(&request[..header_length]);
-                    let body_length = headers
-                        .lines()
-                        .find_map(|line| line.split_once(':'))
-                        .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
-                        .unwrap_or(0);
-                    expected_length = Some(header_length + body_length);
-                }
-            }
-            if expected_length.is_some_and(|length| request.len() >= length) {
-                break;
-            }
-        }
-        String::from_utf8_lossy(&request).into_owned()
-    }
-
-    fn start_scripted_server(
-        responses: Vec<ScriptedResponse>,
-    ) -> (Url, Receiver<String>, JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let (request_tx, request_rx) = mpsc::channel();
-        let handle = std::thread::spawn(move || {
-            for response in responses {
-                let (mut stream, _) = listener.accept().unwrap();
-                let request = read_http_request(&mut stream);
-                let _ = request_tx.send(request);
-                let content_type = response
-                    .content_type
-                    .map(|value| format!("Content-Type: {value}\r\n"))
-                    .unwrap_or_default();
-                let declared_length = response.declared_length.unwrap_or(response.body.len());
-                write!(
-                    stream,
-                    "HTTP/1.1 {}\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n",
-                    response.status, content_type, declared_length
-                )
-                .unwrap();
-                stream.write_all(&response.body).unwrap();
-                stream.flush().unwrap();
-            }
-        });
-        let base_url = Url::parse(&format!("http://{address}/v1/")).unwrap();
-        (base_url, request_rx, handle)
-    }
+    const PAGE_ID: &str = "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
+    const DATA_SOURCE_ID: &str = "1a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
 
     fn test_client(base_url: Url, page_size: i64) -> NotionApiClient {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(3))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
-        NotionApiClient {
-            http,
+        NotionApiClient::for_test(
             base_url,
-            token: "bearer_secret".to_string(),
             page_size,
-            request_interval: Duration::ZERO,
-            last_request_at: None,
-            stats: NotionApiStats::default(),
-        }
+            NotionImportCancellation::new(),
+            MAX_IMPORT_REQUESTS,
+        )
     }
 
     #[test]
@@ -634,7 +667,7 @@ mod tests {
         }]);
         let mut client = test_client(base_url, 100);
 
-        let error = sqlx::__rt::test_block_on(client.retrieve_page("page-id"))
+        let error = sqlx::__rt::test_block_on(client.retrieve_page(PAGE_ID))
             .expect_err("oversized success response must fail");
 
         assert!(error.message.contains("success response exceeded"));
@@ -653,7 +686,7 @@ mod tests {
         }]);
         let mut client = test_client(base_url, 100);
 
-        let error = sqlx::__rt::test_block_on(client.retrieve_page("page-id"))
+        let error = sqlx::__rt::test_block_on(client.retrieve_page(PAGE_ID))
             .expect_err("oversized error response must fail");
 
         assert!(error.message.contains("error response exceeded"));
@@ -672,7 +705,7 @@ mod tests {
         }]);
         let mut client = test_client(base_url, 100);
 
-        let error = sqlx::__rt::test_block_on(client.retrieve_page("page-id"))
+        let error = sqlx::__rt::test_block_on(client.retrieve_page(PAGE_ID))
             .expect_err("non-JSON response must fail");
 
         assert!(error.message.contains("unsupported content type"));
@@ -701,7 +734,7 @@ mod tests {
         ]);
         let mut client = test_client(base_url, 2);
 
-        let rows = sqlx::__rt::test_block_on(client.query_data_source("data-source-id")).unwrap();
+        let rows = sqlx::__rt::test_block_on(client.query_data_source(DATA_SOURCE_ID)).unwrap();
 
         assert_eq!(
             rows.iter()
@@ -716,6 +749,43 @@ mod tests {
     }
 
     #[test]
+    fn api_paths_and_queries_carry_only_canonical_notion_ids() {
+        let empty = || {
+            ScriptedResponse::json(
+                "200 OK",
+                json!({ "results": [], "has_more": false, "next_cursor": null }),
+            )
+        };
+        let (base_url, requests, server) = start_scripted_server(vec![empty(), empty()]);
+        let mut client = test_client(base_url, 100);
+
+        sqlx::__rt::test_block_on(
+            client.list_block_children("0A1B2C3D4E5F4A6B8C7D8E9F0A1B2C3D", 10),
+        )
+        .unwrap();
+        sqlx::__rt::test_block_on(client.list_comments("0a1b2c3d4e5f4a6b8c7d8e9f0a1b2c3d"))
+            .unwrap();
+        for hostile in [
+            "../users",
+            "page-id",
+            "0a1b2c3d4e5f4a6b8c7d8e9f0a1b2c3d&page_size=1",
+        ] {
+            let error = sqlx::__rt::test_block_on(client.retrieve_page(hostile)).unwrap_err();
+            assert!(error.message.contains("not a valid UUID"), "{hostile}");
+            assert!(sqlx::__rt::test_block_on(client.list_comments(hostile)).is_err());
+            assert!(sqlx::__rt::test_block_on(client.retrieve_data_source(hostile)).is_err());
+            assert!(sqlx::__rt::test_block_on(client.query_data_source(hostile)).is_err());
+        }
+
+        server.join().unwrap();
+        let requests = requests.try_iter().collect::<Vec<_>>();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains(&format!("/v1/blocks/{PAGE_ID}/children?")));
+        assert!(requests[1].contains(&format!("block_id={PAGE_ID}")));
+        assert_eq!(client.stats().request_count, 2);
+    }
+
+    #[test]
     fn block_pagination_stops_at_the_remaining_import_limit() {
         let (base_url, requests, server) = start_scripted_server(vec![ScriptedResponse::json(
             "200 OK",
@@ -727,7 +797,7 @@ mod tests {
         )]);
         let mut client = test_client(base_url, 100);
 
-        let error = sqlx::__rt::test_block_on(client.list_block_children("page-id", 1))
+        let error = sqlx::__rt::test_block_on(client.list_block_children(PAGE_ID, 1))
             .expect_err("pagination must stop when the remaining block capacity is full");
 
         assert!(error.message.contains("exceeded 1 objects"));
@@ -772,11 +842,69 @@ mod tests {
 
         let result = sqlx::__rt::test_block_on(sqlx::__rt::timeout(
             Duration::from_millis(500),
-            client.retrieve_page("page-id"),
+            client.retrieve_page(PAGE_ID),
         ));
 
         assert!(result.is_err());
         assert!(closed_rx.recv_timeout(Duration::from_secs(3)).unwrap());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn requests_past_the_import_budget_are_never_sent() {
+        let page = |cursor: &str| {
+            ScriptedResponse::json(
+                "200 OK",
+                json!({
+                    "results": [{ "object": "block", "id": format!("block-{cursor}") }],
+                    "has_more": true,
+                    "next_cursor": cursor
+                }),
+            )
+        };
+        let (base_url, requests, server) = start_scripted_server(vec![page("a"), page("b")]);
+        let mut client = NotionApiClient::for_test(base_url, 1, NotionImportCancellation::new(), 2);
+
+        let error = sqlx::__rt::test_block_on(client.list_block_children(PAGE_ID, 100))
+            .expect_err("the third request exceeds the budget");
+
+        assert!(error.message.contains("limit of 2 API requests"));
+        assert_eq!(client.stop_reason(), Some(NotionImportStop::RequestLimit));
+        assert_eq!(client.stats().request_count, 2);
+        server.join().unwrap();
+        assert_eq!(requests.try_iter().count(), 2);
+    }
+
+    #[test]
+    fn cancel_interrupts_a_rate_limit_wait() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let cancellation = NotionImportCancellation::new();
+        let canceler = cancellation.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_http_request(&mut stream);
+            stream
+                .write_all(
+                    b"HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 10\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                )
+                .unwrap();
+            stream.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            canceler.cancel();
+        });
+        let base_url = Url::parse(&format!("http://{address}/v1/")).unwrap();
+        let mut client = NotionApiClient::for_test(base_url, 100, cancellation, 10);
+
+        let started = Instant::now();
+        let error = sqlx::__rt::test_block_on(client.retrieve_page(PAGE_ID))
+            .expect_err("cancel must end the retry wait");
+
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(error.message.contains("canceled"));
+        assert_eq!(client.stop_reason(), Some(NotionImportStop::Canceled));
+        assert_eq!(client.stats().retry_count, 1);
+        assert_eq!(client.stats().request_count, 1);
         server.join().unwrap();
     }
 

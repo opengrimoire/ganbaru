@@ -49,9 +49,7 @@ export function readJsonValue(value: unknown, label: string): JsonValue {
     if (typeof entry === "number" && Number.isFinite(entry)) return entry;
     if (Array.isArray(entry)) return entry.map((item, index) => visit(item, `${path}[${index}]`, depth + 1));
     if (typeof entry === "object") {
-      const result: { [key: string]: JsonValue } = {};
-      for (const [key, item] of Object.entries(entry)) result[key] = visit(item, `${path}.${key}`, depth + 1);
-      return result;
+      return Object.fromEntries(Object.entries(entry).map(([key, item]) => [key, visit(item, `${path}.${key}`, depth + 1)]));
     }
     throw new Error(`${path} is not valid JSON`);
   };
@@ -73,4 +71,17 @@ export function readTurnModeSnapshot(value: unknown, label: string): TurnModeSna
     safetyMode: readEnum(record.safetyMode, SAFETY_MODES, `${label}.safetyMode`),
     interactionMode: readEnum(record.interactionMode, INTERACTION_MODES, `${label}.interactionMode`),
   };
+}
+
+const MAX_ORDER_KEY_LENGTH = 128;
+const ORDER_KEY_PATTERN = /^[0-9A-Za-z]+$/;
+
+/** Reads a timeline order key: base 62 text of at most 128 characters, or `""` when `allowEmpty`. */
+export function readOrderKey(value: unknown, label: string, allowEmpty = false): string {
+  const key = readString(value, label);
+  if (key.length === 0 && allowEmpty) return key;
+  if (key.length > MAX_ORDER_KEY_LENGTH || !ORDER_KEY_PATTERN.test(key)) {
+    throw new Error(`${label} must be an order key`);
+  }
+  return key;
 }

@@ -12,6 +12,7 @@ import {
   parseSourceSummaries,
   parseYouTubeSnapshotResult,
   parseWriteReceipt,
+  parseOrderReceipts,
 } from "./contracts";
 import { normalizeMusicLibraryError } from "$lib/api/music-library";
 
@@ -28,6 +29,7 @@ const item = {
   sourceCollectionIds: ["source-1"],
   originalArtworkIdentity: "sidecar:Games/Nier/cover.jpg",
   artworkOverride: null,
+  youtubeResolutionState: null,
   durationMs: 120_000,
   availability: "available",
   reviewState: "unreviewed",
@@ -39,7 +41,7 @@ const item = {
   lastPlayedAtMs: null,
   playCount: 0,
   membershipId: null,
-  membershipPosition: null,
+  membershipOrderKey: null,
   membershipWeight: null,
   membershipEnabled: null,
   membershipVersion: null,
@@ -64,6 +66,15 @@ describe("music library contracts", () => {
     expect(() => parseWriteReceipt({ id: "playlist-1", version: "1" })).toThrow("version must be a safe integer");
   });
 
+  it("parses reorder receipts and rejects rows without a usable order key", () => {
+    expect(parseOrderReceipts([{ id: "playlist-1", orderKey: "a0V", version: 3 }]))
+      .toEqual([{ id: "playlist-1", orderKey: "a0V", version: 3 }]);
+    expect(parseOrderReceipts([])).toEqual([]);
+    expect(() => parseOrderReceipts([{ id: "playlist-1", orderKey: "", version: 3 }])).toThrow("orderKey must not be empty");
+    expect(() => parseOrderReceipts([{ id: "playlist-1", sortOrder: 0, version: 3 }])).toThrow("orderKey");
+    expect(() => parseOrderReceipts({ id: "playlist-1", orderKey: "a0", version: 3 })).toThrow();
+  });
+
   it("rejects partially shaped summaries instead of applying defaults", () => {
     expect(() => parsePlaylistSummaries([{
       id: "playlist-1",
@@ -73,7 +84,7 @@ describe("music library contracts", () => {
       mixEnabled: false,
       repeatMode: "all",
       intendedUses: [],
-      sortOrder: 0,
+      orderKey: "a0",
       totalCount: 1,
     }])).toThrow("eligibleCount must be a safe integer");
   });
@@ -94,8 +105,8 @@ describe("music library contracts", () => {
   });
 
   it("validates device binding state", () => {
-    expect(parseBindingResult({ rootId: "root-1", folderPath: null, status: "needs-relink" }))
-      .toEqual({ rootId: "root-1", folderPath: null, status: "needs-relink" });
+    expect(parseBindingResult({ rootId: "root-1", folderPath: null, status: "unbound" }))
+      .toEqual({ rootId: "root-1", folderPath: null, status: "unbound" });
     expect(() => parseBindingResult({ rootId: "root-1", folderPath: null, status: "lost" }))
       .toThrow("status is not supported");
   });

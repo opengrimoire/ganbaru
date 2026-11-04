@@ -617,6 +617,7 @@ describe("ChatComposer", () => {
       canonicalPath: "/workspace/example",
       lastVerifiedAt: "2026-07-24T12:00:00.000Z",
       currentBranch: "feat/chat",
+      trust: "trusted",
     }];
     vi.spyOn(chat, "setComposerModes").mockImplementation((safetyMode, interactionMode) => {
       chat.composer = { ...chat.composer, safetyMode, interactionMode };

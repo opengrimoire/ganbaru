@@ -33,7 +33,17 @@ impl HtmlElement {
     }
 }
 
-pub(crate) fn parse_html_nodes(input: &str) -> Vec<HtmlNode> {
+/// Deepest element nesting an HTML import accepts. Saved pages and Notion exports
+/// stay far below it, and it keeps the recursive conversion, `Clone`, and `Drop`
+/// of the node tree within a 2 MiB worker stack.
+pub(crate) const MAX_HTML_IMPORT_DEPTH: usize = 256;
+
+/// Parses sanitized HTML into a node tree.
+///
+/// # Errors
+///
+/// Returns an error when elements nest deeper than [`MAX_HTML_IMPORT_DEPTH`].
+pub(crate) fn parse_html_nodes(input: &str) -> Result<Vec<HtmlNode>, String> {
     let mut stack = vec![HtmlElement::new("#root", Vec::new(), 1)];
     let mut cursor = 0;
     let mut line = 1;
@@ -87,6 +97,9 @@ pub(crate) fn parse_html_nodes(input: &str) -> Vec<HtmlNode> {
         if self_closing || is_void_element(&node.name) {
             append_node(&mut stack, HtmlNode::Element(node));
         } else {
+            if stack.len() > MAX_HTML_IMPORT_DEPTH {
+                return Err(nesting_depth_error());
+            }
             stack.push(node);
         }
     }
@@ -94,7 +107,116 @@ pub(crate) fn parse_html_nodes(input: &str) -> Vec<HtmlNode> {
         let node = stack.pop().expect("html parser stack must contain child");
         append_node(&mut stack, HtmlNode::Element(node));
     }
-    stack.pop().map(|root| root.children).unwrap_or_default()
+    Ok(stack.pop().map(|root| root.children).unwrap_or_default())
+}
+
+/// Upper bound on nesting in raw markup, checked before sanitizing because the
+/// HTML5 tree builder spends time proportional to the open element depth on
+/// every start tag. It leaves room for sanitizing to drop wrapper elements.
+const MAX_RAW_HTML_DEPTH: usize = MAX_HTML_IMPORT_DEPTH * 2;
+
+/// Rejects raw markup whose element nesting clearly exceeds the import limit.
+///
+/// The scan follows the HTML5 rules that matter for depth: void elements and
+/// elements with optional end tags never nest, a self-closing slash is honored
+/// only inside SVG and MathML, unmatched end tags are ignored, an end tag closes
+/// every element opened after its match, and raw text element content is skipped.
+///
+/// # Errors
+///
+/// Returns the nesting depth error used by [`parse_html_nodes`].
+pub(crate) fn check_raw_html_depth(input: &str) -> Result<(), String> {
+    let lower = input.to_ascii_lowercase();
+    let mut open: Vec<String> = Vec::new();
+    let mut foreign_depth = 0usize;
+    let mut cursor = 0;
+    while let Some(relative) = lower[cursor..].find('<') {
+        let start = cursor + relative;
+        if lower[start..].starts_with("<!--") {
+            let Some(end) = lower[start + 4..].find("-->") else {
+                break;
+            };
+            cursor = start + 4 + end + 3;
+            continue;
+        }
+        let Some(tag_end) = find_tag_end(&lower, start + 1) else {
+            break;
+        };
+        cursor = tag_end + 1;
+        let raw_tag = lower[start + 1..tag_end].trim();
+        if let Some(name) = raw_tag.strip_prefix('/') {
+            let name = normalized_name(name);
+            if let Some(index) = open.iter().rposition(|candidate| *candidate == name) {
+                for closed in open.drain(index..) {
+                    if matches!(closed.as_str(), "svg" | "math") {
+                        foreign_depth = foreign_depth.saturating_sub(1);
+                    }
+                }
+            }
+            continue;
+        }
+        let name = normalized_name(raw_tag);
+        if name.is_empty() || is_void_element(&name) || has_optional_end_tag(&name) {
+            continue;
+        }
+        if raw_tag.ends_with('/') && foreign_depth > 0 {
+            continue;
+        }
+        if is_raw_text_element(&name) {
+            let closing = format!("</{name}");
+            match lower[cursor..].find(&closing) {
+                Some(end) => cursor += end,
+                None => break,
+            }
+            continue;
+        }
+        if matches!(name.as_str(), "svg" | "math") {
+            foreign_depth += 1;
+        }
+        open.push(name);
+        if open.len() > MAX_RAW_HTML_DEPTH {
+            return Err(nesting_depth_error());
+        }
+    }
+    Ok(())
+}
+
+fn nesting_depth_error() -> String {
+    format!("HTML import exceeds the nesting depth limit of {MAX_HTML_IMPORT_DEPTH} levels")
+}
+
+fn has_optional_end_tag(name: &str) -> bool {
+    matches!(
+        name,
+        "body"
+            | "caption"
+            | "colgroup"
+            | "dd"
+            | "dt"
+            | "head"
+            | "html"
+            | "li"
+            | "optgroup"
+            | "option"
+            | "p"
+            | "rb"
+            | "rp"
+            | "rt"
+            | "rtc"
+            | "tbody"
+            | "td"
+            | "tfoot"
+            | "th"
+            | "thead"
+            | "tr"
+    )
+}
+
+fn is_raw_text_element(name: &str) -> bool {
+    matches!(
+        name,
+        "iframe" | "noembed" | "noframes" | "script" | "style" | "textarea" | "title" | "xmp"
+    )
 }
 
 fn append_node(stack: &mut [HtmlElement], node: HtmlNode) {
@@ -233,9 +355,13 @@ fn is_void_element(name: &str) -> bool {
     )
 }
 
-fn count_newlines(value: &str) -> i64 {
+pub(crate) fn count_newlines(value: &str) -> i64 {
     value.bytes().filter(|byte| *byte == b'\n').count() as i64
 }
+
+/// Longest entity reference, including `&` and `;`, that decoding looks for.
+/// A bounded lookahead keeps text with many bare `&` characters linear.
+const MAX_ENTITY_REFERENCE_BYTES: usize = 32;
 
 pub(crate) fn decode_html_entities(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
@@ -243,9 +369,14 @@ pub(crate) fn decode_html_entities(value: &str) -> String {
     while let Some(relative_start) = value[cursor..].find('&') {
         let start = cursor + relative_start;
         output.push_str(&value[cursor..start]);
-        let Some(relative_end) = value[start..].find(';') else {
-            cursor = start;
-            break;
+        let window_end = (start + MAX_ENTITY_REFERENCE_BYTES).min(value.len());
+        let Some(relative_end) = value.as_bytes()[start..window_end]
+            .iter()
+            .position(|byte| *byte == b';')
+        else {
+            output.push('&');
+            cursor = start + 1;
+            continue;
         };
         let end = start + relative_end;
         let entity = &value[start + 1..end];

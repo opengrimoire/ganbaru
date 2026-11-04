@@ -1,14 +1,16 @@
 use super::*;
 use crate::custom_fields::{create_custom_field_in_pool, update_custom_field_value_with_history};
+use crate::order::OrderPlacement;
 
 #[test]
 fn duplicate_custom_property_copies_option_schema_with_fresh_ids_and_empty_values() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
-        sqlx::raw_sql("INSERT INTO project_custom_fields (id, project_id, name, field_type, sort_order) VALUES ('source', 'project-a', 'Phase', 'select', 100);
-            INSERT INTO project_custom_field_options (id, field_id, name, sort_order) VALUES ('option-one', 'source', 'Planning', 100), ('option-two', 'source', 'Done', 200);
-            INSERT INTO project_custom_field_option_values (task_id, field_id, option_id) VALUES ('task-a', 'source', 'option-one');")
+        sqlx::raw_sql("INSERT INTO project_custom_fields (id, project_id, name, field_type, order_key) VALUES ('source', 'project-a', 'Phase', 'select', 'a1');
+            INSERT INTO project_custom_field_options (id, field_id, name, order_key) VALUES ('option-one', 'source', 'Planning', 'a1'), ('option-two', 'source', 'Done', 'a2');
+            INSERT INTO project_custom_field_values (task_id, field_id, sync_key) VALUES ('task-a', 'source', 'value-a-source');
+            INSERT INTO project_custom_field_option_values (value_key, ordinal, option_id) VALUES ('value-a-source', 0, 'option-one');")
             .execute(&pool).await.unwrap();
         let result = create_custom_field_in_pool(
             &pool,
@@ -17,7 +19,7 @@ fn duplicate_custom_property_copies_option_schema_with_fresh_ids_and_empty_value
                 project_id: "project-a".to_string(),
                 name: "Phase copy".to_string(),
                 field_type: "select".to_string(),
-                sort_order: 200,
+                placement: OrderPlacement::End,
                 icon: None,
                 duplicate_source_id: Some("source".to_string()),
             },
@@ -35,7 +37,7 @@ fn duplicate_custom_property_copies_option_schema_with_fresh_ids_and_empty_value
                 .all(|option| option.field_id == "copy"
                     && !["option-one", "option-two"].contains(&option.id.as_str()))
         );
-        let values: (i64, i64) = sqlx::query_as("SELECT (SELECT COUNT(*) FROM project_custom_field_option_values WHERE field_id = 'copy'), (SELECT COUNT(*) FROM project_custom_field_option_values WHERE field_id = 'source')")
+        let values: (i64, i64) = sqlx::query_as("SELECT (SELECT COUNT(*) FROM project_custom_field_values WHERE field_id = 'copy'), (SELECT COUNT(*) FROM project_custom_field_values WHERE field_id = 'source')")
             .fetch_one(&pool).await.unwrap();
         assert_eq!(values, (0, 1));
         let invalid = create_custom_field_in_pool(
@@ -45,7 +47,7 @@ fn duplicate_custom_property_copies_option_schema_with_fresh_ids_and_empty_value
                 project_id: "project-a".to_string(),
                 name: "Invalid".to_string(),
                 field_type: "text".to_string(),
-                sort_order: 300,
+                placement: OrderPlacement::End,
                 icon: None,
                 duplicate_source_id: Some("source".to_string()),
             },
@@ -74,7 +76,7 @@ fn custom_field_icons_accept_only_lucide_icons_and_reset_to_the_type_icon() {
             project_id: "project-a".to_string(),
             name: id.to_string(),
             field_type: "text".to_string(),
-            sort_order: 100,
+            placement: OrderPlacement::End,
             icon: icon.map(str::to_string),
             duplicate_source_id: None,
         };
@@ -107,7 +109,7 @@ fn custom_field_icons_accept_only_lucide_icons_and_reset_to_the_type_icon() {
         let update = |icon: Option<&str>| ProjectCustomFieldUpdate {
             id: "Notes".to_string(),
             name: "Notes".to_string(),
-            sort_order: 100,
+            placement: None,
             icon: icon.map(str::to_string),
         };
         let changed = crate::custom_fields::update_custom_field(&pool, update(Some("lucide:pen")))
@@ -127,15 +129,15 @@ fn custom_field_value_rejects_fields_from_another_project() {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name, icon, sort_order)
-             VALUES ('project-b', 'group-a', 'Project B', 'lucide:folder', 200)",
+            "INSERT INTO projects (id, group_id, name, icon, order_key)
+             VALUES ('project-b', 'group-a', 'Project B', 'lucide:folder', 'a2')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_custom_fields (id, project_id, name, field_type, sort_order)
-             VALUES ('field-b', 'project-b', 'Client note', 'text', 100)",
+            "INSERT INTO project_custom_fields (id, project_id, name, field_type, order_key)
+             VALUES ('field-b', 'project-b', 'Client note', 'text', 'a1')",
         )
         .execute(&pool)
         .await
@@ -166,17 +168,17 @@ fn custom_field_value_rejects_options_from_another_field() {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
         sqlx::query(
-            "INSERT INTO project_custom_fields (id, project_id, name, field_type, sort_order)
+            "INSERT INTO project_custom_fields (id, project_id, name, field_type, order_key)
              VALUES
-                ('field-a', 'project-a', 'Phase', 'select', 100),
-                ('field-b', 'project-a', 'Risk', 'select', 200)",
+                ('field-a', 'project-a', 'Phase', 'select', 'a1'),
+                ('field-b', 'project-a', 'Risk', 'select', 'a2')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_custom_field_options (id, field_id, name, sort_order)
-             VALUES ('option-b', 'field-b', 'High', 100)",
+            "INSERT INTO project_custom_field_options (id, field_id, name, order_key)
+             VALUES ('option-b', 'field-b', 'High', 'a1')",
         )
         .execute(&pool)
         .await
@@ -207,8 +209,8 @@ fn custom_field_value_records_task_history() {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
         sqlx::query(
-            "INSERT INTO project_custom_fields (id, project_id, name, field_type, sort_order)
-             VALUES ('field-a', 'project-a', 'Risk', 'text', 100)",
+            "INSERT INTO project_custom_fields (id, project_id, name, field_type, order_key)
+             VALUES ('field-a', 'project-a', 'Risk', 'text', 'a1')",
         )
         .execute(&pool)
         .await

@@ -102,13 +102,20 @@ fn json_graph_export_includes_canonical_tables_counts_schema_and_warnings() {
         assert_eq!(graph["counts"]["tables"]["notes_data_sources"], 1);
 
         let pages = graph["graph"]["pages"]["notes_pages"].as_array().unwrap();
-        assert_eq!(pages[0]["properties"]["title"]["type"], "title");
+        assert!(pages[0].get("properties").is_none());
+        assert!(graph["graph"]["data_sources"]["notes_page_property_values"].is_array());
         let blocks = graph["graph"]["blocks"]["notes_blocks"].as_array().unwrap();
-        assert!(blocks.iter().any(|block| block["payload"].is_object()));
-        let data_sources = graph["graph"]["data_sources"]["notes_data_sources"]
+        assert!(
+            blocks
+                .iter()
+                .any(|block| block["attrs"].is_object() && block["text"].is_object())
+        );
+        let properties = graph["graph"]["data_sources"]["notes_data_source_properties"]
             .as_array()
             .unwrap();
-        assert_eq!(data_sources[0]["properties"]["Name"]["type"], "title");
+        assert!(properties.iter().any(|property| property["name"] == "Name"
+            && property["type"] == "title"
+            && property["config"].is_object()));
         assert_eq!(
             graph["graph"]["comments"]["notes_comments"][0]["rich_text"][0]["plain_text"],
             "Graph note"

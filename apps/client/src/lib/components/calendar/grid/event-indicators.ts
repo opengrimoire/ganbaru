@@ -1,6 +1,9 @@
 import type { CalendarEvent } from "$lib/calendar/types";
+import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 
 export interface EventIndicatorState {
+  hasConflict: boolean;
+  hasMusic: boolean;
   hasRepeat: boolean;
   hasCallLink: boolean;
   hasLocation: boolean;
@@ -14,6 +17,8 @@ export interface EventMeetingIndicatorState {
   hasGenericMeeting: boolean;
   iconCount: number;
 }
+
+const SOUNDSCAPES_AVAILABLE = platformHasCapability(BUILD_PLATFORM_PROFILE, "music.soundscapes");
 
 export function getMeetingIndicatorState(event: CalendarEvent): EventMeetingIndicatorState {
   const hasCallLink = event.hasCallLink === true || !!event.url;
@@ -33,15 +38,30 @@ export function getMeetingIndicatorState(event: CalendarEvent): EventMeetingIndi
   };
 }
 
-export function getEventIndicatorState(event: CalendarEvent): EventIndicatorState {
+/**
+ * Derives the icons shown on a Calendar event surface.
+ *
+ * @param event - Event to inspect.
+ * @param soundscapesAvailable - Whether this platform plays soundscapes, so a soundscape-only event counts as music.
+ * @param hasConflict - Whether the event has an open sync conflict, which adds a warning icon.
+ * @returns Which icons to show and how many.
+ */
+export function getEventIndicatorState(
+  event: CalendarEvent,
+  soundscapesAvailable = SOUNDSCAPES_AVAILABLE,
+  hasConflict = false,
+): EventIndicatorState {
+  const hasMusic = event.hasMusicPlaylist === true || (soundscapesAvailable && event.hasSoundscape === true);
   const hasRepeat = !!event.recurrence || !!event.recurringParentId;
   const meetingIndicators = getMeetingIndicatorState(event);
 
   return {
+    hasConflict,
+    hasMusic,
     hasRepeat,
     hasCallLink: meetingIndicators.hasCallLink,
     hasLocation: meetingIndicators.hasLocation,
     hasGenericMeeting: meetingIndicators.hasGenericMeeting,
-    iconCount: meetingIndicators.iconCount + (hasRepeat ? 1 : 0),
+    iconCount: meetingIndicators.iconCount + (hasRepeat ? 1 : 0) + (hasMusic ? 1 : 0) + (hasConflict ? 1 : 0),
   };
 }

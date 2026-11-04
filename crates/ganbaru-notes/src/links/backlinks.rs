@@ -3,48 +3,24 @@ use crate::models::{NoteBacklinkDto, NoteBacklinkIndexedInput, NoteBlockRow};
 use crate::reads;
 use crate::validation::require_uuid;
 use serde_json::Value;
-use sqlx::{FromRow, Row, SqlitePool};
+use sqlx::{AssertSqlSafe, FromRow, Row, SqlitePool};
 use std::collections::HashSet;
 
 const FINGERPRINT_KEY: &str = "source_fingerprint";
 
-#[derive(Clone, Copy)]
-enum ReferenceSourceKind {
-    Block,
-    Comment,
-}
-
-pub async fn list_backlinks(
-    pool: &SqlitePool,
-    page_id: &str,
-) -> Result<Vec<NoteBacklinkDto>, String> {
-    let page_id = page_id.trim();
-    require_uuid(page_id, "page_id")?;
-    if !reads::page_exists(pool, page_id).await? {
-        return Err("notes page not found".to_string());
-    }
-    ensure_index_current(pool).await?;
-
-    let rows = sqlx::query_as::<_, BacklinkResultRow>(
-        "SELECT
-            idx.id,
-            idx.source_type,
-            idx.source_page_id,
-            idx.source_block_id,
-            idx.reference_type,
-            idx.snippet,
-            idx.created_time,
-            idx.last_edited_time,
-            block.type AS source_block_type
-         FROM notes_backlink_index AS idx
+/// Joins that every backlink reader adds to `notes_backlink_index AS idx`, so that
+/// [`VISIBLE_SOURCE_FILTER`] can see the source page, block, and comment.
+pub(crate) const VISIBLE_SOURCE_JOINS: &str = "
          JOIN notes_pages AS source_page ON source_page.id = idx.source_page_id
          LEFT JOIN notes_blocks AS block ON block.id = idx.source_block_id
          LEFT JOIN notes_comments AS comment ON comment.id = idx.source_comment_id
          LEFT JOIN notes_comment_threads AS thread ON thread.id = comment.thread_id
-         LEFT JOIN notes_blocks AS thread_block ON thread_block.id = thread.parent_block_id
-         WHERE idx.target_type = 'page'
-           AND idx.target_id = ?
-           AND source_page.in_trash = 0
+         LEFT JOIN notes_blocks AS thread_block ON thread_block.id = thread.parent_block_id";
+
+/// Keeps only backlinks whose source page, database row parent, block, and comment are live, so
+/// trashed or archived content never appears as a backlink in the app or in an export.
+pub(crate) const VISIBLE_SOURCE_FILTER: &str = "
+           source_page.in_trash = 0
            AND source_page.archived = 0
            AND (
                source_page.parent_type != 'data_source_id'
@@ -72,13 +48,48 @@ pub async fn list_backlinks(
                        OR (thread_block.id IS NOT NULL AND thread_block.in_trash = 0)
                    )
                )
-           )
-         ORDER BY idx.last_edited_time DESC, idx.reference_type ASC, idx.id ASC",
-    )
-    .bind(page_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| format!("list notes backlinks from index: {e}"))?;
+           )";
+
+#[derive(Clone, Copy)]
+enum ReferenceSourceKind {
+    Block,
+    Comment,
+}
+
+pub async fn list_backlinks(
+    pool: &SqlitePool,
+    page_id: &str,
+) -> Result<Vec<NoteBacklinkDto>, String> {
+    let page_id = page_id.trim();
+    require_uuid(page_id, "page_id")?;
+    if !reads::page_exists(pool, page_id).await? {
+        return Err("notes page not found".to_string());
+    }
+    ensure_index_current(pool).await?;
+
+    let sql = format!(
+        "SELECT
+            idx.id,
+            idx.source_type,
+            idx.source_page_id,
+            idx.source_block_id,
+            idx.reference_type,
+            idx.snippet,
+            idx.created_time,
+            idx.last_edited_time,
+            block.type AS source_block_type
+         FROM notes_backlink_index AS idx
+         {VISIBLE_SOURCE_JOINS}
+         WHERE idx.target_type = 'page'
+           AND idx.target_id = ?
+           AND {VISIBLE_SOURCE_FILTER}
+         ORDER BY idx.last_edited_time DESC, idx.reference_type ASC, idx.id ASC"
+    );
+    let rows = sqlx::query_as::<_, BacklinkResultRow>(AssertSqlSafe(sql.as_str()))
+        .bind(page_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("list notes backlinks from index: {e}"))?;
 
     let mut backlinks = Vec::new();
     for row in rows {
@@ -182,7 +193,7 @@ pub async fn rebuild_index(pool: &SqlitePool) -> Result<i64, String> {
     Ok(entry_count)
 }
 
-async fn ensure_index_current(pool: &SqlitePool) -> Result<(), String> {
+pub(crate) async fn ensure_index_current(pool: &SqlitePool) -> Result<(), String> {
     let fingerprint = backlink_source_fingerprint(pool).await?;
     let stored: Option<String> =
         sqlx::query_scalar("SELECT value FROM notes_backlink_index_state WHERE key = ?")
@@ -217,26 +228,12 @@ async fn append_block_entries(
     link_resolver: &LocalLinkResolver,
     entries: &mut Vec<BacklinkIndexEntry>,
 ) -> Result<(), String> {
-    let rows = sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            has_children,
-            in_trash,
-            type AS block_type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id,
-            source_last_edited_time,
-            created_time,
-            last_edited_time
-         FROM notes_blocks",
-    )
+    let rows = sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
+         FROM notes_blocks"
+    ))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes blocks for backlink index: {e}"))?;
@@ -338,7 +335,7 @@ async fn append_relation_entries(
             link.target_page_id,
             link.created_time,
             source_page.last_edited_time
-         FROM notes_data_source_relation_links AS link
+         FROM notes_relation_links AS link
          JOIN notes_pages AS source_page ON source_page.id = link.source_page_id
          JOIN notes_pages AS target_page ON target_page.id = link.target_page_id
          JOIN notes_data_sources AS source_data_source
@@ -560,7 +557,7 @@ async fn backlink_source_fingerprint(
          FROM notes_page_aliases
          UNION ALL
          SELECT 'relation_links', COUNT(*), COALESCE(MAX(created_time), '')
-         FROM notes_data_source_relation_links
+         FROM notes_relation_links
          UNION ALL
          SELECT 'data_sources', COUNT(*), COALESCE(MAX(last_edited_time), '')
          FROM notes_data_sources

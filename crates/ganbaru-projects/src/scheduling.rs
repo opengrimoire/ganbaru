@@ -133,7 +133,8 @@ pub async fn read(
     let music: Vec<Option<String>> = sqlx::query_scalar(
         "SELECT CASE WHEN length(CAST(payload AS BLOB)) <= ?2 THEN payload END FROM
          (SELECT json_object('phase', phase, 'behavior', behavior, 'playlistId', playlist_id,
-          'soundscapeId', soundscape_id, 'soundscapeBehavior', soundscape_behavior,
+          'soundscapePresetId', soundscape_preset_id,
+          'soundscapeBehavior', soundscape_behavior,
           'provenanceKind', 'copied-project', 'provenanceId', owner_id) AS payload
           FROM music_context_assignments WHERE owner_kind = 'project-default' AND owner_id = ?1
           ORDER BY phase LIMIT 4)",
@@ -176,7 +177,7 @@ pub async fn write(
         let task = scheduled.task;
         let result = sqlx::query(
             "UPDATE project_tasks SET start_date = ?1, target_end_date = ?1,
-             due_date = COALESCE(due_date, ?1), updated_at = datetime('now')
+             due_date = COALESCE(due_date, ?1), revision = revision + 1, updated_at = datetime('now')
              WHERE id = ?2 AND revision = ?3 AND archived_at IS NULL",
         )
         .bind(&scheduled.date)

@@ -31,7 +31,6 @@ export const CONTACTS_ERROR_CODES = [
   "invalid_card",
   "card_revoked",
   "recipient_unreachable",
-  "read_only",
   "revision_conflict",
   "failed",
 ] as const;

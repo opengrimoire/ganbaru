@@ -1,6 +1,6 @@
 <script lang="ts">
   import Send from "@lucide/svelte/icons/send";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import type { ChatScheduledMessageRead } from "$lib/chat/contracts";
   import { chatReferenceTextSegments } from "$lib/chat/composer/message-references";
   import ProfileAvatar from "$lib/components/profile/ProfileAvatar.svelte";

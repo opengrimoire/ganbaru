@@ -1,6 +1,7 @@
 import {
   ACTIVITY_STATUSES,
   APPROVAL_DECISION_KINDS,
+  APPROVAL_SUBJECT_KINDS,
   CANONICAL_ITEM_KINDS,
   CANONICAL_REQUEST_KINDS,
   CHAT_THREAD_STATES,
@@ -11,6 +12,7 @@ import {
   type AccountStatusEvent,
   type ApprovalDecision,
   type ApprovalDecisionOption,
+  type ApprovalSubject,
   type AuthenticationStatusEvent,
   type CanonicalEvent,
   type CanonicalRuntimeEvent,
@@ -30,6 +32,7 @@ import {
   type ProviderAttributedCost,
   type RateLimitStatusEvent,
   type RequestOpenedEvent,
+  type SessionPermissionGrant,
   type RequestResolvedEvent,
   type RuntimeErrorEvent,
   type SessionConfiguredEvent,
@@ -310,7 +313,40 @@ function parseRequestOpened(value: unknown, label: string): RequestOpenedEvent {
     detail: readNullable(record.detail, `${label}.detail`, readString),
     allowedDecisions: readArray(record.allowedDecisions, `${label}.allowedDecisions`, parseApprovalOption),
     safePayload: readVersionedJson(record.safePayload, `${label}.safePayload`),
+    subject: record.subject === undefined ? null : readNullable(record.subject, `${label}.subject`, parseApprovalSubject),
+    sessionGrants: record.sessionGrants === undefined
+      ? []
+      : readArray(record.sessionGrants, `${label}.sessionGrants`, parseSessionPermissionGrant),
   };
+}
+
+/** Validates the concrete target a provider approval acts on. */
+export function parseApprovalSubject(value: unknown, label: string): ApprovalSubject {
+  const record = readRecord(value, label);
+  return {
+    kind: readEnum(record.kind, APPROVAL_SUBJECT_KINDS, `${label}.kind`),
+    text: readString(record.text, `${label}.text`),
+    location: record.location === undefined ? null : readNullable(record.location, `${label}.location`, readString),
+    truncated: readBoolean(record.truncated, `${label}.truncated`),
+  };
+}
+
+/** Validates one permission an allow-for-session decision forwards to the provider session. */
+export function parseSessionPermissionGrant(value: unknown, label: string): SessionPermissionGrant {
+  const record = readRecord(value, label);
+  const kind = readEnum(record.kind, ["allow_rule", "directory", "accept_edits"] as const, `${label}.kind`);
+  switch (kind) {
+    case "allow_rule":
+      return {
+        kind,
+        toolName: readString(record.toolName, `${label}.toolName`),
+        ruleContent: record.ruleContent === undefined ? null : readNullable(record.ruleContent, `${label}.ruleContent`, readString),
+      };
+    case "directory":
+      return { kind, path: readString(record.path, `${label}.path`) };
+    case "accept_edits":
+      return { kind };
+  }
 }
 
 function parseRequestResolved(value: unknown, label: string): RequestResolvedEvent {

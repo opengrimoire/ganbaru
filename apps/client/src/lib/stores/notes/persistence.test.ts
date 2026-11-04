@@ -1,16 +1,58 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   applyBlockUpdate,
+  blockConvertedToType,
   blockPlainText,
   blockWithText,
   createBlockWrite,
 } from "$lib/notes/blocks/factory";
 import type { NotesBlock, NotesBlockUpdate, NotesParent } from "$lib/notes/types";
-import { createNotesBlockPersistence } from "./persistence";
+import { createNotesBlockPersistence, NotesHeldEditError, type NotesBlockEditConflict } from "./persistence";
 
-const updateNotesBlock = vi.hoisted(() => vi.fn());
+const { updateNotesBlock, appendNotesBlockChildren, trashNotesBlock } = vi.hoisted(() => ({
+  updateNotesBlock: vi.fn(),
+  appendNotesBlockChildren: vi.fn(),
+  trashNotesBlock: vi.fn(),
+}));
 
-vi.mock("$lib/api/notes", () => ({ updateNotesBlock }));
+vi.mock("$lib/api/notes", () => ({ updateNotesBlock, appendNotesBlockChildren, trashNotesBlock }));
+
+const refused = () => new Error(`Notes edit conflict: block ${blockId} changed; reload before retrying`);
+
+/** Plain text of a block the test expects to exist. */
+function presentText(block: NotesBlock | undefined): string {
+  if (!block) throw new Error("expected a block");
+  return blockPlainText(block);
+}
+
+/** A Notes block store with one block on an open page and a canonical copy another device changed. */
+function conflictHarness(local: NotesBlock, canonical: NotesBlock | null) {
+  let current: NotesBlock | undefined = local;
+  let openPageId: string | null = pageId;
+  const conflicts: Array<NotesBlockEditConflict | null> = [];
+  const onCanonicalChanged = vi.fn();
+  const readCanonicalBlock = vi.fn(async (_blockId: string, _pageId: string | null) => canonical);
+  const persistence = createNotesBlockPersistence({
+    beforeSave: async () => undefined,
+    readBlock: () => current,
+    replaceBlock: (block) => { current = block; },
+    setLoadError: vi.fn(),
+    readCanonicalBlock,
+    currentPageId: () => openPageId,
+    onBlockConflict: (_id, conflict) => conflicts.push(conflict),
+    onCanonicalChanged,
+    debounceMs: 250,
+  });
+  return {
+    persistence,
+    conflicts,
+    onCanonicalChanged,
+    readCanonicalBlock,
+    read: () => current,
+    write: (block: NotesBlock | undefined) => { current = block; },
+    openPage: (id: string | null) => { openPageId = id; },
+  };
+}
 
 const blockId = "00000000-0000-4000-8000-000000000001";
 const pageId = "00000000-0000-4000-8000-000000000002";
@@ -242,5 +284,176 @@ describe("notes block persistence", () => {
     await expect(read).rejects.toThrow("read failed");
     await later;
     expect(order).toEqual(["write", "read", "later"]);
+  });
+});
+
+describe("notes block persistence after a remote change", () => {
+  const base = { ...paragraph("Base"), content_revision: "a".repeat(64) };
+
+  it("replays the edit on canonical content whose kind changed and saves on its revision", async () => {
+    const remote = applyBlockUpdate(base, blockConvertedToType(base, "heading_1"));
+    const canonical = { ...remote, content_revision: "b".repeat(64) };
+    updateNotesBlock.mockReset().mockRejectedValueOnce(refused())
+      .mockImplementation(async (_id: string, update: NotesBlockUpdate) => applyBlockUpdate(canonical, update));
+    const { persistence, conflicts, read } = conflictHarness(base, canonical);
+    const draft = blockWithText(base, "Base typed");
+    persistence.localApplyBlockUpdate(blockId, draft);
+
+    await persistence.saveBlockNow(blockId, draft);
+
+    expect(updateNotesBlock).toHaveBeenCalledTimes(2);
+    const [, merged, revision] = updateNotesBlock.mock.calls[1] as [string, NotesBlockUpdate, string];
+    expect(revision).toBe("b".repeat(64));
+    expect(merged.type).toBe("heading_1");
+    expect(read()?.type).toBe("heading_1");
+    expect(presentText(read())).toBe("Base typed");
+    expect(persistence.hasLocalChanges(blockId)).toBe(false);
+    expect(conflicts).toEqual([]);
+  });
+
+  it("holds an edit whose text changed on both sides and keeps the draft until the user chooses", async () => {
+    const canonical = { ...paragraph("Theirs"), content_revision: "b".repeat(64) };
+    updateNotesBlock.mockReset().mockRejectedValueOnce(refused())
+      .mockImplementation(async (_id: string, update: NotesBlockUpdate) => applyBlockUpdate(canonical, update));
+    const { persistence, conflicts, read } = conflictHarness(base, canonical);
+    const draft = blockWithText(base, "Mine");
+    persistence.localApplyBlockUpdate(blockId, draft);
+
+    await persistence.saveBlockNow(blockId, draft);
+    await persistence.saveBlockNow(blockId, draft);
+
+    expect(updateNotesBlock).toHaveBeenCalledOnce();
+    expect(conflicts).toEqual([{ blockId, pageId, kind: "text", mine: draft, theirs: canonical }]);
+    expect(persistence.readBlockConflict(blockId)?.kind).toBe("text");
+    expect(persistence.hasLocalChanges(blockId)).toBe(true);
+    expect(presentText(read())).toBe("Mine");
+
+    await persistence.resolveBlockConflict(blockId, "mine");
+
+    expect(updateNotesBlock).toHaveBeenLastCalledWith(blockId, expect.objectContaining({ type: "paragraph" }), "b".repeat(64));
+    expect(presentText(read())).toBe("Mine");
+    expect(conflicts.at(-1)).toBeNull();
+    expect(persistence.readBlockConflict(blockId)).toBeUndefined();
+    expect(persistence.hasLocalChanges(blockId)).toBe(false);
+  });
+
+  it("keeps both versions by inserting the draft as a new block after the canonical one", async () => {
+    const canonical = { ...paragraph("Theirs"), content_revision: "b".repeat(64) };
+    updateNotesBlock.mockReset().mockRejectedValueOnce(refused());
+    appendNotesBlockChildren.mockReset().mockResolvedValue({ results: [] });
+    const { persistence, onCanonicalChanged, read } = conflictHarness(base, canonical);
+    const draft = blockWithText(base, "Mine");
+    persistence.localApplyBlockUpdate(blockId, draft);
+    await persistence.saveBlockNow(blockId, draft);
+
+    await persistence.resolveBlockConflict(blockId, "both");
+
+    const request = appendNotesBlockChildren.mock.calls[0]?.[0] as { parent: NotesParent; after: string; children: NotesBlock[] };
+    expect(request.parent).toEqual(parent);
+    expect(request.after).toBe(blockId);
+    expect(request.children).toHaveLength(1);
+    expect(request.children[0]?.id).not.toBe(blockId);
+    expect(presentText(request.children[0])).toBe("Mine");
+    expect(presentText(read())).toBe("Theirs");
+    expect(onCanonicalChanged).toHaveBeenCalledOnce();
+    expect(updateNotesBlock).toHaveBeenCalledOnce();
+  });
+
+  it("takes the canonical content when the user discards the draft", async () => {
+    const canonical = { ...paragraph("Theirs"), content_revision: "b".repeat(64) };
+    updateNotesBlock.mockReset().mockRejectedValueOnce(refused());
+    const { persistence, read } = conflictHarness(base, canonical);
+    const draft = blockWithText(base, "Mine");
+    persistence.localApplyBlockUpdate(blockId, draft);
+    await persistence.saveBlockNow(blockId, draft);
+
+    await persistence.resolveBlockConflict(blockId, "theirs");
+
+    expect(presentText(read())).toBe("Theirs");
+    expect(persistence.hasLocalChanges(blockId)).toBe(false);
+    expect(updateNotesBlock).toHaveBeenCalledOnce();
+  });
+
+  it("restores a block removed elsewhere when the user keeps the draft", async () => {
+    updateNotesBlock.mockReset().mockRejectedValueOnce(refused())
+      .mockImplementation(async (_id: string, update: NotesBlockUpdate) => applyBlockUpdate(base, update));
+    trashNotesBlock.mockReset().mockResolvedValue({ ...base, content_revision: "c".repeat(64) });
+    const { persistence, conflicts, onCanonicalChanged } = conflictHarness(base, null);
+    const draft = blockWithText(base, "Mine");
+    persistence.localApplyBlockUpdate(blockId, draft);
+    await persistence.saveBlockNow(blockId, draft);
+    expect(conflicts[0]?.kind).toBe("removed");
+
+    await persistence.resolveBlockConflict(blockId, "mine");
+
+    expect(trashNotesBlock).toHaveBeenCalledWith(blockId, false);
+    expect(updateNotesBlock).toHaveBeenLastCalledWith(blockId, expect.anything(), "c".repeat(64));
+    expect(onCanonicalChanged).toHaveBeenCalledOnce();
+  });
+
+  it("refuses to let the page go while an edit is held, and settles once the user chooses", async () => {
+    const canonical = { ...paragraph("Theirs"), content_revision: "b".repeat(64) };
+    updateNotesBlock.mockReset().mockRejectedValueOnce(refused());
+    const { persistence } = conflictHarness(base, canonical);
+    const draft = blockWithText(base, "Mine");
+    persistence.localApplyBlockUpdate(blockId, draft);
+    await persistence.saveBlockNow(blockId, draft);
+
+    expect(() => persistence.assertNoHeldEdits()).toThrow(NotesHeldEditError);
+    try {
+      persistence.assertNoHeldEdits();
+    } catch (error) {
+      expect(error).toMatchObject({ blockIds: [blockId], pageIds: [pageId] });
+    }
+
+    await persistence.resolveBlockConflict(blockId, "theirs");
+
+    expect(() => persistence.assertNoHeldEdits()).not.toThrow();
+  });
+
+  it("reads the canonical block from the page the edit was held on, not the page open now", async () => {
+    const canonical = { ...paragraph("Theirs"), content_revision: "b".repeat(64) };
+    updateNotesBlock.mockReset().mockRejectedValueOnce(refused())
+      .mockImplementation(async (_id: string, update: NotesBlockUpdate) => applyBlockUpdate(canonical, update));
+    trashNotesBlock.mockClear();
+    const { persistence, readCanonicalBlock, openPage, write } = conflictHarness(base, canonical);
+    const draft = blockWithText(base, "Mine");
+    persistence.localApplyBlockUpdate(blockId, draft);
+    await persistence.saveBlockNow(blockId, draft);
+    openPage("00000000-0000-4000-8000-000000000003");
+    write(undefined);
+
+    await persistence.resolveBlockConflict(blockId, "mine");
+
+    expect(readCanonicalBlock).toHaveBeenLastCalledWith(blockId, pageId);
+    expect(trashNotesBlock).not.toHaveBeenCalled();
+    expect(updateNotesBlock).toHaveBeenLastCalledWith(blockId, draft, "b".repeat(64));
+  });
+
+  it("holds typing made during a replay that clashes with the text the replay took", async () => {
+    const canonical = { ...paragraph("Theirs"), content_revision: "b".repeat(64) };
+    let finishReplay!: () => void;
+    updateNotesBlock.mockReset().mockRejectedValueOnce(refused())
+      .mockImplementationOnce(async (_id: string, update: NotesBlockUpdate) => {
+        await new Promise<void>((resolve) => { finishReplay = resolve; });
+        return applyBlockUpdate(canonical, update);
+      });
+    const { persistence, conflicts, read } = conflictHarness(base, canonical);
+    const converted = blockConvertedToType(base, "heading_1");
+    persistence.localApplyBlockUpdate(blockId, converted);
+    const save = persistence.saveBlockNow(blockId, converted);
+    await vi.waitFor(() => expect(updateNotesBlock).toHaveBeenCalledTimes(2));
+    const typed = blockWithText(applyBlockUpdate(base, converted), "Base typed later");
+    persistence.localApplyBlockUpdate(blockId, typed);
+    persistence.scheduleBlockSave(blockId, typed);
+
+    finishReplay();
+    await save;
+    await persistence.flushPendingBlockSaves();
+
+    expect(updateNotesBlock).toHaveBeenCalledTimes(2);
+    expect(conflicts.at(-1)).toMatchObject({ blockId, pageId, kind: "text" });
+    expect(presentText(read())).toBe("Base typed later");
+    expect(persistence.readBlockConflict(blockId)?.theirs).toMatchObject({ type: "heading_1" });
   });
 });

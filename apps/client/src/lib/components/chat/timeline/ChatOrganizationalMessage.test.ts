@@ -38,7 +38,7 @@ const message: ChatMessageRead = {
     participantKind: "ai_teammate",
   }],
   replyThread: null,
-  ordinal: 1,
+  orderKey: "c001",
   editedAt: null,
   createdAt: "2026-08-12T20:00:00.000Z",
 };

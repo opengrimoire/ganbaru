@@ -1,13 +1,12 @@
 //! Immutable, provider-neutral Chat review snapshots and guarded Git actions.
 
-use super::git;
+use super::git::{self, GitFolder};
 use super::models::{ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId};
 use super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation};
 use crate::workspace::mutation::ChatWorkspaceMutationRegistry;
 use sqlx::SqlitePool;
 use std::fs;
 use std::future::Future;
-use std::path::Path;
 use std::pin::Pin;
 
 pub type ReviewAuthorizationFuture<'a> = Pin<
@@ -61,12 +60,17 @@ use authorization::{authorize_completed_action, authorize_snapshot, require_requ
 pub use contracts::*;
 use material::working_tree_material;
 #[cfg(test)]
-use material::{enrich_working_tree_files, git_files, parse_name_status};
+use material::{
+    ReviewCaptureLimits, add_too_large_files, enrich_working_tree_files, git_files,
+    parse_name_status, working_tree_material_with_limits,
+};
 use opening::open_review;
 #[cfg(test)]
 use opening::{file_contract, provider_turn_patch};
 #[cfg(test)]
 use patch_parser::{hunk_id, parse_patch};
+#[cfg(test)]
+use patch_store::ReviewTemporaryFile;
 use patch_store::{ReviewObjectStore, read_patch_page, unavailable_patch};
 pub use registry::ChatReviewRegistry;
 pub use registry::ResolveReviewSelectionRequest;
@@ -256,13 +260,14 @@ pub async fn apply_review_action_service(
     )
     .await?;
     require_snapshot_revision(&snapshot, &request.expected_review_revision)?;
-    authorize_snapshot(
+    let trust = authorize_snapshot(
         authorizer,
         pool,
         &snapshot,
-        WorkingFolderAuthorizationOperation::Git,
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
+    let folder = GitFolder::new(&snapshot.root, trust);
     let _guard = mutations.try_mutation(&snapshot.root)?;
     if let Some(result) = state.completed(
         &request.client_operation_id,
@@ -278,7 +283,7 @@ pub async fn apply_review_action_service(
         ReviewDiffSource::WorkingTree { mode } => *mode,
         _ => return Err(ChatError::unsupported("This review source is read-only")),
     };
-    let current = working_tree_material(&snapshot.root, mode).await?;
+    let current = working_tree_material(folder, mode).await?;
     let current_revision = review_revision(
         snapshot.thread_id.as_ref(),
         &snapshot.environment_id,
@@ -295,7 +300,7 @@ pub async fn apply_review_action_service(
             true,
         ));
     }
-    apply_action(&snapshot, &request, mode).await?;
+    apply_action(&snapshot, folder, &request, mode).await?;
     let affected_paths = action_paths(&snapshot, request.file_id.as_deref());
     changes.invalidate_paths(
         &snapshot.working_folder_id,
@@ -349,9 +354,9 @@ pub async fn apply_review_action_service(
     Ok(result)
 }
 
-async fn optional_head(root: &Path) -> ChatResult<Option<String>> {
+async fn optional_head(folder: GitFolder<'_>) -> ChatResult<Option<String>> {
     match git_text(
-        root,
+        folder,
         &["rev-parse", "-q", "--verify", "HEAD^{commit}"],
         None,
     )
@@ -364,15 +369,16 @@ async fn optional_head(root: &Path) -> ChatResult<Option<String>> {
 }
 
 async fn review_storage_text(
-    root: &Path,
+    folder: GitFolder<'_>,
     arguments: &[&str],
+    input: Option<&[u8]>,
     store: Option<&ReviewObjectStore>,
 ) -> ChatResult<String> {
     String::from_utf8(
         git::review_output_in_storage(
-            root,
+            folder,
             arguments,
-            None,
+            input,
             store.map(|store| store.index.as_path()),
             store.map(|store| store.objects.as_path()),
             store.map(|store| store.alternate_objects.as_path()),
@@ -384,13 +390,13 @@ async fn review_storage_text(
 }
 
 async fn review_output(
-    root: &Path,
+    folder: GitFolder<'_>,
     arguments: &[&str],
     input: Option<&[u8]>,
     store: Option<&ReviewObjectStore>,
 ) -> ChatResult<Vec<u8>> {
     git::review_output_in_storage(
-        root,
+        folder,
         arguments,
         input,
         None,
@@ -400,12 +406,16 @@ async fn review_output(
     .await
 }
 
-async fn empty_tree(root: &Path) -> ChatResult<String> {
-    git_text(root, &["mktree"], Some(&[])).await
+async fn empty_tree(folder: GitFolder<'_>) -> ChatResult<String> {
+    git_text(folder, &["mktree"], Some(&[])).await
 }
 
-async fn git_text(root: &Path, arguments: &[&str], input: Option<&[u8]>) -> ChatResult<String> {
-    String::from_utf8(git::review_output(root, arguments, input).await?)
+async fn git_text(
+    folder: GitFolder<'_>,
+    arguments: &[&str],
+    input: Option<&[u8]>,
+) -> ChatResult<String> {
+    String::from_utf8(git::review_output(folder, arguments, input).await?)
         .map(|value| value.trim().to_string())
         .map_err(|_| review_error("Git output is not valid UTF-8"))
 }

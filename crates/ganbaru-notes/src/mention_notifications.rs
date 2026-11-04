@@ -14,7 +14,7 @@ const MAX_NOTIFICATION_BATCH: usize = 200;
 const MAX_PLAIN_TEXT_LENGTH: usize = 500;
 const MAX_SOURCE_TEXT_LENGTH: usize = 2000;
 /// Reminders of a database row's date properties, keyed by the row page and named by their property.
-const PAGE_PROPERTY_SOURCE: &str = "page_property";
+pub(crate) const PAGE_PROPERTY_SOURCE: &str = "page_property";
 
 struct MentionNotificationCandidate {
     kind: &'static str,
@@ -173,14 +173,16 @@ pub async fn refresh_all(pool: &SqlitePool) -> Result<i64, String> {
     .map_err(|e| format!("clear pending notes mention notifications: {e}"))?
     .rows_affected() as i64;
 
-    let block_rows = sqlx::query_as::<_, (String, String, String, String, String)>(
-        "SELECT block.id, block.page_id, block.type, block.payload, block.plain_text
-         FROM notes_blocks AS block
-         JOIN notes_pages AS page ON page.id = block.page_id
-         WHERE block.in_trash = 0
-           AND page.in_trash = 0
-           AND page.archived = 0",
-    )
+    let block_rows = sqlx::query_as::<_, (String, String, String, String, String)>(concat!(
+        "SELECT block.id, block.page_id, block.type, ",
+        crate::note_block_content_sql!("block"),
+        ", block.plain_text
+             FROM notes_blocks AS block
+             JOIN notes_pages AS page ON page.id = block.page_id
+             WHERE block.in_trash = 0
+               AND page.in_trash = 0
+               AND page.archived = 0"
+    ))
     .fetch_all(&mut *tx)
     .await
     .map_err(|e| format!("load notes blocks for mention notification refresh: {e}"))?;
@@ -313,14 +315,16 @@ pub async fn sync_page_properties_tx(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
 ) -> Result<(), String> {
-    let row = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT page.title, page.properties, source.properties
+    let row = sqlx::query_as::<_, (String, String, Option<String>)>(sqlx::AssertSqlSafe(format!(
+        "SELECT page.title, {properties}, CASE WHEN source.id IS NULL THEN NULL ELSE {schema} END
          FROM notes_pages AS page
          LEFT JOIN notes_data_sources AS source
            ON page.parent_type = 'data_source_id'
           AND source.id = page.parent_data_source_id
          WHERE page.id = ?",
-    )
+        properties = crate::page_property_storage::page_properties_sql("page"),
+        schema = crate::note_data_source_properties_json!("source"),
+    )))
     .bind(page_id)
     .fetch_optional(&mut **tx)
     .await
@@ -560,12 +564,13 @@ async fn active_pending_notification_rows(
                    AND page.parent_type = 'data_source_id'
                    AND EXISTS (
                        SELECT 1
-                       FROM notes_data_sources AS source,
-                            json_each(source.properties) AS property
+                       FROM notes_data_sources AS source
+                       JOIN notes_data_source_properties AS property
+                         ON property.data_source_id = source.id
                        WHERE source.id = page.parent_data_source_id
                          AND source.in_trash = 0
-                         AND json_extract(property.value, '$.id') = notification.target_id
-                         AND json_extract(property.value, '$.type') = 'date'
+                         AND property.property_id = notification.target_id
+                         AND property.type = 'date'
                    )
                )
            )

@@ -193,14 +193,17 @@ async fn apply_reference(
     }
     session.state.last_transition_at_ms = session.state.last_transition_at_ms.max(context.now_ms);
     save_state(tx, &session.state, next_revision, context.now_ms).await?;
-    load_snapshot(
+    let mut snapshot = load_snapshot(
         tx,
         next_revision,
         &session.state,
         context.now_ms,
         &session.changed_segments,
     )
-    .await
+    .await?;
+    snapshot.adaptive_degraded = session.adaptive_degraded;
+    super::activity::record_activity(tx, context, &snapshot).await?;
+    Ok(snapshot)
 }
 
 fn stale(revision: i64) -> FocusExecutionError {

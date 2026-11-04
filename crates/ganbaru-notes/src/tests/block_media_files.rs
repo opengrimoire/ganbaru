@@ -111,7 +111,7 @@ fn block_media_asset_references_follow_local_file_payloads() {
         let first_reference_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*)
              FROM notes_asset_references
-             WHERE asset_id = ? AND owner_type = 'block' AND owner_id = ?
+             WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?) AND owner_type = 'block' AND owner_id = ?
                 AND page_id = ? AND block_id = ? AND role = 'block_file'",
         )
         .bind(first_asset)
@@ -142,7 +142,7 @@ fn block_media_asset_references_follow_local_file_payloads() {
         .unwrap();
 
         let old_reference_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?)")
                 .bind(first_asset)
                 .fetch_one(&pool)
                 .await
@@ -152,7 +152,7 @@ fn block_media_asset_references_follow_local_file_payloads() {
         let replacement_reference_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*)
              FROM notes_asset_references
-             WHERE asset_id = ? AND owner_type = 'block' AND owner_id = ?
+             WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?) AND owner_type = 'block' AND owner_id = ?
                 AND page_id = ? AND block_id = ? AND role = 'block_file'",
         )
         .bind(second_asset)
@@ -261,7 +261,7 @@ fn database_file_property_asset_references_follow_local_file_values() {
         let reference_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*)
              FROM notes_asset_references
-             WHERE asset_id = ?
+             WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?)
                AND owner_type = 'data_source_property'
                AND owner_id = ?
                AND data_source_id = ?
@@ -296,7 +296,7 @@ fn database_file_property_asset_references_follow_local_file_values() {
         .unwrap();
 
         let remaining_references: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?)")
                 .bind(asset_path)
                 .fetch_one(&pool)
                 .await

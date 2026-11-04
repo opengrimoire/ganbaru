@@ -160,7 +160,7 @@ fn aggregate_admission_uses_policy_and_source_indexes_before_looking_up_outcomes
             "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM ({} LIMIT ?)",
             super::super::reads::EXPERIMENT_OUTCOME_INPUT_SQL
         );
-        let rows = sqlx::query(&query)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
             .bind(POLICY)
             .bind(CUTOFF)
             .bind(100_001_i64)

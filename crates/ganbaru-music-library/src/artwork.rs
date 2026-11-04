@@ -1,7 +1,7 @@
 //! Track artwork discovery from sidecar images and embedded ID3, FLAC, and MP4 cover art.
 
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     fs::{self, File},
     hash::{Hash, Hasher},
     io::{Read, Seek, SeekFrom},
@@ -11,6 +11,13 @@ use std::{
 const MAX_EMBEDDED_ARTWORK_BYTES: usize = 24 * 1024 * 1024;
 const MAX_TAG_BYTES: usize = 64 * 1024 * 1024;
 const IMAGE_EXTENSIONS: &[&str] = &["avif", "bmp", "gif", "jpeg", "jpg", "png", "webp"];
+/// Most entries read from one folder while looking for sidecar artwork, far above any album or
+/// scans folder, so a linked folder with millions of files cannot stall a refresh.
+const MAX_ARTWORK_DIRECTORY_ENTRIES: usize = 10_000;
+/// Most parent folders searched above a track, far deeper than any real library layout.
+const MAX_ARTWORK_PARENT_DEPTH: usize = 128;
+/// Leading bytes read from a sidecar candidate to confirm it is an image.
+const ARTWORK_SIGNATURE_BYTES: u64 = 16;
 
 /// Validated cover art bytes extracted from a media file.
 pub struct EmbeddedArtwork {
@@ -35,6 +42,10 @@ fn is_supported_image_path(path: &Path) -> bool {
 
 /// Finds the best sidecar image for a track in its folder, common artwork subfolders, or parent
 /// folders up to `root`.
+///
+/// Symbolic links are followed, so libraries that link folders or covers from elsewhere keep
+/// their artwork. Each resolved folder is read at most once, folder reads and the parent walk are
+/// capped, and a candidate counts only when its leading bytes are a supported image signature.
 pub fn find_track_artwork(
     track_path: &Path,
     root: &Path,
@@ -44,10 +55,14 @@ pub fn find_track_artwork(
     let mut distance = 0_u8;
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut best: Option<ArtworkCandidate> = None;
+    let mut visited = HashSet::new();
     let track_stem = normalized_artwork_stem(track_path);
 
-    loop {
-        consider_artwork_dir(dir, distance, 0, &track_stem, artwork_cache, &mut best);
+    for _ in 0..MAX_ARTWORK_PARENT_DEPTH {
+        let current = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        if visited.insert(current.clone()) {
+            consider_artwork_dir(dir, distance, 0, &track_stem, artwork_cache, &mut best);
+        }
         for (subdir_distance, name) in [
             "cover", "covers", "artwork", "art", "scans", "scan", "booklet",
         ]
@@ -55,7 +70,11 @@ pub fn find_track_artwork(
         .enumerate()
         {
             let candidate_dir = dir.join(name);
-            if candidate_dir.is_dir() {
+            if candidate_dir.is_dir()
+                && candidate_dir
+                    .canonicalize()
+                    .is_ok_and(|resolved| visited.insert(resolved))
+            {
                 consider_artwork_dir(
                     &candidate_dir,
                     distance,
@@ -67,7 +86,6 @@ pub fn find_track_artwork(
             }
         }
 
-        let current = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
         if current == root {
             break;
         }
@@ -115,17 +133,30 @@ fn find_directory_artwork_candidates(dir: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
     let mut candidates = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries.take(MAX_ARTWORK_DIRECTORY_ENTRIES).flatten() {
         let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_symlink() || !file_type.is_file() || !is_supported_image_path(&path) {
+        if !is_supported_image_path(&path)
+            || !fs::metadata(&path).is_ok_and(|metadata| metadata.is_file())
+            || !has_image_signature(&path)
+        {
             continue;
         }
         candidates.push(path);
     }
     candidates
+}
+
+/// Reports whether a file starts with a supported image signature, so a linked or renamed file
+/// that is not an image never becomes artwork.
+fn has_image_signature(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let mut header = Vec::new();
+    file.take(ARTWORK_SIGNATURE_BYTES)
+        .read_to_end(&mut header)
+        .is_ok()
+        && sniff_image_content_type(&header).is_some()
 }
 
 fn artwork_rank_for_track(path: &Path, track_stem: &str) -> (u8, String) {
@@ -636,7 +667,8 @@ fn normalize_artwork_content_type(mime: &str, bytes: &[u8]) -> Option<String> {
     Some(normalized.to_string())
 }
 
-fn sniff_image_content_type(bytes: &[u8]) -> Option<&'static str> {
+/// Returns the media type of a supported image from its leading signature bytes.
+pub fn sniff_image_content_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
         return Some("image/jpeg");
     }
@@ -651,6 +683,9 @@ fn sniff_image_content_type(bytes: &[u8]) -> Option<&'static str> {
     }
     if bytes.starts_with(b"BM") {
         return Some("image/bmp");
+    }
+    if bytes.get(4..8) == Some(b"ftyp") && matches!(bytes.get(8..12), Some(b"avif" | b"avis")) {
+        return Some("image/avif");
     }
     None
 }
@@ -689,8 +724,8 @@ mod tests {
         let track = disc_dir.join("01 - Made in Abyss.mp3");
         let artwork = album_dir.join("01-MIA-FRONT.jpg");
         fs::write(&track, []).unwrap();
-        fs::write(disc_dir.join("booklet-page.jpg"), []).unwrap();
-        fs::write(&artwork, []).unwrap();
+        fs::write(disc_dir.join("booklet-page.jpg"), PNG_HEADER).unwrap();
+        fs::write(&artwork, PNG_HEADER).unwrap();
 
         let mut cache = HashMap::new();
         assert_eq!(find_track_artwork(&track, &root, &mut cache), Some(artwork));
@@ -705,13 +740,58 @@ mod tests {
         let track = root.join("02 - Focus.mp3");
         let sidecar = root.join("02 - Focus.jpg");
         fs::write(&track, []).unwrap();
-        fs::write(root.join("01 - Intro.jpg"), []).unwrap();
-        fs::write(&sidecar, []).unwrap();
+        fs::write(root.join("01 - Intro.jpg"), PNG_HEADER).unwrap();
+        fs::write(&sidecar, PNG_HEADER).unwrap();
 
         let mut cache = HashMap::new();
         assert_eq!(find_track_artwork(&track, &root, &mut cache), Some(sidecar));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artwork_lookup_follows_links_but_only_to_images() {
+        use std::os::unix::fs::symlink;
+        let base = unique_temporary_dir("ganbaru-artwork-links");
+        let root = base.join("library");
+        let shared = base.join("nas/covers");
+        let album = root.join("album");
+        fs::create_dir_all(&album).unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        let track = album.join("song.mp3");
+        fs::write(&track, []).unwrap();
+        fs::write(shared.join("front.png"), PNG_HEADER).unwrap();
+        fs::write(base.join("secret.txt"), b"not an image").unwrap();
+        symlink(base.join("secret.txt"), album.join("cover.jpg")).unwrap();
+        fs::write(album.join("folder.jpg"), b"renamed text").unwrap();
+        symlink(&shared, album.join("artwork")).unwrap();
+        symlink(&album, album.join("scans")).unwrap();
+
+        let mut cache = HashMap::new();
+        assert_eq!(
+            find_track_artwork(&track, &root, &mut cache),
+            Some(album.join("artwork/front.png"))
+        );
+
+        symlink(shared.join("front.png"), album.join("song.png")).unwrap();
+        let mut cache = HashMap::new();
+        assert_eq!(
+            find_track_artwork(&track, &root, &mut cache),
+            Some(album.join("song.png"))
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn image_signature_accepts_supported_formats_only() {
+        assert_eq!(sniff_image_content_type(PNG_HEADER), Some("image/png"));
+        assert_eq!(
+            sniff_image_content_type(b"\0\0\0\x1cftypavif"),
+            Some("image/avif")
+        );
+        assert_eq!(sniff_image_content_type(b"\0\0\0\x1cftypM4A "), None);
+        assert_eq!(sniff_image_content_type(b"-----BEGIN"), None);
     }
 
     #[test]
@@ -804,6 +884,8 @@ mod tests {
         assert_eq!(artwork.bytes, vec![0xff, 0xd8, 0xff, 0xdb]);
         fs::remove_dir_all(root).unwrap();
     }
+
+    const PNG_HEADER: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
 
     fn push_be_u32(bytes: &mut Vec<u8>, value: u32) {
         bytes.extend_from_slice(&value.to_be_bytes());

@@ -181,7 +181,7 @@ async fn ensure_gallery_view_row_tx(
     let database_id = data_sources::views::scoped_database_id(data_source, database_id);
     crate::databases::editing_lock::ensure_unlocked_tx(tx, database_id).await?;
     let id = generate_uuid_tx(tx, "generate gallery view id", "generated_gallery_view_id").await?;
-    let sort_order = data_sources::views::next_view_sort_order_tx(tx, database_id).await?;
+    let order_key = data_sources::views::next_view_order_key_tx(tx, database_id).await?;
     sqlx::query(
         "INSERT INTO notes_database_views (
             id,
@@ -191,7 +191,7 @@ async fn ensure_gallery_view_row_tx(
             type,
             sorts,
             configuration,
-            sort_order
+            order_key
          )
          VALUES (?, ?, ?, ?, 'gallery', '[]', ?, ?)",
     )
@@ -200,7 +200,7 @@ async fn ensure_gallery_view_row_tx(
     .bind(&data_source.id)
     .bind(DEFAULT_GALLERY_VIEW_NAME)
     .bind(default_gallery_configuration(schema).to_string())
-    .bind(sort_order)
+    .bind(order_key)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert notes gallery view: {e}"))?;

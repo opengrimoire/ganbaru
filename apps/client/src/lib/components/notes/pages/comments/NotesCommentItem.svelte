@@ -26,8 +26,8 @@
   import LinkIcon from "@lucide/svelte/icons/link";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Reply from "@lucide/svelte/icons/reply";
-  import SmilePlus from "@lucide/svelte/icons/smile-plus";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import SmilePlus from "@lucide/svelte/icons/face-slightly-smiling-plus";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import { onDestroy } from "svelte";
   import NotesCommentAttachment from "./NotesCommentAttachment.svelte";
   import NotesCommentAvatar, { NOTES_COMMENT_AVATAR_SIZE } from "./NotesCommentAvatar.svelte";

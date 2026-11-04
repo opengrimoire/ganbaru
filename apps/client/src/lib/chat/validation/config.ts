@@ -1,12 +1,11 @@
 import {
   CHAT_SEND_KEYS,
-  CHAT_VAULT_CONFIG_SCHEMA_VERSION,
   INTERACTION_MODES,
   SAFETY_MODES,
   type ChatBehaviorPreferences,
   type ChatPanelPreferences,
   type ChatPortableProviderConfig,
-  type ChatVaultConfig,
+  type ChatConfiguration,
   type RememberedComposerSelection,
 } from "../contracts";
 import { parseModelOptionSelection } from "./provider";
@@ -43,9 +42,8 @@ const DEFAULT_BEHAVIOR: ChatBehaviorPreferences = {
   confirmMultilineTerminalPaste: true,
 };
 
-export function defaultChatVaultConfig(): ChatVaultConfig {
+export function defaultChatConfiguration(): ChatConfiguration {
   return {
-    schemaVersion: CHAT_VAULT_CONFIG_SCHEMA_VERSION,
     providers: [],
     automaticProviderSetupDisabled: [],
     rememberedSelections: [],
@@ -171,13 +169,11 @@ function parseBehavior(value: unknown, label: string): ChatBehaviorPreferences {
   };
 }
 
-export function parseChatVaultConfig(value: unknown, label = "chat"): ChatVaultConfig {
+/**
+ * Validates a Chat settings read from the backend and drops unknown top-level fields.
+ */
+export function parseChatConfiguration(value: unknown, label = "chat"): ChatConfiguration {
   const record = readRecord(value, label);
-  const schemaVersion = readNonNegativeSafeInteger(
-    record.schemaVersion,
-    `${label}.schemaVersion`,
-  );
-  if (schemaVersion !== CHAT_VAULT_CONFIG_SCHEMA_VERSION) throw new Error(`${label}.schemaVersion is unsupported`);
   const providers = readArray(record.providers, `${label}.providers`, parsePortableProvider);
   if (providers.length > MAX_PROVIDERS) throw new Error(`${label}.providers exceeds the item limit`);
   const automaticProviderSetupDisabled = readArray(
@@ -217,8 +213,6 @@ export function parseChatVaultConfig(value: unknown, label = "chat"): ChatVaultC
     }
   }
   return {
-    ...record,
-    schemaVersion,
     providers,
     automaticProviderSetupDisabled,
     rememberedSelections,
@@ -226,9 +220,4 @@ export function parseChatVaultConfig(value: unknown, label = "chat"): ChatVaultC
     panels: parsePanels(record.panels, `${label}.panels`),
     behavior: parseBehavior(record.behavior, `${label}.behavior`),
   };
-}
-
-export function parseChatConfigRoot(value: unknown): ChatVaultConfig {
-  const root = readRecord(value, "vault config");
-  return root.chat === undefined ? defaultChatVaultConfig() : parseChatVaultConfig(root.chat);
 }

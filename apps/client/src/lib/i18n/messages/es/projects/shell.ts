@@ -93,8 +93,6 @@ export const shell = {
     groupName: "Nombre del grupo",
     groupNamePlaceholder: "Nombre del grupo",
     projectNamePlaceholder: "Nombre del proyecto",
-    projectTemplate: "Plantilla del proyecto",
-    managedFolderCreationHint: "Se crea automáticamente una carpeta privada. Agrega una carpeta existente después en la configuración del proyecto.",
     groupColor: "Color del grupo",
     selectGroupColor: "Seleccionar color del grupo",
     selectGroupIcon: (icon: string) => `Seleccionar icono ${icon} del grupo`,

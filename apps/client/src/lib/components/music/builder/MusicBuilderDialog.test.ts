@@ -64,10 +64,18 @@ describe("MusicBuilderDialog", () => {
     await tick();
 
     const dialog = document.body.querySelector<HTMLElement>("[role='dialog']");
+    const layer = dialog?.parentElement;
+    dialog?.dispatchEvent(new Event("pointerdown", { bubbles: true }));
     dialog?.click();
     expect(onClose).not.toHaveBeenCalled();
 
-    dialog?.parentElement?.click();
+    // A drag that starts inside the dialog and is released over the backdrop clicks their common ancestor.
+    dialog?.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    layer?.click();
+    expect(onClose).not.toHaveBeenCalled();
+
+    layer?.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    layer?.click();
     expect(onClose).toHaveBeenCalledOnce();
   });
 

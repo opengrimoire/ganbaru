@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "apps/client/src-tauri",
   "apps/client/src-tauri/app",
+  "crates/ganbaru-atomic-files",
   "crates/ganbaru-calendar",
   "crates/ganbaru-chat",
   "crates/ganbaru-chat-contracts",
@@ -11,10 +12,13 @@ members = [
   "crates/ganbaru-db",
   "crates/ganbaru-distractions",
   "crates/ganbaru-handoff",
+  "crates/ganbaru-image-metadata",
+  "crates/ganbaru-linking-firewall",
   "crates/ganbaru-mobile-documents",
   "crates/ganbaru-mobile-distractions",
   "crates/ganbaru-mobile-media",
   "crates/ganbaru-mobile-notifications",
+  "crates/ganbaru-mobile-sync",
   "crates/ganbaru-music",
   "crates/ganbaru-music-library",
   "crates/ganbaru-music-player",
@@ -27,6 +31,7 @@ members = [
   "crates/ganbaru-sync",
   "crates/ganbaru-sync-contracts",
   "crates/ganbaru-sync-replica",
+  "crates/ganbaru-sync-relay",
   "crates/ganbaru-themes",
   "crates/ganbaru-working-folders",
 ]
@@ -36,6 +41,10 @@ edition = "2024"
 rust-version = "1.98"
 authors = ["Ganbaru"]
 license = "AGPL-3.0-only"
+
+[workspace.lints.rust]
+# Unsafe code is allowed only in modules listed in docs/data/security/unsafe-rust.md.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 # Nested guards and let-chains are both valid; choose by readability and scope.
@@ -48,8 +57,11 @@ axum = "0.8.8"
 base64 = "0.22.1"
 block2 = "0.6.2"
 cairo-rs = { version = "0.18.5", features = ["png"] }
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+dunce = "1.0.5"
 flate2 = "1.1.9"
+ganbaru-atomic-files = { path = "crates/ganbaru-atomic-files" }
 ganbaru-calendar = { path = "crates/ganbaru-calendar" }
 ganbaru-chat = { path = "crates/ganbaru-chat", default-features = false }
 ganbaru-chat-contracts = { path = "crates/ganbaru-chat-contracts" }
@@ -58,10 +70,12 @@ ganbaru-civil-time = { path = "crates/ganbaru-civil-time" }
 ganbaru-db = { path = "crates/ganbaru-db" }
 ganbaru-distractions = { path = "crates/ganbaru-distractions" }
 ganbaru-handoff = { path = "crates/ganbaru-handoff" }
+ganbaru-image-metadata = { path = "crates/ganbaru-image-metadata" }
 ganbaru-mobile-documents = { path = "crates/ganbaru-mobile-documents" }
 ganbaru-mobile-distractions = { path = "crates/ganbaru-mobile-distractions" }
 ganbaru-mobile-media = { path = "crates/ganbaru-mobile-media" }
 ganbaru-mobile-notifications = { path = "crates/ganbaru-mobile-notifications" }
+ganbaru-mobile-sync = { path = "crates/ganbaru-mobile-sync" }
 ganbaru-music = { path = "crates/ganbaru-music" }
 ganbaru-music-library = { path = "crates/ganbaru-music-library" }
 ganbaru-music-player = { path = "crates/ganbaru-music-player" }
@@ -73,9 +87,14 @@ ganbaru-quick-notes = { path = "crates/ganbaru-quick-notes" }
 ganbaru-sync = { path = "crates/ganbaru-sync" }
 ganbaru-sync-contracts = { path = "crates/ganbaru-sync-contracts" }
 ganbaru-sync-replica = { path = "crates/ganbaru-sync-replica" }
+ganbaru-sync-relay = { path = "crates/ganbaru-sync-relay" }
 ganbaru-themes = { path = "crates/ganbaru-themes" }
 ganbaru-working-folders = { path = "crates/ganbaru-working-folders" }
 gtk = "0.18"
+hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "getrandom", "x25519", "chacha"] }
+hyper = { version = "1.10.1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1.20", default-features = false, features = ["service", "tokio"] }
+if-addrs = { version = "=0.15.0", features = ["link-local"] }
 jiff = { version = "0.2.37", default-features = false, features = [
   "std",
   "tz-system",
@@ -85,6 +104,8 @@ jiff = { version = "0.2.37", default-features = false, features = [
 ] }
 keyring = "4.1.5"
 libc = "0.2"
+libsqlite3-sys = { version = "0.37", default-features = false }
+mdns-sd = { version = "=0.21.6", default-features = false }
 notify = "=8.2.0"
 notify-rust = "4"
 objc2 = "0.6.4"
@@ -134,13 +155,15 @@ rodio = { version = "0.22.2", default-features = false, features = [
   "symphonia-wav",
   "symphonia-pcm",
 ] }
+rustix = { version = "1.1.4", default-features = false, features = ["std", "process", "fs"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring"] }
 qrcode = { version = "0.14.1", default-features = false }
 quircs = "0.10.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate", "json"] }
+socket2 = "0.6.4"
+sqlx = { version = "0.9", default-features = false, features = ["sqlite-bundled", "sqlite-deserialize", "runtime-tokio", "macros", "migrate", "json"] }
 tauri = { version = "~2.11.1" }
 tauri-build = { version = "~2.6.1", features = [] }
 tauri-plugin-dialog = "2"
@@ -161,7 +184,6 @@ windows = { version = "0.61", features = [
   "Media",
   "Win32_Foundation",
   "Win32_Security",
-  "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Com",
@@ -178,7 +200,63 @@ windows = { version = "0.61", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 x11rb = "0.13.2"
-zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
+x25519-dalek = { version = "=3.0.0", default-features = false, features = ["static_secrets", "zeroize"] }
+zeroize = "1.8.2"
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
 [profile.dev]
 debug = "line-tables-only"
+
+# The Notes HTML sanitizer stack dominates import time and is too slow for import tests when unoptimized.
+[profile.dev.package.ammonia]
+opt-level = 3
+
+[profile.dev.package.html5ever]
+opt-level = 3
+
+[profile.dev.package.markup5ever]
+opt-level = 3
+
+[profile.dev.package.tendril]
+opt-level = 3
+
+[profile.dev.package.string_cache]
+opt-level = 3
+
+# Every database test copies a migrated template and runs its statements against this bundle.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+# Sync tests sign, hash, and seal every record and bind every statement through these crates.
+[profile.dev.package.ring]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.digest]
+opt-level = 3
+
+[profile.dev.package.hmac]
+opt-level = 3
+
+[profile.dev.package.hkdf]
+opt-level = 3
+
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+
+[profile.dev.package.chacha20]
+opt-level = 3
+
+[profile.dev.package.poly1305]
+opt-level = 3
+
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+
+[profile.dev.package.sqlx-core]
+opt-level = 3
+
+[profile.dev.package.sqlx-sqlite]
+opt-level = 3

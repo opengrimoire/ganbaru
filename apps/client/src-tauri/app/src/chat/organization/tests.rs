@@ -1,10 +1,21 @@
 use super::common::{
-    has_thread_eligible_mention, is_valid_teammate_effort, map_teammate_write_error,
-    normalized_fts_query, validate_message_request, validate_teammate_role,
+    ACTIVE_FOLDER_GRANTS_SQL, has_thread_eligible_mention, is_valid_teammate_effort,
+    normalized_fts_query, require_unused_teammate_name, validate_message_request,
+    validate_teammate_role,
 };
-use super::scheduling::{claim_scheduled_message_for_immediate_send, validate_scheduled_for};
+use super::scheduling::{
+    SCHEDULED_REQUEST_MISMATCH_REASON, ScheduledRowBinding,
+    claim_scheduled_message_for_immediate_send, insert_scheduled_reference,
+    refuse_mismatched_request, scheduled_consent_in, scheduled_consents_without_a_row,
+    scheduled_reference_target, scheduled_request_mismatch, validate_scheduled_for,
+};
 use super::workflow::{has_authority_bearing_references, require_continuation_scope_is_unchanged};
 use super::*;
+use crate::chat::device_state::{
+    ChatDeviceScope, forget_scheduled_message_consent, record_assignment_acceptance,
+    record_scheduled_message_consent,
+};
+use ganbaru_chat::coordination::acceptance::scheduled_consent_digest;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
 
@@ -28,7 +39,9 @@ async fn migrated_pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -46,8 +59,8 @@ async fn seed_unused_teammate(pool: &SqlitePool, teammate_id: &str, policy_id: &
     .unwrap();
     sqlx::query(
         "INSERT INTO chat_teammates
-            (participant_id, role, instructions, latest_policy_revision, created_at, updated_at)
-         VALUES (?, 'General support', '', 1, ?, ?)",
+            (participant_id, role, instructions, created_at, updated_at)
+         VALUES (?, 'General support', '', ?, ?)",
     )
     .bind(teammate_id)
     .bind("2026-08-14T17:30:00.000Z")
@@ -57,9 +70,9 @@ async fn seed_unused_teammate(pool: &SqlitePool, teammate_id: &str, policy_id: &
     .unwrap();
     sqlx::query(
         "INSERT INTO chat_teammate_policy_revisions
-            (id, teammate_id, revision, provider_instance_id,
+            (id, teammate_id, provider_instance_id,
              model_selection_data, created_at)
-         VALUES (?, ?, 1, 'provider:test',
+         VALUES (?, ?, 'provider:test',
                  '{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}', ?)",
     )
     .bind(policy_id)
@@ -88,22 +101,27 @@ fn archived_ai_teammate_names_remain_reserved_case_insensitively() {
         .await
         .unwrap();
 
-        let error = sqlx::query(
-            "INSERT INTO chat_participants
-                (id, participant_kind, display_name, created_at, updated_at)
-             VALUES (?, 'ai_teammate', ?, ?, ?)",
+        let mut connection = pool.acquire().await.unwrap();
+        let error = require_unused_teammate_name(
+            &mut connection,
+            " review lead ",
+            "participant:active-reviewer",
         )
-        .bind("participant:active-reviewer")
-        .bind(" review lead ")
-        .bind("2026-08-14T17:31:00.000Z")
-        .bind("2026-08-14T17:31:00.000Z")
-        .execute(&pool)
         .await
         .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation);
+        assert_eq!(error.field.as_deref(), Some("displayName"));
 
-        let mapped = map_teammate_write_error(error);
-        assert_eq!(mapped.code, ChatErrorCode::Validation);
-        assert_eq!(mapped.field.as_deref(), Some("displayName"));
+        require_unused_teammate_name(
+            &mut connection,
+            "Review Lead",
+            "participant:archived-reviewer",
+        )
+        .await
+        .unwrap();
+        require_unused_teammate_name(&mut connection, "Release lead", "participant:other")
+            .await
+            .unwrap();
     });
 }
 
@@ -157,19 +175,59 @@ fn teammate_role_is_required_and_trimmed() {
     );
 }
 
+/// A device scope that accepted what `assignment_id` would run.
+async fn scope_accepting(pool: &SqlitePool, assignment_id: &str) -> ChatDeviceScope {
+    let digest = assignments::assignment_acceptance_digest(
+        pool,
+        &ChatWorkAssignmentId::new(assignment_id).unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut scope = ChatDeviceScope::default();
+    record_assignment_acceptance(
+        &mut scope,
+        digest,
+        UtcTimestamp::new("2026-08-04T17:00:00.000Z").unwrap(),
+    );
+    scope
+}
+
 async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
     sqlx::raw_sql(
-        "INSERT INTO project_groups (id, name) VALUES ('group:review', 'Review');
-         INSERT INTO projects (id, group_id, name)
-         VALUES ('project:review', 'group:review', 'Review');
+        "INSERT INTO project_groups (id, name, order_key) VALUES ('group:review', 'Review', 'a1');
+         INSERT INTO projects (id, group_id, name, order_key)
+         VALUES ('project:review', 'group:review', 'Review', 'a1');
          INSERT INTO project_working_folders
              (id, project_id, display_name, kind, managed_relative_path)
          VALUES ('folder:review', 'project:review', 'Review', 'managed', 'projects/review');
-         UPDATE chat_conversations SET id = 'conversation:review'
-         WHERE project_id = 'project:review' AND conversation_kind = 'channel';
-         UPDATE chat_channels SET id = 'channel:review'
-         WHERE project_id = 'project:review' AND is_default = 1;
-         INSERT INTO chat_participants
+         INSERT INTO chat_conversations
+             (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+         VALUES ('conversation:review', 'project:review', 'channel', '2026-08-04T17:00:00.000Z',
+                 '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z');
+         INSERT INTO chat_channels
+             (id, project_id, conversation_id, name, is_default, created_at, updated_at)
+         VALUES ('channel:review', 'project:review', 'conversation:review', 'general', 1,
+                 '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z');
+         INSERT INTO chat_conversation_memberships
+             (conversation_id, participant_id, sync_key, membership_role, created_at,
+              updated_at)
+         VALUES ('conversation:review', 'participant:local-owner', 'membership:review-owner',
+                 'owner', '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z');",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    ganbaru_chat::project_defaults::ensure_project_chat_defaults(
+        &mut connection,
+        "project:review",
+        &UtcTimestamp::new("2026-08-04T17:00:00.000Z").unwrap(),
+    )
+    .await
+    .unwrap();
+    drop(connection);
+    sqlx::raw_sql(
+        "INSERT INTO chat_participants
              (id, participant_kind, display_name, created_at, updated_at)
          VALUES (
              'participant:review-agent', 'ai_teammate', 'Review agent',
@@ -182,44 +240,45 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
              '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_teammate_policy_revisions
-             (id, teammate_id, revision, provider_instance_id,
+             (id, teammate_id, provider_instance_id,
               model_selection_data, created_at)
          VALUES (
-             'policy:review', 'participant:review-agent', 1, 'provider:review',
+             'policy:review', 'participant:review-agent', 'provider:review',
              '{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}',
              '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_conversation_memberships
-             (conversation_id, participant_id, membership_role, created_at, updated_at)
+             (conversation_id, participant_id, sync_key, membership_role, created_at,
+              updated_at)
          VALUES (
-             'conversation:review', 'participant:review-agent', 'member',
+             'conversation:review', 'participant:review-agent', 'membership:review', 'member',
              '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_teammate_channel_memberships
-             (conversation_id, teammate_id, access_profile_id,
+             (conversation_id, teammate_id, sync_key, access_profile_id,
               read_history, read_history_inherits_profile,
               participate, participate_inherits_profile,
               history_boundary, history_boundary_inherits_profile,
               created_at, updated_at)
          VALUES (
-             'conversation:review', 'participant:review-agent',
+             'conversation:review', 'participant:review-agent', 'channel-membership:review',
              'access-profile:build-and-test', 1, 1, 1, 1, 'entire', 1,
              '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_teammate_working_folder_grants
-             (conversation_id, teammate_id, project_id, working_folder_id,
+             (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
               capability, capability_inherits_profile, is_default, created_at)
          VALUES (
              'conversation:review', 'participant:review-agent', 'project:review',
-             'folder:review', 'execute', 1, 1, '2026-08-04T17:00:00.000Z'
+             'folder:review', 'grant:review', 'execute', 1, 1, '2026-08-04T17:00:00.000Z'
          );
          UPDATE chat_teammate_access_state
          SET access_revision = 1, updated_at = '2026-08-04T17:00:00.000Z'
          WHERE teammate_id = 'participant:review-agent';
          INSERT INTO chat_conversation_items
-             (id, conversation_id, item_kind, ordinal, created_at)
+             (id, conversation_id, item_kind, order_key, created_at)
          VALUES (
-             'item:review-root', 'conversation:review', 'message', 1,
+             'item:review-root', 'conversation:review', 'message', 'a1',
              '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_communication_messages
@@ -229,29 +288,29 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
              '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_communication_message_revisions
-             (id, message_item_id, revision, normalized_markdown, created_at)
+             (id, message_item_id, normalized_markdown, created_at)
          VALUES (
-             'revision:review-root', 'item:review-root', 1, 'Create hello.py',
+             'revision:review-root', 'item:review-root', 'Create hello.py',
              '2026-08-04T17:00:00.000Z'
          );
          UPDATE chat_communication_messages
          SET current_revision_id = 'revision:review-root'
          WHERE item_id = 'item:review-root';
          INSERT INTO chat_reply_threads
-             (id, conversation_id, root_item_id, reply_count, last_activity_at,
+             (id, conversation_id, root_item_id, last_activity_at,
               created_at, updated_at)
          VALUES (
-             'reply-thread:review', 'conversation:review', 'item:review-root', 2,
+             'reply-thread:review', 'conversation:review', 'item:review-root',
              '2026-08-04T17:02:00.000Z', '2026-08-04T17:00:00.000Z',
              '2026-08-04T17:02:00.000Z'
          );
          INSERT INTO chat_conversation_items
-             (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+             (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES
              ('item:review-reply-1', 'conversation:review', 'reply-thread:review',
-              'message', 1, '2026-08-04T17:01:00.000Z'),
+              'message', 'a1', '2026-08-04T17:01:00.000Z'),
              ('item:review-reply-2', 'conversation:review', 'reply-thread:review',
-              'message', 2, '2026-08-04T17:02:00.000Z');
+              'message', 'a2', '2026-08-04T17:02:00.000Z');
          INSERT INTO chat_communication_messages
              (item_id, author_participant_id, author_label_snapshot, created_at)
          VALUES
@@ -260,11 +319,11 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
              ('item:review-reply-2', 'participant:local-owner', 'You',
               '2026-08-04T17:02:00.000Z');
          INSERT INTO chat_communication_message_revisions
-             (id, message_item_id, revision, normalized_markdown, created_at)
+             (id, message_item_id, normalized_markdown, created_at)
          VALUES
-             ('revision:review-reply-1', 'item:review-reply-1', 1,
+             ('revision:review-reply-1', 'item:review-reply-1',
               'Ok, remove it now.', '2026-08-04T17:01:00.000Z'),
-             ('revision:review-reply-2', 'item:review-reply-2', 1,
+             ('revision:review-reply-2', 'item:review-reply-2',
               '@review-agent Ok, remove it now.', '2026-08-04T17:02:00.000Z');
          UPDATE chat_communication_messages
          SET current_revision_id = 'revision:review-reply-1'
@@ -274,10 +333,10 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
          WHERE item_id = 'item:review-reply-2';
          INSERT INTO chat_work_assignments
              (id, reply_thread_id, teammate_id, triggering_message_item_id,
-              state, created_at, updated_at)
+              executing_device_id, state, created_at, updated_at)
          VALUES (
              'assignment:review', 'reply-thread:review', 'participant:review-agent',
-             'item:review-root', 'ready_for_review',
+             'item:review-root', 'device:desk', 'ready_for_review',
              '2026-08-04T17:00:00.000Z', '2026-08-04T17:02:00.000Z'
          );
          INSERT INTO chat_work_assignment_inputs
@@ -298,7 +357,7 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
 }
 
 #[test]
-fn unused_archived_teammates_can_be_restored_or_permanently_deleted() {
+fn unused_archived_teammates_can_be_restored() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         let teammate_id = ChatParticipantId::new("participant:unused-agent").unwrap();
@@ -310,7 +369,6 @@ fn unused_archived_teammates_can_be_restored_or_permanently_deleted() {
                 .unwrap();
         assert!(archived.participant.archived_at.is_some());
         assert_eq!(archived.active_assignment_count, 0);
-        assert!(!archived.has_durable_history);
         let archived_access = access::read_teammate_access(&pool, &teammate_id)
             .await
             .expect("archived agents stay inspectable in Settings");
@@ -325,38 +383,6 @@ fn unused_archived_teammates_can_be_restored_or_permanently_deleted() {
         .await
         .unwrap();
         assert!(restored.participant.archived_at.is_none());
-
-        let archived_again = super::teammate_lifecycle::set_teammate_archived(
-            &pool,
-            &teammate_id,
-            restored.participant.revision,
-            true,
-        )
-        .await
-        .unwrap();
-        super::teammate_lifecycle::delete_unused_teammate(
-            &pool,
-            &teammate_id,
-            archived_again.participant.revision,
-        )
-        .await
-        .unwrap();
-
-        let participant_count: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM chat_participants WHERE id = ?")
-                .bind(teammate_id.as_str())
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        let policy_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_teammate_policy_revisions WHERE teammate_id = ?",
-        )
-        .bind(teammate_id.as_str())
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(participant_count, 0);
-        assert_eq!(policy_count, 0);
     });
 }
 
@@ -378,41 +404,6 @@ fn active_work_blocks_teammate_archiving() {
                 .await
                 .unwrap();
         assert!(archived_at.is_none());
-    });
-}
-
-#[test]
-fn durable_history_blocks_permanent_teammate_deletion() {
-    tauri::async_runtime::block_on(async {
-        let pool = migrated_pool().await;
-        seed_review_assignment_with_stranded_replies(&pool).await;
-        sqlx::query(
-            "UPDATE chat_work_assignments SET state = 'completed' WHERE id = 'assignment:review'",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
-        let archived =
-            super::teammate_lifecycle::set_teammate_archived(&pool, &teammate_id, 1, true)
-                .await
-                .unwrap();
-        assert!(archived.has_durable_history);
-        let error = super::teammate_lifecycle::delete_unused_teammate(
-            &pool,
-            &teammate_id,
-            archived.participant.revision,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.code, ChatErrorCode::Conflict);
-        let participant_count: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM chat_participants WHERE id = ?")
-                .bind(teammate_id.as_str())
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(participant_count, 1);
     });
 }
 
@@ -449,62 +440,64 @@ fn scheduled_delivery_requires_a_near_future_time_within_one_year() {
     );
 }
 
+/// Device that scheduled the test messages.
+const SCHEDULING_DEVICE: &str = "device:scheduling";
+
+/// The Chat writers `device_ids`.
+fn chat_writers_of(device_ids: &[&str]) -> super::workflow::ChatWriters {
+    super::workflow::ChatWriters::new(device_ids.iter().map(|id| (*id).to_owned()))
+}
+
+/// Stores `request_data` as the scheduled message `scheduled:test` executed by `executing`,
+/// with the local dispatch row the scheduling device keeps when `dispatches_here`.
+async fn insert_test_scheduled_message(
+    pool: &SqlitePool,
+    request_data: &str,
+    executing: Option<&str>,
+    dispatches_here: bool,
+    now: &UtcTimestamp,
+) {
+    sqlx::query(
+        "INSERT INTO chat_scheduled_messages
+            (id, client_command_id, channel_id, executing_device_id, request_data,
+             scheduled_for, created_at, updated_at)
+         VALUES ('scheduled:test', 'command:test', 'channel:test', ?, ?, ?, ?, ?)",
+    )
+    .bind(executing)
+    .bind(request_data)
+    .bind("2026-08-04T00:00:00.000Z")
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .execute(pool)
+    .await
+    .unwrap();
+    if dispatches_here {
+        sqlx::query(
+            "INSERT INTO chat_scheduled_message_dispatch
+                (scheduled_message_id, attempt_count, available_at, updated_at)
+             VALUES ('scheduled:test', 0, '2026-08-04T00:00:00.000Z', ?)",
+        )
+        .bind(now.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
 #[test]
 fn immediate_scheduled_delivery_claim_is_atomic() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
-        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group:test', 'Test')")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query(
-            "INSERT INTO projects (id, group_id, name)
-             VALUES ('project:test', 'group:test', 'Test')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_conversations
-                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
-             VALUES ('conversation:test', 'project:test', 'channel', ?, ?, ?)",
-        )
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_channels
-                (id, project_id, conversation_id, name, created_at, updated_at)
-             VALUES ('channel:test', 'project:test', 'conversation:test', 'general', ?, ?)",
-        )
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+        seed_test_channel(&pool, &now).await;
         let request_data = serde_json::to_string(&message("Send this now")).unwrap();
-        sqlx::query(
-            "INSERT INTO chat_scheduled_messages
-                (id, client_command_id, channel_id, request_data, scheduled_for,
-                 available_at, created_at, updated_at)
-             VALUES ('scheduled:test', 'command:test', 'channel:test', ?, ?, ?, ?, ?)",
-        )
-        .bind(&request_data)
-        .bind("2026-08-04T00:00:00.000Z")
-        .bind("2026-08-04T00:00:00.000Z")
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
+            .await;
         let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
         let claimed = claim_scheduled_message_for_immediate_send(
             &pool,
             &scheduled_message_id,
+            SCHEDULING_DEVICE,
             &now,
             "claim:first",
         )
@@ -512,18 +505,18 @@ fn immediate_scheduled_delivery_claim_is_atomic() {
         .unwrap();
         assert_eq!(claimed, request_data);
         let row = sqlx::query(
-            "SELECT state, attempt_count, claim_token
-             FROM chat_scheduled_messages WHERE id = 'scheduled:test'",
+            "SELECT attempt_count, claim_token
+             FROM chat_scheduled_message_dispatch WHERE scheduled_message_id = 'scheduled:test'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(row.get::<String, _>("state"), "dispatching");
         assert_eq!(row.get::<i64, _>("attempt_count"), 1);
         assert_eq!(row.get::<String, _>("claim_token"), "claim:first");
         let duplicate = claim_scheduled_message_for_immediate_send(
             &pool,
             &scheduled_message_id,
+            SCHEDULING_DEVICE,
             &now,
             "claim:second",
         )
@@ -534,17 +527,1600 @@ fn immediate_scheduled_delivery_claim_is_atomic() {
 }
 
 #[test]
+fn only_the_executing_device_sends_a_scheduled_message() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let request_data = serde_json::to_string(&message("Send from the desk")).unwrap();
+        // The scheduled message arrived through sync: this device keeps no dispatch row.
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), false, &now)
+            .await;
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+
+        let refused = claim_scheduled_message_for_immediate_send(
+            &pool,
+            &scheduled_message_id,
+            "device:phone",
+            &now,
+            "claim:phone",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.code, ChatErrorCode::Conflict);
+        scheduling::prepare_scheduled_dispatch(&pool, "device:phone", &now)
+            .await
+            .unwrap();
+        let dispatch_rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_scheduled_message_dispatch")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(dispatch_rows, 0);
+
+        // The executing device adopts the message even without its dispatch row.
+        scheduling::prepare_scheduled_dispatch(&pool, SCHEDULING_DEVICE, &now)
+            .await
+            .unwrap();
+        scheduling::require_scheduled_executor(&pool, &scheduled_message_id, SCHEDULING_DEVICE)
+            .await
+            .unwrap();
+        let available_at: String = sqlx::query_scalar(
+            "SELECT available_at FROM chat_scheduled_message_dispatch
+             WHERE scheduled_message_id = 'scheduled:test'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(available_at, "2026-08-04T00:00:00.000Z");
+    });
+}
+
+#[test]
+fn a_scheduled_message_without_an_executing_device_is_sent_where_it_dispatches() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let request_data = serde_json::to_string(&message("Older schedule")).unwrap();
+        insert_test_scheduled_message(&pool, &request_data, None, false, &now).await;
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+
+        let refused =
+            scheduling::require_scheduled_executor(&pool, &scheduled_message_id, "device:any")
+                .await
+                .unwrap_err();
+        assert_eq!(refused.code, ChatErrorCode::Conflict);
+        sqlx::query(
+            "INSERT INTO chat_scheduled_message_dispatch
+                (scheduled_message_id, attempt_count, available_at, updated_at)
+             VALUES ('scheduled:test', 0, ?1, ?1)",
+        )
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        scheduling::require_scheduled_executor(&pool, &scheduled_message_id, "device:any")
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn scheduled_content_must_fit_one_sync_operation() {
+    let request = message("Short");
+    let serialized = serde_json::to_string(&request).unwrap();
+    scheduling::validate_scheduled_content(&serialized, &request.references).unwrap();
+
+    let oversized = "x".repeat(ganbaru_sync::domains::chat::MAX_SCHEDULED_REQUEST_BYTES + 1);
+    let error = scheduling::validate_scheduled_content(&oversized, &[]).unwrap_err();
+    assert_eq!(error.field.as_deref(), Some("message"));
+
+    let mention = participant_reference(
+        "reference:atlas",
+        ChatParticipantId::new("participant:atlas").unwrap(),
+        ChatParticipantKind::AiTeammate,
+        "Atlas",
+        "@Atlas",
+        0,
+        6,
+    );
+    let mentions = vec![mention; ganbaru_sync::domains::chat::MAX_SCHEDULED_REFERENCES + 1];
+    let error = scheduling::validate_scheduled_content(&serialized, &mentions).unwrap_err();
+    assert_eq!(error.field.as_deref(), Some("references"));
+}
+
+#[test]
+fn scheduled_send_posts_stored_attachment_values_under_derived_ids() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let mut request = message("Send the screenshot");
+        request.attachment_ids = vec![ChatAttachmentId::new("attachment:gone").unwrap()];
+        let request_data = serde_json::to_string(&request).unwrap();
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
+            .await;
+        // The device row of the attachment is absent, as after its working folder was deleted
+        // or on a device that received the scheduled message through sync.
+        let digest = "a".repeat(64);
+        sqlx::query(
+            "INSERT INTO chat_scheduled_message_attachment_references
+                (scheduled_message_id, ordinal, attachment_id, working_folder_id, kind,
+                 original_display_name, mime_type, byte_size, sha256)
+             VALUES ('scheduled:test', 0, 'attachment:gone', 'working-folder:gone', 'image',
+                     'screen.png', 'image/png', 42, ?)",
+        )
+        .bind(&digest)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+        claim_scheduled_message_for_immediate_send(
+            &pool,
+            &scheduled_message_id,
+            SCHEDULING_DEVICE,
+            &now,
+            "claim:a",
+        )
+        .await
+        .unwrap();
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Local,
+        };
+        let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
+        let device = PostingDevice::this_device(SCHEDULING_DEVICE, &writers);
+
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+
+        let expected = super::common::scheduled_post_ids(
+            "scheduled:test",
+            super::common::ScheduledPostTarget::Message,
+        )
+        .unwrap();
+        assert_eq!(posted.item_id, expected.item_id);
+        // The receipt is keyed by the replicated command id and names the derived post, so
+        // every device that sends or reads it agrees on the post.
+        let (receipt_state, receipt_data): (String, String) = sqlx::query_as(
+            "SELECT state, result_data FROM chat_organizational_command_receipts
+             WHERE client_command_id = ?",
+        )
+        .bind(request.client_command_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(receipt_state, "completed");
+        assert!(receipt_data.contains(expected.item_id.as_str()));
+        let reference: (String, String, String, String, i64, String) = sqlx::query_as(
+            "SELECT message_revision_id, attachment_id, working_folder_id, original_display_name,
+                    byte_size, sha256
+             FROM chat_communication_attachment_references",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            reference,
+            (
+                expected.revision_id.as_str().to_owned(),
+                "attachment:gone".to_owned(),
+                "working-folder:gone".to_owned(),
+                "screen.png".to_owned(),
+                42,
+                digest,
+            )
+        );
+        let scheduled_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_scheduled_messages WHERE id = 'scheduled:test'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(scheduled_rows, 0);
+
+        let repeated = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+        assert_eq!(repeated.item_id, expected.item_id);
+        let items: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_conversation_items")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(items, 1);
+    });
+}
+
+#[test]
+fn scheduled_send_rejects_a_claim_that_changed() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let request = message("Send this once");
+        let request_data = serde_json::to_string(&request).unwrap();
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
+            .await;
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+        claim_scheduled_message_for_immediate_send(
+            &pool,
+            &scheduled_message_id,
+            SCHEDULING_DEVICE,
+            &now,
+            "claim:a",
+        )
+        .await
+        .unwrap();
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:stale",
+            consent: ScheduledConsent::Local,
+        };
+
+        let Err(error) = persist_post(
+            &pool,
+            &request,
+            Some(send),
+            PostingDevice::this_device(SCHEDULING_DEVICE, &chat_writers_of(&[SCHEDULING_DEVICE])),
+        )
+        .await
+        else {
+            panic!("a stale claim posted");
+        };
+
+        assert_eq!(error.code, ChatErrorCode::Conflict);
+        let items: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_conversation_items")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(items, 0);
+    });
+}
+
+#[test]
+fn scheduled_request_mismatch_refuses_foreign_channel() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        sqlx::query(
+            "INSERT INTO chat_conversations
+                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation:foreign', 'project:test', 'channel', ?1, ?1, ?1);
+             INSERT INTO chat_channels (id, project_id, conversation_id, name, created_at, updated_at)
+             VALUES ('channel:foreign', 'project:test', 'conversation:foreign', 'foreign', ?1, ?1)",
+        )
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut request = message("Post this elsewhere");
+        request.channel_id = ChatChannelId::new("channel:foreign").unwrap();
+        let request_data = serde_json::to_string(&request).unwrap();
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
+            .await;
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+        claim_scheduled_message_for_immediate_send(
+            &pool,
+            &scheduled_message_id,
+            SCHEDULING_DEVICE,
+            &now,
+            "claim:a",
+        )
+        .await
+        .unwrap();
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Local,
+        };
+        let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
+        let device = PostingDevice::this_device(SCHEDULING_DEVICE, &writers);
+
+        let outcome = write_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+
+        let PostOutcome::Refused(refusal) = outcome else {
+            panic!("the mismatched request was not refused");
+        };
+        assert_eq!(refusal.code, ChatErrorCode::Conflict);
+        let items: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_conversation_items")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(items, 0, "the mismatched request posted");
+        let (failed_at, last_error): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT failed_at, last_error FROM chat_scheduled_messages WHERE id = 'scheduled:test'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            failed_at.is_some(),
+            "the refusal fails the message for good"
+        );
+        assert_eq!(
+            last_error.as_deref(),
+            Some(SCHEDULED_REQUEST_MISMATCH_REASON)
+        );
+    });
+}
+
+#[test]
+fn scheduled_write_post_sends_a_matching_request() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let request = message("Send this on time");
+        let request_data = serde_json::to_string(&request).unwrap();
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
+            .await;
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+        claim_scheduled_message_for_immediate_send(
+            &pool,
+            &scheduled_message_id,
+            SCHEDULING_DEVICE,
+            &now,
+            "claim:a",
+        )
+        .await
+        .unwrap();
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Local,
+        };
+        let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
+        let device = PostingDevice::this_device(SCHEDULING_DEVICE, &writers);
+
+        let outcome = write_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(outcome, PostOutcome::Posted(_)),
+            "the matching request was refused"
+        );
+        let scheduled_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_scheduled_messages WHERE id = 'scheduled:test'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(scheduled_rows, 0);
+    });
+}
+
+/// The dispatch job count of the assignment of `assignment_id`.
+async fn dispatch_job_count(pool: &SqlitePool, assignment_id: &ChatWorkAssignmentId) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?")
+        .bind(assignment_id.as_str())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Stores and claims the scheduled message `scheduled:test` as `claim:a` on `device:desk`, a
+/// mention of the review agent, returning its request.
+async fn claim_scheduled_mention(
+    pool: &SqlitePool,
+    now: &UtcTimestamp,
+) -> (PostChatMessageCommand, ChatScheduledMessageId) {
+    claim_scheduled_mention_on(pool, now, None).await
+}
+
+/// Like `claim_scheduled_mention`, with the request choosing `execution_target`.
+async fn claim_scheduled_mention_on(
+    pool: &SqlitePool,
+    now: &UtcTimestamp,
+    execution_target: Option<ChatExecutionTarget>,
+) -> (PostChatMessageCommand, ChatScheduledMessageId) {
+    let mut request = message("@Review agent check this");
+    request.execution_target = execution_target;
+    request.client_command_id = ChatCommandId::new("command:test").unwrap();
+    request.channel_id = ChatChannelId::new("channel:review").unwrap();
+    request.references = vec![participant_reference(
+        "reference:scheduled",
+        ChatParticipantId::new("participant:review-agent").unwrap(),
+        ChatParticipantKind::AiTeammate,
+        "Review agent",
+        "@Review agent",
+        0,
+        13,
+    )];
+    sqlx::query(
+        "INSERT INTO chat_scheduled_messages
+            (id, client_command_id, channel_id, executing_device_id, request_data,
+             scheduled_for, created_at, updated_at)
+         VALUES ('scheduled:test', 'command:test', 'channel:review', 'device:desk', ?1, ?2, ?2,
+                 ?2)",
+    )
+    .bind(serde_json::to_string(&request).unwrap())
+    .bind(now.as_str())
+    .execute(pool)
+    .await
+    .unwrap();
+    let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+    claim_scheduled_message_for_immediate_send(
+        pool,
+        &scheduled_message_id,
+        "device:desk",
+        now,
+        "claim:a",
+    )
+    .await
+    .unwrap();
+    (request, scheduled_message_id)
+}
+
+#[test]
+fn scheduled_request_mismatch_names_the_field_that_differs() {
+    let stored_thread = ChatReplyThreadId::new("thread:stored").unwrap();
+    let mut request = message("@Review agent check this");
+    request.reply_thread_id = Some(stored_thread.clone());
+    request.references = vec![participant_reference(
+        "reference:scheduled",
+        ChatParticipantId::new("participant:review-agent").unwrap(),
+        ChatParticipantKind::AiTeammate,
+        "Review agent",
+        "@Review agent",
+        0,
+        13,
+    )];
+    let references: Vec<_> = request
+        .references
+        .iter()
+        .map(scheduled_reference_target)
+        .collect();
+    let client_command_id = request.client_command_id.as_str().to_owned();
+    let channel_id = request.channel_id.as_str().to_owned();
+    let row = ScheduledRowBinding {
+        client_command_id: &client_command_id,
+        channel_id: &channel_id,
+        reply_thread_id: Some(stored_thread.as_str()),
+        references: &references,
+    };
+    assert_eq!(scheduled_request_mismatch(&row, &request), None);
+
+    let mut foreign = request.clone();
+    foreign.channel_id = ChatChannelId::new("channel:foreign").unwrap();
+    assert_eq!(
+        scheduled_request_mismatch(&row, &foreign),
+        Some("channelId")
+    );
+
+    let mut rethreaded = request.clone();
+    rethreaded.reply_thread_id = None;
+    assert_eq!(
+        scheduled_request_mismatch(&row, &rethreaded),
+        Some("replyThreadId")
+    );
+
+    let mut recommanded = request.clone();
+    recommanded.client_command_id = ChatCommandId::new("command:foreign").unwrap();
+    assert_eq!(
+        scheduled_request_mismatch(&row, &recommanded),
+        Some("clientCommandId")
+    );
+
+    let mut retargeted = request.clone();
+    retargeted.references = vec![participant_reference(
+        "reference:scheduled",
+        ChatParticipantId::new("participant:other-agent").unwrap(),
+        ChatParticipantKind::AiTeammate,
+        "Review agent",
+        "@Review agent",
+        0,
+        13,
+    )];
+    assert_eq!(
+        scheduled_request_mismatch(&row, &retargeted),
+        Some("references")
+    );
+
+    let mut unmentioned = request.clone();
+    unmentioned.references.clear();
+    assert_eq!(
+        scheduled_request_mismatch(&row, &unmentioned),
+        Some("references")
+    );
+
+    let mut extended = request.clone();
+    extended.references.push(extended.references[0].clone());
+    assert_eq!(
+        scheduled_request_mismatch(&row, &extended),
+        Some("references")
+    );
+}
+
+#[test]
+fn scheduled_request_mismatch_passes_a_row_with_its_stored_references() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
+        let mut transaction = pool.begin().await.unwrap();
+        insert_scheduled_reference(
+            &mut transaction,
+            &scheduled_message_id,
+            &request.references[0],
+            0,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Local,
+        };
+
+        let refusal = refuse_mismatched_request(&pool, send, &request)
+            .await
+            .unwrap();
+
+        assert!(refusal.is_none(), "the honest request was refused");
+        let failed_at: Option<String> =
+            sqlx::query_scalar("SELECT failed_at FROM chat_scheduled_messages WHERE id = ?")
+                .bind(scheduled_message_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(failed_at, None);
+    });
+}
+
+#[test]
+fn scheduled_consent_covers_only_the_request_it_was_given_for() {
+    let id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+    let other = ChatScheduledMessageId::new("scheduled:other").unwrap();
+    let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+    let mut scope = ChatDeviceScope::default();
+    assert_eq!(
+        scheduled_consent_in(&scope, &id, "request"),
+        ScheduledConsent::Unattended
+    );
+
+    record_scheduled_message_consent(
+        &mut scope,
+        id.as_str().to_owned(),
+        scheduled_consent_digest(id.as_str(), "request"),
+        now,
+    );
+
+    assert_eq!(
+        scheduled_consent_in(&scope, &id, "request"),
+        ScheduledConsent::Local
+    );
+    assert!(
+        scope.assignment_acceptances.is_empty(),
+        "a scheduled consent took an assignment acceptance slot"
+    );
+    assert_eq!(
+        scheduled_consent_in(&scope, &id, "rewritten request"),
+        ScheduledConsent::Unattended,
+        "a request rewritten on a peer kept the consent"
+    );
+    assert_eq!(
+        scheduled_consent_in(&scope, &other, "request"),
+        ScheduledConsent::Unattended,
+        "the consent reached another message"
+    );
+
+    forget_scheduled_message_consent(
+        &mut scope,
+        id.as_str(),
+        &scheduled_consent_digest(id.as_str(), "rewritten request"),
+    );
+    assert_eq!(
+        scheduled_consent_in(&scope, &id, "request"),
+        ScheduledConsent::Local,
+        "forgetting another request dropped the consent"
+    );
+    forget_scheduled_message_consent(
+        &mut scope,
+        id.as_str(),
+        &scheduled_consent_digest(id.as_str(), "request"),
+    );
+
+    assert_eq!(
+        scheduled_consent_in(&scope, &id, "request"),
+        ScheduledConsent::Unattended
+    );
+}
+
+#[test]
+fn scheduled_consent_to_a_message_that_is_gone_is_swept() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, pending) = claim_scheduled_mention(&pool, &now).await;
+        let request_data = serde_json::to_string(&request).unwrap();
+        let mut scope = ChatDeviceScope::default();
+        for id in [pending.as_str(), "scheduled:cancelled"] {
+            record_scheduled_message_consent(
+                &mut scope,
+                id.to_owned(),
+                scheduled_consent_digest(id, &request_data),
+                now.clone(),
+            );
+        }
+
+        let stale = scheduled_consents_without_a_row(&pool, &scope)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            stale,
+            vec![(
+                "scheduled:cancelled".to_owned(),
+                scheduled_consent_digest("scheduled:cancelled", &request_data)
+            )],
+            "consent to a message that no longer exists was kept"
+        );
+    });
+}
+
+#[test]
+fn consented_scheduled_post_queues_its_dispatch() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Local,
+        };
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+
+        assert!(!posted.assignment_write.awaits_acceptance);
+        let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 1);
+    });
+}
+
+#[test]
+fn unattended_scheduled_post_leaves_assignment_queued() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Unattended,
+        };
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+
+        assert!(posted.assignment_write.awaits_acceptance);
+        let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+        assert_eq!(
+            dispatch_job_count(&pool, &assignment_id).await,
+            0,
+            "the unattended post queued its dispatch"
+        );
+        let read = read_assignment(&pool, &assignment_id).await.unwrap();
+        assert_eq!(read.state, ChatWorkAssignmentState::Queued);
+        let unaccepted = ChatDeviceScope::default();
+        assert!(
+            assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &unaccepted,
+            )
+            .await
+            .unwrap(),
+            "the work waits for Start here"
+        );
+        assert!(
+            !assignments::adopt_synced_assignment(
+                &pool,
+                &assignment_id,
+                "device:desk",
+                &unaccepted,
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
+
+        let accepted = scope_accepting(&pool, assignment_id.as_str()).await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:desk", &accepted)
+                .await
+                .unwrap(),
+            "an accepted teammate runs through the adoption gate"
+        );
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 1);
+    });
+}
+
+#[test]
+fn recovery_after_a_stop_starts_accepted_unattended_work_and_leaves_the_rest_at_start_here() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Unattended,
+        };
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        // The post commits and the app stops before the unattended start runs.
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+        let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+
+        let unaccepted = ChatDeviceScope::default();
+        let adopted = assignments::adopt_accepted_queued_assignments(&pool, device, &unaccepted)
+            .await
+            .unwrap();
+        assert!(adopted.is_empty(), "recovery started unaccepted work");
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
+        assert!(
+            assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &unaccepted,
+            )
+            .await
+            .unwrap(),
+            "unaccepted work still waits for Start here after recovery"
+        );
+
+        let accepted = scope_accepting(&pool, assignment_id.as_str()).await;
+        let adopted = assignments::adopt_accepted_queued_assignments(&pool, device, &accepted)
+            .await
+            .unwrap();
+        assert_eq!(
+            adopted,
+            std::slice::from_ref(&assignment_id),
+            "recovery starts work whose teammate this device accepted"
+        );
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 1);
+    });
+}
+
+/// Grants the review agent a second, non-default folder `folder:second` of the review project.
+async fn seed_second_review_folder(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO project_working_folders
+             (id, project_id, display_name, kind, managed_relative_path)
+         VALUES ('folder:second', 'project:review', 'Second', 'managed', 'projects/second');
+         INSERT INTO chat_teammate_working_folder_grants
+             (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+              capability, capability_inherits_profile, is_default, created_at)
+         VALUES (
+             'conversation:review', 'participant:review-agent', 'project:review',
+             'folder:second', 'grant:second', 'execute', 1, 0, '2026-08-04T17:00:00.000Z'
+         );",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// The working folder the frozen authorization of `assignment_id` runs in.
+async fn frozen_execution_folder(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT folder.working_folder_id
+         FROM chat_assignment_authorized_folder_sources folder
+         JOIN chat_assignment_authorization_revisions authorization
+           ON authorization.id = folder.authorization_revision_id
+         WHERE authorization.assignment_id = ? AND folder.is_execution_target = 1",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn unattended_work_keeps_the_execution_target_its_request_chose() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_second_review_folder(&pool).await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let target = ChatExecutionTarget::WorkingFolder {
+            working_folder_id: ProjectWorkingFolderId::new("folder:second").unwrap(),
+            execution_environment_id: ChatExecutionEnvironmentId::new(
+                ganbaru_chat::project_defaults::current_folder_environment_id("folder:second"),
+            )
+            .unwrap(),
+        };
+        let (request, scheduled_message_id) =
+            claim_scheduled_mention_on(&pool, &now, Some(target)).await;
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Unattended,
+        };
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+        let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
+
+        let accepted = scope_accepting(&pool, assignment_id.as_str()).await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:desk", &accepted)
+                .await
+                .unwrap()
+        );
+
+        assert_eq!(
+            frozen_execution_folder(&pool, &assignment_id)
+                .await
+                .as_deref(),
+            Some("folder:second"),
+            "the accepted work dropped the execution target its request chose"
+        );
+    });
+}
+
+/// Posts an unattended reply on `device:desk` whose request chose `folder:second`, returning
+/// the queued assignment that waits for Start here.
+async fn post_unattended_work_on_second_folder(pool: &SqlitePool) -> ChatWorkAssignmentRead {
+    seed_second_review_folder(pool).await;
+    let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+    let target = ChatExecutionTarget::WorkingFolder {
+        working_folder_id: ProjectWorkingFolderId::new("folder:second").unwrap(),
+        execution_environment_id: ChatExecutionEnvironmentId::new(
+            ganbaru_chat::project_defaults::current_folder_environment_id("folder:second"),
+        )
+        .unwrap(),
+    };
+    let (request, scheduled_message_id) =
+        claim_scheduled_mention_on(pool, &now, Some(target)).await;
+    let send = ScheduledSend {
+        scheduled_message_id: &scheduled_message_id,
+        claim_token: "claim:a",
+        consent: ScheduledConsent::Unattended,
+    };
+    let writers = chat_writers_of(&["device:desk"]);
+    let device = PostingDevice::this_device("device:desk", &writers);
+    let posted = persist_post(pool, &request, Some(send), device)
+        .await
+        .unwrap();
+    let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+    read_assignment(pool, &assignment_id).await.unwrap()
+}
+
+/// How many execution targets this device keeps for `assignment_id`.
+async fn requested_target_count(pool: &SqlitePool, assignment_id: &ChatWorkAssignmentId) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM chat_assignment_requested_targets WHERE assignment_id = ?",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn retry_of_cancelled_unattended_work_resolves_its_target_again() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let queued = post_unattended_work_on_second_folder(&pool).await;
+        // A cancel synced from another device settles the work without this device's cancel path.
+        sqlx::query(
+            "UPDATE chat_work_assignments
+             SET state = 'cancelled', settled_at = updated_at, revision = revision + 1
+             WHERE id = ?",
+        )
+        .bind(queued.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "DELETE FROM chat_teammate_working_folder_grants WHERE working_folder_id = 'folder:second'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let cancelled = read_assignment(&pool, &queued.id).await.unwrap();
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let now = UtcTimestamp::new("2026-08-04T17:04:00.000Z").unwrap();
+
+        let retried =
+            assignments::persist_retry(&pool, &cancelled.id, cancelled.revision, device, &now)
+                .await;
+
+        assert!(
+            retried.is_ok(),
+            "retry kept the target whose grant was removed: {retried:?}"
+        );
+        assert_eq!(
+            frozen_execution_folder(&pool, &cancelled.id)
+                .await
+                .as_deref(),
+            Some("folder:review")
+        );
+    });
+}
+
+#[test]
+fn cancelling_unattended_work_drops_its_kept_target() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let queued = post_unattended_work_on_second_folder(&pool).await;
+        assert_eq!(requested_target_count(&pool, &queued.id).await, 1);
+
+        super::workflow::set_assignment_state(
+            &pool,
+            &queued.id,
+            queued.revision,
+            ChatWorkAssignmentState::Cancelled,
+            Some("Cancelled by the user"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            requested_target_count(&pool, &queued.id).await,
+            0,
+            "the target outlived the work it was kept for"
+        );
+    });
+}
+
+/// The subject digest the dispatch job of `assignment_id` consented to run.
+async fn consented_dispatch_digest(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+) -> String {
+    sqlx::query_scalar(
+        "SELECT consented_digest FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn consented_scheduled_send_accepts_the_work_it_dispatches() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Local,
+        };
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+        let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+
+        let digest = post_acceptance_digest(&pool, &posted.assignment_write, Some(send))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            digest,
+            Some(consented_dispatch_digest(&pool, &assignment_id).await),
+            "a consented scheduled send did not accept the work it dispatched"
+        );
+    });
+}
+
+#[test]
+fn unattended_scheduled_send_accepts_nothing() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Unattended,
+        };
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+
+        let digest = post_acceptance_digest(&pool, &posted.assignment_write, Some(send))
+            .await
+            .unwrap();
+
+        assert_eq!(digest, None, "an unattended send accepted its work");
+    });
+}
+
+/// Seeds the review thread with `assignment:review` in `state` on `device:desk`, without
+/// pending replies, and stores and claims as `claim:a` a scheduled reply in that thread that
+/// names no teammate, so its routing infers the review agent. Returns the pool, the request,
+/// and the scheduled message.
+async fn claim_scheduled_review_reply(
+    state: &str,
+    now: &UtcTimestamp,
+) -> (SqlitePool, PostChatMessageCommand, ChatScheduledMessageId) {
+    let pool = migrated_pool().await;
+    seed_review_assignment_with_stranded_replies(&pool).await;
+    sqlx::query(
+        "DELETE FROM chat_work_assignment_inputs
+         WHERE assignment_id = 'assignment:review' AND routing_kind <> 'trigger'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE chat_work_assignments SET state = ? WHERE id = 'assignment:review'")
+        .bind(state)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut request = message("Also cover the edge cases");
+    request.client_command_id = ChatCommandId::new("command:scheduled-reply").unwrap();
+    request.channel_id = ChatChannelId::new("channel:review").unwrap();
+    request.reply_thread_id = Some(ChatReplyThreadId::new("reply-thread:review").unwrap());
+    sqlx::query(
+        "INSERT INTO chat_scheduled_messages
+            (id, client_command_id, channel_id, reply_thread_id, executing_device_id,
+             request_data, scheduled_for, created_at, updated_at)
+         VALUES ('scheduled:reply', 'command:scheduled-reply', 'channel:review',
+                 'reply-thread:review', 'device:desk', ?1, ?2, ?2, ?2)",
+    )
+    .bind(serde_json::to_string(&request).unwrap())
+    .bind(now.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let scheduled_message_id = ChatScheduledMessageId::new("scheduled:reply").unwrap();
+    claim_scheduled_message_for_immediate_send(
+        &pool,
+        &scheduled_message_id,
+        "device:desk",
+        now,
+        "claim:a",
+    )
+    .await
+    .unwrap();
+    (pool, request, scheduled_message_id)
+}
+
+/// Sends the claimed scheduled reply of [`claim_scheduled_review_reply`] on `device:desk`.
+async fn send_scheduled_review_reply(
+    pool: &SqlitePool,
+    request: &PostChatMessageCommand,
+    scheduled_message_id: &ChatScheduledMessageId,
+    consent: ScheduledConsent,
+) -> super::PersistedPost {
+    let send = ScheduledSend {
+        scheduled_message_id,
+        claim_token: "claim:a",
+        consent,
+    };
+    let writers = chat_writers_of(&["device:desk"]);
+    persist_post(
+        pool,
+        request,
+        Some(send),
+        PostingDevice::this_device("device:desk", &writers),
+    )
+    .await
+    .unwrap()
+}
+
+/// The number of assignment inputs that deliver the message `message_item_id`.
+async fn inputs_of_message(pool: &SqlitePool, message_item_id: &ChatConversationItemId) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM chat_work_assignment_inputs WHERE message_item_id = ?")
+        .bind(message_item_id.as_str())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn unattended_scheduled_reply_queues_no_input_on_active_work() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (pool, request, scheduled_message_id) =
+            claim_scheduled_review_reply("working", &now).await;
+        let assignment_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+        let before = read_assignment(&pool, &assignment_id).await.unwrap();
+
+        let posted = send_scheduled_review_reply(
+            &pool,
+            &request,
+            &scheduled_message_id,
+            ScheduledConsent::Unattended,
+        )
+        .await;
+
+        assert!(
+            !posted.assignment_write.input_queued,
+            "the unattended reply queued input on active work"
+        );
+        assert_eq!(inputs_of_message(&pool, &posted.item_id).await, 0);
+        let after = read_assignment(&pool, &assignment_id).await.unwrap();
+        assert_eq!(after.state, ChatWorkAssignmentState::Working);
+        assert_eq!(after.revision, before.revision);
+        assert!(
+            read_post_receipt(&pool, &request.client_command_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the unattended reply stays visible"
+        );
+    });
+}
+
+#[test]
+fn unattended_scheduled_reply_settles_no_reviewed_work() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (pool, request, scheduled_message_id) =
+            claim_scheduled_review_reply("ready_for_review", &now).await;
+        let assignment_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+
+        let posted = send_scheduled_review_reply(
+            &pool,
+            &request,
+            &scheduled_message_id,
+            ScheduledConsent::Unattended,
+        )
+        .await;
+
+        let reviewed = read_assignment(&pool, &assignment_id).await.unwrap();
+        assert_eq!(
+            reviewed.state,
+            ChatWorkAssignmentState::ReadyForReview,
+            "the unattended reply settled the reviewed work"
+        );
+        let assignments: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_work_assignments")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(assignments, 1, "the unattended reply created a follow-up");
+        assert!(!posted.assignment_write.dispatches_here());
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        assert!(
+            assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &ChatDeviceScope::default(),
+            )
+            .await
+            .unwrap(),
+            "the reply waits for Start here"
+        );
+
+        let accepted = scope_accepting(&pool, assignment_id.as_str()).await;
+        let started =
+            assignments::recover_stranded_follow_up_assignments(&pool, device, &accepted, &now)
+                .await
+                .unwrap();
+        assert_eq!(started, 1, "accepting the work did not start the follow-up");
+        let settled = read_assignment(&pool, &assignment_id).await.unwrap();
+        assert_eq!(settled.state, ChatWorkAssignmentState::Completed);
+    });
+}
+
+/// The execution target that runs work in the review agent's second folder `folder:second`.
+fn second_review_folder_target() -> ChatExecutionTarget {
+    ChatExecutionTarget::WorkingFolder {
+        working_folder_id: ProjectWorkingFolderId::new("folder:second").unwrap(),
+        execution_environment_id: ChatExecutionEnvironmentId::new(
+            ganbaru_chat::project_defaults::current_folder_environment_id("folder:second"),
+        )
+        .unwrap(),
+    }
+}
+
+/// Sends on `device:desk`, unattended, a scheduled reply to `assignment:review` awaiting review
+/// whose request chose `folder:second`, returning the pool once the reply waits as a pending
+/// input of the reviewed work.
+async fn post_unattended_review_reply_on_second_folder(now: &UtcTimestamp) -> SqlitePool {
+    let (pool, mut request, scheduled_message_id) =
+        claim_scheduled_review_reply("ready_for_review", now).await;
+    seed_second_review_folder(&pool).await;
+    request.execution_target = Some(second_review_folder_target());
+    sqlx::query("UPDATE chat_scheduled_messages SET request_data = ? WHERE id = ?")
+        .bind(serde_json::to_string(&request).unwrap())
+        .bind(scheduled_message_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let posted = send_scheduled_review_reply(
+        &pool,
+        &request,
+        &scheduled_message_id,
+        ScheduledConsent::Unattended,
+    )
+    .await;
+    assert!(posted.assignment_write.input_queued);
+    assert!(posted.assignment_write.awaits_acceptance);
+    pool
+}
+
+/// The follow-up assignment that settled `assignment:review`, if one exists.
+async fn review_follow_up_id(pool: &SqlitePool) -> Option<ChatWorkAssignmentId> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT id FROM chat_work_assignments WHERE previous_assignment_id = 'assignment:review'",
+    )
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+    .map(|id| ChatWorkAssignmentId::new(id).unwrap())
+}
+
+#[test]
+fn follow_up_of_an_unattended_review_reply_keeps_its_chosen_target() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let pool = post_unattended_review_reply_on_second_folder(&now).await;
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let accepted = scope_accepting(&pool, "assignment:review").await;
+
+        let started =
+            assignments::recover_stranded_follow_up_assignments(&pool, device, &accepted, &now)
+                .await
+                .unwrap();
+
+        assert_eq!(started, 1, "accepting the work did not start the follow-up");
+        let follow_up_id = review_follow_up_id(&pool).await.unwrap();
+        assert_eq!(
+            frozen_execution_folder(&pool, &follow_up_id)
+                .await
+                .as_deref(),
+            Some("folder:second"),
+            "the follow-up dropped the execution target its reply chose"
+        );
+        let kept: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_assignment_input_requested_targets")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(kept, 0, "the target outlived the reply it was kept for");
+    });
+}
+
+#[test]
+fn follow_up_resolves_the_target_again_when_the_chosen_one_no_longer_resolves() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let pool = post_unattended_review_reply_on_second_folder(&now).await;
+        sqlx::query(
+            "DELETE FROM chat_teammate_working_folder_grants WHERE working_folder_id = 'folder:second'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let accepted = scope_accepting(&pool, "assignment:review").await;
+
+        let refused =
+            assignments::recover_stranded_follow_up_assignments(&pool, device, &accepted, &now)
+                .await
+                .unwrap();
+        assert_eq!(
+            refused, 0,
+            "the follow-up started on a target without a grant"
+        );
+        assert_eq!(review_follow_up_id(&pool).await, None);
+
+        let started =
+            assignments::recover_stranded_follow_up_assignments(&pool, device, &accepted, &now)
+                .await
+                .unwrap();
+        assert_eq!(
+            started, 1,
+            "the reply stayed stuck on its unresolvable target"
+        );
+        let follow_up_id = review_follow_up_id(&pool).await.unwrap();
+        assert_eq!(
+            frozen_execution_folder(&pool, &follow_up_id)
+                .await
+                .as_deref(),
+            Some("folder:review")
+        );
+    });
+}
+
+#[test]
+fn consented_scheduled_replies_still_route_to_their_work() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let assignment_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+
+        let (pool, request, scheduled_message_id) =
+            claim_scheduled_review_reply("working", &now).await;
+        let posted = send_scheduled_review_reply(
+            &pool,
+            &request,
+            &scheduled_message_id,
+            ScheduledConsent::Local,
+        )
+        .await;
+        assert!(posted.assignment_write.input_queued);
+        assert!(posted.assignment_write.executes_here);
+        assert_eq!(
+            posted.assignment_write.assignment_id.as_ref(),
+            Some(&assignment_id)
+        );
+        assert_eq!(inputs_of_message(&pool, &posted.item_id).await, 1);
+
+        let (pool, request, scheduled_message_id) =
+            claim_scheduled_review_reply("ready_for_review", &now).await;
+        let posted = send_scheduled_review_reply(
+            &pool,
+            &request,
+            &scheduled_message_id,
+            ScheduledConsent::Local,
+        )
+        .await;
+        let follow_up_id = posted.assignment_write.assignment_id.clone().unwrap();
+        assert_ne!(follow_up_id, assignment_id);
+        assert_eq!(dispatch_job_count(&pool, &follow_up_id).await, 1);
+        let reviewed = read_assignment(&pool, &assignment_id).await.unwrap();
+        assert_eq!(reviewed.state, ChatWorkAssignmentState::Completed);
+    });
+}
+
+#[test]
+fn unattended_scheduled_mention_of_another_teammate_waits_for_start_here() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (pool, mut request, scheduled_message_id) =
+            claim_scheduled_review_reply("ready_for_review", &now).await;
+        seed_other_review_teammate(&pool).await;
+        request.normalized_markdown = "@Other agent take a look".to_owned();
+        request.references = vec![participant_reference(
+            "reference:other",
+            ChatParticipantId::new("participant:other-agent").unwrap(),
+            ChatParticipantKind::AiTeammate,
+            "Other agent",
+            "@Other agent",
+            0,
+            12,
+        )];
+        sqlx::query("UPDATE chat_scheduled_messages SET request_data = ? WHERE id = ?")
+            .bind(serde_json::to_string(&request).unwrap())
+            .bind(scheduled_message_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let reviewed_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+
+        let posted = send_scheduled_review_reply(
+            &pool,
+            &request,
+            &scheduled_message_id,
+            ScheduledConsent::Unattended,
+        )
+        .await;
+
+        let reviewed = read_assignment(&pool, &reviewed_id).await.unwrap();
+        assert_eq!(
+            reviewed.state,
+            ChatWorkAssignmentState::ReadyForReview,
+            "the mention settled the reviewed work of another teammate"
+        );
+        let assignment_id = posted
+            .assignment_write
+            .assignment_id
+            .clone()
+            .expect("the mention created no work for the other teammate");
+        assert_ne!(assignment_id, reviewed_id);
+        assert!(posted.assignment_write.awaits_acceptance);
+        assert!(!posted.assignment_write.dispatches_here());
+        let created = read_assignment(&pool, &assignment_id).await.unwrap();
+        assert_eq!(created.state, ChatWorkAssignmentState::Queued);
+        assert_eq!(created.teammate.id.as_str(), "participant:other-agent");
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        assert!(
+            assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &ChatDeviceScope::default(),
+            )
+            .await
+            .unwrap(),
+            "the new work waits for Start here"
+        );
+
+        let accepted = scope_accepting(&pool, assignment_id.as_str()).await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:desk", &accepted)
+                .await
+                .unwrap(),
+            "an accepted teammate runs through the adoption gate"
+        );
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 1);
+        let reviewed = read_assignment(&pool, &reviewed_id).await.unwrap();
+        assert_eq!(reviewed.state, ChatWorkAssignmentState::ReadyForReview);
+    });
+}
+
+#[test]
+fn a_user_post_accepts_the_work_it_dispatches() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let writers = chat_writers_of(&["device:desk"]);
+        let posted = persist_post(
+            &pool,
+            &review_reply_mention("command:new-work"),
+            None,
+            PostingDevice::this_device("device:desk", &writers),
+        )
+        .await
+        .unwrap();
+        let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+
+        let digest = post_acceptance_digest(&pool, &posted.assignment_write, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            digest,
+            Some(consented_dispatch_digest(&pool, &assignment_id).await)
+        );
+    });
+}
+
+async fn seed_test_channel(pool: &SqlitePool, now: &UtcTimestamp) {
+    sqlx::query(
+        "INSERT INTO project_groups (id, name, order_key) VALUES ('group:test', 'Test', 'a1')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project:test', 'group:test', 'Test', 'a1')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_conversations
+                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation:test', 'project:test', 'channel', ?, ?, ?)",
+    )
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_channels
+                (id, project_id, conversation_id, name, created_at, updated_at)
+             VALUES ('channel:test', 'project:test', 'conversation:test', 'general', ?, ?)",
+    )
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Writes the seeded inputs of the review thread again under the ids that derive from their
+/// messages, since input ids are immutable keys, and returns those ids.
+async fn rekey_review_inputs_by_message(pool: &SqlitePool) -> Vec<String> {
+    let mut input_ids = Vec::new();
+    for message in [
+        "item:review-root",
+        "item:review-reply-1",
+        "item:review-reply-2",
+    ] {
+        let id = super::common::assignment_input_id(message).unwrap();
+        let seeded = sqlx::query(
+            "SELECT assignment_id, ordinal, routing_kind, delivery_state, created_at,
+                    delivered_at
+             FROM chat_work_assignment_inputs WHERE message_item_id = ?",
+        )
+        .bind(message)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM chat_work_assignment_inputs WHERE message_item_id = ?")
+            .bind(message)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_work_assignment_inputs
+                (id, assignment_id, message_item_id, ordinal, routing_kind,
+                 delivery_state, created_at, delivered_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(seeded.get::<String, _>("assignment_id"))
+        .bind(message)
+        .bind(seeded.get::<i64, _>("ordinal"))
+        .bind(seeded.get::<String, _>("routing_kind"))
+        .bind(seeded.get::<String, _>("delivery_state"))
+        .bind(seeded.get::<String, _>("created_at"))
+        .bind(seeded.get::<Option<String>, _>("delivered_at"))
+        .execute(pool)
+        .await
+        .unwrap();
+        input_ids.push(id);
+    }
+    input_ids
+}
+
+#[test]
 fn restart_rehomes_review_replies_into_one_ordered_follow_up_assignment() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         seed_review_assignment_with_stranded_replies(&pool).await;
         let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let input_ids = rekey_review_inputs_by_message(&pool).await;
 
-        let recovered = assignments::recover_stranded_follow_up_assignments(&pool, &now)
-            .await
-            .unwrap();
+        let desk_writers = chat_writers_of(&["device:desk"]);
+        let scope = scope_accepting(&pool, "assignment:review").await;
+        let elsewhere = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:phone", &desk_writers),
+            &scope,
+            &now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(elsewhere, 0, "only the executing device rehomes replies");
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:desk", &desk_writers),
+            &scope,
+            &now,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(recovered, 1);
+        let all_inputs: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM chat_work_assignment_inputs ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let mut expected_ids = input_ids.clone();
+        expected_ids.sort();
+        assert_eq!(
+            all_inputs, expected_ids,
+            "inputs move instead of being replaced"
+        );
         let old_state: String = sqlx::query_scalar(
             "SELECT state FROM chat_work_assignments WHERE id = 'assignment:review'",
         )
@@ -553,13 +2129,18 @@ fn restart_rehomes_review_replies_into_one_ordered_follow_up_assignment() {
         .unwrap();
         assert_eq!(old_state, "completed");
         let follow_up = sqlx::query(
-            "SELECT id, triggering_message_item_id, previous_assignment_id, state
+            "SELECT id, triggering_message_item_id, previous_assignment_id, state,
+                    executing_device_id
              FROM chat_work_assignments WHERE previous_assignment_id = 'assignment:review'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         let follow_up_id = follow_up.get::<String, _>("id");
+        assert_eq!(
+            follow_up.get::<String, _>("executing_device_id"),
+            "device:desk"
+        );
         assert_eq!(
             follow_up.get::<String, _>("triggering_message_item_id"),
             "item:review-reply-1"
@@ -601,6 +2182,35 @@ fn restart_rehomes_review_replies_into_one_ordered_follow_up_assignment() {
         .await
         .unwrap();
         assert_eq!(queued_job, 1);
+    });
+}
+
+#[test]
+fn unmentioned_replies_continue_only_with_a_teammate_that_still_participates() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let conversation_id = ChatConversationId::new("conversation:review").unwrap();
+        let reply_thread_id = ChatReplyThreadId::new("reply-thread:review").unwrap();
+
+        let invocation =
+            resolve_invoked_teammate(&pool, &conversation_id, Some(&reply_thread_id), &[])
+                .await
+                .unwrap()
+                .expect("a reply in an assignment thread continues with its teammate");
+        assert_eq!(invocation.teammate_id.as_str(), "participant:review-agent");
+
+        sqlx::query(
+            "UPDATE chat_conversation_memberships SET removed_at = '2026-08-04T17:03:00.000Z'
+             WHERE participant_id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let error = resolve_invoked_teammate(&pool, &conversation_id, Some(&reply_thread_id), &[])
+            .await
+            .expect_err("a removed teammate is not re-invoked by an unmentioned reply");
+        assert_eq!(error.code, ChatErrorCode::Conflict);
     });
 }
 
@@ -681,9 +2291,9 @@ fn channel_unread_count_excludes_local_messages() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         sqlx::raw_sql(
-            "INSERT INTO project_groups (id, name) VALUES ('group:unread', 'Unread');
-             INSERT INTO projects (id, group_id, name)
-             VALUES ('project:unread', 'group:unread', 'Unread');
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group:unread', 'Unread', 'a1');
+             INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project:unread', 'group:unread', 'Unread', 'a1');
              INSERT INTO chat_conversations
                  (id, project_id, conversation_kind, last_activity_at,
                   created_at, updated_at)
@@ -706,11 +2316,11 @@ fn channel_unread_count_excludes_local_messages() {
                  '2026-08-04T19:00:00.000Z', '2026-08-04T19:00:00.000Z'
              );
              INSERT INTO chat_conversation_items
-                 (id, conversation_id, item_kind, ordinal, created_at)
+                 (id, conversation_id, item_kind, order_key, created_at)
              VALUES
-                 ('item:local-unread', 'conversation:unread', 'message', 1,
+                 ('item:local-unread', 'conversation:unread', 'message', 'a1',
                   '2026-08-04T19:00:00.000Z'),
-                 ('item:incoming-unread', 'conversation:unread', 'message', 2,
+                 ('item:incoming-unread', 'conversation:unread', 'message', 'a2',
                   '2026-08-04T19:01:00.000Z');
              INSERT INTO chat_communication_messages
                  (item_id, author_participant_id, author_label_snapshot, created_at)
@@ -737,14 +2347,14 @@ fn channel_unread_count_excludes_local_messages() {
 }
 
 #[test]
-fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
+fn reply_thread_unread_excludes_local_messages_and_tracks_item_positions() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         sqlx::raw_sql(
-            "INSERT INTO project_groups (id, name)
-             VALUES ('group:thread-unread', 'Thread unread');
-             INSERT INTO projects (id, group_id, name)
-             VALUES ('project:thread-unread', 'group:thread-unread', 'Thread unread');
+            "INSERT INTO project_groups (id, name, order_key)
+             VALUES ('group:thread-unread', 'Thread unread', 'a1');
+             INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project:thread-unread', 'group:thread-unread', 'Thread unread', 'a1');
              INSERT INTO chat_conversations
                  (id, project_id, conversation_kind, last_activity_at,
                   created_at, updated_at)
@@ -760,9 +2370,9 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
                  '2026-08-04T19:00:00.000Z', '2026-08-04T19:00:00.000Z'
              );
              INSERT INTO chat_conversation_items
-                 (id, conversation_id, item_kind, ordinal, created_at)
+                 (id, conversation_id, item_kind, order_key, created_at)
              VALUES (
-                 'item:thread-root', 'conversation:thread-unread', 'message', 1,
+                 'item:thread-root', 'conversation:thread-unread', 'message', 'a1',
                  '2026-08-04T19:00:00.000Z'
              );
              INSERT INTO chat_communication_messages
@@ -772,30 +2382,30 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
                  '2026-08-04T19:00:00.000Z'
              );
              INSERT INTO chat_communication_message_revisions
-                 (id, message_item_id, revision, normalized_markdown, created_at)
+                 (id, message_item_id, normalized_markdown, created_at)
              VALUES (
-                 'revision:thread-root', 'item:thread-root', 1, 'Root',
+                 'revision:thread-root', 'item:thread-root', 'Root',
                  '2026-08-04T19:00:00.000Z'
              );
              UPDATE chat_communication_messages
              SET current_revision_id = 'revision:thread-root'
              WHERE item_id = 'item:thread-root';
              INSERT INTO chat_reply_threads
-                 (id, conversation_id, root_item_id, reply_count, last_activity_at,
+                 (id, conversation_id, root_item_id, last_activity_at,
                   created_at, updated_at)
              VALUES (
                  'reply-thread:unread', 'conversation:thread-unread',
-                 'item:thread-root', 1, '2026-08-04T19:02:00.000Z',
+                 'item:thread-root', '2026-08-04T19:02:00.000Z',
                  '2026-08-04T19:00:00.000Z', '2026-08-04T19:02:00.000Z'
              );
              INSERT INTO chat_conversation_items
-                 (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+                 (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
              VALUES
                  ('item:thread-work', 'conversation:thread-unread',
-                  'reply-thread:unread', 'work_update', 1,
+                  'reply-thread:unread', 'work_update', 'a1',
                   '2026-08-04T19:01:00.000Z'),
                  ('item:thread-local', 'conversation:thread-unread',
-                  'reply-thread:unread', 'message', 2,
+                  'reply-thread:unread', 'message', 'a2',
                   '2026-08-04T19:02:00.000Z');
              INSERT INTO chat_communication_messages
                  (item_id, author_participant_id, author_label_snapshot, created_at)
@@ -804,9 +2414,9 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
                  '2026-08-04T19:02:00.000Z'
              );
              INSERT INTO chat_communication_message_revisions
-                 (id, message_item_id, revision, normalized_markdown, created_at)
+                 (id, message_item_id, normalized_markdown, created_at)
              VALUES (
-                 'revision:thread-local', 'item:thread-local', 1, 'Local reply',
+                 'revision:thread-local', 'item:thread-local', 'Local reply',
                  '2026-08-04T19:02:00.000Z'
              );
              UPDATE chat_communication_messages
@@ -825,10 +2435,10 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
 
         sqlx::raw_sql(
             "INSERT INTO chat_conversation_items
-                 (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+                 (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
              VALUES (
                  'item:thread-incoming', 'conversation:thread-unread',
-                 'reply-thread:unread', 'message', 3,
+                 'reply-thread:unread', 'message', 'a3',
                  '2026-08-04T19:03:00.000Z'
              );
              INSERT INTO chat_communication_messages
@@ -838,16 +2448,16 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
                  '2026-08-04T19:03:00.000Z'
              );
              INSERT INTO chat_communication_message_revisions
-                 (id, message_item_id, revision, normalized_markdown, created_at)
+                 (id, message_item_id, normalized_markdown, created_at)
              VALUES (
-                 'revision:thread-incoming', 'item:thread-incoming', 1,
+                 'revision:thread-incoming', 'item:thread-incoming',
                  'Incoming reply', '2026-08-04T19:03:00.000Z'
              );
              UPDATE chat_communication_messages
              SET current_revision_id = 'revision:thread-incoming'
              WHERE item_id = 'item:thread-incoming';
              UPDATE chat_reply_threads
-             SET reply_count = 2, last_activity_at = '2026-08-04T19:03:00.000Z',
+             SET last_activity_at = '2026-08-04T19:03:00.000Z',
                  updated_at = '2026-08-04T19:03:00.000Z'
              WHERE id = 'reply-thread:unread';",
         )
@@ -863,15 +2473,18 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
         super::reads::read_reply_thread_page(&pool, &thread_id, None, 50)
             .await
             .unwrap();
-        let read_ordinal: i64 = sqlx::query_scalar(
-            "SELECT last_read_reply_ordinal FROM chat_reply_thread_read_cursors
+        let read_position: (String, String) = sqlx::query_as(
+            "SELECT last_read_order_key, last_read_item_id FROM chat_reply_thread_read_cursors
              WHERE reply_thread_id = ? AND participant_id = 'participant:local-owner'",
         )
         .bind(thread_id.as_str())
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(read_ordinal, 3);
+        assert_eq!(
+            read_position,
+            ("a3".to_owned(), "item:thread-incoming".to_owned())
+        );
         let read = super::reads::read_reply_thread_summary(&pool, &thread_id)
             .await
             .unwrap();
@@ -879,10 +2492,10 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
 
         sqlx::raw_sql(
             "INSERT INTO chat_conversation_items
-                 (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+                 (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
              VALUES (
                  'item:thread-local-after-read', 'conversation:thread-unread',
-                 'reply-thread:unread', 'message', 4,
+                 'reply-thread:unread', 'message', 'a4',
                  '2026-08-04T19:04:00.000Z'
              );
              INSERT INTO chat_communication_messages
@@ -890,9 +2503,7 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
              VALUES (
                  'item:thread-local-after-read', 'participant:local-owner', 'You',
                  '2026-08-04T19:04:00.000Z'
-             );
-             UPDATE chat_reply_threads SET reply_count = 3
-             WHERE id = 'reply-thread:unread';",
+             );",
         )
         .execute(&pool)
         .await
@@ -973,4 +2584,3195 @@ fn fts_queries_are_bounded_and_quote_each_term() {
     );
     assert!(normalized_fts_query("   ").is_err());
     assert!(normalized_fts_query(&"x".repeat(501)).is_err());
+}
+
+#[test]
+fn history_access_admits_positions_from_its_lower_bound() {
+    let entire = super::common::TeammateHistoryAccess::resolve(true, false, None);
+    assert_eq!(entire.visible_from(), Some(""));
+    assert!(entire.admits_position("c000"));
+
+    let from_grant =
+        super::common::TeammateHistoryAccess::resolve(true, true, Some("c005".to_owned()));
+    assert!(!from_grant.admits_position("c004"));
+    assert!(from_grant.admits_position("c005"));
+    assert!(from_grant.admits_position("c0050"));
+
+    let unreadable = super::common::TeammateHistoryAccess::resolve(false, false, None);
+    assert_eq!(unreadable.visible_from(), None);
+    assert!(!unreadable.admits_position("zzzz"));
+
+    let unstamped = super::common::TeammateHistoryAccess::resolve(true, true, None);
+    assert_eq!(unstamped.visible_from(), None);
+}
+
+/// Freezes the seeded review assignment for a reply that mentions the agent,
+/// with the given channel history settings, and returns the source kinds and
+/// the excluded thread reply count.
+async fn freeze_review_reply_context(
+    read_history: bool,
+    history_from_order_key: Option<&str>,
+) -> (Vec<String>, i64) {
+    let pool = migrated_pool().await;
+    seed_review_assignment_with_stranded_replies(&pool).await;
+    sqlx::raw_sql(
+        "INSERT INTO chat_conversation_items
+             (id, conversation_id, item_kind, order_key, created_at)
+         VALUES ('item:review-later', 'conversation:review', 'message', 'a2',
+                 '2026-08-04T17:03:00.000Z');
+         INSERT INTO chat_communication_messages
+             (item_id, author_participant_id, author_label_snapshot, created_at)
+         VALUES ('item:review-later', 'participant:local-owner', 'You',
+                 '2026-08-04T17:03:00.000Z');
+         INSERT INTO chat_communication_message_revisions
+             (id, message_item_id, normalized_markdown, created_at)
+         VALUES ('revision:review-later', 'item:review-later', 'Later update',
+                 '2026-08-04T17:03:00.000Z');
+         UPDATE chat_communication_messages
+         SET current_revision_id = 'revision:review-later'
+         WHERE item_id = 'item:review-later';",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE chat_teammate_channel_memberships
+         SET read_history = ?, read_history_inherits_profile = 0,
+             history_boundary = ?, history_boundary_inherits_profile = 0,
+             history_from_order_key = ?
+         WHERE teammate_id = 'participant:review-agent'",
+    )
+    .bind(read_history)
+    .bind(if history_from_order_key.is_some() {
+        "from_grant"
+    } else {
+        "entire"
+    })
+    .bind(history_from_order_key)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut transaction = pool.begin().await.unwrap();
+    super::context::freeze_context_package(
+        &mut transaction,
+        &ChatWorkAssignmentId::new("assignment:review").unwrap(),
+        &ChatReplyThreadId::new("reply-thread:review").unwrap(),
+        &ChatConversationItemId::new("item:review-reply-2").unwrap(),
+        &ChatParticipantId::new("participant:review-agent").unwrap(),
+        None,
+        &UtcTimestamp::new("2026-08-04T17:04:00.000Z").unwrap(),
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    let kinds = sqlx::query_scalar(
+        "SELECT source.source_kind || ':' || source.source_id
+         FROM chat_assignment_context_sources source
+         JOIN chat_assignment_context_packages package ON package.id = source.context_package_id
+         WHERE package.assignment_id = 'assignment:review'
+         ORDER BY source.ordinal",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let excluded = sqlx::query_scalar(
+        "SELECT excluded_thread_reply_count FROM chat_assignment_context_packages
+         WHERE assignment_id = 'assignment:review'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    (kinds, excluded)
+}
+
+#[test]
+fn context_packages_include_threads_within_the_history_boundary() {
+    tauri::async_runtime::block_on(async {
+        let (kinds, excluded) = freeze_review_reply_context(true, None).await;
+        assert_eq!(
+            kinds,
+            [
+                "thread_root:item:review-root",
+                "thread_reply:item:review-reply-1",
+                "trigger:item:review-reply-2",
+                "channel_message:item:review-later",
+            ]
+            .map(String::from)
+        );
+        assert_eq!(excluded, 0);
+
+        let (kinds, _) = freeze_review_reply_context(true, Some("a1")).await;
+        assert!(kinds.contains(&"thread_root:item:review-root".to_string()));
+    });
+}
+
+#[test]
+fn context_packages_exclude_threads_rooted_before_the_history_boundary() {
+    tauri::async_runtime::block_on(async {
+        let (kinds, excluded) = freeze_review_reply_context(true, Some("a2")).await;
+        assert_eq!(
+            kinds,
+            [
+                "trigger:item:review-reply-2",
+                "channel_message:item:review-later",
+            ]
+            .map(String::from)
+        );
+        assert_eq!(excluded, 0);
+    });
+}
+
+#[test]
+fn context_packages_without_history_access_hold_only_the_trigger() {
+    tauri::async_runtime::block_on(async {
+        let (kinds, excluded) = freeze_review_reply_context(false, None).await;
+        assert_eq!(kinds, ["trigger:item:review-reply-2".to_string()]);
+        assert_eq!(excluded, 0);
+    });
+}
+
+#[test]
+fn removing_a_teammate_from_a_channel_keeps_the_rows_and_hides_them_from_readers() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let teammate_id = ChatParticipantId::new("participant:design-agent").unwrap();
+        seed_unused_teammate(&pool, teammate_id.as_str(), "policy:design-agent").await;
+        sqlx::raw_sql(
+            "INSERT INTO project_groups (id, name, icon, order_key)
+             VALUES ('group-design', 'Design', 'lucide:folder', 'a0');
+             INSERT INTO projects (id, group_id, name, icon, order_key)
+             VALUES ('project-design', 'group-design', 'Design', 'lucide:folder', 'a0');
+             INSERT INTO chat_conversations
+                 (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation-design', 'project-design', 'channel',
+                     '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z',
+                     '2026-08-14T17:30:00.000Z');
+             INSERT INTO chat_channels
+                 (id, project_id, conversation_id, name, is_default, created_at, updated_at)
+             VALUES ('channel-design', 'project-design', 'conversation-design', 'design', 0,
+                     '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');
+             INSERT INTO chat_conversation_memberships
+                 (conversation_id, participant_id, sync_key, membership_role, created_at,
+                  updated_at)
+             VALUES ('conversation-design', 'participant:design-agent', 'membership:design',
+                     'member', '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');
+             INSERT INTO chat_teammate_channel_memberships
+                 (conversation_id, teammate_id, sync_key, access_profile_id, created_at,
+                  updated_at)
+             VALUES ('conversation-design', 'participant:design-agent',
+                     'channel-membership:design', 'access-profile:edit-files',
+                     '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let conversation_id = ChatConversationId::new("conversation-design").unwrap();
+        let before = access::read_teammate_access(&pool, &teammate_id)
+            .await
+            .unwrap();
+        assert_eq!(before.channels.len(), 1);
+
+        let removed_at = UtcTimestamp::new("2026-08-15T09:00:00.000Z").unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        access::remove_teammate_from_conversation(
+            &mut transaction,
+            &teammate_id,
+            conversation_id.as_str(),
+            &removed_at,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let kept: Option<String> = sqlx::query_scalar(
+            "SELECT removed_at FROM chat_teammate_channel_memberships
+             WHERE conversation_id = 'conversation-design'
+               AND teammate_id = 'participant:design-agent'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(kept.as_deref(), Some(removed_at.as_str()));
+        let after = access::read_teammate_access(&pool, &teammate_id)
+            .await
+            .unwrap();
+        assert!(after.channels.is_empty());
+        let roster = reads::read_memberships_for_conversation(&pool, &conversation_id, false)
+            .await
+            .unwrap();
+        assert!(roster.is_empty());
+        let history = reads::read_memberships_for_conversation(&pool, &conversation_id, true)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].removed_at.is_some());
+        assert!(
+            history[0].ai_access.is_none(),
+            "a removed membership carries no channel access"
+        );
+    });
+}
+
+/// Runs the save-time profile revision check for one channel draft made against `revision_id`.
+async fn check_draft_profile_revision(
+    pool: &SqlitePool,
+    revision_id: &str,
+) -> Result<(), ChatErrorCode> {
+    let draft = ChatTeammateChannelAccessInput {
+        channel_id: ChatChannelId::new("channel:draft").unwrap(),
+        access_profile_id: ChatAccessProfileId::new("access-profile:draft").unwrap(),
+        access_profile_revision_id: ChatAccessProfileRevisionId::new(revision_id).unwrap(),
+        capabilities: ChatChannelCapabilities {
+            read_history: true,
+            participate: true,
+        },
+        history_boundary: ChatHistoryBoundary::Entire,
+        runtime_approval_override: None,
+        scratch_runtime_approval_override: None,
+        folder_grants: Vec::new(),
+    };
+    let mut transaction = pool.begin().await.unwrap();
+    access::require_expected_profile_revisions_in_transaction(&mut transaction, &[draft])
+        .await
+        .map_err(|error| error.code)
+}
+
+#[test]
+fn saved_access_drafts_compare_effective_profile_revision_ids_not_numbers() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
+             VALUES ('access-profile:draft', 'Draft profile', '2026-10-24T09:00:00.000Z',
+                     '2026-10-24T09:00:00.000Z');
+             INSERT INTO chat_access_profile_revisions
+                (id, access_profile_id, default_read_history, default_participate,
+                 default_history_boundary, maximum_folder_capability, created_at)
+             VALUES ('revision:first', 'access-profile:draft', 1, 1, 'entire', 'edit',
+                     '2026-10-24T09:01:00.000Z'),
+                    ('revision:seen', 'access-profile:draft', 1, 1, 'entire', 'publish',
+                     '2026-10-24T09:03:00.000Z');
+             UPDATE chat_access_profiles
+             SET current_revision_id = 'revision:seen',
+                 current_maximum_folder_capability = 'publish'
+             WHERE id = 'access-profile:draft';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            check_draft_profile_revision(&pool, "revision:seen").await,
+            Ok(())
+        );
+
+        // A synced revision created between the two shifts the numbers, so the stricter one the
+        // pointer now names carries number 2, the number the draft saw.
+        sqlx::raw_sql(
+            "INSERT INTO chat_access_profile_revisions
+                (id, access_profile_id, default_read_history, default_participate,
+                 default_history_boundary, maximum_folder_capability, created_at)
+             VALUES ('revision:synced', 'access-profile:draft', 1, 1, 'entire', 'read',
+                     '2026-10-24T09:02:00.000Z');
+             UPDATE chat_access_profiles
+             SET current_revision_id = 'revision:synced',
+                 current_maximum_folder_capability = 'read'
+             WHERE id = 'access-profile:draft';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let synced_number: i64 = sqlx::query_scalar(
+            "SELECT revision FROM chat_access_profile_effective_revisions
+             WHERE access_profile_id = 'access-profile:draft'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(synced_number, 2);
+        assert_eq!(
+            check_draft_profile_revision(&pool, "revision:seen").await,
+            Err(ChatErrorCode::StaleRevision)
+        );
+        assert_eq!(
+            check_draft_profile_revision(&pool, "revision:synced").await,
+            Ok(())
+        );
+    });
+}
+
+/// Seeds root messages of the review channel as `(item id, order key, deleted)`.
+async fn seed_review_root_messages(pool: &SqlitePool, messages: &[(&str, &str, bool)]) {
+    for (item_id, order_key, deleted) in messages {
+        let revision_id = format!("revision:{item_id}");
+        sqlx::query(
+            "INSERT INTO chat_conversation_items
+                 (id, conversation_id, item_kind, order_key, created_at)
+             VALUES (?, 'conversation:review', 'message', ?, '2026-08-04T17:05:00.000Z')",
+        )
+        .bind(item_id)
+        .bind(order_key)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_communication_messages
+                 (item_id, author_participant_id, author_label_snapshot, deleted_at, created_at)
+             VALUES (?, 'participant:local-owner', 'You', ?, '2026-08-04T17:05:00.000Z')",
+        )
+        .bind(item_id)
+        .bind(deleted.then_some("2026-08-04T17:06:00.000Z"))
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_communication_message_revisions
+                 (id, message_item_id, normalized_markdown, created_at)
+             VALUES (?, ?, ?, '2026-08-04T17:05:00.000Z')",
+        )
+        .bind(&revision_id)
+        .bind(item_id)
+        .bind(format!("Text of {item_id}"))
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE chat_communication_messages SET current_revision_id = ? WHERE item_id = ?",
+        )
+        .bind(&revision_id)
+        .bind(item_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
+#[test]
+fn channel_pages_break_equal_order_keys_by_item_id_without_gaps() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_review_root_messages(
+            &pool,
+            &[("item:tie-b", "a2", false), ("item:tie-a", "a2", false)],
+        )
+        .await;
+        let channel_id = ChatChannelId::new("channel:review").unwrap();
+        let ids = |page: &ChatChannelPageRead| {
+            page.messages
+                .iter()
+                .map(|message| message.item_id.as_str().to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let newest = read_channel_page(&pool, channel_id.clone(), None, Some(1))
+            .await
+            .unwrap();
+        assert_eq!(ids(&newest), ["item:tie-b"]);
+        assert_eq!(newest.messages[0].order_key, "a2");
+        let middle = read_channel_page(
+            &pool,
+            channel_id.clone(),
+            newest.previous_cursor.as_deref(),
+            Some(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids(&middle), ["item:tie-a"]);
+        let oldest = read_channel_page(
+            &pool,
+            channel_id.clone(),
+            middle.previous_cursor.as_deref(),
+            Some(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids(&oldest), ["item:review-root"]);
+        assert_eq!(oldest.previous_cursor, None);
+
+        let through = super::common::PageCursor::through("a2", "item:tie-a");
+        let anchored = read_channel_page(&pool, channel_id, Some(&through), Some(5))
+            .await
+            .unwrap();
+        assert_eq!(ids(&anchored), ["item:review-root", "item:tie-a"]);
+    });
+}
+
+#[test]
+fn reply_thread_summaries_count_only_live_reply_messages() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let thread_id = ChatReplyThreadId::new("reply-thread:review").unwrap();
+        let summary = super::reads::read_reply_thread_summary(&pool, &thread_id)
+            .await
+            .unwrap();
+        assert_eq!(summary.reply_count, 2);
+
+        sqlx::raw_sql(
+            "INSERT INTO chat_conversation_items
+                 (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
+             VALUES ('item:review-update', 'conversation:review', 'reply-thread:review',
+                     'work_update', 'a3', '2026-08-04T17:03:00.000Z');
+             UPDATE chat_communication_messages SET deleted_at = '2026-08-04T17:04:00.000Z'
+             WHERE item_id = 'item:review-reply-1';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let summary = super::reads::read_reply_thread_summary(&pool, &thread_id)
+            .await
+            .unwrap();
+        assert_eq!(summary.reply_count, 1);
+    });
+}
+
+#[test]
+fn channel_reference_ranges_break_equal_order_keys_at_both_ends() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_review_root_messages(
+            &pool,
+            &[
+                ("item:tie-a", "a2", false),
+                ("item:tie-b", "a2", false),
+                ("item:tie-c", "a2", true),
+            ],
+        )
+        .await;
+        sqlx::raw_sql(
+            "UPDATE chat_teammate_channel_memberships
+             SET history_boundary = 'from_grant', history_boundary_inherits_profile = 0,
+                 history_from_order_key = 'a2'
+             WHERE teammate_id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut request = message("See general");
+        request.channel_id = ChatChannelId::new("channel:review").unwrap();
+        request.reply_thread_id = Some(ChatReplyThreadId::new("reply-thread:review").unwrap());
+        request.references = vec![ChatMessageReference::Channel {
+            metadata: ChatReferenceMetadata {
+                reference_id: ChatMessageReferenceId::new("reference:general").unwrap(),
+                label_snapshot: "general".to_owned(),
+                start_offset: 4,
+                end_offset: 11,
+                plain_text_projection: "#general".to_owned(),
+            },
+            channel_id: ChatChannelId::new("channel:review").unwrap(),
+        }];
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        super::workflow::insert_communication_message(
+            &mut transaction,
+            super::workflow::CommunicationMessageWrite {
+                item_id: &ChatConversationItemId::new("item:review-reference").unwrap(),
+                revision_id: &ChatMessageRevisionId::new("revision:review-reference").unwrap(),
+                conversation_id: &ChatConversationId::new("conversation:review").unwrap(),
+                reply_thread_id: request.reply_thread_id.as_ref(),
+                order_key: "a3",
+                request: &request,
+                attachments: super::common::AttachmentSource::Device(&request.attachment_ids),
+                invoked_teammate_id: Some(&teammate_id),
+                now: &UtcTimestamp::new("2026-08-04T17:07:00.000Z").unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let bounds: (String, String, String, String) = sqlx::query_as(
+            "SELECT source_lower_order_key, source_lower_item_id,
+                    source_high_order_key, source_high_item_id
+             FROM chat_channel_reference_targets WHERE reference_id = 'reference:general'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            bounds,
+            (
+                "a2".to_owned(),
+                String::new(),
+                "a2".to_owned(),
+                "item:tie-b".to_owned()
+            )
+        );
+
+        seed_review_root_messages(&pool, &[("item:tie-z", "a2", false)]).await;
+        let in_range: Vec<String> = sqlx::query_scalar(
+            "SELECT item.id FROM chat_conversation_items item
+             JOIN chat_channel_reference_targets target
+               ON target.reference_id = 'reference:general'
+             WHERE item.conversation_id = target.source_conversation_id
+               AND item.reply_thread_id IS NULL
+               AND (item.order_key, item.id)
+                   >= (target.source_lower_order_key, target.source_lower_item_id)
+               AND (item.order_key, item.id)
+                   <= (target.source_high_order_key, target.source_high_item_id)
+             ORDER BY item.order_key, item.id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(in_range, ["item:tie-a", "item:tie-b"]);
+    });
+}
+
+#[test]
+fn message_search_keeps_messages_whose_author_identity_is_gone() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_review_root_messages(
+            &pool,
+            &[
+                ("item:attributed", "a5", false),
+                ("item:unattributed", "a6", false),
+            ],
+        )
+        .await;
+        sqlx::raw_sql(
+            "UPDATE chat_communication_messages SET author_participant_id = NULL
+             WHERE item_id = 'item:unattributed';
+             UPDATE chat_participants SET display_name = 'Renamed owner'
+             WHERE id = 'participant:local-owner';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let results = search_messages(
+            &pool,
+            normalized_fts_query("Text of item").unwrap(),
+            Some("project:review"),
+            None,
+        )
+        .await
+        .unwrap();
+        let result = |item_id: &str| {
+            results
+                .iter()
+                .find(|result| result.message_item_id.as_str() == item_id)
+                .unwrap_or_else(|| panic!("search dropped {item_id}"))
+        };
+
+        let attributed = result("item:attributed");
+        assert_eq!(
+            attributed
+                .author_participant_id
+                .as_ref()
+                .map(ChatParticipantId::as_str),
+            Some("participant:local-owner")
+        );
+        assert_eq!(attributed.author_kind, Some(ChatParticipantKind::LocalUser));
+        assert_eq!(attributed.author_display_name, "Renamed owner");
+        let unattributed = result("item:unattributed");
+        assert_eq!(unattributed.author_participant_id, None);
+        assert_eq!(unattributed.author_kind, None);
+        assert_eq!(unattributed.author_display_name, "You");
+    });
+}
+
+/// Removes the seeded review assignment so the review thread holds plain replies only.
+async fn clear_review_assignment(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "DELETE FROM chat_work_assignment_inputs;
+         DELETE FROM chat_work_assignments;",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn set_review_agent_home_device(pool: &SqlitePool, home_device_id: Option<&str>) {
+    sqlx::query(
+        "UPDATE chat_teammates SET home_device_id = ?
+         WHERE participant_id = 'participant:review-agent'",
+    )
+    .bind(home_device_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Routes the review reply `item:review-reply-1` to the review agent as `device` posts it.
+async fn route_review_reply(
+    pool: &SqlitePool,
+    device: super::workflow::PostingDevice<'_>,
+) -> super::workflow::AssignmentWrite {
+    let invocation = super::workflow::ResolvedInvocation {
+        teammate_id: ChatParticipantId::new("participant:review-agent").unwrap(),
+        active_assignment: None,
+        latest_assignment: None,
+    };
+    let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+    let mut transaction = pool.begin().await.unwrap();
+    let write = super::workflow::persist_assignment_routing(
+        &mut transaction,
+        &ChatReplyThreadId::new("reply-thread:review").unwrap(),
+        &ChatConversationItemId::new("item:review-reply-1").unwrap(),
+        Some(&invocation),
+        None,
+        device,
+        &now,
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    write
+}
+
+/// The executing device and dispatch job count of the assignment the review reply triggers.
+async fn routed_assignment(pool: &SqlitePool) -> Option<(Option<String>, i64)> {
+    sqlx::query(
+        "SELECT assignment.executing_device_id,
+                (SELECT count(*) FROM chat_assignment_dispatch_jobs job
+                 WHERE job.assignment_id = assignment.id) AS dispatch_jobs
+         FROM chat_work_assignments assignment
+         WHERE assignment.triggering_message_item_id = 'item:review-reply-1'",
+    )
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+    .map(|row| {
+        (
+            row.get::<Option<String>, _>("executing_device_id"),
+            row.get::<i64, _>("dispatch_jobs"),
+        )
+    })
+}
+
+async fn review_thread_without_assignment() -> SqlitePool {
+    let pool = migrated_pool().await;
+    seed_review_assignment_with_stranded_replies(&pool).await;
+    clear_review_assignment(&pool).await;
+    pool
+}
+
+#[test]
+fn a_new_assignment_runs_on_the_home_device_else_the_posting_desktop_else_nowhere() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:desk", "device:laptop"]);
+        let phone = super::workflow::PostingDevice {
+            id: "device:phone",
+            can_execute: false,
+            chat_writers: &writers,
+            unattended: false,
+        };
+        let desk = super::workflow::PostingDevice {
+            id: "device:desk",
+            can_execute: true,
+            chat_writers: &writers,
+            unattended: false,
+        };
+
+        let pool = review_thread_without_assignment().await;
+        let write = route_review_reply(&pool, phone).await;
+        assert!(
+            write.assignment_id.is_none(),
+            "the mention is recorded only"
+        );
+        assert!(!write.executes_here);
+        assert_eq!(routed_assignment(&pool).await, None);
+
+        let pool = review_thread_without_assignment().await;
+        set_review_agent_home_device(&pool, Some("device:desk")).await;
+        let write = route_review_reply(&pool, phone).await;
+        assert!(write.assignment_id.is_some());
+        assert!(
+            !write.executes_here,
+            "the home device dispatches on arrival"
+        );
+        assert_eq!(
+            routed_assignment(&pool).await,
+            Some((Some("device:desk".to_owned()), 0))
+        );
+
+        let pool = review_thread_without_assignment().await;
+        let write = route_review_reply(&pool, desk).await;
+        assert!(write.executes_here);
+        assert_eq!(
+            routed_assignment(&pool).await,
+            Some((Some("device:desk".to_owned()), 1))
+        );
+
+        let pool = review_thread_without_assignment().await;
+        set_review_agent_home_device(&pool, Some("device:laptop")).await;
+        let write = route_review_reply(&pool, desk).await;
+        assert!(
+            !write.executes_here,
+            "the home device outranks the posting desktop"
+        );
+        assert_eq!(
+            routed_assignment(&pool).await,
+            Some((Some("device:laptop".to_owned()), 0))
+        );
+    });
+}
+
+/// The only Chat writer after `device:old` stopped writing, as after an unlink.
+const NEW_OWNER: &str = "device:new";
+
+#[test]
+fn after_a_handoff_a_mention_runs_on_the_new_owner_instead_of_the_old_home_device() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let pool = review_thread_without_assignment().await;
+        set_review_agent_home_device(&pool, Some("device:old")).await;
+
+        let write = route_review_reply(
+            &pool,
+            super::workflow::PostingDevice::this_device(NEW_OWNER, &writers),
+        )
+        .await;
+
+        assert!(write.executes_here);
+        assert_eq!(
+            routed_assignment(&pool).await,
+            Some((Some(NEW_OWNER.to_owned()), 1)),
+            "the old home device is a replica and would never run it"
+        );
+
+        let pool = review_thread_without_assignment().await;
+        set_review_agent_home_device(&pool, Some("device:old")).await;
+        let phone = super::workflow::PostingDevice {
+            id: "device:phone",
+            can_execute: false,
+            chat_writers: &writers,
+            unattended: false,
+        };
+        let write = route_review_reply(&pool, phone).await;
+        assert!(
+            write.assignment_id.is_none(),
+            "a device that cannot run it records the mention for Start"
+        );
+    });
+}
+
+/// Writes the assignment `assignment:old` of the review reply `item:review-reply-1` in
+/// `state`, executed by `device:old`, with a pending input for `item:review-reply-2`.
+async fn seed_assignment_on_old_owner(pool: &SqlitePool, state: &str) {
+    sqlx::query(
+        "INSERT INTO chat_work_assignments
+             (id, reply_thread_id, teammate_id, triggering_message_item_id,
+              executing_device_id, state, created_at, updated_at)
+         VALUES ('assignment:old', 'reply-thread:review', 'participant:review-agent',
+                 'item:review-reply-1', 'device:old', ?, '2026-08-04T17:01:00.000Z',
+                 '2026-08-04T17:01:00.000Z')",
+    )
+    .bind(state)
+    .execute(pool)
+    .await
+    .unwrap();
+    for (message, ordinal, kind) in [
+        ("item:review-reply-1", 1, "trigger"),
+        ("item:review-reply-2", 2, "queued_continuation"),
+    ] {
+        sqlx::query(
+            "INSERT INTO chat_work_assignment_inputs
+                 (id, assignment_id, message_item_id, ordinal, routing_kind, created_at)
+             VALUES (?, 'assignment:old', ?, ?, ?, '2026-08-04T17:01:00.000Z')",
+        )
+        .bind(super::common::assignment_input_id(message).unwrap())
+        .bind(message)
+        .bind(ordinal)
+        .bind(kind)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
+/// State, reason, executing device, and successor of the assignment `assignment_id`.
+async fn assignment_takeover(
+    pool: &SqlitePool,
+    assignment_id: &str,
+) -> (String, Option<String>, Option<String>, Option<String>) {
+    sqlx::query_as(
+        "SELECT assignment.state, assignment.state_reason, assignment.executing_device_id,
+                (SELECT successor.id FROM chat_work_assignments successor
+                 WHERE successor.previous_assignment_id = assignment.id) AS successor_id
+         FROM chat_work_assignments assignment WHERE assignment.id = ?",
+    )
+    .bind(assignment_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn the_new_owner_takes_over_unstarted_work_queued_on_the_old_owner() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+
+        let scope = scope_accepting(&pool, "assignment:old").await;
+
+        let phone = super::workflow::PostingDevice {
+            id: "device:phone",
+            can_execute: false,
+            chat_writers: &writers,
+            unattended: false,
+        };
+        assert_eq!(
+            assignments::take_over_stranded_assignments(&pool, phone, &scope, &now)
+                .await
+                .unwrap(),
+            0,
+            "only a device that runs work takes it over"
+        );
+        let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
+        let taken = assignments::take_over_stranded_assignments(&pool, new_owner, &scope, &now)
+            .await
+            .unwrap();
+
+        assert_eq!(taken, 1);
+        let (state, reason, _, successor) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "cancelled");
+        assert_eq!(reason.as_deref(), Some(assignments::REROUTED_REASON));
+        let successor = successor.expect("the work moved to a successor");
+        let (successor_state, _, executor, _) = assignment_takeover(&pool, &successor).await;
+        assert_eq!(successor_state, "queued");
+        assert_eq!(executor.as_deref(), Some(NEW_OWNER));
+        let inputs: Vec<(String, String, i64, String)> = sqlx::query_as(
+            "SELECT message_item_id, assignment_id, ordinal, routing_kind
+             FROM chat_work_assignment_inputs ORDER BY ordinal",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            inputs,
+            vec![
+                (
+                    "item:review-reply-1".to_owned(),
+                    successor.clone(),
+                    1,
+                    "follow_up".to_owned()
+                ),
+                (
+                    "item:review-reply-2".to_owned(),
+                    successor.clone(),
+                    2,
+                    "queued_continuation".to_owned()
+                ),
+            ]
+        );
+        let jobs: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_assignment_dispatch_jobs
+             WHERE assignment_id = ? AND state = 'queued'",
+        )
+        .bind(&successor)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(jobs, 1, "the new owner dispatches the successor");
+        assert_eq!(
+            assignments::take_over_stranded_assignments(&pool, new_owner, &scope, &now)
+                .await
+                .unwrap(),
+            0,
+            "a second recovery leaves the moved work alone"
+        );
+    });
+}
+
+/// Number of dispatch jobs of `assignment_id`.
+async fn dispatch_jobs_of(pool: &SqlitePool, assignment_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?")
+        .bind(assignment_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn synced_assignment_stays_queued_until_accepted() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+
+        let adopted = assignments::adopt_synced_assignment(
+            &pool,
+            &assignment_id,
+            "device:old",
+            &ChatDeviceScope::default(),
+        )
+        .await
+        .unwrap();
+        assert!(!adopted, "nobody accepted this work on this device");
+        assert_eq!(dispatch_jobs_of(&pool, "assignment:old").await, 0);
+        let (state, reason, _, _) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "queued", "the work waits and stays visible");
+        assert_eq!(reason, None);
+
+        let mut other_subject = ChatDeviceScope::default();
+        record_assignment_acceptance(
+            &mut other_subject,
+            "0".repeat(64),
+            UtcTimestamp::new("2026-08-04T17:00:00.000Z").unwrap(),
+        );
+        assert!(
+            !assignments::adopt_synced_assignment(
+                &pool,
+                &assignment_id,
+                "device:old",
+                &other_subject
+            )
+            .await
+            .unwrap(),
+            "an acceptance of something else does not start it"
+        );
+
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:old", &scope)
+                .await
+                .unwrap()
+        );
+        assert_eq!(dispatch_jobs_of(&pool, "assignment:old").await, 1);
+    });
+}
+
+#[test]
+fn unaccepted_work_does_not_block_archiving_a_teammate() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+
+        let archived =
+            super::teammate_lifecycle::set_teammate_archived(&pool, &teammate_id, 1, true)
+                .await
+                .expect("queued work nobody accepted here does not block archiving");
+        assert!(archived.participant.archived_at.is_some());
+        assert_eq!(archived.active_assignment_count, 0);
+        let (state, reason, executor, _) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "queued", "the unaccepted work stays queued");
+        assert_eq!(reason, None);
+        assert_eq!(executor.as_deref(), Some("device:old"));
+        assert!(
+            !assignments::adopt_synced_assignment(
+                &pool,
+                &assignment_id,
+                "device:old",
+                &ChatDeviceScope::default(),
+            )
+            .await
+            .unwrap(),
+            "an archived teammate's queued work does not start"
+        );
+
+        let restored = super::teammate_lifecycle::set_teammate_archived(
+            &pool,
+            &teammate_id,
+            archived.participant.revision,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(restored.participant.archived_at.is_none());
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:old", &scope)
+                .await
+                .unwrap(),
+            "the restored teammate's queued work starts once accepted"
+        );
+
+        let error = super::teammate_lifecycle::set_teammate_archived(
+            &pool,
+            &teammate_id,
+            restored.participant.revision,
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.code,
+            ChatErrorCode::Conflict,
+            "work accepted on this device still blocks archiving"
+        );
+    });
+}
+
+#[test]
+fn accepted_work_of_a_teammate_archived_elsewhere_waits_at_claim() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:old", &scope)
+                .await
+                .unwrap()
+        );
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 1);
+        sqlx::query(
+            "UPDATE chat_participants SET archived_at = '2026-08-04T17:02:00.000Z',
+                 revision = revision + 1
+             WHERE id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let now = super::now_timestamp().unwrap();
+        let claim = super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:old", &now)
+            .await
+            .unwrap();
+
+        assert!(
+            claim.is_none(),
+            "an archived teammate's accepted work does not start"
+        );
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
+        let (state, reason, executor, _) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "queued", "the accepted work waits for a restore");
+        assert_eq!(reason, None);
+        assert_eq!(executor.as_deref(), Some("device:old"));
+
+        let archived_revision: i64 =
+            sqlx::query_scalar("SELECT revision FROM chat_participants WHERE id = ?")
+                .bind(teammate_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        super::teammate_lifecycle::set_teammate_archived(
+            &pool,
+            &teammate_id,
+            u64::try_from(archived_revision).unwrap(),
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:old", &scope)
+                .await
+                .unwrap(),
+            "the restored teammate's work starts once accepted again"
+        );
+    });
+}
+
+#[test]
+fn accepted_work_of_a_teammate_archived_after_its_claim_waits_for_a_restore() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:old", &scope)
+                .await
+                .unwrap()
+        );
+        let now = super::now_timestamp().unwrap();
+        let claim = super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:old", &now)
+            .await
+            .unwrap()
+            .expect("the accepted work claims while the teammate is active");
+        sqlx::query(
+            "UPDATE chat_participants SET archived_at = '2026-08-04T17:02:00.000Z',
+                 revision = revision + 1
+             WHERE id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let error = ChatError::new(
+            ChatErrorCode::Permission,
+            "The teammate is no longer available for organizational work",
+            true,
+        );
+
+        let settlement =
+            super::dispatch::settle_dispatch_error(&pool, &assignment_id, &claim.token, &error)
+                .await
+                .unwrap();
+
+        assert_eq!(settlement, super::dispatch::DispatchSettlement::Waiting);
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
+        let (state, reason, ..) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "queued", "the accepted work waits for a restore");
+        assert_eq!(reason, None);
+    });
+}
+
+#[test]
+fn a_dispatch_error_of_an_active_teammate_still_fails_the_work() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:old", &scope)
+                .await
+                .unwrap()
+        );
+        let now = super::now_timestamp().unwrap();
+        let claim = super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:old", &now)
+            .await
+            .unwrap()
+            .unwrap();
+        let error = ChatError::new(
+            ChatErrorCode::Permission,
+            "The execution folder is no longer authorized for this assignment",
+            false,
+        );
+
+        let settlement =
+            super::dispatch::settle_dispatch_error(&pool, &assignment_id, &claim.token, &error)
+                .await
+                .unwrap();
+
+        assert_eq!(settlement, super::dispatch::DispatchSettlement::Failed);
+        let (state, reason, ..) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "failed");
+        assert_eq!(reason.as_deref(), Some(error.message.as_str()));
+    });
+}
+
+#[test]
+fn only_live_dispatch_jobs_block_archiving_a_teammate() {
+    tauri::async_runtime::block_on(async {
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        for (job_state, blocks) in [
+            ("queued", true),
+            ("claimed", true),
+            ("cancelled", false),
+            ("completed", false),
+            ("failed", false),
+        ] {
+            let pool = review_thread_without_assignment().await;
+            seed_assignment_on_old_owner(&pool, "queued").await;
+            sqlx::query(
+                "INSERT INTO chat_assignment_dispatch_jobs
+                    (id, assignment_id, state, available_at, created_at, updated_at)
+                 VALUES ('dispatch:old', 'assignment:old', ?1, ?2, ?2, ?2)",
+            )
+            .bind(job_state)
+            .bind("2026-08-04T17:02:00.000Z")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let result =
+                super::teammate_lifecycle::set_teammate_archived(&pool, &teammate_id, 1, true)
+                    .await;
+
+            if blocks {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    ChatErrorCode::Conflict,
+                    "a {job_state} job blocks archiving"
+                );
+            } else {
+                let archived = result.unwrap_or_else(|error| {
+                    panic!("a {job_state} job must not block archiving: {error:?}")
+                });
+                assert_eq!(archived.active_assignment_count, 0);
+                let (state, ..) = assignment_takeover(&pool, "assignment:old").await;
+                assert_eq!(state, "queued");
+            }
+        }
+    });
+}
+
+/// A local reply in `reply-thread:review` that mentions the review agent.
+fn review_reply_mention(client_command_id: &str) -> PostChatMessageCommand {
+    let mut request = message("@Review agent continue");
+    request.client_command_id = ChatCommandId::new(client_command_id).unwrap();
+    request.channel_id = ChatChannelId::new("channel:review").unwrap();
+    request.reply_thread_id = Some(ChatReplyThreadId::new("reply-thread:review").unwrap());
+    request.references = vec![participant_reference(
+        "reference:reply",
+        ChatParticipantId::new("participant:review-agent").unwrap(),
+        ChatParticipantKind::AiTeammate,
+        "Review agent",
+        "@Review agent",
+        0,
+        13,
+    )];
+    request
+}
+
+#[test]
+fn queued_input_records_no_acceptance() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let writers = chat_writers_of(&["device:old"]);
+        let device = PostingDevice::this_device("device:old", &writers);
+        let unaccepted = ChatDeviceScope::default();
+        assert!(
+            assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &unaccepted,
+            )
+            .await
+            .unwrap(),
+            "the synced work waits for Start here"
+        );
+
+        let posted = persist_post(
+            &pool,
+            &review_reply_mention("command:stale-reply"),
+            None,
+            device,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(posted.assignment_write.assignment_id, Some(assignment_id));
+        assert!(posted.assignment_write.input_queued);
+        assert!(posted.assignment_write.executes_here);
+        assert!(
+            !posted.assignment_write.dispatches_here(),
+            "a reply queued into unaccepted work dispatches nothing, so it accepts nothing"
+        );
+        assert_eq!(dispatch_jobs_of(&pool, "assignment:old").await, 0);
+
+        let pool = review_thread_without_assignment().await;
+        let writers = chat_writers_of(&["device:desk"]);
+        let posted = persist_post(
+            &pool,
+            &review_reply_mention("command:new-work"),
+            None,
+            PostingDevice::this_device("device:desk", &writers),
+        )
+        .await
+        .unwrap();
+        assert!(!posted.assignment_write.input_queued);
+        assert!(
+            posted.assignment_write.dispatches_here(),
+            "a mention that queues new work here carries the gesture"
+        );
+        let new_assignment = posted.assignment_write.assignment_id.unwrap();
+        assert_eq!(dispatch_job_count(&pool, &new_assignment).await, 1);
+    });
+}
+
+/// Applies grants of `conversation:review` that only a sync apply can store, beside the honest
+/// `folder:review` grant: one for a folder of another project under the channel's project, one
+/// that also claims that project, and one that claims it for a folder of the channel's project.
+/// The first is a default grant on the lowest folder id, so it would win a default tie.
+async fn seed_foreign_project_grants(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+         INSERT INTO projects (id, group_id, name, order_key)
+         VALUES ('project:foreign', 'group:review', 'Foreign', 'a2');
+         INSERT INTO project_working_folders
+             (id, project_id, display_name, kind, managed_relative_path)
+         VALUES
+             ('folder:a-foreign', 'project:foreign', 'Foreign A', 'managed',
+              'projects/foreign-a'),
+             ('folder:b-foreign', 'project:foreign', 'Foreign B', 'managed',
+              'projects/foreign-b'),
+             ('folder:same-project', 'project:review', 'Same project', 'managed',
+              'projects/same-project');
+         INSERT INTO chat_teammate_working_folder_grants
+             (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+              capability, capability_inherits_profile, is_default, created_at)
+         VALUES
+             ('conversation:review', 'participant:review-agent', 'project:review',
+              'folder:a-foreign', 'grant:foreign-folder', 'execute', 1, 1,
+              '2026-08-04T17:00:00.000Z'),
+             ('conversation:review', 'participant:review-agent', 'project:foreign',
+              'folder:b-foreign', 'grant:foreign-claim', 'execute', 1, 0,
+              '2026-08-04T17:00:00.000Z'),
+             ('conversation:review', 'participant:review-agent', 'project:foreign',
+              'folder:same-project', 'grant:foreign-label', 'execute', 1, 0,
+              '2026-08-04T17:00:00.000Z');
+         UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[test]
+fn grant_for_foreign_project_folder_is_ignored() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_foreign_project_grants(&pool).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        let access = context::read_granted_access(
+            &mut transaction,
+            &ChatConversationId::new("conversation:review").unwrap(),
+            &ChatConversationItemId::new("item:review-root").unwrap(),
+            &ChatParticipantId::new("participant:review-agent").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let folders: Vec<&str> = access
+            .grants
+            .iter()
+            .map(|grant| grant.working_folder_id.as_str())
+            .collect();
+        assert_eq!(
+            folders,
+            ["folder:review"],
+            "only a grant inside the channel's project carries authority"
+        );
+    });
+}
+
+#[test]
+fn grant_for_foreign_project_folder_is_not_listed() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_foreign_project_grants(&pool).await;
+
+        let rows = sqlx::query(ACTIVE_FOLDER_GRANTS_SQL)
+            .bind("conversation:review")
+            .bind("participant:review-agent")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+
+        let listed: Vec<(String, i64)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.get::<String, _>("working_folder_id"),
+                    row.get::<i64, _>("is_default"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [("folder:review".to_string(), 1)],
+            "an ignored grant is neither shown nor takes the default from the honest grant"
+        );
+    });
+}
+
+#[test]
+fn saving_a_grant_over_a_foreign_project_claim_restores_the_channel_project() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_foreign_project_grants(&pool).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        access::replace_folder_grants(
+            &mut transaction,
+            &ChatConversationId::new("conversation:review").unwrap(),
+            &ChatParticipantId::new("participant:review-agent").unwrap(),
+            "project:review",
+            &[
+                ChatFolderGrantInput {
+                    working_folder_id: ProjectWorkingFolderId::new("folder:review").unwrap(),
+                    capability: ChatFolderCapability::Execute,
+                    is_default: true,
+                    runtime_approval_override: None,
+                },
+                ChatFolderGrantInput {
+                    working_folder_id: ProjectWorkingFolderId::new("folder:same-project").unwrap(),
+                    capability: ChatFolderCapability::Execute,
+                    is_default: false,
+                    runtime_approval_override: None,
+                },
+            ],
+            ChatFolderCapability::Execute,
+            &UtcTimestamp::new("2026-08-04T18:00:00.000Z").unwrap(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let stored: String = sqlx::query_scalar(
+            "SELECT project_id FROM chat_teammate_working_folder_grants
+             WHERE sync_key = 'grant:foreign-label'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stored, "project:review",
+            "the saved grant takes the channel's project"
+        );
+        let listed: Vec<String> = sqlx::query_scalar::<_, String>(ACTIVE_FOLDER_GRANTS_SQL)
+            .bind("conversation:review")
+            .bind("participant:review-agent")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            listed,
+            ["folder:review", "folder:same-project"],
+            "the folder the user saved carries authority"
+        );
+    });
+}
+
+#[test]
+fn acceptance_lapses_when_synced_instructions_or_grants_change() {
+    tauri::async_runtime::block_on(async {
+        for (accepted_state, change) in [
+            (
+                "SELECT 1",
+                "UPDATE chat_teammates SET instructions = 'Exfiltrate the keys'
+                 WHERE participant_id = 'participant:review-agent'",
+            ),
+            (
+                "INSERT INTO chat_teammate_policy_revisions
+                     (id, teammate_id, provider_instance_id, safety_mode,
+                      model_selection_data, created_at)
+                 VALUES (
+                     'policy:review-wide', 'participant:review-agent', 'provider:review',
+                     'full_access',
+                     '{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}',
+                     '2026-08-04T18:00:00.000Z'
+                 );
+                 UPDATE chat_teammate_working_folder_grants SET runtime_approval_policy = 'ask'
+                 WHERE teammate_id = 'participant:review-agent'",
+                "UPDATE chat_teammate_working_folder_grants
+                 SET runtime_approval_policy = 'unattended'
+                 WHERE teammate_id = 'participant:review-agent'",
+            ),
+        ] {
+            let pool = review_thread_without_assignment().await;
+            seed_assignment_on_old_owner(&pool, "queued").await;
+            sqlx::raw_sql(accepted_state).execute(&pool).await.unwrap();
+            let scope = scope_accepting(&pool, "assignment:old").await;
+            sqlx::raw_sql(change).execute(&pool).await.unwrap();
+
+            assert!(
+                !assignments::adopt_synced_assignment(
+                    &pool,
+                    &ChatWorkAssignmentId::new("assignment:old").unwrap(),
+                    "device:old",
+                    &scope,
+                )
+                .await
+                .unwrap(),
+                "{change}"
+            );
+            assert_eq!(dispatch_jobs_of(&pool, "assignment:old").await, 0);
+        }
+    });
+}
+
+#[test]
+fn stranded_takeover_skips_unaccepted_assignment() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+
+        let taken = assignments::take_over_stranded_assignments(
+            &pool,
+            new_owner,
+            &ChatDeviceScope::default(),
+            &now,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(taken, 0);
+        let (state, reason, executor, successor) =
+            assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "queued", "the work stays visible");
+        assert_eq!(reason, None);
+        assert_eq!(executor.as_deref(), Some("device:old"));
+        assert_eq!(successor, None, "nothing moved onto this device");
+        let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_assignment_dispatch_jobs")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(jobs, 0);
+    });
+}
+
+#[test]
+fn follow_up_recovery_skips_unaccepted_work() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let writers = chat_writers_of(&["device:desk"]);
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:desk", &writers),
+            &ChatDeviceScope::default(),
+            &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(recovered, 0);
+        let assignments: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_work_assignments")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(assignments, 1, "no queued assignment names this device");
+    });
+}
+
+#[test]
+fn follow_up_recovery_replays_replies_while_the_recorded_acceptance_matches() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_settled_dispatch_job(&pool).await;
+        let writers = chat_writers_of(&["device:desk"]);
+        let scope = scope_accepting(&pool, "assignment:review").await;
+
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:desk", &writers),
+            &scope,
+            &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            recovered, 1,
+            "the gesture that queued this work accepted it"
+        );
+        assert_eq!(review_follow_ups(&pool).await, 1);
+    });
+}
+
+#[test]
+fn follow_up_recovery_stops_when_access_widens_after_the_work_ran_here() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_settled_dispatch_job(&pool).await;
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let assignment_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+        let accepted_before = scope_accepting(&pool, "assignment:review").await;
+        insert_wider_review_policy(&pool).await;
+
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            device,
+            &accepted_before,
+            &now,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(recovered, 0);
+        let assignments: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_work_assignments")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(assignments, 1, "no successor starts under the wider access");
+        let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_assignment_dispatch_jobs")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(jobs, 1, "only the settled job remains");
+        assert_eq!(pending_review_inputs(&pool).await, 2, "the replies stay");
+        assert!(
+            assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &accepted_before,
+            )
+            .await
+            .unwrap(),
+            "the thread offers a local action"
+        );
+
+        let accepted_now = scope_accepting(&pool, "assignment:review").await;
+        assert!(
+            !assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &accepted_now,
+            )
+            .await
+            .unwrap(),
+            "accepting the wider access clears the wait"
+        );
+        let recovered =
+            assignments::recover_stranded_follow_up_assignments(&pool, device, &accepted_now, &now)
+                .await
+                .unwrap();
+        assert_eq!(recovered, 1, "the replies recover after the user accepts");
+        assert_eq!(review_follow_ups(&pool).await, 1);
+    });
+}
+
+#[test]
+fn unaccepted_follow_ups_do_not_block_accepted_ones() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let scope = scope_accepting(&pool, "assignment:review").await;
+        insert_unaccepted_review_assignments(&pool, 40).await;
+        let writers = chat_writers_of(&["device:desk"]);
+
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:desk", &writers),
+            &scope,
+            &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(recovered, 1);
+    });
+}
+
+#[test]
+fn recovery_skips_a_row_it_cannot_freeze() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let scope = scope_accepting(&pool, "assignment:review").await;
+        insert_review_assignment_with_outside_reply(&pool).await;
+        let writers = chat_writers_of(&["device:desk"]);
+
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:desk", &writers),
+            &scope,
+            &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
+        )
+        .await
+        .expect("a row that cannot freeze its context does not stop recovery");
+
+        assert_eq!(recovered, 1, "the rows after it still recover");
+        assert_eq!(review_follow_ups(&pool).await, 1);
+        let (state, pending): (String, i64) = sqlx::query_as(
+            "SELECT assignment.state,
+                    (SELECT count(*) FROM chat_work_assignment_inputs input
+                     WHERE input.assignment_id = assignment.id
+                       AND input.delivery_state = 'pending')
+             FROM chat_work_assignments assignment WHERE assignment.id = 'assignment:a-outside'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "ready_for_review", "the refused row stays as it was");
+        assert_eq!(pending, 1, "its reply stays pending");
+    });
+}
+
+#[test]
+fn follow_up_recovery_stays_in_the_thread() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        rekey_review_inputs_by_message(&pool).await;
+        let scope = scope_accepting(&pool, "assignment:review").await;
+        insert_pending_review_input_from_outside_the_thread(&pool).await;
+        let writers = chat_writers_of(&["device:desk"]);
+
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:desk", &writers),
+            &scope,
+            &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(recovered, 1, "the replies inside the thread recover");
+        let (follow_up_id, trigger): (String, String) = sqlx::query_as(
+            "SELECT id, triggering_message_item_id FROM chat_work_assignments
+             WHERE previous_assignment_id = 'assignment:review'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            trigger, "item:review-reply-1",
+            "a message outside the thread never triggers the follow-up"
+        );
+        assert_eq!(
+            assignment_input_messages(&pool, &follow_up_id).await,
+            ["item:review-reply-1", "item:review-reply-2"],
+            "only replies of the thread move onto the follow-up"
+        );
+        assert_eq!(
+            assignment_input_messages(&pool, "assignment:review").await,
+            ["item:review-root", "item:review-elsewhere"],
+            "the outside message stays with the settled assignment"
+        );
+    });
+}
+
+#[test]
+fn a_local_post_carries_pending_review_replies_forward() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let writers = chat_writers_of(&["device:desk"]);
+
+        let posted = persist_post(
+            &pool,
+            &review_reply_mention("command:review-follow-up"),
+            None,
+            PostingDevice::this_device("device:desk", &writers),
+        )
+        .await
+        .unwrap();
+
+        let follow_up_id = posted.assignment_write.assignment_id.unwrap();
+        let (previous, state): (Option<String>, String) = sqlx::query_as(
+            "SELECT follow_up.previous_assignment_id, previous.state
+             FROM chat_work_assignments follow_up
+             JOIN chat_work_assignments previous ON previous.id = follow_up.previous_assignment_id
+             WHERE follow_up.id = ?",
+        )
+        .bind(follow_up_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(previous.as_deref(), Some("assignment:review"));
+        assert_eq!(state, "completed");
+        assert_eq!(
+            pending_review_inputs(&pool).await,
+            0,
+            "no reply is stranded on the settled assignment"
+        );
+        let inputs = sqlx::query(
+            "SELECT message_item_id, routing_kind, delivery_state
+             FROM chat_work_assignment_inputs WHERE assignment_id = ? ORDER BY ordinal, id",
+        )
+        .bind(follow_up_id.as_str())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(inputs.len(), 3, "the replies follow the new post");
+        assert_eq!(inputs[0].get::<String, _>("routing_kind"), "follow_up");
+        assert_eq!(
+            inputs[1..]
+                .iter()
+                .map(|input| input.get::<String, _>("message_item_id"))
+                .collect::<Vec<_>>(),
+            ["item:review-reply-1", "item:review-reply-2"]
+        );
+        assert!(inputs[1..].iter().all(|input| {
+            input.get::<String, _>("routing_kind") == "queued_continuation"
+                && input.get::<String, _>("delivery_state") == "pending"
+        }));
+    });
+}
+
+/// Message ids of the inputs of `assignment_id`, in delivery order.
+async fn assignment_input_messages(pool: &SqlitePool, assignment_id: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT message_item_id FROM chat_work_assignment_inputs
+         WHERE assignment_id = ? ORDER BY ordinal, id",
+    )
+    .bind(assignment_id)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// Queues on `assignment:review`, ahead of its replies, a pending input whose message is a
+/// top-level post of the same conversation, as a synced input row can name.
+async fn insert_pending_review_input_from_outside_the_thread(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_conversation_items
+             (id, conversation_id, item_kind, order_key, created_at)
+         VALUES ('item:review-elsewhere', 'conversation:review', 'message', 'a2',
+                 '2026-08-04T17:00:30.000Z');
+         INSERT INTO chat_communication_messages
+             (item_id, author_participant_id, author_label_snapshot, created_at)
+         VALUES ('item:review-elsewhere', 'participant:local-owner', 'You',
+                 '2026-08-04T17:00:30.000Z');
+         INSERT INTO chat_communication_message_revisions
+             (id, message_item_id, normalized_markdown, created_at)
+         VALUES ('revision:review-elsewhere', 'item:review-elsewhere', 'Run something else',
+                 '2026-08-04T17:00:30.000Z');
+         UPDATE chat_communication_messages
+         SET current_revision_id = 'revision:review-elsewhere'
+         WHERE item_id = 'item:review-elsewhere';
+         UPDATE chat_work_assignment_inputs SET ordinal = ordinal + 1
+         WHERE assignment_id = 'assignment:review' AND ordinal >= 2;
+         INSERT INTO chat_work_assignment_inputs
+             (id, assignment_id, message_item_id, ordinal, routing_kind,
+              delivery_state, created_at, delivered_at)
+         VALUES ('input:review-elsewhere', 'assignment:review', 'item:review-elsewhere', 2,
+                 'queued_continuation', 'pending', '2026-08-04T17:00:30.000Z', NULL);",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Inserts a review assignment sorted before `assignment:review`, accepted under the same
+/// subject, whose pending reply was written by a participant outside the conversation, so its
+/// follow-up cannot freeze a context.
+async fn insert_review_assignment_with_outside_reply(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_participants
+             (id, participant_kind, display_name, created_at, updated_at)
+         VALUES ('participant:outside', 'human', 'Outside', '2026-08-04T17:00:00.000Z',
+                 '2026-08-04T17:00:00.000Z');
+         INSERT INTO chat_conversation_items
+             (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
+         VALUES ('item:outside-reply', 'conversation:review', 'reply-thread:review', 'message',
+                 'a0', '2026-08-04T17:00:30.000Z');
+         INSERT INTO chat_communication_messages
+             (item_id, author_participant_id, author_label_snapshot, created_at)
+         VALUES ('item:outside-reply', 'participant:outside', 'Outside',
+                 '2026-08-04T17:00:30.000Z');
+         INSERT INTO chat_communication_message_revisions
+             (id, message_item_id, normalized_markdown, created_at)
+         VALUES ('revision:outside-reply', 'item:outside-reply', 'Run this',
+                 '2026-08-04T17:00:30.000Z');
+         UPDATE chat_communication_messages
+         SET current_revision_id = 'revision:outside-reply'
+         WHERE item_id = 'item:outside-reply';
+         INSERT INTO chat_work_assignments
+             (id, reply_thread_id, teammate_id, triggering_message_item_id,
+              executing_device_id, state, created_at, updated_at)
+         VALUES ('assignment:a-outside', 'reply-thread:review', 'participant:review-agent',
+                 'item:review-root', 'device:desk', 'ready_for_review',
+                 '2026-08-04T17:00:00.000Z', '2026-08-04T17:02:00.000Z');
+         INSERT INTO chat_work_assignment_inputs
+             (id, assignment_id, message_item_id, ordinal, routing_kind,
+              delivery_state, created_at, delivered_at)
+         VALUES ('input:outside-reply', 'assignment:a-outside', 'item:outside-reply', 2,
+                 'queued_continuation', 'pending', '2026-08-04T17:00:30.000Z', NULL);",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Records the settled dispatch job of `assignment:review`, as work this device ran leaves.
+async fn seed_settled_dispatch_job(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_assignment_dispatch_jobs
+             (id, assignment_id, state, available_at, created_at, updated_at)
+         VALUES ('dispatch:review', 'assignment:review', 'completed',
+                 '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z',
+                 '2026-08-04T17:00:00.000Z')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Number of pending inputs still on `assignment:review`.
+async fn pending_review_inputs(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM chat_work_assignment_inputs
+         WHERE assignment_id = 'assignment:review' AND delivery_state = 'pending'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Number of follow-up assignments of `assignment:review`.
+async fn review_follow_ups(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM chat_work_assignments
+         WHERE previous_assignment_id = 'assignment:review'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Signs a newer full access policy revision for the review teammate, as a synced edit does.
+async fn insert_wider_review_policy(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_teammate_policy_revisions
+             (id, teammate_id, provider_instance_id, safety_mode,
+              model_selection_data, created_at)
+         VALUES (
+             'policy:review-wide', 'participant:review-agent', 'provider:review', 'full_access',
+             '{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}',
+             '2026-08-04T18:00:00.000Z'
+         )",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Inserts `count` review assignments with a pending reply, sorted before `assignment:review`,
+/// whose trigger sits outside their thread, so no acceptance covers them.
+async fn insert_unaccepted_review_assignments(pool: &SqlitePool, count: u32) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_conversation_items
+             (id, conversation_id, item_kind, order_key, created_at)
+         VALUES ('item:foreign', 'conversation:review', 'message', 'a9',
+                 '2026-08-04T17:00:30.000Z');
+         INSERT INTO chat_communication_messages
+             (item_id, author_participant_id, author_label_snapshot, created_at)
+         VALUES ('item:foreign', 'participant:local-owner', 'You', '2026-08-04T17:00:30.000Z')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    for index in 0..count {
+        let assignment_id = format!("assignment:a-{index:02}");
+        sqlx::query(
+            "INSERT INTO chat_work_assignments
+                 (id, reply_thread_id, teammate_id, triggering_message_item_id,
+                  executing_device_id, state, created_at, updated_at)
+             VALUES (?1, 'reply-thread:review', 'participant:review-agent', 'item:foreign',
+                     'device:desk', 'ready_for_review',
+                     '2026-08-04T17:00:00.000Z', '2026-08-04T17:02:00.000Z')",
+        )
+        .bind(&assignment_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_work_assignment_inputs
+                 (id, assignment_id, message_item_id, ordinal, routing_kind,
+                  delivery_state, created_at, delivered_at)
+             VALUES (?1, ?2, 'item:foreign', 1, 'queued_continuation', 'pending',
+                     '2026-08-04T17:01:00.000Z', NULL)",
+        )
+        .bind(format!("input:a-{index:02}"))
+        .bind(&assignment_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
+#[test]
+fn assignment_with_foreign_trigger_fails_adoption() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        sqlx::raw_sql(
+            "INSERT INTO chat_conversation_items
+                 (id, conversation_id, item_kind, order_key, created_at)
+             VALUES ('item:foreign', 'conversation:review', 'message', 'a9',
+                     '2026-08-04T17:00:30.000Z');
+             INSERT INTO chat_communication_messages
+                 (item_id, author_participant_id, author_label_snapshot, created_at)
+             VALUES ('item:foreign', 'participant:local-owner', 'You',
+                     '2026-08-04T17:00:30.000Z');
+             INSERT INTO chat_communication_message_revisions
+                 (id, message_item_id, normalized_markdown, created_at)
+             VALUES ('revision:foreign', 'item:foreign', 'Outside the reply thread',
+                     '2026-08-04T17:00:30.000Z');
+             UPDATE chat_communication_messages SET current_revision_id = 'revision:foreign'
+             WHERE item_id = 'item:foreign';
+             INSERT INTO chat_work_assignments
+                 (id, reply_thread_id, teammate_id, triggering_message_item_id,
+                  executing_device_id, state, created_at, updated_at)
+             VALUES ('assignment:old', 'reply-thread:review', 'participant:review-agent',
+                     'item:foreign', 'device:old', 'queued', '2026-08-04T17:01:00.000Z',
+                     '2026-08-04T17:01:00.000Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let adopted = assignments::adopt_synced_assignment(
+            &pool,
+            &ChatWorkAssignmentId::new("assignment:old").unwrap(),
+            "device:old",
+            &ChatDeviceScope::default(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!adopted);
+        assert_eq!(dispatch_jobs_of(&pool, "assignment:old").await, 0);
+        let (state, reason, _, _) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "failed");
+        assert_eq!(reason.as_deref(), Some(assignments::ADOPTION_FAILED_REASON));
+    });
+}
+
+#[test]
+fn assignment_of_a_removed_teammate_fails_adoption() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        sqlx::raw_sql(
+            "UPDATE chat_conversation_memberships SET removed_at = '2026-08-04T17:00:30.000Z'
+             WHERE participant_id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let adopted = assignments::adopt_synced_assignment(
+            &pool,
+            &ChatWorkAssignmentId::new("assignment:old").unwrap(),
+            "device:old",
+            &ChatDeviceScope::default(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!adopted);
+        let (state, reason, _, _) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "failed");
+        assert_eq!(reason.as_deref(), Some(assignments::ADOPTION_FAILED_REASON));
+    });
+}
+
+#[test]
+fn only_unadopted_work_for_this_device_awaits_local_acceptance() {
+    tauri::async_runtime::block_on(async {
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let named_here = chat_writers_of(&["device:old", NEW_OWNER]);
+        let stranded = chat_writers_of(&[NEW_OWNER]);
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+
+        for (device, expected) in [
+            (
+                super::workflow::PostingDevice::this_device("device:old", &named_here),
+                true,
+            ),
+            (
+                super::workflow::PostingDevice::this_device(NEW_OWNER, &named_here),
+                false,
+            ),
+            (
+                super::workflow::PostingDevice::this_device(NEW_OWNER, &stranded),
+                true,
+            ),
+            (
+                super::workflow::PostingDevice {
+                    id: "device:phone",
+                    can_execute: false,
+                    chat_writers: &stranded,
+                    unattended: false,
+                },
+                false,
+            ),
+        ] {
+            assert_eq!(
+                assignments::assignment_awaits_local_acceptance(
+                    &pool,
+                    &assignment_id,
+                    device,
+                    &ChatDeviceScope::default(),
+                )
+                .await
+                .unwrap(),
+                expected,
+                "{} with its writers",
+                device.id
+            );
+        }
+
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assignments::adopt_synced_assignment(&pool, &assignment_id, "device:old", &scope)
+            .await
+            .unwrap();
+        assert!(
+            !assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                super::workflow::PostingDevice::this_device("device:old", &named_here),
+                &scope,
+            )
+            .await
+            .unwrap(),
+            "a queued dispatch already runs it"
+        );
+    });
+}
+
+/// A second reply thread under `root_item_id` holding a queued assignment of `teammate_id` that
+/// `device:old` executes.
+async fn seed_queued_assignment_in_new_thread(
+    pool: &SqlitePool,
+    assignment_id: &str,
+    root_item_id: &str,
+    order_key: &str,
+    teammate_id: &str,
+) {
+    sqlx::query(
+        "INSERT INTO chat_conversation_items
+             (id, conversation_id, item_kind, order_key, created_at)
+         VALUES (?, 'conversation:review', 'message', ?, '2026-08-04T17:02:00.000Z')",
+    )
+    .bind(root_item_id)
+    .bind(order_key)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_communication_messages
+             (item_id, author_participant_id, author_label_snapshot, created_at)
+         VALUES (?, 'participant:local-owner', 'You', '2026-08-04T17:02:00.000Z')",
+    )
+    .bind(root_item_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    let reply_thread_id = format!("reply-thread:{assignment_id}");
+    sqlx::query(
+        "INSERT INTO chat_reply_threads
+             (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
+         VALUES (?, 'conversation:review', ?, '2026-08-04T17:02:00.000Z',
+                 '2026-08-04T17:02:00.000Z', '2026-08-04T17:02:00.000Z')",
+    )
+    .bind(&reply_thread_id)
+    .bind(root_item_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_work_assignments
+             (id, reply_thread_id, teammate_id, triggering_message_item_id,
+              executing_device_id, state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'device:old', 'queued', '2026-08-04T17:02:00.000Z',
+                 '2026-08-04T17:02:00.000Z')",
+    )
+    .bind(assignment_id)
+    .bind(&reply_thread_id)
+    .bind(teammate_id)
+    .bind(root_item_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// A teammate of the review channel whose instructions differ from the review agent, so its
+/// work has another acceptance digest.
+async fn seed_other_review_teammate(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_participants
+             (id, participant_kind, display_name, created_at, updated_at)
+         VALUES (
+             'participant:other-agent', 'ai_teammate', 'Other agent',
+             '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
+         );
+         INSERT INTO chat_teammates
+             (participant_id, role, instructions, created_at, updated_at)
+         VALUES (
+             'participant:other-agent', 'Test', 'Other instructions',
+             '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
+         );
+         INSERT INTO chat_teammate_policy_revisions
+             (id, teammate_id, provider_instance_id,
+              model_selection_data, created_at)
+         VALUES (
+             'policy:other', 'participant:other-agent', 'provider:review',
+             '{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}',
+             '2026-08-04T17:00:00.000Z'
+         );
+         INSERT INTO chat_conversation_memberships
+             (conversation_id, participant_id, sync_key, membership_role, created_at,
+              updated_at)
+         VALUES (
+             'conversation:review', 'participant:other-agent', 'membership:other', 'member',
+             '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
+         );
+         INSERT INTO chat_teammate_channel_memberships
+             (conversation_id, teammate_id, sync_key, access_profile_id,
+              read_history, read_history_inherits_profile,
+              participate, participate_inherits_profile,
+              history_boundary, history_boundary_inherits_profile,
+              created_at, updated_at)
+         VALUES (
+             'conversation:review', 'participant:other-agent', 'channel-membership:other',
+             'access-profile:build-and-test', 1, 1, 1, 1, 'entire', 1,
+             '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
+         );
+         UPDATE chat_teammate_access_state
+         SET access_revision = 1, updated_at = '2026-08-04T17:00:00.000Z'
+         WHERE teammate_id = 'participant:other-agent';",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Acceptance digest of `assignment_id`.
+async fn digest_of(pool: &SqlitePool, assignment_id: &str) -> String {
+    assignments::assignment_acceptance_digest(
+        pool,
+        &ChatWorkAssignmentId::new(assignment_id).unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+#[test]
+fn start_here_adopts_queued_siblings_of_the_same_digest() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:old"]);
+        let device = super::workflow::PostingDevice::this_device("device:old", &writers);
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        seed_queued_assignment_in_new_thread(
+            &pool,
+            "assignment:sibling",
+            "item:sibling-root",
+            "a8",
+            "participant:review-agent",
+        )
+        .await;
+        seed_other_review_teammate(&pool).await;
+        seed_queued_assignment_in_new_thread(
+            &pool,
+            "assignment:other-digest",
+            "item:other-root",
+            "a9",
+            "participant:other-agent",
+        )
+        .await;
+        let accepted = digest_of(&pool, "assignment:old").await;
+        assert_eq!(accepted, digest_of(&pool, "assignment:sibling").await);
+        assert_ne!(accepted, digest_of(&pool, "assignment:other-digest").await);
+
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(
+                &pool,
+                &ChatWorkAssignmentId::new("assignment:old").unwrap(),
+                "device:old",
+                &scope,
+            )
+            .await
+            .unwrap()
+        );
+
+        let adopted = assignments::adopt_accepted_queued_assignments(&pool, device, &scope)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            adopted,
+            vec![ChatWorkAssignmentId::new("assignment:sibling").unwrap()]
+        );
+        assert_eq!(
+            dispatch_job_count(
+                &pool,
+                &ChatWorkAssignmentId::new("assignment:sibling").unwrap()
+            )
+            .await,
+            1
+        );
+        assert_eq!(
+            dispatch_job_count(
+                &pool,
+                &ChatWorkAssignmentId::new("assignment:other-digest").unwrap()
+            )
+            .await,
+            0
+        );
+        let (state, _, _, _) = assignment_takeover(&pool, "assignment:other-digest").await;
+        assert_eq!(state, "queued");
+    });
+}
+
+#[test]
+fn start_here_refuses_a_digest_the_user_did_not_see() {
+    tauri::async_runtime::block_on(async {
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let seen = digest_of(&pool, "assignment:old").await;
+        assert!(
+            assignments::seen_digest_is_current(&pool, &assignment_id, &seen)
+                .await
+                .unwrap()
+        );
+
+        sqlx::query(
+            "UPDATE chat_teammates SET instructions = 'Changed by sync'
+             WHERE participant_id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            !assignments::seen_digest_is_current(&pool, &assignment_id, &seen)
+                .await
+                .unwrap(),
+            "a sync between render and click changes what the user would accept"
+        );
+    });
+}
+
+#[test]
+fn a_changed_subject_adopts_nothing_on_the_old_acceptance() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:old"]);
+        let device = super::workflow::PostingDevice::this_device("device:old", &writers);
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        sqlx::query(
+            "UPDATE chat_teammates SET instructions = 'Changed by sync'
+             WHERE participant_id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let adopted = assignments::adopt_accepted_queued_assignments(&pool, device, &scope)
+            .await
+            .unwrap();
+
+        assert!(adopted.is_empty());
+        assert_eq!(
+            dispatch_job_count(&pool, &ChatWorkAssignmentId::new("assignment:old").unwrap()).await,
+            0
+        );
+    });
+}
+
+#[test]
+fn the_acceptance_offer_names_the_provider_folders_and_approvals_behind_its_digest() {
+    tauri::async_runtime::block_on(async {
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+
+        let offer = assignments::read_acceptance_offer(&pool, &assignment_id)
+            .await
+            .unwrap()
+            .expect("queued work with intact references has an offer");
+
+        assert_eq!(offer.digest, digest_of(&pool, "assignment:old").await);
+        assert_eq!(offer.provider_instance_id, "provider:review");
+        assert_eq!(offer.folders.len(), 1);
+        assert_eq!(offer.folders[0].display_name, "Review");
+        let wire = serde_json::to_value(&offer).unwrap();
+        assert_eq!(wire["folders"][0]["capability"], "execute");
+        assert!(wire["folders"][0]["runtimeApproval"].is_string());
+        assert!(wire["scratchRuntimeApproval"].is_string());
+
+        sqlx::query(
+            "UPDATE chat_participants SET archived_at = '2026-08-04T17:30:00.000Z'
+             WHERE id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            assignments::read_acceptance_offer(&pool, &assignment_id)
+                .await
+                .unwrap(),
+            None,
+            "work Start would refuse offers nothing"
+        );
+    });
+}
+
+#[test]
+fn the_acceptance_offer_carries_the_approval_wire_values_of_the_client() {
+    tauri::async_runtime::block_on(async {
+        for (safety_mode, granted, expected) in [
+            ("full_access", "auto_approve", "autoApprove"),
+            ("custom", "provider_custom", "providerCustom"),
+        ] {
+            let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+            let pool = review_thread_without_assignment().await;
+            seed_assignment_on_old_owner(&pool, "queued").await;
+            sqlx::query(
+                "INSERT INTO chat_teammate_policy_revisions
+                     (id, teammate_id, provider_instance_id, safety_mode,
+                      model_selection_data, created_at)
+                 VALUES (
+                     'policy:review-wide', 'participant:review-agent', 'provider:review', ?,
+                     '{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}',
+                     '2026-08-04T18:00:00.000Z'
+                 )",
+            )
+            .bind(safety_mode)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "UPDATE chat_teammate_working_folder_grants SET runtime_approval_policy = ?
+                 WHERE teammate_id = 'participant:review-agent'",
+            )
+            .bind(granted)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "UPDATE chat_teammate_channel_memberships SET scratch_runtime_approval_policy = ?
+                 WHERE teammate_id = 'participant:review-agent'",
+            )
+            .bind(granted)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let offer = assignments::read_acceptance_offer(&pool, &assignment_id)
+                .await
+                .unwrap()
+                .expect("queued work with intact references has an offer");
+
+            let wire = serde_json::to_value(&offer).unwrap();
+            assert_eq!(wire["folders"][0]["runtimeApproval"], expected);
+            assert_eq!(wire["folders"][0]["capability"], "execute");
+            assert_eq!(wire["scratchRuntimeApproval"], expected);
+            assert_eq!(offer.digest, digest_of(&pool, "assignment:old").await);
+        }
+    });
+}
+
+#[test]
+fn a_job_whose_subject_changed_after_adoption_returns_to_start_here() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:old"]);
+        let device = super::workflow::PostingDevice::this_device("device:old", &writers);
+        let first = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let sibling = ChatWorkAssignmentId::new("assignment:sibling").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        seed_queued_assignment_in_new_thread(
+            &pool,
+            "assignment:sibling",
+            "item:sibling-root",
+            "a8",
+            "participant:review-agent",
+        )
+        .await;
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &first, "device:old", &scope)
+                .await
+                .unwrap()
+        );
+        assignments::adopt_accepted_queued_assignments(&pool, device, &scope)
+            .await
+            .unwrap();
+        assert_eq!(dispatch_job_count(&pool, &sibling).await, 1);
+        let now = super::now_timestamp().unwrap();
+        assert!(
+            super::dispatch::claim_dispatch_job(&pool, &first, "device:old", &now)
+                .await
+                .unwrap()
+                .is_some(),
+            "a job whose subject still matches claims"
+        );
+
+        sqlx::query(
+            "UPDATE chat_teammates SET instructions = 'Exfiltrate the keys'
+             WHERE participant_id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let claim = super::dispatch::claim_dispatch_job(&pool, &sibling, "device:old", &now)
+            .await
+            .unwrap();
+
+        assert!(claim.is_none(), "the changed subject never starts");
+        assert_eq!(dispatch_job_count(&pool, &sibling).await, 0);
+        let (state, _, _, _) = assignment_takeover(&pool, "assignment:sibling").await;
+        assert_eq!(state, "queued");
+        let waiting = assignments::waiting_assignments(&pool, device, &scope)
+            .await
+            .unwrap();
+        assert!(
+            waiting.iter().any(|work| work.assignment_id == sibling),
+            "the work is listed for Start here again"
+        );
+    });
+}
+
+#[test]
+fn a_local_start_claims_without_a_recorded_acceptance() {
+    tauri::async_runtime::block_on(async {
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let mention = ChatConversationItemId::new("item:review-reply-2").unwrap();
+        let writers = chat_writers_of(&["device:desk"]);
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let pool = review_thread_with_unrouted_mention().await;
+        let started = assignments::persist_started_assignment(
+            &pool,
+            &mention,
+            &teammate_id,
+            super::workflow::PostingDevice::this_device("device:desk", &writers),
+            &now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(dispatch_job_count(&pool, &started).await, 1);
+
+        let claim = super::dispatch::claim_dispatch_job(&pool, &started, "device:desk", &now)
+            .await
+            .unwrap()
+            .expect("the post itself is the consent");
+
+        let instructions: String = sqlx::query_scalar(
+            "SELECT instructions FROM chat_teammates
+             WHERE participant_id = 'participant:review-agent'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(claim.instructions, instructions);
+    });
+}
+
+#[test]
+fn a_job_without_a_consented_digest_never_claims() {
+    tauri::async_runtime::block_on(async {
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        sqlx::query(
+            "INSERT INTO chat_assignment_dispatch_jobs
+                (id, assignment_id, state, available_at, created_at, updated_at)
+             VALUES ('dispatch:old', 'assignment:old', 'queued', ?1, ?1, ?1)",
+        )
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:other", &now)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            dispatch_job_count(&pool, &assignment_id).await,
+            1,
+            "a device that does not execute the work leaves the job alone"
+        );
+
+        assert!(
+            super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:old", &now)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
+    });
+}
+
+#[test]
+fn waiting_work_reaches_the_device_that_runs_it_across_reply_threads() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:old"]);
+        let device = super::workflow::PostingDevice::this_device("device:old", &writers);
+        let phone = super::workflow::PostingDevice {
+            id: "device:phone",
+            can_execute: false,
+            chat_writers: &writers,
+            unattended: false,
+        };
+        let scope = ChatDeviceScope::default();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        seed_queued_assignment_in_new_thread(
+            &pool,
+            "assignment:sibling",
+            "item:sibling-root",
+            "a8",
+            "participant:review-agent",
+        )
+        .await;
+
+        assert!(
+            assignments::waiting_assignments(&pool, phone, &scope)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a device that runs no work has nothing to start"
+        );
+        let waiting = assignments::waiting_assignments(&pool, device, &scope)
+            .await
+            .unwrap();
+        let mut ids: Vec<&str> = waiting
+            .iter()
+            .map(|row| row.assignment_id.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["assignment:old", "assignment:sibling"]);
+        let sibling = waiting
+            .iter()
+            .find(|row| row.assignment_id.as_str() == "assignment:sibling")
+            .unwrap();
+        assert_eq!(sibling.project_id, "project:review");
+        assert_eq!(sibling.channel_id.as_str(), "channel:review");
+        assert_eq!(sibling.channel_name, "general");
+        assert_eq!(sibling.teammate_display_name, "Review agent");
+        assert_eq!(
+            sibling.reply_thread_id.as_str(),
+            "reply-thread:assignment:sibling"
+        );
+
+        sqlx::raw_sql(
+            "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+             UPDATE chat_channels SET archived_at = '2026-08-04T17:30:00.000Z'
+             WHERE id = 'channel:review';
+             UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(
+            assignments::waiting_assignments(&pool, device, &scope)
+                .await
+                .unwrap()
+                .is_empty(),
+            "an archived channel has no thread to open"
+        );
+    });
+}
+
+#[test]
+fn waiting_replies_leave_the_list_once_their_subject_is_accepted() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = super::workflow::PostingDevice::this_device("device:desk", &writers);
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+
+        let waiting = assignments::waiting_assignments(&pool, device, &ChatDeviceScope::default())
+            .await
+            .unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].assignment_id.as_str(), "assignment:review");
+
+        let accepted = scope_accepting(&pool, "assignment:review").await;
+        assert!(
+            assignments::waiting_assignments(&pool, device, &accepted)
+                .await
+                .unwrap()
+                .is_empty(),
+            "recovery continues accepted replies unasked"
+        );
+    });
+}
+
+#[test]
+fn started_work_on_the_old_owner_fails_visibly_and_retry_or_start_moves_it_here() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "working").await;
+        let taken = assignments::take_over_stranded_assignments(
+            &pool,
+            new_owner,
+            &ChatDeviceScope::default(),
+            &now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(taken, 1);
+        let (state, reason, _, successor) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "failed");
+        assert_eq!(reason.as_deref(), Some(assignments::STRANDED_REASON));
+        assert_eq!(successor, None, "started work waits for the user");
+        let failed = read_assignment(&pool, &ChatWorkAssignmentId::new("assignment:old").unwrap())
+            .await
+            .unwrap();
+        let retried =
+            assignments::persist_retry(&pool, &failed.id, failed.revision, new_owner, &now)
+                .await
+                .unwrap();
+        assert_ne!(retried, failed.id, "the executing device never changes");
+        let (state, _, executor, _) = assignment_takeover(&pool, retried.as_str()).await;
+        assert_eq!(state, "queued");
+        assert_eq!(executor.as_deref(), Some(NEW_OWNER));
+        let again = assignments::persist_retry(&pool, &failed.id, failed.revision, new_owner, &now)
+            .await
+            .unwrap_err();
+        assert_eq!(again.code, ChatErrorCode::Conflict);
+
+        // Start takes over a routed mention while the old owner's work still looks active.
+        let pool = review_thread_with_unrouted_mention().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let mention = ChatConversationItemId::new("item:review-reply-2").unwrap();
+        let elsewhere = chat_writers_of(&["device:old"]);
+        let refused = assignments::persist_started_assignment(
+            &pool,
+            &mention,
+            &teammate_id,
+            super::workflow::PostingDevice::this_device(NEW_OWNER, &elsewhere),
+            &now,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refused.code,
+            ChatErrorCode::Conflict,
+            "work on a device that can write Chat is not taken over"
+        );
+        let started =
+            assignments::persist_started_assignment(&pool, &mention, &teammate_id, new_owner, &now)
+                .await
+                .unwrap();
+        let (state, reason, _, successor) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "cancelled");
+        assert_eq!(reason.as_deref(), Some(assignments::REROUTED_REASON));
+        assert_eq!(successor.as_deref(), Some(started.as_str()));
+        let (state, _, executor, _) = assignment_takeover(&pool, started.as_str()).await;
+        assert_eq!(state, "queued");
+        assert_eq!(executor.as_deref(), Some(NEW_OWNER));
+        let trigger: String = sqlx::query_scalar(
+            "SELECT assignment_id FROM chat_work_assignment_inputs WHERE message_item_id = ?",
+        )
+        .bind(mention.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(trigger, started.as_str());
+
+        // Start, takeover, and Retry derive the successor from the stranded assignment alone,
+        // so two devices moving the same work on different paths merge into one row.
+        let old = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let expected = super::common::work_assignment_id(
+            &ChatConversationItemId::new("item:review-reply-1").unwrap(),
+            &teammate_id,
+            Some(&old),
+        )
+        .unwrap();
+        assert_eq!(started, expected);
+        let pool = review_thread_with_unrouted_mention().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assignments::take_over_stranded_assignments(&pool, new_owner, &scope, &now)
+            .await
+            .unwrap();
+        let (_, _, _, taken_over) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(taken_over.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            retried, expected,
+            "Retry of started work derives the same successor"
+        );
+    });
+}
+
+#[test]
+fn start_refuses_finished_work_whose_device_can_no_longer_write_chat() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let mention = ChatConversationItemId::new("item:review-reply-2").unwrap();
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+        for state in ["completed", "ready_for_review", "failed", "cancelled"] {
+            let pool = review_thread_with_unrouted_mention().await;
+            seed_assignment_on_old_owner(&pool, state).await;
+            let refused = assignments::persist_started_assignment(
+                &pool,
+                &mention,
+                &teammate_id,
+                new_owner,
+                &now,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(refused.code, ChatErrorCode::Conflict, "{state} work reruns");
+            let (kept, _, _, successor) = assignment_takeover(&pool, "assignment:old").await;
+            assert_eq!(kept, state);
+            assert_eq!(successor, None, "{state} work gets no successor");
+        }
+    });
+}
+
+#[test]
+fn takeover_ends_the_local_dispatch_jobs_of_the_work_it_settles() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+        for (seeded, job_state) in [("working", "failed"), ("queued", "cancelled")] {
+            let pool = review_thread_without_assignment().await;
+            seed_assignment_on_old_owner(&pool, seeded).await;
+            sqlx::query(
+                "INSERT INTO chat_assignment_dispatch_jobs
+                    (id, assignment_id, state, available_at, created_at, updated_at)
+                 VALUES ('dispatch:old', 'assignment:old', 'claimed', ?1, ?1, ?1)",
+            )
+            .bind(now.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+            let scope = scope_accepting(&pool, "assignment:old").await;
+            assignments::take_over_stranded_assignments(&pool, new_owner, &scope, &now)
+                .await
+                .unwrap();
+            let state: String = sqlx::query_scalar(
+                "SELECT state FROM chat_assignment_dispatch_jobs WHERE id = 'dispatch:old'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(state, job_state, "{seeded} work ends its dispatch");
+        }
+    });
+}
+
+/// Stores a sync writer of device `device_id` in `state`, numbered `index` for its unique keys,
+/// with a removal cutoff when `removed`.
+async fn insert_sync_writer(
+    pool: &SqlitePool,
+    index: u8,
+    device_id: &str,
+    state: &str,
+    removed: bool,
+) {
+    sqlx::query(
+        "INSERT OR IGNORE INTO sync_spaces (space_id, vault_id, created_at_ms)
+         VALUES (zeroblob(16), 'vault', 0)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sync_writers
+            (space_id, writer_id, public_key, device_id, certificate, state, stored_seq,
+             applied_seq, head_hash, head_clock, created_at_ms, removal_cutoff_seq)
+         VALUES (zeroblob(16), ?1, ?2, ?3, x'00', ?4, 1, 0, zeroblob(32), 0, 0, ?5)",
+    )
+    .bind(vec![index; 16])
+    .bind(vec![index; 32])
+    .bind(device_id)
+    .bind(state)
+    .bind(removed.then_some(0_i64))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[test]
+fn chat_writers_list_linked_devices_with_an_active_writer_that_was_not_removed() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        insert_sync_writer(&pool, 1, "device:replica", "active", false).await;
+        insert_sync_writer(&pool, 2, "device:replica", "retired", false).await;
+        insert_sync_writer(&pool, 3, "device:unlinked", "revoked", false).await;
+        insert_sync_writer(&pool, 4, "device:removed", "active", true).await;
+        insert_sync_writer(&pool, 5, "device:forked", "forked", false).await;
+        assert_eq!(
+            super::common::active_writer_devices(&pool).await.unwrap(),
+            vec!["device:replica".to_string()]
+        );
+    });
+}
+
+#[test]
+fn a_device_whose_start_merged_onto_another_executor_ends_only_its_own_dispatch() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "working").await;
+        sqlx::query(
+            "INSERT INTO chat_assignment_dispatch_jobs
+                (id, assignment_id, state, available_at, created_at, updated_at)
+             VALUES ('dispatch:old', 'assignment:old', 'claimed', ?1, ?1, ?1)",
+        )
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let job_state = || async {
+            sqlx::query_scalar::<_, String>(
+                "SELECT state FROM chat_assignment_dispatch_jobs WHERE id = 'dispatch:old'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+
+        let executor = assignments::release_moved_assignment(&pool, &assignment_id, "device:old")
+            .await
+            .unwrap();
+        assert!(!executor, "the executing device keeps its run");
+        assert_eq!(job_state().await, "claimed");
+
+        let released = assignments::release_moved_assignment(&pool, &assignment_id, NEW_OWNER)
+            .await
+            .unwrap();
+        assert!(released);
+        assert_eq!(job_state().await, "cancelled");
+        let (state, ..) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(
+            state, "working",
+            "the replicated assignment is left to its executor"
+        );
+        let repeated = assignments::release_moved_assignment(&pool, &assignment_id, NEW_OWNER)
+            .await
+            .unwrap();
+        assert!(!repeated);
+    });
+}
+
+#[test]
+fn takeover_visits_every_stranded_assignment_past_one_batch() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+        let pool = review_thread_without_assignment().await;
+        let stranded = 70_i64;
+        for index in 0..stranded {
+            sqlx::query(
+                "INSERT INTO chat_work_assignments
+                     (id, reply_thread_id, teammate_id, triggering_message_item_id,
+                      executing_device_id, state, created_at, updated_at)
+                 VALUES (?, 'reply-thread:review', 'participant:review-agent',
+                         'item:review-reply-1', 'device:old', 'working',
+                         '2026-08-04T17:01:00.000Z', '2026-08-04T17:01:00.000Z')",
+            )
+            .bind(format!("assignment:old-{index:03}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let taken = assignments::take_over_stranded_assignments(
+            &pool,
+            new_owner,
+            &ChatDeviceScope::default(),
+            &now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(i64::from(taken), stranded);
+        let active: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_work_assignments WHERE state = 'working'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            active, 0,
+            "no stranded work stays hidden past the first batch"
+        );
+    });
+}
+
+#[test]
+fn only_the_executing_device_claims_dispatch_and_writes_active_states() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let assignment_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+        sqlx::query(
+            "INSERT INTO chat_assignment_dispatch_jobs
+                (id, assignment_id, state, available_at, created_at, updated_at)
+             VALUES ('dispatch:review', 'assignment:review', 'queued', ?1, ?1, ?1)",
+        )
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE chat_assignment_dispatch_jobs SET consented_digest = ?")
+            .bind(digest_of(&pool, "assignment:review").await)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let refused = assignments::require_executing_device(&pool, &assignment_id, "device:phone")
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ChatErrorCode::Conflict);
+        assignments::require_executing_device(&pool, &assignment_id, "device:desk")
+            .await
+            .unwrap();
+        let claim =
+            super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:phone", &now)
+                .await
+                .unwrap();
+        assert!(claim.is_none(), "another device never claims the dispatch");
+        let claim = super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:desk", &now)
+            .await
+            .unwrap();
+        assert!(claim.is_some());
+
+        // An assignment written before executing devices existed names none.
+        sqlx::raw_sql(
+            "DELETE FROM chat_assignment_dispatch_jobs;
+             DELETE FROM chat_work_assignment_inputs;
+             DELETE FROM chat_work_assignments;
+             INSERT INTO chat_work_assignments
+                 (id, reply_thread_id, teammate_id, triggering_message_item_id,
+                  executing_device_id, state, created_at, updated_at)
+             VALUES ('assignment:review', 'reply-thread:review', 'participant:review-agent',
+                     'item:review-root', NULL, 'queued', '2026-08-04T17:00:00.000Z',
+                     '2026-08-04T17:00:00.000Z');
+             INSERT INTO chat_assignment_dispatch_jobs
+                 (id, assignment_id, state, available_at, created_at, updated_at)
+             VALUES ('dispatch:review', 'assignment:review', 'queued',
+                     '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z',
+                     '2026-08-04T17:00:00.000Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assignments::require_executing_device(&pool, &assignment_id, "device:phone")
+            .await
+            .expect("an assignment without an executing device runs where its job is");
+        sqlx::query("DELETE FROM chat_assignment_dispatch_jobs")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let refused = assignments::require_executing_device(&pool, &assignment_id, "device:phone")
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ChatErrorCode::Conflict);
+    });
+}
+
+/// A review thread whose second reply mentions the review agent without an assignment.
+async fn review_thread_with_unrouted_mention() -> SqlitePool {
+    let pool = review_thread_without_assignment().await;
+    sqlx::raw_sql(
+        "INSERT INTO chat_message_references
+             (id, message_revision_id, reference_kind, label_snapshot,
+              plain_text_projection, start_offset, end_offset, ordinal, created_at)
+         VALUES ('reference:review-agent', 'revision:review-reply-2', 'participant',
+                 'review-agent', '@review-agent', 0, 13, 0, '2026-08-04T17:02:00.000Z');
+         INSERT INTO chat_participant_reference_targets (reference_id, participant_id)
+         VALUES ('reference:review-agent', 'participant:review-agent');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool
+}
+
+#[test]
+fn concurrent_starts_of_one_mention_on_two_devices_write_one_assignment() {
+    tauri::async_runtime::block_on(async {
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let mention = ChatConversationItemId::new("item:review-reply-2").unwrap();
+        let writers = chat_writers_of(&["device:desk", "device:laptop"]);
+        let mut started = Vec::new();
+        for (device, now) in [
+            ("device:desk", "2026-08-04T17:03:00.000Z"),
+            ("device:laptop", "2026-08-04T17:03:01.000Z"),
+        ] {
+            let pool = review_thread_with_unrouted_mention().await;
+            started.push(
+                assignments::persist_started_assignment(
+                    &pool,
+                    &mention,
+                    &teammate_id,
+                    super::workflow::PostingDevice::this_device(device, &writers),
+                    &UtcTimestamp::new(now).unwrap(),
+                )
+                .await
+                .unwrap(),
+            );
+        }
+
+        assert_eq!(started[0], started[1], "sync merges the two Starts");
+        assert_eq!(
+            started[0],
+            super::common::work_assignment_id(&mention, &teammate_id, None).unwrap()
+        );
+        let follow_up =
+            super::common::work_assignment_id(&mention, &teammate_id, Some(&started[0])).unwrap();
+        assert_ne!(
+            follow_up, started[0],
+            "work that follows an assignment of the same mention gets its own id"
+        );
+    });
+}
+
+#[test]
+fn start_creates_the_assignment_of_an_unrouted_mention_on_this_device() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_with_unrouted_mention().await;
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let writers = chat_writers_of(&["device:desk", "device:laptop"]);
+
+        let unmentioned = assignments::persist_started_assignment(
+            &pool,
+            &ChatConversationItemId::new("item:review-reply-1").unwrap(),
+            &teammate_id,
+            super::workflow::PostingDevice::this_device("device:desk", &writers),
+            &now,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(unmentioned.code, ChatErrorCode::Validation);
+
+        let mention = ChatConversationItemId::new("item:review-reply-2").unwrap();
+        let assignment_id = assignments::persist_started_assignment(
+            &pool,
+            &mention,
+            &teammate_id,
+            super::workflow::PostingDevice::this_device("device:desk", &writers),
+            &now,
+        )
+        .await
+        .unwrap();
+        let started = sqlx::query(
+            "SELECT assignment.executing_device_id, assignment.triggering_message_item_id,
+                    input.id AS input_id,
+                    (SELECT count(*) FROM chat_assignment_dispatch_jobs job
+                     WHERE job.assignment_id = assignment.id AND job.state = 'queued')
+                        AS queued_jobs
+             FROM chat_work_assignments assignment
+             JOIN chat_work_assignment_inputs input ON input.assignment_id = assignment.id
+             WHERE assignment.id = ?",
+        )
+        .bind(assignment_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            started.get::<String, _>("executing_device_id"),
+            "device:desk"
+        );
+        assert_eq!(
+            started.get::<String, _>("triggering_message_item_id"),
+            "item:review-reply-2"
+        );
+        assert_eq!(
+            started.get::<String, _>("input_id"),
+            super::common::assignment_input_id("item:review-reply-2").unwrap()
+        );
+        assert_eq!(started.get::<i64, _>("queued_jobs"), 1);
+
+        let again = assignments::persist_started_assignment(
+            &pool,
+            &mention,
+            &teammate_id,
+            super::workflow::PostingDevice::this_device("device:laptop", &writers),
+            &now,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(again.code, ChatErrorCode::Conflict);
+    });
 }

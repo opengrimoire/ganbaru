@@ -2,10 +2,11 @@
 
 use super::{
     MAX_LINKED_PEERS, MAX_REVOKED_PEERS, PAIRING_STATE_SCHEMA_VERSION, PairingManagerInner,
-    PairingStateFile, PendingAcknowledgement, StoredIncomingTransfer, StoredOutgoingTransfer,
-    certificate_fingerprint, decode_certificate, decode_identity, initialized_state, random_token,
+    PairingStateFile, PendingAcknowledgement, StoredOutgoingTransfer, certificate_fingerprint,
+    decode_certificate, decode_private_key, initialized_state, random_token,
+    validate_pinned_endpoint,
 };
-use crate::protocol::{self, BundlePurpose, validate_identifier};
+use crate::protocol::{self, validate_device_label, validate_identifier};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -20,21 +21,6 @@ pub(super) fn persist_initialized_state(inner: &PairingManagerInner) -> Result<(
 
 pub(super) fn validate_stored_outgoing(transfer: &StoredOutgoingTransfer) -> Result<(), String> {
     transfer.metadata.validate()?;
-    if transfer.purpose == BundlePurpose::Ownership && transfer.metadata.generation == 0 {
-        return Err("outgoing ownership generation must be positive".to_string());
-    }
-    Ok(())
-}
-
-pub(super) fn validate_stored_incoming(transfer: &StoredIncomingTransfer) -> Result<(), String> {
-    transfer.metadata.validate()?;
-    validate_identifier("incoming source device id", &transfer.source_device_id)?;
-    if transfer.source_device_id == transfer.metadata.device_id {
-        return Err("incoming transfer source and receiver must differ".to_string());
-    }
-    if transfer.purpose == BundlePurpose::Ownership && transfer.metadata.generation == 0 {
-        return Err("incoming ownership generation must be positive".to_string());
-    }
     Ok(())
 }
 
@@ -53,10 +39,55 @@ pub(super) fn validate_activation_record(record: &PendingAcknowledgement) -> Res
     validate_identifier("activation vault id", &record.vault_id)?;
     validate_identifier("activation device id", &record.device_id)?;
     validate_identifier("activation transfer id", &record.transfer_id)?;
-    if record.purpose == BundlePurpose::Ownership && record.generation == 0 {
-        return Err("activation acknowledgement is inconsistent".to_string());
-    }
     Ok(())
+}
+
+/// Replaces stored device labels that fail the display text rules, so one bad label cannot block
+/// startup or drop a working link. A linked peer keeps its label with the offending characters
+/// removed, or its device ID when nothing displayable remains; an invalid coordinator label is
+/// forgotten. Labels are local display data, never signed, so rewriting them is safe.
+///
+/// Returns whether anything changed.
+pub(super) fn quarantine_invalid_labels(state: &mut PairingStateFile) -> bool {
+    let mut changed = false;
+    for peer in state.linked_peers.values_mut() {
+        if validate_device_label("linked device label", &peer.device_label).is_ok() {
+            continue;
+        }
+        let cleaned = displayable_label(&peer.device_label);
+        peer.device_label = if validate_device_label("linked device label", &cleaned).is_ok() {
+            cleaned
+        } else {
+            displayable_label(&peer.device_id)
+        };
+        changed = true;
+    }
+    if let Some(coordinator) = state.coordinator.as_mut()
+        && coordinator
+            .device_label
+            .as_deref()
+            .is_some_and(|label| validate_device_label("coordinator device label", label).is_err())
+    {
+        coordinator.device_label = None;
+        changed = true;
+    }
+    changed
+}
+
+/// Removes disallowed characters and keeps whole characters within the label byte bound.
+fn displayable_label(label: &str) -> String {
+    let mut cleaned = String::new();
+    for character in label
+        .trim()
+        .chars()
+        .filter(|character| !ganbaru_contacts::is_disallowed_display_character(*character))
+    {
+        if cleaned.len() + character.len_utf8() > protocol::MAX_DEVICE_LABEL_BYTES {
+            break;
+        }
+        cleaned.push(character);
+    }
+    cleaned
 }
 
 pub(super) fn validate_state(
@@ -70,7 +101,10 @@ pub(super) fn validate_state(
         return Err("pairing identity belongs to a different device".to_string());
     }
     validate_identifier("device id", &state.identity.device_id)?;
-    decode_identity(&state.identity)?;
+    decode_certificate(&state.identity.certificate)?;
+    if let Some(private_key) = state.identity.private_key.as_deref() {
+        decode_private_key(private_key)?;
+    }
     if state.linked_peers.len() > MAX_LINKED_PEERS {
         return Err("too many linked devices are stored".to_string());
     }
@@ -83,7 +117,6 @@ pub(super) fn validate_state(
     if state.coordinator.is_some() && state.revoked_by_coordinator {
         return Err("a linked coordinator cannot also be recorded as revoked".to_string());
     }
-    let mut peer_vault_id: Option<&str> = None;
     let mut certificate_fingerprints = std::collections::BTreeSet::new();
     for (device_id, peer) in &state.linked_peers {
         if device_id != &peer.device_id {
@@ -94,16 +127,7 @@ pub(super) fn validate_state(
         }
         validate_identifier("peer device id", &peer.device_id)?;
         validate_identifier("peer vault id", &peer.vault_id)?;
-        if peer.device_label.trim().is_empty()
-            || peer.device_label.len() > protocol::MAX_DEVICE_LABEL_BYTES
-            || peer.device_label.chars().any(char::is_control)
-        {
-            return Err("linked device label is invalid".to_string());
-        }
-        if peer_vault_id.is_some_and(|vault_id| vault_id != peer.vault_id) {
-            return Err("linked devices belong to different vaults".to_string());
-        }
-        peer_vault_id = Some(&peer.vault_id);
+        validate_device_label("linked device label", &peer.device_label)?;
         let certificate = decode_certificate(&peer.certificate)?;
         if certificate_fingerprint(certificate.as_ref()) != peer.certificate_fingerprint {
             return Err("linked peer certificate fingerprint is inconsistent".to_string());
@@ -136,9 +160,17 @@ pub(super) fn validate_state(
             .endpoint
             .parse::<std::net::SocketAddr>()
             .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-        if coordinator.certificate_fingerprint.len() != 64 {
-            return Err("coordinator certificate fingerprint is invalid".to_string());
+        protocol::validate_certificate_fingerprint(
+            "coordinator certificate fingerprint",
+            &coordinator.certificate_fingerprint,
+        )?;
+        if let Some(label) = coordinator.device_label.as_deref() {
+            validate_device_label("coordinator device label", label)?;
         }
+        if let Some(endpoint) = coordinator.last_endpoint.as_deref() {
+            validate_pinned_endpoint("last coordinator endpoint", endpoint)?;
+        }
+        protocol::validate_coordinator_endpoints(&coordinator.reported_endpoints)?;
     }
     if let Some(pending) = state.pending_acknowledgement.as_ref() {
         validate_pending_acknowledgement(pending, expected_device_id)?;
@@ -148,9 +180,6 @@ pub(super) fn validate_state(
     }
     if let Some(transfer) = state.outgoing_transfer.as_ref() {
         validate_stored_outgoing(transfer)?;
-    }
-    if let Some(transfer) = state.incoming_transfer.as_ref() {
-        validate_stored_incoming(transfer)?;
     }
     if let Some(completed) = state.completed_activation.as_ref() {
         validate_activation_record(completed)?;

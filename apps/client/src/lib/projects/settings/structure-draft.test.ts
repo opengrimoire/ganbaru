@@ -8,11 +8,11 @@ import type { getProjects } from "$lib/stores/projects.svelte";
 function collections(): ProjectSettingsSessionCollections {
   const common = { projectId: "project", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
   return {
-    statuses: ["a", "b"].map((id, index) => ({ ...common, id, name: id, sortOrder: (index + 1) * 1000, category: "active", terminal: false, color: 8 })),
-    priorities: ["low", "high"].map((id, index) => ({ ...common, id, name: id, sortOrder: (index + 1) * 1000, color: 8 })),
-    tags: ["first", "second"].map((id, index) => ({ ...common, id, name: id, sortOrder: (index + 1) * 1000, color: 8 })),
-    customFields: ["field", "other"].map((id, index) => ({ ...common, id, name: id, sortOrder: (index + 1) * 1000, fieldType: "select", icon: null })),
-    optionsForField: (fieldId) => ["one", "two"].map((id, index) => ({ ...common, id: `${fieldId}-${id}`, fieldId, name: id, sortOrder: (index + 1) * 1000 })),
+    statuses: ["a", "b"].map((id, index) => ({ ...common, id, name: id, orderKey: `a${index}`, category: "active", terminal: false, color: 8 })),
+    priorities: ["low", "high"].map((id, index) => ({ ...common, id, name: id, orderKey: `a${index}`, color: 8 })),
+    tags: ["first", "second"].map((id, index) => ({ ...common, id, name: id, orderKey: `a${index}`, color: 8 })),
+    customFields: ["field", "other"].map((id, index) => ({ ...common, id, name: id, orderKey: `a${index}`, fieldType: "select", icon: null })),
+    optionsForField: (fieldId) => ["one", "two"].map((id, index) => ({ ...common, id: `${fieldId}-${id}`, fieldId, name: id, orderKey: `a${index}` })),
   };
 }
 
@@ -62,15 +62,28 @@ describe("Project settings structural drafts", () => {
     expect(draft.dirty).toBe(false);
   });
 
-  it("updates the draft's saved ranks so later name saves preserve reordered positions", async () => {
+  it("places each reordered row beside its saved neighbour and acknowledges the new order", async () => {
     const { draft, ports, state } = setup();
     await draft.moveStatus(draft.statuses[1], -1);
     await draft.moveCustomFieldOption(draft.optionsForField("field")[1], -1);
-    const nameSaveEntry = draft.statuses[0];
     await draft.save(state);
-    expect(ports.updateStatus).toHaveBeenCalledWith(expect.objectContaining({ id: "b" }), { sortOrder: 1 });
-    expect(nameSaveEntry.sortOrder).toBe(1);
-    expect(draft.optionsForField("field").map((entry) => [entry.id, entry.sortOrder])).toEqual([["field-two", 1], ["field-one", 2]]);
+    expect(ports.updateStatus).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "b" }), { placement: { kind: "before", id: "a" } });
+    expect(ports.updateCustomFieldOption).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "field-two" }), { placement: { kind: "before", id: "field-one" } });
+    expect(draft.statuses.map((entry) => entry.id)).toEqual(["b", "a"]);
+    expect(draft.optionsForField("field").map((entry) => entry.id)).toEqual(["field-two", "field-one"]);
+    expect(draft.dirty).toBe(false);
+  });
+
+  it("places a row moved past several siblings after the row it now follows", async () => {
+    const { draft, ports, state } = setup();
+    draft.addTag("project", "third", 8);
+    await draft.save(state);
+    await draft.moveTag(draft.tags[0], 1);
+    await draft.moveTag(draft.tags[1], 1);
+    await draft.save(state);
+    expect(draft.tags.map((entry) => entry.name)).toEqual(["second", "third", "first"]);
+    expect(ports.updateTag).toHaveBeenCalledWith(expect.objectContaining({ id: "second" }), { placement: { kind: "before", id: "first" } });
+    expect(ports.updateTag).toHaveBeenCalledWith(expect.objectContaining({ name: "third" }), { placement: { kind: "after", id: "second" } });
     expect(draft.dirty).toBe(false);
   });
 

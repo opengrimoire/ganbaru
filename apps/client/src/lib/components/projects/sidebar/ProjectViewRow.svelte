@@ -6,7 +6,7 @@
   import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Star from "@lucide/svelte/icons/star";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { ProjectView } from "$lib/projects/types";

@@ -11,21 +11,59 @@ static READ_GATE: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::syn
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UsageProjection {
     vault_id: String,
-    local_date: String,
+    pub(super) local_date: String,
     week_start_local_date: String,
     updated_at: String,
     pub(super) totals: Vec<BudgetTotal>,
     foreground_status: DistractionsForegroundDesktopAppStatus,
+    /// A read bound left some usage out, so totals may be low.
+    #[serde(skip)]
+    pub(super) truncated: bool,
+    /// The enforcement snapshot these totals published, kept to republish after a failed read.
+    #[serde(skip)]
+    pub(super) limit_state: DistractionsLimitState,
 }
 
-pub(super) fn config_at(path: &Path) -> Result<Value, String> {
-    if !path
-        .try_exists()
-        .map_err(|error| format!("inspect usage configuration: {error}"))?
-    {
-        return Ok(serde_json::json!({}));
+#[cfg(test)]
+impl UsageProjection {
+    /// A projection of `totals` for the runtime's fallback tests.
+    pub(super) fn with_totals(local_date: &str, totals: Vec<BudgetTotal>) -> Self {
+        Self {
+            vault_id: "vault".into(),
+            local_date: local_date.into(),
+            week_start_local_date: local_date.into(),
+            updated_at: String::new(),
+            totals,
+            foreground_status: unavailable_foreground_desktop_app_status("test"),
+            truncated: false,
+            limit_state: DistractionsLimitState {
+                local_date: local_date.into(),
+                week_start_local_date: local_date.into(),
+                updated_at: String::new(),
+                confirmed_at: None,
+                database_path: None,
+                configuration_digest: None,
+                limits: Vec::new(),
+            },
+        }
     }
-    authorization::read_bounded_authorization_config(path)
+}
+
+/// Republishes the last good totals under the revocation fence, so an invalidated observation
+/// cannot restore a snapshot that was cleared.
+pub(super) async fn republish_last_good_limit_state<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    generation: u64,
+    state: DistractionsLimitState,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = limit_state_path(&app)?;
+        runtime::publish(&app, Some(generation), || {
+            state_files::republish_limit_state(&path, &state, now_utc())
+        })
+    })
+    .await
+    .map_err(|error| format!("native usage republication worker: {error}"))?
 }
 
 /// Read the owner's last accepted projection without scheduling observation or enforcement work.
@@ -36,7 +74,7 @@ pub fn distractions_load_usage_projection<R: Runtime>(
     runtime::usage_projection(&app)
 }
 
-/// Derive exhaustion from persisted configuration and usage, never from a frontend total.
+/// Derive exhaustion from the vault's rules and usage, never from a frontend total.
 pub(super) async fn derive_usage_projection<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<UsageProjection, String> {
@@ -46,11 +84,14 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
     let publication_token = runtime::publication_token(&app)?;
     let vault_id = vault::active_vault_id(&app)?;
     let database_path = vault::active_database_path(&app)?;
-    let config_path = vault::active_vault_path(&app)?.join(VAULT_CONFIG_FILE);
-    let path = config_path.clone();
+    let rules = rule_store::snapshot(&app).await?;
+    if rules.vault_id != vault_id {
+        return Err("native usage vault changed before its rules were read".into());
+    }
+    let rules_revision = rules.revision;
     let (config_root, config, local_date, checked_at) =
         tauri::async_runtime::spawn_blocking(move || {
-            let root = config_at(&path)?;
+            let root = rules.root;
             let config = parse_config(&root)?;
             let zone = ganbaru_civil_time::system_zone()?;
             let checked_at = now_utc();
@@ -64,56 +105,46 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
         .await
         .map_err(|error| format!("native usage configuration worker: {error}"))??;
     let week = week_start(&local_date)?;
-    let status = app
-        .state::<vault::ownership::VaultOwnershipManager>()
-        .status(&vault_id)?;
-    // Without budgets there is nothing to total. Spooled samples stay bounded and
-    // drain on the first read after a budget exists or during handoff.
-    let sources = if config.items.is_empty() {
-        Vec::new()
-    } else if status.can_write {
+    let device_id = vault::ensure_device_id(&app)?;
+    // Without budgets there is nothing to total. Spooled samples stay bounded and drain on the
+    // first read after a budget exists, on exit, or before a vault snapshot.
+    let window = if config.items.is_empty() {
+        UsageWindow::default()
+    } else {
         let _write_permit = app
-            .state::<vault::ownership::VaultOwnershipManager>()
-            .acquire_managed_write(&vault_id)?;
+            .state::<vault::write_fence::VaultWriteFence>()
+            .acquire_managed_write()?;
         if vault::active_vault_id(&app)? != vault_id
             || vault::active_database_path(&app)? != database_path
         {
             return Err("native usage vault changed before its read".into());
         }
-        let pool =
-            crate::db::connect_sqlite(app.clone(), format!("sqlite:{}", vault::APP_SQLITE_FILE))
-                .await?;
-        crate::distractions::linked::drain_local_spool(&app, &pool, &vault_id, &status.device_id)
-            .await?;
+        let pool = crate::db::connect_vault(&app).await?;
+        crate::distractions::usage_totals::drain_and_flush(
+            &app, &pool, &vault_id, &device_id, false,
+        )
+        .await?;
         let mut tx = pool
             .begin()
             .await
             .map_err(|error| format!("begin native usage snapshot: {error}"))?;
-        let sources = read_source_days(&mut tx, &week, &local_date).await?;
+        let scope = UsageBudgetScope::from_rules(&config);
+        let window = read_source_days(&mut tx, &device_id, &week, &local_date, &scope).await?;
         tx.commit()
             .await
             .map_err(|error| format!("finish native usage snapshot: {error}"))?;
-        sources
-    } else {
-        crate::distractions::linked::accounting_source_days(
-            &app,
-            &vault_id,
-            &status.device_id,
-            &week,
-            &local_date,
-        )
-        .await?
+        window
     };
     let publication_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let totals = totals(&config, &sources, &local_date)?;
+        let UsageTotals {
+            budgets: totals,
+            truncated: matching_truncated,
+        } = totals(&config, &window.sources, &local_date)?;
+        let truncated = window.truncated || matching_truncated;
         if vault::active_vault_id(&publication_app)? != vault_id
             || vault::active_database_path(&publication_app)? != database_path
-            || publication_app
-                .state::<vault::ownership::VaultOwnershipManager>()
-                .status(&vault_id)?
-                != status
-            || config_at(&config_path)?.get("distractions") != config_root.get("distractions")
+            || !rule_store::is_current(rules_revision)
         {
             return Err("native usage context changed during the read".into());
         }
@@ -132,6 +163,7 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
             local_date: local_date.clone(),
             week_start_local_date: week.clone(),
             updated_at: updated_at.clone(),
+            confirmed_at: None,
             database_path: Some(
                 database_path
                     .to_str()
@@ -173,6 +205,8 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
                 updated_at,
                 totals,
                 foreground_status,
+                truncated,
+                limit_state: state,
             })
         })
     })

@@ -76,7 +76,7 @@ const SPLIT_ORIENTATIONS: readonly WorkspaceSplitOrientation[] = ["side-by-side"
 const MAX_ID_LENGTH = 1_024;
 const MAX_TITLE_LENGTH = 200;
 /** Kinds opened when a vault has no saved tabs yet. */
-export const DEFAULT_WORKSPACE_TAB_KINDS: readonly View[] = ["calendar", "projects"];
+export const DEFAULT_WORKSPACE_TAB_KINDS: readonly View[] = ["calendar"];
 
 const ITEM_TYPES_BY_KIND: Readonly<Record<View, readonly WorkspaceTabItemType[]>> = {
   calendar: [],

@@ -567,6 +567,53 @@ fn simultaneous_window_commands_share_one_serial_driver_operation() {
 }
 
 #[test]
+fn reading_unknown_threads_creates_no_runtime_owner() {
+    tauri::async_runtime::block_on(async {
+        let registry = ChatRuntimeRegistry::default();
+        let thread_id = ChatThreadId::new("thread-unknown").unwrap();
+        assert!(registry.existing_owner(&thread_id).unwrap().is_none());
+        let snapshot = registry.snapshot(&thread_id).unwrap();
+        assert_eq!(snapshot.session_state, ProviderSessionState::Stopped);
+        assert!(snapshot.session_id.is_none());
+        assert!(registry.existing_owner(&thread_id).unwrap().is_none());
+        assert!(registry.owners().unwrap().is_empty());
+
+        let created = registry.owner(thread_id.clone()).unwrap();
+        let existing = registry.existing_owner(&thread_id).unwrap().unwrap();
+        assert!(Arc::ptr_eq(&created, &existing));
+    });
+}
+
+#[test]
+fn stopped_unreferenced_owners_are_evicted_after_the_idle_timeout() {
+    tauri::async_runtime::block_on(async {
+        let registry = ChatRuntimeRegistry::with_idle_timeout_for_test(Duration::from_millis(20));
+        let stale = ChatThreadId::new("thread-stale").unwrap();
+        let held = ChatThreadId::new("thread-held").unwrap();
+        let ready = ChatThreadId::new("thread-ready").unwrap();
+        drop(registry.owner(stale.clone()).unwrap());
+        let held_owner = registry.owner(held.clone()).unwrap();
+        let ready_owner = registry.owner(ready.clone()).unwrap();
+        ready_owner
+            .try_command(ThreadRuntimeCommand::SessionState(
+                ProviderSessionState::Ready,
+            ))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        drop(ready_owner);
+        tokio::time::sleep(Duration::from_millis(40)).await;
+
+        registry
+            .owner(ChatThreadId::new("thread-next").unwrap())
+            .unwrap();
+        assert!(registry.existing_owner(&stale).unwrap().is_none());
+        assert!(registry.existing_owner(&held).unwrap().is_some());
+        assert!(registry.existing_owner(&ready).unwrap().is_some());
+        drop(held_owner);
+    });
+}
+
+#[test]
 fn ready_session_stops_lazily_and_hung_shutdown_stays_bounded() {
     tauri::async_runtime::block_on(async {
         let idle_registry =

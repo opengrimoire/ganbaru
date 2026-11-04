@@ -315,12 +315,13 @@
     terminalLayoutSaveTimer = window.setTimeout(() => {
       terminalLayoutSaveTimer = null;
       const thread = threadId;
-      if (!thread || chat.selectedThreadId !== thread || terminals.length === 0) return;
+      const workspace = workingFolderId;
+      if (!thread || !workspace || chat.selectedThreadId !== thread || terminals.length === 0) return;
       const terminalNames = terminals.map((terminal) => workspacePanelTabLabel(terminalWorkspacePanelTabKey(terminal.id)));
       const selectedIndex = selectedTerminalId === null
         ? -1
         : terminals.findIndex((terminal) => terminal.id === selectedTerminalId);
-      void chatApi.saveChatTerminalPanelLayout(thread, {
+      void chatApi.saveChatTerminalPanelLayout(thread, workspace, {
         placement,
         terminalNames,
         selectedIndex: selectedIndex >= 0 ? selectedIndex : null,
@@ -419,9 +420,10 @@
     error = null;
     try {
       const loaded = await withTerminalLoadLock(scopeKey, async () => {
+        await chatApi.reserveChatDraftThread(thread, workspace);
         const [available, layout] = await Promise.all([
           chatApi.listChatTerminals(thread, workspace),
-          chatApi.readChatTerminalLayout(thread),
+          chatApi.readChatTerminalLayout(thread, workspace),
         ]);
         const owned = terminalPanels.claimAvailable(available, placement);
         if (owned.length > 0) return { terminals: owned, layout };
@@ -466,6 +468,7 @@
     thread: string,
     workspace: string,
   ): ReturnType<typeof chatApi.createChatTerminal> {
+    await chatApi.reserveChatDraftThread(thread, workspace);
     const snapshot = await chatApi.createChatTerminal({
       terminalId: crypto.randomUUID(),
       threadId: thread,

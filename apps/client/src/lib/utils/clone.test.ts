@@ -27,6 +27,18 @@ describe("cloneData", () => {
     expect(source).toEqual({ rich_text: [{ plain_text: "hello", annotations: { bold: false } }] });
   });
 
+  it("copies a parsed __proto__ key as data instead of replacing the prototype", () => {
+    const source = JSON.parse('{"__proto__": {"polluted": true}, "kept": 1}') as Record<string, unknown>;
+
+    const copy = cloneData(source);
+
+    expect(Object.getPrototypeOf(copy)).toBe(Object.prototype);
+    expect("polluted" in copy).toBe(false);
+    expect(Object.hasOwn(copy, "__proto__")).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(copy, "__proto__")?.value).toEqual({ polluted: true });
+    expect(copy.kept).toBe(1);
+  });
+
   it("keeps primitives, undefined fields, and null prototypes", () => {
     const bare = Object.assign(Object.create(null) as Record<string, unknown>, { key: "value" });
 

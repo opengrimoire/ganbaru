@@ -4,12 +4,12 @@ use super::block_tree::{
 };
 use super::pages::load_page_row;
 use super::parents::{
-    ParentTarget, insert_block, parent_target_from_block_row, refresh_parent_has_children,
-    resolve_block_parent, touch_page, validate_block_update_children, validate_block_update_parent,
+    ParentTarget, insert_block, parent_target_from_block_row, resolve_block_parent, touch_page,
+    touch_parent_block, validate_block_update_children, validate_block_update_parent,
     validate_children_for_parent,
 };
-use super::payloads::page_row_properties_for_title;
-use super::sort::next_sort_orders;
+use super::sort::next_order_keys;
+use crate::block_storage::write_block_content;
 use crate::models::{
     NoteAppendBlockChildren, NoteBlockDto, NoteBlockUpdate, NotePaginatedBlockList, NoteTrashBlocks,
 };
@@ -51,7 +51,7 @@ pub(super) async fn append_block_children_tx(
     }
     let parent = resolve_block_parent(tx, &request.parent).await?;
     validate_children_for_parent(&parent, &request.children)?;
-    let sort_orders = next_sort_orders(
+    let order_keys = next_order_keys(
         tx,
         &parent,
         request.after.as_deref(),
@@ -62,11 +62,11 @@ pub(super) async fn append_block_children_tx(
         page_history::record_page_snapshot_tx(tx, &parent.page_id, "append_block_children").await?;
     }
     let mut inserted_ids = Vec::with_capacity(request.children.len());
-    for (child, sort_order) in request.children.iter().zip(sort_orders) {
-        insert_block(tx, &parent, child, sort_order).await?;
+    for (child, order_key) in request.children.iter().zip(order_keys) {
+        insert_block(tx, &parent, child, &order_key).await?;
         inserted_ids.push(child.id.trim().to_string());
     }
-    refresh_parent_has_children(tx, &parent).await?;
+    touch_parent_block(tx, &parent).await?;
     touch_page(tx, &parent.page_id).await?;
     Ok(inserted_ids)
 }
@@ -127,7 +127,7 @@ fn content_conflict(block_id: &str) -> String {
 }
 
 /// Validate and update one block using the transaction's current graph.
-pub(super) async fn update_block_tx(
+pub(crate) async fn update_block_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     block_id: &str,
     update: NoteBlockUpdate,
@@ -149,39 +149,20 @@ pub(super) async fn update_block_tx(
     if record_history {
         page_history::record_page_snapshot_tx(tx, &current.page_id, "update_block").await?;
     }
-    let result = sqlx::query(
-        "UPDATE notes_blocks
-         SET type = ?,
-             payload = ?,
-             plain_text = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ? AND in_trash = 0",
-    )
-    .bind(&block_type)
-    .bind(payload.to_string())
-    .bind(&plain_text)
-    .bind(block_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("update notes block: {e}"))?;
-    if result.rows_affected() == 0 {
-        return Err("notes block not found".to_string());
-    }
+    write_block_content(tx, block_id, &block_type, &payload, &plain_text).await?;
     if block_type == "child_page" {
         let title = payload
             .get("title")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let page = load_page_row(tx, block_id).await?;
+        load_page_row(tx, block_id).await?;
         sqlx::query(
             "UPDATE notes_pages
              SET title = ?,
-                 properties = ?,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?",
         )
         .bind(title)
-        .bind(page_row_properties_for_title(&page, title)?)
         .bind(block_id)
         .execute(&mut **tx)
         .await
@@ -244,7 +225,7 @@ pub(super) async fn trash_block_tx(
         parent_block_type: None,
         page_id: current.page_id.clone(),
     };
-    refresh_parent_has_children(tx, &parent).await?;
+    touch_parent_block(tx, &parent).await?;
     touch_page(tx, &current.page_id).await?;
     Ok(())
 }
@@ -276,7 +257,7 @@ pub async fn trash_blocks(
         set_block_subtree_trash(&mut tx, block_id, in_trash).await?;
     }
     for parent in &parents {
-        refresh_parent_has_children(&mut tx, parent).await?;
+        touch_parent_block(&mut tx, parent).await?;
     }
     for page_id in &touched_pages {
         touch_page(&mut tx, page_id).await?;

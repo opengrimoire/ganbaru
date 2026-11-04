@@ -143,13 +143,7 @@ fn database_rollups_compute_from_relations_and_invalidate_cache() {
             table_json["rows"][0]["properties"]["Project budget"]["rollup"]["number"].as_f64(),
             Some(7.0)
         );
-        let stored_properties: String =
-            sqlx::query_scalar("SELECT properties FROM notes_pages WHERE id = ?")
-                .bind(PAGE_B)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        let stored_json: serde_json::Value = serde_json::from_str(&stored_properties).unwrap();
+        let stored_json = stored_page_properties(&pool, PAGE_B).await;
         assert!(stored_json.get("Project budget").is_none());
         let cache_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM notes_data_source_rollup_cache")
@@ -383,13 +377,7 @@ fn database_formulas_compute_without_persisting_stale_values() {
             "Broken: division by zero"
         );
 
-        let stored_properties: String =
-            sqlx::query_scalar("SELECT properties FROM notes_pages WHERE id = ?")
-                .bind(PAGE_B)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        let stored_json: serde_json::Value = serde_json::from_str(&stored_properties).unwrap();
+        let stored_json = stored_page_properties(&pool, PAGE_B).await;
         assert!(stored_json.get("Score").is_none());
         assert!(stored_json.get("Score label").is_none());
         assert!(stored_json.get("State").is_none());

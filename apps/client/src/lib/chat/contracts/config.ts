@@ -2,7 +2,6 @@ import type {
   ProjectWorkingFolderId,
   CredentialReferenceId,
   InteractionMode,
-  JsonValue,
   ModelId,
   ProviderFamilyId,
   ProviderInstanceId,
@@ -11,7 +10,6 @@ import type {
 } from "./common";
 import type { ModelOptionSelection } from "./provider";
 
-export const CHAT_VAULT_CONFIG_SCHEMA_VERSION = 1;
 export const CHAT_SEND_KEYS = ["enter", "mod_enter"] as const;
 export type ChatSendKey = (typeof CHAT_SEND_KEYS)[number];
 
@@ -44,6 +42,10 @@ export interface ChatPanelPreferences {
   inspectorWidthPx: number;
 }
 
+/**
+ * Chat behavior, stored as `chat.behavior.*` preferences. Fields are portable vault preferences
+ * that replicate, except `confirmMultilineTerminalPaste`, which is stored per device.
+ */
 export interface ChatBehaviorPreferences {
   sendKey: ChatSendKey;
   restoreLastSelectedThread: boolean;
@@ -54,13 +56,16 @@ export interface ChatBehaviorPreferences {
   confirmMultilineTerminalPaste: boolean;
 }
 
-export interface ChatVaultConfig {
-  schemaVersion: number;
+/**
+ * Chat settings as one read: the device-local fields (providers, remembered selections,
+ * working folder provider preferences, panels) stay in this device's preference file and never
+ * replicate; `behavior` is portable apart from its per-device fields.
+ */
+export interface ChatConfiguration {
   providers: ChatPortableProviderConfig[];
   automaticProviderSetupDisabled: ProviderFamilyId[];
   rememberedSelections: RememberedComposerSelection[];
   workingFolderProviderPreferences: Record<ProjectWorkingFolderId, ProviderInstanceId>;
   panels: ChatPanelPreferences;
   behavior: ChatBehaviorPreferences;
-  [unknownField: string]: JsonValue | unknown;
 }

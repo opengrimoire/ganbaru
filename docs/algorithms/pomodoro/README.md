@@ -2,7 +2,7 @@
 
 Pomodoro behavior is split into related specifications so each decision stays reviewable on its own.
 
-- [Focus authority and evidence](focus-authority.md): what may start or advance execution, the native owner, recovery, effect fencing, and planned device ownership.
+- [Focus authority and evidence](focus-authority.md): what may start or advance execution, the native owner, recovery, effect fencing, and linked devices.
 - [State machine](state-machine.md): observation priority, phase advancement, Calendar block activation, reconfiguration, and side-effect ordering.
 - [Plan and history](plan-and-history.md): lazy segment persistence, future projection, inheritance, pauses, and worked examples.
 - [Idle detection](idle-detection.md): platform activity sources, sampling, webcam suppression, idle backdating, and focus failure.
@@ -19,6 +19,6 @@ Durable rows are summarized in [Pomodoro schema](../../data/schema/pomodoro.md).
 - Commit canonical state before notifications, overlays, media, or window events.
 - Treat desktop and mobile recovery evidence separately.
 - Record adaptive decisions in the same transaction as the run or phase they select.
-- Keep at most one globally active segment.
+- Keep at most one active segment across open runs.
 
 Algorithm names describe responsibilities, not file or helper names. Source may be reorganized without changing these contracts.

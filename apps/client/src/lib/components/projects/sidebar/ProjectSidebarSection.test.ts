@@ -46,7 +46,7 @@ const project: Project = {
   name: "Launch",
   icon: "lucide:folder",
   color: 8,
-  sortOrder: 0,
+  orderKey: "0",
   status: "active",
   defaultEventName: null,
   defaultEventTimeMode: "timed",
@@ -74,8 +74,8 @@ function sidebarViews(projectId: string): ProjectView[] {
   return starredFirst(projectViewsFor(store.views, projectId, store.hostableViewTypes), (entry) => store.starredViewIds.includes(entry.id));
 }
 
-function view(id: string, viewType: ProjectViewType, sortOrder: number, name?: string): ProjectView {
-  return { id, projectId: project.id, viewType, sortOrder, name, createdAt: "", updatedAt: "" };
+function view(id: string, viewType: ProjectViewType, orderKey: string, name?: string): ProjectView {
+  return { id, projectId: project.id, viewType, orderKey, name, createdAt: "", updatedAt: "" };
 }
 
 let target: HTMLDivElement;
@@ -152,7 +152,7 @@ function pointer(element: EventTarget, type: string, clientY: number, pointerTyp
 beforeEach(() => {
   target = document.createElement("div");
   document.body.append(target);
-  store.views = [view("overview", "dashboard", 1000), view("list", "list", 2000, "Backlog"), view("notes", "notes", 3000)];
+  store.views = [view("overview", "dashboard", "1000"), view("list", "list", "2000", "Backlog"), view("notes", "notes", "3000")];
   store.hostableViewTypes = ["notes", "chat"];
   store.addView.mockReset();
   store.renameView.mockReset().mockResolvedValue(undefined);
@@ -200,7 +200,7 @@ describe("ProjectSidebarSection", () => {
     expect(store.addView).not.toHaveBeenCalled();
 
     store.addView.mockImplementation((projectId: string, viewType: ProjectViewType) => {
-      store.views = [...store.views, { ...view("added", viewType, 4000), projectId }];
+      store.views = [...store.views, { ...view("added", viewType, "4000"), projectId }];
       return Promise.resolve("added");
     });
     (menu?.querySelector('[data-project-add-view="kanban"]') as HTMLButtonElement).click();

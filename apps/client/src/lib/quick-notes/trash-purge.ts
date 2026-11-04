@@ -29,8 +29,8 @@ export function quickNotesTrashPurgeDeadline(result: QuickNotesTrashPurge): numb
 }
 
 /**
- * Runs the trash purge now and again when the oldest remaining trashed note expires. Invalidate
- * it after Quick notes change, because new trash can move the deadline.
+ * Runs the trash purge now and again when the oldest remaining trashed note expires. Invalidate it after Quick notes
+ * change, because new trash can move the deadline.
  */
 export function createQuickNotesTrashPurgeScheduler(
   options: QuickNotesTrashPurgeSchedulerOptions,
@@ -41,7 +41,8 @@ export function createQuickNotesTrashPurgeScheduler(
     run: async (context) => {
       const result = await options.purge();
       if (result.purged > 0) options.onPurged(result.purged);
-      return context.isCurrent() ? quickNotesTrashPurgeDeadline(result) : null;
+      if (!context.isCurrent()) return null;
+      return quickNotesTrashPurgeDeadline(result);
     },
     onError: options.onError,
   });

@@ -1,5 +1,4 @@
 use super::super::*;
-use ganbaru_db::run_migrations;
 
 pub(super) async fn migrated_pool_with_event() -> sqlx::SqlitePool {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -11,7 +10,9 @@ pub(super) async fn migrated_pool_with_event() -> sqlx::SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     sqlx::query(
         "INSERT INTO calendar_events (id, title, start_time, end_time)
              VALUES ('event-1', 'Focus block', '2026-05-29T10:00:00Z', '2026-05-29T11:00:00Z')",

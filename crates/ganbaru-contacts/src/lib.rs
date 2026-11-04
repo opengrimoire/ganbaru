@@ -4,6 +4,7 @@
 //! platform integration. Platform code stores keys, delivers requests, and persists rows.
 
 mod card;
+mod display_text;
 mod identity;
 mod request;
 mod trust;
@@ -16,12 +17,15 @@ pub use card::{
     MAX_ENDPOINT_HINT_BYTES, SignedCard, decode_card, decode_card_text, encode_card_text,
     sign_card, verification_code,
 };
+pub use display_text::{DisplayTextError, is_disallowed_display_character, validate_display_text};
 pub use identity::{
     PUBLIC_KEY_BYTES, PUBLIC_KEY_TEXT_LENGTH, PersonKeyPair, PersonPublicKey, SIGNATURE_BYTES,
-    SignatureError, nonces_match, random_bytes, verify,
+    SignatureError, is_small_order_public_key, is_valid_public_key_text, nonces_match,
+    random_bytes, verify,
 };
 pub use request::{
-    CARD_NONCE_BYTES, decode_nonce, encode_nonce, request_signature_payload,
-    status_signature_payload,
+    CARD_NONCE_BYTES, CLOCK_TOLERANCE_DAYS, REQUEST_SIGNATURE_DOMAIN, REQUEST_TTL_DAYS,
+    STATUS_SIGNATURE_DOMAIN, STORED_TIME_FORMAT, decode_nonce, encode_nonce, is_stored_timestamp,
+    is_valid_request_window, request_signature_payload, status_signature_payload,
 };
 pub use trust::TrustKind;

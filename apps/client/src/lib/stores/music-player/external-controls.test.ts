@@ -1,12 +1,9 @@
-import { listen } from "@tauri-apps/api/event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PLAYBACK_SNAPSHOT } from "$lib/music/playback";
 import { localFileSourceFromPath } from "$lib/music/sources";
 import { createMusicExternalControls } from "$lib/stores/music-player/external-controls";
 
 function createContext() {
-  const unlisten = vi.fn();
-  const listenMock = vi.fn(async () => unlisten) as unknown as typeof listen;
   const context: Parameters<typeof createMusicExternalControls>[0] = {
     currentSource: () => null,
     snapshot: () => DEFAULT_PLAYBACK_SNAPSHOT,
@@ -30,33 +27,13 @@ function createContext() {
     setVolume: vi.fn(async () => undefined),
     setRate: vi.fn(async () => undefined),
     toggleShuffle: vi.fn(),
-    inspectAssignment: vi.fn(),
     handleWindowMessage: vi.fn(),
-    listen: listenMock,
   };
-  return {
-    context,
-    listenMock,
-    unlisten,
-  };
+  return { context };
 }
 
 describe("Music external controls", () => {
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
-  it("owns one listener set and releases every listener on destroy", async () => {
-    const { context, listenMock, unlisten } = createContext();
-    const controls = createMusicExternalControls(context);
-
-    controls.init();
-    controls.init();
-    await Promise.resolve();
-
-    expect(listenMock).toHaveBeenCalledTimes(1);
-    expect(listenMock).toHaveBeenCalledWith("tray-music-inspect-assignment", expect.any(Function));
-    controls.destroy();
-    expect(unlisten).toHaveBeenCalledTimes(1);
-    expect(controls.isInitialized()).toBe(false);
-  });
 
   it("releases browser metadata and handlers when its decoder no longer owns the source", () => {
     const handlers = new Map<string, unknown>();

@@ -255,6 +255,7 @@ mod windows;
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn clamp_unit_rejects_invalid_values() {
         assert_eq!(clamp_unit(f64::NAN), 0.0);
@@ -269,6 +270,7 @@ mod tests {
         assert_eq!(clamp_playback_rate(3.0), MAX_PLAYBACK_RATE);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn mpris_time_conversion_saturates() {
         assert_eq!(ms_to_us_i64(123), 123_000);

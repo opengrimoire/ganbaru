@@ -2,7 +2,7 @@
   import { tick } from "svelte";
   import GripVertical from "@lucide/svelte/icons/grip-vertical";
   import Plus from "@lucide/svelte/icons/plus";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import CollectionMenu from "$lib/components/collections/CollectionMenu.svelte";
   import CollectionMenuItem from "$lib/components/collections/CollectionMenuItem.svelte";
   import CollectionMenuTextField from "$lib/components/collections/CollectionMenuTextField.svelte";

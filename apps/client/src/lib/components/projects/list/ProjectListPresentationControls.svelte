@@ -1,7 +1,7 @@
 <script lang="ts">
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import Plus from "@lucide/svelte/icons/plus";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import CollectionMenu from "$lib/components/collections/CollectionMenu.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
@@ -28,7 +28,7 @@
 
   /** Add a usable status condition from this project's current schema. */
   function addRule(): void {
-    const value = query.statuses[0]?.id;
+    const value = query.statuses.find((entry) => !entry.deletedAt)?.id;
     if (!value) return;
     saveRules([...query.listPresentation.colorRules, { id: crypto.randomUUID(), property: "status", value, color: FALLBACK_COLOR_INDEX }]);
   }
@@ -51,7 +51,7 @@
           options={[{value: "status", label: t("projects.columns.status")}, {value: "priority", label: t("projects.columns.priority")}]}
           onChange={(value) => {
             if (value === "status" || value === "priority") {
-              const first = (value === "status" ? query.statuses : query.priorities)[0];
+              const first = (value === "status" ? query.statuses : query.priorities).find((entry) => !entry.deletedAt);
               if (first) updateRule(rule, { property: value, value: first.id });
             }
           }} />

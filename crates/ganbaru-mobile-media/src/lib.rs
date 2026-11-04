@@ -13,6 +13,7 @@ mod mobile;
 #[cfg(target_os = "android")]
 pub use mobile::{
     MobileMedia, MobileMediaExt, MobileMediaProbe, MobileMediaTree, MobileMediaTreeTrack,
+    MobileYouTubeBounds, MobileYouTubePage,
 };
 
 #[cfg(target_os = "android")]

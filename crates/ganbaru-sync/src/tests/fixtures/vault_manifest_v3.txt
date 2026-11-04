@@ -1,0 +1,38 @@
+manifest 3
+table 1 quick_note_tags replicated key id redirects
+  group 0 immutable created_at:timestamp
+  group 1 register name:trimmed_text(1..=40)
+  group 2 position order_key:order_key
+  group 3 max updated_at:timestamp
+  group 4 register color:integer(0..=31)
+  unique name nocase
+table 2 quick_notes replicated key id
+  group 0 immutable created_at:timestamp
+  group 1 register surfaced recoverable title:text(..=200)
+  group 2 register surfaced recoverable
+    owned quick_note_text_runs parent note_id ordinal sort_order rows 4096 codec custom content:text(..=65536) bold:flag italic:flag underline:flag
+  group 3 register recoverable color:integer(0..=31)
+  group 4 reference 1 set_null recoverable tag_id:optional_row_key
+  group 5 coupled recoverable pinned:flag archived:flag trashed_at:optional_timestamp
+  group 6 position order_key:order_key
+  group 7 max updated_at:timestamp
+  group 8 register surfaced recoverable
+    owned quick_note_images parent note_id ordinal sort_order rows 24 codec custom sha256:text(..=64) content_type:text(..=10) byte_size:integer(1..=26214400) width:integer(1..=16384) height:integer(1..=16384)
+  check pinned,archived,trashed_at within 5
+table 16 vault_preferences replicated key key
+  derived key exists 2 inputs 
+  group 0 register value:text(..=65536)
+  group 1 max updated_at:timestamp
+  group 2 register
+table 17 themes replicated key id
+  group 0 immutable created_at_ms:integer(0..=9223372036854775807)
+  group 1 immutable seed_blend_canvas:text(..=9) seed_icon_label:text(..=5) seed_calendar_default_mode:text(..=10) seed_calendar_default_custom:text(..=9)
+    owned theme_seed_tokens parent theme_id key kind,key rows 256 codec custom kind:text(..=8) key:text(..=64) value:text(..=9) isolated:flag
+    owned theme_seed_event_palette parent theme_id key slot rows 32 codec custom slot:integer(0..=31) value:text(..=9)
+  group 2 register recoverable display_name:trimmed_text(1..=60)
+  group 3 register recoverable icon_label:text(..=5)
+  group 4 register surfaced recoverable blend_canvas:text(..=9) derivation_engine_version:integer(0..=9223372036854775807) calendar_default_mode:text(..=10) calendar_default_custom:text(..=9)
+    owned theme_tokens parent theme_id key kind,key rows 256 codec custom kind:text(..=8) key:text(..=64) value:text(..=9) isolated:flag
+    owned theme_event_palette parent theme_id key slot rows 32 codec custom slot:integer(0..=31) value:text(..=9)
+  group 5 max upgrade_dismissed_engine_version:integer(0..=9223372036854775807)
+  group 6 max updated_at_ms:integer(0..=9223372036854775807)

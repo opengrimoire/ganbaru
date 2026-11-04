@@ -4,8 +4,8 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import ShieldAlert from "@lucide/svelte/icons/shield-alert";
   import * as chatApi from "$lib/api/chat";
-  import type { ChatPendingRequestRead, UserInputAnswer } from "$lib/chat/contracts";
-  import { parseApprovalChoices, parseUserInputQuestions, validateUserInputAnswers } from "$lib/chat/composer/model";
+  import type { ApprovalSubjectKind, ChatPendingRequestRead, SessionPermissionGrant, UserInputAnswer } from "$lib/chat/contracts";
+  import { parseApprovalChoices, parseApprovalDisplay, parseUserInputQuestions, validateUserInputAnswers } from "$lib/chat/composer/model";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import { formatList, formatNumber } from "$lib/i18n/formatters";
@@ -28,10 +28,13 @@
   let answerDraftRequest = 0;
   let answerSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let panel: HTMLElement | undefined = $state();
-  const approvalChoices = $derived(parseApprovalChoices(pending.allowedDecisions));
+  const approvalDisplay = $derived(parseApprovalDisplay(pending.safeDisplay));
+  // Allow for session is withheld when its grants cannot be shown, so nothing is forwarded unseen.
+  const approvalChoices = $derived(parseApprovalChoices(pending.allowedDecisions)
+    .filter((choice) => choice.decisionKind !== "allow_session" || approvalDisplay.sessionGrants !== null));
+  const sessionGrants = $derived(approvalChoices.some((choice) => choice.decisionKind === "allow_session") ? approvalDisplay.sessionGrants ?? [] : []);
   const questions = $derived(pending.requestKind === "user_input" ? parseUserInputQuestions(pending.safeDisplay) : []);
   const question = $derived(questions[step] ?? null);
-  const approvalDisplay = $derived(readApprovalDisplay(pending));
   const answerPreview = $derived(question ? answerLabel(question.id) : "");
 
   $effect(() => {
@@ -181,22 +184,42 @@
     }
   }
 
-  function readApprovalDisplay(request: ChatPendingRequestRead): { title: string; detail: string | null; payload: string | null } {
-    const value = request.safeDisplay.value;
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      return { title: t("chat.composer.approval"), detail: null, payload: null };
+  function subjectLabel(kind: ApprovalSubjectKind): string {
+    switch (kind) {
+      case "command": return t("chat.composer.approvalSubjectCommand");
+      case "path": return t("chat.composer.approvalSubjectPath");
+      case "url": return t("chat.composer.approvalSubjectUrl");
+      case "pattern": return t("chat.composer.approvalSubjectPattern");
+      case "query": return t("chat.composer.approvalSubjectQuery");
+      case "tool": return t("chat.composer.approvalSubjectTool");
     }
-    return {
-      title: typeof value.title === "string" ? value.title : t("chat.composer.approval"),
-      detail: typeof value.detail === "string" ? value.detail : null,
-      payload: value.payload === undefined ? null : JSON.stringify(value.payload, null, 2),
-    };
+  }
+
+  function grantLabel(grant: SessionPermissionGrant): string {
+    switch (grant.kind) {
+      case "allow_rule": return grant.ruleContent === null
+        ? t("chat.composer.sessionGrantTool", grant.toolName)
+        : t("chat.composer.sessionGrantRule", grant.toolName, grant.ruleContent);
+      case "directory": return t("chat.composer.sessionGrantDirectory", grant.path);
+      case "accept_edits": return t("chat.composer.sessionGrantAcceptEdits");
+    }
   }
 </script>
 
 <section bind:this={panel} class="chat-request-panel" tabindex="-1">
   {#if pending.requestKind === "approval"}
-    <header><ShieldAlert size={16} /><div><strong>{approvalDisplay.title}</strong>{#if approvalDisplay.detail}<p>{approvalDisplay.detail}</p>{/if}</div></header>
+    <header><ShieldAlert size={16} /><div><strong>{approvalDisplay.title ?? t("chat.composer.approval")}</strong>{#if approvalDisplay.detail}<p>{approvalDisplay.detail}</p>{/if}</div></header>
+    {#if approvalDisplay.subject}
+      <div class="approval-subject" data-testid="approval-subject">
+        <small>{subjectLabel(approvalDisplay.subject.kind)}</small>
+        <pre>{approvalDisplay.subject.text}</pre>
+        {#if approvalDisplay.subject.location}<small>{t("chat.composer.approvalSubjectLocation", approvalDisplay.subject.location)}</small>{/if}
+        {#if approvalDisplay.subject.truncated}<small>{t("chat.composer.approvalSubjectTruncated")}</small>{/if}
+      </div>
+    {/if}
+    {#if sessionGrants.length > 0}
+      <div class="session-grants" data-testid="session-grants"><small>{t("chat.composer.sessionGrantsTitle")}</small><ul>{#each sessionGrants as grant}<li>{grantLabel(grant)}</li>{/each}</ul></div>
+    {/if}
     {#if approvalDisplay.payload}<details><summary>{t("chat.composer.details")}<ChevronDown size={13} /></summary><pre>{approvalDisplay.payload}</pre></details>{/if}
     <div class="request-actions">{#each approvalChoices as choice, index}<button type="button" disabled={resolving} class:danger={choice.decisionKind === "allow_session"} title={choice.description ?? undefined} onclick={() => void resolveApproval(index)}>{choice.label}</button>{/each}</div>
   {:else if question}
@@ -219,6 +242,10 @@
   header p, .chat-request-panel > small { color: var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); }
   details summary { display: inline-flex; cursor: pointer; align-items: center; gap: 0.25rem; color: var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); }
   pre { margin-top: 0.4rem; max-height: 10rem; overflow: auto; white-space: pre-wrap; border-radius: 0.35rem; background: var(--muted); padding: 0.5rem; font-size: calc(0.666667rem * var(--type-scale)); }
+  .approval-subject, .session-grants { display: grid; gap: 0.2rem; }
+  .approval-subject small, .session-grants small { color: var(--muted-foreground); font-size: calc(0.666667rem * var(--type-scale)); }
+  .approval-subject pre { margin-top: 0; overflow-wrap: anywhere; }
+  .session-grants ul { list-style: disc; padding-left: 1.1rem; font-size: calc(0.7rem * var(--type-scale)); overflow-wrap: anywhere; }
   .request-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; }
   .request-actions button { min-height: 2rem; border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.3rem 0.6rem; font-size: calc(0.733333rem * var(--type-scale)); }
   .request-actions button:hover { background: var(--accent); }

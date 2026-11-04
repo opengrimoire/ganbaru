@@ -25,9 +25,9 @@ function emptySnapshot(): ProjectsSnapshot {
   };
 }
 
-function project(id: string, groupId: string, status: Project["status"], sortOrder: number): Project {
+function project(id: string, groupId: string, status: Project["status"], orderKey: string): Project {
   return {
-    id, groupId, name: id, icon: "lucide:folder", sortOrder, status,
+    id, groupId, name: id, icon: "lucide:folder", orderKey, status,
     defaultEventName: null, defaultEventTimeMode: "timed", defaultEventDurationMinutes: null,
     defaultPomodoroMode: "preset", defaultIdleSettingsSource: "global",
     defaultIdlePauseEnabled: true, defaultIdleThresholdMinutes: 5, createdAt, updatedAt,
@@ -45,7 +45,7 @@ function task(
 ): ProjectTask {
   return {
     id, projectId, sectionId, statusId, parentTaskId, archivedAt, title: id, description: "",
-    priority: "none", taskType: "task", sectionSortOrder: order, statusSortOrder: order * 2,
+    priority: "none", taskType: "task", sectionOrderKey: String(order).padStart(6, "0"), statusOrderKey: String(order * 2).padStart(6, "0"),
     milestone: false, createdAt: `${createdAt.slice(0, -5)}${String(order % 1000).padStart(3, "0")}Z`, updatedAt,
   };
 }
@@ -53,29 +53,34 @@ function task(
 function nestedFixture(): ProjectsSnapshot {
   return {
     groups: [
-      { id: "group-b", name: "B", icon: "lucide:folder", sortOrder: 2000, collapsed: false, createdAt, updatedAt },
-      { id: "group-a", name: "A", icon: "lucide:folder", sortOrder: 1000, collapsed: false, createdAt, updatedAt },
-      { id: "group-hidden", name: "Hidden", icon: "lucide:folder", sortOrder: 500, collapsed: false, hiddenAt: updatedAt, createdAt, updatedAt },
+      { id: "group-b", name: "B", icon: "lucide:folder", orderKey: "2000", collapsed: false, createdAt, updatedAt },
+      { id: "group-a", name: "A", icon: "lucide:folder", orderKey: "1000", collapsed: false, createdAt, updatedAt },
+      { id: "group-hidden", name: "Hidden", icon: "lucide:folder", orderKey: "0500", collapsed: false, hiddenAt: updatedAt, createdAt, updatedAt },
     ],
     projects: [
-      project("project-b", "group-a", "archived", 500),
-      project("project-a", "group-a", "active", 2000),
-      project("project-c", "group-b", "active", 1000),
+      project("project-b", "group-a", "archived", "0500"),
+      project("project-a", "group-a", "active", "2000"),
+      project("project-c", "group-b", "active", "1000"),
     ],
     sections: [
-      { id: "section-hidden", projectId: "project-a", name: "Hidden", sortOrder: 500, collapsed: false, hiddenAt: updatedAt, createdAt, updatedAt },
-      { id: "section-b", projectId: "project-a", name: "Later", sortOrder: 2000, collapsed: false, createdAt, updatedAt },
-      { id: "section-a", projectId: "project-a", name: "First", sortOrder: 1000, collapsed: false, createdAt, updatedAt },
+      { id: "section-hidden", projectId: "project-a", name: "Hidden", orderKey: "0500", collapsed: false, hiddenAt: updatedAt, createdAt, updatedAt },
+      { id: "section-b", projectId: "project-a", name: "Later", orderKey: "2000", collapsed: false, createdAt, updatedAt },
+      { id: "section-a", projectId: "project-a", name: "First", orderKey: "1000", collapsed: false, createdAt, updatedAt },
     ],
     statuses: [
-      { id: "status-done", projectId: "project-a", name: "Done", category: "done", color: 2, sortOrder: 2000, terminal: true, createdAt, updatedAt },
-      { id: "status-todo", projectId: "project-a", name: "To do", category: "not_started", color: 1, sortOrder: 1000, terminal: false, createdAt, updatedAt },
+      { id: "status-done", projectId: "project-a", name: "Done", category: "done", color: 2, orderKey: "2000", terminal: true, createdAt, updatedAt },
+      { id: "status-todo", projectId: "project-a", name: "To do", category: "not_started", color: 1, orderKey: "1000", terminal: false, createdAt, updatedAt },
+      { id: "status-retired", projectId: "project-a", name: "Retired", category: "not_started", color: 3, orderKey: "0500", terminal: false, deletedAt: updatedAt, createdAt, updatedAt },
+      { id: "status-gone", projectId: "project-a", name: "Gone", category: "done", color: 4, orderKey: "0400", terminal: true, deletedAt: updatedAt, createdAt, updatedAt },
     ],
     priorities: [
-      { id: "priority-b", projectId: "project-a", name: "Low", color: 2, sortOrder: 2000, createdAt, updatedAt },
-      { id: "priority-a", projectId: "project-a", name: "High", color: 1, sortOrder: 1000, createdAt, updatedAt },
+      { id: "priority-b", projectId: "project-a", name: "Low", color: 2, orderKey: "2000", createdAt, updatedAt },
+      { id: "priority-a", projectId: "project-a", name: "High", color: 1, orderKey: "1000", createdAt, updatedAt },
+      { id: "priority-retired", projectId: "project-a", name: "Retired", color: 3, orderKey: "0500", deletedAt: updatedAt, createdAt, updatedAt },
+      { id: "priority-gone", projectId: "project-a", name: "Gone", color: 4, orderKey: "0400", deletedAt: updatedAt, createdAt, updatedAt },
     ],
     tasks: [
+      { ...task("task-retired", "project-a", "section-b", "status-retired", 4000), priority: "priority-retired" },
       task("task-child-b", "project-a", "section-a", "status-todo", 3000, "task-parent"),
       task("task-archived", "project-a", "section-a", "status-todo", 500, undefined, updatedAt),
       task("task-parent", "project-a", "section-a", "status-todo", 1000),
@@ -83,24 +88,24 @@ function nestedFixture(): ProjectsSnapshot {
       task("task-other", "project-c", "section-other", "status-other", 1000),
     ],
     checklistItems: [
-      { id: "item-b", taskId: "task-parent", title: "B", sortOrder: 2000, createdAt, updatedAt },
-      { id: "item-a", taskId: "task-parent", title: "A", sortOrder: 1000, createdAt, updatedAt },
+      { id: "item-b", taskId: "task-parent", title: "B", orderKey: "2000", createdAt, updatedAt },
+      { id: "item-a", taskId: "task-parent", title: "A", orderKey: "1000", createdAt, updatedAt },
     ],
     tags: [
-      { id: "tag-b", projectId: "project-a", name: "Beta", sortOrder: 2000, createdAt, updatedAt },
-      { id: "tag-a", projectId: "project-a", name: "Alpha", sortOrder: 1000, createdAt, updatedAt },
+      { id: "tag-b", projectId: "project-a", name: "Beta", orderKey: "2000", createdAt, updatedAt },
+      { id: "tag-a", projectId: "project-a", name: "Alpha", orderKey: "1000", createdAt, updatedAt },
     ],
     taskTagLinks: [{ taskId: "task-parent", tagId: "tag-b", createdAt }],
     customFields: [
-      { id: "field-b", projectId: "project-a", name: "Text", fieldType: "text", sortOrder: 2000, icon: null, createdAt, updatedAt },
-      { id: "field-a", projectId: "project-a", name: "Choice", fieldType: "select", sortOrder: 1000, icon: null, createdAt, updatedAt },
+      { id: "field-b", projectId: "project-a", name: "Text", fieldType: "text", orderKey: "2000", icon: null, createdAt, updatedAt },
+      { id: "field-a", projectId: "project-a", name: "Choice", fieldType: "select", orderKey: "1000", icon: null, createdAt, updatedAt },
     ],
     customFieldOptions: [
-      { id: "option-b", fieldId: "field-a", name: "B", sortOrder: 2000, createdAt, updatedAt },
-      { id: "option-a", fieldId: "field-a", name: "A", sortOrder: 1000, createdAt, updatedAt },
+      { id: "option-b", fieldId: "field-a", name: "B", orderKey: "2000", createdAt, updatedAt },
+      { id: "option-a", fieldId: "field-a", name: "A", orderKey: "1000", createdAt, updatedAt },
     ],
     customFieldValues: [{ taskId: "task-parent", fieldId: "field-b", textValue: "value", updatedAt }],
-    customFieldOptionValues: [{ taskId: "task-parent", fieldId: "field-a", optionId: "option-b", createdAt }],
+    customFieldOptionValues: [{ taskId: "task-parent", fieldId: "field-a", optionId: "option-b" }],
     dependencies: [{ id: "dependency-a", blockingTaskId: "task-child-a", blockedTaskId: "task-parent", dependencyType: "blocks", createdAt }],
     eventLinks: [{ taskId: "task-parent", eventId: "event-a", linkKind: "scheduled", createdAt }],
     taskChangeEvents: [
@@ -111,8 +116,8 @@ function nestedFixture(): ProjectsSnapshot {
       projectId: "project-a", viewId: "view-a-list", preferenceKey: TASK_LIST_COLUMNS_PREFERENCE_KEY,
       preferenceValue: JSON.stringify(["status", "custom:field-a"]), updatedAt,
     }],
-    views: [{ id: "view-a-list", projectId: "project-a", viewType: "list", sortOrder: 1000, createdAt, updatedAt }],
-    customEmojis: [{ id: "emoji-a", name: "Focus", assetPath: "project-icons/a.png", sortOrder: 3000, createdAt, updatedAt }],
+    views: [{ id: "view-a-list", projectId: "project-a", viewType: "list", orderKey: "1000", createdAt, updatedAt }],
+    customEmojis: [{ id: "emoji-a", name: "Focus", assetPath: "project-icons/a.png", orderKey: "3000", createdAt, updatedAt }],
   };
 }
 
@@ -148,42 +153,48 @@ function denseFixture(count = 2_000): ProjectsSnapshot {
   };
 }
 
-const byOrderAndName = <T extends { sortOrder: number; name: string }>(a: T, b: T) =>
-  a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
-const bySectionOrder = (a: ProjectTask, b: ProjectTask) =>
-  a.sectionSortOrder - b.sectionSortOrder || a.createdAt.localeCompare(b.createdAt);
-const byStatusOrder = (a: ProjectTask, b: ProjectTask) =>
-  a.statusSortOrder - b.statusSortOrder || a.createdAt.localeCompare(b.createdAt);
+/** Reference ordering: code-unit comparison of the key, then of the id, never locale collation. */
+function keyThenId(leftKey: string, leftId: string, rightKey: string, rightId: string): number {
+  if (leftKey !== rightKey) return leftKey < rightKey ? -1 : 1;
+  if (leftId !== rightId) return leftId < rightId ? -1 : 1;
+  return 0;
+}
+
+const byOrder = <T extends { id: string; orderKey: string }>(a: T, b: T) => keyThenId(a.orderKey, a.id, b.orderKey, b.id);
+const bySectionOrder = (a: ProjectTask, b: ProjectTask) => keyThenId(a.sectionOrderKey, a.id, b.sectionOrderKey, b.id);
+const byStatusOrder = (a: ProjectTask, b: ProjectTask) => keyThenId(a.statusOrderKey, a.id, b.statusOrderKey, b.id);
 
 function ids(values: readonly { id: string }[]): string[] {
   return values.map((value) => value.id);
 }
 
-function maxOrder(values: readonly number[]): number {
-  return Math.max(0, ...values) + 1000;
-}
 
 function compareEverySelector(snapshot: ProjectsSnapshot): void {
   const projectId = "project-a";
   const groupId = "group-a";
   const taskId = "task-parent";
   const fieldId = "field-a";
-  const activeProjects = snapshot.projects.filter((value) => value.status === "active").sort(byOrderAndName);
-  const activeSections = snapshot.sections.filter((value) => value.projectId === projectId && !value.archivedAt && !value.hiddenAt).sort(byOrderAndName);
-  const statuses = snapshot.statuses.filter((value) => value.projectId === projectId).sort(byOrderAndName);
-  const priorities = snapshot.priorities.filter((value) => value.projectId === projectId).sort(byOrderAndName);
+  const activeProjects = snapshot.projects.filter((value) => value.status === "active").sort(byOrder);
+  const activeSections = snapshot.sections.filter((value) => value.projectId === projectId && !value.archivedAt && !value.hiddenAt).sort(byOrder);
+  const allStatuses = snapshot.statuses.filter((value) => value.projectId === projectId).sort(byOrder);
+  const statuses = allStatuses.filter((value) => !value.deletedAt);
+  const allPriorities = snapshot.priorities.filter((value) => value.projectId === projectId).sort(byOrder);
+  const priorities = allPriorities.filter((value) => !value.deletedAt);
+  const projectTasks = snapshot.tasks.filter((value) => value.projectId === projectId);
+  const usedStatusIds = new Set(projectTasks.map((value) => value.statusId));
+  const usedPriorityIds = new Set(projectTasks.map((value) => value.priority));
   const activeTasks = snapshot.tasks.filter((value) => value.projectId === projectId && !value.archivedAt).sort(bySectionOrder);
   const allTasks = snapshot.tasks.filter((value) => value.projectId === projectId).sort(bySectionOrder);
   const sectionTasks = snapshot.tasks.filter((value) => value.projectId === projectId && value.sectionId === "section-a" && !value.parentTaskId && !value.archivedAt).sort(bySectionOrder);
   const statusTasks = snapshot.tasks.filter((value) => value.projectId === projectId && value.statusId === "status-todo" && !value.parentTaskId && !value.archivedAt).sort(byStatusOrder);
   const subtasks = snapshot.tasks.filter((value) => value.parentTaskId === taskId && !value.archivedAt).sort(bySectionOrder);
   const allSubtasks = snapshot.tasks.filter((value) => value.parentTaskId === taskId).sort(bySectionOrder);
-  const projects = snapshot.projects.filter((value) => value.groupId === groupId).sort(byOrderAndName);
-  const projectTags = snapshot.tags.filter((value) => value.projectId === projectId).sort(byOrderAndName);
+  const projects = snapshot.projects.filter((value) => value.groupId === groupId).sort(byOrder);
+  const projectTags = snapshot.tags.filter((value) => value.projectId === projectId).sort(byOrder);
   const taskLinks = snapshot.taskTagLinks.filter((value) => value.taskId === taskId);
   const linkedTagIds = new Set(taskLinks.map((value) => value.tagId));
-  const fields = snapshot.customFields.filter((value) => value.projectId === projectId).sort(byOrderAndName);
-  const options = snapshot.customFieldOptions.filter((value) => value.fieldId === fieldId).sort(byOrderAndName);
+  const fields = snapshot.customFields.filter((value) => value.projectId === projectId).sort(byOrder);
+  const options = snapshot.customFieldOptions.filter((value) => value.fieldId === fieldId).sort(byOrder);
   const selectedOptionIds = new Set(snapshot.customFieldOptionValues.filter((value) => value.taskId === taskId && value.fieldId === fieldId).map((value) => value.optionId));
   const history = snapshot.taskChangeEvents.filter((value) => value.taskId === taskId).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
   const projectTaskIds = new Set(snapshot.tasks.filter((value) => value.projectId === projectId).map((value) => value.id));
@@ -194,9 +205,11 @@ function compareEverySelector(snapshot: ProjectsSnapshot): void {
   expect(indexed.projectById(snapshot, projectId)).toBe(snapshot.projects.find((value) => value.id === projectId));
   expect(indexed.groupById(snapshot, groupId)).toBe(snapshot.groups.find((value) => value.id === groupId));
   expect(ids(indexed.sectionsForProject(snapshot, projectId))).toEqual(ids(activeSections));
-  expect(ids(indexed.sectionsForProjectIncludingInactive(snapshot, projectId))).toEqual(ids(snapshot.sections.filter((value) => value.projectId === projectId).sort(byOrderAndName)));
+  expect(ids(indexed.sectionsForProjectIncludingInactive(snapshot, projectId))).toEqual(ids(snapshot.sections.filter((value) => value.projectId === projectId).sort(byOrder)));
   expect(ids(indexed.statusesForProject(snapshot, projectId))).toEqual(ids(statuses));
   expect(ids(indexed.prioritiesForProject(snapshot, projectId))).toEqual(ids(priorities));
+  expect(ids(indexed.taskStatusesForProject(snapshot, projectId))).toEqual(ids(allStatuses.filter((value) => !value.deletedAt || usedStatusIds.has(value.id))));
+  expect(ids(indexed.taskPrioritiesForProject(snapshot, projectId))).toEqual(ids(allPriorities.filter((value) => !value.deletedAt || usedPriorityIds.has(value.id))));
   expect(ids(indexed.tasksForProject(snapshot, projectId))).toEqual(ids(activeTasks));
   expect(ids(indexed.tasksForProjectIncludingArchived(snapshot, projectId))).toEqual(ids(allTasks));
   expect(ids(indexed.topLevelTasksForSection(snapshot, projectId, "section-a"))).toEqual(ids(sectionTasks));
@@ -205,7 +218,7 @@ function compareEverySelector(snapshot: ProjectsSnapshot): void {
   expect(ids(indexed.subtasksForTaskIncludingArchived(snapshot, taskId))).toEqual(ids(allSubtasks));
   expect(ids(indexed.projectsForGroup(snapshot, groupId))).toEqual(ids(projects.filter((value) => value.status === "active")));
   expect(ids(indexed.projectsForGroupIncludingInactive(snapshot, groupId))).toEqual(ids(projects));
-  expect(ids(indexed.visibleGroups(snapshot))).toEqual(ids(snapshot.groups.filter((value) => !value.hiddenAt && !value.archivedAt).sort(byOrderAndName)));
+  expect(ids(indexed.visibleGroups(snapshot))).toEqual(ids(snapshot.groups.filter((value) => !value.hiddenAt && !value.archivedAt).sort(byOrder)));
   expect(indexed.defaultSection(snapshot, projectId)).toBe(activeSections[0]);
   expect(indexed.defaultStatus(snapshot, projectId)).toBe(statuses.find((value) => value.name.toLowerCase() === "to do") ?? statuses.find((value) => value.category === "not_started") ?? statuses[0]);
   expect(indexed.doneStatus(snapshot, projectId)).toBe(statuses.find((value) => value.terminal));
@@ -216,11 +229,11 @@ function compareEverySelector(snapshot: ProjectsSnapshot): void {
   expect(indexed.eventLinksForEvent(snapshot, "event-a")).toEqual(snapshot.eventLinks.filter((value) => value.eventId === "event-a"));
   expect(indexed.taskChangeEventsForTask(snapshot, taskId)).toEqual(history);
   expect(indexed.recentTaskChangeEventsForProject(snapshot, projectId, 1)).toEqual(projectHistory.slice(0, 1));
-  expect(ids(indexed.checklistItemsForTask(snapshot, taskId))).toEqual(ids(snapshot.checklistItems.filter((value) => value.taskId === taskId).sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt))));
+  expect(ids(indexed.checklistItemsForTask(snapshot, taskId))).toEqual(ids(snapshot.checklistItems.filter((value) => value.taskId === taskId).sort((a, b) => byOrder(a, b))));
   expect(ids(indexed.tagsForProject(snapshot, projectId))).toEqual(ids(projectTags));
   expect(indexed.tagById(snapshot, "tag-a")).toBe(snapshot.tags.find((value) => value.id === "tag-a"));
   expect(indexed.taskTagLinksForTask(snapshot, taskId)).toEqual(taskLinks);
-  expect(ids(indexed.tagsForTask(snapshot, taskId))).toEqual(ids(snapshot.tags.filter((value) => linkedTagIds.has(value.id)).sort(byOrderAndName)));
+  expect(ids(indexed.tagsForTask(snapshot, taskId))).toEqual(ids(snapshot.tags.filter((value) => linkedTagIds.has(value.id)).sort(byOrder)));
   const selectedTask = snapshot.tasks.find((value) => value.id === taskId);
   expect(ids(indexed.unlinkedTagsForTask(snapshot, selectedTask))).toEqual(
     selectedTask ? ids(projectTags.filter((value) => !linkedTagIds.has(value.id))) : [],
@@ -235,19 +248,6 @@ function compareEverySelector(snapshot: ProjectsSnapshot): void {
   expect(ids(indexed.customFieldOptionValuesForTask(snapshot, taskId, fieldId))).toEqual(ids(options.filter((value) => selectedOptionIds.has(value.id))));
   expect(indexed.dependenciesBlockingTask(snapshot, taskId)).toEqual(snapshot.dependencies.filter((value) => value.blockedTaskId === taskId));
   expect(indexed.dependenciesBlockedByTask(snapshot, "task-child-a")).toEqual(snapshot.dependencies.filter((value) => value.blockingTaskId === "task-child-a"));
-  expect(indexed.nextGroupSortOrder(snapshot)).toBe(maxOrder(snapshot.groups.map((value) => value.sortOrder)));
-  expect(indexed.nextProjectSortOrder(snapshot, groupId)).toBe(maxOrder(projects.map((value) => value.sortOrder)));
-  expect(indexed.nextSectionSortOrder(snapshot, projectId)).toBe(maxOrder(activeSections.map((value) => value.sortOrder)));
-  expect(indexed.nextStatusSortOrder(snapshot, projectId)).toBe(maxOrder(statuses.map((value) => value.sortOrder)));
-  expect(indexed.nextPrioritySortOrder(snapshot, projectId)).toBe(maxOrder(priorities.map((value) => value.sortOrder)));
-  expect(indexed.nextTaskSectionSortOrder(snapshot, projectId, "section-a")).toBe(maxOrder(sectionTasks.map((value) => value.sectionSortOrder)));
-  expect(indexed.nextSubtaskSortOrder(snapshot, taskId)).toBe(maxOrder(allSubtasks.map((value) => value.sectionSortOrder)));
-  expect(indexed.nextChecklistSortOrder(snapshot, taskId)).toBe(maxOrder(snapshot.checklistItems.filter((value) => value.taskId === taskId).map((value) => value.sortOrder)));
-  expect(indexed.nextTagSortOrder(snapshot, projectId)).toBe(maxOrder(projectTags.map((value) => value.sortOrder)));
-  expect(indexed.nextCustomFieldSortOrder(snapshot, projectId)).toBe(maxOrder(fields.map((value) => value.sortOrder)));
-  expect(indexed.nextCustomFieldOptionSortOrder(snapshot, fieldId)).toBe(maxOrder(options.map((value) => value.sortOrder)));
-  expect(indexed.nextCustomEmojiSortOrder(snapshot)).toBe(maxOrder(snapshot.customEmojis.map((value) => value.sortOrder)));
-  expect(indexed.nextTaskStatusSortOrder(snapshot, projectId, "status-todo")).toBe(maxOrder(statusTasks.map((value) => value.statusSortOrder)));
 }
 
 describe("ProjectLoadedDataIndex", () => {
@@ -270,6 +270,27 @@ describe("ProjectLoadedDataIndex", () => {
     sections.pop();
 
     expect(ids(indexed.sectionsForProject(snapshot, "project-a"))).toEqual(["section-a", "section-b"]);
+  });
+
+  it("hides deleted statuses and priorities from pickers but keeps the ones tasks still use", () => {
+    const snapshot = nestedFixture();
+
+    expect(ids(indexed.statusesForProject(snapshot, "project-a"))).toEqual(["status-todo", "status-done"]);
+    expect(ids(indexed.taskStatusesForProject(snapshot, "project-a"))).toEqual(["status-retired", "status-todo", "status-done"]);
+    expect(ids(indexed.prioritiesForProject(snapshot, "project-a"))).toEqual(["priority-a", "priority-b"]);
+    expect(ids(indexed.taskPrioritiesForProject(snapshot, "project-a"))).toEqual(["priority-retired", "priority-a", "priority-b"]);
+    expect(indexed.defaultStatus(snapshot, "project-a")?.id).toBe("status-todo");
+  });
+
+  it("orders rows with equal keys by id rather than by name", () => {
+    const snapshot = nestedFixture();
+    snapshot.tags = [
+      { id: "tag-z", projectId: "project-a", name: "Alpha", orderKey: "1000", createdAt, updatedAt },
+      { id: "tag-m", projectId: "project-a", name: "Zulu", orderKey: "1000", createdAt, updatedAt },
+      { id: "tag-upper", projectId: "project-a", name: "Beta", orderKey: "Z", createdAt, updatedAt },
+    ];
+
+    expect(ids(indexed.tagsForProject(snapshot, "project-a"))).toEqual(["tag-m", "tag-z", "tag-upper"]);
   });
 
   it("indexes identities for every loaded core and optional collection", () => {
@@ -309,7 +330,7 @@ describe("ProjectLoadedDataIndex", () => {
     expect(builds).toBe(1);
 
     snapshot = applyProjectMutation(snapshot, {
-      changed: { ...emptySnapshot(), tasks: [{ ...snapshot.tasks[2]!, title: "Patched" }] },
+      changed: { ...emptySnapshot(), tasks: [{ ...snapshot.tasks.find((value) => value.id === "task-parent")!, title: "Patched" }] },
       removals: [],
       calendarEventProjectAssignments: [],
     });

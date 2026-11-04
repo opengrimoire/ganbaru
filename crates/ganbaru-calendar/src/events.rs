@@ -20,6 +20,17 @@ mod validation;
 
 pub(crate) use archive::archive_or_delete_calendar_events_for_calendar;
 
+/// Checks a stored source event against every sync value bound an edit enforces.
+#[cfg(test)]
+pub(crate) async fn check_stored_value_bounds(
+    connection: &mut sqlx::SqliteConnection,
+    event_id: &str,
+) -> Result<(), String> {
+    metadata::Metadata::read(connection, event_id, &mut ReadBudget::default())
+        .await?
+        .check_value_bounds()
+}
+
 #[cfg(test)]
 use archive::{archive_calendar_event_tx, delete_calendar_event_tx};
 #[cfg(test)]

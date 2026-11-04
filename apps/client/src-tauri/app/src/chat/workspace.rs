@@ -12,7 +12,6 @@ use crate::vault;
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
 };
-use std::fs;
 use std::path::Path;
 use tauri::Runtime;
 
@@ -36,21 +35,26 @@ pub fn ensure_managed_working_folder_binding<R: Runtime>(
         .managed_relative_path
         .as_deref()
         .ok_or_else(path_validation_error)?;
-    let expected = format!("projects/{}", working_folder.project_id);
+    let expected =
+        ganbaru_working_folders::managed_project_relative_path(working_folder.project_id.as_str())
+            .map_err(|_| path_validation_error())?;
     if relative_path != expected {
         return Err(path_validation_error());
     }
     let vault_root = vault::active_writable_vault_path(app).map_err(device_state_error)?;
-    let folder_path = vault_root.join(relative_path);
-    fs::create_dir_all(&folder_path).map_err(|_| {
+    let folder_path = ganbaru_working_folders::resolve_managed_project_folder(
+        &vault_root,
+        working_folder.project_id.as_str(),
+    )
+    .map_err(|_| {
         ChatError::new(
             ChatErrorCode::Permission,
-            "The managed project working folder could not be created",
+            "The managed project working folder could not be created inside the active Ganbaru folder",
             true,
         )
     })?;
     let (_, binding) = prepare_workspace_binding(working_folder, &folder_path)?;
-    store_active_device_binding(app, &working_folder.id, binding)
+    store_active_device_binding(app, &working_folder.id, binding).map(|_| ())
 }
 
 pub fn validate_external_folder_outside_vault<R: Runtime>(
@@ -68,14 +72,28 @@ pub fn validate_external_folder_outside_vault<R: Runtime>(
     Ok(())
 }
 
+/// Stores this device's binding for a working folder and returns whether it replaced a
+/// binding to another directory, which also drops the folder's trust decision.
 pub fn store_active_device_binding<R: Runtime>(
     app: &tauri::AppHandle<R>,
     working_folder_id: &ProjectWorkingFolderId,
     binding: ProjectWorkingFolderBindingState,
-) -> ChatResult<()> {
+) -> ChatResult<bool> {
     update_active_working_folder_scope(app, |scope| {
-        scope.bindings.insert(working_folder_id.clone(), binding);
-        Ok(())
+        let previous = scope.bindings.insert(working_folder_id.clone(), binding);
+        let rebound = previous.is_some_and(|previous| {
+            scope
+                .bindings
+                .get(working_folder_id)
+                .is_some_and(|current| {
+                    current.canonical_path != previous.canonical_path
+                        || current.filesystem_identity != previous.filesystem_identity
+                })
+        });
+        if rebound {
+            scope.trust.remove(working_folder_id);
+        }
+        Ok(rebound)
     })
     .map_err(device_state_error)
 }
@@ -86,9 +104,23 @@ pub fn remove_active_device_binding<R: Runtime>(
 ) -> ChatResult<()> {
     update_active_working_folder_scope(app, |scope| {
         scope.bindings.remove(working_folder_id);
+        scope.trust.remove(working_folder_id);
         Ok(())
     })
-    .map_err(device_state_error)
+    .map_err(device_state_error)?;
+    // An unbound folder's preview logins and site data go with its binding. The unbind has
+    // already happened, so a cleanup failure is reported without undoing it.
+    #[cfg(desktop)]
+    if let Err(error) = crate::chat::preview::data_store::discard_preview_data(
+        app,
+        Some(std::slice::from_ref(working_folder_id)),
+    ) {
+        eprintln!(
+            "Could not discard Chat preview data for an unbound working folder: {}",
+            error.message
+        );
+    }
+    Ok(())
 }
 
 fn paths_overlap(left: &Path, right: &Path) -> bool {

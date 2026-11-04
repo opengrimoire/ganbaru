@@ -12,8 +12,12 @@ pub use profiles::*;
 use retained_references::{retained_reference_issues, retained_reference_issues_in_transaction};
 pub use targets::*;
 
-use super::common::{wire_folder_capability, wire_history_boundary, wire_runtime_approval_policy};
+use super::common::{
+    effective_runtime_approval, runtime_approval_rank, teammate_runtime_approval,
+    wire_folder_capability, wire_history_boundary, wire_runtime_approval_policy,
+};
 use super::*;
+use ganbaru_chat::conversion::{channel_membership_key, folder_grant_key, membership_key};
 use ganbaru_chat::coordination::access::history_boundary_is_expansion;
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,6 +30,7 @@ struct ResolvedChannelAccess {
     conversation_id: ChatConversationId,
     channel_name: String,
     access_profile_id: ChatAccessProfileId,
+    access_profile_revision_id: ChatAccessProfileRevisionId,
     access_profile_revision: u64,
     profile_default_channel_capabilities: ChatChannelCapabilities,
     profile_default_history_boundary: ChatHistoryBoundary,
@@ -211,7 +216,7 @@ pub async fn chat_preview_teammate_access(
         &pool,
         &request.teammate_id,
         request.expected_access_revision,
-        request.teammate_default_runtime_approval,
+        request.policy.as_ref(),
         &request.channels,
     )
     .await
@@ -234,7 +239,7 @@ pub async fn chat_replace_teammate_access(
         &pool,
         &request.teammate_id,
         request.expected_access_revision,
-        request.teammate_default_runtime_approval,
+        request.policy.as_ref(),
         &request.channels,
     )
     .await?;
@@ -250,7 +255,7 @@ pub async fn chat_replace_teammate_access(
         .0;
     let has_reduction = teammate_access_has_reduction(
         &current,
-        request.teammate_default_runtime_approval,
+        proposed_teammate_default(&current, request.policy.as_ref()),
         &resolved,
     );
     let now = now_timestamp()?;
@@ -265,13 +270,9 @@ pub async fn chat_replace_teammate_access(
     }
     let updated = sqlx::query(
         "UPDATE chat_teammate_access_state
-         SET access_revision = access_revision + 1,
-             runtime_approval_policy = ?, updated_at = ?
+         SET access_revision = access_revision + 1, updated_at = ?
          WHERE teammate_id = ? AND access_revision = ?",
     )
-    .bind(wire_runtime_approval_policy(
-        request.teammate_default_runtime_approval,
-    ))
     .bind(now.as_str())
     .bind(request.teammate_id.as_str())
     .bind(i64_value(request.expected_access_revision)?)
@@ -288,6 +289,12 @@ pub async fn chat_replace_teammate_access(
     require_expected_profile_revisions_in_transaction(&mut transaction, &request.channels).await?;
 
     if let Some(configuration) = validated_configuration {
+        require_unused_teammate_name(
+            &mut transaction,
+            &configuration.display_name,
+            request.teammate_id.as_str(),
+        )
+        .await?;
         let updated = sqlx::query(
             "UPDATE chat_participants
              SET display_name = ?, avatar_schema_version = ?, avatar_data = ?,
@@ -302,7 +309,7 @@ pub async fn chat_replace_teammate_access(
         .bind(i64_value(configuration.expected_revision)?)
         .execute(&mut *transaction)
         .await
-        .map_err(map_teammate_write_error)?;
+        .map_err(persistence_error)?;
         if updated.rows_affected() != 1 {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
@@ -321,18 +328,9 @@ pub async fn chat_replace_teammate_access(
         .execute(&mut *transaction)
         .await
         .map_err(persistence_error)?;
-        let next_policy_revision: i64 = sqlx::query_scalar(
-            "SELECT latest_policy_revision + 1
-             FROM chat_teammates WHERE participant_id = ?",
-        )
-        .bind(request.teammate_id.as_str())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
         insert_policy_revision(
             &mut transaction,
             &request.teammate_id,
-            u64_value(next_policy_revision)?,
             request
                 .policy
                 .as_ref()
@@ -348,7 +346,7 @@ pub async fn chat_replace_teammate_access(
         .collect::<BTreeSet<_>>();
     let existing_conversations = sqlx::query_scalar::<_, String>(
         "SELECT conversation_id FROM chat_teammate_channel_memberships
-         WHERE teammate_id = ?",
+         WHERE teammate_id = ? AND removed_at IS NULL",
     )
     .bind(request.teammate_id.as_str())
     .fetch_all(&mut *transaction)
@@ -356,46 +354,22 @@ pub async fn chat_replace_teammate_access(
     .map_err(persistence_error)?;
     for conversation_id in existing_conversations {
         if !proposed_conversations.contains(conversation_id.as_str()) {
-            sqlx::query(
-                "UPDATE chat_teammate_working_folder_grants
-                 SET revoked_at = ?, is_default = 0, revision = revision + 1
-                 WHERE conversation_id = ? AND teammate_id = ? AND revoked_at IS NULL",
+            remove_teammate_from_conversation(
+                &mut transaction,
+                &request.teammate_id,
+                &conversation_id,
+                &now,
             )
-            .bind(now.as_str())
-            .bind(&conversation_id)
-            .bind(request.teammate_id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(persistence_error)?;
-            sqlx::query(
-                "DELETE FROM chat_teammate_channel_memberships
-                 WHERE conversation_id = ? AND teammate_id = ?",
-            )
-            .bind(&conversation_id)
-            .bind(request.teammate_id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(persistence_error)?;
-            sqlx::query(
-                "UPDATE chat_conversation_memberships
-                 SET removed_at = ?, revision = revision + 1, updated_at = ?
-                 WHERE conversation_id = ? AND participant_id = ?",
-            )
-            .bind(now.as_str())
-            .bind(now.as_str())
-            .bind(&conversation_id)
-            .bind(request.teammate_id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(persistence_error)?;
+            .await?;
         }
     }
 
     for channel in &resolved {
         sqlx::query(
             "INSERT INTO chat_conversation_memberships
-                (conversation_id, participant_id, membership_role, created_at, updated_at)
-             VALUES (?, ?, 'member', ?, ?)
+                (conversation_id, participant_id, sync_key, membership_role, created_at,
+                 updated_at)
+             VALUES (?, ?, ?, 'member', ?, ?)
              ON CONFLICT(conversation_id, participant_id) DO UPDATE SET
                 membership_role = 'member', removed_at = NULL,
                 revision = chat_conversation_memberships.revision + 1,
@@ -403,21 +377,25 @@ pub async fn chat_replace_teammate_access(
         )
         .bind(channel.conversation_id.as_str())
         .bind(request.teammate_id.as_str())
+        .bind(sync_key(membership_key(
+            channel.conversation_id.as_str(),
+            request.teammate_id.as_str(),
+        ))?)
         .bind(now.as_str())
         .bind(now.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(persistence_error)?;
-        let history_from_ordinal = match channel.history_boundary {
+        let history_from_order_key = match &channel.history_boundary {
             ChatHistoryBoundary::Entire => None,
-            ChatHistoryBoundary::FromGrant { lower_ordinal } => {
-                Some(i64_value(lower_ordinal.ok_or_else(|| {
+            ChatHistoryBoundary::FromGrant { lower_order_key } => {
+                Some(lower_order_key.clone().ok_or_else(|| {
                     ChatError::new(
                         ChatErrorCode::Persistence,
-                        "Resolved history boundary is missing its lower ordinal",
+                        "Resolved history boundary is missing its lower order key",
                         false,
                     )
-                })?)?)
+                })?)
             }
         };
         let read_history_inherits_profile = channel.capabilities.read_history
@@ -428,13 +406,13 @@ pub async fn chat_replace_teammate_access(
             == wire_history_boundary(&channel.profile_default_history_boundary);
         sqlx::query(
             "INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, access_profile_id,
+                (conversation_id, teammate_id, sync_key, access_profile_id,
                  read_history, read_history_inherits_profile,
                  participate, participate_inherits_profile,
                  history_boundary, history_boundary_inherits_profile,
-                 history_from_ordinal, runtime_approval_policy,
+                 history_from_order_key, runtime_approval_policy,
                  scratch_runtime_approval_policy, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(conversation_id, teammate_id) DO UPDATE SET
                 access_profile_id = excluded.access_profile_id,
                 read_history = excluded.read_history,
@@ -443,13 +421,17 @@ pub async fn chat_replace_teammate_access(
                 participate_inherits_profile = excluded.participate_inherits_profile,
                 history_boundary = excluded.history_boundary,
                 history_boundary_inherits_profile = excluded.history_boundary_inherits_profile,
-                history_from_ordinal = excluded.history_from_ordinal,
+                history_from_order_key = excluded.history_from_order_key,
                 runtime_approval_policy = excluded.runtime_approval_policy,
                 scratch_runtime_approval_policy = excluded.scratch_runtime_approval_policy,
-                updated_at = excluded.updated_at",
+                removed_at = NULL, updated_at = excluded.updated_at",
         )
         .bind(channel.conversation_id.as_str())
         .bind(request.teammate_id.as_str())
+        .bind(sync_key(channel_membership_key(
+            channel.conversation_id.as_str(),
+            request.teammate_id.as_str(),
+        ))?)
         .bind(channel.access_profile_id.as_str())
         .bind(channel.capabilities.read_history)
         .bind(read_history_inherits_profile)
@@ -457,7 +439,7 @@ pub async fn chat_replace_teammate_access(
         .bind(participate_inherits_profile)
         .bind(wire_history_boundary(&channel.history_boundary))
         .bind(history_boundary_inherits_profile)
-        .bind(history_from_ordinal)
+        .bind(history_from_order_key)
         .bind(
             channel
                 .runtime_approval_override
@@ -474,51 +456,16 @@ pub async fn chat_replace_teammate_access(
         .await
         .map_err(persistence_error)?;
 
-        sqlx::query(
-            "UPDATE chat_teammate_working_folder_grants
-             SET revoked_at = ?, is_default = 0, revision = revision + 1
-             WHERE conversation_id = ? AND teammate_id = ? AND revoked_at IS NULL",
+        replace_folder_grants(
+            &mut transaction,
+            &channel.conversation_id,
+            &request.teammate_id,
+            &channel.project_id,
+            &channel.folder_grants,
+            channel.profile_maximum_folder_capability,
+            &now,
         )
-        .bind(now.as_str())
-        .bind(channel.conversation_id.as_str())
-        .bind(request.teammate_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
-        for grant in &channel.folder_grants {
-            sqlx::query(
-                "INSERT INTO chat_teammate_working_folder_grants
-                    (conversation_id, teammate_id, project_id, working_folder_id,
-                     capability, capability_inherits_profile,
-                     is_default, runtime_approval_policy,
-                     revision, created_at, revoked_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)
-                 ON CONFLICT(conversation_id, teammate_id, working_folder_id) DO UPDATE SET
-                    project_id = excluded.project_id,
-                    capability = excluded.capability,
-                    capability_inherits_profile = excluded.capability_inherits_profile,
-                    is_default = excluded.is_default,
-                    runtime_approval_policy = excluded.runtime_approval_policy,
-                    revision = chat_teammate_working_folder_grants.revision + 1,
-                    revoked_at = NULL",
-            )
-            .bind(channel.conversation_id.as_str())
-            .bind(request.teammate_id.as_str())
-            .bind(&channel.project_id)
-            .bind(grant.working_folder_id.as_str())
-            .bind(wire_folder_capability(grant.capability))
-            .bind(grant.capability == channel.profile_maximum_folder_capability)
-            .bind(grant.is_default)
-            .bind(
-                grant
-                    .runtime_approval_override
-                    .map(wire_runtime_approval_policy),
-            )
-            .bind(now.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(persistence_error)?;
-        }
+        .await?;
     }
 
     if has_reduction {
@@ -537,11 +484,78 @@ pub async fn chat_replace_teammate_access(
     read_teammate_access(&pool, &request.teammate_id).await
 }
 
+/// Replaces the active folder grants of one AI channel membership: revokes every active grant,
+/// then creates or reactivates one row per requested grant under `project_id`.
+///
+/// Reactivation also writes the project, so a synced row that claimed another project for a
+/// folder of this one carries authority again once the user saves it.
+pub(super) async fn replace_folder_grants(
+    transaction: &mut Transaction<'_, Sqlite>,
+    conversation_id: &ChatConversationId,
+    teammate_id: &ChatParticipantId,
+    project_id: &str,
+    grants: &[ChatFolderGrantInput],
+    profile_maximum_folder_capability: ChatFolderCapability,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    sqlx::query(
+        "UPDATE chat_teammate_working_folder_grants
+         SET revoked_at = ?, is_default = 0, revision = revision + 1
+         WHERE conversation_id = ? AND teammate_id = ? AND revoked_at IS NULL",
+    )
+    .bind(now.as_str())
+    .bind(conversation_id.as_str())
+    .bind(teammate_id.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    for grant in grants {
+        sqlx::query(
+            "INSERT INTO chat_teammate_working_folder_grants
+                (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+                 capability, capability_inherits_profile,
+                 is_default, runtime_approval_policy,
+                 revision, created_at, revoked_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)
+             ON CONFLICT(conversation_id, teammate_id, working_folder_id) DO UPDATE SET
+                project_id = excluded.project_id,
+                capability = excluded.capability,
+                capability_inherits_profile = excluded.capability_inherits_profile,
+                is_default = excluded.is_default,
+                runtime_approval_policy = excluded.runtime_approval_policy,
+                revision = chat_teammate_working_folder_grants.revision + 1,
+                revoked_at = NULL",
+        )
+        .bind(conversation_id.as_str())
+        .bind(teammate_id.as_str())
+        .bind(project_id)
+        .bind(grant.working_folder_id.as_str())
+        .bind(sync_key(folder_grant_key(
+            conversation_id.as_str(),
+            teammate_id.as_str(),
+            grant.working_folder_id.as_str(),
+        ))?)
+        .bind(wire_folder_capability(grant.capability))
+        .bind(grant.capability == profile_maximum_folder_capability)
+        .bind(grant.is_default)
+        .bind(
+            grant
+                .runtime_approval_override
+                .map(wire_runtime_approval_policy),
+        )
+        .bind(now.as_str())
+        .execute(&mut **transaction)
+        .await
+        .map_err(persistence_error)?;
+    }
+    Ok(())
+}
+
 async fn preview_teammate_access(
     pool: &SqlitePool,
     teammate_id: &ChatParticipantId,
     expected_access_revision: u64,
-    teammate_default_runtime_approval: ChatRuntimeApprovalPolicy,
+    policy: Option<&ChatTeammatePolicyInput>,
     channels: &[ChatTeammateChannelAccessInput],
 ) -> ChatResult<ChatTeammateAccessPreview> {
     let current = read_teammate_access(pool, teammate_id).await?;
@@ -552,6 +566,7 @@ async fn preview_teammate_access(
             true,
         ));
     }
+    let teammate_default_runtime_approval = proposed_teammate_default(&current, policy);
     let (resolved, mut issues) = resolve_channel_access(pool, teammate_id, channels).await?;
     issues.extend(retained_reference_issues(pool, &resolved).await?);
     let current_ids = current
@@ -586,7 +601,11 @@ async fn preview_teammate_access(
     })
 }
 
-async fn require_expected_profile_revisions_in_transaction(
+/// Refuses the save unless every channel's profile still has the effective revision the draft
+/// names. Revision ids are compared because display numbers follow creation order, so a synced
+/// revision created earlier can shift the numbers and give another revision the number the draft
+/// saw.
+pub(super) async fn require_expected_profile_revisions_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
     channels: &[ChatTeammateChannelAccessInput],
 ) -> ChatResult<()> {
@@ -595,27 +614,30 @@ async fn require_expected_profile_revisions_in_transaction(
         .map(|channel| {
             (
                 channel.access_profile_id.as_str(),
-                channel.access_profile_revision,
+                channel.access_profile_revision_id.as_str(),
             )
         })
         .collect::<BTreeSet<_>>();
-    for (access_profile_id, expected_revision) in expected {
-        let latest_revision = sqlx::query_scalar::<_, i64>(
-            "SELECT latest_revision FROM chat_access_profiles
-             WHERE id = ? AND archived_at IS NULL",
+    for (access_profile_id, expected_revision_id) in expected {
+        let effective_revision_id = sqlx::query_scalar::<_, String>(
+            "SELECT revision.id
+             FROM chat_access_profiles profile
+             JOIN chat_access_profile_effective_revisions revision
+               ON revision.access_profile_id = profile.id
+             WHERE profile.id = ? AND profile.archived_at IS NULL",
         )
         .bind(access_profile_id)
         .fetch_optional(&mut **transaction)
         .await
         .map_err(persistence_error)?;
-        let Some(latest_revision) = latest_revision else {
+        let Some(effective_revision_id) = effective_revision_id else {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
                 "An access profile became unavailable before teammate access could be saved",
                 true,
             ));
         };
-        if u64_value(latest_revision)? != expected_revision {
+        if effective_revision_id != expected_revision_id {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
                 "An access profile changed before teammate access could be saved",
@@ -624,6 +646,17 @@ async fn require_expected_profile_revisions_in_transaction(
         }
     }
     Ok(())
+}
+
+/// Returns the runtime approval a saved draft leaves as the teammate default, which follows the
+/// teammate's approval behavior.
+fn proposed_teammate_default(
+    current: &ChatTeammateAccessRead,
+    policy: Option<&ChatTeammatePolicyInput>,
+) -> ChatRuntimeApprovalPolicy {
+    policy
+        .map(|policy| teammate_runtime_approval(policy.safety_mode))
+        .unwrap_or(current.teammate_default_runtime_approval)
 }
 
 fn teammate_access_is_expansion(
@@ -762,9 +795,12 @@ fn teammate_access_has_reduction(
 
 fn resolve_runtime_approval(
     override_policy: Option<ChatRuntimeApprovalPolicy>,
-    fallback: ChatRuntimeApprovalPolicy,
+    teammate_default: ChatRuntimeApprovalPolicy,
 ) -> ChatRuntimeApprovalPolicy {
-    override_policy.unwrap_or(fallback)
+    effective_runtime_approval(
+        teammate_default,
+        override_policy.unwrap_or(teammate_default),
+    )
 }
 
 fn resolve_nested_runtime_approval(
@@ -772,9 +808,7 @@ fn resolve_nested_runtime_approval(
     channel_override: Option<ChatRuntimeApprovalPolicy>,
     teammate_default: ChatRuntimeApprovalPolicy,
 ) -> ChatRuntimeApprovalPolicy {
-    resource_override
-        .or(channel_override)
-        .unwrap_or(teammate_default)
+    resolve_runtime_approval(resource_override.or(channel_override), teammate_default)
 }
 
 fn runtime_approval_is_expansion(
@@ -797,25 +831,58 @@ fn runtime_approval_is_reduction(
     current: ChatRuntimeApprovalPolicy,
     proposed: ChatRuntimeApprovalPolicy,
 ) -> bool {
-    if current == proposed {
-        return false;
-    }
-    match (
-        runtime_approval_rank(current),
-        runtime_approval_rank(proposed),
-    ) {
-        (Some(current), Some(proposed)) => proposed < current,
-        _ => true,
-    }
+    ganbaru_chat::coordination::reductions::approval_is_reduction(
+        wire_runtime_approval_policy(current),
+        wire_runtime_approval_policy(proposed),
+    )
 }
 
-fn runtime_approval_rank(policy: ChatRuntimeApprovalPolicy) -> Option<u8> {
-    match policy {
-        ChatRuntimeApprovalPolicy::Ask => Some(0),
-        ChatRuntimeApprovalPolicy::AutoApprove => Some(1),
-        ChatRuntimeApprovalPolicy::Unattended => Some(2),
-        ChatRuntimeApprovalPolicy::ProviderCustom => None,
-    }
+/// Removes a teammate from one channel conversation: revokes its folder grants there and marks
+/// its teammate channel membership and conversation membership removed.
+///
+/// The rows stay, so a removal is an ordinary replicated update rather than a delete, and adding
+/// the teammate back clears the removal.
+pub(in crate::chat::organization) async fn remove_teammate_from_conversation(
+    transaction: &mut Transaction<'_, Sqlite>,
+    teammate_id: &ChatParticipantId,
+    conversation_id: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    sqlx::query(
+        "UPDATE chat_teammate_working_folder_grants
+         SET revoked_at = ?, is_default = 0, revision = revision + 1
+         WHERE conversation_id = ? AND teammate_id = ? AND revoked_at IS NULL",
+    )
+    .bind(now.as_str())
+    .bind(conversation_id)
+    .bind(teammate_id.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    sqlx::query(
+        "UPDATE chat_teammate_channel_memberships SET removed_at = ?, updated_at = ?
+         WHERE conversation_id = ? AND teammate_id = ? AND removed_at IS NULL",
+    )
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .bind(conversation_id)
+    .bind(teammate_id.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    sqlx::query(
+        "UPDATE chat_conversation_memberships
+         SET removed_at = ?, revision = revision + 1, updated_at = ?
+         WHERE conversation_id = ? AND participant_id = ?",
+    )
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .bind(conversation_id)
+    .bind(teammate_id.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
 }
 
 async fn revoke_teammate_authorizations(
@@ -824,49 +891,13 @@ async fn revoke_teammate_authorizations(
     now: &UtcTimestamp,
     reason: &str,
 ) -> ChatResult<()> {
-    sqlx::query(
-        "UPDATE chat_assignment_authorization_revisions
-         SET decision_state = 'revoked', reason = ?, revoked_at = ?
-         WHERE id IN (
-             SELECT authorization.id
-             FROM chat_assignment_authorization_revisions authorization
-             JOIN chat_work_assignments assignment
-               ON assignment.id = authorization.assignment_id
-             WHERE assignment.teammate_id = ?
-               AND authorization.decision_state = 'allowed'
-               AND authorization.revoked_at IS NULL
-         )",
+    ganbaru_chat::coordination::revocation::revoke_teammate_authorizations(
+        transaction,
+        teammate_id.as_str(),
+        now.as_str(),
+        reason,
     )
-    .bind(reason)
-    .bind(now.as_str())
-    .bind(teammate_id.as_str())
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
-    sqlx::query(
-        "INSERT INTO chat_access_revocation_jobs
-            (id, teammate_id, authorization_revision_id, reason,
-             available_at, created_at, updated_at)
-         SELECT 'access-revocation:' || lower(hex(randomblob(16))), ?, authorization.id, ?, ?, ?, ?
-         FROM chat_assignment_authorization_revisions authorization
-         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
-         WHERE assignment.teammate_id = ? AND authorization.revoked_at = ?
-           AND NOT EXISTS (
-               SELECT 1 FROM chat_access_revocation_jobs existing
-               WHERE existing.authorization_revision_id = authorization.id
-                 AND existing.state IN ('queued', 'claimed')
-           )",
-    )
-    .bind(teammate_id.as_str())
-    .bind(reason)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(teammate_id.as_str())
-    .bind(now.as_str())
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+    .await?;
     Ok(())
 }
 
@@ -939,6 +970,62 @@ mod tests {
                 ChatRuntimeApprovalPolicy::Unattended,
             ),
             ChatRuntimeApprovalPolicy::AutoApprove,
+        );
+    }
+
+    #[test]
+    fn grants_never_widen_the_teammate_approval_behavior() {
+        assert_eq!(
+            resolve_nested_runtime_approval(
+                Some(ChatRuntimeApprovalPolicy::Unattended),
+                None,
+                teammate_runtime_approval(ChatApprovalPolicy::AskForApproval),
+            ),
+            ChatRuntimeApprovalPolicy::Ask,
+        );
+        assert_eq!(
+            resolve_nested_runtime_approval(
+                None,
+                Some(ChatRuntimeApprovalPolicy::Unattended),
+                teammate_runtime_approval(ChatApprovalPolicy::ApproveForMe),
+            ),
+            ChatRuntimeApprovalPolicy::AutoApprove,
+        );
+        assert_eq!(
+            resolve_nested_runtime_approval(
+                Some(ChatRuntimeApprovalPolicy::Ask),
+                None,
+                teammate_runtime_approval(ChatApprovalPolicy::FullAccess),
+            ),
+            ChatRuntimeApprovalPolicy::Ask,
+        );
+        assert_eq!(
+            resolve_nested_runtime_approval(
+                None,
+                None,
+                teammate_runtime_approval(ChatApprovalPolicy::FullAccess),
+            ),
+            ChatRuntimeApprovalPolicy::Unattended,
+        );
+    }
+
+    #[test]
+    fn unranked_approvals_keep_the_granted_value() {
+        assert_eq!(
+            resolve_nested_runtime_approval(
+                Some(ChatRuntimeApprovalPolicy::ProviderCustom),
+                None,
+                teammate_runtime_approval(ChatApprovalPolicy::AskForApproval),
+            ),
+            ChatRuntimeApprovalPolicy::ProviderCustom,
+        );
+        assert_eq!(
+            resolve_nested_runtime_approval(
+                Some(ChatRuntimeApprovalPolicy::Unattended),
+                None,
+                teammate_runtime_approval(ChatApprovalPolicy::Custom),
+            ),
+            ChatRuntimeApprovalPolicy::Unattended,
         );
     }
 }

@@ -216,7 +216,7 @@ async fn ensure_timeline_view_row_tx(
         "generated_timeline_view_id",
     )
     .await?;
-    let sort_order = data_sources::views::next_view_sort_order_tx(tx, database_id).await?;
+    let order_key = data_sources::views::next_view_order_key_tx(tx, database_id).await?;
     let (range_start, range_end) = current_month_range_tx(tx).await?;
     sqlx::query(
         "INSERT INTO notes_database_views (
@@ -227,7 +227,7 @@ async fn ensure_timeline_view_row_tx(
             type,
             sorts,
             configuration,
-            sort_order
+            order_key
          )
          VALUES (?, ?, ?, ?, 'timeline', '[]', ?, ?)",
     )
@@ -236,7 +236,7 @@ async fn ensure_timeline_view_row_tx(
     .bind(&data_source.id)
     .bind(DEFAULT_TIMELINE_VIEW_NAME)
     .bind(default_timeline_configuration(schema, &range_start, &range_end).to_string())
-    .bind(sort_order)
+    .bind(order_key)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert notes timeline view: {e}"))?;

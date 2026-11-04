@@ -9,7 +9,10 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { isThemeCalendarDark, type Theme } from "$lib/themes";
   import { getEventIndicatorState } from "./event-indicators";
+  import Music from "@lucide/svelte/icons/eighth-notes";
   import Repeat from "@lucide/svelte/icons/repeat";
+  import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
+  import { calendarConflicts } from "$lib/stores/calendar-conflicts.svelte";
   import Video from "@lucide/svelte/icons/video";
   import MapPin from "@lucide/svelte/icons/map-pin";
   import Users from "@lucide/svelte/icons/users";
@@ -45,7 +48,7 @@
 
   const preferences = getPreferences();
   const isDark = $derived(isThemeCalendarDark(theme));
-  const indicators = $derived(getEventIndicatorState(event));
+  const indicators = $derived(getEventIndicatorState(event, undefined, calendarConflicts.isConflicted(event)));
   const hasIcons = $derived(indicators.iconCount > 0);
   const isCancelled = $derived(isEventSurfaceCancelled(event));
   const eventTitle = $derived(event.title || t("calendar.event.noTitle"));
@@ -110,6 +113,12 @@
 >
   {#if hasIcons}
     <span class="absolute right-1 top-0.75 z-10 flex items-center gap-0.5" style="color: {iconColor};">
+      {#if indicators.hasConflict}
+        <TriangleAlert size={8} class="shrink-0" role="img" aria-label={t("calendar.conflict.badge")} />
+      {/if}
+      {#if indicators.hasMusic}
+        <Music size={8} class="shrink-0" />
+      {/if}
       {#if indicators.hasRepeat}
         <Repeat size={8} class="shrink-0" />
       {/if}
@@ -127,7 +136,8 @@
   <span
     class="relative z-10 truncate"
     class:pr-5={indicators.iconCount > 0 && indicators.iconCount <= 2}
-    class:pr-8={indicators.iconCount > 2}
+    class:pr-8={indicators.iconCount === 3}
+    class:pr-11={indicators.iconCount > 3}
     style={isCancelled ? 'text-decoration: line-through;' : ''}
   >
     {eventTitle}

@@ -1,0 +1,14 @@
+[package]
+name = "ganbaru-image-metadata"
+version = "0.1.0"
+description = "Ganbaru bounded image header parsing without pixel decoding"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true

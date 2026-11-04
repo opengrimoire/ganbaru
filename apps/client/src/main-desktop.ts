@@ -4,6 +4,8 @@ import { mount, tick, unmount } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ensureConfigLoaded, flushConfig, startConfigWindowSync } from "./lib/vault/config";
+import { listenSyncApplied } from "./lib/api/sync";
+import { startProfileImageFileSync } from "./lib/stores/profile-image-files.svelte";
 import { getActiveVaultInfo } from "./lib/vault/state";
 import {
   getLocalization,
@@ -152,7 +154,8 @@ const appPromise = (async () => {
         onReady: async (info, preferenceReady) => {
           const appRuntimeReady = preferenceReady.then(async () => {
             await ensureConfigLoaded();
-            startConfigWindowSync();
+            startConfigWindowSync(listenSyncApplied);
+            startProfileImageFileSync();
             await initializeLocalizationFromConfig();
             await applyPreVaultLanguagePreference();
             await hydrateUserThemes();
@@ -188,7 +191,19 @@ const appPromise = (async () => {
       import("$lib/api/vault-handoff"),
       import("$lib/components/vault/handoff/PairingQrCode.svelte"),
     ]);
-    const initialStatus = await handoffApi.readPairingStatus();
+    const initialStatus = await handoffApi.readPairingStatus().catch((error: unknown) => {
+      console.warn("Vault linking is unavailable; skipping the linking step:", error);
+      return null;
+    });
+    if (!initialStatus) {
+      // Linking can be disabled for this run; Settings explains it, and startup must continue.
+      const [{ default: App }] = await Promise.all([
+        appModulePromise,
+        workspacePreparation.catch(prepareWorkspace),
+      ]);
+      if (currentView) await unmount(currentView);
+      return mount(App, { target });
+    }
     const initialInvitation = initialStatus.linked
       ? null
       : await handoffApi.createPairingInvitation();
@@ -234,7 +249,8 @@ const appPromise = (async () => {
       return await mountVaultSetupView(null);
     }
     await ensureConfigLoaded();
-    startConfigWindowSync();
+    startConfigWindowSync(listenSyncApplied);
+    startProfileImageFileSync();
     await initializeLocalizationFromConfig();
     await applyPreVaultLanguagePreference();
     benchmarkResumePending = await hasFreshBenchmarkResumeState();
@@ -270,7 +286,6 @@ void finishDesktopReadiness({
   mounted: appPromise,
   flushUpdates: tick,
   document,
-  clearTransitionMarker: (key) => window.sessionStorage.removeItem(key),
   revealMainWindow: getCurrentWindow().label === "main"
     ? () => invoke<void>("reveal_main_window")
     : null,

@@ -10,7 +10,11 @@
   import { isCloseWindowShortcut } from "$lib/windows/title-bar-shortcuts";
   import TooltipHost from "$lib/components/ui/TooltipHost.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import ServerRecoveryForm from "./ServerRecoveryForm.svelte";
   import VaultHandoffOnboardingContent from "./VaultHandoffOnboardingContent.svelte";
+
+  const RECOVERY_BUTTON_CLASS =
+    "min-h-9 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent disabled:pointer-events-none disabled:opacity-55";
 
   let {
     vaultId,
@@ -83,7 +87,11 @@
         {initialInvitation}
         {initialStatus}
         {onComplete}
-      />
+      >
+        {#snippet recovery(leave)}
+          <ServerRecoveryForm buttonClass={RECOVERY_BUTTON_CLASS} onActivated={leave} />
+        {/snippet}
+      </VaultHandoffOnboardingContent>
     </div>
   </div>
   <TooltipHost />

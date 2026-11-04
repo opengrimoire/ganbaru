@@ -1,5 +1,7 @@
 use super::*;
+use ganbaru_music::sync_keys;
 use sqlx::{Sqlite, SqlitePool, Transaction};
+use std::path::Path;
 
 pub(super) fn map_database_error(context: &str, error: sqlx::Error) -> MusicLibraryError {
     if error
@@ -22,6 +24,116 @@ pub(super) async fn commit(
         .map_err(|error| MusicLibraryError::database(context, error))
 }
 
+/// Makes a playlist's intended uses equal `uses`, inserting and deleting only the differences.
+/// Returns whether any row changed.
+pub(super) async fn replace_intended_uses(
+    transaction: &mut Transaction<'_, Sqlite>,
+    playlist_id: &str,
+    uses: &[MusicIntendedUse],
+) -> MusicLibraryResult<bool> {
+    let stored: Vec<String> = sqlx::query_scalar(
+        "SELECT intended_use FROM music_playlist_intended_uses WHERE playlist_id = ?",
+    )
+    .bind(playlist_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("load playlist intended uses", error))?;
+    let desired = uses.iter().map(AsRef::as_ref).collect::<Vec<&str>>();
+    let mut changed = false;
+    for value in stored
+        .iter()
+        .filter(|value| !desired.contains(&value.as_str()))
+    {
+        sqlx::query(
+            "DELETE FROM music_playlist_intended_uses WHERE playlist_id = ? AND intended_use = ?",
+        )
+        .bind(playlist_id)
+        .bind(value)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("remove playlist intended use", error))?;
+        changed = true;
+    }
+    for value in desired {
+        if stored.iter().any(|stored| stored == value) {
+            continue;
+        }
+        changed |= insert_intended_use(transaction, playlist_id, value).await?;
+    }
+    Ok(changed)
+}
+
+/// Adds one intended use to a playlist unless it is already there. Returns whether a row was
+/// inserted.
+pub(super) async fn insert_intended_use(
+    transaction: &mut Transaction<'_, Sqlite>,
+    playlist_id: &str,
+    intended_use: &str,
+) -> MusicLibraryResult<bool> {
+    let sync_key = sync_keys::intended_use_key(playlist_id, intended_use)?;
+    let inserted = sqlx::query(
+        "INSERT INTO music_playlist_intended_uses (playlist_id, intended_use, sync_key)
+         VALUES (?, ?, ?)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(playlist_id)
+    .bind(intended_use)
+    .bind(sync_key)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| map_database_error("save music playlist intended use", error))?;
+    Ok(inserted.rows_affected() > 0)
+}
+
+/// Makes an item's signals equal `signals`, inserting and deleting only the differences.
+/// Returns whether any row changed.
+pub(super) async fn replace_item_signals(
+    transaction: &mut Transaction<'_, Sqlite>,
+    item_id: &str,
+    signals: &[MusicItemSignal],
+    created_at_ms: i64,
+) -> MusicLibraryResult<bool> {
+    let stored: Vec<String> =
+        sqlx::query_scalar("SELECT signal FROM music_item_signals WHERE item_id = ?")
+            .bind(item_id)
+            .fetch_all(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("load music item signals", error))?;
+    let desired = signals.iter().map(AsRef::as_ref).collect::<Vec<&str>>();
+    let mut changed = false;
+    for value in stored
+        .iter()
+        .filter(|value| !desired.contains(&value.as_str()))
+    {
+        sqlx::query("DELETE FROM music_item_signals WHERE item_id = ? AND signal = ?")
+            .bind(item_id)
+            .bind(value)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("remove music item signal", error))?;
+        changed = true;
+    }
+    for value in desired {
+        if stored.iter().any(|stored| stored == value) {
+            continue;
+        }
+        let inserted = sqlx::query(
+            "INSERT INTO music_item_signals (item_id, signal, created_at_ms, sync_key)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(item_id)
+        .bind(value)
+        .bind(created_at_ms)
+        .bind(sync_keys::signal_key(item_id, value)?)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("save music item signal", error))?;
+        changed |= inserted.rows_affected() > 0;
+    }
+    Ok(changed)
+}
+
 async fn playlist_exists(
     transaction: &mut Transaction<'_, Sqlite>,
     playlist_id: &str,
@@ -42,10 +154,12 @@ pub async fn create_playlist(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin create music playlist", error))?;
+    let tail = super::order::playlist_tail(&mut transaction).await?;
+    let order_key = super::order::key_after(tail.as_deref())?;
     sqlx::query(
         "INSERT INTO music_playlists
-            (id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, sort_order, created_at_ms, updated_at_ms, version)
-         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM music_playlists), ?, ?, 1)",
+            (id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, order_key, created_at_ms, updated_at_ms, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
     )
     .bind(&request.id)
     .bind(request.name.trim())
@@ -53,20 +167,14 @@ pub async fn create_playlist(
     .bind(request.shuffle_enabled)
     .bind(request.mix_enabled)
     .bind(request.repeat_mode.as_ref())
+    .bind(order_key.as_str())
     .bind(request.created_at_ms)
     .bind(request.created_at_ms)
     .execute(&mut *transaction)
     .await
     .map_err(|error| map_database_error("create music playlist", error))?;
     for intended_use in request.intended_uses {
-        sqlx::query(
-            "INSERT INTO music_playlist_intended_uses (playlist_id, intended_use) VALUES (?, ?)",
-        )
-        .bind(&request.id)
-        .bind(intended_use.as_ref())
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| map_database_error("save music playlist intended use", error))?;
+        insert_intended_use(&mut transaction, &request.id, intended_use.as_ref()).await?;
     }
     commit(transaction, "commit create music playlist").await?;
     Ok(MusicWriteReceipt {
@@ -91,11 +199,25 @@ pub async fn update_playlist(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin update music playlist", error))?;
-    let result = sqlx::query(
+    let version: Option<i64> =
+        sqlx::query_scalar("SELECT version FROM music_playlists WHERE id = ?")
+            .bind(&request.id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("load music playlist version", error))?;
+    match version {
+        None => return Err(MusicLibraryError::not_found("music playlist", &request.id)),
+        Some(version) if version != request.expected_version => {
+            return Err(MusicLibraryError::stale("music playlist", &request.id));
+        }
+        Some(_) => {}
+    }
+    let row_changed = sqlx::query(
         "UPDATE music_playlists
          SET name = ?, icon = ?, shuffle_enabled = ?, mix_enabled = ?, repeat_mode = ?,
              updated_at_ms = ?, version = version + 1
-         WHERE id = ? AND version = ?",
+         WHERE id = ?
+           AND (name, icon, shuffle_enabled, mix_enabled, repeat_mode) IS NOT (?, ?, ?, ?, ?)",
     )
     .bind(protected_name)
     .bind(protected_icon)
@@ -104,37 +226,36 @@ pub async fn update_playlist(
     .bind(request.repeat_mode.as_ref())
     .bind(request.updated_at_ms)
     .bind(&request.id)
-    .bind(request.expected_version)
+    .bind(protected_name)
+    .bind(protected_icon)
+    .bind(request.shuffle_enabled)
+    .bind(request.mix_enabled)
+    .bind(request.repeat_mode.as_ref())
     .execute(&mut *transaction)
     .await
-    .map_err(|error| map_database_error("update music playlist", error))?;
-    if result.rows_affected() == 0 {
-        return Err(if playlist_exists(&mut transaction, &request.id).await? {
-            MusicLibraryError::stale("music playlist", &request.id)
-        } else {
-            MusicLibraryError::not_found("music playlist", &request.id)
-        });
-    }
-    sqlx::query("DELETE FROM music_playlist_intended_uses WHERE playlist_id = ?")
-        .bind(&request.id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("replace playlist intended uses", error))?;
-    for intended_use in request.intended_uses {
+    .map_err(|error| map_database_error("update music playlist", error))?
+    .rows_affected()
+        > 0;
+    let uses_changed =
+        replace_intended_uses(&mut transaction, &request.id, &request.intended_uses).await?;
+    if uses_changed && !row_changed {
         sqlx::query(
-            "INSERT INTO music_playlist_intended_uses (playlist_id, intended_use) VALUES (?, ?)",
+            "UPDATE music_playlists SET updated_at_ms = ?, version = version + 1 WHERE id = ?",
         )
+        .bind(request.updated_at_ms)
         .bind(&request.id)
-        .bind(intended_use.as_ref())
         .execute(&mut *transaction)
         .await
-        .map_err(|error| map_database_error("save music playlist intended use", error))?;
+        .map_err(|error| MusicLibraryError::database("version music playlist", error))?;
     }
-    super::search::refresh_playlist(&mut transaction, &request.id).await?;
+    let changed = row_changed || uses_changed;
+    if changed {
+        super::search::refresh_playlist(&mut transaction, &request.id).await?;
+    }
     commit(transaction, "commit update music playlist").await?;
     Ok(MusicWriteReceipt {
         id: request.id,
-        version: request.expected_version + 1,
+        version: request.expected_version + i64::from(changed),
     })
 }
 
@@ -160,10 +281,12 @@ pub async fn duplicate_playlist(
             &request.source_playlist_id,
         ));
     };
+    let tail = super::order::playlist_tail(&mut transaction).await?;
+    let order_key = super::order::key_after(tail.as_deref())?;
     sqlx::query(
         "INSERT INTO music_playlists
-            (id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, sort_order, created_at_ms, updated_at_ms, version)
-         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM music_playlists), ?, ?, 1)",
+            (id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, order_key, created_at_ms, updated_at_ms, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
     )
     .bind(&request.new_playlist_id)
     .bind(request.name.trim())
@@ -171,73 +294,88 @@ pub async fn duplicate_playlist(
     .bind(shuffle_enabled)
     .bind(mix_enabled)
     .bind(repeat_mode)
+    .bind(order_key.as_str())
     .bind(request.created_at_ms)
     .bind(request.created_at_ms)
     .execute(&mut *transaction)
     .await
     .map_err(|error| map_database_error("duplicate music playlist", error))?;
-    sqlx::query(
-        "INSERT INTO music_playlist_intended_uses (playlist_id, intended_use)
-         SELECT ?, intended_use FROM music_playlist_intended_uses WHERE playlist_id = ?",
+    let source_uses: Vec<String> = sqlx::query_scalar(
+        "SELECT intended_use FROM music_playlist_intended_uses WHERE playlist_id = ?",
     )
-    .bind(&request.new_playlist_id)
     .bind(&request.source_playlist_id)
-    .execute(&mut *transaction)
+    .fetch_all(&mut *transaction)
     .await
     .map_err(|error| MusicLibraryError::database("duplicate playlist intended uses", error))?;
-    sqlx::query(
-        "INSERT INTO music_playlist_memberships
-            (id, playlist_id, item_id, position, weight, enabled,
-             start_ms, end_ms, volume, rate, created_at_ms, updated_at_ms, version)
-         SELECT 'duplicate-membership:' || ? || ':' || id, ?, item_id, position, weight, enabled,
-                start_ms, end_ms, volume, rate, ?, ?, 1
-         FROM music_playlist_memberships WHERE playlist_id = ?",
+    for intended_use in source_uses {
+        insert_intended_use(&mut transaction, &request.new_playlist_id, &intended_use).await?;
+    }
+    duplicate_memberships(
+        &mut transaction,
+        &request.source_playlist_id,
+        &request.new_playlist_id,
+        request.created_at_ms,
     )
-    .bind(&request.new_playlist_id)
-    .bind(&request.new_playlist_id)
-    .bind(request.created_at_ms)
-    .bind(request.created_at_ms)
-    .bind(&request.source_playlist_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("duplicate playlist memberships", error))?;
-    sqlx::query(
-        "INSERT INTO music_membership_skip_ranges
-            (id, membership_id, start_ms, end_ms, sort_order)
-         SELECT 'duplicate-skip:' || ? || ':' || skip.id,
-                'duplicate-membership:' || ? || ':' || membership.id,
-                skip.start_ms, skip.end_ms, skip.sort_order
-         FROM music_membership_skip_ranges AS skip
-         JOIN music_playlist_memberships AS membership ON membership.id = skip.membership_id
-         WHERE membership.playlist_id = ?",
-    )
-    .bind(&request.new_playlist_id)
-    .bind(&request.new_playlist_id)
-    .bind(&request.source_playlist_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("duplicate membership skip ranges", error))?;
-    sqlx::query(
-        "INSERT INTO music_membership_break_items
-            (membership_id, item_id, start_ms, end_ms, volume, rate)
-         SELECT 'duplicate-membership:' || ? || ':' || membership.id,
-                break_item.item_id, break_item.start_ms, break_item.end_ms,
-                break_item.volume, break_item.rate
-         FROM music_membership_break_items AS break_item
-         JOIN music_playlist_memberships AS membership ON membership.id = break_item.membership_id
-         WHERE membership.playlist_id = ?",
-    )
-    .bind(&request.new_playlist_id)
-    .bind(&request.source_playlist_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("duplicate membership break items", error))?;
+    .await?;
     super::search::refresh_playlist(&mut transaction, &request.new_playlist_id).await?;
     commit(transaction, "commit duplicate music playlist").await?;
     Ok(MusicWriteReceipt {
         id: request.new_playlist_id,
         version: 1,
     })
+}
+
+/// Copies every membership of `source_playlist_id`, with its skip ranges and break item, into
+/// `new_playlist_id` under row keys derived from the new playlist and fresh rank order keys in
+/// the source order.
+async fn duplicate_memberships(
+    transaction: &mut Transaction<'_, Sqlite>,
+    source_playlist_id: &str,
+    new_playlist_id: &str,
+    created_at_ms: i64,
+) -> MusicLibraryResult<()> {
+    let sources: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, item_id FROM music_playlist_memberships WHERE playlist_id = ?
+         ORDER BY order_key, id",
+    )
+    .bind(source_playlist_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("load duplicated memberships", error))?;
+    let order_keys = super::order::rank_keys(sources.len())?;
+    for ((source_id, item_id), order_key) in sources.into_iter().zip(order_keys) {
+        let copy_id = super::identity::membership_id(new_playlist_id, &item_id)?;
+        sqlx::query(
+            "INSERT INTO music_playlist_memberships
+                (id, playlist_id, item_id, order_key, weight, enabled, start_ms, end_ms,
+                 volume_milli, rate_milli, break_item_id, break_start_ms, break_end_ms,
+                 break_volume_milli, break_rate_milli, created_at_ms, updated_at_ms, version)
+             SELECT ?, ?, item_id, ?, weight, enabled, start_ms, end_ms,
+                    volume_milli, rate_milli, break_item_id, break_start_ms, break_end_ms,
+                    break_volume_milli, break_rate_milli, ?, ?, 1
+             FROM music_playlist_memberships WHERE id = ?",
+        )
+        .bind(&copy_id)
+        .bind(new_playlist_id)
+        .bind(order_key.as_str())
+        .bind(created_at_ms)
+        .bind(created_at_ms)
+        .bind(&source_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| map_database_error("duplicate playlist membership", error))?;
+        sqlx::query(
+            "INSERT INTO music_membership_skip_ranges (membership_id, ordinal, start_ms, end_ms)
+             SELECT ?, ordinal, start_ms, end_ms
+             FROM music_membership_skip_ranges WHERE membership_id = ?",
+        )
+        .bind(&copy_id)
+        .bind(&source_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("duplicate membership skip ranges", error))?;
+    }
+    Ok(())
 }
 
 async fn delete_impact_in_transaction(
@@ -374,26 +512,8 @@ pub async fn delete_playlist(
     .fetch_all(&mut *transaction)
     .await
     .map_err(|error| MusicLibraryError::database("load deleted playlist search items", error))?;
-    sqlx::query("UPDATE projects SET focus_playlist_id = ? WHERE focus_playlist_id = ?")
-        .bind(&request.replacement_playlist_id)
-        .bind(&request.playlist_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("clear project focus assignments", error))?;
-    sqlx::query("UPDATE projects SET break_playlist_id = ? WHERE break_playlist_id = ?")
-        .bind(&request.replacement_playlist_id)
-        .bind(&request.playlist_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("clear project break assignments", error))?;
-    sqlx::query("UPDATE calendar_events SET playlist_id = ? WHERE playlist_id = ?")
-        .bind(&request.replacement_playlist_id)
-        .bind(&request.playlist_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| {
-            MusicLibraryError::database("clear calendar playlist assignments", error)
-        })?;
+    // Project and Calendar event rows belong to their own domains and read a deleted
+    // playlist as none, so the replacement rewrites Music assignments only.
     sqlx::query(
         "UPDATE music_context_assignments
          SET playlist_id = ?, version = version + 1
@@ -463,11 +583,27 @@ pub async fn set_review_state(
     })
 }
 
+/// Sets the metadata overrides of an item. An artwork override must be a managed reference
+/// whose verified file is already stored in `vault_root`; its exact size is stored with it.
 pub async fn set_metadata_overrides(
     pool: &SqlitePool,
+    vault_root: &Path,
     request: MusicMetadataOverrideWrite,
 ) -> MusicLibraryResult<MusicWriteReceipt> {
     validate_metadata_override_write(&request)?;
+    let artwork = match request.artwork_override.clone() {
+        // Reading and describing up to 10 MiB of artwork blocks, so it leaves the async worker.
+        Some(reference) => {
+            let vault_root = vault_root.to_path_buf();
+            let artwork = tokio::task::spawn_blocking(move || {
+                crate::managed_artwork::stored_artwork(&vault_root, &reference)
+            })
+            .await
+            .map_err(|error| MusicLibraryError::runtime("read stored music artwork", error))??;
+            Some(artwork)
+        }
+        None => None,
+    };
     let mut transaction = pool
         .begin()
         .await
@@ -475,13 +611,18 @@ pub async fn set_metadata_overrides(
     let result = sqlx::query(
         "UPDATE music_library_items
          SET title_override = ?, artist_override = ?, album_override = ?, artwork_override = ?,
-             updated_at_ms = ?, version = version + 1
+             artwork_override_byte_size = ?, updated_at_ms = ?, version = version + 1
          WHERE id = ? AND version = ?",
     )
     .bind(request.title_override.as_deref().map(str::trim))
     .bind(request.artist_override.as_deref().map(str::trim))
     .bind(request.album_override.as_deref().map(str::trim))
-    .bind(request.artwork_override.as_deref().map(str::trim))
+    .bind(artwork.as_ref().map(|artwork| artwork.reference.as_str()))
+    .bind(
+        artwork
+            .as_ref()
+            .map(|artwork| i64::from(artwork.asset.byte_size())),
+    )
     .bind(request.updated_at_ms)
     .bind(&request.item_id)
     .bind(request.expected_version)
@@ -524,21 +665,19 @@ pub async fn set_item_signals(
         let Some(version) = version else {
             return Err(MusicLibraryError::not_found("music library item", item_id));
         };
-        sqlx::query("DELETE FROM music_item_signals WHERE item_id = ?")
-            .bind(item_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| MusicLibraryError::database("replace music item signals", error))?;
-        for signal in &request.signals {
-            sqlx::query(
-                "INSERT INTO music_item_signals (item_id, signal, created_at_ms) VALUES (?, ?, ?)",
-            )
-            .bind(item_id)
-            .bind(signal.as_ref())
-            .bind(request.updated_at_ms)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| MusicLibraryError::database("save music item signal", error))?;
+        if !replace_item_signals(
+            &mut transaction,
+            item_id,
+            &request.signals,
+            request.updated_at_ms,
+        )
+        .await?
+        {
+            receipts.push(MusicWriteReceipt {
+                id: item_id.clone(),
+                version,
+            });
+            continue;
         }
         sqlx::query(
             "UPDATE music_library_items SET updated_at_ms = ?, version = version + 1 WHERE id = ?",
@@ -558,94 +697,91 @@ pub async fn set_item_signals(
     Ok(receipts)
 }
 
+/// Saves one membership matched by playlist and item. A new membership gets the derived row key
+/// and is appended to the playlist; an existing one keeps its row key and place. An unchanged
+/// save writes nothing and returns the current version.
 async fn upsert_membership_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
     membership: &MusicMembershipWrite,
 ) -> MusicLibraryResult<MusicWriteReceipt> {
-    if let Some(expected_version) = membership.expected_version {
-        let updated = sqlx::query(
-            "UPDATE music_playlist_memberships
-             SET position = ?, weight = ?, enabled = ?, start_ms = ?, end_ms = ?,
-                 volume = ?, rate = ?, updated_at_ms = ?, version = version + 1
-             WHERE id = ? AND playlist_id = ? AND item_id = ? AND version = ?",
-        )
-        .bind(membership.position)
-        .bind(membership.weight.as_ref())
-        .bind(membership.enabled)
-        .bind(membership.start_ms)
-        .bind(membership.end_ms)
-        .bind(membership.volume)
-        .bind(membership.rate)
-        .bind(membership.updated_at_ms)
-        .bind(&membership.id)
-        .bind(&membership.playlist_id)
-        .bind(&membership.item_id)
-        .bind(expected_version)
-        .execute(&mut **transaction)
-        .await
-        .map_err(|error| map_database_error("update playlist membership", error))?;
-        if updated.rows_affected() == 0 {
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM music_playlist_memberships WHERE id = ?)",
-            )
-            .bind(&membership.id)
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(|error| MusicLibraryError::database("check playlist membership", error))?;
-            return Err(if exists {
-                MusicLibraryError::stale("playlist membership", &membership.id)
-            } else {
-                MusicLibraryError::not_found("playlist membership", &membership.id)
-            });
-        }
-        return Ok(MusicWriteReceipt {
-            id: membership.id.clone(),
-            version: expected_version + 1,
-        });
-    }
-    sqlx::query(
-        "INSERT INTO music_playlist_memberships
-            (id, playlist_id, item_id, position, weight, enabled,
-             start_ms, end_ms, volume, rate, created_at_ms, updated_at_ms, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-         ON CONFLICT(playlist_id, item_id) DO UPDATE SET
-            position = excluded.position,
-            weight = excluded.weight,
-            enabled = excluded.enabled,
-            start_ms = excluded.start_ms,
-            end_ms = excluded.end_ms,
-            volume = excluded.volume,
-            rate = excluded.rate,
-            updated_at_ms = excluded.updated_at_ms,
-            version = music_playlist_memberships.version + 1",
-    )
-    .bind(&membership.id)
-    .bind(&membership.playlist_id)
-    .bind(&membership.item_id)
-    .bind(membership.position)
-    .bind(membership.weight.as_ref())
-    .bind(membership.enabled)
-    .bind(membership.start_ms)
-    .bind(membership.end_ms)
-    .bind(membership.volume)
-    .bind(membership.rate)
-    .bind(membership.updated_at_ms)
-    .bind(membership.updated_at_ms)
-    .execute(&mut **transaction)
-    .await
-    .map_err(|error| map_database_error("save playlist membership", error))?;
-    let receipt: (String, i64) = sqlx::query_as(
+    let existing: Option<(String, i64)> = sqlx::query_as(
         "SELECT id, version FROM music_playlist_memberships WHERE playlist_id = ? AND item_id = ?",
     )
     .bind(&membership.playlist_id)
     .bind(&membership.item_id)
-    .fetch_one(&mut **transaction)
+    .fetch_optional(&mut **transaction)
     .await
-    .map_err(|error| MusicLibraryError::database("load saved playlist membership", error))?;
+    .map_err(|error| MusicLibraryError::database("load playlist membership", error))?;
+    let Some((id, version)) = existing else {
+        let id = super::identity::membership_id(&membership.playlist_id, &membership.item_id)?;
+        if membership.expected_version.is_some() {
+            return Err(MusicLibraryError::not_found("playlist membership", &id));
+        }
+        let tail = super::order::membership_tail(transaction, &membership.playlist_id).await?;
+        let order_key = super::order::key_after(tail.as_deref())?;
+        sqlx::query(
+            "INSERT INTO music_playlist_memberships
+                (id, playlist_id, item_id, order_key, weight, enabled,
+                 start_ms, end_ms, volume_milli, rate_milli, created_at_ms, updated_at_ms, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+        )
+        .bind(&id)
+        .bind(&membership.playlist_id)
+        .bind(&membership.item_id)
+        .bind(order_key.as_str())
+        .bind(membership.weight.as_ref())
+        .bind(membership.enabled)
+        .bind(membership.start_ms)
+        .bind(membership.end_ms)
+        .bind(membership.volume_milli)
+        .bind(membership.rate_milli)
+        .bind(membership.updated_at_ms)
+        .bind(membership.updated_at_ms)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| map_database_error("save playlist membership", error))?;
+        super::search::refresh_item(transaction, &membership.item_id).await?;
+        return Ok(MusicWriteReceipt { id, version: 1 });
+    };
+    if membership
+        .expected_version
+        .is_some_and(|expected| expected != version)
+    {
+        return Err(MusicLibraryError::stale("playlist membership", &id));
+    }
+    let updated = sqlx::query(
+        "UPDATE music_playlist_memberships
+         SET weight = ?, enabled = ?, start_ms = ?, end_ms = ?,
+             volume_milli = ?, rate_milli = ?, updated_at_ms = ?, version = version + 1
+         WHERE id = ?
+           AND (weight, enabled, start_ms, end_ms, volume_milli, rate_milli)
+               IS NOT (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(membership.weight.as_ref())
+    .bind(membership.enabled)
+    .bind(membership.start_ms)
+    .bind(membership.end_ms)
+    .bind(membership.volume_milli)
+    .bind(membership.rate_milli)
+    .bind(membership.updated_at_ms)
+    .bind(&id)
+    .bind(membership.weight.as_ref())
+    .bind(membership.enabled)
+    .bind(membership.start_ms)
+    .bind(membership.end_ms)
+    .bind(membership.volume_milli)
+    .bind(membership.rate_milli)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| map_database_error("update playlist membership", error))?
+    .rows_affected();
+    if updated == 0 {
+        return Ok(MusicWriteReceipt { id, version });
+    }
     super::search::refresh_item(transaction, &membership.item_id).await?;
     Ok(MusicWriteReceipt {
-        id: receipt.0,
-        version: receipt.1,
+        id,
+        version: version + 1,
     })
 }
 
@@ -669,35 +805,78 @@ pub async fn upsert_memberships(
 pub async fn save_advanced_membership(
     pool: &SqlitePool,
     request: MusicAdvancedMembershipWrite,
-) -> MusicLibraryResult<MusicWriteReceipt> {
+) -> MusicLibraryResult<MusicAdvancedMembershipReceipt> {
     validate_advanced_membership_write(&request)?;
     let mut transaction = pool
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin advanced membership update", error))?;
-    let receipt = upsert_membership_in_transaction(&mut transaction, &request.membership).await?;
-    sqlx::query("DELETE FROM music_membership_skip_ranges WHERE membership_id = ?")
-        .bind(&receipt.id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("replace membership skip ranges", error))?;
-    for range in request.skip_ranges {
-        sqlx::query(
-            "INSERT INTO music_membership_skip_ranges
-                (id, membership_id, start_ms, end_ms, sort_order)
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(range.id)
-        .bind(&receipt.id)
-        .bind(range.start_ms)
-        .bind(range.end_ms)
-        .bind(range.sort_order)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("save membership skip range", error))?;
-    }
+    let membership =
+        upsert_membership_in_transaction(&mut transaction, &request.membership).await?;
+    let skip_ranges =
+        replace_skip_ranges(&mut transaction, &membership.id, &request.skip_ranges).await?;
     commit(transaction, "commit advanced membership update").await?;
-    Ok(receipt)
+    Ok(MusicAdvancedMembershipReceipt {
+        membership,
+        skip_ranges,
+    })
+}
+
+/// Makes the membership's skip ranges equal `ranges` in order, writing only the ordinals whose
+/// bounds changed and deleting the ones past the end.
+pub(super) async fn replace_skip_ranges(
+    transaction: &mut Transaction<'_, Sqlite>,
+    membership_id: &str,
+    ranges: &[MusicMembershipSkipRangeWrite],
+) -> MusicLibraryResult<Vec<MusicMembershipSkipRange>> {
+    let stored: Vec<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT ordinal, start_ms, end_ms FROM music_membership_skip_ranges
+         WHERE membership_id = ? ORDER BY ordinal",
+    )
+    .bind(membership_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("load membership skip ranges", error))?;
+    let stored = stored
+        .into_iter()
+        .map(|(ordinal, start_ms, end_ms)| (ordinal, (start_ms, end_ms)))
+        .collect::<std::collections::HashMap<_, _>>();
+    let count = i64::try_from(ranges.len())
+        .map_err(|error| MusicLibraryError::runtime("count membership skip ranges", error))?;
+    sqlx::query(
+        "DELETE FROM music_membership_skip_ranges WHERE membership_id = ? AND ordinal >= ?",
+    )
+    .bind(membership_id)
+    .bind(count)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("remove membership skip ranges", error))?;
+    let mut saved = Vec::with_capacity(ranges.len());
+    for (ordinal, range) in (0_i64..).zip(ranges) {
+        let bounds = (range.start_ms, range.end_ms);
+        if stored.get(&ordinal) != Some(&bounds) {
+            sqlx::query(
+                "INSERT INTO music_membership_skip_ranges (membership_id, ordinal, start_ms, end_ms)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(membership_id, ordinal)
+                 DO UPDATE SET start_ms = excluded.start_ms, end_ms = excluded.end_ms",
+            )
+            .bind(membership_id)
+            .bind(ordinal)
+            .bind(range.start_ms)
+            .bind(range.end_ms)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("save membership skip range", error))?;
+        }
+        saved.push(MusicMembershipSkipRange {
+            membership_id: membership_id.to_string(),
+            ordinal,
+            start_ms: range.start_ms,
+            end_ms: range.end_ms,
+        });
+    }
+    Ok(saved)
 }
 
 pub async fn remove_memberships(
@@ -758,42 +937,66 @@ pub async fn upsert_source_collection(
     pool: &SqlitePool,
     request: MusicCollectionWrite,
 ) -> MusicLibraryResult<MusicWriteReceipt> {
-    validate_collection_write(&request)?;
-    sqlx::query(
-        "INSERT INTO music_source_collections
-            (id, kind, identity_key, name, local_root_id, youtube_playlist_id,
-             created_at_ms, updated_at_ms, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-         ON CONFLICT(id) DO UPDATE SET
-            kind = excluded.kind,
-            identity_key = excluded.identity_key,
-            name = excluded.name,
-            local_root_id = excluded.local_root_id,
-            youtube_playlist_id = excluded.youtube_playlist_id,
-            updated_at_ms = excluded.updated_at_ms,
-            version = music_source_collections.version + 1",
-    )
-    .bind(&request.id)
-    .bind(request.kind.as_ref())
-    .bind(&request.identity_key)
-    .bind(request.name.trim())
-    .bind(&request.local_root_id)
-    .bind(&request.youtube_playlist_id)
-    .bind(request.updated_at_ms)
-    .bind(request.updated_at_ms)
-    .execute(pool)
-    .await
-    .map_err(|error| map_database_error("save music source collection", error))?;
-    let version: i64 =
-        sqlx::query_scalar("SELECT version FROM music_source_collections WHERE id = ?")
-            .bind(&request.id)
-            .fetch_one(pool)
+    let identity_key = validate_collection_write(&request)?;
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| MusicLibraryError::database("begin source collection save", error))?;
+    let existing: Option<(String, i64)> =
+        sqlx::query_as("SELECT id, version FROM music_source_collections WHERE identity_key = ?")
+            .bind(&identity_key)
+            .fetch_optional(&mut *transaction)
             .await
-            .map_err(|error| MusicLibraryError::database("load saved source collection", error))?;
-    Ok(MusicWriteReceipt {
-        id: request.id,
-        version,
-    })
+            .map_err(|error| MusicLibraryError::database("load source collection", error))?;
+    let receipt = match existing {
+        Some((id, version)) => {
+            let changed = sqlx::query(
+                "UPDATE music_source_collections
+                 SET name = ?, updated_at_ms = ?, version = version + 1
+                 WHERE id = ? AND name IS NOT ?",
+            )
+            .bind(request.name.trim())
+            .bind(request.updated_at_ms)
+            .bind(&id)
+            .bind(request.name.trim())
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| map_database_error("rename music source collection", error))?
+            .rows_affected();
+            MusicWriteReceipt {
+                id,
+                version: version + i64::from(changed > 0),
+            }
+        }
+        None => {
+            let id = super::identity::creatable_key(
+                &mut transaction,
+                super::identity::RetirableTable::Collections,
+                super::identity::collection_id(&identity_key),
+            )
+            .await?;
+            sqlx::query(
+                "INSERT INTO music_source_collections
+                    (id, kind, identity_key, name, local_root_id, youtube_playlist_id,
+                     created_at_ms, updated_at_ms, version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+            )
+            .bind(&id)
+            .bind(request.kind.as_ref())
+            .bind(&identity_key)
+            .bind(request.name.trim())
+            .bind(&request.local_root_id)
+            .bind(&request.youtube_playlist_id)
+            .bind(request.updated_at_ms)
+            .bind(request.updated_at_ms)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| map_database_error("save music source collection", error))?;
+            MusicWriteReceipt { id, version: 1 }
+        }
+    };
+    commit(transaction, "commit source collection save").await?;
+    Ok(receipt)
 }
 
 pub async fn create_local_root(
@@ -801,6 +1004,8 @@ pub async fn create_local_root(
     request: MusicLocalRootCreate,
 ) -> MusicLibraryResult<MusicWriteReceipt> {
     validate_local_root_create(&request)?;
+    let identity_key = super::identity::local_root_identity_key(&request.root_id);
+    let collection_id = super::identity::collection_id(&identity_key);
     let mut transaction = pool
         .begin()
         .await
@@ -821,8 +1026,8 @@ pub async fn create_local_root(
             (id, kind, identity_key, name, local_root_id, created_at_ms, updated_at_ms)
          VALUES (?, 'local-root', ?, ?, ?, ?, ?)",
     )
-    .bind(&request.collection_id)
-    .bind(&request.identity_key)
+    .bind(&collection_id)
+    .bind(&identity_key)
     .bind(request.name.trim())
     .bind(&request.root_id)
     .bind(request.created_at_ms)
@@ -832,7 +1037,7 @@ pub async fn create_local_root(
     .map_err(|error| map_database_error("create local music source", error))?;
     commit(transaction, "commit local music root creation").await?;
     Ok(MusicWriteReceipt {
-        id: request.collection_id,
+        id: collection_id,
         version: 1,
     })
 }

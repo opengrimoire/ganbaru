@@ -2,7 +2,7 @@
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
   import Save from "@lucide/svelte/icons/save";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import { cn } from "$lib/utils";
   import {
     DISTRACTIONS_CATEGORY_DEFINITIONS,

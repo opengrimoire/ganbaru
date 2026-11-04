@@ -9,7 +9,8 @@ use sqlx::SqlitePool;
 use crate::events::archive_or_delete_calendar_events_for_calendar;
 use crate::events::scope::DeviceDate;
 
-const BUILTIN_LOCAL_CALENDAR_ID: &str = "local";
+/// The built-in calendar seeded by the schema, which cannot be removed.
+pub(crate) const BUILTIN_LOCAL_CALENDAR_ID: &str = "local";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

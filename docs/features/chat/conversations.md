@@ -32,11 +32,13 @@ Messages are durable participant-authored records. They can include text, valida
 
 Reply threads keep detailed work from overwhelming the main channel. A provider run started from a reply posts concise state and results to the main timeline; detailed execution stays inspectable in the linked run.
 
+Linked devices can all post and edit. A post written offline syncs when its device reconnects and takes its place after the messages that device had seen, so it can land above messages another device already read. Two devices can create channels with the same name at once; both channels stay, and either can be renamed. When two devices edit one message, the name or topic of one channel, or one teammate's profile at once, one version shows and Settings > Chat lists the conflict so either version can be kept.
+
 ## Composer
 
 The composer supports drafts, attachments, replies, explicit agent mentions, provider interactions, and scheduled sends. A message can be sent without invoking AI, and plain conversation never silently becomes an execution request.
 
-Slash commands are discoverable actions, not an alternate security model. They can change presentation, select an interaction mode, or start a typed application action, but cannot bypass project, folder, provider, or confirmation boundaries.
+Slash commands are discoverable actions, not an alternate security model. They can change presentation, select an interaction mode, or start a typed application action, but cannot bypass project, folder, provider, or confirmation boundaries. The composer lists workspace commands only from command folders that resolve inside the workspace, so a repository link cannot point the catalog at other folders; user-level command folders may link anywhere.
 
 When a message looks actionable but lacks an authorized target or a clear objective, Chat keeps it as conversation or asks for clarification. It never guesses a working folder or broadens authority.
 

@@ -1,105 +1,20 @@
-//! The sync status the frontend shows, and the subscription channels that carry it. Channels
-//! work in every shell, including Android, which keeps the global event module out of its bundle.
+//! The subscription channels that carry the sync status and applied tables to the frontend.
+//! Channels work in every shell, including Android, which keeps the global event module out of
+//! its bundle. The status itself is [`ganbaru_sync_replica::service::status`].
 
-use ganbaru_sync::SyncStatus;
+pub(crate) use ganbaru_sync_replica::service::status::*;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, Runtime};
 
-/// What the service is doing for the active vault.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum SyncState {
-    /// The vault is not linked to other devices.
-    #[default]
-    Off,
-    /// Current with the hub, or the hub with nothing to do.
-    Idle,
-    /// An exchange is running.
-    Syncing,
-    /// The hub cannot be reached; changes queue locally.
-    Offline,
-    /// Exchanges are paused on this device; sealing continues.
-    Paused,
-    /// The person key has not reached this device yet.
-    WaitingForIdentity,
-    /// The last exchange or pass failed.
-    Error,
-}
-
-/// The side of the exchange this device takes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum SyncRole {
-    /// The coordinator, which linked devices exchange with.
-    Hub,
-    /// A linked device.
-    Client,
-}
-
-/// Stored operations that cannot be applied, by reason.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct HeldView {
-    pub newer_format: usize,
-    pub newer_manifest: usize,
-    pub invalid: usize,
-}
-
-/// Rows with an open conflict in one table.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ConflictCount {
-    pub table: String,
-    pub count: usize,
-}
-
-/// The sync status of the active vault.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SyncStatusView {
-    pub state: SyncState,
-    pub role: Option<SyncRole>,
-    pub paused: bool,
-    pub last_exchange_at_ms: Option<u64>,
-    pub last_error: Option<String>,
-    pub pending_local_changes: usize,
-    pub waiting: usize,
-    pub held: HeldView,
-    pub conflicts: Vec<ConflictCount>,
-    pub recovery_count: usize,
-}
-
-impl SyncStatusView {
-    /// Copies the engine counts into the view.
-    pub(crate) fn set_counts(&mut self, status: &SyncStatus) {
-        self.pending_local_changes = status.pending_captures;
-        self.waiting = status.waiting;
-        self.held = HeldView {
-            newer_format: status.held.newer_format,
-            newer_manifest: status.held.newer_manifest,
-            invalid: status.held.invalid,
-        };
-        self.conflicts = status
-            .conflicts
-            .iter()
-            .map(|(table, count)| ConflictCount {
-                table: (*table).to_string(),
-                count: *count,
-            })
-            .collect();
-        self.recovery_count = status.recovery;
-    }
-}
-
 /// A notice on a sync subscription channel.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum SyncNotice {
     /// The status changed.
-    Status { status: SyncStatusView },
+    Status { status: Box<SyncStatusView> },
     /// Replicated changes rewrote rows of these tables, for frontend invalidation.
     Applied { tables: Vec<String> },
 }
@@ -186,7 +101,7 @@ pub(crate) fn emit_status<R: Runtime>(app: &AppHandle<R>, view: &SyncStatusView)
     notify(
         app,
         &SyncNotice::Status {
-            status: view.clone(),
+            status: Box::new(view.clone()),
         },
     );
 }

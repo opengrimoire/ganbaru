@@ -24,7 +24,7 @@ function createController(activeView: "list" | "kanban" = "list") {
   const saveTaskListColumns = vi.fn<ControllerInput["projects"]["saveTaskListColumns"]>().mockResolvedValue(undefined);
   const saveTaskListPresentation = vi.fn<ControllerInput["projects"]["saveTaskListPresentation"]>().mockResolvedValue(undefined);
   const fields: ProjectCustomField[] = [];
-  const createdField: ProjectCustomField = { id: "created", projectId: "project-1", name: "Points", fieldType: "number", sortOrder: 100, icon: null, createdAt: "", updatedAt: "" };
+  const createdField: ProjectCustomField = { id: "created", projectId: "project-1", name: "Points", fieldType: "number", orderKey: "100", icon: null, createdAt: "", updatedAt: "" };
   const addCustomField = vi.fn<ControllerInput["projects"]["addCustomField"]>().mockResolvedValue(createdField);
   const duplicateCustomField = vi.fn<ControllerInput["projects"]["duplicateCustomField"]>().mockResolvedValue(createdField);
   const loadTaskView = vi.fn<ControllerInput["projects"]["loadTaskView"]>().mockImplementation(async (request, append = false) => { selection.loadError = null; requests.push({request, append}); });

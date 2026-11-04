@@ -17,15 +17,15 @@ pub struct PropertySearchEntry {
 pub async fn property_search_entries(
     pool: &SqlitePool,
 ) -> Result<Vec<PropertySearchEntry>, String> {
-    let data_sources = sqlx::query_as::<_, PropertySearchDataSourceRow>(
-        "SELECT data_source.id,
-            data_source.properties,
-            data_source.last_edited_time
+    let data_sources = sqlx::query_as::<_, PropertySearchDataSourceRow>(concat!(
+        "SELECT data_source.id, ",
+        crate::note_data_source_properties_json!("data_source"),
+        " AS properties, data_source.last_edited_time
          FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.in_trash = 0
-           AND database.in_trash = 0",
-    )
+           AND database.in_trash = 0"
+    ))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes data sources for property search: {e}"))?;
@@ -58,14 +58,15 @@ async fn load_active_row_pages_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     data_source_id: &str,
 ) -> Result<Vec<NotePageRow>, String> {
-    sqlx::query_as::<_, NotePageRow>(
-        "SELECT page.*
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
          FROM notes_pages AS page
          WHERE page.parent_type = 'data_source_id'
            AND page.parent_data_source_id = ?
            AND page.in_trash = 0
            AND page.archived = 0",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(data_source_id)
     .fetch_all(&mut **tx)
     .await

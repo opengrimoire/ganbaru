@@ -277,6 +277,55 @@ pub struct RequestOpenedEvent {
     pub detail: Option<String>,
     pub allowed_decisions: Vec<ApprovalDecisionOption>,
     pub safe_payload: VersionedJson,
+    /// The concrete thing the tool acts on, built by the provider adapter from the tool input
+    /// so approval panels show it without relying on provider-written titles.
+    #[serde(default)]
+    pub subject: Option<ApprovalSubject>,
+    /// The exact session permission updates an allow-for-session decision forwards.
+    #[serde(default)]
+    pub session_grants: Vec<SessionPermissionGrant>,
+}
+
+/// The concrete command, path, address, or tool an approval request acts on.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalSubject {
+    pub kind: ApprovalSubjectKind,
+    pub text: String,
+    /// The folder a search pattern runs in, when the tool names one.
+    pub location: Option<String>,
+    /// True when `text` or `location` was shortened to the display bound.
+    pub truncated: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalSubjectKind {
+    Command,
+    Path,
+    Url,
+    Pattern,
+    Query,
+    Tool,
+}
+
+/// One permission an allow-for-session decision grants for the rest of the provider session.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum SessionPermissionGrant {
+    /// Allow a tool, optionally limited to a rule such as a command prefix.
+    AllowRule {
+        tool_name: String,
+        rule_content: Option<String>,
+    },
+    /// Let the provider work in an additional directory.
+    Directory { path: String },
+    /// Accept file edits without asking again.
+    AcceptEdits,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

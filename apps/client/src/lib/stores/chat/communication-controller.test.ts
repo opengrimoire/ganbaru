@@ -57,7 +57,7 @@ describe("ChatCommunicationController older reply history", () => {
   });
 });
 
-function replyPage(previousCursor: string | null, replyOrdinal: number): ChatReplyThreadPageRead {
+function replyPage(previousCursor: string | null, replyPosition: number): ChatReplyThreadPageRead {
   return {
     thread: {
       id: REPLY_THREAD_ID,
@@ -68,7 +68,7 @@ function replyPage(previousCursor: string | null, replyOrdinal: number): ChatRep
       workState: "ready_for_review",
     },
     rootMessage: message("root:test", 0),
-    replies: [message(`reply:${replyOrdinal}`, replyOrdinal)],
+    replies: [message(`reply:${replyPosition}`, replyPosition)],
     assignment: null,
     agentRuns: [],
     previousCursor,
@@ -76,11 +76,11 @@ function replyPage(previousCursor: string | null, replyOrdinal: number): ChatRep
   };
 }
 
-function message(itemId: string, ordinal: number): ChatMessageRead {
+function message(itemId: string, position: number): ChatMessageRead {
   return {
     itemId,
     conversationId: "conversation:test",
-    replyThreadId: ordinal === 0 ? null : REPLY_THREAD_ID,
+    replyThreadId: position === 0 ? null : REPLY_THREAD_ID,
     revisionId: `revision:${itemId}`,
     revision: 1,
     author,
@@ -90,8 +90,8 @@ function message(itemId: string, ordinal: number): ChatMessageRead {
     attachmentIds: [],
     references: [],
     replyThread: null,
-    ordinal,
+    orderKey: `c${String(position).padStart(3, "0")}`,
     editedAt: null,
-    createdAt: `2026-08-04T17:0${ordinal}:00.000Z`,
+    createdAt: `2026-08-04T17:0${position}:00.000Z`,
   };
 }

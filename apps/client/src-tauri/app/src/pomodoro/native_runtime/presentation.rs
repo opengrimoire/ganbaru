@@ -11,7 +11,6 @@ use tauri::Manager;
 use crate::pomodoro::overlay::PomodoroOverlayState;
 use crate::sound_effects::{AppSound, AppSoundState};
 
-const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
 const IDLE_ALERT_INTERVAL_MS: i64 = 10_000;
 const FOCUS_WARNING_INTERVAL_MS: i64 = 60_000;
 const PAUSED_REMINDER_INTERVAL_MS: i64 = 60_000;
@@ -298,7 +297,7 @@ pub(super) struct DesktopPresentation {
     state: PresentationState,
     preferences: Preferences,
     preferences_generation: Option<u64>,
-    /// Set when a vault config patch changed the preferences branch.
+    /// Set when a change under the `preferences` branch of the vault preferences arrived.
     preferences_stale: bool,
     notification_copy: Option<DesktopNotificationCopy>,
 }
@@ -321,15 +320,10 @@ impl DesktopPresentation {
         pool: Option<&SqlitePool>,
     ) -> Result<(), FocusExecutionError> {
         if self.preferences_generation != Some(generation) || self.preferences_stale {
-            let app = app.clone();
-            self.preferences = tauri::async_runtime::spawn_blocking(move || {
-                let raw = crate::vault::read_active_config_bounded(&app, MAX_PREFERENCES_BYTES)?;
-                let value = serde_json::from_str(&raw)
-                    .map_err(|error| format!("Parse native Focus preferences: {error}"))?;
-                Ok::<_, String>(Preferences::parse(&value))
-            })
-            .await
-            .map_err(|error| format!("Read native Focus preferences: {error}"))??;
+            let view = crate::vault::preferences::effective_view(app)
+                .await
+                .map_err(|error| format!("Read native Focus preferences: {error}"))?;
+            self.preferences = Preferences::parse(&view);
             self.preferences_generation = Some(generation);
             self.preferences_stale = false;
         }

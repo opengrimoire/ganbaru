@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ensureDbUrl } from "$lib/api/db";
 import { invalidateAssetUrl, loadAssetUrl } from "$lib/api/asset-url-cache";
 
 export interface ProjectIconAsset {
@@ -25,8 +24,7 @@ export async function projectIconAssetUrl(relativePath: string): Promise<string>
 }
 
 export async function deleteProjectIconAssetsIfUnreferenced(relativePaths: string[]): Promise<void> {
-  const dbUrl = await ensureDbUrl();
-  await invoke("projects_icon_delete_assets_if_unreferenced", { dbUrl, relativePaths });
+  await invoke("projects_icon_delete_assets_if_unreferenced", { relativePaths });
   for (const relativePath of relativePaths) {
     invalidateAssetUrl("project-icon", relativePath);
   }

@@ -1,14 +1,17 @@
-import { invoke } from "@tauri-apps/api/core";
-import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { getConfigKey, setConfigKey } from "$lib/vault/config";
 import { formatNumber } from "$lib/i18n/formatters";
 import { getLocalization } from "$lib/i18n/translator.svelte";
 import {
   DEFAULT_AUTO_UPDATE_NOTIFICATIONS,
   type AutomaticUpdateCheckKind,
+  type AvailableUpdate,
+  type UpdateDownloadEvent,
   type UpdateInstallContext,
   errorText,
+  parseAvailableUpdate,
   parseStoredUpdateCheckAt,
+  parseUpdateDownloadEvent,
   parseUpdateInstallContext,
   releasePageUrl,
   shouldRunAutomaticUpdateCheck,
@@ -54,7 +57,7 @@ function loadLastAutoCheckAt(): string | null {
 class UpdateManagerStore {
   private localization = getLocalization();
   status = $state<UpdateStatus>("idle");
-  pendingUpdate = $state<Update | null>(null);
+  pendingUpdate = $state<AvailableUpdate | null>(null);
   currentVersion = $state<string | null>(null);
   latestVersion = $state<string | null>(null);
   releaseNotes = $state<string | null>(null);
@@ -131,16 +134,7 @@ class UpdateManagerStore {
     this.promptDismissed = true;
   }
 
-  closePendingUpdate(): void {
-    const update = this.pendingUpdate;
-    if (!update) return;
-    void update.close().catch((error: unknown) => {
-      console.error("Failed to close pending update resource:", error);
-    });
-  }
-
   resetUpdateState(): void {
-    this.closePendingUpdate();
     this.pendingUpdate = null;
     this.latestVersion = null;
     this.releaseNotes = null;
@@ -217,7 +211,7 @@ class UpdateManagerStore {
 
     try {
       await this.loadInstallContext();
-      const update = await check({ timeout: 30_000 });
+      const update = parseAvailableUpdate(await invoke<unknown>("updates_check"));
       if (!update) {
         this.status = "current";
         return;
@@ -248,9 +242,11 @@ class UpdateManagerStore {
     this.contentLength = null;
 
     try {
-      await this.pendingUpdate.downloadAndInstall((event) => {
-        this.handleDownloadEvent(event);
-      }, { timeout: 120_000 });
+      const onEvent = new Channel<unknown>((message) => {
+        const event = parseUpdateDownloadEvent(message);
+        if (event) this.handleDownloadEvent(event);
+      });
+      await invoke<void>("updates_install", { onEvent });
       this.status = "installed";
       void invoke("restart_app");
     } catch (error: unknown) {
@@ -259,7 +255,7 @@ class UpdateManagerStore {
     }
   }
 
-  private handleDownloadEvent(event: DownloadEvent): void {
+  private handleDownloadEvent(event: UpdateDownloadEvent): void {
     switch (event.event) {
       case "Started":
         this.contentLength = event.data.contentLength ?? null;

@@ -4,6 +4,7 @@
 //! name | color (1) | nonce (16) | hint length (1) and hint | fingerprint flag (1) and optional
 //! fingerprint (32) | issued at milliseconds (8) | signature (64) over everything before it.
 
+use crate::display_text::{DisplayTextError, validate_display_text};
 use crate::identity::{PUBLIC_KEY_BYTES, PersonKeyPair, PersonPublicKey, SIGNATURE_BYTES, verify};
 use crate::request::CARD_NONCE_BYTES;
 use base64::Engine;
@@ -11,7 +12,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-/// Leading bytes of every binary card.
+/// Leading bytes of every binary card. They are also the domain of the card signature, so a
+/// card never verifies as any other message the person key signs.
 pub const CARD_MAGIC: &[u8; 4] = b"GBC\x01";
 /// Prefix of the pasteable text form.
 pub const CARD_TEXT_PREFIX: &str = "GANB-";
@@ -25,7 +27,12 @@ pub const MAX_ENDPOINT_HINT_BYTES: usize = 64;
 const CARD_VERSION: u8 = 1;
 const FINGERPRINT_BYTES: usize = 32;
 const MAX_COLOR: u8 = 31;
+/// Groups in a code compared live while both devices wait, such as device enrollment: 60 bits,
+/// far beyond what can be searched before the exchange times out.
 const VERIFICATION_CODE_GROUPS: usize = 3;
+/// Groups in a contact code. It derives from the public key alone and can be searched offline
+/// for a colliding key, so it carries 80 bits.
+pub(crate) const CONTACT_CODE_GROUPS: usize = 4;
 const VERIFICATION_CODE_GROUP_LENGTH: usize = 4;
 const CROCKFORD_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -38,7 +45,8 @@ pub enum CardError {
     Bounds,
     /// The magic or version is unknown.
     Format,
-    /// The display name or hint is not valid UTF-8 or is empty.
+    /// The display name or hint is not valid UTF-8, or the name is blank or holds a control,
+    /// bidirectional, or invisible character.
     Field,
     /// The signature does not verify against the public key in the card.
     Signature,
@@ -110,10 +118,13 @@ fn validate_fields(card: &ContactCard) -> Result<(), CardError> {
     if card.color > MAX_COLOR {
         return Err(CardError::Bounds);
     }
-    if card.display_name.trim().is_empty() {
-        return Err(CardError::Field);
+    match validate_display_text(&card.display_name, MAX_DISPLAY_NAME_BYTES) {
+        Ok(()) => Ok(()),
+        Err(DisplayTextError::TooLong) => Err(CardError::Bounds),
+        Err(DisplayTextError::Empty | DisplayTextError::DisallowedCharacter) => {
+            Err(CardError::Field)
+        }
     }
-    Ok(())
 }
 
 fn encode_unsigned(card: &ContactCard) -> Vec<u8> {
@@ -259,18 +270,22 @@ pub fn decode_card_text(text: &str) -> Result<SignedCard, CardError> {
     decode_card(&bytes)
 }
 
-/// Crockford base32 verification code from the leading bits of a digest.
+/// Crockford base32 code from the leading 60 bits of a digest, for codes compared live.
 pub fn verification_code(digest: &[u8; 32]) -> String {
-    let mut code =
-        String::with_capacity(VERIFICATION_CODE_GROUPS * (VERIFICATION_CODE_GROUP_LENGTH + 1));
+    grouped_code(digest, VERIFICATION_CODE_GROUPS)
+}
+
+/// Crockford base32 code from the leading bits of a digest, in dash-separated groups of four.
+pub(crate) fn grouped_code(digest: &[u8; 32], groups: usize) -> String {
+    let length = groups * VERIFICATION_CODE_GROUP_LENGTH;
+    let mut code = String::with_capacity(groups * (VERIFICATION_CODE_GROUP_LENGTH + 1));
     let mut bits: u32 = 0;
     let mut bit_count = 0;
     let mut emitted = 0;
     for byte in digest {
         bits = (bits << 8) | u32::from(*byte);
         bit_count += 8;
-        while bit_count >= 5 && emitted < VERIFICATION_CODE_GROUPS * VERIFICATION_CODE_GROUP_LENGTH
-        {
+        while bit_count >= 5 && emitted < length {
             bit_count -= 5;
             let index = ((bits >> bit_count) & 0x1f) as usize;
             if emitted > 0 && emitted % VERIFICATION_CODE_GROUP_LENGTH == 0 {
@@ -279,7 +294,7 @@ pub fn verification_code(digest: &[u8; 32]) -> String {
             code.push(char::from(CROCKFORD_ALPHABET[index]));
             emitted += 1;
         }
-        if emitted >= VERIFICATION_CODE_GROUPS * VERIFICATION_CODE_GROUP_LENGTH {
+        if emitted >= length {
             break;
         }
     }

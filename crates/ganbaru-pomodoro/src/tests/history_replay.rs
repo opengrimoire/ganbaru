@@ -32,8 +32,8 @@ fn load_adaptive_history_reads_recent_signals() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO pomodoro_pauses (id, segment_id, started_at, ended_at, reason)
-                 VALUES ('pause-1', 'segment-1', '2026-05-29T10:10:00Z',
+            "INSERT INTO pomodoro_pauses (ordinal, segment_id, started_at, ended_at, reason)
+                 VALUES (0, 'segment-1', '2026-05-29T10:10:00Z',
                          '2026-05-29T10:14:00Z', 'idle')",
         )
         .execute(&pool)
@@ -164,7 +164,7 @@ fn adaptive_history_rejects_oversized_pause_evidence_without_truncating_it() {
         .unwrap();
         tx.commit().await.unwrap();
         sqlx::query("UPDATE pomodoro_segments SET status = 'completed', actual_end = '2026-05-29T10:40:00Z', end_reason = 'completed'").execute(&pool).await.unwrap();
-        sqlx::query("WITH RECURSIVE indices(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM indices WHERE n < 4096) INSERT INTO pomodoro_pauses (id, segment_id, started_at, ended_at, reason) SELECT 'pause-' || n, 'segment-1', '2026-05-29T10:10:00Z', '2026-05-29T10:11:00Z', 'manual' FROM indices").execute(&pool).await.unwrap();
+        sqlx::query("WITH RECURSIVE indices(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM indices WHERE n < 4096) INSERT INTO pomodoro_pauses (ordinal, segment_id, started_at, ended_at, reason) SELECT n, 'segment-1', '2026-05-29T10:10:00Z', '2026-05-29T10:11:00Z', 'manual' FROM indices").execute(&pool).await.unwrap();
         let error = load_adaptive_history_from_pool(
             &pool,
             "2026-05-29T11:00:00Z",

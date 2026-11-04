@@ -1,6 +1,10 @@
 //! Assignment dispatch and live provider delivery.
 
-use super::common::{new_id, serialization_error, sha256_hex};
+use super::assignments::read_assignment_subject;
+use super::common::{
+    native_assignment_safety_mode, new_id, parse_runtime_approval_policy, serialization_error,
+    sha256_hex, this_device_id,
+};
 use super::reads::read_policy;
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
 use ganbaru_chat_contracts::models::*;
@@ -12,40 +16,99 @@ pub(super) async fn dispatch_assignment_job(
     db_url: String,
     assignment_id: ChatWorkAssignmentId,
 ) -> ChatResult<()> {
+    let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let now = now_timestamp()?;
-    let claim_token = new_id("dispatch-claim");
-    let claimed = sqlx::query(
-        "UPDATE chat_assignment_dispatch_jobs
-         SET state = 'claimed', claimed_at = ?, claim_token = ?,
-             attempt_count = attempt_count + 1, updated_at = ?
-         WHERE assignment_id = ? AND state = 'queued' AND available_at <= ?",
-    )
-    .bind(now.as_str())
-    .bind(&claim_token)
-    .bind(now.as_str())
-    .bind(assignment_id.as_str())
-    .bind(now.as_str())
-    .execute(&pool)
-    .await
-    .map_err(persistence_error)?;
-    if claimed.rows_affected() != 1 {
+    let Some(claim) = claim_dispatch_job(&pool, &assignment_id, &device_id, &now).await? else {
         return Ok(());
-    }
-    let result = dispatch_claimed_assignment(
-        app.clone(),
-        db_url.clone(),
-        &pool,
-        &assignment_id,
-        &claim_token,
-    )
-    .await;
+    };
+    let result =
+        dispatch_claimed_assignment(app.clone(), db_url.clone(), &pool, &assignment_id, &claim)
+            .await;
     if let Err(error) = result {
-        fail_assignment_dispatch(&pool, &assignment_id, &claim_token, &error).await?;
-        return Err(error);
+        return match settle_dispatch_error(&pool, &assignment_id, &claim.token, &error).await? {
+            DispatchSettlement::Failed => Err(error),
+            DispatchSettlement::Waiting => Ok(()),
+        };
     }
     mark_initial_assignment_input_delivered(&pool, &assignment_id).await?;
     deliver_pending_assignment_inputs(app, db_url, &pool, &assignment_id).await
+}
+
+/// A claimed dispatch job and the instructions its consented subject verified.
+#[derive(Debug)]
+pub(super) struct ClaimedDispatch {
+    pub(super) token: String,
+    pub(super) instructions: String,
+}
+
+/// Claims the queued dispatch job of `assignment_id` when the device `device_id` executes the
+/// assignment. An assignment without an executing device runs on the device that holds its
+/// device-local dispatch job.
+///
+/// The job starts only what it consented to: when the current subject is not its consented
+/// digest, or cannot be read (as for an archived teammate), the job is dropped so the
+/// assignment stays queued and waits for Start here again.
+pub(super) async fn claim_dispatch_job(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    device_id: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<Option<ClaimedDispatch>> {
+    let mut transaction = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(persistence_error)?;
+    let Some(consented_digest) = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT job.consented_digest
+         FROM chat_assignment_dispatch_jobs job
+         JOIN chat_work_assignments assignment ON assignment.id = job.assignment_id
+         WHERE job.assignment_id = ?1 AND job.state = 'queued' AND job.available_at <= ?2
+           AND coalesce(assignment.executing_device_id, ?3) = ?3",
+    )
+    .bind(assignment_id.as_str())
+    .bind(now.as_str())
+    .bind(device_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(persistence_error)?
+    else {
+        return Ok(None);
+    };
+    let subject = match read_assignment_subject(&mut transaction, assignment_id).await {
+        Ok(subject) => Some(subject),
+        Err(error) if error.code == ChatErrorCode::Persistence => return Err(error),
+        Err(_) => None,
+    };
+    let Some(subject) =
+        subject.filter(|subject| consented_digest.as_deref() == Some(subject.digest().as_str()))
+    else {
+        sqlx::query("DELETE FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?")
+            .bind(assignment_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(persistence_error)?;
+        transaction.commit().await.map_err(persistence_error)?;
+        return Ok(None);
+    };
+    let claim_token = new_id("dispatch-claim")?;
+    sqlx::query(
+        "UPDATE chat_assignment_dispatch_jobs
+         SET state = 'claimed', claimed_at = ?1, claim_token = ?2,
+             attempt_count = attempt_count + 1, updated_at = ?1
+         WHERE assignment_id = ?3",
+    )
+    .bind(now.as_str())
+    .bind(&claim_token)
+    .bind(assignment_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(Some(ClaimedDispatch {
+        token: claim_token,
+        instructions: subject.instructions,
+    }))
 }
 
 async fn mark_initial_assignment_input_delivered(
@@ -100,7 +163,7 @@ async fn dispatch_claimed_assignment(
     db_url: String,
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
-    claim_token: &str,
+    claim: &ClaimedDispatch,
 ) -> ChatResult<()> {
     let row = sqlx::query(
         "SELECT
@@ -119,8 +182,6 @@ async fn dispatch_claimed_assignment(
             authorization.scope_digest,
             authorization.decision_state,
             authorization.revoked_at AS authorization_revoked_at,
-            policy.revision AS policy_revision,
-            teammate.instructions,
             channel.project_id,
             project.status AS project_status,
             environment.scratch_generation_id,
@@ -154,10 +215,10 @@ async fn dispatch_claimed_assignment(
          JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          JOIN chat_assignment_dispatch_jobs job ON job.assignment_id = assignment.id
          WHERE assignment.id = ?
            AND CASE
@@ -180,7 +241,7 @@ async fn dispatch_claimed_assignment(
     if row
         .try_get::<String, _>("claim_token")
         .map_err(persistence_error)?
-        != claim_token
+        != claim.token
     {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,
@@ -241,8 +302,14 @@ async fn dispatch_claimed_assignment(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let policy_revision = u64_value(row.try_get("policy_revision").map_err(persistence_error)?)?;
-    let policy = read_policy(pool, &teammate_id, policy_revision).await?;
+    let policy_revision_id: String = row
+        .try_get("teammate_policy_revision_id")
+        .map_err(persistence_error)?;
+    let policy = read_policy(pool, &teammate_id, &policy_revision_id).await?;
+    let frozen_runtime_approval: String = row
+        .try_get("resolved_runtime_approval_policy")
+        .map_err(persistence_error)?;
+    let resolved_runtime_approval = parse_runtime_approval_policy(&frozen_runtime_approval)?;
     let working_folder_id = row
         .try_get::<Option<String>, _>("working_folder_id")
         .map_err(persistence_error)?
@@ -298,6 +365,7 @@ async fn dispatch_claimed_assignment(
             &destination_conversation_id,
             teammate_id.as_str(),
             &requester_participant_id,
+            Some(&frozen_runtime_approval),
         )
         .await?
         {
@@ -377,7 +445,7 @@ async fn dispatch_claimed_assignment(
         .transpose()?;
     let provider_execution_thread_id = existing_thread_id
         .clone()
-        .unwrap_or(ChatThreadId::new(new_id("provider-execution")).map_err(identifier_error)?);
+        .unwrap_or(ChatThreadId::new(new_id("provider-execution")?).map_err(identifier_error)?);
     let attachment_ids = sqlx::query_scalar::<_, String>(
         "SELECT attachment.attachment_id
          FROM chat_work_assignments assignment
@@ -431,7 +499,7 @@ async fn dispatch_claimed_assignment(
     .fetch_one(pool)
     .await
     .map_err(persistence_error)?;
-    let developer_instructions: String = row.try_get("instructions").map_err(persistence_error)?;
+    let developer_instructions = claim.instructions.clone();
     let project_id: String = row.try_get("project_id").map_err(persistence_error)?;
     let request = super::super::send_commands::SendChatTurnCommand {
         command: ChatCommandContext {
@@ -448,13 +516,17 @@ async fn dispatch_claimed_assignment(
         new_thread_id: (continuation.is_none()).then_some(provider_execution_thread_id),
         execution_environment_id: execution_environment_id.clone(),
         scratch_generation_id: scratch_generation_id.clone(),
-        turn_id: ChatTurnId::new(new_id("provider-turn")).map_err(identifier_error)?,
-        message_id: ChatMessageId::new(new_id("provider-message")).map_err(identifier_error)?,
+        turn_id: ChatTurnId::new(new_id("provider-turn")?).map_err(identifier_error)?,
+        message_id: ChatMessageId::new(new_id("provider-message")?).map_err(identifier_error)?,
         provider_instance_id: policy.provider_instance_id,
         provider_managed_model: policy.provider_managed_model,
         model_id: policy.model_id,
         model_options: policy.model_options,
-        modes: assignment_turn_modes(policy.safety_mode, has_native_target),
+        modes: assignment_turn_modes(
+            policy.safety_mode,
+            resolved_runtime_approval,
+            has_native_target,
+        ),
         prompt: row.try_get("serialized_text").map_err(persistence_error)?,
         attachment_ids,
         mentions,
@@ -467,7 +539,7 @@ async fn dispatch_claimed_assignment(
             origin: ganbaru_chat::agent_runs::TurnOrigin::Assignment {
                 developer_instructions,
                 run: Box::new(ganbaru_chat::agent_runs::AgentRunBinding {
-                    run_id: ChatAgentRunId::new(new_id("agent-run")).map_err(identifier_error)?,
+                    run_id: ChatAgentRunId::new(new_id("agent-run")?).map_err(identifier_error)?,
                     assignment_id: assignment_id.clone(),
                     project_id,
                     teammate_policy_revision_id: policy.id,
@@ -506,10 +578,10 @@ async fn require_live_folder_target(
            JOIN chat_teammate_channel_memberships channel_access
              ON channel_access.conversation_id = live.conversation_id
             AND channel_access.teammate_id = live.teammate_id
+            AND channel_access.removed_at IS NULL
            JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-           JOIN chat_access_profile_revisions profile_revision
+           JOIN chat_access_profile_effective_revisions profile_revision
              ON profile_revision.access_profile_id = profile.id
-            AND profile_revision.revision = profile.latest_revision
            WHERE frozen.authorization_revision_id = ?
              AND frozen.working_folder_id = ?
              AND frozen.is_execution_target = 1
@@ -553,6 +625,51 @@ async fn require_live_folder_target(
     }
 }
 
+/// How a claimed dispatch that could not start was settled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DispatchSettlement {
+    /// The assignment and its job were failed with the dispatch error.
+    Failed,
+    /// The job was dropped and the assignment stays queued.
+    Waiting,
+}
+
+/// Settles the claim `claim_token` of `assignment_id` after its dispatch returned `error`.
+///
+/// When the teammate was archived, for example by a linked device after this device claimed
+/// the work, the still queued assignment is not failed: its job is dropped so the work waits,
+/// and after a restore it is started again like any other unaccepted work. Any other error
+/// fails the assignment.
+pub(super) async fn settle_dispatch_error(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    claim_token: &str,
+    error: &ChatError,
+) -> ChatResult<DispatchSettlement> {
+    let released = sqlx::query(
+        "DELETE FROM chat_assignment_dispatch_jobs
+         WHERE assignment_id = ?1 AND claim_token = ?2
+           AND EXISTS (
+             SELECT 1 FROM chat_work_assignments assignment
+             JOIN chat_participants participant ON participant.id = assignment.teammate_id
+             WHERE assignment.id = ?1 AND assignment.state = 'queued'
+               AND participant.archived_at IS NOT NULL
+           )",
+    )
+    .bind(assignment_id.as_str())
+    .bind(claim_token)
+    .execute(pool)
+    .await
+    .map_err(persistence_error)?
+    .rows_affected()
+        > 0;
+    if released {
+        return Ok(DispatchSettlement::Waiting);
+    }
+    fail_assignment_dispatch(pool, assignment_id, claim_token, error).await?;
+    Ok(DispatchSettlement::Failed)
+}
+
 async fn fail_assignment_dispatch(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
@@ -573,7 +690,7 @@ async fn fail_assignment_dispatch(
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    sqlx::query(
+    let failed = sqlx::query(
         "UPDATE chat_work_assignments
          SET state = 'failed', state_reason = ?, settled_at = ?,
              revision = revision + 1, updated_at = ?
@@ -585,15 +702,21 @@ async fn fail_assignment_dispatch(
     .bind(assignment_id.as_str())
     .execute(&mut *transaction)
     .await
-    .map_err(persistence_error)?;
-    insert_dispatch_failure_message(
-        &mut transaction,
-        assignment_id,
-        claim_token,
-        &error.message,
-        &now,
-    )
-    .await?;
+    .map_err(persistence_error)?
+    .rows_affected()
+        > 0;
+    // An assignment that already left the queue, for example through a cancel applied from
+    // another device, keeps its state and gets no failure message.
+    if failed {
+        insert_dispatch_failure_message(
+            &mut transaction,
+            assignment_id,
+            claim_token,
+            &error.message,
+            &now,
+        )
+        .await?;
+    }
     transaction.commit().await.map_err(persistence_error)
 }
 
@@ -625,23 +748,21 @@ async fn insert_dispatch_failure_message(
     let hash = sha256_hex(format!("{}:{claim_token}", assignment_id.as_str()).as_bytes());
     let item_id = format!("organizational-item:{hash}");
     let revision_id = format!("organizational-revision:{hash}");
-    let ordinal: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(ordinal), 0) + 1 FROM chat_conversation_items
-         WHERE reply_thread_id = ?",
+    let order_key = ganbaru_chat::timeline::next_order_key(
+        transaction,
+        &conversation_id,
+        Some(&reply_thread_id),
     )
-    .bind(&reply_thread_id)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+    .await?;
     sqlx::query(
         "INSERT INTO chat_conversation_items
-            (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES (?, ?, ?, 'message', ?, ?)",
     )
     .bind(&item_id)
     .bind(&conversation_id)
     .bind(&reply_thread_id)
-    .bind(ordinal)
+    .bind(&order_key)
     .bind(now.as_str())
     .execute(&mut **transaction)
     .await
@@ -668,9 +789,9 @@ async fn insert_dispatch_failure_message(
     let rich_content_data = serde_json::to_string(&rich_content).map_err(serialization_error)?;
     sqlx::query(
         "INSERT INTO chat_communication_message_revisions
-            (id, message_item_id, revision, normalized_markdown,
+            (id, message_item_id, normalized_markdown,
              rich_content_schema_version, rich_content_data, created_at)
-         VALUES (?, ?, 1, ?, 1, ?, ?)",
+         VALUES (?, ?, ?, 1, ?, ?)",
     )
     .bind(&revision_id)
     .bind(&item_id)
@@ -699,8 +820,8 @@ async fn insert_dispatch_failure_message(
     .await
     .map_err(persistence_error)?;
     sqlx::query(
-        "UPDATE chat_reply_threads SET reply_count = reply_count + 1,
-             last_activity_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
+        "UPDATE chat_reply_threads
+         SET last_activity_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
     )
     .bind(now.as_str())
     .bind(now.as_str())
@@ -769,10 +890,10 @@ pub(super) async fn deliver_assignment_input(
          JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          JOIN chat_work_assignment_inputs input ON input.assignment_id = run.assignment_id
          JOIN chat_communication_messages message ON message.item_id = input.message_item_id
          JOIN chat_communication_message_revisions revision
@@ -827,7 +948,7 @@ pub(super) async fn deliver_assignment_input(
                 expected_thread_revision: None,
             },
             thread_id,
-            message_id: ChatMessageId::new(new_id("provider-steer-message"))
+            message_id: ChatMessageId::new(new_id("provider-steer-message")?)
                 .map_err(identifier_error)?,
             prompt: row
                 .try_get("normalized_markdown")
@@ -848,22 +969,20 @@ pub(super) async fn deliver_assignment_input(
     Ok(())
 }
 
-fn teammate_cli_safety_mode(value: ChatApprovalPolicy) -> SafetyMode {
-    match value {
-        ChatApprovalPolicy::AskForApproval => SafetyMode::AskForApproval,
-        ChatApprovalPolicy::ApproveForMe => SafetyMode::ApproveForMe,
-        ChatApprovalPolicy::FullAccess => SafetyMode::FullAccess,
-        ChatApprovalPolicy::Custom => SafetyMode::Custom,
-    }
-}
-
+/// Chooses the turn modes for an organizational assignment. Native targets run
+/// with the frozen effective runtime approval, which is never broader than the
+/// teammate's own approval behavior; targetless assignments stay conversational.
 fn assignment_turn_modes(
     teammate_approval: ChatApprovalPolicy,
+    resolved_runtime_approval: ChatRuntimeApprovalPolicy,
     has_native_target: bool,
 ) -> TurnModeSnapshot {
     if has_native_target {
         return TurnModeSnapshot {
-            safety_mode: teammate_cli_safety_mode(teammate_approval),
+            safety_mode: native_assignment_safety_mode(
+                teammate_approval,
+                resolved_runtime_approval,
+            ),
             interaction_mode: InteractionMode::Build,
         };
     }
@@ -875,19 +994,73 @@ fn assignment_turn_modes(
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatApprovalPolicy, InteractionMode, SafetyMode, assignment_turn_modes};
+    use super::{
+        ChatApprovalPolicy, ChatRuntimeApprovalPolicy, InteractionMode, SafetyMode,
+        assignment_turn_modes,
+    };
 
     #[test]
     fn targetless_assignments_use_a_narrow_conversation_mode() {
-        let modes = assignment_turn_modes(ChatApprovalPolicy::FullAccess, false);
+        let modes = assignment_turn_modes(
+            ChatApprovalPolicy::FullAccess,
+            ChatRuntimeApprovalPolicy::Unattended,
+            false,
+        );
         assert_eq!(modes.safety_mode, SafetyMode::AskForApproval);
         assert_eq!(modes.interaction_mode, InteractionMode::Build);
     }
 
     #[test]
-    fn native_assignments_keep_the_teammate_cli_approval_behavior() {
-        let modes = assignment_turn_modes(ChatApprovalPolicy::FullAccess, true);
-        assert_eq!(modes.safety_mode, SafetyMode::FullAccess);
-        assert_eq!(modes.interaction_mode, InteractionMode::Build);
+    fn native_assignments_run_with_the_frozen_effective_approval() {
+        let cases = [
+            (
+                ChatApprovalPolicy::FullAccess,
+                ChatRuntimeApprovalPolicy::Unattended,
+                SafetyMode::FullAccess,
+            ),
+            (
+                ChatApprovalPolicy::FullAccess,
+                ChatRuntimeApprovalPolicy::AutoApprove,
+                SafetyMode::ApproveForMe,
+            ),
+            (
+                ChatApprovalPolicy::FullAccess,
+                ChatRuntimeApprovalPolicy::Ask,
+                SafetyMode::AskForApproval,
+            ),
+            (
+                ChatApprovalPolicy::ApproveForMe,
+                ChatRuntimeApprovalPolicy::AutoApprove,
+                SafetyMode::ApproveForMe,
+            ),
+            (
+                ChatApprovalPolicy::AskForApproval,
+                ChatRuntimeApprovalPolicy::Ask,
+                SafetyMode::AskForApproval,
+            ),
+            (
+                ChatApprovalPolicy::AskForApproval,
+                ChatRuntimeApprovalPolicy::ProviderCustom,
+                SafetyMode::AskForApproval,
+            ),
+            (
+                ChatApprovalPolicy::Custom,
+                ChatRuntimeApprovalPolicy::ProviderCustom,
+                SafetyMode::Custom,
+            ),
+            (
+                ChatApprovalPolicy::Custom,
+                ChatRuntimeApprovalPolicy::Ask,
+                SafetyMode::Custom,
+            ),
+        ];
+        for (teammate, resolved, expected) in cases {
+            let modes = assignment_turn_modes(teammate, resolved, true);
+            assert_eq!(
+                modes.safety_mode, expected,
+                "{teammate:?} with {resolved:?}"
+            );
+            assert_eq!(modes.interaction_mode, InteractionMode::Build);
+        }
     }
 }

@@ -21,7 +21,7 @@ The harness fires a desktop notification when it reaches the summary or error st
 The harness uses device-local `app_config_dir/benchmark.sqlite` for the whole run. The user's real database and Ganbaru folder are never opened during benchmark passes.
 
 - The benchmark database and its sidecars are deleted before a run starts and when the summary closes, the run is cancelled, or stale state is detected.
-- `vaultMode: "benchmark"` in `benchmark-state.json` tells the database URL resolver to open the benchmark database.
+- At boot the frontend asks Rust to select the benchmark database when a fresh `vaultMode: "benchmark"` pending state matches the harness and dataset versions. Rust accepts only when the state file names a pending relaunch, keeps the selection for the process lifetime, and refuses benchmark fixture writes in any other process.
 - The app restarts after teardown so the Rust database layer returns to the real user database.
 - Stale state is discarded when the harness or dataset version changed, the total run TTL expired, or a pending restart was not claimed within its short TTL.
 

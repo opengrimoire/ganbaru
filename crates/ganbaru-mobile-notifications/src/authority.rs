@@ -1,5 +1,10 @@
 //! Private callback guard for platform requests already queued by Tauri.
 
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use std::sync::OnceLock;
 
 type AuthorityChecker = dyn Fn(u64, i64) -> bool + Send + Sync;

@@ -89,7 +89,7 @@ fn database_subitems_keep_source_ownership_and_reject_cycles_and_foreign_parents
         )
         .await;
         let foreign_row = "44444444-4444-4444-8444-444444444444";
-        sqlx::query("INSERT INTO notes_pages(id, parent_type, parent_data_source_id, title, properties) VALUES (?, 'data_source_id', ?, 'Foreign', '{}')")
+        sqlx::query("INSERT INTO notes_pages(id, parent_type, parent_data_source_id, title) VALUES (?, 'data_source_id', ?, 'Foreign')")
             .bind(foreign_row).bind(DATA_SOURCE_B).execute(&pool).await.unwrap();
         assert!(
             data_sources::row_hierarchy::set_row_parent(
@@ -158,14 +158,26 @@ fn database_subitems_report_unloaded_ancestors_and_counts_and_restore_trashed_re
             .await
             .unwrap();
         assert_eq!(metadata(&pool, &[PAGE_C]).await[PAGE_C]["depth"], 1);
-        sqlx::query("UPDATE notes_pages SET parent_type = 'workspace', parent_data_source_id = NULL WHERE id = ?")
-            .bind(PAGE_B).execute(&pool).await.unwrap();
+        writes::update_page(
+            &pool,
+            PAGE_B,
+            NotePageUpdate {
+                title: None,
+                parent: Some(workspace_parent()),
+                properties: None,
+                icon: OptionalJsonValue::Unset,
+                cover: OptionalJsonValue::Unset,
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(metadata(&pool, &[PAGE_C]).await[PAGE_C]["depth"], 0);
-        let edge_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM notes_data_source_row_hierarchy")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let edge_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notes_pages WHERE parent_row_page_id IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(edge_count, 0);
     });
 }
@@ -178,7 +190,7 @@ fn database_subitems_validate_subtree_depth_and_roll_back_new_row_documents_at_t
         let mut parent = PAGE_B.to_string();
         for depth in 1..=data_sources::row_hierarchy::MAX_ROW_HIERARCHY_DEPTH {
             let id = format!("40000000-0000-4000-8000-{depth:012}");
-            sqlx::query("INSERT INTO notes_pages(id, parent_type, parent_data_source_id, title, properties) VALUES (?, 'data_source_id', ?, ?, '{}')")
+            sqlx::query("INSERT INTO notes_pages(id, parent_type, parent_data_source_id, title) VALUES (?, 'data_source_id', ?, ?)")
                 .bind(&id).bind(DATA_SOURCE_A).bind(format!("Depth {depth}")).execute(&pool).await.unwrap();
             data_sources::row_hierarchy::set_row_parent(
                 &pool,
@@ -210,7 +222,7 @@ fn database_subitems_validate_subtree_depth_and_roll_back_new_row_documents_at_t
         let absent: i64 = sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM notes_pages WHERE id = ?) + (SELECT COUNT(*) FROM notes_blocks WHERE id = ?)")
             .bind(PAGE_C).bind(BLOCK_C).fetch_one(&pool).await.unwrap();
         assert_eq!(absent, 0);
-        sqlx::query("INSERT INTO notes_pages(id, parent_type, parent_data_source_id, title, properties) VALUES (?, 'data_source_id', ?, 'Other root', '{}')")
+        sqlx::query("INSERT INTO notes_pages(id, parent_type, parent_data_source_id, title) VALUES (?, 'data_source_id', ?, 'Other root')")
             .bind(PAGE_C).bind(DATA_SOURCE_A).execute(&pool).await.unwrap();
         assert!(
             data_sources::row_hierarchy::set_row_parent(
@@ -228,8 +240,12 @@ fn database_subitems_validate_subtree_depth_and_roll_back_new_row_documents_at_t
             metadata(&pool, &[&parent]).await[&parent]["depth"],
             data_sources::row_hierarchy::MAX_ROW_HIERARCHY_DEPTH
         );
-        sqlx::query("INSERT INTO notes_data_source_row_hierarchy(row_page_id, data_source_id, parent_row_page_id) VALUES (?, ?, ?)")
-            .bind(PAGE_B).bind(DATA_SOURCE_A).bind(PAGE_C).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE notes_pages SET parent_row_page_id = ? WHERE id = ?")
+            .bind(PAGE_C)
+            .bind(PAGE_B)
+            .execute(&pool)
+            .await
+            .unwrap();
         let mut tx = pool.begin().await.unwrap();
         assert!(
             data_sources::row_hierarchy::validate_sources_tx(&mut tx, &[DATA_SOURCE_A.into()])
@@ -263,9 +279,9 @@ fn database_subitems_copy_and_export_canonical_relationships_with_independent_ro
         )
         .unwrap();
         let copied_source = copied["data_source"]["id"].as_str().unwrap();
-        let edge = sqlx::query("SELECT hierarchy.row_page_id, hierarchy.parent_row_page_id, child.title AS child_title, parent.title AS parent_title
-            FROM notes_data_source_row_hierarchy AS hierarchy JOIN notes_pages AS child ON child.id = hierarchy.row_page_id
-            JOIN notes_pages AS parent ON parent.id = hierarchy.parent_row_page_id WHERE hierarchy.data_source_id = ?")
+        let edge = sqlx::query("SELECT child.id AS row_page_id, child.parent_row_page_id, child.title AS child_title, parent.title AS parent_title
+            FROM notes_pages AS child JOIN notes_pages AS parent ON parent.id = child.parent_row_page_id
+            WHERE child.parent_data_source_id = ?")
             .bind(copied_source).fetch_one(&pool).await.unwrap();
         assert_eq!(edge.get::<String, _>("child_title"), "Child");
         assert_eq!(edge.get::<String, _>("parent_title"), "Parent");
@@ -279,10 +295,12 @@ fn database_subitems_copy_and_export_canonical_relationships_with_independent_ro
         .unwrap();
         let graph: Value = serde_json::from_str(&export.json).unwrap();
         assert_eq!(
-            graph["graph"]["data_sources"]["notes_data_source_row_hierarchy"]
+            graph["graph"]["pages"]["notes_pages"]
                 .as_array()
                 .unwrap()
-                .len(),
+                .iter()
+                .filter(|page| !page["parent_row_page_id"].is_null())
+                .count(),
             2
         );
         let duplicate = serde_json::to_value(
@@ -315,20 +333,23 @@ fn database_subitems_copy_and_export_canonical_relationships_with_independent_ro
         )
         .unwrap();
         let duplicated_parent_id = duplicated_parent["page"]["id"].as_str().unwrap();
-        let parent_children: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM notes_data_source_row_hierarchy WHERE parent_row_page_id = ?",
-        )
-        .bind(duplicated_parent_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let parent_children: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM notes_pages WHERE parent_row_page_id = ?")
+                .bind(duplicated_parent_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(parent_children, 2);
         assert_eq!(
             metadata(&pool, &[duplicated_parent_id]).await[duplicated_parent_id]["depth"],
             0
         );
-        sqlx::query("INSERT INTO notes_data_source_row_hierarchy(row_page_id, data_source_id, parent_row_page_id) VALUES (?, ?, ?)")
-            .bind(PAGE_B).bind(DATA_SOURCE_A).bind(PAGE_C).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE notes_pages SET parent_row_page_id = ? WHERE id = ?")
+            .bind(PAGE_C)
+            .bind(PAGE_B)
+            .execute(&pool)
+            .await
+            .unwrap();
         assert!(
             databases::duplicate_database(
                 &pool,

@@ -105,12 +105,71 @@ fn schema_accepts_mobile_app_rule_snapshots() {
         .await
         .unwrap();
 
-        let invalid = sqlx::query(
-            "UPDATE distractions_block_event_rule_snapshots
-             SET rule_kind = 'screen_content' WHERE block_event_id = 'mobile-block-1'",
+        let second = sqlx::query(
+            "INSERT INTO distractions_block_event_rule_snapshots
+                (block_event_id, ordinal, rule_kind, blocker_mode)
+             VALUES ('mobile-block-1', 1, 'mobile_app', 'blacklist')",
         )
         .execute(&pool)
         .await;
-        assert!(invalid.is_err());
+        assert!(second.is_err(), "an event keeps one rule snapshot");
+
+        sqlx::query("DELETE FROM distractions_block_events WHERE id = 'mobile-block-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let snapshots: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM distractions_block_event_rule_snapshots")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(snapshots, 0);
+    });
+}
+
+#[test]
+fn deleting_a_focus_run_deletes_its_block_events() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_event(&pool).await;
+        insert_open_run(&pool, "run-1").await.unwrap();
+        sqlx::query(
+            "INSERT INTO distractions_block_events
+                (id, run_id, occurred_at, source_type, source_key, phase, decision)
+             VALUES ('block-run', 'run-1', '2026-05-23T09:10:00Z', 'browser',
+                     'reddit.com', 'focus', 'blocked'),
+                    ('block-free', NULL, '2026-05-23T09:11:00Z', 'browser',
+                     'reddit.com', NULL, 'blocked')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO distractions_block_event_rule_snapshots
+                (block_event_id, rule_kind, rule_label, blocker_mode)
+             VALUES ('block-run', 'site', 'Reddit', 'strict'),
+                    ('block-free', 'site', 'Reddit', 'strict')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("DELETE FROM pomodoro_runs WHERE id = 'run-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM distractions_block_events ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, ["block-free"]);
+        let snapshots: Vec<String> = sqlx::query_scalar(
+            "SELECT block_event_id FROM distractions_block_event_rule_snapshots",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(snapshots, ["block-free"]);
     });
 }

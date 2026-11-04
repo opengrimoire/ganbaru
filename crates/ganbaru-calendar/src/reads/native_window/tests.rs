@@ -100,7 +100,9 @@ async fn pool() -> SqlitePool {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     sqlx::raw_sql("INSERT INTO calendars(id, name, source) VALUES('native-calendar', 'Native', 'local');
         INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id, rrule)
         VALUES('series', 'Home-zone series', '2024-03-09T14:00:00Z', '2024-03-09T15:00:00Z', 'America/New_York', 'native-calendar', 'FREQ=DAILY;COUNT=3');")
@@ -277,7 +279,7 @@ fn native_window_reports_preservation_only_rules_without_silently_reinterpreting
 }
 
 #[test]
-fn native_window_rejects_excess_templates_and_bad_windows_without_truncating() {
+fn native_window_counts_excess_templates_and_rejects_bad_windows() {
     crate::test_support::block_on(async {
         let pool = pool().await;
         sqlx::query("WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<10000)
@@ -285,18 +287,16 @@ fn native_window_rejects_excess_templates_and_bad_windows_without_truncating() {
             SELECT 'extra-' || value, 'Extra', '2024-03-09T09:00:00Z', '2024-03-09T10:00:00Z', 'UTC', 'native-calendar', 'FREQ=DAILY' FROM n")
             .execute(&pool).await.unwrap();
         let mut tx = pool.begin().await.unwrap();
-        assert!(
-            read(
-                &mut tx,
-                &window("2024-03-09", "2024-03-09"),
-                WindowPurpose::Render,
-                false
-            )
-            .await
-            .err()
-            .unwrap()
-            .contains("10000")
-        );
+        let source = read(
+            &mut tx,
+            &window("2024-03-09", "2024-03-09"),
+            WindowPurpose::Render,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(source.events.len(), 10_000);
+        assert_eq!(source.omitted_template_count, 1);
         assert!(
             Window::new(
                 "2024-03-10",
@@ -312,6 +312,321 @@ fn native_window_rejects_excess_templates_and_bad_windows_without_truncating() {
                 &civil_time::zone("UTC").unwrap()
             )
             .is_err()
+        );
+    });
+}
+
+/// Largest JSON document the frontend parser accepts as a Calendar window.
+const FRONTEND_JSON_BYTES: usize = 64 * 1024 * 1024;
+
+/// One honest timed event that every read purpose selects, before any flood row starts.
+const HONEST_EVENT_SQL: &str = "INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id)
+    VALUES('honest', 'Honest', '2024-03-09T08:00:00Z', '2024-03-09T09:00:00Z', 'UTC', 'native-calendar');";
+
+/// Make every event visible to the Focus and notification purposes.
+const SELECT_FOR_EVERY_PURPOSE_SQL: &str = "
+    INSERT OR IGNORE INTO calendar_event_pomodoro_configs(event_id, rhythm_kind, rhythm_source)
+        SELECT id, 'count', 'custom' FROM calendar_events;
+    INSERT OR IGNORE INTO calendar_event_pomodoro_config_count_rhythms(event_id, focus_duration_minutes, short_break_minutes, long_break_minutes, long_break_after_focus_count)
+        SELECT id, 25, 5, 15, 4 FROM calendar_events;
+    INSERT INTO calendar_event_notifications(id, event_id, offset_minutes)
+        SELECT 'notice-' || id, id, 10 FROM calendar_events;";
+
+/// Assert what the frontend parser would reject outright in a window.
+fn assert_frontend_accepts(result: &NativeCalendarWindow, label: &str) {
+    let mut ids = std::collections::BTreeSet::new();
+    assert!(
+        result.occurrences.iter().all(|row| ids.insert(&row.id)),
+        "{label} window repeats an occurrence id"
+    );
+    assert!(
+        result.occurrences.len() <= 10_000,
+        "{label} window has {} occurrences",
+        result.occurrences.len()
+    );
+    assert!(result.events.len() <= 10_000);
+    let bytes = serde_json::to_vec(result).unwrap().len();
+    assert!(
+        bytes <= FRONTEND_JSON_BYTES,
+        "{label} window is {bytes} bytes"
+    );
+}
+
+#[test]
+fn template_flood_keeps_honest_events_in_the_window() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        sqlx::raw_sql(HONEST_EVENT_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql("
+            WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<10001)
+            INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id, rrule)
+            SELECT 'flood-' || value, 'Flood', '2024-03-09T15:00:00Z', '2024-03-09T15:30:00Z', 'UTC', 'native-calendar', 'FREQ=DAILY' FROM n;
+            WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<300)
+            INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id)
+            SELECT 'long-title-' || value, replace(hex(zeroblob(262144)), '00', 'x'), '2024-03-09T16:00:00Z', '2024-03-09T16:30:00Z', 'UTC', 'native-calendar' FROM n;
+            WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<4)
+            INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id, rrule)
+            SELECT 'long-rule-' || value, 'Long rule', '2024-03-09T16:00:00Z', '2024-03-09T16:30:00Z', 'UTC', 'native-calendar',
+                   'FREQ=DAILY;X-PAD=' || replace(hex(zeroblob(9000)), '00', 'A') FROM n;
+            INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id, rrule)
+            VALUES('owned', 'Owned rows', '2024-03-09T16:00:00Z', '2024-03-09T16:30:00Z', 'UTC', 'native-calendar', 'FREQ=DAILY');
+            WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<100001)
+            INSERT INTO calendar_event_exdates(id, event_id, occurrence_date)
+            SELECT 'owned-' || value, 'owned', printf('1900-01-01-%d', value) FROM n;
+            WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<300)
+            INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id)
+            SELECT 'control-' || value, replace(hex(zeroblob(1024)), '00', char(1)), '2024-03-09T17:00:00Z', '2024-03-09T17:30:00Z', 'UTC', 'native-calendar' FROM n;
+            INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id)
+            VALUES('huge-idle', 'Huge idle', '2024-03-09T18:00:00Z', '2024-03-09T18:30:00Z', 'UTC', 'native-calendar'),
+                  ('series::2024-03-10', 'Id collision', '2024-03-10T13:00:00Z', '2024-03-10T14:00:00Z', 'UTC', 'native-calendar');
+            INSERT INTO calendar_event_pomodoro_configs(event_id, rhythm_kind, rhythm_source, idle_timeout_minutes)
+            VALUES('huge-idle', 'sequence', 'custom', 9007199254740992);")
+            .execute(&pool).await.unwrap();
+        sqlx::raw_sql(SELECT_FOR_EVERY_PURPOSE_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let window = window("2024-03-09", "2024-03-11");
+        for (label, purpose) in [
+            ("render", WindowPurpose::Render),
+            ("focus", WindowPurpose::Focus),
+            ("notifications", WindowPurpose::Notifications),
+        ] {
+            let mut tx = pool.begin().await.unwrap();
+            let source = read(&mut tx, &window, purpose, false).await;
+            tx.commit().await.unwrap();
+            assert!(
+                source.is_ok(),
+                "{label} read failed: {:?}",
+                source
+                    .err()
+                    .map(|error| error.chars().take(200).collect::<String>())
+            );
+            let result = source.ok().unwrap().expand(&window);
+            assert!(result.is_ok(), "{label} expansion failed");
+            let result = result.ok().unwrap();
+            assert_frontend_accepts(&result, label);
+            assert!(
+                result.omitted_template_count > 0,
+                "{label} hid the omission"
+            );
+            assert!(
+                result.occurrences.iter().any(|row| row.id == "honest"),
+                "{label} lost the honest event"
+            );
+            assert!(
+                result.occurrences.iter().any(|row| row.id == "series"),
+                "{label} lost the honest series"
+            );
+            for rejected in ["long-rule-1", "owned", "huge-idle"] {
+                assert!(
+                    result.events.iter().all(|event| event.id != rejected),
+                    "{label} admitted {rejected}"
+                );
+            }
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|row| row.event_id.starts_with("series")),
+                "{label} did not report the identity collision"
+            );
+            assert!(
+                result
+                    .events
+                    .iter()
+                    .all(|event| event.title.chars().count() <= 1_024)
+            );
+        }
+    });
+}
+
+#[test]
+fn native_window_reports_each_value_it_shortens() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        sqlx::raw_sql("
+            INSERT INTO calendar_events(id, title, location, start_time, end_time, timezone, calendar_id)
+            VALUES
+              ('long-title', replace(hex(zeroblob(1025)), '00', 'x'), 'Room',
+               '2024-03-09T15:00:00Z', '2024-03-09T15:30:00Z', 'UTC', 'native-calendar'),
+              ('long-location', 'Short', replace(hex(zeroblob(2000)), '00', 'y'),
+               '2024-03-09T15:00:00Z', '2024-03-09T15:30:00Z', 'UTC', 'native-calendar'),
+              ('exact-wide', replace(hex(zeroblob(1024)), '00', char(128512)),
+               replace(hex(zeroblob(1024)), '00', 'z'),
+               '2024-03-09T15:00:00Z', '2024-03-09T15:30:00Z', 'UTC', 'native-calendar');")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let result = snapshot(&pool, &window("2024-03-09", "2024-03-15"), false).await;
+        let exact = result
+            .events
+            .iter()
+            .find(|event| event.id == "exact-wide")
+            .unwrap();
+        assert_eq!(exact.title.chars().count(), 1_024);
+        let mut shortened = result.shortened_text;
+        shortened.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+        assert_eq!(
+            shortened,
+            vec![
+                ShortenedWindowText {
+                    event_id: "long-location".into(),
+                    title: false,
+                    location: true,
+                },
+                ShortenedWindowText {
+                    event_id: "long-title".into(),
+                    title: true,
+                    location: false,
+                },
+            ]
+        );
+    });
+}
+
+#[test]
+fn expansion_omits_templates_past_the_frontend_text_charge() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        sqlx::raw_sql("
+            WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<10000)
+            INSERT INTO calendar_events(id, title, location, start_time, end_time, timezone, calendar_id)
+            SELECT printf('%.120d', value), replace(hex(zeroblob(1024)), '00', 'x'), replace(hex(zeroblob(1024)), '00', 'y'),
+                   '2024-03-09T15:00:00Z', '2024-03-09T15:30:00Z', 'UTC', 'native-calendar' FROM n")
+            .execute(&pool).await.unwrap();
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM calendar_events ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let ids = serde_json::to_string(&ids).unwrap();
+        let mut connection = pool.acquire().await.unwrap();
+        let events: Vec<DbCalendarEventRow> =
+            read_rows(&mut connection, &ids, &admitted_events_sql())
+                .await
+                .unwrap();
+        drop(connection);
+        let serialized = serde_json::to_vec(&events).unwrap().len();
+        assert!(serialized < FRONTEND_JSON_BYTES);
+        let result = WindowSource::from_prepared(events, Vec::new(), Vec::new())
+            .expand(&window("2024-03-09", "2024-03-09"));
+        let result = result.ok().unwrap();
+        assert!(result.omitted_template_count > 0);
+        assert!(!result.events.is_empty());
+        let charged = text_units(&serde_json::to_value(&result).unwrap()) * 3;
+        assert!(charged <= FRONTEND_JSON_BYTES, "charged {charged} bytes");
+    });
+}
+
+#[test]
+fn control_character_flood_stays_inside_the_serialized_limit() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        sqlx::raw_sql(HONEST_EVENT_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql("
+            WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<9000)
+            INSERT INTO calendar_events(id, title, location, start_time, end_time, timezone, calendar_id)
+            SELECT 'control-' || value, replace(hex(zeroblob(1024)), '00', char(1)), replace(hex(zeroblob(1024)), '00', char(1)),
+                   '2024-03-09T17:00:00Z', '2024-03-09T17:30:00Z', 'UTC', 'native-calendar' FROM n;")
+            .execute(&pool).await.unwrap();
+        let window = window("2024-03-09", "2024-03-09");
+        let mut tx = pool.begin().await.unwrap();
+        let source = read(&mut tx, &window, WindowPurpose::Render, false)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let result = source.expand(&window);
+        assert!(result.is_ok(), "the flood failed the window");
+        let result = result.ok().unwrap();
+        assert_frontend_accepts(&result, "render");
+        assert!(result.omitted_template_count > 0);
+        assert!(result.occurrences.iter().any(|row| row.id == "honest"));
+        let kept: std::collections::BTreeSet<_> = result
+            .events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect();
+        assert!(
+            result
+                .occurrences
+                .iter()
+                .all(|row| kept.contains(row.template_id.as_str()))
+        );
+    });
+}
+
+#[test]
+fn native_window_isolates_faulty_templates_and_still_returns_healthy_events() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        sqlx::raw_sql("INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id, rrule)
+            VALUES ('costly', 'Never matches', '1700-01-01T09:00:00Z', '1700-01-01T10:00:00Z', 'UTC', 'native-calendar', 'FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30;COUNT=2'),
+                   ('bad-override', 'Bad override', '2024-03-10T09:00:00Z', '2024-03-10T10:00:00Z', 'UTC', 'native-calendar', 'FREQ=DAILY;COUNT=3');
+            INSERT INTO calendar_event_overrides(id, parent_event_id, recurrence_id, start_time, end_time)
+            VALUES ('inverted', 'bad-override', '2024-03-11T09:00:00Z', '2024-03-11T10:00:00Z', '2024-03-11T09:00:00Z');")
+            .execute(&pool).await.unwrap();
+        let result = snapshot(&pool, &window("2024-03-09", "2024-03-15"), false).await;
+
+        let healthy = result
+            .occurrences
+            .iter()
+            .filter(|occurrence| occurrence.template_id == "series")
+            .count();
+        assert_eq!(healthy, 3);
+        assert_eq!(result.occurrences.len(), 3);
+        let mut failed = result
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.event_id.as_str())
+            .collect::<Vec<_>>();
+        failed.sort_unstable();
+        assert_eq!(failed, ["bad-override", "costly"]);
+        let costly = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.event_id == "costly")
+            .unwrap();
+        assert!(costly.message.contains("per-event"), "{}", costly.message);
+    });
+}
+
+#[test]
+fn native_render_window_flags_events_whose_resolved_music_plays() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        sqlx::raw_sql("INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id)
+            VALUES('quiet', 'Quiet', '2024-03-09T16:00:00Z', '2024-03-09T17:00:00Z', 'UTC', 'native-calendar');
+            INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, updated_at_ms, sync_key)
+            VALUES('event-snapshot', 'series', 'focus', 'play-automatically', 'playlist-default-start-of-day', 'copied-project', 1, lower(hex(randomblob(16)))),
+                  ('event-snapshot', 'quiet', 'focus', 'play-automatically', 'playlist-default-start-of-day', 'copied-project', 1, lower(hex(randomblob(16)))),
+                  ('event-override', 'quiet', 'focus', 'pause-music', NULL, 'explicit', 1, lower(hex(randomblob(16))));")
+            .execute(&pool).await.unwrap();
+        let window = window("2024-03-09", "2024-03-09");
+        let flags = |result: &NativeCalendarWindow, id: &str| {
+            let event = result.events.iter().find(|event| event.id == id).unwrap();
+            (event.has_music_playlist, event.has_soundscape)
+        };
+        let rendered = snapshot(&pool, &window, false).await;
+        assert_eq!(flags(&rendered, "series"), (1, 0));
+        assert_eq!(flags(&rendered, "quiet"), (0, 0));
+        let mut tx = pool.begin().await.unwrap();
+        let notifications = read(&mut tx, &window, WindowPurpose::Notifications, false)
+            .await
+            .unwrap()
+            .expand(&window)
+            .unwrap();
+        tx.rollback().await.unwrap();
+        assert!(
+            notifications
+                .events
+                .iter()
+                .all(|event| event.has_music_playlist == 0)
         );
     });
 }

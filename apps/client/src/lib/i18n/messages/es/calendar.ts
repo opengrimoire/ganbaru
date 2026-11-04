@@ -142,6 +142,8 @@ export const calendar = {
       `Secuencia de ${count} ${singular ? "paso conservada" : "pasos conservada"}`,
     convertSequenceToSimple: "Convertir a ritmo simple",
     pauseOnInactivity: "Pausar por inactividad",
+    timingConflictNote:
+      "Focus no inicia este evento por sí solo mientras su hora está en conflicto entre dispositivos. Aun así puedes iniciarlo tú.",
   },
   meeting: {
     title: "Reunión",
@@ -250,7 +252,17 @@ export const calendar = {
     removeLinkedTask: (task: string) => `Quitar tarea vinculada ${task}`,
     taskLinksRecurring: "Los vínculos de tareas están disponibles para eventos individuales.",
     music: "Música",
-    musicDescription: "Modifica la banda sonora del proyecto para este evento. Las opciones heredadas permanecen visibles y cada cambio de fase inicia una pista nueva cuando la reproducción es automática.",
+    musicPlaylist: "Playlist",
+    musicSound: "Sonido ambiental",
+    musicPhasePlaylist: (phase: string) => `Playlist (${phase})`,
+    musicPhaseSound: (phase: string) => `Sonido ambiental (${phase})`,
+    musicPhases: (focus: boolean, shortBreak: boolean, longBreak: boolean) => {
+      if (focus && shortBreak && longBreak) return "Enfoque, descanso corto y largo";
+      if (focus && (shortBreak || longBreak)) return `Enfoque y descanso ${shortBreak ? "corto" : "largo"}`;
+      if (focus) return "Solo enfoque";
+      if (shortBreak && longBreak) return "Solo descansos";
+      return shortBreak ? "Solo descanso corto" : "Solo descanso largo";
+    },
     comingSoon: "Próximamente",
     readOnly: "Solo lectura",
     readOnlyHyphen: "Solo lectura",
@@ -270,6 +282,57 @@ export const calendar = {
     readOnlyShortcut: (shortcut: string, action: string) =>
       `Solo lectura (${shortcut} para ${action})`,
     saveShortcut: (shortcut: string) => `Guardar (${shortcut})`,
+    detailsLoadFailed: "No se pudieron cargar los detalles del evento.",
+    detailsLoadFailedSaveBlocked: "No se pudieron cargar los detalles del evento. El título o la ubicación largos son de solo lectura hasta que se carguen.",
+  },
+  conflict: {
+    badge: "Editado en dos dispositivos",
+    noticeTitle: "Este evento se editó en dos dispositivos",
+    noticeFields: (fields: string) => `Requiere una elección: ${fields}.`,
+    fieldTitle: "título",
+    fieldDescription: "descripción",
+    fieldTiming: "hora y repetición",
+    review: "Revisar",
+    saveFirst: "Guarda o descarta tus cambios para revisar este conflicto.",
+    dialogTitle: "Elige qué conservar",
+    close: "Cerrar",
+    titleTitle: "El título se editó en dos dispositivos",
+    descriptionTitle: "La descripción se editó en dos dispositivos",
+    timingTitle: "La hora se editó en dos dispositivos",
+    hint: "Elige la versión que quieres conservar.",
+    empty: "Vacío",
+    shown: "Visible ahora",
+    keepThis: "Conservar esta",
+    useOther: "Usar esta",
+    versionFrom: (device: string, time: string) => `${device}, ${time}`,
+    thisDevice: "Este dispositivo",
+    otherDevice: "Otro dispositivo",
+    resolved: "Este conflicto ya se resolvió",
+    failed: "No se pudo resolver el conflicto",
+    starts: (value: string) => `Empieza ${value}`,
+    ends: (value: string) => `Termina ${value}`,
+    timezone: (name: string) => `Zona horaria ${name}`,
+    allDay: "Todo el día",
+    doesNotRepeat: "No se repite",
+    excludedDates: (count: number) => `${count} ${count === 1 ? "fecha omitida" : "fechas omitidas"}`,
+    addedDates: (count: number) => `${count} ${count === 1 ? "fecha añadida" : "fechas añadidas"}`,
+    overrides: (count: number) => `${count} ${count === 1 ? "ocurrencia modificada" : "ocurrencias modificadas"}`,
+  },
+  sync: {
+    eventConflicts: (count: number) =>
+      count === 1
+        ? "1 evento se editó en dos dispositivos. Ábrelo en el Calendario para elegir qué conservar."
+        : `${count} eventos se editaron en dos dispositivos. Ábrelos en el Calendario para elegir qué conservar.`,
+    eventUntitled: "Evento sin título",
+    eventRecoveryNote: "Restaurar crea el evento de nuevo como un evento nuevo.",
+    eventRestored: "Evento restaurado",
+    eventRestoreFailed: "No se pudo restaurar el evento",
+    calendarUntitled: "Calendario sin nombre",
+    calendarRecoveryNote: "Restaurar crea el calendario de nuevo. Sus eventos vuelven al calendario Local.",
+    calendarRestored: "Calendario restaurado",
+    calendarRestoreFailed: "No se pudo restaurar el calendario",
+    preservedUntitled: "Datos de iCalendar conservados",
+    preservedNote: "Estos datos importados no se pueden restaurar en el Calendario. Solo se pueden descartar.",
   },
   view: {
     saving: "Guardando...",
@@ -279,9 +342,22 @@ export const calendar = {
     deleteFailed: (message: string) => `Error al eliminar o deshacer: ${message}`,
     previewFailed: "No se pudo previsualizar este cambio",
     historyUnavailable: "No se pudo cargar la línea de tiempo de Focus. Prueba con un intervalo más corto del calendario o reintenta.",
+    eventsUnreadable: (count: number) =>
+      count === 1
+        ? "No se pudo mostrar 1 evento en este intervalo porque su repetición guardada no se pudo expandir."
+        : `No se pudieron mostrar ${count} eventos en este intervalo porque su repetición guardada no se pudo expandir.`,
+    eventsOmitted: (count: number) =>
+      count === 1
+        ? "1 evento de este intervalo no se muestra porque el intervalo contiene más de lo que el calendario puede mostrar."
+        : `${count} eventos de este intervalo no se muestran porque el intervalo contiene más de lo que el calendario puede mostrar.`,
+    eventsLoadFailed: "No se pudieron cargar los eventos del calendario.",
     saved: "Guardado",
     unknownSaveError: "Error desconocido al guardar",
     saveFailed: (message: string) => `No se pudo guardar: ${message}`,
+    tooManyChangedOccurrences:
+      "Este evento tiene demasiadas ocurrencias modificadas. Quita algunos cambios de las repeticiones e inténtalo de nuevo.",
+    valueTooLarge:
+      "Este evento tiene demasiados datos adjuntos, como alarmas, asistentes o categorías, para sincronizarse. Quita algunos e inténtalo de nuevo.",
     changesLost: "Tus cambios se perderán",
     discardUnsavedTitle: "¿Descartar cambios sin guardar?",
     discard: "Descartar",
@@ -289,6 +365,9 @@ export const calendar = {
     saveAndStopTitle: "¿Guardar y detener la sesión de enfoque?",
     stopAndSave: "Detener y guardar",
     keepEditing: "Seguir editando",
+    meetingMusicTitle: "¿Guardar una reunión con música?",
+    meetingMusicMessage: "La música o un sonido ambiental empezará automáticamente cuando comience este evento, y otras personas podrían escucharlo durante la reunión.",
+    saveWithMusic: "Guardar con música",
     stopFocusSessionTitle: "¿Detener la sesión de enfoque?",
     endEventConfirm: "Terminar evento",
     keepSession: "Mantener sesión",

@@ -16,9 +16,13 @@ workspace = true
 [dependencies]
 ganbaru-contacts = { workspace = true }
 ganbaru-sync-contracts = { workspace = true }
+ganbaru-working-folders = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 sqlx = { workspace = true }
 
 [dev-dependencies]
-ganbaru-db = { workspace = true }
+ganbaru-calendar = { workspace = true }
+ganbaru-notes = { workspace = true }
+ganbaru-db = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true }

@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { readdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { preparePinnedTauriSigner } from "./pinned-tauri-signer.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
@@ -28,33 +29,39 @@ const signingKey = process.env.TAURI_SIGNING_PRIVATE_KEY?.trim();
 if (!signingKey) {
   throw new Error("TAURI_SIGNING_PRIVATE_KEY must be set");
 }
+const runnerTemp = process.env.RUNNER_TEMP;
+if (!runnerTemp) {
+  throw new Error("RUNNER_TEMP must be set");
+}
 
 const assets = updaterAssets();
 if (!assets.length) {
   throw new Error("No updater assets were found to sign");
 }
 
-for (const asset of assets) {
-  const signaturePath = `${asset}.sig`;
-  rmSync(signaturePath, { force: true });
+const signerDirectory = path.join(runnerTemp, "ganbaru-tauri-signer");
+const tauriEntry = await preparePinnedTauriSigner(REPO_ROOT, signerDirectory);
+try {
+  for (const asset of assets) {
+    const signaturePath = `${asset}.sig`;
+    rmSync(signaturePath, { force: true });
 
-  const result = spawnSync(
-    "pnpm",
-    ["--dir", "apps/client", "exec", "tauri", "signer", "sign", asset],
-    {
-      cwd: REPO_ROOT,
+    const result = spawnSync(process.execPath, [tauriEntry, "signer", "sign", asset], {
+      cwd: signerDirectory,
       env: process.env,
       stdio: "inherit",
-    },
-  );
+    });
 
-  if (result.status !== 0) {
-    throw new Error(`Failed to sign ${path.basename(asset)}`);
+    if (result.status !== 0) {
+      throw new Error(`Failed to sign ${path.basename(asset)}`);
+    }
+
+    if (!statSync(signaturePath, { throwIfNoEntry: false })?.isFile()) {
+      throw new Error(`Signature was not written for ${path.basename(asset)}`);
+    }
+
+    console.log(`Signed ${path.basename(asset)}`);
   }
-
-  if (!statSync(signaturePath, { throwIfNoEntry: false })?.isFile()) {
-    throw new Error(`Signature was not written for ${path.basename(asset)}`);
-  }
-
-  console.log(`Signed ${path.basename(asset)}`);
+} finally {
+  rmSync(signerDirectory, { recursive: true, force: true });
 }

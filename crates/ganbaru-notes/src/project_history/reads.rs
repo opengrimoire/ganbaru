@@ -22,6 +22,9 @@ pub(super) async fn load_manifest_tx(
     let raw = load_bundle_tx(tx, &version.manifest_hash).await?;
     let manifest: ProjectHistoryManifest = serde_json::from_slice(&raw)
         .map_err(|e| format!("parse Notes project history manifest: {e}"))?;
+    if manifest.schema_version < HISTORY_SCHEMA_VERSION {
+        return Err(OLDER_NOTES_FORMAT_ERROR.to_string());
+    }
     if manifest.schema_version != HISTORY_SCHEMA_VERSION || manifest.project_id != project_id {
         return Err("Notes project history manifest metadata is invalid".to_string());
     }
@@ -32,11 +35,29 @@ pub(super) async fn load_manifest_rows_tx(
     tx: &mut Transaction<'_, Sqlite>,
     manifest: &ProjectHistoryManifest,
 ) -> Result<BTreeMap<String, Vec<Value>>, String> {
+    load_manifest_rows_within_tx(tx, manifest, MAX_HISTORY_VERSION_ROW_BYTES).await
+}
+
+/// Loads every row a manifest names, refusing a row listed twice in one table and stopping once
+/// the decoded rows would exceed `budget` bytes.
+pub(super) async fn load_manifest_rows_within_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    manifest: &ProjectHistoryManifest,
+    budget: usize,
+) -> Result<BTreeMap<String, Vec<Value>>, String> {
     let mut rows_by_table = BTreeMap::new();
+    let mut remaining = budget;
     for (table, hashes) in &manifest.rows_by_table {
         let mut rows = Vec::with_capacity(hashes.len());
+        let mut seen = HashSet::with_capacity(hashes.len());
         for hash in hashes {
-            let raw = load_bundle_tx(tx, hash).await?;
+            if !seen.insert(hash.as_str()) {
+                return Err(format!(
+                    "Notes project history manifest repeats a row in {table}"
+                ));
+            }
+            let raw = load_bundle_within_tx(tx, hash, remaining).await?;
+            remaining -= raw.len();
             let row = serde_json::from_slice(&raw)
                 .map_err(|e| format!("parse Notes history row for {table}: {e}"))?;
             rows.push(row);

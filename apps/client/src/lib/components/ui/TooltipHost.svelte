@@ -137,6 +137,12 @@
     return tooltipTextFor(element).length > 0 ? element : null;
   }
 
+  /** The element that could carry a tooltip under a pointer, whether or not it has tooltip text right now. */
+  function findTooltipCandidate(target: EventTarget | null): HTMLElement | null {
+    if (!(target instanceof Element)) return null;
+    return target.closest<HTMLElement>(targetSelector);
+  }
+
   function isKeyboardFocusIntent(): boolean {
     return document.documentElement.dataset.focusIntent === "keyboard";
   }
@@ -305,6 +311,17 @@
     }, delayMs);
   }
 
+  /** Follows a tooltip text change on the element it is shown for, hiding it when the text goes away. */
+  function refreshAnchorText(element: HTMLElement): void {
+    const nextText = tooltipTextFor(element);
+    if (nextText.length === 0) {
+      hideTooltip();
+      return;
+    }
+    text = nextText;
+    void positionTooltip();
+  }
+
   function hideTooltip(): void {
     clearShowTimer();
     anchor = null;
@@ -383,6 +400,10 @@
           else removeMigratedTitle(record.target);
           continue;
         }
+        if (record.type === "attributes") {
+          if (record.target === anchor && anchorTextOverride === undefined) refreshAnchorText(anchor);
+          continue;
+        }
 
         for (const node of record.addedNodes) {
           if (node instanceof Element) migrateTitleAttributes(node);
@@ -392,7 +413,7 @@
 
     observer.observe(document.body, {
       attributes: true,
-      attributeFilter: ["title"],
+      attributeFilter: ["title", "data-app-tooltip"],
       childList: true,
       subtree: true,
     });
@@ -459,7 +480,8 @@
     const handlePointerDown = (event: PointerEvent) => {
       const target = findTooltipTarget(event.target);
       if (target?.dataset.appTooltipKeepOnClick === "true") return;
-      suppressedPointerTarget = target;
+      // A tooltip the click itself reveals also waits until the pointer leaves and comes back.
+      suppressedPointerTarget = target ?? findTooltipCandidate(event.target);
       hideTooltip();
     };
 

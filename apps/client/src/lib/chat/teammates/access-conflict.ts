@@ -1,5 +1,4 @@
 import type {
-  ChatRuntimeApprovalPolicy,
   ChatTeammateChannelAccessInput,
   ModelOptionSelection,
   SafetyMode,
@@ -23,14 +22,12 @@ export interface ChatTeammateStudioProfileDraft {
 
 export interface ChatTeammateStudioDraft {
   profile: ChatTeammateStudioProfileDraft;
-  teammateDefaultRuntimeApproval: ChatRuntimeApprovalPolicy;
   channels: ChatTeammateChannelAccessInput[];
 }
 
 export interface ChatTeammateConflictComparison {
   identityChanged: boolean;
   policyChanged: boolean;
-  runtimeApprovalChanged: boolean;
   addedChannelCount: number;
   removedChannelCount: number;
   changedChannelCount: number;
@@ -65,8 +62,6 @@ export function compareChatTeammateStudioDrafts(
   return {
     identityChanged: !identityEqual(local.profile, durable.profile),
     policyChanged: !policyEqual(local.profile, durable.profile),
-    runtimeApprovalChanged: local.teammateDefaultRuntimeApproval
-      !== durable.teammateDefaultRuntimeApproval,
     addedChannelCount,
     removedChannelCount,
     changedChannelCount,
@@ -130,11 +125,6 @@ export function rebaseChatTeammateStudioDraft(
         versionedJsonEqual,
       )),
     },
-    teammateDefaultRuntimeApproval: chooseField(
-      baseline.teammateDefaultRuntimeApproval,
-      local.teammateDefaultRuntimeApproval,
-      durable.teammateDefaultRuntimeApproval,
-    ),
     channels,
   };
 }

@@ -9,21 +9,25 @@ const RECENT_SELECTIONS_GLOBAL: i64 = 512;
 #[cfg(test)]
 pub(crate) async fn record_listening(
     pool: &SqlitePool,
+    device_id: &str,
     request: MusicListeningUpdate,
 ) -> MusicLibraryResult<()> {
     let mut transaction = pool
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin listening update", error))?;
-    record_listening_in_transaction(&mut transaction, &request).await?;
+    record_listening_in_transaction(&mut transaction, device_id, &request).await?;
     super::writes::commit(transaction, "commit listening update").await
 }
 
-/// Records a selection outcome in the same transaction as its session transition.
+/// Records a selection outcome for `device_id` in the same transaction as its session
+/// transition. Each device keeps its own counts; reads add them per item.
 pub async fn record_listening_in_transaction(
     connection: &mut SqliteConnection,
+    device_id: &str,
     request: &MusicListeningUpdate,
 ) -> MusicLibraryResult<()> {
+    validate_id(device_id, "deviceId")?;
     validate_id(&request.item_id, "itemId")?;
     if let Some(playlist_id) = &request.playlist_id {
         validate_id(playlist_id, "playlistId")?;
@@ -41,9 +45,10 @@ pub async fn record_listening_in_transaction(
     };
     sqlx::query(
         "INSERT INTO music_listening_statistics
-            (item_id, last_played_at_ms, play_count, completion_count, skip_count, updated_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(item_id) DO UPDATE SET
+            (device_id, item_id, last_played_at_ms, play_count, completion_count, skip_count,
+             updated_at_ms, sync_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(device_id, item_id) DO UPDATE SET
             last_played_at_ms = CASE WHEN excluded.play_count > 0
                 THEN excluded.last_played_at_ms ELSE music_listening_statistics.last_played_at_ms END,
             play_count = music_listening_statistics.play_count + excluded.play_count,
@@ -51,12 +56,17 @@ pub async fn record_listening_in_transaction(
             skip_count = music_listening_statistics.skip_count + excluded.skip_count,
             updated_at_ms = excluded.updated_at_ms",
     )
+    .bind(device_id)
     .bind(&request.item_id)
     .bind((play_increment > 0).then_some(request.occurred_at))
     .bind(play_increment)
     .bind(completion_increment)
     .bind(skip_increment)
     .bind(request.occurred_at)
+    .bind(ganbaru_music::sync_keys::statistics_key(
+        device_id,
+        &request.item_id,
+    )?)
     .execute(&mut *connection)
     .await
     .map_err(|error| MusicLibraryError::database("update listening statistics", error))?;

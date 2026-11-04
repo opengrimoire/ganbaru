@@ -56,6 +56,7 @@
     contentAlign = "end",
     triggerProps = {},
     textSize = "compact",
+    textWeight = "medium",
   }: {
     value: string;
     options: readonly Option[];
@@ -92,6 +93,8 @@
     triggerProps?: Omit<HTMLButtonAttributes, "children" | "onclick" | "class" | "disabled">;
     /** Text size of the trigger and menu: compact for settings controls, collection to match collection tables and panels. */
     textSize?: "compact" | "collection";
+    /** Weight of the trigger value: medium for settings controls, normal when it continues a sentence-like label row. */
+    textWeight?: "medium" | "normal";
   } = $props();
 
   const { t } = getLocalization();
@@ -321,7 +324,8 @@
       aria-disabled={unavailable ? "true" : undefined}
       aria-label={ariaLabel ?? label}
       class={cn(
-        "flex h-7 w-full max-w-full items-center gap-2 rounded-md font-medium text-foreground transition-colors disabled:cursor-not-allowed max-[480px]:w-full",
+        "flex h-7 w-full max-w-full items-center gap-2 rounded-md text-foreground transition-colors disabled:cursor-not-allowed max-[480px]:w-full",
+        textWeight === "medium" ? "font-medium" : "font-normal",
         unavailable && "control-unavailable",
         textClass,
         appearance === "quiet"

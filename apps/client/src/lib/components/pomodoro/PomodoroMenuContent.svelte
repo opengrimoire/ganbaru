@@ -6,21 +6,24 @@
   import PlayIcon from "@lucide/svelte/icons/play";
   import SkipBack from "@lucide/svelte/icons/skip-back";
   import SkipForward from "@lucide/svelte/icons/skip-forward";
+  import { onMount } from "svelte";
+  import { readFocusDeviceActivity } from "$lib/api/focus-device-activity";
+  import { listenSyncApplied } from "$lib/api/sync";
   import Loading from "$lib/components/ui/Loading.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { PlaybackStatus } from "$lib/music/playback";
+  import {
+    focusActivityChanged, focusActivityLines, type FocusOtherDeviceActivity,
+  } from "$lib/pomodoro/device-activity";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
-  import { cn } from "$lib/utils";
 
   let {
     includeMusic,
-    touch = false,
     onDismiss,
     onOpenMusic,
   }: {
     includeMusic: boolean;
-    touch?: boolean;
     onDismiss: () => void;
     onOpenMusic: () => void;
   } = $props();
@@ -30,6 +33,9 @@
   const { t } = getLocalization();
   let starting = $state(false);
   let startMessage = $state("");
+  let otherActivity = $state<FocusOtherDeviceActivity[]>([]);
+  let confirmingStart = $state(false);
+  const activityLines = $derived(focusActivityLines(t, otherActivity));
   const MENU_ICON_SIZE = 14;
   const MENU_ICON_STROKE_WIDTH = 1.8;
   const volumeStep = 0.05;
@@ -97,6 +103,44 @@
     onOpenMusic();
   }
 
+  /** Read what other linked devices are focusing on; a failed read shows no activity. */
+  async function refreshActivity(): Promise<void> {
+    try {
+      otherActivity = await readFocusDeviceActivity();
+    } catch (error) {
+      console.warn("Failed to read Focus activity of other devices:", error);
+      otherActivity = [];
+    }
+  }
+
+  onMount(() => {
+    void refreshActivity();
+    let disposed = false;
+    let stopListening: (() => void) | null = null;
+    listenSyncApplied((tables) => {
+      if (focusActivityChanged(tables)) void refreshActivity();
+    })
+      .then((stop) => {
+        if (disposed) stop();
+        else stopListening = stop;
+      })
+      .catch((error: unknown) => console.warn("Failed to follow Focus activity of other devices:", error));
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
+  });
+
+  /** An explicit start while another device is focusing asks for confirmation first. */
+  function requestScheduledStart(): void {
+    if (otherActivity.length > 0 && !confirmingStart) {
+      confirmingStart = true;
+      return;
+    }
+    confirmingStart = false;
+    void startScheduledSession();
+  }
+
   /** Start an eligible commitment only after native persistence acknowledges it. */
   async function startScheduledSession(): Promise<void> {
     if (starting) return;
@@ -116,7 +160,7 @@
 </script>
 
 {#if isActive}
-  <div class="menu-label">
+  <div class="menu-label tabular-nums">
     {pomodoro.phase !== "focus" && pomodoro.remainingSeconds === 0
       ? t("pomodoroNotification.breakCompleteTitle")
       : t("titleBar.pomodoro.left", pomodoro.formattedTime)}
@@ -125,15 +169,30 @@
   <div class="menu-label">
     {t("titleBar.pomodoro.noActiveSession")}
   </div>
-  <button
-    type="button"
-    disabled={starting}
-    onclick={() => { void startScheduledSession(); }}
-    class={MENU_ITEM_CLASS}
-  >
-    <span>{t("pomodoroNotification.startScheduledSession")}</span>
-    <PlayIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-  </button>
+{/if}
+
+{#each activityLines as line, index (index)}
+  <p class="px-2 py-1.5 text-panel-detail text-muted-foreground" data-focus-activity>{line}</p>
+{/each}
+
+{#if !isActive}
+  {#if confirmingStart}
+    <p class="px-2 py-1.5 text-panel-detail text-foreground" role="status">
+      {t("pomodoroNotification.startElsewhereQuestion")}
+    </p>
+    <button type="button" disabled={starting} onclick={requestScheduledStart} class={MENU_ITEM_CLASS}>
+      <span>{t("pomodoroNotification.startAnyway")}</span>
+      <PlayIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
+    </button>
+    <button type="button" onclick={() => { confirmingStart = false; }} class={MENU_ITEM_CLASS}>
+      <span>{t("pomodoroNotification.cancelStart")}</span>
+    </button>
+  {:else}
+    <button type="button" disabled={starting} onclick={requestScheduledStart} class={MENU_ITEM_CLASS}>
+      <span>{t("pomodoroNotification.startScheduledSession")}</span>
+      <PlayIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
+    </button>
+  {/if}
   {#if startMessage}
     <p class="px-2 py-1.5 text-panel-detail text-muted-foreground" role="status">{startMessage}</p>
   {/if}
@@ -183,22 +242,6 @@
 
 {#if includeMusic}
   <div role="separator" class="menu-separator"></div>
-  {#if musicPlayer.contextPlayback && musicPlayer.contextPlayback.state !== "overridden"}
-    <button
-      type="button"
-      onclick={() => { musicPlayer.inspectContextAssignment(); onDismiss(); }}
-      class={cn(
-        "menu-item items-start gap-2 bg-primary/7 py-2",
-        touch ? "active:bg-primary/12" : "hover:bg-primary/12",
-      )}
-    >
-      <span class="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary"></span>
-      <span class="min-w-0">
-        <span class="block truncate font-medium">{t("titleBar.music.contextual", t(`music.assignment.phase.${musicPlayer.contextPlayback.phase}`), musicPlayer.contextPlayback.eventTitle)}</span>
-        <span class="block text-panel-detail text-muted-foreground">{t("titleBar.music.inspectAssignment")}</span>
-      </span>
-    </button>
-  {/if}
   <div class="menu-label">
     <span class="block truncate">{#if musicStatusLoading}<Loading layout="inline" label={t("titleBar.music.status.loading")} />{:else}{musicStatusText}{/if}</span>
   </div>

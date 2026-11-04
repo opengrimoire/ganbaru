@@ -185,16 +185,16 @@ async fn seed_database_view(pool: &SqlitePool) {
 
 async fn seed_project_context(pool: &SqlitePool) {
     sqlx::query(
-        "INSERT INTO project_groups (id, name, icon, sort_order)
-         VALUES (?, 'Agent context', 'lucide:folder', 0)",
+        "INSERT INTO project_groups (id, name, icon, order_key)
+         VALUES (?, 'Agent context', 'lucide:folder', 'a1')",
     )
     .bind(PROJECT_GROUP_ID)
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO projects (id, group_id, name, icon, sort_order, status)
-         VALUES (?, ?, 'Agent bridge project', 'lucide:folder', 0, 'active')",
+        "INSERT INTO projects (id, group_id, name, icon, order_key, status)
+         VALUES (?, ?, 'Agent bridge project', 'lucide:folder', 'a1', 'active')",
     )
     .bind(PROJECT_ID)
     .bind(PROJECT_GROUP_ID)
@@ -202,8 +202,8 @@ async fn seed_project_context(pool: &SqlitePool) {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO project_sections (id, project_id, name, sort_order)
-         VALUES (?, ?, 'Implementation', 0)",
+        "INSERT INTO project_sections (id, project_id, name, order_key)
+         VALUES (?, ?, 'Implementation', 'a1')",
     )
     .bind(PROJECT_SECTION_ID)
     .bind(PROJECT_ID)
@@ -211,8 +211,8 @@ async fn seed_project_context(pool: &SqlitePool) {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO project_statuses (id, project_id, name, category, color, sort_order, terminal)
-         VALUES (?, ?, 'In progress', 'active', 19, 0, 0)",
+        "INSERT INTO project_statuses (id, project_id, name, category, color, order_key, terminal)
+         VALUES (?, ?, 'In progress', 'active', 19, 'a1', 0)",
     )
     .bind(PROJECT_STATUS_ID)
     .bind(PROJECT_ID)
@@ -220,8 +220,8 @@ async fn seed_project_context(pool: &SqlitePool) {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO project_priorities (id, project_id, name, color, sort_order)
-         VALUES ('normal', ?, 'Normal', 19, 0)",
+        "INSERT INTO project_priorities (id, project_id, name, color, order_key, sync_key)
+         VALUES ('normal', ?, 'Normal', 19, 'a1', 'priority-normal')",
     )
     .bind(PROJECT_ID)
     .execute(pool)
@@ -237,12 +237,12 @@ async fn seed_project_context(pool: &SqlitePool) {
             description,
             priority,
             task_type,
-            section_sort_order,
-            status_sort_order,
+            section_order_key,
+            status_order_key,
             estimate_minutes,
             due_date
          )
-         VALUES (?, ?, ?, ?, 'Implement bridge export', 'Expose deterministic context.', 'normal', 'task', 0, 0, 45, '2026-07-10')",
+         VALUES (?, ?, ?, ?, 'Implement bridge export', 'Expose deterministic context.', 'normal', 'task', 'a1', 'a1', 45, '2026-07-10')",
     )
     .bind(PROJECT_TASK_ID)
     .bind(PROJECT_ID)
@@ -252,8 +252,8 @@ async fn seed_project_context(pool: &SqlitePool) {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO project_checklist_items (id, task_id, title, sort_order)
-         VALUES (?, ?, 'Review deterministic markdown', 0)",
+        "INSERT INTO project_checklist_items (id, task_id, title, order_key)
+         VALUES (?, ?, 'Review deterministic markdown', 'a1')",
     )
     .bind(PROJECT_CHECKLIST_ID)
     .bind(PROJECT_TASK_ID)
@@ -261,8 +261,8 @@ async fn seed_project_context(pool: &SqlitePool) {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO project_tags (id, project_id, name, color, sort_order)
-         VALUES (?, ?, 'agent context', 23, 0)",
+        "INSERT INTO project_tags (id, project_id, name, color, order_key)
+         VALUES (?, ?, 'agent context', 23, 'a1')",
     )
     .bind(PROJECT_TAG_ID)
     .bind(PROJECT_ID)
@@ -270,12 +270,193 @@ async fn seed_project_context(pool: &SqlitePool) {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO project_task_tag_links (task_id, tag_id)
-         VALUES (?, ?)",
+        "INSERT INTO project_task_tag_links (task_id, tag_id, sync_key)
+         VALUES (?, ?, 'tag-link')",
     )
     .bind(PROJECT_TASK_ID)
     .bind(PROJECT_TAG_ID)
     .execute(pool)
     .await
     .unwrap();
+}
+
+#[test]
+fn agent_bridge_export_with_descendants_includes_nested_pages_at_every_depth() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        for (id, title, parent, first_block, after) in [
+            (
+                PAGE_B,
+                "Nested child",
+                page_parent(PAGE_A),
+                BLOCK_B,
+                Some(BLOCK_A),
+            ),
+            (
+                PAGE_C,
+                "Grandchild in a block",
+                block_parent(BLOCK_B),
+                BLOCK_C,
+                None,
+            ),
+        ] {
+            writes::create_page(
+                &pool,
+                NotePageCreate {
+                    id: id.to_string(),
+                    title: title.to_string(),
+                    parent,
+                    folder_id: None,
+                    project_id: None,
+                    first_block_id: first_block.to_string(),
+                    after_block_id: after.map(str::to_string),
+                    properties: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let request = |include_descendants| NoteAgentBridgeExportRequest {
+            page_ids: vec![PAGE_A.to_string()],
+            project_ids: Vec::new(),
+            include_descendants: Some(include_descendants),
+            include_backlinks: Some(false),
+            include_database_views: Some(false),
+            include_task_context: Some(false),
+            include_page_comments: Some(false),
+            include_resolved_comments: Some(false),
+        };
+
+        let exact = transfers::agent_bridge_export::export_bridge(&pool, request(false))
+            .await
+            .unwrap();
+        let nested = transfers::agent_bridge_export::export_bridge(&pool, request(true))
+            .await
+            .unwrap();
+
+        assert_eq!(exact.exported_page_count, 1);
+        assert_eq!(nested.exported_page_count, 3);
+        assert!(nested.markdown.contains(PAGE_B));
+        assert!(nested.markdown.contains(PAGE_C));
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_bridge_save_leaves_a_symlink_at_the_predictable_temporary_name_untouched() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        let export = transfers::agent_bridge_export::export_bridge(
+            &pool,
+            NoteAgentBridgeExportRequest {
+                page_ids: vec![PAGE_A.to_string()],
+                project_ids: Vec::new(),
+                include_descendants: Some(false),
+                include_backlinks: Some(false),
+                include_database_views: Some(false),
+                include_task_context: Some(false),
+                include_page_comments: Some(false),
+                include_resolved_comments: Some(false),
+            },
+        )
+        .await
+        .unwrap();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ganbaru-notes-bridge-symlink-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "keep").unwrap();
+        let path = dir.join("bridge.md");
+        std::os::unix::fs::symlink(&victim, dir.join("bridge.md.tmp")).unwrap();
+
+        let saved = transfers::agent_bridge_export::write_bridge(&path, export.clone());
+        let written = std::fs::read_to_string(&path);
+        let victim_contents = std::fs::read_to_string(&victim);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        saved.unwrap();
+        assert_eq!(written.unwrap(), export.markdown);
+        assert_eq!(victim_contents.unwrap(), "keep");
+    });
+}
+
+#[test]
+fn agent_bridge_backlinks_leave_out_trashed_sources_like_the_backlinks_panel() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        create_page(&pool, PAGE_B, BLOCK_D).await;
+        writes::update_page(
+            &pool,
+            PAGE_B,
+            NotePageUpdate {
+                title: Some("Trashed source".to_string()),
+                parent: None,
+                properties: None,
+                icon: OptionalJsonValue::Unset,
+                cover: OptionalJsonValue::Unset,
+            },
+        )
+        .await
+        .unwrap();
+        writes::append_block_children(
+            &pool,
+            NoteAppendBlockChildren {
+                parent: page_parent(PAGE_B),
+                after: Some(BLOCK_D.to_string()),
+                children: vec![block(
+                    BLOCK_E,
+                    "paragraph",
+                    json!({
+                        "rich_text": [
+                            rich_text("Private mention of "),
+                            page_mention(PAGE_A, "Target")
+                        ],
+                        "color": "default"
+                    }),
+                )],
+            },
+        )
+        .await
+        .unwrap();
+        let request = NoteAgentBridgeExportRequest {
+            page_ids: vec![PAGE_A.to_string()],
+            project_ids: Vec::new(),
+            include_descendants: Some(false),
+            include_backlinks: Some(true),
+            include_database_views: Some(false),
+            include_task_context: Some(false),
+            include_page_comments: Some(false),
+            include_resolved_comments: Some(false),
+        };
+
+        let live = transfers::agent_bridge_export::export_bridge(&pool, request.clone())
+            .await
+            .unwrap();
+        assert_eq!(live.exported_backlink_count, 1);
+        assert!(live.markdown.contains("Trashed source"));
+
+        writes::trash_page(&pool, PAGE_B, true).await.unwrap();
+        let trashed = transfers::agent_bridge_export::export_bridge(&pool, request)
+            .await
+            .unwrap();
+
+        assert_eq!(trashed.exported_backlink_count, 0);
+        assert!(!trashed.markdown.contains("Trashed source"));
+        assert!(!trashed.markdown.contains("Private mention"));
+        assert!(
+            links::backlinks::list_backlinks(&pool, PAGE_A)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    });
 }

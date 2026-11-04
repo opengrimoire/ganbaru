@@ -1,24 +1,23 @@
 use sqlx::SqlitePool;
 
 use super::models::*;
-use super::routine::ensure_built_in_routine_defaults;
 pub use super::task_views::{load_task_detail, load_task_view};
 use super::views::load_all_views;
 
-/// Loads the workspace after repairing built-in Routine defaults.
+/// Loads the workspace. Loads are read-only: commands protect the built-in Routine rows, and no load repairs them.
 pub async fn load_workspace(
     pool: &SqlitePool,
     preferred_project_id: Option<&str>,
 ) -> Result<ProjectsWorkspaceSnapshot, String> {
-    load_projects_workspace(pool, preferred_project_id, true).await
+    load_projects_workspace(pool, preferred_project_id).await
 }
 
-/// Reloads the workspace without built-in repair, so refreshes stay read-only.
+/// Reloads the workspace after a change, with the same read as [`load_workspace`].
 pub async fn refresh_workspace(
     pool: &SqlitePool,
     preferred_project_id: Option<&str>,
 ) -> Result<ProjectsWorkspaceSnapshot, String> {
-    load_projects_workspace(pool, preferred_project_id, false).await
+    load_projects_workspace(pool, preferred_project_id).await
 }
 
 fn resolved_project_id(
@@ -37,9 +36,9 @@ fn resolved_project_id(
         .iter()
         .filter(|project| project.status == "active")
         .min_by(|left, right| {
-            left.sort_order
-                .cmp(&right.sort_order)
-                .then_with(|| left.name.cmp(&right.name))
+            left.order_key
+                .cmp(&right.order_key)
+                .then_with(|| left.id.cmp(&right.id))
         })
         .or_else(|| projects.first())
         .map(|project| project.id.clone())
@@ -48,19 +47,15 @@ fn resolved_project_id(
 async fn load_projects_workspace(
     pool: &sqlx::SqlitePool,
     preferred_project_id: Option<&str>,
-    repair_built_ins: bool,
 ) -> Result<ProjectsWorkspaceSnapshot, String> {
-    if repair_built_ins {
-        ensure_built_in_routine_defaults(pool).await?;
-    }
     let groups = sqlx::query_as::<_, ProjectGroupRow>(
-        "SELECT * FROM project_groups ORDER BY sort_order ASC, name ASC",
+        "SELECT * FROM project_groups ORDER BY order_key ASC, id ASC",
     )
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load project groups: {e}"))?;
     let projects = sqlx::query_as::<_, ProjectRow>(
-        "SELECT * FROM projects ORDER BY group_id ASC, sort_order ASC, name ASC",
+        "SELECT * FROM projects ORDER BY group_id ASC, order_key ASC, id ASC",
     )
     .fetch_all(pool)
     .await
@@ -87,7 +82,7 @@ async fn load_projects_core_snapshot(
     let sections = sqlx::query_as::<_, ProjectSectionRow>(
         "SELECT * FROM project_sections
          WHERE project_id = ?
-         ORDER BY project_id ASC, sort_order ASC, name ASC",
+         ORDER BY project_id ASC, order_key ASC, id ASC",
     )
     .bind(normalized_project_id)
     .fetch_all(pool)
@@ -96,7 +91,7 @@ async fn load_projects_core_snapshot(
     let statuses = sqlx::query_as::<_, ProjectStatusRow>(
         "SELECT * FROM project_statuses
          WHERE project_id = ?
-         ORDER BY project_id ASC, sort_order ASC, name ASC",
+         ORDER BY project_id ASC, order_key ASC, id ASC",
     )
     .bind(normalized_project_id)
     .fetch_all(pool)
@@ -105,7 +100,7 @@ async fn load_projects_core_snapshot(
     let priorities = sqlx::query_as::<_, ProjectPriorityRow>(
         "SELECT * FROM project_priorities
          WHERE project_id = ?
-         ORDER BY project_id ASC, sort_order ASC, name ASC",
+         ORDER BY project_id ASC, order_key ASC, id ASC",
     )
     .bind(normalized_project_id)
     .fetch_all(pool)
@@ -176,7 +171,7 @@ pub async fn load_optional_data(
             result.tags = sqlx::query_as::<_, ProjectTagRow>(
                 "SELECT * FROM project_tags
                  WHERE project_id = ?
-                 ORDER BY project_id ASC, sort_order ASC, name ASC",
+                 ORDER BY project_id ASC, order_key ASC, id ASC",
             )
             .bind(project_id)
             .fetch_all(pool)
@@ -187,7 +182,7 @@ pub async fn load_optional_data(
                  FROM project_task_tag_links
                  JOIN project_tasks ON project_tasks.id = project_task_tag_links.task_id
                  WHERE project_tasks.project_id = ?
-                 ORDER BY project_task_tag_links.created_at ASC",
+                 ORDER BY project_task_tag_links.created_at ASC, project_task_tag_links.sync_key ASC",
             )
             .bind(project_id)
             .fetch_all(pool)
@@ -198,7 +193,7 @@ pub async fn load_optional_data(
                  FROM project_task_dependencies
                  JOIN project_tasks ON project_tasks.id = project_task_dependencies.blocked_task_id
                  WHERE project_tasks.project_id = ?
-                 ORDER BY project_task_dependencies.created_at ASC",
+                 ORDER BY project_task_dependencies.created_at ASC, project_task_dependencies.id ASC",
             )
             .bind(project_id)
             .fetch_all(pool)
@@ -221,7 +216,7 @@ pub async fn load_optional_data(
             result.custom_fields = sqlx::query_as::<_, ProjectCustomFieldRow>(
                 "SELECT * FROM project_custom_fields
                  WHERE project_id = ?
-                 ORDER BY project_id ASC, sort_order ASC, name ASC",
+                 ORDER BY project_id ASC, order_key ASC, id ASC",
             )
             .bind(project_id)
             .fetch_all(pool)
@@ -232,7 +227,7 @@ pub async fn load_optional_data(
                  FROM project_custom_field_options
                  JOIN project_custom_fields ON project_custom_fields.id = project_custom_field_options.field_id
                  WHERE project_custom_fields.project_id = ?
-                 ORDER BY project_custom_field_options.field_id ASC, project_custom_field_options.sort_order ASC, project_custom_field_options.name ASC",
+                 ORDER BY project_custom_field_options.field_id ASC, project_custom_field_options.order_key ASC, project_custom_field_options.id ASC",
             )
             .bind(project_id)
             .fetch_all(pool)
@@ -243,7 +238,7 @@ pub async fn load_optional_data(
                  FROM project_custom_field_values
                  JOIN project_tasks ON project_tasks.id = project_custom_field_values.task_id
                  WHERE project_tasks.project_id = ?
-                 ORDER BY project_custom_field_values.updated_at ASC",
+                 ORDER BY project_custom_field_values.updated_at ASC, project_custom_field_values.sync_key ASC",
             )
             .bind(project_id)
             .fetch_all(pool)
@@ -251,11 +246,14 @@ pub async fn load_optional_data(
             .map_err(|e| format!("load project custom field values: {e}"))?;
             result.custom_field_option_values =
                 sqlx::query_as::<_, ProjectCustomFieldOptionValueRow>(
-                    "SELECT project_custom_field_option_values.*
-                     FROM project_custom_field_option_values
-                     JOIN project_tasks ON project_tasks.id = project_custom_field_option_values.task_id
+                    "SELECT value.task_id, value.field_id, selected.option_id
+                     FROM project_custom_field_option_values AS selected
+                     JOIN project_custom_field_values AS value ON value.sync_key = selected.value_key
+                     JOIN project_custom_field_options AS field_option
+                        ON field_option.id = selected.option_id AND field_option.field_id = value.field_id
+                     JOIN project_tasks ON project_tasks.id = value.task_id
                      WHERE project_tasks.project_id = ?
-                     ORDER BY project_custom_field_option_values.created_at ASC",
+                     ORDER BY selected.value_key ASC, selected.ordinal ASC",
                 )
                 .bind(project_id)
                 .fetch_all(pool)
@@ -284,7 +282,7 @@ pub async fn load_optional_data(
                  FROM project_checklist_items
                  JOIN project_tasks ON project_tasks.id = project_checklist_items.task_id
                  WHERE project_tasks.project_id = ?
-                 ORDER BY project_checklist_items.task_id ASC, project_checklist_items.sort_order ASC",
+                 ORDER BY project_checklist_items.task_id ASC, project_checklist_items.order_key ASC, project_checklist_items.id ASC",
             )
             .bind(project_id)
             .fetch_all(pool)
@@ -320,7 +318,7 @@ pub(super) async fn load_project_custom_emojis(
     pool: &sqlx::SqlitePool,
 ) -> Result<Vec<ProjectCustomEmojiRow>, String> {
     sqlx::query_as::<_, ProjectCustomEmojiRow>(
-        "SELECT * FROM project_custom_emojis ORDER BY sort_order ASC, name ASC",
+        "SELECT * FROM project_custom_emojis ORDER BY order_key ASC, id ASC",
     )
     .fetch_all(pool)
     .await

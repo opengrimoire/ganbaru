@@ -339,20 +339,7 @@ pub(super) async fn add_exdate(
     occurrence_date: &str,
     updated_at: &str,
 ) -> Result<(), String> {
-    sqlx::query(
-        "INSERT OR IGNORE INTO calendar_event_exdates
-            (id, event_id, occurrence_date, sort_order)
-         SELECT lower(hex(randomblob(16))), ?, ?, COALESCE(MAX(sort_order) + 1, 0)
-         FROM calendar_event_exdates
-         WHERE event_id = ?",
-    )
-    .bind(event_id)
-    .bind(occurrence_date)
-    .bind(event_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("add recurring exception date: {e}"))?;
-
+    super::metadata::add_exdate(tx, event_id, occurrence_date).await?;
     sqlx::query("UPDATE calendar_events SET updated_at = ? WHERE id = ?")
         .bind(updated_at)
         .bind(event_id)

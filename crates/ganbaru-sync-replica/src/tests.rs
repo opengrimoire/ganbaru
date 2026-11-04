@@ -1,13 +1,16 @@
 use super::access::vault_connection_hook;
+use super::authority::{AnchorKeys, Founding, ensure_charter};
 use super::carry_forward;
 use super::writer::{
-    FileKeyStore, RESERVATION_BLOCK, SuccessorPlan, SyncFiles, WriterCheck, WriterKeyStore,
+    FileKeyStore, RESERVATION_BLOCK, SuccessorPlan, SyncFiles, SyncKey, SyncKeyStore, WriterCheck,
     WriterRecord, check_writer, create_writer, read_record, read_stored_writer, record_matches,
 };
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
+use ganbaru_handoff::key_wrap::{KeyWrapper, TestKeyWrapper, is_key_protection_lost};
 use ganbaru_sync::local::{self, LocalWriterHead};
 use ganbaru_sync::{Engine, SpaceContext, WriterState};
+use ganbaru_sync_contracts::{AdminKeyPair, DeviceKeyPair, RecoverySeed};
 use sqlx::SqliteConnection;
 use sqlx::pool::PoolConnection;
 use std::path::{Path, PathBuf};
@@ -16,7 +19,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 
+mod assets;
+mod backup;
 mod exchange;
+mod keys;
+mod outbox;
+mod peers;
+mod quarantine;
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -29,6 +38,14 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 const VAULT_ID: &str = "vault-sync-test";
 const DEVICE_ID: &str = "device-test";
 const NOW_MS: u64 = 1_800_000_000_000;
+
+/// The platform key stand-in every test key store of this process shares, so a store opened
+/// again reads what an earlier one wrote.
+fn test_wrapper() -> Arc<TestKeyWrapper> {
+    static WRAPPER: std::sync::LazyLock<Arc<TestKeyWrapper>> =
+        std::sync::LazyLock::new(|| Arc::new(TestKeyWrapper::default()));
+    WRAPPER.clone()
+}
 
 struct TestDirectory(PathBuf);
 
@@ -54,9 +71,7 @@ impl TestDirectory {
     }
 
     fn keys(&self) -> FileKeyStore {
-        FileKeyStore {
-            directory: self.0.join("keys"),
-        }
+        FileKeyStore::new(self.0.join("keys"), test_wrapper())
     }
 }
 
@@ -70,13 +85,35 @@ fn person() -> PersonKeyPair {
     PersonKeyPair::from_seed(&[7; 32]).expect("test person seed")
 }
 
+/// The test device key of the anchor [`DEVICE_ID`].
+fn device() -> DeviceKeyPair {
+    DeviceKeyPair::from_seed(&[8; 32]).expect("test device seed")
+}
+
+/// The anchor keys of [`DEVICE_ID`].
+fn anchor_keys() -> AnchorKeys {
+    AnchorKeys {
+        device: device(),
+        admin: AdminKeyPair::from_seed(&[9; 32]).expect("test admin seed"),
+        recovery: RecoverySeed::from_bytes([10; 32])
+            .public_keys()
+            .expect("test recovery keys"),
+    }
+}
+
 /// Creates a migrated vault database at `path` holding the test person identity.
 async fn create_vault(registry: &DatabasePoolRegistry, path: &Path) -> sqlx::SqlitePool {
-    let pool = registry.connect_path(path).await.expect("migrate vault");
+    ganbaru_db::test_support::write_migrated_database(path)
+        .await
+        .expect("write migrated database");
+    let pool = registry
+        .connect_path(path)
+        .await
+        .expect("open migrated vault");
     sqlx::query(
         "INSERT INTO contacts_local_identity
-            (singleton, public_key, card_nonce, created_at, updated_at)
-         VALUES (1, ?, 'AAAAAAAAAAAAAAAAAAAAAA', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            (singleton, public_key, created_at)
+         VALUES (1, ?, '2026-01-01T00:00:00Z')",
     )
     .bind(person().public_key().to_text())
     .execute(&pool)
@@ -85,15 +122,33 @@ async fn create_vault(registry: &DatabasePoolRegistry, path: &Path) -> sqlx::Sql
     pool
 }
 
+/// Initializes the test space, founded by [`DEVICE_ID`] as its anchor.
 async fn context(conn: &mut SqliteConnection) -> SpaceContext {
+    context_founded(conn, [11; 32]).await
+}
+
+/// Initializes the test space, founded by [`DEVICE_ID`] as its anchor listening with
+/// `tls_fingerprint`. Another fingerprint founds another charter for the same space.
+async fn context_founded(conn: &mut SqliteConnection, tls_fingerprint: [u8; 32]) -> SpaceContext {
     Engine::vault()
         .init_space(conn, VAULT_ID, NOW_MS)
         .await
         .expect("initialize space");
-    local::space_context(conn, VAULT_ID)
+    let ctx = local::space_context(conn, VAULT_ID)
         .await
         .expect("read space")
-        .expect("space context")
+        .expect("space context");
+    let founding = Founding {
+        device_id: DEVICE_ID,
+        tls_fingerprint,
+        discovery_key: [12; 32],
+        person: &person(),
+        now_ms: NOW_MS,
+    };
+    ensure_charter(&Engine::vault(), conn, &ctx, &anchor_keys(), &founding)
+        .await
+        .expect("found space");
+    ctx
 }
 
 async fn add_note(conn: &mut SqliteConnection, id: &str) {
@@ -116,7 +171,7 @@ async fn check(
 ) -> WriterCheck {
     let files = directory.files();
     let stored = read_stored_writer(&files, &directory.keys()).expect("read stored writer");
-    check_writer(engine, conn, ctx, &files, stored)
+    check_writer(engine, conn, ctx, &files, &device().public_key(), stored)
         .await
         .expect("check writer")
 }
@@ -124,12 +179,13 @@ async fn check(
 fn record(last_committed_seq: u64, reserved_through: u64) -> WriterRecord {
     WriterRecord {
         schema_version: 1,
-        writer_id: "00".repeat(32),
+        writer_id: "00".repeat(16),
         certificate: String::new(),
         reserved_through,
         last_committed_seq,
         paused: false,
         retired_keys: Vec::new(),
+        sequenced: None,
     }
 }
 
@@ -177,7 +233,7 @@ fn reservations_grow_in_blocks() {
         &files,
         &keys,
         SuccessorPlan::default(),
-        &person(),
+        &device(),
         DEVICE_ID,
         NOW_MS,
     )
@@ -193,6 +249,90 @@ fn reservations_grow_in_blocks() {
     assert_eq!(reserve(1), RESERVATION_BLOCK);
     assert_eq!(reserve(RESERVATION_BLOCK), RESERVATION_BLOCK);
     assert_eq!(reserve(RESERVATION_BLOCK + 1), 2 * RESERVATION_BLOCK);
+}
+
+#[test]
+fn records_naming_a_non_canonical_writer_id_are_refused() {
+    let directory = TestDirectory::new("record-ids");
+    let files = directory.files();
+    let keys = directory.keys();
+    std::fs::create_dir_all(&files.directory).expect("create sync directory");
+    let outside = directory.path().join("outside.key");
+    std::fs::write(&outside, b"not a writer key").expect("write outside file");
+    let canonical = "ab".repeat(16);
+    let cases = [
+        ("../outside".to_string(), Vec::new()),
+        ("AB".repeat(16), Vec::new()),
+        (canonical.clone(), vec!["../../outside".to_string()]),
+        (canonical.clone(), vec!["ab".repeat(15)]),
+    ];
+    for (writer_id, retired_keys) in cases {
+        let mut stored = record(0, 0);
+        stored.writer_id = writer_id.clone();
+        stored.retired_keys = retired_keys.clone();
+        std::fs::write(
+            files.record_path(),
+            serde_json::to_vec(&stored).expect("encode record"),
+        )
+        .expect("write record");
+        let error = read_stored_writer(&files, &keys)
+            .err()
+            .unwrap_or_else(|| panic!("{writer_id} with {retired_keys:?} was accepted"));
+        assert_eq!(error, "sync writer record names an invalid writer id");
+    }
+    let mut stored = record(0, 0);
+    stored.writer_id = canonical;
+    std::fs::write(
+        files.record_path(),
+        serde_json::to_vec(&stored).expect("encode record"),
+    )
+    .expect("write record");
+    assert!(read_record(&files.record_path()).expect("read").is_some());
+    assert!(outside.exists());
+}
+
+#[test]
+fn file_key_store_keeps_only_sealed_keys_and_reports_unopenable_ones_as_lost() {
+    let directory = TestDirectory::new("sealed-keys");
+    let wrapper = Arc::new(TestKeyWrapper::default());
+    let keys = FileKeyStore::new(directory.path().join("keys"), wrapper.clone());
+    let (pkcs8, _) = DeviceKeyPair::generate().expect("device key");
+    keys.write(VAULT_ID, SyncKey::Device, pkcs8.as_slice())
+        .expect("store device key");
+    let path = directory
+        .path()
+        .join("keys")
+        .join(format!("device-key-{VAULT_ID}.key"));
+    let stored = std::fs::read(&path).expect("stored file");
+    assert!(ganbaru_handoff::key_wrap::is_envelope(&stored));
+    assert!(
+        !stored
+            .windows(pkcs8.as_slice().len())
+            .any(|window| window == pkcs8.as_slice())
+    );
+    assert_eq!(
+        keys.read(VAULT_ID, SyncKey::Device).expect("read"),
+        Some(pkcs8.as_slice().to_vec())
+    );
+
+    wrapper.set_unavailable(true);
+    let offline = keys.read(VAULT_ID, SyncKey::Device).expect_err("offline");
+    assert!(!is_key_protection_lost(&offline), "{offline}");
+    wrapper.set_unavailable(false);
+
+    std::fs::write(&path, pkcs8.as_slice()).expect("plaintext copy");
+    let plaintext = keys.read(VAULT_ID, SyncKey::Device).expect_err("plaintext");
+    assert!(is_key_protection_lost(&plaintext), "{plaintext}");
+
+    keys.write(VAULT_ID, SyncKey::Device, pkcs8.as_slice())
+        .expect("store again");
+    wrapper
+        .forget(&ganbaru_handoff::key_wrap::vault_keys_alias(VAULT_ID))
+        .expect("forget platform key");
+    let forgotten = keys.read(VAULT_ID, SyncKey::Device).expect_err("forgotten");
+    assert!(is_key_protection_lost(&forgotten), "{forgotten}");
+    keys.remove(VAULT_ID, SyncKey::Device).expect("remove");
+    assert_eq!(keys.read(VAULT_ID, SyncKey::Device).expect("removed"), None);
 }
 
 #[test]
@@ -212,7 +352,7 @@ fn writer_survives_restarts_and_rotates_after_a_restore() {
         };
         assert_eq!(plan, SuccessorPlan::default());
         let mut writer =
-            create_writer(&files, &keys, plan, &person(), DEVICE_ID, NOW_MS).expect("create");
+            create_writer(&files, &keys, plan, &device(), DEVICE_ID, NOW_MS).expect("create");
         let original = writer.id();
 
         add_note(&mut conn, "note-1").await;
@@ -240,7 +380,7 @@ fn writer_survives_restarts_and_rotates_after_a_restore() {
             panic!("a restored database needs a successor");
         };
         let successor =
-            create_writer(&files, &keys, plan, &person(), DEVICE_ID, NOW_MS).expect("successor");
+            create_writer(&files, &keys, plan, &device(), DEVICE_ID, NOW_MS).expect("successor");
         assert_ne!(successor.id(), original);
         assert!(successor.record().retired_keys.is_empty());
         let stored = read_record(&files.record_path())
@@ -248,12 +388,12 @@ fn writer_survives_restarts_and_rotates_after_a_restore() {
             .expect("record");
         assert_eq!(stored.writer_id, successor.id().to_hex());
         assert!(
-            keys.read(VAULT_ID, &original.to_hex())
+            keys.read(VAULT_ID, SyncKey::Writer(&original.to_hex()))
                 .expect("read retired key")
                 .is_none()
         );
         assert!(
-            keys.read(VAULT_ID, &successor.id().to_hex())
+            keys.read(VAULT_ID, SyncKey::Writer(&successor.id().to_hex()))
                 .expect("read successor key")
                 .is_some()
         );
@@ -281,7 +421,7 @@ fn carried_operations_reach_the_replacement_once() {
             &files,
             &keys,
             SuccessorPlan::default(),
-            &person(),
+            &device(),
             DEVICE_ID,
             NOW_MS,
         )
@@ -290,9 +430,10 @@ fn carried_operations_reach_the_replacement_once() {
         add_note(&mut conn, "note-unsealed").await;
         drop(conn);
         registry.close_all().await.expect("close pools");
-        let refused = carry_forward::export(&engine, &current_path, &replacement_path, &files)
-            .await
-            .expect_err("pending captures refuse the export");
+        let refused =
+            carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
+                .await
+                .expect_err("pending captures refuse the export");
         assert!(refused.contains("not sealed"));
 
         let current = registry.connect_path(&current_path).await.expect("reopen");
@@ -306,9 +447,10 @@ fn carried_operations_reach_the_replacement_once() {
         drop(conn);
         registry.close_all().await.expect("close pools");
 
-        let exported = carry_forward::export(&engine, &current_path, &replacement_path, &files)
-            .await
-            .expect("export");
+        let exported =
+            carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
+                .await
+                .expect("export");
         assert_eq!(u64::try_from(exported).expect("count"), last);
         assert!(files.carry_path().exists());
 
@@ -317,12 +459,14 @@ fn carried_operations_reach_the_replacement_once() {
             .await
             .expect("open replacement");
         let mut conn = acquire(&replacement).await;
-        let report = carry_forward::import_pending(&engine, &mut conn, &ctx, &files, NOW_MS)
-            .await
-            .expect("import")
-            .expect("a pending bundle");
+        context(&mut conn).await;
+        let report =
+            carry_forward::import_pending(&engine, &mut conn, &ctx, &files, DEVICE_ID, NOW_MS)
+                .await
+                .expect("import")
+                .expect("a pending bundle");
         assert_eq!(report.stored, exported);
-        assert_eq!(report.refused, 0);
+        assert_eq!(report.refused_foreign, 0);
         assert!(!files.carry_path().exists());
         let title: String = sqlx::query_scalar("SELECT title FROM quick_notes WHERE id = ?")
             .bind("note-unsealed")
@@ -342,7 +486,7 @@ fn carried_operations_reach_the_replacement_once() {
             }
         );
         assert!(
-            carry_forward::import_pending(&engine, &mut conn, &ctx, &files, NOW_MS)
+            carry_forward::import_pending(&engine, &mut conn, &ctx, &files, DEVICE_ID, NOW_MS)
                 .await
                 .expect("second import")
                 .is_none()
@@ -354,9 +498,330 @@ fn carried_operations_reach_the_replacement_once() {
 }
 
 #[test]
-fn guarded_connections_refuse_local_tables_and_signal_commits() {
+fn carry_forward_aborts_when_the_replacement_lacks_compacted_operations() {
     block_on(async {
-        let directory = TestDirectory::new("guarded");
+        let directory = TestDirectory::new("carry-compacted");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let current_path = directory.path().join("current.sqlite");
+        let behind_path = directory.path().join("behind.sqlite");
+        let caught_up_path = directory.path().join("caught-up.sqlite");
+
+        let current = create_vault(&registry, &current_path).await;
+        create_vault(&registry, &behind_path).await;
+        let mut conn = acquire(&current).await;
+        let ctx = context(&mut conn).await;
+        let mut writer = create_writer(
+            &files,
+            &directory.keys(),
+            SuccessorPlan::default(),
+            &device(),
+            DEVICE_ID,
+            NOW_MS,
+        )
+        .expect("create writer");
+        for id in ["note-1", "note-2", "note-3"] {
+            add_note(&mut conn, id).await;
+            engine
+                .seal(&mut conn, &ctx, &mut writer.local(), NOW_MS)
+                .await
+                .expect("seal");
+        }
+        sqlx::query("VACUUM INTO ?")
+            .bind(caught_up_path.to_string_lossy().into_owned())
+            .execute(&mut *conn)
+            .await
+            .expect("copy the caught-up replacement");
+        add_note(&mut conn, "note-4").await;
+        let last = engine
+            .seal(&mut conn, &ctx, &mut writer.local(), NOW_MS)
+            .await
+            .expect("seal")
+            .last_seq
+            .expect("sealed operations");
+        let stored = engine.stored_vector(&mut conn, &ctx).await.expect("stored");
+        let report = engine
+            .compact(&mut conn, &ctx, &stored)
+            .await
+            .expect("compact");
+        assert_eq!(report.compacted, usize::try_from(last - 2).expect("count"));
+        drop(conn);
+        registry.close_all().await.expect("close pools");
+
+        let refused =
+            carry_forward::export(&engine, &current_path, &behind_path, &files, DEVICE_ID)
+                .await
+                .expect_err("compacted operations cannot be carried");
+        assert!(refused.contains("compacted"), "{refused}");
+        assert!(!files.carry_path().exists());
+
+        let exported =
+            carry_forward::export(&engine, &current_path, &caught_up_path, &files, DEVICE_ID)
+                .await
+                .expect("a replacement holding the compacted operations takes the rest");
+        assert_eq!(exported, 1);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+#[test]
+fn oversized_carry_bundles_are_refused_before_reading() {
+    block_on(async {
+        let directory = TestDirectory::new("carry-oversized");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
+        let mut conn = acquire(&pool).await;
+        let ctx = context(&mut conn).await;
+        std::fs::create_dir_all(&files.directory).expect("create sync directory");
+        let bundle = std::fs::File::create(files.carry_path()).expect("create bundle");
+        bundle
+            .set_len(ganbaru_sync::local::MAX_BUNDLE_BYTES as u64 + 1)
+            .expect("size bundle");
+        drop(bundle);
+
+        let error =
+            carry_forward::import_pending(&engine, &mut conn, &ctx, &files, DEVICE_ID, NOW_MS)
+                .await
+                .expect_err("an oversized bundle is refused");
+        assert_eq!(
+            error,
+            "carry-forward bundle is not a file within the size limit"
+        );
+        assert!(files.carry_path().exists());
+        drop(conn);
+        drop(pool);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+/// Creates a vault at `path` that holds one note sealed by a new writer of [`DEVICE_ID`], and
+/// returns its space.
+async fn sealed_vault(
+    registry: &DatabasePoolRegistry,
+    directory: &TestDirectory,
+    path: &Path,
+) -> SpaceContext {
+    let engine = Engine::vault();
+    let pool = create_vault(registry, path).await;
+    let mut conn = acquire(&pool).await;
+    let ctx = context(&mut conn).await;
+    let mut writer = create_writer(
+        &directory.files(),
+        &directory.keys(),
+        SuccessorPlan::default(),
+        &device(),
+        DEVICE_ID,
+        NOW_MS,
+    )
+    .expect("create writer");
+    add_note(&mut conn, "note-carried").await;
+    engine
+        .seal(&mut conn, &ctx, &mut writer.local(), NOW_MS)
+        .await
+        .expect("seal");
+    drop(conn);
+    registry.close_all().await.expect("close pools");
+    ctx
+}
+
+#[test]
+fn own_refusal_keeps_the_carry_bundle_and_fails() {
+    block_on(async {
+        let directory = TestDirectory::new("carry-own-refused");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let current_path = directory.path().join("current.sqlite");
+        let replacement_path = directory.path().join("replacement.sqlite");
+        let ctx = sealed_vault(&registry, &directory, &current_path).await;
+        create_vault(&registry, &replacement_path).await;
+        carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
+            .await
+            .expect("export");
+        let bundle = std::fs::read(files.carry_path()).expect("read bundle");
+
+        // The replacement holds another key for this device, so it refuses its writer.
+        let replacement = registry
+            .connect_path(&replacement_path)
+            .await
+            .expect("open replacement");
+        let mut conn = acquire(&replacement).await;
+        context(&mut conn).await;
+        sqlx::query("UPDATE sync_devices SET device_key = zeroblob(32) WHERE device_id = ?")
+            .bind(DEVICE_ID)
+            .execute(&mut *conn)
+            .await
+            .expect("replace the device key");
+        let error =
+            carry_forward::import_pending(&engine, &mut conn, &ctx, &files, DEVICE_ID, NOW_MS)
+                .await
+                .expect_err("a refused own operation fails the import");
+        assert!(error.contains("refused this device's operation"), "{error}");
+        assert_eq!(
+            std::fs::read(files.carry_path()).expect("the bundle stays"),
+            bundle
+        );
+        drop(conn);
+        drop(replacement);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+#[test]
+fn relabeled_own_writer_fails_the_carry_and_keeps_the_bundle() {
+    block_on(async {
+        let directory = TestDirectory::new("carry-relabeled");
+        let other = TestDirectory::new("carry-relabeled-other");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let current_path = directory.path().join("current.sqlite");
+        let replacement_path = directory.path().join("replacement.sqlite");
+        let other_path = other.path().join("other.sqlite");
+        sealed_vault(&registry, &other, &other_path).await;
+        let other_pool = registry
+            .connect_path(&other_path)
+            .await
+            .expect("open other");
+        let mut other_conn = acquire(&other_pool).await;
+        let other_key: Vec<u8> = sqlx::query_scalar("SELECT public_key FROM sync_writers")
+            .fetch_one(&mut *other_conn)
+            .await
+            .expect("read another writer key");
+        drop(other_conn);
+        drop(other_pool);
+
+        let current = create_vault(&registry, &current_path).await;
+        let mut conn = acquire(&current).await;
+        let ctx = context(&mut conn).await;
+        let mut writer = create_writer(
+            &files,
+            &directory.keys(),
+            SuccessorPlan::default(),
+            &device(),
+            DEVICE_ID,
+            NOW_MS,
+        )
+        .expect("create writer");
+        add_note(&mut conn, "note-sent").await;
+        engine
+            .seal(&mut conn, &ctx, &mut writer.local(), NOW_MS)
+            .await
+            .expect("seal");
+        sqlx::query("VACUUM INTO ?")
+            .bind(replacement_path.to_string_lossy().into_owned())
+            .execute(&mut *conn)
+            .await
+            .expect("copy the replacement at a genuine head");
+        add_note(&mut conn, "note-unsent").await;
+        engine
+            .seal(&mut conn, &ctx, &mut writer.local(), NOW_MS)
+            .await
+            .expect("seal");
+        drop(conn);
+        drop(current);
+        registry.close_all().await.expect("close pools");
+        carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
+            .await
+            .expect("export");
+        let bundle = std::fs::read(files.carry_path()).expect("read bundle");
+
+        // The copy keeps the genuine head of this device's writer but names another device and
+        // key for it, so the replacement would refuse the unsent operations as foreign.
+        let replacement = registry
+            .connect_path(&replacement_path)
+            .await
+            .expect("open replacement");
+        let mut conn = acquire(&replacement).await;
+        sqlx::query("UPDATE sync_writers SET device_id = 'other-device', public_key = ?")
+            .bind(&other_key)
+            .execute(&mut *conn)
+            .await
+            .expect("relabel the writer");
+        drop(conn);
+        drop(replacement);
+        registry.close_all().await.expect("close pools");
+
+        let error = carry_forward::carry_into_replacement(
+            &engine,
+            &current_path,
+            &replacement_path,
+            &files,
+            DEVICE_ID,
+            NOW_MS,
+        )
+        .await
+        .expect_err("a relabeled writer fails the carry");
+        assert!(error.contains("cannot confirm"), "{error}");
+        assert_eq!(
+            std::fs::read(files.carry_path()).expect("the bundle stays"),
+            bundle
+        );
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+#[test]
+fn carry_across_a_charter_change_exports_nothing_and_drops_the_bundle() {
+    block_on(async {
+        let directory = TestDirectory::new("carry-charter");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let current_path = directory.path().join("current.sqlite");
+        let replacement_path = directory.path().join("replacement.sqlite");
+        sealed_vault(&registry, &directory, &current_path).await;
+        let replacement = create_vault(&registry, &replacement_path).await;
+        let mut conn = acquire(&replacement).await;
+        context_founded(&mut conn, [13; 32]).await;
+        drop(conn);
+        drop(replacement);
+        registry.close_all().await.expect("close pools");
+
+        // A bundle of the old log cannot apply under another charter, whatever it holds.
+        std::fs::create_dir_all(&files.directory).expect("create sync directory");
+        let bundle = std::fs::File::create(files.carry_path()).expect("create bundle");
+        bundle
+            .set_len(ganbaru_sync::local::MAX_BUNDLE_BYTES as u64 + 1)
+            .expect("size bundle");
+        drop(bundle);
+
+        let report = carry_forward::carry_into_replacement(
+            &engine,
+            &current_path,
+            &replacement_path,
+            &files,
+            DEVICE_ID,
+            NOW_MS,
+        )
+        .await
+        .expect("a copy of another log carries nothing");
+        assert!(report.is_none());
+        assert!(!files.carry_path().exists());
+        let replacement = registry
+            .connect_path(&replacement_path)
+            .await
+            .expect("open replacement");
+        let mut conn = acquire(&replacement).await;
+        let carried: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM quick_notes WHERE id = 'note-carried'")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("count notes");
+        assert_eq!(carried, 0);
+        drop(conn);
+        drop(replacement);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+#[test]
+fn writable_connections_accept_every_domain_and_signal_commits() {
+    block_on(async {
+        let directory = TestDirectory::new("commit-signal");
         let path = directory.path().join("vault.sqlite");
         let setup = DatabasePoolRegistry::default();
         create_vault(&setup, &path).await;
@@ -365,27 +830,19 @@ fn guarded_connections_refuse_local_tables_and_signal_commits() {
         let commits = Arc::new(Notify::new());
         let registry = DatabasePoolRegistry::default();
         registry.set_connection_hook(Some(vault_connection_hook(commits.clone())));
-        let (pool, access) = registry
-            .connect_path_guarded(&path)
-            .await
-            .expect("open guarded");
-        assert_eq!(access, DatabaseAccessMode::Guarded);
-
-        let refused = sqlx::query(
-            "INSERT INTO projects (id, group_id, name) VALUES ('project-1', 'group-1', 'Project')",
-        )
-        .execute(&pool)
-        .await
-        .expect_err("guarded replicas refuse local-only tables");
-        assert!(
-            refused
-                .to_string()
-                .contains(ganbaru_sync::guards::READ_ONLY_MESSAGE),
-            "{refused}"
+        let pool = registry.connect_path(&path).await.expect("open vault");
+        assert_eq!(
+            registry.access(&path).await,
+            Some(DatabaseAccessMode::ReadWrite)
         );
 
+        sqlx::query("INSERT INTO notes_local_users (id) VALUES ('user-1')")
+            .execute(&pool)
+            .await
+            .expect("every device writes Notes tables");
+
         let mut conn = acquire(&pool).await;
-        add_note(&mut conn, "note-guarded").await;
+        add_note(&mut conn, "note-commit").await;
         drop(conn);
         tokio::time::timeout(Duration::from_secs(5), commits.notified())
             .await

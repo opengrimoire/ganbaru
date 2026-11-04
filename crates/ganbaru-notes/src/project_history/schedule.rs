@@ -61,7 +61,7 @@ pub(super) async fn initialize_project_history(
              SELECT 1 FROM notes_folders WHERE project_id = ?
              UNION ALL
              SELECT 1 FROM notes_pages
-             WHERE trim(json_extract(properties, '$.__ganbaru_project_id')) = ?
+             WHERE project_id = ?
          )",
     )
     .bind(&project_id)
@@ -97,6 +97,7 @@ pub async fn notes_flush_due_project_history(
 pub async fn flush_due_checkpoints(
     pool: &SqlitePool,
 ) -> Result<NotesProjectHistoryScheduleDto, String> {
+    crate::page_history::flush_pending_remote_snapshots(pool).await?;
     let rows = sqlx::query(
         "SELECT project_id, actor_id, actor_display_name, changed_note_summary
          FROM notes_project_history_dirty

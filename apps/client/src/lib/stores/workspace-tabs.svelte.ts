@@ -3,6 +3,7 @@ import { SvelteSet } from "svelte/reactivity";
 import { availableAppViews, type View } from "$lib/navigation";
 import { getNavigation, registerNavigationRouter, type NavigationRouterRegistration } from "$lib/stores/navigation.svelte";
 import { activeVaultIdentity, onActiveVaultIdentityChange } from "$lib/vault/active-vault";
+import { reportNotesHeldEditFailure } from "$lib/stores/notes/held-edit-notice.svelte";
 import type {
   ScreenPoint,
   TabDragGrab,
@@ -826,7 +827,13 @@ async function prepareDeparture(id: string): Promise<WorkspaceTab | null> {
   const host = connection;
   const tab = tabsState.tabs.find((candidate) => candidate.id === id);
   if (!host || !tab) return null;
-  await host.flushPendingEdits?.();
+  try {
+    await host.flushPendingEdits?.();
+  } catch (error) {
+    // A held Notes edit keeps the tab here; the notice leads the user to the page that waits for a choice.
+    if (reportNotesHeldEditFailure(error)) return null;
+    throw error;
+  }
   const location = liveLocation(tab);
   setState(updateWorkspaceTab(tabsState, id, { location }));
   return tabsState.tabs.find((candidate) => candidate.id === id) ?? null;
@@ -888,7 +895,7 @@ function beginDrag(id: string, grab: TabDragGrab): TabWindowDrag | null {
   liveDrag = { sourceLabel: windows?.label ?? null, tab, ...grab };
   if (!windows || !vaultId) return null;
   void connection?.flushPendingEdits?.().catch((error: unknown) => {
-    console.error("Failed to save pending edits before a tab drag:", error);
+    if (!reportNotesHeldEditFailure(error)) console.error("Failed to save pending edits before a tab drag:", error);
   });
   void windows.announceDrag(vaultId, tab, grab).catch((error: unknown) => {
     console.error("Failed to announce a tab drag:", error);

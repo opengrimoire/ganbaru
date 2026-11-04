@@ -5,7 +5,6 @@ fn effect() -> CommittedFocusEffect {
     CommittedFocusEffect {
         vault_id: "vault".into(),
         vault_generation: 7,
-        ownership_generation: 3,
         execution_revision: 10,
         run_id: Some("run".into()),
         segment_id: Some("segment".into()),
@@ -32,9 +31,6 @@ fn native_focus_queued_effect_cannot_pass_a_newer_commit_or_vault_fence() {
     current.vault_generation += 1;
     assert!(!same_revision(&current, &candidate));
     current.vault_generation = candidate.vault_generation;
-    current.ownership_generation += 1;
-    assert!(!same_revision(&current, &candidate));
-    current.ownership_generation = candidate.ownership_generation;
     current.vault_id = "other-vault".into();
     assert!(!same_revision(&current, &candidate));
 }

@@ -9,11 +9,11 @@ describe("provisional Notes page", () => {
       parent: { type: "workspace", workspace: true },
       folder_id: null,
       first_block_id: "22222222-2222-4222-8222-222222222222",
-      properties: { __ganbaru_project_id: "project-routine-learning" },
+      project_id: "project-routine-learning",
     }, "2026-07-12T00:00:00.000Z");
 
     expect(loaded.page.id).toBe("11111111-1111-4111-8111-111111111111");
-    expect(loaded.page.properties.__ganbaru_project_id).toBe("project-routine-learning");
+    expect(loaded.page.project_id).toBe("project-routine-learning");
     expect(loaded.page.properties.title).toMatchObject({ type: "title" });
     expect(loaded.blocks.results).toHaveLength(1);
     expect(loaded.blocks.results[0]).toMatchObject({

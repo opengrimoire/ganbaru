@@ -360,10 +360,24 @@ impl SyncFiles {
         self.directory.join(&self.vault_id)
     }
 
-    /// Marks a copy recovered through an anchor server after every device was lost. Such a device
-    /// has no link to the devices it inherited, so it never proposes removing them for that.
-    pub fn server_recovery_path(&self) -> PathBuf {
-        self.vault_directory().join("server-recovery")
+    /// Marks a vault that syncs through a server without a LAN link: a desktop that added a server
+    /// alone, or that joined or recovered the vault through one.
+    pub fn server_sync_path(&self) -> PathBuf {
+        self.vault_directory().join("server-sync")
+    }
+
+    /// Writes the marker at [`Self::server_sync_path`], creating the vault's sync directory
+    /// owner-only when it is missing.
+    pub fn mark_server_sync(&self) -> Result<(), String> {
+        let marker = self.server_sync_path();
+        ganbaru_atomic_files::create_private_directories(&self.vault_directory())
+            .map_err(|error| format!("create the sync directory: {error}"))?;
+        ganbaru_atomic_files::write_file_atomically(
+            &marker,
+            b"",
+            ganbaru_atomic_files::FileAccess::OwnerOnly,
+        )
+        .map_err(|error| format!("record server sync: {error}"))
     }
 
     /// The proposal outbox of this installation.

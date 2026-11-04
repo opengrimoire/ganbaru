@@ -32,6 +32,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
   import SyncRecoveryKitSetup from "$lib/components/sync/SyncRecoveryKitSetup.svelte";
+  import SyncServer from "$lib/components/sync/SyncServer.svelte";
   import SyncSection from "$lib/components/sync/SyncSection.svelte";
   import {
     formatHandoffError,
@@ -790,10 +791,13 @@
     {/if}
 
     </fieldset>
-    {#if presentation === "settings" && !status.linked}
+    {#if presentation === "settings" && !status.linked && !status.serverSync}
       <SyncRecoveryKitSetup {buttonClass} printable={platform === "desktop"} />
+      {#if platform === "desktop"}
+        <SyncServer {buttonClass} canManage onAdded={() => void refreshStatus()} />
+      {/if}
     {/if}
-    {#if presentation === "settings" && status.linked}
+    {#if presentation === "settings" && (status.linked || status.serverSync)}
       <SyncSection
         {buttonClass}
         mobileLayout={platform === "android"}

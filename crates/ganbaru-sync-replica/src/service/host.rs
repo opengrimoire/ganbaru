@@ -204,6 +204,6 @@ pub trait SyncHost: Clone + Send + Sync + 'static {
     fn sync_enabled(&self) -> Result<bool, String> {
         let vault_id = self.active_vault_id()?;
         Ok(self.pairing().is_linked_for(&vault_id)?
-            || self.sync_files(&vault_id)?.server_recovery_path().exists())
+            || self.sync_files(&vault_id)?.server_sync_path().exists())
     }
 }

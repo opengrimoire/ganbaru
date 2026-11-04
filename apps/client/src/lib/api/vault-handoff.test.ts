@@ -16,6 +16,7 @@ describe("linked-device status cache", () => {
     invokeMock.mockResolvedValue({
       deviceId: "desktop-1",
       linked: true,
+      serverSync: false,
       devices: [{
         deviceId: "phone-1",
         label: "Phone",
@@ -44,6 +45,7 @@ describe("linked-device status cache", () => {
     invokeMock.mockResolvedValue({
       deviceId: "phone-1",
       linked: false,
+      serverSync: false,
       devices: [],
       peerDeviceId: null,
       peerLabel: null,
@@ -64,6 +66,7 @@ describe("pending enrollment status", () => {
   const coordinatorStatus = {
     deviceId: "desktop-1",
     linked: false,
+    serverSync: false,
     devices: [],
     peerDeviceId: null,
     peerLabel: null,

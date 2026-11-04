@@ -124,7 +124,7 @@ export const sync = {
       serverNeedsUpdate: "El servidor usa una versión anterior. Actualízalo e inténtalo de nuevo.",
       deviceNeedsUpdate: "El servidor usa una versión más nueva. Actualiza Ganbaru e inténtalo de nuevo.",
       serverIsAnchor: "Este servidor es el ancla. Toma el ancla en esta computadora primero.",
-      notSyncing: "Primero vincula un dispositivo. Un servidor solo atiende a una bóveda que se sincroniza.",
+      notSyncing: "La sincronización no pudo iniciar en esta bóveda. Inténtalo de nuevo en un momento.",
       notAdmin: "Solo una computadora administradora puede agregar o quitar el servidor.",
       serverExists: "Esta bóveda ya usa un servidor. Quítalo primero.",
       serverRunsAnotherVault: "Este servidor ya ejecuta otra bóveda, así que no se cambió nada. Borra el directorio de datos del servidor e imprime un nuevo código de configuración para usarlo con esta bóveda.",

@@ -66,7 +66,7 @@ pub enum SyncServerError {
     DeviceNeedsUpdate,
     /// The server anchors the vault, so another device takes the anchor before it goes.
     ServerIsAnchor,
-    /// The active vault has not joined a sync space.
+    /// The active vault has no sync space, and could not found one in time.
     NotSyncing,
     /// This device does not hold a live admin key of the space.
     NotAdmin,
@@ -318,9 +318,61 @@ pub async fn sync_add_server<R: Runtime>(
     if !acknowledged_unreviewed {
         return Err(SyncServerError::Unacknowledged);
     }
-    match parse_setup_code(&code)? {
+    let code = parse_setup_code(&code)?;
+    let founded = ensure_sync_space(&app, &runtime).await?;
+    let added = match code {
         SetupCode::Relay(code) => add_relay(&app, &runtime, code).await,
         SetupCode::Anchor(code) => add_anchor_server(&app, &runtime, &code, take_anchor).await,
+    };
+    if added.is_err()
+        && let Some(marker) = founded
+    {
+        // The space stays founded; without its server this desktop stops syncing again.
+        if let Err(error) = std::fs::remove_file(&marker) {
+            eprintln!("sync: remove the server sync marker: {error}");
+        }
+    }
+    added
+}
+
+/// How long adding a server waits for a desktop that syncs with nothing yet to found its space.
+#[cfg(desktop)]
+const FOUNDING_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+#[cfg(desktop)]
+const FOUNDING_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Lets a desktop that is linked to nothing add a server: marks the active vault as syncing
+/// through a server and waits for the service to found its space, as the first link would.
+/// Returns the marker it wrote, so a failed add can remove it, or `None` when the vault already
+/// had a space.
+#[cfg(desktop)]
+async fn ensure_sync_space<R: Runtime>(
+    app: &AppHandle<R>,
+    runtime: &SyncRuntime,
+) -> Result<Option<std::path::PathBuf>, SyncServerError> {
+    if authorization(app).await?.is_some() {
+        return Ok(None);
+    }
+    let host = AppHost::of(app);
+    let files = host.sync_files(&host.active_vault_id()?)?;
+    let marker = files.server_sync_path();
+    let wrote = !marker.exists();
+    if wrote {
+        blocking(move || files.mark_server_sync()).await?;
+    }
+    let deadline = tokio::time::Instant::now() + FOUNDING_WAIT;
+    loop {
+        runtime.sync_now();
+        tokio::time::sleep(FOUNDING_POLL).await;
+        if authorization(app).await?.is_some() {
+            return Ok(wrote.then_some(marker));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            if wrote && let Err(error) = std::fs::remove_file(&marker) {
+                eprintln!("sync: remove the server sync marker: {error}");
+            }
+            return Err(SyncServerError::NotSyncing);
+        }
     }
 }
 

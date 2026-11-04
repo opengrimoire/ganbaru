@@ -466,7 +466,7 @@ async fn receive_recovered_copy(
     .await?;
     let staging =
         crate::vault::backup::handoff_staging_path_in(&folder.parent, &metadata.transfer_id);
-    let marker = crate::sync::sync_files(app, &metadata.vault_id)?.server_recovery_path();
+    let marker = crate::sync::sync_files(app, &metadata.vault_id)?.server_sync_path();
     let staged = async {
         crate::vault::backup::stage_handoff_archive(&archive, &staging, &metadata.vault_id).await?;
         settle_recovered_copy(&staging, &marker, &metadata.vault_id, binding).await?;
@@ -542,7 +542,7 @@ async fn settle_recovered_copy(
             if let Err(error) = std::fs::remove_file(marker)
                 && error.kind() != std::io::ErrorKind::NotFound
             {
-                eprintln!("failed to remove the server recovery marker: {error}");
+                eprintln!("failed to remove the server sync marker: {error}");
             }
             Err(crate::sync::RECOVERY_KIT_MISMATCH.to_string())
         }

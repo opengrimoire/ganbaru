@@ -118,7 +118,7 @@ export const sync = {
       serverNeedsUpdate: "The server runs an older version. Update it and try again.",
       deviceNeedsUpdate: "The server runs a newer version. Update Ganbaru and try again.",
       serverIsAnchor: "This server is the anchor. Take the anchor on this computer first.",
-      notSyncing: "Link a device first. A server only serves a vault that syncs.",
+      notSyncing: "Sync could not start on this vault. Try again in a moment.",
       notAdmin: "Only an admin computer can add or remove the server.",
       serverExists: "This vault already uses a server. Remove it first.",
       serverRunsAnotherVault: "This server already runs another vault, so nothing was changed. Delete the server's data directory and print a new setup code to use it for this vault.",

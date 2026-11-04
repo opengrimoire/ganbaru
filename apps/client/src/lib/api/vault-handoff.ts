@@ -27,6 +27,8 @@ export interface DesktopNetworkAccess {
 export interface PairingStatus {
   deviceId: string;
   linked: boolean;
+  /** Whether the vault syncs through a server without a LAN link. */
+  serverSync: boolean;
   devices: LinkedDevice[];
   peerDeviceId: string | null;
   peerLabel: string | null;
@@ -174,6 +176,7 @@ function parseStatus(value: unknown): PairingStatus {
     !isRecord(value) ||
     typeof value.deviceId !== "string" ||
     typeof value.linked !== "boolean" ||
+    typeof value.serverSync !== "boolean" ||
     !Array.isArray(value.devices) ||
     typeof value.revokedByCoordinator !== "boolean" ||
     typeof value.replicaReady !== "boolean"
@@ -202,6 +205,7 @@ function parseStatus(value: unknown): PairingStatus {
   return {
     deviceId: value.deviceId,
     linked: value.linked,
+    serverSync: value.serverSync,
     devices,
     peerDeviceId: nullableString(value.peerDeviceId, "peer device id"),
     peerLabel: nullableString(value.peerLabel, "peer label"),

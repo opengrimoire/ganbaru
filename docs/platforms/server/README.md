@@ -28,7 +28,7 @@ An anchor server keeps the vault in plaintext and holds its keys, so encryption 
 - A small Linux machine that stays on. A relay fits the smallest virtual server you can rent. An anchor needs disk for a whole vault.
 - A data directory only the server user can read. All server state lives in that directory.
 - TCP port 43823 reachable from your devices, through a public address, a forwarded port, or a VPN address. Devices pin the server's certificate fingerprint, so no domain or certificate authority is needed. Do not put a proxy that terminates TLS in front of the server, because devices would refuse its certificate; plain TCP forwarding is fine.
-- A linked vault. A server only serves a vault that syncs, so link two devices on the same network first, and add the server from an admin desktop.
+- A vault to serve. Add the server from an admin desktop; a desktop that is not linked to anything yet can add one too.
 - The [container image or the binary](#get-the-server) of the same version as your app.
 
 Commands below use `<version>` for that version and `<address>` for a name or address your devices can reach. Prefer a domain name that you control: the address is part of the setup code, so changing it later means removing the server and adding it again. `ganbaru-sync-relay help` lists every option.

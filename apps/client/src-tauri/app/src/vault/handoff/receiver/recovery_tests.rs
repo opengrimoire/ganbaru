@@ -196,7 +196,7 @@ fn write_marker(path: &Path) {
 
 /// Settles a forged copy and checks that it is refused as a kit mismatch and leaves nothing.
 async fn assert_refused_as_mismatch(root: &Path, staging: &Path, binding: &RecoveryBinding) {
-    let marker = root.join("server-recovery");
+    let marker = root.join("server-sync");
     write_marker(&marker);
     let settled = settle_recovered_copy(staging, &marker, VAULT_ID, binding).await;
     assert_eq!(settled, Err(RECOVERY_KIT_MISMATCH.to_string()));
@@ -294,7 +294,7 @@ async fn recovery_keeps_the_marker_on_a_read_failure() {
         b"these bytes are not a SQLite database header at all",
     )
     .unwrap();
-    let marker = root.0.join("server-recovery");
+    let marker = root.0.join("server-sync");
     write_marker(&marker);
     let settled = settle_recovered_copy(&staging, &marker, VAULT_ID, &answered).await;
     let Err(error) = settled else {
@@ -339,7 +339,7 @@ async fn recovery_accepts_the_printed_and_replaced_kits() {
     );
 
     // A genuine copy settles and keeps its marker for the activation.
-    let marker = root.0.join("server-recovery");
+    let marker = root.0.join("server-sync");
     write_marker(&marker);
     let answered = binding(trust, printed, printed.admin, replaced.admin);
     assert_eq!(

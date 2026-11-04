@@ -18,10 +18,13 @@
   let {
     buttonClass,
     canManage,
+    onAdded,
   }: {
     buttonClass: string;
     /** Whether this live admin desktop may add or remove the server. */
     canManage: boolean;
+    /** Runs after a server was added, so a desktop that synced with nothing can show sync. */
+    onAdded?: () => void;
   } = $props();
 
   /** The setup guide for a self-hosted server; each mode links to its own section. */
@@ -82,6 +85,7 @@
       }
       message = addedMessage(step);
       await refresh();
+      onAdded?.();
     } catch (cause: unknown) {
       showError(cause);
     } finally {

@@ -245,8 +245,8 @@ pub async fn sync_recover_through_server(
     }
     let answered = server_names_kit(&space, &kit_keys)?;
     let host = AppHost::of(&app);
-    let marker = host.sync_files(&space.vault_id)?.server_recovery_path();
-    if !marker.exists() {
+    let files = host.sync_files(&space.vault_id)?;
+    if !files.server_sync_path().exists() {
         let store = host.key_store()?;
         let vault_id = space.vault_id.clone();
         let (device, admin) = blocking(move || {
@@ -275,16 +275,7 @@ pub async fn sync_recover_through_server(
             .recover(&proposal)
             .await
             .map_err(|error| error.to_string())?;
-        let written = marker.clone();
-        blocking(move || {
-            ganbaru_atomic_files::write_file_atomically(
-                &written,
-                b"",
-                ganbaru_atomic_files::FileAccess::OwnerOnly,
-            )
-            .map_err(|error| format!("record the recovery: {error}"))
-        })
-        .await?;
+        blocking(move || files.mark_server_sync()).await?;
     }
     drop(connection);
     let binding = RecoveryBinding {

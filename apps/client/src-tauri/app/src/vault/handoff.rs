@@ -85,6 +85,8 @@ pub(crate) struct LinkedDeviceView {
 pub(crate) struct PairingStatus {
     device_id: String,
     linked: bool,
+    /// Whether the vault syncs through a server without a LAN link.
+    server_sync: bool,
     devices: Vec<LinkedDeviceView>,
     peer_device_id: Option<String>,
     peer_label: Option<String>,
@@ -735,6 +737,12 @@ pub(crate) fn handoff_pairing_status<R: Runtime>(
     Ok(PairingStatus {
         device_id,
         linked: !peers.is_empty() || coordinator.is_some(),
+        server_sync: match vault_id.as_deref() {
+            Some(vault_id) => crate::sync::sync_files(&app, vault_id)?
+                .server_sync_path()
+                .exists(),
+            None => false,
+        },
         devices,
         peer_device_id: peer.map(|peer| peer.device_id.clone()).or_else(|| {
             coordinator

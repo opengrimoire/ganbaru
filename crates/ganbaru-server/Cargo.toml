@@ -1,18 +1,18 @@
 [package]
-name = "ganbaru-sync-relay"
+name = "ganbaru-server"
 version = "0.1.0"
-description = "Ganbaru self-hosted sync relay server that stores sealed records it cannot open"
+description = "Ganbaru self-hosted server: a relay that stores sealed records it cannot open, or an always-on anchor replica of one vault"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-default-run = "ganbaru-sync-relay"
+default-run = "ganbaru-server"
 
 [lib]
 doctest = false
 
 [[bin]]
-name = "ganbaru-sync-relay"
+name = "ganbaru-server"
 path = "src/main.rs"
 
 [lints]

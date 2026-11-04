@@ -41,9 +41,9 @@ The release workflow builds a signed universal APK for direct installation and a
 
 Android release acceptance must verify signature, application identity, coexistence with the `.dev` build, offline startup, data behavior, and the supported ABI set.
 
-## Sync relay
+## Self-hosted server
 
-Each release attaches static musl builds of the self-hosted sync relay for Linux on x86_64 and aarch64 (`ganbaru-sync-relay_<version>_linux_<arch>`), built on native runners for each architecture and covered by the signed `SHA256SUMS`. After the release is published, a separate job verifies those binaries against the signature and publishes a multi-architecture image to `ghcr.io/<owner>/ganbaru-sync-relay:<version>` from `crates/ganbaru-sync-relay/Containerfile`: a `scratch` image that runs the binary as user 65532 with one `/data` volume and port 43823. There is no `latest` tag; the job summary records the index digest, and operators should pull by that digest. The relay has no self-update.
+Each release attaches static musl builds of the self-hosted `ganbaru-server` binary for Linux on x86_64 and aarch64 (`ganbaru-server_<version>_linux_<arch>`), built on native runners for each architecture and covered by the signed `SHA256SUMS`. After the release is published, a separate job verifies those binaries against the signature and publishes a multi-architecture image to `ghcr.io/<owner>/ganbaru-server:<version>` from `crates/ganbaru-server/Containerfile`: a `scratch` image that runs the binary as user 65532 with one `/data` volume, port 43823, and no default mode. A stable release also moves the `latest` tag, which automatic container updates follow; pre-releases do not. The job summary records the index digest for operators who pin by digest. The server never updates itself.
 
 ## Recovery boundaries
 

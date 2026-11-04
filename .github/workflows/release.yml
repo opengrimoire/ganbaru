@@ -273,14 +273,16 @@ jobs:
       - name: fetch Rust dependencies
         run: cargo fetch --locked
 
-      - name: build static relay
+      - name: build static server
         env:
           RELAY_TARGET: ${{ matrix.target }}
+          # `ganbaru-server version` prints the release this binary ships in.
+          GANBARU_RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           # ring and the bundled SQLite compile C code, which must target musl as well.
           target_env="$(printf '%s' "$RELAY_TARGET" | tr '-' '_')"
           export "CC_${target_env}=musl-gcc"
-          cargo build --release --locked -p ganbaru-sync-relay --target "$RELAY_TARGET"
+          cargo build --release --locked -p ganbaru-server --target "$RELAY_TARGET"
 
       - name: stage relay asset
         env:
@@ -288,13 +290,13 @@ jobs:
           RELAY_ASSET_ARCH: ${{ matrix.asset_arch }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
-          binary="target/$RELAY_TARGET/release/ganbaru-sync-relay"
+          binary="target/$RELAY_TARGET/release/ganbaru-server"
           description="$(file -b "$binary")"
           echo "$description"
           case "$description" in
             *"statically linked"* | *"static-pie linked"*) ;;
             *)
-              echo "The relay binary is not statically linked"
+              echo "The server binary is not statically linked"
               exit 1
               ;;
           esac
@@ -303,7 +305,7 @@ jobs:
             exit 1
           fi
           mkdir -p dist/relay-assets
-          cp "$binary" "dist/relay-assets/ganbaru-sync-relay_${RELEASE_VERSION}_linux_${RELAY_ASSET_ARCH}"
+          cp "$binary" "dist/relay-assets/ganbaru-server_${RELEASE_VERSION}_linux_${RELAY_ASSET_ARCH}"
 
       - name: record asset digest
         id: digest
@@ -770,6 +772,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+      RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
       GANBARU_PACKAGE_REPO_PUBLIC_KEY: ${{ vars.GANBARU_PACKAGE_REPO_PUBLIC_KEY }}
     steps:
       - name: checkout
@@ -787,7 +790,7 @@ jobs:
       - name: download relay binaries
         run: |
           mkdir -p dist/release-assets
-          gh release download "$RELEASE_TAG_NAME" --pattern "ganbaru-sync-relay_*" --pattern "SHA256SUMS" --pattern "SHA256SUMS.asc" --dir dist/release-assets
+          gh release download "$RELEASE_TAG_NAME" --pattern "ganbaru-server_*" --pattern "SHA256SUMS" --pattern "SHA256SUMS.asc" --dir dist/release-assets
 
       - name: verify relay binaries
         run: node apps/client/scripts/release/release-checksums.mjs verify dist/release-assets
@@ -797,9 +800,9 @@ jobs:
           version="${RELEASE_TAG_NAME#app-v}"
           context="dist/relay-image"
           mkdir -p "$context/linux-amd64" "$context/linux-arm64" "$context/data"
-          install -m 0555 "dist/release-assets/ganbaru-sync-relay_${version}_linux_x86_64" "$context/linux-amd64/ganbaru-sync-relay"
-          install -m 0555 "dist/release-assets/ganbaru-sync-relay_${version}_linux_aarch64" "$context/linux-arm64/ganbaru-sync-relay"
-          cp crates/ganbaru-sync-relay/Containerfile "$context/Containerfile"
+          install -m 0555 "dist/release-assets/ganbaru-server_${version}_linux_x86_64" "$context/linux-amd64/ganbaru-server"
+          install -m 0555 "dist/release-assets/ganbaru-server_${version}_linux_aarch64" "$context/linux-arm64/ganbaru-server"
+          cp crates/ganbaru-server/Containerfile "$context/Containerfile"
 
       - name: log in to GitHub Container Registry
         run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
@@ -810,7 +813,7 @@ jobs:
         run: |
           version="${RELEASE_TAG_NAME#app-v}"
           owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
-          image="ghcr.io/$owner/ganbaru-sync-relay"
+          image="ghcr.io/$owner/ganbaru-server"
           references=()
           for arch in amd64 arm64; do
             docker build \
@@ -825,11 +828,16 @@ jobs:
             docker push "$image:$version-$arch"
             references+=("$(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$version-$arch")")
           done
-          docker buildx imagetools create --tag "$image:$version" "${references[@]}"
+          # A stable release also moves `latest`, which automatic container updates follow.
+          latest=()
+          if [ "$RELEASE_PRERELEASE" != "true" ]; then
+            latest=(--tag "$image:latest")
+          fi
+          docker buildx imagetools create --tag "$image:$version" "${latest[@]}" "${references[@]}"
           digest="sha256:$(docker buildx imagetools inspect --raw "$image:$version" | sha256sum | cut -d ' ' -f 1)"
           echo "Published $image@$digest"
           {
-            echo "### Relay image"
+            echo "### Server image"
             echo
             echo "\`$image@$digest\`"
           } >> "$GITHUB_STEP_SUMMARY"

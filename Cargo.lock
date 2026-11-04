@@ -2150,6 +2150,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganbaru-server"
+version = "0.1.0"
+dependencies = [
+ "ganbaru-atomic-files",
+ "ganbaru-contacts",
+ "ganbaru-db",
+ "ganbaru-handoff",
+ "ganbaru-sync",
+ "ganbaru-sync-contracts",
+ "ganbaru-sync-replica",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "ganbaru-sync"
 version = "0.1.0"
 dependencies = [
@@ -2179,27 +2200,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ganbaru-sync-relay"
-version = "0.1.0"
-dependencies = [
- "ganbaru-atomic-files",
- "ganbaru-contacts",
- "ganbaru-db",
- "ganbaru-handoff",
- "ganbaru-sync",
- "ganbaru-sync-contracts",
- "ganbaru-sync-replica",
- "rcgen",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "tokio",
- "tokio-rustls",
-]
-
-[[package]]
 name = "ganbaru-sync-replica"
 version = "0.1.0"
 dependencies = [
@@ -2213,9 +2213,9 @@ dependencies = [
  "ganbaru-notes",
  "ganbaru-projects",
  "ganbaru-quick-notes",
+ "ganbaru-server",
  "ganbaru-sync",
  "ganbaru-sync-contracts",
- "ganbaru-sync-relay",
  "ganbaru-themes",
  "keyring",
  "rustix",

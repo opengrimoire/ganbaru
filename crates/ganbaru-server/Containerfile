@@ -1,12 +1,13 @@
-# Ganbaru sync relay image: the static relay binary on an empty base, run as a non-root user
-# with one data volume and one port.
+# Ganbaru server image: the static ganbaru-server binary on an empty base, run as a non-root user
+# with one data volume and one port. Choose the mode when you run it, for example
+# `<image> anchor` or `<image> relay`; with no arguments it prints help.
 #
 # The image is not built from source. The release workflow builds and signs the static musl
 # binaries, and the image job verifies them against the signed SHA256SUMS before it stages this
 # build context:
 #
-#   linux-amd64/ganbaru-sync-relay
-#   linux-arm64/ganbaru-sync-relay
+#   linux-amd64/ganbaru-server
+#   linux-arm64/ganbaru-server
 #   data/            (empty)
 #
 # Build one architecture with, for example:
@@ -17,14 +18,14 @@ FROM scratch
 
 ARG TARGETARCH
 
-COPY --chmod=0555 linux-${TARGETARCH}/ganbaru-sync-relay /usr/local/bin/ganbaru-sync-relay
+COPY --chmod=0555 linux-${TARGETARCH}/ganbaru-server /usr/local/bin/ganbaru-server
 COPY --chown=65532:65532 --chmod=0700 data/ /data/
 
 # SQLite falls back to the working directory for temporary files when /tmp does not exist.
 WORKDIR /data
 USER 65532:65532
+ENV GANBARU_SERVER_DATA_DIR=/data
 VOLUME ["/data"]
 EXPOSE 43823
 
-ENTRYPOINT ["/usr/local/bin/ganbaru-sync-relay"]
-CMD ["serve", "--data-dir", "/data", "--listen", "0.0.0.0:43823"]
+ENTRYPOINT ["/usr/local/bin/ganbaru-server"]

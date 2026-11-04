@@ -27,6 +27,9 @@ use ganbaru_handoff::protocol::relay::{
     RELAY_AUTH_DOMAIN, RELAY_EPOCH_DOMAIN, RELAY_SETUP_TOKEN_LIFETIME, RelayAdminCommand,
     RelayRefusalCode, RelayRequest, RelayResponse, RelaySetupToken, encode_relay_bytes,
 };
+use ganbaru_server::identity::RelayIdentity;
+use ganbaru_server::server::{ConnectionLimits, RelayServer, unix_time_ms};
+use ganbaru_server::store::{RelayStore, RetentionPolicy};
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::{AuthorizationView, RelayKeys};
 use ganbaru_sync_contracts::bounds::RELAY_ASSET_CHUNK_BYTES;
@@ -36,9 +39,6 @@ use ganbaru_sync_contracts::{
     RelayAccessKeyPair, Sequencing, SetRole, SignedProposal, SpaceKey, WriterId,
     sign_device_proposal, sign_proposal,
 };
-use ganbaru_sync_relay::identity::RelayIdentity;
-use ganbaru_sync_relay::server::{ConnectionLimits, RelayServer, unix_time_ms};
-use ganbaru_sync_relay::store::{RelayStore, RetentionPolicy};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};

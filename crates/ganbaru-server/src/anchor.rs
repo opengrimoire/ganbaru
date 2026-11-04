@@ -46,8 +46,7 @@ use host::AnchorHost;
 use routes::{AnchorRoutes, SetupRoute};
 use state::{Activation, DataPaths, KeyFiles};
 
-/// The version this binary reports in a setup conversation.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+use crate::config::VERSION;
 
 fn prepare(paths: &DataPaths) -> Result<(), String> {
     for directory in [paths.root().to_path_buf(), paths.config()] {

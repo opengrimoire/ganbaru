@@ -910,15 +910,16 @@
 {/if}
 
 {#if desktopQrAvailable && platform === "desktop" && codeDialogVisible}
-  {#await import("./PairingCodeDialog.svelte") then module}
-    {@const PairingCodeDialog = module.default}
-    <PairingCodeDialog
+  {#await import("./ConnectDialog.svelte") then module}
+    {@const ConnectDialog = module.default}
+    <ConnectDialog
       busy={busy === "pair"}
       {enrollmentCode}
       error={codeError}
       onSubmit={(code) => void acceptInvitation(code)}
       onEdit={() => { codeError = null; }}
       onClose={() => { if (busy !== "pair") { codeDialogVisible = false; codeError = null; } }}
+      onServerActivated={() => { codeDialogVisible = false; onActivated?.(); }}
     />
   {/await}
 {/if}

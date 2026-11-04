@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack, type Snippet } from "svelte";
+  import { untrack } from "svelte";
   import {
     releaseStarterVault,
     type PairingInvitation,
@@ -16,7 +16,6 @@
     initialInvitation = null,
     initialStatus = null,
     bootstrapReplicaOnLink = false,
-    recovery,
     onComplete,
   }: {
     platform: "desktop" | "android";
@@ -24,8 +23,6 @@
     initialInvitation?: PairingInvitation | null;
     initialStatus?: PairingStatus | null;
     bootstrapReplicaOnLink?: boolean;
-    /** A desktop-only way in for an unlinked device, given the call that leaves onboarding. */
-    recovery?: Snippet<[() => void]>;
     onComplete: () => void | Promise<void>;
   } = $props();
 
@@ -126,7 +123,6 @@
         </button>
       {/if}
       {#if status?.linked !== true}
-        {@render recovery?.(() => void leave(true))}
         <button
           use:onboardingPrimaryAction
           type="button"

@@ -355,6 +355,17 @@ export async function requestVaultBootstrap(): Promise<VaultBootstrapOutcome> {
 }
 
 /**
+ * On a desktop that is not linked yet, joins the vault an anchor server runs with the setup code it
+ * printed. The server enrolls this desktop as an admin, and the vault is copied into a new folder.
+ * It rejects with a waiting message while the server is not the vault's anchor.
+ *
+ * @returns The validated outcome of the copy.
+ */
+export async function joinVaultThroughServer(code: string): Promise<VaultBootstrapOutcome> {
+  return parseBootstrapOutcome(await invoke<unknown>("sync_join_through_server", { code }));
+}
+
+/**
  * On a new desktop, recovers the vault an anchor server runs with the setup code it printed and
  * the recovery kit, which enrolls this desktop as an admin and copies the vault into a new folder.
  *

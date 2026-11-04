@@ -160,7 +160,7 @@ An anchor serves one vault. The desktop that adds it must be an admin.
 2. Enter the code in Settings > Data, in the server section of an admin desktop, and confirm that this server can read your whole vault. The desktop proves the code, learns the server's keys, proposes the server's enrollment as an admin, and uploads a copy of the vault. No admin key or person key leaves the desktop, and the server dials nobody.
 3. Keep the default to let the server take the anchor, or choose to keep the current anchor. If the anchor desktop is off, the desktop waits for it; once it has run, enter the same code again, or a new one if it expired.
 
-Every linked device learns the server from the log and dials it from any network. Two dials happen before that: the desktop adding the server dials the endpoints in the setup code, which may be public, and recovery with the kit through an anchor server dials them from a new device, which may be off the LAN. Every other new device links to a desktop first, on the LAN.
+Every linked device learns the server from the log and dials it from any network. Two dials happen before that: the desktop adding the server dials the endpoints in the setup code, which may be public, and a desktop [joining through the server](#adding-a-desktop-through-the-server) dials them before it has the vault, from any network. Every other new device links to a desktop first, on the LAN.
 
 An anchor accepts at most 256 connections that have not yet authenticated, 4 from one address (an IPv4 address or an IPv6 /64), and closes any that does not authenticate or prove a setup code within 30 seconds. It keeps 64 of those slots for addresses your devices used recently, so a flood from unknown addresses does not lock your devices out, though it can delay a device connecting from a new address, or a new setup, until it stops. A device turned away for a full budget retries on its next pass.
 
@@ -207,17 +207,17 @@ With systemd, stop the service and run `sudo -u ganbaru-server ganbaru-sync-rela
 
 Copying an anchor's data directory is not a backup of the vault for another machine, because its keys identify this server, and it holds the vault in plaintext. Copy it only to move the server: stop the old one, copy the whole directory with its owner, and never start the old one again. Two copies running at once sign with the same keys, and devices treat that as a fork. Do not put an older copy back over a server that devices still use.
 
-## Recovering after losing every device
+## Adding a desktop through the server
 
-The server must hold the anchor role, and you need the recovery kit.
+A desktop that has no vault yet, such as a new work computer or one replacing every lost device, joins through an anchor server without meeting another device. The server must hold the anchor role.
 
 1. Run `anchor setup` on the server for a fresh code.
-2. On a new desktop, choose **Recover from an anchor server** on the linking screen of the first launch, or in Settings > Data when the device is not linked, and enter the code and the kit. The desktop derives the recovery admin key in memory, enrolls itself as an admin through the server, and copies the vault into a new folder.
-3. Keep the recovery kit. The person key does not return this way: a linked phone or desktop that still holds it can share it again, and otherwise anything signed with it stays as it is.
+2. On the new desktop, choose **or connect this computer to another computer or a server** on the first launch, or **Connect to a computer or server** in Settings > Data, open **A server**, and paste the code. The server enrolls the desktop as an admin, signed with the server's own admin key, and the desktop copies the vault into a new folder.
+3. If the server refuses to add the desktop, for example because its admin key was removed, choose **Use the recovery kit instead** and enter the kit too. The desktop derives the recovery admin key in memory and enrolls itself with it.
 
-Before the desktop signs anything with the kit, the server must name the kit's public key, and the copied log must name the kit the same way before the vault opens. A kit that does not belong to the vault on the server is refused with "this recovery kit does not belong to the vault on this server", and no copy opens. The check proves only that the server knew the kit's public keys, not that it runs your vault: a server that already learned them, such as from an earlier recovery attempt, can pass it.
+Proving a fresh code takes a shell on the server, which already reads the whole vault and holds an admin key, so the code alone is enough authority to join. The desktop opens the copy only when its log enrolls this desktop's own keys, and with the kit, only when the log names that kit. The kit check proves only that the server knew the kit's public keys, not that it runs your vault: a server that already learned them, such as from an earlier recovery attempt, can pass it.
 
-If the copy fails after the enrollment, repeat the steps with a fresh code and the same kit.
+The person key does not travel this way: a linked device that still holds it can share it again, and until then this desktop cannot sign contact cards or requests. If the copy fails after the enrollment, repeat the steps with a fresh code.
 
 ## Removing a server
 

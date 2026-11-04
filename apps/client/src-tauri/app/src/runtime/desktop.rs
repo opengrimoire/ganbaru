@@ -3,6 +3,9 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tauri::Manager;
 
+#[cfg(target_os = "linux")]
+mod main_window_reveal;
+
 static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 static MAIN_WINDOW_FRONTEND_READY: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -35,14 +38,43 @@ fn raise_window_for_second_launch(app: &tauri::AppHandle) {
     crate::app_windows::raise_app_window(app);
 }
 
+/// Shows the initialized main window. `background` is the RGB surface the page paints first; the
+/// native window and WebView take it so no other color shows while the window maps or resizes.
 #[tauri::command]
-fn reveal_main_window(app: tauri::AppHandle) -> Result<(), String> {
+fn reveal_main_window(app: tauri::AppHandle, background: Option<[u8; 3]>) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "main window is unavailable".to_string())?;
-    window.show().map_err(|error| error.to_string())?;
+    if let Some([red, green, blue]) = background
+        && let Err(error) =
+            window.set_background_color(Some(tauri::window::Color(red, green, blue, u8::MAX)))
+    {
+        eprintln!("failed to set the main window background: {error}");
+    }
+    show_initialized_main_window(&app, &window)?;
     MAIN_WINDOW_FRONTEND_READY.store(true, std::sync::atomic::Ordering::Release);
     window.set_focus().map_err(|error| error.to_string())
+}
+
+/// Shows the main window. On Linux a window configured to start maximized waits for the window
+/// manager's maximize before its WebView appears, so the first frame paints at the final size.
+fn show_initialized_main_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if app
+        .config()
+        .app
+        .windows
+        .iter()
+        .any(|config| config.label == window.label() && config.maximized)
+    {
+        return main_window_reveal::show_after_initial_maximize(window);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = app;
+    window.show().map_err(|error| error.to_string())
 }
 
 fn schedule_main_window_reveal_fallback(app: &tauri::AppHandle) {

@@ -26,6 +26,10 @@ import {
 import { applyPlatformProfileToDocument } from "./lib/platform";
 import { installModalKeyboardRouter } from "./lib/modal-focus";
 import { finishDesktopReadiness } from "./lib/windows/desktop-readiness";
+import {
+  DESKTOP_SHELL_BACKGROUND_TOKEN,
+  readMountedRootBackground,
+} from "./lib/themes/native-background";
 import { mark as perfMark } from "$lib/stores/perf-log.svelte";
 
 applyPlatformProfileToDocument();
@@ -287,7 +291,15 @@ void finishDesktopReadiness({
   flushUpdates: tick,
   document,
   revealMainWindow: getCurrentWindow().label === "main"
-    ? () => invoke<void>("reveal_main_window")
+    ? () => {
+      const background = readMountedRootBackground(
+        document.getElementById("app")!,
+        DESKTOP_SHELL_BACKGROUND_TOKEN,
+      );
+      return invoke<void>("reveal_main_window", {
+        background: background ? [background.r, background.g, background.b] : null,
+      });
+    }
     : null,
   onError: (error) => {
     console.error("Failed to reveal the initialized main window:", error);

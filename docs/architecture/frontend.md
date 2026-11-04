@@ -8,7 +8,7 @@ The frontend is a plain Svelte 5 application built with Vite. It is not SvelteKi
 
 The shell owns cross-feature navigation and mounts only the selected primary surface. Desktop loads its common surfaces eagerly and prepares the main workspaces before mounting, so first navigation is immediate. Android makes Calendar usable first, then prepares the other surfaces in prioritized background batches; an early navigation reuses the in-flight preparation. Heavy or uncommon workflows load on demand on both platforms. Without an active vault, desktop boot loads only setup and linking onboarding, not the feature roots. Production bundle contracts protect these resident and lazy boundaries.
 
-The desktop main window starts hidden and is revealed only after the selected root has mounted with theme, locale, and required fonts ready, so the user never sees an unstyled or half-laid-out window. A native timeout remains as failure recovery. Other tab windows and Pomodoro overlays do not reveal the main window or prepare its workspaces.
+The desktop main window starts hidden and is revealed only after the selected root has mounted with theme, locale, and required fonts ready, so the user never sees an unstyled or half-laid-out window. The reveal paints the native window in the root's background, and on Linux keeps the WebView hidden until the window manager has applied the initial maximize, because GTK maps the window at its requested size first and the page would otherwise paint into only part of the screen. A native timeout remains as failure recovery. Other tab windows and Pomodoro overlays do not reveal the main window or prepare its workspaces.
 
 ## Source organization
 

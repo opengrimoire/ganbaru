@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getAllWebviewWindows, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { View } from "$lib/navigation";
-import { readNativeBackground } from "$lib/themes/native-background";
+import { DESKTOP_SHELL_BACKGROUND_TOKEN, readNativeBackground } from "$lib/themes/native-background";
 import { parseWorkspaceTab, type WorkspaceTab } from "$lib/workspace-tabs/model";
 
 /** Label of the window the app starts with. It hosts app-wide work and hides instead of closing while other windows stay open. */
@@ -24,8 +24,6 @@ const WINDOW_RAISED_EVENT = "app-window-raised";
 export const TAB_WINDOW_DRAG_MIME = "application/x-ganbaru-window-tab";
 /** Where the pointer sits on a torn-off window, so it lands over that window's tab strip. */
 const TEAR_OFF_GRAB_OFFSET = { x: 96, y: 16 } as const;
-/** Surface the desktop shell paints first, used as the native background of a new window. */
-const TAB_WINDOW_BACKGROUND_TOKEN = "--sidebar";
 
 interface TabWindowMessage {
   /** The only window that acts on the message. */
@@ -312,7 +310,7 @@ async function openTabWindow(
   tab: WorkspaceTab | null,
   { focus = true, position = null }: { focus?: boolean; position?: ScreenPoint | null } = {},
 ): Promise<void> {
-  const background = readNativeBackground(document.documentElement, TAB_WINDOW_BACKGROUND_TOKEN);
+  const background = readNativeBackground(document.documentElement, DESKTOP_SHELL_BACKGROUND_TOKEN);
   await invoke<void>("app_window_open_tab", {
     request: {
       label,

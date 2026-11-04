@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Translate } from "$lib/i18n/translator.svelte";
-import { serverConnectError } from "./server-connect";
+import { isServerWithoutVault, serverConnectError } from "./server-connect";
 
 const t = ((key: string) => key) as Translate;
 const errors = "vaultHandoff.serverConnect.errors";
@@ -26,5 +26,18 @@ describe("serverConnectError", () => {
   it("never shows native text it does not recognize", () => {
     expect(serverConnectError("connection reset near SECRET", t)).toBe(`${errors}.failed`);
     expect(serverConnectError(null, t)).toBe(`${errors}.failed`);
+  });
+});
+
+describe("isServerWithoutVault", () => {
+  it("recognizes an empty server in text and errors", () => {
+    expect(isServerWithoutVault("this server runs no vault yet")).toBe(true);
+    expect(isServerWithoutVault(new Error("the server runs no vault yet"))).toBe(true);
+  });
+
+  it("leaves every other refusal to the error message", () => {
+    expect(isServerWithoutVault("the server refused this setup code")).toBe(false);
+    expect(isServerWithoutVault("could not reach the server: timed out")).toBe(false);
+    expect(isServerWithoutVault(null)).toBe(false);
   });
 });

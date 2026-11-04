@@ -154,6 +154,7 @@ export const vaultHandoff = {
   },
   serverConnect: {
     description: "En tu servidor de Ganbaru, ejecuta ganbaru-server anchor setup y pega el código que imprime. Esta computadora se une a la bóveda que ejecuta el servidor, en una carpeta nueva.",
+    startDescription: "En tu servidor de Ganbaru, ejecuta ganbaru-server anchor setup y pega el código que imprime. Si el servidor ejecuta una bóveda, esta computadora se une a ella en una carpeta nueva. Si el servidor está vacío, recibe esta bóveda y se convierte en su ancla.",
     codeLabel: "Código de configuración del servidor",
     useKit: "Usar el kit de recuperación",
     kitDescription: "Solo hace falta cuando el servidor se niega a agregar esta computadora por sí mismo.",

@@ -1,7 +1,13 @@
 <script lang="ts">
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { onMount, tick } from "svelte";
-  import { joinVaultThroughServer, recoverVaultThroughServer } from "$lib/api/vault-handoff";
+  import { addSyncServer, SyncServerError } from "$lib/api/sync";
+  import {
+    joinVaultThroughServer,
+    recoverVaultThroughServer,
+    releaseStarterVault,
+  } from "$lib/api/vault-handoff";
+  import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     activateModalFocus,
@@ -9,19 +15,23 @@
     trapModalTabKey,
   } from "$lib/modal-focus";
   import { cn } from "$lib/utils";
-  import { serverConnectError } from "$lib/vault/server-connect";
+  import { syncServerErrorLabel } from "$lib/sync/server";
+  import { isServerWithoutVault, serverConnectError } from "$lib/vault/server-connect";
 
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
 
   /**
    * Connects this computer to a vault it does not have yet: through another computer's pairing
    * code, or through the setup code an anchor server printed. The server path may add the recovery
-   * kit, which leaves its field when it is submitted and is kept nowhere else.
+   * kit, which leaves its field when it is submitted and is kept nowhere else. When
+   * `startOnEmptyServer` is set, a server that runs no vault yet receives the active vault and
+   * becomes its anchor instead.
    */
   let {
     busy,
     enrollmentCode,
     error,
+    startOnEmptyServer = false,
     onSubmit,
     onEdit,
     onClose,
@@ -32,6 +42,8 @@
     /** The code to compare with the coordinator while it decides whether to link this device. */
     enrollmentCode: string | null;
     error: string | null;
+    /** Whether an empty server receives the active vault, as onboarding does with the vault it chose. */
+    startOnEmptyServer?: boolean;
     onSubmit: (code: string) => void;
     onEdit: () => void;
     onClose: () => void;
@@ -55,6 +67,7 @@
   let serverCode = $state("");
   let kit = $state("");
   let useKit = $state(false);
+  let acknowledged = $state(false);
   let serverBusy = $state(false);
   let serverError = $state<string | null>(null);
   let serverNotice = $state<string | null>(null);
@@ -63,7 +76,7 @@
     !anyBusy
       && (source === "computer"
         ? code.trim() !== ""
-        : serverCode.trim() !== "" && (!useKit || kit.trim() !== "")),
+        : acknowledged && serverCode.trim() !== "" && (!useKit || kit.trim() !== "")),
   );
 
   function close(): void {
@@ -102,9 +115,35 @@
       serverCode = "";
       if (outcome.activated) onServerActivated();
     } catch (cause) {
-      serverError = serverConnectError(cause, t);
+      if (startOnEmptyServer && !typedKit && isServerWithoutVault(cause)) {
+        await startOnServer(typedCode);
+      } else {
+        serverError = serverConnectError(cause, t);
+      }
     } finally {
       serverBusy = false;
+    }
+  }
+
+  /**
+   * Puts the active vault on a server that runs none yet and makes the server its anchor. The
+   * vault becomes user data first, so a later link keeps a backup of it.
+   */
+  async function startOnServer(typedCode: string): Promise<void> {
+    try {
+      await releaseStarterVault();
+      const step = await addSyncServer(typedCode, acknowledged, true);
+      if (step === "waitingForAnchor") {
+        serverNotice = t("sync.server.anchorWaiting");
+        return;
+      }
+      serverCode = "";
+      onServerActivated();
+    } catch (cause) {
+      console.warn("the vault could not be added to the server", cause);
+      serverError = cause instanceof SyncServerError
+        ? syncServerErrorLabel(t, cause)
+        : t("vaultHandoff.serverConnect.errors.failed");
     }
   }
 
@@ -212,7 +251,9 @@
           <p id="pairing-code-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{error}</p>
         {/if}
       {:else}
-        <p class="text-[0.866667rem] leading-5 text-muted-foreground">{t("vaultHandoff.serverConnect.description")}</p>
+        <p class="text-[0.866667rem] leading-5 text-muted-foreground">
+          {startOnEmptyServer ? t("vaultHandoff.serverConnect.startDescription") : t("vaultHandoff.serverConnect.description")}
+        </p>
         <label class="mt-4 block text-[0.8rem] text-muted-foreground" for="server-connect-code">{t("vaultHandoff.serverConnect.codeLabel")}</label>
         <input
           bind:this={serverInput}
@@ -256,6 +297,10 @@
           </button>
           <p class="text-[0.8rem] leading-5 text-muted-foreground">{t("vaultHandoff.serverConnect.kitDescription")}</p>
         {/if}
+        <label class="mt-3 flex min-w-0 items-start gap-2 text-[0.8rem] leading-5 text-foreground">
+          <Checkbox class="mt-0.5" bind:checked={acknowledged} disabled={serverBusy} />
+          <span class="min-w-0">{t("sync.server.unreviewedAnchor")}</span>
+        </label>
         {#if serverError}
           <p id="server-connect-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{serverError}</p>
         {:else if serverNotice}

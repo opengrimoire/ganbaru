@@ -916,6 +916,7 @@
       busy={busy === "pair"}
       {enrollmentCode}
       error={codeError}
+      startOnEmptyServer={presentation === "onboarding"}
       onSubmit={(code) => void acceptInvitation(code)}
       onEdit={() => { codeError = null; }}
       onClose={() => { if (busy !== "pair") { codeDialogVisible = false; codeError = null; } }}

@@ -152,7 +152,7 @@ An anchor takes the anchor role only when it is added. If a desktop later takes 
 A new computer, such as a work PC or one replacing every lost device, can join through an anchor server without meeting another device.
 
 1. Run `anchor setup` on the server for a fresh code.
-2. On the new computer, choose **or connect this computer to another computer or a server** on the first launch, or **Connect to a computer or server** in Settings > Data. Open **A server** and paste the code. The server adds the computer as an admin and it copies the vault.
+2. On the new computer, choose **or connect this computer to another computer or a server** on the first launch, or **Connect to a computer or server** in Settings > Data. Open **A server**, confirm the warning, and paste the code. The server adds the computer as an admin and it copies the vault. On the first launch, a server that runs no vault yet receives this computer's vault instead and becomes its anchor.
 3. If the server refuses, for example because its admin key was removed, choose **Use the recovery kit instead** and enter the kit too.
 
 The code alone is enough because printing it takes a shell on the server, which can already read the vault. The new computer opens the copy only when the vault's log adds this computer's own keys. Until a linked device shares the person key with it, it cannot sign contact cards or requests. If the copy fails, repeat with a fresh code.

@@ -483,17 +483,16 @@ fn charge_serialized(writer: &mut ExportSizeWriter, value: &impl Serialize) -> R
     })
 }
 
-/// Bound escaped output bytes without allocating a second serialized snapshot.
-pub(super) fn bound_snapshot_output(value: &impl Serialize) -> Result<(), String> {
-    serde_json::to_writer(
-        ExportSizeWriter {
-            remaining: MAX_EXPORT_BYTES,
-        },
-        value,
-    )
-    .map_err(|error| {
+/// Bound escaped output bytes without allocating a second serialized snapshot, returning the
+/// bytes the snapshot serializes to.
+pub(super) fn bound_snapshot_output(value: &impl Serialize) -> Result<usize, String> {
+    let mut writer = ExportSizeWriter {
+        remaining: MAX_EXPORT_BYTES,
+    };
+    serde_json::to_writer(&mut writer, value).map_err(|error| {
         format!("Calendar snapshot exceeds its byte limit or cannot serialize: {error}")
-    })
+    })?;
+    Ok(MAX_EXPORT_BYTES - writer.remaining)
 }
 
 fn group_rows<T>(rows: Vec<T>, owner: impl Fn(&T) -> &str) -> BTreeMap<String, Vec<T>> {

@@ -123,6 +123,12 @@ impl PreparedMutation {
     }
 }
 
+/// Advances an event sequence, holding at the top value. Sync merges sequences by
+/// maximum, so a replicated top value cannot be lowered and must not block edits.
+fn next_sequence(sequence: i64) -> i64 {
+    sequence.saturating_add(1)
+}
+
 struct MeasuredBytes(usize);
 impl Write for MeasuredBytes {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -210,10 +216,7 @@ impl Metadata {
         event.updated_at = DateTime::from_timestamp_millis(now_ms)
             .ok_or("Calendar deletion clock is invalid")?
             .to_rfc3339_opts(SecondsFormat::Millis, true);
-        event.sequence = event
-            .sequence
-            .checked_add(1)
-            .ok_or("Calendar sequence overflow")?;
+        event.sequence = next_sequence(event.sequence);
         let id = event.id.clone();
         metadata
             .overrides
@@ -537,10 +540,7 @@ impl Metadata {
         event.all_day = i64::from(series.all_day);
         event.updated_at.clone_from(&now);
         event.sequence = if existing {
-            source
-                .sequence
-                .checked_add(1)
-                .ok_or("Calendar sequence overflow")?
+            next_sequence(source.sequence)
         } else {
             0
         };

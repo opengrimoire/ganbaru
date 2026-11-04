@@ -61,8 +61,12 @@ const BUNDLE_PROJECTS_DIRECTORY: &str = "projects";
 
 /// Whether `relative` belongs to the vault layout a bundle carries: the vault marker and
 /// database files, the skeleton directories with their contents, and only folders directly
-/// below `projects`. Anything else, such as a `.git`, `.claude`, `.codex`, or `.vscode` folder
-/// or a stray `config.json` at the vault root, stays out of bundles in both directions.
+/// below `projects` whose names do not start with a dot. Anything else, such as a `.git`,
+/// `.claude`, `.codex`, or `.vscode` folder or a stray `config.json` at the vault root, stays
+/// out of bundles in both directions. Project folders are named by project IDs, which Ganbaru
+/// creates as UUIDs, while Git and the OpenCode, Cursor, and Grok CLIs search the parents of a launch
+/// folder that is not a repository root, so a hidden folder beside the project folders, such
+/// as `projects/.opencode` or `projects/.git`, would configure every one of them.
 pub fn is_bundle_layout_entry(relative: &Path, directory: bool) -> bool {
     let mut components = relative.components().map(|component| match component {
         Component::Normal(name) => name.to_str(),
@@ -75,8 +79,8 @@ pub fn is_bundle_layout_entry(relative: &Path, directory: bool) -> bool {
         None if directory => BUNDLE_DIRECTORIES.contains(&top),
         None => [VAULT_MANIFEST_FILE, DATABASE_FILE].contains(&top),
         Some(None) => false,
-        Some(Some(_)) if top == BUNDLE_PROJECTS_DIRECTORY => {
-            directory || components.next().is_some()
+        Some(Some(name)) if top == BUNDLE_PROJECTS_DIRECTORY => {
+            !name.starts_with('.') && (directory || components.next().is_some())
         }
         Some(Some(_)) => BUNDLE_DIRECTORIES.contains(&top),
     }
@@ -118,12 +122,21 @@ impl ArchiveGate {
 
 /// Writes a consistent copy of the database `pool` serves to `destination`.
 pub async fn vacuum_database(pool: &SqlitePool, destination: &Path) -> Result<(), String> {
+    vacuum_into(pool, destination).await
+}
+
+/// Runs `VACUUM INTO` on `executor`, which writes a fresh copy to `destination` whose pages
+/// hold only live rows.
+async fn vacuum_into<'e, E>(executor: E, destination: &Path) -> Result<(), String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     let destination = destination
         .to_str()
         .ok_or_else(|| "database snapshot path contains non-UTF-8 characters".to_string())?;
     sqlx::query("VACUUM INTO ?")
         .bind(destination)
-        .execute(pool)
+        .execute(executor)
         .await
         .map_err(|error| format!("create consistent database snapshot: {error}"))?;
     Ok(())
@@ -211,20 +224,48 @@ async fn write_snapshot_archive(
 }
 
 /// Clears installation-local sync state and device-local rows from a snapshot copy before it
-/// leaves this device.
-async fn prepare_snapshot_copy(snapshot: &Path) -> Result<(), String> {
+/// leaves this device, or from a restored copy that arrived from elsewhere.
+///
+/// Clearing only frees the pages that held those rows, so the cleared copy is then rewritten
+/// and replaces `snapshot`: the result holds no page of a cleared row.
+pub async fn prepare_snapshot_copy(snapshot: &Path) -> Result<(), String> {
+    let compacted = snapshot.with_extension("compact");
+    remove_stale_compaction(&compacted)?;
     let options = sqlx::sqlite::SqliteConnectOptions::new().filename(snapshot);
     let mut conn = SqliteConnection::connect_with(&options)
         .await
         .map_err(|error| format!("open vault snapshot: {error}"))?;
-    let result = ganbaru_sync::local::prepare_snapshot_copy(&mut conn, &VAULT_MANIFEST)
-        .await
-        .map_err(|error| format!("prepare vault snapshot: {error}"));
+    let result = async {
+        ganbaru_sync::local::prepare_snapshot_copy(&mut conn, &VAULT_MANIFEST)
+            .await
+            .map_err(|error| format!("prepare vault snapshot: {error}"))?;
+        vacuum_into(&mut conn, &compacted).await
+    }
+    .await;
     let closed = conn
         .close()
         .await
         .map_err(|error| format!("close vault snapshot: {error}"));
-    result.and(closed)
+    let outcome = result.and(closed).and_then(|()| {
+        fs::rename(&compacted, snapshot)
+            .map_err(|error| format!("replace vault snapshot with its compacted copy: {error}"))
+    });
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(error) => match remove_stale_compaction(&compacted) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(format!("{error}; {cleanup}")),
+        },
+    }
+}
+
+/// Removes the compacted copy at `compacted` that an interrupted preparation left behind.
+fn remove_stale_compaction(compacted: &Path) -> Result<(), String> {
+    match fs::remove_file(compacted) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove compacted vault snapshot: {error}")),
+    }
 }
 
 #[derive(Clone)]
@@ -443,17 +484,69 @@ impl StagingDirectory {
 
 impl Drop for StagingDirectory {
     fn drop(&mut self) {
-        // A leftover private directory holds nothing the vault does not, and the next backup
-        // uses a fresh name, so a failed removal is not an error.
+        // Drop runs on errors and unwinding but not after a hard kill or power loss; the
+        // sweep at the next backup and at app startup removes what either case leaves.
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// Removes backup staging a hard kill left below `staging`. The caller holds the gate that
+/// keeps a second backup of this staging root from running, so no live staging is swept.
+///
+/// # Errors
+///
+/// Returns an error when `staging` cannot be listed or a leftover cannot be removed.
+pub fn sweep_backup_staging(staging: &Path) -> Result<(), BackupFileError> {
+    sweep_staging_entries(staging, |name| name.starts_with(BACKUP_STAGING_PREFIX))
+        .map_err(|error| BackupFileError::Io(format!("sweep backup staging: {error}")))
+}
+
+/// Removes the files and directories directly below `root` whose name `stale` accepts. A
+/// symlink is never followed or removed, so a planted link cannot point the sweep elsewhere,
+/// and a missing `root` has nothing to sweep. Every match is tried before the first failure
+/// is returned. The caller guarantees that no live staging matches.
+///
+/// # Errors
+///
+/// Returns an error when `root` cannot be listed or a match cannot be removed.
+pub fn sweep_staging_entries(root: &Path, stale: impl Fn(&str) -> bool) -> io::Result<()> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mut first_error = None;
+    for entry in entries {
+        let removed = entry.and_then(|entry| {
+            if !entry.file_name().to_str().is_some_and(&stale) {
+                return Ok(());
+            }
+            // The entry's own type: a symlink reports as a symlink, not as its target.
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                fs::remove_dir_all(entry.path())
+            } else if kind.is_file() {
+                fs::remove_file(entry.path())
+            } else {
+                Ok(())
+            }
+        });
+        match removed {
+            Err(error) if error.kind() != ErrorKind::NotFound => {
+                first_error.get_or_insert(error);
+            }
+            _ => {}
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Writes an encrypted backup of the vault at `vault_root` to `destination`.
 ///
 /// The archive is the snapshot another installation starts from, so a restore never carries
 /// installation-local sync state or device-local rows. It is assembled in a fresh private
-/// directory below `staging`, which is removed on every path. The gate stays held from the
+/// directory below `staging`, which is removed on every path, after staging an earlier run
+/// left by a hard kill is swept. The gate stays held from the
 /// database snapshot until the encrypted file is synced and renamed over `destination`, so
 /// the asset sweep never removes a file the archive references while it is written. The
 /// caller excludes vault writers first. Returns the bytes written.
@@ -465,6 +558,7 @@ pub async fn create_encrypted_backup(
     destination: &Path,
 ) -> Result<u64, BackupFileError> {
     let _gate = gate.lock().await;
+    sweep_backup_staging(staging)?;
     let directory = StagingDirectory::create(staging)?;
     let archive = directory.0.join(STAGED_ARCHIVE_FILE);
     write_snapshot_archive(
@@ -477,8 +571,15 @@ pub async fn create_encrypted_backup(
     seal_archive(&archive, keys, destination)
 }
 
-/// Streams the archive at `archive` into an encrypted backup at `destination`.
-pub(crate) fn seal_archive(
+/// Streams the archive at `archive` into an encrypted backup at `destination`, written
+/// through a private staged file that replaces `destination` only once complete. Returns the
+/// bytes written.
+///
+/// # Errors
+///
+/// Returns an error when the keys cannot seal a header, or the archive cannot be read or the
+/// backup written.
+pub fn seal_archive(
     archive: &Path,
     keys: &BackupSealKeys,
     destination: &Path,

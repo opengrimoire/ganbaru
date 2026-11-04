@@ -17,9 +17,11 @@ use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_WRITERS_PER_SPACE}
 #[cfg(desktop)]
 use ganbaru_sync_contracts::ids::parse_hex;
 #[cfg(desktop)]
-use ganbaru_sync_contracts::{Digest32, LateResolution};
+use ganbaru_sync_contracts::{Digest32, KitCode, LateResolution};
 use ganbaru_sync_replica::quarantine::Quarantine;
 use serde::Deserialize;
+#[cfg(desktop)]
+use serde::Serialize;
 use std::time::Duration;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Runtime, State, Webview};
@@ -247,14 +249,33 @@ pub async fn sync_promote_device(
         .map(|_| ())
 }
 
-/// Replaces the vault's recovery kit on an admin desktop. The new kit waits for the user to
-/// save it, as [`sync_recovery_kit_state`] shows; the old kit stops signing once the anchor
-/// sequences the change and opens no data encrypted after it.
+/// Installs a new recovery key from the anchor desktop. The new kit waits for the user to save
+/// it, as [`sync_recovery_kit_state`] shows. The printed kit keeps its lineage and still signs a
+/// forced handover or an enrollment, but opens no data encrypted after the change; only
+/// [`sync_rotate_recovery_kit`] retires it.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn sync_regenerate_recovery_kit(runtime: State<'_, SyncRuntime>) -> Result<(), String> {
     let _kit = KIT_LOCK.lock().await;
     match run_authority(&runtime, AuthorityAction::RegenerateRecoveryKit).await? {
+        AuthorityAnswer::RecoveryKit => Ok(()),
+        _ => Err("sync answered the recovery kit request with something else".to_string()),
+    }
+}
+
+/// Replaces the printed recovery kit with a new one that the current kit, `kit_code`, signs,
+/// on any enrolled desktop. Once the anchor sequences the change, the old code signs nothing
+/// and opens no data encrypted after it. The new kit waits for the user to save it, as
+/// [`sync_recovery_kit_state`] shows. The derived key is never stored.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_rotate_recovery_kit(
+    runtime: State<'_, SyncRuntime>,
+    kit_code: String,
+) -> Result<(), String> {
+    let kit_code = KitCode::new(kit_code);
+    let _kit = KIT_LOCK.lock().await;
+    match run_authority(&runtime, AuthorityAction::RotateRecoveryKit(kit_code)).await? {
         AuthorityAnswer::RecoveryKit => Ok(()),
         _ => Err("sync answered the recovery kit request with something else".to_string()),
     }
@@ -330,6 +351,7 @@ pub async fn sync_use_recovery_kit(
     runtime: State<'_, SyncRuntime>,
     code: String,
 ) -> Result<(), String> {
+    let code = KitCode::new(code);
     run_authority(&runtime, AuthorityAction::UseRecoveryKit(code))
         .await
         .map(|_| ())
@@ -349,7 +371,8 @@ pub struct EntryTarget {
 /// `point`, a kit point the contest view offers, or by default from the point the engine
 /// chooses, and then removes the old anchor and every device in `remove_devices`. With
 /// `quarantine_anchor`, it then quarantines the lost anchor and proposes its removal, which it
-/// sequences itself. Returns the authorization revision of the last entry it sealed.
+/// sequences itself. Returns the authorization revision of the last entry it sealed and how
+/// many entries after the handover have not landed yet.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn sync_force_anchor<R: Runtime>(
@@ -359,14 +382,22 @@ pub async fn sync_force_anchor<R: Runtime>(
     point: Option<EntryTarget>,
     remove_devices: Vec<String>,
     quarantine_anchor: bool,
-) -> Result<u64, String> {
+) -> Result<ForceAnchorOutcome, String> {
+    let kit_code = kit_code.map(KitCode::new);
     let request = force_request(kit_code, point, remove_devices)?;
-    let (revision, old_anchor) =
+    let (outcome, old_anchor) =
         match run_authority(&runtime, AuthorityAction::ForceAnchor(request)).await? {
             AuthorityAnswer::ForcedAnchor {
                 revision,
                 old_anchor,
-            } => (revision, old_anchor),
+                incomplete,
+            } => (
+                ForceAnchorOutcome {
+                    revision,
+                    incomplete,
+                },
+                old_anchor,
+            ),
             _ => return Err("sync answered forcing the anchor with something else".to_string()),
         };
     if quarantine_anchor && old_anchor != AppHost::of(&app).device_id()? {
@@ -379,7 +410,19 @@ pub async fn sync_force_anchor<R: Runtime>(
         runtime.request_authority_detached(AuthorityAction::ProposeRemoval(old_anchor))?;
     }
     runtime.sync_now();
-    Ok(revision)
+    Ok(outcome)
+}
+
+/// What a forced anchor handover sealed.
+#[cfg(desktop)]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForceAnchorOutcome {
+    /// The authorization revision of the last entry sealed.
+    revision: u64,
+    /// How many entries after the handover still wait or were refused; the waiting ones finish
+    /// in the service loop.
+    incomplete: usize,
 }
 
 /// The anchor handover contests of the active vault's sync space, with the actions this
@@ -544,7 +587,7 @@ async fn contest_step(runtime: &SyncRuntime, action: AuthorityAction) -> Result<
 /// The forced handover the frontend asks for, with a bounded device review.
 #[cfg(desktop)]
 fn force_request(
-    kit: Option<String>,
+    kit: Option<KitCode>,
     point: Option<EntryTarget>,
     remove_devices: Vec<String>,
 ) -> Result<ForceRequest, String> {

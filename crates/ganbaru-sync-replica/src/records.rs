@@ -273,12 +273,14 @@ impl Backstop {
 /// A growth alert of Settings > Sync, see the R7.3 A8 rule. Display only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GrowthAlert {
-    /// Envelopes one device's writers carry exceed [`RecordLimits::alert_device_bytes`].
+    /// Envelopes of the writers one device's enrolled key certified exceed
+    /// [`RecordLimits::alert_device_bytes`].
     Device { device_id: String, bytes: u64 },
     /// Stored envelopes exceed [`RecordLimits::alert_total_bytes`].
     Total { bytes: u64 },
-    /// A writer holds two envelopes at one sequence or two certificates. `device_id` is the
-    /// device a stored certificate of the writer names, if any.
+    /// A writer holds two verified envelopes at one sequence, such as two certificates.
+    /// `device_id` is the device a verified certificate of the writer names with that device's
+    /// enrolled key, if any.
     ForkedWriter {
         writer: WriterId,
         device_id: Option<String>,
@@ -651,7 +653,7 @@ impl RecordExchange {
     ) -> Result<Option<BackstopState>, SyncError> {
         let free = self.free_space();
         if self.lock().backstop.is_none() {
-            let storage = engine.authorization_storage(conn, ctx).await?;
+            let storage = engine.authorization_totals(conn, ctx).await?;
             let full = storage.bytes > self.limits.backstop_bytes
                 || storage.envelopes > self.limits.backstop_envelopes
                 || free.is_some_and(|free| free < self.limits.backstop_free_bytes);

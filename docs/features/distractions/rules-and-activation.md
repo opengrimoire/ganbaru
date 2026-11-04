@@ -20,6 +20,8 @@ Environment overrides should reuse the same deterministic matcher while preservi
 
 Desktop and Android app enforcement is blocklist-only. Application allowlisting is represented by absence from the selected block targets plus mandatory protected-app rules.
 
+An Android rule's identity must be a valid package name; a synced rule that is not is refused at sync admission. Guardian publication skips any stored rule it cannot enforce, such as one with an invalid package or one past its rule count bound, and logs a diagnostic. Enabled rules rank before disabled ones for that bound, and adding an Android rule is refused once the vault holds as many rules as Guardian enforces. Usage limits publish the same way: invalid packages are skipped, each limit keeps its first packages up to the per-limit bound, enabled limits rank first for the limit count, and a limit that would push the published rules past their byte budget is left out while the smaller limits after it still publish. Settings refuses a usage limit edit that adds an Android package past the per-limit bound, or that gives a limit its first packages once as many limits with packages exist as Guardian publishes; a synced limit already over a bound stays editable and removable as long as it gains no package. A rule or usage limit name is published without leading or trailing whitespace or control characters and cut to Guardian's display bound; when nothing remains, Guardian shows the package name or the limit identity instead. One bad rule or oversized limit therefore never stops the valid rules from publishing.
+
 ## Browser rule kinds
 
 Implemented browser rules cover normalized hosts, built-in categories, custom category stacks, explicit blocked hosts, explicit allowed hosts, and exceptions. Planned richer rules may target paths, videos, playlists, channels, creators, or locally extracted task metadata.
@@ -52,7 +54,7 @@ Matching canonicalizes scheme and host, removes default ports, normalizes intern
 
 Entering a configured phase publishes fresh enforcement state. Moving to a disallowed phase clears or changes the applicable rule snapshot. Manual focus pause can suspend enforcement when configured. Resume requires fresh state rather than reviving an expired snapshot.
 
-Stopping a run, ending an event, switching vaults, clean app exit, and factory reset clear current phase enforcement. Abrupt process death is handled by short expiration so stale rules fail open.
+Stopping a run, ending an event, switching vaults, clean app exit, and factory reset clear current phase enforcement. Abrupt process death is handled by short expiration so stale rules fail open. A failed usage read or a usage limit configuration that fails to parse never suspends phase enforcement.
 
 ## Content-aware rules
 

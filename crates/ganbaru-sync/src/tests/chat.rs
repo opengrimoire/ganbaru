@@ -12,26 +12,32 @@
 
 use std::sync::{Arc, Mutex};
 
-use ganbaru_sync_contracts::derived_key;
+use ganbaru_sync_contracts::{ChangeAction, Content, Envelope, RowKey, derived_key};
 use sqlx::SqliteConnection;
 
+use super::authorization::{forge, view};
 use super::block_on;
 use super::fixture::{
     FixtureHook, LISTS_TABLE, OVERRIDES_TABLE, OverrideHook, TEST_MANIFEST, test_adapters,
 };
-use super::replica::{Replica, converge, quoted};
+use super::holds::sealed_create;
+use super::refusal::take;
+use super::replica::{Replica, converge, device_id, forge_change, quoted};
 use super::sim::Rng;
+use crate::domains::chat::LOCAL_OWNER_PARTICIPANT_KEY;
 use crate::error::failpoints;
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::chat::{
     CHANNEL_MEMBERSHIP_KEY_PREFIX, CHANNELS_TABLE, CONVERSATION_CURSOR_KEY_PREFIX,
     CONVERSATIONS_TABLE, FOLDER_GRANT_KEY_PREFIX, MEMBERSHIP_KEY_PREFIX, MESSAGES_TABLE,
-    PARTICIPANTS_TABLE, REPLY_CURSOR_KEY_PREFIX, REPLY_CURSORS_TABLE, REPLY_THREAD_KEY_PREFIX,
-    REPLY_THREADS_TABLE, REVISIONS_TABLE,
+    PARTICIPANTS_TABLE, PROFILES_TABLE, REPLY_CURSOR_KEY_PREFIX, REPLY_CURSORS_TABLE,
+    REPLY_THREAD_KEY_PREFIX, REPLY_THREADS_TABLE, REVISIONS_TABLE,
 };
 use crate::manifest::vault::projects::PROJECTS_TABLE;
-use crate::{Engine, MAX_UNSEEN_PRESENTATIONS, SyncError, SyncResult};
+use crate::provenance::row_creating_devices;
+use crate::validate;
+use crate::{Engine, HoldReason, MAX_UNSEEN_PRESENTATIONS, StoreOutcome, SyncError, SyncResult};
 
 const SALT: u64 = 73;
 const TEAMMATE: &str = "participant:reviewer";
@@ -72,6 +78,137 @@ async fn replicas(count: usize) -> Vec<Replica> {
     }
     converge(&mut replicas).await;
     replicas
+}
+
+/// A write of a built-in profile that the protecting trigger refuses keeps the seeded row and its
+/// revision, and apply goes on.
+#[test]
+fn built_in_profile_write_does_not_stop_apply() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[1]
+            .exec("DROP TRIGGER chat_access_profile_builtin_protected")
+            .await;
+        replicas[1]
+            .exec(
+                "UPDATE chat_access_profiles SET display_name = 'Renamed'
+                 WHERE id = 'access-profile:read-only'",
+            )
+            .await;
+        assert!(replicas[1].seal().await.unwrap().sealed_ops > 0);
+
+        take(&mut replicas, 0, 1).await.unwrap();
+
+        let receiver = &mut replicas[0];
+        assert_eq!(
+            receiver
+                .scalar_text(
+                    "SELECT display_name FROM chat_access_profiles
+                     WHERE id = 'access-profile:read-only'"
+                )
+                .await
+                .as_deref(),
+            Some("Read only")
+        );
+        assert_eq!(
+            receiver
+                .scalar_text(
+                    "SELECT kind FROM sync_refused_rows
+                     WHERE row_key = 'access-profile:read-only'"
+                )
+                .await
+                .as_deref(),
+            Some("kept")
+        );
+        assert_eq!(
+            receiver
+                .count(
+                    "SELECT count(*) FROM chat_access_profile_revisions
+                     WHERE id = 'access-profile-revision:read-only:1'"
+                )
+                .await,
+            1
+        );
+    });
+}
+
+/// Each device seeds the same built-in profiles, every create passes admission, and none is held
+/// on a replica that received them.
+#[test]
+fn every_seed_capture_stays_valid() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let seeded: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, builtin_key FROM chat_access_profiles WHERE builtin_key IS NOT NULL",
+        )
+        .fetch_all(&mut replicas[0].conn)
+        .await
+        .unwrap();
+        assert_eq!(seeded.len(), 5);
+        for replica in &mut replicas {
+            for (id, _) in &seeded {
+                let create = sealed_create(replica, PROFILES_TABLE, id).await;
+                assert_eq!(validate::change(&replica.engine, &create), Ok(()), "{id}");
+            }
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM sync_ops WHERE state <> 'applied'")
+                    .await,
+                0
+            );
+        }
+    });
+}
+
+/// A claim of a built-in key under a lower row key stays out of merge state, so the seeded row
+/// keeps its place and an honest row that references it materializes.
+#[test]
+fn builtin_key_claim_leaves_referrers_of_the_seeded_row_visible() {
+    const SEEDED: &str = "access-profile:read-only";
+    const CLAIM: &str = "access-profile:aaa";
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        let mut claim = sealed_create(&mut replicas[2], PROFILES_TABLE, SEEDED).await;
+        claim.row = RowKey::new(CLAIM).unwrap();
+        let forged = forge_change(&mut replicas[2], claim).await;
+
+        let conversation = conversation_sql().replace(&quoted(PROFILE), &quoted(SEEDED));
+        replicas[0]
+            .exec(&format!("{}{conversation}", identity_sql()))
+            .await;
+        replicas[0].seal().await.unwrap();
+
+        let outcomes = replicas[1].receive(&[forged]).await;
+        replicas[1].apply_all().await.unwrap();
+        take(&mut replicas, 1, 0).await.unwrap();
+
+        let receiver = &mut replicas[1];
+        assert_eq!(
+            receiver
+                .count(&format!(
+                    "SELECT count(*) FROM chat_teammate_channel_memberships
+                     WHERE access_profile_id = {}",
+                    quoted(SEEDED)
+                ))
+                .await,
+            1
+        );
+        assert_eq!(
+            receiver
+                .count(&format!(
+                    "SELECT count(*) FROM chat_access_profiles WHERE id = {}",
+                    quoted(CLAIM)
+                ))
+                .await,
+            0
+        );
+        assert_eq!(
+            outcomes,
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }]
+        );
+    });
 }
 
 /// A timestamp `minute` minutes after [`CREATED`], at `second` seconds.
@@ -494,7 +631,7 @@ const OWNER: &str = "participant:local-owner";
 const PROJECT: &str = "project-routine-learning";
 const FOLDER: &str = "working-folder-routine-learning";
 const CONVERSATION: &str = "conversation:design";
-const CHANNEL: &str = "channel:design";
+pub(super) const CHANNEL: &str = "channel:design";
 
 /// Seeds of the revoke against widen scenario.
 const ACCESS_SEEDS: u64 = 8;
@@ -529,6 +666,16 @@ fn optional(text: Option<&str>) -> String {
 /// [`TEAMMATE`]'s AI channel access through [`PROFILE`], and its default `edit` grant on
 /// [`FOLDER`]. It needs the rows of [`identity_sql`].
 fn conversation_sql() -> String {
+    conversation_on(PROJECT, FOLDER)
+}
+
+/// [`identity_sql`] and a conversation of `project` that grants `folder`.
+pub(super) fn folder_grant_sql(project: &str, folder: &str) -> String {
+    format!("{}{}", identity_sql(), conversation_on(project, folder))
+}
+
+/// [`conversation_sql`] on `project`, granting `folder`.
+fn conversation_on(project: &str, folder: &str) -> String {
     format!(
         "INSERT INTO chat_conversations
             (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
@@ -550,8 +697,8 @@ fn conversation_sql() -> String {
                  {created});",
         conversation = quoted(CONVERSATION),
         channel = quoted(CHANNEL),
-        project = quoted(PROJECT),
-        folder = quoted(FOLDER),
+        project = quoted(project),
+        folder = quoted(folder),
         owner = quoted(OWNER),
         teammate = quoted(TEAMMATE),
         profile = quoted(PROFILE),
@@ -564,7 +711,7 @@ fn conversation_sql() -> String {
         )),
         grant_key = quoted(&key(
             FOLDER_GRANT_KEY_PREFIX,
-            &[CONVERSATION, TEAMMATE, FOLDER]
+            &[CONVERSATION, TEAMMATE, folder]
         )),
     )
 }
@@ -1695,6 +1842,39 @@ async fn delete_project_against(replicas: &mut [Replica], offline: &str) {
     assert_converged(replicas).await;
 }
 
+/// An edit from another device leaves the message's creator alone and names the editing device
+/// as the creator of the new revision, on every replica.
+#[test]
+fn chat_an_edit_names_its_device_as_the_revision_creator() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0]
+            .exec(&message_sql(ROOT, None, "c001", "Root"))
+            .await;
+        converge(&mut replicas).await;
+        replicas[1]
+            .exec(&edit_sql(ROOT, "item:root:1", "Root edited", &at(1, 0)))
+            .await;
+        converge(&mut replicas).await;
+
+        for replica in &mut replicas {
+            let manifest = replica.engine.manifest();
+            assert_eq!(
+                row_creating_devices(&mut replica.conn, manifest, MESSAGES_TABLE, ROOT)
+                    .await
+                    .unwrap(),
+                vec![device_id(0)]
+            );
+            assert_eq!(
+                row_creating_devices(&mut replica.conn, manifest, REVISIONS_TABLE, "item:root:1")
+                    .await
+                    .unwrap(),
+                vec![device_id(1)]
+            );
+        }
+    });
+}
+
 /// A post written and then edited offline shows only its newest text in the offer, in both
 /// arrival orders.
 #[test]
@@ -1848,6 +2028,58 @@ fn chat_attachment_references_arrive_by_value_and_name_their_files() {
         assert_eq!(
             assets,
             vec![("chat/attachments", IMAGE_DIGEST, "image/png", 4096)]
+        );
+    });
+}
+
+#[test]
+fn local_user_participant_under_another_key_is_invalid() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let mut create = replicas[0]
+            .own_ops()
+            .await
+            .iter()
+            .filter_map(|bytes| {
+                match Envelope::decode(bytes)
+                    .unwrap()
+                    .operation()
+                    .unwrap()
+                    .content
+                {
+                    Content::Changes(changes) => Some(changes),
+                    _ => None,
+                }
+            })
+            .flatten()
+            .find(|change| {
+                change.table == PARTICIPANTS_TABLE
+                    && change.row.as_str() == LOCAL_OWNER_PARTICIPANT_KEY
+            })
+            .expect("the seeded owner is sealed");
+        assert_eq!(create.action, ChangeAction::Create);
+        assert_eq!(
+            crate::validate::change(&replicas[0].engine, &create),
+            Ok(())
+        );
+
+        // A writer whose build does not enforce the seeded identity.
+        create.row = RowKey::new("participant:other").unwrap();
+        let revision = view(&mut replicas[1]).await.revision;
+        let forged = forge(&mut replicas[1], Content::Changes(vec![create]), revision).await;
+
+        assert_eq!(
+            replicas[0].receive(&[forged]).await,
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }]
+        );
+        replicas[0].apply_all().await.unwrap();
+        assert_eq!(
+            replicas[0]
+                .count("SELECT count(*) FROM chat_participants WHERE id = 'participant:other'")
+                .await,
+            0
         );
     });
 }

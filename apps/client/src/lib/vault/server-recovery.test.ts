@@ -13,6 +13,7 @@ describe("serverRecoveryError", () => {
     ["the server rejected the recovery proposal with code 7", `${errors}.rejected`],
     ["this server runs no vault yet", `${errors}.noVault`],
     ["this vault is already open on this device", `${errors}.alreadyOpen`],
+    ["this recovery kit does not belong to the vault on this server", `${errors}.wrongKit`],
   ])("names what to fix for %s", (cause, expected) => {
     expect(serverRecoveryError(cause, t)).toBe(expected);
     expect(serverRecoveryError(new Error(cause), t)).toBe(expected);

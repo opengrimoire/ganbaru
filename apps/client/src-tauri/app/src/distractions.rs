@@ -42,6 +42,8 @@ pub(crate) mod rule_commands;
 pub(crate) mod rule_store;
 #[cfg(desktop)]
 pub(crate) mod runtime;
+#[cfg(all(desktop, target_os = "linux"))]
+mod session_anchors;
 #[cfg(desktop)]
 pub(crate) mod spool;
 #[cfg(desktop)]
@@ -49,6 +51,37 @@ pub(crate) mod state_files;
 pub(crate) mod usage_totals;
 
 pub(crate) use ganbaru_distractions::limits;
+
+/// The limit parse failure last logged, so reads repeating on a timer report it once.
+#[cfg(any(desktop, target_os = "android"))]
+static LIMIT_PARSE_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The persisted usage limits for an enforcement loop, or limits off when they do not parse, so
+/// a limit failure costs budgets alone and phase enforcement keeps running.
+#[cfg(any(desktop, target_os = "android"))]
+pub(crate) fn limits_or_phase_only(root: &serde_json::Value) -> limits::LimitsConfig {
+    let parsed = limits::parse_config(root);
+    let mut logged = LIMIT_PARSE_FAILURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match parsed {
+        Ok(config) => {
+            *logged = None;
+            config
+        }
+        Err(error) => {
+            if logged.as_deref() != Some(error.as_str()) {
+                eprintln!("Usage limits are off until they parse: {error}");
+                *logged = Some(error);
+            }
+            limits::LimitsConfig {
+                enabled: false,
+                items: Vec::new(),
+            }
+        }
+    }
+}
+
 #[cfg(desktop)]
 use ganbaru_distractions::{contracts, rules, usage};
 
@@ -86,6 +119,10 @@ use rules::{
     is_protected_desktop_app_name, normalize_app_candidate_name, normalize_process_match_name,
     normalize_process_match_names, trusted_process_match_names,
     unavailable_foreground_desktop_app_status, validate_foreground_status_is_closeable,
+};
+#[cfg(all(desktop, target_os = "linux"))]
+use session_anchors::{
+    SessionAnchors, current_session_anchors, drop_anchored_matches, refuse_anchored_close,
 };
 #[cfg(desktop)]
 pub use state_files::clear_distractions_enforcement_state;

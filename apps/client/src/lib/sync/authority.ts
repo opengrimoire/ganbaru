@@ -99,7 +99,8 @@ export function syncOwnDevice(authority: SyncAuthorityView): SyncAuthorityDevice
  * that is not the anchor. Removal and promotion are admin proposals, so they need an admin
  * desktop and a space that is not frozen. The coordinator removes linked devices by unlinking
  * them, so it proposes removal only for a server, and it is the only installation that
- * promotes, since it holds the admin keys sent at pairing.
+ * promotes, since it holds the admin keys sent at pairing. It never promotes the anchor, whose
+ * role only the anchor, the printed kit, or a recovery key can change.
  */
 export function syncDeviceActions(context: SyncAuthorityContext, device: SyncAuthorityDevice): SyncDeviceActions {
   const other = !device.device.ownDevice;
@@ -119,6 +120,7 @@ export function syncDeviceActions(context: SyncAuthorityContext, device: SyncAut
       && context.statusRole === "hub"
       && other
       && live
+      && !device.anchor
       && !device.quarantined
       && device.kind === "desktop"
       && device.role === "member",
@@ -202,6 +204,20 @@ export function canManageSyncRecoveryKit(context: SyncAuthorityContext): boolean
 export function canInstallSyncRecoveryKey(context: SyncAuthorityContext): boolean {
   const own = syncOwnDevice(context.authority);
   return adminHere(context) && own !== null && own.anchor && own.removedRevision === null;
+}
+
+/**
+ * Whether this desktop may replace the printed recovery kit with its code. The old kit signs
+ * the replacement, so any live enrolled desktop offers it, admin or not, while the space is not
+ * frozen.
+ */
+export function canRotateSyncRecoveryKit(context: SyncAuthorityContext): boolean {
+  const own = syncOwnDevice(context.authority);
+  return !context.mobileLayout
+    && !context.authority.frozen
+    && own !== null
+    && own.kind === "desktop"
+    && own.removedRevision === null;
 }
 
 /**

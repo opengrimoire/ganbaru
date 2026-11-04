@@ -14,7 +14,7 @@ The ganbaru-db query-plan test protects these reads:
 | Notes | Visible child blocks under one parent | idx_notes_blocks_parent_block |
 | Distraction blocker | Usage samples over a local-date window in source order | idx_distractions_usage_samples_date_source |
 | Pomodoro | Open run lookup | idx_pomodoro_runs_open |
-| Pomodoro | Global active segment lookup | idx_pomodoro_segments_single_active |
+| Pomodoro | Active segment lookup | idx_pomodoro_segments_active |
 | Quick notes | Active notes in pin and manual order | idx_quick_notes_active |
 | Quick notes | Active notes for one tag in display order | idx_quick_notes_tag_active |
 

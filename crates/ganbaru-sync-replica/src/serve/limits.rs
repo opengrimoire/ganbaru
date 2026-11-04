@@ -1,12 +1,17 @@
-//! Connection admission bounds for the coordinator listener.
+//! Connection admission bounds for the coordinator, member, and server listeners.
 //!
 //! A connection is pending from accept until its TLS handshake shows a linked, unrevoked device
 //! certificate. Pending connections (handshakes, enrollment, contact requests, revoked devices)
 //! have a small global budget and a smaller per-source budget, so one LAN host cannot exhaust
 //! file descriptors or crowd out linked devices. Authenticated connections draw from their own
-//! larger budget, again bounded per source. Contact messages, which reach the vault database without authentication, also
-//! spend a per-source token bucket. Every bound sits far above what a household of linked devices
-//! uses.
+//! larger budget, again bounded per source. Contact messages, which reach the vault database
+//! without authentication, also spend a per-source token bucket. Every bound sits far above what
+//! a household of linked devices uses.
+//!
+//! An Internet-facing listener can also keep part of the pending budget for sources that
+//! authenticated recently, so a flood from unknown addresses does not lock out enrolled devices,
+//! and can move a connection that proved a setup secret to a setup budget of its own, so a long
+//! upload does not hold a pending slot.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -34,6 +39,9 @@ pub const CONTACT_MESSAGE_REFILL: Duration = Duration::from_secs(1);
 /// first, so the map only fills when that many sources are sending at the same time.
 #[cfg(desktop)]
 const MAX_CONTACT_SOURCES: usize = 1_024;
+/// Sources remembered as having authenticated, when a listener keeps a known source reserve. The
+/// least recently authenticated source is forgotten first.
+const MAX_KNOWN_SOURCES: usize = 1_024;
 
 /// Groups addresses one host can cheaply rotate through: IPv6 hosts pick any address in their
 /// /64, and IPv4-mapped IPv6 addresses count as the IPv4 host.
@@ -104,8 +112,62 @@ struct Counts {
     pending_by_source: HashMap<SourceKey, usize>,
     authenticated: usize,
     authenticated_by_source: HashMap<SourceKey, usize>,
+    setup: usize,
+    setup_by_source: HashMap<SourceKey, usize>,
+    /// Sources that authenticated, with the tick of their latest authentication.
+    known_sources: HashMap<SourceKey, u64>,
+    known_tick: u64,
     #[cfg(desktop)]
     contact_budgets: HashMap<SourceKey, ContactBudget>,
+}
+
+impl Counts {
+    /// Remembers that `source` authenticated, forgetting the least recent source when full.
+    fn remember(&mut self, source: SourceKey) {
+        self.known_tick += 1;
+        if !self.known_sources.contains_key(&source)
+            && self.known_sources.len() >= MAX_KNOWN_SOURCES
+        {
+            let oldest = self
+                .known_sources
+                .iter()
+                .min_by_key(|(_, tick)| **tick)
+                .map(|(key, _)| *key);
+            if let Some(oldest) = oldest {
+                self.known_sources.remove(&oldest);
+            }
+        }
+        self.known_sources.insert(source, self.known_tick);
+    }
+}
+
+/// Takes one slot of a budget counted by `total` and `by_source`, or returns false when the
+/// global or per-source bound is reached.
+fn take_slot(
+    total: &mut usize,
+    by_source: &mut HashMap<SourceKey, usize>,
+    source: SourceKey,
+    max_total: usize,
+    max_per_source: usize,
+) -> bool {
+    let from_source = by_source.get(&source).copied().unwrap_or(0);
+    if *total >= max_total || from_source >= max_per_source {
+        return false;
+    }
+    *total += 1;
+    by_source.insert(source, from_source + 1);
+    true
+}
+
+/// Releases one slot that [`take_slot`] took.
+fn release_slot(total: &mut usize, by_source: &mut HashMap<SourceKey, usize>, source: SourceKey) {
+    *total = total.saturating_sub(1);
+    if let Some(from_source) = by_source.get_mut(&source) {
+        *from_source = from_source.saturating_sub(1);
+        if *from_source == 0 {
+            by_source.remove(&source);
+        }
+    }
 }
 
 /// Shared admission state for one listener.
@@ -116,6 +178,9 @@ pub struct ConnectionLimits {
     max_pending_per_source: usize,
     max_authenticated: usize,
     max_authenticated_per_source: usize,
+    known_source_reserve: usize,
+    max_setup: usize,
+    max_setup_per_source: usize,
 }
 
 impl Default for ConnectionLimits {
@@ -142,7 +207,26 @@ impl ConnectionLimits {
             max_pending_per_source,
             max_authenticated,
             max_authenticated_per_source,
+            known_source_reserve: 0,
+            max_setup: 0,
+            max_setup_per_source: 0,
         }
+    }
+
+    /// Keeps `reserve` pending slots for sources that authenticated or proved a setup secret
+    /// recently: a source not among them is admitted only while fewer than
+    /// `max_pending - reserve` connections are pending. The default reserve is 0.
+    pub fn with_known_source_reserve(mut self, reserve: usize) -> Self {
+        self.known_source_reserve = reserve;
+        self
+    }
+
+    /// Gives connections that proved a setup secret a budget of their own, `max_total` in all
+    /// and `max_per_source` per source, see [`PendingPermit::setup`]. The default is none.
+    pub fn with_setup_slots(mut self, max_total: usize, max_per_source: usize) -> Self {
+        self.max_setup = max_total;
+        self.max_setup_per_source = max_per_source;
+        self
     }
 
     /// Admits a newly accepted connection as pending, or returns `None` when the global or
@@ -150,12 +234,22 @@ impl ConnectionLimits {
     pub fn admit(&self, source: IpAddr) -> Option<PendingPermit> {
         let source = SourceKey::from_address(source);
         let mut counts = self.lock();
-        let from_source = counts.pending_by_source.get(&source).copied().unwrap_or(0);
-        if counts.pending >= self.max_pending || from_source >= self.max_pending_per_source {
+        let max_pending =
+            if self.known_source_reserve == 0 || counts.known_sources.contains_key(&source) {
+                self.max_pending
+            } else {
+                self.max_pending.saturating_sub(self.known_source_reserve)
+            };
+        let counts = &mut *counts;
+        if !take_slot(
+            &mut counts.pending,
+            &mut counts.pending_by_source,
+            source,
+            max_pending,
+            self.max_pending_per_source,
+        ) {
             return None;
         }
-        counts.pending += 1;
-        counts.pending_by_source.insert(source, from_source + 1);
         Some(PendingPermit {
             limits: self.clone(),
             source,
@@ -207,31 +301,61 @@ pub struct PendingPermit {
 impl PendingPermit {
     /// Moves the connection to the authenticated budget and releases its pending slot. Returns
     /// `None` when the global or per-source authenticated budget is full; the pending slot is
-    /// released either way.
+    /// released either way. The source is remembered as known when the listener keeps a known
+    /// source reserve.
     pub fn authenticate(self) -> Option<AuthenticatedPermit> {
         let limits = self.limits.clone();
         let source = self.source;
-        let mut counts = limits.lock();
-        let from_source = counts
-            .authenticated_by_source
-            .get(&source)
-            .copied()
-            .unwrap_or(0);
-        let admitted = counts.authenticated < limits.max_authenticated
-            && from_source < limits.max_authenticated_per_source;
-        if admitted {
-            counts.authenticated += 1;
-            counts
-                .authenticated_by_source
-                .insert(source, from_source + 1);
-        }
-        // Release the lock before `self` drops, because releasing the pending slot locks again.
-        drop(counts);
         // Build the permit only when admitted, since dropping one releases an authenticated slot.
-        if admitted {
-            Some(AuthenticatedPermit { limits, source })
-        } else {
-            None
+        limits
+            .promote(source, Promotion::Authenticated)
+            .then(|| AuthenticatedPermit { limits, source })
+    }
+
+    /// Moves a connection that proved a setup secret to the setup budget and releases its
+    /// pending slot, so a long upload does not hold pre-authentication budget. Returns `None`
+    /// when the setup budget is full or the listener has none; the pending slot is released
+    /// either way. The source is remembered as known, like an authenticated one.
+    pub fn setup(self) -> Option<SetupPermit> {
+        let limits = self.limits.clone();
+        let source = self.source;
+        limits
+            .promote(source, Promotion::Setup)
+            .then(|| SetupPermit { limits, source })
+    }
+}
+
+/// The budget a pending connection moves to.
+#[derive(Clone, Copy)]
+enum Promotion {
+    Authenticated,
+    Setup,
+}
+
+impl ConnectionLimits {
+    /// Takes a slot of the `promotion` budget for `source` and remembers the source as known.
+    /// The lock is released on return, before the caller's pending permit drops and locks again.
+    fn promote(&self, source: SourceKey, promotion: Promotion) -> bool {
+        let mut guard = self.lock();
+        let counts = &mut *guard;
+        if self.known_source_reserve > 0 {
+            counts.remember(source);
+        }
+        match promotion {
+            Promotion::Authenticated => take_slot(
+                &mut counts.authenticated,
+                &mut counts.authenticated_by_source,
+                source,
+                self.max_authenticated,
+                self.max_authenticated_per_source,
+            ),
+            Promotion::Setup => take_slot(
+                &mut counts.setup,
+                &mut counts.setup_by_source,
+                source,
+                self.max_setup,
+                self.max_setup_per_source,
+            ),
         }
     }
 }
@@ -239,13 +363,12 @@ impl PendingPermit {
 impl Drop for PendingPermit {
     fn drop(&mut self) {
         let mut counts = self.limits.lock();
-        counts.pending = counts.pending.saturating_sub(1);
-        if let Some(from_source) = counts.pending_by_source.get_mut(&self.source) {
-            *from_source = from_source.saturating_sub(1);
-            if *from_source == 0 {
-                counts.pending_by_source.remove(&self.source);
-            }
-        }
+        let counts = &mut *counts;
+        release_slot(
+            &mut counts.pending,
+            &mut counts.pending_by_source,
+            self.source,
+        );
     }
 }
 
@@ -258,13 +381,26 @@ pub struct AuthenticatedPermit {
 impl Drop for AuthenticatedPermit {
     fn drop(&mut self) {
         let mut counts = self.limits.lock();
-        counts.authenticated = counts.authenticated.saturating_sub(1);
-        if let Some(from_source) = counts.authenticated_by_source.get_mut(&self.source) {
-            *from_source = from_source.saturating_sub(1);
-            if *from_source == 0 {
-                counts.authenticated_by_source.remove(&self.source);
-            }
-        }
+        let counts = &mut *counts;
+        release_slot(
+            &mut counts.authenticated,
+            &mut counts.authenticated_by_source,
+            self.source,
+        );
+    }
+}
+
+/// Holds a setup slot until dropped.
+pub struct SetupPermit {
+    limits: ConnectionLimits,
+    source: SourceKey,
+}
+
+impl Drop for SetupPermit {
+    fn drop(&mut self) {
+        let mut counts = self.limits.lock();
+        let counts = &mut *counts;
+        release_slot(&mut counts.setup, &mut counts.setup_by_source, self.source);
     }
 }
 
@@ -391,6 +527,102 @@ mod tests {
                 .admit(v4(10))
                 .and_then(PendingPermit::authenticate)
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn known_source_keeps_a_slot_during_a_flood() {
+        let limits = ConnectionLimits::new(4, 4, 8, 8).with_known_source_reserve(2);
+        let known = v4(10);
+        drop(
+            limits
+                .admit(known)
+                .and_then(PendingPermit::authenticate)
+                .expect("the known source authenticates once"),
+        );
+        let flood: Vec<PendingPermit> =
+            (20..40).filter_map(|last| limits.admit(v4(last))).collect();
+        assert_eq!(
+            flood.len(),
+            2,
+            "unknown sources fill only the unreserved part"
+        );
+        let first = limits
+            .admit(known)
+            .expect("a known source is admitted during a flood");
+        let _second = limits.admit(known).expect("the reserve holds two slots");
+        assert!(
+            limits.admit(known).is_none(),
+            "the global bound still holds"
+        );
+        drop(first);
+        assert!(
+            limits.admit(v4(41)).is_none(),
+            "a freed reserved slot stays reserved"
+        );
+        drop(flood);
+        assert!(
+            limits.admit(v4(41)).is_some(),
+            "the flood's slots are released"
+        );
+    }
+
+    #[test]
+    fn a_proven_setup_frees_its_pending_slot_and_has_its_own_bound() {
+        let lan = ConnectionLimits::new(4, 4, 4, 4);
+        assert!(
+            lan.admit(v4(10)).and_then(PendingPermit::setup).is_none(),
+            "a listener without setup slots admits no setup"
+        );
+        let limits = ConnectionLimits::new(1, 1, 4, 4).with_setup_slots(2, 1);
+        let setup = limits
+            .admit(v4(10))
+            .and_then(PendingPermit::setup)
+            .expect("setup slot");
+        let pending = limits.admit(v4(10)).expect("the pending slot was released");
+        assert!(pending.setup().is_none(), "per-source setup bound");
+        let other = limits
+            .admit(v4(11))
+            .and_then(PendingPermit::setup)
+            .expect("another source");
+        assert!(
+            limits
+                .admit(v4(12))
+                .and_then(PendingPermit::setup)
+                .is_none(),
+            "global setup bound"
+        );
+        drop((setup, other));
+        let counts = limits.lock();
+        assert_eq!((counts.pending, counts.setup), (0, 0));
+        assert!(counts.pending_by_source.is_empty() && counts.setup_by_source.is_empty());
+    }
+
+    #[test]
+    fn known_sources_are_bounded_and_forget_the_oldest() {
+        let limits = ConnectionLimits::new(4, 4, 4, 4).with_known_source_reserve(1);
+        let source = |index: usize| {
+            let [.., high, low] = u32::try_from(index).expect("index").to_be_bytes();
+            IpAddr::V4(Ipv4Addr::new(10, 2, high, low))
+        };
+        for index in 0..=MAX_KNOWN_SOURCES {
+            drop(
+                limits
+                    .admit(source(index))
+                    .and_then(PendingPermit::authenticate),
+            );
+        }
+        let counts = limits.lock();
+        assert_eq!(counts.known_sources.len(), MAX_KNOWN_SOURCES);
+        assert!(
+            !counts
+                .known_sources
+                .contains_key(&SourceKey::from_address(source(0)))
+        );
+        assert!(
+            counts
+                .known_sources
+                .contains_key(&SourceKey::from_address(source(MAX_KNOWN_SOURCES)))
         );
     }
 

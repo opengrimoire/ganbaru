@@ -302,7 +302,7 @@ pub(crate) const REGISTRY: &[PreferenceSpec] = &[
     portable("theme.quickToggleLightId", LABEL),
     portable("theme.quickToggleDarkId", LABEL),
     device("theme.activeId", LABEL),
-    portable("updates.autoNotifications", BOOL),
+    device("updates.autoNotifications", BOOL),
     device("updates.lastAutoCheckAt", ValueRule::Text { max_bytes: 64 }),
     portable("projects.starredProjectIds", IDS),
     portable("projects.starredViewIds", IDS),
@@ -344,7 +344,7 @@ pub(crate) const REGISTRY: &[PreferenceSpec] = &[
         "chat.behavior.idleSessionTimeoutSeconds",
         CHAT_IDLE_SESSION_TIMEOUT_SECONDS,
     ),
-    portable("chat.behavior.confirmMultilineTerminalPaste", BOOL),
+    device("chat.behavior.confirmMultilineTerminalPaste", BOOL),
     portable("music.review.autoplay", BOOL),
     portable("music.sources.localName", LABEL),
     portable("music.sources.youtubeName", LABEL),
@@ -484,6 +484,8 @@ mod tests {
             "projects.iconPicker.recent",
             "notes.selectedPageId",
             "chatSidebar.showArchivedInPickers",
+            "updates.autoNotifications",
+            "chat.behavior.confirmMultilineTerminalPaste",
         ];
         for key in portable {
             assert!(portable_row(key).is_some(), "{key}");
@@ -491,8 +493,8 @@ mod tests {
         for key in device {
             assert!(device_spec(key).is_some(), "{key}");
         }
-        assert_eq!(specs(Scope::Portable).count(), 56);
-        assert_eq!(specs(Scope::Device).count(), 21);
+        assert_eq!(specs(Scope::Portable).count(), 54);
+        assert_eq!(specs(Scope::Device).count(), 23);
     }
 
     #[test]
@@ -611,9 +613,7 @@ mod tests {
 
     fn chat_behavior_spec(field: &str) -> &'static PreferenceSpec {
         let key = format!("chat.behavior.{field}");
-        let (spec, child) = portable_row(&key).expect(field);
-        assert_eq!(child, None);
-        spec
+        REGISTRY.iter().find(|spec| spec.path == key).expect(field)
     }
 
     #[test]
@@ -624,11 +624,16 @@ mod tests {
         for (field, value) in fields {
             assert!(chat_behavior_spec(field).rule.accepts(value), "{field}");
         }
-        let registered = specs(Scope::Portable)
+        let registered = REGISTRY
+            .iter()
             .filter_map(|spec| spec.path.strip_prefix("chat.behavior."))
             .collect::<Vec<_>>();
         assert_eq!(registered.len(), fields.len());
         assert!(registered.iter().all(|field| fields.contains_key(*field)));
+        let device_fields = specs(Scope::Device)
+            .filter_map(|spec| spec.path.strip_prefix("chat.behavior."))
+            .collect::<Vec<_>>();
+        assert_eq!(device_fields, ["confirmMultilineTerminalPaste"]);
 
         let send_key = chat_behavior_spec("sendKey");
         for key in [ChatSendKey::Enter, ChatSendKey::ModEnter] {

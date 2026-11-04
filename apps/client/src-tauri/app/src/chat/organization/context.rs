@@ -11,6 +11,7 @@ use super::{
     MAX_CHANNEL_CONTEXT_MESSAGES, MAX_THREAD_CONTEXT_REPLIES, i64_value, identifier_error,
     persistence_error, u64_value,
 };
+use ganbaru_chat::coordination::acceptance::AcceptanceGrant;
 use ganbaru_chat::project_defaults::{
     current_folder_environment_id, ensure_working_folder_chat_defaults,
 };
@@ -473,6 +474,62 @@ impl AssignmentAccess {
     }
 }
 
+/// The access a teammate would hold if an assignment ran now.
+pub(super) struct GrantedAccess {
+    pub(super) policy_revision_id: ChatTeammatePolicyRevisionId,
+    pub(super) grants: Vec<AcceptanceGrant>,
+    pub(super) scratch_runtime_approval: &'static str,
+}
+
+/// Reads the access `teammate_id` would hold running the message `triggering_message_item_id`
+/// in `conversation_id`, resolved as a frozen context package resolves it.
+pub(super) async fn read_granted_access(
+    transaction: &mut Transaction<'_, Sqlite>,
+    conversation_id: &ChatConversationId,
+    triggering_message_item_id: &ChatConversationItemId,
+    teammate_id: &ChatParticipantId,
+) -> ChatResult<GrantedAccess> {
+    let access = read_assignment_access(
+        transaction,
+        conversation_id,
+        triggering_message_item_id,
+        teammate_id,
+    )
+    .await?;
+    let folder_grants = read_folder_grants(
+        transaction,
+        conversation_id,
+        teammate_id,
+        &access.maximum_folder_capability,
+    )
+    .await?;
+    let channel_approval = access.channel_runtime_approval_policy.as_ref();
+    let grants = folder_grants
+        .into_iter()
+        .map(|grant| {
+            let runtime_approval = access.effective_runtime_approval(
+                grant.runtime_approval_policy.as_ref().or(channel_approval),
+            )?;
+            Ok(AcceptanceGrant {
+                working_folder_id: grant.working_folder_id,
+                capability: grant.capability,
+                runtime_approval: runtime_approval.to_owned(),
+            })
+        })
+        .collect::<ChatResult<Vec<_>>>()?;
+    let scratch_runtime_approval = access.effective_runtime_approval(
+        access
+            .scratch_runtime_approval_policy
+            .as_ref()
+            .or(channel_approval),
+    )?;
+    Ok(GrantedAccess {
+        policy_revision_id: access.policy_revision_id,
+        grants,
+        scratch_runtime_approval,
+    })
+}
+
 #[derive(Clone)]
 struct FolderGrant {
     working_folder_id: String,
@@ -664,6 +721,11 @@ async fn read_assignment_access(
     })
 }
 
+/// Reads the teammate's active grants that carry authority in the conversation.
+///
+/// Sync applies a grant row without the project triggers, since refusing one would stop the
+/// apply, so the match is enforced on read: a grant naming another project, or a folder of
+/// another project, reads as revoked.
 async fn read_folder_grants(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
@@ -671,12 +733,17 @@ async fn read_folder_grants(
     maximum_capability: &str,
 ) -> ChatResult<Vec<FolderGrant>> {
     let rows = sqlx::query(
-        "SELECT working_folder_id, capability, capability_inherits_profile,
-                is_default, runtime_approval_policy
-         FROM chat_teammate_working_folder_grants
-         WHERE conversation_id = ? AND teammate_id = ?
-           AND revoked_at IS NULL
-         ORDER BY working_folder_id",
+        "SELECT grant_row.working_folder_id, grant_row.capability,
+                grant_row.capability_inherits_profile, grant_row.is_default,
+                grant_row.runtime_approval_policy
+         FROM chat_teammate_working_folder_grants grant_row
+         JOIN chat_conversations conversation ON conversation.id = grant_row.conversation_id
+         JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
+         WHERE grant_row.conversation_id = ? AND grant_row.teammate_id = ?
+           AND grant_row.revoked_at IS NULL
+           AND grant_row.project_id = conversation.project_id
+           AND folder.project_id = conversation.project_id
+         ORDER BY grant_row.working_folder_id",
     )
     .bind(conversation_id.as_str())
     .bind(teammate_id.as_str())
@@ -852,6 +919,7 @@ async fn resolve_execution_target(
                     destination_conversation_id.as_str(),
                     teammate_id.as_str(),
                     requester_participant_id.as_str(),
+                    None,
                 )
                 .await?
                 {

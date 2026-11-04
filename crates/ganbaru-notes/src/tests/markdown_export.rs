@@ -1,5 +1,6 @@
 use super::helpers::*;
 
+const UNSAFE_MEDIA_CODE: &str = "markdown_export_unsafe_media_skipped";
 const BLOCK_G: &str = "12121212-1212-4212-8212-121212121212";
 const BLOCK_H: &str = "13131313-1313-4313-8313-131313131313";
 const BLOCK_I: &str = "14141414-1414-4414-8414-141414141414";
@@ -315,6 +316,184 @@ fn markdown_export_links_only_safe_web_references_and_escapes_labels() {
                     diagnostic["code"] == "markdown_export_external_reference_not_linked"
                         && diagnostic["block_id"] == BLOCK_C
                 })
+        );
+    });
+}
+
+/// Exports the page without its title and returns the Markdown with the export diagnostics.
+async fn export_markdown(pool: &SqlitePool) -> (String, Vec<serde_json::Value>) {
+    let export = serde_json::to_value(
+        transfers::markdown_export::export_page(
+            pool,
+            NoteMarkdownExportRequest {
+                page_id: PAGE_A.to_string(),
+                include_page_title: Some(false),
+                include_comments: None,
+                include_resolved_comments: None,
+            },
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    (
+        export["markdown"].as_str().unwrap().to_string(),
+        export["diagnostics"].as_array().unwrap().clone(),
+    )
+}
+
+fn has_line(markdown: &str, expected: &str) -> bool {
+    markdown.lines().any(|line| line == expected)
+}
+
+#[test]
+fn markdown_export_skips_javascript_media_url() {
+    crate::test_block_on(async {
+        let hostile = [
+            (BLOCK_B, "pdf", "javascript:alert(1)"),
+            (BLOCK_C, "file", " JavaScript:alert(2)"),
+            (BLOCK_D, "image", "data:text/html,alert(3)"),
+            (BLOCK_E, "video", "vbscript:alert(4)"),
+            (BLOCK_F, "audio", "file:///etc/passwd"),
+            (BLOCK_G, "file", "java\tscript:alert(5)"),
+        ];
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        let ids = hostile.iter().map(|row| row.0).collect::<Vec<_>>();
+        append_placeholder_blocks(&pool, &ids).await;
+        for (id, block_type, url) in hostile {
+            let label = format!("Label {id}");
+            store_replicated_media(&pool, id, block_type, media_payload(url, &label, None)).await;
+        }
+
+        let (markdown, diagnostics) = export_markdown(&pool).await;
+
+        for (id, block_type, _) in hostile {
+            assert!(
+                has_line(&markdown, &format!("[Label {id}]")),
+                "{block_type} keeps only its bracketed label:\n{markdown}"
+            );
+            assert!(
+                has_diagnostic(&diagnostics, UNSAFE_MEDIA_CODE, id),
+                "{block_type} reports the skipped URL"
+            );
+        }
+    });
+}
+
+#[test]
+fn markdown_export_skips_a_file_upload_reference() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        append_placeholder_blocks(&pool, &[BLOCK_B, BLOCK_C]).await;
+        for (id, caption) in [(BLOCK_B, vec![rich_text("Upload")]), (BLOCK_C, vec![])] {
+            store_replicated_media(
+                &pool,
+                id,
+                "file",
+                json!({
+                    "caption": caption,
+                    "type": "file_upload",
+                    "file_upload": { "id": "upload-1" }
+                }),
+            )
+            .await;
+        }
+
+        let (markdown, diagnostics) = export_markdown(&pool).await;
+
+        assert!(!markdown.contains("file-upload:"));
+        assert!(has_line(&markdown, "[Upload]"));
+        assert!(has_line(&markdown, "[file]"));
+        for id in [BLOCK_B, BLOCK_C] {
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .filter(|diagnostic| diagnostic["block_id"] == id)
+                    .map(|diagnostic| diagnostic["code"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                [UNSAFE_MEDIA_CODE]
+            );
+        }
+    });
+}
+
+#[test]
+fn markdown_export_reports_a_blank_media_url_as_missing() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        append_placeholder_blocks(&pool, &[BLOCK_B]).await;
+        store_replicated_media(&pool, BLOCK_B, "image", media_payload(" ", "Pending", None)).await;
+
+        let (markdown, diagnostics) = export_markdown(&pool).await;
+
+        assert!(has_line(&markdown, "[Pending]"));
+        assert!(has_diagnostic(
+            &diagnostics,
+            "markdown_export_media_missing_reference",
+            BLOCK_B
+        ));
+        assert!(!has_diagnostic(&diagnostics, UNSAFE_MEDIA_CODE, BLOCK_B));
+    });
+}
+
+#[test]
+fn markdown_export_keeps_asset_and_web_media_links() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        append_placeholder_blocks(&pool, &[BLOCK_B, BLOCK_C, BLOCK_D]).await;
+        store_replicated_media(
+            &pool,
+            BLOCK_B,
+            "image",
+            local_media_payload(
+                "notes/files/diagram.png",
+                "image/png",
+                4,
+                &"a".repeat(64),
+                "Diagram",
+                None,
+            ),
+        )
+        .await;
+        store_replicated_media(
+            &pool,
+            BLOCK_C,
+            "pdf",
+            media_payload(" https://example.com/guide.pdf", "Guide", None),
+        )
+        .await;
+        store_replicated_media(
+            &pool,
+            BLOCK_D,
+            "video",
+            media_payload("http://example.com/clip.mp4", "Clip", None),
+        )
+        .await;
+
+        let (markdown, diagnostics) = export_markdown(&pool).await;
+
+        assert!(has_line(
+            &markdown,
+            "![Diagram](ganbaru-asset:notes/files/diagram.png)"
+        ));
+        assert!(has_line(
+            &markdown,
+            "[Guide](https://example.com/guide.pdf)"
+        ));
+        assert!(has_line(&markdown, "[Clip](http://example.com/clip.mp4)"));
+        assert!(has_diagnostic(
+            &diagnostics,
+            "markdown_export_local_asset_reference",
+            BLOCK_B
+        ));
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic["code"] != UNSAFE_MEDIA_CODE)
         );
     });
 }

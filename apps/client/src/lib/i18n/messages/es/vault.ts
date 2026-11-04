@@ -61,6 +61,8 @@ export const dataFolderError = {
     "Esta carpeta está abierta en otra app de Ganbaru. Cierra esa app o elige otra carpeta.",
   linkedAndroid:
     "Este teléfono está vinculado a otros dispositivos. Desvincula primero este teléfono y luego restaura.",
+  anchorRollback:
+    "Esta computadora es el ancla de tus dispositivos vinculados y esta copia desharía cambios que ellos ya siguen. Traspasa el ancla o quita esos dispositivos y luego restaura.",
 } as const satisfies MessageShape<typeof enDataFolderError>;
 
 export const language = {
@@ -159,6 +161,7 @@ export const vaultHandoff = {
       rejected: "El servidor rechazó este kit de recuperación. Puede pertenecer a otra bóveda.",
       noVault: "Este servidor aún no ejecuta ninguna bóveda.",
       alreadyOpen: "Esta bóveda ya está abierta en este dispositivo.",
+      wrongKit: "Este kit de recuperación no pertenece a la bóveda de este servidor. Revisa el kit y el código de configuración.",
       failed: "No se pudo recuperar la bóveda. Comprueba que el servidor esté en marcha e inténtalo de nuevo con un código de configuración nuevo y el mismo kit.",
     },
   },

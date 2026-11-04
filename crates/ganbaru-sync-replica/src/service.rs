@@ -539,7 +539,7 @@ impl ServiceTask {
 /// Runtime internals that headless pass tests of a host drive.
 #[cfg(feature = "test-support")]
 pub mod test_support {
-    use super::{RuntimeState, ServiceTask, SyncRuntime};
+    use super::{RuntimeState, ServiceState, ServiceTask, SyncHost, SyncRuntime, SyncStatusView};
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Weak};
     use tokio::sync::Notify;
@@ -575,6 +575,19 @@ pub mod test_support {
     /// How many passes `runtime` started.
     pub fn passes_started(runtime: &SyncRuntime) -> u64 {
         runtime.passes_started.load(Ordering::SeqCst)
+    }
+
+    /// Runs one pass of `host` with the requests queued on `runtime`, and returns the status the
+    /// pass left.
+    pub async fn run_pass<H: SyncHost>(
+        host: &H,
+        runtime: &SyncRuntime,
+    ) -> Result<SyncStatusView, String> {
+        let gate = tokio::sync::Mutex::new(());
+        ServiceState::for_runtime(runtime)
+            .pass(host, runtime, &gate)
+            .await;
+        runtime.status()
     }
 }
 
@@ -1169,15 +1182,19 @@ impl ServiceState {
 struct ApplyMark {
     /// The stored vector at the last apply.
     stored: Option<VersionVector>,
+    /// Envelopes in the authorization record store at the last apply.
+    records: u64,
     /// Local captures left when the last apply stopped on captures that sealing did not drain.
     blocked_at: Option<u64>,
 }
 
 impl ApplyMark {
-    /// Whether an apply is due: the log grew, or local captures changed since an apply
+    /// Whether an apply is due: the log grew, the record store changed, which can move the
+    /// selection and its holds with no new operation, or local captures changed since an apply
     /// stopped on them. A capture count that stays the same cannot unblock it.
-    fn due(&self, stored: &VersionVector, pending: u64) -> bool {
+    fn due(&self, stored: &VersionVector, records: u64, pending: u64) -> bool {
         self.stored.as_ref() != Some(stored)
+            || self.records != records
             || self.blocked_at.is_some_and(|blocked| blocked != pending)
     }
 }
@@ -1564,7 +1581,9 @@ impl ServiceState {
                 next = Next::Continue;
             }
         }
-        self.apply_new(&session).await?;
+        // A failed apply fails the pass only once the steps that do not depend on it have run,
+        // so operations that stay unapplied never block an authority action.
+        let apply_failure = self.apply_new(&session).await.err();
         let anchor_link = self.anchor_link.take();
         if is_hub && !session.anchored_by_server().await? {
             view.anchor_unreachable_since_ms = None;
@@ -1876,7 +1895,7 @@ impl ServiceState {
             let names = devices::read_with(host.device_id()?, &manager);
             view.set_clock_ahead(&status, &clock_warnings, &names);
         }
-        Ok(next)
+        apply_failure.map_or(Ok(next), Err)
     }
 
     /// Reset sync state on the coordinator: unlinks every device linked for the vault, because
@@ -2143,16 +2162,16 @@ impl ServiceState {
                             .await
                             .map_err(|error| format!("record sync stability: {error}"))?;
                         if let Some(pin) = wait.transport.manager.coordinator_pin()? {
-                            session
-                                .engine
-                                .record_anchor_marks(
-                                    &mut conn,
-                                    &session.ctx,
-                                    &pin.device_id,
-                                    &done.hub,
-                                )
-                                .await
-                                .map_err(|error| format!("record anchor marks: {error}"))?;
+                            crate::client::record_anchor_marks(
+                                &session.engine,
+                                &mut conn,
+                                &session.ctx,
+                                &wait.ids.device_id,
+                                &pin.device_id,
+                                &done.hub,
+                            )
+                            .await
+                            .map_err(|error| format!("record anchor marks: {error}"))?;
                         }
                     }
                     if done.confirmed.is_some() {
@@ -2199,6 +2218,28 @@ impl ServiceState {
                     wait.known = done.known;
                     wait.known.merge(&skipped);
                     return Ok(Next::Online(Box::new(wait)));
+                }
+                Ok(Exchange::UnprovenFork(fork)) => {
+                    // A claim without signed proof retires nothing: the writer stays, the
+                    // coordinator is treated as away, and members still exchange.
+                    let error = format!(
+                        "the coordinator claims writer {} forked and shows no signed operation \
+                         for it",
+                        fork.writer.to_hex()
+                    );
+                    let next = self
+                        .coordinator_away(
+                            session,
+                            wait,
+                            quarantine.devices(),
+                            &listening,
+                            view,
+                            error,
+                        )
+                        .await;
+                    view.state = SyncState::Error;
+                    view.last_error_code = Some(SyncErrorCode::ForkClaimUnproven);
+                    return Ok(next);
                 }
                 Ok(Exchange::Fork(fork)) => {
                     if !session.recover_fork(&mut self.writer, fork).await? {
@@ -2395,10 +2436,10 @@ impl ServiceState {
         }
     }
 
-    /// Applies stored operations once the log grew since the last apply, or local captures
-    /// changed since an apply stopped on them, then repairs the Notes structure that applies
-    /// left pending. Apply always commits, so applying on every pass would wake the service
-    /// again; the repair commits only when keys are pending.
+    /// Applies stored operations once the log grew or the record store changed since the last
+    /// apply, or local captures changed since an apply stopped on them, then repairs the Notes
+    /// structure that applies left pending. Apply always commits, so applying on every pass
+    /// would wake the service again; the repair commits only when keys are pending.
     async fn apply_new<H: SyncHost>(&mut self, session: &Session<'_, H>) -> Result<(), String> {
         let applied = self.apply_if_due(session).await;
         session.repair_notes().await;
@@ -2406,22 +2447,30 @@ impl ServiceState {
     }
 
     async fn apply_if_due<H: SyncHost>(&mut self, session: &Session<'_, H>) -> Result<(), String> {
-        let stored = {
+        let (stored, records) = {
             let mut conn = acquire(&session.pool).await?;
-            session
+            let stored = session
                 .engine
                 .stored_vector(&mut conn, &session.ctx)
                 .await
-                .map_err(|error| format!("read sync log: {error}"))?
+                .map_err(|error| format!("read sync log: {error}"))?;
+            let records = session
+                .engine
+                .authorization_totals(&mut conn, &session.ctx)
+                .await
+                .map_err(|error| format!("read authorization storage: {error}"))?
+                .envelopes;
+            (stored, records)
         };
         let pending = session.pending_captures().await?;
-        if !self.applied.due(&stored, pending) {
+        if !self.applied.due(&stored, records, pending) {
             return Ok(());
         }
         let applied = session.apply_ready(&mut self.writer).await?;
         session.report(applied.tables, &applied.notices).await;
         self.applied = ApplyMark {
             stored: Some(stored),
+            records,
             blocked_at: applied.blocked_at,
         };
         Ok(())
@@ -2631,6 +2680,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 &mut conn,
                 &self.ctx,
                 &self.files,
+                &self.host.device_id()?,
                 now_ms()?,
             )
             .await?
@@ -3145,12 +3195,20 @@ impl<'a, H: SyncHost> Session<'a, H> {
 
     /// Recovers from a fork of one of this installation's chains: the hub holds other
     /// operations at the same sequences. The local copy above the fork point moves to a fresh
-    /// writer, so both histories survive. Returns false while the person key is unavailable.
+    /// writer, so both histories survive. Returns false while the person key is unavailable. A
+    /// re-seal the old chain refuses fails before the rotation, so it consumes no writer.
     async fn recover_fork(
         &self,
         writer: &mut Option<ActiveWriter>,
         fork: ForkPoint,
     ) -> Result<bool, String> {
+        {
+            let mut conn = acquire(&self.pool).await?;
+            self.engine
+                .check_reseal_fork(&mut conn, &self.ctx, fork.writer, fork.keep_through)
+                .await
+                .map_err(|error| format!("re-seal forked sync operations: {error}"))?;
+        }
         let current = writer.as_ref().map(ActiveWriter::id);
         if (current == Some(fork.writer) || current.is_none()) && !self.rotate(writer).await? {
             return Ok(false);
@@ -3852,28 +3910,46 @@ mod tests {
     #[test]
     fn apply_runs_once_per_log_growth() {
         let mut mark = ApplyMark::default();
-        assert!(mark.due(&vector(1), 0), "the first pass applies");
+        assert!(mark.due(&vector(1), 0, 0), "the first pass applies");
         mark.stored = Some(vector(1));
-        assert!(!mark.due(&vector(1), 0));
+        assert!(!mark.due(&vector(1), 0, 0));
         assert!(
-            !mark.due(&vector(1), 7),
+            !mark.due(&vector(1), 0, 7),
             "captures alone do not rerun an apply that finished"
         );
-        assert!(mark.due(&vector(2), 0), "a grown log applies again");
+        assert!(mark.due(&vector(2), 0, 0), "a grown log applies again");
+    }
+
+    #[test]
+    fn a_record_admitted_with_no_new_operation_applies_once() {
+        let mark = ApplyMark {
+            stored: Some(vector(1)),
+            records: 3,
+            blocked_at: None,
+        };
+        assert!(!mark.due(&vector(1), 3, 0));
+        assert!(
+            mark.due(&vector(1), 4, 0),
+            "a selection or hold read from the new record is not current until it applies"
+        );
     }
 
     #[test]
     fn a_blocked_apply_reruns_when_captures_change_and_waits_while_they_stay() {
         let mark = ApplyMark {
             stored: Some(vector(1)),
+            records: 0,
             blocked_at: Some(5),
         };
         assert!(
-            !mark.due(&vector(1), 5),
+            !mark.due(&vector(1), 0, 5),
             "the same captures would block again"
         );
-        assert!(mark.due(&vector(1), 2), "sealed captures may unblock it");
-        assert!(mark.due(&vector(1), 9), "new local edits may be sealable");
-        assert!(mark.due(&vector(2), 5), "a grown log applies again");
+        assert!(mark.due(&vector(1), 0, 2), "sealed captures may unblock it");
+        assert!(
+            mark.due(&vector(1), 0, 9),
+            "new local edits may be sealable"
+        );
+        assert!(mark.due(&vector(2), 0, 5), "a grown log applies again");
     }
 }

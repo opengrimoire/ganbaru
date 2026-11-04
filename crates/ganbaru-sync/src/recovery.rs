@@ -16,8 +16,12 @@
 //! its descendants; restoring or discarding then seals deletions that cover every retained
 //! version of the root and of each row in the group holding an unseen edit, which closes the
 //! offer on every replica.
+//!
+//! Coverage is one version vector, the join of every context a row's causes lead to, kept per row
+//! so a chain of causes is walked once.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use ganbaru_sync_contracts::{
     Change, ChangeAction, GroupId, Hlc, RowKey, TableId, Value, VersionVector, WriterId,
@@ -31,7 +35,9 @@ use crate::manifest::TableSpec;
 use crate::merge::{self, Batch, RowState, Version, table_param};
 use crate::repair;
 use crate::seal::{SealReport, SealSlot, existence_write};
-use crate::visibility::{MAX_REDIRECT_DEPTH, RowRef, Visibility, removed};
+use crate::visibility::{
+    CascadeWalk, MAX_REDIRECT_DEPTH, RowRef, Visibility, removed, retention_parent,
+};
 use crate::{Engine, LocalWriter, SpaceContext, SyncError, log, sql};
 
 /// A deleted row, with its deleted descendants, holding edits the deletion did not see.
@@ -138,7 +144,7 @@ async fn tombstones(
 }
 
 /// The context of an operation, advanced past the operation itself.
-async fn operation_context(
+pub(crate) async fn operation_context(
     conn: &mut SqliteConnection,
     batch: &mut Batch,
     writer: WriterId,
@@ -179,15 +185,15 @@ async fn removal_context(
     }
 }
 
-/// Whether a row named as a cause is deleted: tombstoned, removed, or hidden by cascade from
-/// a deleted root.
+/// Whether a row named as a cause is deleted: tombstoned and not retained, removed, or hidden by
+/// cascade from a deleted root.
 async fn deleted(
     engine: &Engine,
     conn: &mut SqliteConnection,
     visibility: &mut Visibility,
     (table, key): &RowRef,
 ) -> SyncResult<bool> {
-    Ok(match merge::row_state(conn, *table, key).await? {
+    Ok(match visibility.state(engine, conn, *table, key).await? {
         None => false,
         Some(RowState::Tombstoned) => true,
         Some(RowState::Live) => {
@@ -201,9 +207,90 @@ async fn deleted(
     })
 }
 
-/// The contexts that decide which retained versions of a deleted row its deletion saw. A
-/// tombstone whose cause is no longer deleted covers its own context.
+/// What a row covers itself, and the rows whose coverage it takes on: a tombstone with a deleted
+/// cause follows that cause, any other tombstone covers its own context, and a live row covers
+/// its winning removal and follows the cause of its cascade.
+async fn direct_coverage(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+    visibility: &mut Visibility,
+    (table, key): &RowRef,
+) -> SyncResult<(VersionVector, Vec<RowRef>)> {
+    let mut own = VersionVector::new();
+    let mut successors = Vec::new();
+    match merge::row_state(conn, *table, key).await? {
+        None => {}
+        Some(RowState::Tombstoned) => {
+            for tombstone in tombstones(conn, *table, key).await? {
+                match tombstone.cause {
+                    Some(cause) if deleted(engine, conn, visibility, &cause).await? => {
+                        successors.push(cause);
+                    }
+                    _ => own.merge(
+                        &operation_context(conn, batch, tombstone.writer, tombstone.seq).await?,
+                    ),
+                }
+            }
+        }
+        Some(RowState::Live) => {
+            let spec = table_spec(engine, *table)?;
+            if let Some(context) = removal_context(engine, conn, batch, spec, key).await? {
+                own.merge(&context);
+            }
+            let roots = visibility.cascade_roots(engine, conn, *table, key).await?;
+            if let Some(root) = roots.cause() {
+                successors.push((root.table, root.key.clone()));
+            }
+        }
+    }
+    Ok((own, successors))
+}
+
+/// The version vector that decides which retained versions of a deleted row its deletion saw: a
+/// version is seen when a context the row's causes lead to covers it, and the join of those
+/// contexts covers exactly what one of them does. A tombstone whose cause is no longer deleted
+/// covers its own context. Each row is read once per [`Visibility`], so rows that share a chain of
+/// causes share the walk.
 pub(crate) async fn coverage(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+    visibility: &mut Visibility,
+    table: TableId,
+    key: &str,
+) -> SyncResult<Arc<VersionVector>> {
+    let start = (table, key.to_string());
+    if let Some(known) = visibility.known_coverage(&start) {
+        return Ok(known);
+    }
+    let mut walk = CascadeWalk::new(start.clone());
+    while let Some(row) = walk.next_row() {
+        if let Some(known) = visibility.known_coverage(&row) {
+            walk.supply_finished(row, known);
+        } else {
+            #[cfg(test)]
+            {
+                visibility.coverage_rows += 1;
+            }
+            let (own, successors) = direct_coverage(engine, conn, batch, visibility, &row).await?;
+            walk.supply(row, own, successors);
+        }
+    }
+    visibility.keep_coverage(walk.finish());
+    visibility
+        .known_coverage(&start)
+        .ok_or_else(|| corrupt("coverage walk left its start row"))
+}
+
+/// Whether a version is outside the coverage.
+pub(crate) fn uncovered(version: &Version, covering: &VersionVector) -> bool {
+    !covering.covers(&version.writer, version.seq)
+}
+
+/// Each context of the walk [`coverage`] joins, listed one by one, to compare a verdict against.
+#[cfg(test)]
+pub(crate) async fn coverage_contexts(
     engine: &Engine,
     conn: &mut SqliteConnection,
     batch: &mut Batch,
@@ -250,18 +337,11 @@ pub(crate) async fn coverage(
     Ok(contexts)
 }
 
-/// Whether a version is covered by none of the contexts.
-fn uncovered(version: &Version, covering: &[VersionVector]) -> bool {
-    !covering
-        .iter()
-        .any(|context| context.covers(&version.writer, version.seq))
-}
-
 /// Retained versions of recoverable groups that the coverage does not cover.
 fn unseen<'v>(
     table: &TableSpec,
     versions: &'v [Version],
-    covering: &[VersionVector],
+    covering: &VersionVector,
 ) -> impl Iterator<Item = &'v Version> {
     versions.iter().filter(move |version| {
         table
@@ -273,7 +353,7 @@ fn unseen<'v>(
 
 /// The recovery flag of a tombstoned row: it, or a live descendant grouped under it, holds a
 /// recoverable version its coverage does not cover. Live rows carry no flag; their root
-/// carries it for them.
+/// carries it for them, and a retained row lost nothing to recover.
 pub(crate) async fn flagged(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -282,6 +362,9 @@ pub(crate) async fn flagged(
     table: TableId,
     key: &str,
 ) -> SyncResult<bool> {
+    if visibility.retained(engine, conn, table, key).await? {
+        return Ok(false);
+    }
     let row = (table, key.to_string());
     if newest_unseen(engine, conn, batch, visibility, &row)
         .await?
@@ -315,14 +398,16 @@ pub(crate) async fn flag_root(
     }
     let root = group_root(engine, conn, visibility, (table, key.to_string())).await?;
     Ok(
-        (merge::row_state(conn, root.0, &root.1).await? == Some(RowState::Tombstoned))
+        (visibility.state(engine, conn, root.0, &root.1).await? == Some(RowState::Tombstoned))
             .then_some(root),
     )
 }
 
-/// The root a deleted row is grouped under for recovery: itself when it has a tombstone
-/// without a cause, otherwise the lowest cause of its tombstones or the cause of its cascade,
-/// followed until a row has no further cause.
+/// The root a deleted row is grouped under for recovery, followed until a row has no further
+/// cause. A tombstoned row its table's retention rule selects goes with its deleted parent,
+/// whose restoration brings it back. Any other tombstoned row is its own root when one of its
+/// tombstones has no cause or a cause that is not deleted, and otherwise follows the lowest
+/// cause. A live row follows the cause of its cascade.
 pub(crate) async fn group_root(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -332,17 +417,15 @@ pub(crate) async fn group_root(
     let mut current = row;
     for _ in 0..MAX_REDIRECT_DEPTH {
         let (table, key) = &current;
-        let next = match merge::row_state(conn, *table, key).await? {
+        let next = match visibility.state(engine, conn, *table, key).await? {
             None => None,
             Some(RowState::Tombstoned) => {
-                let tombstones = tombstones(conn, *table, key).await?;
-                if tombstones.iter().any(|tombstone| tombstone.cause.is_none()) {
-                    None
+                if let Some(parent) =
+                    deleted_retention_parent(engine, conn, visibility, &current).await?
+                {
+                    Some(parent)
                 } else {
-                    tombstones
-                        .into_iter()
-                        .filter_map(|tombstone| tombstone.cause)
-                        .min()
+                    tombstoned_root_cause(engine, conn, visibility, &current).await?
                 }
             }
             Some(RowState::Live) => visibility
@@ -357,6 +440,56 @@ pub(crate) async fn group_root(
         }
     }
     Ok(current)
+}
+
+/// The parent a tombstoned row goes with: the one its table's retention rule names from the
+/// row's winning versions, when that parent is deleted.
+async fn deleted_retention_parent(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    (table, key): &RowRef,
+) -> SyncResult<Option<RowRef>> {
+    let spec = table_spec(engine, *table)?;
+    let Some(rule) = spec.retained else {
+        return Ok(None);
+    };
+    let versions = merge::versions(engine, conn, *table, key).await?;
+    let winners = merge::winners(engine, spec, &versions);
+    let Some(parent) = winners
+        .get(&rule.group)
+        .and_then(|winner| retention_parent(spec, rule, winner.value.fields()))
+    else {
+        return Ok(None);
+    };
+    let parent = (rule.parent, parent);
+    Ok(deleted(engine, conn, visibility, &parent)
+        .await?
+        .then_some(parent))
+}
+
+/// The lowest cause a tombstoned row follows toward its root, or `None` when one of its
+/// tombstones has no cause or a cause that is not deleted, as its coverage reads them.
+async fn tombstoned_root_cause(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    (table, key): &RowRef,
+) -> SyncResult<Option<RowRef>> {
+    let mut lowest: Option<RowRef> = None;
+    for tombstone in tombstones(conn, *table, key).await? {
+        let Some(cause) = tombstone.cause else {
+            return Ok(None);
+        };
+        if !deleted(engine, conn, visibility, &cause).await? {
+            return Ok(None);
+        }
+        lowest = Some(match lowest {
+            Some(lowest) => lowest.min(cause),
+            None => cause,
+        });
+    }
+    Ok(lowest)
 }
 
 /// The root, its flagged members, and its descendants, each once.
@@ -454,7 +587,7 @@ impl Engine {
 
 /// Visibility for reads outside an apply.
 async fn read_visibility(engine: &Engine, conn: &mut SqliteConnection) -> SyncResult<Visibility> {
-    Visibility::load(engine, conn, &mut BTreeSet::new()).await
+    Visibility::read(engine, conn).await
 }
 
 /// Every row carrying the recovery flag, by table and key.

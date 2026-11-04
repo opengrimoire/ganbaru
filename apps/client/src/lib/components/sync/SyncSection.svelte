@@ -40,6 +40,7 @@
   import {
     canInstallSyncRecoveryKey,
     canManageSyncRecoveryKit,
+    canRotateSyncRecoveryKit,
     canManageSyncServer,
     canResetSyncState,
     canResolveSyncLateChanges,
@@ -110,6 +111,7 @@
   );
   const canManageKit = $derived(authorityContext !== null && canManageSyncRecoveryKit(authorityContext));
   const canInstallKey = $derived(authorityContext !== null && canInstallSyncRecoveryKey(authorityContext));
+  const canRotateKit = $derived(authorityContext !== null && canRotateSyncRecoveryKit(authorityContext));
   const contests = $derived(authorityState.contests);
   const kitUse = $derived(
     authorityContext === null ? null : syncRecoveryKitUse(authorityContext, status.state, syncKitContested(contests)),
@@ -261,6 +263,8 @@
       {/each}
       {#if status.state === "error" && status.lastErrorCode === "writerLimit"}
         <Notice message={t("sync.writerLimit")} />
+      {:else if status.state === "error" && status.lastErrorCode === "forkClaimUnproven"}
+        <Notice tone="warning" role="status" copy={false} message={t("sync.forkClaimUnproven")} />
       {:else if status.state === "error" && status.lastErrorCode === "bootstrapRequired"}
         <Notice tone="warning" role="status" copy={false} message={t("sync.bootstrapRequired")}>
           {#snippet actions()}
@@ -405,6 +409,7 @@
           {buttonClass}
           canManage={canManageKit}
           {canInstallKey}
+          canRotate={canRotateKit}
           use={kitUse}
           anchor={syncQuarantinableAnchor(authorityContext.authority)}
           pendingKit={authorityState.pendingKit}

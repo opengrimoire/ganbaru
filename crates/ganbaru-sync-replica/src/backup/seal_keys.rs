@@ -6,7 +6,7 @@ use crate::keys::SpaceKeys;
 use crate::service::blocking;
 use crate::writer::SyncKeyStore;
 use ganbaru_sync::{AuthorizationView, Engine, SpaceContext, local};
-use ganbaru_sync_contracts::SpaceId;
+use ganbaru_sync_contracts::{EncryptionPublicKey, SpaceId};
 use sqlx::SqliteConnection;
 use std::sync::Arc;
 
@@ -41,6 +41,31 @@ pub async fn opened_space_keys(
     Ok(space_keys)
 }
 
+/// The recovery encryption key the selected log published, or else the vault's stored one.
+/// `None` when the vault has no recovery kit.
+pub async fn selected_recovery_key(
+    conn: &mut SqliteConnection,
+    vault_id: &str,
+) -> Result<Option<EncryptionPublicKey>, String> {
+    let state = space_state(conn, vault_id).await?;
+    recovery_key_of(conn, state.as_ref().map(|(_, view)| view)).await
+}
+
+/// The recovery encryption key `view` published, or else the one the database at `conn`
+/// stores for its first charter.
+async fn recovery_key_of(
+    conn: &mut SqliteConnection,
+    view: Option<&AuthorizationView>,
+) -> Result<Option<EncryptionPublicKey>, String> {
+    if let Some(key) = view.and_then(|view| view.recovery_encryption_key) {
+        return Ok(Some(key));
+    }
+    let stored = local::recovery_kit_keys(conn)
+        .await
+        .map_err(|error| format!("read the recovery kit keys: {error}"))?;
+    Ok(stored.map(|keys| keys.encryption))
+}
+
 /// The keys a backup of the vault is sealed to: the recovery encryption key the selected log
 /// published, or else the one the vault keeps for its first charter, and the newest epoch key
 /// this installation opened. `None` when the vault has no recovery kit.
@@ -50,13 +75,7 @@ pub async fn backup_seal_keys(
     vault_id: &str,
 ) -> Result<Option<BackupSealKeys>, String> {
     let state = space_state(conn, vault_id).await?;
-    let stored = local::recovery_kit_keys(conn)
-        .await
-        .map_err(|error| format!("read the recovery kit keys: {error}"))?;
-    let recovery = state
-        .as_ref()
-        .and_then(|(_, view)| view.recovery_encryption_key)
-        .or(stored.map(|keys| keys.encryption));
+    let recovery = recovery_key_of(conn, state.as_ref().map(|(_, view)| view)).await?;
     let Some(recovery) = recovery else {
         return Ok(None);
     };

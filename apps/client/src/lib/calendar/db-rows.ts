@@ -22,6 +22,9 @@ import {
   safeJsonParse,
 } from "./json-fields";
 
+/** Characters a native window keeps of an event title or location; the full event holds the rest. */
+export const WINDOW_TEXT_CHARS = 1024;
+
 /**
  * Event row shape returned by native calendar window reads. It carries only
  * the columns the slim in-memory `CalendarEvent` reads. Heavy columns

@@ -24,9 +24,9 @@ use crate::domains::distractions::{
 };
 use crate::manifest::vault::focus::{RUNS_TABLE, SEGMENTS_TABLE};
 use crate::manifest::{
-    ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, GroupSpec, GroupStorage,
-    MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, PublishedWith,
-    ReferenceColumn, TableIdRange, TableSpec, group_id,
+    ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable, DomainManifest, GroupSpec,
+    GroupStorage, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable,
+    PublishedWith, ReferenceColumn, RowKeyRule, RowOwner, TableIdRange, TableSpec, group_id,
 };
 
 /// Domain name for distraction rules.
@@ -73,6 +73,9 @@ pub const APP_RULE_KEY_PREFIX: &str = "app";
 /// Key prefix of a usage total, derived from its device, source type, source key, and local
 /// date.
 pub const USAGE_TOTAL_KEY_PREFIX: &str = "usage";
+/// What a usage total key starts with: [`USAGE_TOTAL_KEY_PREFIX`] and its separator, followed by
+/// the owner tag of the device, `:`, and the digest of the derived key.
+pub const USAGE_TOTAL_OWNER_PREFIX: &str = "usage:";
 
 /// Settings field groups.
 pub mod settings_group {
@@ -299,7 +302,11 @@ const BASE: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `distractions_settings`, the seeded singleton row [`SETTINGS_KEY`]. It is never deleted.
@@ -347,6 +354,8 @@ pub const SETTINGS: TableSpec = TableSpec {
         ),
         register(settings_group::LIMITS, "limits", &[flag("limits_enabled")]),
     ],
+    key_rule: RowKeyRule::Fixed(SETTINGS_KEY),
+    deletion: Deletion::Never,
     ..BASE
 };
 
@@ -545,12 +554,17 @@ pub const USAGE_LIMITS: TableSpec = TableSpec {
 };
 
 /// `distractions_usage_totals`, the seconds one device spent on one source during one local day,
-/// keyed by those four values under [`USAGE_TOTAL_KEY_PREFIX`]. Only the device the row names
-/// writes it and its total only grows, so `Max` converges. Rows are never deleted, so the table
-/// declares no existence group and the retention window is a read filter.
+/// keyed by the owner tag of the device followed by a digest of those four values, under
+/// [`USAGE_TOTAL_OWNER_PREFIX`]. Only the device the row names may write it, which every replica
+/// enforces from the key, and its total only grows, so `Max` converges. Rows are never deleted,
+/// so the table declares no existence group and the retention window is a read filter.
 pub const USAGE_TOTALS: TableSpec = TableSpec {
     id: USAGE_TOTALS_TABLE,
     name: "distractions_usage_totals",
+    owner: Some(RowOwner::KeyTag {
+        prefix: USAGE_TOTAL_OWNER_PREFIX,
+        device_column: "device_id",
+    }),
     groups: &[
         group(
             usage_total_group::BUCKET,

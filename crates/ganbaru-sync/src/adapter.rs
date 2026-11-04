@@ -1,10 +1,10 @@
-//! Domain adapters: composite value codecs, intrinsic validation, derived projections, coupled
-//! priorities, asset references, and recovery presentation for tables whose manifest names an
-//! adapter.
+//! Domain adapters: composite value codecs, intrinsic validation, derived projections, forced
+//! group values, coupled priorities, asset references, and recovery presentation for tables whose
+//! manifest names an adapter.
 
 use std::fmt;
 
-use ganbaru_sync_contracts::{Field, GroupId, GroupValue, TableId, Value};
+use ganbaru_sync_contracts::{Field, GroupId, GroupValue, RowKey, TableId, Value};
 
 use crate::assets::AssetRef;
 
@@ -99,16 +99,40 @@ pub trait DomainAdapter: Send + Sync {
         value: &Value,
     ) -> Result<Vec<(&'static str, Field)>, AdapterError>;
 
+    /// Values a row materializes in place of its merge winners, given the winning value of each
+    /// group. The winners stay in merge state and a group left out materializes its winner, so
+    /// every replica stores the same row and none needs to seal a repair.
+    fn forced_groups(
+        &self,
+        table: TableId,
+        winners: &[(GroupId, &Value)],
+    ) -> Result<Vec<(GroupId, Value)>, AdapterError> {
+        let _ = (table, winners);
+        Ok(Vec::new())
+    }
+
     /// Priority of a coupled group value; greater wins before clocks are compared.
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8;
 
     /// Checks rules the column types cannot express. Called for every group of the table.
     fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError>;
 
+    /// Checks rules of a row key that the manifest's key rule cannot express. Called for every
+    /// change of the table, whatever its action.
+    fn validate_key(&self, table: TableId, key: &str) -> Result<(), AdapterError> {
+        let _ = (table, key);
+        Ok(())
+    }
+
     /// Checks rules that span groups of one row. Called after [`DomainAdapter::validate`] for a
-    /// change that writes every group, with the groups in ascending order.
-    fn validate_row(&self, table: TableId, groups: &[GroupValue]) -> Result<(), AdapterError> {
-        let _ = (table, groups);
+    /// change that writes every group, with the row's key and the groups in ascending order.
+    fn validate_row(
+        &self,
+        table: TableId,
+        row: &RowKey,
+        groups: &[GroupValue],
+    ) -> Result<(), AdapterError> {
+        let _ = (table, row, groups);
         Ok(())
     }
 

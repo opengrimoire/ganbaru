@@ -3,7 +3,7 @@
 //! block win over a concurrent restore, and the managed files Notes JSON references.
 
 use ganbaru_sync_contracts::bounds::MAX_TEXT_FIELD_BYTES;
-use ganbaru_sync_contracts::{Field, GroupId, GroupValue, TableId, Value, derived_key};
+use ganbaru_sync_contracts::{Field, GroupId, GroupValue, RowKey, TableId, Value, derived_key};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
 use crate::assets::{AssetClass, AssetRef, CONTENT_TYPE_EXTENSIONS, file_name};
@@ -871,7 +871,12 @@ impl DomainAdapter for NotesAdapter {
         }
     }
 
-    fn validate_row(&self, table: TableId, groups: &[GroupValue]) -> Result<(), AdapterError> {
+    fn validate_row(
+        &self,
+        table: TableId,
+        _row: &RowKey,
+        groups: &[GroupValue],
+    ) -> Result<(), AdapterError> {
         if table == OPTIONS_TABLE {
             validate_option_row(groups)
         } else {
@@ -1117,6 +1122,7 @@ mod tests {
         let row = |property_key: &str| {
             adapter.validate_row(
                 OPTIONS_TABLE,
+                &RowKey::new("option-1").unwrap(),
                 &[
                     GroupValue::new(
                         OPTIONS_TABLE,

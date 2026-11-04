@@ -1,27 +1,30 @@
 <script lang="ts">
-  import { onDestroy, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { saveSyncRecoveryKitFile, type SyncPendingRecoveryKit } from "$lib/api/sync";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { acquireSecureWindow, type SecureWindowRelease } from "$lib/mobile/secure-window";
+  import { BUILD_PLATFORM } from "$lib/platform";
   import { syncKitCodeLines, syncKitFileName, syncKitFileText } from "$lib/sync/authority";
   import { portal } from "$lib/utils/portal";
 
   /**
    * Shows a recovery kit that waits to be saved: its code, a printable page with its QR code, a
    * text file export, and the confirmation that asks for the code's last group. The code reaches
-   * paper, a file, or the clipboard only when the user chooses to.
+   * paper, a file, or the clipboard only when the user chooses to. On Android the code shows
+   * only once the window is kept out of screenshots, recents, and screen capture.
    */
   let {
     kit,
     buttonClass,
-    exportable = true,
+    printable = true,
     onConfirm,
   }: {
     kit: SyncPendingRecoveryKit;
     buttonClass: string;
-    /** Whether the printable page and the text file export are offered; false where the platform has neither. */
-    exportable?: boolean;
+    /** Whether the printable page is offered; false where the platform cannot print. */
+    printable?: boolean;
     /** Sends the typed last group; resolves true when the kit was confirmed and forgotten. */
     onConfirm: (lastGroup: string) => Promise<boolean>;
   } = $props();
@@ -37,6 +40,8 @@
   let message = $state("");
   let failed = $state(false);
   let printedAtMs = $state<number | null>(null);
+  /** Whether the code may show: at once off Android, and on Android once the window is secure. */
+  let shielded = $state(BUILD_PLATFORM !== "android");
 
   const codeLines = $derived(syncKitCodeLines(kit.code));
   const qrSide = $derived(kit.qr.width + QUIET_ZONE_MODULES * 2);
@@ -48,6 +53,23 @@
   }
 
   onDestroy(stopPrinting);
+
+  onMount(() => {
+    let mounted = true;
+    let release: SecureWindowRelease | null = null;
+    void acquireSecureWindow().then((next) => {
+      if (!mounted) {
+        void next();
+        return;
+      }
+      release = next;
+      shielded = true;
+    });
+    return () => {
+      mounted = false;
+      if (release) void release();
+    };
+  });
 
   async function print(): Promise<void> {
     if (printedAtMs !== null) return;
@@ -108,23 +130,25 @@
 <div class="flex min-w-0 flex-col gap-2">
   <Notice tone="warning" role="status" copy={false} class="px-1 text-[0.8rem] leading-5" message={t("sync.kit.pending")} />
   <div class="px-1" aria-label={t("sync.kit.code")}>
-    {#each codeLines as line, index (index)}
-      <p class="font-mono text-[0.933333rem] font-semibold tracking-wider text-foreground select-all" dir="ltr">{line}</p>
-    {/each}
+    {#if shielded}
+      {#each codeLines as line, index (index)}
+        <p class="font-mono text-[0.933333rem] font-semibold tracking-wider text-foreground select-all" dir="ltr">{line}</p>
+      {/each}
+    {/if}
   </div>
   {#if !kit.active}
     <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("sync.kit.inactive")}</p>
   {/if}
-  {#if exportable}
-    <div class="flex flex-wrap gap-2">
+  <div class="flex flex-wrap gap-2">
+    {#if printable}
       <button type="button" class={buttonClass} disabled={busy || printedAtMs !== null} onclick={() => void print()}>
         {t("sync.kit.print")}
       </button>
-      <button type="button" class={buttonClass} disabled={busy} onclick={() => void saveFile()}>
-        {t("sync.kit.saveFile")}
-      </button>
-    </div>
-  {/if}
+    {/if}
+    <button type="button" class={buttonClass} disabled={busy} onclick={() => void saveFile()}>
+      {t("sync.kit.saveFile")}
+    </button>
+  </div>
   <form class="flex min-w-0 flex-col gap-2 px-1" onsubmit={(event) => void confirm(event)}>
     <div class="text-[0.8rem] text-foreground">{t("sync.kit.confirmSavedTitle")}</div>
     <div class="text-[0.75rem] text-muted-foreground">{t("sync.kit.confirmSavedMessage")}</div>
@@ -154,7 +178,7 @@
   {/if}
 </div>
 
-{#if printedAtMs !== null}
+{#if printedAtMs !== null && shielded}
   <section class="sync-kit-print" use:portal>
     <h1 class="sync-kit-print-title">{t("sync.kit.fileTitle")}</h1>
     <p>{t("sync.kit.fileCreated", formatDateTime(localization.locale, printedAtMs, { dateStyle: "long", timeStyle: "short" }))}</p>

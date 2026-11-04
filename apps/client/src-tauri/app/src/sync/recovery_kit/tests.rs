@@ -47,10 +47,10 @@ async fn an_unlinked_recovery_kit_is_kept_for_the_first_charter_once_confirmed()
     assert!(kit.qr.width > 0);
     assert_eq!(kit.qr.modules.len(), kit.qr.width * kit.qr.width);
     assert!(
-        !format!("{kit:?}").contains(&kit.code),
+        !format!("{kit:?}").contains(kit.code.as_str()),
         "debug never shows the code"
     );
-    let seed = RecoverySeed::parse_kit_code(&kit.code).expect("parse");
+    let seed = RecoverySeed::parse_kit_code(kit.code.as_str()).expect("parse");
     assert_eq!(
         local::recovery_kit_keys(&mut conn).await.expect("read"),
         Some(seed.public_keys().expect("kit keys")),
@@ -66,14 +66,14 @@ async fn an_unlinked_recovery_kit_is_kept_for_the_first_charter_once_confirmed()
         .pending
         .expect("replaced kit");
     assert_ne!(replaced.code, kit.code, "creating again replaces the kit");
-    let seed = RecoverySeed::parse_kit_code(&replaced.code).expect("parse");
+    let seed = RecoverySeed::parse_kit_code(replaced.code.as_str()).expect("parse");
     assert_eq!(
         local::recovery_kit_keys(&mut conn).await.expect("read"),
         Some(seed.public_keys().expect("kit keys"))
     );
 
     assert!(
-        !confirm_saved(&mut conn, &keys, VAULT_ID, last_group(&kit.code))
+        !confirm_saved(&mut conn, &keys, VAULT_ID, last_group(kit.code.as_str()))
             .await
             .expect("confirm"),
         "the replaced kit's last group does not confirm"
@@ -97,7 +97,7 @@ async fn an_unlinked_recovery_kit_is_kept_for_the_first_charter_once_confirmed()
             .is_some(),
         "a failed confirmation keeps the kit"
     );
-    let typed = last_group(&replaced.code).to_ascii_lowercase();
+    let typed = last_group(replaced.code.as_str()).to_ascii_lowercase();
     assert!(
         confirm_saved(&mut conn, &keys, VAULT_ID, &format!(" {typed} "))
             .await
@@ -184,4 +184,15 @@ async fn a_recovery_kit_is_created_only_before_the_vault_has_a_sync_space() {
     );
     drop(conn);
     registry.close_all().await.expect("close pools");
+}
+
+#[test]
+fn pending_recovery_kit_serializes_the_code() {
+    let seed = RecoverySeed::from_bytes([0x52; 32]);
+    let text = seed.kit_code().as_str().to_string();
+    let kit = pending_kit(&seed, true).expect("pending kit");
+    let json = serde_json::to_value(&kit).expect("serialize");
+    assert_eq!(json["code"], serde_json::Value::String(text));
+    assert_eq!(json["active"], serde_json::Value::Bool(true));
+    assert!(json["qr"].is_object());
 }

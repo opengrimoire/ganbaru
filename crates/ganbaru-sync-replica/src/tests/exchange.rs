@@ -1,9 +1,11 @@
 use super::{NOW_MS, TestDirectory, VAULT_ID, acquire, add_note, block_on, create_vault, person};
 use crate::assets::{
-    ASSET_UNAVAILABLE, AssetMemory, AssetSession, AssetStore, AssetTransfer, ContentAddressedStore,
-    INVALID_ASSET, MAX_ASSET_PASS_BYTES,
+    ASSET_UNAVAILABLE, AssetMemory, AssetSession, AssetStore, AssetSweep, AssetTransfer,
+    ContentAddressedStore, INVALID_ASSET, InFlightAssets, MAX_ASSET_PASS_BYTES,
+    UNREFERENCED_ASSET_GRACE, collect_unreferenced_assets,
 };
 use crate::authority::{self, AnchorKeys, Enrollment, Founding, ensure_charter};
+use crate::backup::ArchiveGate;
 use crate::client::{
     self, ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
 };
@@ -16,7 +18,7 @@ use crate::quarantine::PullSkips;
 use crate::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture,
 };
-use crate::wire::{asset_to_wire, bytes_to_wire};
+use crate::wire::{asset_key, asset_to_wire, bytes_to_wire};
 use crate::writer::{ActiveWriter, SuccessorPlan, create_writer};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::protocol::{
@@ -40,7 +42,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::sync::watch;
 
 const HUB_DEVICE: &str = "device-hub";
@@ -507,8 +509,16 @@ fn open_hub(replica: &Replica) -> OpenHubVault {
 
 /// Opens the replica's vault as a hub that quarantined `quarantined`.
 fn open_hub_quarantining(replica: &Replica, quarantined: BTreeSet<String>) -> OpenHubVault {
+    open_hub_serving(replica, quarantined, Arc::clone(&replica.assets))
+}
+
+/// Opens the replica's vault as a hub that quarantined `quarantined` and serves `assets`.
+fn open_hub_serving(
+    replica: &Replica,
+    quarantined: BTreeSet<String>,
+    assets: Arc<dyn AssetStore>,
+) -> OpenHubVault {
     let pool = replica.pool.clone();
-    let assets = Arc::clone(&replica.assets);
     let device_id = replica.device_id.clone();
     Arc::new(move || {
         let pool = pool.clone();
@@ -562,7 +572,7 @@ fn contact_source(contact: HubContact) -> HubContactSource {
 fn done(exchange: Exchange) -> Exchanged {
     match exchange {
         Exchange::Done(done) => done,
-        Exchange::Fork(fork) => panic!("unexpected fork: {fork:?}"),
+        Exchange::Fork(fork) | Exchange::UnprovenFork(fork) => panic!("unexpected fork: {fork:?}"),
     }
 }
 
@@ -1466,6 +1476,7 @@ fn a_cloned_installation_is_found_and_resealed_by_a_successor() {
         {
             Exchange::Fork(fork) => fork,
             Exchange::Done(done) => panic!("the fork went unnoticed: {done:?}"),
+            Exchange::UnprovenFork(fork) => panic!("the fork went unproven: {fork:?}"),
         };
         assert_eq!(fork.writer, forked_writer);
         assert_eq!(fork.keep_through, shared);
@@ -1516,6 +1527,7 @@ fn a_cloned_installation_is_found_and_resealed_by_a_successor() {
         {
             Exchange::Fork(fork) => fork,
             Exchange::Done(done) => panic!("the reported fork went unnoticed: {done:?}"),
+            Exchange::UnprovenFork(fork) => panic!("the fork went unproven: {fork:?}"),
         };
         assert_eq!(fork.writer, forked_writer);
         assert_eq!(fork.keep_through, shared);
@@ -1700,6 +1712,7 @@ fn fork_evidence_travels_between_members_through_the_hub() {
         {
             Exchange::Fork(fork) => fork,
             Exchange::Done(done) => panic!("the reported fork went unnoticed: {done:?}"),
+            Exchange::UnprovenFork(fork) => panic!("the fork went unproven: {fork:?}"),
         };
         assert_eq!((fork.writer, fork.keep_through), (writer, shared));
         hub_replica.close().await;
@@ -2953,6 +2966,62 @@ fn a_replica_refuses_damaged_assets_from_the_hub() {
     });
 }
 
+#[test]
+fn asset_query_does_not_renew_collection_grace() {
+    block_on(async {
+        let hub_replica = Replica::new("grace-hub", HUB_DEVICE).await;
+        let bytes = png(64, 6);
+        images::import_image(hub_replica.directory.path(), &bytes).expect("store image");
+        let image = reference(&bytes);
+        let in_flight = Arc::new(InFlightAssets::default());
+        let store: Arc<dyn AssetStore> = Arc::new(
+            ContentAddressedStore::new(hub_replica.directory.path().to_path_buf())
+                .with_in_flight(Arc::clone(&in_flight)),
+        );
+        let transport = DirectTransport(
+            SyncHub::new(
+                open_hub_serving(&hub_replica, BTreeSet::new(), store),
+                watch::Sender::new(0),
+            )
+            .with_contact(contact_source(test_contact())),
+        );
+
+        // A peer keeps asking about an unreferenced file to keep it on disk.
+        for _ in 0..3 {
+            let query = ControlMessage::SyncAssetQuery {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: VAULT_ID.to_string(),
+                device_id: PHONE_DEVICE.to_string(),
+                assets: vec![asset_to_wire(&image)],
+            };
+            match transport.request(query).await.expect("query") {
+                ControlMessage::SyncAssetPresence { held } => {
+                    assert_eq!(held, vec![asset_key(&image)]);
+                }
+                other => panic!("expected the presence answer, got {other:?}"),
+            }
+        }
+
+        let engine = Engine::vault();
+        let swept = collect_unreferenced_assets(
+            &ArchiveGate::default(),
+            AssetSweep {
+                engine: &engine,
+                pool: &hub_replica.pool,
+                vault_root: hub_replica.directory.path(),
+                in_flight: &in_flight,
+                grace: UNREFERENCED_ASSET_GRACE,
+                now: SystemTime::now() + UNREFERENCED_ASSET_GRACE * 2,
+            },
+            |_| Some(()),
+        )
+        .await;
+        assert_eq!(swept, Ok(1), "a question keeps no file alive");
+        assert_eq!(hub_replica.asset_bytes(&image), None);
+        hub_replica.close().await;
+    });
+}
+
 /// Public key of the person the contacts tests add.
 const PEER_KEY: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE";
 const CONTACTS_AT: &str = "2026-10-07T12:00:00.000Z";
@@ -3238,16 +3307,16 @@ fn the_higher_card_revision_wins_a_concurrent_regeneration() {
             )
             .bind(nonce)
         };
-        rotate("BBBBBBBBBBBBBBBBBBBBBB")
+        rotate("BBBBBBBBBBBBBBBBBBBBBA")
             .execute(&hub_replica.pool)
             .await
             .expect("hub rotate");
-        rotate("CCCCCCCCCCCCCCCCCCCCCC")
+        rotate("CCCCCCCCCCCCCCCCCCCCCA")
             .execute(&hub_replica.pool)
             .await
             .expect("hub rotate again");
         hub_replica.seal().await;
-        rotate("DDDDDDDDDDDDDDDDDDDDDD")
+        rotate("DDDDDDDDDDDDDDDDDDDDDA")
             .execute(&phone.pool)
             .await
             .expect("phone rotate");
@@ -3259,7 +3328,7 @@ fn the_higher_card_revision_wins_a_concurrent_regeneration() {
                     .fetch_one(&replica.pool)
                     .await
                     .expect("read card");
-            assert_eq!(card, ("CCCCCCCCCCCCCCCCCCCCCC".to_string(), 3));
+            assert_eq!(card, ("CCCCCCCCCCCCCCCCCCCCCA".to_string(), 3));
         }
         hub_replica.close().await;
         phone.close().await;
@@ -3708,7 +3777,9 @@ fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_sta
 mod calendar_conflicts;
 mod calendar_recovery;
 mod flood;
+mod forged_forks;
 mod handover;
+mod held;
 mod notes_conflicts;
 mod notes_recovery;
 mod projects_conflicts;

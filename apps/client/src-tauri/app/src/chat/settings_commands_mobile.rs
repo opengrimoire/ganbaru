@@ -54,7 +54,7 @@ pub async fn chat_discover_default_providers(
     read_settings(&app).await
 }
 
-/// Stores the portable Chat behavior preferences, which replicate to the vault's other devices.
+/// Stores the Chat behavior preferences. Portable fields replicate to the vault's other devices.
 #[tauri::command]
 pub async fn chat_update_behavior(
     app: tauri::AppHandle,

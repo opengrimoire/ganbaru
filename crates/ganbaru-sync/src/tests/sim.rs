@@ -4,10 +4,14 @@
 //! Engine calls crash at failpoints and must leave no trace, the hub removes spare devices while
 //! they edit and excludes what they write past the cutoff, cloned spare installations fork their
 //! writer and re-seal once fork evidence reaches them, and conflicts and recovery offers are
-//! resolved along the way. Exchanges sometimes end with the hub and the exchanging replica compacting what is stable, except one replica that never
-//! compacts; compaction never changes domain rows. After every step the databases keep their
-//! invariants; at quiescence every installation holds the same replicated state, and every
-//! override policy the fixture hook settles shows its strictest concurrent version.
+//! resolved along the way. Writers sometimes forge rows the schema refuses, which every other
+//! replica leaves out without stopping apply, and row keys the manifest refuses, which a copy of
+//! the hub holds. Exchanges sometimes end with the hub and the
+//! exchanging replica compacting what is stable, except one replica that never compacts;
+//! compaction never changes domain rows. After every step the databases keep their invariants;
+//! at quiescence every installation holds the same replicated state once forging writers drop
+//! their own forged rows, and every override policy the fixture hook settles shows its strictest
+//! concurrent version.
 //!
 //! Seeds are split across four test functions that the harness runs in parallel.
 //! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default debug
@@ -19,24 +23,31 @@ mod relay;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Envelope, Field, Value, VersionVector, WriterId};
+use ganbaru_sync_contracts::{
+    Change, ChangeAction, Content, Entry, Envelope, Field, LateResolution, LateRow, ResolveLate,
+    RowKey, TableId, Value, VersionVector, WriterId,
+};
 
+use super::authorization::{seal_after, view};
 use super::block_on;
 use super::fixture::{
     ASK, BOARD_CARDS, BOARD_CHECKS, BOARD_HANDLE_PREFIX, MAX_BOARD_STAGE, MAX_LIST_ENTRIES,
-    MEMOS_TABLE, NODE_MAX_DEPTH, OVERRIDES_TABLE, UNATTENDED, edge_key, membership_key,
+    MEMOS_TABLE, NODE_MAX_DEPTH, OVERRIDES_TABLE, RESERVED, UNATTENDED, edge_key, membership_key,
     memo_tag_key, override_group, policy_rank,
 };
-use super::replica::{ENROLLED_DEVICES, Replica, START_MS, device_id, quoted, rank};
+use super::replica::{ENROLLED_DEVICES, Replica, START_MS, converge, device_id, quoted, rank};
 use crate::acknowledge::{ACKNOWLEDGEMENT_INTERVAL_MS, KEEPALIVE_INTERVAL_MS};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
+use crate::manifest::vault::chat::PROFILES_TABLE;
+use crate::manifest::vault::contacts::{CARD_KEY, CARD_TABLE};
+use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
 use crate::merge;
 use crate::stability::{CountedDevice, DeviceStanding};
 use crate::{
-    ApplyReport, EvidenceOutcome, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult,
-    compaction_limit,
+    ApplyReport, EvidenceOutcome, HoldReason, MAX_EXCLUDED_PER_WRITER, StoreOutcome, StoreRefusal,
+    SyncError, SyncResult, compaction_limit,
 };
 
 const DEFAULT_SEEDS: u64 = 48;
@@ -105,19 +116,21 @@ struct Sim {
     spares: usize,
     /// Override edits, drawn apart from `rng` and keyed apart from `created`, so they leave
     /// every other choice of a seed as it was.
-    overrides: Overrides,
+    overrides: SideEdits,
+    /// Edits of rows that refer to a tree or an edge, kept apart in the same way.
+    notes: SideEdits,
 }
 
-/// Choices and ids of fixture override edits.
-struct Overrides {
+/// Choices and ids of a stream of edits kept apart from the rest of a run.
+struct SideEdits {
     rng: Rng,
     created: usize,
 }
 
-impl Overrides {
-    fn new(seed: u64) -> Self {
+impl SideEdits {
+    fn new(seed: u64, mix: u64) -> Self {
         Self {
-            rng: Rng(seed ^ OVERRIDE_SEED_MIX),
+            rng: Rng(seed ^ mix),
             created: 0,
         }
     }
@@ -125,8 +138,27 @@ impl Overrides {
 
 /// Mixed into a seed for the override edit stream.
 const OVERRIDE_SEED_MIX: u64 = 0x6f76_6572_7269_6465;
+/// Mixed into a seed for the note edit stream.
+const NOTE_SEED_MIX: u64 = 0x6e6f_7465_7369_6465;
 /// Chance in percent that a local edit is followed by an override edit.
 const OVERRIDE_EDIT_PERCENT: u64 = 6;
+/// Chance in percent that a local edit is followed by an edit of a row referring to a tree or
+/// an edge.
+const NOTE_EDIT_PERCENT: u64 = 12;
+/// Chance in percent that an override edit is a forged row the schema refuses.
+const HOSTILE_OVERRIDE_PERCENT: u64 = 25;
+/// A key the card table refuses.
+const HOSTILE_CARD_KEY: &str = "not-the-card";
+/// Rows of the singleton and seeded tables whose rows no operation deletes.
+const NEVER_DELETED: [(TableId, &str); 3] = [
+    (CARD_TABLE, CARD_KEY),
+    (SETTINGS_TABLE, SETTINGS_KEY),
+    (PROFILES_TABLE, "access-profile:read-only"),
+];
+/// Bytes of a page of stored operations, more than any one operation.
+const MAX_OP_PAGE_BYTES: usize = 64 * 1024;
+/// Id prefix of forged overrides.
+const HOSTILE_OVERRIDE: &str = "hostile-override-";
 
 /// Runs `call`, first crashing it at a random failpoint now and then. A crashed call must leave
 /// the database exactly as it was; the call then runs again without a failpoint.
@@ -218,6 +250,7 @@ async fn apply_all(rng: &mut Rng, replica: &mut Replica) {
             })
             .await
             .unwrap_or_else(|error| panic!("replica {} failed to apply: {error:?}", replica.index));
+        replica.check_class_index().await;
         // Fork evidence reaches an installation without freezing its writer when the apply
         // seals nothing, so every round re-seals its own forks, as the app does.
         let resealed = replica.reseal_own_forks().await;
@@ -513,7 +546,8 @@ impl Sim {
             clock_ms: START_MS,
             created: 0,
             spares: 0,
-            overrides: Overrides::new(seed),
+            overrides: SideEdits::new(seed, OVERRIDE_SEED_MIX),
+            notes: SideEdits::new(seed, NOTE_SEED_MIX),
         }
     }
 
@@ -603,6 +637,9 @@ impl Sim {
         let touch = format!("updated_at = {now}, revision = revision + 1");
         if self.overrides.rng.chance(OVERRIDE_EDIT_PERCENT) {
             self.edit_overrides(index, now.clone()).await;
+        }
+        if self.notes.rng.chance(NOTE_EDIT_PERCENT) {
+            self.edit_notes(index).await;
         }
         let kind = self.rng.below(45);
         if kind >= 43 {
@@ -1128,6 +1165,9 @@ impl Sim {
             _ => quoted(UNATTENDED),
         };
         let fallback = quoted(if rng.chance(50) { ASK } else { UNATTENDED });
+        if rng.chance(HOSTILE_OVERRIDE_PERCENT) {
+            return self.forge_refused_override(index, &now, &fallback).await;
+        }
         let sql = match (rng.below(8), rng.pick(&overrides)) {
             (0..=3, Some(id)) => format!(
                 "UPDATE fixture_overrides SET policy = {policy} WHERE id = {}",
@@ -1148,6 +1188,23 @@ impl Sim {
             }
         };
         self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// Stores an override whose policy passes validation and that the schema refuses, the way a
+    /// hostile writer that skips its own constraints would.
+    async fn forge_refused_override(&mut self, index: usize, now: &str, fallback: &str) {
+        self.overrides.created += 1;
+        let key = format!("{HOSTILE_OVERRIDE}{index}-{}", self.overrides.created);
+        self.replicas[index]
+            .exec(&format!(
+                "PRAGMA ignore_check_constraints = ON;
+                 INSERT INTO fixture_overrides (id, created_at, fallback, policy)
+                 VALUES ({}, {now}, {fallback}, {});
+                 PRAGMA ignore_check_constraints = OFF;",
+                quoted(&key),
+                quoted(RESERVED)
+            ))
+            .await;
     }
 
     /// One local edit of fixture links and their ends: create an end whose label may collide,
@@ -1305,6 +1362,54 @@ impl Sim {
                     quoted(&id),
                     target.as_deref().map_or("NULL".to_string(), quoted),
                     quoted(&self.words())
+                )
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of the rows that reach a tree or an edge set by reference: a note on a
+    /// node, a note on an edge, or a pointer to a note on a node. Each edit adds a row, moves
+    /// one, or deletes one.
+    async fn edit_notes(&mut self, index: usize) {
+        let rng = &mut self.notes.rng;
+        let (table, targets_sql) = match rng.below(3) {
+            0 => (
+                "fixture_node_notes",
+                "SELECT id FROM fixture_nodes ORDER BY id",
+            ),
+            1 => (
+                "fixture_edge_notes",
+                "SELECT sync_key FROM fixture_edges ORDER BY sync_key",
+            ),
+            _ => (
+                "fixture_note_pointers",
+                "SELECT id FROM fixture_node_notes ORDER BY id",
+            ),
+        };
+        let targets = ids(&mut self.replicas[index], targets_sql).await;
+        let rows = ids(
+            &mut self.replicas[index],
+            &format!("SELECT id FROM {table} ORDER BY id"),
+        )
+        .await;
+        let rng = &mut self.notes.rng;
+        let target = rng.pick(&targets).map(|id| quoted(id));
+        let row = rng.pick(&rows).map(|id| quoted(id));
+        let sql = match (rng.below(4), row) {
+            (1 | 2, Some(row)) => format!(
+                "UPDATE {table} SET peer_id = {} WHERE id = {row}",
+                target.unwrap_or("NULL".into())
+            ),
+            (3, Some(row)) => format!("DELETE FROM {table} WHERE id = {row}"),
+            _ => {
+                self.notes.created += 1;
+                let id = format!("note-{index}-{}", self.notes.created);
+                format!(
+                    "INSERT INTO {table} (id, label, peer_id) VALUES ({}, {}, {})",
+                    quoted(&id),
+                    quoted(rng.pick(TAG_NAMES).unwrap()),
+                    target.unwrap_or("NULL".into())
                 )
             }
         };
@@ -1755,6 +1860,69 @@ impl Sim {
         }
     }
 
+    /// A replica's writer seals a tombstone under a row key the schema refuses.
+    async fn forge_refused_key(&mut self, index: usize) {
+        self.forge_held_tombstone(index, CARD_TABLE, HOSTILE_CARD_KEY)
+            .await;
+    }
+
+    /// A replica's writer seals a tombstone of a row that no operation may delete.
+    async fn forge_never_deleted_tombstone(&mut self, index: usize) {
+        let (table, key) = NEVER_DELETED[self.rng.below(NEVER_DELETED.len())];
+        self.forge_held_tombstone(index, table, key).await;
+    }
+
+    /// A replica's writer seals a tombstone the bytes alone refuse, the way a hostile writer that
+    /// skips its own rules would, and a copy of the hub holds it and applies nothing of it. The
+    /// run continues without the copies, since a held operation stops its writer.
+    async fn forge_held_tombstone(&mut self, index: usize, table: TableId, key: &str) {
+        let mut writer = self.replicas[index].clone_device().await;
+        let id = writer.writer();
+        let mut before_last = writer.stored_vector().await;
+        let Some(last_seq) = before_last.get(&id).checked_sub(1) else {
+            return;
+        };
+        before_last.set(id, last_seq);
+        // Compaction may have taken the last operation, which the sequence must follow.
+        let Ok(page) = writer
+            .engine
+            .ops_after(
+                &mut writer.conn,
+                &writer.ctx,
+                &before_last,
+                MAX_OP_PAGE_BYTES,
+            )
+            .await
+        else {
+            return;
+        };
+        let mut receiver = self.hub.clone_device().await;
+        receiver.pull(&mut writer).await;
+        let change = Change {
+            table,
+            row: RowKey::new(key).unwrap(),
+            action: ChangeAction::Tombstone,
+            groups: Vec::new(),
+            replaced_by: None,
+            cause: None,
+        };
+        let revision = view(&mut writer).await.revision;
+        let forged = seal_after(
+            &page.ops[0],
+            &writer.identity.key,
+            Content::Changes(vec![change]),
+            revision,
+            writer.now_ms,
+        );
+        assert_eq!(
+            receiver.receive(&[forged]).await,
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }],
+            "the hub did not hold the tombstone of {key} from replica {index}"
+        );
+    }
+
     async fn step(&mut self) {
         self.advance_clocks();
         let index = self.rng.below(self.replicas.len());
@@ -1769,7 +1937,9 @@ impl Sim {
             65..=74 => seal(&mut self.rng, &mut self.replicas[index]).await,
             75..=81 => self.resolve(index).await,
             82..=88 => self.recover(index).await,
-            89..=96 => self.offline[index] = !self.offline[index],
+            89..=94 => self.offline[index] = !self.offline[index],
+            95 => self.forge_refused_key(index).await,
+            96 => self.forge_never_deleted_tombstone(index).await,
             97..=98 => self.remove_spare().await,
             _ => self.fork_spare(index).await,
         }
@@ -2002,7 +2172,32 @@ impl Sim {
         }
     }
 
+    /// Asserts that replicas refused only forged rows, then drops those rows from their writers,
+    /// the one place they exist, without capturing the delete.
+    async fn clear_forged_rows(&mut self) {
+        let forged = format!(
+            "UPDATE sync_apply_state SET applying = 1;
+             DELETE FROM fixture_overrides WHERE policy = {};
+             UPDATE sync_apply_state SET applying = 0;",
+            quoted(RESERVED)
+        );
+        for replica in self
+            .replicas
+            .iter_mut()
+            .chain(std::iter::once(&mut self.hub))
+        {
+            for key in ids(replica, "SELECT row_key FROM sync_refused_rows").await {
+                assert!(
+                    key.starts_with(HOSTILE_OVERRIDE),
+                    "honest row {key} was refused"
+                );
+            }
+            replica.exec(&forged).await;
+        }
+    }
+
     async fn assert_converged(&mut self) {
+        self.clear_forged_rows().await;
         self.assert_overrides_settled().await;
         let expected = self.hub.dump().await;
         for replica in &mut self.replicas {
@@ -2010,6 +2205,15 @@ impl Sim {
                 replica.dump().await,
                 expected,
                 "replica {} diverged",
+                replica.index
+            );
+        }
+        let derivation = self.hub.full_derivation().await;
+        for replica in &mut self.replicas {
+            assert_eq!(
+                replica.full_derivation().await,
+                derivation,
+                "replica {} derives other repairs",
                 replica.index
             );
         }
@@ -2115,4 +2319,238 @@ fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_2() {
 #[test]
 fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_3() {
     run_shard(3);
+}
+
+/// Seeds of [`excluded_creates_converge`]. Half of them seal a burst past the excluded bound,
+/// which costs [`MAX_EXCLUDED_PER_WRITER`] seals each, so the run keeps fewer seeds than the
+/// main simulation.
+const EXCLUDED_CREATE_SEEDS: u64 = 8;
+/// Peers that receive what the removed device seals past its cutoff in a random way.
+const EXCLUDED_CREATE_PEERS: usize = 3;
+/// The row an honest member creates and the removed device signs a Create of past its cutoff,
+/// named as [`super::exclusion::late_create`] expects.
+const EXCLUDED_SHARED_NOTE: &str = "note-kept";
+
+/// How a peer meets the operations a removed device sealed past its cutoff.
+#[derive(Clone, Copy, Debug)]
+enum LateArrival {
+    /// Learns of the removal first, so it refuses what lies past the excluded bound.
+    RemovalFirst,
+    /// Stores and applies the operations, then learns of the removal.
+    OperationsFirst,
+}
+
+/// Seals what the removed device does past its cutoff: its own note, optional edits that fill
+/// or pass the excluded bound, and last a forged Create of [`EXCLUDED_SHARED_NOTE`] built from
+/// the honest creation. Returns the operations past `cutoff`.
+async fn seal_excluded_creates(
+    rng: &mut Rng,
+    removed: &mut Replica,
+    honest: &mut Replica,
+    cutoff: u64,
+) -> Vec<Vec<u8>> {
+    let edit_early = async |removed: &mut Replica, index: u64| {
+        super::exclusion::edit(
+            removed,
+            &format!("UPDATE quick_notes SET title = 'Early {index}' WHERE id = 'note-early'"),
+        )
+        .await;
+    };
+    let burst = rng.chance(50);
+    // A burst fills the bound before the forged Create, with the removed device's own note
+    // inside the bound or past it.
+    let (before, after) = if burst {
+        let own_past = rng.chance(50);
+        let total = if own_past {
+            MAX_EXCLUDED_PER_WRITER
+        } else {
+            MAX_EXCLUDED_PER_WRITER - 1
+        };
+        let before = if own_past {
+            total
+        } else {
+            rng.below(usize::try_from(total).unwrap() + 1) as u64
+        };
+        (before, total - before)
+    } else {
+        (rng.below(3) as u64, rng.below(3) as u64)
+    };
+    for index in 0..before {
+        edit_early(removed, index).await;
+    }
+    super::exclusion::edit(removed, &super::exclusion::note("note-own", "Own", 2)).await;
+    for index in 0..after {
+        edit_early(removed, before + index).await;
+    }
+    let forged = super::exclusion::late_create(removed, honest, EXCLUDED_SHARED_NOTE).await;
+    let mut past = removed.own_ops().await[usize::try_from(cutoff).unwrap()..].to_vec();
+    past.push(forged);
+    if burst {
+        assert!(past.len() as u64 > MAX_EXCLUDED_PER_WRITER);
+    }
+    past
+}
+
+/// Decides late changes on `anchor` in a random order, restoring or discarding each, and
+/// leaving the rest undecided when the draw stops.
+async fn decide_late_changes(rng: &mut Rng, anchor: &mut Replica, removal: u64) {
+    loop {
+        let listed = anchor
+            .engine
+            .late_changes(&mut anchor.conn, &anchor.ctx)
+            .await
+            .unwrap();
+        let Some(late) = rng.pick(&listed).cloned() else {
+            return;
+        };
+        if rng.chance(20) {
+            return;
+        }
+        let resolution = if late.restorable && rng.chance(50) {
+            anchor
+                .engine
+                .restore_late_change(
+                    &mut anchor.conn,
+                    &anchor.ctx,
+                    &late,
+                    &mut anchor.identity.local(),
+                    anchor.now_ms,
+                )
+                .await
+                .unwrap();
+            LateResolution::Restore
+        } else {
+            LateResolution::Discard
+        };
+        anchor
+            .sequence(Entry::ResolveLate(ResolveLate {
+                removal_revision: removal,
+                rows: vec![LateRow {
+                    table: late.table,
+                    row: RowKey::new(late.row_key.clone()).unwrap(),
+                    resolution,
+                }],
+            }))
+            .await
+            .unwrap()
+            .unwrap();
+        anchor.apply_all().await.unwrap();
+    }
+}
+
+/// One seed of [`excluded_creates_converge`].
+async fn excluded_creates_run(seed: u64) {
+    use super::exclusion::{deliver, edit, note, title};
+
+    let _guard = SeedGuard(seed);
+    let mut rng = Rng(seed);
+    let salt = 400 + seed;
+    let mut anchor = Replica::anchor(0, salt).await;
+    let mut removed = Replica::new(1, salt).await;
+    let mut honest = Replica::new(2, salt).await;
+    let mut peers = Vec::new();
+    for index in 0..EXCLUDED_CREATE_PEERS {
+        peers.push(Replica::new(3 + index, salt).await);
+    }
+    edit(&mut honest, &note(EXCLUDED_SHARED_NOTE, "Draft", 0)).await;
+    deliver(&mut anchor, &mut honest).await;
+    deliver(&mut removed, &mut anchor).await;
+    edit(&mut removed, &note("note-early", "Early", 1)).await;
+    deliver(&mut anchor, &mut removed).await;
+    deliver(&mut honest, &mut anchor).await;
+    for peer in &mut peers {
+        deliver(peer, &mut anchor).await;
+    }
+    let cutoff = anchor.stored_vector().await.get(&removed.writer());
+    let removal = anchor.remove(&removed.device_id.clone()).await.unwrap();
+    let past = seal_excluded_creates(&mut rng, &mut removed, &mut honest, cutoff).await;
+
+    let arrivals = [LateArrival::RemovalFirst, LateArrival::OperationsFirst];
+    for peer in &mut peers {
+        let arrival = *rng.pick(&arrivals).unwrap();
+        match arrival {
+            LateArrival::RemovalFirst => {
+                deliver(peer, &mut anchor).await;
+                peer.receive(&past).await;
+                peer.apply_all().await.unwrap();
+            }
+            LateArrival::OperationsFirst => {
+                peer.receive(&past).await;
+                peer.apply_all().await.unwrap();
+                deliver(peer, &mut anchor).await;
+            }
+        }
+        assert_eq!(
+            title(peer, EXCLUDED_SHARED_NOTE).await.as_deref(),
+            Some("Draft"),
+            "peer {} lost the honest row arriving {arrival:?}",
+            peer.index
+        );
+    }
+    anchor.receive(&past).await;
+    anchor.apply_all().await.unwrap();
+    decide_late_changes(&mut rng, &mut anchor, removal).await;
+
+    let mut replicas = vec![anchor, honest];
+    replicas.extend(peers);
+    converge(&mut replicas).await;
+    let editor = rng.below(replicas.len());
+    edit(
+        &mut replicas[editor],
+        &format!(
+            "UPDATE quick_notes SET title = 'Edited' WHERE id = {}",
+            quoted(EXCLUDED_SHARED_NOTE)
+        ),
+    )
+    .await;
+    converge(&mut replicas).await;
+    let expected = replicas[0].dump().await;
+    for replica in &mut replicas {
+        assert_eq!(
+            title(replica, EXCLUDED_SHARED_NOTE).await.as_deref(),
+            Some("Edited"),
+            "replica {} lost the honest row",
+            replica.index
+        );
+        assert_eq!(
+            replica.dump().await,
+            expected,
+            "replica {} diverged",
+            replica.index
+        );
+        replica.check_invariants().await;
+    }
+    let limit = replicas[0].stored_vector().await;
+    for replica in &mut replicas {
+        replica
+            .compact(&limit, crate::COMPACTION_BATCH_OPS)
+            .await
+            .unwrap();
+    }
+    for replica in &mut replicas {
+        assert_eq!(
+            replica.dump().await,
+            expected,
+            "replica {} diverged after compacting",
+            replica.index
+        );
+        replica.check_invariants().await;
+    }
+}
+
+/// A removed device signs a Create of a row an honest member created, after edits that may
+/// pass its excluded bound. Peers meet those operations before or after the removal, the
+/// anchor restores and discards late changes in a random order, and every replica compacts
+/// once they agree. Every replica keeps the honest row and ends with the same state.
+#[test]
+fn excluded_creates_converge() {
+    block_on(async {
+        let all = match number(SEED_VARIABLE) {
+            Some(seed) => seed..seed + 1,
+            None => 0..EXCLUDED_CREATE_SEEDS,
+        };
+        for seed in all {
+            excluded_creates_run(seed).await;
+        }
+    });
 }

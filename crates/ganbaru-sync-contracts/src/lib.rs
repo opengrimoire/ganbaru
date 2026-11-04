@@ -9,6 +9,7 @@
 pub mod authorization;
 pub mod backup;
 pub mod bounds;
+pub mod builtin_profiles;
 pub mod certificate;
 pub mod charter;
 pub mod codec;
@@ -44,8 +45,8 @@ pub use crypto::{
 };
 pub use hlc::{Hlc, HlcClock};
 pub use ids::{
-    DerivedKeyError, GroupId, GroupMask, OpId, PENDING_KEY_PREFIX, RowKey, Seq, SpaceId, TableId,
-    WriterId, derived_key,
+    DEVICE_OWNER_TAG_HEX_CHARS, DerivedKeyError, GroupId, GroupMask, OpId, PENDING_KEY_PREFIX,
+    RowKey, Seq, SpaceId, TableId, WriterId, derived_key, device_owner_tag,
 };
 pub use keys::{
     AdminKeyPair, AdminPublicKey, DeviceKeyPair, DevicePublicKey, KeyError, RelayAccessKeyPair,
@@ -57,7 +58,7 @@ pub use op::{
 };
 pub use order_key::{OrderKey, OrderKeyError};
 pub use order_placement::{OrderPlacementError, OrderedRow};
-pub use recovery::{RecoveryError, RecoveryPublicKeys, RecoverySeed};
+pub use recovery::{KitCode, RecoveryError, RecoveryPublicKeys, RecoverySeed};
 pub use relay::{
     OpenedRecord, RelayAssetChunk, RelayAssetHeader, RelayAssetId, RelayAssetOpener, RelayError,
     RelayRecord, RelayRecordHeader, relay_asset_chunk_count, seal_relay_asset,

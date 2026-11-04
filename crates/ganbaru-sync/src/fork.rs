@@ -6,7 +6,7 @@
 //! that holds such a pair stores it in `sync_fork_evidence`, keeps the writer's chain through the
 //! common prefix, and from then on refuses everything past it, so neither branch survives
 //! anywhere: the writer becomes forked with the last shared sequence as its cutoff. A pair is
-//! evidence only when both operations decode and neither claims a revision below the shared
+//! evidence only when both signed headers decode and neither claims a revision below the shared
 //! operation before them, so every stored fork proves the revision it freezes at.
 //!
 //! Every replica but the forked writer's own device excludes both branches: the merge effects
@@ -24,6 +24,9 @@
 //! with its own writer, the current value of every live group that the branch it stored wrote,
 //! once the exclusion materialized. Its operations cover every version the anchor holds, so
 //! every member converges to the anchor's state whether or not a copy of the branch re-seals.
+//! A row another device owns is the exception: the anchor cannot seal it, so the anchor keeps
+//! the branch value while members that retained restore the displaced one, until the owner
+//! writes the row again. A removed or destroyed owner never does.
 //!
 //! Authority does not read this table: the record store keeps both twins and the operation
 //! they continue from, and a provable fork of a writer that carries records freezes their epoch
@@ -39,6 +42,7 @@ use sqlx::{Connection, SqliteConnection};
 use crate::error::{SyncResult, corrupt};
 use crate::log::{self, clamp_ms, seq_i64, stored_u64};
 use crate::merge::{self, Batch, RowState};
+use crate::visibility::Visibility;
 use crate::{Engine, SpaceContext};
 use crate::{authorization, exclusion, seal, sql};
 
@@ -181,15 +185,16 @@ pub(crate) async fn unsettle(conn: &mut SqliteConnection, space: SpaceId) -> Syn
 /// sequence as its cutoff. Evidence of a fork at an earlier sequence replaces a later one, since
 /// the cutoff only falls. A revoked writer keeps its removal cutoff apart, so its cutoff becomes
 /// the fork's and the result does not depend on whether the removal or the evidence came first.
-/// The envelopes are stored ordered by hash, so every replica holds the same row. A fork at or
-/// below the writer's compacted sequence is refused, since its bodies are gone here and that
-/// branch cannot be excluded.
+/// The envelopes are stored ordered by hash and without their bodies, see
+/// [`Envelope::proof_bytes`], so every replica holds the same row and none holds the values of a
+/// forked operation. A fork at or below the writer's compacted sequence is refused, since its
+/// bodies are gone here and that branch cannot be excluded.
 pub(crate) async fn record(
     conn: &mut SqliteConnection,
     space: SpaceId,
     writer: WriterId,
     seq: Seq,
-    pair: [(&[u8], Digest32); 2],
+    pair: [&Envelope<'_>; 2],
     now_ms: u64,
 ) -> SyncResult<EvidenceOutcome> {
     let existing: Option<i64> = sqlx::query_scalar(
@@ -218,11 +223,11 @@ pub(crate) async fn record(
             EvidenceRefusal::InsideCompactedRange,
         ));
     }
-    let [(first, first_hash), (second, second_hash)] = pair;
-    let (first, second) = if first_hash <= second_hash {
-        (first, second)
+    let [first, second] = pair;
+    let (first, second) = if first.hash() <= second.hash() {
+        (first.proof_bytes(), second.proof_bytes())
     } else {
-        (second, first)
+        (second.proof_bytes(), first.proof_bytes())
     };
     sqlx::query(
         "INSERT INTO sync_fork_evidence
@@ -254,8 +259,9 @@ pub(crate) async fn record(
 }
 
 /// Checks that two operations of `writer` at `seq`, both signed by its key, prove the revision
-/// their fork freezes at: both decode, and neither claims a revision below the one the shared
-/// operation before them was sealed against, which this replica must store. Both copies of an
+/// their fork freezes at: both signed headers decode, and neither claims a revision below the one
+/// the shared operation before them was sealed against, which this replica must store. Only the
+/// headers are read, since stored evidence keeps no bodies. Both copies of an
 /// honest fork continue from that operation and seal against what their installation selected
 /// since, so a lower claim cannot be told apart from a forgery: it is refused rather than
 /// freezing an epoch below entries the writer already saw.
@@ -268,10 +274,10 @@ pub(crate) async fn unprovable(
 ) -> SyncResult<Option<EvidenceRefusal>> {
     let mut claimed = Vec::with_capacity(pair.len());
     for envelope in pair {
-        let Ok(operation) = envelope.operation() else {
+        let Ok(header) = envelope.header_fields() else {
             return Ok(Some(EvidenceRefusal::Malformed));
         };
-        claimed.push(operation.header.authorization_revision);
+        claimed.push(header.authorization_revision);
     }
     if seq <= 1 {
         return Ok(None);
@@ -326,15 +332,7 @@ async fn store_evidence(
     if let Some(refusal) = unprovable(conn, ctx.space, a.writer, a.seq, [&a, &b]).await? {
         return refused(refusal);
     }
-    record(
-        conn,
-        ctx.space,
-        a.writer,
-        a.seq,
-        [(first, a.hash()), (second, b.hash())],
-        now_ms,
-    )
-    .await
+    record(conn, ctx.space, a.writer, a.seq, [&a, &b], now_ms).await
 }
 
 /// Settles fork evidence stored since the last engine write, inside one: both branches of every
@@ -430,6 +428,7 @@ async fn exclude_branches(
         exclusion::restore_displaced(engine, conn, batch, *writer, *keep).await?;
     }
     if !removed.is_empty() {
+        merge::settle_kept(engine, conn, batch).await?;
         exclusion::drop_orphan_rows(conn, batch).await?;
     }
     merge::mark_uncreated(conn, &created).await?;
@@ -498,8 +497,9 @@ pub(crate) async fn collect_released(
     let through = stored_u64(released, "released mark")?;
     let mut groups = BTreeMap::new();
     collect_written(engine, conn, space, &mut groups, writer, keep, through).await?;
+    let mut visibility = Visibility::default();
     for ((table, key), mask) in groups {
-        if merge::row_state(conn, table, &key).await? == Some(RowState::Live) {
+        if visibility.state(engine, conn, table, &key).await? == Some(RowState::Live) {
             record_restated(engine, conn, table, &key, mask).await?;
         }
         let entry = batch
@@ -633,11 +633,11 @@ pub(crate) async fn capture_released(
     capture_rows(engine, conn, released, now_ms, false).await
 }
 
-/// Captures `groups` on live rows, so the next seal publishes their current values, and records
-/// their winning values as restatements. A live row of a derived-key table its domain table does
-/// not hold publishes its existence register as absent when `groups` names it; any other row the
-/// domain table does not hold, and a row an exclusion left orphaned or a tombstone deleted, is
-/// skipped.
+/// Captures `groups` on live rows, a retained tombstoned row among them, so the next seal
+/// publishes their current values, and records their winning values as restatements. A live row
+/// of a derived-key table its domain table does not hold publishes its existence register as
+/// absent when `groups` names it; any other row the domain table does not hold, and a row an
+/// exclusion left orphaned or a tombstone deleted, is skipped.
 pub(crate) async fn capture_groups(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -656,11 +656,12 @@ async fn capture_rows(
     now_ms: u64,
     restate: bool,
 ) -> SyncResult<()> {
+    let mut visibility = Visibility::default();
     for ((table, key), mask) in groups {
         let Some(spec) = engine.manifest().table(table) else {
             continue;
         };
-        if merge::row_state(conn, table, &key).await? != Some(RowState::Live) {
+        if visibility.state(engine, conn, table, &key).await? != Some(RowState::Live) {
             continue;
         }
         if sql::read_columns(conn, spec.name, spec.key_column, &key, &[])
@@ -921,5 +922,30 @@ impl Engine {
         .fetch_optional(&mut *conn)
         .await?;
         Ok(envelope.filter(|envelope| !envelope.is_empty()))
+    }
+
+    /// The sequence and hash of `envelope` when it is an operation of `writer` in this space,
+    /// signed by the key this replica stores for `writer`; `None` for anything else, so a peer
+    /// cannot pass off an unsigned or foreign operation as the writer's head. Writes nothing.
+    pub async fn verify_own_head(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        writer: WriterId,
+        envelope: &[u8],
+    ) -> SyncResult<Option<(Seq, Digest32)>> {
+        log::ensure_space(conn, ctx.space).await?;
+        let Ok(operation) = Envelope::decode(envelope) else {
+            return Ok(None);
+        };
+        if operation.space != ctx.space || operation.writer != writer || operation.seq == 0 {
+            return Ok(None);
+        }
+        let Some(stored) = log::writer(conn, ctx.space, writer).await? else {
+            return Ok(None);
+        };
+        Ok(operation
+            .verify(&stored.public_key)
+            .then(|| (operation.seq, operation.hash())))
     }
 }

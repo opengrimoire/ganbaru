@@ -8,6 +8,10 @@ use crate::validation::{is_exportable_web_reference_url, rich_text_items_plain_t
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// Policy written into every exported page. It names only scripts, plugins, and the base URL, because `default-src` handling of `file:` origins varies by browser and could block the relative stylesheet.
+const EXPORT_CONTENT_SECURITY_POLICY: &str =
+    "script-src 'none'; object-src 'none'; base-uri 'none'";
+
 pub(crate) struct HtmlRenderInput<'a> {
     pub(crate) page: &'a ExportPage,
     pub(crate) blocks: &'a [ExportBlock],
@@ -50,7 +54,7 @@ pub(crate) fn render_page(input: HtmlRenderInput<'_>) -> HtmlRenderOutput {
     let comments = renderer.render_comments(input.comments);
     let title = escape_html(&input.page.title);
     let html = format!(
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{title}</title>\n<link rel=\"stylesheet\" href=\"{}\">\n</head>\n<body>\n<main class=\"page\">\n<header class=\"page-header\">\n<h1>{title}</h1>\n<p class=\"page-meta\">Created {}. Edited {}.</p>\n</header>\n{}\n<section class=\"blocks\">\n{}\n</section>\n{}\n</main>\n</body>\n</html>\n",
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta http-equiv=\"Content-Security-Policy\" content=\"{EXPORT_CONTENT_SECURITY_POLICY}\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{title}</title>\n<link rel=\"stylesheet\" href=\"{}\">\n</head>\n<body>\n<main class=\"page\">\n<header class=\"page-header\">\n<h1>{title}</h1>\n<p class=\"page-meta\">Created {}. Edited {}.</p>\n</header>\n{}\n<section class=\"blocks\">\n{}\n</section>\n{}\n</main>\n</body>\n</html>\n",
         escape_attr(&css),
         escape_html(&input.page.row.created_time),
         escape_html(&input.page.row.last_edited_time),
@@ -230,7 +234,8 @@ impl HtmlRenderer<'_> {
 
     fn media(&mut self, block: &ExportBlock) -> String {
         let label = media_label(&block.payload, &block.row.block_type);
-        let Some(source) = media_source(&block.payload) else {
+        let Some(source) = media_source(&block.payload).filter(|source| !source.trim().is_empty())
+        else {
             self.warn_block(
                 block,
                 "html_export_media_missing_reference",
@@ -238,7 +243,9 @@ impl HtmlRenderer<'_> {
             );
             return tag("p", &escape_html(&label));
         };
-        let url = self.export_media_url(block, &source);
+        let Some(url) = self.export_media_url(block, &source) else {
+            return tag("p", &escape_html(&label));
+        };
         match block.row.block_type.as_str() {
             "image" => format!(
                 "<figure><img src=\"{}\" alt=\"{}\"><figcaption>{}</figcaption></figure>",
@@ -612,18 +619,28 @@ impl HtmlRenderer<'_> {
         output
     }
 
-    fn export_media_url(&mut self, block: &ExportBlock, source: &str) -> String {
+    /// The link for a media `source`: a path inside the archive for a managed asset, or an `http` or `https` URL. Any other source records a diagnostic and returns `None`, so the block renders as its label.
+    fn export_media_url(&mut self, block: &ExportBlock, source: &str) -> Option<String> {
         if let Some(asset_path) = source.strip_prefix("ganbaru-asset:") {
             if let Some(archive_path) = self.asset_paths.get(asset_path) {
-                return relative_link(self.current_page_path, archive_path);
+                return Some(relative_link(self.current_page_path, archive_path));
             }
             self.warn_block(
                 block,
                 "html_export_local_asset_not_included",
                 "Local managed asset was not included in this archive",
             );
+            return None;
         }
-        source.to_string()
+        if !is_exportable_web_reference_url(&block.row.block_type, source) {
+            self.warn_block(
+                block,
+                "html_export_unsafe_media_skipped",
+                "Media URL was not safe to export",
+            );
+            return None;
+        }
+        Some(source.trim().to_string())
     }
 
     fn warn_block(&mut self, block: &ExportBlock, code: &'static str, message: &'static str) {

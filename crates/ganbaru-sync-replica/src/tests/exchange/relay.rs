@@ -1,14 +1,18 @@
 //! Full relay passes against an in-process relay server: devices converge only through the
 //! relay, a removed device opens nothing sealed after its removal, an admin repairs a wrong epoch
 //! registration, an admin that lags behind a rotation or a demotion leaves the relay alone, a
-//! stalled flush registers nothing, asset chunks round trip and a tampered chunk is refused, and
-//! an access proof bound to another connection is refused.
+//! removed admin's key leaves the relay although a planted floor keeps pulls from draining, a
+//! stalled flush registers nothing, a rotation during a pass ends it without failure, asset
+//! chunks round trip and a tampered chunk is refused, and an access proof bound to another
+//! connection is refused.
 
+use super::flood::{authorization_record, operation_of, seal_next, throwaway_writer};
 use super::handover::{commit_sequenced, sequence_here};
 use super::{
     HUB_DEVICE, PHONE_DEVICE, Replica, TABLET_DEVICE, block_on, device_key, done, hub, hub_keys,
     png,
 };
+use crate::assets::{AssetStore, AssetStoreError, StagedAsset};
 use crate::authority::{self, Enrollment};
 use crate::client::{MAX_EXCHANGE_BYTES, PeerIds};
 use crate::keys::SpaceKeys;
@@ -20,22 +24,28 @@ use crate::relay::{
 use crate::tests::{NOW_MS, TestDirectory, VAULT_ID, acquire, add_note};
 use ganbaru_handoff::dial::LoopbackPolicy;
 use ganbaru_handoff::protocol::relay::{
-    RELAY_AUTH_DOMAIN, RELAY_EPOCH_DOMAIN, RELAY_SETUP_TOKEN_LIFETIME, RelayRefusalCode,
-    RelayRequest, RelayResponse, RelaySetupToken, encode_relay_bytes,
+    RELAY_AUTH_DOMAIN, RELAY_EPOCH_DOMAIN, RELAY_SETUP_TOKEN_LIFETIME, RelayAdminCommand,
+    RelayRefusalCode, RelayRequest, RelayResponse, RelaySetupToken, encode_relay_bytes,
 };
+use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::{AuthorizationView, RelayKeys};
 use ganbaru_sync_contracts::bounds::RELAY_ASSET_CHUNK_BYTES;
 use ganbaru_sync_contracts::{
-    AdminKeyPair, DeviceKind, DeviceRole, EncryptionKeyPair, Entry, RelayAccessKeyPair, SetRole,
-    SpaceKey,
+    AdminKeyPair, AdminPublicKey, AuthorizationRecord, ChainLink, Content, DeviceKeyPair,
+    DeviceKind, DeviceRole, EncryptionKeyPair, Enroll, Entry, KeyEnvelope, KeyEpoch, Proposal,
+    RelayAccessKeyPair, Sequencing, SetRole, SignedProposal, SpaceKey, WriterId,
+    sign_device_proposal, sign_proposal,
 };
 use ganbaru_sync_relay::identity::RelayIdentity;
 use ganbaru_sync_relay::server::{ConnectionLimits, RelayServer, unix_time_ms};
 use ganbaru_sync_relay::store::{RelayStore, RetentionPolicy};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 
 /// A relay server running on a loopback port for one test.
 struct TestRelay {
@@ -445,12 +455,168 @@ fn an_admin_pass_repairs_an_epoch_registered_with_a_replayed_key_epoch_record() 
     ));
 }
 
+#[test]
+fn a_member_forged_admin_role_does_not_block_squat_repair() {
+    block_on(hijacked_epoch_is_repaired(
+        "hijack-role",
+        Hijack::ForgedAdminRole,
+    ));
+}
+
+#[test]
+fn a_made_up_admin_enrollment_does_not_block_squat_repair() {
+    block_on(hijacked_epoch_is_repaired(
+        "hijack-enroll",
+        Hijack::MadeUpAdmin,
+    ));
+}
+
 /// The record a hijacker registers its epoch 2 with.
 enum Hijack {
     Garbage,
     /// The genuine, anchor-signed key epoch record of epoch 1, which any holder of the epoch 1
     /// key has.
     ReplayedEpochOne,
+    /// A key epoch the phone signs and names itself anchor in, on a role record that makes the
+    /// phone an admin under a key no admin holds, both stored on the hub.
+    ForgedAdminRole,
+    /// A key epoch a made-up device signs and names itself anchor in, on an enrollment of that
+    /// device as an admin under a key no admin holds, both stored on the hub.
+    MadeUpAdmin,
+}
+
+/// An admin device id the chain never enrolls.
+const MADE_UP_DEVICE: &str = "device-made-up";
+
+/// A writer key seed no replica of these tests uses.
+const FORGER_WRITER_SEED: u8 = 90;
+
+/// An admin key no device of these tests holds.
+fn stranger_admin() -> AdminKeyPair {
+    AdminKeyPair::from_seed(&[91; 32]).expect("admin seed")
+}
+
+/// `entry` signed by `admin` under `charter`.
+fn signed_entry(
+    hub: &Keyed,
+    charter: ganbaru_sync_contracts::Digest32,
+    admin: &AdminKeyPair,
+    entry: Entry,
+) -> SignedProposal {
+    sign_proposal(
+        &Proposal {
+            space: hub.replica.ctx.space,
+            charter,
+            author: admin.public_key(),
+            created_at_ms: i64::try_from(NOW_MS).expect("a small time"),
+            entry,
+        },
+        admin,
+    )
+    .expect("sign the proposal")
+}
+
+/// The genesis of a throwaway writer that `device` certifies as `device_id`, followed by
+/// `records` it carries, each sealed in the shape of the hub's last record operation.
+async fn carried_by(
+    hub: &Keyed,
+    device_id: &str,
+    device: &DeviceKeyPair,
+    records: Vec<AuthorizationRecord>,
+) -> Vec<Vec<u8>> {
+    let (genesis, mut own) = hub.replica.own_records(hub.replica.writer.id()).await;
+    let template = own.pop().expect("a hub record");
+    let (key, genesis) = throwaway_writer(&genesis, FORGER_WRITER_SEED, device_id, device);
+    let mut sealed = vec![genesis];
+    for record in records {
+        let mut operation = operation_of(&template);
+        operation.content = Content::Authorization(Box::new(record));
+        let next = seal_next(sealed.last().expect("a genesis"), &key, operation);
+        sealed.push(next);
+    }
+    sealed
+}
+
+/// A key epoch record of epoch 2 for `forged`, which a device signs and names itself anchor
+/// in, on a record that makes that device an admin under a key no admin holds. Both are
+/// carried by a writer the device certifies and stored on the hub, as a relay serving them
+/// would leave them.
+async fn self_made_admin_epoch(
+    hub: &Keyed,
+    epoch_one: &SpaceKey,
+    forged: &SpaceKey,
+    made_up: bool,
+) -> Vec<u8> {
+    let space = hub.replica.ctx.space;
+    let charter = hub.replica.charter().await;
+    let (_, own) = hub.replica.own_records(hub.replica.writer.id()).await;
+    let head =
+        authorization_record(own.last().expect("a hub record")).expect("an authorization record");
+    let stranger = stranger_admin();
+    let role = DeviceRole::Admin(stranger.public_key());
+    let (device_id, device) = if made_up {
+        (
+            MADE_UP_DEVICE,
+            DeviceKeyPair::from_seed(&[93; 32]).expect("device seed"),
+        )
+    } else {
+        (PHONE_DEVICE, device_key(PHONE_DEVICE))
+    };
+    let entry = if made_up {
+        Entry::Enroll(Enroll {
+            device_id: device_id.to_string(),
+            device_key: device.public_key(),
+            tls_fingerprint: [94; 32],
+            label: "Made up".to_string(),
+            device_kind: DeviceKind::Desktop,
+            role,
+        })
+    } else {
+        Entry::SetRole(SetRole::Device {
+            device_id: device_id.to_string(),
+            role,
+        })
+    };
+    let admin_record = AuthorizationRecord {
+        epoch: head.epoch,
+        revision: head.revision + 1,
+        previous_entry_hash: head.hash(),
+        anchor_device_id: head.anchor_device_id.clone(),
+        proposal: signed_entry(hub, charter, &stranger, entry),
+        sequencing: Sequencing::Empty,
+    };
+    let recipient = EncryptionKeyPair::generate()
+        .expect("encryption key")
+        .public_key();
+    let key_epoch = Proposal {
+        space,
+        charter,
+        author: AdminPublicKey::from_bytes(*device.public_key().as_bytes()),
+        created_at_ms: i64::try_from(NOW_MS).expect("a small time"),
+        entry: Entry::KeyEpoch(KeyEpoch {
+            key_epoch: 2,
+            wrapped_previous: Some(ChainLink::seal(&space, forged, epoch_one).expect("link")),
+            envelopes: vec![KeyEnvelope::seal(&space, forged, &recipient).expect("envelope")],
+            relay_access_key: forged.relay_access_public_key(&space).expect("access key"),
+        }),
+    };
+    let key_epoch_record = AuthorizationRecord {
+        epoch: head.epoch,
+        revision: head.revision + 2,
+        previous_entry_hash: admin_record.hash(),
+        anchor_device_id: device_id.to_string(),
+        proposal: sign_device_proposal(&key_epoch, &device).expect("sign the key epoch"),
+        sequencing: Sequencing::Empty,
+    };
+    let mut sealed = carried_by(
+        hub,
+        device_id,
+        &device,
+        vec![admin_record, key_epoch_record],
+    )
+    .await;
+    hub.replica.hold_records(&sealed).await;
+    sealed.pop().expect("the key epoch record")
 }
 
 async fn hijacked_epoch_is_repaired(label: &str, hijack: Hijack) {
@@ -460,6 +626,10 @@ async fn hijacked_epoch_is_repaired(label: &str, hijack: Hijack) {
     hub_device.claim(&relay).await;
     assert_eq!(hub_device.pass(&relay).await.problem, None);
     assert_eq!(phone.pass(&relay).await.problem, None);
+    let space = hub_device.replica.ctx.space;
+    let forged_key = SpaceKey::generate(2).expect("forged key");
+    let epoch_one = phone.relay_keys().await;
+    let epoch_one = epoch_one.key(1).expect("epoch 1 key");
     let entry = match hijack {
         Hijack::Garbage => vec![7; 64],
         Hijack::ReplayedEpochOne => {
@@ -472,10 +642,15 @@ async fn hijacked_epoch_is_repaired(label: &str, hijack: Hijack) {
                 .expect("read the key epoch record")
                 .expect("the record of epoch 1")
         }
+        Hijack::ForgedAdminRole => {
+            self_made_admin_epoch(&hub_device, epoch_one, &forged_key, false).await
+        }
+        Hijack::MadeUpAdmin => {
+            self_made_admin_epoch(&hub_device, epoch_one, &forged_key, true).await
+        }
     };
 
     // A holder of the epoch 1 key registers an epoch 2 the chain never sealed.
-    let space = hub_device.replica.ctx.space;
     let access = phone.access(1).await;
     let mut hijacker = Connection::open(&relay.target, space, LoopbackPolicy::Allow)
         .await
@@ -490,10 +665,7 @@ async fn hijacked_epoch_is_repaired(label: &str, hijack: Hijack) {
         .await
         .expect("auth");
     assert!(matches!(response, RelayResponse::Authenticated { .. }));
-    let forged = SpaceKey::generate(2)
-        .expect("forged key")
-        .relay_access_key(&space)
-        .expect("forged access");
+    let forged = forged_key.relay_access_key(&space).expect("forged access");
     let signature = forged.sign(RELAY_EPOCH_DOMAIN, &hijacker.binding().epoch_payload(2));
     let response = hijacker
         .request(&RelayRequest::RegisterEpoch {
@@ -767,6 +939,104 @@ fn a_device_whose_flush_stalls_does_not_register_the_next_epoch() {
     });
 }
 
+/// An asset store that hands control to the test once, from inside a relay pass, on the
+/// `fire_on`-th `holds` call, and resumes once the test answers.
+struct PausesMidPass {
+    inner: Arc<dyn AssetStore>,
+    calls: AtomicUsize,
+    fire_on: usize,
+    hook: Mutex<Option<(oneshot::Sender<()>, mpsc::Receiver<()>)>>,
+}
+
+impl AssetStore for PausesMidPass {
+    fn holds(&self, asset: &AssetRef) -> Result<bool, AssetStoreError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) + 1 == self.fire_on
+            && let Some((paused, resume)) = self.hook.lock().expect("hook").take()
+        {
+            paused.send(()).expect("signal the pause");
+            resume
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the test resumes the pass");
+        }
+        self.inner.holds(asset)
+    }
+
+    fn presence(&self, asset: &AssetRef) -> Result<bool, AssetStoreError> {
+        self.inner.presence(asset)
+    }
+
+    fn read_chunk(
+        &self,
+        asset: &AssetRef,
+        offset: u32,
+        max_len: usize,
+    ) -> Result<Vec<u8>, AssetStoreError> {
+        self.inner.read_chunk(asset, offset, max_len)
+    }
+
+    fn stage(&self, asset: &AssetRef) -> Result<StagedAsset, AssetStoreError> {
+        self.inner.stage(asset)
+    }
+
+    fn commit(&self, staged: StagedAsset) -> Result<(), AssetStoreError> {
+        self.inner.commit(staged)
+    }
+}
+
+#[test]
+fn a_rotation_during_the_pass_ends_it_without_failure() {
+    block_on(async {
+        let relay = start_relay("relay-rotation-race").await;
+        let (mut hub_device, members) =
+            keyed_space("rotation-race", &[PHONE_DEVICE, TABLET_DEVICE]).await;
+        let mut members = members.into_iter();
+        let mut phone = members.next().expect("phone");
+        let tablet = members.next().expect("tablet");
+        hub_device.claim(&relay).await;
+        for keyed in [&hub_device, &phone, &tablet] {
+            assert_eq!(keyed.pass(&relay).await.problem, None);
+        }
+        // The phone references one asset it holds, so each pass asks its store twice: once
+        // before pushing and once before the closing State request.
+        add_note(&mut *acquire(&phone.replica.pool).await, "note-race").await;
+        phone.replica.add_image("note-race", 0, &png(64, 5)).await;
+        phone.replica.seal().await;
+        assert_eq!(phone.pass(&relay).await.uploaded, 1);
+        remove_and_rotate(&mut hub_device, TABLET_DEVICE).await;
+
+        // The hub registers epoch 2 while the phone's epoch 1 session is between its
+        // downloads and the closing State request.
+        let (paused, on_pause) = oneshot::channel();
+        let (resume, on_resume) = mpsc::channel();
+        let inner = Arc::clone(&phone.replica.assets);
+        phone.replica.assets = Arc::new(PausesMidPass {
+            inner,
+            calls: AtomicUsize::new(0),
+            fire_on: 2,
+            hook: Mutex::new(Some((paused, on_resume))),
+        });
+        let (raced, ()) = tokio::join!(phone.pass(&relay), async {
+            on_pause.await.expect("the pass pauses");
+            let rotated = hub_device.pass(&relay).await;
+            assert_eq!(rotated.registered, vec![2], "{rotated:?}");
+            resume.send(()).expect("resume the pass");
+        });
+        assert_eq!(raced.problem, None, "{raced:?}");
+        assert_eq!(raced.epoch, 1, "{raced:?}");
+        assert_eq!(raced.undelivered, None, "{raced:?}");
+        assert!(raced.more, "{raced:?}");
+
+        // The next pass reaches the new epoch.
+        let next = phone.pass(&relay).await;
+        assert_eq!(next.problem, None, "{next:?}");
+        assert_eq!(next.epoch, 2, "{next:?}");
+        assert_eq!(next.undelivered, Some(0), "{next:?}");
+        hub_device.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
 #[test]
 fn a_lagging_admin_does_not_restore_a_demoted_admin_key() {
     block_on(async {
@@ -842,6 +1112,84 @@ fn a_lagging_admin_does_not_restore_a_demoted_admin_key() {
         assert_eq!(drained.problem, None, "{drained:?}");
         assert!(!relay_holds_admin(&pool, &second_admin).await);
         assert!(relay_holds_admin(&pool, &hub_keys().admin).await);
+        pool.close().await;
+        hub_device.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn removed_admin_key_leaves_the_relay_without_a_drained_pull() {
+    block_on(async {
+        let relay = start_relay("relay-removed-admin").await;
+        let (mut hub_device, members) = keyed_space("removed-admin", &[PHONE_DEVICE]).await;
+        let phone = members.into_iter().next().expect("phone");
+        hub_device.claim(&relay).await;
+        assert_eq!(hub_device.pass(&relay).await.problem, None);
+        assert_eq!(phone.pass(&relay).await.problem, None);
+
+        let second_admin = AdminKeyPair::from_seed(&[62; 32]).expect("admin seed");
+        let space = hub_device.replica.ctx.space;
+        let charter = hub_device.replica.charter().await;
+        for entry in [
+            authority::enroll_entry(Enrollment {
+                device_id: SECOND_ADMIN_DEVICE.to_string(),
+                device_key: device_key(SECOND_ADMIN_DEVICE).public_key(),
+                tls_fingerprint: [62; 32],
+                label: SECOND_ADMIN_DEVICE.to_string(),
+                device_kind: DeviceKind::Desktop,
+            }),
+            authority::promote_entry(SECOND_ADMIN_DEVICE, second_admin.public_key()),
+        ] {
+            let proposal = authority::propose(space, charter, &hub_keys().admin, entry, NOW_MS)
+                .expect("sign proposal");
+            sequence_here(&mut hub_device.replica, &proposal).await;
+        }
+        assert_eq!(hub_device.pass(&relay).await.problem, None);
+        let pool = relay_database(&relay).await;
+        assert!(relay_holds_admin(&pool, &second_admin).await);
+
+        // While still an admin, the device pushed the first record of a fresh writer at
+        // sequence 2, so every pull meets a floor no member can reach below.
+        let planted = WriterId::from_bytes([95; 16]);
+        sqlx::query(
+            "INSERT INTO relay_floors (space_id, writer_id, floor, next_seq) \
+             SELECT space_id, ?, 2, 2 FROM relay_spaces",
+        )
+        .bind(planted.as_bytes().as_slice())
+        .execute(&pool)
+        .await
+        .expect("plant a floor");
+
+        // The chain removes the device, and the next pass of a live admin drops its key.
+        remove_and_rotate(&mut hub_device, SECOND_ADMIN_DEVICE).await;
+        let removing = hub_device.pass(&relay).await;
+        assert_eq!(removing.registered, vec![2], "{removing:?}");
+        assert!(
+            !relay_holds_admin(&pool, &second_admin).await,
+            "{removing:?}"
+        );
+        assert!(relay_holds_admin(&pool, &hub_keys().admin).await);
+
+        // The removed key can no longer roll the relay back to the epoch it holds.
+        let access = phone.access(1).await;
+        let mut removed = Connection::open(&relay.target, space, LoopbackPolicy::Allow)
+            .await
+            .expect("connect");
+        removed.hello().await.expect("hello");
+        let refused = removed
+            .admin(
+                &second_admin,
+                1,
+                &RelayAdminCommand::RelayEpochRepair {
+                    epoch: 1,
+                    access_key: &access.public_key(),
+                },
+            )
+            .await
+            .expect_err("a removed admin's repair is refused");
+        assert_eq!(refused.problem, RelayProblem::AdminRefused, "{refused:?}");
+        assert_eq!(relay_epoch(&pool).await, 2);
         pool.close().await;
         hub_device.close().await;
         phone.close().await;

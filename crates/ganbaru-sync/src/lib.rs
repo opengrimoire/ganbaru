@@ -12,12 +12,13 @@
 //! Every engine entry point takes the vault connection and runs in its own transaction, so a
 //! failure leaves engine state and domain tables as they were.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 use ganbaru_contacts::PersonPublicKey;
 use ganbaru_sync_contracts::{
     DeviceKeyPair, Digest32, EncryptionPublicKey, KeyEnvelope, SignedCertificate, SpaceId,
-    SpaceKey, WriterId, WriterKeyPair,
+    SpaceKey, TableId, WriterId, WriterKeyPair,
 };
 use sqlx::SqliteConnection;
 
@@ -32,6 +33,7 @@ pub mod hold;
 pub mod hooks;
 pub mod local;
 pub mod manifest;
+pub mod provenance;
 pub mod relay;
 pub mod seed;
 pub mod stability;
@@ -51,6 +53,7 @@ mod merge;
 mod publication;
 mod records;
 mod recovery;
+mod refused;
 mod repair;
 mod reseal;
 mod seal;
@@ -67,11 +70,12 @@ mod tests;
 pub use adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
 pub use apply::{ApplyReport, ClockWarning, MAX_CHANGES_PER_APPLY, MAX_OPS_PER_APPLY};
 pub use authorization::{
-    AuthorizationStorage, AuthorizationView, CandidateKind, ContestAction, ContestCandidate,
-    ContestCause, ContestEntry, ContestInstance, ContestObjection, ContestRejection, ContestRole,
-    ContestView, ContestYield, ContestsView, EnrolledDevice, ForkedWriter, HandoverPoint, KitPoint,
-    KitPointPlace, LosingRemoval, RECORD_CLASSES, RecordAdmission, RecordClass, RecordCursor,
-    RecordEnvelope, RecordPage, RecordRole, RecordWants, StoredSpaceKey,
+    AuthorizationStorage, AuthorizationTotals, AuthorizationView, CandidateKind, ContestAction,
+    ContestCandidate, ContestCause, ContestEntry, ContestInstance, ContestObjection,
+    ContestRejection, ContestRole, ContestView, ContestYield, ContestsView, EnrolledDevice,
+    ForkedWriter, HandoverPoint, KeyEpochStanding, KitPoint, KitPointPlace, LosingRemoval,
+    RECORD_CLASSES, RecordAdmission, RecordClass, RecordCursor, RecordEnvelope, RecordPage,
+    RecordRole, RecordWants, StoredSpaceKey,
 };
 pub use compact::{
     COMPACTION_BATCH_OPS, COMPACTION_TIME_BUDGET, CompactionReport, compaction_limit,
@@ -87,7 +91,7 @@ pub use exclusion::{
 pub use fork::{EvidenceOutcome, EvidenceRefusal, ForkEvidence};
 pub use local::{CarryReport, LocalRestoreReport, LocalWriterHead};
 pub use log::{OpsPage, WriterState};
-pub use records::WriterRetirement;
+pub use records::{ReverifyReport, WriterRetirement};
 pub use recovery::{MAX_UNSEEN_PRESENTATIONS, RecoveryDescendant, RecoveryEntry};
 pub use relay::{RelayKeys, open_space_keys};
 pub use reseal::ResealReport;
@@ -184,6 +188,8 @@ pub struct Engine {
     enrolled: authorization::EnrolledCache,
     /// Operation bodies read last for elided values.
     bodies: hydrate::BodyCache,
+    /// The component of every table, see [`Manifest::reference_components`].
+    components: BTreeMap<TableId, TableId>,
 }
 
 impl Engine {
@@ -260,7 +266,29 @@ impl Engine {
             hooks,
             enrolled: authorization::EnrolledCache::default(),
             bodies: hydrate::BodyCache::default(),
+            components: manifest.reference_components(),
         })
+    }
+
+    /// Whether two replicated tables share a reference component.
+    pub(crate) fn same_component(&self, left: TableId, right: TableId) -> bool {
+        match (self.components.get(&left), self.components.get(&right)) {
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        }
+    }
+
+    /// Every table sharing a reference component with one of `tables`.
+    pub(crate) fn components_of(&self, tables: &BTreeSet<TableId>) -> BTreeSet<TableId> {
+        let components: BTreeSet<&TableId> = tables
+            .iter()
+            .filter_map(|table| self.components.get(table))
+            .collect();
+        self.components
+            .iter()
+            .filter(|(_, component)| components.contains(component))
+            .map(|(table, _)| *table)
+            .collect()
     }
 
     /// The engine for the vault manifest with its built-in adapters and hooks.

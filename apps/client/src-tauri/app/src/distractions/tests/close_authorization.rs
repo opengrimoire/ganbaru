@@ -75,6 +75,8 @@ struct MockDesktopProcessController {
     waits: usize,
     pins: usize,
     calls: Vec<&'static str>,
+    /// Anchors returned by successive lookups; none once exhausted.
+    anchor_lookups: VecDeque<Option<std::sync::Arc<super::SessionAnchors>>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -116,6 +118,54 @@ impl super::DesktopProcessController for MockDesktopProcessController {
     fn wait(&mut self, _duration: std::time::Duration) {
         self.waits += 1;
     }
+
+    fn session_anchors(&mut self) -> Option<std::sync::Arc<super::SessionAnchors>> {
+        self.anchor_lookups.pop_front().flatten()
+    }
+}
+
+/// The session guard runs inside the signal flow itself, before TERM and again before KILL,
+/// whatever the caller's authorization closure checks.
+#[cfg(target_os = "linux")]
+#[test]
+fn close_process_refuses_an_anchored_process_before_each_signal() {
+    let anchored = || {
+        Some(std::sync::Arc::new(super::SessionAnchors::protecting([
+            valid_close_request().process_id,
+        ])))
+    };
+    let observed = valid_observed_process();
+    let mut before_term = MockDesktopProcessController {
+        observations: VecDeque::new(),
+        fallback: Some(observed.clone()),
+        signals: Vec::new(),
+        waits: 0,
+        pins: 0,
+        calls: Vec::new(),
+        anchor_lookups: VecDeque::from([anchored()]),
+    };
+
+    assert!(
+        super::close_desktop_process_with(&valid_close_request(), &mut before_term, |_| Ok(()))
+            .is_err()
+    );
+    assert!(before_term.signals.is_empty());
+
+    let mut before_kill = MockDesktopProcessController {
+        observations: VecDeque::new(),
+        fallback: Some(observed),
+        signals: Vec::new(),
+        waits: 0,
+        pins: 0,
+        calls: Vec::new(),
+        anchor_lookups: VecDeque::from([None, anchored()]),
+    };
+
+    assert!(
+        super::close_desktop_process_with(&valid_close_request(), &mut before_kill, |_| Ok(()))
+            .is_err()
+    );
+    assert_eq!(before_kill.signals, vec![super::DesktopProcessSignal::Term]);
 }
 
 #[cfg(target_os = "linux")]
@@ -129,6 +179,7 @@ fn close_process_rechecks_identity_before_kill_fallback() {
         waits: 0,
         pins: 0,
         calls: Vec::new(),
+        anchor_lookups: VecDeque::new(),
     };
     let mut authorization_checks = 0;
 
@@ -212,6 +263,7 @@ fn already_exited_process_does_not_report_an_accepted_close() {
         waits: 0,
         pins: 0,
         calls: Vec::new(),
+        anchor_lookups: VecDeque::new(),
     };
     let signalled =
         super::close_desktop_process_with(&valid_close_request(), &mut controller, |_| Ok(()))
@@ -230,6 +282,7 @@ fn close_process_stops_when_process_exits_between_checks() {
         waits: 0,
         pins: 0,
         calls: Vec::new(),
+        anchor_lookups: VecDeque::new(),
     };
 
     super::close_desktop_process_with(&valid_close_request(), &mut controller, |_| Ok(())).unwrap();
@@ -250,6 +303,7 @@ fn close_process_rejects_pid_reuse_after_term() {
         waits: 0,
         pins: 0,
         calls: Vec::new(),
+        anchor_lookups: VecDeque::new(),
     };
 
     assert!(
@@ -269,6 +323,7 @@ fn close_process_rejects_stale_rule_before_term() {
         waits: 0,
         pins: 0,
         calls: Vec::new(),
+        anchor_lookups: VecDeque::new(),
     };
 
     assert!(
@@ -291,6 +346,7 @@ fn close_process_rejects_rule_revoked_before_kill_fallback() {
         waits: 0,
         pins: 0,
         calls: Vec::new(),
+        anchor_lookups: VecDeque::new(),
     };
     let mut authorization_checks = 0;
 
@@ -319,6 +375,7 @@ fn persisted_desktop_rule_authorization_tracks_current_phase_and_rule_state() {
                 "blockDuringFocus": true,
                 "pauseDuringFocusPause": true,
                 "blockedApps": [{
+                    "identity": "Steam",
                     "name": "Steam",
                     "enabled": true,
                     "matchNames": ["steam"]
@@ -358,6 +415,7 @@ fn persisted_desktop_rule_authorization_tracks_current_phase_and_rule_state() {
             "desktop": {
                 "enabled": true,
                 "blockedApps": [{
+                    "identity": "Steam",
                     "name": "Steam",
                     "enabled": false,
                     "matchNames": ["steam"]
@@ -404,6 +462,7 @@ fn persisted_usage_rule_requires_exact_entry_and_exhausted_limit() {
         local_date: "2026-07-10".to_string(),
         week_start_local_date: "2026-07-06".to_string(),
         updated_at: "2026-07-10T12:00:00.000Z".to_string(),
+        confirmed_at: None,
         database_path: Some("/tmp/vault/ganbaru.sqlite".to_string()),
         configuration_digest: Some(limits::configuration_digest(&config).unwrap()),
         limits: vec![DistractionsLimitStateItem {
@@ -502,16 +561,147 @@ fn persisted_usage_rule_requires_exact_entry_and_exhausted_limit() {
     );
 }
 
+/// Closes keep authorizing on totals a failing read can no longer refresh, while the snapshot
+/// keeps the read time the browser host ages it by.
+#[test]
+fn limit_close_uses_last_good_totals() {
+    let config = serde_json::json!({
+        "distractions": {
+            "limits": {
+                "enabled": true,
+                "items": [{
+                    "id": "games",
+                    "enabled": true,
+                    "minutesPerDay": 10,
+                    "entries": [{
+                        "id": "steam-entry",
+                        "desktopAppName": "Steam",
+                        "desktopAppMatchNames": ["steam"]
+                    }]
+                }]
+            }
+        }
+    });
+    let identity = super::DistractionsDesktopRuleIdentity::UsageLimit {
+        rule_id: "games".to_string(),
+        entry_id: "steam-entry".to_string(),
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "ganbaru-distractions-last-good-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("distractions-limit-state.json");
+    let database_path = dir.join("ganbaru.sqlite");
+    let read_at = "2026-07-10T12:00:00.000Z";
+    let state = DistractionsLimitState {
+        local_date: "2026-07-10".to_string(),
+        week_start_local_date: "2026-07-06".to_string(),
+        updated_at: read_at.to_string(),
+        confirmed_at: None,
+        database_path: Some(database_path.to_str().unwrap().to_string()),
+        configuration_digest: Some(limits::configuration_digest(&config).unwrap()),
+        limits: vec![DistractionsLimitStateItem {
+            id: "games".to_string(),
+            period: "day".to_string(),
+            window_start_local_date: "2026-07-10".to_string(),
+            window_end_local_date: "2026-07-10".to_string(),
+            used_seconds: 600,
+            limit_seconds: 600,
+            remaining_seconds: 0,
+            exhausted: true,
+        }],
+    };
+    std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+    let at = |time: &str| {
+        DateTime::parse_from_rfc3339(time)
+            .unwrap()
+            .with_timezone(&Utc)
+    };
+
+    let failing_for_a_minute = at("2026-07-10T12:01:00.000Z");
+    assert!(read_fresh_limit_state(&path, failing_for_a_minute, &database_path).is_none());
+
+    crate::distractions::state_files::republish_limit_state(
+        &path,
+        &state,
+        at("2026-07-10T12:00:58.000Z"),
+    )
+    .unwrap();
+    let cached = read_fresh_limit_state(&path, failing_for_a_minute, &database_path)
+        .expect("closes keep the last good totals while reads fail");
+    let close = |config: &serde_json::Value| {
+        super::configured_close_authorization(
+            config,
+            None,
+            Some(&cached),
+            &identity,
+            &super::DesktopCatalogIndex::default(),
+        )
+    };
+    assert_eq!(close(&config).unwrap().match_names(), ["Steam"]);
+
+    let mut edited = config.clone();
+    edited["distractions"]["limits"]["items"][0]["minutesPerDay"] = serde_json::json!(20);
+    assert!(close(&edited).is_err());
+
+    let published: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(published["updatedAt"], read_at);
+
+    assert!(
+        read_fresh_limit_state(&path, at("2026-07-10T12:01:30.000Z"), &database_path).is_none(),
+        "a republication stops authorizing once it stops being renewed"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn focus_rule_config(name: &str, match_names: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "distractions": {
             "desktop": {
                 "enabled": true,
                 "blockDuringFocus": true,
-                "blockedApps": [{ "name": name, "enabled": true, "matchNames": match_names }]
+                "blockedApps": [{
+                    "identity": name,
+                    "name": name,
+                    "enabled": true,
+                    "matchNames": match_names
+                }]
             }
         }
     })
+}
+
+#[test]
+fn desktop_rule_authorization_addresses_the_stored_identity() {
+    let config = serde_json::json!({
+        "distractions": {
+            "desktop": {
+                "enabled": true,
+                "blockDuringFocus": true,
+                "blockedApps": [
+                    { "identity": "first", "name": "Steam", "enabled": false, "matchNames": [] },
+                    { "identity": "second", "name": "Steam", "enabled": true, "matchNames": [] }
+                ]
+            }
+        }
+    });
+    let authorize = |rule_id: &str| {
+        super::configured_close_authorization(
+            &config,
+            Some(&state("focus")),
+            None,
+            &super::DistractionsDesktopRuleIdentity::DesktopApp {
+                rule_id: rule_id.to_string(),
+            },
+            &super::DesktopCatalogIndex::default(),
+        )
+    };
+
+    assert_eq!(authorize("second").unwrap().match_names(), ["Steam"]);
+    assert!(authorize("first").is_err());
+    assert!(authorize("steam").is_err());
 }
 
 #[test]

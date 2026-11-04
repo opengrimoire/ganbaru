@@ -114,6 +114,32 @@ Denies the saveFileDownload command without any pre-configured scope.
 <tr>
 <td>
 
+`ganbaru-mobile-documents:allow-saveUtf8Document`
+
+</td>
+<td>
+
+Enables the saveUtf8Document command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`ganbaru-mobile-documents:deny-saveUtf8Document`
+
+</td>
+<td>
+
+Denies the saveUtf8Document command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `ganbaru-mobile-documents:allow-saveUtf8Download`
 
 </td>

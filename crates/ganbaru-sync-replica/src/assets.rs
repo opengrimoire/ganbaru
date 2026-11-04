@@ -17,7 +17,7 @@ pub use collection::{
 };
 
 use super::client::{PeerIds, SyncTransport, answer};
-use super::wire::{asset_key, asset_to_wire, bytes_from_wire, bytes_to_wire};
+use super::wire::{DEVICE_HELD, asset_key, asset_to_wire, bytes_from_wire, bytes_to_wire};
 use ganbaru_atomic_files::{
     FileAccess, StagedFile, create_directories_within, is_temporary_file_name,
 };
@@ -90,7 +90,12 @@ pub type AssetCheck = fn(&AssetRef, &Path) -> Result<(), String>;
 pub trait AssetStore: Send + Sync {
     /// Whether the vault holds a regular file for the asset at its exact size. The digest is
     /// checked when the bytes arrive, not here, so the check stays cheap for every reference.
+    /// A held file counts as touched by a transfer, so collection spares it within the grace.
     fn holds(&self, asset: &AssetRef) -> Result<bool, AssetStoreError>;
+    /// Whether the vault holds a regular file for the asset at its exact size, as a read that
+    /// leaves the collection grace of the file as it is. A peer's question must not keep a
+    /// file alive.
+    fn presence(&self, asset: &AssetRef) -> Result<bool, AssetStoreError>;
     /// At most `max_len` bytes of a held asset from `offset`. The receiver verifies the
     /// assembled bytes.
     fn read_chunk(
@@ -171,8 +176,9 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// The asset files under a fixed vault root, each at the path its class derives, with the
-/// checks registered for some classes. Every asset it confirms holding, stages, or commits is
-/// recorded in its [`InFlightAssets`], so the asset sweep spares it within the grace.
+/// checks registered for some classes. Every asset it confirms holding for a transfer, stages,
+/// or commits is recorded in its [`InFlightAssets`], so the asset sweep spares it within the
+/// grace. A presence answer to a peer records nothing.
 #[derive(Clone, Debug)]
 pub struct ContentAddressedStore {
     root: PathBuf,
@@ -215,6 +221,10 @@ impl AssetStore for ContentAddressedStore {
             self.in_flight.touch(asset);
         }
         Ok(held)
+    }
+
+    fn presence(&self, asset: &AssetRef) -> Result<bool, AssetStoreError> {
+        self.holds_file(asset)
     }
 
     fn read_chunk(
@@ -395,6 +405,24 @@ pub(crate) async fn partition_held(
     .await
 }
 
+/// The assets the store holds, keeping their order, read through [`AssetStore::presence`] so
+/// answering a peer leaves every collection grace as it is.
+pub(crate) async fn partition_present(
+    store: &Arc<dyn AssetStore>,
+    references: Vec<AssetRef>,
+) -> Result<Vec<AssetRef>, AssetStoreError> {
+    blocking(store, move |store| {
+        let mut present = Vec::new();
+        for asset in references {
+            if store.presence(&asset)? {
+                present.push(asset);
+            }
+        }
+        Ok(present)
+    })
+    .await
+}
+
 /// The memory key of an asset: its whole reference, so references that share a digest but
 /// disagree on content type or size are remembered apart.
 type MemoryKey = (&'static str, String, String, u32);
@@ -461,6 +489,9 @@ pub struct AssetTransfer {
     pub more: bool,
     /// An asset the hub or this device refused.
     pub problem: Option<String>,
+    /// The hub holds this device for data during an anchor handover contest, so asset moves
+    /// wait until the contest resolves. This is no problem to report.
+    pub held: bool,
 }
 
 enum Upload {
@@ -468,12 +499,16 @@ enum Upload {
     /// The local file changed or vanished since the presence check.
     Missing,
     Refused(String),
+    /// The hub holds this device, so no asset moves until the contest resolves.
+    Held,
 }
 
 enum Download {
     Stored,
     Unavailable,
     Refused(String),
+    /// The hub holds this device, so no asset moves until the contest resolves.
+    Held,
 }
 
 /// One replica's view for the asset steps of a pass.
@@ -507,7 +542,10 @@ impl<T: SyncTransport> AssetSession<'_, T> {
             .map_err(|error| error.describe())?;
         let mut lacking = Vec::new();
         for batch in held.chunks(MAX_SYNC_ASSETS) {
-            let on_hub = self.query(batch).await?;
+            let Some(on_hub) = self.query(batch).await? else {
+                transfer.held = true;
+                return Ok(());
+            };
             for asset in batch {
                 if on_hub.contains(&asset_key(asset)) {
                     memory
@@ -534,6 +572,10 @@ impl<T: SyncTransport> AssetSession<'_, T> {
                         asset.sha256()
                     ));
                 }
+                Upload::Held => {
+                    transfer.held = true;
+                    break;
+                }
             }
             memory
                 .settled_uploads
@@ -542,12 +584,16 @@ impl<T: SyncTransport> AssetSession<'_, T> {
         Ok(())
     }
 
-    /// Downloads the referenced assets this device lacks from the hub.
+    /// Downloads the referenced assets this device lacks from the hub. Nothing is asked for
+    /// once the hub answered this pass that it holds this device.
     pub async fn download(
         &self,
         memory: &mut AssetMemory,
         transfer: &mut AssetTransfer,
     ) -> Result<(), String> {
+        if transfer.held {
+            return Ok(());
+        }
         let now = Instant::now();
         let references = self
             .referenced()
@@ -585,6 +631,10 @@ impl<T: SyncTransport> AssetSession<'_, T> {
                         .refused_downloads
                         .remember(asset, REFUSED_DOWNLOAD_TTL, now);
                 }
+                Download::Held => {
+                    transfer.held = true;
+                    break;
+                }
             }
         }
         Ok(())
@@ -603,23 +653,23 @@ impl<T: SyncTransport> AssetSession<'_, T> {
             .map_err(|error| format!("load asset references: {error}"))
     }
 
-    /// The assets of the batch that the hub holds.
-    async fn query(&self, batch: &[AssetRef]) -> Result<HashSet<SyncAssetKey>, String> {
+    /// The assets of the batch that the hub holds, or `None` when the hub holds this device.
+    async fn query(&self, batch: &[AssetRef]) -> Result<Option<HashSet<SyncAssetKey>>, String> {
         let request = ControlMessage::SyncAssetQuery {
             protocol_version: PROTOCOL_VERSION,
             vault_id: self.ids.vault_id.clone(),
             device_id: self.ids.device_id.clone(),
             assets: batch.iter().map(asset_to_wire).collect(),
         };
-        let held = answer(
-            self.transport.request(request).await?,
-            "SyncAssetPresence",
-            |response| match response {
-                ControlMessage::SyncAssetPresence { held } => Some(held),
-                _ => None,
-            },
-        )?;
-        Ok(held.into_iter().collect())
+        let response = self.transport.request(request).await?;
+        if is_held_refusal(&response) {
+            return Ok(None);
+        }
+        let held = answer(response, "SyncAssetPresence", |response| match response {
+            ControlMessage::SyncAssetPresence { held } => Some(held),
+            _ => None,
+        })?;
+        Ok(Some(held.into_iter().collect()))
     }
 
     async fn upload_one(&self, asset: &AssetRef, moved: &mut usize) -> Result<Upload, String> {
@@ -652,6 +702,9 @@ impl<T: SyncTransport> AssetSession<'_, T> {
                 && code == INVALID_ASSET
             {
                 return Ok(Upload::Refused(message.clone()));
+            }
+            if is_held_refusal(&response) {
+                return Ok(Upload::Held);
             }
             let received = answer(response, "SyncAssetReceived", |response| match response {
                 ControlMessage::SyncAssetReceived { received } => Some(received),
@@ -699,6 +752,9 @@ impl<T: SyncTransport> AssetSession<'_, T> {
             {
                 return Ok(Download::Unavailable);
             }
+            if is_held_refusal(&response) {
+                return Ok(Download::Held);
+            }
             let data = answer(response, "SyncAssetChunk", |response| match response {
                 ControlMessage::SyncAssetChunk { data } => Some(data),
                 _ => None,
@@ -724,6 +780,11 @@ impl<T: SyncTransport> AssetSession<'_, T> {
             Err(error) => Ok(Download::Refused(error.describe())),
         }
     }
+}
+
+/// Whether the hub refused an asset request because it holds this device.
+fn is_held_refusal(response: &ControlMessage) -> bool {
+    matches!(response, ControlMessage::Error { code, .. } if code == DEVICE_HELD)
 }
 
 #[cfg(test)]

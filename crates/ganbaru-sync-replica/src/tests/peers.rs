@@ -32,6 +32,7 @@ fn device(index: u8, removed: bool) -> EnrolledDevice {
         role: DeviceRole::Member,
         enrolled_revision: u64::from(index),
         removed_revision: removed.then_some(u64::from(index) + 10),
+        held: false,
         encryption_key: None,
     }
 }
@@ -47,6 +48,7 @@ fn view(devices: Vec<EnrolledDevice>) -> AuthorizationView {
         charter: [8; 32],
         recovery_admin_key: AdminPublicKey::from_bytes([9; 32]),
         kit_admin_key: AdminPublicKey::from_bytes([9; 32]),
+        retired_admin_keys: BTreeSet::new(),
         devices,
         discovery_key: [5; 32],
         previous_discovery_key: None,
@@ -140,6 +142,224 @@ fn member_admission_gives_a_snapshot_copy_only_to_live_enrolled_devices_asking_f
         admission.bootstrap(&enrolled, VAULT, "device-3"),
         Err(MemberRefusal::DeviceMismatch)
     );
+}
+
+#[test]
+fn held_device_is_refused_a_snapshot_copy() {
+    // A frozen contest holds device 2: a branch that is not effective removes it, so the
+    // selected log keeps it enrolled with no removal revision.
+    let held = EnrolledDevice {
+        held: true,
+        ..device(2, false)
+    };
+    let admission =
+        MemberAdmission::new(VAULT, &view(vec![device(1, false), held]), &BTreeSet::new());
+    let fingerprint = fingerprint_hex(&[2; 32]);
+
+    assert!(admission.is_held(&fingerprint));
+    let refusal = admission
+        .bootstrap(&fingerprint, VAULT, "device-2")
+        .unwrap_err();
+    assert_eq!(refusal, MemberRefusal::Held);
+    assert_eq!(refusal.code(), "device_held");
+    assert!(refusal.retryable(), "the hold ends when the contest does");
+    // A mismatch keeps its own code.
+    assert_eq!(
+        admission.bootstrap(&fingerprint, "vault-other", "device-2"),
+        Err(MemberRefusal::VaultMismatch)
+    );
+    assert_eq!(
+        admission.bootstrap(&fingerprint, VAULT, "device-1"),
+        Err(MemberRefusal::DeviceMismatch)
+    );
+
+    // Record exchange stays open, since it is how the contest reaches the device and ends.
+    assert_eq!(admission.certificate(&fingerprint), Ok("device-2"));
+    assert!(admission.admitted_fingerprints().contains(&fingerprint));
+    assert_eq!(
+        admission.request(&fingerprint, &sync_hello(VAULT, "device-2")),
+        Ok(())
+    );
+
+    // A device that is not held still gets its copy.
+    let live = fingerprint_hex(&[1; 32]);
+    assert!(!admission.is_held(&live));
+    assert_eq!(admission.bootstrap(&live, VAULT, "device-1"), Ok(()));
+}
+
+/// A stand-in certificate for device `index`, and the enrolled device whose TLS fingerprint
+/// matches it.
+fn certified_device(
+    index: u8,
+    held: bool,
+) -> (rustls::pki_types::CertificateDer<'static>, EnrolledDevice) {
+    let certificate = rustls::pki_types::CertificateDer::from(vec![index; 48]);
+    let fingerprint = ganbaru_handoff::pairing::certificate_fingerprint(certificate.as_ref());
+    let device = EnrolledDevice {
+        tls_fingerprint: ganbaru_handoff::protocol::decode_certificate_fingerprint(&fingerprint)
+            .expect("fingerprint"),
+        held,
+        ..device(index, false)
+    };
+    (certificate, device)
+}
+
+/// The requests that hand out vault content or the person key, from `device_id`.
+fn vault_material_requests(device_id: &str) -> Vec<ControlMessage> {
+    let compatibility = ganbaru_handoff::protocol::test_compatibility();
+    vec![
+        ControlMessage::RequestBundle {
+            protocol_version: PROTOCOL_VERSION,
+            compatibility: compatibility.clone(),
+            vault_id: VAULT.to_string(),
+            device_id: device_id.to_string(),
+        },
+        ControlMessage::DownloadBundle {
+            metadata: ganbaru_handoff::protocol::BundleMetadata {
+                protocol_version: PROTOCOL_VERSION,
+                compatibility,
+                vault_id: VAULT.to_string(),
+                device_id: device_id.to_string(),
+                transfer_id: "transfer-held".to_string(),
+                archive_bytes: 64,
+                archive_sha256: "a".repeat(64),
+                derived_state_stale: false,
+            },
+        },
+        ControlMessage::PersonKeyRequest {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT.to_string(),
+            device_id: device_id.to_string(),
+        },
+    ]
+}
+
+#[test]
+fn coordinator_refuses_held_device_vault_material() {
+    use crate::serve::coordinator::log_refusal;
+
+    // A frozen contest holds device 2, still paired with the coordinator.
+    let (live_certificate, live) = certified_device(1, false);
+    let (held_certificate, held) = certified_device(2, true);
+    let (unknown_certificate, _) = certified_device(3, false);
+    let admission = MemberAdmission::new(VAULT, &view(vec![live, held]), &BTreeSet::new());
+    let refusal = |certificate: &rustls::pki_types::CertificateDer<'static>,
+                   request: &ControlMessage| {
+        log_refusal(Ok(Some(admission.clone())), certificate, request)
+    };
+
+    for request in vault_material_requests("device-2") {
+        assert_eq!(
+            refusal(&held_certificate, &request),
+            Some(MemberRefusal::Held),
+            "{request:?}"
+        );
+    }
+    // Sync stays open, since record exchange is how the contest reaches the device.
+    assert_eq!(
+        refusal(&held_certificate, &sync_hello(VAULT, "device-2")),
+        None
+    );
+
+    // A device that is not held keeps its copy and person key.
+    for request in vault_material_requests("device-1") {
+        assert_eq!(refusal(&live_certificate, &request), None, "{request:?}");
+    }
+    // A device linked before its enrollment was sequenced is unknown to the log and keeps its
+    // first copy and person key, and so does every device of a coordinator without a log.
+    for request in vault_material_requests("device-3") {
+        assert_eq!(refusal(&unknown_certificate, &request), None, "{request:?}");
+        assert_eq!(
+            log_refusal(Ok(None), &unknown_certificate, &request),
+            None,
+            "{request:?}"
+        );
+        assert_eq!(
+            log_refusal(Ok(None), &held_certificate, &request),
+            None,
+            "{request:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn recheck_turns_a_removed_member_into_a_refusal() {
+    use crate::serve::MemberAdmissionSource;
+    use crate::serve::bundles::member_stream_check;
+    use crate::serve::coordinator::log_stream_check;
+    use std::sync::{Arc, Mutex};
+
+    // Device 2 starts a copy while admitted; the selected log then removes or holds it.
+    let (certificate, admitted) = certified_device(2, false);
+    let fingerprint = ganbaru_handoff::pairing::certificate_fingerprint(certificate.as_ref());
+    let current = Arc::new(Mutex::new(view(vec![device(1, false), admitted.clone()])));
+    let read = current.clone();
+    let source: MemberAdmissionSource = Arc::new(move || {
+        let view = read.lock().expect("view").clone();
+        Box::pin(async move { Ok(Some(MemberAdmission::new(VAULT, &view, &BTreeSet::new()))) })
+    });
+    let member = member_stream_check(&source, &fingerprint, VAULT, "device-2");
+    let download = || {
+        vault_material_requests("device-2")
+            .into_iter()
+            .find(|request| matches!(request, ControlMessage::DownloadBundle { .. }))
+            .expect("download request")
+    };
+    let coordinator = log_stream_check(Some(&source), Some(&certificate), download());
+    let set_device = |changed: EnrolledDevice| {
+        *current.lock().expect("view") = view(vec![device(1, false), changed]);
+    };
+
+    assert_eq!(member().await, Ok(()));
+    assert_eq!(coordinator().await, Ok(()));
+
+    set_device(EnrolledDevice {
+        removed_revision: Some(20),
+        ..admitted.clone()
+    });
+    assert_eq!(member().await, Err(MemberRefusal::Removed));
+    assert_eq!(coordinator().await, Err(MemberRefusal::Removed));
+
+    set_device(EnrolledDevice {
+        held: true,
+        ..admitted.clone()
+    });
+    assert_eq!(member().await, Err(MemberRefusal::Held));
+    assert_eq!(coordinator().await, Err(MemberRefusal::Held));
+
+    // A log that cannot be read, or sync that stopped, lets the copy continue.
+    let unreadable: MemberAdmissionSource =
+        Arc::new(|| Box::pin(async { Err("database is locked".to_string()) }));
+    let stopped: MemberAdmissionSource = Arc::new(|| Box::pin(async { Ok(None) }));
+    for source in [&unreadable, &stopped] {
+        assert_eq!(
+            member_stream_check(source, &fingerprint, VAULT, "device-2")().await,
+            Ok(())
+        );
+        assert_eq!(
+            log_stream_check(Some(source), Some(&certificate), download())().await,
+            Ok(())
+        );
+    }
+}
+
+#[test]
+fn member_refusals_are_retryable_only_when_they_clear_on_their_own() {
+    for refusal in [
+        MemberRefusal::Unknown,
+        MemberRefusal::Removed,
+        MemberRefusal::Held,
+        MemberRefusal::Quarantined,
+        MemberRefusal::DeviceMismatch,
+        MemberRefusal::VaultMismatch,
+        MemberRefusal::NotSync,
+        MemberRefusal::Proposal,
+        MemberRefusal::Forward,
+        MemberRefusal::Unavailable,
+    ] {
+        let expected = matches!(refusal, MemberRefusal::Held | MemberRefusal::Unavailable);
+        assert_eq!(refusal.retryable(), expected, "{refusal:?}");
+    }
 }
 
 fn record_get(vault_id: &str, device_id: &str) -> ControlMessage {

@@ -59,6 +59,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::vault_pick_open,
             vault::vault_pick_and_read_ics_import,
             vault::vault_pick_and_write_ics_export,
+            vault::vault_pick_and_write_recovery_kit,
             vault::vault_read_config,
             vault::vault_patch_config,
             vault::vault_pick_and_read_theme_json,
@@ -80,6 +81,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::channels::chat_list_channels,
             chat::conflicts::chat_conflicts,
             chat::conflicts::chat_resolve_conflict,
+            chat::provenance::chat_message_provenance,
             chat::channels::chat_list_navigation_channels,
             chat::channels::chat_read_channel,
             chat::channels::chat_create_channel,
@@ -456,6 +458,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             crate::sync::commands::sync_recovery_kit_state,
             crate::sync::commands::sync_create_recovery_kit,
             crate::sync::commands::sync_recovery_kit_saved,
+            crate::sync::connectivity::sync_set_secure_window,
             contacts::contacts_list,
             contacts::contacts_local_card,
             contacts::contacts_regenerate_card,
@@ -492,6 +495,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::handoff::initialize(app.handle());
             #[cfg(target_os = "android")]
             vault::backup::recover_interrupted_restore_for_app(app.handle())?;
+            if let Err(error) = vault::encrypted_backup::sweep_interrupted_backups(app.handle()) {
+                eprintln!("interrupted backup staging is not swept: {error}");
+            }
             #[cfg(target_os = "android")]
             crate::sync::headless::configure_background_at_start(app.handle());
             crate::sync::setup(app.handle());

@@ -75,6 +75,10 @@ impl<H: SyncHost> AssetStore for ActiveVaultAssets<H> {
         self.files.holds(asset)
     }
 
+    fn presence(&self, asset: &AssetRef) -> Result<bool, AssetStoreError> {
+        self.files.presence(asset)
+    }
+
     fn read_chunk(
         &self,
         asset: &AssetRef,

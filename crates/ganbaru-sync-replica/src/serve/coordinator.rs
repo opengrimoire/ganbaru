@@ -1,6 +1,9 @@
 //! The desktop coordinator listener: TLS pinned to linked devices, quarantine and log admission,
 //! and sync dispatch. Pairing, handoff, and contact requests go to the caller's routes.
 
+use super::bundles::{
+    StreamCheck, StreamCheckFuture, continue_stream, continue_unless_unavailable,
+};
 use super::limits::{ConnectionLimits, PendingPermit};
 use super::{
     COORDINATOR_BUSY_CODE, CoordinatorListener, LanAdmission, MEMBERSHIP_REVOKED_CODE,
@@ -216,8 +219,13 @@ async fn handle_connection<R: Routes>(
     if let (Some(source), Some(certificate)) = (log_admission.as_ref(), peer_certificate.as_ref())
         && let Some(refusal) = log_refusal(source().await, certificate, &request)
     {
-        let retryable = refusal == MemberRefusal::Unavailable;
-        return send_error(&mut stream, refusal.code(), refusal.describe(), retryable).await;
+        return send_error(
+            &mut stream,
+            refusal.code(),
+            refusal.describe(),
+            refusal.retryable(),
+        )
+        .await;
     }
 
     if let Some((vault_id, device_id)) = request.sync_peer() {
@@ -242,6 +250,7 @@ async fn handle_connection<R: Routes>(
             certificate: peer_certificate.as_ref(),
             limits: &limits,
             admission: None,
+            admission_source: log_admission.as_ref(),
         };
         return routes.serve(&mut stream, peer, request).await;
     }
@@ -275,6 +284,8 @@ fn server_config(
 /// Why the selected log turns away `request` from the device whose certificate is
 /// `certificate`: a device the log removed reaches no coordinator service but record exchange,
 /// pairing still linking it or not, and any other sync request needs a device the log enrolled.
+/// A device a frozen anchor handover contest holds gets no copy and no person key until the
+/// contest resolves, and keeps sync, since record exchange is how the contest reaches it.
 /// Record exchange is served to every paired device, so an authorization branch the local log
 /// does not select still reaches it. A request from a certificate
 /// the log does not know, such as a device linked before its enrollment was sequenced, keeps
@@ -294,6 +305,9 @@ pub fn log_refusal(
         }
     };
     let fingerprint = certificate_fingerprint(certificate.as_ref());
+    if request.is_vault_material() && admission.is_held(&fingerprint) {
+        return Some(MemberRefusal::Held);
+    }
     match admission.certificate(&fingerprint) {
         Ok(_) | Err(MemberRefusal::Quarantined) => None,
         Err(MemberRefusal::Removed | MemberRefusal::Unknown) if request.is_record_exchange() => {
@@ -303,6 +317,29 @@ pub fn log_refusal(
         Err(refusal) if request.sync_peer().is_some() => Some(refusal),
         Err(_) => None,
     }
+}
+
+/// The check the coordinator runs during a copy: [`log_refusal`] for `request` from the device
+/// whose certificate is `certificate`, against the selected log as it is now. A coordinator
+/// without a log, a device the log does not know yet, and a log that cannot be read all let the
+/// copy continue, so a briefly locked database never ends an honest transfer.
+pub fn log_stream_check<'a>(
+    source: Option<&'a MemberAdmissionSource>,
+    certificate: Option<&'a CertificateDer<'static>>,
+    request: ControlMessage,
+) -> StreamCheck<'a> {
+    let (Some(source), Some(certificate)) = (source, certificate) else {
+        return continue_stream();
+    };
+    Box::new(move || -> StreamCheckFuture<'a> {
+        let request = request.clone();
+        Box::pin(async move {
+            match log_refusal(source().await, certificate, &request) {
+                Some(refusal) => continue_unless_unavailable(Err(refusal)),
+                None => Ok(()),
+            }
+        })
+    })
 }
 
 /// Whether the listener turns a linked device away as quarantined. A quarantine list that

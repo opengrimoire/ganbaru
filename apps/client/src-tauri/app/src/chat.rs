@@ -36,6 +36,7 @@ mod internal_mcp_tools;
 pub mod organization;
 #[cfg(desktop)]
 pub mod preview;
+pub mod provenance;
 #[cfg(desktop)]
 pub mod provider_files;
 #[cfg(desktop)]

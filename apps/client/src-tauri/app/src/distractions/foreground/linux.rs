@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(target_os = "linux")]
-fn is_wayland_session() -> bool {
+pub(in crate::distractions) fn is_wayland_session() -> bool {
     std::env::var("XDG_SESSION_TYPE")
         .map(|value| value.eq_ignore_ascii_case("wayland"))
         .unwrap_or(false)
@@ -9,7 +9,10 @@ fn is_wayland_session() -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn x11_intern_atom<C: x11rb::connection::Connection>(conn: &C, name: &[u8]) -> Result<u32, String> {
+pub(in crate::distractions) fn x11_intern_atom<C: x11rb::connection::Connection>(
+    conn: &C,
+    name: &[u8],
+) -> Result<u32, String> {
     use x11rb::protocol::xproto::ConnectionExt as _;
 
     conn.intern_atom(false, name)
@@ -20,7 +23,7 @@ fn x11_intern_atom<C: x11rb::connection::Connection>(conn: &C, name: &[u8]) -> R
 }
 
 #[cfg(target_os = "linux")]
-fn x11_property_u32<C: x11rb::connection::Connection>(
+pub(in crate::distractions) fn x11_property_u32<C: x11rb::connection::Connection>(
     conn: &C,
     window: u32,
     property: u32,
@@ -378,11 +381,17 @@ pub(in crate::distractions) fn close_current_foreground_desktop_app(
     expected: DistractionsForegroundDesktopAppExpectation,
     authorize: &mut dyn FnMut(&DistractionsForegroundDesktopAppStatus) -> Result<(), String>,
 ) -> Result<(), String> {
+    let mut authorize_outside_session = |status: &DistractionsForegroundDesktopAppStatus| {
+        if let Some(process_id) = status.process_id {
+            refuse_anchored_close(process_id, current_session_anchors(|| false).as_deref())?;
+        }
+        authorize(status)
+    };
     if is_wayland_session() {
-        return wayland_close_active_window(expected, authorize);
+        return wayland_close_active_window(expected, &mut authorize_outside_session);
     }
     if std::env::var_os("DISPLAY").is_some() {
-        return x11_close_active_window(expected, authorize);
+        return x11_close_active_window(expected, &mut authorize_outside_session);
     }
     Err("foreground desktop app closing needs X11 or a Wayland compositor with zwlr_foreign_toplevel_manager_v1".to_string())
 }

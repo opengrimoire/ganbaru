@@ -126,6 +126,7 @@ describe("sync authority state", () => {
       title: "",
       preview: "",
       changedAtMs: null,
+      restorable: true,
       decisionPending: false,
     });
     expect(invoke).toHaveBeenCalledWith("sync_late_change_discard", {

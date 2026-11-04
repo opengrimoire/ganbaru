@@ -21,9 +21,18 @@ export interface CalendarExpansionDiagnostic {
   message: string;
 }
 
+/** Which window text of one template native reads shortened. */
+interface ShortenedWindowText {
+  event_id: string;
+  title: boolean;
+  location: boolean;
+}
+
 interface NativeCalendarWindow extends CalendarWindowRows {
   occurrences: NativeOccurrence[];
   diagnostics: CalendarExpansionDiagnostic[];
+  omitted_template_count: number;
+  shortened_text: ShortenedWindowText[];
 }
 
 export interface NativeCalendarWindowRequest {
@@ -38,6 +47,7 @@ export interface MappedNativeCalendarWindow {
   windowEvents: CalendarEvent[];
   totalEventCount: number | null;
   diagnostics: CalendarExpansionDiagnostic[];
+  omittedTemplateCount: number;
 }
 
 type Validator<T> = (value: unknown) => value is T;
@@ -69,6 +79,7 @@ export function parseNativeCalendarWindow(value: unknown): NativeCalendarWindow 
   };
   const number: Validator<number> = (value): value is number => typeof value === "number" && Number.isSafeInteger(value);
   const flag: Validator<number> = (value): value is number => value === 0 || value === 1;
+  const boolean: Validator<boolean> = (value): value is boolean => typeof value === "boolean";
   const nullable = <T>(check: Validator<T>): Validator<T | null> => (value): value is T | null => value === null || check(value);
   const optional = <T>(check: Validator<T>): Validator<T | undefined> => (value): value is T | undefined => value === undefined || check(value);
   const nullableText = nullable(text);
@@ -115,6 +126,8 @@ export function parseNativeCalendarWindow(value: unknown): NativeCalendarWindow 
       start_time: instant, end_time: instant, override_id: nullableText,
     })),
     diagnostics: array(record<CalendarExpansionDiagnostic>({ event_id: text, message: text })),
+    omitted_template_count: (value): value is number => number(value) && value >= 0,
+    shortened_text: array(record<ShortenedWindowText>({ event_id: text, title: boolean, location: boolean })),
   });
   if (!payload(value)) throw new Error("Invalid native Calendar window");
   const events = new Map(value.events.map((event) => [event.id, event]));
@@ -125,7 +138,8 @@ export function parseNativeCalendarWindow(value: unknown): NativeCalendarWindow 
     || (value.total_event_count !== null && value.total_event_count < value.events.length)
     || value.attendees.some((row) => !events.has(row.event_id))
     || value.overrides.some((row) => !events.has(row.parent_event_id))
-    || value.diagnostics.some((row) => !events.has(row.event_id))) {
+    || value.diagnostics.some((row) => !events.has(row.event_id))
+    || value.shortened_text.some((row) => !events.has(row.event_id))) {
     throw new Error("Invalid native Calendar row ownership or bounds");
   }
   for (const occurrence of value.occurrences) {
@@ -144,10 +158,21 @@ export function parseNativeCalendarWindow(value: unknown): NativeCalendarWindow 
   return value;
 }
 
+/** Mark the template text native reads shortened, so a panel always loads its full value. */
+function markShortenedText(events: readonly CalendarEvent[], rows: readonly ShortenedWindowText[]): void {
+  const byId = new Map(rows.map((row) => [row.event_id, row]));
+  for (const event of events) {
+    const row = byId.get(event.id);
+    if (row?.title) event.windowTitleShortened = true;
+    if (row?.location) event.windowLocationShortened = true;
+  }
+}
+
 /** Map canonical instants to render labels, applying only the override selected by native expansion. */
 export function mapNativeCalendarWindow(value: unknown, renderZone: string): MappedNativeCalendarWindow {
   const rows = parseNativeCalendarWindow(value);
   const sourceEvents = mapWindowRows(rows, renderZone);
+  markShortenedText(sourceEvents, rows.shortened_text);
   const templates = new Map(sourceEvents.map((event) => [event.id, event]));
   const overrides = new Map(rows.overrides.map((override) => [override.id, override]));
   const windowEvents = rows.occurrences.map((occurrence): CalendarEvent => {
@@ -168,7 +193,10 @@ export function mapNativeCalendarWindow(value: unknown, renderZone: string): Map
     if (occurrence.override_id) {
       const override = overrides.get(occurrence.override_id);
       if (!override) throw new Error("Native Calendar selected override is missing");
-      if (override.title !== null) event.title = override.title;
+      if (override.title !== null) {
+        event.title = override.title;
+        delete event.windowTitleShortened;
+      }
       const color = normalizeEventColor(override.color);
       if (color !== undefined) event.color = color;
       if (override.status === "cancelled" || override.status === "tentative" || override.status === "confirmed") event.status = override.status;
@@ -176,7 +204,13 @@ export function mapNativeCalendarWindow(value: unknown, renderZone: string): Map
     }
     return event;
   });
-  return { sourceEvents, windowEvents, totalEventCount: rows.total_event_count, diagnostics: rows.diagnostics };
+  return {
+    sourceEvents,
+    windowEvents,
+    totalEventCount: rows.total_event_count,
+    diagnostics: rows.diagnostics,
+    omittedTemplateCount: rows.omitted_template_count,
+  };
 }
 
 /** Fetch canonical source rows and occurrences without sending a frontend recurrence projection back to Rust. */

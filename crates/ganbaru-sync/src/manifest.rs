@@ -2,13 +2,17 @@
 //!
 //! A manifest version fixes table ids, group ids, column membership, and value rules, and ids are
 //! never reused. Operations of every version up to the current one validate against the current
-//! manifest, so a new version may only add tables and groups or loosen rules; tightening a rule
-//! needs per-version validation first. A conformance test records each version's canonical
-//! [`Manifest::summary`], so a change to the summary without a version bump fails.
+//! manifest. A version no release carries yet changes in place, tightening included, because no
+//! device outside development holds its operations. Once a release carries a version, it never
+//! changes, and a later version may only add tables and groups or loosen rules; tightening a rule
+//! then needs per-version validation first. A conformance test records each version's canonical
+//! [`Manifest::summary`], so a change to the summary fails until the recorded snapshot is updated
+//! (in place for an unreleased version, under a version bump otherwise).
 //!
 //! Each domain declares its tables in one [`DomainManifest`]; a manifest flattens a list of
 //! domains in dependency order.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use ganbaru_sync_contracts::bounds::{
@@ -18,6 +22,7 @@ use ganbaru_sync_contracts::bounds::{
 use ganbaru_sync_contracts::{GroupId, GroupMask, TableId, derived_key};
 
 use crate::assets::{AssetClass, LocalAssetColumn, local_asset_problems};
+use crate::domains::themes::is_theme_id;
 
 pub mod order;
 pub mod summary;
@@ -64,6 +69,10 @@ pub const SYNC_TABLES: &[&str] = &[
     "sync_fork_evidence",
     "sync_row_creations",
     "sync_stale_rows",
+    "sync_refused_rows",
+    "sync_unique_classes",
+    "sync_contested_classes",
+    "sync_unique_class_rules",
     "sync_recovery_kit",
 ];
 
@@ -256,9 +265,17 @@ pub enum ColumnType {
     OrderKey,
     /// Null or the row key of a referenced row.
     OptionalRowKey,
+    /// A row key that is never null. Used for every reference and key column that is NOT NULL
+    /// in its domain table.
+    RowKey,
 }
 
 impl ColumnType {
+    /// Whether the column holds a row key, required or nullable.
+    pub const fn is_row_key(self) -> bool {
+        matches!(self, Self::RowKey | Self::OptionalRowKey)
+    }
+
     /// Whether the column holds text, so comparisons must ignore declared collations.
     pub const fn is_text(self) -> bool {
         !matches!(
@@ -306,7 +323,7 @@ impl ColumnType {
             }
             Self::Timestamp | Self::OptionalTimestamp => MAX_TIMESTAMP_BYTES,
             Self::OrderKey => MAX_ORDER_KEY_BYTES,
-            Self::OptionalRowKey => MAX_ROW_KEY_BYTES,
+            Self::RowKey | Self::OptionalRowKey => MAX_ROW_KEY_BYTES,
         };
         TAG + LENGTH + text_bytes
     }
@@ -720,8 +737,8 @@ pub struct TableSpec {
     pub acyclic: Option<AcyclicSpec>,
     /// A SQL condition over the key and group columns that a row satisfies once it is
     /// published. Rows that fail it are drafts: they are not captured, a local update cannot
-    /// make a published row fail it again, and a merged winner that fails it is not
-    /// materialized.
+    /// make a published row fail it again, a merged winner that fails it is not materialized,
+    /// and no replicated operation changes a local draft or adds a row to it.
     pub publish_when: Option<&'static str>,
     /// The predicate table whose row publishes this table's rows.
     pub published_with: Option<PublishedWith>,
@@ -729,11 +746,109 @@ pub struct TableSpec {
     /// with `ON DELETE CASCADE`. The key is not a group column, so no reference declares it: the
     /// row is hidden while that parent row is, and it is recovered with it.
     pub key_parent: Option<TableId>,
+    /// The device a row belongs to, when only that device may write it. Every replica refuses a
+    /// change from another device, and a device never seals another device's row.
+    pub owner: Option<RowOwner>,
     /// Whether domain code may hold local deletes of the table for Undo with
     /// [`crate::hold::hold_deletes`]. Rows that the held delete removes through
     /// `ON DELETE CASCADE` inherit the hold, see [`Manifest::may_hold_deletes`]. Device
     /// behavior, so it is not in the summary.
     pub holds_deletes: bool,
+    /// What the table accepts as a key beyond the [`RowKey`] rules.
+    ///
+    /// [`RowKey`]: ganbaru_sync_contracts::RowKey
+    pub key_rule: RowKeyRule,
+    /// Whether rows of the table are ever deleted.
+    pub deletion: Deletion,
+    /// The rows a tombstone of their own does not remove while their parent lives.
+    pub retained: Option<RowRetention>,
+}
+
+/// Which rows of a table outlive a tombstone of their own: while the value of `column` in the
+/// immutable `group` is `value` and the row of `parent` that the same group references is shown,
+/// the row materializes and reads as live. The merge state keeps the tombstone, so the rule needs
+/// no repair write and replicas that cannot seal agree on it. The row goes with its parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowRetention {
+    /// Immutable group holding the column and the cascading reference to the parent.
+    pub group: GroupId,
+    /// Column of the group that selects the retained rows.
+    pub column: &'static str,
+    /// Value of the column on a retained row.
+    pub value: &'static str,
+    /// Table the rows are retained under.
+    pub parent: TableId,
+}
+
+/// Whether a table's rows can be deleted through sync.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deletion {
+    /// Rows are deleted by tombstones, repairs, and cascades.
+    Ordinary,
+    /// No replicated operation deletes a row: a tombstone is invalid, repair seals none, and a
+    /// late one is neither listed nor restored.
+    Never,
+}
+
+/// How a row key names the device that owns the row, in a form a change carries whatever its
+/// action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowOwner {
+    /// The row key is the owning device id.
+    KeyIsDevice {
+        /// Column holding the device id.
+        device_column: &'static str,
+    },
+    /// The row key starts with `prefix`, the owner tag, and `:`. See
+    /// [`device_owner_tag`](ganbaru_sync_contracts::device_owner_tag).
+    KeyTag {
+        /// What the row key starts with, separator included.
+        prefix: &'static str,
+        /// Column holding the device id.
+        device_column: &'static str,
+    },
+}
+
+impl RowOwner {
+    /// Column holding the device id, the key column or an immutable group column.
+    pub const fn device_column(self) -> &'static str {
+        match self {
+            Self::KeyIsDevice { device_column } | Self::KeyTag { device_column, .. } => {
+                device_column
+            }
+        }
+    }
+}
+
+/// A rule on the row keys of a table, mirroring the key CHECK of its domain table or a stricter
+/// rule of the table's insert value guard. Every change carries the key, whatever its action, so
+/// a key the schema refuses never spreads. Lengths count characters, as `length()` does in SQLite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKeyRule {
+    /// Every valid [`RowKey`](ganbaru_sync_contracts::RowKey).
+    Any,
+    /// Only this key, for a singleton row.
+    Fixed(&'static str),
+    /// Keys of exactly this many characters.
+    ExactChars(usize),
+    /// Keys of at most this many characters.
+    MaxChars(usize),
+    /// A theme id, see [`is_theme_id`]. The insert value guard states the rule, because the
+    /// table's CHECK only refuses the built-in themes.
+    ThemeSlug,
+}
+
+impl RowKeyRule {
+    /// Whether the rule admits `key`.
+    pub fn admits(self, key: &str) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Fixed(fixed) => key == fixed,
+            Self::ExactChars(chars) => key.chars().count() == chars,
+            Self::MaxChars(chars) => key.chars().count() <= chars,
+            Self::ThemeSlug => is_theme_id(key),
+        }
+    }
 }
 
 /// A child table published together with a row of a predicate table: while that row fails
@@ -1001,8 +1116,10 @@ impl Manifest {
     /// `Local` column
     /// declares a SQL literal; key-derived columns are named apart from the key of a
     /// single-column key; references, owned tables, derived keys, trees, edges, and
-    /// publication are well formed; and tables follow the dependency order of their references.
-    /// Adapter and hook registration is checked by the engine.
+    /// publication are well formed; retention rules can hold; no delete can reach a
+    /// never-deleted table; and tables follow
+    /// the dependency order of their references. Adapter and hook registration is checked by the
+    /// engine.
     pub fn validate(&self) -> Result<(), String> {
         let mut problems = String::new();
         for (index, domain) in self.domains.iter().enumerate() {
@@ -1113,6 +1230,8 @@ impl Manifest {
                 .chain(self.acyclic_cascade_problems(table))
                 .chain(self.publication_problems(table))
                 .chain(self.key_parent_problems(table))
+                .chain(self.deletion_problems(table))
+                .chain(self.retention_problems(table))
             {
                 let _ = writeln!(problems, "{}: {problem}", table.name);
             }
@@ -1152,6 +1271,119 @@ impl Manifest {
             _ => {}
         }
         problems
+    }
+
+    /// Why a never-deleted table could still lose a row: a delete of a key parent or of a
+    /// cascading reference's table would reach it, so those tables are never deleted either.
+    fn deletion_problems(&self, table: &TableSpec) -> Vec<String> {
+        if table.deletion != Deletion::Never {
+            return Vec::new();
+        }
+        let deletable = |parent: TableId| {
+            self.table(parent)
+                .is_some_and(|spec| spec.deletion != Deletion::Never)
+        };
+        let mut problems = Vec::new();
+        if table.key_parent.is_some_and(deletable) {
+            problems.push("the key parent of a never-deleted table is never deleted".to_string());
+        }
+        for (_, _, reference) in table.references() {
+            if reference.on_delete == OnDelete::Cascade && deletable(reference.table) {
+                problems.push(format!(
+                    "{} cascades from a table that is not never deleted",
+                    reference.column
+                ));
+            }
+        }
+        problems
+    }
+
+    /// Why a retention rule cannot hold. Its group is immutable and holds the text column and a
+    /// cascading reference to a parent that never redirects, so every replica reads one parent
+    /// for the life of the row. Duplicate classes, trees, and edges read raw sync state, so a
+    /// retained table has none, and what the parent's cascade reaches is free of retention,
+    /// trees, and edges, so reading it never returns to a retained row or to unfinished
+    /// derivation. A retained row can be tombstoned, which stores no conflict mask, so a
+    /// retained table surfaces no group.
+    fn retention_problems(&self, table: &TableSpec) -> Vec<String> {
+        let Some(retained) = table.retained else {
+            return Vec::new();
+        };
+        let mut problems = Vec::new();
+        let duplicate_repair = table
+            .resolutions
+            .iter()
+            .any(|resolution| matches!(resolution, Resolution::DuplicateRepair { .. }));
+        if table.tree.is_some() || table.acyclic.is_some() || duplicate_repair {
+            problems.push("a retained table repairs duplicates, a tree, or edges".to_string());
+        }
+        if table.groups.iter().any(|group| group.surfaced) {
+            problems.push("a retained table surfaces a group".to_string());
+        }
+        match table.group(retained.group) {
+            Some(group) if group.kind == MergeKind::Immutable => {
+                let selects = group
+                    .columns()
+                    .iter()
+                    .any(|column| column.name == retained.column && column.ty.is_text());
+                if !selects {
+                    problems.push(format!(
+                        "retention column {} is not text of the group",
+                        retained.column
+                    ));
+                }
+                let references = group.reference_columns().any(|(_, reference)| {
+                    reference.table == retained.parent && reference.on_delete == OnDelete::Cascade
+                });
+                if !references {
+                    problems
+                        .push("the retention group does not cascade from the parent".to_string());
+                }
+            }
+            _ => problems.push("the retention group is not immutable".to_string()),
+        }
+        match self.table(retained.parent) {
+            Some(parent) if parent.redirects => {
+                problems.push("the retention parent redirects".to_string());
+            }
+            Some(parent) => {
+                let reaches_derived = self.cascade_closure(parent).iter().any(|id| {
+                    self.table(*id).is_some_and(|reached| {
+                        reached.retained.is_some()
+                            || reached.tree.is_some()
+                            || reached.acyclic.is_some()
+                    })
+                });
+                if reaches_derived {
+                    problems.push(
+                        "the retention parent reaches retention, a tree, or edges".to_string(),
+                    );
+                }
+            }
+            None => problems.push("the retention parent is not a table".to_string()),
+        }
+        problems
+    }
+
+    /// `table` and the tables its cascading references and key parents reach.
+    fn cascade_closure(&self, table: &TableSpec) -> BTreeSet<TableId> {
+        let mut reached = BTreeSet::from([table.id]);
+        let mut pending = vec![table.id];
+        while let Some(id) = pending.pop() {
+            let Some(spec) = self.table(id) else {
+                continue;
+            };
+            let cascades = spec
+                .references()
+                .filter(|(_, _, reference)| reference.on_delete == OnDelete::Cascade)
+                .map(|(_, _, reference)| reference.table);
+            for next in cascades.chain(spec.key_parent) {
+                if reached.insert(next) {
+                    pending.push(next);
+                }
+            }
+        }
+        reached
     }
 
     /// Why a table's publication declarations are malformed. A predicate is one non-blank
@@ -1196,6 +1428,19 @@ impl Manifest {
                 problems.push(format!(
                     "{} is not an immutable cascading reference into the publishing parent",
                     with.column
+                ));
+            }
+        }
+        if let Some(owner) = table.owner {
+            let column = owner.device_column();
+            let bound = column == table.key_column
+                || table.groups.iter().any(|group| {
+                    group.kind == MergeKind::Immutable
+                        && group.columns().iter().any(|spec| spec.name == column)
+                });
+            if !bound {
+                problems.push(format!(
+                    "owner column {column} is neither the key nor an immutable column"
                 ));
             }
         }
@@ -1288,6 +1533,39 @@ impl Manifest {
     /// Replicated table by id.
     pub fn table(&self, id: TableId) -> Option<&'static TableSpec> {
         self.tables.iter().find(|table| table.id == id)
+    }
+
+    /// The lowest table of the component of every table, in the graph of reference columns of
+    /// either delete action, owned references, and key parents, with direction ignored. Nothing
+    /// that follows a reference leaves a component.
+    pub(crate) fn reference_components(&self) -> BTreeMap<TableId, TableId> {
+        fn root(parents: &BTreeMap<TableId, TableId>, table: TableId) -> TableId {
+            let mut current = table;
+            while let Some(parent) = parents.get(&current).filter(|parent| **parent != current) {
+                current = *parent;
+            }
+            current
+        }
+        let mut parents: BTreeMap<TableId, TableId> = self
+            .tables
+            .iter()
+            .map(|table| (table.id, table.id))
+            .collect();
+        for table in self.tables {
+            let referenced = table
+                .references()
+                .map(|(_, _, reference)| reference.table)
+                .chain(table.owned_references().map(|(_, _, _, owned)| owned.table))
+                .chain(table.key_parent);
+            for target in referenced {
+                let (left, right) = (root(&parents, table.id), root(&parents, target));
+                parents.insert(left.max(right), left.min(right));
+            }
+        }
+        self.tables
+            .iter()
+            .map(|table| (table.id, root(&parents, table.id)))
+            .collect()
     }
 
     /// Whether a local delete of `table` can be held: the table holds deletes, or it
@@ -1394,8 +1672,8 @@ fn reference_problems(group: &GroupSpec) -> Vec<String> {
     let columns = group.columns();
     match group.kind {
         MergeKind::Reference { .. } => {
-            if !matches!(columns, [column] if column.ty == ColumnType::OptionalRowKey) {
-                problems.push("a reference group holds one optional row key column".to_string());
+            if !matches!(columns, [column] if column.ty.is_row_key()) {
+                problems.push("a reference group holds one row key column".to_string());
             }
             if !group.references.is_empty() {
                 problems.push("a reference group declares no reference columns".to_string());
@@ -1417,10 +1695,18 @@ fn reference_problems(group: &GroupSpec) -> Vec<String> {
             .find(|column| column.name == reference.column)
         {
             None => problems.push(format!("{} is not a column of the group", reference.column)),
-            Some(column) if column.ty != ColumnType::OptionalRowKey => problems.push(format!(
-                "{} holds a reference but is not an optional row key",
+            Some(column) if !column.ty.is_row_key() => problems.push(format!(
+                "{} holds a reference but is not a row key",
                 reference.column
             )),
+            Some(column)
+                if column.ty == ColumnType::RowKey && reference.on_delete != OnDelete::Cascade =>
+            {
+                problems.push(format!(
+                    "{} is required, so its reference must cascade",
+                    reference.column
+                ));
+            }
             Some(_) => {}
         }
         if group.references[..index]
@@ -1511,11 +1797,8 @@ pub(crate) fn owned_table_problems(owned: &OwnedTable, nested: bool) -> Vec<Stri
             .iter()
             .find(|column| column.name == reference.column)
         {
-            Some(column) if column.ty == ColumnType::OptionalRowKey => {}
-            _ => problems.push(format!(
-                "{} is not an optional row key data column",
-                reference.column
-            )),
+            Some(column) if column.ty.is_row_key() => {}
+            _ => problems.push(format!("{} is not a row key data column", reference.column)),
         }
         if owned.references[..index]
             .iter()
@@ -1558,7 +1841,8 @@ pub(crate) fn owned_table_problems(owned: &OwnedTable, nested: bool) -> Vec<Stri
 
 /// Why a table's derived key or existence group is malformed. Only the existence group has no
 /// column; it is a plain register the user never sees in a conflict or recovery entry. A
-/// derived-key table never tombstones, so it neither redirects nor repairs duplicates.
+/// derived-key table never tombstones, so it neither redirects nor repairs duplicates. Its key
+/// inputs are immutable columns, and its immutable columns are the key column or key inputs.
 fn derived_key_problems(table: &TableSpec) -> Vec<String> {
     let mut problems = Vec::new();
     for group in table.groups {
@@ -1605,6 +1889,16 @@ fn derived_key_problems(table: &TableSpec) -> Vec<String> {
             .any(|column| column.name == *input)
         {
             problems.push(format!("key input {input} is not an immutable column"));
+        }
+    }
+    // A re-add, or a Create covering a known row, writes every group again, and merge lets it
+    // replace Immutable versions, so they may hold only values the key derives from.
+    for column in table.immutable_columns() {
+        if column.name != table.key_column && !derived.key_inputs.contains(&column.name) {
+            problems.push(format!(
+                "immutable column {} is neither the key column nor a key input",
+                column.name
+            ));
         }
     }
     match derived.prefix {

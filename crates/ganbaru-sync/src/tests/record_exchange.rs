@@ -8,13 +8,19 @@ use ganbaru_sync_contracts::{
 };
 
 use super::arrival_orders;
-use super::authorization::{admin_entry, genesis_of, head, remove_entry, seal_after, view};
+use super::authorization::{
+    admin_entry, genesis_of, head, held, remove_entry, seal_after, tag, view,
+};
 use super::block_on;
+use super::exclusion::{edit, note};
 use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, anchor_device_key, device_admin, device_id,
-    enroll_entry, person, proposal,
+    device_key, enroll_entry, person, proposal,
 };
-use crate::{AuthorizationView, RecordClass, RecordCursor, RecordEnvelope, RecordRole};
+use crate::{
+    AuthorizationView, EvidenceOutcome, RecordClass, RecordCursor, RecordEnvelope, RecordRole,
+    StoreOutcome, StoreRefusal,
+};
 
 use std::collections::BTreeSet;
 
@@ -334,6 +340,75 @@ fn two_takes_resolve_by_a_yield_that_travels_by_record_pages_alone() {
             assert_eq!(view(replica).await, resolved);
         }
         assert_eq!(stored(&mut member).await, stored(&mut hub).await);
+    });
+}
+
+/// The second take of a contest follows a row change of its author, whom the contest holds. The
+/// holder's lane stops at that row change, so the member selects the first take alone, and the
+/// record pages then bring it the contest without the row change.
+#[test]
+fn record_pages_carry_a_take_past_a_held_row_change_and_no_data() {
+    block_on(async {
+        let mut hub = anchor_with_admins(86).await;
+        hub.sequence(enroll_entry(&person(), 30, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut first = Replica::new(20, 86).await;
+        let mut second = Replica::new(21, 86).await;
+        let mut member = Replica::new(30, 86).await;
+        for replica in [&mut first, &mut second, &mut member] {
+            replica.pull(&mut hub).await;
+        }
+        let point = view(&mut hub).await.revision;
+
+        take(&mut first, 20).await;
+        let removal = proposal(
+            first.ctx.space,
+            &device_admin(20),
+            first.now_ms,
+            remove_entry(&device_id(21)),
+        );
+        first.sequence_signed(&removal).await.unwrap().unwrap();
+        tag(&mut second, "held-row").await;
+        take(&mut second, 21).await;
+        let removal = proposal(
+            second.ctx.space,
+            &device_admin(21),
+            second.now_ms,
+            remove_entry(&device_id(20)),
+        );
+        second.sequence_signed(&removal).await.unwrap().unwrap();
+        hub.pull(&mut first).await;
+        hub.pull(&mut second).await;
+        let contested = view(&mut hub).await;
+        assert_eq!(contested.frozen_at, Some(point));
+        assert!(
+            held(&mut hub, 21).await,
+            "the contest holds the second take"
+        );
+
+        member.pull(&mut hub).await;
+        assert_eq!(
+            view(&mut member).await.anchor_device_id,
+            device_id(20),
+            "the lane stops before the second take"
+        );
+        let lanes = member.stored_vector().await;
+
+        exchange(&mut member, &mut hub).await;
+        assert_eq!(view(&mut member).await, contested);
+        assert!(held(&mut member, 21).await, "the next apply holds it too");
+        assert_eq!(
+            member.stored_vector().await,
+            lanes,
+            "pages bring no operation"
+        );
+        let rows: Vec<String> = sqlx::query_scalar("SELECT id FROM quick_note_tags")
+            .fetch_all(&mut member.conn)
+            .await
+            .unwrap();
+        assert!(!rows.contains(&"held-row".to_owned()));
     });
 }
 
@@ -1228,5 +1303,383 @@ fn evidence_whose_twin_is_purged_is_purged_when_the_writer_settles() {
                 .iter()
                 .all(|(_, hash, _)| *hash != data_hash)
         );
+    });
+}
+
+/// The genesis of `identity`, re-sealed from `genesis`, and a copy of the stored record `record`
+/// that its writer carries right after it.
+fn carried_by(identity: &Identity, genesis: &[u8], record: &[u8]) -> [Vec<u8>; 2] {
+    let certificate = genesis_of(genesis, identity);
+    let mut operation = Envelope::decode(record).unwrap().operation().unwrap();
+    operation.writer = identity.id();
+    operation.seq = 2;
+    operation.previous_hash = Envelope::decode(&certificate).unwrap().hash();
+    let carried = operation.seal(&identity.key).unwrap().into_bytes();
+    [certificate, carried]
+}
+
+/// The roles and classes a page serves the envelopes of `writer` in.
+fn classes_of(envelopes: &[RecordEnvelope], writer: WriterId) -> Vec<(RecordRole, RecordClass)> {
+    envelopes
+        .iter()
+        .filter(|envelope| Envelope::decode(&envelope.bytes).unwrap().writer == writer)
+        .map(|envelope| (envelope.role, envelope.class))
+        .collect()
+}
+
+/// A certificate that pairs a live device id with a key the chain does not enroll for that
+/// device puts its writer in the Rest class, whether the key is unknown or another device's,
+/// while a successor writer of a live device that names its enrolled key stays Live.
+#[test]
+fn a_certificate_pairing_a_live_id_with_another_key_stays_in_the_rest_class() {
+    block_on(async {
+        let mut hub = anchor_with_admins(94).await;
+        let hub_writer = hub.writer();
+        let genesis = genesis_of_writer(&mut hub, hub_writer).await;
+        let (envelopes, _) = all_pages(&mut hub, PAGE_ENVELOPES).await;
+        let record = envelopes
+            .iter()
+            .find(|envelope| {
+                envelope.role == RecordRole::Record
+                    && Envelope::decode(&envelope.bytes).unwrap().writer == hub_writer
+            })
+            .expect("the hub carries its records")
+            .bytes
+            .clone();
+
+        let stranger = DeviceKeyPair::from_seed(&[94; 32]).unwrap();
+        let unknown = Identity::new([95; 32], &stranger, &device_id(20), None);
+        let borrowed = Identity::new(
+            [96; 32],
+            &anchor_device_key(&person()),
+            &device_id(21),
+            None,
+        );
+        let successor = Identity::new([97; 32], &device_key(&person(), 22), &device_id(22), None);
+        for identity in [&unknown, &borrowed, &successor] {
+            let admission = admit_bytes(&mut hub, &carried_by(identity, &genesis, &record)).await;
+            assert_eq!(admission.admitted, 2);
+        }
+
+        let (envelopes, _) = all_pages(&mut hub, PAGE_ENVELOPES).await;
+        for attacker in [&unknown, &borrowed] {
+            assert_eq!(
+                classes_of(&envelopes, attacker.id()),
+                [
+                    (RecordRole::Certificate, RecordClass::Rest),
+                    (RecordRole::Record, RecordClass::Rest),
+                ],
+                "a key the chain does not enroll for the named device earns no Live class"
+            );
+        }
+        let honest = classes_of(&envelopes, successor.id());
+        assert_eq!(honest.len(), 2);
+        assert!(
+            honest.iter().all(|(_, class)| *class == RecordClass::Live),
+            "the enrolled key keeps its writers Live: {honest:?}"
+        );
+    });
+}
+
+/// The stored genesis of the hub's own writer and two records that writer carries.
+async fn hub_records(hub: &mut Replica) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let hub_writer = hub.writer();
+    let genesis = genesis_of_writer(hub, hub_writer).await;
+    let (envelopes, _) = all_pages(hub, PAGE_ENVELOPES).await;
+    let mut records = envelopes.into_iter().filter(|envelope| {
+        envelope.role == RecordRole::Record
+            && Envelope::decode(&envelope.bytes).unwrap().writer == hub_writer
+    });
+    let first = records.next().expect("the hub carries records").bytes;
+    let second = records
+        .next()
+        .expect("the hub carries a second record")
+        .bytes;
+    (genesis, first, second)
+}
+
+async fn storage_of(replica: &mut Replica) -> crate::AuthorizationStorage {
+    replica
+        .engine
+        .authorization_storage(&mut replica.conn, &replica.ctx)
+        .await
+        .unwrap()
+}
+
+/// A certificate that names a live device id with a key the chain does not enroll for it charges
+/// no bytes to that device, and its writer's fork names no device, while a writer certified by
+/// the enrolled key is still charged to its device.
+#[test]
+fn a_forged_certificate_charges_nothing_to_the_device_it_names() {
+    block_on(async {
+        let mut hub = anchor_with_admins(95).await;
+        let (genesis, first, second) = hub_records(&mut hub).await;
+        let stranger = DeviceKeyPair::from_seed(&[98; 32]).unwrap();
+        let forger = Identity::new([99; 32], &stranger, &device_id(20), None);
+        let [certificate, carried] = carried_by(&forger, &genesis, &first);
+        let [_, twin] = carried_by(&forger, &genesis, &second);
+        let admission = admit_bytes(&mut hub, &[certificate, carried, twin]).await;
+        assert_eq!(admission.admitted, 3);
+        let successor = Identity::new([100; 32], &device_key(&person(), 22), &device_id(22), None);
+        let admission = admit_bytes(&mut hub, &carried_by(&successor, &genesis, &first)).await;
+        assert_eq!(admission.admitted, 2);
+
+        let storage = storage_of(&mut hub).await;
+        assert!(
+            storage
+                .by_device
+                .iter()
+                .all(|(device, _)| *device != device_id(20)),
+            "a forged certificate charges its junk to the device it names: {:?}",
+            storage.by_device
+        );
+        assert!(
+            storage
+                .by_device
+                .iter()
+                .any(|(device, bytes)| *device == device_id(22) && *bytes > 0)
+        );
+        assert_eq!(
+            storage.forked_writers,
+            [crate::ForkedWriter {
+                writer: forger.id(),
+                device_id: None,
+            }]
+        );
+    });
+}
+
+/// Two pending envelopes at one sequence of a writer the store holds no certificate for prove
+/// nothing and raise no fork alert.
+#[test]
+fn pending_envelopes_raise_no_fork_alert() {
+    block_on(async {
+        let mut hub = anchor_with_admins(96).await;
+        let (genesis, first, second) = hub_records(&mut hub).await;
+        let stranger = DeviceKeyPair::from_seed(&[101; 32]).unwrap();
+        let unknown = Identity::new([102; 32], &stranger, &device_id(20), None);
+        let [_, carried] = carried_by(&unknown, &genesis, &first);
+        let [_, twin] = carried_by(&unknown, &genesis, &second);
+        let admission = admit_bytes(&mut hub, &[carried, twin]).await;
+        assert_eq!(admission.admitted, 2);
+        assert!(
+            writer_rows(&mut hub, unknown.id())
+                .await
+                .iter()
+                .all(|(_, verified)| *verified == 0)
+        );
+
+        let storage = storage_of(&mut hub).await;
+        assert!(
+            storage.forked_writers.is_empty(),
+            "pending envelopes raise a fork alert: {:?}",
+            storage.forked_writers
+        );
+    });
+}
+
+/// Two verified certificates of one writer sit at one sequence and stay a fork alert that names
+/// the device whose enrolled key signed them.
+#[test]
+fn two_verified_certificates_at_one_sequence_stay_a_fork_alert() {
+    block_on(async {
+        let mut hub = anchor_with_admins(97).await;
+        let (genesis, _, _) = hub_records(&mut hub).await;
+        let device = device_key(&person(), 22);
+        let successor = Identity::new([103; 32], &device, &device_id(22), None);
+        let certificate = genesis_of(&genesis, &successor);
+        let second = resealed_genesis(&certificate, &successor.key, &device);
+        let admission = admit_bytes(&mut hub, &[certificate, second]).await;
+        assert_eq!(admission.admitted, 2);
+
+        let storage = storage_of(&mut hub).await;
+        assert_eq!(
+            storage.forked_writers,
+            [crate::ForkedWriter {
+                writer: successor.id(),
+                device_id: Some(device_id(22)),
+            }]
+        );
+    });
+}
+
+async fn totals_of(replica: &mut Replica) -> crate::AuthorizationTotals {
+    replica
+        .engine
+        .authorization_totals(&mut replica.conn, &replica.ctx)
+        .await
+        .unwrap()
+}
+
+/// The totals the backstop and the apply trigger read agree with the totals of the full
+/// breakdown, and grow by exactly the admitted envelopes, pending and forked ones included,
+/// while the breakdown keeps its device and fork attribution.
+#[test]
+fn storage_totals_match_the_breakdown_through_pending_and_forked_records() {
+    block_on(async {
+        let mut hub = anchor_with_admins(104).await;
+        let honest = totals_of(&mut hub).await;
+        let storage = storage_of(&mut hub).await;
+        assert_eq!(
+            (honest.bytes, honest.envelopes),
+            (storage.bytes, storage.envelopes)
+        );
+        assert!(storage.forked_writers.is_empty());
+
+        let (genesis, first, second) = hub_records(&mut hub).await;
+        let stranger = DeviceKeyPair::from_seed(&[105; 32]).unwrap();
+        let unknown = Identity::new([106; 32], &stranger, &device_id(20), None);
+        let [_, pending] = carried_by(&unknown, &genesis, &first);
+        let [_, pending_twin] = carried_by(&unknown, &genesis, &second);
+        let forger = Identity::new([107; 32], &stranger, &device_id(20), None);
+        let [certificate, carried] = carried_by(&forger, &genesis, &first);
+        let [_, twin] = carried_by(&forger, &genesis, &second);
+        let added = [pending, pending_twin, certificate, carried, twin];
+        let admission = admit_bytes(&mut hub, &added).await;
+        assert_eq!(admission.admitted, added.len());
+
+        let grown = totals_of(&mut hub).await;
+        assert_eq!(
+            grown,
+            crate::AuthorizationTotals {
+                bytes: honest.bytes + added.iter().map(|bytes| bytes.len() as u64).sum::<u64>(),
+                envelopes: honest.envelopes + added.len() as u64,
+            }
+        );
+        let storage = storage_of(&mut hub).await;
+        assert_eq!(
+            (grown.bytes, grown.envelopes),
+            (storage.bytes, storage.envelopes)
+        );
+        assert!(
+            storage
+                .by_device
+                .iter()
+                .any(|(device, bytes)| device == ANCHOR_DEVICE_ID && *bytes > 0)
+        );
+        assert!(
+            storage
+                .by_device
+                .iter()
+                .all(|(device, _)| *device != device_id(20))
+        );
+        assert_eq!(
+            storage.forked_writers,
+            [crate::ForkedWriter {
+                writer: forger.id(),
+                device_id: None,
+            }]
+        );
+    });
+}
+
+/// Whether `needle` occurs in `haystack`.
+fn holds(haystack: &[u8], needle: &str) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle.as_bytes())
+}
+
+/// A member's writer forks with data operations, and its evidence is served through record pages
+/// to a peer the vault never enrolled. Evidence carries only the signed parts of the forked
+/// operations and the shared prefix: the stored rows and every served envelope hold no body and
+/// no value text, while the fork still verifies and blocks both branches on every receiver.
+#[test]
+fn fork_evidence_is_stored_without_bodies() {
+    block_on(async {
+        let salt = 96;
+        let secrets = ["PrefixSecret", "OriginalSecret", "CloneSecret"];
+        let mut original = Replica::new(1, salt).await;
+        edit(&mut original, &note("note-1", secrets[0], 0)).await;
+        let mut clone = original.clone_device().await;
+        edit(
+            &mut original,
+            &format!("UPDATE quick_notes SET title = '{}'", secrets[1]),
+        )
+        .await;
+        edit(
+            &mut clone,
+            &format!("UPDATE quick_notes SET title = '{}'", secrets[2]),
+        )
+        .await;
+        let ours = original.own_ops().await;
+        let theirs = clone.own_ops().await;
+        assert_eq!(ours[..2], theirs[..2]);
+        assert!(holds(&ours[1], secrets[0]) && holds(&ours[2], secrets[1]));
+        assert!(holds(&theirs[2], secrets[2]));
+        let forked = Envelope::decode(&ours[2]).unwrap().seq;
+
+        let mut member = Replica::new(2, salt).await;
+        member.receive(&ours).await;
+        member.apply_all().await.unwrap();
+        assert_eq!(
+            member.receive(&theirs[2..]).await,
+            vec![StoreOutcome::Refused(StoreRefusal::Fork { seq: forked })]
+        );
+        let evidence = member.evidence().await;
+        assert_eq!(evidence.len(), 1);
+        let rows: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT envelope FROM sync_auth_envelopes WHERE role = 'evidence'")
+                .fetch_all(&mut member.conn)
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 3, "both branches and the shared prefix");
+        let stored = rows
+            .iter()
+            .map(Vec::as_slice)
+            .chain([evidence[0].first.as_slice(), evidence[0].second.as_slice()]);
+        for bytes in stored {
+            assert!(
+                Envelope::decode(bytes).unwrap().body.is_empty(),
+                "stored fork evidence keeps a body"
+            );
+            assert!(secrets.iter().all(|secret| !holds(bytes, secret)));
+        }
+
+        let (served, _) = all_pages(&mut member, PAGE_ENVELOPES).await;
+        let served_evidence = served
+            .iter()
+            .filter(|envelope| envelope.role == RecordRole::Evidence)
+            .count();
+        assert_eq!(served_evidence, 3);
+        for envelope in &served {
+            assert!(
+                secrets.iter().all(|secret| !holds(&envelope.bytes, secret)),
+                "a record page serves value text as {:?}",
+                envelope.role
+            );
+            if envelope.role == RecordRole::Evidence {
+                assert!(Envelope::decode(&envelope.bytes).unwrap().body.is_empty());
+            }
+        }
+
+        let mut stranger = Replica::new(9, salt).await;
+        admit(&mut stranger, &served).await;
+        assert!(
+            storage_of(&mut stranger)
+                .await
+                .forked_writers
+                .iter()
+                .any(|fork| fork.writer == original.writer())
+        );
+        assert_eq!(
+            store_set(&mut stranger)
+                .await
+                .iter()
+                .filter(|(role, _, verified)| role == "evidence" && *verified == 1)
+                .count(),
+            3
+        );
+
+        let mut peer = Replica::new(3, salt).await;
+        peer.receive(&ours[..2]).await;
+        peer.apply_all().await.unwrap();
+        assert_eq!(
+            peer.take_evidence(&mut member).await,
+            vec![EvidenceOutcome::Stored]
+        );
+        let revoked = vec![StoreOutcome::Refused(StoreRefusal::Revoked)];
+        assert_eq!(peer.receive(&ours[2..]).await, revoked);
+        assert_eq!(peer.receive(&theirs[2..]).await, revoked);
     });
 }

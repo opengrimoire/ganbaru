@@ -1,23 +1,34 @@
 //! Engine entry points across replicas of the vault and fixture domains.
 
+use std::collections::BTreeSet;
+
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::bounds::{MAX_DEPENDENCIES, MAX_WRITERS_PER_DEVICE};
 use ganbaru_sync_contracts::hlc::CLOCK_WARNING_AHEAD_MS;
 use ganbaru_sync_contracts::{
-    Content, Envelope, Field, GroupMask, TableId, VersionVector, WriterId,
+    Change, Content, Envelope, Field, GroupId, GroupMask, GroupValue, Hlc, TableId, Value,
+    VersionVector, WriterId,
 };
 
+use super::authorization::{seal_at, view};
 use super::block_on;
+use super::exclusion::{deliver, edit, restore_all};
 use super::fixture::{
     CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, HANDLES_TABLE, ITEMS_TABLE, LINKS_TABLE,
-    MEMBERSHIPS_TABLE, NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, membership_key,
+    MEMBERSHIPS_TABLE, NOCASE_LABEL_MANIFEST, NODES_TABLE, REORDERED_RULES_MANIFEST, TEST_MANIFEST,
+    edge_group, edge_key, membership_key, test_engine, test_engine_of,
 };
+use super::holds::sealed_create;
 use super::replica::{
-    Replica, START_MS, VAULT_ID, converge, device_id, mint_writers, pair, person, rank,
-    spread_devices,
+    Replica, START_MS, VAULT_ID, converge, device_id, forge_change, mint_writers, pair, person,
+    rank, spread_devices,
 };
 use crate::error::failpoints;
+use crate::manifest::group_id;
+use crate::manifest::vault::chat::{CONVERSATIONS_TABLE, conversation_group};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
+use crate::provenance::row_creating_devices;
+use crate::repair;
 use crate::{ConflictRow, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult};
 
 const STORED: StoreOutcome = StoreOutcome::Stored { held: None };
@@ -925,6 +936,440 @@ fn a_duplicate_hidden_by_cascade_does_not_hide_the_row_it_collides_with() {
     });
 }
 
+/// Stores what `from` has on `to` without applying it.
+async fn store_from(to: &mut Replica, from: &mut Replica) {
+    let known = to.stored_vector().await;
+    let ops = from.ops_since(&known).await;
+    to.receive(&ops).await;
+}
+
+/// Applies everything ready the way a replica without an active writer does, so collisions stay
+/// unrepaired.
+async fn apply_without_writer(replica: &mut Replica) {
+    loop {
+        let report = replica
+            .engine
+            .apply(&mut replica.conn, &replica.ctx, None, replica.now_ms)
+            .await
+            .unwrap();
+        if !report.more {
+            return;
+        }
+    }
+}
+
+/// Every version of every row but the dirty one is undecodable, so any read of those rows
+/// outside the contested classes fails.
+#[test]
+fn contested_reads_no_row_outside_the_contested_classes() {
+    const BYSTANDERS: usize = 32;
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        let bystanders: String = (0..BYSTANDERS)
+            .map(|index| {
+                format!("INSERT INTO fixture_cycle_a (id, label) VALUES ('a-{index}', 'L{index}');")
+            })
+            .collect();
+        replicas[0].exec(&bystanders).await;
+        replicas[0]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('x-1', 'Same')")
+            .await;
+        replicas[1]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('x-2', 'Same')")
+            .await;
+        for source in [0, 1] {
+            replicas[source].seal_rotating().await.unwrap();
+            let (to, from) = pair(&mut replicas, 2, source);
+            store_from(to, from).await;
+        }
+        let observer = &mut replicas[2];
+        apply_without_writer(observer).await;
+        observer
+            .exec(&format!(
+                "UPDATE sync_register_versions SET value = x'ff'
+                 WHERE table_id = {} AND row_key <> 'a-0'",
+                CYCLE_A_TABLE.0
+            ))
+            .await;
+
+        let dirty_row = (CYCLE_A_TABLE, "a-0".to_owned());
+        let mut dirty = BTreeSet::from([dirty_row.clone()]);
+        let result = repair::contested(&observer.engine, &mut observer.conn, &mut dirty).await;
+
+        assert!(
+            result.is_ok(),
+            "the scan reached a row outside the contested classes: {result:?}"
+        );
+        assert_eq!(
+            result.unwrap().get(&CYCLE_A_TABLE),
+            Some(&vec![BTreeSet::from(["x-1".to_owned(), "x-2".to_owned()])])
+        );
+        assert_eq!(dirty, BTreeSet::from([dirty_row]));
+    });
+}
+
+/// `a-1` keeps its class until a delete of the row it references reaches an observer, which then
+/// shows `a-2` although no write named `a-2` and the class only went dirty after it was read.
+#[test]
+fn keeper_changes_when_a_row_elsewhere_is_published() {
+    block_on(async {
+        let mut replicas = replicas(4).await;
+        replicas[0]
+            .exec(
+                "INSERT INTO fixture_cycle_b (id, label) VALUES ('b-1', 'B');
+                 INSERT INTO fixture_cycle_a (id, label) VALUES ('a-1', 'Same');",
+            )
+            .await;
+        replicas[0].seal_rotating().await.unwrap();
+        let (to, from) = pair(&mut replicas, 1, 0);
+        to.pull(from).await;
+        replicas[1]
+            .exec("UPDATE fixture_cycle_a SET peer_id = 'b-1' WHERE id = 'a-1'")
+            .await;
+        replicas[3]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('a-2', 'Same')")
+            .await;
+        for source in [0, 1, 3] {
+            replicas[source].seal_rotating().await.unwrap();
+            let (to, from) = pair(&mut replicas, 2, source);
+            store_from(to, from).await;
+        }
+        apply_without_writer(&mut replicas[2]).await;
+        assert_eq!(
+            texts(
+                &mut replicas[2],
+                "SELECT id FROM fixture_cycle_a ORDER BY id"
+            )
+            .await,
+            ["a-1"]
+        );
+
+        replicas[0]
+            .exec("DELETE FROM fixture_cycle_b WHERE id = 'b-1'")
+            .await;
+        replicas[0].seal_rotating().await.unwrap();
+        let (to, from) = pair(&mut replicas, 2, 0);
+        store_from(to, from).await;
+        apply_without_writer(&mut replicas[2]).await;
+
+        assert_eq!(
+            texts(
+                &mut replicas[2],
+                "SELECT id FROM fixture_cycle_a ORDER BY id"
+            )
+            .await,
+            ["a-2"]
+        );
+    });
+}
+
+/// Writes, repair tombstones, deletes, an exclusion, and a restore each leave the class index
+/// equal to a full scan of the merge state on every replica.
+#[test]
+fn class_index_matches_a_full_recompute() {
+    async fn check(replicas: [&mut Replica; 3]) {
+        for replica in replicas {
+            replica.check_class_index().await;
+        }
+    }
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 215).await;
+        let mut removed = Replica::new(1, 215).await;
+        let mut honest = Replica::new(2, 215).await;
+
+        edit(
+            &mut honest,
+            "INSERT INTO fixture_handles (id, label, code) VALUES ('h-1', 'L1', 'C1');
+             INSERT INTO fixture_handles (id, label, code) VALUES ('h-2', 'L2', 'C2');
+             INSERT INTO fixture_handles (id, label, code) VALUES ('h-3', 'L3', 'C3');",
+        )
+        .await;
+        // A concurrent create collides, and the duplicate is repaired with a tombstone.
+        edit(
+            &mut anchor,
+            "INSERT INTO fixture_handles (id, label, code) VALUES ('h-4', 'L1', 'C4')",
+        )
+        .await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut honest, &mut anchor).await;
+        deliver(&mut removed, &mut anchor).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+        assert_eq!(redirects(&mut anchor, HANDLES_TABLE).await, ["h-4:h-1"]);
+
+        edit(
+            &mut honest,
+            "UPDATE fixture_handles SET label = 'L9' WHERE id = 'h-2'",
+        )
+        .await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut removed, &mut honest).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+
+        edit(&mut honest, "DELETE FROM fixture_handles WHERE id = 'h-3'").await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut removed, &mut honest).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+
+        // The removed device creates a row and edits another past its cutoff.
+        edit(
+            &mut removed,
+            "INSERT INTO fixture_handles (id, label, code) VALUES ('h-5', 'L5', 'C5');
+             UPDATE fixture_handles SET label = 'L8' WHERE id = 'h-2';",
+        )
+        .await;
+        deliver(&mut honest, &mut removed).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+        let device = removed.device_id.clone();
+        let removal = anchor.remove(&device).await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut anchor, &mut removed).await;
+        deliver(&mut honest, &mut anchor).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+        assert_eq!(
+            texts(&mut anchor, "SELECT id FROM fixture_handles ORDER BY id").await,
+            ["h-1", "h-2"]
+        );
+
+        restore_all(&mut anchor, removal).await;
+        deliver(&mut honest, &mut anchor).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+        assert_eq!(
+            texts(&mut anchor, "SELECT id FROM fixture_handles ORDER BY id").await,
+            ["h-1", "h-2", "h-5"]
+        );
+    });
+}
+
+/// An observer that applied `h-1` and `h-2` from replica 0, before `prepare` changes its class
+/// index or its engine and `h-3` from replica 1, which never saw them, arrives. `h-3` must be
+/// hidden behind the row it collides with, not refused by the domain unique constraint.
+async fn assert_collision_with_an_untouched_row_is_repaired(
+    prepare: impl AsyncFnOnce(&mut Replica),
+    collision: &str,
+) {
+    let mut replicas = replicas(3).await;
+    replicas[0]
+        .exec(
+            "INSERT INTO fixture_handles (id, label, code) VALUES ('h-1', 'L1', 'C1');
+             INSERT INTO fixture_handles (id, label, code) VALUES ('h-2', 'L2', 'C2');",
+        )
+        .await;
+    replicas[1]
+        .exec(&format!(
+            "INSERT INTO fixture_handles (id, label, code) VALUES ('h-3', {collision})"
+        ))
+        .await;
+    replicas[0].seal_rotating().await.unwrap();
+    replicas[1].seal_rotating().await.unwrap();
+    let (to, from) = pair(&mut replicas, 2, 0);
+    store_from(to, from).await;
+    apply_without_writer(&mut replicas[2]).await;
+    prepare(&mut replicas[2]).await;
+
+    let (to, from) = pair(&mut replicas, 2, 1);
+    store_from(to, from).await;
+    let observer = &mut replicas[2];
+    apply_without_writer(observer).await;
+
+    assert_eq!(
+        observer
+            .count("SELECT count(*) FROM sync_refused_rows")
+            .await,
+        0,
+        "the collision was refused instead of repaired"
+    );
+    assert_eq!(
+        texts(observer, "SELECT id FROM fixture_handles ORDER BY id").await,
+        ["h-1", "h-2"]
+    );
+    observer.check_class_index().await;
+}
+
+/// Merge state from before the class index existed, as an older vault or a rollback copy holds
+/// it: the index starts empty, so it must be built from merge state before it is read.
+#[test]
+fn an_empty_class_index_is_rebuilt_from_merge_state() {
+    block_on(async {
+        assert_collision_with_an_untouched_row_is_repaired(
+            async |observer: &mut Replica| {
+                observer
+                    .exec(
+                        "DELETE FROM sync_contested_classes;
+                         DELETE FROM sync_unique_classes;
+                         DELETE FROM sync_unique_class_rules;",
+                    )
+                    .await;
+            },
+            "'L1', 'C3'",
+        )
+        .await;
+    });
+}
+
+/// A manifest update that reorders the duplicate rules of a table moves every class to another
+/// rule position, so entries of untouched rows must follow.
+#[test]
+fn reordered_duplicate_rules_rebuild_the_class_index() {
+    block_on(async {
+        assert_collision_with_an_untouched_row_is_repaired(
+            async |observer: &mut Replica| {
+                observer.engine = test_engine_of(&REORDERED_RULES_MANIFEST);
+            },
+            "'L3', 'C1'",
+        )
+        .await;
+    });
+}
+
+/// Replicas 0 and 1 create `h-1` and `h-4`, whose labels differ only in case, and the observer,
+/// replica 2 running `engine`, applies both without a writer, so a collision stays unrepaired.
+async fn observer_of_case_variants(engine: crate::Engine) -> Vec<Replica> {
+    let mut replicas = replicas(3).await;
+    replicas[2].engine = engine;
+    replicas[0]
+        .exec("INSERT INTO fixture_handles (id, label, code) VALUES ('h-1', 'L1', 'C1')")
+        .await;
+    replicas[1]
+        .exec("INSERT INTO fixture_handles (id, label, code) VALUES ('h-4', 'l1', 'C4')")
+        .await;
+    replicas[0].seal_rotating().await.unwrap();
+    replicas[1].seal_rotating().await.unwrap();
+    for from in [0, 1] {
+        let (to, from) = pair(&mut replicas, 2, from);
+        store_from(to, from).await;
+    }
+    apply_without_writer(&mut replicas[2]).await;
+    replicas
+}
+
+/// Replica 0 creates an unrelated handle, and the observer applies it without a writer.
+async fn apply_unrelated_handle(replicas: &mut [Replica]) {
+    replicas[0]
+        .exec("INSERT INTO fixture_handles (id, label, code) VALUES ('h-9', 'L9', 'C9')")
+        .await;
+    replicas[0].seal_rotating().await.unwrap();
+    let (to, from) = pair(replicas, 2, 0);
+    store_from(to, from).await;
+    apply_without_writer(&mut replicas[2]).await;
+}
+
+/// Ids of the materialized handles, in order.
+async fn handle_ids(replica: &mut Replica) -> Vec<String> {
+    texts(replica, "SELECT id FROM fixture_handles ORDER BY id").await
+}
+
+/// The class index with its rule fingerprint, one line per stored row.
+async fn class_index_rows(replica: &mut Replica) -> Vec<String> {
+    texts(
+        replica,
+        "SELECT 'rules:' || hex(fingerprint) FROM sync_unique_class_rules
+         UNION ALL SELECT 'class:' || table_id || ':' || rule_index || ':' || hex(class_key)
+             || ':' || row_key FROM sync_unique_classes
+         UNION ALL SELECT 'contested:' || table_id || ':' || rule_index || ':' || hex(class_key)
+             FROM sync_contested_classes
+         ORDER BY 1",
+    )
+    .await
+}
+
+/// A recovery read under changed duplicate rules writes nothing, so the next apply still
+/// rebuilds the class index and hides the row that now collides.
+#[test]
+fn a_recovery_read_under_changed_rules_leaves_the_rebuild_to_the_next_apply() {
+    block_on(async {
+        let mut replicas = observer_of_case_variants(test_engine()).await;
+        assert_eq!(handle_ids(&mut replicas[2]).await, ["h-1", "h-4"]);
+        replicas[2].engine = test_engine_of(&NOCASE_LABEL_MANIFEST);
+        let before = class_index_rows(&mut replicas[2]).await;
+        let observer = &mut replicas[2];
+        let offered = observer
+            .engine
+            .recovery_values(&mut observer.conn, HANDLES_TABLE, "h-1")
+            .await
+            .unwrap();
+        assert!(offered.is_none());
+        assert_eq!(
+            class_index_rows(observer).await,
+            before,
+            "a recovery read wrote the class index"
+        );
+
+        apply_unrelated_handle(&mut replicas).await;
+        assert_eq!(
+            handle_ids(&mut replicas[2]).await,
+            ["h-1", "h-9"],
+            "the row that now collides stayed shown"
+        );
+        replicas[2].check_class_index().await;
+    });
+}
+
+/// A rule change that dissolves a contested class shows its hidden rows again, although no
+/// operation touches them.
+#[test]
+fn rows_of_a_class_that_stops_colliding_are_shown_after_the_rebuild() {
+    block_on(async {
+        let mut replicas = observer_of_case_variants(test_engine_of(&NOCASE_LABEL_MANIFEST)).await;
+        assert_eq!(handle_ids(&mut replicas[2]).await, ["h-1"]);
+        replicas[2].engine = test_engine();
+
+        apply_unrelated_handle(&mut replicas).await;
+        assert_eq!(
+            handle_ids(&mut replicas[2]).await,
+            ["h-1", "h-4", "h-9"],
+            "the row of the dissolved class stayed hidden"
+        );
+        replicas[2].check_class_index().await;
+    });
+}
+
+/// A class key is a digest of the folded unique values, so a long value takes the same index
+/// space as a short one, and every replica derives the same key.
+#[test]
+fn class_keys_are_fixed_size_digests_equal_on_every_replica() {
+    block_on(async {
+        let long = "x".repeat(40);
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "INSERT INTO fixture_handles (id, label, code) VALUES ('h-1', '{long}', 'C1')"
+            ))
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "INSERT INTO fixture_handles (id, label, code) VALUES ('h-2', '{long}', 'C2')"
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM sync_unique_classes WHERE length(class_key) <> 32")
+                    .await,
+                0,
+                "replica {} stores an unbounded class key",
+                replica.index
+            );
+            replica.check_class_index().await;
+        }
+        let keys: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT class_key FROM sync_unique_classes WHERE row_key = 'h-1' ORDER BY rule_index",
+        )
+        .fetch_all(&mut replicas[0].conn)
+        .await
+        .unwrap();
+        let other: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT class_key FROM sync_unique_classes WHERE row_key = 'h-1' ORDER BY rule_index",
+        )
+        .fetch_all(&mut replicas[1].conn)
+        .await
+        .unwrap();
+        assert_eq!(keys, other, "replicas disagree on a class key");
+    });
+}
+
 /// `h-2` collides with `h-1` on its label and with `h-3` on its code. Hidden behind `h-1`, it
 /// must not take `h-3` down with it.
 #[test]
@@ -1276,7 +1721,7 @@ fn a_child_edited_while_its_parent_is_deleted_is_offered_under_the_parent() {
 
 /// Stores what `from` has and `to` lacks, then applies on `to` without a local writer, so no
 /// repair is sealed and rows hidden by cascade stay live.
-async fn pull_without_writer(to: &mut Replica, from: &mut Replica) {
+pub(super) async fn pull_without_writer(to: &mut Replica, from: &mut Replica) {
     let known = to.stored_vector().await;
     let ops = from.ops_since(&known).await;
     to.receive(&ops).await;
@@ -2387,4 +2832,443 @@ fn recovery_root_tables_follow_cascades_and_leave_out_derived_keys() {
         ]
     );
     assert!(!roots.contains(&MEMBERSHIPS_TABLE));
+}
+
+const ITEM: &str = "item-1";
+const ITEM_CREATED: GroupId = group_id(0);
+const ITEM_LABEL: GroupId = group_id(1);
+const FIRST_CREATED_AT: &str = "2027-01-01T00:00:00.000Z";
+const OTHER_CREATED_AT: &str = "2027-06-01T00:00:00.000Z";
+const FORGED_LABEL: &str = "Forged";
+
+/// SQL creating [`ITEM`] with `created_at`.
+fn add_item(created_at: &str) -> String {
+    format!(
+        "INSERT INTO fixture_items (id, created_at, label, label_edits)
+         VALUES ('{ITEM}', '{created_at}', 'One', 0)"
+    )
+}
+
+/// Three replicas holding [`ITEM`] as the first created it. The second has sealed since, so the
+/// next operation of the first two covers the item's versions.
+async fn replicas_with_item() -> Vec<Replica> {
+    let mut replicas = replicas(3).await;
+    replicas[0].exec(&add_item(FIRST_CREATED_AT)).await;
+    converge(&mut replicas).await;
+    seed_note(&mut replicas[1]).await;
+    converge(&mut replicas).await;
+    replicas
+}
+
+/// The tree and acyclic tables `reader` derives while it applies what `writer` sealed.
+async fn derived_applying(writer: &mut Replica, reader: &mut Replica) -> Vec<TableId> {
+    writer.seal().await.unwrap();
+    crate::visibility::take_derived();
+    reader.pull(writer).await;
+    crate::visibility::take_derived()
+}
+
+/// Two replicas sharing a node, two items, and an edge between them.
+async fn replicas_with_tree_and_edge() -> Vec<Replica> {
+    let mut replicas = replicas(2).await;
+    let items: String = ["x", "y"]
+        .iter()
+        .map(|id| {
+            format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ('{id}', '2027-01-01T00:00:00.000Z', '{id}', 0);"
+            )
+        })
+        .collect();
+    let node = format!(
+        "INSERT INTO fixture_nodes (id, parent_id, position, label)
+         VALUES ('node-1', NULL, '{}', 'Node');",
+        rank(1)
+    );
+    replicas[0]
+        .exec(&format!("{items}{node}{}", add_edge("x", "y")))
+        .await;
+    converge(&mut replicas).await;
+    replicas
+}
+
+#[test]
+fn a_batch_outside_the_closure_derives_no_tree_or_edge_table() {
+    block_on(async {
+        let mut replicas = replicas_with_tree_and_edge().await;
+        let (writer, reader) = replicas.split_at_mut(1);
+        let (writer, reader) = (&mut writer[0], &mut reader[0]);
+        writer
+            .exec("INSERT INTO fixture_memos (id, label) VALUES ('memo-1', 'One')")
+            .await;
+        assert_eq!(
+            derived_applying(writer, reader).await,
+            Vec::<TableId>::new()
+        );
+        assert_eq!(reader.count("SELECT count(*) FROM fixture_memos").await, 1);
+
+        // A pointer reaches the tree through a reference that never cascades, and against the
+        // direction of the note's reference.
+        writer
+            .exec(
+                "INSERT INTO fixture_node_notes (id, label, peer_id)
+                 VALUES ('note-1', 'Note', 'node-1');
+                 INSERT INTO fixture_note_pointers (id, label, peer_id)
+                 VALUES ('pointer-1', 'Pointer', 'note-1');",
+            )
+            .await;
+        let derived = derived_applying(writer, reader).await;
+        assert!(derived.contains(&NODES_TABLE), "{derived:?}");
+        assert!(!derived.contains(&EDGES_TABLE), "{derived:?}");
+
+        writer
+            .exec("UPDATE fixture_note_pointers SET label = 'Moved' WHERE id = 'pointer-1'")
+            .await;
+        let derived = derived_applying(writer, reader).await;
+        assert!(derived.contains(&NODES_TABLE), "{derived:?}");
+
+        let key = edge_key("x", "y");
+        writer
+            .exec(&format!(
+                "INSERT INTO fixture_edge_notes (id, label, peer_id)
+                 VALUES ('edge-note-1', 'Note', '{key}')"
+            ))
+            .await;
+        let derived = derived_applying(writer, reader).await;
+        assert!(derived.contains(&EDGES_TABLE), "{derived:?}");
+        assert!(!derived.contains(&NODES_TABLE), "{derived:?}");
+    });
+}
+
+/// `change` with `fields` as the value of `group`.
+pub(super) fn with_group(mut change: Change, group: GroupId, fields: Vec<Field>) -> Change {
+    let value = GroupValue::new(change.table, group, Value::new(fields).unwrap());
+    *change
+        .groups
+        .iter_mut()
+        .find(|value| value.group == group)
+        .unwrap() = value;
+    change
+}
+
+pub(super) fn text_field(text: &str) -> Field {
+    Field::Text(text.to_owned())
+}
+
+/// The Create of [`ITEM`] again, with another Immutable value and another label.
+async fn forged_item_create(creator: &mut Replica) -> Change {
+    let create = sealed_create(creator, ITEMS_TABLE, ITEM).await;
+    let create = with_group(create, ITEM_CREATED, vec![text_field(OTHER_CREATED_AT)]);
+    with_group(create, ITEM_LABEL, vec![text_field(FORGED_LABEL)])
+}
+
+/// Stores `forged` on `replica`, as a valid operation, and applies it.
+pub(super) async fn take_forged(replica: &mut Replica, forged: &[u8]) {
+    assert_eq!(replica.receive(&[forged.to_vec()]).await, vec![STORED]);
+    replica.apply_all().await.unwrap();
+}
+
+/// Asserts that both `receivers` take the forged Create of [`ITEM`] the same way: the first
+/// created value stands and the mutable group merges.
+async fn assert_item_keeps_created_at(
+    replicas: &mut [Replica],
+    receivers: [usize; 2],
+    forged: &[u8],
+) {
+    for index in receivers {
+        let replica = &mut replicas[index];
+        take_forged(replica, forged).await;
+        assert_eq!(
+            replica
+                .scalar_text("SELECT created_at FROM fixture_items WHERE id = 'item-1'")
+                .await
+                .as_deref(),
+            Some(FIRST_CREATED_AT),
+            "replica {index} keeps the first value"
+        );
+        assert_eq!(
+            replica
+                .scalar_text("SELECT label FROM fixture_items WHERE id = 'item-1'")
+                .await
+                .as_deref(),
+            Some(FORGED_LABEL),
+            "replica {index} merges the mutable group"
+        );
+    }
+    let [first, second] = receivers;
+    assert_eq!(replicas[first].dump().await, replicas[second].dump().await);
+}
+
+#[test]
+fn create_covering_an_immutable_version_keeps_it() {
+    const FIRST_PROJECT: &str = "project-routine-learning";
+    const OTHER_PROJECT: &str = "project-routine-reading";
+    const CONVERSATION: &str = "conversation:design";
+    const CREATED_AT: &str = "2027-01-01T00:00:00.000Z";
+    const LATER_ACTIVITY: &str = "2027-02-01T00:00:00.000Z";
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        for replica in &mut replicas {
+            let now = replica.now_ms;
+            replica
+                .engine
+                .seed_captures(&mut replica.conn, now)
+                .await
+                .unwrap();
+        }
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec(&format!(
+                "INSERT INTO chat_conversations
+                    (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+                 VALUES ('{CONVERSATION}', '{FIRST_PROJECT}', 'channel', '{CREATED_AT}',
+                         '{CREATED_AT}', '{CREATED_AT}')"
+            ))
+            .await;
+        converge(&mut replicas).await;
+        seed_note(&mut replicas[1]).await;
+        converge(&mut replicas).await;
+
+        let create = sealed_create(&mut replicas[0], CONVERSATIONS_TABLE, CONVERSATION).await;
+        let create = with_group(
+            create,
+            conversation_group::CREATED,
+            vec![
+                text_field(OTHER_PROJECT),
+                text_field("channel"),
+                text_field(CREATED_AT),
+            ],
+        );
+        let create = with_group(
+            create,
+            conversation_group::ACTIVITY,
+            vec![text_field(LATER_ACTIVITY)],
+        );
+        let forged = forge_change(&mut replicas[1], create).await;
+
+        for index in [0, 2] {
+            let replica = &mut replicas[index];
+            take_forged(replica, &forged).await;
+            assert_eq!(
+                replica
+                    .scalar_text(&format!(
+                        "SELECT project_id FROM chat_conversations WHERE id = '{CONVERSATION}'"
+                    ))
+                    .await
+                    .as_deref(),
+                Some(FIRST_PROJECT),
+                "replica {index} keeps the first value"
+            );
+            assert_eq!(
+                replica
+                    .scalar_text(&format!(
+                        "SELECT last_activity_at FROM chat_conversations
+                         WHERE id = '{CONVERSATION}'"
+                    ))
+                    .await
+                    .as_deref(),
+                Some(LATER_ACTIVITY),
+                "replica {index} merges the mutable group"
+            );
+        }
+        assert_eq!(replicas[0].dump().await, replicas[2].dump().await);
+    });
+}
+
+#[test]
+fn create_with_a_low_clock_cannot_replace_an_immutable_version() {
+    block_on(async {
+        let mut replicas = replicas_with_item().await;
+        let change = forged_item_create(&mut replicas[0]).await;
+        let forger = &mut replicas[1];
+        let revision = view(forger).await.revision;
+        let last = forger.own_ops().await.pop().unwrap();
+        let forged = seal_at(
+            &last,
+            &forger.identity.key,
+            Content::Changes(vec![change]),
+            revision,
+            Hlc::new(1, 0),
+        );
+        assert_item_keeps_created_at(&mut replicas, [0, 2], &forged).await;
+    });
+}
+
+#[test]
+fn create_by_the_same_writer_keeps_its_immutable_version() {
+    block_on(async {
+        let mut replicas = replicas_with_item().await;
+        let change = forged_item_create(&mut replicas[0]).await;
+        let forged = forge_change(&mut replicas[0], change).await;
+        assert_item_keeps_created_at(&mut replicas, [1, 2], &forged).await;
+    });
+}
+
+/// A Create that left the Immutable groups as they were does not name its device as a creator,
+/// while its record still keeps the row created for exclusion.
+#[test]
+fn create_that_keeps_an_immutable_version_is_not_listed_as_a_creator() {
+    block_on(async {
+        let mut replicas = replicas_with_item().await;
+        let change = forged_item_create(&mut replicas[0]).await;
+        let forged = forge_change(&mut replicas[1], change).await;
+        for index in [0, 2] {
+            let replica = &mut replicas[index];
+            take_forged(replica, &forged).await;
+            let manifest = replica.engine.manifest();
+            assert_eq!(
+                row_creating_devices(&mut replica.conn, manifest, ITEMS_TABLE, ITEM)
+                    .await
+                    .unwrap(),
+                vec![device_id(0)],
+                "replica {index} names only the device whose creation stands"
+            );
+            assert_eq!(
+                replica
+                    .count(&format!(
+                        "SELECT count(*) FROM sync_row_creations
+                         WHERE table_id = {} AND row_key = '{ITEM}'",
+                        ITEMS_TABLE.0
+                    ))
+                    .await,
+                2,
+                "replica {index} keeps both creation records"
+            );
+        }
+    });
+}
+
+#[test]
+fn concurrent_creates_converge_on_the_lowest_clock() {
+    const CLOCK_AHEAD_MS: u64 = 1_000;
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        // The first writer's clock runs ahead, so the second wins whichever writer ranks lower.
+        replicas[0].now_ms += CLOCK_AHEAD_MS;
+        replicas[0].exec(&add_item(OTHER_CREATED_AT)).await;
+        replicas[1].exec(&add_item(FIRST_CREATED_AT)).await;
+        replicas[0].seal().await.unwrap();
+        replicas[1].seal().await.unwrap();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                replica
+                    .scalar_text("SELECT created_at FROM fixture_items WHERE id = 'item-1'")
+                    .await
+                    .as_deref(),
+                Some(FIRST_CREATED_AT)
+            );
+        }
+    });
+}
+
+#[test]
+fn derived_key_create_covering_a_removed_row_rewrites_every_group() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        replicas[0].exec(MEMBERSHIP_PARENTS).await;
+        replicas[0]
+            .exec(&add_membership("item-1", "a-1", "first"))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_memberships WHERE item_id = 'item-1'")
+            .await;
+        converge(&mut replicas).await;
+        // The adder's next operation carries a context that covers the removal.
+        replicas[1]
+            .exec("UPDATE fixture_items SET label = 'Two' WHERE id = 'item-1'")
+            .await;
+        converge(&mut replicas).await;
+
+        // A Create that saw the removal adds the row again with every group, Immutable ones
+        // included, because their values are the ones the key derives from.
+        let key = membership_key("item-1", "a-1");
+        let create = sealed_create(&mut replicas[0], MEMBERSHIPS_TABLE, &key).await;
+        let create = with_group(
+            create,
+            super::fixture::membership_group::DETAILS,
+            vec![text_field("2027-01-01T00:00:00.000Z"), text_field("again")],
+        );
+        let forged = forge_change(&mut replicas[1], create).await;
+        let adder: String = replicas[1]
+            .writer()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let groups = TEST_MANIFEST.table(MEMBERSHIPS_TABLE).unwrap().groups.len();
+        let groups = i64::try_from(groups).unwrap();
+        let by_adder = format!(
+            "SELECT count(*) FROM sync_register_versions
+             WHERE table_id = {{table}} AND writer_id = x'{adder}'"
+        );
+        for index in [0, 2] {
+            let replica = &mut replicas[index];
+            take_forged(replica, &forged).await;
+            assert_eq!(memberships(replica).await, ["item-1>a-1:again"]);
+            assert_eq!(
+                membership_rows(replica, &by_adder).await,
+                groups,
+                "replica {index} takes every group of the Create"
+            );
+            assert_eq!(
+                membership_rows(
+                    replica,
+                    "SELECT count(*) FROM sync_register_versions WHERE table_id = {table}"
+                )
+                .await,
+                groups,
+                "replica {index} keeps no other version"
+            );
+        }
+        assert_eq!(replicas[0].dump().await, replicas[2].dump().await);
+    });
+}
+
+#[test]
+fn derived_key_readd_rewrites_every_group() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0].exec(MEMBERSHIP_PARENTS).await;
+        replicas[0]
+            .exec(&add_membership("item-1", "a-1", "first"))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_memberships WHERE item_id = 'item-1'")
+            .await;
+        converge(&mut replicas).await;
+        replicas[1]
+            .exec(&add_membership("item-1", "a-1", "again"))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+
+        let adder: String = replicas[1]
+            .writer()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let groups = TEST_MANIFEST.table(MEMBERSHIPS_TABLE).unwrap().groups.len();
+        let groups = i64::try_from(groups).unwrap();
+        let by_adder = format!(
+            "SELECT count(*) FROM sync_register_versions
+             WHERE table_id = {{table}} AND writer_id = x'{adder}'"
+        );
+        for replica in &mut replicas {
+            assert_eq!(memberships(replica).await, ["item-1>a-1:again"]);
+            assert_eq!(membership_rows(replica, &by_adder).await, groups);
+            assert_eq!(
+                membership_rows(
+                    replica,
+                    "SELECT count(*) FROM sync_register_versions WHERE table_id = {table}"
+                )
+                .await,
+                groups
+            );
+        }
+    });
 }

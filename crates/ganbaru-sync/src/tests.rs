@@ -28,13 +28,16 @@ mod notes_comments;
 mod owned;
 mod preferences;
 mod projects;
+mod provenance;
 mod publication;
 mod record_exchange;
+mod refusal;
 mod replica;
 mod settle;
 mod sim;
 mod space_keys;
 mod stability;
+mod staged_copy;
 mod trigger_policies;
 mod values;
 

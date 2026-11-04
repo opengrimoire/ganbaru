@@ -1804,7 +1804,7 @@ dependencies = [
 
 [[package]]
 name = "ganbaru"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "ganbaru-mobile-distractions",
  "ganbaru-mobile-documents",
@@ -2158,6 +2158,7 @@ dependencies = [
  "ganbaru-db",
  "ganbaru-notes",
  "ganbaru-sync-contracts",
+ "ganbaru-working-folders",
  "serde",
  "serde_json",
  "sqlx",
@@ -8418,9 +8419,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "9.0.4"
+version = "9.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a954114b47a54df49f83d2722814e86b23d4bb1b54a1b90fb7d92b41619ddc22"
+checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
 dependencies = [
  "crc32fast",
  "flate2",

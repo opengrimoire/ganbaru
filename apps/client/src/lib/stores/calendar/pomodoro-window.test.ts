@@ -18,7 +18,7 @@ function snapshot(): MappedNativeCalendarWindow {
     pomodoroConfig: { rhythm: { kind: "count", focusDurationMinutes: 40, shortBreakMinutes: 5, longBreakMinutes: 10, longBreakAfterFocusCount: 4 },
       rhythmSource: "custom", presetKey: null, idleTimeoutMinutes: null },
   };
-  return { sourceEvents: [], windowEvents: [commitment], totalEventCount: null, diagnostics: [] };
+  return { sourceEvents: [], windowEvents: [commitment], totalEventCount: null, diagnostics: [], omittedTemplateCount: 0 };
 }
 
 describe("native Pomodoro Calendar window cache", () => {

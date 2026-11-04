@@ -157,6 +157,7 @@ async fn require_current_scratch_authority(
             identity.conversation_id.as_str(),
             identity.teammate_id.as_str(),
             LOCAL_PARTICIPANT_ID,
+            None,
         )
         .await?
     {

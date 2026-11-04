@@ -72,6 +72,12 @@ async fn effective(pool: &SqlitePool) -> ChatProjectPrimaryWorkingFolderRead {
         .unwrap()
 }
 
+fn primary_id(read: &ChatProjectPrimaryWorkingFolderRead) -> Option<&str> {
+    read.working_folder_id
+        .as_ref()
+        .map(ProjectWorkingFolderId::as_str)
+}
+
 async fn folder_revision(pool: &SqlitePool, id: &str) -> u64 {
     let revision: i64 =
         sqlx::query_scalar("SELECT revision FROM project_working_folders WHERE id = ?")
@@ -89,7 +95,7 @@ async fn effective_primary_working_folder_is_the_stored_active_folder_of_the_pro
 
     let read = effective(&pool).await;
 
-    assert_eq!(read.working_folder_id.as_str(), EXTERNAL_FOLDER_ID);
+    assert_eq!(primary_id(&read), Some(EXTERNAL_FOLDER_ID));
     assert_eq!(read.revision, 1);
 }
 
@@ -111,11 +117,27 @@ async fn effective_primary_working_folder_falls_back_to_the_managed_folder() {
                 .unwrap();
         }
         assert_eq!(
-            effective(&pool).await.working_folder_id.as_str(),
-            MANAGED_FOLDER_ID,
+            primary_id(&effective(&pool).await),
+            Some(MANAGED_FOLDER_ID),
             "stored {stored}"
         );
     }
+}
+
+#[tokio::test]
+async fn effective_primary_working_folder_skips_an_unreadable_stored_folder() {
+    let pool = migrated_pool().await;
+    store_primary(&pool, EXTERNAL_FOLDER_ID).await;
+    sqlx::query("UPDATE project_working_folders SET updated_at = 'not a timestamp' WHERE id = ?")
+        .bind(EXTERNAL_FOLDER_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let read = effective(&pool).await;
+
+    assert_eq!(primary_id(&read), Some(MANAGED_FOLDER_ID));
+    assert_eq!(read.revision, 1);
 }
 
 #[tokio::test]
@@ -123,14 +145,14 @@ async fn primary_working_folder_without_a_stored_row_reads_the_managed_folder_at
     let pool = migrated_pool().await;
 
     let read = effective(&pool).await;
-    assert_eq!(read.working_folder_id.as_str(), MANAGED_FOLDER_ID);
+    assert_eq!(primary_id(&read), Some(MANAGED_FOLDER_ID));
     assert_eq!(read.revision, 0);
 
     let set =
         set_primary_working_folder(&pool, PROJECT_ID, &folder_id(EXTERNAL_FOLDER_ID), 0, &now())
             .await
             .unwrap();
-    assert_eq!(set.working_folder_id.as_str(), EXTERNAL_FOLDER_ID);
+    assert_eq!(primary_id(&set), Some(EXTERNAL_FOLDER_ID));
     assert_eq!(set.revision, 1);
 
     let stale =
@@ -165,10 +187,30 @@ async fn primary_working_folder_set_refuses_a_foreign_missing_or_archived_folder
             "candidate {candidate}"
         );
     }
-    assert_eq!(
-        effective(&pool).await.working_folder_id.as_str(),
-        MANAGED_FOLDER_ID
-    );
+    assert_eq!(primary_id(&effective(&pool).await), Some(MANAGED_FOLDER_ID));
+}
+
+#[tokio::test]
+async fn project_without_a_folder_reads_no_primary() {
+    let pool = migrated_pool().await;
+    sqlx::raw_sql(
+        "INSERT INTO projects (id, group_id, name, order_key)
+         VALUES ('project-empty', 'group-primary', 'Empty', 'a2')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let read = read_effective_primary_working_folder(&pool, "project-empty")
+        .await
+        .unwrap();
+    assert_eq!(primary_id(&read), None);
+    assert_eq!(read.revision, 0);
+
+    let missing = read_effective_primary_working_folder(&pool, "project-missing")
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code, ChatErrorCode::NotFound);
 }
 
 #[tokio::test]

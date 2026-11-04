@@ -21,6 +21,8 @@ import {
   type ChatAccessProfileImpactPreviewRead,
   type ChatAccessProfileRevision,
   type ChatAiTeammateRead,
+  type ChatAssignmentAcceptanceFolderRead,
+  type ChatAssignmentAcceptanceOfferRead,
   type ChatAssignmentTargetRead,
   type ChatChannelPageRead,
   type ChatChannelMembershipRemovalPreview,
@@ -53,6 +55,7 @@ import {
   type ChatTeammateAccessPreviewIssue,
   type ChatTeammateAccessRead,
   type ChatTeammateChannelAccess,
+  type ChatWaitingAssignmentRead,
   type ChatWorkAssignmentRead,
   type PostChatMessageResult,
 } from "../contracts";
@@ -460,7 +463,9 @@ export function parseChatProjectPrimaryWorkingFolder(
   const record = readRecord(value, label);
   return {
     projectId: readIdentifier(record.projectId, `${label}.projectId`),
-    workingFolderId: readIdentifier(record.workingFolderId, `${label}.workingFolderId`),
+    workingFolderId: record.workingFolderId === null
+      ? null
+      : readIdentifier(record.workingFolderId, `${label}.workingFolderId`),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
   };
 }
@@ -921,7 +926,51 @@ export function parseChatWorkAssignment(
     settledAt: readNullable(record.settledAt, `${label}.settledAt`, readUtcTimestamp),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
     updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
+    localAcceptance: readNullable(record.localAcceptance, `${label}.localAcceptance`, parseAssignmentAcceptanceOffer),
   };
+}
+
+function parseAssignmentAcceptanceFolder(value: unknown, label: string): ChatAssignmentAcceptanceFolderRead {
+  const record = readRecord(value, label);
+  return {
+    displayName: readString(record.displayName, `${label}.displayName`),
+    capability: readEnum(record.capability, CHAT_FOLDER_CAPABILITIES, `${label}.capability`),
+    runtimeApproval: readEnum(record.runtimeApproval, CHAT_RUNTIME_APPROVAL_POLICIES, `${label}.runtimeApproval`),
+  };
+}
+
+function parseAssignmentAcceptanceOffer(value: unknown, label: string): ChatAssignmentAcceptanceOfferRead {
+  const record = readRecord(value, label);
+  return {
+    digest: readIdentifier(record.digest, `${label}.digest`),
+    providerInstanceId: readIdentifier(record.providerInstanceId, `${label}.providerInstanceId`),
+    folders: readArray(record.folders, `${label}.folders`, parseAssignmentAcceptanceFolder),
+    scratchRuntimeApproval: readEnum(
+      record.scratchRuntimeApproval,
+      CHAT_RUNTIME_APPROVAL_POLICIES,
+      `${label}.scratchRuntimeApproval`,
+    ),
+  };
+}
+
+function parseWaitingAssignment(value: unknown, label: string): ChatWaitingAssignmentRead {
+  const record = readRecord(value, label);
+  return {
+    assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
+    projectId: readIdentifier(record.projectId, `${label}.projectId`),
+    channelId: readIdentifier(record.channelId, `${label}.channelId`),
+    channelName: readString(record.channelName, `${label}.channelName`),
+    replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
+    teammateDisplayName: readString(record.teammateDisplayName, `${label}.teammateDisplayName`),
+    createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
+  };
+}
+
+export function parseChatWaitingAssignments(
+  value: unknown,
+  label = "Chat waiting assignments",
+): ChatWaitingAssignmentRead[] {
+  return readArray(value, label, parseWaitingAssignment);
 }
 
 function parseAgentRun(value: unknown, label: string): ChatAgentRunRead {

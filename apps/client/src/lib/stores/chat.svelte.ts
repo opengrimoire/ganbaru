@@ -5,6 +5,7 @@ import type {
   ChatChannelId,
   ChatChannelRead,
   ChatChannelPageRead,
+  ChatWaitingAssignmentRead,
   ChatProjectPrimaryWorkingFolderRead,
   ChatReplyThreadId,
   ChatReplyThreadPageRead,
@@ -128,6 +129,8 @@ export class ChatStore {
   selectedWorkingFolderId = $state<ProjectWorkingFolderId | null>(null);
   /** The primary working folder of the selected channel's project. */
   primaryWorkingFolder = $state<ChatProjectPrimaryWorkingFolderRead | null>(null);
+  /** Work that waits for a local action on this device across the vault, newest first. */
+  waitingAssignments = $state<ChatWaitingAssignmentRead[]>([]);
   selectedThreadId = $state<ChatThreadId | null>(null);
   selectedExecutionEnvironmentId = $state<string | null>(null);
   railOpen = $state(true);
@@ -425,6 +428,7 @@ export class ChatStore {
     this.loadRequest += 1;
     this.channelSelectionRequest += 1;
     this.loaded = false;
+    this.waitingAssignments = [];
     this.communicationController.reset();
     this.channelNavigationController.reset();
     this.organizationalController.reset();
@@ -485,6 +489,7 @@ export class ChatStore {
       );
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
       this.loaded = true;
+      this.refreshWaitingAssignments();
       this.listenForOtherWindows();
       this.listenForSync();
       if (!this.owner) return;
@@ -849,6 +854,38 @@ export class ChatStore {
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
   }
 
+  /**
+   * Starts waiting work with the details the user saw and rereads what it changed. Resolves false when the work
+   * changed since then, which started nothing and refreshes the offer instead.
+   */
+  async acceptAssignmentHere(assignmentId: ChatWorkAssignmentId, seenDigest: string): Promise<boolean> {
+    const started = await chatApi.acceptChatAssignmentHere(assignmentId, seenDigest);
+    this.publishChannelChange(this.selectedChannelId);
+    this.refreshWaitingAssignments();
+    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
+    return started !== null;
+  }
+
+  /** Opens the reply thread of waiting work, where its details and Start here live. */
+  async openWaitingAssignment(waiting: ChatWaitingAssignmentRead): Promise<void> {
+    this.messageAnchorId = null;
+    await this.projects.selectProject(waiting.projectId);
+    await this.loadProjectChannels(waiting.projectId);
+    await this.selectChannel(waiting.channelId);
+    await this.openReplyThread(waiting.replyThreadId);
+  }
+
+  /** Rereads the work waiting for a local action here, which only its own reply thread would otherwise reveal. */
+  private refreshWaitingAssignments(): void {
+    if (!localExecutionAvailable) return;
+    const vaultGeneration = this.vaultGeneration;
+    void chatApi.listChatWaitingAssignments().then((waiting) => {
+      if (vaultGeneration === this.vaultGeneration) this.waitingAssignments = waiting;
+    }).catch((error: unknown) => {
+      console.error("Chat waiting work could not be read", error);
+    });
+  }
+
   async archiveChannel(channel: ChatChannelRead): Promise<void> {
     return this.channelNavigationController.archive(channel);
   }
@@ -1165,6 +1202,7 @@ export class ChatStore {
     const channels = await chatApi.listChatNavigationChannels();
     if (!isCurrentVault()) return;
     for (const channel of channels) this.channelNavigationController.upsert(channel);
+    this.refreshWaitingAssignments();
     if (this.owner) await this.refreshTeammates();
     const channelId = this.selectedChannelId;
     if (!isCurrentVault() || !channelId) return;
@@ -1178,6 +1216,7 @@ export class ChatStore {
     const vaultGeneration = this.vaultGeneration;
     if (!this.loaded) return;
     const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
+    this.refreshWaitingAssignments();
     await Promise.all([
       ...[...changes.threadIds].map((threadId) => this.refreshThreadFromOtherWindow(threadId, isCurrentVault)),
       ...[...changes.channelIds].map((channelId) => this.refreshChannelFromOtherWindow(channelId, isCurrentVault)),

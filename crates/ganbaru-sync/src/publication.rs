@@ -5,18 +5,26 @@
 //! names no parent and its declaration lets null publish. The same condition
 //! renders over a trigger row (`NEW` or `OLD`), over the rows of the table itself, and over
 //! merged winners, so capture, seeding, and visibility agree on it.
+//!
+//! A local draft belongs to the device that wrote it and no other replica holds it, so a
+//! replicated operation carrying its key is never the same row. Materialization leaves such a
+//! draft and its children as they are and keeps the operation in merge state, so every replica
+//! merges alike. A snapshot copy leaves drafts behind for the same reason.
 
 use ganbaru_sync_contracts::Field;
 use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{GroupStorage, Manifest, PublishedWith, TableSpec};
+use crate::manifest::{GroupSpec, GroupStorage, Manifest, PublishedWith, TableSpec};
+use crate::materialize;
 use crate::merge;
 use crate::sql;
 
 /// Alias of the publishing parent row inside a rendered condition.
 const PARENT_ALIAS: &str = "sync_publisher";
+/// Alias of the domain row a stored-row query reads.
+const ROW_ALIAS: &str = "sync_stored";
 
 /// Columns a predicate may name: the key and every column of a column group.
 fn predicate_columns(table: &TableSpec) -> impl Iterator<Item = &'static str> {
@@ -92,6 +100,93 @@ pub(crate) fn condition_in(manifest: &Manifest, table: &TableSpec, alias: &str) 
         name = table.name,
         key = table.key_column,
     ))
+}
+
+/// Whether `key` names a domain row of `table` that fails its publication condition. This reads
+/// the device's own row and never merged winners, so the answer differs between replicas and
+/// must not reach visibility or merge state.
+pub(crate) async fn is_local_draft(
+    conn: &mut SqliteConnection,
+    manifest: &Manifest,
+    table: &TableSpec,
+    key: &str,
+) -> SyncResult<bool> {
+    let Some(condition) = condition_in(manifest, table, ROW_ALIAS) else {
+        return Ok(false);
+    };
+    let sql = format!(
+        "SELECT EXISTS (SELECT 1 FROM {name} AS {ROW_ALIAS}
+         WHERE {ROW_ALIAS}.{key_column} = ? AND NOT ({condition}))",
+        name = sql::ident(table.name),
+        key_column = sql::ident(table.key_column),
+    );
+    let draft: i64 = sqlx::query(AssertSqlSafe(sql.as_str()))
+        .bind(key)
+        .fetch_one(&mut *conn)
+        .await?
+        .try_get(0)?;
+    Ok(draft != 0)
+}
+
+/// Whether the resolved `columns` of a `published_with` row name a parent that is a local draft.
+pub(crate) async fn names_local_draft(
+    conn: &mut SqliteConnection,
+    manifest: &Manifest,
+    table: &TableSpec,
+    columns: &[(&GroupSpec, Vec<Field>)],
+) -> SyncResult<bool> {
+    let Some((parent, with)) = publisher(manifest, table) else {
+        return Ok(false);
+    };
+    let reference = columns.iter().find_map(|(group, fields)| {
+        let index = group
+            .columns()
+            .iter()
+            .position(|column| column.name == with.column)?;
+        fields.get(index)
+    });
+    match reference {
+        Some(Field::Text(key)) => is_local_draft(conn, manifest, parent, key).await,
+        _ => Ok(false),
+    }
+}
+
+/// The keys of every local draft of `table`.
+async fn local_draft_keys(
+    conn: &mut SqliteConnection,
+    manifest: &Manifest,
+    table: &TableSpec,
+) -> SyncResult<Vec<String>> {
+    let Some(condition) = condition_in(manifest, table, ROW_ALIAS) else {
+        return Ok(Vec::new());
+    };
+    let key_column = sql::ident(table.key_column);
+    let sql = format!(
+        "SELECT {ROW_ALIAS}.{key_column} FROM {name} AS {ROW_ALIAS} WHERE NOT ({condition})",
+        name = sql::ident(table.name),
+    );
+    Ok(sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+        .fetch_all(&mut *conn)
+        .await?)
+}
+
+/// Deletes every local draft and the rows it owns from a database about to leave this device.
+/// Children go first, because their condition reads the parent row. The caller holds the apply
+/// flag, so capture and gated triggers stay quiet.
+pub(crate) async fn delete_local_drafts(
+    conn: &mut SqliteConnection,
+    manifest: &Manifest,
+) -> SyncResult<()> {
+    let (children, parents): (Vec<&TableSpec>, Vec<&TableSpec>) = manifest
+        .tables
+        .iter()
+        .partition(|table| table.published_with.is_some());
+    for table in children.into_iter().chain(parents) {
+        for key in local_draft_keys(conn, manifest, table).await? {
+            materialize::delete_row(conn, table, &key).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Whether a live row of a predicate table fails its predicate with the winners of its retained

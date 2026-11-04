@@ -416,6 +416,17 @@ impl RelayStore {
         Ok(())
     }
 
+    /// Whether the relay holds `space`. A read only, so callers can refuse an unknown space
+    /// before they keep any state for it.
+    pub async fn space_exists(&self, space: &SpaceId) -> StoreResult<bool> {
+        let found: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM relay_spaces WHERE space_id = ?")
+                .bind(space.as_bytes().as_slice())
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(found.is_some())
+    }
+
     /// Finds the access key a credential for `epoch` must verify against.
     pub async fn credential(&self, space: &SpaceId, epoch: u32) -> StoreResult<EpochCredential> {
         let mut connection = self.pool.acquire().await?;

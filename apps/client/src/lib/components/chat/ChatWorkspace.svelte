@@ -75,6 +75,11 @@
   const localization = getLocalization();
   const { t } = localization;
   const chat = useChat();
+  // The open reply thread already shows its own Start here notice.
+  const waitingAssignments = $derived(
+    chat.waitingAssignments.filter((waiting) => waiting.replyThreadId !== chat.openReplyThreadId),
+  );
+  const latestWaitingAssignment = $derived(waitingAssignments[0] ?? null);
   const paneEvents = useChatPaneEvents();
   const preferences = getPreferences();
   const projects = useProjects();
@@ -1037,6 +1042,13 @@
     </div>
   {/if}
   <main class="main-shell relative flex min-w-0 flex-col">
+        {#if latestWaitingAssignment}
+          <Notice class="waiting-work-notice" role="status" message={t("chat.organization.waitingWork", waitingAssignments.length, latestWaitingAssignment.teammateDisplayName, latestWaitingAssignment.channelName)} copy={false}>
+            {#snippet actions()}
+              <button type="button" class="notice-action-text" onclick={() => { void chat.openWaitingAssignment(latestWaitingAssignment); }}>{t("chat.organization.openWaitingWork")}</button>
+            {/snippet}
+          </Notice>
+        {/if}
         {#if loadError}
           <div class="min-h-0 flex-1 text-sm"><Notice layout="fill" message={loadError} onRetry={retryWorkspaceLoad} /></div>
         {:else if chat.channelArchiveOpen}
@@ -1153,6 +1165,7 @@
   .chat-workspace[data-rail-presentation="column"][data-rail-docked="true"] .chat-rail-shell { grid-row: 1 / 5; }
   .chat-workspace[data-rail-docked="true"] .chat-rail-shell { margin: calc(-1 * var(--chat-canvas-inset)) var(--chat-canvas-inset) calc(-1 * var(--chat-canvas-inset)) calc(-1 * var(--chat-canvas-inset)); }
   .main-shell { grid-column: 2; grid-row: 2; min-width: min(440px, 100cqw); min-height: 0; }
+  .main-shell :global(.waiting-work-notice) { flex: none; margin: 0.35rem 0.5rem 0; padding: 0.25rem 0.35rem; font-size: 0.75rem; }
   .chat-workspace[data-reply-thread-presentation="column"] .main-shell { min-width: min(320px, 100cqw); }
   /* Beside a docked rail the main column owns the canvas's bottom-left corner, so its full-bleed fills (composer docks, panels) follow the rounded edge. Only that corner is clipped, so popovers still escape upward and rightward. */
   .chat-workspace[data-rail-docked="true"]:not(:has(.chat-bottom-transition-shell.open)) .main-shell { clip-path: inset(-100vmax -100vmax 0 0 round 0 0 0 max(0px, var(--content-radius) - var(--chat-canvas-inset))); }

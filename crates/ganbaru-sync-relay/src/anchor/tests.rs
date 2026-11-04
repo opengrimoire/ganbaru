@@ -6,27 +6,32 @@ use ganbaru_handoff::dial::LoopbackPolicy;
 use ganbaru_handoff::pairing::PinnedCharter;
 use ganbaru_handoff::protocol::anchor::AnchorSetupCode;
 use ganbaru_handoff::protocol::{
-    self, BundleMetadata, HandoffCompatibility, encode_sync_charter, sha256_file,
+    self, BundleMetadata, HandoffCompatibility, encode_sync_admin_key, encode_sync_charter,
+    sha256_file,
 };
 use ganbaru_sync::{
     AuthorizationView, Engine, LocalWriter, SequenceReservation, SpaceContext, local,
 };
-use ganbaru_sync_contracts::authorization::{Enroll, Entry};
+use ganbaru_sync_contracts::authorization::{Enroll, Entry, SetRole};
 use ganbaru_sync_contracts::{
     AdminKeyPair, DeviceKeyPair, DeviceKind, DeviceRole, RecoverySeed, SignedCertificate,
-    SignedCharter, WriterCertificate, WriterKeyPair, sign_certificate,
+    SignedCharter, WriterCertificate, WriterKeyPair, sign_certificate, sign_charter,
 };
-use ganbaru_sync_replica::anchor_link::local_compatibility;
-use ganbaru_sync_replica::anchor_setup::{AnchorSetupError, open_setup};
+use ganbaru_sync_replica::anchor_link::{dial_server, local_compatibility, request_on};
+use ganbaru_sync_replica::anchor_setup::{AnchorSetupError, open_setup, setup_target};
+use ganbaru_sync_replica::assets::STALE_STAGING_AGE;
 use ganbaru_sync_replica::authority::{
     self, AnchorKeys, Enrollment, Founding, charter_hash, ensure_charter,
 };
 use ganbaru_sync_replica::backup::{ArchiveGate, DATABASE_FILE, create_snapshot_archive};
+use ganbaru_sync_replica::serve::PreAuthPolicy;
+use ganbaru_sync_replica::serve::limits::ConnectionLimits;
 use sqlx::SqlitePool;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-use tokio::net::TcpListener;
+use std::time::{Duration, Instant, SystemTime};
+use tokio::io::AsyncReadExt;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
 const VAULT_ID: &str = "vault-anchor-test";
@@ -162,13 +167,12 @@ impl Founder {
         }
     }
 
-    /// Sequences `entry` as the founding anchor.
-    async fn sequence(&self, entry: Entry) {
+    /// Sequences `entry`, proposed by `signer`, as the founding anchor.
+    async fn sequence(&self, signer: &AdminKeyPair, entry: Entry) {
         let engine = Engine::vault();
         let mut conn = self.pool.acquire().await.unwrap();
         let charter = charter_hash(&engine, &mut conn, &self.ctx).await.unwrap();
-        let proposal =
-            authority::propose(self.ctx.space, charter, &self.admin, entry, NOW_MS).unwrap();
+        let proposal = authority::propose(self.ctx.space, charter, signer, entry, NOW_MS).unwrap();
         let mut reservation = Unreserved;
         let mut writer = LocalWriter {
             key: &self.writer,
@@ -228,10 +232,29 @@ async fn with_anchor<F, T>(data_dir: &Path, scenario: impl FnOnce(String) -> F) 
 where
     F: Future<Output = T>,
 {
+    with_anchor_budget(
+        data_dir,
+        crate::limits::anchor_connection_limits(),
+        crate::limits::anchor_pre_auth_policy(),
+        scenario,
+    )
+    .await
+}
+
+/// Runs `scenario` against an anchor with the given connection budget.
+async fn with_anchor_budget<F, T>(
+    data_dir: &Path,
+    limits: ConnectionLimits,
+    policy: PreAuthPolicy,
+    scenario: impl FnOnce(String) -> F,
+) -> T
+where
+    F: Future<Output = T>,
+{
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = listener.local_addr().unwrap().to_string();
     let (_stop, shutdown) = oneshot::channel();
-    let server = super::serve_on(listener, data_dir, shutdown);
+    let server = super::serve_with(listener, data_dir, shutdown, limits, policy);
     let scenario = scenario(endpoint);
     tokio::pin!(server);
     tokio::pin!(scenario);
@@ -261,6 +284,13 @@ fn is_refused(error: &AnchorSetupError) -> bool {
 
 /// Enrolls the server the code leads to and uploads the founder's vault.
 async fn enroll_and_upload(founder: &Founder, code: &AnchorSetupCode) -> String {
+    let server = enroll_server(founder, code).await;
+    upload(founder, code).await.unwrap();
+    server
+}
+
+/// Enrolls the server the code leads to as an admin of the founder's log.
+async fn enroll_server(founder: &Founder, code: &AnchorSetupCode) -> String {
     let identity = open_setup(code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
         .await
         .unwrap()
@@ -269,23 +299,29 @@ async fn enroll_and_upload(founder: &Founder, code: &AnchorSetupCode) -> String 
     let server = identity.enrollment;
     assert!(identity.space.is_none());
     founder
-        .sequence(Entry::Enroll(Enroll {
-            device_id: server.device_id.clone(),
-            device_key: server.device_key,
-            tls_fingerprint: server.server.certificate_fingerprint,
-            label: server.label.clone(),
-            device_kind: DeviceKind::Server,
-            role: DeviceRole::Admin(server.admin_key),
-        }))
+        .sequence(
+            &founder.admin,
+            Entry::Enroll(Enroll {
+                device_id: server.device_id.clone(),
+                device_key: server.device_key,
+                tls_fingerprint: server.server.certificate_fingerprint,
+                label: server.label.clone(),
+                device_kind: DeviceKind::Server,
+                role: DeviceRole::Admin(server.admin_key),
+            }),
+        )
         .await;
+    server.device_id
+}
+
+/// Uploads the founder's vault to the server the code leads to.
+async fn upload(founder: &Founder, code: &AnchorSetupCode) -> Result<(), AnchorSetupError> {
     let (metadata, archive) = founder.snapshot().await;
     open_setup(code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
         .await
         .unwrap()
         .upload(metadata, &archive, founder.pinned(), true)
         .await
-        .unwrap();
-    server.device_id
 }
 
 /// The authorization view of the anchor's vault, read through a connection of its own.
@@ -357,6 +393,78 @@ fn a_proven_desktop_activates_a_server_that_takes_the_anchor() {
 }
 
 #[test]
+fn the_pre_auth_deadline_closes_a_stalled_connection_and_spares_an_upload() {
+    // Well below the TLS and control frame timeouts, so only the deadline closes a stall early.
+    const STALL_LIMIT: Duration = Duration::from_secs(5);
+    let deadline = Duration::from_millis(800);
+    let policy = PreAuthPolicy {
+        tls_timeout: crate::limits::TLS_HANDSHAKE_TIMEOUT,
+        deadline,
+    };
+    // One pending slot, so a proven connection that kept it would lock out the next one.
+    let limits = ConnectionLimits::new(1, 1, 8, 8).with_setup_slots(2, 2);
+    block_on(async {
+        let founder = Founder::new().await;
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor_budget(root, limits, policy, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+
+            let mut silent = TcpStream::connect(&endpoint).await.unwrap();
+            let started = Instant::now();
+            let mut byte = [0_u8; 1];
+            let read = tokio::time::timeout(STALL_LIMIT, silent.read(&mut byte)).await;
+            assert!(
+                matches!(read, Ok(Ok(0) | Err(_))),
+                "a socket that never starts TLS is closed at the deadline"
+            );
+            assert!(started.elapsed() < STALL_LIMIT);
+
+            let mut stalled = dial_server(&setup_target(&code), None, LoopbackPolicy::Allow)
+                .await
+                .unwrap();
+            let hello = protocol::ControlMessage::AnchorHello {
+                protocol_version: protocol::PROTOCOL_VERSION,
+                compatibility: local_compatibility(APP_VERSION),
+                client_nonce: protocol::relay::encode_relay_bytes(
+                    &protocol::anchor::anchor_nonce().unwrap(),
+                ),
+            };
+            let challenge = request_on(&mut stalled, &hello).await.unwrap();
+            assert!(matches!(
+                challenge,
+                protocol::ControlMessage::AnchorChallenge { .. }
+            ));
+            let started = Instant::now();
+            let next =
+                tokio::time::timeout(STALL_LIMIT, protocol::read_control(&mut stalled)).await;
+            assert!(
+                matches!(next, Ok(Err(_))),
+                "a client that greets and never proves is closed at the deadline"
+            );
+            assert!(started.elapsed() < STALL_LIMIT);
+
+            let server = enroll_server(&founder, &code).await;
+            let (metadata, archive) = founder.snapshot().await;
+            let proven = open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
+                .await
+                .unwrap();
+            tokio::time::sleep(deadline * 3).await;
+            let other = open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
+                .await
+                .expect("a proven connection gives its pending slot back");
+            drop(other);
+            proven
+                .upload(metadata, &archive, founder.pinned(), true)
+                .await
+                .expect("an upload that runs past the deadline finishes");
+            wait_for_anchor(root, &server).await;
+        })
+        .await;
+    });
+}
+
+#[test]
 fn a_wrong_or_replaced_code_opens_nothing_and_keeps_the_newest_secret() {
     block_on(async {
         let data = TempDir::new();
@@ -378,6 +486,44 @@ fn a_wrong_or_replaced_code_opens_nothing_and_keeps_the_newest_secret() {
 }
 
 #[test]
+fn a_setup_code_binds_to_the_first_proven_vault() {
+    const OTHER_VAULT_ID: &str = "vault-anchor-other";
+    block_on(async {
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor(root, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+            open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
+                .await
+                .expect("the first proof binds the code to its vault");
+            let refused = open_setup(
+                &code,
+                APP_VERSION,
+                Some(OTHER_VAULT_ID),
+                LoopbackPolicy::Allow,
+            )
+            .await
+            .err()
+            .expect("a proof naming another vault should be refused");
+            assert!(is_refused(&refused), "{refused}");
+            open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
+                .await
+                .expect("a retry for the bound vault still works");
+            let newer = printed_code(root, &endpoint);
+            open_setup(
+                &newer,
+                APP_VERSION,
+                Some(OTHER_VAULT_ID),
+                LoopbackPolicy::Allow,
+            )
+            .await
+            .expect("a newly printed code is not bound yet");
+        })
+        .await;
+    });
+}
+
+#[test]
 fn a_snapshot_that_does_not_enroll_the_server_is_refused() {
     block_on(async {
         let founder = Founder::new().await;
@@ -391,8 +537,7 @@ fn a_snapshot_that_does_not_enroll_the_server_is_refused() {
                 .unwrap()
                 .upload(metadata, &archive, founder.pinned(), true)
                 .await
-                .err()
-                .expect("the upload should be refused");
+                .expect_err("the upload should be refused");
             assert!(refused.to_string().contains("does not enroll"), "{refused}");
             let paths = DataPaths::new(root.to_path_buf());
             assert!(!paths.activation().exists());
@@ -400,6 +545,90 @@ fn a_snapshot_that_does_not_enroll_the_server_is_refused() {
             open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
                 .await
                 .expect("a refused upload does not spend the secret");
+        })
+        .await;
+    });
+}
+
+/// Breaks the writer signature of the newest authorization record in the founder's store and
+/// keeps the row verified, as a sender that planted the record would.
+async fn forge_newest_record(founder: &Founder) {
+    let (hash, mut envelope): (Vec<u8>, Vec<u8>) = sqlx::query_as(
+        "SELECT envelope_hash, envelope FROM sync_auth_envelopes WHERE role = 'record'
+         ORDER BY stored_order DESC LIMIT 1",
+    )
+    .fetch_one(&founder.pool)
+    .await
+    .unwrap();
+    let last = envelope
+        .last_mut()
+        .expect("an envelope ends with its signature");
+    *last ^= 0xff;
+    sqlx::query("UPDATE sync_auth_envelopes SET envelope = ? WHERE envelope_hash = ?")
+        .bind(envelope)
+        .bind(hash)
+        .execute(&founder.pool)
+        .await
+        .unwrap();
+}
+
+/// Replaces the founder's charter and local person key with ones another person signed. The
+/// sender controls its database, so the trigger that keeps the identity fixed is lifted for the
+/// update and restored after it.
+async fn replace_person(founder: &Founder) {
+    let other = PersonKeyPair::from_seed(&[8; 32]).unwrap();
+    let charter = sign_charter(&founder.charter.charter, &other).unwrap();
+    sqlx::query("UPDATE sync_spaces SET charter = ?")
+        .bind(charter.encode())
+        .execute(&founder.pool)
+        .await
+        .unwrap();
+    let trigger: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master
+         WHERE type = 'trigger' AND name = 'contacts_local_identity_immutable_update'",
+    )
+    .fetch_one(&founder.pool)
+    .await
+    .unwrap();
+    sqlx::query("DROP TRIGGER contacts_local_identity_immutable_update")
+        .execute(&founder.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE contacts_local_identity SET public_key = ?")
+        .bind(other.public_key().to_text())
+        .execute(&founder.pool)
+        .await
+        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(trigger))
+        .execute(&founder.pool)
+        .await
+        .unwrap();
+}
+
+#[test]
+fn activation_reverifies_a_staged_authorization_store() {
+    block_on(async {
+        let founder = Founder::new().await;
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor(root, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+            enroll_server(&founder, &code).await;
+            forge_newest_record(&founder).await;
+            let refused = upload(&founder, &code)
+                .await
+                .expect_err("an enrollment with a broken signature should not activate");
+            assert!(refused.to_string().contains("does not enroll"), "{refused}");
+            let paths = DataPaths::new(root.to_path_buf());
+            assert!(!paths.activation().exists());
+            assert!(!paths.vault().exists());
+
+            replace_person(&founder).await;
+            let refused = upload(&founder, &code)
+                .await
+                .expect_err("a copy under another person's charter should not activate");
+            assert!(refused.to_string().contains("charter"), "{refused}");
+            assert!(!paths.vault().exists());
         })
         .await;
     });
@@ -458,6 +687,61 @@ fn a_recovery_kit_enrolls_a_new_desktop_through_the_server_as_anchor() {
 }
 
 #[test]
+fn active_space_names_the_kit_keys() {
+    block_on(async {
+        let founder = Founder::new().await;
+        // The printed kit rotates the lineage to a new kit, then the founding anchor installs a
+        // recovery key of its own, so the log holds two different keys.
+        let rotated = AdminKeyPair::from_seed(&[43; 32]).unwrap();
+        let installed = AdminKeyPair::from_seed(&[44; 32]).unwrap();
+        let printed = authority::kit_admin(&recovery_seed().kit_code()).unwrap();
+        founder
+            .sequence(
+                &printed,
+                Entry::SetRole(SetRole::Recovery {
+                    recovery_admin_key: rotated.public_key(),
+                }),
+            )
+            .await;
+        founder
+            .sequence(
+                &founder.admin,
+                Entry::SetRole(SetRole::Recovery {
+                    recovery_admin_key: installed.public_key(),
+                }),
+            )
+            .await;
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor(root, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+            let server = enroll_and_upload(&founder, &code).await;
+            let view = wait_for_anchor(root, &server).await;
+            assert_eq!(view.kit_admin_key, rotated.public_key());
+            assert_eq!(view.recovery_admin_key, installed.public_key());
+
+            let fresh = printed_code(root, &endpoint);
+            let connection = open_setup(&fresh, APP_VERSION, None, LoopbackPolicy::Allow)
+                .await
+                .unwrap();
+            let space = connection.identity().space.clone().expect("active space");
+            assert_eq!(
+                space.kit_admin_key,
+                encode_sync_admin_key(&rotated.public_key()),
+                "the answer names the key of the kit that holds the lineage"
+            );
+            assert_eq!(
+                space.recovery_admin_key,
+                encode_sync_admin_key(&installed.public_key()),
+                "the answer names the recovery key the anchor admits"
+            );
+            assert_ne!(space.kit_admin_key, space.recovery_admin_key);
+        })
+        .await;
+    });
+}
+
+#[test]
 fn a_backup_needs_a_stopped_activated_server() {
     block_on(async {
         let data = TempDir::new();
@@ -470,5 +754,74 @@ fn a_backup_needs_a_stopped_activated_server() {
         let refused = super::backup(config).await.unwrap_err();
         assert!(refused.contains("no vault"), "{refused}");
         assert!(!out.exists());
+    });
+}
+
+#[test]
+fn anchor_activation_record_damage_still_lets_the_anchor_start() {
+    block_on(async {
+        let data = TempDir::new();
+        let root = data.path();
+        std::fs::write(DataPaths::new(root.to_path_buf()).activation(), b"{damaged").unwrap();
+        with_anchor(root, |endpoint| async move {
+            tokio::net::TcpStream::connect(&endpoint).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        })
+        .await;
+    });
+}
+
+/// A staged temporary file name for `target`, as an interrupted transfer leaves it.
+fn staged_name(target: &str, nonce: char) -> String {
+    format!(".{target}.{}.tmp", nonce.to_string().repeat(32))
+}
+
+#[test]
+fn anchor_activation_removes_stale_staging() {
+    block_on(async {
+        let founder = Founder::new().await;
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor(root, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+            let server = enroll_and_upload(&founder, &code).await;
+            wait_for_anchor(root, &server).await;
+        })
+        .await;
+
+        let engine = Engine::vault();
+        let class = engine
+            .manifest()
+            .asset_classes()
+            .next()
+            .expect("the vault declares an asset class");
+        let directory = class.directory(&DataPaths::new(root.to_path_buf()).vault());
+        std::fs::create_dir_all(&directory).unwrap();
+        let target = "a".repeat(64);
+        let abandoned = directory.join(staged_name(&target, 'b'));
+        let fresh = directory.join(staged_name(&target, 'c'));
+        for path in [&abandoned, &fresh] {
+            std::fs::write(path, b"partial").unwrap();
+        }
+        let old = SystemTime::now() - STALE_STAGING_AGE - Duration::from_secs(1);
+        std::fs::File::options()
+            .write(true)
+            .open(&abandoned)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        with_anchor(root, |_endpoint| async {
+            let deadline = Instant::now() + WAIT;
+            while abandoned.exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "the anchor kept a stale staged file"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(fresh.exists(), "the anchor removed a fresh staged file");
+        })
+        .await;
     });
 }

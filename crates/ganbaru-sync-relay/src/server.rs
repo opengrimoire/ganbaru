@@ -29,6 +29,7 @@ use ganbaru_sync_contracts::relay::{MAX_RELAY_ASSET_CHUNK_BYTES, MAX_RELAY_RECOR
 use ganbaru_sync_contracts::{RelayAssetChunk, RelayRecord, SpaceId, WriterId};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
@@ -104,8 +105,13 @@ struct Shared {
     /// Per space, a counter of admin changes that replace epoch keys (an epoch repair or a space
     /// removal). Authentication and every authenticated request hold it for reading, and those
     /// changes hold it for writing while they commit and then advance it, so a connection that
-    /// verified against a replaced key can never act after the change.
+    /// verified against a replaced key can never act after the change. Entries exist only for
+    /// spaces the store holds: callers check the space before creating one, and an entry is
+    /// evicted once its space is gone and no handler holds it.
     generations: Mutex<HashMap<SpaceId, Arc<RwLock<u64>>>>,
+    /// Source of every generation value, so a value is never handed out twice, even to a space
+    /// whose entry was evicted and created again.
+    next_generation: AtomicU64,
     pending: ConnectionBudget,
     authenticated: ConnectionBudget,
     frame_memory: FrameMemory,
@@ -113,12 +119,60 @@ struct Shared {
 }
 
 impl Shared {
+    fn fresh_generation(&self) -> u64 {
+        self.next_generation.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// The generation lock of `space`, created when missing. Call only after the store showed
+    /// the space exists.
     fn generation(&self, space: &SpaceId) -> Arc<RwLock<u64>> {
         let mut generations = self
             .generations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Arc::clone(generations.entry(*space).or_default())
+        Arc::clone(
+            generations
+                .entry(*space)
+                .or_insert_with(|| Arc::new(RwLock::new(self.fresh_generation()))),
+        )
+    }
+
+    /// The generation lock of `space` if it has one, without creating it.
+    fn existing_generation(&self, space: &SpaceId) -> Option<Arc<RwLock<u64>>> {
+        self.generations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(space)
+            .map(Arc::clone)
+    }
+
+    /// Releases a handler's generation lock of a space the store no longer holds, evicting the
+    /// entry when no other handler holds it. Clones are taken only under the map lock, so a
+    /// count of one there means nobody can be waiting on this entry.
+    fn release_removed(&self, space: &SpaceId, lock: Arc<RwLock<u64>>) {
+        drop(lock);
+        let mut generations = self
+            .generations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if generations
+            .get(space)
+            .is_some_and(|entry| Arc::strong_count(entry) == 1)
+        {
+            generations.remove(space);
+        }
+    }
+
+    /// Wakes the waiters of a removed space and drops its notifier. A waiter still holding the
+    /// old notifier has already been woken.
+    fn forget_waits(&self, space: &SpaceId) {
+        let mut waits = self
+            .waits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(notify) = waits.remove(space) {
+            notify.notify_waiters();
+        }
     }
 
     fn notifier(&self, space: &SpaceId) -> Arc<Notify> {
@@ -137,6 +191,31 @@ impl Shared {
         if let Some(notify) = waits.get(space) {
             notify.notify_waiters();
         }
+    }
+}
+
+/// Counts entries in a running server's per-space maps.
+#[cfg(test)]
+pub(crate) struct ServerProbe(Arc<Shared>);
+
+#[cfg(test)]
+impl ServerProbe {
+    /// Spaces with a generation entry.
+    pub(crate) fn generations(&self) -> usize {
+        self.0
+            .generations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    /// Spaces with a wait notifier.
+    pub(crate) fn waits(&self) -> usize {
+        self.0
+            .waits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
     }
 }
 
@@ -162,6 +241,7 @@ impl RelayServer {
                 store,
                 waits: Mutex::new(HashMap::new()),
                 generations: Mutex::new(HashMap::new()),
+                next_generation: AtomicU64::new(0),
                 pending: ConnectionBudget::new(limits.pending, limits.pending_per_source),
                 authenticated: ConnectionBudget::new(
                     limits.authenticated,
@@ -178,6 +258,12 @@ impl RelayServer {
         self.listener
             .local_addr()
             .map_err(|error| format!("read relay listener address: {error}"))
+    }
+
+    /// A view of the per-space maps that stays valid while the server runs.
+    #[cfg(test)]
+    pub(crate) fn probe(&self) -> ServerProbe {
+        ServerProbe(Arc::clone(&self.shared))
     }
 
     /// Accepts connections until the task is dropped, and trims storage periodically.
@@ -292,6 +378,20 @@ fn store_failure(error: StoreError) -> (RelayResponse, Next) {
             )
         }
     }
+}
+
+fn is_unknown_space(error: &StoreError) -> bool {
+    matches!(
+        error,
+        StoreError::Refused(RelayRefusalCode::UnknownSpace, _)
+    )
+}
+
+/// The refusal for an admin request on a space the relay does not hold. It matches the store's
+/// answer to an unknown signer on a hosted space, so the admin path does not reveal which
+/// spaces exist.
+fn not_an_admin() -> (RelayResponse, Next) {
+    refused(RelayRefusalCode::AdminSignature, "signer is not an admin")
 }
 
 fn bad_request(message: &str) -> (RelayResponse, Next) {
@@ -503,11 +603,25 @@ impl Session {
             Ok(signature) => signature,
             Err(error) => return bad_request(&error),
         };
+        match self.shared.store.space_exists(&space).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return refused(RelayRefusalCode::UnknownSpace, "space is not on this relay");
+            }
+            Err(error) => return store_failure(error),
+        }
         let lock = self.shared.generation(&space);
         let generation = lock.read().await;
+        // The space can be removed between the check above and this read under the lock.
         let credential = match self.shared.store.credential(&space, epoch).await {
             Ok(credential) => credential,
-            Err(error) => return store_failure(error),
+            Err(error) => {
+                if is_unknown_space(&error) {
+                    drop(generation);
+                    self.shared.release_removed(&space, lock);
+                }
+                return store_failure(error);
+            }
         };
         let payload = self.binding(space).auth_payload(epoch);
         if !credential
@@ -653,10 +767,16 @@ impl Session {
                 "admin signature is invalid",
             );
         }
+        match self.shared.store.space_exists(&space).await {
+            Ok(true) => {}
+            Ok(false) => return not_an_admin(),
+            Err(error) => return store_failure(error),
+        }
         let replaces_keys = matches!(
             change,
             AdminChange::RelayEpochRepair { .. } | AdminChange::RemoveSpace
         );
+        let removes_space = matches!(change, AdminChange::RemoveSpace);
         let lock = self.shared.generation(&space);
         let mut generation = if replaces_keys {
             Some(lock.write().await)
@@ -671,11 +791,21 @@ impl Session {
         match applied {
             Ok(()) => {
                 if let Some(generation) = generation.as_mut() {
-                    **generation = generation.wrapping_add(1);
+                    **generation = self.shared.fresh_generation();
                 }
                 drop(generation);
-                self.shared.wake(&space);
+                if removes_space {
+                    self.shared.release_removed(&space, lock);
+                    self.shared.forget_waits(&space);
+                } else {
+                    self.shared.wake(&space);
+                }
                 (RelayResponse::AdminApplied { counter }, Next::Continue)
+            }
+            Err(error) if is_unknown_space(&error) => {
+                drop(generation);
+                self.shared.release_removed(&space, lock);
+                not_an_admin()
             }
             Err(error) => store_failure(error),
         }
@@ -688,7 +818,14 @@ impl Session {
         generation: u64,
         request: RelayRequest,
     ) -> (RelayResponse, Next) {
-        let lock = self.shared.generation(&space);
+        // A missing entry means the space was removed after this session verified, so the
+        // lookup never creates one.
+        let Some(lock) = self.shared.existing_generation(&space) else {
+            return refused(
+                RelayRefusalCode::Authentication,
+                "an admin replaced the space's epoch keys; authenticate again",
+            );
+        };
         let current = lock.read().await;
         if *current != generation {
             return refused(
@@ -700,26 +837,36 @@ impl Session {
         let _generation = (!matches!(request, RelayRequest::Wait { .. })).then_some(current);
         let store = &self.shared.store;
         let result = match request {
-            RelayRequest::State => store.state(&space).await.map(|state| RelayResponse::State {
-                current_epoch: state.current_epoch,
-                writers: state
-                    .writers
-                    .iter()
-                    .map(|range| RelayWriterRange {
-                        writer: range.writer.to_hex(),
-                        floor: range.floor,
-                        next: range.next,
-                    })
-                    .collect(),
-                stored_bytes: state.stored_bytes,
-                quota_bytes: store.retention().quota_bytes,
-                admins: state
-                    .admins
-                    .iter()
-                    .map(|admin| encode_relay_bytes(admin.as_bytes()))
-                    .collect(),
-                admin_counter: state.admin_counter,
-            }),
+            // A session below the current epoch may still read what was sealed for it, but not
+            // the space's writer ranges, usage, or admin set.
+            RelayRequest::State => match store.state(&space).await {
+                Ok(state) if state.current_epoch > epoch => {
+                    return refused(
+                        RelayRefusalCode::StaleEpoch,
+                        "the space moved to a newer epoch; authenticate at it",
+                    );
+                }
+                result => result.map(|state| RelayResponse::State {
+                    current_epoch: state.current_epoch,
+                    writers: state
+                        .writers
+                        .iter()
+                        .map(|range| RelayWriterRange {
+                            writer: range.writer.to_hex(),
+                            floor: range.floor,
+                            next: range.next,
+                        })
+                        .collect(),
+                    stored_bytes: state.stored_bytes,
+                    quota_bytes: store.retention().quota_bytes,
+                    admins: state
+                        .admins
+                        .iter()
+                        .map(|admin| encode_relay_bytes(admin.as_bytes()))
+                        .collect(),
+                    admin_counter: state.admin_counter,
+                }),
+            },
             RelayRequest::Push { records } => {
                 let mut decoded = Vec::with_capacity(records.len());
                 for text in &records {

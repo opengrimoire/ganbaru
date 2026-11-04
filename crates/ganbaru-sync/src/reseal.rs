@@ -16,7 +16,7 @@ use sqlx::{Connection, Row, SqliteConnection};
 use crate::apply::{Constrained, finish_sealed};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::log::{self, seq_i64, stored_u64};
-use crate::merge::{Batch, table_param};
+use crate::merge::{self, Batch, table_param};
 use crate::seal::{Advance, Replay, SealReport, SealSlot};
 use crate::{Engine, LocalWriter, SpaceContext, SyncError, authorization, exclusion, fork, sql};
 
@@ -115,8 +115,9 @@ fn remap(
     Ok(remapped)
 }
 
-/// Removes the versions, tombstones, and row creations of a writer's operations past
-/// `keep_through`, revives rows left without tombstones, and marks every touched row dirty. A
+/// Removes the versions, held Creates, tombstones, and row creations of a writer's operations
+/// past `keep_through`, revives rows left without tombstones, and marks every touched row dirty;
+/// the caller settles the groups those held Creates kept with [`merge::settle_kept`]. A
 /// re-seal replaces what it removes; a removal cutoff leaves rows its excluded operations
 /// created without merge state, which late changes keep hidden.
 pub(crate) async fn remove_effects(
@@ -149,6 +150,7 @@ pub(crate) async fn remove_effects(
         .execute(&mut *conn)
         .await?;
     }
+    merge::forget_held_past(conn, batch, old, keep_through).await?;
     for (table_id, key) in touched {
         let table = u16::try_from(table_id)
             .map(TableId)
@@ -171,7 +173,60 @@ pub(crate) async fn remove_effects(
     Ok(())
 }
 
+/// What a re-seal of `old` through a requested sequence works from, once that sequence is known
+/// to lie inside the old chain.
+struct ResealBounds {
+    row: log::WriterRow,
+    prefixes: BTreeMap<WriterId, Seq>,
+    /// The requested sequence, lowered to the shared prefix that stored evidence proves.
+    keep_through: Seq,
+}
+
+/// Checks that `old` can be re-sealed through `keep_through`, without writing anything.
+async fn reseal_bounds(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    old: WriterId,
+    keep_through: Seq,
+) -> SyncResult<ResealBounds> {
+    let Some(row) = log::writer(conn, ctx.space, old).await? else {
+        return Err(SyncError::InvalidReseal("the old writer is unknown"));
+    };
+    let prefixes = fork::shared_prefixes(conn, ctx.space).await?;
+    let proven = prefixes.get(&old).copied();
+    if row.stored != row.applied && proven.is_none() {
+        return Err(SyncError::InvalidReseal(
+            "the old writer has operations that are not applied",
+        ));
+    }
+    let keep_through = proven.map_or(keep_through, |proven| keep_through.min(proven));
+    if (keep_through < 1 && proven != Some(0)) || keep_through > row.applied {
+        return Err(SyncError::InvalidReseal(
+            "the kept sequence is outside the old chain",
+        ));
+    }
+    Ok(ResealBounds {
+        row,
+        prefixes,
+        keep_through,
+    })
+}
+
 impl Engine {
+    /// Checks, without writing anything, that [`Engine::reseal_fork`] of `old` through
+    /// `keep_through` passes the checks on the old chain, so a caller can refuse a fork before
+    /// it rotates to a successor writer that a refused re-seal would leave unused.
+    pub async fn check_reseal_fork(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        old: WriterId,
+        keep_through: Seq,
+    ) -> SyncResult<()> {
+        log::ensure_space(conn, ctx.space).await?;
+        reseal_bounds(conn, ctx, old, keep_through).await.map(drop)
+    }
+
     /// Replaces the old local writer's operations past `keep_through`, the last sequence another
     /// copy of the chain shares with this one, with operations of a new writer that merge the same
     /// way, then seals pending captures with it. The new writer must not have sealed anything but
@@ -206,22 +261,11 @@ impl Engine {
         }
         let mut tx = conn.begin().await?;
         log::ensure_space(&mut tx, ctx.space).await?;
-        let Some(row) = log::writer(&mut tx, ctx.space, old).await? else {
-            return Err(SyncError::InvalidReseal("the old writer is unknown"));
-        };
-        let prefixes = fork::shared_prefixes(&mut tx, ctx.space).await?;
-        let proven = prefixes.get(&old).copied();
-        if row.stored != row.applied && proven.is_none() {
-            return Err(SyncError::InvalidReseal(
-                "the old writer has operations that are not applied",
-            ));
-        }
-        let keep_through = proven.map_or(keep_through, |proven| keep_through.min(proven));
-        if (keep_through < 1 && proven != Some(0)) || keep_through > row.applied {
-            return Err(SyncError::InvalidReseal(
-                "the kept sequence is outside the old chain",
-            ));
-        }
+        let ResealBounds {
+            row,
+            prefixes,
+            keep_through,
+        } = reseal_bounds(&mut tx, ctx, old, keep_through).await?;
         if let Some(existing) = log::writer(&mut tx, ctx.space, new).await?
             && existing.stored > 1
         {
@@ -240,6 +284,7 @@ impl Engine {
         fork::drop_branch(&mut tx, ctx.space, old, keep_through, row.applied).await?;
         batch.applied.set(old, keep_through);
         batch.contexts.clear();
+        merge::settle_kept(self, &mut tx, &mut batch).await?;
         if dropped_entries
             && let Some(selection) = authorization::rederive(&mut tx, ctx.space).await?
         {

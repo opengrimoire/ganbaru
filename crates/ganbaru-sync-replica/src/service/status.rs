@@ -86,6 +86,9 @@ pub enum SyncErrorCode {
     CoordinatorRemoved,
     /// The anchor server speaks an older protocol, so it stopped answering this device.
     ServerNeedsUpdate,
+    /// The coordinator claims a fork of this device's writer and shows no signed operation
+    /// for it, so the writer stays in place and the device exchanges with the other members.
+    ForkClaimUnproven,
 }
 
 /// Why the coordinator does not count a linked device toward stability.

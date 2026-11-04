@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mapNavigationDatabase, mapPageSummary } from "./workspace-parsing";
 
 function pageSummary(icon: string | null): Record<string, unknown> {
@@ -29,9 +29,19 @@ describe("Notes workspace parsing", () => {
     }
     expect(() => mapNavigationDatabase({ ...database, title: null })).toThrow("database.title must be a string");
   });
-  it("reports stored icon JSON failures with field context", () => {
-    expect(() => mapPageSummary(pageSummary("{{"))).toThrow(
-      'page.icon for page "page-1" must contain valid JSON',
-    );
+  it("mapPageSummary tolerates an unusable synced icon", () => {
+    const hostile = pageSummary(JSON.stringify({ type: "external", external: { url: "http://example.com/icon.png" } }));
+    const honest = { ...pageSummary(JSON.stringify({ type: "emoji", emoji: "📌" })), id: "page-2" };
+    expect(() => [hostile, honest].map(mapPageSummary)).not.toThrow();
+    const pages = [hostile, honest].map(mapPageSummary);
+    expect(pages.map((page) => page.id)).toEqual(["page-1", "page-2"]);
+    expect(pages[0]?.icon).toBeNull();
+    expect(pages[1]?.icon).toEqual({ type: "emoji", emoji: "📌" });
+  });
+  it("maps stored icon text that is not JSON to no icon, reporting the page", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    expect(mapPageSummary(pageSummary("{{")).icon).toBeNull();
+    expect(warn).toHaveBeenCalledWith('Ignoring unusable synced page.icon for page "page-1"', expect.any(SyntaxError));
+    warn.mockRestore();
   });
 });

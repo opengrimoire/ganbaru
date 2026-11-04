@@ -228,6 +228,34 @@ async fn ensure_card_endpoint<R: Runtime>(app: &AppHandle<R>) {
     let _ = app;
 }
 
+/// Views of the rows that can be shown. A row can arrive through sync, so one that cannot be
+/// read is skipped and logged and leaves the rest of the list usable.
+fn request_views(rows: &[store::RequestRow]) -> Vec<ContactRequestView> {
+    rows.iter()
+        .filter_map(|row| {
+            row.view()
+                .inspect_err(|error| {
+                    eprintln!("skipping unreadable contact request {:?}: {error}", row.id);
+                })
+                .ok()
+        })
+        .collect()
+}
+
+/// Views of the contacts that can be shown. A snapshot copy can hold a row no adapter checked,
+/// so one that cannot be read is skipped and logged and leaves the rest of the list usable.
+/// Authorization reads rows directly, so a skipped block still applies.
+fn contact_views(rows: Vec<store::ContactRow>) -> Vec<ContactView> {
+    rows.into_iter()
+        .filter_map(|row| {
+            let id = row.id.clone();
+            row.view()
+                .inspect_err(|error| eprintln!("skipping unreadable contact {id:?}: {error}"))
+                .ok()
+        })
+        .collect()
+}
+
 async fn snapshot<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
@@ -235,16 +263,8 @@ async fn snapshot<R: Runtime>(
     let identity = identity::load_identity(app, pool)
         .await?
         .map(|identity| identity.view());
-    let contacts = store::list_contacts(pool)
-        .await?
-        .into_iter()
-        .map(store::ContactRow::view)
-        .collect::<Result<Vec<_>, _>>()?;
-    let requests = store::list_pending_requests(pool, store::now())
-        .await?
-        .iter()
-        .map(store::RequestRow::view)
-        .collect::<Result<Vec<_>, _>>()?;
+    let contacts = contact_views(store::list_contacts(pool).await?);
+    let requests = request_views(&store::list_pending_requests(pool, store::now()).await?);
     Ok(ContactsSnapshot {
         identity,
         contacts,

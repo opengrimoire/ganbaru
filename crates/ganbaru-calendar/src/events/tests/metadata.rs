@@ -1,6 +1,9 @@
 use super::fixtures::*;
 use crate::events::metadata::{Metadata, copy_event_metadata};
 use crate::events::occurrence::ReadBudget;
+use crate::events::scope::read_snapshot;
+use crate::recurrence::canonical::{EditScope, ScopeClock, parse_date};
+use serde_json::json;
 
 #[test]
 fn copying_task_links_rejects_a_target_without_the_matching_project() {
@@ -103,6 +106,101 @@ async fn capture(connection: &mut sqlx::SqliteConnection) -> Metadata {
     Metadata::read(connection, "source", &mut ReadBudget::default())
         .await
         .unwrap()
+}
+
+fn before_the_series() -> ScopeClock {
+    ScopeClock {
+        epoch_ms: chrono::DateTime::parse_from_rfc3339("2099-05-08T00:00:00Z")
+            .unwrap()
+            .timestamp_millis(),
+        floating_today: None,
+    }
+}
+
+async fn seed_with_sequence(sequence: i64) -> sqlx::SqlitePool {
+    let pool = seed().await;
+    sqlx::query("UPDATE calendar_events SET sequence = ? WHERE id = 'source'")
+        .bind(sequence)
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool
+}
+
+/// Saves a title across the whole series and returns the stored sequence.
+async fn commit_series_edit(pool: &sqlx::SqlitePool) -> Result<i64, String> {
+    let selected = parse_date("2099-05-10")?;
+    let draft = json!({"fields":[{"field":"title","value":"Edited"}]});
+    let parse_draft = || serde_json::from_value(draft.clone()).map_err(|e| e.to_string());
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let review = crate::events::edit::prepare(
+        read_snapshot(&mut tx, "source").await?,
+        selected,
+        EditScope::All,
+        before_the_series(),
+        parse_draft()?,
+    )?;
+    let rows = crate::events::commit::prepare_rows(
+        read_snapshot(&mut tx, "source").await?,
+        selected,
+        EditScope::All,
+        before_the_series(),
+        parse_draft()?,
+        "save-at-top-sequence",
+        &review.review_revision,
+    )?;
+    rows.write(&mut tx).await?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    stored_sequence(pool).await
+}
+
+/// Deletes one occurrence of the series and returns the stored sequence.
+async fn commit_partial_deletion(pool: &sqlx::SqlitePool) -> Result<i64, String> {
+    let selected = parse_date("2099-05-11")?;
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let review = crate::events::deletion::prepare(
+        read_snapshot(&mut tx, "source").await?,
+        selected,
+        EditScope::This,
+        before_the_series(),
+    )?;
+    let rows = crate::events::deletion::prepare_commit(
+        read_snapshot(&mut tx, "source").await?,
+        selected,
+        EditScope::This,
+        before_the_series(),
+        "delete-at-top-sequence",
+        &review.review_revision,
+        false,
+    )?;
+    rows.write(&mut tx).await?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    stored_sequence(pool).await
+}
+
+async fn stored_sequence(pool: &sqlx::SqlitePool) -> Result<i64, String> {
+    sqlx::query_scalar("SELECT sequence FROM calendar_events WHERE id = 'source'")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[test]
+fn edit_at_the_top_sequence_commits() {
+    crate::test_support::block_on(async {
+        let edit = commit_series_edit(&seed_with_sequence(i64::MAX).await).await;
+        let deletion = commit_partial_deletion(&seed_with_sequence(i64::MAX).await).await;
+        assert_eq!((edit, deletion), (Ok(i64::MAX), Ok(i64::MAX)));
+    });
+}
+
+#[test]
+fn edit_below_the_top_sequence_still_advances_it() {
+    crate::test_support::block_on(async {
+        let edit = commit_series_edit(&seed_with_sequence(i64::MAX - 1).await).await;
+        let deletion = commit_partial_deletion(&seed_with_sequence(7).await).await;
+        assert_eq!((edit, deletion), (Ok(i64::MAX), Ok(8)));
+    });
 }
 
 #[test]

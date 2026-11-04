@@ -65,7 +65,12 @@ impl PreparedMutation {
             ))
         });
         attendees.sort_by(|a, b| a.event_id.cmp(&b.event_id));
-        WindowSource::from_prepared(events, overrides, attendees).expand(window)
+        let projected = WindowSource::from_prepared(events, overrides, attendees).expand(window)?;
+        // A review of partial rows would approve changes the person cannot see.
+        if projected.omitted_template_count > 0 {
+            return Err("Calendar review does not fit its window bounds".into());
+        }
+        Ok(projected)
     }
 }
 

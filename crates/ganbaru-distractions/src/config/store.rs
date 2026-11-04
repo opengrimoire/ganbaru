@@ -10,6 +10,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use ganbaru_sync::domains::distractions::{
+    LimitSources, MOBILE_PLATFORM, is_usable_limit_name, is_usable_limit_source,
+};
 use ganbaru_sync::manifest::vault::distractions::{
     APP_RULE_KEY_PREFIX, HOST_RULE_KEY_PREFIX, SETTINGS_KEY,
 };
@@ -20,18 +23,17 @@ use sqlx::{Row, SqliteConnection, SqlitePool};
 
 use super::{
     CategoryRule, CustomCategory, DesktopAppRule, DistractionsConfig, DistractionsMode, HostRule,
-    LimitEntryRule, LimitRule, MAX_CATEGORY_NAME_CHARS, MAX_COLOR, MAX_LIMIT_ENTRIES,
-    MAX_MATCH_NAMES, MAX_MINUTES_PER_DAY, MAX_MINUTES_PER_WEEK, MAX_NAME_CHARS, MAX_USAGE_LIMITS,
-    MobileAppRule, built_in_categories, is_built_in_category, is_rule_host, is_rule_id,
-    normalize_app_name, normalize_host, normalize_hosts, normalize_match_names, normalize_name,
-    normalize_package,
+    LimitEntryRule, LimitRule, MAX_CATEGORY_NAME_CHARS, MAX_COLOR, MAX_GUARDIAN_USAGE_LIMITS,
+    MAX_LIMIT_ENTRIES, MAX_MATCH_NAMES, MAX_MINUTES_PER_DAY, MAX_MINUTES_PER_WEEK,
+    MAX_MOBILE_APP_RULES, MAX_NAME_CHARS, MAX_USAGE_LIMITS, MobileAppRule, built_in_categories,
+    is_built_in_category, is_rule_host, is_rule_id, normalize_app_name, normalize_host,
+    normalize_hosts, normalize_match_names, normalize_name, normalize_package,
 };
 use crate::rules::{app_name_key, is_protected_desktop_app_name};
 
 /// List kind and platform values stored in the rule tables.
 const CATEGORY_LIST_KIND: &str = "category";
 const DESKTOP_PLATFORM: &str = "desktop";
-const MOBILE_PLATFORM: &str = "mobile";
 
 /// Why an edit was refused. The serialized code is what Settings maps to a message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -202,7 +204,9 @@ impl HostList {
     }
 }
 
-/// The rule a toggle or removal names.
+/// The rule a toggle or removal names. A desktop rule is named by its stored identity, exactly as
+/// the assembled configuration reports it, because a synced row's identity can differ from its
+/// display name.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(
     tag = "kind",
@@ -214,7 +218,7 @@ pub enum RuleTarget {
     Category { id: String },
     CustomCategory { id: String },
     Host { list: HostList, host: String },
-    DesktopApp { name: String },
+    DesktopApp { identity: String },
     MobileApp { package_name: String },
     UsageLimit { id: String },
 }
@@ -436,8 +440,10 @@ pub(super) async fn set_enabled(
             .await
             .map_err(storage("toggle distraction host"))?;
         }
-        RuleTarget::DesktopApp { name } => {
-            if is_protected_desktop_app_name(name) {
+        RuleTarget::DesktopApp { identity } => {
+            // Turning a rule off only reduces enforcement, so a protected name can refuse an
+            // enable but never holds a rule on.
+            if enabled && desktop_rule_names_protected_app(&mut *conn, identity).await? {
                 return Ok(());
             }
             sqlx::query(
@@ -446,7 +452,7 @@ pub(super) async fn set_enabled(
             )
             .bind(flag)
             .bind(DESKTOP_PLATFORM)
-            .bind(app_name_key(name))
+            .bind(identity)
             .execute(conn)
             .await
             .map_err(storage("toggle desktop distraction app"))?;
@@ -473,6 +479,35 @@ pub(super) async fn set_enabled(
         }
     }
     Ok(())
+}
+
+/// Whether a stored desktop rule names a protected app through its identity, display name, or any
+/// stored match name. Assembly drops protected match names, so this reads the raw column.
+async fn desktop_rule_names_protected_app(
+    conn: &mut SqliteConnection,
+    identity: &str,
+) -> Result<bool, RulesError> {
+    if is_protected_desktop_app_name(identity) {
+        return Ok(true);
+    }
+    let row = sqlx::query(
+        "SELECT display_name, match_names_json FROM distractions_app_rules
+         WHERE platform = ? AND identity = ?",
+    )
+    .bind(DESKTOP_PLATFORM)
+    .bind(identity)
+    .fetch_optional(conn)
+    .await
+    .map_err(storage("read desktop distraction app"))?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    let match_names: Vec<String> =
+        serde_json::from_str(&text(&row, "match_names_json")?).unwrap_or_default();
+    Ok(is_protected_desktop_app_name(&text(&row, "display_name")?)
+        || match_names
+            .iter()
+            .any(|name| is_protected_desktop_app_name(name)))
 }
 
 async fn remove(conn: &mut SqliteConnection, target: &RuleTarget) -> Result<(), RulesError> {
@@ -502,11 +537,11 @@ async fn remove(conn: &mut SqliteConnection, target: &RuleTarget) -> Result<(), 
             )
             .await?;
         }
-        RuleTarget::DesktopApp { name } => {
+        RuleTarget::DesktopApp { identity } => {
             execute(
                 conn,
                 "DELETE FROM distractions_app_rules WHERE platform = ? AND identity = ?",
-                &[DESKTOP_PLATFORM, &app_name_key(name)],
+                &[DESKTOP_PLATFORM, identity],
                 "remove desktop distraction app",
             )
             .await?;
@@ -633,6 +668,9 @@ async fn add_mobile_app(
     if existing > 0 {
         return Ok(());
     }
+    if publishable_mobile_rules(conn).await? >= MAX_MOBILE_APP_RULES {
+        return Err(RuleRefusal::TooLarge.into());
+    }
     sqlx::query(
         "INSERT INTO distractions_app_rules
              (id, platform, identity, display_name, enabled, created_at_ms)
@@ -648,6 +686,23 @@ async fn add_mobile_app(
     .await
     .map_err(storage("add mobile distraction app"))?;
     Ok(())
+}
+
+/// How many Android rules Guardian would publish: stored packages it accepts, counted once per
+/// lowercase package whether enabled or not. A synced row with an invalid package holds no slot.
+async fn publishable_mobile_rules(conn: &mut SqliteConnection) -> Result<usize, RulesError> {
+    let identities: Vec<String> =
+        sqlx::query_scalar("SELECT identity FROM distractions_app_rules WHERE platform = ?")
+            .bind(MOBILE_PLATFORM)
+            .fetch_all(conn)
+            .await
+            .map_err(storage("count mobile distraction apps"))?;
+    Ok(identities
+        .iter()
+        .filter_map(|identity| normalize_package(identity))
+        .map(|package| package.to_ascii_lowercase())
+        .collect::<HashSet<_>>()
+        .len())
 }
 
 async fn row_exists(
@@ -933,7 +988,21 @@ fn normalize_limit(draft: &LimitDraft) -> Result<NormalizedLimit, RuleRefusal> {
     })
 }
 
-/// Creates or replaces a usage limit and returns its id.
+/// The distinct lowercase Android packages of these limit entries, as Guardian publishes them.
+fn guardian_packages<'a>(entries: impl IntoIterator<Item = &'a LimitEntryRule>) -> HashSet<String> {
+    entries
+        .into_iter()
+        .filter_map(|entry| entry.mobile_app_package.as_deref())
+        .filter_map(normalize_package)
+        .map(|package| package.to_ascii_lowercase())
+        .collect()
+}
+
+/// Creates or replaces a usage limit and returns its id. A limit with Android packages is
+/// refused when Guardian would not publish all of them: a new package past
+/// [`MAX_MOBILE_APP_RULES`] in the limit, or a limit that gains packages while
+/// [`MAX_GUARDIAN_USAGE_LIMITS`] other limits already have some. A limit already over a cap
+/// stays editable as long as it gains no package.
 pub(super) async fn save_usage_limit(
     conn: &mut SqliteConnection,
     id: Option<&str>,
@@ -941,19 +1010,36 @@ pub(super) async fn save_usage_limit(
     now_ms: i64,
 ) -> Result<String, RulesError> {
     let limit = normalize_limit(draft)?;
-    let (limit_count, entry_count): (i64, i64) = sqlx::query_as(
-        "SELECT
-             (SELECT count(*) FROM distractions_usage_limits WHERE id IS NOT ?1),
-             (SELECT count(*) FROM distractions_usage_limit_entries WHERE limit_id IS NOT ?1)",
-    )
-    .bind(id)
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(storage("count usage limits"))?;
-    let other_limits = usize::try_from(limit_count).unwrap_or(usize::MAX);
-    let other_entries = usize::try_from(entry_count).unwrap_or(usize::MAX);
+    // The caps count the limits load assembles, so rows load skips cannot use them up.
+    let others: Vec<LimitRule> = read_usable_limits(conn)
+        .await?
+        .into_iter()
+        .filter(|other| Some(other.id.as_str()) != id)
+        .collect();
+    let other_limits = others.len();
+    let other_entries: usize = others.iter().map(|other| other.entries.len()).sum();
     if other_limits >= MAX_USAGE_LIMITS
         || other_entries.saturating_add(limit.entries.len()) > MAX_LIMIT_ENTRIES
+    {
+        return Err(RuleRefusal::TooLarge.into());
+    }
+    let current = match id {
+        Some(id) => {
+            let stored = read_entries(conn, Some(id)).await?;
+            guardian_packages(stored.get(id).into_iter().flatten())
+        }
+        None => HashSet::new(),
+    };
+    let packages = guardian_packages(limit.entries.iter().map(|entry| &entry.rule));
+    let other_package_limits = others
+        .iter()
+        .filter(|other| !guardian_packages(&other.entries).is_empty())
+        .count();
+    let adds_package = packages.iter().any(|package| !current.contains(package));
+    if (packages.len() > MAX_MOBILE_APP_RULES && adds_package)
+        || (!packages.is_empty()
+            && current.is_empty()
+            && other_package_limits >= MAX_GUARDIAN_USAGE_LIMITS)
     {
         return Err(RuleRefusal::TooLarge.into());
     }
@@ -1223,6 +1309,7 @@ async fn load_apps(
                 let stored: Vec<String> =
                     serde_json::from_str(&text(row, "match_names_json")?).unwrap_or_default();
                 config.desktop.blocked_apps.push(DesktopAppRule {
+                    identity: text(row, "identity")?,
                     match_names: normalize_match_names(&name, &stored),
                     name,
                     enabled,
@@ -1276,14 +1363,17 @@ async fn read_entries(
     Ok(entries)
 }
 
-/// Whether an assembled entry is one usage accounting can read: a valid distinct id and a source.
+/// Whether an assembled entry is one usage accounting can read: a valid distinct id and usable
+/// sources.
 fn is_usable_entry(entry: &LimitEntryRule, ids: &mut HashSet<String>) -> bool {
     is_rule_id(&entry.id)
-        && (entry.website_host.is_some()
-            || entry.mobile_app_name.is_some()
-            || entry.mobile_app_package.is_some()
-            || entry.desktop_app_name.is_some())
-        && entry.desktop_app_match_names.len() <= MAX_MATCH_NAMES
+        && is_usable_limit_source(LimitSources {
+            website_host: entry.website_host.as_deref(),
+            mobile_app_name: entry.mobile_app_name.as_deref(),
+            mobile_app_package: entry.mobile_app_package.as_deref(),
+            desktop_app_name: entry.desktop_app_name.as_deref(),
+            desktop_app_match_names: &entry.desktop_app_match_names,
+        })
         && ids.insert(entry.id.clone())
 }
 
@@ -1291,6 +1381,13 @@ async fn load_limits(
     conn: &mut SqliteConnection,
     config: &mut DistractionsConfig,
 ) -> Result<(), RulesError> {
+    config.limits.items = read_usable_limits(conn).await?;
+    Ok(())
+}
+
+/// The usage limits load assembles, in order: rows another device left incomplete or unreadable,
+/// and limits past the caps, are skipped.
+async fn read_usable_limits(conn: &mut SqliteConnection) -> Result<Vec<LimitRule>, RulesError> {
     let mut entries = read_entries(conn, None).await?;
     let rows = sqlx::query(
         "SELECT id, name, enabled, minutes_per_day, minutes_per_week
@@ -1300,8 +1397,10 @@ async fn load_limits(
     .await
     .map_err(storage("read usage limits"))?;
     let mut entry_total = 0usize;
+    let mut limits = Vec::new();
     for row in &rows {
         let id = text(row, "id")?;
+        let name = text(row, "name")?;
         let minutes_per_day = optional_integer(row, "minutes_per_day")?;
         let minutes_per_week = optional_integer(row, "minutes_per_week")?;
         let mut ids = HashSet::new();
@@ -1312,23 +1411,24 @@ async fn load_limits(
             .filter(|entry| is_usable_entry(entry, &mut ids))
             .collect();
         let complete = is_rule_id(&id)
+            && is_usable_limit_name(&name)
             && !limit_entries.is_empty()
             && (minutes_per_day.is_some() || minutes_per_week.is_some());
         if !complete
-            || config.limits.items.len() >= MAX_USAGE_LIMITS
+            || limits.len() >= MAX_USAGE_LIMITS
             || entry_total + limit_entries.len() > MAX_LIMIT_ENTRIES
         {
             continue;
         }
         entry_total += limit_entries.len();
-        config.limits.items.push(LimitRule {
+        limits.push(LimitRule {
             id,
-            name: text(row, "name")?,
+            name,
             enabled: flag(row, "enabled")?,
             minutes_per_day,
             minutes_per_week,
             entries: limit_entries,
         });
     }
-    Ok(())
+    Ok(limits)
 }

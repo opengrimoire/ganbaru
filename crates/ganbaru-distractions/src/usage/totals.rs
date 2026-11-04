@@ -2,10 +2,11 @@
 //!
 //! Usage samples stay on the device that recorded them. The device sums its own samples per
 //! source and local day and flushes each sum into `distractions_usage_totals` under a key
-//! derived from the device id, source, and day, so other devices count its usage without seeing
-//! its samples. A bucket flushes at most once per [`FLUSH_INTERVAL`] unless the caller forces a
-//! flush on exit, backgrounding, or a vault snapshot. Totals only grow and are never deleted;
-//! the retention window filters reads.
+//! naming the device's owner tag and derived from the device id, source, and day, so other
+//! devices count its usage without seeing its samples and no other device can write it. A
+//! bucket flushes at most once per [`FLUSH_INTERVAL`] unless the caller forces a flush on exit,
+//! backgrounding, or a vault snapshot. Totals only grow and are never deleted; the retention
+//! window filters reads.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -13,9 +14,11 @@ use std::time::{Duration, Instant};
 use ganbaru_sync::domains::distractions::{
     MAX_USAGE_DAY_SECONDS, MAX_USAGE_LABEL_CHARS, MAX_USAGE_SOURCE_KEY_CHARS,
 };
-use ganbaru_sync::manifest::vault::distractions::USAGE_TOTAL_KEY_PREFIX;
+use ganbaru_sync::manifest::vault::distractions::{
+    USAGE_TOTAL_KEY_PREFIX, USAGE_TOTAL_OWNER_PREFIX,
+};
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
-use ganbaru_sync_contracts::derived_key;
+use ganbaru_sync_contracts::{derived_key, device_owner_tag};
 use sqlx::{Row, SqliteConnection, SqlitePool};
 
 use super::UsageDateWindow;
@@ -195,9 +198,10 @@ pub async fn stale_totals(
     Ok(stale)
 }
 
-/// The replicated key of `device_id`'s total for `bucket`.
+/// The replicated key of `device_id`'s total for `bucket`: the owner tag of the device, which
+/// lets every replica refuse a total from another device, followed by the derived digest.
 pub fn usage_total_key(device_id: &str, bucket: &UsageBucket) -> Result<String, String> {
-    derived_key(
+    let derived = derived_key(
         USAGE_TOTAL_KEY_PREFIX,
         &[
             device_id,
@@ -206,8 +210,15 @@ pub fn usage_total_key(device_id: &str, bucket: &UsageBucket) -> Result<String, 
             &bucket.local_date,
         ],
     )
-    .map(|key| key.to_string())
-    .map_err(|error| format!("derive usage total key: {error}"))
+    .map_err(|error| format!("derive usage total key: {error}"))?;
+    let digest = derived
+        .as_str()
+        .strip_prefix(USAGE_TOTAL_OWNER_PREFIX)
+        .ok_or_else(|| "derive usage total key: unexpected prefix".to_owned())?;
+    Ok(format!(
+        "{USAGE_TOTAL_OWNER_PREFIX}{tag}:{digest}",
+        tag = device_owner_tag(device_id)
+    ))
 }
 
 /// Writes `totals` as `device_id`'s flushes. A total only grows and its label follows the

@@ -10,14 +10,6 @@ pub(super) const EVENT_MUSIC_SQL: &str = "SELECT owner_id, owner_kind, phase, be
        AND owner_id IN (SELECT value FROM json_each(?1))
      ORDER BY owner_id, owner_kind, phase";
 
-pub(super) const EVENT_MUSIC_TEXT_COLUMNS: &[&str] = &[
-    "owner_id",
-    "owner_kind",
-    "phase",
-    "behavior",
-    "soundscape_behavior",
-];
-
 const OVERRIDE: &str = "event-override";
 const SNAPSHOT: &str = "event-snapshot";
 const FOCUS_PHASE: &str = "focus";

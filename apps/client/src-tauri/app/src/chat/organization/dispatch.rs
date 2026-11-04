@@ -1,5 +1,6 @@
 //! Assignment dispatch and live provider delivery.
 
+use super::assignments::read_assignment_subject;
 use super::common::{
     native_assignment_safety_mode, new_id, parse_runtime_approval_policy, serialization_error,
     sha256_hex, this_device_id,
@@ -18,55 +19,96 @@ pub(super) async fn dispatch_assignment_job(
     let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let now = now_timestamp()?;
-    let Some(claim_token) = claim_dispatch_job(&pool, &assignment_id, &device_id, &now).await?
-    else {
+    let Some(claim) = claim_dispatch_job(&pool, &assignment_id, &device_id, &now).await? else {
         return Ok(());
     };
-    let result = dispatch_claimed_assignment(
-        app.clone(),
-        db_url.clone(),
-        &pool,
-        &assignment_id,
-        &claim_token,
-    )
-    .await;
+    let result =
+        dispatch_claimed_assignment(app.clone(), db_url.clone(), &pool, &assignment_id, &claim)
+            .await;
     if let Err(error) = result {
-        fail_assignment_dispatch(&pool, &assignment_id, &claim_token, &error).await?;
-        return Err(error);
+        return match settle_dispatch_error(&pool, &assignment_id, &claim.token, &error).await? {
+            DispatchSettlement::Failed => Err(error),
+            DispatchSettlement::Waiting => Ok(()),
+        };
     }
     mark_initial_assignment_input_delivered(&pool, &assignment_id).await?;
     deliver_pending_assignment_inputs(app, db_url, &pool, &assignment_id).await
 }
 
+/// A claimed dispatch job and the instructions its consented subject verified.
+#[derive(Debug)]
+pub(super) struct ClaimedDispatch {
+    pub(super) token: String,
+    pub(super) instructions: String,
+}
+
 /// Claims the queued dispatch job of `assignment_id` when the device `device_id` executes the
-/// assignment, returning the claim token. An assignment without an executing device runs on
-/// the device that holds its device-local dispatch job.
+/// assignment. An assignment without an executing device runs on the device that holds its
+/// device-local dispatch job.
+///
+/// The job starts only what it consented to: when the current subject is not its consented
+/// digest, or cannot be read (as for an archived teammate), the job is dropped so the
+/// assignment stays queued and waits for Start here again.
 pub(super) async fn claim_dispatch_job(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
     device_id: &str,
     now: &UtcTimestamp,
-) -> ChatResult<Option<String>> {
+) -> ChatResult<Option<ClaimedDispatch>> {
+    let mut transaction = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(persistence_error)?;
+    let Some(consented_digest) = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT job.consented_digest
+         FROM chat_assignment_dispatch_jobs job
+         JOIN chat_work_assignments assignment ON assignment.id = job.assignment_id
+         WHERE job.assignment_id = ?1 AND job.state = 'queued' AND job.available_at <= ?2
+           AND coalesce(assignment.executing_device_id, ?3) = ?3",
+    )
+    .bind(assignment_id.as_str())
+    .bind(now.as_str())
+    .bind(device_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(persistence_error)?
+    else {
+        return Ok(None);
+    };
+    let subject = match read_assignment_subject(&mut transaction, assignment_id).await {
+        Ok(subject) => Some(subject),
+        Err(error) if error.code == ChatErrorCode::Persistence => return Err(error),
+        Err(_) => None,
+    };
+    let Some(subject) =
+        subject.filter(|subject| consented_digest.as_deref() == Some(subject.digest().as_str()))
+    else {
+        sqlx::query("DELETE FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?")
+            .bind(assignment_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(persistence_error)?;
+        transaction.commit().await.map_err(persistence_error)?;
+        return Ok(None);
+    };
     let claim_token = new_id("dispatch-claim")?;
-    let claimed = sqlx::query(
+    sqlx::query(
         "UPDATE chat_assignment_dispatch_jobs
          SET state = 'claimed', claimed_at = ?1, claim_token = ?2,
              attempt_count = attempt_count + 1, updated_at = ?1
-         WHERE assignment_id = ?3 AND state = 'queued' AND available_at <= ?1
-           AND EXISTS (
-             SELECT 1 FROM chat_work_assignments assignment
-             WHERE assignment.id = ?3
-               AND coalesce(assignment.executing_device_id, ?4) = ?4
-           )",
+         WHERE assignment_id = ?3",
     )
     .bind(now.as_str())
     .bind(&claim_token)
     .bind(assignment_id.as_str())
-    .bind(device_id)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    Ok((claimed.rows_affected() == 1).then_some(claim_token))
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(Some(ClaimedDispatch {
+        token: claim_token,
+        instructions: subject.instructions,
+    }))
 }
 
 async fn mark_initial_assignment_input_delivered(
@@ -121,7 +163,7 @@ async fn dispatch_claimed_assignment(
     db_url: String,
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
-    claim_token: &str,
+    claim: &ClaimedDispatch,
 ) -> ChatResult<()> {
     let row = sqlx::query(
         "SELECT
@@ -140,7 +182,6 @@ async fn dispatch_claimed_assignment(
             authorization.scope_digest,
             authorization.decision_state,
             authorization.revoked_at AS authorization_revoked_at,
-            teammate.instructions,
             channel.project_id,
             project.status AS project_status,
             environment.scratch_generation_id,
@@ -200,7 +241,7 @@ async fn dispatch_claimed_assignment(
     if row
         .try_get::<String, _>("claim_token")
         .map_err(persistence_error)?
-        != claim_token
+        != claim.token
     {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,
@@ -265,10 +306,10 @@ async fn dispatch_claimed_assignment(
         .try_get("teammate_policy_revision_id")
         .map_err(persistence_error)?;
     let policy = read_policy(pool, &teammate_id, &policy_revision_id).await?;
-    let resolved_runtime_approval = parse_runtime_approval_policy(
-        &row.try_get::<String, _>("resolved_runtime_approval_policy")
-            .map_err(persistence_error)?,
-    )?;
+    let frozen_runtime_approval: String = row
+        .try_get("resolved_runtime_approval_policy")
+        .map_err(persistence_error)?;
+    let resolved_runtime_approval = parse_runtime_approval_policy(&frozen_runtime_approval)?;
     let working_folder_id = row
         .try_get::<Option<String>, _>("working_folder_id")
         .map_err(persistence_error)?
@@ -324,6 +365,7 @@ async fn dispatch_claimed_assignment(
             &destination_conversation_id,
             teammate_id.as_str(),
             &requester_participant_id,
+            Some(&frozen_runtime_approval),
         )
         .await?
         {
@@ -457,7 +499,7 @@ async fn dispatch_claimed_assignment(
     .fetch_one(pool)
     .await
     .map_err(persistence_error)?;
-    let developer_instructions: String = row.try_get("instructions").map_err(persistence_error)?;
+    let developer_instructions = claim.instructions.clone();
     let project_id: String = row.try_get("project_id").map_err(persistence_error)?;
     let request = super::super::send_commands::SendChatTurnCommand {
         command: ChatCommandContext {
@@ -581,6 +623,51 @@ async fn require_live_folder_target(
             false,
         ))
     }
+}
+
+/// How a claimed dispatch that could not start was settled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DispatchSettlement {
+    /// The assignment and its job were failed with the dispatch error.
+    Failed,
+    /// The job was dropped and the assignment stays queued.
+    Waiting,
+}
+
+/// Settles the claim `claim_token` of `assignment_id` after its dispatch returned `error`.
+///
+/// When the teammate was archived, for example by a linked device after this device claimed
+/// the work, the still queued assignment is not failed: its job is dropped so the work waits,
+/// and after a restore it is started again like any other unaccepted work. Any other error
+/// fails the assignment.
+pub(super) async fn settle_dispatch_error(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    claim_token: &str,
+    error: &ChatError,
+) -> ChatResult<DispatchSettlement> {
+    let released = sqlx::query(
+        "DELETE FROM chat_assignment_dispatch_jobs
+         WHERE assignment_id = ?1 AND claim_token = ?2
+           AND EXISTS (
+             SELECT 1 FROM chat_work_assignments assignment
+             JOIN chat_participants participant ON participant.id = assignment.teammate_id
+             WHERE assignment.id = ?1 AND assignment.state = 'queued'
+               AND participant.archived_at IS NOT NULL
+           )",
+    )
+    .bind(assignment_id.as_str())
+    .bind(claim_token)
+    .execute(pool)
+    .await
+    .map_err(persistence_error)?
+    .rows_affected()
+        > 0;
+    if released {
+        return Ok(DispatchSettlement::Waiting);
+    }
+    fail_assignment_dispatch(pool, assignment_id, claim_token, error).await?;
+    Ok(DispatchSettlement::Failed)
 }
 
 async fn fail_assignment_dispatch(

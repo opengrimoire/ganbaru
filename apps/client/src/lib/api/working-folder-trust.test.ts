@@ -1,10 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
+import { configuration as enConfiguration } from "$lib/i18n/messages/en/projects/configuration";
+import { configuration as esConfiguration } from "$lib/i18n/messages/es/projects/configuration";
 import { withProviderStartTrust, withWorkingFolderTrust } from "./working-folder-trust";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("$lib/api/db", () => ({ ensureDbUrl: async () => "sqlite:vault" }));
 
 const required = { code: "trust_decision_required", message: "Decide", retryable: true };
+
+describe("trust prompt wording", () => {
+  it("promises no run when declining, because some providers refuse instead", () => {
+    expect(enConfiguration.settings.workingFolders.trustDecline).not.toMatch(/\brun\b/i);
+    expect(esConfiguration.settings.workingFolders.trustDecline).not.toMatch(/ejecut/i);
+  });
+});
 
 describe("user Git actions that need a trust decision", () => {
   it("runs once without asking when no decision is needed", async () => {

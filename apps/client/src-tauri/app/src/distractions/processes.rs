@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
 pub(super) fn read_linux_process_names(path: &Path) -> Vec<String> {
@@ -31,6 +33,19 @@ fn linux_process_start_time(path: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Parent process ID from `/proc/<pid>/stat`, read past the closing parenthesis because the name
+/// before it can hold spaces and parentheses.
+#[cfg(target_os = "linux")]
+pub(super) fn linux_process_parent_id(path: &Path) -> Option<u32> {
+    let stat = std::fs::read_to_string(path.join("stat")).ok()?;
+    let command_end = stat.rfind(')')?;
+    stat.get(command_end + 1..)?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
 /// Real UID from the `Uid:` line of `/proc/<pid>/status`. The status file stays readable and
 /// keeps the true owner even when a non-dumpable process makes its `/proc` directory root-owned.
 #[cfg(target_os = "linux")]
@@ -45,12 +60,12 @@ pub(super) fn linux_status_real_uid(status: &str) -> Option<u32> {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_process_real_uid(path: &Path) -> Option<u32> {
+pub(super) fn linux_process_real_uid(path: &Path) -> Option<u32> {
     linux_status_real_uid(&std::fs::read_to_string(path.join("status")).ok()?)
 }
 
 #[cfg(target_os = "linux")]
-fn current_real_uid() -> Option<u32> {
+pub(super) fn current_real_uid() -> Option<u32> {
     static CURRENT_REAL_UID: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
     *CURRENT_REAL_UID.get_or_init(|| linux_process_real_uid(Path::new("/proc/self")))
 }
@@ -117,12 +132,30 @@ pub(super) fn list_blocked_desktop_app_matches(
     apps: Vec<DistractionsDesktopAppRuleInput>,
     is_cancelled: impl Fn() -> bool,
 ) -> Vec<DistractionsRunningDesktopAppMatch> {
+    scan_blocked_desktop_app_matches(
+        Path::new("/proc"),
+        std::process::id(),
+        apps,
+        |is_cancelled| current_session_anchors(is_cancelled),
+        is_cancelled,
+    )
+}
+
+/// Lists the same-user processes below `proc_root` that match `apps`, without
+/// `current_process_id` and without the processes the anchors from `session_anchors` protect.
+#[cfg(target_os = "linux")]
+pub(super) fn scan_blocked_desktop_app_matches(
+    proc_root: &Path,
+    current_process_id: u32,
+    apps: Vec<DistractionsDesktopAppRuleInput>,
+    session_anchors: impl FnOnce(&dyn Fn() -> bool) -> Option<Arc<SessionAnchors>>,
+    is_cancelled: impl Fn() -> bool,
+) -> Vec<DistractionsRunningDesktopAppMatch> {
     let matchers = desktop_rule_matchers(apps);
     if matchers.is_empty() {
         return Vec::new();
     }
-    let current_process_id = std::process::id();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
+    let Ok(entries) = std::fs::read_dir(proc_root) else {
         return Vec::new();
     };
     let mut matches = Vec::new();
@@ -162,6 +195,14 @@ pub(super) fn list_blocked_desktop_app_matches(
             break;
         }
     }
+    if matches.is_empty() {
+        return matches;
+    }
+    let anchors = session_anchors(&is_cancelled);
+    if is_cancelled() {
+        return Vec::new();
+    }
+    drop_anchored_matches(&mut matches, anchors.as_deref());
     matches.sort_by(|a, b| {
         a.app_name
             .to_lowercase()

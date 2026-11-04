@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use ganbaru_sync_contracts::bounds::{MAX_WRITERS_PER_DEVICE, MAX_WRITERS_PER_SPACE};
 use ganbaru_sync_contracts::op::FORMAT_VERSION;
 use ganbaru_sync_contracts::{
-    Content, Envelope, Hlc, Operation, OperationError, OperationKind, PayloadError, Seq,
-    SignedCertificate, VersionVector, WriterId,
+    Change, Content, Envelope, Hlc, Operation, OperationError, OperationKind, PayloadError, Seq,
+    SignedCertificate, SpaceId, VersionVector, WriterId,
 };
 use sqlx::{Connection, SqliteConnection};
 
@@ -95,10 +95,11 @@ pub enum StoreRefusal {
     /// [`MAX_EXCLUDED_ENTRIES_PER_WRITER`](crate::exclusion::MAX_EXCLUDED_ENTRIES_PER_WRITER)
     /// further, contiguous from it), or the writer is one the removal does not name outside the
     /// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`](crate::exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
-    /// lowest writer ids of its device: its genesis while that many lower ones are stored, and
-    /// its later operations other than contiguous entries once lower ones displaced it.
+    /// lowest writer ids of its device and the operation is neither its genesis nor an
+    /// authorization entry contiguous from it.
     Revoked,
-    /// The genesis would exceed the writers its device or the space may have.
+    /// The genesis would exceed the writers its device or the space may have, and, for a removed
+    /// device, no higher unnamed writer of it can make room.
     WriterLimit,
     /// Earlier operations of the writer are missing.
     Gap {
@@ -178,8 +179,13 @@ fn storable_clock(clock: Hlc) -> bool {
     i64::try_from(clock.as_u64()).is_ok()
 }
 
-/// Classifies an authenticated envelope against this version's format and manifest.
-pub(crate) fn classify(engine: &Engine, envelope: &Envelope<'_>) -> Classified {
+/// Classifies an authenticated envelope of a writer on `writer_device` against this version's
+/// format and manifest.
+pub(crate) fn classify(
+    engine: &Engine,
+    envelope: &Envelope<'_>,
+    writer_device: &str,
+) -> Classified {
     let operation = match envelope.operation() {
         Ok(operation) => operation,
         Err(PayloadError::NewerFormat | PayloadError::UnknownKind) => {
@@ -196,10 +202,21 @@ pub(crate) fn classify(engine: &Engine, envelope: &Envelope<'_>) -> Classified {
         }
         Err(PayloadError::Body(_)) => return Classified::Malformed,
     };
-    classify_operation(engine, operation)
+    classify_operation(engine, operation, writer_device)
 }
 
-fn classify_operation(engine: &Engine, operation: Operation) -> Classified {
+/// Whether every change of an operation passes the manifest and comes from the row's owner.
+fn changes_admitted(engine: &Engine, changes: &[Change], writer_device: &str) -> bool {
+    changes.iter().all(|change| {
+        validate::change(engine, change).is_ok()
+            && engine
+                .manifest()
+                .table(change.table)
+                .is_some_and(|table| validate::writer_change(table, change, writer_device).is_ok())
+    })
+}
+
+fn classify_operation(engine: &Engine, operation: Operation, writer_device: &str) -> Classified {
     let clock = operation.header.clock;
     if !storable_clock(clock) {
         return Classified::Held {
@@ -214,10 +231,7 @@ fn classify_operation(engine: &Engine, operation: Operation) -> Classified {
                 Some(HoldReason::Invalid)
             } else if version > u32::from(engine.manifest().version) {
                 Some(HoldReason::NewerManifest)
-            } else if changes
-                .iter()
-                .any(|change| validate::change(engine, change).is_err())
-            {
+            } else if !changes_admitted(engine, changes, writer_device) {
                 Some(HoldReason::Invalid)
             } else {
                 None
@@ -345,8 +359,8 @@ async fn store_genesis(
     // A writer of a removed device that this replica never stored takes the cutoff the removal
     // lists for it, 0 when the removal does not name it. Its excluded operations are stored up
     // to the bound, so the late changes other replicas applied before the removal are derived
-    // here too, but only the few unnamed writers per removed device with the lowest ids keep
-    // operations past their genesis.
+    // here too. Every unnamed writer keeps its genesis, but only the few per removed device with
+    // the lowest ids keep operations past it.
     let enrollment =
         authorization::enrollment(conn, ctx.space, &cert.device_id, &cert.device_key).await?;
     let selected = !matches!(enrollment, Enrollment::Absent);
@@ -376,19 +390,22 @@ async fn store_genesis(
         }
         Enrollment::Absent => return Ok(StoreOutcome::Refused(StoreRefusal::Unenrolled)),
     };
-    if matches!(removal, Some((_, 0)))
-        && highest_kept_unnamed(conn, ctx, &cert.device_id)
-            .await?
-            .is_some_and(|highest| envelope.writer.as_bytes().as_slice() > highest.as_slice())
-    {
-        return Ok(StoreOutcome::Refused(StoreRefusal::Revoked));
-    }
     let clock = operation.header.clock;
     if !storable_clock(clock) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
     }
-    if !within_writer_limits(conn, ctx, &cert.device_id, selected).await? {
-        return Ok(StoreOutcome::Refused(StoreRefusal::WriterLimit));
+    if !within_writer_limits(conn, ctx.space, &cert.device_id, selected).await? {
+        // A removed device's writers all count toward the space's named writers, so displacing
+        // one of them frees a slot under both bounds.
+        let displaced = match removal {
+            Some((_, cutoff)) => {
+                displace_unnamed(conn, ctx, &cert.device_id, envelope.writer, cutoff).await?
+            }
+            None => false,
+        };
+        if !displaced {
+            return Ok(StoreOutcome::Refused(StoreRefusal::WriterLimit));
+        }
     }
     sqlx::query(
         "INSERT INTO sync_writers
@@ -501,7 +518,7 @@ async fn store_next(
                         ctx.space,
                         writer.id,
                         envelope.seq,
-                        [(&stored, log::digest(&hash)?), (bytes, envelope.hash())],
+                        [&previous, envelope],
                         now_ms,
                     )
                     .await?;
@@ -553,7 +570,7 @@ async fn store_next(
             seq: writer.stored,
         }));
     }
-    let classified = classify(engine, envelope);
+    let classified = classify(engine, envelope, &writer.device_id);
     if matches!(classified, Classified::Malformed) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
     }
@@ -577,17 +594,19 @@ async fn store_next(
         {
             let removal = exclusion::removal_revision(conn, ctx.space, &writer.device_id).await?;
             if let Ok(operation) = envelope.operation() {
-                exclusion::fold(
-                    engine,
-                    conn,
-                    removal,
-                    writer.id,
-                    envelope.seq,
-                    clock,
-                    &operation.content,
-                )
-                .await?;
-                exclusion::mark_stale(engine, conn, &operation.content).await?;
+                if held != Some(HoldReason::Invalid) {
+                    exclusion::fold(
+                        engine,
+                        conn,
+                        removal,
+                        writer.id,
+                        envelope.seq,
+                        clock,
+                        &operation.content,
+                    )
+                    .await?;
+                    exclusion::mark_stale(engine, conn, &operation.content).await?;
+                }
                 // An earlier anchor may have stored the operation, which released what it
                 // displaced, so the anchor seals the groups it writes again.
                 if fork::reseals_excluded(conn, ctx.space).await? {
@@ -769,23 +788,21 @@ impl Engine {
         .await?)
     }
 
-    /// Whether `bytes`, a key epoch record some untrusted source such as a relay serves for
-    /// `epoch`, authenticates against this replica's stored verified envelope set and charter
-    /// alone, without reading the selected chain. A record a device without the anchor's device
-    /// and writer keys made never passes, so a relay holding one for an epoch the selected chain
-    /// does not name yet means this replica lags behind a real rotation.
-    pub async fn authenticates_key_epoch(
+    /// How `bytes`, a key epoch record some untrusted source such as a relay serves for `epoch`,
+    /// stands against the authorization records this replica stores, judged by the rules the
+    /// walk applies rather than the selected chain alone. A record a device signed without
+    /// holding the anchor's device key, or one that leans on an admin role no check-valid chain
+    /// grants, is forged; a record whose chain this replica has not stored is undecided, since
+    /// the replica may lag behind a real rotation. Without a charter every record is forged.
+    pub async fn key_epoch_standing(
         &self,
         conn: &mut SqliteConnection,
         ctx: &SpaceContext,
         bytes: &[u8],
         epoch: u32,
-    ) -> SyncResult<bool> {
+    ) -> SyncResult<authorization::KeyEpochStanding> {
         log::ensure_space(conn, ctx.space).await?;
-        let Some(charter) = authorization::load_charter(conn, ctx.space).await? else {
-            return Ok(false);
-        };
-        records::authentic_key_epoch(conn, ctx.space, &charter, bytes, epoch).await
+        authorization::key_epoch_standing(conn, ctx.space, bytes, epoch).await
     }
 
     async fn store_page(
@@ -869,27 +886,6 @@ async fn carried_certificate_matches(
     })
 }
 
-/// The highest writer id among the stored writers of the removed device `device_id` its removal
-/// does not name that keep excluded operations, once there are
-/// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`](exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
-/// of them, `None` while there are fewer.
-async fn highest_kept_unnamed(
-    conn: &mut SqliteConnection,
-    ctx: &SpaceContext,
-    device_id: &str,
-) -> SyncResult<Option<Vec<u8>>> {
-    Ok(sqlx::query_scalar(
-        "SELECT writer_id FROM sync_writers
-         WHERE space_id = ? AND device_id = ? AND removal_cutoff_seq = 0
-         ORDER BY writer_id LIMIT 1 OFFSET ?",
-    )
-    .bind(ctx.space.as_bytes().as_slice())
-    .bind(device_id)
-    .bind(exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE - 1)
-    .fetch_optional(&mut *conn)
-    .await?)
-}
-
 /// Most stored writers of devices the selected chain does not enroll, which another stored chain
 /// enrolls. They never count toward the writers of devices the selected chain names, which may
 /// fill [`MAX_WRITERS_PER_SPACE`] less this many, so the space never stores more than it.
@@ -899,9 +895,9 @@ pub(crate) const MAX_UNSELECTED_WRITERS_PER_SPACE: usize = 2 * MAX_WRITERS_PER_D
 /// [`MAX_WRITERS_PER_DEVICE`], and within [`MAX_UNSELECTED_WRITERS_PER_SPACE`] when `selected` is
 /// false, or the rest of [`MAX_WRITERS_PER_SPACE`] when it is true: whether the selected chain
 /// names the device.
-async fn within_writer_limits(
+pub(crate) async fn within_writer_limits(
     conn: &mut SqliteConnection,
-    ctx: &SpaceContext,
+    space: SpaceId,
     device_id: &str,
     selected: bool,
 ) -> SyncResult<bool> {
@@ -913,7 +909,7 @@ async fn within_writer_limits(
          FROM sync_writers w WHERE w.space_id = ?2",
     )
     .bind(device_id)
-    .bind(ctx.space.as_bytes().as_slice())
+    .bind(space.as_bytes().as_slice())
     .fetch_one(&mut *conn)
     .await?;
     let below = |count: i64, limit: usize| usize::try_from(count).is_ok_and(|count| count < limit);
@@ -926,6 +922,70 @@ async fn within_writer_limits(
         below(total - named, MAX_UNSELECTED_WRITERS_PER_SPACE)
     };
     Ok(below(device, MAX_WRITERS_PER_DEVICE) && space)
+}
+
+/// Forgets the highest unnamed writer, with cutoff 0, of the removed device `device_id` so that
+/// the genesis of `writer`, whose removal cutoff is `cutoff`, fits the writer limits. Every
+/// replica then keeps the writers the removal names and the device's unnamed writers with the
+/// lowest ids, whatever order their geneses arrived in. The anchor bounds the writers a removal
+/// names, so they alone never exceed the device limit. The changes the forgotten writer left are
+/// excluded everywhere, and the settle its successor's certificate triggers drops their late
+/// changes.
+///
+/// An unnamed `writer` displaces only a higher writer. A writer whose operations are still
+/// applied, before the removal settles them, or one of the local device, is never forgotten, and
+/// the genesis is refused instead; the next exchange offers it again. Returns whether a writer
+/// was forgotten.
+async fn displace_unnamed(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    device_id: &str,
+    writer: WriterId,
+    cutoff: Seq,
+) -> SyncResult<bool> {
+    let highest: Option<(Vec<u8>, i64, Option<String>)> = sqlx::query_as(
+        "SELECT w.writer_id, w.applied_seq, s.local_device_id
+         FROM sync_writers w JOIN sync_spaces s ON s.space_id = w.space_id
+         WHERE w.space_id = ? AND w.device_id = ? AND w.removal_cutoff_seq = 0
+         ORDER BY w.writer_id DESC LIMIT 1",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(device_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((highest, applied, local)) = highest else {
+        return Ok(false);
+    };
+    let highest = log::writer_id(&highest)?;
+    if applied != 0 || local.as_deref() == Some(device_id) || (cutoff == 0 && writer >= highest) {
+        return Ok(false);
+    }
+    // A re-offered genesis finds its certificate already walked; walking it again settles the
+    // exclusions without the forgotten writer.
+    sqlx::query(
+        "UPDATE sync_auth_envelopes SET walked = 0
+         WHERE space_id = ? AND role = 'certificate' AND writer_id = ?",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .execute(&mut *conn)
+    .await?;
+    for table in [
+        "sync_ops",
+        "sync_stable",
+        "sync_anchor_marks",
+        "sync_released_marks",
+        "sync_writers",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM {table} WHERE space_id = ? AND writer_id = ?"
+        )))
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(highest.as_bytes().as_slice())
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(true)
 }
 
 /// Whether the selected chain names the device of `writer`, enrolled or removed, with the device

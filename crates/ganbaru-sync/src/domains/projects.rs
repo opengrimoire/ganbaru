@@ -8,7 +8,10 @@
 
 use std::fmt;
 
-use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
+use ganbaru_sync_contracts::{Field, GroupId, GroupValue, RowKey, TableId, Value};
+use ganbaru_working_folders::{
+    UtcTimestamp, managed_folder_project, managed_project_relative_path,
+};
 use sqlx::SqliteConnection;
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
@@ -24,6 +27,9 @@ use crate::manifest::vault::projects::{
     folder_group, group_group, priority_group, project_group, section_group, status_group,
     tag_link_group, task_group, value_group, view_preference_group,
 };
+
+/// `kind` of a working folder the project owns.
+pub const MANAGED_FOLDER_KIND: &str = "managed";
 
 /// Characters in an enumerated column.
 pub const MAX_ENUM_CHARS: usize = 32;
@@ -175,7 +181,7 @@ mod allowed {
     pub const IDLE_THRESHOLDS: &[i64] = &[1, 2, 3, 4, 5, 10, 15];
     pub const NOTES_OPEN_MODES: &[&str] = &["center", "side", "full"];
     pub const NOTES_RETENTION_DAYS: &[i64] = &[0, 7, 30, 90, 180, 365];
-    pub const FOLDER_KINDS: &[&str] = &["managed", "external"];
+    pub const FOLDER_KINDS: &[&str] = &[super::MANAGED_FOLDER_KIND, "external"];
     pub const REPOSITORY_KINDS: &[&str] = &["git", "none"];
     pub const STATUS_CATEGORIES: &[&str] = &["not_started", "active", "blocked", "done"];
     pub const TASK_TYPES: &[&str] = &["task", "milestone", "bug", "habit"];
@@ -421,27 +427,36 @@ fn validate_project(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     }
 }
 
-/// A managed relative path stays inside the project folder: relative, without a parent segment
-/// or a backslash.
-fn is_contained_relative_path(path: &str) -> bool {
-    !path.is_empty()
-        && !path.starts_with('/')
-        && !path.contains('\\')
-        && path.split('/').all(|segment| segment != "..")
+/// A managed folder stores the one path its project owns. Every device binds a managed folder only
+/// at that path, so admitting another would leave the row unusable on all of them.
+fn is_project_managed_path(project: &str, path: &str) -> bool {
+    managed_project_relative_path(project).is_ok_and(|expected| expected == path)
+}
+
+/// A working folder timestamp every reader of the row can parse. Reads parse these columns as
+/// [`UtcTimestamp`], so admitting other text would make the stored row unreadable on every device.
+fn folder_timestamp(field: &Field, what: &'static str) -> Result<(), AdapterError> {
+    let Field::Text(text) = field else {
+        return Err(AdapterError(what));
+    };
+    UtcTimestamp::new(text.as_str())
+        .map(|_| ())
+        .map_err(|_| AdapterError(what))
 }
 
 fn validate_folder(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     if group == folder_group::CREATED {
-        let [project, kind, path, _, _] = fields(value, "project folder")?;
+        let [project, kind, path, _, created_at] = fields(value, "project folder")?;
         required(project, "project folder project")?;
         one_of(kind, allowed::FOLDER_KINDS, "project folder kind")?;
-        match (kind, path) {
-            (Field::Text(kind), Field::Text(path))
-                if kind == "managed" && is_contained_relative_path(path) =>
+        folder_timestamp(created_at, "project folder creation time")?;
+        match (project, kind, path) {
+            (Field::Text(project), Field::Text(kind), Field::Text(path))
+                if kind == MANAGED_FOLDER_KIND && is_project_managed_path(project, path) =>
             {
                 Ok(())
             }
-            (Field::Text(kind), Field::Null) if kind == "external" => Ok(()),
+            (_, Field::Text(kind), Field::Null) if kind == "external" => Ok(()),
             _ => Err(AdapterError("project folder path")),
         }
     } else if group == folder_group::REPOSITORY {
@@ -461,12 +476,61 @@ fn validate_folder(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     } else if group == folder_group::ARCHIVED {
         match fields(value, "project folder archive")? {
             [Field::Null] => Ok(()),
-            [Field::Text(archived)] if archived.len() >= 20 => Ok(()),
-            _ => Err(AdapterError("project folder archive")),
+            [archived] => folder_timestamp(archived, "project folder archive"),
         }
+    } else if group == folder_group::UPDATED {
+        let [updated_at] = fields(value, "project folder update time")?;
+        folder_timestamp(updated_at, "project folder update time")
     } else {
         Ok(())
     }
+}
+
+/// A working folder key names its kind and project: a managed folder lives only under its
+/// project's [`ganbaru_working_folders::managed_folder_id`], and no external folder takes a key of that shape. Every device
+/// derives a managed folder's key from its project, so a forged create under that key with an
+/// earlier clock would otherwise win the immutable merge and carry the honest folder to another
+/// project or kind.
+fn validate_folder_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
+    let Some(created) = groups
+        .iter()
+        .find(|value| value.group == folder_group::CREATED)
+    else {
+        return Ok(());
+    };
+    let [project, kind, _, _, _] = fields(&created.value, "project folder")?;
+    let owner = managed_folder_project(row.as_str());
+    match (kind, project) {
+        (Field::Text(kind), Field::Text(project)) if kind == MANAGED_FOLDER_KIND => {
+            if owner.as_deref() == Some(project.as_str()) {
+                Ok(())
+            } else {
+                Err(AdapterError("project folder key"))
+            }
+        }
+        _ if owner.is_some() => Err(AdapterError("project folder key")),
+        _ => Ok(()),
+    }
+}
+
+/// The forced groups of a working folder: a managed folder always materializes unarchived, since
+/// the project's primary folder falls back to it and an archived one refuses every folder use.
+fn forced_folder_groups(
+    winners: &[(GroupId, &Value)],
+) -> Result<Vec<(GroupId, Value)>, AdapterError> {
+    let Some((_, created)) = winners
+        .iter()
+        .find(|(group, _)| *group == folder_group::CREATED)
+    else {
+        return Ok(Vec::new());
+    };
+    let [_, kind, _, _, _] = fields(created, "project folder")?;
+    if !matches!(kind, Field::Text(kind) if kind == MANAGED_FOLDER_KIND) {
+        return Ok(Vec::new());
+    }
+    let unarchived =
+        Value::new(vec![Field::Null]).map_err(|_| AdapterError("project folder archive"))?;
+    Ok(vec![(folder_group::ARCHIVED, unarchived)])
 }
 
 fn validate_task(group: GroupId, value: &Value) -> Result<(), AdapterError> {
@@ -568,8 +632,31 @@ impl DomainAdapter for ProjectsAdapter {
         Ok(Vec::new())
     }
 
+    fn forced_groups(
+        &self,
+        table: TableId,
+        winners: &[(GroupId, &Value)],
+    ) -> Result<Vec<(GroupId, Value)>, AdapterError> {
+        match table {
+            FOLDERS_TABLE => forced_folder_groups(winners),
+            _ => Ok(Vec::new()),
+        }
+    }
+
     fn priority(&self, _table: TableId, _group: GroupId, _value: &Value) -> u8 {
         0
+    }
+
+    fn validate_row(
+        &self,
+        table: TableId,
+        row: &RowKey,
+        groups: &[GroupValue],
+    ) -> Result<(), AdapterError> {
+        match table {
+            FOLDERS_TABLE => validate_folder_row(row, groups),
+            _ => Ok(()),
+        }
     }
 
     fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError> {
@@ -879,14 +966,204 @@ mod tests {
     }
 
     #[test]
-    fn managed_paths_stay_inside_the_project_folder() {
-        assert!(is_contained_relative_path("projects/abc"));
-        assert!(is_contained_relative_path("projects/a..b"));
-        assert!(!is_contained_relative_path("/projects/abc"));
-        assert!(!is_contained_relative_path("projects/../abc"));
-        assert!(!is_contained_relative_path(".."));
-        assert!(!is_contained_relative_path("projects\\abc"));
-        assert!(!is_contained_relative_path(""));
+    fn managed_folder_path_must_match_its_project() {
+        let adapter = ProjectsAdapter;
+        let admits = |project: &str, kind: &str, path: Field| {
+            let created = value(vec![
+                text(project),
+                text(kind),
+                path,
+                Field::Integer(0),
+                text("2027-01-02T00:00:00.000Z"),
+            ]);
+            adapter
+                .validate(FOLDERS_TABLE, folder_group::CREATED, &created)
+                .is_ok()
+        };
+
+        assert!(admits("project", "managed", text("projects/project")));
+        assert!(admits("a..b", "managed", text("projects/a..b")));
+        assert!(admits("project", "external", Field::Null));
+        for unbound in [
+            "",
+            "x",
+            "..",
+            "project",
+            "projects/other",
+            "projects/project/nested",
+            "projects/project/",
+            "./projects/project",
+            "/projects/project",
+            "projects/../project",
+            "projects\\project",
+        ] {
+            assert!(!admits("project", "managed", text(unbound)), "{unbound}");
+        }
+        assert!(!admits("a/b", "managed", text("projects/a/b")));
+        for hidden in [".opencode", ".grok"] {
+            assert!(
+                !admits(hidden, "managed", text(&format!("projects/{hidden}"))),
+                "{hidden}"
+            );
+        }
+        assert!(!admits(
+            "project:one",
+            "managed",
+            text("projects/project:one")
+        ));
+    }
+
+    #[test]
+    fn folder_key_must_match_its_kind_and_project() {
+        let adapter = ProjectsAdapter;
+        let admits = |key: &str, project: &str, kind: &str| {
+            let path = if kind == MANAGED_FOLDER_KIND {
+                text(&format!("projects/{project}"))
+            } else {
+                Field::Null
+            };
+            let created = GroupValue::new(
+                FOLDERS_TABLE,
+                folder_group::CREATED,
+                value(vec![
+                    text(project),
+                    text(kind),
+                    path,
+                    Field::Integer(0),
+                    text("2027-01-02T00:00:00.000Z"),
+                ]),
+            );
+            adapter
+                .validate_row(FOLDERS_TABLE, &RowKey::new(key).unwrap(), &[created])
+                .is_ok()
+        };
+
+        assert!(admits("working-folder:project", "project", "managed"));
+        assert!(admits(
+            "working-folder-routine-learning",
+            "project-routine-learning",
+            "managed"
+        ));
+        let external = "working-folder:external:0f8e2c4a-6b1d-4e3f-9a7c-5d2b8e1f0a63";
+        assert!(admits(external, "project", "external"));
+        assert!(admits("folder-external", "project", "external"));
+
+        assert!(!admits("working-folder:project", "other", "managed"));
+        assert!(!admits("working-folder:extra", "project", "managed"));
+        assert!(!admits(external, "project", "managed"));
+        assert!(!admits("working-folder:project", "project", "external"));
+        assert!(!admits("working-folder:project", "other", "external"));
+        assert!(!admits(
+            "working-folder-routine-learning",
+            "project",
+            "external"
+        ));
+        assert!(!admits(
+            "working-folder:project-routine-learning",
+            "project-routine-learning",
+            "managed"
+        ));
+    }
+
+    #[test]
+    fn folder_timestamps_accept_only_rfc3339_utc() {
+        let adapter = ProjectsAdapter;
+        let created_group = |created_at: &str| {
+            value(vec![
+                text("project"),
+                text("external"),
+                Field::Null,
+                Field::Integer(10),
+                text(created_at),
+            ])
+        };
+        let register = |timestamp: &str| value(vec![text(timestamp)]);
+        for valid in [
+            "2027-01-02T00:00:00.000Z",
+            "2027-01-02T00:00:00Z",
+            "2027-01-02T00:00:00.000+00:00",
+        ] {
+            for (group, value) in [
+                (folder_group::CREATED, created_group(valid)),
+                (folder_group::ARCHIVED, register(valid)),
+                (folder_group::UPDATED, register(valid)),
+            ] {
+                assert!(adapter.validate(FOLDERS_TABLE, group, &value).is_ok());
+            }
+        }
+        for invalid in [
+            "not a timestamp at all",
+            "2027-01-02T00:00:00.000",
+            "2027-01-02T00:00:00.000+01:00",
+            "2027-13-02T00:00:00.000Z",
+            "2027-01-02 00:00:00.000Z",
+            "2027-01-02t00:00:00.000Z",
+            "2027-01-02T00:00:00.000z",
+            "2027-01-02T23:59:60.000Z",
+        ] {
+            for (group, value) in [
+                (folder_group::CREATED, created_group(invalid)),
+                (folder_group::ARCHIVED, register(invalid)),
+                (folder_group::UPDATED, register(invalid)),
+            ] {
+                assert!(
+                    adapter.validate(FOLDERS_TABLE, group, &value).is_err(),
+                    "{invalid}"
+                );
+            }
+        }
+        let unarchived = value(vec![Field::Null]);
+        assert!(
+            adapter
+                .validate(FOLDERS_TABLE, folder_group::ARCHIVED, &unarchived)
+                .is_ok()
+        );
+        assert!(
+            adapter
+                .validate(FOLDERS_TABLE, folder_group::UPDATED, &unarchived)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn only_a_managed_folder_has_its_archive_forced_null() {
+        let adapter = ProjectsAdapter;
+        let created_group = |kind: &str, path: Field| {
+            value(vec![
+                text("project"),
+                text(kind),
+                path,
+                Field::Integer(0),
+                text("2027-01-02T00:00:00.000Z"),
+            ])
+        };
+        let managed = created_group("managed", text("projects/project"));
+        let external = created_group("external", Field::Null);
+        let archived = value(vec![text("2027-01-02T00:00:00.000Z")]);
+        let forced = |table: TableId, created: &Value| {
+            adapter
+                .forced_groups(
+                    table,
+                    &[
+                        (folder_group::CREATED, created),
+                        (folder_group::ARCHIVED, &archived),
+                    ],
+                )
+                .unwrap()
+        };
+
+        assert_eq!(
+            forced(FOLDERS_TABLE, &managed),
+            [(folder_group::ARCHIVED, value(vec![Field::Null]))]
+        );
+        assert!(forced(FOLDERS_TABLE, &external).is_empty());
+        assert!(forced(PROJECTS_TABLE, &managed).is_empty());
+        assert!(
+            adapter
+                .forced_groups(FOLDERS_TABLE, &[(folder_group::ARCHIVED, &archived)])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

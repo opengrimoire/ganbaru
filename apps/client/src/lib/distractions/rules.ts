@@ -84,7 +84,11 @@ export const DISTRACTIONS_PROTECTED_DESKTOP_APP_NAMES = [
 export const DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES = [
   "Activity Monitor",
   "alacritty",
+  "awesome",
   "bash",
+  "bspwm",
+  "cinnamon",
+  "cinnamon-session",
   "cmd",
   "cmd.exe",
   "conhost.exe",
@@ -95,13 +99,17 @@ export const DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES = [
   "dbus-daemon",
   "dllhost.exe",
   "Dock",
+  "dwm",
   "dwm.exe",
   "electron",
   "explorer.exe",
   "Finder",
   "fish",
   "flatpak",
+  "fluxbox",
   "foot",
+  "fvwm",
+  "fvwm3",
   "ghostty",
   "gnome-control-center",
   "gnome-keyring-daemon",
@@ -110,8 +118,12 @@ export const DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES = [
   "gnome-terminal",
   "gnome-terminal-server",
   "gpg-agent",
+  "herbstluftwm",
   "Hyprland",
+  "i3",
   "ibus-daemon",
+  "icewm",
+  "icewm-session",
   "java",
   "javaw",
   "javaw.exe",
@@ -123,10 +135,16 @@ export const DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES = [
   "labwc",
   "launchd",
   "loginwindow",
+  "lxqt-session",
+  "lxsession",
+  "marco",
+  "mate-session",
+  "mate-terminal",
   "mmc.exe",
   "mutter",
   "niri",
   "node",
+  "openbox",
   "pipewire",
   "pipewire-pulse",
   "plasmashell",
@@ -141,6 +159,7 @@ export const DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES = [
   "python3.11",
   "python3.12",
   "pythonw.exe",
+  "qtile",
   "regedit.exe",
   "river",
   "rundll32.exe",
@@ -175,8 +194,11 @@ export const DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES = [
   "xdg-desktop-portal",
   "xdg-desktop-portal-gnome",
   "xdg-desktop-portal-gtk",
+  "xfce4-session",
   "xfce4-terminal",
+  "xfdesktop",
   "xfwm4",
+  "xmonad",
   "Xorg",
   "XTerm",
   "Xwayland",
@@ -269,6 +291,8 @@ export interface DistractionsHostRule {
 }
 
 export interface DistractionsAppRule {
+  /** Stored row identity that actions address; a synced row's identity can differ from its name. */
+  identity: string;
   name: string;
   enabled: boolean;
   matchNames: string[];
@@ -582,10 +606,14 @@ function normalizeAppRuleValue(value: unknown): DistractionsAppRule | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (typeof record.name !== "string") return null;
+  // Only an empty identity is dropped, matching native enforcement, which skips only empty
+  // identities. Every enforced row therefore stays visible and removable in Settings.
+  if (typeof record.identity !== "string" || record.identity === "") return null;
   const name = normalizeDistractionsAppName(record.name);
   if (!name) return null;
   const matchNames = normalizeAppRuleMatchNames(name, record.matchNames);
   return {
+    identity: record.identity,
     name,
     enabled: record.enabled !== false,
     matchNames,
@@ -615,10 +643,9 @@ function normalizeAppRules(value: unknown, includeProtectedApps = false): Distra
   for (const item of value) {
     const rule = normalizeAppRuleValue(item);
     if (!rule) continue;
-    const key = appRuleKey(rule.name);
-    if (!includeProtectedApps && protectedDesktopAppKeys().has(key)) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (!includeProtectedApps && protectedDesktopAppKeys().has(appRuleKey(rule.name))) continue;
+    if (seen.has(rule.identity)) continue;
+    seen.add(rule.identity);
     rules.push(rule);
   }
   return rules;
@@ -992,7 +1019,7 @@ export type DistractionsRuleTarget =
   | { kind: "category"; id: DistractionsCategoryId }
   | { kind: "customCategory"; id: string }
   | { kind: "host"; list: DistractionsHostList; host: string }
-  | { kind: "desktopApp"; name: string }
+  | { kind: "desktopApp"; identity: string }
   | { kind: "mobileApp"; packageName: string }
   | { kind: "usageLimit"; id: string };
 

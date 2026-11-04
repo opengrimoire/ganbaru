@@ -20,7 +20,7 @@ function fixture() {
     sourceId: "source", editedId: "source", reviewRevision: "a".repeat(64), changed: true,
     scope: { effectiveScope: "all", selectedStarted: false, selectedHasHistory: false, selectedActive: false },
     deletion: { outcome: "mixed", requiresActiveStop: true, historyOnly: false },
-    window: { sourceEvents: [], windowEvents: [event("survivor", "source")], diagnostics: [], totalEventCount: null },
+    window: { sourceEvents: [], windowEvents: [event("survivor", "source")], diagnostics: [], totalEventCount: null, omittedTemplateCount: 0 },
     previewedIds: new Set(), editingId: undefined };
   const receipt: CalendarCommitReceipt = { commandId: "delete", editedId: "selected", changed: true, preservedIds: [],
     undoReviewRevision: "b".repeat(64), undoAvailableForMs: 4_000 };

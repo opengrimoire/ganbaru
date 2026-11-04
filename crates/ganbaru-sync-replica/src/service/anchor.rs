@@ -18,8 +18,8 @@ use ganbaru_handoff::protocol::decode_sync_admin_key;
 use ganbaru_sync::{AuthorizationView, ContestEntry};
 use ganbaru_sync_contracts::{
     AdminKeyPair, AdminPublicKey, DeviceKind, DevicePublicKey, DeviceRole, Digest32, Enroll, Entry,
-    LateResolution, LateRow, ProposalRejection, ResolveLate, RowKey, Server, ServerConfig,
-    SignedProposal, TableId, VersionVector,
+    KitCode, LateResolution, LateRow, ProposalRejection, RecoverySeed, ResolveLate, RowKey, Server,
+    ServerConfig, SignedProposal, TableId, VersionVector,
 };
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
@@ -32,11 +32,15 @@ pub enum AuthorityAction {
     TakeAnchor,
     /// Propose making a linked desktop an admin with the admin key it sent at pairing.
     Promote(String),
-    /// Replace the recovery kit and propose its recovery encryption key and recovery admin key.
+    /// Install a new recovery key from the anchor and propose its recovery encryption key and
+    /// recovery admin key. The printed kit keeps the lineage.
     RegenerateRecoveryKit,
+    /// Replace the printed kit with a new one, signed with the recovery admin key the code of
+    /// the current kit derives, from any enrolled desktop.
+    RotateRecoveryKit(KitCode),
     /// Propose, signed with the recovery admin key the kit code derives, making this enrolled
     /// desktop an admin with its own admin key.
-    UseRecoveryKit(String),
+    UseRecoveryKit(KitCode),
     /// Propose removing a device this desktop quarantined.
     ProposeRemoval(String),
     /// Propose removing a device from the vault, refusing what the anchor would reject.
@@ -75,7 +79,7 @@ pub struct ServerEnrollment {
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct ForceRequest {
     /// The kit code whose recovery admin key signs, or `None` for this desktop's admin key.
-    pub kit: Option<String>,
+    pub kit: Option<KitCode>,
     /// The kit point to continue from, `None` for the default one.
     pub point: Option<ContestEntry>,
     /// Devices the person marked in the device review of a kit recovery.
@@ -130,6 +134,7 @@ impl std::fmt::Debug for AuthorityAction {
             Self::Promote(device_id) => formatter.debug_tuple("Promote").field(device_id).finish(),
             Self::RegenerateRecoveryKit => formatter.write_str("RegenerateRecoveryKit"),
             Self::UseRecoveryKit(_) => formatter.write_str("UseRecoveryKit(<redacted>)"),
+            Self::RotateRecoveryKit(_) => formatter.write_str("RotateRecoveryKit(<redacted>)"),
             Self::ProposeRemoval(device_id) => formatter
                 .debug_tuple("ProposeRemoval")
                 .field(device_id)
@@ -164,8 +169,13 @@ pub enum AuthorityAnswer {
     /// The authorization revision of the handover this desktop sealed.
     Anchored(u64),
     /// The authorization revision of the forced handover, and its promotion when the kit
-    /// signed it, with the device id of the anchor it replaced.
-    ForcedAnchor { revision: u64, old_anchor: String },
+    /// signed it, with the device id of the anchor it replaced and how many entries after the
+    /// handover have not landed yet; those that wait finish in the service loop.
+    ForcedAnchor {
+        revision: u64,
+        old_anchor: String,
+        incomplete: usize,
+    },
     /// The authorization revision of the yield or objection this desktop sealed.
     Contested(u64),
     /// The regenerated recovery kit, which waits in the key store until the user saves it.
@@ -180,10 +190,12 @@ impl std::fmt::Debug for AuthorityAnswer {
             Self::ForcedAnchor {
                 revision,
                 old_anchor,
+                incomplete,
             } => formatter
                 .debug_struct("ForcedAnchor")
                 .field("revision", revision)
                 .field("old_anchor", old_anchor)
+                .field("incomplete", incomplete)
                 .finish(),
             Self::Contested(revision) => {
                 formatter.debug_tuple("Contested").field(revision).finish()
@@ -400,6 +412,9 @@ impl<H: SyncHost> Session<'_, H> {
             AuthorityAction::UseRecoveryKit(code) => {
                 return self.use_recovery_kit(&admin, code).await;
             }
+            AuthorityAction::RotateRecoveryKit(code) => {
+                return self.rotate_recovery_kit(admin, code).await;
+            }
             // A quarantine on a device that is not an admin stays local.
             AuthorityAction::ProposeRemoval(_) if !admin.is_admin() => {
                 return Ok(AuthorityAnswer::Proposed);
@@ -474,6 +489,9 @@ impl<H: SyncHost> Session<'_, H> {
                     .await?;
                 Ok(AuthorityAnswer::Proposed)
             }
+            AuthorityAction::RotateRecoveryKit(_) => {
+                Err("the recovery kit action ran on the admin path".to_string())
+            }
             AuthorityAction::RegenerateRecoveryKit => {
                 let keys = self.keys.clone();
                 let vault_id = self.files.vault_id.clone();
@@ -493,11 +511,7 @@ impl<H: SyncHost> Session<'_, H> {
                     )
                 })
                 .await?;
-                let public = authority::recovery_public_keys(&seed)?;
-                let mut conn = acquire(&self.pool).await?;
-                ganbaru_sync::local::store_recovery_kit_keys(&mut conn, &public, now)
-                    .await
-                    .map_err(|error| format!("store the recovery kit keys: {error}"))?;
+                self.store_kit_keys(&seed, now).await?;
                 Ok(AuthorityAnswer::RecoveryKit)
             }
             AuthorityAction::ProposeRemoval(device_id) => {
@@ -522,7 +536,7 @@ impl<H: SyncHost> Session<'_, H> {
     async fn use_recovery_kit(
         &self,
         admin: &AdminContext,
-        code: &str,
+        code: &KitCode,
     ) -> Result<AuthorityAnswer, String> {
         if admin.is_admin() {
             return Err("this desktop is already an admin".to_string());
@@ -546,6 +560,55 @@ impl<H: SyncHost> Session<'_, H> {
         )?;
         self.place_proposal(proposal).await?;
         Ok(AuthorityAnswer::Proposed)
+    }
+
+    /// Replaces the printed recovery kit on this enrolled desktop, admin or not, with a new kit
+    /// that the kit `code` derives the signer for. The derived key lives only inside this call;
+    /// the new seed waits in the key store until the user saves its kit.
+    async fn rotate_recovery_kit(
+        &self,
+        admin: AdminContext,
+        code: &KitCode,
+    ) -> Result<AuthorityAnswer, String> {
+        let live_desktop = admin.view.devices.iter().any(|device| {
+            device.device_id == admin.device_id
+                && device.removed_revision.is_none()
+                && device.kind == DeviceKind::Desktop
+        });
+        if !live_desktop {
+            return Err("only an enrolled desktop can replace the recovery kit".to_string());
+        }
+        let old_kit = authority::kit_admin(code)?;
+        let keys = self.keys.clone();
+        let vault_id = self.files.vault_id.clone();
+        let path = self.files.outbox_path();
+        let space = self.ctx.space;
+        let now = now_ms()?;
+        let seed = blocking(move || {
+            let mut outbox = Outbox::load(&path)?;
+            authority::rotate_recovery_kit(
+                keys.as_ref(),
+                &vault_id,
+                &mut outbox,
+                &admin.view,
+                space,
+                &old_kit,
+                now,
+            )
+        })
+        .await?;
+        self.store_kit_keys(&seed, now).await?;
+        Ok(AuthorityAnswer::RecoveryKit)
+    }
+
+    /// Records the public keys of a new kit in the vault database, which keeps the keys of the
+    /// latest kit this device made.
+    async fn store_kit_keys(&self, seed: &RecoverySeed, now: u64) -> Result<(), String> {
+        let public = authority::recovery_public_keys(seed)?;
+        let mut conn = acquire(&self.pool).await?;
+        ganbaru_sync::local::store_recovery_kit_keys(&mut conn, &public, now)
+            .await
+            .map_err(|error| format!("store the recovery kit keys: {error}"))
     }
 
     /// Seals a handover that makes this desktop the anchor. Runs only after an exchange that
@@ -611,7 +674,7 @@ impl<H: SyncHost> Session<'_, H> {
         writer: &mut Option<ActiveWriter>,
         request: &ForceRequest,
     ) -> Result<AuthorityAnswer, String> {
-        let kit = request.kit.as_deref();
+        let kit = request.kit.as_ref();
         if kit.is_none() && (request.point.is_some() || !request.removals.is_empty()) {
             return Err(
                 "only the recovery kit chooses a point or removes reviewed devices".to_string(),
@@ -663,25 +726,34 @@ impl<H: SyncHost> Session<'_, H> {
             removals: request.removals.clone(),
             recovery: kit_keys.as_ref(),
         };
+        let path = self.files.outbox_path();
+        let mut outbox = blocking(move || Outbox::load(&path)).await?;
+        let quarantined = self.quarantined().await?;
         let mut conn = acquire(&self.pool).await?;
-        let revision = authority::force_handover_here(
+        let forced = authority::force_handover_here(
             &self.engine,
             &mut conn,
             &self.ctx,
             &forced,
             &mut active.local(),
+            &mut outbox,
+            &quarantined,
             now_ms()?,
         )
-        .await?
-        .map_err(|rejection| format!("take the anchor: {rejection}"))?;
+        .await;
         drop(conn);
+        // The seal may have committed before a later step failed, so the writer record follows
+        // what was sealed either way.
         self.record_commit(active).await?;
+        let forced = forced?.map_err(|rejection| format!("take the anchor: {rejection}"))?;
         eprintln!(
-            "sync: this desktop forced the anchor at authorization revision {revision} without the lost anchor"
+            "sync: this desktop forced the anchor at authorization revision {} without the lost anchor, with {} follow-ups still to land",
+            forced.revision, forced.incomplete
         );
         Ok(AuthorityAnswer::ForcedAnchor {
-            revision,
+            revision: forced.revision,
             old_anchor: admin.view.anchor_device_id.clone(),
+            incomplete: forced.incomplete,
         })
     }
 
@@ -853,7 +925,11 @@ impl<H: SyncHost> Session<'_, H> {
     ) -> Result<bool, String> {
         let path = self.files.outbox_path();
         let mut outbox = blocking(move || Outbox::load(&path)).await?;
-        if !outbox.entries().iter().any(|entry| entry.pending()) {
+        if !outbox
+            .entries()
+            .iter()
+            .any(|entry| entry.pending() || entry.after.is_some())
+        {
             return Ok(false);
         }
         let before = self.stored_head(active).await?;
@@ -923,5 +999,38 @@ impl<H: SyncHost> Session<'_, H> {
         let seq = self.stored_head(active).await?;
         active.committed(seq)?;
         Ok(seq)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuthorityAction, ForceRequest};
+    use ganbaru_sync_contracts::RecoverySeed;
+
+    #[test]
+    fn authority_action_debug_never_shows_the_kit() {
+        let text = RecoverySeed::from_bytes([0x51; 32])
+            .kit_code()
+            .as_str()
+            .to_string();
+        let force = ForceRequest {
+            kit: Some(text.clone().into()),
+            point: None,
+            removals: vec!["device-b".to_string()],
+        };
+        let shown = [
+            format!("{:?}", AuthorityAction::UseRecoveryKit(text.clone().into())),
+            format!(
+                "{:?}",
+                AuthorityAction::RotateRecoveryKit(text.clone().into())
+            ),
+            format!("{force:?}"),
+            format!("{:?}", AuthorityAction::ForceAnchor(force.clone())),
+        ];
+        for shown in shown {
+            for group in text.split('-') {
+                assert!(!shown.contains(group), "{shown} shows the group {group}");
+            }
+        }
     }
 }

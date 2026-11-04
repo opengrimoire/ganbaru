@@ -8,6 +8,8 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
+use ganbaru_sync::domains::distractions::is_android_package_name;
+pub use ganbaru_sync::domains::distractions::is_rule_id;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -32,11 +34,8 @@ pub const MAX_CATEGORY_NAME_CHARS: usize = 60;
 /// Most characters of an app name, usage limit name, or limit entry name.
 pub const MAX_NAME_CHARS: usize = 80;
 
-/// Most characters of an Android package name.
-pub const MAX_PACKAGE_CHARS: usize = 255;
-
 /// Most characters of a custom category, usage limit, or limit entry id.
-pub const MAX_ID_CHARS: usize = 80;
+pub const MAX_ID_CHARS: usize = ganbaru_sync::domains::distractions::MAX_ID_CHARS;
 
 /// Most desktop process names one app rule or limit entry matches.
 pub const MAX_MATCH_NAMES: usize = 64;
@@ -52,6 +51,13 @@ pub const MAX_MINUTES_PER_WEEK: i64 = 10_080;
 
 /// Most usage limits of a vault.
 pub const MAX_USAGE_LIMITS: usize = crate::limits::MAX_LIMITS;
+
+/// Most Android application rules of a vault, which is also the most packages Guardian enforces
+/// in its rule list or in one usage limit.
+pub const MAX_MOBILE_APP_RULES: usize = 256;
+
+/// Most usage limits with Android packages Guardian enforces.
+pub const MAX_GUARDIAN_USAGE_LIMITS: usize = 128;
 
 /// Most limit entries of every usage limit together.
 pub const MAX_LIMIT_ENTRIES: usize = 2_000;
@@ -115,6 +121,8 @@ pub struct CustomCategory {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopAppRule {
+    /// The stored row identity that toggles, removals, and close authorization address.
+    pub identity: String,
     pub name: String,
     pub enabled: bool,
     pub match_names: Vec<String>,
@@ -285,16 +293,6 @@ pub fn is_built_in_category(id: &str) -> bool {
         .any(|category| category.id == id)
 }
 
-/// Whether `id` is a custom category, usage limit, or limit entry id.
-pub fn is_rule_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= MAX_ID_CHARS
-        && id.as_bytes()[0].is_ascii_alphanumeric()
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
 /// Whether `host` is a normalized host rule: lowercase ASCII labels of letters, digits, and
 /// inner hyphens joined by dots.
 pub fn is_rule_host(host: &str) -> bool {
@@ -349,22 +347,10 @@ pub fn normalize_app_name(input: &str) -> Option<String> {
     normalize_app_candidate_name(input)
 }
 
-/// An Android package name: dotted segments that start with a letter.
+/// An Android package name without surrounding whitespace, or `None` outside the shared grammar.
 pub fn normalize_package(input: &str) -> Option<String> {
     let package = input.trim();
-    let valid = !package.is_empty()
-        && package.len() <= MAX_PACKAGE_CHARS
-        && package.split('.').count() >= 2
-        && package.split('.').all(|segment| {
-            segment
-                .as_bytes()
-                .first()
-                .is_some_and(u8::is_ascii_alphabetic)
-                && segment
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        });
-    valid.then(|| package.to_string())
+    is_android_package_name(package).then(|| package.to_string())
 }
 
 /// The display name followed by the distinct unprotected match names, by case-insensitive key;

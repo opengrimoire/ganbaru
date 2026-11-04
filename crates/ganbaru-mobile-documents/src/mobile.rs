@@ -62,6 +62,11 @@ struct SaveDownloadResponse {
     display_name: String,
 }
 
+#[derive(Deserialize)]
+struct SaveDocumentResponse {
+    saved: bool,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SaveFileDownloadRequest<'a> {
@@ -227,6 +232,36 @@ impl<R: Runtime> MobileDocuments<R> {
             )
             .map(|response| response.display_name)
             .map_err(|error| format!("save {document_kind} download: {error}"))
+    }
+
+    /// Ask Android's system picker where to create one bounded UTF-8 document and write it there.
+    /// Returns false when the person cancels the picker.
+    pub fn save_utf8_document(
+        &self,
+        file_name: &str,
+        contents: &str,
+        max_bytes: u64,
+        accepted_extensions: &[&str],
+        mime_type: &str,
+        document_kind: &str,
+    ) -> Result<bool, String> {
+        self.0
+            .run_mobile_plugin::<SaveDocumentResponse>(
+                "saveUtf8Document",
+                SaveUtf8DownloadRequest {
+                    file_name,
+                    contents,
+                    max_bytes,
+                    accepted_extensions: accepted_extensions
+                        .iter()
+                        .map(|value| (*value).to_string())
+                        .collect(),
+                    mime_type,
+                    document_kind,
+                },
+            )
+            .map(|response| response.saved)
+            .map_err(|error| format!("save {document_kind} document: {error}"))
     }
 
     /// Stream one bounded app-private file into Android's public Downloads collection.

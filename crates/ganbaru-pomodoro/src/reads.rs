@@ -2,6 +2,7 @@ mod budget;
 
 use std::collections::{HashMap, HashSet};
 
+pub(crate) use budget::AdaptiveEvidenceError;
 use budget::AggregateBudget;
 use ganbaru_db::impl_sqlite_from_row;
 use sqlx::SqlitePool;
@@ -21,9 +22,11 @@ pub(super) const EXPERIMENT_OUTCOME_INPUT_SQL: &str =
      LEFT JOIN pomodoro_adaptive_outcomes o ON o.assignment_id = a.id
      WHERE e.policy_id = ? AND a.experiment_id = e.id AND a.assigned_at < ?";
 
-fn validate_evidence_rows(count: usize, domain: &str) -> Result<(), String> {
+fn validate_evidence_rows(count: usize, domain: &str) -> Result<(), AdaptiveEvidenceError> {
     if count > MAX_ADAPTIVE_EVIDENCE_ROWS {
-        return Err(format!("Adaptive {domain} evidence exceeds its row limit"));
+        return Err(AdaptiveEvidenceError::Oversized(format!(
+            "Adaptive {domain} evidence exceeds its row limit"
+        )));
     }
     Ok(())
 }
@@ -222,7 +225,8 @@ pub(super) async fn load_adaptive_replay_dataset_from_pool(
         .map_err(|error| format!("Begin adaptive replay snapshot: {error}"))?;
     let result =
         load_adaptive_replay_dataset_tx(&mut tx, before, policy_id, limit, history_segment_limit)
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
     tx.commit()
         .await
         .map_err(|error| format!("Finish adaptive replay snapshot: {error}"))?;
@@ -240,7 +244,9 @@ pub(super) async fn load_adaptive_history_from_pool(
         .begin()
         .await
         .map_err(|error| format!("Begin adaptive history snapshot: {error}"))?;
-    let result = load_adaptive_history_tx(&mut tx, before, policy_id, segment_limit).await?;
+    let result = load_adaptive_history_tx(&mut tx, before, policy_id, segment_limit)
+        .await
+        .map_err(|error| error.to_string())?;
     tx.commit()
         .await
         .map_err(|error| format!("Finish adaptive history snapshot: {error}"))?;
@@ -254,7 +260,7 @@ pub(super) async fn load_adaptive_replay_dataset_tx(
     policy_id: &str,
     limit: i64,
     history_segment_limit: i64,
-) -> Result<PomodoroAdaptiveReplayDatasetRead, String> {
+) -> Result<PomodoroAdaptiveReplayDatasetRead, AdaptiveEvidenceError> {
     let mut budget = AggregateBudget::replay();
     budget
         .admit(
@@ -380,7 +386,7 @@ async fn load_adaptive_replay_outcome_rows(
     connection: &mut sqlx::SqliteConnection,
     opportunity_ids: &[&str],
     before: &str,
-) -> Result<Vec<PomodoroAdaptiveReplayOutcomeRowRead>, String> {
+) -> Result<Vec<PomodoroAdaptiveReplayOutcomeRowRead>, AdaptiveEvidenceError> {
     if opportunity_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -440,7 +446,7 @@ async fn load_adaptive_replay_histories(
     policy_id: &str,
     history_segment_limit: i64,
     budget: &mut AggregateBudget,
-) -> Result<Vec<PomodoroAdaptiveReplayOpportunityHistoryRead>, String> {
+) -> Result<Vec<PomodoroAdaptiveReplayOpportunityHistoryRead>, AdaptiveEvidenceError> {
     let mut histories = Vec::with_capacity(opportunities.len());
     for opportunity in opportunities {
         histories.push(PomodoroAdaptiveReplayOpportunityHistoryRead {
@@ -496,7 +502,7 @@ pub(super) async fn load_adaptive_history_tx(
     before: &str,
     policy_id: &str,
     segment_limit: i64,
-) -> Result<PomodoroAdaptiveHistoryRead, String> {
+) -> Result<PomodoroAdaptiveHistoryRead, AdaptiveEvidenceError> {
     let mut budget = AggregateBudget::history();
     load_adaptive_history_snapshot_tx(
         connection,
@@ -521,7 +527,7 @@ async fn load_adaptive_history_snapshot_tx(
     segment_limit: i64,
     state_source: AdaptiveHistoryStateSource,
     budget: &mut AggregateBudget,
-) -> Result<PomodoroAdaptiveHistoryRead, String> {
+) -> Result<PomodoroAdaptiveHistoryRead, AdaptiveEvidenceError> {
     admit_policy_experiments(connection, policy_id).await?;
     let mut segment_rows = sqlx::query_as::<_, PomodoroAdaptiveHistorySegmentRow>(
         "SELECT id, run_id, rhythm_position, phase, planned_start, planned_end, actual_start, actual_end,
@@ -599,7 +605,7 @@ async fn load_adaptive_history_snapshot_tx(
 async fn load_pauses_for_segment_ids(
     connection: &mut sqlx::SqliteConnection,
     segment_ids: &[&str],
-) -> Result<HashMap<String, Vec<PomodoroPauseWrite>>, String> {
+) -> Result<HashMap<String, Vec<PomodoroPauseWrite>>, AdaptiveEvidenceError> {
     if segment_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -648,7 +654,7 @@ async fn load_adaptive_run_events(
     connection: &mut sqlx::SqliteConnection,
     run_ids: &[&str],
     before: &str,
-) -> Result<Vec<PomodoroAdaptiveHistoryRunEventRead>, String> {
+) -> Result<Vec<PomodoroAdaptiveHistoryRunEventRead>, AdaptiveEvidenceError> {
     if run_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -787,7 +793,7 @@ async fn load_adaptive_context_states_before(
     policy_id: &str,
     before: &str,
     budget: &mut AggregateBudget,
-) -> Result<Vec<PomodoroAdaptiveHistoryContextStateRead>, String> {
+) -> Result<Vec<PomodoroAdaptiveHistoryContextStateRead>, AdaptiveEvidenceError> {
     budget
         .admit(
             connection,
@@ -944,7 +950,7 @@ async fn load_adaptive_experiment_assignments(
 async fn admit_policy_experiments(
     connection: &mut sqlx::SqliteConnection,
     policy_id: &str,
-) -> Result<(), String> {
+) -> Result<(), AdaptiveEvidenceError> {
     let experiment_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM (SELECT 1 FROM pomodoro_adaptive_experiments WHERE policy_id = ? LIMIT ?)",
     ).bind(policy_id).bind(MAX_ADAPTIVE_EVIDENCE_ROWS as i64 + 1)
@@ -958,7 +964,7 @@ async fn load_adaptive_experiment_outcomes(
     policy_id: &str,
     before: &str,
     budget: &mut AggregateBudget,
-) -> Result<Vec<PomodoroAdaptiveHistoryExperimentOutcomeRead>, String> {
+) -> Result<Vec<PomodoroAdaptiveHistoryExperimentOutcomeRead>, AdaptiveEvidenceError> {
     // Later outcomes still cost an indexed scan, although their values never
     // contribute to the historical aggregate. Admit that work as well.
     budget

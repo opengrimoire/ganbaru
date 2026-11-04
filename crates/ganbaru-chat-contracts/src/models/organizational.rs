@@ -687,7 +687,8 @@ pub struct ChatChannelMembershipRemovalPreview {
 #[serde(rename_all = "camelCase")]
 pub struct ChatProjectPrimaryWorkingFolderRead {
     pub project_id: String,
-    pub working_folder_id: ProjectWorkingFolderId,
+    /// `None` when the project has no usable folder on this replica.
+    pub working_folder_id: Option<ProjectWorkingFolderId>,
     pub revision: u64,
 }
 
@@ -846,6 +847,42 @@ pub struct ChatWorkAssignmentRead {
     pub settled_at: Option<UtcTimestamp>,
     pub created_at: UtcTimestamp,
     pub updated_at: UtcTimestamp,
+    /// What the reading device would accept by starting this work, present when it waits for a
+    /// local action there. Computed on read and never persisted.
+    pub local_acceptance: Option<ChatAssignmentAcceptanceOfferRead>,
+}
+
+/// One folder a waiting assignment would run in, with the access it would hold there.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentAcceptanceFolderRead {
+    pub display_name: String,
+    pub capability: ChatFolderCapability,
+    pub runtime_approval: ChatRuntimeApprovalPolicy,
+}
+
+/// What a device accepts by starting a waiting assignment.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentAcceptanceOfferRead {
+    /// Acceptance digest of this subject, returned with the Start so a change refuses it.
+    pub digest: String,
+    pub provider_instance_id: String,
+    pub folders: Vec<ChatAssignmentAcceptanceFolderRead>,
+    pub scratch_runtime_approval: ChatRuntimeApprovalPolicy,
+}
+
+/// Work that waits for a local action on the reading device, wherever its reply thread is.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatWaitingAssignmentRead {
+    pub assignment_id: ChatWorkAssignmentId,
+    pub project_id: String,
+    pub channel_id: ChatChannelId,
+    pub channel_name: String,
+    pub reply_thread_id: ChatReplyThreadId,
+    pub teammate_display_name: String,
+    pub created_at: UtcTimestamp,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

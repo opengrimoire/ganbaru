@@ -156,11 +156,13 @@ The relay keeps at most 2 GiB per vault for 90 days. Change that with `--quota-m
 
 An anchor serves one vault. The desktop that adds it must be an admin.
 
-1. Print a setup code on the server, as shown above, naming each address your devices can reach; a phone away from home needs a public or VPN address. The code works once, for 15 minutes. A newer code replaces an older one, so run it again whenever a code expires.
+1. Print a setup code on the server, as shown above, naming each address your devices can reach; a phone away from home needs a public or VPN address. The code stays valid for 15 minutes and for one vault: the first vault a desktop proves it for binds it, and the server refuses it for any other. A retry for the same vault works, and a newer code replaces an older one, so run it again whenever a code expires or another vault took it. If the desktop reports that the server already runs another vault, delete the server's data directory and print a new code.
 2. Enter the code in Settings > Data, in the server section of an admin desktop, and confirm that this server can read your whole vault. The desktop proves the code, learns the server's keys, proposes the server's enrollment as an admin, and uploads a copy of the vault. No admin key or person key leaves the desktop, and the server dials nobody.
 3. Keep the default to let the server take the anchor, or choose to keep the current anchor. If the anchor desktop is off, the desktop waits for it; once it has run, enter the same code again, or a new one if it expired.
 
 Every linked device learns the server from the log and dials it from any network. Two dials happen before that: the desktop adding the server dials the endpoints in the setup code, which may be public, and recovery with the kit through an anchor server dials them from a new device, which may be off the LAN. Every other new device links to a desktop first, on the LAN.
+
+An anchor accepts at most 256 connections that have not yet authenticated, 4 from one address (an IPv4 address or an IPv6 /64), and closes any that does not authenticate or prove a setup code within 30 seconds. It keeps 64 of those slots for addresses your devices used recently, so a flood from unknown addresses does not lock your devices out, though it can delay a device connecting from a new address, or a new setup, until it stops. A device turned away for a full budget retries on its next pass.
 
 Two limits apply today. A server takes the anchor only as part of being added, so once a desktop takes the anchor from it, or you kept the anchor on a desktop, the anchor cannot go to that server: it keeps running its vault and refuses a second upload with "this server already runs a vault". To return to a server anchor, [remove the server](#removing-a-server) and add it again with a fresh setup on an empty data directory. The recovery kit also cannot be regenerated while a server anchors, so take the anchor to a desktop, regenerate the kit there, and return the same way.
 
@@ -212,6 +214,8 @@ The server must hold the anchor role, and you need the recovery kit.
 1. Run `anchor setup` on the server for a fresh code.
 2. On a new desktop, choose **Recover from an anchor server** on the linking screen of the first launch, or in Settings > Data when the device is not linked, and enter the code and the kit. The desktop derives the recovery admin key in memory, enrolls itself as an admin through the server, and copies the vault into a new folder.
 3. Keep the recovery kit. The person key does not return this way: a linked phone or desktop that still holds it can share it again, and otherwise anything signed with it stays as it is.
+
+Before the desktop signs anything with the kit, the server must name the kit's public key, and the copied log must name the kit the same way before the vault opens. A kit that does not belong to the vault on the server is refused with "this recovery kit does not belong to the vault on this server", and no copy opens. The check proves only that the server knew the kit's public keys, not that it runs your vault: a server that already learned them, such as from an earlier recovery attempt, can pass it.
 
 If the copy fails after the enrollment, repeat the steps with a fresh code and the same kit.
 

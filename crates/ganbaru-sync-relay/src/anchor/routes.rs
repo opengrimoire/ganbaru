@@ -2,13 +2,14 @@
 //! that bootstrap from it.
 //!
 //! Setup is reachable without a client certificate. Nothing happens before the peer proves the
-//! one-time secret, and a wrong proof costs the peer the connection, not the secret.
+//! setup secret, and a wrong proof costs the peer the connection, not the secret.
 
 use super::activation::{Upload, activate};
 use super::host::AnchorHost;
 use crate::server::unix_time_ms;
 use ganbaru_handoff::pairing::{PinnedCharter, certificate_fingerprint};
 use ganbaru_handoff::protocol::anchor::{self, AnchorSpace, SETUP_REFUSED_CODE};
+use ganbaru_handoff::protocol::relay::RelaySetupToken;
 use ganbaru_handoff::protocol::{
     self, BundleMetadata, ControlMessage, encode_sync_admin_key, encode_sync_charter,
     encode_sync_device_key, read_control_limited, relay, validate_identifier, write_control,
@@ -18,7 +19,9 @@ use ganbaru_sync_replica::anchor_link::local_compatibility;
 use ganbaru_sync_replica::authority::ensure_admin_key;
 use ganbaru_sync_replica::hub::SyncHub;
 use ganbaru_sync_replica::serve::bundles::MemberBundles;
-use ganbaru_sync_replica::serve::{Peer, Routes, ServerStream, send_error, timeout_control};
+use ganbaru_sync_replica::serve::{
+    COORDINATOR_BUSY_CODE, Peer, PreAuthGate, Routes, ServerStream, send_error, timeout_control,
+};
 use ganbaru_sync_replica::service::{SyncHost, blocking};
 use ganbaru_sync_replica::writer::ensure_device_key;
 use sha2::{Digest, Sha256};
@@ -33,6 +36,7 @@ const DEVICE_LABEL: &str = "Ganbaru server";
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
 const UPLOAD_BUSY_CODE: &str = "upload_busy";
 const UPLOAD_REFUSED_CODE: &str = "upload_refused";
+const WRONG_CODE: &str = "this setup code is wrong, used, or expired";
 
 /// Setup state shared by every connection.
 pub struct SetupRoute {
@@ -42,6 +46,8 @@ pub struct SetupRoute {
     pub version: &'static str,
     /// Held for one upload, which has fixed staging paths.
     pub upload: tokio::sync::Mutex<()>,
+    /// Held while a proof binds the setup secret to its vault.
+    pub binding: std::sync::Mutex<()>,
 }
 
 /// The routes of an anchor listener.
@@ -77,15 +83,44 @@ impl Routes for AnchorRoutes {
             let enrolled = peer.certificate.is_some();
             return self
                 .setup
-                .converse(stream, enrolled, &compatibility, &client_nonce)
+                .converse(stream, enrolled, &compatibility, &client_nonce, None)
                 .await;
         }
-        let (Some(admission), Some(certificate)) = (peer.admission, peer.certificate) else {
+        let (Some(admission), Some(recheck), Some(certificate)) =
+            (peer.admission, peer.admission_source, peer.certificate)
+        else {
             return Err("a snapshot copy needs an enrolled device".to_string());
         };
         let fingerprint = certificate_fingerprint(certificate.as_ref());
         self.bundles
-            .serve(stream, peer.manager, admission, &fingerprint, request)
+            .serve(
+                stream,
+                peer.manager,
+                admission,
+                recheck,
+                &fingerprint,
+                request,
+            )
+            .await
+    }
+
+    async fn serve_unauthenticated(
+        &self,
+        stream: &mut ServerStream,
+        peer: Peer<'_>,
+        request: ControlMessage,
+        gate: &PreAuthGate,
+    ) -> Result<(), String> {
+        let ControlMessage::AnchorHello {
+            compatibility,
+            client_nonce,
+            ..
+        } = request
+        else {
+            return self.serve(stream, peer, request).await;
+        };
+        self.setup
+            .converse(stream, false, &compatibility, &client_nonce, Some(gate))
             .await
     }
 }
@@ -93,12 +128,17 @@ impl Routes for AnchorRoutes {
 impl SetupRoute {
     /// Answers a setup greeting. An enrolled device that greets is asking which protocol this
     /// server speaks, so it gets the challenge alone, as does a peer that cannot continue.
+    ///
+    /// A peer without a certificate comes with its `gate`. A proof that holds moves it off the
+    /// pre-authentication deadline and budget, or turns it away as busy when the setup budget
+    /// is full.
     async fn converse(
         &self,
         stream: &mut ServerStream,
         enrolled: bool,
         compatibility: &protocol::HandoffCompatibility,
         client_nonce: &str,
+        gate: Option<&PreAuthGate>,
     ) -> Result<(), String> {
         let local = local_compatibility(self.version);
         let server_nonce = anchor::anchor_nonce()?;
@@ -121,10 +161,19 @@ impl SetupRoute {
             // The peer read the challenge and stopped, as a device of another protocol does.
             Ok(_) | Err(_) => return Ok(()),
         };
-        if !self.proof_holds(&server_nonce, &client_nonce, &proof)? {
-            return refuse_setup(stream, "this setup code is wrong, used, or expired").await;
+        let Some(secret) = self.proven_secret(&server_nonce, &client_nonce, &proof)? else {
+            return refuse_setup(stream, WRONG_CODE).await;
+        };
+        if gate.is_some_and(|gate| !gate.setup_proven()) {
+            return send_error(
+                stream,
+                COORDINATOR_BUSY_CODE,
+                "this server is handling too many setups; retry shortly",
+                true,
+            )
+            .await;
         }
-        let vault_id = match self.proven_vault(vault_id)? {
+        let vault_id = match self.proven_vault(&secret, vault_id)? {
             Ok(vault_id) => vault_id,
             Err(message) => return refuse_setup(stream, message).await,
         };
@@ -133,46 +182,67 @@ impl SetupRoute {
         self.after_proof(stream, &vault_id).await
     }
 
-    fn proof_holds(
+    /// The live setup secret `proof` proves, `None` when it proves none.
+    fn proven_secret(
         &self,
         server_nonce: &[u8; anchor::ANCHOR_NONCE_BYTES],
         client_nonce: &[u8; anchor::ANCHOR_NONCE_BYTES],
         proof: &str,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<RelaySetupToken>, String> {
         let Ok(proof) = anchor::decode_anchor_proof(proof) else {
-            return Ok(false);
+            return Ok(None);
         };
         let Some(secret) = super::state::live_setup_secret(self.host.paths(), unix_time_ms())?
         else {
-            return Ok(false);
+            return Ok(None);
         };
         let fingerprint = self.host.pairing().certificate().map(|certificate| {
             let digest: [u8; 32] = Sha256::digest(certificate.as_ref()).into();
             digest
         })?;
-        Ok(anchor::verify_anchor_setup_proof(
+        let holds = anchor::verify_anchor_setup_proof(
             &secret,
             server_nonce,
             client_nonce,
             &fingerprint,
             &proof,
-        ))
+        );
+        Ok(holds.then_some(secret))
     }
 
-    /// The vault a proven peer talks about, or why it cannot be served.
-    fn proven_vault(&self, asked: Option<String>) -> Result<Result<String, &'static str>, String> {
+    /// The vault a peer that proved `secret` talks about, or why it cannot be served. Before
+    /// activation the first vault asked for binds the code, and a code bound to another vault
+    /// is refused as a wrong one. A peer that asks for no vault, as recovery does, binds nothing.
+    fn proven_vault(
+        &self,
+        secret: &RelaySetupToken,
+        asked: Option<String>,
+    ) -> Result<Result<String, &'static str>, String> {
         let active = self.host.activation()?;
         Ok(match (asked, active) {
             (Some(asked), Some(active)) if asked != active.vault_id => {
                 Err("this server already runs another vault")
             }
-            (Some(asked), _) => match validate_identifier("vault id", &asked) {
-                Ok(()) => Ok(asked),
-                Err(_) => Err("this vault id is invalid"),
-            },
+            (Some(asked), active) => {
+                if validate_identifier("vault id", &asked).is_err() {
+                    Err("this vault id is invalid")
+                } else if active.is_none() && !self.bind(secret, &asked)? {
+                    Err(WRONG_CODE)
+                } else {
+                    Ok(asked)
+                }
+            }
             (None, Some(active)) => Ok(active.vault_id),
             (None, None) => Err("this server runs no vault yet"),
         })
+    }
+
+    fn bind(&self, secret: &RelaySetupToken, vault_id: &str) -> Result<bool, String> {
+        let _binding = self
+            .binding
+            .lock()
+            .map_err(|_| "the setup binding lock is poisoned".to_string())?;
+        super::state::bind_setup_vault(self.host.paths(), secret, vault_id)
     }
 
     /// What the server enrolls with, creating its keys for `vault_id` on first use.
@@ -213,10 +283,17 @@ impl SetupRoute {
             .await
             .map_err(|error| format!("read sync charter: {error}"))?
             .ok_or_else(|| "this server has no charter".to_string())?;
+        let view = Engine::vault()
+            .authorization(&mut conn, &ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .ok_or_else(|| "this server has no authorization log".to_string())?;
         Ok(Some(AnchorSpace {
             vault_id: active.vault_id,
             charter: encode_sync_charter(&charter),
             person_key: ctx.person_key.to_text(),
+            kit_admin_key: encode_sync_admin_key(&view.kit_admin_key),
+            recovery_admin_key: encode_sync_admin_key(&view.recovery_admin_key),
         }))
     }
 

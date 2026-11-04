@@ -580,7 +580,8 @@ pub struct RelayEpochEntry {
 pub enum RelayResponse {
     /// Accepts the hello.
     Welcome { protocol_version: u16 },
-    /// Accepts the credential. A stale connection may read but not write.
+    /// Accepts the credential. A stale connection, one below the current epoch, may pull, read
+    /// key epochs, and wait, but may not write or read the space state.
     Authenticated {
         epoch: u32,
         current_epoch: u32,

@@ -1,12 +1,12 @@
 //! The authorization log: enrollment gating at store, entries the anchor sequences, chain
 //! selection, readiness against the selected revision, and the derived device table.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{
-    AdminKeyPair, AuthorizationRecord, Content, DeviceKind, DeviceRole, Digest32, Enroll, Entry,
-    Envelope, Handover, Header, HlcClock, Operation, ProposalRejection, Remove, Sequencing,
-    SetRole, SignedProposal, WriterKeyPair, Yield,
+    AdminKeyPair, AuthorizationRecord, Content, DeviceKeyPair, DeviceKind, DeviceRole, Digest32,
+    Enroll, Entry, Envelope, Handover, Header, Hlc, HlcClock, Operation, ProposalRejection, Remove,
+    Sequencing, SetRole, SignedProposal, WriterKeyPair, Yield,
 };
 
 use super::block_on;
@@ -20,7 +20,7 @@ use crate::store::MAX_UNSELECTED_WRITERS_PER_SPACE;
 use crate::{
     AuthorizationView, HoldReason, LateChange, MAX_EXCLUDED_PER_WRITER, StoreOutcome, StoreRefusal,
 };
-use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
+use ganbaru_sync_contracts::bounds::{MAX_LOG_POSITION, MAX_WRITERS_PER_DEVICE};
 
 const STORED: StoreOutcome = StoreOutcome::Stored { held: None };
 
@@ -89,7 +89,11 @@ pub(super) async fn head(replica: &mut Replica) -> (u32, u64, Digest32) {
 
 /// The next operation of the replica's own writer with `content`, sealed outside the engine so
 /// a test can carry what the engine would never seal. The replica's own log does not hold it.
-async fn forge(replica: &mut Replica, content: Content, authorization_revision: u64) -> Vec<u8> {
+pub(super) async fn forge(
+    replica: &mut Replica,
+    content: Content,
+    authorization_revision: u64,
+) -> Vec<u8> {
     let last = replica
         .own_ops()
         .await
@@ -113,6 +117,20 @@ pub(super) fn seal_after(
     authorization_revision: u64,
     now_ms: u64,
 ) -> Vec<u8> {
+    let last = Envelope::decode(previous).unwrap().operation().unwrap();
+    let clock = HlcClock::new(last.header.clock).tick(now_ms);
+    seal_at(previous, key, content, authorization_revision, clock)
+}
+
+/// The operation `key` seals with `content` right after `previous` at `clock`, which the engine
+/// would only choose past the writer's last clock.
+pub(super) fn seal_at(
+    previous: &[u8],
+    key: &WriterKeyPair,
+    content: Content,
+    authorization_revision: u64,
+    clock: Hlc,
+) -> Vec<u8> {
     let envelope = Envelope::decode(previous).unwrap();
     let previous = envelope.operation().unwrap();
     Operation {
@@ -121,7 +139,7 @@ pub(super) fn seal_after(
         seq: previous.seq + 1,
         previous_hash: envelope.hash(),
         header: Header {
-            clock: HlcClock::new(previous.header.clock).tick(now_ms),
+            clock,
             manifest_version: previous.header.manifest_version,
             authorization_revision,
             key_epoch: 0,
@@ -1106,7 +1124,7 @@ fn two_admins_removing_each_other_freeze_until_one_yields_whatever_order_their_c
     });
 }
 
-async fn held(replica: &mut Replica, index: usize) -> bool {
+pub(super) async fn held(replica: &mut Replica, index: usize) -> bool {
     replica
         .engine
         .device_held(&mut replica.conn, &replica.ctx, &device_id(index))
@@ -1377,6 +1395,139 @@ fn operations_wait_for_the_revision_they_were_sealed_against_but_entries_never_w
     });
 }
 
+/// `record` carried right after `previous` by `key`'s writer, encoded and signed without the
+/// format's checks, as a writer that skips them would send it.
+fn seal_unchecked(
+    previous: &[u8],
+    key: &WriterKeyPair,
+    record: &AuthorizationRecord,
+    now_ms: u64,
+) -> Vec<u8> {
+    let mut template = record.clone();
+    template.revision = MAX_LOG_POSITION;
+    let template = seal_after(
+        previous,
+        key,
+        Content::Authorization(Box::new(template)),
+        MAX_LOG_POSITION - 1,
+        now_ms,
+    );
+    let envelope = Envelope::decode(&template).unwrap();
+    let mut signed = envelope.signed.to_vec();
+    // The header opens with the clock and manifest version, then the authorization revision,
+    // and ends with the record hash.
+    let header = signed.len() - envelope.header.len();
+    signed[header + 12..header + 20].copy_from_slice(&(record.revision - 1).to_be_bytes());
+    let end = signed.len();
+    signed[end - 32..].copy_from_slice(&record.hash());
+    let body = record.encode();
+    let mut bytes = signed.clone();
+    bytes.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+    bytes.extend_from_slice(&body);
+    bytes.extend_from_slice(&key.sign_operation(&signed));
+    bytes
+}
+
+/// The reachable revision `replica` last derived.
+async fn reachable_revision(replica: &mut Replica) -> i64 {
+    sqlx::query_scalar("SELECT reachable_revision FROM sync_spaces WHERE space_id = ?")
+        .bind(replica.ctx.space.as_bytes().as_slice())
+        .fetch_one(&mut replica.conn)
+        .await
+        .unwrap()
+}
+
+/// A self-minted writer's records on a parent no chain reaches are stored and exchanged, but
+/// raise neither the reachable revision nor the apply gate, and a revision past the store range
+/// is refused before it is stored.
+#[test]
+fn an_unwalked_record_does_not_raise_the_reachable_revision() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 61).await;
+        let mut member = Replica::new(1, 61).await;
+        tag(&mut member, "tag-1").await;
+        let chain_head = hub
+            .sequence(enroll_entry(&person(), 20, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        let genesis = hub.own_ops().await[0].clone();
+
+        let stranger = DeviceKeyPair::from_seed(&[61; 32]).unwrap();
+        let forger = Identity::new([62; 32], &stranger, &device_id(30), None);
+        let certificate = genesis_of(&genesis, &forger);
+        let forged = chain_head + 1_000;
+        let (space, now_ms) = (hub.ctx.space, hub.now_ms);
+        let record = |revision| AuthorizationRecord {
+            epoch: 0,
+            revision,
+            previous_entry_hash: [0xf0; 32],
+            anchor_device_id: ANCHOR_DEVICE_ID.to_owned(),
+            proposal: proposal(space, &device_admin(30), now_ms, admin_entry(31)),
+            sequencing: Sequencing::Empty,
+        };
+        let unwalked = seal_after(
+            &certificate,
+            &forger.key,
+            Content::Authorization(Box::new(record(forged))),
+            forged - 1,
+            now_ms,
+        );
+        let admission = hub
+            .engine
+            .admit_records(
+                &mut hub.conn,
+                &hub.ctx,
+                &[certificate, unwalked.clone()],
+                now_ms,
+            )
+            .await
+            .unwrap();
+        assert_eq!(admission.admitted, 2, "records stay stored and exchanged");
+        hub.apply_all().await.unwrap();
+        let reachable = reachable_revision(&mut hub).await;
+
+        // A member operation sealed against the unwalked revision waits for it.
+        let mut ops = member.own_ops().await;
+        ops.push(forge(&mut member, Content::Acknowledgement, forged).await);
+        hub.receive(&ops).await;
+        hub.apply_all().await.unwrap();
+        let member_applied = hub.applied_vector().await.get(&member.writer());
+
+        // One past the store range would fail every later selection if it were stored.
+        let past = seal_unchecked(
+            &unwalked,
+            &forger.key,
+            &record(MAX_LOG_POSITION + 1),
+            now_ms,
+        );
+        let past_admitted = hub
+            .engine
+            .admit_records(&mut hub.conn, &hub.ctx, &[past], now_ms)
+            .await
+            .unwrap()
+            .admitted;
+        let selects = hub.apply_all().await.is_ok()
+            && hub
+                .sequence(enroll_entry(&person(), 21, DeviceRole::Member))
+                .await
+                .is_ok_and(|revision| revision == Ok(chain_head + 1));
+
+        assert_eq!(
+            (reachable, member_applied, past_admitted, selects),
+            (
+                i64::try_from(chain_head).unwrap(),
+                u64::try_from(ops.len() - 1).unwrap(),
+                0,
+                true
+            ),
+            "reachable revision, applied member operations, stored past-range records, and \
+             whether selection still runs"
+        );
+        assert_eq!(view(&mut hub).await.revision, chain_head + 1);
+    });
+}
+
 #[test]
 fn an_entry_applied_before_the_local_writer_seals_its_genesis_does_not_freeze_it() {
     block_on(async {
@@ -1535,6 +1686,71 @@ fn the_anchor_rejects_entries_its_rules_forbid() {
 }
 
 #[test]
+fn an_admin_cannot_rekey_the_anchor_role() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 61).await;
+        hub.sequence(admin_entry(20)).await.unwrap().unwrap();
+        let space = hub.ctx.space;
+        let rekey = |key: &AdminKeyPair| {
+            Entry::SetRole(SetRole::Device {
+                device_id: ANCHOR_DEVICE_ID.to_owned(),
+                role: DeviceRole::Admin(key.public_key()),
+            })
+        };
+        let anchor_role = |view: &AuthorizationView| {
+            view.devices
+                .iter()
+                .find(|device| device.device_id == ANCHOR_DEVICE_ID)
+                .unwrap()
+                .role
+        };
+
+        // Another admin names a key it holds, or its own, for the anchor: both are refused and
+        // the anchor keeps its key.
+        let planted = AdminKeyPair::from_seed(&[78; 32]).unwrap();
+        for key in [&planted, &device_admin(20)] {
+            let attack = proposal(space, &device_admin(20), hub.now_ms, rekey(key));
+            assert_eq!(
+                hub.sequence_signed(&attack).await.unwrap(),
+                Err(ProposalRejection::NamesAnchor)
+            );
+        }
+        let anchor = anchor_admin(&person());
+        assert_eq!(
+            anchor_role(&view(&mut hub).await),
+            DeviceRole::Admin(anchor.public_key())
+        );
+
+        // The anchor rotates its own key, and the kit sets it back.
+        let rotated = AdminKeyPair::from_seed(&[79; 32]).unwrap();
+        let own = proposal(space, &anchor, hub.now_ms, rekey(&rotated));
+        hub.sequence_signed(&own).await.unwrap().unwrap();
+        assert_eq!(
+            anchor_role(&view(&mut hub).await),
+            DeviceRole::Admin(rotated.public_key())
+        );
+        let kit = proposal(
+            space,
+            &recovery_admin(&person()),
+            hub.now_ms,
+            rekey(&anchor),
+        );
+        hub.sequence_signed(&kit).await.unwrap().unwrap();
+        assert_eq!(
+            anchor_role(&view(&mut hub).await),
+            DeviceRole::Admin(anchor.public_key())
+        );
+
+        // The anchor still removes the admin that tried.
+        hub.sequence(remove_entry(&device_id(20)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_devices_replay_the_selected_chain(&mut hub).await;
+    });
+}
+
+#[test]
 fn a_chain_never_orders_one_proposal_twice() {
     block_on(async {
         let mut hub = Replica::anchor(0, 64).await;
@@ -1574,6 +1790,79 @@ fn a_chain_never_orders_one_proposal_twice() {
                 AdminKeyPair::from_seed(&[91; 32]).unwrap().public_key()
             );
         }
+    });
+}
+
+#[test]
+fn demoted_and_replaced_keys_fold_into_the_retired_set() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 66).await;
+        let space = hub.ctx.space;
+        hub.sequence(admin_entry(20)).await.unwrap().unwrap();
+        assert!(view(&mut hub).await.retired_admin_keys.is_empty());
+
+        // A demotion retires the device's admin key, which the device table no longer shows.
+        let admin = device_admin(20).public_key();
+        let set_role = |role: DeviceRole| {
+            Entry::SetRole(SetRole::Device {
+                device_id: device_id(20),
+                role,
+            })
+        };
+        hub.sequence(set_role(DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            view(&mut hub).await.retired_admin_keys,
+            BTreeSet::from([admin])
+        );
+
+        // A promotion back keeps the key retired; readers subtract the live admins.
+        hub.sequence(set_role(DeviceRole::Admin(admin)))
+            .await
+            .unwrap()
+            .unwrap();
+        let promoted = view(&mut hub).await;
+        assert_eq!(promoted.retired_admin_keys, BTreeSet::from([admin]));
+        assert!(promoted.devices.iter().any(|device| {
+            device.device_id == device_id(20) && device.role == DeviceRole::Admin(admin)
+        }));
+
+        // An installed recovery key retires the kit key it replaced as the recovery key.
+        let kit = recovery_admin(&person());
+        let installed = AdminKeyPair::from_seed(&[93; 32]).unwrap().public_key();
+        hub.sequence(Entry::SetRole(SetRole::Recovery {
+            recovery_admin_key: installed,
+        }))
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            view(&mut hub).await.retired_admin_keys,
+            BTreeSet::from([admin, kit.public_key()])
+        );
+
+        // A rotation the kit signs retires the installed key it resets.
+        let rotated = AdminKeyPair::from_seed(&[94; 32]).unwrap().public_key();
+        let rotation = proposal(
+            space,
+            &kit,
+            hub.now_ms,
+            Entry::SetRole(SetRole::Recovery {
+                recovery_admin_key: rotated,
+            }),
+        );
+        hub.sequence_signed(&rotation).await.unwrap().unwrap();
+        let after = view(&mut hub).await;
+        assert_eq!(
+            (after.kit_admin_key, after.recovery_admin_key),
+            (rotated, rotated)
+        );
+        assert_eq!(
+            after.retired_admin_keys,
+            BTreeSet::from([admin, kit.public_key(), installed])
+        );
     });
 }
 

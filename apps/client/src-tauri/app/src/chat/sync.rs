@@ -69,7 +69,8 @@ pub(crate) const CHAT_ASSIGNMENT_STARTED_TOPIC: &str = "chat-assignment-started"
 
 /// Replicated tables whose applied rows feed device-local Chat state, each registered with
 /// [`ChatApplyHook`].
-const HOOKED_TABLES: [&TableSpec; 12] = [
+const HOOKED_TABLES: [&TableSpec; 13] = [
+    &chat::PARTICIPANTS,
     &chat::TEAMMATES,
     &chat::POLICY_REVISIONS,
     &chat::PROFILES,

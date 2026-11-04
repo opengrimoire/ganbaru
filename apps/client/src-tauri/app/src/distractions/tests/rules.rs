@@ -15,6 +15,7 @@ fn limit_state_requires_a_local_date() {
         local_date: "today".to_string(),
         week_start_local_date: "2026-05-25".to_string(),
         updated_at: "2026-05-28T00:00:00.000Z".to_string(),
+        confirmed_at: None,
         database_path: Some("/tmp/ganbaru-vault/ganbaru.sqlite".to_string()),
         configuration_digest: None,
         limits: vec![DistractionsLimitStateItem {

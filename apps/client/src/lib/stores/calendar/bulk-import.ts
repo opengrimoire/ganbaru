@@ -273,7 +273,7 @@ function buildPreservedComponent(
     uid: component.uid ?? null,
     recurrenceId: component.recurrenceId ?? null,
     recurrenceIdValueType: component.recurrenceIdValueType ?? null,
-    sequence: component.sequence ?? null,
+    sequence: component.sequence === undefined ? null : clampImportedSequence(component.sequence),
     dtstartKey: component.dtstartKey ?? null,
     rawJcal: JSON.stringify(component.rawJcal),
     preservationStatus: component.preservationStatus,
@@ -362,7 +362,7 @@ function buildBulkImportEvent(
     priority: event.priority ?? null,
     categories: jsonOrNull(event.categories),
     geo: jsonOrNull(event.geo),
-    sequence: event.sequence ?? 0,
+    sequence: clampImportedSequence(event.sequence ?? 0),
     rdate: jsonOrNull(event.rdate),
     extendedProperties: jsonOrNull(event.extendedProperties),
     organizer: jsonOrNull(event.organizer),
@@ -442,6 +442,16 @@ function buildOverrides(
     visibility: overrideRow.visibility ?? null,
     extendedProperties: jsonOrNull(overrideRow.extendedProperties),
   }));
+}
+
+/**
+ * Bounds a parsed SEQUENCE to what the import command can receive, because a
+ * value outside its integer range refuses every event in the call. A clamped
+ * value can read as older than a larger stored one, which skips only that event.
+ */
+function clampImportedSequence(sequence: number): number {
+  if (Number.isNaN(sequence)) return 0;
+  return Math.trunc(Math.min(Math.max(sequence, 0), Number.MAX_SAFE_INTEGER));
 }
 
 function jsonOrNull(value: unknown): string | null {

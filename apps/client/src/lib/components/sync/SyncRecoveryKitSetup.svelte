@@ -18,11 +18,11 @@
    */
   let {
     buttonClass,
-    exportable = true,
+    printable = true,
   }: {
     buttonClass: string;
-    /** Whether the kit sheet offers its printable page and text file export. */
-    exportable?: boolean;
+    /** Whether the kit sheet offers its printable page; false where the platform cannot print. */
+    printable?: boolean;
   } = $props();
 
   const { t } = getLocalization();
@@ -85,7 +85,7 @@
       <div class="mt-0.5 text-[0.8rem] text-muted-foreground">{t("sync.kit.description")}</div>
     </div>
     {#if kitState.pending}
-      <SyncRecoveryKitSheet kit={kitState.pending} {buttonClass} {exportable} onConfirm={confirmSaved} />
+      <SyncRecoveryKitSheet kit={kitState.pending} {buttonClass} {printable} onConfirm={confirmSaved} />
     {:else}
       <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">
         {kitState.stored ? t("sync.kit.createStored") : t("sync.kit.createDescription")}

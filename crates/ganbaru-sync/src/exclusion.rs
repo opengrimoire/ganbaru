@@ -7,7 +7,10 @@
 //! are removed. The versions such an operation superseded come back from
 //! `sync_displaced_versions`, which a member fills while the anchor has not confirmed storing
 //! the superseding operation; the anchor never applies an operation past a cutoff, so it keeps
-//! none. After a handover the cutoff can still fall below what an earlier anchor installation
+//! none. Every replica also keeps there, once per Create, the value of a Create an Immutable
+//! group left out, and once removals are settled the group holds exactly the kept Creates that
+//! saw no other, so excluding a version ends as if the Create arrived after the exclusion,
+//! whatever the order. After a handover the cutoff can still fall below what an earlier anchor installation
 //! stored and confirmed, which kept nothing either, so the anchor seals again the current value
 //! of every live group an operation it excludes writes. The charter epoch has no earlier
 //! anchor, and sealing again there would only bury late values an admin may still restore.
@@ -32,9 +35,10 @@ use crate::apply::{Constrained, finish_sealed};
 use crate::authorization::{self, Selection};
 use crate::error::{SyncResult, corrupt};
 use crate::log::{self, seq_i64, stored_u64};
+use crate::manifest::{MergeKind, TableSpec};
 use crate::merge::{self, Batch, RowState, group_id, mask_param, table_param};
 use crate::seal::{SealReport, SealSlot};
-use crate::{Engine, LocalWriter, SpaceContext, SyncError, records, reseal, sql, store};
+use crate::{Engine, LocalWriter, SpaceContext, SyncError, records, reseal, sql, store, validate};
 
 /// Most operations past its removal cutoff a removed device's writer may still have stored.
 /// Later ones are refused as revoked.
@@ -44,8 +48,11 @@ pub const MAX_EXCLUDED_PER_WRITER: u64 = 1024;
 /// removed device: the ones with the lowest writer ids, so every replica derives the same late
 /// changes whatever order the writers arrived in. Each keeps up to [`MAX_EXCLUDED_PER_WRITER`]
 /// operations. A surplus writer keeps only its genesis and the authorization entries contiguous
-/// from it, a genesis above the lowest ids is refused as revoked, and a lower one displaces the
-/// highest, so a removed device that mints writers stores a bounded amount anywhere.
+/// from it, and a lower one displaces the highest, so a removed device that mints writers stores
+/// a bounded amount anywhere. Every replica stores a surplus genesis within the writer limits,
+/// so a context covering it becomes ready everywhere. Past those limits a lower unnamed genesis,
+/// or one the removal names, displaces the highest unnamed writer, and a context covering a
+/// writer the limits refuse for good is past the bound everywhere.
 pub const MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE: i64 = 2;
 
 /// A static query with, between `$before` and `$after`, the SQL condition on the writer row
@@ -171,37 +178,72 @@ pub(crate) async fn record_local_device(
 /// A writer some of whose operations the selected state excludes on this replica.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Excluding {
-    /// Removal cutoff and stored sequence, when the writer's device was removed and is not the
-    /// local one.
-    pub(crate) removal: Option<(Seq, Seq)>,
+    /// What the removal keeps of the writer, when its device was removed and is not the local
+    /// one.
+    pub(crate) removal: Option<Removal>,
     /// Last sequence the copies of a forked writer share.
     pub(crate) fork: Option<Seq>,
 }
 
+/// What a removal keeps of one writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Removal {
+    /// Removal cutoff of the writer.
+    pub(crate) cutoff: Seq,
+    /// Last sequence of the writer stored here.
+    pub(crate) stored: Seq,
+    /// Last sequence of the writer outside authorization entries any replica keeps:
+    /// [`excluded_limit`] of the cutoff, [`SURPLUS_LIMIT`] for a surplus unnamed writer, or 0
+    /// for an unnamed writer the writer limits refuse.
+    pub(crate) limit: Seq,
+}
+
 /// Writers some of whose operations are excluded on this replica: every writer of a removed
-/// device but the local one, and every forked writer.
+/// device but the local one, stored or refused by the writer limits, and every forked writer.
 pub(crate) async fn excluding(
     conn: &mut SqliteConnection,
     space: SpaceId,
 ) -> SyncResult<BTreeMap<WriterId, Excluding>> {
-    let rows: Vec<(Vec<u8>, i64, i64)> = sqlx::query_as(
-        "SELECT w.writer_id, w.removal_cutoff_seq, w.stored_seq
+    let rows: Vec<(Vec<u8>, i64, i64, bool)> = sqlx::query_as(surplus_unnamed_query!(
+        "SELECT w.writer_id, w.removal_cutoff_seq, w.stored_seq, ",
+        2,
+        " AS surplus
          FROM sync_writers w JOIN sync_spaces s ON s.space_id = w.space_id
-         WHERE w.space_id = ? AND w.removal_cutoff_seq IS NOT NULL
-            AND (s.local_device_id IS NULL OR w.device_id <> s.local_device_id)",
-    )
+         WHERE w.space_id = ?1 AND w.removal_cutoff_seq IS NOT NULL
+            AND (s.local_device_id IS NULL OR w.device_id <> s.local_device_id)"
+    ))
     .bind(space.as_bytes().as_slice())
+    .bind(MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
     .fetch_all(&mut *conn)
     .await?;
     let mut excluding = BTreeMap::new();
-    for (writer, cutoff, stored) in &rows {
+    for (writer, cutoff, stored, surplus) in &rows {
+        let cutoff = stored_u64(*cutoff, "removal cutoff")?;
         excluding.insert(
             log::writer_id(writer)?,
             Excluding {
-                removal: Some((
-                    stored_u64(*cutoff, "removal cutoff")?,
-                    stored_u64(*stored, "stored sequence")?,
-                )),
+                removal: Some(Removal {
+                    cutoff,
+                    stored: stored_u64(*stored, "stored sequence")?,
+                    limit: if *surplus {
+                        SURPLUS_LIMIT
+                    } else {
+                        excluded_limit(cutoff)
+                    },
+                }),
+                fork: None,
+            },
+        );
+    }
+    for writer in refused_unnamed(conn, space).await? {
+        excluding.insert(
+            writer,
+            Excluding {
+                removal: Some(Removal {
+                    cutoff: 0,
+                    stored: 0,
+                    limit: 0,
+                }),
                 fork: None,
             },
         );
@@ -215,6 +257,47 @@ pub(crate) async fn excluding(
     Ok(excluding)
 }
 
+/// Writers of a removed device but the local one whose certificate is stored but whose genesis
+/// the writer limits refuse for good: the removal does not name them, the device or the space is
+/// full, and no stored unnamed writer of the device has a higher id to displace. Every replica
+/// that stores the same geneses refuses them alike, so a context covering one is past the bound
+/// everywhere. A writer the limits would still admit is left out, and a context covering it
+/// waits for its genesis.
+async fn refused_unnamed(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<Vec<WriterId>> {
+    let rows: Vec<(Vec<u8>, String)> = sqlx::query_as(
+        "SELECT DISTINCT e.writer_id, e.device_id
+         FROM sync_auth_envelopes e
+         JOIN sync_devices d
+            ON d.space_id = e.space_id AND d.device_id = e.device_id
+                AND d.device_key = e.device_key
+         JOIN sync_spaces s ON s.space_id = e.space_id
+         WHERE e.space_id = ?1 AND e.role = 'certificate' AND d.removed_revision IS NOT NULL
+            AND (s.local_device_id IS NULL OR e.device_id <> s.local_device_id)
+            AND NOT EXISTS (
+                SELECT 1 FROM sync_writers w
+                WHERE w.space_id = e.space_id AND w.writer_id = e.writer_id
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM sync_writers w
+                WHERE w.space_id = e.space_id AND w.device_id = e.device_id
+                    AND w.removal_cutoff_seq = 0 AND w.writer_id > e.writer_id
+            )",
+    )
+    .bind(space.as_bytes().as_slice())
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut refused = Vec::new();
+    for (writer, device) in rows {
+        let writer = log::writer_id(&writer)?;
+        if !store::within_writer_limits(conn, space, &device, true).await?
+            && authorization::removal_cutoff(conn, space, &device, writer).await? == 0
+        {
+            refused.push(writer);
+        }
+    }
+    Ok(refused)
+}
+
 /// Whether an operation with causal context `context` may apply after `applied`.
 ///
 /// A context entry `(W, s)` is satisfied when `W` is applied through `s`, or when the selected
@@ -223,9 +306,11 @@ pub(crate) async fn excluding(
 /// - Fork: `s` is past the last sequence the copies of the forked writer `W` share, and `W` is
 ///   applied through that sequence. No replica stores either branch once it holds the evidence.
 /// - Removal: `s` is past the removal cutoff of `W`, `W` is applied through the cutoff, and the
-///   excluded operation is stored, or `s` is past the [`excluded_limit`] of the
-///   cutoff, where no replica stores it. Storing the excluded operations first lets the late
-///   changes they leave know the rows they created.
+///   excluded operation is stored, or `s` is past the writer's [`Removal::limit`], where no
+///   replica stores it. Storing the excluded operations first lets the late changes they leave
+///   know the rows they created. A surplus unnamed writer's limit is its genesis, which every
+///   replica stores within the writer limits. An unnamed writer those limits refuse for good,
+///   whose genesis no replica keeps, has limit 0.
 ///
 /// The excluded operations never apply, so waiting for them would hold an honest operation
 /// forever. A fork clamps `s` to the shared prefix before the removal rule applies.
@@ -243,19 +328,18 @@ pub(crate) fn ready(
         };
         let seq = excluded.fork.map_or(seq, |keep| seq.min(keep));
         match excluded.removal {
-            Some((cutoff, stored)) if seq > cutoff => {
-                let beyond = seq > excluded_limit(cutoff);
-                applied.get(&writer) >= cutoff && (stored >= seq || beyond)
+            Some(removal) if seq > removal.cutoff => {
+                applied.get(&writer) >= removal.cutoff
+                    && (removal.stored >= seq || seq > removal.limit)
             }
             _ => applied.get(&writer) >= seq,
         }
     })
 }
 
-/// Whether `context` covers an operation past the [`excluded_limit`] of the
-/// removal cutoff of an excluded writer. No replica keeps such an operation, so a row only it
-/// created is unknown everywhere, and an honest change to that row is dropped on every replica
-/// alike instead of holding its writer.
+/// Whether `context` covers an operation past the [`Removal::limit`] of an excluded writer. No
+/// replica keeps such an operation, so a row only it created is unknown everywhere, and an
+/// honest change to that row is dropped on every replica alike instead of holding its writer.
 pub(crate) fn beyond_bound(
     context: &VersionVector,
     excluding: &BTreeMap<WriterId, Excluding>,
@@ -265,7 +349,7 @@ pub(crate) fn beyond_bound(
             excluding
                 .get(&writer)
                 .and_then(|excluded| excluded.removal)
-                .is_some_and(|(cutoff, _)| seq > excluded_limit(cutoff))
+                .is_some_and(|removal| seq > removal.limit)
         })
 }
 
@@ -373,6 +457,7 @@ pub(crate) async fn reconcile(
         restore_displaced(engine, conn, batch, *writer, *cutoff).await?;
     }
     if !removed.is_empty() {
+        merge::settle_kept(engine, conn, batch).await?;
         drop_orphan_rows(conn, batch).await?;
     }
     let released = release(engine, conn, ctx, local.as_deref()).await?;
@@ -423,8 +508,8 @@ async fn release(
     ctx: &SpaceContext,
     local: Option<&str>,
 ) -> SyncResult<bool> {
-    let rows: Vec<(Vec<u8>, i64, Vec<u8>)> = sqlx::query_as(
-        "SELECT o.writer_id, o.seq, o.envelope
+    let rows: Vec<(Vec<u8>, i64, Vec<u8>, String)> = sqlx::query_as(
+        "SELECT o.writer_id, o.seq, o.envelope, w.device_id
          FROM sync_ops o JOIN sync_writers w
             ON w.space_id = o.space_id AND w.writer_id = o.writer_id
          WHERE o.space_id = ?1 AND o.excluded_revision IS NOT NULL
@@ -436,9 +521,9 @@ async fn release(
     .bind(local)
     .fetch_all(&mut *conn)
     .await?;
-    for (writer, seq, envelope) in &rows {
+    for (writer, seq, envelope, device) in &rows {
         let hold = match Envelope::decode(envelope) {
-            Ok(envelope) => store::classify(engine, &envelope).hold(),
+            Ok(envelope) => store::classify(engine, &envelope, device).hold(),
             Err(_) => Some(store::HoldReason::Invalid),
         };
         sqlx::query(
@@ -456,10 +541,37 @@ async fn release(
     Ok(!rows.is_empty())
 }
 
+/// Versions of one group as `(writer, seq)`.
+async fn group_versions(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+    group: GroupId,
+) -> SyncResult<Vec<(WriterId, Seq)>> {
+    let rows: Vec<(Vec<u8>, i64)> = sqlx::query_as(
+        "SELECT writer_id, seq FROM sync_register_versions
+         WHERE table_id = ? AND row_key = ? AND group_id = ?",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .bind(i64::from(group.get()))
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.iter()
+        .map(|(writer, seq)| {
+            Ok((
+                log::writer_id(writer)?,
+                stored_u64(*seq, "version sequence")?,
+            ))
+        })
+        .collect()
+}
+
 /// Restores the versions the operations of `writer` past `cutoff` superseded, unless the
-/// superseded version's own operation is excluded, its writer has a later version of the group,
-/// or a remaining version of the group saw it. Displaced rows of those operations, and those of
-/// versions the operations wrote, are dropped.
+/// superseded version's own operation is excluded or gone, its writer has a later version of the
+/// group, or a remaining version of the group saw it. Displaced rows of those operations, and
+/// those of versions the operations wrote, are dropped. Creates held back from a group
+/// [`merge::keeps_immutable`] are settled by [`merge::settle_kept`] once every removal is.
 pub(crate) async fn restore_displaced(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -469,7 +581,7 @@ pub(crate) async fn restore_displaced(
 ) -> SyncResult<()> {
     let rows = sqlx::query(
         "SELECT d.table_id, d.row_key, d.group_id, d.writer_id, d.seq, d.clock, d.value_hash,
-            d.value, o.excluded_revision IS NOT NULL
+            d.value, o.seq IS NULL OR o.excluded_revision IS NOT NULL
          FROM sync_displaced_versions d
          LEFT JOIN sync_ops o ON o.space_id = ?1 AND o.writer_id = d.writer_id AND o.seq = d.seq
          WHERE d.displaced_by_writer = ?2 AND d.displaced_by_seq > ?3
@@ -506,19 +618,15 @@ pub(crate) async fn restore_displaced(
         if merge::row_state(conn, table, &key).await?.is_none() {
             continue;
         }
-        let existing: Vec<(Vec<u8>, i64)> = sqlx::query_as(
-            "SELECT writer_id, seq FROM sync_register_versions
-             WHERE table_id = ? AND row_key = ? AND group_id = ?",
-        )
-        .bind(table_param(table))
-        .bind(&key)
-        .bind(i64::from(stored.group.get()))
-        .fetch_all(&mut *conn)
-        .await?;
+        let group = spec
+            .group(stored.group)
+            .ok_or_else(|| corrupt("displaced version of an unknown group"))?;
+        if merge::keeps_immutable(spec, group) {
+            continue;
+        }
+        let existing = group_versions(conn, table, &key, stored.group).await?;
         let mut superseded = false;
-        for (other, other_seq) in &existing {
-            let other = log::writer_id(other)?;
-            let other_seq = stored_u64(*other_seq, "version sequence")?;
+        for (other, other_seq) in existing {
             if other == stored.writer
                 || batch
                     .contexts
@@ -705,11 +813,12 @@ pub(crate) async fn settle(
 /// not know the removal or the lower writers yet: a replica that learned them first refuses
 /// them, so dropping them leaves what never storing them leaves. Authorization entries
 /// contiguous past that bound stay up to their own bound, as a replica that knew the removal
-/// stores them too; the
-/// entries of what is dropped go with it. Rows a dropped operation created
-/// lose their whole merge state, honest changes included, since a replica that never stored
-/// the creation skips those changes (see [`beyond_bound`]). The local device keeps its own
-/// operations. Returns whether a dropped operation carried an entry.
+/// stores them too; the entries of what is dropped go with it. A row loses its whole merge
+/// state only when no kept operation created it, honest changes included, since a replica that
+/// never stored the creation skips those changes (see [`beyond_bound`]). A row a kept operation
+/// also created keeps its merge state, and excluding the dropped operations' applied effects
+/// removes what they wrote to it. The local device keeps its own operations. Returns whether a
+/// dropped operation carried an entry.
 async fn drop_beyond_bound(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -777,14 +886,16 @@ async fn drop_beyond_bound(
         // the cutoff and removes the effects of every applied one.
         crate::fork::drop_branch(conn, space, writer, bound, stored_u64(applied, "applied")?)
             .await?;
-        for (table, key) in created {
+        for (table, key) in uncreated_after_drop(conn, writer, bound, created).await? {
             purge_row(conn, batch, table, key).await?;
         }
     }
     Ok(entries)
 }
 
-/// Rows created by the applied operations of `writer` past `bound`.
+/// Rows created by the applied operations of `writer` past `bound`, read from the recorded
+/// creations so that operations whose bodies were compacted count too. Only rows of tables that
+/// track their creation count, see [`tracks_creation`].
 pub(crate) async fn created_past(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -792,9 +903,10 @@ pub(crate) async fn created_past(
     writer: WriterId,
     bound: Seq,
 ) -> SyncResult<BTreeSet<(TableId, String)>> {
-    let envelopes: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT envelope FROM sync_ops
-         WHERE space_id = ? AND writer_id = ? AND seq > ? AND state = 'applied'",
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT c.table_id, c.row_key FROM sync_row_creations c
+         JOIN sync_ops o ON o.writer_id = c.writer_id AND o.seq = c.seq
+         WHERE o.space_id = ? AND c.writer_id = ? AND c.seq > ?",
     )
     .bind(space.as_bytes().as_slice())
     .bind(writer.as_bytes().as_slice())
@@ -802,21 +914,37 @@ pub(crate) async fn created_past(
     .fetch_all(&mut *conn)
     .await?;
     let mut created = BTreeSet::new();
-    for envelope in envelopes {
-        let Some(Content::Changes(changes)) = Envelope::decode(&envelope)
-            .ok()
-            .and_then(|envelope| envelope.operation().ok())
-            .map(|operation| operation.content)
-        else {
-            continue;
-        };
-        for change in &changes {
-            if late_kind(engine, change) == Some(LateKind::Created) {
-                created.insert((change.table, change.row.as_str().to_string()));
-            }
+    for (table, key) in rows {
+        let table = u16::try_from(table)
+            .map(TableId)
+            .map_err(|_| corrupt("row creation of a table id out of range"))?;
+        if engine.manifest().table(table).is_some_and(tracks_creation) {
+            created.insert((table, key));
         }
     }
     Ok(created)
+}
+
+/// Forgets the creations of `writer` past `bound`, and keeps of `rows` those no other
+/// creation holds, which are the rows only dropped operations created.
+async fn uncreated_after_drop(
+    conn: &mut SqliteConnection,
+    writer: WriterId,
+    bound: Seq,
+    rows: BTreeSet<(TableId, String)>,
+) -> SyncResult<BTreeSet<(TableId, String)>> {
+    sqlx::query("DELETE FROM sync_row_creations WHERE writer_id = ? AND seq > ?")
+        .bind(writer.as_bytes().as_slice())
+        .bind(seq_i64(bound)?)
+        .execute(&mut *conn)
+        .await?;
+    let mut uncreated = BTreeSet::new();
+    for (table, key) in rows {
+        if !has_creation(conn, table, &key).await? {
+            uncreated.insert((table, key));
+        }
+    }
+    Ok(uncreated)
 }
 
 /// Removes every version, tombstone, and displaced version of a row with its merge row, and
@@ -923,7 +1051,8 @@ async fn marks(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<BTreeM
 }
 
 /// Raises anchor marks and drops the displaced versions whose superseding operation they
-/// cover.
+/// cover. Held Creates stay: a cutoff after a handover or a fork can still fall below a mark,
+/// and only the held Create can fill its group again.
 async fn write_marks(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -946,7 +1075,8 @@ async fn write_marks(
             "DELETE FROM sync_displaced_versions
              WHERE displaced_by_writer = ?1 AND displaced_by_seq <= (
                 SELECT seq FROM sync_anchor_marks WHERE space_id = ?2 AND writer_id = ?1
-             )",
+             )
+                AND NOT (writer_id = ?1 AND seq = displaced_by_seq)",
         )
         .bind(writer.as_bytes().as_slice())
         .bind(space.as_bytes().as_slice())
@@ -996,11 +1126,13 @@ pub(crate) async fn record_marks(
 /// What a removed device's late operations did to a row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LateKind {
-    /// Wrote values of an existing row.
+    /// Wrote values of an existing row, or created a row an operation that still counts also
+    /// created.
     Values,
     /// Deleted the row.
     Tombstone,
-    /// Created the row, which stays hidden until an admin restores it.
+    /// Created a row no operation that still counts created, which stays hidden until an admin
+    /// restores it.
     Created,
 }
 
@@ -1110,13 +1242,19 @@ pub(crate) fn decode_groups(mut bytes: &[u8]) -> SyncResult<LateGroups> {
     Ok(groups)
 }
 
+/// Whether a create of a row of `spec` creates it for exclusion: a row with its own key does,
+/// and a derived-key row does not, since any replica may create that row on its own.
+fn tracks_creation(spec: &TableSpec) -> bool {
+    spec.derived_key.is_none()
+}
+
 /// What one change of an excluded operation leaves: a create of a row with its own key
 /// creates it, and a create of a derived-key row only writes values, since any replica may
 /// create that row on its own.
 fn late_kind(engine: &Engine, change: &Change) -> Option<LateKind> {
     let spec = engine.manifest().table(change.table)?;
     Some(match change.action {
-        ChangeAction::Create if spec.derived_key.is_none() => LateKind::Created,
+        ChangeAction::Create if tracks_creation(spec) => LateKind::Created,
         ChangeAction::Create | ChangeAction::Write => LateKind::Values,
         ChangeAction::Tombstone => LateKind::Tombstone,
     })
@@ -1124,7 +1262,10 @@ fn late_kind(engine: &Engine, change: &Change) -> Option<LateKind> {
 
 /// Folds the changes of the excluded operation `(writer, seq)` into the late changes of
 /// `removal`. A row keeps the strongest kind (created, then tombstone, then values), the union
-/// of the groups written, and the latest value per group; a decision on the row stays.
+/// of the groups written, and the latest value per group; a decision on the row stays. Callers
+/// skip an operation classified as invalid, which leaves no late change on any replica. An
+/// operation of a newer manifest stays, since this version cannot judge it and nothing folds it
+/// again after an update.
 pub(crate) async fn fold(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -1298,6 +1439,9 @@ async fn late_state(conn: &mut SqliteConnection) -> SyncResult<LateState> {
     Ok(state)
 }
 
+/// An excluded operation's writer, sequence, removal revision, envelope, and writer device.
+type ExcludedOp = (Vec<u8>, i64, i64, Vec<u8>, String);
+
 /// Derives every late change again from the excluded operations and the decisions of the
 /// selected chain, and marks dirty each row whose late state changed. Removals the chain no
 /// longer selects lose their late changes with their exclusions.
@@ -1311,18 +1455,24 @@ pub(crate) async fn rebuild_late(
     sqlx::query("DELETE FROM sync_late_changes")
         .execute(&mut *conn)
         .await?;
-    let rows: Vec<(Vec<u8>, i64, i64, Vec<u8>)> = sqlx::query_as(
-        "SELECT writer_id, seq, excluded_revision, envelope FROM sync_ops
-         WHERE space_id = ? AND excluded_revision IS NOT NULL ORDER BY writer_id, seq",
+    let rows: Vec<ExcludedOp> = sqlx::query_as(
+        "SELECT o.writer_id, o.seq, o.excluded_revision, o.envelope, w.device_id
+         FROM sync_ops o JOIN sync_writers w
+            ON w.space_id = o.space_id AND w.writer_id = o.writer_id
+         WHERE o.space_id = ? AND o.excluded_revision IS NOT NULL
+         ORDER BY o.writer_id, o.seq",
     )
     .bind(batch.space.as_bytes().as_slice())
     .fetch_all(&mut *conn)
     .await?;
-    for (writer, seq, removal, envelope) in rows {
-        let Some(operation) = Envelope::decode(&envelope)
-            .ok()
-            .and_then(|envelope| envelope.operation().ok())
-        else {
+    for (writer, seq, removal, envelope, device) in rows {
+        let Ok(envelope) = Envelope::decode(&envelope) else {
+            continue;
+        };
+        if store::classify(engine, &envelope, &device).hold() == Some(store::HoldReason::Invalid) {
+            continue;
+        }
+        let Ok(operation) = envelope.operation() else {
             continue;
         };
         fold(
@@ -1413,9 +1563,11 @@ pub(crate) async fn any_late(conn: &mut SqliteConnection) -> SyncResult<bool> {
     )
 }
 
-/// Whether a live row is hidden as a late change: a removed device created it past its cutoff
-/// and no admin restored it, or excluding a removed device's operations left it without a
-/// value for a group.
+/// Whether a live row is hidden as a late change: a removed device created it past its cutoff,
+/// no operation that still counts created it, and no admin restored it, or excluding a removed
+/// device's operations left it without a value for a group. A late create of a row an honest
+/// operation created never hides it, since the removed device could otherwise hide any row
+/// whose key it knew.
 pub(crate) async fn hides(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -1432,10 +1584,10 @@ pub(crate) async fn hides(
     if rows.is_empty() {
         return Ok(false);
     }
-    if rows
-        .iter()
-        .any(|(change, resolution)| change == "created" && resolution.as_deref() != Some("restore"))
-    {
+    let created = rows.iter().any(|(change, resolution)| {
+        change == "created" && resolution.as_deref() != Some("restore")
+    });
+    if created && !has_creation(conn, table, key).await? {
         return Ok(true);
     }
     let Some(spec) = engine.manifest().table(table) else {
@@ -1470,6 +1622,61 @@ pub(crate) async fn created_late(
     .bind(key)
     .fetch_one(&mut *conn)
     .await?)
+}
+
+/// Whether an operation that still counts created this row. Effects of excluded operations
+/// left `sync_row_creations` when they were removed, and a replica that never applied them
+/// has none, so the answer does not depend on arrival order.
+pub(crate) async fn has_creation(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+) -> SyncResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sync_row_creations WHERE table_id = ? AND row_key = ?)",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// The kind a late change has now: a late create of a row an operation that still counts also
+/// created acts as late values. The stored kind stays as folded, so it does not depend on
+/// arrival order, and this answer follows the replica's creations as they change.
+async fn effective_kind(conn: &mut SqliteConnection, record: &LateRecord) -> SyncResult<LateKind> {
+    if record.kind == LateKind::Created && has_creation(conn, record.table, &record.key).await? {
+        return Ok(LateKind::Values);
+    }
+    Ok(record.kind)
+}
+
+/// The clock of the operation carrying the selected entry of `revision`, read from the record
+/// store, which holds it on every replica that selected it. `None` when this replica selected
+/// no such entry or its envelope does not decode.
+pub(crate) async fn entry_clock(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    revision: u64,
+) -> SyncResult<Option<Hlc>> {
+    let envelope: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT e.envelope FROM sync_auth_selected s
+         JOIN sync_auth_envelopes e
+            ON e.space_id = s.space_id AND e.envelope_hash = s.envelope_hash AND e.role = 'record'
+         WHERE s.space_id = ? AND s.revision = ?
+         LIMIT 1",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(seq_i64(revision)?)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(envelope.and_then(|bytes| {
+        Envelope::decode(&bytes)
+            .ok()?
+            .header_fields()
+            .ok()
+            .map(|header| header.clock)
+    }))
 }
 
 /// One stored late change.
@@ -1544,7 +1751,8 @@ pub struct LateChange {
     pub table: TableId,
     /// Row key.
     pub row_key: String,
-    /// What the excluded operations did to the row.
+    /// What the excluded operations did to the row, with a late create of a row an operation
+    /// that still counts created listed as values.
     pub kind: LateKind,
     /// Title and preview from the late values.
     pub presentation: Presentation,
@@ -1552,22 +1760,38 @@ pub struct LateChange {
     pub values: Vec<(GroupId, Value)>,
     /// Clock of the newest late value, or `None` when the change only deleted the row.
     pub clock: Option<Hlc>,
+    /// Whether restoring the change can write it back. A row the removed device owns only that
+    /// device may write, so restoring it records the decision and writes nothing, and the
+    /// listing offers only discarding it.
+    pub restorable: bool,
 }
 
 /// The change restoring a late change seals: the late values no current version is newer than,
-/// as a create of every group when the removed device created the row or no published state
-/// knows it, or a deletion of a live row.
+/// as a create of every group when only the removed device created the row or no published
+/// state knows it, or a deletion of a live row. A write leaves out Immutable groups, which the
+/// row already holds, unless it is a derived-key re-add of every group. A late value counts at
+/// most at the clock of the removal entry, since the removed device signed it alone: a forged
+/// clock ahead of the removal cannot beat an honest edit from before the removal was seen. A
+/// row another device owns seals nothing, since only its owner can write it: the restore
+/// decision is all that is recorded. [`admit_restoring_change`] judges the result, since values
+/// that were valid in separate operations can compose into a change that is not.
 async fn restoring_change(
     engine: &Engine,
     conn: &mut SqliteConnection,
+    space: SpaceId,
     record: &LateRecord,
+    sealing_device: &str,
 ) -> SyncResult<Option<Change>> {
     let Some(spec) = engine.manifest().table(record.table) else {
         return Err(corrupt("late change of an unknown table"));
     };
+    if !validate::device_owns_row(spec, &record.key, sealing_device) {
+        return Ok(None);
+    }
     let row = RowKey::new(record.key.clone()).map_err(|_| corrupt("stored row key"))?;
     let state = merge::row_state(conn, record.table, &record.key).await?;
-    if record.kind == LateKind::Tombstone {
+    let kind = effective_kind(conn, record).await?;
+    if kind == LateKind::Tombstone {
         return Ok((state == Some(RowState::Live)).then(|| Change {
             table: record.table,
             row,
@@ -1579,19 +1803,23 @@ async fn restoring_change(
     }
     let versions = merge::versions(engine, conn, record.table, &record.key).await?;
     let restated = crate::fork::restated(conn, record.table, &record.key).await?;
+    // Without the removal entry no late clock is trusted, so every honest version wins.
+    let removal_clock = entry_clock(conn, space, record.removal)
+        .await?
+        .unwrap_or(Hlc::from_u64(0));
     // A version restating an older value this replica sealed again is no newer edit. Only the
     // replica that sealed a restatement, the anchor or a former anchor, records it, so on another
     // admin a restatement still counts as newer and the group keeps the restated value.
     let newer = |group: GroupId, late: &LateValue| {
         versions.iter().any(|version| {
             version.group == group
-                && version.clock > late.clock
+                && version.clock > late.clock.min(removal_clock)
                 && restated.get(&group) != Some(&version.hash)
         })
     };
     // A late create comes back as a create, which writes every group: a group an honest
     // operation wrote after the late value keeps that honest value.
-    if record.kind == LateKind::Created {
+    if kind == LateKind::Created {
         let winners = merge::winners(engine, spec, &versions);
         let mut groups = Vec::with_capacity(spec.groups.len());
         for group in spec.groups {
@@ -1612,19 +1840,26 @@ async fn restoring_change(
             cause: None,
         }));
     }
-    let groups = record
+    let mut groups = record
         .groups
         .iter()
         .filter(|(group, late)| !newer(**group, late))
         .map(|(group, late)| GroupValue::new(spec.id, *group, late.value.clone()))
         .collect::<Vec<_>>();
-    if groups.is_empty() {
-        return Ok(None);
-    }
     let action = match state {
         None => ChangeAction::Create,
         Some(_) => ChangeAction::Write,
     };
+    let readd = spec.derived_key.is_some() && groups.len() == spec.groups.len();
+    if action == ChangeAction::Write && !readd {
+        groups.retain(|value| {
+            spec.group(value.group)
+                .is_some_and(|group| group.kind != MergeKind::Immutable)
+        });
+    }
+    if groups.is_empty() {
+        return Ok(None);
+    }
     Ok(Some(Change {
         table: record.table,
         row,
@@ -1633,6 +1868,22 @@ async fn restoring_change(
         replaced_by: None,
         cause: None,
     }))
+}
+
+/// Refuses a restoring change the manifest or its row owner would refuse. Sealing validates
+/// nothing, so peers would hold such an operation as invalid and stall the sealing writer. The
+/// listing stays, and an admin can discard it.
+fn admit_restoring_change(
+    engine: &Engine,
+    change: &Change,
+    sealing_device: &str,
+) -> SyncResult<()> {
+    let Some(spec) = engine.manifest().table(change.table) else {
+        return Err(corrupt("late change of an unknown table"));
+    };
+    validate::change(engine, change)
+        .and_then(|()| validate::writer_change(spec, change, sealing_device))
+        .map_err(SyncError::InvalidRequest)
 }
 
 impl Engine {
@@ -1673,6 +1924,7 @@ impl Engine {
                 .adapter(spec)
                 .map(|adapter| adapter.presentation(spec.id, &values))
                 .unwrap_or_default();
+            let kind = effective_kind(conn, &record).await?;
             changes.push(LateChange {
                 removal_revision: record.removal,
                 device_id: removed
@@ -1681,10 +1933,13 @@ impl Engine {
                     .ok_or_else(|| corrupt("late change of an unknown removal"))?,
                 table: record.table,
                 row_key: record.key,
-                kind: record.kind,
+                kind,
                 presentation,
                 clock: record.groups.values().map(|late| late.clock).max(),
                 values,
+                // Every replica holds a write to an owned row by another device as invalid,
+                // so a late change to one is the removed device's own row.
+                restorable: spec.owner.is_none(),
             });
         }
         Ok(changes)
@@ -1694,6 +1949,11 @@ impl Engine {
     /// writer, before an admin sequences `resolve_late` restoring it: the late values no
     /// current version is newer than, or the deletion of a live row. A change already decided,
     /// or one with nothing left to write, seals no change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SyncError::InvalidRequest`] with nothing sealed when the change to seal would
+    /// not pass validation on a peer, which leaves the late change listed for a discard.
     pub async fn restore_late_change(
         &self,
         conn: &mut SqliteConnection,
@@ -1724,7 +1984,17 @@ impl Engine {
             &writer.certificate.certificate.device_id,
         )
         .await?;
-        let change = restoring_change(self, &mut tx, &record).await?;
+        let change = restoring_change(
+            self,
+            &mut tx,
+            ctx.space,
+            &record,
+            &writer.certificate.certificate.device_id,
+        )
+        .await?;
+        if let Some(change) = &change {
+            admit_restoring_change(self, change, &writer.certificate.certificate.device_id)?;
+        }
         let mut slot = SealSlot::new(Some(writer));
         let (sealer, writer) = slot
             .open(self, &mut tx, ctx, &mut batch, now_ms)

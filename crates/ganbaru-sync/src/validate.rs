@@ -5,12 +5,15 @@
 //! A test compares both forms on the same samples.
 
 use ganbaru_sync_contracts::bounds::{MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES};
-use ganbaru_sync_contracts::{Change, ChangeAction, Field, OrderKey, RowKey, Value, derived_key};
+use ganbaru_sync_contracts::{
+    Change, ChangeAction, Field, OrderKey, RowKey, Value, derived_key, device_owner_tag,
+};
 
 use crate::Engine;
 use crate::codec::{decode_table, owned_blob};
 use crate::manifest::{
-    ColumnType, DerivedKey, GroupSpec, MAX_TIMESTAMP_BYTES, MergeKind, TableSpec,
+    ColumnType, Deletion, DerivedKey, GroupSpec, MAX_TIMESTAMP_BYTES, MergeKind, RowOwner,
+    TableSpec,
 };
 
 /// Why a value or change breaks the manifest.
@@ -61,14 +64,17 @@ pub(crate) fn column_value(ty: ColumnType, field: &Field) -> bool {
         ColumnType::OrderKey => {
             is_text_without_nul(field).is_some_and(|text| OrderKey::parse(text).is_ok())
         }
-        ColumnType::OptionalRowKey => match field {
-            Field::Null => true,
-            Field::Text(text) => {
-                text.len() <= MAX_ROW_KEY_BYTES && RowKey::new(text.as_str()).is_ok()
-            }
-            _ => false,
-        },
+        ColumnType::OptionalRowKey => *field == Field::Null || is_row_key_text(field),
+        ColumnType::RowKey => is_row_key_text(field),
     }
+}
+
+/// Whether a field is text that can key a row.
+fn is_row_key_text(field: &Field) -> bool {
+    matches!(
+        field,
+        Field::Text(text) if text.len() <= MAX_ROW_KEY_BYTES && RowKey::new(text.as_str()).is_ok()
+    )
 }
 
 /// Checks a group value against its storage, column rules, and the table's adapter.
@@ -107,6 +113,14 @@ pub(crate) fn group_value(
 /// Checks one change against the manifest.
 pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
     let table = engine.manifest().table(change.table).ok_or("table")?;
+    if !table.key_rule.admits(change.row.as_str()) {
+        return Err("row key rule");
+    }
+    if let Some(adapter) = engine.adapter(table) {
+        adapter
+            .validate_key(table.id, change.row.as_str())
+            .map_err(|error| error.0)?;
+    }
     let mask = change.mask();
     let full = table.full_mask();
     match change.action {
@@ -134,13 +148,18 @@ pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
             if table.derived_key.is_some() {
                 return Err("derived-key tombstone");
             }
+            if table.deletion == Deletion::Never {
+                return Err("tombstone of a never-deleted table");
+            }
             if let Some(target) = &change.replaced_by {
                 if !table.redirects || target >= &change.row {
                     return Err("tombstone redirect");
                 }
             }
             if let Some(cause) = &change.cause {
-                if engine.manifest().table(cause.table).is_none() {
+                // Every honest cause is reached along references, and derivation scoped to a
+                // component relies on a recovery read never crossing one.
+                if !engine.same_component(table.id, cause.table) {
                     return Err("tombstone cause");
                 }
             }
@@ -160,10 +179,75 @@ pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
     }
     if writes_every_group && let Some(adapter) = engine.adapter(table) {
         adapter
-            .validate_row(table.id, &change.groups)
+            .validate_row(table.id, &change.row, &change.groups)
             .map_err(|error| error.0)?;
     }
     Ok(())
+}
+
+/// Refuses a change to a device-owned row from any other device.
+pub(crate) const OWNER_MISMATCH: Invalid = "row owner mismatch";
+
+/// Checks that `writer_device` owns the row `change` writes, and that a create names that device
+/// in its device column. A write of existence groups alone is left to the group merge.
+pub(crate) fn writer_change(
+    table: &TableSpec,
+    change: &Change,
+    writer_device: &str,
+) -> Result<(), Invalid> {
+    let Some(owner) = table.owner else {
+        return Ok(());
+    };
+    let writes_existence_only = change.action == ChangeAction::Write
+        && !change.groups.is_empty()
+        && change
+            .groups
+            .iter()
+            .all(|value| table.is_exists_group(value.group));
+    if writes_existence_only {
+        return Ok(());
+    }
+    if !device_owns_row(table, change.row.as_str(), writer_device) {
+        return Err(OWNER_MISMATCH);
+    }
+    if change.action == ChangeAction::Create
+        && !creates_for_device(table, change, owner.device_column(), writer_device)
+    {
+        return Err(OWNER_MISMATCH);
+    }
+    Ok(())
+}
+
+/// Whether the create names `device` in `column`, which a key column does by the key itself.
+fn creates_for_device(table: &TableSpec, change: &Change, column: &str, device: &str) -> bool {
+    let located = table.groups.iter().find_map(|group| {
+        let index = group
+            .columns()
+            .iter()
+            .position(|spec| spec.name == column)?;
+        Some((group.id, index))
+    });
+    let Some((group, index)) = located else {
+        return true;
+    };
+    change
+        .groups
+        .iter()
+        .find(|value| value.group == group)
+        .and_then(|value| value.value.fields().get(index))
+        .is_some_and(|field| matches!(field, Field::Text(text) if text == device))
+}
+
+/// True when `table` has no owner, or when `row_key` names `device`.
+pub(crate) fn device_owns_row(table: &TableSpec, row_key: &str, device: &str) -> bool {
+    match table.owner {
+        None => true,
+        Some(RowOwner::KeyIsDevice { .. }) => row_key == device,
+        Some(RowOwner::KeyTag { prefix, .. }) => row_key
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix(device_owner_tag(device).as_str()))
+            .is_some_and(|rest| rest.starts_with(':')),
+    }
 }
 
 /// Checks that a change writing every group of a derived-key row names the key its key inputs

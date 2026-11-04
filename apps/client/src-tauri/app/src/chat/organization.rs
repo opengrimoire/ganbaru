@@ -49,7 +49,7 @@ use common::{
 #[cfg(desktop)]
 pub(crate) use common::{
     effective_runtime_approval, native_assignment_safety_mode, parse_approval_policy,
-    parse_runtime_approval_policy, runtime_approval_rank, teammate_runtime_approval,
+    parse_runtime_approval_policy, teammate_runtime_approval, wire_runtime_approval_policy,
 };
 #[cfg(desktop)]
 use common::{
@@ -262,7 +262,28 @@ pub async fn chat_post_message(
     db_url: String,
     request: PostChatMessageCommand,
 ) -> ChatResult<PostChatMessageResult> {
-    post_message(app, db_url, &request, None).await
+    match post_message(app, db_url, &request, None).await? {
+        PostOutcome::Posted(result) => Ok(result),
+        PostOutcome::Refused(refusal) => Err(refusal),
+    }
+}
+
+/// What the step that writes a post did.
+pub(super) enum PostOutcome<T> {
+    /// The post was written.
+    Posted(T),
+    /// The scheduled request did not match its stored row. The refusal is already recorded as
+    /// the failure of the scheduled message, and nothing was posted.
+    Refused(ChatError),
+}
+
+/// Whether the send of a scheduled message carries consent given on this device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ScheduledConsent {
+    /// This device scheduled exactly this request, or the user pressed send now or retry.
+    Local,
+    /// A due message this device never consented to, as one scheduled or rewritten elsewhere.
+    Unattended,
 }
 
 /// A scheduled message being sent under the claim `claim_token`.
@@ -272,17 +293,19 @@ pub(super) struct ScheduledSend<'a> {
     pub(super) scheduled_message_id: &'a ChatScheduledMessageId,
     /// Claim the sender holds on it.
     pub(super) claim_token: &'a str,
+    /// Consent behind this send, which decides whether its work starts by itself.
+    pub(super) consent: ScheduledConsent,
 }
 
 /// Posts `request`, or sends the scheduled message `scheduled` with it, and starts the work the
-/// post routes to.
+/// post routes to. A scheduled send whose request does not match its stored row is refused
+/// and starts nothing.
 pub(super) async fn post_message(
     app: tauri::AppHandle,
     db_url: String,
     request: &PostChatMessageCommand,
     scheduled: Option<ScheduledSend<'_>>,
-) -> ChatResult<PostChatMessageResult> {
-    validate_message_request(request)?;
+) -> ChatResult<PostOutcome<PostChatMessageResult>> {
     #[cfg(desktop)]
     let dispatch_app = app.clone();
     #[cfg(desktop)]
@@ -290,13 +313,17 @@ pub(super) async fn post_message(
     let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url).await?;
     let writers = chat_writers(&app, &pool).await?;
-    let posted = persist_post(
+    let posted = match write_post(
         &pool,
         request,
         scheduled,
         PostingDevice::this_device(&device_id, &writers),
     )
-    .await?;
+    .await?
+    {
+        PostOutcome::Posted(posted) => posted,
+        PostOutcome::Refused(refusal) => return Ok(PostOutcome::Refused(refusal)),
+    };
     #[cfg(desktop)]
     if let Some(assignment_id) = posted
         .assignment_write
@@ -304,7 +331,26 @@ pub(super) async fn post_message(
         .clone()
         .filter(|_| posted.assignment_write.executes_here)
     {
-        if posted.assignment_write.input_queued {
+        match post_acceptance_digest(&pool, &posted.assignment_write, scheduled).await {
+            Ok(Some(digest)) => assignments::record_post_acceptance(&app, &assignment_id, digest),
+            Ok(None) => {}
+            Err(error) => eprintln!(
+                "Chat assignment {} was not recorded as accepted: {error}",
+                assignment_id.as_str()
+            ),
+        }
+        if posted.assignment_write.awaits_acceptance && posted.assignment_write.input_queued {
+            // A pending reply of reviewed work continues through follow-up recovery, which
+            // starts it only when the teammate holds a local acceptance.
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) =
+                    assignments::recover_assignment_dispatch_jobs(dispatch_app, dispatch_db_url)
+                        .await
+                {
+                    eprintln!("Chat follow-up of an unattended reply did not start: {error}");
+                }
+            });
+        } else if posted.assignment_write.input_queued {
             let input_message_id = posted.item_id.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = deliver_assignment_input(
@@ -315,13 +361,62 @@ pub(super) async fn post_message(
                 )
                 .await;
             });
+        } else if posted.assignment_write.awaits_acceptance {
+            assignments::start_unattended_assignment(&app, &assignment_id);
         } else {
             tauri::async_runtime::spawn(async move {
                 let _ = dispatch_assignment_job(dispatch_app, dispatch_db_url, assignment_id).await;
             });
         }
     }
-    Ok(posted.result)
+    Ok(PostOutcome::Posted(posted.result))
+}
+
+/// Writes the post of `request` from `device`, the step every user post and scheduled send
+/// runs before any work starts. A scheduled send first refuses a request that does not match
+/// its stored row, so a peer that rewrote the request cannot redirect the post.
+async fn write_post(
+    pool: &SqlitePool,
+    request: &PostChatMessageCommand,
+    scheduled: Option<ScheduledSend<'_>>,
+    device: PostingDevice<'_>,
+) -> ChatResult<PostOutcome<PersistedPost>> {
+    if let Some(send) = scheduled
+        && let Some(refusal) = scheduling::refuse_mismatched_request(pool, send, request).await?
+    {
+        return Ok(PostOutcome::Refused(refusal));
+    }
+    validate_message_request(request)?;
+    persist_post(pool, request, scheduled, device)
+        .await
+        .map(PostOutcome::Posted)
+}
+
+/// The acceptance digest the post that wrote `write` gives on this device, or `None` when it
+/// gives none. A user post, or a scheduled send with local consent, that dispatches new work
+/// accepts exactly the subject its dispatch job consented to run. An unattended scheduled send
+/// accepts nothing, since a peer may have written or rewritten its request.
+#[cfg(desktop)]
+async fn post_acceptance_digest(
+    pool: &SqlitePool,
+    write: &AssignmentWrite,
+    scheduled: Option<ScheduledSend<'_>>,
+) -> ChatResult<Option<String>> {
+    let Some(assignment_id) = write.assignment_id.as_ref() else {
+        return Ok(None);
+    };
+    let consented = scheduled.is_none_or(|send| send.consent == ScheduledConsent::Local);
+    if !consented || !write.dispatches_here() {
+        return Ok(None);
+    }
+    let digest = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT consented_digest FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?;
+    Ok(digest.flatten())
 }
 
 /// A post written to the vault. Only desktop dispatches the work it routed.
@@ -343,13 +438,21 @@ const DELETE_CLAIMED_SCHEDULED_MESSAGE: &str = "DELETE FROM chat_scheduled_messa
 /// Writes the post of `request` from `device` in one transaction. A scheduled send posts under
 /// ids derived from the scheduled message, copies its stored attachment values, and deletes the
 /// scheduled message in the same transaction, so it posts once even when the device stops
-/// between steps.
+/// between steps. An unattended send still posts, but queues no dispatch for the work it creates
+/// and leaves existing work as it is.
 async fn persist_post(
     pool: &SqlitePool,
     request: &PostChatMessageCommand,
     scheduled: Option<ScheduledSend<'_>>,
     device: PostingDevice<'_>,
 ) -> ChatResult<PersistedPost> {
+    let device = match scheduled {
+        Some(ScheduledSend {
+            consent: ScheduledConsent::Unattended,
+            ..
+        }) => device.unattended(),
+        _ => device,
+    };
     if let Some(result) = read_post_receipt(pool, &request.client_command_id).await? {
         if let Some(scheduled) = scheduled {
             sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)
@@ -741,14 +844,17 @@ pub async fn chat_read_reply_thread_page(
     cursor: Option<String>,
     limit: Option<u32>,
 ) -> ChatResult<ChatReplyThreadPageRead> {
-    let pool = chat_pool(app, db_url).await?;
-    read_reply_thread_page(
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let page = read_reply_thread_page(
         &pool,
         &reply_thread_id,
         parse_cursor(cursor.as_deref())?,
         limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE),
     )
-    .await
+    .await?;
+    #[cfg(desktop)]
+    let page = assignments::mark_local_acceptance(&app, &pool, page).await?;
+    Ok(page)
 }
 
 #[tauri::command]
@@ -879,6 +985,28 @@ pub async fn chat_retry_assignment(
     expected_revision: u64,
 ) -> ChatResult<ChatWorkAssignmentRead> {
     assignments::retry_assignment(app, db_url, assignment_id, expected_revision).await
+}
+
+/// Starts synced work that waits for a local action on this device and records the acceptance.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_accept_assignment_here(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+    seen_digest: String,
+) -> ChatResult<Option<ChatWorkAssignmentRead>> {
+    assignments::accept_assignment_here(app, db_url, assignment_id, seen_digest).await
+}
+
+/// Lists the work that waits for a local action on this device, across every reply thread.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_list_waiting_assignments(
+    app: tauri::AppHandle,
+    db_url: String,
+) -> ChatResult<Vec<ChatWaitingAssignmentRead>> {
+    assignments::list_waiting_assignments(app, db_url).await
 }
 
 /// Starts the work of a mention whose post recorded no assignment, running it on this device.

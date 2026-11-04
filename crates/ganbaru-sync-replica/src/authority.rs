@@ -22,7 +22,7 @@ use ganbaru_sync::{
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
     AdminKeyPair, AdminPublicKey, Charter, DeviceKey, DeviceKeyPair, DeviceKind, DevicePublicKey,
-    DeviceRole, Digest32, EncryptionKeyPair, EncryptionPublicKey, Enroll, Entry, Handover,
+    DeviceRole, Digest32, EncryptionKeyPair, EncryptionPublicKey, Enroll, Entry, Handover, KitCode,
     Proposal, ProposalRejection, RecoveryKey, RecoveryPublicKeys, RecoverySeed, Remove, SetRole,
     SignedCharter, SignedProposal, SpaceId, VersionVector, sign_charter, sign_device_proposal,
     sign_proposal,
@@ -329,7 +329,9 @@ pub async fn sequence_covering(
 }
 
 /// Sequences every waiting proposal of the anchor's outbox in order, records final rejections,
-/// and drops the proposals the selected chain now holds. Removal cutoffs cover at least
+/// and drops the proposals the selected chain now holds. Proposals gated on a handover the
+/// selected chain holds are released first, so the follow-ups of a forced handover interrupted
+/// after its seal run here. Removal cutoffs cover at least
 /// `covered`, and device key entries of devices in `quarantined` are refused, as in
 /// [`sequence_covering`]. Returns how many proposals were sequenced or replayed.
 #[allow(clippy::too_many_arguments)]
@@ -343,6 +345,7 @@ pub async fn sequence_outbox(
     quarantined: &BTreeSet<String>,
     now_ms: u64,
 ) -> Result<usize, String> {
+    outbox.prune(engine, conn, ctx).await?;
     let mut sequenced = 0;
     for proposal in outbox.pending() {
         let outcome = sequence_covering(
@@ -491,15 +494,13 @@ pub fn recovery_entry(recovery: &RecoverySeed) -> Result<Entry, String> {
     }))
 }
 
-/// Replaces the vault's recovery kit and returns the new seed. Two proposals enter the outbox:
-/// the recovery key entry naming the new recovery encryption key, then the `set role` naming the
-/// new recovery admin key. The recovery key goes first, so the key epoch it opens and every
-/// later one seal no envelope to the old kit. The seed is stored after both, so a full outbox
-/// changes nothing and a failed store withdraws them: the log never names a key whose seed is
-/// gone. The key store keeps the new seed until the user saves the kit. A kit that still waits
-/// is never overwritten while it may still sign: one the log names must be saved first, and one
-/// whose proposal still waits must be sequenced or rejected first. Key stores may block, so
-/// callers run this off the async runtime.
+/// Installs a new recovery key from the anchor's admin key and returns its seed. Two proposals
+/// enter the outbox: the recovery key entry naming the new recovery encryption key, then the
+/// `set role` naming the new recovery admin key. The recovery key goes first, so the key epoch
+/// it opens and every later one seal no envelope to the old key. The kit lineage stays with the
+/// printed kit, which still signs a forced handover and an enrollment; only
+/// [`rotate_recovery_kit`] retires it. The seed is handled as [`queue_new_kit`] describes. Key
+/// stores may block, so callers run this off the async runtime.
 pub fn regenerate_recovery_kit(
     keys: &dyn SyncKeyStore,
     vault_id: &str,
@@ -514,6 +515,74 @@ pub fn regenerate_recovery_kit(
     if !is_admin(view, &view.anchor_device_id, &admin.public_key()) {
         return Err("only the anchor computer replaces the recovery kit".to_string());
     }
+    queue_new_kit(keys, vault_id, outbox, view, |seed| {
+        let public = recovery_public_keys(seed)?;
+        Ok(vec![
+            propose(
+                space,
+                view.charter,
+                admin,
+                recovery_key_entry(public.encryption),
+                now_ms,
+            )?,
+            propose(space, view.charter, admin, recovery_entry(seed)?, now_ms)?,
+        ])
+    })
+}
+
+/// Replaces the vault's recovery kit with a new one, signed by `old_kit`, the admin key of the
+/// kit that holds the lineage, and returns the new seed. Any enrolled desktop that holds the
+/// printed kit may run it. Two proposals enter the outbox: the `set role` the old kit signs,
+/// which moves the lineage to the new kit's admin key, then the recovery key entry naming the
+/// new recovery encryption key, signed by the new kit. Once the anchor sequences both, the old
+/// code signs nothing and opens no later key epoch. The new kit signs its own encryption key,
+/// so two rotations racing with copies of the same code never mix: the anchor accepts the
+/// first `set role` it sequences, and every proposal of the other rotation is then signed by a
+/// key the log does not name. One key epoch between the two entries is still sealed to the old
+/// kit, which already opened every earlier one. The seed is handled as [`queue_new_kit`]
+/// describes. Key stores may block, so callers run this off the async runtime.
+pub fn rotate_recovery_kit(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+    outbox: &mut Outbox,
+    view: &AuthorizationView,
+    space: SpaceId,
+    old_kit: &AdminKeyPair,
+    now_ms: u64,
+) -> Result<RecoverySeed, String> {
+    if old_kit.public_key() != view.kit_admin_key {
+        return Err("this code is not the vault's current recovery kit".to_string());
+    }
+    queue_new_kit(keys, vault_id, outbox, view, |seed| {
+        let public = recovery_public_keys(seed)?;
+        let new_kit = seed
+            .recovery_admin_key()
+            .map_err(|error| format!("derive the recovery admin key: {error}"))?;
+        Ok(vec![
+            propose(space, view.charter, old_kit, recovery_entry(seed)?, now_ms)?,
+            propose(
+                space,
+                view.charter,
+                &new_kit,
+                recovery_key_entry(public.encryption),
+                now_ms,
+            )?,
+        ])
+    })
+}
+
+/// Generates a recovery seed, queues the proposals `sign` makes for it in order, and stores the
+/// seed until the user saves its kit. The seed is stored after every proposal, so a full outbox
+/// changes nothing and a failed store withdraws them: the log never names a key whose seed is
+/// gone. A kit that still waits is never overwritten while it may still sign: one the log names
+/// must be saved first, and one whose proposal still waits must be sequenced or rejected first.
+fn queue_new_kit(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+    outbox: &mut Outbox,
+    view: &AuthorizationView,
+    sign: impl FnOnce(&RecoverySeed) -> Result<Vec<SignedProposal>, String>,
+) -> Result<RecoverySeed, String> {
     if let Some(waiting) = pending_recovery_seed(keys, vault_id)? {
         let key = recovery_public_key(&waiting)?;
         if key == view.recovery_admin_key {
@@ -533,13 +602,8 @@ pub fn regenerate_recovery_kit(
     }
     let seed =
         RecoverySeed::generate().map_err(|error| format!("create sync recovery seed: {error}"))?;
-    let public = recovery_public_keys(&seed)?;
     let mut added = Vec::new();
-    for entry in [
-        recovery_key_entry(public.encryption),
-        recovery_entry(&seed)?,
-    ] {
-        let proposal = propose(space, view.charter, admin, entry, now_ms)?;
+    for proposal in sign(&seed)? {
         let hash = proposal.hash();
         if let Err(error) = outbox.add(proposal) {
             withdraw_all(outbox, &added)?;
@@ -622,12 +686,25 @@ pub fn forget_unlinked_recovery_seed(
     keys.remove(vault_id, SyncKey::RecoverySeed)
 }
 
+/// The public recovery keys `kit_code` derives. Refuses a code that does not parse.
+pub fn kit_public_keys(kit_code: &KitCode) -> Result<RecoveryPublicKeys, String> {
+    let seed = RecoverySeed::parse_kit_code(kit_code.as_str())
+        .map_err(|error| format!("read the recovery kit: {error}"))?;
+    recovery_public_keys(&seed)
+}
+
+/// Whether a selected log names this kit: the key only a rotation replaces, or the recovery key
+/// the anchor admits. These are the two keys the anchor accepts as a recovery author.
+pub fn log_names_kit(view: &AuthorizationView, kit: &RecoveryPublicKeys) -> bool {
+    view.kit_admin_key == kit.admin || view.recovery_admin_key == kit.admin
+}
+
 /// The recovery admin key `kit_code` derives, whether or not any log names it. Refuses a code
 /// that does not parse. A forced handover uses it unchecked, because a stolen anchor may have
 /// replaced the recovery key on the selected chain, and the engine admits the handover only
 /// where the key is of kit lineage. Callers keep the key only as long as they sign with it.
-pub fn kit_admin(kit_code: &str) -> Result<AdminKeyPair, String> {
-    let seed = RecoverySeed::parse_kit_code(kit_code)
+pub fn kit_admin(kit_code: &KitCode) -> Result<AdminKeyPair, String> {
+    let seed = RecoverySeed::parse_kit_code(kit_code.as_str())
         .map_err(|error| format!("read the recovery kit: {error}"))?;
     seed.recovery_admin_key()
         .map_err(|error| format!("derive the recovery admin key: {error}"))
@@ -636,8 +713,8 @@ pub fn kit_admin(kit_code: &str) -> Result<AdminKeyPair, String> {
 /// The recovery encryption key `kit_code` derives, which opens every key epoch sealed while the
 /// log names it. Refuses a code that does not parse. Callers keep the key only while the kit
 /// flow runs.
-pub fn kit_encryption(kit_code: &str) -> Result<EncryptionKeyPair, String> {
-    let seed = RecoverySeed::parse_kit_code(kit_code)
+pub fn kit_encryption(kit_code: &KitCode) -> Result<EncryptionKeyPair, String> {
+    let seed = RecoverySeed::parse_kit_code(kit_code.as_str())
         .map_err(|error| format!("read the recovery kit: {error}"))?;
     seed.recovery_encryption_key()
         .map_err(|error| format!("derive the recovery encryption key: {error}"))
@@ -646,7 +723,10 @@ pub fn kit_encryption(kit_code: &str) -> Result<EncryptionKeyPair, String> {
 /// The recovery admin key `kit_code` derives. Refuses a code that does not parse or a kit
 /// whose key the selected log does not name. Callers keep the key only as long as they sign
 /// with it.
-pub fn recovery_admin(view: &AuthorizationView, kit_code: &str) -> Result<AdminKeyPair, String> {
+pub fn recovery_admin(
+    view: &AuthorizationView,
+    kit_code: &KitCode,
+) -> Result<AdminKeyPair, String> {
     let recovery = kit_admin(kit_code)?;
     if recovery.public_key() != view.recovery_admin_key {
         return Err("this recovery kit does not belong to the vault's current log".to_string());
@@ -661,7 +741,7 @@ pub fn recovery_admin(view: &AuthorizationView, kit_code: &str) -> Result<AdminK
 pub fn recovery_promotion(
     view: &AuthorizationView,
     space: SpaceId,
-    kit_code: &str,
+    kit_code: &KitCode,
     device_id: &str,
     admin_key: AdminPublicKey,
     now_ms: u64,
@@ -678,11 +758,13 @@ pub fn recovery_promotion(
 
 /// Signs, with the recovery admin key `kit_code` derives, the proposal that enrolls a new desktop
 /// as an admin after every device of the space is lost. The derived key lives only inside this
-/// call, and the anchor refuses a kit its selected log no longer names.
+/// call. The anchor accepts the kit that holds the lineage even after a recovery key replaced
+/// it, and refuses a kit a rotation retired. The signed proposal discloses the kit's admin public
+/// key, so callers send it only to a server that already named that key.
 pub fn recovery_enrollment(
     space: SpaceId,
     charter: Digest32,
-    kit_code: &str,
+    kit_code: &KitCode,
     enrollment: Enrollment,
     admin_key: AdminPublicKey,
     now_ms: u64,
@@ -993,21 +1075,44 @@ fn forced_opens_epoch(
 /// selected head. With a promotion, the new anchor then sequences the promotion of its own
 /// device to admin with that key, signed by the same signer. With the kit's recovery key, the
 /// new anchor publishes its own device key right after the handover, which seals any rotation
-/// the handover point waits for, and signs every later entry with that key at hand. Before
+/// the handover point waits for, and signs every later entry with that key at hand; on a kit
+/// point it also names the kit's recovery encryption key again, ahead of the removals, when the
+/// log names another one, so a key a stolen anchor planted receives no later epoch. Before
 /// anything is sealed, a desktop that would open no key epoch at the point it continues from is
 /// refused with [`KeylessAnchor`]: the point needs no key epoch, names this desktop's encryption
 /// key, or, with the kit, names the kit's recovery encryption key, which a regeneration
-/// replaces. Returns the revision of the last entry, or why the engine rejected one.
+/// replaces.
+///
+/// The entries after the handover enter `outbox` gated on it before it seals, so a crash after
+/// the seal leaves them for the service loop, which sequences them once its replica holds the
+/// handover; a refused handover withdraws them. Follow-ups still gated on an earlier forced
+/// handover the selected chain does not hold are withdrawn first. Each follow-up is sequenced
+/// in order and a rejected one does not stop the rest; device key entries of devices in
+/// `quarantined` are refused, as in [`sequence_covering`]. Returns the revision and how many
+/// follow-ups did not land, or why the engine rejected the handover.
+#[allow(clippy::too_many_arguments)]
 pub async fn force_handover_here(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     forced: &ForcedHandover<'_>,
     writer: &mut LocalWriter<'_>,
+    outbox: &mut Outbox,
+    quarantined: &BTreeSet<String>,
     now_ms: u64,
-) -> Result<Result<u64, ProposalRejection>, String> {
+) -> Result<Result<ForcedHandoverResult, ProposalRejection>, String> {
     let Some(recovery) = forced.recovery else {
-        return force_handover_with(engine, conn, ctx, forced, writer, now_ms).await;
+        return force_handover_with(
+            engine,
+            conn,
+            ctx,
+            forced,
+            writer,
+            outbox,
+            quarantined,
+            now_ms,
+        )
+        .await;
     };
     let base = writer
         .keys
@@ -1019,17 +1124,47 @@ pub async fn force_handover_here(
         reservation: &mut *writer.reservation,
         keys: Some(&kit),
     };
-    force_handover_with(engine, conn, ctx, forced, &mut with_kit, now_ms).await
+    force_handover_with(
+        engine,
+        conn,
+        ctx,
+        forced,
+        &mut with_kit,
+        outbox,
+        quarantined,
+        now_ms,
+    )
+    .await
 }
 
+/// What a forced handover sealed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForcedHandoverResult {
+    /// The revision of the last entry sealed.
+    pub revision: u64,
+    /// How many follow-ups have not landed yet: they wait in the outbox, or the anchor
+    /// refused them for a reason other than the device being gone already.
+    pub incomplete: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes a forced handover stop right after its seal commits, as a crash there would.
+    pub(crate) static CRASH_AFTER_FORCED_SEAL: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn force_handover_with(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     forced: &ForcedHandover<'_>,
     writer: &mut LocalWriter<'_>,
+    outbox: &mut Outbox,
+    quarantined: &BTreeSet<String>,
     now_ms: u64,
-) -> Result<Result<u64, ProposalRejection>, String> {
+) -> Result<Result<ForcedHandoverResult, ProposalRejection>, String> {
     let signer = forced.signer;
     let device_id = writer.certificate.certificate.device_id.clone();
     let point = match &forced.point {
@@ -1074,22 +1209,18 @@ async fn force_handover_with(
         }),
         now_ms,
     )?;
-    let mut revision = match engine
-        .seal_handover(conn, ctx, &handover, None, writer, now_ms)
-        .await
-        .map_err(|error| format!("seal sync handover: {error}"))?
-    {
-        Ok(revision) => revision,
-        Err(rejection) => return Ok(Err(rejection)),
-    };
-    if forced.recovery.is_some() {
-        match sequence_own_device_key(engine, conn, ctx, writer, now_ms).await? {
-            Ok(Some(sealed)) => revision = revision.max(sealed),
-            Ok(None) => {}
-            Err(rejection) => return Ok(Err(rejection)),
-        }
-    }
     let mut follow_up = Vec::new();
+    if point.by_kit
+        && let Some(kit_encryption) = forced.recovery.map(EncryptionKeyPair::public_key)
+        && point
+            .view
+            .recovery_encryption_key
+            .is_some_and(|named| named != kit_encryption)
+    {
+        // A stolen anchor may have named its own recovery encryption key. The kit names its
+        // own again before the removals, so the rotations they require do not seal to it.
+        follow_up.push(recovery_key_entry(kit_encryption));
+    }
     if point.by_kit {
         let mut removed = BTreeSet::from([device_id.clone()]);
         let reviewed = forced.removals.iter().map(String::as_str);
@@ -1102,14 +1233,66 @@ async fn force_handover_with(
     if let Some(admin_key) = forced.promote {
         follow_up.push(promote_entry(&device_id, admin_key));
     }
-    for entry in follow_up {
-        let proposal = propose(ctx.space, charter, signer, entry, now_ms)?;
-        match sequence(engine, conn, ctx, writer, &proposal, now_ms).await? {
-            Ok(sealed) => revision = revision.max(sealed),
-            Err(rejection) => return Ok(Err(rejection)),
+    let follow_up = follow_up
+        .into_iter()
+        .map(|entry| propose(ctx.space, charter, signer, entry, now_ms))
+        .collect::<Result<Vec<_>, _>>()?;
+    let gate = handover.hash();
+    // Follow-ups this desktop gated on an earlier forced handover that the selected chain
+    // does not hold can never run; the new handover replaces them.
+    outbox.prune(engine, conn, ctx).await?;
+    outbox.withdraw_gated()?;
+    outbox.add_gated(follow_up, gate)?;
+    let mut revision = match engine
+        .seal_handover(conn, ctx, &handover, None, writer, now_ms)
+        .await
+        .map_err(|error| format!("seal sync handover: {error}"))?
+    {
+        Ok(revision) => revision,
+        Err(rejection) => {
+            outbox.withdraw_gated()?;
+            return Ok(Err(rejection));
+        }
+    };
+    #[cfg(test)]
+    if CRASH_AFTER_FORCED_SEAL.with(std::cell::Cell::get) {
+        return Err("the test stopped the forced handover after its seal".to_string());
+    }
+    let mut incomplete = 0;
+    if forced.recovery.is_some() {
+        match sequence_own_device_key(engine, conn, ctx, writer, now_ms).await? {
+            Ok(Some(sealed)) => revision = revision.max(sealed),
+            Ok(None) => {}
+            Err(rejection) => {
+                eprintln!(
+                    "sync: the forced anchor could not publish its device key yet: {rejection}"
+                );
+                incomplete += 1;
+            }
         }
     }
-    Ok(Ok(revision))
+    sequence_outbox(
+        engine,
+        conn,
+        ctx,
+        writer,
+        outbox,
+        &VersionVector::new(),
+        quarantined,
+        now_ms,
+    )
+    .await?;
+    if let Some(view) = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+    {
+        revision = revision.max(view.revision);
+    }
+    Ok(Ok(ForcedHandoverResult {
+        revision,
+        incomplete: incomplete + outbox.forced_incomplete(&gate),
+    }))
 }
 
 /// The proposal that publishes the device encryption key of `keys` for the device `device_id`,

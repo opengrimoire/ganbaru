@@ -13,7 +13,10 @@ use super::store::{
     HostList, LimitDraft, LimitEntryDraft, RuleEdit, RuleRefusal, RuleTarget, RulesError, apply,
     read,
 };
-use super::{DistractionsConfig, MAX_HOST_CHARS};
+use super::{
+    DistractionsConfig, MAX_GUARDIAN_USAGE_LIMITS, MAX_HOST_CHARS, MAX_LIMIT_ENTRIES,
+    MAX_MOBILE_APP_RULES, MAX_USAGE_LIMITS,
+};
 use crate::test_support::block_on;
 
 const NOW_MS: i64 = 1_700_000_000_000;
@@ -446,5 +449,499 @@ fn recovery_restores_a_category_under_a_free_name_and_a_limit_with_its_entries()
         assert_eq!(entry.desktop_app_name.as_deref(), Some("Player"));
         assert_eq!(entry.desktop_app_match_names, vec!["Player"]);
         assert_eq!(entry.color, Some(3));
+    });
+}
+
+async fn insert_desktop_rule(pool: &SqlitePool, identity: &str, name: &str, match_names: &str) {
+    sqlx::query(
+        "INSERT INTO distractions_app_rules
+             (id, platform, identity, display_name, match_names_json, enabled, created_at_ms)
+         VALUES (?, 'desktop', ?, ?, ?, 1, ?)",
+    )
+    .bind(format!("rule-{identity}"))
+    .bind(identity)
+    .bind(name)
+    .bind(match_names)
+    .bind(NOW_MS)
+    .execute(pool)
+    .await
+    .expect("insert desktop rule");
+}
+
+/// Switches the database in or out of the state apply runs in, past the local value checks.
+async fn set_applying(pool: &SqlitePool, applying: bool) {
+    sqlx::query("UPDATE sync_apply_state SET applying = ? WHERE singleton = 1")
+        .bind(applying)
+        .execute(pool)
+        .await
+        .expect("set applying");
+}
+
+async fn insert_replicated_limit(pool: &SqlitePool, id: &str, name: &str, enabled: bool) {
+    sqlx::query(
+        "INSERT INTO distractions_usage_limits (id, created_at_ms, name, enabled, minutes_per_day)
+         VALUES (?, ?, ?, ?, 30)",
+    )
+    .bind(id)
+    .bind(NOW_MS)
+    .bind(name)
+    .bind(enabled)
+    .execute(pool)
+    .await
+    .expect("insert usage limit");
+}
+
+/// Sources of a replicated limit entry row.
+#[derive(Clone, Copy, Default)]
+struct ReplicatedSources<'a> {
+    website_host: Option<&'a str>,
+    mobile_app_name: Option<&'a str>,
+    mobile_app_package: Option<&'a str>,
+    desktop_app_name: Option<&'a str>,
+    match_names: Option<&'a str>,
+}
+
+async fn insert_replicated_entry(
+    pool: &SqlitePool,
+    limit_id: &str,
+    ordinal: i64,
+    id: &str,
+    sources: ReplicatedSources<'_>,
+) {
+    sqlx::query(
+        "INSERT INTO distractions_usage_limit_entries
+             (limit_id, ordinal, id, website_host, mobile_app_name, mobile_app_package,
+              desktop_app_name, desktop_app_match_names_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(limit_id)
+    .bind(ordinal)
+    .bind(id)
+    .bind(sources.website_host)
+    .bind(sources.mobile_app_name)
+    .bind(sources.mobile_app_package)
+    .bind(sources.desktop_app_name)
+    .bind(sources.match_names.unwrap_or("[]"))
+    .execute(pool)
+    .await
+    .expect("insert usage limit entry");
+}
+
+#[test]
+fn read_entries_always_pass_parse_config() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let valid = ReplicatedSources {
+            website_host: Some("video.example.com"),
+            ..ReplicatedSources::default()
+        };
+        let blank_host = ReplicatedSources {
+            website_host: Some(" "),
+            ..ReplicatedSources::default()
+        };
+        let blank_match_name = ReplicatedSources {
+            desktop_app_name: Some("Steam"),
+            match_names: Some(r#"[""]"#),
+            ..ReplicatedSources::default()
+        };
+        let invalid_package = ReplicatedSources {
+            mobile_app_name: Some("Video"),
+            mobile_app_package: Some("not a package"),
+            ..ReplicatedSources::default()
+        };
+        set_applying(&pool, true).await;
+        for (id, enabled) in [("disabled-limit", false), ("enabled-limit", true)] {
+            insert_replicated_limit(&pool, id, "Video", enabled).await;
+            insert_replicated_entry(&pool, id, 0, "blank-host", blank_host).await;
+            insert_replicated_entry(&pool, id, 1, "blank-match", blank_match_name).await;
+            insert_replicated_entry(&pool, id, 2, "bad-package", invalid_package).await;
+            insert_replicated_entry(&pool, id, 3, "valid", valid).await;
+        }
+        insert_replicated_limit(&pool, "only-blank", "Video", true).await;
+        insert_replicated_entry(&pool, "only-blank", 0, "blank-host", blank_host).await;
+        let long_name = format!("{}Video", " ".repeat(600));
+        insert_replicated_limit(&pool, "long-name", &long_name, true).await;
+        insert_replicated_entry(&pool, "long-name", 0, "valid", valid).await;
+        set_applying(&pool, false).await;
+
+        let config = read(&pool).await.expect("read rules");
+        let root = config.to_root_value().expect("encode rules");
+        let parsed = crate::limits::parse_config(&root);
+        assert!(
+            parsed.is_ok(),
+            "one row failed the whole configuration: {parsed:?}"
+        );
+        let limits = parsed.unwrap().items;
+        let kept: Vec<(&str, bool, Vec<&str>)> = limits
+            .iter()
+            .map(|limit| {
+                let entries = limit.entries.iter().map(|entry| entry.id.as_str());
+                (limit.id.as_str(), limit.enabled, entries.collect())
+            })
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                ("disabled-limit", false, vec!["valid"]),
+                ("enabled-limit", true, vec!["valid"]),
+            ]
+        );
+    });
+}
+
+#[test]
+fn hidden_limit_rows_leave_the_limit_cap_free() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let website = ReplicatedSources {
+            website_host: Some("video.example.com"),
+            ..ReplicatedSources::default()
+        };
+        set_applying(&pool, true).await;
+        for index in 0..MAX_USAGE_LIMITS {
+            insert_replicated_limit(&pool, &format!("hidden-{index}"), "Hidden", true).await;
+        }
+        insert_replicated_limit(&pool, "misnamed-entries", "Hidden", true).await;
+        for ordinal in 0..MAX_LIMIT_ENTRIES {
+            let ordinal = i64::try_from(ordinal).expect("ordinal fits");
+            let id = format!("-hidden-{ordinal}");
+            insert_replicated_entry(&pool, "misnamed-entries", ordinal, &id, website).await;
+        }
+        set_applying(&pool, false).await;
+        let hidden = read(&pool).await.expect("read rules");
+        assert!(hidden.limits.items.is_empty());
+
+        let config = apply(
+            &pool,
+            &limit("Video", vec![entry("video", "video.example.com", "")]),
+            NOW_MS,
+        )
+        .await
+        .expect("hidden rows leave room for a new limit");
+        let saved: Vec<&str> = config
+            .limits
+            .items
+            .iter()
+            .map(|limit| limit.name.as_str())
+            .collect();
+        assert_eq!(saved, ["Video"]);
+    });
+}
+
+async fn insert_mobile_rule(pool: &SqlitePool, package: &str, enabled: bool) {
+    sqlx::query(
+        "INSERT INTO distractions_app_rules
+             (id, platform, identity, display_name, enabled, created_at_ms)
+         VALUES (?, 'mobile', ?, 'App', ?, ?)",
+    )
+    .bind(format!("rule-{package}"))
+    .bind(package)
+    .bind(enabled)
+    .bind(NOW_MS)
+    .execute(pool)
+    .await
+    .expect("insert mobile rule");
+}
+
+fn add_mobile_app(package: &str) -> RuleEdit {
+    RuleEdit::AddMobileApp {
+        name: "App".into(),
+        package_name: package.into(),
+    }
+}
+
+#[test]
+fn mobile_app_rules_refuse_past_the_guardian_cap() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        set_applying(&pool, true).await;
+        for index in 0..MAX_MOBILE_APP_RULES - 1 {
+            insert_mobile_rule(&pool, &format!("com.cap.app{index}"), index % 2 == 0).await;
+        }
+        insert_mobile_rule(&pool, "not a package", true).await;
+        set_applying(&pool, false).await;
+
+        apply(&pool, &add_mobile_app("com.cap.last"), NOW_MS)
+            .await
+            .expect("an invalid synced row leaves its slot free");
+        let full = apply(&pool, &add_mobile_app("com.cap.surplus"), NOW_MS).await;
+        assert_eq!(refusal(full), RuleRefusal::TooLarge);
+        apply(&pool, &add_mobile_app("COM.CAP.APP0"), NOW_MS)
+            .await
+            .expect("a package already blocked stays a no-op at the cap");
+        let config = read(&pool).await.expect("read rules");
+        assert!(
+            config
+                .mobile
+                .blocked_apps
+                .iter()
+                .all(|rule| rule.package_name != "com.cap.surplus")
+        );
+    });
+}
+
+fn mobile_entry(id: &str, package: &str) -> LimitEntryDraft {
+    LimitEntryDraft {
+        mobile_app_name: "App".to_string(),
+        mobile_app_package: package.to_string(),
+        ..entry(id, "", "")
+    }
+}
+
+fn save_limit(id: &str, entries: Vec<LimitEntryDraft>) -> RuleEdit {
+    let RuleEdit::SaveUsageLimit { draft, .. } = limit("Apps", entries) else {
+        unreachable!("limit builds a save edit");
+    };
+    RuleEdit::SaveUsageLimit {
+        id: Some(id.to_string()),
+        draft,
+    }
+}
+
+async fn insert_package_limit(pool: &SqlitePool, id: &str, packages: usize) {
+    insert_replicated_limit(pool, id, "Apps", true).await;
+    for index in 0..packages {
+        let package = format!("com.{id}.app{index}");
+        let sources = ReplicatedSources {
+            mobile_app_name: Some("App"),
+            mobile_app_package: Some(&package),
+            ..ReplicatedSources::default()
+        };
+        let ordinal = i64::try_from(index).expect("ordinal fits");
+        insert_replicated_entry(pool, id, ordinal, &format!("{id}-{index}"), sources).await;
+    }
+}
+
+#[test]
+fn usage_limits_refuse_android_packages_past_the_guardian_limit_cap() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        set_applying(&pool, true).await;
+        for index in 0..MAX_GUARDIAN_USAGE_LIMITS {
+            insert_package_limit(&pool, &format!("packaged{index}"), 1).await;
+        }
+        set_applying(&pool, false).await;
+
+        let surplus = limit("Surplus", vec![mobile_entry("surplus", "com.cap.surplus")]);
+        assert_eq!(
+            refusal(apply(&pool, &surplus, NOW_MS).await),
+            RuleRefusal::TooLarge
+        );
+        let website = limit("Video", vec![entry("video", "video.example.com", "")]);
+        let config = apply(&pool, &website, NOW_MS)
+            .await
+            .expect("a limit without Android packages is not published to Guardian");
+        let video = config
+            .limits
+            .items
+            .iter()
+            .find(|limit| limit.name == "Video")
+            .expect("saved website limit")
+            .id
+            .clone();
+        let widened = save_limit(
+            &video,
+            vec![
+                entry("video", "video.example.com", ""),
+                mobile_entry("video-app", "com.cap.video"),
+            ],
+        );
+        assert_eq!(
+            refusal(apply(&pool, &widened, NOW_MS).await),
+            RuleRefusal::TooLarge
+        );
+        let edited = save_limit(
+            "packaged0",
+            vec![
+                mobile_entry("packaged0-0", "com.packaged0.app0"),
+                mobile_entry("packaged0-1", "com.packaged0.extra"),
+            ],
+        );
+        apply(&pool, &edited, NOW_MS)
+            .await
+            .expect("a published limit stays editable at the cap");
+    });
+}
+
+#[test]
+fn usage_limits_refuse_android_packages_past_the_guardian_package_cap() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let packages = |count: usize| -> Vec<LimitEntryDraft> {
+            (0..count)
+                .map(|index| mobile_entry(&format!("entry{index}"), &format!("com.cap.app{index}")))
+                .collect()
+        };
+        let oversized = limit("Apps", packages(MAX_MOBILE_APP_RULES + 1));
+        assert_eq!(
+            refusal(apply(&pool, &oversized, NOW_MS).await),
+            RuleRefusal::TooLarge
+        );
+        apply(
+            &pool,
+            &limit("Apps", packages(MAX_MOBILE_APP_RULES)),
+            NOW_MS,
+        )
+        .await
+        .expect("a limit at the package cap saves");
+
+        set_applying(&pool, true).await;
+        insert_package_limit(&pool, "synced", MAX_MOBILE_APP_RULES + 1).await;
+        set_applying(&pool, false).await;
+        let stored = |count: usize| -> Vec<LimitEntryDraft> {
+            (0..count)
+                .map(|index| {
+                    mobile_entry(
+                        &format!("synced-{index}"),
+                        &format!("com.synced.app{index}"),
+                    )
+                })
+                .collect()
+        };
+        apply(
+            &pool,
+            &save_limit("synced", stored(MAX_MOBILE_APP_RULES + 1)),
+            NOW_MS,
+        )
+        .await
+        .expect("a synced limit over the package cap stays editable");
+        let mut grown = stored(MAX_MOBILE_APP_RULES + 1);
+        grown.push(mobile_entry("synced-new", "com.synced.new"));
+        assert_eq!(
+            refusal(apply(&pool, &save_limit("synced", grown), NOW_MS).await),
+            RuleRefusal::TooLarge
+        );
+        apply(
+            &pool,
+            &save_limit("synced", stored(MAX_MOBILE_APP_RULES)),
+            NOW_MS,
+        )
+        .await
+        .expect("removing packages from a synced limit over the cap saves");
+        let removed = RuleEdit::Remove(RuleTarget::UsageLimit {
+            id: "synced".to_string(),
+        });
+        apply(&pool, &removed, NOW_MS)
+            .await
+            .expect("a synced limit over the package cap stays removable");
+    });
+}
+
+async fn desktop_rule_enabled(pool: &SqlitePool, identity: &str) -> Option<i64> {
+    sqlx::query_scalar(
+        "SELECT enabled FROM distractions_app_rules
+         WHERE platform = 'desktop' AND identity = ?",
+    )
+    .bind(identity)
+    .fetch_optional(pool)
+    .await
+    .expect("read desktop rule")
+}
+
+/// The identity the assembled configuration reports for a rule, as Settings sends it back.
+async fn desktop_target(pool: &SqlitePool, name: &str) -> RuleTarget {
+    let config = read(pool).await.expect("read rules");
+    let rule = config
+        .desktop
+        .blocked_apps
+        .iter()
+        .find(|rule| rule.name == name)
+        .expect("assembled desktop rule");
+    RuleTarget::DesktopApp {
+        identity: rule.identity.clone(),
+    }
+}
+
+#[test]
+fn desktop_rule_with_divergent_identity_can_be_removed_and_toggled() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        insert_desktop_rule(&pool, "a", "b", "[]").await;
+        let target = desktop_target(&pool, "b").await;
+
+        apply(
+            &pool,
+            &RuleEdit::SetEnabled {
+                target: target.clone(),
+                enabled: false,
+            },
+            NOW_MS,
+        )
+        .await
+        .expect("toggle rule");
+        assert_eq!(desktop_rule_enabled(&pool, "a").await, Some(0));
+
+        apply(&pool, &RuleEdit::Remove(target), NOW_MS)
+            .await
+            .expect("remove rule");
+        assert_eq!(desktop_rule_enabled(&pool, "a").await, None);
+    });
+}
+
+#[test]
+fn added_desktop_rule_reports_the_derived_identity() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let config = apply(
+            &pool,
+            &RuleEdit::AddDesktopApp {
+                name: "Steam".to_string(),
+                match_names: Vec::new(),
+            },
+            NOW_MS,
+        )
+        .await
+        .expect("add rule");
+        assert_eq!(config.desktop.blocked_apps[0].identity, "steam");
+        assert_eq!(config.desktop.blocked_apps[0].name, "Steam");
+    });
+}
+
+#[test]
+fn protected_names_refuse_an_enable_but_never_a_disable() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        insert_desktop_rule(&pool, "bash", "Steam", "[]").await;
+        insert_desktop_rule(&pool, "steam-a", "tmux", "[]").await;
+        insert_desktop_rule(&pool, "steam-b", "Steam B", r#"["bash", "steam"]"#).await;
+
+        for identity in ["bash", "steam-a", "steam-b"] {
+            let toggle = |enabled| RuleEdit::SetEnabled {
+                target: RuleTarget::DesktopApp {
+                    identity: identity.to_string(),
+                },
+                enabled,
+            };
+            apply(&pool, &toggle(false), NOW_MS)
+                .await
+                .expect("disable rule");
+            assert_eq!(desktop_rule_enabled(&pool, identity).await, Some(0));
+
+            apply(&pool, &toggle(true), NOW_MS)
+                .await
+                .expect("refused enable changes nothing");
+            assert_eq!(desktop_rule_enabled(&pool, identity).await, Some(0));
+        }
+    });
+}
+
+#[test]
+fn desktop_rules_sharing_a_display_name_stay_separately_addressable() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        insert_desktop_rule(&pool, "first", "Steam", "[]").await;
+        insert_desktop_rule(&pool, "second", "Steam", "[]").await;
+
+        apply(
+            &pool,
+            &RuleEdit::Remove(RuleTarget::DesktopApp {
+                identity: "first".to_string(),
+            }),
+            NOW_MS,
+        )
+        .await
+        .expect("remove one rule");
+        assert_eq!(desktop_rule_enabled(&pool, "first").await, None);
+        assert_eq!(desktop_rule_enabled(&pool, "second").await, Some(1));
     });
 }

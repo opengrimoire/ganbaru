@@ -58,4 +58,30 @@ Denies the connectivityStatus command without any pre-configured scope.
 
 </td>
 </tr>
+
+<tr>
+<td>
+
+`ganbaru-mobile-sync:allow-setSecureWindow`
+
+</td>
+<td>
+
+Enables the setSecureWindow command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`ganbaru-mobile-sync:deny-setSecureWindow`
+
+</td>
+<td>
+
+Denies the setSecureWindow command without any pre-configured scope.
+
+</td>
+</tr>
 </table>

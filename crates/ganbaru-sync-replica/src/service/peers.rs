@@ -372,8 +372,15 @@ pub async fn exchange_with_members<H: SyncHost>(
                 outcome.pulled += done.pulled;
                 if device_id == view.anchor_device_id {
                     anchor_answered = true;
-                    record_direct_anchor_marks(pass.engine, pass.pool, pass.ctx, &view, &done)
-                        .await?;
+                    record_direct_anchor_marks(
+                        pass.engine,
+                        pass.pool,
+                        pass.ctx,
+                        &pass.ids.device_id,
+                        &view,
+                        &done,
+                    )
+                    .await?;
                     if done.problem.is_none() && !done.more && !done.bootstrap_required {
                         outcome.anchor_known = Some(done.known.clone());
                     }
@@ -386,6 +393,12 @@ pub async fn exchange_with_members<H: SyncHost>(
             Ok(Exchange::Fork(fork)) => eprintln!(
                 "sync: member {device_id} reported a fork of writer {} at {}; the coordinator \
                  exchange recovers it",
+                fork.writer.to_hex(),
+                fork.keep_through
+            ),
+            Ok(Exchange::UnprovenFork(fork)) => eprintln!(
+                "sync: member {device_id} claims a fork of writer {} at {} and shows no signed \
+                 operation for it; the writer stays",
                 fork.writer.to_hex(),
                 fork.keep_through
             ),
@@ -414,10 +427,12 @@ pub async fn exchange_with_members<H: SyncHost>(
 
 /// Records what the log's anchor reported storing in a direct exchange as anchor marks, so
 /// displaced versions it covers are released without waiting for the coordinator to relay it.
+/// Nothing is recorded while `own_device_id` is held, see [`crate::client::record_anchor_marks`].
 pub(super) async fn record_direct_anchor_marks(
     engine: &Engine,
     pool: &SqlitePool,
     ctx: &SpaceContext,
+    own_device_id: &str,
     view: &AuthorizationView,
     done: &Exchanged,
 ) -> Result<(), String> {
@@ -425,10 +440,16 @@ pub(super) async fn record_direct_anchor_marks(
         .acquire()
         .await
         .map_err(|error| format!("acquire sync connection: {error}"))?;
-    engine
-        .record_anchor_marks(&mut conn, ctx, &view.anchor_device_id, &done.hub)
-        .await
-        .map_err(|error| format!("record anchor marks: {error}"))?;
+    crate::client::record_anchor_marks(
+        engine,
+        &mut conn,
+        ctx,
+        own_device_id,
+        &view.anchor_device_id,
+        &done.hub,
+    )
+    .await
+    .map_err(|error| format!("record anchor marks: {error}"))?;
     Ok(())
 }
 
@@ -550,6 +571,50 @@ pub async fn bootstrap_members<H: SyncHost>(
     let mut sources = bootstrap_sources(&view, &members, &discovered, &known);
     sources.extend(server_source(&view, &own_device_id, quarantined.devices()));
     Ok(sources)
+}
+
+/// Whether a vault copy may come from the coordinator this device enrolled with, see
+/// [`coordinator_allowed`]. `pinned_charter` is the hash of the charter the coordinator pin
+/// holds. Without a selected log of `vault_id`, as on a first link, the coordinator stays a
+/// source.
+pub async fn bootstrap_coordinator_allowed<H: SyncHost>(
+    host: &H,
+    vault_id: &str,
+    coordinator_device_id: &str,
+    pinned_charter: Option<[u8; 32]>,
+) -> Result<bool, String> {
+    let path = host.sync_files(vault_id)?.quarantine_path();
+    let quarantined = blocking(move || Quarantine::load(&path)).await?;
+    let view = match selected_authorization(host).await? {
+        Some((active_vault_id, view)) if active_vault_id == vault_id => Some(view),
+        _ => None,
+    };
+    Ok(coordinator_allowed(
+        coordinator_device_id,
+        quarantined.devices(),
+        view.as_ref(),
+        pinned_charter,
+    ))
+}
+
+/// Whether the coordinator stays a copy source: not while this installation quarantined it, and
+/// not while the local selected log removed it, which counts only when that log starts from the
+/// pinned charter. A removal in a log the coordinator later reset says nothing about the charter
+/// it founded since.
+pub fn coordinator_allowed(
+    coordinator_device_id: &str,
+    quarantined: &BTreeSet<String>,
+    view: Option<&AuthorizationView>,
+    pinned_charter: Option<[u8; 32]>,
+) -> bool {
+    if quarantined.contains(coordinator_device_id) {
+        return false;
+    }
+    let removed = view.is_some_and(|view| {
+        pinned_charter == Some(view.charter)
+            && crate::hub::removes_device(view, coordinator_device_id)
+    });
+    !removed
 }
 
 /// The anchor server of `view` as a copy source, unless it is this device or quarantined here.
@@ -752,6 +817,7 @@ mod tests {
             role: DeviceRole::Member,
             enrolled_revision: 2,
             removed_revision: removed.then_some(3),
+            held: false,
             encryption_key: None,
         }
     }
@@ -769,6 +835,7 @@ mod tests {
             charter: [8; 32],
             recovery_admin_key: AdminPublicKey::from_bytes([9; 32]),
             kit_admin_key: AdminPublicKey::from_bytes([9; 32]),
+            retired_admin_keys: BTreeSet::new(),
             devices: vec![
                 enrolled("device-coordinator", 1, DeviceKind::Desktop, false),
                 enrolled("device-self", 2, DeviceKind::Mobile, false),

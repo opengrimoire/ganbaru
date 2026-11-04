@@ -290,6 +290,8 @@ export const calendar = {
     readOnlyShortcut: (shortcut: string, action: string) =>
       `Read-only (${shortcut} to ${action})`,
     saveShortcut: (shortcut: string) => `Save (${shortcut})`,
+    detailsLoadFailed: "Event details could not be loaded.",
+    detailsLoadFailedSaveBlocked: "Event details could not be loaded. The long title or location stays read only until they load.",
   },
   conflict: {
     badge: "Edited on two devices",
@@ -348,6 +350,9 @@ export const calendar = {
     historyUnavailable: "The recorded Focus timeline could not be loaded. Try a shorter Calendar range or retry.",
     eventsUnreadable: (count: number) =>
       `${count} ${count === 1 ? "event" : "events"} could not be shown in this range because ${count === 1 ? "its" : "their"} saved repetition could not be expanded.`,
+    eventsOmitted: (count: number) =>
+      `${count} ${count === 1 ? "event" : "events"} in this range ${count === 1 ? "is" : "are"} not shown because the range holds more than the Calendar can display.`,
+    eventsLoadFailed: "Calendar events could not be loaded.",
     saved: "Saved",
     unknownSaveError: "Unknown save error",
     saveFailed: (message: string) => `Save failed: ${message}`,

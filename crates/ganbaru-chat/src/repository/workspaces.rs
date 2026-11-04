@@ -6,6 +6,9 @@ use crate::workspace::{
 };
 use sqlx::{Row, SqlitePool};
 
+/// Lists every readable working folder. Folder rows replicate between devices, so a row that does
+/// not parse is logged and left out rather than failing the list for all projects. Query errors
+/// stay fatal.
 pub async fn list_workspaces(pool: &SqlitePool) -> ChatResult<Vec<ProjectWorkingFolder>> {
     let rows = sqlx::query(
         "SELECT id, project_id, display_name, kind, managed_relative_path, sort_order,
@@ -16,7 +19,21 @@ pub async fn list_workspaces(pool: &SqlitePool) -> ChatResult<Vec<ProjectWorking
     .fetch_all(pool)
     .await
     .map_err(persistence_error)?;
-    rows.into_iter().map(row_to_workspace).collect()
+    let mut folders = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = row.try_get::<String, _>("id");
+        match row_to_workspace(row) {
+            Ok(folder) => folders.push(folder),
+            Err(error) => {
+                eprintln!(
+                    "Skipped project working folder {:?}: {}",
+                    id.unwrap_or_default(),
+                    error.message
+                );
+            }
+        }
+    }
+    Ok(folders)
 }
 
 pub async fn read_workspace(
@@ -37,12 +54,57 @@ pub async fn read_workspace(
     .ok_or_else(not_found_error)
 }
 
+/// Resolves the effective primary working folder of `project_id`: the stored primary folder when
+/// it belongs to the project and is not archived, and the project's managed folder otherwise.
+///
+/// Folder rows replicate between devices, so a candidate that does not parse is logged and
+/// skipped like a missing one, as [`list_workspaces`] leaves it out, and the next candidate is
+/// tried. `None` means no candidate is readable on this replica. Query errors stay fatal.
+pub async fn resolve_primary_workspace(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> ChatResult<Option<ProjectWorkingFolder>> {
+    let rows = sqlx::query(
+        "SELECT folder.id, folder.project_id, folder.display_name, folder.kind,
+                folder.managed_relative_path, folder.sort_order, folder.repository_kind,
+                folder.repository_identity, folder.created_at, folder.updated_at,
+                folder.archived_at, folder.revision
+         FROM project_working_folders folder
+         LEFT JOIN project_primary_working_folders primary_folder
+           ON primary_folder.project_id = folder.project_id
+          AND primary_folder.working_folder_id = folder.id
+          AND folder.archived_at IS NULL
+         WHERE folder.project_id = ?
+           AND (primary_folder.project_id IS NOT NULL OR folder.kind = 'managed')
+         ORDER BY primary_folder.project_id IS NULL, folder.sort_order, folder.id",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)?;
+    for row in rows {
+        let id = row.try_get::<String, _>("id");
+        match row_to_workspace(row) {
+            Ok(folder) => return Ok(Some(folder)),
+            Err(error) => {
+                eprintln!(
+                    "Skipped project working folder {:?} as primary: {}",
+                    id.unwrap_or_default(),
+                    error.message
+                );
+            }
+        }
+    }
+    Ok(None)
+}
+
 pub async fn create_workspace(
     pool: &SqlitePool,
     request: &CreateProjectWorkingFolderRequest,
     now: &UtcTimestamp,
 ) -> ChatResult<ProjectWorkingFolder> {
     validate_name(&request.display_name)?;
+    validate_external_id(&request.id)?;
     sqlx::query(
         "INSERT INTO project_working_folders
             (id, project_id, display_name, kind, sort_order, repository_kind, created_at, updated_at)
@@ -316,6 +378,18 @@ fn validate_name(value: &str) -> ChatResult<()> {
         Err(ChatError::validation(
             "displayName",
             "Project working-folder name is invalid",
+        ))
+    } else {
+        Ok(())
+    }
+}
+/// Refuses an external folder id that is some project's managed folder id, which sync reserves
+/// for that project's managed folder on every device.
+fn validate_external_id(id: &ProjectWorkingFolderId) -> ChatResult<()> {
+    if ganbaru_working_folders::managed_folder_project(id.as_str()).is_some() {
+        Err(ChatError::validation(
+            "id",
+            "Project working-folder id is reserved for a managed folder",
         ))
     } else {
         Ok(())

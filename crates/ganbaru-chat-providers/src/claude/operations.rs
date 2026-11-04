@@ -21,6 +21,21 @@ impl ProviderDriver for ClaudeProviderDriver {
         Self::metadata_read()
     }
 
+    fn project_configuration_restriction(&self) -> ProjectConfigurationRestriction {
+        ProjectConfigurationRestriction::Enforced
+    }
+
+    fn project_configuration_paths(&self) -> &'static [ProviderConfigurationPath] {
+        &[
+            ProviderConfigurationPath::ClaudeSettings,
+            ProviderConfigurationPath::ClaudeLocalSettings,
+            ProviderConfigurationPath::ProjectMcp,
+            ProviderConfigurationPath::ClaudeSkills,
+            ProviderConfigurationPath::ClaudeAgents,
+            ProviderConfigurationPath::ClaudeCommands,
+        ]
+    }
+
     fn instance_configuration(&self) -> &ProviderInstanceConfig {
         &self.configuration
     }

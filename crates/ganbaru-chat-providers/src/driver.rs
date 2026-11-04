@@ -58,6 +58,20 @@ pub trait ProviderDriver: Send {
         ProviderAuthoritySupport::default()
     }
 
+    /// How this provider honors a restricted project configuration. A driver
+    /// overrides the default only after verifying its switch with the pinned
+    /// provider version.
+    fn project_configuration_restriction(&self) -> ProjectConfigurationRestriction {
+        ProjectConfigurationRestriction::Unavailable
+    }
+
+    /// Project provider configuration paths this provider loads at start. A
+    /// path past the digest bounds refuses only the providers that list it,
+    /// so a driver narrows the default only to paths it never loads.
+    fn project_configuration_paths(&self) -> &'static [ProviderConfigurationPath] {
+        ProviderConfigurationPath::ALL
+    }
+
     fn cached_model_catalog(&self) -> Option<ProviderModelCatalog> {
         None
     }

@@ -195,6 +195,7 @@ fn enrolling_view(fingerprint: &str, removed: bool) -> AuthorizationView {
         charter: [8; 32],
         recovery_admin_key: AdminPublicKey::from_bytes([9; 32]),
         kit_admin_key: AdminPublicKey::from_bytes([9; 32]),
+        retired_admin_keys: std::collections::BTreeSet::new(),
         devices: vec![EnrolledDevice {
             device_id: PHONE.to_string(),
             device_key: DevicePublicKey::from_bytes([3; 32]),
@@ -204,6 +205,7 @@ fn enrolling_view(fingerprint: &str, removed: bool) -> AuthorizationView {
             role: ganbaru_sync_contracts::DeviceRole::Member,
             enrolled_revision: 2,
             removed_revision: removed.then_some(3),
+            held: false,
             encryption_key: None,
         }],
         discovery_key: [5; 32],
@@ -397,6 +399,117 @@ async fn the_coordinator_serves_nothing_to_a_device_the_log_removed() {
     assert!(
         download.is_err_and(|error| error.contains("removed from the vault")),
         "a removed device downloads no bundle"
+    );
+}
+
+/// A linked phone and a coordinator whose log admission is whatever `admission` holds when a
+/// request arrives.
+async fn coordinator_reading(admission: &SharedAdmission) -> LocalPair {
+    let source = admission.clone();
+    let pair = LocalPair::start_with_sealer(
+        None,
+        server::limits::ConnectionLimits::default(),
+        EnrollmentApprovals::default(),
+        LanAdmission::default(),
+        test_enrollment_sealer(),
+        None,
+        Some(std::sync::Arc::new(move || {
+            let current = source.lock().expect("admission").clone();
+            Box::pin(async move { Ok(current) })
+        })),
+    )
+    .await;
+    pair.enroll().await;
+    pair
+}
+
+/// The error code of a coordinator answer, and whether it may be retried.
+fn error_of(response: &ControlMessage) -> Option<(&str, bool)> {
+    match response {
+        ControlMessage::Error {
+            code, retryable, ..
+        } => Some((code.as_str(), *retryable)),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn the_coordinator_gives_a_held_device_no_copy_or_person_key() {
+    let admission: SharedAdmission = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let pair = coordinator_reading(&admission).await;
+    let phone_fingerprint =
+        certificate_fingerprint(pair.phone.certificate().expect("certificate").as_ref());
+    // A frozen contest holds the phone; its pairing and the selected log still list it.
+    let mut view = enrolling_view(&phone_fingerprint, false);
+    view.devices[0].held = true;
+    *admission.lock().expect("admission") = Some(MemberAdmission::new(
+        VAULT,
+        &view,
+        &std::collections::BTreeSet::new(),
+    ));
+
+    let key = request_person_key(&pair.phone)
+        .await
+        .expect("person key exchange");
+    assert_eq!(error_of(&key), Some(("device_held", true)), "{key:?}");
+    let prepared = prepare_copy(&pair.phone).await;
+    assert!(
+        prepared
+            .as_ref()
+            .is_err_and(|error| error.contains("contest holds")),
+        "{prepared:?}"
+    );
+    let metadata = pair.register_bundle(b"whole-vault bundle", "transfer-held");
+    let download = download_bundle(
+        &pair.phone,
+        &BundleSource::Coordinator,
+        metadata,
+        &TransferCancellation::default(),
+    )
+    .await;
+    assert!(
+        download
+            .as_ref()
+            .is_err_and(|error| error.contains("contest holds")),
+        "a held device downloads no bundle: {download:?}"
+    );
+}
+
+#[tokio::test]
+async fn linked_device_outside_the_log_keeps_its_first_copy() {
+    // The log enrolled only another device: the phone was linked before its enrollment was
+    // sequenced, so its certificate is unknown to the log.
+    let admission: SharedAdmission = std::sync::Arc::new(std::sync::Mutex::new(Some(
+        admission_with(&"0".repeat(64), false),
+    )));
+    let pair = coordinator_reading(&admission).await;
+
+    let metadata = pair.register_bundle(b"first vault copy", "transfer-first");
+    let staged = download_bundle(
+        &pair.phone,
+        &BundleSource::Coordinator,
+        metadata,
+        &TransferCancellation::default(),
+    )
+    .await
+    .expect("the first copy downloads");
+    assert_eq!(fs::read(staged).expect("read copy"), b"first vault copy");
+    // The person key request passes the log and reaches coordinator dispatch, which this
+    // listener has no coordinator for.
+    let key = request_person_key(&pair.phone)
+        .await
+        .expect("person key exchange");
+    assert_eq!(
+        error_of(&key),
+        Some(("coordinator_unavailable", true)),
+        "{key:?}"
+    );
+    let prepared = prepare_copy(&pair.phone).await;
+    assert!(
+        prepared
+            .as_ref()
+            .is_err_and(|error| error.contains("coordinator operations are unavailable")),
+        "{prepared:?}"
     );
 }
 

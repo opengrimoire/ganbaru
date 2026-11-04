@@ -1393,6 +1393,29 @@
     />
   {/if}
 
+  {#if calendarStore.omittedTemplateCount > 0}
+    <Notice
+      class={calendarBannerClass}
+      role="status"
+      tone="warning"
+      icon={CalendarX}
+      copy={false}
+      message={t("calendar.view.eventsOmitted", calendarStore.omittedTemplateCount)}
+    />
+  {/if}
+
+  {#if calendarStore.windowLoadFailed}
+    <Notice
+      class={calendarBannerClass}
+      role="status"
+      tone="warning"
+      icon={CalendarX}
+      copy={false}
+      message={t("calendar.view.eventsLoadFailed")}
+      onRetry={() => calendarStore.load()}
+    />
+  {/if}
+
   <div
     bind:this={viewportController.viewWrapper}
     class="min-w-0 flex-1 overflow-hidden"

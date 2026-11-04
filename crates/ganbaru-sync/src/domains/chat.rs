@@ -23,7 +23,9 @@
 //! outranks the other active states.
 
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
-use ganbaru_sync_contracts::{Field, GroupId, OrderKey, TableId, Value};
+use ganbaru_sync_contracts::builtin_profiles::{BUILTIN_ACCESS_PROFILES, builtin_profile_key};
+use ganbaru_sync_contracts::{Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
+use ganbaru_working_folders::UtcTimestamp;
 
 use crate::adapter::{AdapterError, DomainAdapter, OfferedRows, Presentation};
 use crate::assets::AssetRef;
@@ -56,11 +58,13 @@ pub const MAX_PROVIDER_INSTANCE_CHARS: usize = 1024;
 pub const MAX_JSON_CHARS: usize = 16_384;
 /// Characters of the longest enumerated value any Chat replicated column holds.
 pub const MAX_ENUM_CHARS: usize = 32;
-/// Fewest characters of a stored timestamp, as the tables check it.
-pub const MIN_TIMESTAMP_CHARS: usize = 20;
 
 /// Participant kinds.
 pub const PARTICIPANT_KINDS: [&str; 3] = ["local_user", "ai_teammate", "human"];
+/// Participant kind of the local user.
+const LOCAL_USER_KIND: &str = "local_user";
+/// The key the baseline seeds for the local user, the only one the kind may hold.
+pub const LOCAL_OWNER_PARTICIPANT_KEY: &str = "participant:local-owner";
 /// Teammate safety modes, least restrictive first. Custom defers to the
 /// provider's own configuration, which can grant anything, so it ranks lowest.
 pub const SAFETY_MODES: [&str; 4] = [
@@ -76,13 +80,15 @@ pub const SPEEDS: [&str; 2] = ["standard", "fast"];
 /// Interaction modes.
 pub const INTERACTION_MODES: [&str; 1] = ["build"];
 /// Built-in access profile keys.
-pub const BUILTIN_PROFILE_KEYS: [&str; 5] = [
-    "conversation_only",
-    "read_only",
-    "edit_files",
-    "build_and_test",
-    "publish_changes",
-];
+pub const BUILTIN_PROFILE_KEYS: [&str; BUILTIN_ACCESS_PROFILES.len()] = {
+    let mut keys = [""; BUILTIN_ACCESS_PROFILES.len()];
+    let mut index = 0;
+    while index < keys.len() {
+        keys[index] = BUILTIN_ACCESS_PROFILES[index].1;
+        index += 1;
+    }
+    keys
+};
 /// History boundaries of an access profile revision.
 pub const HISTORY_BOUNDARIES: [&str; 2] = ["entire", "from_grant"];
 /// Maximum folder capabilities, least restrictive first.
@@ -226,12 +232,12 @@ fn optional_one_of(
     }
 }
 
+/// A Chat timestamp every reader of the row can parse. Reads parse these columns as
+/// [`UtcTimestamp`], so admitting other text would make the stored row unreadable on every device.
 fn timestamp(field: &Field) -> Result<(), AdapterError> {
-    if text(field)?.chars().count() >= MIN_TIMESTAMP_CHARS {
-        Ok(())
-    } else {
-        Err(AdapterError("chat timestamp is too short"))
-    }
+    UtcTimestamp::new(text(field)?)
+        .map(|_| ())
+        .map_err(|_| AdapterError("chat timestamp is not RFC 3339 UTC"))
 }
 
 fn optional_timestamp(field: &Field) -> Result<(), AdapterError> {
@@ -299,6 +305,19 @@ fn current_pair(
         (Some(_), copied) => one_of(copied, allowed, what),
         (None, _) => Err(AdapterError(what)),
     }
+}
+
+/// Refuses a local user under any key but the seeded one.
+fn validate_participant_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
+    let local_user = groups
+        .iter()
+        .find(|value| value.group == participant_group::CREATED)
+        .and_then(|value| value.value.fields().first())
+        .is_some_and(|kind| matches!(kind, Field::Text(kind) if kind == LOCAL_USER_KIND));
+    if local_user && row.as_str() != LOCAL_OWNER_PARTICIPANT_KEY {
+        return Err(AdapterError("chat local user key"));
+    }
+    Ok(())
 }
 
 fn validate_participant(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
@@ -398,6 +417,23 @@ fn validate_profile(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
         (profile_group::UPDATED, [at]) => timestamp(at),
         _ => Err(AdapterError("chat access profile value")),
     }
+}
+
+/// Refuses a built-in key on any row but the one seeded with it, and a seeded row without its
+/// own key. Custom profiles carry no key.
+fn validate_profile_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
+    let claimed = groups
+        .iter()
+        .find(|value| value.group == profile_group::CREATED)
+        .and_then(|value| value.value.fields().first())
+        .and_then(|builtin| match builtin {
+            Field::Text(key) => Some(key.as_str()),
+            _ => None,
+        });
+    if claimed != builtin_profile_key(row.as_str()) {
+        return Err(AdapterError("chat built-in profile identity"));
+    }
+    Ok(())
 }
 
 fn validate_profile_revision(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
@@ -1271,6 +1307,21 @@ impl DomainAdapter for ChatAdapter {
         }
     }
 
+    fn validate_row(
+        &self,
+        table: TableId,
+        row: &RowKey,
+        groups: &[GroupValue],
+    ) -> Result<(), AdapterError> {
+        if table == PARTICIPANTS_TABLE {
+            validate_participant_row(row, groups)
+        } else if table == PROFILES_TABLE {
+            validate_profile_row(row, groups)
+        } else {
+            Ok(())
+        }
+    }
+
     fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError> {
         let fields = value.fields();
         if table == PARTICIPANTS_TABLE {
@@ -1444,8 +1495,11 @@ fn group_fields(values: &[(GroupId, Value)], group: GroupId) -> Option<&[Field]>
 
 #[cfg(test)]
 mod tests {
+    use ganbaru_sync_contracts::{Change, ChangeAction};
+
     use super::*;
     use crate::codec::OwnedRow;
+    use crate::{Engine, validate};
 
     const AT: &str = "2026-10-24T10:51:41.000Z";
 
@@ -2106,6 +2160,137 @@ mod tests {
                 )
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    /// A create of access profile `id` carrying `builtin_key`.
+    fn profile_create(id: &str, builtin_key: Option<&str>) -> Change {
+        let group = |group, fields| GroupValue::new(PROFILES_TABLE, group, value(fields));
+        Change {
+            table: PROFILES_TABLE,
+            row: RowKey::new(id).unwrap(),
+            action: ChangeAction::Create,
+            groups: vec![
+                group(profile_group::CREATED, vec![optional(builtin_key), t(AT)]),
+                group(profile_group::NAME, vec![t("Claim")]),
+                group(profile_group::CURRENT, vec![Field::Null, Field::Null]),
+                group(profile_group::LIFECYCLE, vec![Field::Null]),
+                group(profile_group::UPDATED, vec![t(AT)]),
+            ],
+            replaced_by: None,
+            cause: None,
+        }
+    }
+
+    #[test]
+    fn custom_profile_claiming_builtin_key_is_held_invalid() {
+        let engine = Engine::vault();
+        for id in ["access-profile:aaa", "access-profile:zzz"] {
+            for key in BUILTIN_PROFILE_KEYS {
+                assert_eq!(
+                    validate::change(&engine, &profile_create(id, Some(key))),
+                    Err("chat built-in profile identity"),
+                    "{id} {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seeded_id_with_wrong_key_is_held_invalid() {
+        let engine = Engine::vault();
+        for key in [Some("edit_files"), None] {
+            assert_eq!(
+                validate::change(&engine, &profile_create("access-profile:read-only", key)),
+                Err("chat built-in profile identity"),
+                "{key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_profile_with_null_key_stays_valid() {
+        let engine = Engine::vault();
+        assert_eq!(
+            validate::change(&engine, &profile_create("access-profile:reviewers", None)),
+            Ok(())
+        );
+    }
+
+    /// Text the stored-row readers refuse, each long enough for the table length check.
+    const NOT_UTC_TIMESTAMPS: [&str; 5] = [
+        "not a timestamp at all, honestly",
+        "2026-10-24t10:51:41.000Z",
+        "2026-10-24 10:51:41.000Z",
+        "2026-10-24T10:51:41.000+02:00",
+        "2026-10-24T10:51:60.000Z",
+    ];
+
+    #[test]
+    fn chat_timestamps_must_be_rfc3339_utc() {
+        let engine = Engine::vault();
+        let adapter = ChatAdapter;
+        for bad in NOT_UTC_TIMESTAMPS {
+            let mut forged = profile_create("access-profile:reviewers", None);
+            forged.groups[0] = GroupValue::new(
+                PROFILES_TABLE,
+                profile_group::CREATED,
+                value(vec![Field::Null, t(bad)]),
+            );
+            assert!(validate::change(&engine, &forged).is_err(), "created {bad}");
+
+            for (table, group) in [
+                (PROFILES_TABLE, profile_group::UPDATED),
+                (PROFILES_TABLE, profile_group::LIFECYCLE),
+                (CHANNELS_TABLE, channel_group::UPDATED),
+                (CHANNELS_TABLE, channel_group::LIFECYCLE),
+                (CONVERSATIONS_TABLE, conversation_group::ACTIVITY),
+                (MESSAGES_TABLE, message_group::LIFECYCLE),
+                (CONVERSATION_CURSORS_TABLE, read_cursor_group::UPDATED),
+                (SCHEDULED_TABLE, scheduled_group::UPDATED),
+                (ASSIGNMENTS_TABLE, assignment_group::UPDATED),
+            ] {
+                assert!(
+                    adapter
+                        .validate(table, group, &value(vec![t(bad)]))
+                        .is_err(),
+                    "{table:?} {group:?} {bad}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chat_timestamps_accept_the_forms_honest_writers_store() {
+        let engine = Engine::vault();
+        let adapter = ChatAdapter;
+        for good in [AT, "2026-10-24T10:51:41Z", "2026-10-24T10:51:41.000+00:00"] {
+            let mut honest = profile_create("access-profile:reviewers", None);
+            honest.groups[0] = GroupValue::new(
+                PROFILES_TABLE,
+                profile_group::CREATED,
+                value(vec![Field::Null, t(good)]),
+            );
+            assert_eq!(validate::change(&engine, &honest), Ok(()), "created {good}");
+            assert!(
+                adapter
+                    .validate(
+                        MESSAGES_TABLE,
+                        message_group::LIFECYCLE,
+                        &value(vec![t(good)])
+                    )
+                    .is_ok(),
+                "{good}"
+            );
+        }
+        assert!(
+            adapter
+                .validate(
+                    MESSAGES_TABLE,
+                    message_group::LIFECYCLE,
+                    &value(vec![Field::Null])
+                )
+                .is_ok()
         );
     }
 

@@ -21,7 +21,7 @@ pub use sync::{
 };
 pub use sync::{MAX_MEMBER_ENDPOINTS, MAX_SYNC_RECORDS, MemberEndpoint, SYNC_RECORD_CLASSES};
 
-pub const PROTOCOL_VERSION: u16 = 17;
+pub const PROTOCOL_VERSION: u16 = 18;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -381,6 +381,19 @@ pub enum ControlMessage {
     SyncForkPair {
         evidence: Vec<String>,
     },
+    /// Authenticated: the operation of `writer` at the hub's stored head, which the device
+    /// that sealed `writer` checks before it takes a claimed fork as proven.
+    SyncWriterHead {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        writer: String,
+    },
+    /// The signed operation at the hub's stored head of the requested writer, or none when the
+    /// hub holds none it may show.
+    SyncWriterHeadOp {
+        op: Option<String>,
+    },
     /// Authenticated: which of these assets the hub holds.
     SyncAssetQuery {
         protocol_version: u16,
@@ -538,6 +551,17 @@ pub enum ControlMessage {
 }
 
 impl ControlMessage {
+    /// Whether the request hands out vault content or the person key, which a device held by
+    /// an anchor handover contest does not receive until the contest resolves.
+    pub fn is_vault_material(&self) -> bool {
+        matches!(
+            self,
+            Self::RequestBundle { .. }
+                | Self::DownloadBundle { .. }
+                | Self::PersonKeyRequest { .. }
+        )
+    }
+
     /// Whether this is a record exchange request, which every paired peer is served whatever
     /// the authorization log says of its device.
     pub fn is_record_exchange(&self) -> bool {
@@ -576,6 +600,11 @@ impl ControlMessage {
                 ..
             }
             | Self::SyncForkEvidence {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncWriterHead {
                 vault_id,
                 device_id,
                 ..
@@ -893,6 +922,20 @@ impl ControlMessage {
                 sync::validate_evidence(evidence, false)?;
             }
             Self::SyncForkPair { evidence } => sync::validate_evidence(evidence, true)?,
+            Self::SyncWriterHead {
+                protocol_version,
+                vault_id,
+                device_id,
+                writer,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_writer(writer)?;
+            }
+            Self::SyncWriterHeadOp { op } => {
+                if let Some(op) = op {
+                    sync::validate_ops(std::slice::from_ref(op))?;
+                }
+            }
             Self::SyncAssetQuery {
                 protocol_version,
                 vault_id,
@@ -2159,7 +2202,7 @@ mod tests {
         };
         let wire = serde_json::to_value(&hello).expect("serialize sync hello");
         assert_eq!(wire["listening"], serde_json::json!(["192.168.1.20:43821"]));
-        assert_eq!(wire["protocol_version"], serde_json::json!(17));
+        assert_eq!(wire["protocol_version"], serde_json::json!(18));
         assert_eq!(frame_round_trip(&hello), Ok(hello));
     }
 
@@ -2317,6 +2360,42 @@ mod tests {
         }
         assert!(pair(vec![op(1)]).validate().is_err());
         assert!(pair(vec![op(1), op(2), op(3)]).validate().is_err());
+    }
+
+    #[test]
+    fn writer_head_messages_round_trip_and_validate_their_parts() {
+        let request = |writer: String| ControlMessage::SyncWriterHead {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            writer,
+        };
+        let message = request("a".repeat(32));
+        assert_eq!(frame_round_trip(&message), Ok(message.clone()));
+        assert_eq!(message.sync_peer(), Some(("vault-1", "device-phone")));
+        assert!(!message.is_record_exchange());
+        assert!(request("a".repeat(31)).validate().is_err());
+        let mut stale = request("a".repeat(32));
+        if let ControlMessage::SyncWriterHead {
+            protocol_version, ..
+        } = &mut stale
+        {
+            *protocol_version = PROTOCOL_VERSION - 1;
+        }
+        assert!(stale.validate().is_err());
+
+        let op = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            vec![7u8; 90],
+        );
+        for op in [None, Some(op)] {
+            let message = ControlMessage::SyncWriterHeadOp { op };
+            assert_eq!(frame_round_trip(&message), Ok(message));
+        }
+        let malformed = ControlMessage::SyncWriterHeadOp {
+            op: Some("not base64!".to_string()),
+        };
+        assert!(malformed.validate().is_err());
     }
 
     fn signed_charter(

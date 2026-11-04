@@ -17,16 +17,19 @@ use super::fixture::{
 use super::{block_on, migrated_pool};
 use crate::assets::{AssetClass, MAX_ASSET_BYTES};
 use crate::codec::{OwnedRow, decode_table, encode, encode_table};
+use crate::domains::themes::MAX_THEME_ID_CHARS;
 use crate::domains::vault_adapters;
+use crate::edges::WALK_BUDGET;
 use crate::manifest::order::{Dependency, DependencyKind};
-use crate::manifest::vault::quick_notes;
+use crate::manifest::vault::themes::BUILT_IN_THEMES;
 use crate::manifest::vault::{VAULT_DOMAINS, VAULT_MANIFEST};
+use crate::manifest::vault::{chat, quick_notes};
 use crate::manifest::{
-    Classification, Collation, ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec,
-    GroupStorage, KeyDerivedColumn, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest, MergeKind,
-    OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution,
-    SYNC_KEY_COLUMN, SYNC_LOCAL_TABLES, SYNC_TABLES, TableIdRange, TableSpec, TreeSpec, group_id,
-    is_sql_literal,
+    Classification, Collation, ColumnSpec, ColumnType, Deletion, DerivedKey, DomainManifest,
+    GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest,
+    MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn,
+    Resolution, RowKeyRule, RowRetention, SYNC_KEY_COLUMN, SYNC_LOCAL_TABLES, SYNC_TABLES,
+    TableIdRange, TableSpec, TreeSpec, group_id, is_sql_literal,
 };
 use crate::sql::{read_owned, replace_owned};
 use crate::{Adapters, Engine, Hooks, SyncError, triggers, validate};
@@ -434,6 +437,17 @@ fn derived_key_refuses_a_non_key_column_in_an_immutable_group() {
         groups: &[IDENTITY_WITH_TIME, ROLE_ONLY, MEMBERSHIPS.groups[2]],
         ..MEMBERSHIPS
     };
+    const TIME_IN_IDENTITY_DOMAIN: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, TIME_IN_IDENTITY],
+        ..FIXTURE_DOMAIN
+    };
+    // A re-add or a Create on a known row rewrites every group of a derived-key row, so an
+    // immutable value that is not derived from the key would let a later Create replace it.
+    let refused = validation_error(&[&quick_notes::DOMAIN, &TIME_IN_IDENTITY_DOMAIN]);
+    assert!(
+        refused.contains("immutable column created_at is neither the key column nor a key input"),
+        "{refused}"
+    );
     block_on(async {
         let pool = fixture_pool().await;
         assert_eq!(
@@ -1176,6 +1190,551 @@ fn owned_codecs_round_trip_through_the_schema() {
     });
 }
 
+/// The row key `columns` of `table` that are required where the schema allows null, or the
+/// other way around, each as `table.column`.
+async fn row_key_mismatches(pool: &SqlitePool, table: &str, columns: &[ColumnSpec]) -> Vec<String> {
+    let not_null: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info(?) WHERE \"notnull\" = 1")
+            .bind(table)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    columns
+        .iter()
+        .filter(|column| column.ty.is_row_key())
+        .filter(|column| {
+            let required = not_null.iter().any(|name| name == column.name);
+            (column.ty == ColumnType::RowKey) != required
+        })
+        .map(|column| format!("{table}.{}", column.name))
+        .collect()
+}
+
+/// The owned tables under `owned`, itself included.
+fn owned_tree(owned: &'static OwnedTable) -> Vec<&'static OwnedTable> {
+    let mut tree = vec![owned];
+    let mut next = 0;
+    while let Some(table) = tree.get(next).copied() {
+        tree.extend(table.nested);
+        next += 1;
+    }
+    tree
+}
+
+/// A required reference column that holds null would stop the domain write, so the manifest
+/// states what the schema states.
+#[test]
+fn row_key_columns_match_their_not_null_constraint() {
+    block_on(async {
+        let (manifest, pool) = cases().await.into_iter().next().unwrap();
+        let mut mismatches = Vec::new();
+        for table in manifest.tables {
+            for group in table.groups {
+                mismatches.extend(row_key_mismatches(&pool, table.name, group.columns()).await);
+                for root in group.owned_tables() {
+                    for owned in owned_tree(root) {
+                        mismatches
+                            .extend(row_key_mismatches(&pool, owned.table, owned.columns).await);
+                    }
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "a row key column is required exactly when the schema says NOT NULL: {mismatches:#?}"
+        );
+    });
+}
+
+/// `text` without SQL comments, with runs of white space as one space.
+fn normalized_sql(text: &str) -> String {
+    text.lines()
+        .map(|line| line.split_once("--").map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The parts of `text` between `separator`s outside parentheses and strings. The `AND` of a
+/// `BETWEEN` does not separate.
+fn split_top_level<'a>(text: &'a str, separator: &str) -> Vec<&'a str> {
+    let mut parts = Vec::new();
+    let (mut start, mut depth, mut in_string, mut between) = (0, 0, false, false);
+    for (index, character) in text.char_indices() {
+        match character {
+            '\'' => in_string = !in_string,
+            '(' if !in_string => depth += 1,
+            ')' if !in_string => depth -= 1,
+            _ => {}
+        }
+        if in_string || depth > 0 {
+            continue;
+        }
+        let rest = &text[index..];
+        if rest.starts_with(" BETWEEN ") {
+            between = true;
+        } else if rest.starts_with(separator) {
+            if between && separator == " AND " {
+                between = false;
+            } else {
+                parts.push(text[start..index].trim());
+                start = index + separator.len();
+            }
+        }
+    }
+    parts.push(text[start..].trim());
+    parts
+}
+
+/// What follows an opening parenthesis in `text`, up to the parenthesis that closes it.
+fn inside_parentheses(text: &str) -> &str {
+    let (mut depth, mut in_string) = (1, false);
+    for (index, character) in text.char_indices() {
+        match character {
+            '\'' => in_string = !in_string,
+            '(' if !in_string => depth += 1,
+            ')' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return &text[..index];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unbalanced SQL: {text}");
+}
+
+/// `atom` without the parentheses that enclose all of it.
+fn without_outer_parentheses(mut atom: &str) -> &str {
+    while let Some(rest) = atom.strip_prefix('(')
+        && inside_parentheses(rest).len() + 1 == rest.len()
+    {
+        atom = inside_parentheses(rest).trim();
+    }
+    atom
+}
+
+/// The body of every `CHECK` in `definition`.
+fn check_bodies(definition: &str) -> Vec<&str> {
+    let mut bodies = Vec::new();
+    let mut rest = definition;
+    while let Some((_, after)) = rest.split_once("CHECK") {
+        rest = after;
+        if let Some(open) = after.trim_start().strip_prefix('(') {
+            bodies.push(inside_parentheses(open));
+        }
+    }
+    bodies
+}
+
+/// The identifiers of `sql`, outside its strings.
+fn sql_words(sql: &str) -> BTreeSet<&str> {
+    sql.split('\'')
+        .step_by(2)
+        .flat_map(|code| {
+            code.split(|character: char| !character.is_alphanumeric() && character != '_')
+        })
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+/// `sql` with every identifier `from` outside its strings written as `to`.
+fn renamed_identifier(sql: &str, from: &str, to: &str) -> String {
+    let rename = |code: &str| {
+        let mut renamed = String::new();
+        let mut word = String::new();
+        for character in code.chars().map(Some).chain([None]) {
+            match character {
+                Some(character) if character.is_alphanumeric() || character == '_' => {
+                    word.push(character);
+                }
+                _ => {
+                    renamed.push_str(if word == from { to } else { &word });
+                    word.clear();
+                    renamed.extend(character);
+                }
+            }
+        }
+        renamed
+    };
+    sql.split('\'')
+        .enumerate()
+        .map(|(index, part)| {
+            if index % 2 == 0 {
+                rename(part)
+            } else {
+                part.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("'")
+}
+
+/// The name and expression of a generated column `definition`.
+fn generated_column(definition: &str) -> Option<(&str, &str)> {
+    let (head, after) = definition.split_once(" AS (")?;
+    let name = head.split_whitespace().next()?.trim_matches('"');
+    (!name.eq_ignore_ascii_case("CHECK") && !name.eq_ignore_ascii_case("CONSTRAINT"))
+        .then(|| (name, inside_parentheses(after)))
+}
+
+/// What the manifest of one table says about the CHECK terms that read its row key with another
+/// column. These are the only cross-column key terms the schema may hold, because the engine
+/// never writes a row they refuse.
+#[derive(Debug, Clone, Copy, Default)]
+struct KnownKeyTerms {
+    /// Columns that hold a prefix followed by the row key. Materialize writes them from the key,
+    /// so their pinning term `column = 'prefix' || key` never refuses. A column with no prefix
+    /// equals the key, so its other terms read as terms on the key; any other term on a prefixed
+    /// column is unknown.
+    key_derived: &'static [KeyDerivedColumn],
+    /// The parent column of a tree table. Tree repair detaches a row that names itself as its
+    /// parent, so `parent IS NULL OR parent <> key` never refuses.
+    tree_parent: Option<&'static str>,
+}
+
+impl KnownKeyTerms {
+    /// The known cross-column key terms of `table`.
+    fn of(table: &TableSpec) -> Self {
+        let tree_parent = table
+            .tree
+            .and_then(|tree| table.group(tree.parent_group))
+            .and_then(|group| match group.columns() {
+                [column] => Some(column.name),
+                _ => None,
+            });
+        Self {
+            key_derived: table.key_derived_columns,
+            tree_parent,
+        }
+    }
+
+    /// Whether `term` is a cross-column term on `key` the manifest makes safe.
+    fn admits(&self, term: &str, key: &str) -> bool {
+        let pins = self.key_derived.iter().any(|column| {
+            let name = column.name;
+            let pin = if column.prefix.is_empty() {
+                format!("{name} = {key}")
+            } else {
+                format!("{name} = '{}' || {key}", column.prefix.replace('\'', "''"))
+            };
+            term == pin
+        });
+        let no_self_parent = self
+            .tree_parent
+            .is_some_and(|parent| term == format!("{parent} IS NULL OR {parent} <> {key}"));
+        pins || no_self_parent
+    }
+
+    /// Columns equal to the key.
+    fn aliases(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.key_derived
+            .iter()
+            .filter(|column| column.prefix.is_empty())
+            .map(|column| column.name)
+    }
+}
+
+/// What the CHECK constraints of a table say about its row key.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct KeyChecks {
+    /// Terms that read only the key, written over the key column.
+    terms: Vec<String>,
+    /// Terms or columns that read the key in a way no known shape or entry covers.
+    unknown: Vec<String>,
+}
+
+/// The CHECK terms of a `CREATE TABLE` that reach its row key `key`. A term reaches the key when
+/// it reads the key, a key-derived column, or a column generated from any of them. A term that
+/// reads the key or a column equal to it and no other column is known in a shape
+/// [`check_term_probes`] states; a term reading other columns is known only when `known` admits
+/// it. Every other term reaching the key is unknown.
+fn key_checks(create: &str, key: &str, columns: &[String], known: KnownKeyTerms) -> KeyChecks {
+    let create = normalized_sql(create);
+    let (_, after) = create.split_once('(').unwrap();
+    let definitions = split_top_level(inside_parentheses(after), ",");
+    let reads_key = |words: &BTreeSet<&str>| {
+        words.contains(key)
+            || known
+                .key_derived
+                .iter()
+                .any(|column| words.contains(column.name))
+    };
+    let generated = definitions
+        .iter()
+        .filter_map(|definition| generated_column(definition))
+        .filter(|(_, expression)| reads_key(&sql_words(expression)))
+        .map(|(name, _)| name)
+        .collect::<BTreeSet<_>>();
+    let mut checks = KeyChecks::default();
+    for definition in definitions {
+        for body in check_bodies(definition) {
+            for term in split_top_level(body, " AND ") {
+                let term = without_outer_parentheses(term);
+                let words = sql_words(term);
+                let reaches_key =
+                    reads_key(&words) || generated.iter().any(|name| words.contains(name));
+                if !reaches_key || known.admits(term, key) {
+                    continue;
+                }
+                let reads_other = columns.iter().any(|column| {
+                    column != key
+                        && !known.aliases().any(|alias| alias == column)
+                        && words.contains(column.as_str())
+                });
+                let on_key = known.aliases().fold(term.to_owned(), |term, alias| {
+                    renamed_identifier(&term, alias, key)
+                });
+                if reads_other || check_term_probes(&on_key, key).is_none() {
+                    checks.unknown.push(term.to_owned());
+                } else {
+                    checks.terms.push(on_key);
+                }
+            }
+        }
+    }
+    checks
+}
+
+/// A CHECK that reads the row key with another column, or reads a column derived from the key,
+/// can refuse keys that no row key rule states, so it fails conformance unless the manifest
+/// makes it safe.
+#[test]
+fn key_checks_refuse_unreviewed_terms_that_reach_the_key() {
+    let columns = ["id", "other", "sync_key", "slug"].map(str::to_owned);
+    let mixed = "CREATE TABLE t (id TEXT PRIMARY KEY CHECK (id = 'x-' || other), other TEXT)";
+    assert_eq!(
+        key_checks(mixed, "id", &columns, KnownKeyTerms::default()).unknown,
+        ["id = 'x-' || other"],
+        "a term mixing the key with another column is unknown"
+    );
+
+    let pinned = "CREATE TABLE t (id TEXT PRIMARY KEY, \
+                  other TEXT NOT NULL CHECK (other = 'x-' || id AND length(other) <= 8))";
+    let prefixed = KnownKeyTerms {
+        key_derived: &[KeyDerivedColumn {
+            name: "other",
+            prefix: "x-",
+        }],
+        ..KnownKeyTerms::default()
+    };
+    assert_eq!(
+        key_checks(pinned, "id", &columns, prefixed).unknown,
+        ["length(other) <= 8"],
+        "a key-derived column's pin passes, and another term on it is unknown"
+    );
+
+    let tree = "CREATE TABLE t (id TEXT PRIMARY KEY, \
+                other TEXT CHECK (other IS NULL OR other <> id))";
+    assert_eq!(
+        key_checks(tree, "id", &columns, KnownKeyTerms::default()).unknown,
+        ["other IS NULL OR other <> id"],
+        "a self-parent term on a column that is not the tree parent is unknown"
+    );
+    let parent = KnownKeyTerms {
+        tree_parent: Some("other"),
+        ..KnownKeyTerms::default()
+    };
+    assert_eq!(
+        key_checks(tree, "id", &columns, parent),
+        KeyChecks::default(),
+        "tree repair keeps a row from naming itself as its parent"
+    );
+
+    let aliased = "CREATE TABLE t (id TEXT PRIMARY KEY, \
+                   sync_key TEXT NOT NULL CHECK (sync_key = id AND length(sync_key) <= 64))";
+    assert_eq!(
+        key_checks(aliased, "id", &columns, KnownKeyTerms::default()).unknown,
+        ["sync_key = id"],
+        "an undeclared alias of the key is unknown"
+    );
+    let alias = KnownKeyTerms {
+        key_derived: &[KeyDerivedColumn {
+            name: "sync_key",
+            prefix: "",
+        }],
+        ..KnownKeyTerms::default()
+    };
+    assert_eq!(
+        key_checks(aliased, "id", &columns, alias),
+        KeyChecks {
+            terms: vec!["length(id) <= 64".to_owned()],
+            unknown: Vec::new(),
+        },
+        "a term on an alias of the key reads as a term on the key"
+    );
+
+    let generated = "CREATE TABLE t (id TEXT PRIMARY KEY, \
+                     slug TEXT GENERATED ALWAYS AS (lower(id)) STORED CHECK (length(slug) <= 8))";
+    assert_eq!(
+        key_checks(generated, "id", &columns, KnownKeyTerms::default()).unknown,
+        ["length(slug) <= 8"],
+        "a CHECK on a column generated from the key is unknown"
+    );
+}
+
+/// Keys on both sides of a limit of `chars` characters, in one-byte and two-byte characters.
+fn keys_around(chars: usize) -> Vec<String> {
+    (chars.saturating_sub(1)..=chars + 1)
+        .flat_map(|count| ["a".repeat(count), "é".repeat(count)])
+        .collect()
+}
+
+/// Keys that tell a CHECK term from its neighbors, or `None` for a term of an unknown shape.
+fn check_term_probes(term: &str, key: &str) -> Option<Vec<String>> {
+    if term == format!("trim({key}) <> ''") || term == format!("{key} <> ''") {
+        return Some(Vec::new());
+    }
+    if let Some(literal) = term.strip_prefix(&format!("{key} = '")) {
+        return Some(vec![literal.strip_suffix('\'')?.to_owned()]);
+    }
+    if let Some(list) = term.strip_prefix(&format!("{key} NOT IN (")) {
+        let list = list.strip_suffix(')')?;
+        return split_top_level(list, ",")
+            .into_iter()
+            .map(|literal| {
+                let quoted = literal.strip_prefix('\'')?.strip_suffix('\'')?;
+                Some(quoted.to_owned())
+            })
+            .collect();
+    }
+    let characters = format!("length({key})");
+    let bytes = format!("length(CAST({key} AS BLOB))");
+    let bound = term
+        .strip_prefix(&characters)
+        .or_else(|| term.strip_prefix(&bytes))?;
+    let limit = [" = ", " <= ", " BETWEEN 1 AND "]
+        .into_iter()
+        .find_map(|comparison| bound.strip_prefix(comparison))?;
+    Some(keys_around(limit.parse().ok()?))
+}
+
+/// Keys on which `rule` differs from a schema that lacks it.
+fn key_rule_probes(rule: RowKeyRule) -> Vec<String> {
+    match rule {
+        RowKeyRule::Any => Vec::new(),
+        RowKeyRule::Fixed(key) => vec![key.to_owned()],
+        RowKeyRule::ExactChars(chars) | RowKeyRule::MaxChars(chars) => keys_around(chars),
+        RowKeyRule::ThemeSlug => {
+            let mut keys = keys_around(MAX_THEME_ID_CHARS);
+            keys.extend(
+                BUILT_IN_THEMES
+                    .into_iter()
+                    .chain([
+                        "0f8fad5b-d9cb-469f-a165-70867728950e",
+                        "a-",
+                        "-a",
+                        "A",
+                        "a_b",
+                        "a b",
+                        "a\n",
+                        "é",
+                        "pending:theme",
+                    ])
+                    .map(str::to_owned),
+            );
+            keys
+        }
+    }
+}
+
+/// Whether the insert guard clause of `rule` admits `value`, for a rule that has one.
+async fn insert_clause_admits(pool: &SqlitePool, rule: RowKeyRule, value: &str) -> Option<bool> {
+    let clause = rule.insert_sql("?1")?;
+    let admits: Option<i64> =
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT ({clause}) IS 1")))
+            .bind(value)
+            .fetch_one(pool)
+            .await
+            .unwrap_or_else(|error| panic!("{clause}: {error}"));
+    Some(admits == Some(1))
+}
+
+/// Whether the CHECK `terms` on the column `key` admit `value`. A null term passes, as it does
+/// in a CHECK.
+async fn check_terms_admit(pool: &SqlitePool, terms: &[String], key: &str, value: &str) -> bool {
+    let predicate = terms
+        .iter()
+        .map(|term| format!("coalesce(({term}), 1) <> 0"))
+        .chain(std::iter::once("1".to_owned()))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let sql = format!("SELECT {predicate} FROM (SELECT ? AS \"{key}\")");
+    let admits: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(value)
+        .fetch_one(pool)
+        .await
+        .unwrap_or_else(|error| panic!("{terms:?}: {error}"));
+    admits != 0
+}
+
+/// A key the domain table refuses could never apply on any replica, so every table states what
+/// its key CHECK accepts. Every CHECK term that reaches the key must be recognized (see
+/// [`key_checks`]), then the rule and the schema must agree on every valid row key around their
+/// limits. A rule with an insert guard clause declares itself stricter than the CHECK, so every
+/// key it admits must pass the CHECK, and the clause must agree with the rule both ways. Aborting
+/// triggers that read the key are covered by `every_applier_visible_trigger_is_classified`.
+#[test]
+fn row_key_rules_match_the_key_checks() {
+    block_on(async {
+        let mut problems = Vec::new();
+        for (manifest, pool) in cases().await {
+            for table in manifest.tables {
+                let create: String = sqlx::query_scalar(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                )
+                .bind(table.name)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                let columns: Vec<String> =
+                    sqlx::query_scalar("SELECT name FROM pragma_table_info(?)")
+                        .bind(table.name)
+                        .fetch_all(&pool)
+                        .await
+                        .unwrap();
+                let key = table.key_column;
+                let KeyChecks { terms, unknown } =
+                    key_checks(&create, key, &columns, KnownKeyTerms::of(table));
+                for term in unknown {
+                    problems.push(format!("{}: unknown key CHECK {term}", table.name));
+                }
+                let mut probes = key_rule_probes(table.key_rule);
+                probes.extend(["x", "other"].map(str::to_owned));
+                for term in &terms {
+                    probes.extend(check_term_probes(term, key).unwrap_or_default());
+                }
+                probes.retain(|probe| RowKey::new(probe.as_str()).is_ok());
+                probes.sort();
+                probes.dedup();
+                for probe in probes {
+                    let schema = check_terms_admit(&pool, &terms, key, &probe).await;
+                    let rule = table.key_rule.admits(&probe);
+                    let clause = insert_clause_admits(&pool, table.key_rule, &probe).await;
+                    let agrees = match clause {
+                        Some(clause) => clause == rule && (schema || !rule),
+                        None => schema == rule,
+                    };
+                    if !agrees {
+                        problems.push(format!(
+                            "{}: {probe:?}: the rule admits {rule}, the CHECK {schema}, \
+                             the insert clause {clause:?}",
+                            table.name
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "a row key rule differs from its key CHECK: {problems:#?}"
+        );
+    });
+}
+
 /// `(table, column)` of every `NOT NULL` column of an owned table and its nested tables.
 type RequiredColumns = BTreeSet<(&'static str, String)>;
 
@@ -1332,7 +1891,7 @@ fn generated_field(
                 .into_string(),
         ),
         ColumnType::OptionalRowKey if low && nullable => Field::Null,
-        ColumnType::OptionalRowKey => Field::Text(format!("key-{serial}")),
+        ColumnType::OptionalRowKey | ColumnType::RowKey => Field::Text(format!("key-{serial}")),
     }
 }
 
@@ -1731,6 +2290,26 @@ fn validation_refuses_overlapping_ranges_misplaced_ids_and_bad_literals() {
 }
 
 #[test]
+fn validation_refuses_an_owner_column_that_can_change() {
+    const MUTABLE_OWNER: TableSpec = TableSpec {
+        owner: Some(crate::manifest::RowOwner::KeyTag {
+            prefix: "tag:",
+            device_column: "missing",
+        }),
+        ..quick_notes::TAGS
+    };
+    const BAD_OWNER: DomainManifest = DomainManifest {
+        tables: &[MUTABLE_OWNER],
+        ..quick_notes::DOMAIN
+    };
+    let problems = validation_error(&[&BAD_OWNER]);
+    assert!(
+        problems.contains("owner column missing is neither the key nor an immutable column"),
+        "{problems}"
+    );
+}
+
+#[test]
 fn validation_refuses_key_derived_columns_naming_the_key_or_on_composite_keys() {
     const KEY_NAMED: TableSpec = TableSpec {
         key_derived_columns: &[KeyDerivedColumn {
@@ -1755,6 +2334,90 @@ fn validation_refuses_key_derived_columns_naming_the_key_or_on_composite_keys() 
     for problem in [
         "quick_note_tags: a key-derived column needs its own name",
         "quick_notes.handle: a composite-key table has no key-derived columns",
+    ] {
+        assert!(problems.contains(problem), "{problems}");
+    }
+}
+
+/// The tables of the vault marked as never deleted.
+fn never_deleted() -> BTreeSet<&'static str> {
+    VAULT_MANIFEST
+        .tables
+        .iter()
+        .filter(|table| table.deletion == Deletion::Never)
+        .map(|table| table.name)
+        .collect()
+}
+
+/// A delete the schema refuses for every writer could only ever stop on a replica, so the table
+/// must be marked and no replicated operation may delete from it, directly or through a cascade
+/// from a table a tombstone can reach.
+#[test]
+fn never_deleted_tables_cover_every_ungated_delete_refusal() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let triggers: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT name, tbl_name, sql FROM sqlite_schema
+             WHERE type = 'trigger' AND sql LIKE '%BEFORE DELETE%' ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let marked = never_deleted();
+        let mut refusing = 0;
+        for (name, table, sql) in triggers {
+            let replicated = VAULT_MANIFEST.tables.iter().any(|spec| spec.name == table);
+            if !replicated || sql.contains("applying") || !sql.contains("RAISE(ABORT") {
+                continue;
+            }
+            refusing += 1;
+            assert!(
+                marked.contains(table.as_str()),
+                "{name} refuses every delete of {table}, which is not marked as never deleted"
+            );
+        }
+        assert!(refusing > 0, "the schema has an ungated delete refusal");
+        for table in &marked {
+            for (column, target, _, on_delete) in foreign_keys(&pool, table).await {
+                let deletable = VAULT_MANIFEST
+                    .tables
+                    .iter()
+                    .any(|spec| spec.name == target && spec.deletion == Deletion::Ordinary);
+                assert!(
+                    on_delete != "CASCADE" || !deletable,
+                    "{table}.{column} cascades from {target}, which can be deleted"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn manifest_refuses_a_never_table_under_a_deletable_cascade_parent() {
+    const PARENT: TableSpec = TableSpec {
+        deletion: Deletion::Ordinary,
+        ..chat::PARTICIPANTS
+    };
+    const KEY_CHILD: TableSpec = TableSpec {
+        deletion: Deletion::Never,
+        ..chat::TEAMMATES
+    };
+    const PROFILE: TableSpec = TableSpec {
+        deletion: Deletion::Ordinary,
+        ..chat::PROFILES
+    };
+    const REFERENCING: TableSpec = TableSpec {
+        deletion: Deletion::Never,
+        ..chat::PROFILE_REVISIONS
+    };
+    const REFUSED: DomainManifest = DomainManifest {
+        tables: &[PARENT, KEY_CHILD, PROFILE, REFERENCING],
+        ..chat::DOMAIN
+    };
+    let problems = validation_error(&[&REFUSED]);
+    for problem in [
+        "chat_teammates: the key parent of a never-deleted table is never deleted",
+        "chat_access_profile_revisions: access_profile_id cascades from a table that is not never deleted",
     ] {
         assert!(problems.contains(problem), "{problems}");
     }
@@ -1889,11 +2552,125 @@ fn validation_refuses_malformed_references() {
     for problem in [
         "owner_id is an immutable reference that does not cascade",
         "missing_id is not a column of the group",
-        "note holds a reference but is not an optional row key",
+        "note holds a reference but is not a row key",
         "a reference group declares no reference columns",
     ] {
         assert!(malformed.contains(problem), "{problem}: {malformed}");
     }
+}
+
+#[test]
+fn validation_refuses_a_retention_rule_that_cannot_hold() {
+    const RULE: RowRetention = RowRetention {
+        group: group_id(0),
+        column: "owner_id",
+        value: "selected",
+        parent: ITEMS_TABLE,
+    };
+    const RETAINED: TableSpec = TableSpec {
+        retained: Some(RULE),
+        ..LINKS
+    };
+    const WELL_FORMED: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, RETAINED],
+        ..FIXTURE_DOMAIN
+    };
+    leaked(&[&WELL_FORMED]).validate().unwrap();
+
+    const MUTABLE: TableSpec = TableSpec {
+        retained: Some(RowRetention {
+            group: group_id(1),
+            ..RULE
+        }),
+        ..LINKS
+    };
+    const MUTABLE_DOMAIN: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, MUTABLE],
+        ..FIXTURE_DOMAIN
+    };
+    let mutable = validation_error(&[&MUTABLE_DOMAIN]);
+    assert!(
+        mutable.contains("the retention group is not immutable"),
+        "{mutable}"
+    );
+
+    const UNRELATED: TableSpec = TableSpec {
+        retained: Some(RowRetention {
+            column: "missing",
+            parent: CYCLE_A_TABLE,
+            ..RULE
+        }),
+        resolutions: &[Resolution::DuplicateRepair {
+            columns: &["note"],
+            collation: Collation::Binary,
+        }],
+        ..LINKS
+    };
+    const UNRELATED_DOMAIN: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, UNRELATED],
+        ..FIXTURE_DOMAIN
+    };
+    let unrelated = validation_error(&[&UNRELATED_DOMAIN]);
+    for problem in [
+        "a retained table repairs duplicates, a tree, or edges",
+        "retention column missing is not text of the group",
+        "the retention group does not cascade from the parent",
+    ] {
+        assert!(unrelated.contains(problem), "{problem}: {unrelated}");
+    }
+
+    const CHAINED_PARENT: TableSpec = TableSpec {
+        retained: Some(RowRetention {
+            group: group_id(0),
+            column: "peer",
+            value: "selected",
+            parent: LINKS_TABLE,
+        }),
+        ..CYCLE_A
+    };
+    const CHAINED: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CHAINED_PARENT, CYCLE_B, RETAINED],
+        ..FIXTURE_DOMAIN
+    };
+    let chained = validation_error(&[&CHAINED]);
+    assert!(
+        chained.contains("the retention parent reaches retention, a tree, or edges"),
+        "{chained}"
+    );
+}
+
+/// A retained row can be tombstoned, and the schema keeps conflict masks on rows whose merge
+/// state is live, so a retained table surfacing a group would hide its conflicts.
+#[test]
+fn manifest_validation_refuses_a_retained_table_with_a_surfaced_group() {
+    const SURFACED: TableSpec = TableSpec {
+        groups: &[
+            LINKS.groups[0],
+            GroupSpec {
+                surfaced: true,
+                ..LINKS.groups[1]
+            },
+            LINKS.groups[2],
+        ],
+        retained: Some(RowRetention {
+            group: group_id(0),
+            column: "owner_id",
+            value: "selected",
+            parent: ITEMS_TABLE,
+        }),
+        ..LINKS
+    };
+    const SURFACED_DOMAIN: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, SURFACED],
+        ..FIXTURE_DOMAIN
+    };
+    let result = leaked(&[&SURFACED_DOMAIN]).validate();
+    assert!(
+        result
+            .as_ref()
+            .is_err_and(|problems| problems.contains("a retained table surfaces a group")),
+        "{result:?}"
+    );
 }
 
 #[test]
@@ -2040,8 +2817,10 @@ fn engine_construction_checks_adapters_both_ways() {
 }
 
 /// Recorded manifests by version. Operations of every version up to the current one validate
-/// against the current manifest, so a recorded manifest never changes; a new version may only
-/// add tables and groups or loosen rules, and it records its own snapshot here.
+/// against the current manifest. The snapshot of a version no release carries yet is rerecorded
+/// in place when that version changes, tightening included. A released version's snapshot never
+/// changes; a new version may only add tables and groups, loosen rules, or refuse values the
+/// schema could never store, and it records its own snapshot here.
 const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (1, include_str!("fixtures/vault_manifest_v1.txt")),
     (2, include_str!("fixtures/vault_manifest_v2.txt")),
@@ -2065,6 +2844,7 @@ const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (20, include_str!("fixtures/vault_manifest_v20.txt")),
     (21, include_str!("fixtures/vault_manifest_v21.txt")),
     (22, include_str!("fixtures/vault_manifest_v22.txt")),
+    (23, include_str!("fixtures/vault_manifest_v23.txt")),
 ];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {
@@ -2079,7 +2859,17 @@ fn vault_manifest_changes_only_with_a_version_bump() {
     assert_eq!(
         VAULT_MANIFEST.summary(),
         recorded.replace("\r\n", "\n"),
-        "the vault manifest changed without a version bump"
+        "the vault manifest changed: rerecord the snapshot in place for an unreleased version, or \
+         bump the version otherwise"
+    );
+}
+
+#[test]
+fn the_summary_carries_the_sever_walk_budget() {
+    let line = format!("  acyclic blocking_task_id->blocked_task_id walk budget {WALK_BUDGET}\n");
+    assert!(
+        VAULT_MANIFEST.summary().contains(&line),
+        "a changed budget must fail the recorded manifest"
     );
 }
 

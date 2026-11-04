@@ -5,6 +5,9 @@ pub(crate) mod commands;
 use super::device_state::{read_active_device_scope, update_active_device_scope};
 use super::workspace::AuthorizedWorkingFolder;
 use crate::vault;
+use ganbaru_chat::coordination::reductions::{
+    live_teammate_safety_mode_sql, teammate_policy_covers,
+};
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId, RepositoryKind,
 };
@@ -242,6 +245,7 @@ pub(crate) async fn require_reusable_generation(
     let authorization = sqlx::query(
         "SELECT authorization.destination_conversation_id,
                 authorization.requester_participant_id,
+                authorization.resolved_runtime_approval_policy,
                 assignment.teammate_id
          FROM chat_scratch_generations generation
          JOIN chat_scratch_scopes scope ON scope.id = generation.scratch_scope_id
@@ -275,12 +279,16 @@ pub(crate) async fn require_reusable_generation(
     let teammate_id: String = authorization
         .try_get("teammate_id")
         .map_err(persistence_error)?;
+    let authorized_policy: String = authorization
+        .try_get("resolved_runtime_approval_policy")
+        .map_err(persistence_error)?;
     if generation_constraints_hold(
         pool,
         scratch_generation_id,
         &destination_conversation_id,
         &teammate_id,
         &requester_participant_id,
+        Some(&authorized_policy),
     )
     .await?
     {
@@ -290,12 +298,14 @@ pub(crate) async fn require_reusable_generation(
     }
 }
 
+/// See [`generation_constraints_hold_in_connection`].
 pub(crate) async fn generation_constraints_hold(
     pool: &SqlitePool,
     scratch_generation_id: &str,
     destination_conversation_id: &str,
     teammate_id: &str,
     requester_participant_id: &str,
+    authorized_policy: Option<&str>,
 ) -> ChatResult<bool> {
     let mut connection = pool.acquire().await.map_err(persistence_error)?;
     generation_constraints_hold_in_connection(
@@ -304,8 +314,47 @@ pub(crate) async fn generation_constraints_hold(
         destination_conversation_id,
         teammate_id,
         requester_participant_id,
+        authorized_policy,
     )
     .await
+}
+
+/// Returns whether the teammate may still run with `authorized_policy`, the runtime approval a
+/// scratch authorization froze: it is not archived, and its safety mode (see
+/// [`live_teammate_safety_mode_sql`]) with the override that governs a scratch target still covers
+/// that approval, as a folder source's live check requires for folder work.
+async fn policy_still_covers(
+    connection: &mut SqliteConnection,
+    destination_conversation_id: &str,
+    teammate_id: &str,
+    authorized_policy: &str,
+) -> ChatResult<bool> {
+    let live: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {},
+                coalesce(access.scratch_runtime_approval_policy, access.runtime_approval_policy)
+         FROM chat_participants participant
+         LEFT JOIN chat_teammate_channel_memberships access
+           ON access.conversation_id = ?
+          AND access.teammate_id = participant.id
+          AND access.removed_at IS NULL
+         WHERE participant.id = ? AND participant.archived_at IS NULL",
+            live_teammate_safety_mode_sql("participant.id"),
+        )))
+        .bind(destination_conversation_id)
+        .bind(teammate_id)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
+    Ok(live.is_some_and(|(safety_mode, approval_override)| {
+        safety_mode.is_some_and(|safety_mode| {
+            teammate_policy_covers(
+                &safety_mode,
+                approval_override.as_deref(),
+                authorized_policy,
+            )
+        })
+    }))
 }
 
 pub(crate) async fn generation_sources_readable_by(
@@ -344,12 +393,20 @@ pub(crate) async fn generation_sources_readable_by(
     Ok(true)
 }
 
+/// Returns whether the scratch generation still belongs to the destination and its retained
+/// sources are still readable by everyone who can read the destination.
+///
+/// `authorized_policy` is the runtime approval frozen by the authorization a run holds. With it,
+/// the teammate must also still cover that approval, so a scratch run stops at the same point a
+/// folder run does. Freezing a new authorization and owner scratch commands hold no frozen
+/// approval and pass `None`.
 pub(crate) async fn generation_constraints_hold_in_connection(
     connection: &mut SqliteConnection,
     scratch_generation_id: &str,
     destination_conversation_id: &str,
     teammate_id: &str,
     requester_participant_id: &str,
+    authorized_policy: Option<&str>,
 ) -> ChatResult<bool> {
     let owns_destination: bool = sqlx::query_scalar(
         "SELECT EXISTS(
@@ -373,6 +430,17 @@ pub(crate) async fn generation_constraints_hold_in_connection(
     .await
     .map_err(persistence_error)?;
     if !owns_destination {
+        return Ok(false);
+    }
+    if let Some(authorized_policy) = authorized_policy
+        && !policy_still_covers(
+            connection,
+            destination_conversation_id,
+            teammate_id,
+            authorized_policy,
+        )
+        .await?
+    {
         return Ok(false);
     }
     let sources = sqlx::query(
@@ -694,19 +762,25 @@ mod tests {
     use super::*;
 
     const NOW: &str = "2026-09-18T12:00:00.000Z";
-    const GENERATION: &str = "generation:reuse";
+    pub(super) const GENERATION: &str = "generation:reuse";
     const AUTHORIZATION: &str = "authorization:reuse";
-    const TEAMMATE: &str = "participant:scratch-agent";
+    pub(super) const TEAMMATE: &str = "participant:scratch-agent";
 
     /// Returns the default channel conversation of the test project, whose id is derived.
-    fn destination_conversation() -> String {
+    pub(super) fn destination_conversation() -> String {
         ganbaru_chat::project_defaults::default_channel_ids("project-chat")
             .unwrap()
             .0
     }
 
-    /// Builds a real-schema scratch assignment without disabling foreign keys or triggers.
-    async fn pool_with_scratch_assignment(scope_owner: &str) -> SqlitePool {
+    /// Builds a real-schema scratch assignment that froze the `ask` approval.
+    pub(super) async fn pool_with_scratch_assignment(scope_owner: &str) -> SqlitePool {
+        pool_with_frozen_scratch_assignment(scope_owner, "ask").await
+    }
+
+    /// Builds a real-schema scratch assignment that froze the `approval` policy, without
+    /// disabling foreign keys or triggers.
+    async fn pool_with_frozen_scratch_assignment(scope_owner: &str, approval: &str) -> SqlitePool {
         let pool = crate::chat::tests::repository::pool_with_thread().await;
         let conversation = destination_conversation();
         for (id, name) in [
@@ -795,7 +869,7 @@ mod tests {
                  decision_state, created_at)
              VALUES ('{AUTHORIZATION}', 'assignment:scratch', 1, 'participant:local-owner',
                      'policy:scratch', 1, '{conversation}', 'access-profile-revision:conversation-only:1',
-                     'environment:scratch', 'ask', printf('%064d', 0), 'allowed', '{NOW}');
+                     'environment:scratch', '{approval}', printf('%064d', 0), 'allowed', '{NOW}');
              INSERT INTO chat_turns
                 (id, thread_id, ordinal, state, safety_mode, interaction_mode, created_at, updated_at)
              VALUES ('turn:scratch', 'thread-1', 1, 'active', 'ask_for_approval', 'build', '{NOW}', '{NOW}');
@@ -857,6 +931,146 @@ mod tests {
             .unwrap();
         sqlx::query("UPDATE chat_assignment_authorization_revisions SET decision_state = 'revoked', revoked_at = ? WHERE id = ?")
             .bind(NOW).bind(AUTHORIZATION).execute(&pool).await.unwrap();
+        let error = require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Permission);
+    }
+
+    /// Inserts a newer policy revision of the test teammate, as sync applies it.
+    async fn apply_policy_revision(pool: &SqlitePool, id: &str, minute: u32, safety_mode: &str) {
+        sqlx::query(
+            "INSERT INTO chat_teammate_policy_revisions
+                (id, teammate_id, provider_instance_id, model_selection_data, created_at,
+                 safety_mode)
+             VALUES (?, ?, 'codex-personal', '{}', ?, ?)",
+        )
+        .bind(id)
+        .bind(TEAMMATE)
+        .bind(format!("2026-09-18T12:{minute:02}:00.000Z"))
+        .bind(safety_mode)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Builds a scratch assignment that froze `auto_approve` under an approve-for-me teammate.
+    async fn pool_with_auto_approved_scratch() -> SqlitePool {
+        let pool = pool_with_frozen_scratch_assignment(TEAMMATE, "auto_approve").await;
+        apply_policy_revision(&pool, "policy:scratch-approving", 1, "approve_for_me").await;
+        pool
+    }
+
+    #[tokio::test]
+    async fn scratch_constraints_fail_after_policy_narrowing() {
+        let pool = pool_with_auto_approved_scratch().await;
+        require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap();
+
+        apply_policy_revision(&pool, "policy:scratch-wider", 10, "full_access").await;
+        require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap();
+
+        apply_policy_revision(&pool, "policy:scratch-narrower", 20, "ask_for_approval").await;
+        let error = require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Permission);
+    }
+
+    /// Points the test teammate at `revision_id`, as sync applies a pointer before its revision.
+    async fn apply_policy_pointer(pool: &SqlitePool, revision_id: &str, safety_mode: &str) {
+        sqlx::query(
+            "UPDATE chat_teammates
+             SET current_policy_revision_id = ?, current_policy_safety_mode = ?
+             WHERE participant_id = ?",
+        )
+        .bind(revision_id)
+        .bind(safety_mode)
+        .bind(TEAMMATE)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// While the pointed revision has not arrived, the mode the pointer copied decides, so a
+    /// concurrent newer and narrower revision does not stop covered scratch work.
+    #[tokio::test]
+    async fn scratch_constraints_follow_the_copied_mode_while_the_pointed_revision_is_missing() {
+        let pool = pool_with_auto_approved_scratch().await;
+        apply_policy_pointer(&pool, "policy:scratch-pointed", "approve_for_me").await;
+        apply_policy_revision(&pool, "policy:scratch-concurrent", 20, "ask_for_approval").await;
+        require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap();
+
+        apply_policy_revision(&pool, "policy:scratch-pointed", 10, "approve_for_me").await;
+        require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap();
+    }
+
+    /// A pointer whose revision never arrives still stops scratch work its copied mode does not
+    /// cover, even while a wider arrived revision is the newest.
+    #[tokio::test]
+    async fn scratch_constraints_fail_when_the_copied_mode_is_narrower() {
+        let pool = pool_with_auto_approved_scratch().await;
+        apply_policy_pointer(&pool, "policy:scratch-never-sent", "ask_for_approval").await;
+        let error = require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Permission);
+    }
+
+    /// The scratch override replaces the channel override at runtime, so the frozen approval
+    /// stays covered by the same override that froze it.
+    #[tokio::test]
+    async fn scratch_constraints_read_the_override_that_governs_the_scratch_target() {
+        let pool = pool_with_auto_approved_scratch().await;
+        sqlx::query(
+            "UPDATE chat_teammate_channel_memberships
+             SET scratch_runtime_approval_policy = 'auto_approve',
+                 runtime_approval_policy = 'ask'
+             WHERE sync_key = 'channel-membership:scratch'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        apply_policy_revision(&pool, "policy:scratch-custom", 10, "custom").await;
+        require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "UPDATE chat_teammate_channel_memberships
+             SET scratch_runtime_approval_policy = 'ask'
+             WHERE sync_key = 'channel-membership:scratch'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let error = require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Permission);
+    }
+
+    #[tokio::test]
+    async fn scratch_constraints_fail_after_teammate_archive() {
+        let pool = pool_with_scratch_assignment(TEAMMATE).await;
+        require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap();
+
+        sqlx::query("UPDATE chat_participants SET archived_at = ? WHERE id = ?")
+            .bind(NOW)
+            .bind(TEAMMATE)
+            .execute(&pool)
+            .await
+            .unwrap();
+
         let error = require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
             .await
             .unwrap_err();

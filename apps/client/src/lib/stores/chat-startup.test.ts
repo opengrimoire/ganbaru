@@ -83,6 +83,7 @@ beforeEach(() => {
   vi.spyOn(chatApi, "recoverChatAssignmentDispatchJobs").mockResolvedValue(0);
   vi.spyOn(chatApi, "listChatNavigationChannels").mockResolvedValue([channel(), channel("other")]);
   vi.spyOn(chatApi, "listChatTeammates").mockResolvedValue([]);
+  vi.spyOn(chatApi, "listChatWaitingAssignments").mockResolvedValue([]);
   vi.spyOn(chatApi, "readChatProjectPrimaryWorkingFolder").mockRejectedValue(new Error("no working folder"));
   vi.spyOn(chatApi, "readChatChannelPage").mockImplementation(async (channelId) => ({
     channelId, messages: [message(channelId)], previousCursor: null, revision: 1,

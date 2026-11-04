@@ -1,10 +1,108 @@
 use crate::{
     CARD_TEXT_PREFIX, CardError, ContactCard, MAX_DISPLAY_NAME_BYTES, MAX_ENDPOINT_HINT_BYTES,
-    PersonKeyPair, PersonPublicKey, SignatureError, TrustKind, decode_card, decode_card_text,
-    decode_nonce, encode_nonce, nonces_match, request_signature_payload, sign_card,
+    PersonKeyPair, PersonPublicKey, STORED_TIME_FORMAT, SignatureError, TrustKind, decode_card,
+    decode_card_text, decode_nonce, encode_nonce, is_stored_timestamp, is_valid_public_key_text,
+    is_valid_request_window, nonces_match, request_signature_payload, sign_card,
     status_signature_payload, verification_code, verify,
 };
 use chrono::{TimeZone, Utc};
+
+#[test]
+fn public_key_text_rule_matches_the_parser() {
+    let (_, key) = PersonKeyPair::generate().unwrap();
+    assert!(is_valid_public_key_text(&key.public_key().to_text()));
+    for invalid in [
+        "",
+        "short",
+        &"!".repeat(43),
+        &"A".repeat(43),
+        &format!("{}B", "A".repeat(42)),
+    ] {
+        assert!(!is_valid_public_key_text(invalid), "{invalid}");
+    }
+}
+
+#[test]
+fn request_window_stops_at_the_lifetime_and_tolerance() {
+    let created = "2026-10-22T10:51:41.000Z";
+    for expires in [
+        created,
+        "2026-10-29T10:51:41.000Z",
+        "2026-10-30T10:51:41.000Z",
+    ] {
+        assert!(is_valid_request_window(created, expires), "{expires}");
+    }
+    for expires in [
+        "2026-10-30T10:51:41.001Z",
+        "9999-12-31T23:59:59.000Z",
+        "not a timestamp at all",
+    ] {
+        assert!(!is_valid_request_window(created, expires), "{expires}");
+    }
+    assert!(!is_valid_request_window("not a timestamp at all", created));
+}
+
+#[test]
+fn request_window_refuses_text_that_sorts_apart_from_its_time() {
+    let far = "9999-01-02T00:00:00.000Z";
+    for created in [
+        "+9999-01-01T00:00:00.000Z",
+        " 9999-01-01T00:00:00.000Z",
+        "9999-01-01T00:00:00Z",
+    ] {
+        assert!(!is_valid_request_window(created, far), "{created}");
+    }
+}
+
+#[test]
+fn stored_timestamp_rule_matches_the_frontend_reader() {
+    for readable in [
+        "0000-01-01T00:00:00.000Z",
+        "2028-02-29T23:59:59.999Z",
+        "9999-12-31T23:59:59.999Z",
+        format_stored(Utc.with_ymd_and_hms(2026, 10, 22, 10, 51, 41).unwrap()).as_str(),
+    ] {
+        assert!(is_stored_timestamp(readable), "{readable}");
+    }
+    for unreadable in [
+        "",
+        "+10000-01-01T00:00:00.000Z",
+        "-0001-01-01T00:00:00.000Z",
+        "2026-10-22T10:51:60.000Z",
+        "2026-10-22T23:59:60.500Z",
+        "2026-02-30T00:00:00.000Z",
+        "2026-10-22T24:00:00.000Z",
+        "2026-10-22T10:51:41Z",
+        "2026-10-22T10:51:41.000000Z",
+        "2026-10-22T10:51:41.000+00:00",
+        "zzzzzzzzzzzzzzzzzzzzzzzz",
+    ] {
+        assert!(!is_stored_timestamp(unreadable), "{unreadable}");
+    }
+}
+
+fn format_stored(time: chrono::DateTime<Utc>) -> String {
+    time.format(STORED_TIME_FORMAT).to_string()
+}
+
+#[test]
+fn request_window_refuses_times_the_frontend_cannot_read() {
+    for (created, expires) in [
+        ("+10000-01-01T00:00:00.000Z", "9999-12-31T23:59:59.000Z"),
+        ("2026-10-22T10:51:60.000Z", "2026-10-29T10:51:41.000Z"),
+        ("2026-10-22T10:51:41.000Z", "2026-10-29T10:51:60.000Z"),
+    ] {
+        assert!(!is_valid_request_window(created, expires), "{created}");
+    }
+}
+
+#[test]
+fn request_window_survives_the_last_representable_date() {
+    assert!(!is_valid_request_window(
+        "+262142-12-31T23:59:59.000Z",
+        "+262142-12-31T23:59:59.000Z",
+    ));
+}
 
 fn sample_card(key: &PersonKeyPair) -> ContactCard {
     ContactCard {

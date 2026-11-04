@@ -18,11 +18,6 @@ export interface VaultDefaultLocation {
   developmentBuild: boolean;
 }
 
-export interface VaultBackupOutcome {
-  fileName: string;
-  destination: "downloads";
-}
-
 /**
  * How this app holds its active vault against other Ganbaru apps: `exclusive` when the vault lock is held, `unsupported` when the file system cannot lock so another app cannot be detected, and `notHeld` before any vault opens.
  */
@@ -35,6 +30,9 @@ const VAULT_OPEN_ELSEWHERE_MESSAGE = "this vault is open in another ganbaru app"
 
 /** Lowercase text of the native error raised when a linked phone restores another vault. */
 const LINKED_ANDROID_RESTORE_MESSAGE = "unlink it before restoring another vault";
+
+/** Lowercase text of the native error raised when a rollback would rewind a live anchor. */
+const ANCHOR_ROLLBACK_MESSAGE = "the rollback copy is behind its authorization head";
 
 /**
  * Validates the native vault lock status.
@@ -102,15 +100,6 @@ function parseOptionalVaultInfo(value: unknown): VaultInfo | null {
   return value === null ? null : parseVaultInfo(value);
 }
 
-function parseVaultBackupOutcome(value: unknown): VaultBackupOutcome {
-  if (!isRecord(value)) throw new Error("backup response is not an object");
-  const fileName = readString(value.fileName);
-  if (!fileName || value.destination !== "downloads") {
-    throw new Error("backup response is incomplete");
-  }
-  return { fileName, destination: "downloads" };
-}
-
 function activateVaultInfo(info: VaultInfo): VaultInfo;
 function activateVaultInfo(info: VaultInfo | null): VaultInfo | null;
 function activateVaultInfo(info: VaultInfo | null): VaultInfo | null {
@@ -165,6 +154,10 @@ export function formatVaultError(
 
   if (lower.includes(LINKED_ANDROID_RESTORE_MESSAGE)) {
     return t("dataFolderError.linkedAndroid");
+  }
+
+  if (lower.includes(ANCHOR_ROLLBACK_MESSAGE)) {
+    return t("dataFolderError.anchorRollback");
   }
 
   if (
@@ -381,9 +374,14 @@ export async function listReplacedVaultBackups(): Promise<ReplacedVaultBackup[]>
   return parseReplacedVaultBackups(await invoke<unknown>("vault_replaced_backups"));
 }
 
-/** Saves a copy of one replaced vault backup to Downloads. */
-export async function exportReplacedVaultBackup(id: string): Promise<VaultBackupOutcome> {
-  return parseVaultBackupOutcome(await invoke<unknown>("vault_export_replaced_backup", { id }));
+/**
+ * Saves one replaced vault backup to Downloads as an encrypted backup that the recovery kit of the vault in use opens.
+ *
+ * @param id - Identifier from {@link listReplacedVaultBackups}.
+ * @returns The saved file name, or a refusal when the vault in use has no recovery kit.
+ */
+export async function exportReplacedVaultBackup(id: string): Promise<BackupSaveOutcome> {
+  return parseBackupSaveOutcome(await invoke<unknown>("vault_export_replaced_backup", { id }));
 }
 
 /** Deletes one replaced vault backup from this device. */

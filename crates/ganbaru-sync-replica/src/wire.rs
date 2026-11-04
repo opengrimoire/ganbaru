@@ -11,6 +11,10 @@ use ganbaru_sync_contracts::{Digest32, ProposalRejection, Seq, VersionVector, Wr
 /// lacks. The peer stops pulling until it bootstraps from a fresh copy of the vault.
 pub const BOOTSTRAP_REQUIRED: &str = "bootstrap_required";
 
+/// Error code of a request refused because a frozen anchor handover contest holds the device.
+/// The hold ends when the contest resolves, so the device may ask again then.
+pub const DEVICE_HELD: &str = "device_held";
+
 /// Wire entries of a version vector, in writer order.
 pub fn vector_to_wire(vector: &VersionVector) -> Vec<SyncSeq> {
     vector

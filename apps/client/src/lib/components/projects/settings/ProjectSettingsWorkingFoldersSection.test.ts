@@ -259,6 +259,29 @@ describe("Project working folder settings", () => {
     expect(chat.removeWorkingFolder).not.toHaveBeenCalled();
   });
 
+  it("restores an archived managed folder through Save", async () => {
+    chat.workingFolders[0].workingFolder.archivedAt = "2026-10-02T00:00:00Z";
+    folderApi.restoreProjectWorkingFolder.mockImplementation(async (id) => folder(id, "managed"));
+    await render();
+    const menu = await openFolderOptions("managed");
+    const restore = action(menu, "Restore");
+    expect(restore.disabled).toBe(false);
+    restore.click();
+    await tick();
+    expect(folderApi.restoreProjectWorkingFolder).not.toHaveBeenCalled();
+    await component!.saveDraft();
+    expect(folderApi.restoreProjectWorkingFolder).toHaveBeenCalledExactlyOnceWith("managed", 1);
+    expect(folderApi.archiveProjectWorkingFolder).not.toHaveBeenCalled();
+  });
+
+  it("keeps a restored managed folder from being archived again", async () => {
+    chat.workingFolders[0].workingFolder.archivedAt = "2026-10-02T00:00:00Z";
+    await render();
+    action(await openFolderOptions("managed"), "Restore").click();
+    await tick();
+    expect(action(await openFolderOptions("managed"), "Archive").disabled).toBe(true);
+  });
+
   it.each(["missing", "unbound", "repository_mismatch"] as const)("offers managed-folder recovery for a %s binding", async (bindingStatus) => {
     chat.workingFolders[0].bindingStatus = bindingStatus;
     if (bindingStatus === "unbound") chat.workingFolders[0].canonicalPath = null;
@@ -342,6 +365,18 @@ describe("Project working folder settings", () => {
     expect(chat.removeWorkingFolder).not.toHaveBeenCalled();
     await component!.saveDraft();
     expect(chat.removeWorkingFolder).toHaveBeenCalledExactlyOnceWith("external");
+  });
+
+  it("chooses a primary for a project whose read reports no usable folder", async () => {
+    api.readChatProjectPrimaryWorkingFolder.mockResolvedValue({ projectId: "project", workingFolderId: null, revision: 0 });
+    await render();
+    const menu = await openFolderOptions("external");
+    const primaryButton = action(menu, "Make primary");
+    expect(primaryButton.disabled).toBe(false);
+    primaryButton.click();
+    await tick();
+    await component!.saveDraft();
+    expect(api.setChatProjectPrimaryWorkingFolder).toHaveBeenCalledExactlyOnceWith("project", "external", 0);
   });
 
   it("keeps primary selection in the open menu and applies it to Chat only on Save", async () => {

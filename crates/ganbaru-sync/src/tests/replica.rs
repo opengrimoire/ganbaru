@@ -7,14 +7,16 @@ use std::sync::{Mutex, OnceLock};
 
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::{
-    AdminKeyPair, ChangeAction, Charter, Content, DeviceKeyPair, DeviceKind, DeviceRole, Digest32,
-    Enroll, Entry, Envelope, GroupId, Handover, Proposal, ProposalRejection, RecoverySeed, Remove,
-    SignedCertificate, SignedCharter, SignedProposal, SpaceId, TableId, Value, VersionVector,
-    WriterCertificate, WriterId, WriterKeyPair, sign_certificate, sign_charter, sign_proposal,
+    AdminKeyPair, Change, ChangeAction, Charter, Content, DeviceKeyPair, DeviceKind, DeviceRole,
+    Digest32, Enroll, Entry, Envelope, GroupId, Handover, Proposal, ProposalRejection,
+    RecoverySeed, Remove, SignedCertificate, SignedCharter, SignedProposal, SpaceId, TableId,
+    Value, VersionVector, WriterCertificate, WriterId, WriterKeyPair, sign_certificate,
+    sign_charter, sign_proposal,
 };
 use sqlx::sqlite::SqliteOwnedBuf;
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
+use super::authorization::{forge, view};
 use super::fixture::{NODE_MAX_DEPTH, after_local_edit, fixture_pool, test_engine};
 use crate::manifest::Manifest;
 use crate::{
@@ -860,6 +862,35 @@ impl Replica {
         self.conn.serialize(None).await.unwrap().to_vec()
     }
 
+    /// Checks the class index against a full scan of the merge state.
+    pub(super) async fn check_class_index(&mut self) {
+        let (entries, contested) = crate::repair::recompute_classes(&self.engine, &mut self.conn)
+            .await
+            .unwrap();
+        let stored: Vec<(i64, i64, Vec<u8>, String)> = sqlx::query_as(
+            "SELECT table_id, rule_index, class_key, row_key FROM sync_unique_classes",
+        )
+        .fetch_all(&mut self.conn)
+        .await
+        .unwrap();
+        let stored: BTreeSet<_> = stored
+            .into_iter()
+            .map(|(table, rule, class, key)| ((table, rule, class), key))
+            .collect();
+        assert_eq!(stored, entries, "replica {} class entries", self.index);
+        let stored: Vec<(i64, i64, Vec<u8>)> =
+            sqlx::query_as("SELECT table_id, rule_index, class_key FROM sync_contested_classes")
+                .fetch_all(&mut self.conn)
+                .await
+                .unwrap();
+        let stored: BTreeSet<_> = stored.into_iter().collect();
+        assert_eq!(
+            stored, contested,
+            "replica {} contested classes",
+            self.index
+        );
+    }
+
     /// Checks invariants that hold between engine calls.
     pub(super) async fn check_invariants(&mut self) {
         let violations = self
@@ -870,6 +901,7 @@ impl Replica {
             .count("SELECT applying FROM sync_apply_state WHERE singleton = 1")
             .await;
         assert_eq!(applying, 0, "replica {} left applying set", self.index);
+        self.check_class_index().await;
         let stale_index = self
             .count(
                 "SELECT (SELECT count(*) FROM (
@@ -938,6 +970,29 @@ impl Replica {
             self.index
         );
         self.check_compacted_state().await;
+    }
+
+    /// Duplicates, detached rows, severed edges, and repairs of a full derivation of the merge
+    /// state, without changing it. The last round of a run compares these, since a scoped
+    /// finish may leave repairs for the next finish of their component.
+    pub(super) async fn full_derivation(&mut self) -> String {
+        let mut dirty = BTreeSet::new();
+        let mut visibility = crate::visibility::Visibility::load(
+            &self.engine,
+            &mut self.conn,
+            &mut dirty,
+            crate::visibility::DeriveScope::All,
+        )
+        .await
+        .unwrap();
+        let repairs =
+            crate::repair::repair_changes(&self.engine, &mut self.conn, &mut visibility, &dirty)
+                .await
+                .unwrap();
+        format!(
+            "duplicates {:?}\ndetached {:?}\nsevered {:?}\nrepairs {repairs:?}",
+            visibility.duplicates, visibility.detached, visibility.severed
+        )
     }
 
     /// Asserts that every retained version reads back to a value with its stored hash, elided
@@ -1358,6 +1413,47 @@ pub(super) fn pair(replicas: &mut [Replica], a: usize, b: usize) -> (&mut Replic
         let (low, high) = replicas.split_at_mut(a);
         (&mut high[0], &mut low[b])
     }
+}
+
+/// The next operation of `replica`'s writer carrying `change`, which the engine would not seal.
+pub(super) async fn forge_change(replica: &mut Replica, change: Change) -> Vec<u8> {
+    forge_changes(replica, vec![change]).await
+}
+
+/// The next operation of `replica`'s writer carrying all of `changes`. The writer's chain does
+/// not advance, so a second forged operation would fork it.
+pub(super) async fn forge_changes(replica: &mut Replica, changes: Vec<Change>) -> Vec<u8> {
+    let revision = view(replica).await.revision;
+    forge(replica, Content::Changes(changes), revision).await
+}
+
+/// The latest change of `action` that `replica` sealed for the row `key` of `table`.
+pub(super) async fn sealed_change(
+    replica: &mut Replica,
+    table: TableId,
+    key: &str,
+    action: ChangeAction,
+) -> Change {
+    replica
+        .own_ops()
+        .await
+        .iter()
+        .filter_map(|bytes| {
+            match Envelope::decode(bytes)
+                .unwrap()
+                .operation()
+                .unwrap()
+                .content
+            {
+                Content::Changes(changes) => Some(changes),
+                _ => None,
+            }
+        })
+        .flatten()
+        .rfind(|change| {
+            change.table == table && change.row.as_str() == key && change.action == action
+        })
+        .expect("the change is sealed")
 }
 
 /// A SQL string literal.

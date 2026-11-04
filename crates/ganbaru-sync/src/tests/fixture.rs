@@ -26,11 +26,11 @@ use crate::manifest::vault::{
     preferences, projects, quick_notes, themes,
 };
 use crate::manifest::{
-    AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
-    DomainTrigger, GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, Manifest, MergeKind,
-    OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedReference, OwnedTable, PublishedWith,
-    ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy,
-    group_id,
+    AcyclicSpec, Collation, ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable,
+    DomainManifest, DomainTrigger, GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn,
+    Manifest, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedReference, OwnedTable,
+    PublishedWith, ReferenceColumn, Resolution, RowKeyRule, SYNC_KEY_COLUMN, TableIdRange,
+    TableSpec, TreeSpec, TriggerPolicy, group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
 
@@ -109,7 +109,11 @@ pub(super) const ITEMS: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `fixture_items`.
@@ -179,7 +183,11 @@ pub(super) const CYCLE_A: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// The other table of the reference cycle with [`CYCLE_A`].
@@ -319,7 +327,11 @@ pub(super) const LINKS: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// Prefix of [`MEMBERSHIPS`] keys.
@@ -440,7 +452,11 @@ pub(super) const MEMBERSHIPS: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// Group ids of [`NODES`].
@@ -528,11 +544,57 @@ pub(super) const NODES: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `fixture_nodes`.
 pub(super) const NODES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 5);
+
+/// Notes on a tree node, which reach the tree through a cascading reference.
+pub(super) const NODE_NOTES: TableSpec = TableSpec {
+    id: NODE_NOTES_TABLE,
+    name: "fixture_node_notes",
+    groups: &[LABEL, reference("node", NODES_TABLE, OnDelete::Cascade)],
+    resolutions: &[],
+    redirects: false,
+    ..CYCLE_A
+};
+
+/// `fixture_node_notes`.
+pub(super) const NODE_NOTES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 18);
+
+/// Notes on an edge, which a severed edge hides.
+pub(super) const EDGE_NOTES: TableSpec = TableSpec {
+    id: EDGE_NOTES_TABLE,
+    name: "fixture_edge_notes",
+    groups: &[LABEL, reference("edge", EDGES_TABLE, OnDelete::Cascade)],
+    resolutions: &[],
+    redirects: false,
+    ..CYCLE_A
+};
+
+/// `fixture_edge_notes`.
+pub(super) const EDGE_NOTES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 19);
+
+/// Pointers to node notes, which reach the tree only through a reference that never cascades.
+pub(super) const NOTE_POINTERS: TableSpec = TableSpec {
+    id: NOTE_POINTERS_TABLE,
+    name: "fixture_note_pointers",
+    groups: &[
+        LABEL,
+        reference("note", NODE_NOTES_TABLE, OnDelete::SetNull),
+    ],
+    resolutions: &[],
+    redirects: false,
+    ..CYCLE_A
+};
+
+/// `fixture_note_pointers`.
+pub(super) const NOTE_POINTERS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 20);
 
 /// Prefix of [`EDGES`] keys.
 const EDGE_KEY_PREFIX: &str = "fixture_edge";
@@ -625,7 +687,11 @@ pub(super) const EDGES: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `fixture_edges`.
@@ -691,7 +757,11 @@ pub(super) const DRAFTS: TableSpec = TableSpec {
     publish_when: Some("published = 1"),
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `fixture_drafts`.
@@ -1165,6 +1235,9 @@ pub(super) const UNATTENDED: &str = "unattended";
 /// A policy the adapter accepts and the override table's `CHECK` refuses, standing for a domain
 /// constraint the manifest does not describe.
 pub(super) const RESERVED: &str = "reserved";
+/// A label or code the manifest accepts and a `CHECK` of the cycle and handle tables refuses,
+/// standing for a domain constraint the manifest does not describe.
+pub(super) const REFUSED: &str = "refused";
 /// A policy the adapter accepts and derives nothing from, refusing it in
 /// [`FixtureAdapter::derived`].
 pub(super) const UNDERIVABLE: &str = "underivable";
@@ -1220,10 +1293,16 @@ pub(super) const OVERRIDES: TableSpec = TableSpec {
         },
     ],
     adapter: Some(FIXTURE_ADAPTER),
-    triggers: &[DomainTrigger {
-        name: "fixture_overrides_refuse_forbidden",
-        policy: TriggerPolicy::ApplierVisible,
-    }],
+    triggers: &[
+        DomainTrigger {
+            name: "fixture_overrides_refuse_forbidden",
+            policy: TriggerPolicy::ApplierVisible,
+        },
+        DomainTrigger {
+            name: "fixture_overrides_keep_forbidden",
+            policy: TriggerPolicy::ApplierVisible,
+        },
+    ],
     holds_deletes: false,
     ..MEMOS
 };
@@ -1507,7 +1586,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
     name: "fixture",
     table_ids: TableIdRange {
         first: FIXTURE_TABLE_IDS,
-        last: FIXTURE_TABLE_IDS + 17,
+        last: FIXTURE_TABLE_IDS + 20,
     },
     tables: &[
         ITEMS,
@@ -1517,7 +1596,10 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         LINKS,
         MEMBERSHIPS,
         NODES,
+        NODE_NOTES,
+        NOTE_POINTERS,
         EDGES,
+        EDGE_NOTES,
         DRAFTS,
         DRAFT_PARTS,
         DRAFT_NOTES,
@@ -1631,9 +1713,102 @@ pub(super) fn test_engine_hooking(table: TableId, hook: Box<dyn MaterializeHook>
     .expect("the test manifest, adapters, and hooks should agree")
 }
 
+/// The engine of [`test_engine`] with `adapter` in place of the one of the same name.
+pub(super) fn test_engine_adapting(adapter: Box<dyn DomainAdapter>) -> Engine {
+    Engine::with(
+        &TEST_MANIFEST,
+        test_adapters().with(adapter),
+        super::notes::with_notes_hooks(vault_hooks())
+            .with(LISTS_TABLE, Box::new(FixtureHook))
+            .with(OVERRIDES_TABLE, Box::new(OverrideHook::default())),
+    )
+    .expect("the test manifest, adapters, and hooks should agree")
+}
+
 /// [`test_engine_with`] the default [`OverrideHook`].
 pub(super) fn test_engine() -> Engine {
     test_engine_with(OverrideHook::default())
+}
+
+/// The duplicate rules of [`HANDLES`] in the opposite order.
+const REORDERED_HANDLE_RULES: &[Resolution] = &[
+    Resolution::DuplicateRepair {
+        columns: &["code"],
+        collation: Collation::Binary,
+    },
+    Resolution::DuplicateRepair {
+        columns: &["label"],
+        collation: Collation::Binary,
+    },
+];
+
+/// The duplicate rules of [`HANDLES`] with labels compared case-insensitively.
+const NOCASE_LABEL_HANDLE_RULES: &[Resolution] = &[
+    Resolution::DuplicateRepair {
+        columns: &["label"],
+        collation: Collation::NoCase,
+    },
+    Resolution::DuplicateRepair {
+        columns: &["code"],
+        collation: Collation::Binary,
+    },
+];
+
+/// [`TEST_MANIFEST`] with the duplicate rules of [`HANDLES`] in the opposite order, as a manifest
+/// update could list them.
+pub(super) static REORDERED_RULES_MANIFEST: LazyLock<Manifest> =
+    LazyLock::new(|| with_handle_rules(REORDERED_HANDLE_RULES));
+
+/// [`TEST_MANIFEST`] with labels of [`HANDLES`] colliding case-insensitively.
+pub(super) static NOCASE_LABEL_MANIFEST: LazyLock<Manifest> =
+    LazyLock::new(|| with_handle_rules(NOCASE_LABEL_HANDLE_RULES));
+
+/// [`TEST_MANIFEST`] with `rules` as the duplicate rules of [`HANDLES`].
+fn with_handle_rules(rules: &'static [Resolution]) -> Manifest {
+    let tables: Vec<TableSpec> = FIXTURE_DOMAIN
+        .tables
+        .iter()
+        .map(|table| {
+            if table.id == HANDLES_TABLE {
+                TableSpec {
+                    resolutions: rules,
+                    ..*table
+                }
+            } else {
+                *table
+            }
+        })
+        .collect();
+    let fixture: &'static DomainManifest = Box::leak(Box::new(DomainManifest {
+        tables: Box::leak(tables.into_boxed_slice()),
+        ..FIXTURE_DOMAIN
+    }));
+    let domains: Vec<&'static DomainManifest> = TEST_DOMAINS
+        .iter()
+        .map(|domain| {
+            if domain.name == FIXTURE_DOMAIN.name {
+                fixture
+            } else {
+                *domain
+            }
+        })
+        .collect();
+    Manifest::from_domains(
+        VAULT_MANIFEST_VERSION,
+        Box::leak(domains.into_boxed_slice()),
+    )
+}
+
+/// The engine of [`test_engine`] for another manifest of the same tables.
+pub(super) fn test_engine_of(manifest: &'static Manifest) -> Engine {
+    Engine::with(
+        manifest,
+        test_adapters(),
+        super::notes::with_notes_hooks(vault_hooks())
+            .with(LISTS_TABLE, Box::new(FixtureHook))
+            .with(OVERRIDES_TABLE, Box::new(OverrideHook::default())),
+    )
+    .expect("the manifest, adapters, and hooks should agree")
 }
 
 /// Schema of the fixture domain. `label_edits` has no default, so every insert must name it and
@@ -1658,7 +1833,7 @@ fn fixture_schema() -> String {
          );
          CREATE TABLE fixture_cycle_a (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
-             label TEXT NOT NULL CHECK (length(label) <= 40),
+             label TEXT NOT NULL CHECK (length(label) <= 40 AND label IS NOT '{REFUSED}'),
              peer_id TEXT REFERENCES fixture_cycle_b(id) ON DELETE CASCADE,
              UNIQUE (label)
          );
@@ -1669,8 +1844,8 @@ fn fixture_schema() -> String {
          );
          CREATE TABLE fixture_handles (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
-             label TEXT NOT NULL CHECK (length(label) <= 40),
-             code TEXT NOT NULL CHECK (length(code) <= 40),
+             label TEXT NOT NULL CHECK (length(label) <= 40 AND label IS NOT '{REFUSED}'),
+             code TEXT NOT NULL CHECK (length(code) <= 40 AND code IS NOT '{REFUSED}'),
              UNIQUE (label),
              UNIQUE (code)
          );
@@ -1702,6 +1877,21 @@ fn fixture_schema() -> String {
              to_id TEXT NOT NULL REFERENCES fixture_items(id) ON DELETE CASCADE,
              sync_key TEXT NOT NULL UNIQUE,
              PRIMARY KEY (from_id, to_id)
+         );
+         CREATE TABLE fixture_node_notes (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             label TEXT NOT NULL CHECK (length(label) <= 40),
+             peer_id TEXT REFERENCES fixture_nodes(id) ON DELETE CASCADE
+         );
+         CREATE TABLE fixture_note_pointers (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             label TEXT NOT NULL CHECK (length(label) <= 40),
+             peer_id TEXT REFERENCES fixture_node_notes(id) ON DELETE SET NULL
+         );
+         CREATE TABLE fixture_edge_notes (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             label TEXT NOT NULL CHECK (length(label) <= 40),
+             peer_id TEXT REFERENCES fixture_edges(sync_key) ON DELETE CASCADE
          );
          CREATE TABLE fixture_drafts (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
@@ -1812,6 +2002,11 @@ fn fixture_schema() -> String {
          WHEN NEW.policy IS '{FORBIDDEN}'
          BEGIN
              SELECT RAISE(ABORT, 'fixture overrides never forbid');
+         END;
+         CREATE TRIGGER fixture_overrides_keep_forbidden BEFORE DELETE ON fixture_overrides
+         WHEN OLD.policy IS '{FORBIDDEN}'
+         BEGIN
+             SELECT RAISE(ABORT, 'fixture overrides keep a forbidden policy');
          END;
          CREATE TRIGGER fixture_item_marks_refuse_negative BEFORE INSERT ON fixture_item_marks
          WHEN NEW.mark < 0

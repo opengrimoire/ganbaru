@@ -1,9 +1,10 @@
 //! Snapshot copies a member desktop or anchor server serves on its sync listener: the first copy
 //! of a device that links, or a fresh copy for a device that fell behind compaction.
 //!
-//! Only a device the selected log enrolled and did not remove, and that this installation did
-//! not quarantine, gets a copy, and only of itself in this vault. One copy is held at a time.
+//! Only a device the selected log enrolled, did not remove, and does not hold, and that this
+//! installation did not quarantine, gets a copy, and only of itself in this vault. One copy is held at a time.
 
+use super::member::MemberAdmissionSource;
 use super::{Peer, Routes, ServerStream, send_error, timeout_control};
 use crate::peers::admission::{MemberAdmission, MemberRefusal};
 use ganbaru_handoff::pairing::{PairingManager, certificate_fingerprint};
@@ -30,6 +31,65 @@ const MAX_BUNDLE_PREPARATIONS_PER_PEER: usize = 30;
 /// localized guidance.
 pub const BUNDLE_PREPARATION_LIMIT: &str =
     "this device requested the vault too often; wait before requesting another copy";
+/// How often a running copy rereads the sender's admission, so a device removed or held while
+/// it downloads stops receiving the archive. A time bound rather than a chunk count, since a
+/// slow receiver has the most time to be removed.
+pub const STREAM_RECHECK_INTERVAL: Duration = Duration::from_secs(10);
+
+/// One answer of a [`StreamCheck`].
+pub type StreamCheckFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), MemberRefusal>> + Send + 'a>>;
+
+/// Asks whether a running copy may continue. `Err` ends it with the refusal.
+pub type StreamCheck<'a> = Box<dyn Fn() -> StreamCheckFuture<'a> + Send + Sync + 'a>;
+
+/// A check that lets every copy continue, for a sender without an authorization log.
+pub fn continue_stream<'a>() -> StreamCheck<'a> {
+    Box::new(|| -> StreamCheckFuture<'a> { Box::pin(async { Ok(()) }) })
+}
+
+/// The check a member or server listener runs during a copy: the device whose certificate has
+/// `fingerprint` must still pass [`MemberAdmission::bootstrap`] for `vault_id` and `device_id`
+/// in the selected log as it is now. A log that cannot be read, or sync that stopped, lets the
+/// copy continue, so a briefly locked database never ends an honest transfer and a copy does
+/// not depend on a running sync service.
+pub fn member_stream_check<'a>(
+    source: &'a MemberAdmissionSource,
+    fingerprint: &'a str,
+    vault_id: &'a str,
+    device_id: &'a str,
+) -> StreamCheck<'a> {
+    Box::new(move || -> StreamCheckFuture<'a> {
+        Box::pin(async move {
+            match source().await {
+                Ok(Some(admission)) => continue_unless_unavailable(admission.bootstrap(
+                    fingerprint,
+                    vault_id,
+                    device_id,
+                )),
+                Ok(None) => Ok(()),
+                Err(error) => {
+                    eprintln!("sync member listener: recheck a running copy: {error}");
+                    Ok(())
+                }
+            }
+        })
+    })
+}
+
+/// Lets a running copy continue when its admission is only unavailable, and passes every other
+/// answer on.
+pub(super) fn continue_unless_unavailable(
+    answer: Result<(), MemberRefusal>,
+) -> Result<(), MemberRefusal> {
+    match answer {
+        Err(MemberRefusal::Unavailable) => {
+            eprintln!("sync: admission of a running copy is unavailable; the copy continues");
+            Ok(())
+        }
+        answer => answer,
+    }
+}
 
 /// Drops events that left the sliding window ending at `now`.
 fn forget_expired(events: &mut VecDeque<Instant>, now: Instant, window: Duration) {
@@ -63,11 +123,14 @@ impl BundlePreparationWindows {
     }
 }
 
-/// Streams a registered copy to a receiver from the offset it resumes at.
+/// Streams a registered copy to a receiver from the offset it resumes at. `check` runs every
+/// [`STREAM_RECHECK_INTERVAL`] while bytes flow; a refusal closes the connection, so the
+/// receiver sees a truncated transfer and gets the typed refusal on its next request.
 pub async fn serve_download(
     stream: &mut ServerStream,
     manager: &PairingManager,
     requested: BundleMetadata,
+    check: &StreamCheck<'_>,
 ) -> Result<(), String> {
     let registered = manager.outgoing_bundle(&requested.transfer_id)?;
     if registered.metadata != requested {
@@ -106,6 +169,7 @@ pub async fn serve_download(
         &registered.path,
         offset,
         registered.metadata.archive_bytes,
+        check,
     )
     .await?;
     match timeout_control(read_control(stream)).await? {
@@ -123,10 +187,13 @@ async fn stream_file<W>(
     path: &Path,
     offset: u64,
     total_bytes: u64,
+    check: &StreamCheck<'_>,
 ) -> Result<(), String>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
+    // The stream is raw bytes after `ResumeAt`, so a refusal cannot be framed mid-stream.
+    let mut last_check = tokio::time::Instant::now();
     let mut file = tokio::fs::File::open(path)
         .await
         .map_err(|error| format!("open transfer bundle: {error}"))?;
@@ -142,6 +209,12 @@ where
             .await
             .map_err(|_| "reading the transfer bundle timed out".to_string())?
             .map_err(|error| format!("read transfer bundle: {error}"))?;
+        if last_check.elapsed() >= STREAM_RECHECK_INTERVAL {
+            check()
+                .await
+                .map_err(|refusal| format!("stream stopped: {}", refusal.code()))?;
+            last_check = tokio::time::Instant::now();
+        }
         tokio::time::timeout(CHUNK_TIMEOUT, writer.write_all(&buffer[..chunk_bytes]))
             .await
             .map_err(|_| "sending the transfer bundle timed out".to_string())?
@@ -222,11 +295,13 @@ impl MemberBundles {
     }
 
     /// Answers one snapshot copy request from the peer whose certificate has `fingerprint`.
+    /// `admission` decides at the start, and `recheck` is read again while a copy streams.
     pub async fn serve(
         &self,
         stream: &mut ServerStream,
         manager: &PairingManager,
         admission: &MemberAdmission,
+        recheck: &MemberAdmissionSource,
         fingerprint: &str,
         request: ControlMessage,
     ) -> Result<(), String> {
@@ -268,7 +343,9 @@ impl MemberBundles {
                     )
                     .await;
                 }
-                serve_download(stream, manager, metadata).await
+                let (vault_id, device_id) = (metadata.vault_id.clone(), metadata.device_id.clone());
+                let check = member_stream_check(recheck, fingerprint, &vault_id, &device_id);
+                serve_download(stream, manager, metadata, &check).await
             }
             ControlMessage::ActivationComplete {
                 vault_id,
@@ -422,11 +499,22 @@ impl Routes for MemberBundles {
         peer: Peer<'_>,
         request: ControlMessage,
     ) -> Result<(), String> {
-        let (Some(admission), Some(certificate)) = (peer.admission, peer.certificate) else {
+        let (Some(admission), Some(recheck), Some(certificate)) =
+            (peer.admission, peer.admission_source, peer.certificate)
+        else {
             return Err("a snapshot copy needs an admitted peer".to_string());
         };
         let fingerprint = certificate_fingerprint(certificate.as_ref());
-        MemberBundles::serve(self, stream, peer.manager, admission, &fingerprint, request).await
+        MemberBundles::serve(
+            self,
+            stream,
+            peer.manager,
+            admission,
+            recheck,
+            &fingerprint,
+            request,
+        )
+        .await
     }
 }
 
@@ -447,8 +535,17 @@ fn release(manager: &PairingManager, snapshot: &PreparedSnapshot) {
 
 /// Answers a refused copy request with its typed code and returns the refusal as the
 /// connection's error, so it is logged without keys or certificates.
-async fn refuse(stream: &mut ServerStream, refusal: MemberRefusal) -> Result<(), String> {
-    send_error(stream, refusal.code(), refusal.describe(), false).await?;
+async fn refuse<W>(stream: &mut W, refusal: MemberRefusal) -> Result<(), String>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    send_error(
+        stream,
+        refusal.code(),
+        refusal.describe(),
+        refusal.retryable(),
+    )
+    .await?;
     Err(format!("refused: {}", refusal.code()))
 }
 
@@ -480,5 +577,140 @@ mod tests {
             1,
             "only the admitted snapshot after expiry is kept"
         );
+    }
+
+    /// The error a receiver reads after a copy request was refused for `refusal`.
+    async fn refused_reply(refusal: MemberRefusal) -> ControlMessage {
+        let mut sent = Vec::new();
+        let result = refuse(&mut sent, refusal).await;
+        assert_eq!(result, Err(format!("refused: {}", refusal.code())));
+        read_control(&mut sent.as_slice()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn held_refusal_reaches_the_receiver_as_retryable() {
+        // A contest that resolves in the device's favor lifts the hold, so the copy is asked
+        // again then; a removal is final.
+        for (refusal, expected) in [(MemberRefusal::Held, true), (MemberRefusal::Removed, false)] {
+            match refused_reply(refusal).await {
+                ControlMessage::Error {
+                    code, retryable, ..
+                } => {
+                    assert_eq!(code, refusal.code());
+                    assert_eq!(retryable, expected, "{refusal:?}");
+                }
+                other => panic!("unexpected reply {other:?}"),
+            }
+        }
+    }
+
+    /// A receiver that takes one recheck interval to accept each chunk.
+    #[derive(Default)]
+    struct SlowReceiver {
+        received: Vec<u8>,
+        delay: Option<Pin<Box<tokio::time::Sleep>>>,
+    }
+
+    impl tokio::io::AsyncWrite for SlowReceiver {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+            buffer: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            let delay = self
+                .delay
+                .get_or_insert_with(|| Box::pin(tokio::time::sleep(STREAM_RECHECK_INTERVAL)));
+            std::task::ready!(delay.as_mut().poll(context));
+            self.delay = None;
+            self.received.extend_from_slice(buffer);
+            std::task::Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A prepared archive of `chunks` full chunks, removed when dropped.
+    struct TestArchive(PathBuf);
+
+    impl TestArchive {
+        fn new(label: &str, chunks: usize) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "ganbaru-sync-stream-{label}-{}.zip",
+                std::process::id()
+            ));
+            std::fs::write(&path, vec![7_u8; chunks * TRANSFER_CHUNK_BYTES])
+                .expect("write test archive");
+            Self(path)
+        }
+
+        fn bytes(&self) -> u64 {
+            std::fs::metadata(&self.0).expect("archive size").len()
+        }
+    }
+
+    impl Drop for TestArchive {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_stops_when_the_recheck_refuses() {
+        // The device is removed while a slow receiver is still reading the copy.
+        let archive = TestArchive::new("removed", 4);
+        let checks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = checks.clone();
+        let check: StreamCheck<'_> = Box::new(move || {
+            let call = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                if call == 0 {
+                    Ok(())
+                } else {
+                    Err(MemberRefusal::Removed)
+                }
+            })
+        });
+        let mut receiver = SlowReceiver::default();
+
+        let result = stream_file(&mut receiver, &archive.0, 0, archive.bytes(), &check).await;
+
+        let error = result.expect_err("a removed device must not finish its copy");
+        assert!(error.contains(MemberRefusal::Removed.code()), "{error}");
+        assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(receiver.received.len(), 2 * TRANSFER_CHUNK_BYTES);
+        assert!((receiver.received.len() as u64) < archive.bytes());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_continues_when_admission_is_unreadable() {
+        // A briefly locked database never ends an honest copy.
+        let archive = TestArchive::new("unreadable", 3);
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = reads.clone();
+        let source: MemberAdmissionSource = Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Err("database is locked".to_string()) })
+        });
+        let check = member_stream_check(&source, "fingerprint", "vault", "device");
+        let mut receiver = SlowReceiver::default();
+
+        stream_file(&mut receiver, &archive.0, 0, archive.bytes(), &check)
+            .await
+            .expect("an unreadable log lets the copy continue");
+
+        assert_eq!(receiver.received.len() as u64, archive.bytes());
+        assert!(reads.load(std::sync::atomic::Ordering::SeqCst) >= 1);
     }
 }

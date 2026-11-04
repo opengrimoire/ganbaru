@@ -131,6 +131,7 @@ async function flushPendingPatches(): Promise<void> {
     await restoreFailedKeys(keys).catch((error: unknown) => {
       console.error("Config restore after a failed write failed", keys, error);
     });
+    configChanges.publish(keys);
   } finally {
     writeInflight = null;
     for (const key of keys) inflightKeys.delete(key);
@@ -139,7 +140,8 @@ async function flushPendingPatches(): Promise<void> {
 
 /**
  * Put the saved values back into the cache for keys whose write failed, unless a newer local edit is queued for
- * them, then tell subscribers which keys changed. Nothing is published to other windows, since nothing was saved.
+ * them, then tell subscribers which keys changed. The caller still has the other windows reread the keys, because a
+ * batch that spans the portable and device stores can fail after one of them stored its part.
  */
 async function restoreFailedKeys(keys: readonly string[]): Promise<void> {
   const fresh = parseConfig(await invoke<string>("vault_read_config"));

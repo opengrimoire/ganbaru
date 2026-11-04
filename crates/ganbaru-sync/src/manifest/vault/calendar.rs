@@ -18,10 +18,10 @@ use crate::domains::calendar::{
 };
 use crate::manifest::vault::projects::{PROJECTS_TABLE, TASKS_TABLE};
 use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
-    GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
-    OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec,
-    TriggerPolicy, group_id,
+    Collation, ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable, DomainManifest,
+    DomainTrigger, GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound,
+    OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution, RowKeyRule, SYNC_KEY_COLUMN,
+    TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Calendar.
@@ -428,6 +428,13 @@ const fn timestamp(name: &'static str) -> ColumnSpec {
 const fn row_key(name: &'static str) -> ColumnSpec {
     ColumnSpec {
         name,
+        ty: ColumnType::RowKey,
+    }
+}
+
+const fn optional_row_key(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
         ty: ColumnType::OptionalRowKey,
     }
 }
@@ -545,7 +552,11 @@ const BASE: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `calendars`. Removal is a tombstone without redirect.
@@ -684,7 +695,7 @@ pub const COMPONENTS: TableSpec = TableSpec {
         immutable(
             component_group::PARENT,
             "parent",
-            &[row_key("parent_component_id")],
+            &[optional_row_key("parent_component_id")],
             &[cascade("parent_component_id", COMPONENTS_TABLE)],
         ),
         group(
@@ -937,7 +948,7 @@ pub const EVENTS: TableSpec = TableSpec {
         reference(
             event_group::COMPONENT,
             "component",
-            &[row_key("icalendar_component_id")],
+            &[optional_row_key("icalendar_component_id")],
             COMPONENTS_TABLE,
             OnDelete::SetNull,
         ),
@@ -977,7 +988,7 @@ pub const EVENTS: TableSpec = TableSpec {
         reference(
             event_group::PROJECT,
             "project",
-            &[row_key("project_id")],
+            &[optional_row_key("project_id")],
             PROJECTS_TABLE,
             OnDelete::SetNull,
         ),

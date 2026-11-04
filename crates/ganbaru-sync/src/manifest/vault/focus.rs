@@ -13,9 +13,10 @@ use ganbaru_sync_contracts::{GroupId, TableId};
 use crate::domains::focus::{MAX_ENUM_CHARS, MAX_RHYTHM_STEPS, MAX_SEGMENT_PAUSES, MAX_TEXT_CHARS};
 use crate::manifest::vault::calendar::{ARCHIVES_TABLE, EVENTS_TABLE};
 use crate::manifest::{
-    ColumnSpec, ColumnType, DeviceTable, DomainManifest, DomainTrigger, GroupSpec, GroupStorage,
-    MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, PublishedWith,
-    ReferenceColumn, TableIdRange, TableSpec, TriggerPolicy, group_id,
+    ColumnSpec, ColumnType, Deletion, DeviceTable, DomainManifest, DomainTrigger, GroupSpec,
+    GroupStorage, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable,
+    PublishedWith, ReferenceColumn, RowKeyRule, RowOwner, TableIdRange, TableSpec, TriggerPolicy,
+    group_id,
 };
 
 /// Domain name for Focus.
@@ -242,6 +243,13 @@ const fn optional_timestamp(name: &'static str) -> ColumnSpec {
 const fn row_key(name: &'static str) -> ColumnSpec {
     ColumnSpec {
         name,
+        ty: ColumnType::RowKey,
+    }
+}
+
+const fn optional_row_key(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
         ty: ColumnType::OptionalRowKey,
     }
 }
@@ -345,7 +353,11 @@ const BASE: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `pomodoro_runs`, published once closed. The plan, outcome, and inheritance groups change only
@@ -432,11 +444,11 @@ pub const RUNS: TableSpec = TableSpec {
                 "calendar_link",
                 MergeKind::Coupled,
                 &[
-                    row_key("event_id"),
+                    optional_row_key("event_id"),
                     optional_text("current_occurrence_id"),
                     optional_text("current_event_date"),
                     optional_text("current_event_title"),
-                    row_key("calendar_archive_id"),
+                    optional_row_key("calendar_archive_id"),
                 ],
             )
         },
@@ -451,7 +463,7 @@ pub const RUNS: TableSpec = TableSpec {
 
 /// `pomodoro_segments`, published with their run. Segments stay rows because run events,
 /// block events, and adaptive rows reference them. Gated triggers keep at most one active
-/// segment and one open pause per segment.
+/// segment across open runs and one open pause per segment.
 pub const SEGMENTS: TableSpec = TableSpec {
     id: SEGMENTS_TABLE,
     name: "pomodoro_segments",
@@ -478,7 +490,7 @@ pub const SEGMENTS: TableSpec = TableSpec {
         clearing_reference(
             segment_group::EVENT,
             "event",
-            &[row_key("event_id")],
+            &[optional_row_key("event_id")],
             EVENTS_TABLE,
         ),
         owned(
@@ -511,7 +523,7 @@ pub const RUN_EVENTS: TableSpec = TableSpec {
         clearing_reference(
             run_event_group::SEGMENT,
             "segment",
-            &[row_key("segment_id")],
+            &[optional_row_key("segment_id")],
             SEGMENTS_TABLE,
         ),
         group(
@@ -536,14 +548,17 @@ pub const RUN_EVENTS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `pomodoro_device_activity`, keyed by the stable device id. Only the device a row names writes
-/// it, at each run transition and never on heartbeat; a row past `expires_at_ms` means the
-/// device was last seen then. `run_id` is plain text because the run it names is still open and
-/// unpublished.
+/// `pomodoro_device_activity`, keyed by the stable device id. Only the device a row names may
+/// write it, which every replica enforces, at each run transition and never on heartbeat; a row
+/// past `expires_at_ms` means the device was last seen then. `run_id` is plain text because the
+/// run it names is still open and unpublished.
 pub const DEVICE_ACTIVITY: TableSpec = TableSpec {
     id: DEVICE_ACTIVITY_TABLE,
     name: "pomodoro_device_activity",
     key_column: "device_id",
+    owner: Some(RowOwner::KeyIsDevice {
+        device_column: "device_id",
+    }),
     groups: &[group(
         activity_group::ACTIVITY,
         "activity",

@@ -1,13 +1,13 @@
 //! SQLite access for contacts and contact requests.
 
 use super::{ContactRequestView, ContactView};
-use chrono::{DateTime, Utc};
-use ganbaru_contacts::{PersonPublicKey, TrustKind};
+use chrono::{DateTime, Duration, Utc};
+use ganbaru_contacts::{
+    CLOCK_TOLERANCE_DAYS, PersonPublicKey, STORED_TIME_FORMAT, TrustKind, is_stored_timestamp,
+};
 use ganbaru_sync::manifest::vault::contacts::CONTACT_ID_PREFIX;
 use serde::{Deserialize, Serialize};
-use sqlx::{AssertSqlSafe, Executor, FromRow, Sqlite};
-
-const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.3fZ";
+use sqlx::{AssertSqlSafe, Executor, FromRow, Sqlite, SqlitePool};
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -92,7 +92,17 @@ pub(crate) fn now() -> DateTime<Utc> {
 }
 
 pub(crate) fn format_time(time: DateTime<Utc>) -> String {
-    time.format(TIME_FORMAT).to_string()
+    time.format(STORED_TIME_FORMAT).to_string()
+}
+
+/// Refuses a row holding a time the frontend reader cannot parse, which would otherwise fail
+/// the whole snapshot it arrives in.
+fn require_stored_times(times: &[Option<&str>]) -> Result<(), String> {
+    if times.iter().flatten().all(|time| is_stored_timestamp(time)) {
+        Ok(())
+    } else {
+        Err("stored time is malformed".to_owned())
+    }
 }
 
 pub(crate) fn encode_hex(bytes: &[u8]) -> String {
@@ -148,6 +158,14 @@ impl ContactRow {
     pub(crate) fn view(self) -> Result<ContactView, String> {
         let state = ContactState::parse(&self.state)
             .ok_or_else(|| format!("unknown contact state {:?}", self.state))?;
+        require_stored_times(&[
+            self.invite_trust_expires_at.as_deref(),
+            self.message_trust_expires_at.as_deref(),
+            self.accepted_at.as_deref(),
+            self.blocked_at.as_deref(),
+            Some(&self.created_at),
+            Some(&self.updated_at),
+        ])?;
         Ok(ContactView {
             id: self.id,
             public_key: self.public_key,
@@ -195,6 +213,12 @@ impl RequestRow {
             .ok_or_else(|| format!("unknown request state {:?}", self.state))?;
         let public_key = PersonPublicKey::from_text(&self.public_key)
             .map_err(|error| format!("stored public key is malformed: {error}"))?;
+        require_stored_times(&[
+            Some(&self.expires_at),
+            self.last_attempt_at.as_deref(),
+            Some(&self.created_at),
+            Some(&self.updated_at),
+        ])?;
         Ok(ContactRequestView {
             id: self.id.clone(),
             direction,
@@ -453,7 +477,8 @@ where
 
 /// Pending requests in both directions, newest first, one per direction and person. Linked
 /// devices can each store a pending row for the same person, so only the newest is listed.
-/// Handled requests and pending ones past their deadline are never listed.
+/// Handled requests, pending ones past their deadline, and ones created past the clock tolerance
+/// are never listed; the last would otherwise sort as newest and hide the person's real request.
 pub(crate) async fn list_pending_requests<'e, E>(
     executor: E,
     now: DateTime<Utc>,
@@ -467,12 +492,13 @@ where
                 PARTITION BY direction, public_key ORDER BY created_at DESC, id
             ) AS newest
             FROM contact_requests
-            WHERE state = 'pending' AND expires_at > ?
+            WHERE state = 'pending' AND expires_at > ? AND created_at <= ?
          )
          WHERE newest = 1
          ORDER BY created_at DESC, id"
     )))
     .bind(format_time(now))
+    .bind(latest_created_at(now))
     .fetch_all(executor)
     .await
     .map_err(|error| db_error("list contact requests", error))
@@ -821,24 +847,58 @@ where
     Ok(())
 }
 
-/// Expires every pending request whose deadline passed.
-pub(crate) async fn expire_stale_requests<'e, E>(
-    executor: E,
+/// Expires every pending request whose deadline passed or whose creation time sits past the clock
+/// tolerance, then every one [`close_unreadable_requests`] closes. Both clock rules judge the
+/// local clock, so they run only where requests are received; a device that follows a coordinator
+/// hides those rows when listing and leaves the row itself alone.
+pub(crate) async fn expire_stale_requests(
+    pool: &SqlitePool,
     now: DateTime<Utc>,
-) -> Result<(), String>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
+) -> Result<(), String> {
     let time = format_time(now);
     sqlx::query(
         "UPDATE contact_requests
          SET state = 'expired', updated_at = ?
-         WHERE state = 'pending' AND expires_at <= ?",
+         WHERE state = 'pending' AND (expires_at <= ? OR created_at > ?)",
     )
     .bind(&time)
     .bind(&time)
-    .execute(executor)
+    .bind(latest_created_at(now))
+    .execute(pool)
     .await
     .map_err(|error| db_error("expire stale contact requests", error))?;
+    close_unreadable_requests(pool, now).await
+}
+
+/// Expires every pending request no reader can show. Admission refuses these rows, but a snapshot
+/// copy skips admission, and no clock enters the decision, so every device runs this.
+pub(crate) async fn close_unreadable_requests(
+    pool: &SqlitePool,
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    let time = format_time(now);
+    let pending: Vec<RequestRow> = sqlx::query_as(AssertSqlSafe(format!(
+        "SELECT {REQUEST_COLUMNS} FROM contact_requests WHERE state = 'pending'"
+    )))
+    .fetch_all(pool)
+    .await
+    .map_err(|error| db_error("read pending contact requests", error))?;
+    for row in pending.iter().filter(|row| row.view().is_err()) {
+        sqlx::query(
+            "UPDATE contact_requests
+             SET state = 'expired', updated_at = ?
+             WHERE id = ? AND state = 'pending'",
+        )
+        .bind(&time)
+        .bind(&row.id)
+        .execute(pool)
+        .await
+        .map_err(|error| db_error("expire unreadable contact request", error))?;
+    }
     Ok(())
+}
+
+/// The newest creation time a request can honestly carry at `now`.
+fn latest_created_at(now: DateTime<Utc>) -> String {
+    format_time(now + Duration::days(CLOCK_TOLERANCE_DAYS))
 }

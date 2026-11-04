@@ -9,9 +9,10 @@
 use std::fmt::Write as _;
 
 use super::{
-    ColumnType, Manifest, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable,
-    Resolution,
+    ColumnType, Deletion, Manifest, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
+    OwnedTable, Resolution, RowKeyRule, RowOwner,
 };
+use crate::edges::WALK_BUDGET;
 
 impl Manifest {
     /// The canonical summary text, one line per table, group, and resolution.
@@ -21,11 +22,16 @@ impl Manifest {
         for table in self.tables {
             let _ = writeln!(
                 text,
-                "table {} {} replicated key {}{}",
+                "table {} {} replicated key {} rule {}{}{}",
                 table.id.0,
                 table.name,
                 table.key_column,
-                if table.redirects { " redirects" } else { "" }
+                row_key_rule(table.key_rule),
+                if table.redirects { " redirects" } else { "" },
+                match table.deletion {
+                    Deletion::Ordinary => "",
+                    Deletion::Never => " never_deleted",
+                }
             );
             if let Some(derived) = table.derived_key {
                 let _ = writeln!(
@@ -52,7 +58,7 @@ impl Manifest {
             if let Some(acyclic) = table.acyclic {
                 let _ = writeln!(
                     text,
-                    "  acyclic {}->{}",
+                    "  acyclic {}->{} walk budget {WALK_BUDGET}",
                     acyclic.from_column, acyclic.to_column
                 );
             }
@@ -68,6 +74,28 @@ impl Manifest {
             }
             if let Some(parent) = table.key_parent {
                 let _ = writeln!(text, "  key parent {}", parent.0);
+            }
+            if let Some(retained) = table.retained {
+                let _ = writeln!(
+                    text,
+                    "  retained group {} {}={} parent {}",
+                    retained.group.get(),
+                    retained.column,
+                    retained.value,
+                    retained.parent.0
+                );
+            }
+            match table.owner {
+                Some(RowOwner::KeyIsDevice { device_column }) => {
+                    let _ = writeln!(text, "  owner key is device {device_column}");
+                }
+                Some(RowOwner::KeyTag {
+                    prefix,
+                    device_column,
+                }) => {
+                    let _ = writeln!(text, "  owner key tag {prefix} {device_column}");
+                }
+                None => {}
             }
             for group in table.groups {
                 let mut line = format!("  group {} {}", group.id.get(), kind(group.kind));
@@ -180,6 +208,16 @@ const fn on_delete(action: OnDelete) -> &'static str {
     }
 }
 
+fn row_key_rule(rule: RowKeyRule) -> String {
+    match rule {
+        RowKeyRule::Any => "any".to_string(),
+        RowKeyRule::Fixed(key) => format!("fixed({key})"),
+        RowKeyRule::ExactChars(chars) => format!("exact_chars({chars})"),
+        RowKeyRule::MaxChars(chars) => format!("max_chars({chars})"),
+        RowKeyRule::ThemeSlug => "theme_slug".to_string(),
+    }
+}
+
 fn column_type(ty: ColumnType) -> String {
     match ty {
         ColumnType::Text { max_chars } => format!("text(..={max_chars})"),
@@ -195,5 +233,6 @@ fn column_type(ty: ColumnType) -> String {
         ColumnType::OptionalTimestamp => "optional_timestamp".to_string(),
         ColumnType::OrderKey => "order_key".to_string(),
         ColumnType::OptionalRowKey => "optional_row_key".to_string(),
+        ColumnType::RowKey => "row_key".to_string(),
     }
 }

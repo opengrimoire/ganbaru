@@ -22,7 +22,7 @@ import nativeRulesSource from "../../../../../crates/ganbaru-distractions/src/ru
 import nativeStoreSource from "../../../../../crates/ganbaru-distractions/src/config/store.rs?raw";
 
 function appRule(name: string, enabled = true): DistractionsAppRule {
-  return { name, enabled, matchNames: [name] };
+  return { identity: name.toLowerCase(), name, enabled, matchNames: [name] };
 }
 
 function hostRule(host: string, enabled = true): DistractionsHostRule {
@@ -295,12 +295,12 @@ describe("normalizeDistractionsConfig", () => {
         enabled: false,
         blockDuringFocus: false,
         blockedApps: [
-          { name: "Steam" },
-          { name: "Ganbaru" },
-          { name: " steam ", enabled: false },
-          { name: "Discord", enabled: false },
-          { name: "Calculator", matchNames: ["gnome-calculator"] },
-          { name: "Terminal", matchNames: ["gnome-terminal"] },
+          { identity: "steam", name: "Steam" },
+          { identity: "ganbaru", name: "Ganbaru" },
+          { identity: "steam", name: " steam ", enabled: false },
+          { identity: "discord", name: "Discord", enabled: false },
+          { identity: "calculator", name: "Calculator", matchNames: ["gnome-calculator"] },
+          { identity: "terminal", name: "Terminal", matchNames: ["gnome-terminal"] },
         ],
       },
     })).toMatchObject({
@@ -315,6 +315,35 @@ describe("normalizeDistractionsConfig", () => {
         ],
       },
     });
+  });
+
+  it("keeps desktop rows sharing a display name apart by their stored identity", () => {
+    const { desktop } = normalizeDistractionsConfig({
+      desktop: {
+        blockedApps: [
+          { identity: "first", name: "Steam" },
+          { identity: "Second  Row", name: "steam", enabled: false },
+          { name: "Discord" },
+          { identity: "", name: "Spotify" },
+        ],
+      },
+    });
+
+    expect(desktop.blockedApps.map((rule) => rule.identity)).toEqual(["first", "Second  Row"]);
+  });
+
+  it("keeps a row whose identity is not empty even when JavaScript trims it away", () => {
+    const byteOrderMark = String.fromCodePoint(0xfeff);
+    const { desktop } = normalizeDistractionsConfig({
+      desktop: {
+        blockedApps: [
+          { identity: byteOrderMark, name: "Steam" },
+          { identity: "", name: "Discord" },
+        ],
+      },
+    });
+
+    expect(desktop.blockedApps.map((rule) => [rule.identity, rule.name])).toEqual([[byteOrderMark, "Steam"]]);
   });
 
   it("normalizes mobile app rules by stable package identity", () => {
@@ -597,7 +626,7 @@ describe("parseDistractionsConfig", () => {
       ...DEFAULT_DISTRACTIONS_CONFIG,
       mode: "whitelist",
       allowedHosts: [hostRule("docs.rs"), hostRule("example.com", false)],
-      desktop: { ...DEFAULT_DISTRACTIONS_CONFIG.desktop, blockedApps: [{ name: "Steam", enabled: true, matchNames: ["Steam", "steamwebhelper"] }] },
+      desktop: { ...DEFAULT_DISTRACTIONS_CONFIG.desktop, blockedApps: [{ identity: "steam", name: "Steam", enabled: true, matchNames: ["Steam", "steamwebhelper"] }] },
       limits: {
         enabled: false,
         items: [{
@@ -615,7 +644,7 @@ describe("parseDistractionsConfig", () => {
     const parsed = parseDistractionsConfig(nativeRules());
     expect(parsed.mode).toBe("whitelist");
     expect(parsed.allowedHosts).toEqual([hostRule("docs.rs"), hostRule("example.com", false)]);
-    expect(parsed.desktop.blockedApps).toEqual([{ name: "Steam", enabled: true, matchNames: ["Steam", "steamwebhelper"] }]);
+    expect(parsed.desktop.blockedApps).toEqual([{ identity: "steam", name: "Steam", enabled: true, matchNames: ["Steam", "steamwebhelper"] }]);
     expect(parsed.limits.enabled).toBe(false);
     expect(parsed.limits.items[0]).toMatchObject({ id: "video", minutesPerDay: null, minutesPerWeek: 120 });
     expect(parsed.limits.items[0]?.entries[0]).toMatchObject({ id: "tube", color: 3, websiteHost: "youtube.com" });

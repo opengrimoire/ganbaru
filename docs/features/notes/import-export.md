@@ -60,7 +60,7 @@ Invalid rows do not partially write broken property state.
 
 Markdown export renders ordered active blocks, safe rich text, supported mentions, equations, headings, lists, to-dos, toggles, callouts, quotes, code, dividers, simple tables, and media references. Comments are optional and omit local read state.
 
-Text is escaped so it never becomes raw HTML, and link destinations are percent-encoded. Web references and rich text links become Markdown links only for the schemes their blocks accept with an explicit scheme; anything else is written as plain text with a note. HTML export applies the same rule to web references.
+Text is escaped so it never becomes raw HTML, and link destinations are percent-encoded. Web references and rich text links become Markdown links only for the schemes their blocks accept with an explicit scheme; anything else is written as plain text with a note. HTML export applies the same rule to web references. Media blocks link only to `http` or `https` URLs and to `ganbaru-asset:` references, which carry a note; any other reference, including a file upload, is written as the block's bracketed label with a note.
 
 Markdown cannot represent every page, database, layout, color, asset, upload, or unsupported block losslessly. Those approximations and omissions appear in diagnostics. The output can always be regenerated from SQLite.
 
@@ -68,7 +68,7 @@ Markdown cannot represent every page, database, layout, color, asset, upload, or
 
 HTML export produces a readable static archive with page files, shared styling, a manifest, optional subpages, optional managed assets, comments, and database view manifests.
 
-Local Notes links target included exported pages. Assets are copied only when requested and available, and only from a regular file in a managed Notes asset folder reached without symlinks whose bytes still match the recorded size and digest; any other asset is left out with a warning. Database views export readable row data and settings rather than pretending to be a complete interactive database runtime.
+Local Notes links target included exported pages. Assets are copied only when requested and available, and only from a regular file in a managed Notes asset folder reached without symlinks whose bytes still match the recorded size and digest; any other asset is left out with a warning. Media blocks link only to included assets and to `http` or `https` URLs; any other reference renders as the block's label with a warning. Every page carries a Content Security Policy that refuses scripts, plugins, and a base URL, so an exported file runs no code. Database views export readable row data and settings rather than pretending to be a complete interactive database runtime.
 
 ## CSV database export
 

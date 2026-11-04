@@ -8,8 +8,12 @@ use ganbaru_sync_contracts::{
 };
 use ganbaru_sync_replica::authority::propose;
 use ganbaru_sync_replica::outbox::OutboxEntry;
+use ganbaru_sync_replica::service::peers::coordinator_allowed;
 
+use super::super::host::{StagedTrust, staged_trust};
 use super::*;
+use crate::sync::pinned_trust;
+use crate::vault::handoff::pairing::{CoordinatorPin, PinnedCharter};
 
 const VAULT_ID: &str = "vault-authority";
 const AT_MS: u64 = 1_800_000_000_000;
@@ -28,6 +32,7 @@ fn device(id: &str, kind: DeviceKind, role: DeviceRole, removed: Option<u64>) ->
         role,
         enrolled_revision: 1,
         removed_revision: removed,
+        held: false,
         encryption_key: None,
     }
 }
@@ -43,6 +48,7 @@ fn view(devices: Vec<EnrolledDevice>) -> AuthorizationView {
         charter: [2; 32],
         recovery_admin_key: AdminPublicKey::from_bytes([3; 32]),
         kit_admin_key: AdminPublicKey::from_bytes([3; 32]),
+        retired_admin_keys: BTreeSet::new(),
         devices,
         discovery_key: [4; 32],
         previous_discovery_key: None,
@@ -72,6 +78,8 @@ fn entry(change: Entry, created_ms: u64) -> OutboxEntry {
         .expect("proposal"),
         rejection: None,
         held: None,
+        after: None,
+        released_from: None,
     }
 }
 
@@ -217,6 +225,7 @@ fn sync_late_views_mark_rows_a_pending_proposal_already_decides() {
         },
         values: Vec::new(),
         clock,
+        restorable: true,
     };
     let decided = entry(
         Entry::ResolveLate(ResolveLate {
@@ -242,7 +251,7 @@ fn sync_late_views_mark_rows_a_pending_proposal_already_decides() {
     );
     sequenced.held = Some(2);
 
-    let changes = vec![
+    let mut changes = vec![
         late("note-decided", LateKind::Tombstone, None),
         late(
             "note-open",
@@ -250,6 +259,7 @@ fn sync_late_views_mark_rows_a_pending_proposal_already_decides() {
             Some(Hlc::new(AT_MS + 60_000, 3)),
         ),
     ];
+    changes[1].restorable = false;
     let listed = late_views(
         &engine,
         changes.clone(),
@@ -274,6 +284,11 @@ fn sync_late_views_mark_rows_a_pending_proposal_already_decides() {
     assert_eq!(wire["kind"], "values");
     assert_eq!(wire["removalRevision"], 5);
     assert_eq!(wire["device"]["deviceId"], "device-c");
+    assert!(views[0].restorable);
+    assert_eq!(
+        wire["restorable"], false,
+        "the view keeps whether keeping can write back"
+    );
 
     let bounded = late_views(&engine, changes, &[decided, sequenced], &names(), 1);
     assert_eq!(
@@ -284,4 +299,159 @@ fn sync_late_views_mark_rows_a_pending_proposal_already_decides() {
     assert_eq!(bounded.changes[0].row_key, "note-decided");
     let wire = serde_json::to_value(&bounded).expect("serialize late changes");
     assert_eq!(wire["total"], 2);
+}
+
+/// A charter of the test vault founded at `created_ms`, with the person key that signed it.
+fn charter_trust_at(created_ms: i64) -> crate::sync::CharterTrust {
+    let person = ganbaru_contacts::PersonKeyPair::from_seed(&[8; 32]).expect("person key");
+    let charter = ganbaru_sync_contracts::sign_charter(
+        &ganbaru_sync_contracts::Charter {
+            space: SpaceId::personal(VAULT_ID),
+            anchor_device_id: "device-a".to_string(),
+            anchor_device_key: DevicePublicKey::from_bytes([7; 32]),
+            anchor_tls_fingerprint: [0; 32],
+            anchor_admin_key: admin(5).public_key(),
+            recovery_admin_key: admin(6).public_key(),
+            discovery_key: [4; 32],
+            created_at_ms: created_ms,
+        },
+        &person,
+    )
+    .expect("sign charter");
+    (charter, person.public_key())
+}
+
+/// A coordinator pin of `vault_id` holding `trust` as its charter.
+fn pin(vault_id: &str, trust: Option<&crate::sync::CharterTrust>) -> CoordinatorPin {
+    CoordinatorPin {
+        device_id: "device-a".to_string(),
+        device_label: None,
+        endpoint: "127.0.0.1:1".to_string(),
+        vault_id: vault_id.to_string(),
+        certificate_fingerprint: String::new(),
+        last_endpoint: None,
+        reported_endpoints: Vec::new(),
+        charter: trust.map(|(charter, person_key)| PinnedCharter {
+            charter: crate::vault::handoff::protocol::encode_sync_charter(charter),
+            person_key: person_key.to_text(),
+        }),
+    }
+}
+
+/// A view of the test vault whose selected log starts from `charter` and removed `device-a`.
+fn view_removing_the_coordinator(charter: [u8; 32]) -> AuthorizationView {
+    AuthorizationView {
+        charter,
+        ..view(vec![device(
+            "device-a",
+            DeviceKind::Desktop,
+            DeviceRole::Member,
+            Some(5),
+        )])
+    }
+}
+
+#[test]
+fn first_copy_with_no_trusted_charter_is_left_alone() {
+    assert_eq!(pinned_trust(None, VAULT_ID), Ok(None));
+    assert_eq!(staged_trust(None, None), None);
+}
+
+#[test]
+fn staged_trust_prefers_the_pin_and_merges_only_the_same_log() {
+    let current = charter_trust_at(1);
+    let refounded = charter_trust_at(2);
+    let trusted = |(charter, person_key): crate::sync::CharterTrust, merge_live| StagedTrust {
+        charter,
+        person_key,
+        merge_live,
+    };
+
+    assert_eq!(
+        staged_trust(Some(current.clone()), Some(current.clone())),
+        Some(trusted(current.clone(), true))
+    );
+    assert_eq!(
+        staged_trust(Some(refounded.clone()), Some(current.clone())),
+        Some(trusted(refounded.clone(), false))
+    );
+    assert_eq!(
+        staged_trust(Some(current.clone()), None),
+        Some(trusted(current.clone(), false))
+    );
+    assert_eq!(
+        staged_trust(None, Some(current.clone())),
+        Some(trusted(current.clone(), true))
+    );
+    assert_eq!(staged_trust(None, None), None);
+
+    let pinned = pin(VAULT_ID, Some(&current));
+    assert_eq!(
+        pinned_trust(Some(&pinned), VAULT_ID),
+        Ok(Some(current.clone()))
+    );
+    assert_eq!(pinned_trust(Some(&pinned), "vault-other"), Ok(None));
+    assert_eq!(pinned_trust(Some(&pin(VAULT_ID, None)), VAULT_ID), Ok(None));
+    assert!(
+        pinned_trust(Some(&pin("vault-other", Some(&current))), "vault-other").is_err(),
+        "a pinned charter of another space is refused"
+    );
+}
+
+#[test]
+fn bundle_sources_skip_a_removed_coordinator() {
+    let (charter, _) = charter_trust_at(1);
+    let removed = view_removing_the_coordinator(charter.hash());
+    let present = AuthorizationView {
+        charter: charter.hash(),
+        ..view(vec![device(
+            "device-a",
+            DeviceKind::Desktop,
+            DeviceRole::Member,
+            None,
+        )])
+    };
+    let none = BTreeSet::new();
+
+    assert!(!coordinator_allowed(
+        "device-a",
+        &none,
+        Some(&removed),
+        Some(charter.hash())
+    ));
+    assert!(coordinator_allowed(
+        "device-a",
+        &none,
+        Some(&present),
+        Some(charter.hash())
+    ));
+    assert!(coordinator_allowed(
+        "device-a",
+        &none,
+        None,
+        Some(charter.hash())
+    ));
+}
+
+#[test]
+fn bundle_sources_keep_a_coordinator_after_a_new_charter() {
+    let (old, _) = charter_trust_at(1);
+    let (refounded, _) = charter_trust_at(2);
+    let removed = view_removing_the_coordinator(old.hash());
+    let none = BTreeSet::new();
+
+    assert!(coordinator_allowed(
+        "device-a",
+        &none,
+        Some(&removed),
+        Some(refounded.hash())
+    ));
+    assert!(coordinator_allowed("device-a", &none, Some(&removed), None));
+    let quarantined = BTreeSet::from(["device-a".to_string()]);
+    assert!(!coordinator_allowed(
+        "device-a",
+        &quarantined,
+        Some(&removed),
+        Some(refounded.hash())
+    ));
 }

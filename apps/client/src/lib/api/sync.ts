@@ -17,7 +17,13 @@ export const SYNC_ROLES = ["hub", "client"] as const;
 export type SyncRole = (typeof SYNC_ROLES)[number];
 
 /** Sync problems the interface explains in its own words. */
-export const SYNC_ERROR_CODES = ["writerLimit", "bootstrapRequired", "coordinatorRemoved", "serverNeedsUpdate"] as const;
+export const SYNC_ERROR_CODES = [
+  "writerLimit",
+  "bootstrapRequired",
+  "coordinatorRemoved",
+  "serverNeedsUpdate",
+  "forkClaimUnproven",
+] as const;
 export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[number];
 
 /**
@@ -327,6 +333,8 @@ export interface SyncLateChange {
   preview: string;
   /** When the newest late value was written; null for a deletion. */
   changedAtMs: number | null;
+  /** Whether keeping the change can write it back; a row only the removed device may write can only be discarded. */
+  restorable: boolean;
   /** Whether this device already proposed a decision the anchor has not sequenced yet. */
   decisionPending: boolean;
 }
@@ -661,6 +669,7 @@ export function mapSyncLateChange(value: unknown, label: string): SyncLateChange
     title: readString(row.title, `${label}.title`),
     preview: readString(row.preview, `${label}.preview`),
     changedAtMs: readNullable(row.changedAtMs, `${label}.changedAtMs`, readNonNegativeSafeInteger),
+    restorable: readBoolean(row.restorable, `${label}.restorable`),
     decisionPending: readBoolean(row.decisionPending, `${label}.decisionPending`),
   };
 }
@@ -995,11 +1004,23 @@ export async function promoteSyncDevice(deviceId: string): Promise<void> {
 }
 
 /**
- * Replaces the recovery kit from the anchor desktop. The new kit then waits to be saved, as
+ * Makes a recovery key from the anchor desktop. The printed kit keeps working; only
+ * {@link rotateSyncRecoveryKit} retires it. The new kit then waits to be saved, as
  * {@link getSyncRecoveryKitState} shows.
  */
 export async function regenerateSyncRecoveryKit(): Promise<void> {
   await invoke("sync_regenerate_recovery_kit");
+}
+
+/**
+ * Replaces the printed recovery kit with a new one, signed by the current kit, from any linked
+ * desktop. Once the anchor sequences it, the old code no longer signs. The new kit then waits
+ * to be saved, as {@link getSyncRecoveryKitState} shows.
+ *
+ * @param kitCode - The code of the vault's current printed recovery kit.
+ */
+export async function rotateSyncRecoveryKit(kitCode: string): Promise<void> {
+  await invoke("sync_rotate_recovery_kit", { kitCode });
 }
 
 /** The active vault's recovery kit, with the kit this desktop holds until the user saves it. */
@@ -1053,6 +1074,7 @@ export const SYNC_SERVER_ERROR_CODES = [
   "notSyncing",
   "notAdmin",
   "serverExists",
+  "serverRunsAnotherVault",
   "noServer",
   "noKeys",
   "relay",
@@ -1181,20 +1203,38 @@ export interface SyncForceAnchorRequest {
   quarantineAnchor: boolean;
 }
 
+/** What a forced anchor handover sealed. */
+export interface SyncForceAnchorOutcome {
+  /** The revision of the last entry it sealed. */
+  revision: number;
+  /** How many device changes after the handover have not landed yet; they finish on later passes. */
+  incomplete: number;
+}
+
+/** Validates the outcome of a forced anchor handover from the native command. */
+export function mapSyncForceAnchorOutcome(value: unknown): SyncForceAnchorOutcome {
+  const label = "forced handover";
+  const row = readRecord(value, label);
+  return {
+    revision: readNonNegativeSafeInteger(row.revision, `${label}.revision`),
+    incomplete: readNonNegativeSafeInteger(row.incomplete, `${label}.incomplete`),
+  };
+}
+
 /**
  * On a linked desktop whose anchor stopped answering or whose vault is contested, makes this
  * desktop the anchor without it, signed with its admin key or, with a kit code, with the
- * recovery key, which also makes it an admin. Returns the revision of the last entry it sealed.
+ * recovery key, which also makes it an admin. Returns the revision of the last entry it sealed
+ * and how many of the device changes after the handover are still waiting.
  */
-export async function forceSyncAnchor(request: SyncForceAnchorRequest): Promise<number> {
-  return readNonNegativeSafeInteger(
+export async function forceSyncAnchor(request: SyncForceAnchorRequest): Promise<SyncForceAnchorOutcome> {
+  return mapSyncForceAnchorOutcome(
     await invoke<unknown>("sync_force_anchor", {
       kitCode: request.kitCode,
       point: request.point,
       removeDevices: request.removeDevices,
       quarantineAnchor: request.quarantineAnchor,
     }),
-    "forced handover revision",
   );
 }
 
@@ -1244,6 +1284,11 @@ export async function saveSyncRecoveryKitFile(defaultName: string, contents: str
     await invoke<unknown>("vault_pick_and_write_recovery_kit", { defaultName, contents }),
     "recovery kit saved",
   );
+}
+
+/** Keeps the Android window out of screenshots, recents, and screen capture while `secure`. Android only. */
+export async function setSyncSecureWindow(secure: boolean): Promise<void> {
+  await invoke("sync_set_secure_window", { secure });
 }
 
 type SyncNoticeListener = (notice: SyncNotice) => void;

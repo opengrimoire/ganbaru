@@ -15,6 +15,7 @@ import {
   canTakeSyncAnchor,
   canForceSyncAnchor,
   canInstallSyncRecoveryKey,
+  canRotateSyncRecoveryKit,
   SYNC_HANDOVER_SUGGESTION_MS,
   type SyncAuthorityContext,
   syncDeviceActions,
@@ -111,6 +112,11 @@ describe("sync device actions", () => {
     expect(syncDeviceActions(context({ statusRole: "hub", mobileLayout: true }), memberDesktop).promote).toBe(false);
   });
 
+  it("does not offer promotion for an anchor left a member, which the anchor refuses", () => {
+    const memberAnchor = device("anchor", { anchor: true });
+    expect(syncDeviceActions(context({ statusRole: "hub" }), memberAnchor).promote).toBe(false);
+  });
+
   it("lets any device quarantine other live devices except the anchor, and lift it later", () => {
     const member = context({ mobileLayout: true }, { ownIsAdmin: false });
     expect(syncDeviceActions(member, memberDesktop)).toMatchObject({ quarantine: true, lift: false });
@@ -171,6 +177,16 @@ describe("sync authority controls", () => {
     expect(canInstallSyncRecoveryKey(context({}, { ...anchorHere, ownIsAdmin: false }))).toBe(false);
     expect(canInstallSyncRecoveryKey(context({}, { devices: [{ ...own, anchor: true, removedRevision: 3 }] }))).toBe(false);
     expect(canInstallSyncRecoveryKey(context({}, { devices: [anchor] }))).toBe(false);
+  });
+
+  it("offers to replace the printed kit on any live enrolled desktop of a space that is not frozen", () => {
+    expect(canRotateSyncRecoveryKit(context())).toBe(true);
+    expect(canRotateSyncRecoveryKit(context({}, { ownIsAdmin: false, devices: [{ ...own, role: "member" }, anchor] }))).toBe(true);
+    expect(canRotateSyncRecoveryKit(context({ mobileLayout: true }))).toBe(false);
+    expect(canRotateSyncRecoveryKit(context({}, { frozen: true }))).toBe(false);
+    expect(canRotateSyncRecoveryKit(context({}, { devices: [{ ...own, removedRevision: 3 }, anchor] }))).toBe(false);
+    expect(canRotateSyncRecoveryKit(context({}, { devices: [{ ...own, kind: "mobile" }, anchor] }))).toBe(false);
+    expect(canRotateSyncRecoveryKit(context({}, { devices: [anchor, memberDesktop] }))).toBe(false);
   });
 
   it("offers the anchor for quarantine only while it is another live device not quarantined yet", () => {
@@ -284,6 +300,7 @@ describe("sync late change presentation", () => {
     title: "Plan",
     preview: "",
     changedAtMs: NOW - 5 * 60_000,
+    restorable: true,
     decisionPending: false,
   };
 

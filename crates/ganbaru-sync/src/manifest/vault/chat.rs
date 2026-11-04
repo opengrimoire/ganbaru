@@ -53,10 +53,10 @@ use crate::domains::chat::{
 };
 use crate::manifest::vault::projects::{FOLDERS_TABLE, PROJECTS_TABLE};
 use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
-    GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
-    OwnedReference, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange,
-    TableSpec, TriggerPolicy, group_id,
+    Collation, ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable, DomainManifest,
+    DomainTrigger, GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound,
+    OwnedCodec, OwnedOrder, OwnedReference, OwnedTable, ReferenceColumn, Resolution, RowKeyRule,
+    SYNC_KEY_COLUMN, TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Chat.
@@ -568,6 +568,13 @@ const fn optional_timestamp(name: &'static str) -> ColumnSpec {
 const fn row_key(name: &'static str) -> ColumnSpec {
     ColumnSpec {
         name,
+        ty: ColumnType::RowKey,
+    }
+}
+
+const fn optional_row_key(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
         ty: ColumnType::OptionalRowKey,
     }
 }
@@ -632,7 +639,11 @@ const BASE: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `chat_participants`, archive-only. The local owner keeps the id the baseline seeds, which an
@@ -668,6 +679,7 @@ pub const PARTICIPANTS: TableSpec = TableSpec {
     local_columns: &[REVISION],
     revision_column: Some("revision"),
     triggers: &[applier_visible("chat_participants_local_user_identity")],
+    deletion: Deletion::Never,
     ..BASE
 };
 
@@ -692,7 +704,7 @@ pub const TEAMMATES: TableSpec = TableSpec {
             teammate_group::POLICY,
             "policy",
             &[
-                row_key("current_policy_revision_id"),
+                optional_row_key("current_policy_revision_id"),
                 optional_text("current_policy_safety_mode", MAX_ENUM_CHARS),
             ],
         ),
@@ -708,6 +720,7 @@ pub const TEAMMATES: TableSpec = TableSpec {
         teammate_group::POLICY,
     )],
     triggers: &[gated("chat_teammate_create_access_state")],
+    deletion: Deletion::Never,
     ..BASE
 };
 
@@ -737,11 +750,13 @@ pub const POLICY_REVISIONS: TableSpec = TableSpec {
         applier_visible("chat_teammate_policy_immutable_delete"),
         applier_visible("chat_teammate_policy_immutable_update"),
     ],
+    deletion: Deletion::Never,
     ..BASE
 };
 
-/// `chat_access_profiles`, archive-only. Built-in profiles are seeded with fixed ids, so the
-/// built-in key never collides across devices; concurrent edits of a custom profile keep the
+/// `chat_access_profiles`, archive-only. Built-in profiles are seeded with fixed ids, and the
+/// adapter admits a built-in key only on the row seeded with it, so a collision reaches the
+/// duplicate repair only as defense in depth. Concurrent edits of a custom profile keep the
 /// revision with the lower folder capability.
 pub const PROFILES: TableSpec = TableSpec {
     id: PROFILES_TABLE,
@@ -764,7 +779,7 @@ pub const PROFILES: TableSpec = TableSpec {
             profile_group::CURRENT,
             "current",
             &[
-                row_key("current_revision_id"),
+                optional_row_key("current_revision_id"),
                 optional_text("current_maximum_folder_capability", MAX_ENUM_CHARS),
             ],
         )),
@@ -792,6 +807,7 @@ pub const PROFILES: TableSpec = TableSpec {
         applier_visible("chat_access_profile_builtin_protected"),
         gated("chat_access_profile_revision_counter_monotonic"),
     ],
+    deletion: Deletion::Never,
     ..BASE
 };
 
@@ -817,6 +833,7 @@ pub const PROFILE_REVISIONS: TableSpec = TableSpec {
         applier_visible("chat_access_profile_revision_immutable_update"),
         gated("chat_access_profile_audience_publish"),
     ],
+    deletion: Deletion::Never,
     ..BASE
 };
 
@@ -969,8 +986,9 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
 /// `chat_teammate_working_folder_grants`, revoked by `revoked_at`. Concurrent edits keep a
 /// revocation first, then the lower capability (an inherited one counting as the highest), then
 /// the stricter approval override, with no override counting as the least strict. Commands
-/// never rewrite the project or creation time, but the group stays a register because a derived
-/// key table admits only key columns in immutable groups, so concurrent creations converge.
+/// never rewrite the creation time, and rewrite the project only to the conversation's when a
+/// save reactivates a grant. The group stays a register because a derived key table admits only
+/// key columns in immutable groups, so concurrent creations converge.
 pub const FOLDER_GRANTS: TableSpec = TableSpec {
     id: FOLDER_GRANTS_TABLE,
     name: "chat_teammate_working_folder_grants",
@@ -1120,7 +1138,7 @@ pub const ITEMS: TableSpec = TableSpec {
         item_group::CREATED,
         &[
             row_key("conversation_id"),
-            row_key("reply_thread_id"),
+            optional_row_key("reply_thread_id"),
             text("item_kind", MAX_ENUM_CHARS),
             order_key("order_key"),
             timestamp("created_at"),
@@ -1157,7 +1175,7 @@ pub const MESSAGES: TableSpec = TableSpec {
             register(
                 message_group::AUTHOR,
                 "author",
-                &[row_key("author_participant_id")],
+                &[optional_row_key("author_participant_id")],
             ),
             &[set_null("author_participant_id", PARTICIPANTS_TABLE)],
         ),
@@ -1165,7 +1183,7 @@ pub const MESSAGES: TableSpec = TableSpec {
             message_group::CONTENT,
             "content",
             &[
-                row_key("current_revision_id"),
+                optional_row_key("current_revision_id"),
                 optional_timestamp("edited_at"),
             ],
         )),
@@ -1302,8 +1320,8 @@ pub const CHANNEL_TARGETS: TableSpec = TableSpec {
             optional_text("source_lower_order_key", MAX_ORDER_KEY_BYTES),
             optional_text("source_lower_item_id", MAX_ID_CHARS),
             optional_text("source_high_order_key", MAX_ORDER_KEY_BYTES),
-            row_key("source_high_item_id"),
-            row_key("source_revision_cutoff_id"),
+            optional_row_key("source_high_item_id"),
+            optional_row_key("source_revision_cutoff_id"),
         ],
         &[],
     )],
@@ -1462,10 +1480,10 @@ pub const SCHEDULED_REFERENCES: OwnedTable = OwnedTable {
         text("plain_text_projection", MAX_LABEL_CHARS),
         integer("start_offset", 0),
         integer("end_offset", 1),
-        row_key("participant_id"),
+        optional_row_key("participant_id"),
         optional_text("participant_kind", MAX_ENUM_CHARS),
-        row_key("channel_id"),
-        row_key("working_folder_id"),
+        optional_row_key("channel_id"),
+        optional_row_key("working_folder_id"),
         optional_text("path_kind", MAX_ENUM_CHARS),
         optional_text("relative_path", MAX_RELATIVE_PATH_CHARS),
         optional_text("execution_environment_id", MAX_ENVIRONMENT_ID_CHARS),
@@ -1504,7 +1522,7 @@ pub const SCHEDULED: TableSpec = TableSpec {
             &[
                 text("client_command_id", MAX_ID_CHARS),
                 row_key("channel_id"),
-                row_key("reply_thread_id"),
+                optional_row_key("reply_thread_id"),
                 optional_text("executing_device_id", MAX_DEVICE_ID_BYTES),
                 timestamp("created_at"),
             ],
@@ -1571,7 +1589,7 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
             register(
                 assignment_group::PREVIOUS,
                 "previous",
-                &[row_key("previous_assignment_id")],
+                &[optional_row_key("previous_assignment_id")],
             ),
             &[set_null("previous_assignment_id", ASSIGNMENTS_TABLE)],
         ),
@@ -1730,6 +1748,8 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("chat_assignment_context_sources", &[]),
         device("chat_assignment_context_packages", &[]),
         device("chat_assignment_dispatch_jobs", &[]),
+        device("chat_assignment_input_requested_targets", &[]),
+        device("chat_assignment_requested_targets", &[]),
         device(
             "chat_attachment_references",
             &[gated("chat_attachment_messages_expose_resource")],

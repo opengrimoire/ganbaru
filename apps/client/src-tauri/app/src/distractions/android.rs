@@ -2,6 +2,7 @@
 use crate::vault;
 #[cfg(target_os = "android")]
 use ganbaru_mobile_distractions::{MobileDistractionsExt, PendingEvent};
+use ganbaru_sync::domains::distractions::is_android_package_name;
 #[cfg(not(target_os = "android"))]
 use serde::Deserialize;
 use serde::Serialize;
@@ -81,28 +82,6 @@ pub struct MobileDistractionsSyncResult {
     full_batch: bool,
 }
 
-fn is_valid_package_name(value: &str) -> bool {
-    if value.len() < 3 || value.len() > 255 {
-        return false;
-    }
-    let mut segments = value.split('.');
-    let mut count = 0;
-    for segment in &mut segments {
-        count += 1;
-        let mut chars = segment.chars();
-        if !chars
-            .next()
-            .is_some_and(|character| character.is_ascii_alphabetic())
-        {
-            return false;
-        }
-        if !chars.all(|character| character.is_ascii_alphanumeric() || character == '_') {
-            return false;
-        }
-    }
-    count >= 2
-}
-
 fn normalize_event(mut event: PendingEvent) -> Result<PendingEvent, String> {
     if event.id.is_empty()
         || event.id.len() > 120
@@ -115,7 +94,7 @@ fn normalize_event(mut event: PendingEvent) -> Result<PendingEvent, String> {
         return Err("mobile Distractions event kind is invalid".to_string());
     }
     event.package_name = event.package_name.trim().to_ascii_lowercase();
-    if !is_valid_package_name(&event.package_name) {
+    if !is_android_package_name(&event.package_name) {
         return Err("mobile Distractions package name is invalid".to_string());
     }
     event.display_name = event
@@ -281,6 +260,8 @@ async fn acknowledge_guardian<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ganbaru_distractions::config::normalize_package;
+    use ganbaru_sync::domains::distractions::{MAX_PACKAGE_CHARS, MIN_PACKAGE_CHARS};
 
     fn event(id: &str) -> PendingEvent {
         PendingEvent {
@@ -311,12 +292,78 @@ mod tests {
     }
 
     #[test]
-    fn package_validation_requires_bounded_java_segments() {
-        assert!(is_valid_package_name("com.example.video"));
-        assert!(is_valid_package_name("app_1.social.feed2"));
-        assert!(!is_valid_package_name("android"));
-        assert!(!is_valid_package_name("1com.example"));
-        assert!(!is_valid_package_name("com.example-app"));
+    fn package_grammar_matches_both_callers() {
+        let longest = format!("a.{}", "b".repeat(MAX_PACKAGE_CHARS - 2));
+        let too_long = format!("{longest}b");
+        for (package, valid) in [
+            ("com.example.video", true),
+            ("app_1.social.feed2", true),
+            ("Com.Example.Video", true),
+            ("a.b", true),
+            (longest.as_str(), true),
+            (too_long.as_str(), false),
+            ("", false),
+            ("android", false),
+            ("1com.example", false),
+            ("com.1example", false),
+            ("com.Example_app.x", true),
+            ("com.example-app", false),
+            ("com..example", false),
+            ("com.example.", false),
+            (".com.example", false),
+            ("com._example", false),
+            ("not a package", false),
+            ("com.exámple", false),
+        ] {
+            assert_eq!(is_android_package_name(package), valid, "{package}");
+            assert_eq!(normalize_package(package).is_some(), valid, "{package}");
+            let mut journal_event = event("one");
+            journal_event.package_name = package.into();
+            assert_eq!(normalize_event(journal_event).is_ok(), valid, "{package}");
+        }
+    }
+
+    /// Guardian source that validates published package names. Kotlin tests do not run in the
+    /// Rust gates, so this test reads the source to keep both grammars in step.
+    const GUARDIAN_MODELS_SOURCE: &str = include_str!(
+        "../../../../../../crates/ganbaru-mobile-distractions/android/src/main/java/org/opengrimoire/ganbaru/mobile/distractions/DistractionsModels.kt"
+    );
+
+    /// The regular expression that states [`is_android_package_name`]: dotted segments, at least
+    /// two, each an ASCII letter followed by ASCII letters, digits, and underscores.
+    const RUST_PACKAGE_PATTERN: &str = r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$";
+
+    /// The text between `start` and the next `end` after it in `source`.
+    fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let (_, rest) = source
+            .split_once(start)
+            .unwrap_or_else(|| panic!("Guardian source lacks {start:?}"));
+        rest.split_once(end)
+            .unwrap_or_else(|| panic!("Guardian source lacks {end:?} after {start:?}"))
+            .0
+    }
+
+    #[test]
+    fn guardian_package_grammar_matches_the_rust_grammar() {
+        let check = between(
+            GUARDIAN_MODELS_SOURCE,
+            "private fun packageName(value: String): String",
+            "PACKAGE_PATTERN.matches(it)",
+        );
+        let bounds = between(check, "it.length in ", " &&");
+        let (minimum, maximum) = bounds
+            .split_once("..")
+            .unwrap_or_else(|| panic!("Guardian package bounds are not a closed range: {bounds}"));
+        assert_eq!(minimum.parse::<usize>().unwrap(), MIN_PACKAGE_CHARS);
+        assert_eq!(maximum.parse::<usize>().unwrap(), MAX_PACKAGE_CHARS);
+
+        let kotlin_pattern = between(
+            GUARDIAN_MODELS_SOURCE,
+            "private val PACKAGE_PATTERN = Regex(\"",
+            "\")",
+        )
+        .replace("\\\\", "\\");
+        assert_eq!(kotlin_pattern, RUST_PACKAGE_PATTERN);
     }
 
     #[tokio::test]
@@ -361,7 +408,8 @@ mod tests {
             &capture,
             &excluded,
         )
-        .unwrap();
+        .unwrap()
+        .sources;
         assert_eq!(sources[0].elapsed_seconds, 32);
         tx.commit().await.unwrap();
         sqlx::query("DROP TABLE distractions_usage_samples")

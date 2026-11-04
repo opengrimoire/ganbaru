@@ -1,20 +1,64 @@
 //! Deletion and insert holds for domain Undo and sealing split into batches.
 
+use ganbaru_sync_contracts::{Cause, Change, ChangeAction, Content, Envelope, RowKey, TableId};
 use sqlx::Connection;
 
 use super::block_on;
 use super::fixture::{
-    CYCLE_A_TABLE, CYCLE_B_TABLE, ITEMS_TABLE, MEMO_LINES_TABLE, MEMO_TAGS_TABLE, MEMOS_TABLE,
-    TEST_MANIFEST, edge_key, memo_tag_key,
+    CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, ITEMS_TABLE, MEMO_LINES_TABLE, MEMO_TAGS_TABLE,
+    MEMOS_TABLE, NODES_TABLE, TEST_MANIFEST, edge_key, memo_tag_key,
 };
-use super::replica::{Replica, connection_from, converge, rank};
+use super::replica::{Replica, connection_from, converge, forge_change, quoted, rank};
+use crate::domains::themes::PALETTE_SIZE;
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
-use crate::{MAX_OPS_PER_SEAL, SyncError};
+use crate::manifest::vault::chat::{
+    PARTICIPANTS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE,
+    TEAMMATES_TABLE,
+};
+use crate::manifest::vault::contacts::{CARD_KEY, CARD_TABLE, CONTACTS_TABLE};
+use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE};
+use crate::manifest::vault::themes::THEMES_TABLE;
+use crate::manifest::{Deletion, MergeKind};
+use crate::{HoldReason, MAX_OPS_PER_SEAL, StoreOutcome, SyncError};
 
 /// Rows in the first seal of a large domain, enough to exceed one seal transaction with keys of
 /// the longest allowed length.
 const LARGE_SEAL_ROWS: u32 = 6_000;
+
+/// A timestamp every timestamp column accepts.
+const WRITTEN_AT: &str = "2027-01-01T00:00:00.000Z";
+
+/// A person public key of the length `contacts` requires.
+const PERSON_KEY: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE";
+
+/// A theme id outside the built-in themes.
+pub(super) const THEME_KEY: &str = "theme-shared";
+
+/// Honest rows of the tables whose key CHECK narrows a row key, with keys it refuses.
+const NARROWED_KEYS: [(TableId, &str, &[&str]); 4] = [
+    (CARD_TABLE, CARD_KEY, &["x"]),
+    (SETTINGS_TABLE, SETTINGS_KEY, &["other"]),
+    (THEMES_TABLE, THEME_KEY, &["light", "dark", "Evil"]),
+    (CONTACTS_TABLE, PERSON_KEY, &["short", "contact-short"]),
+];
+
+/// A row key of every table whose rows no replicated operation deletes.
+const NEVER_DELETED: [(TableId, &str); 7] = [
+    (CARD_TABLE, CARD_KEY),
+    (SETTINGS_TABLE, SETTINGS_KEY),
+    (PARTICIPANTS_TABLE, "participant:reviewer"),
+    (TEAMMATES_TABLE, "participant:reviewer"),
+    (POLICY_REVISIONS_TABLE, "policy-0"),
+    (PROFILES_TABLE, "access-profile:read-only"),
+    (
+        PROFILE_REVISIONS_TABLE,
+        "access-profile-revision:read-only:1",
+    ),
+];
+
+/// A key sorting before every key of [`NEVER_DELETED`], so a redirect to it is well formed.
+const LOWEST_KEY: &str = "0";
 
 async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
@@ -879,5 +923,245 @@ fn apply_over_too_many_constrained_captures_waits_for_batched_seals_and_then_pro
                 .await,
             0
         );
+    });
+}
+
+/// Two replicas sharing one sealed row of every table in [`NARROWED_KEYS`].
+pub(super) async fn narrowed_rows() -> Vec<Replica> {
+    let mut replicas = replicas(2).await;
+    let writer = &mut replicas[1];
+    let now = writer.now_ms;
+    writer
+        .engine
+        .seed_captures(&mut writer.conn, now)
+        .await
+        .unwrap();
+    writer
+        .exec(&format!(
+            "INSERT INTO contact_card (key, card_nonce, updated_at)
+             VALUES ('{CARD_KEY}', 'AAAAAAAAAAAAAAAAAAAAAA', '{WRITTEN_AT}');
+             INSERT INTO contacts (id, public_key, display_name, state, created_at, updated_at)
+             VALUES ('contact-{PERSON_KEY}', '{PERSON_KEY}', 'Ana', 'active', '{WRITTEN_AT}',
+                     '{WRITTEN_AT}');
+             INSERT INTO themes
+                 (id, display_name, blend_canvas, seed_blend_canvas, derivation_engine_version,
+                  created_at_ms, updated_at_ms, icon_label, seed_icon_label)
+             VALUES ('{THEME_KEY}', 'Ocean', '#101010', '#101010', 1, {now}, {now}, 'dark', 'dark');
+             WITH RECURSIVE slot(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM slot WHERE n < {last})
+             INSERT INTO theme_event_palette (theme_id, slot, value)
+             SELECT '{THEME_KEY}', n, '#202020' FROM slot;
+             WITH RECURSIVE slot(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM slot WHERE n < {last})
+             INSERT INTO theme_seed_event_palette (theme_id, slot, value)
+             SELECT '{THEME_KEY}', n, '#202020' FROM slot;",
+            last = PALETTE_SIZE - 1,
+        ))
+        .await;
+    converge(&mut replicas).await;
+    replicas
+}
+
+/// The create `replica` sealed for `key` of `table`.
+pub(super) async fn sealed_create(replica: &mut Replica, table: TableId, key: &str) -> Change {
+    replica
+        .own_ops()
+        .await
+        .iter()
+        .filter_map(|bytes| {
+            match Envelope::decode(bytes)
+                .unwrap()
+                .operation()
+                .unwrap()
+                .content
+            {
+                Content::Changes(changes) => Some(changes),
+                _ => None,
+            }
+        })
+        .flatten()
+        .find(|change| {
+            change.table == table
+                && change.row.as_str() == key
+                && change.action == ChangeAction::Create
+        })
+        .unwrap_or_else(|| panic!("the row {key} is sealed"))
+}
+
+/// `create` as a change of `action`, valid for its own row.
+fn with_action(create: &Change, action: ChangeAction) -> Change {
+    let table = TEST_MANIFEST.table(create.table).unwrap();
+    let mut change = create.clone();
+    change.action = action;
+    match action {
+        ChangeAction::Create => {}
+        ChangeAction::Write => change
+            .groups
+            .retain(|value| table.group(value.group).unwrap().kind != MergeKind::Immutable),
+        ChangeAction::Tombstone => change.groups.clear(),
+    }
+    change
+}
+
+/// Every action of a signed change names a key: a row the schema refuses could never apply, so
+/// replicas hold the operation instead of passing it on, and a tombstone gets no further.
+#[test]
+fn key_rule_refused_for_each_action() {
+    block_on(async {
+        let mut replicas = narrowed_rows().await;
+        for (table_id, honest, refused_keys) in NARROWED_KEYS {
+            let table = TEST_MANIFEST.table(table_id).unwrap();
+            let create = sealed_create(&mut replicas[1], table_id, honest).await;
+            for action in [
+                ChangeAction::Create,
+                ChangeAction::Write,
+                ChangeAction::Tombstone,
+            ] {
+                // A derived-key row has no tombstone, whatever its key.
+                if action == ChangeAction::Tombstone && table.derived_key.is_some() {
+                    continue;
+                }
+                let mut change = with_action(&create, action);
+                // A tombstone of a never-deleted row is refused under any key.
+                if action != ChangeAction::Tombstone || table.deletion != Deletion::Never {
+                    assert_eq!(
+                        crate::validate::change(&replicas[1].engine, &change),
+                        Ok(()),
+                        "{action:?} of {} under its own key",
+                        table.name
+                    );
+                }
+                for key in refused_keys {
+                    change.row = RowKey::new(*key).unwrap();
+                    let forged = forge_change(&mut replicas[1], change.clone()).await;
+                    let mut receiver = replicas[0].clone_device().await;
+                    assert_eq!(
+                        receiver.receive(&[forged]).await,
+                        vec![StoreOutcome::Stored {
+                            held: Some(HoldReason::Invalid)
+                        }],
+                        "{action:?} of {} under key {key}",
+                        table.name
+                    );
+                    receiver.apply_all().await.unwrap();
+                    assert_eq!(
+                        receiver
+                            .count(&format!(
+                                "SELECT count(*) FROM {} WHERE {} = {}",
+                                table.name,
+                                table.key_column,
+                                quoted(key)
+                            ))
+                            .await,
+                        0,
+                        "{action:?} of {} under key {key} applied",
+                        table.name
+                    );
+                }
+            }
+        }
+    });
+}
+
+/// A forged tombstone of a table no operation deletes from is held by its bytes alone, with or
+/// without a redirect, whether or not the row exists on the receiver.
+#[test]
+fn tombstone_of_a_never_deleted_table_is_invalid() {
+    block_on(async {
+        let mut replicas = narrowed_rows().await;
+        for (table, key) in NEVER_DELETED {
+            for replaced_by in [None, Some(LOWEST_KEY)] {
+                let change = Change {
+                    table,
+                    row: RowKey::new(key).unwrap(),
+                    action: ChangeAction::Tombstone,
+                    groups: Vec::new(),
+                    replaced_by: replaced_by.map(|target| RowKey::new(target).unwrap()),
+                    cause: None,
+                };
+                let forged = forge_change(&mut replicas[1], change).await;
+                let mut receiver = replicas[0].clone_device().await;
+                assert_eq!(
+                    receiver.receive(&[forged]).await,
+                    vec![StoreOutcome::Stored {
+                        held: Some(HoldReason::Invalid)
+                    }],
+                    "tombstone of {key} replaced by {replaced_by:?}"
+                );
+            }
+        }
+    });
+}
+
+/// A tombstone of `MEMO_LINES_TABLE` caused by a row of `table`.
+fn line_tombstone(table: TableId) -> Change {
+    Change {
+        table: MEMO_LINES_TABLE,
+        row: RowKey::new("line-1").unwrap(),
+        action: ChangeAction::Tombstone,
+        groups: Vec::new(),
+        replaced_by: None,
+        cause: Some(Cause {
+            table,
+            row: RowKey::new("cause-1").unwrap(),
+        }),
+    }
+}
+
+/// A cause is read without following a reference, so one must stay among the tables a row's
+/// references connect it to.
+#[test]
+fn tombstone_cause_outside_the_component_is_invalid() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[1]
+            .exec("INSERT INTO fixture_memos (id, label) VALUES ('memo-1', 'One')")
+            .await;
+        converge(&mut replicas).await;
+        for table in [MEMOS_TABLE, MEMO_LINES_TABLE, MEMO_TAGS_TABLE] {
+            assert_eq!(
+                crate::validate::change(&replicas[1].engine, &line_tombstone(table)),
+                Ok(())
+            );
+        }
+        for table in [NODES_TABLE, EDGES_TABLE, ITEMS_TABLE] {
+            let forged = forge_change(&mut replicas[1], line_tombstone(table)).await;
+            let mut receiver = replicas[0].clone_device().await;
+            assert_eq!(
+                receiver.receive(&[forged]).await,
+                vec![StoreOutcome::Stored {
+                    held: Some(HoldReason::Invalid)
+                }],
+                "cause in table {table:?}"
+            );
+        }
+    });
+}
+
+/// The keys domains write pass the rules, so honest rows keep replicating.
+#[test]
+fn seeded_and_derived_keys_pass_their_rules() {
+    block_on(async {
+        let mut replicas = narrowed_rows().await;
+        for (table_id, honest, _) in NARROWED_KEYS {
+            let table = TEST_MANIFEST.table(table_id).unwrap();
+            assert!(table.key_rule.admits(honest), "{}", table.name);
+            let create = sealed_create(&mut replicas[1], table_id, honest).await;
+            assert_eq!(
+                crate::validate::change(&replicas[1].engine, &create),
+                Ok(())
+            );
+            assert_eq!(
+                replicas[0]
+                    .count(&format!(
+                        "SELECT count(*) FROM {} WHERE {} = {}",
+                        table.name,
+                        table.key_column,
+                        quoted(honest)
+                    ))
+                    .await,
+                1,
+                "{} reached the other replica",
+                table.name
+            );
+        }
     });
 }

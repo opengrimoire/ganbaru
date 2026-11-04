@@ -282,6 +282,8 @@ export const calendar = {
     readOnlyShortcut: (shortcut: string, action: string) =>
       `Solo lectura (${shortcut} para ${action})`,
     saveShortcut: (shortcut: string) => `Guardar (${shortcut})`,
+    detailsLoadFailed: "No se pudieron cargar los detalles del evento.",
+    detailsLoadFailedSaveBlocked: "No se pudieron cargar los detalles del evento. El título o la ubicación largos son de solo lectura hasta que se carguen.",
   },
   conflict: {
     badge: "Editado en dos dispositivos",
@@ -344,6 +346,11 @@ export const calendar = {
       count === 1
         ? "No se pudo mostrar 1 evento en este intervalo porque su repetición guardada no se pudo expandir."
         : `No se pudieron mostrar ${count} eventos en este intervalo porque su repetición guardada no se pudo expandir.`,
+    eventsOmitted: (count: number) =>
+      count === 1
+        ? "1 evento de este intervalo no se muestra porque el intervalo contiene más de lo que el calendario puede mostrar."
+        : `${count} eventos de este intervalo no se muestran porque el intervalo contiene más de lo que el calendario puede mostrar.`,
+    eventsLoadFailed: "No se pudieron cargar los eventos del calendario.",
     saved: "Guardado",
     unknownSaveError: "Error desconocido al guardar",
     saveFailed: (message: string) => `No se pudo guardar: ${message}`,

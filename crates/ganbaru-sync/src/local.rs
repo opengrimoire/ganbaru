@@ -10,16 +10,17 @@ pub(crate) use restore::{read_only_uri, repair_foreign_keys};
 
 use ganbaru_contacts::PersonPublicKey;
 use ganbaru_sync_contracts::{
-    AdminPublicKey, EncryptionPublicKey, Envelope, GroupId, RecoveryPublicKeys, Seq, SpaceId,
-    TableId, Value, VersionVector, WriterId, WriterPublicKey,
+    AdminPublicKey, Digest32, EncryptionPublicKey, Envelope, GroupId, RecoveryPublicKeys, Seq,
+    SpaceId, TableId, Value, VersionVector, WriterId, WriterPublicKey,
 };
 use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
+use std::collections::BTreeSet;
 
 use crate::error::{SyncError, SyncResult, corrupt};
 use crate::hooks::Notices;
 use crate::log::{self, WriterState};
 use crate::manifest::Manifest;
-use crate::{Engine, SpaceContext, StoreOutcome, hydrate, sql};
+use crate::{Engine, SpaceContext, StoreOutcome, hydrate, publication, sql};
 
 /// Most operations one carry-forward store transaction takes.
 const IMPORT_CHUNK: usize = 256;
@@ -229,9 +230,10 @@ pub(crate) async fn write_local_seeds(
 
 /// Prepares a snapshot copy for another installation in one transaction: `Local` tables are
 /// emptied, keeping only their seeded rows at new-vault values, and every `Local` column is reset
-/// to its materialization value, because device state belongs to the device that wrote it;
-/// captures belong to the installation that made them, so the copy drops any that could not be
-/// sealed; and the apply flag is clear.
+/// to its materialization value, because device state belongs to the device that wrote it; local
+/// drafts stay behind for the same reason, and the operation that publishes one later reaches the
+/// copy as a new row; captures belong to the installation that made them, so the copy drops any
+/// that could not be sealed; and the apply flag is clear.
 ///
 /// The resets run with the apply flag set, so gated domain triggers and capture stay quiet.
 pub async fn prepare_snapshot_copy(
@@ -264,6 +266,7 @@ pub async fn prepare_snapshot_copy(
         .execute(&mut *tx)
         .await?;
     }
+    publication::delete_local_drafts(&mut tx, manifest).await?;
     sqlx::query("DELETE FROM sync_capture")
         .execute(&mut *tx)
         .await?;
@@ -354,12 +357,22 @@ impl Engine {
     }
 
     /// Stores and applies carried operations in the replacement database. Operations already
-    /// stored with the same hash are skipped, so a repeated import is harmless.
+    /// stored with the same hash are skipped, so a repeated import is harmless. A refused
+    /// operation of this device's writer fails the import with
+    /// [`SyncError::CarriedOwnRefused`], because no other device holds it; refusals of other
+    /// writers are counted, and a refusal never drops the operations after it.
+    ///
+    /// This device's writers are `known_own`, which the caller reads from a database it trusts
+    /// such as the live vault, together with the writers `conn` certifies to `own_device_id` and
+    /// those whose carried genesis certifies them to it.
+    #[allow(clippy::too_many_arguments)]
     pub async fn import_carried(
         &self,
         conn: &mut SqliteConnection,
         ctx: &SpaceContext,
         vault_id: &str,
+        own_device_id: &str,
+        known_own: &BTreeSet<WriterId>,
         ops: &[Vec<u8>],
         now_ms: u64,
     ) -> SyncResult<CarryReport> {
@@ -368,12 +381,22 @@ impl Engine {
             return Ok(report);
         }
         self.init_space(conn, vault_id, now_ms).await?;
+        let mut own = self.device_writers(conn, ctx, own_device_id).await?;
+        own.extend(known_own.iter().copied());
+        own.extend(carried_writers_of(ops, own_device_id));
         for chunk in ops.chunks(IMPORT_CHUNK) {
-            for outcome in self.store_many(conn, ctx, chunk, now_ms).await? {
-                match outcome {
-                    StoreOutcome::Refused(_) => report.refused += 1,
-                    _ => report.stored += 1,
+            let mut rest = chunk;
+            while !rest.is_empty() {
+                let outcomes = self.store_many(conn, ctx, rest, now_ms).await?;
+                if outcomes.is_empty() {
+                    return Err(corrupt(
+                        "carried operations were neither stored nor refused",
+                    ));
                 }
+                for (bytes, outcome) in rest.iter().zip(&outcomes) {
+                    report.record(bytes, outcome, &own)?;
+                }
+                rest = &rest[outcomes.len().min(rest.len())..];
             }
         }
         loop {
@@ -396,12 +419,55 @@ impl Engine {
 pub struct CarryReport {
     /// Operations stored or already present.
     pub stored: usize,
-    /// Operations the replacement refused.
-    pub refused: usize,
+    /// Operations of other devices the replacement refused, such as past a removal cutoff.
+    /// Their writers' devices hold them.
+    pub refused_foreign: usize,
     /// Operations applied.
     pub applied: usize,
     /// Local captures in the replacement stopped the apply.
     pub pending_captures: bool,
+}
+
+impl CarryReport {
+    /// Counts the outcome of one carried operation, failing on a refused operation of a writer
+    /// in `own`. Bytes that do not decode belong to no known writer and count as foreign.
+    fn record(
+        &mut self,
+        bytes: &[u8],
+        outcome: &StoreOutcome,
+        own: &BTreeSet<WriterId>,
+    ) -> SyncResult<()> {
+        let StoreOutcome::Refused(refusal) = outcome else {
+            self.stored += 1;
+            return Ok(());
+        };
+        if let Ok(envelope) = Envelope::decode(bytes)
+            && own.contains(&envelope.writer)
+        {
+            return Err(SyncError::CarriedOwnRefused {
+                writer: envelope.writer,
+                seq: envelope.seq,
+                refusal: *refusal,
+            });
+        }
+        self.refused_foreign += 1;
+        Ok(())
+    }
+}
+
+/// Writers whose carried genesis certifies them for `device_id`, so a writer this device
+/// created after the copy was made counts as its own though the copy has no row for it.
+fn carried_writers_of(ops: &[Vec<u8>], device_id: &str) -> BTreeSet<WriterId> {
+    ops.iter()
+        .filter_map(|bytes| {
+            let envelope = Envelope::decode(bytes).ok()?;
+            if envelope.seq != 1 {
+                return None;
+            }
+            let (_, certificate) = envelope.genesis().ok()?;
+            (certificate.certificate.device_id == device_id).then_some(envelope.writer)
+        })
+        .collect()
 }
 
 async fn space_exists(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<bool> {
@@ -413,15 +479,117 @@ async fn space_exists(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult
     Ok(exists)
 }
 
-/// Stored vector of a replacement database, empty when it has no space yet.
-pub async fn replacement_vector(
+/// The stored vector of the staged copy `staged` over the writers of `live`, the operations
+/// carry-forward may skip. Each staged head is checked against the live log before it is
+/// trusted:
+///
+/// - A writer the copy does not hold stays at zero, and writers `live` does not know are left
+///   out, since `live` has nothing of theirs to carry.
+/// - The staged row must name the key and device of the live row, which the writer's genesis
+///   certificate fixes; a copy that changes either is [`SyncError::StagedHead`].
+/// - A head at or below the live head must hash as the live operation at that sequence. A
+///   different hash on a writer of `own_device_id` is [`SyncError::StagedHead`], because the
+///   copy would hide operations only this device holds; on another writer it stands, since a
+///   fresh copy is how a forked lane recovers.
+/// - A head past the live head must be a stored envelope of that sequence whose hash is the
+///   head hash and that the writer key of the live log signed; otherwise it is
+///   [`SyncError::StagedHead`].
+pub async fn verified_replacement_vector(
+    live: &mut SqliteConnection,
+    staged: &mut SqliteConnection,
+    space: SpaceId,
+    own_device_id: &str,
+) -> SyncResult<VersionVector> {
+    let mut vector = VersionVector::default();
+    if !space_exists(live, space).await? || !space_exists(staged, space).await? {
+        return Ok(vector);
+    }
+    for row in log::writers(live, space).await? {
+        let Some(claimed) = log::writer(staged, space, row.id).await? else {
+            continue;
+        };
+        let seq = claimed.stored;
+        let certified_alike =
+            claimed.public_key == row.public_key && claimed.device_id == row.device_id;
+        let confirmed = if !certified_alike {
+            false
+        } else if seq <= row.stored {
+            let own = row.device_id == own_device_id;
+            !own || stored_hash(live, space, row.id, seq).await? == Some(claimed.head_hash)
+        } else {
+            signed_head(staged, space, &row.public_key, seq, &claimed.head_hash).await?
+        };
+        if !confirmed {
+            return Err(SyncError::StagedHead {
+                writer: row.id,
+                seq,
+            });
+        }
+        vector.set(row.id, seq);
+    }
+    Ok(vector)
+}
+
+/// The hash of the operation of `writer` stored at `seq`, kept when compaction drops its body.
+async fn stored_hash(
     conn: &mut SqliteConnection,
     space: SpaceId,
-) -> SyncResult<VersionVector> {
-    if !space_exists(conn, space).await? {
-        return Ok(VersionVector::default());
-    }
-    log::stored_vector(conn, space).await
+    writer: WriterId,
+    seq: Seq,
+) -> SyncResult<Option<Digest32>> {
+    let hash: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT hash FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq = ?",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .bind(log::seq_i64(seq)?)
+    .fetch_optional(&mut *conn)
+    .await?;
+    hash.as_deref().map(log::digest).transpose()
+}
+
+/// Whether `conn` stores at `seq` an operation of the writer with `key` whose hash is `head`
+/// and that the key signed.
+async fn signed_head(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    key: &WriterPublicKey,
+    seq: Seq,
+    head: &Digest32,
+) -> SyncResult<bool> {
+    let writer = WriterId::for_public_key(key);
+    let envelope: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT envelope FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq = ?",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .bind(log::seq_i64(seq)?)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(envelope.as_deref().is_some_and(|bytes| {
+        Envelope::decode(bytes).is_ok_and(|envelope| {
+            envelope.space == space
+                && envelope.writer == writer
+                && envelope.seq == seq
+                && envelope.hash() == *head
+                && envelope.verify(key)
+        })
+    }))
+}
+
+/// Whether the staged copy `staged` continues the authorization log of `live`. Only two
+/// charters that differ answer no; a database without one yet continues any log.
+pub async fn same_log(
+    live: &mut SqliteConnection,
+    staged: &mut SqliteConnection,
+    space: SpaceId,
+) -> SyncResult<bool> {
+    let live_charter = crate::authorization::load_charter(live, space).await?;
+    let staged_charter = crate::authorization::load_charter(staged, space).await?;
+    Ok(match (live_charter, staged_charter) {
+        (Some(live), Some(staged)) => live == staged,
+        _ => true,
+    })
 }
 
 /// Encodes carried operations of a space as a device-local staging bundle.

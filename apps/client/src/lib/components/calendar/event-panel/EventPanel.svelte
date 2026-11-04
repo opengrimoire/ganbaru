@@ -9,6 +9,7 @@
   import MeetingSection from "./MeetingSection.svelte";
   import PomodoroSection from "./PomodoroSection.svelte";
   import EventConflictNotice from "$lib/components/calendar/conflicts/EventConflictNotice.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { hasTimingConflict } from "$lib/calendar/conflicts";
   import { calendarConflicts } from "$lib/stores/calendar-conflicts.svelte";
   import NotificationsSection from "./NotificationsSection.svelte";
@@ -548,19 +549,24 @@
   // resolver checks `lastFullKey` again at completion so a stale promise
   // for an event the user already navigated away from can't clobber the
   // current panel.
+  // A failed or empty load is shown with a retry, because a shortened title
+  // or location stays uneditable until the full event arrives.
   $effect(() => {
     if (parked || mode !== "edit" || !event?.id || detailsLoaded || !loadFullEvent) {
       session.cancelHeavyLoad();
       return;
     }
+    void session.heavyLoadAttempt;
     const id = event.id;
     if (id === session.lastFullKey) return;
     const request = session.beginHeavyLoad(id);
     const lookupId = eventPanelHeavyLookupId(event);
     loadFullEvent(lookupId).then((full) => {
       if (full) session.completeHeavyLoad(request, full);
+      else session.failHeavyLoad(request);
     }).catch((e) => {
       console.error("[EventPanel] loadFullEvent failed:", e);
+      session.failHeavyLoad(request);
     });
   });
 
@@ -685,8 +691,14 @@
   // reverting all edits back to the original values disables the button
   // again, matching the click-outside cancellation behavior.
   const saveReady = $derived(mode === "create" || externalDirty || musicAssignmentsDirty || dateTime.hasSaveableTimeDraft);
+  const titleEditBlocked = $derived(!detailsLoaded && session.titleEditBlocked);
+  const locationEditBlocked = $derived(!detailsLoaded && session.locationEditBlocked);
   const saveControlsDisabled = $derived(
-    (controlsDisabled && !pomodoroReadOnlyInteractive) || session.savePending || !saveReady,
+    (controlsDisabled && !pomodoroReadOnlyInteractive)
+      || session.savePending
+      || !saveReady
+      || titleEditBlocked
+      || locationEditBlocked,
   );
   const isBodyConstrained = $derived(mobileLayout || geometry.isBodyConstrained);
 
@@ -741,6 +753,7 @@
   }
 
   function canSave(): boolean {
+    if (titleEditBlocked || locationEditBlocked) return false;
     return canRunEventPanelSave({
       parked,
       controlsDisabled,
@@ -1128,7 +1141,7 @@
           type="text"
           bind:value={session.title}
           placeholder={t("calendar.eventPanel.titlePlaceholder")}
-          disabled={controlsDisabled}
+          disabled={controlsDisabled || titleEditBlocked}
           class="w-full bg-transparent py-0.5 text-[1rem] font-semibold text-foreground outline-none placeholder:text-event-panel-placeholder"
           oninput={() => session.emitChange()}
           onkeydown={handleInputKeydown}
@@ -1388,6 +1401,18 @@
   <!-- Feature sections -->
   <div class="shrink-0 flex flex-col gap-1.5 px-4 py-1.5">
 
+      {#if session.heavyLoadFailed}
+        <Notice
+          role="status"
+          tone="warning"
+          copy={false}
+          message={t(titleEditBlocked || locationEditBlocked
+            ? "calendar.eventPanel.detailsLoadFailedSaveBlocked"
+            : "calendar.eventPanel.detailsLoadFailed")}
+          onRetry={() => session.retryHeavyLoad()}
+        />
+      {/if}
+
       {#if conflictEventId}
         <EventConflictNotice eventId={conflictEventId} blocked={externalDirty} onResolved={onClose} />
       {/if}
@@ -1409,6 +1434,7 @@
           eventTitle={session.title}
           description={session.description}
           readOnly={controlsDisabled}
+          locationReadOnly={locationEditBlocked}
           allowReadOnlyExpand={readOnly && !parked}
           expanded={openSection === "meeting"}
           onToggle={() => handleToggle("meeting")}

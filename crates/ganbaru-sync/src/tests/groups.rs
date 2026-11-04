@@ -782,6 +782,7 @@ fn a_planned_row_brings_every_row_nested_under_it() {
             &replica.engine,
             &mut replica.conn,
             &mut batch.dirty,
+            crate::visibility::DeriveScope::All,
         )
         .await
         .unwrap();

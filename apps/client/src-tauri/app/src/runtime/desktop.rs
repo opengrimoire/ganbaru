@@ -359,6 +359,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::channels::chat_list_channels,
             chat::conflicts::chat_conflicts,
             chat::conflicts::chat_resolve_conflict,
+            chat::provenance::chat_message_provenance,
             chat::channels::chat_list_navigation_channels,
             chat::channels::chat_read_channel,
             chat::channels::chat_create_channel,
@@ -400,6 +401,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_read_reply_thread_page,
             chat::organization::chat_search_messages,
             chat::organization::chat_cancel_assignment,
+            chat::organization::chat_accept_assignment_here,
+            chat::organization::chat_list_waiting_assignments,
             chat::organization::chat_retry_assignment,
             chat::organization::chat_start_mentioned_assignment,
             chat::organization::chat_recover_assignment_dispatch_jobs,
@@ -917,6 +920,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             crate::sync::commands::sync_take_anchor,
             crate::sync::commands::sync_promote_device,
             crate::sync::commands::sync_regenerate_recovery_kit,
+            crate::sync::commands::sync_rotate_recovery_kit,
             crate::sync::commands::sync_recovery_kit_state,
             crate::sync::commands::sync_create_recovery_kit,
             crate::sync::commands::sync_recovery_kit_saved,
@@ -990,6 +994,14 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
                 eprintln!("app config directory permissions are unchanged: {error}");
             }
             vault::handoff::initialize(app.handle());
+            if let Err(error) =
+                vault::backup::recover_interrupted_replacements_for_app(app.handle())
+            {
+                eprintln!("interrupted vault replacement is not recovered: {error}");
+            }
+            if let Err(error) = vault::encrypted_backup::sweep_interrupted_backups(app.handle()) {
+                eprintln!("interrupted backup staging is not swept: {error}");
+            }
             crate::sync::setup(app.handle());
             if let Err(error) = vault::handoff::start_desktop(app.handle()) {
                 eprintln!("vault handoff coordinator is unavailable: {error}");

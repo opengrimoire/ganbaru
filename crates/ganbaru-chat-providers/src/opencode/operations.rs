@@ -17,6 +17,21 @@ impl ProviderDriver for OpenCodeProviderDriver {
         Self::metadata_read()
     }
 
+    /// Covered paths OpenCode loads, from opencode.ai/docs (`config`, `plugins`, `skills`):
+    /// `opencode.json` or `opencode.jsonc`, the `.opencode` tree with its configuration,
+    /// agents, commands, modes, plugins, skills, tools, and themes and the packages
+    /// `.opencode/package.json` installs for plugins, and skills from `.claude/skills`.
+    /// Project `.agents/skills` is also searched; it holds instruction-only skills, so the
+    /// digest leaves it out like `AGENTS.md`.
+    fn project_configuration_paths(&self) -> &'static [ProviderConfigurationPath] {
+        &[
+            ProviderConfigurationPath::OpenCodeJson,
+            ProviderConfigurationPath::OpenCodeJsonc,
+            ProviderConfigurationPath::OpenCode,
+            ProviderConfigurationPath::ClaudeSkills,
+        ]
+    }
+
     fn instance_configuration(&self) -> &ProviderInstanceConfig {
         &self.configuration
     }

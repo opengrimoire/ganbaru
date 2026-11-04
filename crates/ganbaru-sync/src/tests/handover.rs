@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use ganbaru_sync_contracts::{
     AdminKeyPair, AuthorizationRecord, DevicePublicKey, DeviceRole, Digest32, Entry, Handover,
-    Remove, Sequencing, SetRole, SignedCharter, SpaceId, WriterId, Yield,
+    Remove, Sequencing, SetRole, SignedCharter, SignedProposal, SpaceId, WriterId, Yield,
 };
 
 use super::arrival_orders;
@@ -21,7 +21,7 @@ use super::replica::{
     ANCHOR_DEVICE_ID, START_MS, anchor_admin, anchor_device_key, device_admin, device_id,
     device_key, enroll_entry, person, proposal, recovery_admin, test_charter,
 };
-use crate::authorization::{SelectedHead, select_records};
+use crate::authorization::{ReversalCheck, SelectedHead, reversal_in_records, select_records};
 
 /// A position in a test log: the head an entry continues from.
 #[derive(Clone)]
@@ -256,6 +256,17 @@ impl Log {
     /// its last record there below the fork.
     fn fork_anchor(&mut self, at: &At) {
         self.forks.insert(self.writer, at.revision + 1);
+    }
+
+    /// The anchor's reversal check of `proposal` over every record, in stored order.
+    fn reversal(&self, proposal: &SignedProposal) -> ReversalCheck {
+        let records: Vec<(WriterId, u64, AuthorizationRecord)> = self
+            .records
+            .iter()
+            .zip(&self.writers)
+            .map(|(record, writer)| (*writer, record.revision, record.clone()))
+            .collect();
+        reversal_in_records(&self.charter, &records, proposal)
     }
 
     /// What the records in `order` select.
@@ -867,6 +878,36 @@ fn the_kit_recovers_a_clone_freeze_and_demotes_every_other_admin() {
 }
 
 #[test]
+fn a_kit_promotes_the_device_it_handed_the_anchor_to() {
+    // Another admin naming a key for the anchor is no entry any replica walks.
+    let (mut log, base) = Log::new();
+    log.append(
+        &base,
+        &device_admin(FIRST),
+        Entry::SetRole(SetRole::Device {
+            device_id: ANCHOR_DEVICE_ID.to_owned(),
+            role: DeviceRole::Admin(device_admin(FIRST).public_key()),
+        }),
+    );
+    log.assert_selects(&base);
+
+    let kit = log.kit(&base, &device_id(MEMBER));
+    let promoted = log.append(&kit, &recovery_admin(&person()), promote(MEMBER));
+    let selected = log.assert_selects(&promoted);
+    assert_eq!(selected.admins.len(), 1, "admins {:?}", selected.admins);
+    assert!(selected.admins.contains(&device_id(MEMBER)));
+
+    let installed = other_recovery(91);
+    let (mut log, base) = Log::new();
+    let install = log.append(&base, &anchor_admin(&person()), rotate_recovery(&installed));
+    let recovered = log.handover(&install, &installed, &device_id(MEMBER));
+    let promoted = log.append(&recovered, &installed, promote(MEMBER));
+    let selected = log.assert_selects(&promoted);
+    assert_eq!(selected.admins.len(), 1, "admins {:?}", selected.admins);
+    assert!(selected.admins.contains(&device_id(MEMBER)));
+}
+
+#[test]
 fn concurrent_kit_uses_converge_on_the_higher_ranked_one() {
     for same_point in [true, false] {
         let (mut log, base) = Log::new();
@@ -1392,4 +1433,50 @@ fn a_writer_fork_in_a_later_instance_freezes_it_at_its_own_last_record_below_the
     assert!(live(&selected, &device_id(5)));
     assert!(!selected.devices.contains_key(&device_id(6)));
     assert!(!selected.devices.contains_key(&device_id(7)));
+}
+
+/// Entries of the long abandoned branch in
+/// [`the_reversal_check_walks_a_long_abandoned_branch_once`].
+const LONG_BRANCH: usize = 20_000;
+
+#[test]
+fn the_reversal_check_walks_a_long_abandoned_branch_once() {
+    // A lone take stands, so the anchor's own continuation from the same point is abandoned.
+    let (mut log, base) = Log::new();
+    let taken = log.take(&base, SECOND);
+    let anchor = anchor_admin(&person());
+    let mut at = log.append(&base, &anchor, admin_entry(4));
+    let target = log.records.last().unwrap().proposal.clone();
+    for step in 0..LONG_BRANCH {
+        let role = if step % 2 == 0 {
+            DeviceRole::Admin(device_admin(MEMBER).public_key())
+        } else {
+            DeviceRole::Member
+        };
+        let entry = Entry::SetRole(SetRole::Device {
+            device_id: device_id(MEMBER),
+            role,
+        });
+        at = log.append(&at, &anchor, entry);
+    }
+    let kept = log.reversal(&target);
+    assert!(!kept.reversed);
+
+    // A removal at the end of the branch reverses the enrollment at its start.
+    log.append(&at, &anchor, remove(&device_id(4)));
+    let order: Vec<usize> = (0..log.records.len()).collect();
+    assert_eq!(log.select(&order).head, taken.hash);
+    let reversed = log.reversal(&target);
+    assert!(reversed.reversed);
+    // One pass takes each visit once; a pass per entry would take about half of LONG_BRANCH
+    // squared.
+    for check in [kept, reversed] {
+        assert!(check.popped > LONG_BRANCH, "{} popped", check.popped);
+        assert!(check.popped <= check.visits, "{} popped", check.popped);
+        assert!(
+            check.compared <= check.popped,
+            "{} compared",
+            check.compared
+        );
+    }
 }

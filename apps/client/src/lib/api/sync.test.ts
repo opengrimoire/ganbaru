@@ -17,6 +17,7 @@ import {
   listSyncRecovery,
   mapSyncAuthority,
   mapSyncContests,
+  mapSyncForceAnchorOutcome,
   mapSyncLateChange,
   mapSyncLateChanges,
   mapSyncNotice,
@@ -34,6 +35,7 @@ import {
   removeSyncServer,
   restoreSyncLateChange,
   restoreSyncRecovery,
+  rotateSyncRecoveryKit,
   resumeSyncRecords,
   saveSyncRecoveryKitFile,
   takeSyncAnchor,
@@ -200,6 +202,11 @@ describe("sync API boundary", () => {
     expect(mapSyncStatus({ ...validStatus(), lastErrorCode: "bootstrapRequired" }).lastErrorCode).toBe("bootstrapRequired");
     expect(mapSyncStatus({ ...validStatus(), state: "offline", lastErrorCode: "coordinatorRemoved" }).lastErrorCode)
       .toBe("coordinatorRemoved");
+  });
+
+  it("accepts the fork claim unproven error code", () => {
+    expect(mapSyncStatus({ ...validStatus(), state: "error", lastErrorCode: "forkClaimUnproven" }).lastErrorCode)
+      .toBe("forkClaimUnproven");
   });
 
   it("maps an unknown relay delivery count and rejects a malformed one", () => {
@@ -463,6 +470,7 @@ function validLateChange(overrides: Record<string, unknown> = {}): Record<string
     title: "Plan",
     preview: "Start",
     changedAtMs: 3_000,
+    restorable: true,
     decisionPending: false,
     ...overrides,
   };
@@ -521,19 +529,21 @@ describe("sync authority API boundary", () => {
 
   it("maps late changes, including a deletion without a time", async () => {
     vi.mocked(invoke).mockResolvedValueOnce({
-      changes: [validLateChange(), validLateChange({ kind: "tombstone", changedAtMs: null, decisionPending: true })],
+      changes: [validLateChange(), validLateChange({ kind: "tombstone", changedAtMs: null, restorable: false, decisionPending: true })],
       total: 5,
     });
     const { changes, total } = await listSyncLateChanges();
     expect(total).toBe(5);
     expect(changes[0]).toEqual({ ...validLateChange() });
-    expect(changes[1]).toMatchObject({ kind: "tombstone", changedAtMs: null, decisionPending: true });
+    expect(changes[1]).toMatchObject({ kind: "tombstone", changedAtMs: null, restorable: false, decisionPending: true });
     expect(() => mapSyncLateChanges({ changes: [validLateChange()], total: 0 })).toThrow();
     expect(() => mapSyncLateChanges({ changes: [validLateChange()] })).toThrow();
     expect(() => mapSyncLateChanges([validLateChange()])).toThrow();
     expect(() => mapSyncLateChange(validLateChange({ kind: "moved" }), "late")).toThrow();
     expect(() => mapSyncLateChange(validLateChange({ removalRevision: undefined }), "late")).toThrow();
     expect(() => mapSyncLateChange(validLateChange({ decisionPending: 1 }), "late")).toThrow();
+    expect(() => mapSyncLateChange(validLateChange({ restorable: "yes" }), "late")).toThrow();
+    expect(() => mapSyncLateChange(validLateChange({ restorable: undefined }), "late")).toThrow();
   });
 
   it("maps the recovery kit state and refuses an empty code or a malformed QR matrix", async () => {
@@ -558,6 +568,9 @@ describe("sync authority API boundary", () => {
     vi.mocked(invoke).mockResolvedValueOnce(null);
     await expect(regenerateSyncRecoveryKit()).resolves.toBeUndefined();
     expect(invoke).toHaveBeenLastCalledWith("sync_regenerate_recovery_kit");
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    await expect(rotateSyncRecoveryKit("ABCD-WXYZ")).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenLastCalledWith("sync_rotate_recovery_kit", { kitCode: "ABCD-WXYZ" });
     vi.mocked(invoke).mockResolvedValueOnce(false);
     await expect(confirmSyncRecoveryKitSaved("WXYZ")).resolves.toBe(false);
     expect(invoke).toHaveBeenLastCalledWith("sync_recovery_kit_saved", { lastGroup: "WXYZ" });
@@ -712,16 +725,31 @@ describe("sync contest API boundary", () => {
     vi.mocked(invoke).mockResolvedValueOnce(undefined);
     await resumeSyncRecords();
     expect(invoke).toHaveBeenLastCalledWith("sync_records_resume");
-    vi.mocked(invoke).mockResolvedValueOnce(14);
+    vi.mocked(invoke).mockResolvedValueOnce({ revision: 14, incomplete: 0 });
     const point = { hash: HASH_A, revision: 7 };
     await expect(
       forceSyncAnchor({ kitCode: "CODE", point, removeDevices: ["intruder"], quarantineAnchor: false }),
-    ).resolves.toBe(14);
+    ).resolves.toEqual({ revision: 14, incomplete: 0 });
     expect(invoke).toHaveBeenLastCalledWith("sync_force_anchor", {
       kitCode: "CODE",
       point,
       removeDevices: ["intruder"],
       quarantineAnchor: false,
     });
+  });
+
+  it("force anchor reads the outcome", () => {
+    expect(mapSyncForceAnchorOutcome({ revision: 21, incomplete: 2 })).toEqual({ revision: 21, incomplete: 2 });
+    for (const invalid of [
+      14,
+      null,
+      { revision: 21 },
+      { revision: 21, incomplete: -1 },
+      { revision: 21, incomplete: 1.5 },
+      { revision: "21", incomplete: 0 },
+      { revision: Number.MAX_SAFE_INTEGER + 1, incomplete: 0 },
+    ]) {
+      expect(() => mapSyncForceAnchorOutcome(invalid)).toThrow();
+    }
   });
 });

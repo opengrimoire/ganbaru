@@ -238,7 +238,12 @@ impl OpenCodeProviderDriver {
                 }
                 let models = parse_models_cli_output(&models_output.stdout)?;
                 let agents = parse_agents_cli_output(&agents_output.stdout)?;
-                let mut server = OwnedOpenCodeServer::start(&self.configuration, workspace).await?;
+                let mut server = OwnedOpenCodeServer::start(
+                    &self.configuration,
+                    workspace,
+                    ProjectConfigurationAccess::Restricted,
+                )
+                .await?;
                 let server_probe = async {
                     let client = OpenCodeHttpClient::new(
                         &server.origin,
@@ -325,9 +330,14 @@ impl OpenCodeProviderDriver {
         }
         let resume_session_id = input.resume_session_id()?;
         let mut owned_server = match self.settings.connection {
-            OpenCodeConnectionMode::Local => {
-                Some(OwnedOpenCodeServer::start(&self.configuration, &workspace).await?)
-            }
+            OpenCodeConnectionMode::Local => Some(
+                OwnedOpenCodeServer::start(
+                    &self.configuration,
+                    &workspace,
+                    input.workspace().project_configuration,
+                )
+                .await?,
+            ),
             OpenCodeConnectionMode::External { .. } => None,
         };
         let origin = owned_server
@@ -461,9 +471,14 @@ impl OpenCodeProviderDriver {
         let workspace = canonical_workspace(&request.workspace)?;
         self.require_external_workspace_confirmation()?;
         let mut owned_server = match self.settings.connection {
-            OpenCodeConnectionMode::Local => {
-                Some(OwnedOpenCodeServer::start(&self.configuration, &workspace).await?)
-            }
+            OpenCodeConnectionMode::Local => Some(
+                OwnedOpenCodeServer::start(
+                    &self.configuration,
+                    &workspace,
+                    request.workspace.project_configuration,
+                )
+                .await?,
+            ),
             OpenCodeConnectionMode::External { .. } => None,
         };
         let origin = owned_server

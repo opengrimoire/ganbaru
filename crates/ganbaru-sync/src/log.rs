@@ -385,9 +385,10 @@ impl Engine {
 
     /// Stored operations that `known` does not include, held operations among them, ordered by
     /// arrival while keeping every writer's operations in sequence order. A writer of a device
-    /// the selection holds for data is served only up to its first row change, so its
-    /// authorization records still spread while its data waits. The page holds at least one
-    /// operation when any remains, then stops before `max_bytes`.
+    /// the selection holds for data is served only up to its first row change, since a chain
+    /// admits no gap. Its authorization records before that row change spread on the lane, and
+    /// later ones only through [`Self::record_page`]. The page holds at least one operation when
+    /// any remains, then stops before `max_bytes`.
     ///
     /// Fails with [`SyncError::Compacted`] when `known` lacks an operation whose body
     /// compaction dropped, since the peer can then only bootstrap from a snapshot.
@@ -402,8 +403,9 @@ impl Engine {
     }
 
     /// [`Self::ops_after`] for a peer the selection holds for data: every writer's chain is
-    /// served only up to its first row change, so the peer still receives the authorization
-    /// records that can resolve the contest, but no data.
+    /// served only up to its first row change, so the peer receives no data. The records that
+    /// can resolve the contest reach it through [`Self::record_page`] wherever they sit in a
+    /// chain.
     pub async fn authorization_ops_after(
         &self,
         conn: &mut SqliteConnection,
@@ -430,6 +432,24 @@ impl Engine {
         .fetch_optional(&mut *conn)
         .await?;
         Ok(held == Some(1))
+    }
+
+    /// The writers certified to `device_id` in `ctx`'s space.
+    pub async fn device_writers(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        device_id: &str,
+    ) -> SyncResult<BTreeSet<WriterId>> {
+        ensure_space(conn, ctx.space).await?;
+        let ids: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT writer_id FROM sync_writers WHERE space_id = ? AND device_id = ?",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(device_id)
+        .fetch_all(&mut *conn)
+        .await?;
+        ids.iter().map(|id| writer_id(id)).collect()
     }
 }
 

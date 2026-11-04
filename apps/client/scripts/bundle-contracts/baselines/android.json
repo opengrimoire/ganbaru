@@ -52,10 +52,10 @@
       "roots": [
         "src/lib/components/chat/ChatWorkspace.svelte"
       ],
-      "maxSourceModules": 332
+      "maxSourceModules": 334
     }
   ],
-  "maxTotalSourceModules": 1353,
+  "maxTotalSourceModules": 1355,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",

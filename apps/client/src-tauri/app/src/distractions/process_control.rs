@@ -20,6 +20,8 @@ pub(super) trait DesktopProcessController {
     fn signal(&mut self, pinned: &Self::Pinned, signal: DesktopProcessSignal)
     -> Result<(), String>;
     fn wait(&mut self, duration: std::time::Duration);
+    /// The session anchors checked before each signal, or `None` when the name list stands alone.
+    fn session_anchors(&mut self) -> Option<std::sync::Arc<SessionAnchors>>;
 }
 
 /// A Linux process reference that cannot drift to another process.
@@ -94,6 +96,10 @@ impl DesktopProcessController for SystemDesktopProcessController {
     fn wait(&mut self, duration: std::time::Duration) {
         std::thread::sleep(duration);
     }
+
+    fn session_anchors(&mut self) -> Option<std::sync::Arc<SessionAnchors>> {
+        current_session_anchors(|| false)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -165,6 +171,7 @@ where
     let Some(observed) = observe_exact_close_process(request, controller)? else {
         return Ok(false);
     };
+    refuse_anchored_close(request.process_id, controller.session_anchors().as_deref())?;
     authorize(&observed)?;
     if let Err(error) = controller.signal(&pinned, DesktopProcessSignal::Term) {
         if observe_exact_close_process(request, controller)?.is_none() {
@@ -181,6 +188,7 @@ where
     let Some(observed) = observe_exact_close_process(request, controller)? else {
         return Ok(true);
     };
+    refuse_anchored_close(request.process_id, controller.session_anchors().as_deref())?;
     authorize(&observed)?;
     if let Err(error) = controller.signal(&pinned, DesktopProcessSignal::Kill) {
         if observe_exact_close_process(request, controller)?.is_none() {
@@ -191,7 +199,8 @@ where
     Ok(true)
 }
 
-/// Recheck runtime authority and the `config` rules immediately before each process signal.
+/// Recheck runtime authority, the session guard, and the `config` rules immediately before each
+/// process signal.
 #[cfg(target_os = "linux")]
 pub(super) fn close_desktop_process_checked<R: Runtime>(
     app: &tauri::AppHandle<R>,

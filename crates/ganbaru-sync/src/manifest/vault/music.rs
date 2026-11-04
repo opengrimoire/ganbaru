@@ -17,10 +17,10 @@ use crate::domains::music::{
     MAX_SKIP_RANGES, MAX_SOUND_LEVEL_MILLI, MAX_VOLUME_MILLI, MIN_RATE_MILLI,
 };
 use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
-    GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
-    OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec,
-    TriggerPolicy, group_id,
+    Collation, ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable, DomainManifest,
+    DomainTrigger, GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound,
+    OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution, RowKeyRule, SYNC_KEY_COLUMN,
+    TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Music.
@@ -456,6 +456,13 @@ const fn order_key(name: &'static str) -> ColumnSpec {
 const fn row_key(name: &'static str) -> ColumnSpec {
     ColumnSpec {
         name,
+        ty: ColumnType::RowKey,
+    }
+}
+
+const fn optional_row_key(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
         ty: ColumnType::OptionalRowKey,
     }
 }
@@ -510,7 +517,11 @@ const BASE: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `music_local_roots`.
@@ -801,7 +812,7 @@ pub const COLLECTIONS: TableSpec = TableSpec {
             &[
                 text("kind", MAX_ENUM_CHARS),
                 trimmed("identity_key", MAX_IDENTITY_KEY_CHARS),
-                row_key("local_root_id"),
+                optional_row_key("local_root_id"),
                 optional_text("youtube_playlist_id", MAX_ID_CHARS),
             ],
             &[cascade("local_root_id", ROOTS_TABLE)],
@@ -1061,7 +1072,7 @@ pub const MEMBERSHIPS: TableSpec = TableSpec {
         recoverable(reference(
             membership_group::BREAK_ITEM,
             "break item",
-            &[row_key("break_item_id")],
+            &[optional_row_key("break_item_id")],
             ITEMS_TABLE,
             OnDelete::SetNull,
         )),
@@ -1126,7 +1137,7 @@ pub const SNOOZES: TableSpec = TableSpec {
             &[
                 row_key("item_id"),
                 text("scope", MAX_ENUM_CHARS),
-                row_key("playlist_id"),
+                optional_row_key("playlist_id"),
             ],
             &[
                 cascade("item_id", ITEMS_TABLE),

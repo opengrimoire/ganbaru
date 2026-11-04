@@ -154,6 +154,20 @@ let reloadInFlight: Promise<void> | undefined;
 let reloadQueued = false;
 let replicationListenerStarted = false;
 
+/**
+ * Delays before each retry of a failed boot load of the stored themes. The
+ * list length bounds the retries, so a lasting failure stops retrying and
+ * leaves the next applied theme sync or a restart to load them.
+ */
+const STORED_THEMES_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000, 30_000];
+
+/**
+ * Whether the boot load failed, so the next successful load resolves the
+ * active and quick-toggle themes from the saved preferences again instead of
+ * keeping the built-in fallback shown meanwhile.
+ */
+let restoreSavedSelection = false;
+
 function combinedRegistry(): Readonly<Record<ThemeId, Theme>> {
   return { ...BUILTIN_THEME_REGISTRY, ...customThemes };
 }
@@ -299,25 +313,69 @@ function initThemeSync(): void {
   }).catch((err) => console.warn("theme window sync listener failed", err));
 }
 
+/** Stored themes and dismissals, or undefined when the load fails. */
+async function loadStoredThemes(): Promise<[UserThemeRead[], DismissalRow[]] | undefined> {
+  try {
+    return await Promise.all([loadAllUserThemes(), loadDismissals()]);
+  } catch (err) {
+    console.warn("Could not load user themes:", err);
+    return undefined;
+  }
+}
+
+/**
+ * Resolve the quick-toggle pair and the active theme from the saved
+ * preferences against the current registry. Nothing is written, so a saved
+ * choice naming a missing theme comes back once that theme loads.
+ */
+function resolveSavedSelection(): void {
+  quickToggleLightId = loadQuickToggleIdFromConfig(QUICK_TOGGLE_LIGHT_KEY, "light");
+  quickToggleDarkId = loadQuickToggleIdFromConfig(QUICK_TOGGLE_DARK_KEY, "dark");
+  activeId = resolveActiveId(getConfigKey<string | undefined>(ACTIVE_KEY, undefined));
+}
+
+/**
+ * Retry the stored theme load after a failed boot load, once per entry of
+ * `STORED_THEMES_RETRY_DELAYS_MS`. A retry is skipped once any reload has
+ * already restored the saved selection.
+ */
+function scheduleStoredThemesRetry(attempt: number): void {
+  const delayMs = STORED_THEMES_RETRY_DELAYS_MS[attempt];
+  if (delayMs === undefined) return;
+  setTimeout(() => {
+    if (!restoreSavedSelection) return;
+    reloadUserThemes().catch((error: unknown) => {
+      console.warn("Theme load retry failed", error);
+      scheduleStoredThemesRetry(attempt + 1);
+    });
+  }, delayMs);
+}
+
 /**
  * Boot-time hydration: load user themes from SQLite, resolve the active theme
  * from config, and paint the first frame.
  *
  * Idempotent. The platform bootstraps await this after `ensureConfigLoaded`
  * and before mounting the app so first paint matches what the user has on
- * disk (no FOUC).
+ * disk (no FOUC). A failed load falls back to the built-in themes, because the
+ * app must open without optional theme rows, and retries a bounded number of
+ * times in the background. The fallback is never written, so the first
+ * successful load restores the saved selection.
  */
 export async function hydrateUserThemes(): Promise<void> {
   if (hydrated) return;
-  const [reads, dismissalRows] = await Promise.all([loadAllUserThemes(), loadDismissals()]);
+  const stored = await loadStoredThemes();
+  const [reads, dismissalRows] = stored ?? [[], []];
   applyStoredThemes(reads, dismissalRows);
-  quickToggleLightId = loadQuickToggleIdFromConfig(QUICK_TOGGLE_LIGHT_KEY, "light");
-  quickToggleDarkId = loadQuickToggleIdFromConfig(QUICK_TOGGLE_DARK_KEY, "dark");
-  activeId = resolveActiveId(getConfigKey<string | undefined>(ACTIVE_KEY, undefined));
+  resolveSavedSelection();
   hydrated = true;
   applyThemeToDom();
   initThemeSync();
   startThemeReplicationListener();
+  if (stored === undefined) {
+    restoreSavedSelection = true;
+    scheduleStoredThemesRetry(0);
+  }
 }
 
 /**
@@ -361,8 +419,13 @@ async function reloadOnce(): Promise<void> {
   const [reads, dismissalRows] = await Promise.all([loadAllUserThemes(), loadDismissals()]);
   if (editingThemeId !== undefined) reloadAfterEditing = true;
   applyStoredThemes(reads, dismissalRows);
-  const nextActiveId = resolveActiveId(activeId);
-  if (nextActiveId !== activeId) activeId = nextActiveId;
+  if (restoreSavedSelection) {
+    restoreSavedSelection = false;
+    resolveSavedSelection();
+  } else {
+    const nextActiveId = resolveActiveId(activeId);
+    if (nextActiveId !== activeId) activeId = nextActiveId;
+  }
   applyThemeToDom();
 }
 

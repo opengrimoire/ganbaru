@@ -5,16 +5,25 @@
 //! views stay separate, a primary folder survives its archiving, and a deletion that missed a
 //! concurrent edit or insert is offered for recovery.
 
-use ganbaru_sync_contracts::{GroupMask, derived_key};
-
-use super::block_on;
-use super::replica::{Replica, converge, device_id, pair, quoted, rank};
-use crate::manifest::TableSpec;
-use crate::manifest::vault::projects::{
-    DEPENDENCIES, DEPENDENCIES_TABLE, GROUPS_TABLE, PRIMARY_FOLDERS_TABLE, PROJECTS,
-    PROJECTS_TABLE, TASKS, VALUES, dependency_group, value_group,
+use ganbaru_sync_contracts::{
+    Cause, Change, ChangeAction, Content, Field, GroupId, GroupMask, GroupValue, Hlc, RowKey,
+    TableId, Value, VersionVector, derived_key,
 };
-use crate::{ChangeNotice, ConflictRow};
+
+use super::authorization::{seal_at, view};
+use super::block_on;
+use super::chat::{CHANNEL, folder_grant_sql};
+use super::engine::with_group;
+use super::replica::{
+    Replica, converge, device_id, forge_change, forge_changes, pair, quoted, rank, sealed_change,
+};
+use crate::manifest::TableSpec;
+use crate::manifest::vault::chat::CHANNELS_TABLE;
+use crate::manifest::vault::projects::{
+    DEPENDENCIES, DEPENDENCIES_TABLE, FOLDERS, FOLDERS_TABLE, GROUPS_TABLE, PRIMARY_FOLDERS_TABLE,
+    PROJECTS, PROJECTS_TABLE, TASKS, VALUES, dependency_group, folder_group, value_group,
+};
+use crate::{ChangeNotice, ConflictRow, HoldReason, StoreOutcome, merge};
 
 const CREATED: &str = "2027-01-01T00:00:00.000Z";
 const EDITED: &str = "2027-01-02T00:00:00.000Z";
@@ -24,6 +33,8 @@ const SECTION_A: &str = "section-a";
 const SECTION_B: &str = "section-b";
 const OPEN: &str = "status-open";
 const DONE: &str = "status-done";
+const EXTERNAL_FOLDER: &str = "folder-external";
+pub(super) const MANAGED_FOLDER: &str = "working-folder:project-shared";
 
 async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
@@ -900,6 +911,250 @@ fn projects_a_folder_made_primary_while_archived_converges_without_a_failure() {
     });
 }
 
+/// A write of one timestamp group of `folder` alone.
+fn folder_timestamp_write(folder: &str, group: GroupId, timestamp: &str) -> Change {
+    Change {
+        table: FOLDERS_TABLE,
+        row: RowKey::new(folder).unwrap(),
+        action: ChangeAction::Write,
+        groups: vec![GroupValue::new(
+            FOLDERS_TABLE,
+            group,
+            Value::new(vec![Field::Text(timestamp.to_string())]).unwrap(),
+        )],
+        replaced_by: None,
+        cause: None,
+    }
+}
+
+#[test]
+fn folder_timestamps_must_be_rfc3339_utc() {
+    block_on(async {
+        let created = quoted(CREATED);
+        let sql = format!(
+            "INSERT INTO project_working_folders
+                 (id, project_id, display_name, kind, managed_relative_path, created_at, updated_at)
+             VALUES ({folder}, {project}, 'Repository', 'external', NULL, {created}, {created});",
+            folder = quoted(EXTERNAL_FOLDER),
+            project = quoted(PROJECT),
+        );
+        let refused: Vec<_> = [
+            "not a timestamp at all",
+            "2027-01-02T00:00:00.000+01:00",
+            "2027-01-02 00:00:00.000Z",
+            "2027-01-02t00:00:00.000Z",
+            "2027-01-02T00:00:00.000z",
+            "2027-01-02T23:59:60.000Z",
+        ]
+        .into_iter()
+        .flat_map(|timestamp| {
+            [
+                (folder_group::ARCHIVED, timestamp),
+                (folder_group::UPDATED, timestamp),
+            ]
+        })
+        .collect();
+        let mut replicas = shared(refused.len() + 2, &sql).await;
+        let stored_timestamps = "SELECT updated_at || '|' || coalesce(archived_at, '-')
+                                 FROM project_working_folders WHERE id = 'folder-external'";
+
+        for (index, (group, timestamp)) in refused.into_iter().enumerate() {
+            let forged = forge_change(
+                &mut replicas[0],
+                folder_timestamp_write(EXTERNAL_FOLDER, group, timestamp),
+            )
+            .await;
+            let receiver = &mut replicas[index + 1];
+            assert_eq!(
+                receiver.receive(&[forged]).await,
+                vec![StoreOutcome::Stored {
+                    held: Some(HoldReason::Invalid)
+                }],
+                "{timestamp}"
+            );
+            receiver.apply_all().await.unwrap();
+            assert_eq!(
+                texts(receiver, stored_timestamps).await,
+                [format!("{CREATED}|-")],
+                "{timestamp}"
+            );
+        }
+
+        let valid = forge_change(
+            &mut replicas[0],
+            folder_timestamp_write(EXTERNAL_FOLDER, folder_group::ARCHIVED, EDITED),
+        )
+        .await;
+        let receiver = replicas.last_mut().unwrap();
+        assert_eq!(
+            receiver.receive(&[valid]).await,
+            vec![StoreOutcome::Stored { held: None }]
+        );
+        receiver.apply_all().await.unwrap();
+        assert_eq!(
+            texts(receiver, stored_timestamps).await,
+            [format!("{CREATED}|{EDITED}")]
+        );
+    });
+}
+
+/// The project's managed folder and an external folder.
+fn folders_sql() -> String {
+    let created = quoted(CREATED);
+    format!(
+        "INSERT INTO project_working_folders
+             (id, project_id, display_name, kind, managed_relative_path, created_at, updated_at)
+         VALUES ({managed}, {project}, 'Launch', 'managed', 'projects/project-shared',
+                 {created}, {created}),
+                ({external}, {project}, 'Repository', 'external', NULL, {created}, {created});",
+        managed = quoted(MANAGED_FOLDER),
+        external = quoted(EXTERNAL_FOLDER),
+        project = quoted(PROJECT),
+    )
+}
+
+/// The stored `archived_at` of `folder`, with `-` for null.
+async fn stored_archive(replica: &mut Replica, folder: &str) -> Vec<String> {
+    texts(
+        replica,
+        &format!(
+            "SELECT coalesce(archived_at, '-') FROM project_working_folders WHERE id = {}",
+            quoted(folder)
+        ),
+    )
+    .await
+}
+
+/// The merge winner of the archive group of `folder`.
+async fn archive_winner(replica: &mut Replica, folder: &str) -> Field {
+    let versions = merge::versions(&replica.engine, &mut replica.conn, FOLDERS_TABLE, folder)
+        .await
+        .unwrap();
+    let winners = merge::winners(&replica.engine, &FOLDERS, &versions);
+    match winners[&folder_group::ARCHIVED].value.fields() {
+        [field] => field.clone(),
+        other => panic!("unexpected archive value {other:?}"),
+    }
+}
+
+/// Every operation `replica` stores.
+async fn stored_ops(replica: &mut Replica) -> usize {
+    replica.ops_since(&VersionVector::new()).await.len()
+}
+
+#[test]
+fn replicated_archive_of_a_managed_folder_materializes_unarchived() {
+    block_on(async {
+        let mut replicas = shared(3, &folders_sql()).await;
+        let before = stored_ops(&mut replicas[1]).await;
+        let forged = forge_change(
+            &mut replicas[0],
+            folder_timestamp_write(MANAGED_FOLDER, folder_group::ARCHIVED, EDITED),
+        )
+        .await;
+
+        // The override needs no seal: a replica that only receives and applies holds it too.
+        for receiver in &mut replicas[1..] {
+            assert_eq!(
+                receiver.receive(std::slice::from_ref(&forged)).await,
+                vec![StoreOutcome::Stored { held: None }]
+            );
+            receiver.apply_all().await.unwrap();
+            assert_eq!(stored_archive(receiver, MANAGED_FOLDER).await, ["-"]);
+            assert_eq!(
+                archive_winner(receiver, MANAGED_FOLDER).await,
+                Field::Text(EDITED.to_string())
+            );
+            assert_eq!(receiver.seal().await.unwrap().sealed_ops, 0);
+        }
+
+        // An unrelated edit materializes the row again and restates nothing.
+        replicas[2]
+            .exec(&format!(
+                "UPDATE project_working_folders SET display_name = 'Renamed' WHERE id = {}",
+                quoted(MANAGED_FOLDER)
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(stored_archive(replica, MANAGED_FOLDER).await, ["-"]);
+            assert_eq!(
+                archive_winner(replica, MANAGED_FOLDER).await,
+                Field::Text(EDITED.to_string())
+            );
+        }
+        assert_eq!(stored_ops(&mut replicas[1]).await, before + 2);
+    });
+}
+
+#[test]
+fn local_restore_of_an_archived_managed_folder_seals_a_null_archive() {
+    block_on(async {
+        let mut replicas = shared(2, &folders_sql()).await;
+        let forged = forge_change(
+            &mut replicas[1],
+            folder_timestamp_write(MANAGED_FOLDER, folder_group::ARCHIVED, EDITED),
+        )
+        .await;
+        replicas[0].receive(std::slice::from_ref(&forged)).await;
+        replicas[0].apply_all().await.unwrap();
+
+        // Applying materializes null, so the row only holds the timestamp if it is written past
+        // the gated triggers and capture.
+        replicas[0]
+            .exec(&format!(
+                "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+                 UPDATE project_working_folders SET archived_at = {} WHERE id = {};
+                 UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;",
+                quoted(EDITED),
+                quoted(MANAGED_FOLDER)
+            ))
+            .await;
+        assert_eq!(
+            stored_archive(&mut replicas[0], MANAGED_FOLDER).await,
+            [EDITED]
+        );
+
+        replicas[0]
+            .exec(&format!(
+                "UPDATE project_working_folders SET archived_at = NULL WHERE id = {}",
+                quoted(MANAGED_FOLDER)
+            ))
+            .await;
+        assert_eq!(replicas[0].seal().await.unwrap().sealed_ops, 1);
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(stored_archive(replica, MANAGED_FOLDER).await, ["-"]);
+            assert_eq!(archive_winner(replica, MANAGED_FOLDER).await, Field::Null);
+        }
+    });
+}
+
+#[test]
+fn replicated_archive_of_an_external_folder_stays_archived() {
+    block_on(async {
+        let mut replicas = shared(2, &folders_sql()).await;
+        replicas[0]
+            .exec(&format!(
+                "UPDATE project_working_folders SET archived_at = {} WHERE id = {}",
+                quoted(EDITED),
+                quoted(EXTERNAL_FOLDER)
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(stored_archive(replica, EXTERNAL_FOLDER).await, [EDITED]);
+            assert_eq!(
+                archive_winner(replica, EXTERNAL_FOLDER).await,
+                Field::Text(EDITED.to_string())
+            );
+        }
+    });
+}
+
 #[test]
 fn projects_applied_rows_are_reported_under_their_table_names() {
     block_on(async {
@@ -928,5 +1183,514 @@ fn projects_applied_rows_are_reported_under_their_table_names() {
             !notices.iter().any(|notice| notice.topic == PROJECTS.name),
             "{notices:?}"
         );
+    });
+}
+
+/// A tombstone of `folder` alone, which the engine never seals for a folder of a live project.
+pub(super) fn folder_tombstone(folder: &str) -> Change {
+    Change {
+        table: FOLDERS_TABLE,
+        row: RowKey::new(folder).unwrap(),
+        action: ChangeAction::Tombstone,
+        groups: Vec::new(),
+        replaced_by: None,
+        cause: None,
+    }
+}
+
+/// SQL adding the shared project's folders and a Chat grant on its managed folder.
+pub(super) fn managed_folder_sql() -> String {
+    format!(
+        "{}{}",
+        folders_sql(),
+        folder_grant_sql(PROJECT, MANAGED_FOLDER)
+    )
+}
+
+/// Every replica holding the shared project, its folders, and a Chat grant on the managed one.
+pub(super) async fn shared_managed_folder(count: usize) -> Vec<Replica> {
+    shared(count, &managed_folder_sql()).await
+}
+
+/// The folders of the shared project and the folders Chat grants name.
+pub(super) async fn folders_and_grants(replica: &mut Replica) -> (Vec<String>, Vec<String>) {
+    let folders = texts(
+        replica,
+        "SELECT id FROM project_working_folders WHERE project_id = 'project-shared' ORDER BY id",
+    )
+    .await;
+    let grants = texts(
+        replica,
+        "SELECT working_folder_id FROM chat_teammate_working_folder_grants
+         WHERE project_id = 'project-shared'",
+    )
+    .await;
+    (folders, grants)
+}
+
+/// The result of [`folders_and_grants`] with both folders of the shared project kept.
+pub(super) fn every_folder_and_grant() -> (Vec<String>, Vec<String>) {
+    (
+        vec![EXTERNAL_FOLDER.to_owned(), MANAGED_FOLDER.to_owned()],
+        vec![MANAGED_FOLDER.to_owned()],
+    )
+}
+
+/// `author`'s sealed operations with `forged` at their end.
+async fn delivery_with(author: &mut Replica, forged: Vec<u8>) -> Vec<Vec<u8>> {
+    let mut delivery = author.own_ops().await;
+    delivery.push(forged);
+    delivery
+}
+
+/// Receives and applies `ops` on `replica`.
+async fn deliver(replica: &mut Replica, ops: &[Vec<u8>]) {
+    replica.receive(ops).await;
+    replica.apply_all().await.unwrap();
+}
+
+/// Pulls and applies everything `replicas[source]` holds on `replicas[target]`.
+async fn pull_all(replicas: &mut [Replica], target: usize, source: usize) {
+    let (target, source) = pair(replicas, target, source);
+    target.pull(source).await;
+    target.apply_all().await.unwrap();
+}
+
+#[test]
+fn tombstone_of_a_managed_folder_keeps_it_while_the_project_lives() {
+    block_on(async {
+        // The second replica deletes the folder without having seen it, so its tombstone can
+        // arrive on either side of the Create.
+        let mut replicas = shared(4, "").await;
+        replicas[0].exec(&managed_folder_sql()).await;
+        replicas[0].seal().await.unwrap();
+        replicas[1]
+            .exec(&format!(
+                "UPDATE projects SET name = 'Unrelated' WHERE id = {}",
+                quoted(PROJECT)
+            ))
+            .await;
+        replicas[1].seal().await.unwrap();
+        let forged = forge_change(&mut replicas[1], folder_tombstone(MANAGED_FOLDER)).await;
+        let delivery = delivery_with(&mut replicas[1], forged).await;
+
+        // Neither replica seals, so the row stays with no repair write behind it.
+        deliver(&mut replicas[2], &delivery).await;
+        pull_all(&mut replicas, 2, 0).await;
+        pull_all(&mut replicas, 3, 0).await;
+        deliver(&mut replicas[3], &delivery).await;
+        for replica in &mut replicas[2..] {
+            assert_eq!(
+                folders_and_grants(replica).await,
+                every_folder_and_grant(),
+                "replica {} lost the folder",
+                replica.index
+            );
+            replica.check_invariants().await;
+        }
+
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(folders_and_grants(replica).await, every_folder_and_grant());
+            assert_eq!(surfaced(replica).await, (0, 0));
+        }
+
+        // A kept row stays editable, and the edit replicates.
+        replicas[2]
+            .exec(&format!(
+                "UPDATE project_working_folders
+                 SET repository_kind = 'git', repository_identity = 'origin',
+                     revision = revision + 1, updated_at = {}
+                 WHERE id = {}",
+                quoted(EDITED),
+                quoted(MANAGED_FOLDER)
+            ))
+            .await;
+        let report = replicas[2].seal().await.unwrap();
+        assert!(report.invalid_rows.is_empty(), "{:?}", report.invalid_rows);
+        assert!(report.sealed_ops > 0);
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(
+                    replica,
+                    &format!(
+                        "SELECT repository_identity FROM project_working_folders WHERE id = {}",
+                        quoted(MANAGED_FOLDER)
+                    ),
+                )
+                .await,
+                ["origin"]
+            );
+            replica.check_invariants().await;
+        }
+    });
+}
+
+#[test]
+fn kept_folder_with_an_unseen_edit_reports_no_recovery_offer() {
+    block_on(async {
+        let mut replicas = shared_managed_folder(3).await;
+        replicas[2]
+            .exec(&format!(
+                "UPDATE project_working_folders SET display_name = 'Offline' WHERE id = {}",
+                quoted(MANAGED_FOLDER)
+            ))
+            .await;
+        replicas[2].seal().await.unwrap();
+        let forged = forge_change(&mut replicas[0], folder_tombstone(MANAGED_FOLDER)).await;
+        deliver(&mut replicas[1], std::slice::from_ref(&forged)).await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(folders_and_grants(replica).await, every_folder_and_grant());
+            assert_eq!(surfaced(replica).await, (0, 0));
+        }
+    });
+}
+
+#[test]
+fn project_deletion_removes_a_kept_folder_in_either_arrival_order() {
+    block_on(async {
+        let mut replicas = shared_managed_folder(4).await;
+        let forged = forge_change(&mut replicas[1], folder_tombstone(MANAGED_FOLDER)).await;
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM projects WHERE id = {}",
+                quoted(PROJECT)
+            ))
+            .await;
+        replicas[0].seal().await.unwrap();
+
+        deliver(&mut replicas[2], std::slice::from_ref(&forged)).await;
+        pull_all(&mut replicas, 2, 0).await;
+        pull_all(&mut replicas, 3, 0).await;
+        deliver(&mut replicas[3], std::slice::from_ref(&forged)).await;
+        for replica in &mut replicas[2..] {
+            assert_eq!(
+                folders_and_grants(replica).await,
+                (Vec::new(), Vec::new()),
+                "replica {} kept the folder",
+                replica.index
+            );
+        }
+
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+    });
+}
+
+#[test]
+fn tombstone_of_an_external_folder_removes_it() {
+    block_on(async {
+        let mut replicas = shared_managed_folder(2).await;
+        let forged = forge_change(&mut replicas[0], folder_tombstone(EXTERNAL_FOLDER)).await;
+        deliver(&mut replicas[1], std::slice::from_ref(&forged)).await;
+        assert_eq!(
+            folders_and_grants(&mut replicas[1]).await,
+            (
+                vec![MANAGED_FOLDER.to_owned()],
+                vec![MANAGED_FOLDER.to_owned()]
+            )
+        );
+    });
+}
+
+/// A tombstone of the shared project's Chat channel naming the managed folder as its cause.
+fn channel_tombstone_caused_by_the_folder() -> Change {
+    Change {
+        table: CHANNELS_TABLE,
+        row: RowKey::new(CHANNEL).unwrap(),
+        action: ChangeAction::Tombstone,
+        groups: Vec::new(),
+        replaced_by: None,
+        cause: Some(Cause {
+            table: FOLDERS_TABLE,
+            row: RowKey::new(MANAGED_FOLDER).unwrap(),
+        }),
+    }
+}
+
+/// Every replica holding the shared project's folders, after the last replica renamed the
+/// Chat channel and sealed it without sharing it, and the first received a forged tombstone of
+/// the managed folder with a forged channel tombstone it causes.
+async fn forged_folder_and_channel_tombstones() -> Vec<Replica> {
+    let mut replicas = shared_managed_folder(3).await;
+    replicas[2]
+        .exec(&format!(
+            "UPDATE chat_channels SET name = 'offline' WHERE id = {}",
+            quoted(CHANNEL)
+        ))
+        .await;
+    replicas[2].seal().await.unwrap();
+    let forged = forge_changes(
+        &mut replicas[1],
+        vec![
+            folder_tombstone(MANAGED_FOLDER),
+            channel_tombstone_caused_by_the_folder(),
+        ],
+    )
+    .await;
+    deliver(&mut replicas[0], std::slice::from_ref(&forged)).await;
+    replicas
+}
+
+/// The roots of the recovery offers of a replica.
+async fn offered_roots(replica: &mut Replica) -> Vec<(TableId, String)> {
+    replica
+        .engine
+        .recovery_entries(&mut replica.conn, &replica.ctx)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| (entry.table, entry.row_key))
+        .collect()
+}
+
+#[test]
+fn a_chat_tombstone_caused_by_a_kept_folder_is_offered_on_its_own() {
+    block_on(async {
+        let mut replicas = forged_folder_and_channel_tombstones().await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(folders_and_grants(replica).await, every_folder_and_grant());
+            assert_eq!(
+                offered_roots(replica).await,
+                [(CHANNELS_TABLE, CHANNEL.to_owned())],
+                "replica {}",
+                replica.index
+            );
+        }
+    });
+}
+
+#[test]
+fn a_deleted_project_offers_what_its_forged_folder_tombstone_caused_under_the_project() {
+    block_on(async {
+        let mut replicas = forged_folder_and_channel_tombstones().await;
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM projects WHERE id = {}",
+                quoted(PROJECT)
+            ))
+            .await;
+        replicas[0].seal().await.unwrap();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(folders_and_grants(replica).await, (Vec::new(), Vec::new()));
+            assert_eq!(
+                offered_roots(replica).await,
+                [(PROJECTS_TABLE, PROJECT.to_owned())],
+                "replica {}",
+                replica.index
+            );
+        }
+    });
+}
+
+const OTHER_PROJECT: &str = "project-other";
+
+/// SQL adding a second project to the shared group.
+fn other_project_sql() -> String {
+    format!(
+        "INSERT INTO projects (id, group_id, name, created_at, updated_at, order_key)
+         VALUES ({}, {}, 'Other', {created}, {created}, {});",
+        quoted(OTHER_PROJECT),
+        quoted(GROUP),
+        quoted(&rank(2)),
+        created = quoted(CREATED),
+    )
+}
+
+/// The stored project and kind of `folder` as `project|kind`.
+async fn folder_owner(replica: &mut Replica, folder: &str) -> Vec<String> {
+    texts(
+        replica,
+        &format!(
+            "SELECT project_id || '|' || kind FROM project_working_folders WHERE id = {}",
+            quoted(folder)
+        ),
+    )
+    .await
+}
+
+/// The operation `replica`'s writer seals with `change` at `clock`, below any clock an honest
+/// writer would choose, so a Create wins an immutable minimum it did not see.
+async fn forge_at(replica: &mut Replica, change: Change, clock: Hlc) -> Vec<u8> {
+    let revision = view(replica).await.revision;
+    let last = replica
+        .own_ops()
+        .await
+        .pop()
+        .expect("the replica has sealed");
+    seal_at(
+        &last,
+        &replica.identity.key,
+        Content::Changes(vec![change]),
+        revision,
+        clock,
+    )
+}
+
+/// Seals an unrelated project rename on `replica`, so it has a writer chain to forge on.
+async fn seal_unrelated_edit(replica: &mut Replica, name: &str) {
+    replica
+        .exec(&format!(
+            "UPDATE projects SET name = {} WHERE id = {}",
+            quoted(name),
+            quoted(PROJECT)
+        ))
+        .await;
+    replica.seal().await.unwrap();
+}
+
+/// A forged full Create of the managed folder's key with `created` as its creation group, at a
+/// clock that wins the immutable minimum, followed by a forged tombstone of that key from
+/// another writer. Neither forger saw the honest Create. Every replica keeps the managed row of
+/// the shared project, whether the honest Create or the forgery arrives first.
+async fn assert_forged_managed_key_create_is_held(created: Vec<Field>) {
+    const HONEST_FIRST: usize = 3;
+    const FORGED_FIRST: usize = 4;
+    let mut replicas = shared(5, &other_project_sql()).await;
+    replicas[0].exec(&managed_folder_sql()).await;
+    replicas[0].seal().await.unwrap();
+    let honest = sealed_change(
+        &mut replicas[0],
+        FOLDERS_TABLE,
+        MANAGED_FOLDER,
+        ChangeAction::Create,
+    )
+    .await;
+    seal_unrelated_edit(&mut replicas[1], "Create forger").await;
+    seal_unrelated_edit(&mut replicas[2], "Tombstone forger").await;
+    let forged_create = forge_at(
+        &mut replicas[1],
+        with_group(honest, folder_group::CREATED, created),
+        Hlc::new(1, 0),
+    )
+    .await;
+    let create_delivery = delivery_with(&mut replicas[1], forged_create).await;
+    let forged_tombstone = forge_change(&mut replicas[2], folder_tombstone(MANAGED_FOLDER)).await;
+    let tombstone_delivery = delivery_with(&mut replicas[2], forged_tombstone).await;
+
+    pull_all(&mut replicas, HONEST_FIRST, 0).await;
+    for receiver in [HONEST_FIRST, FORGED_FIRST] {
+        let outcomes = replicas[receiver].receive(&create_delivery).await;
+        assert_eq!(
+            outcomes.last(),
+            Some(&StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }),
+            "replica {receiver} admitted the forged Create"
+        );
+        replicas[receiver].apply_all().await.unwrap();
+        deliver(&mut replicas[receiver], &tombstone_delivery).await;
+    }
+    pull_all(&mut replicas, FORGED_FIRST, 0).await;
+    for replica in &mut replicas[HONEST_FIRST..] {
+        assert_eq!(
+            folder_owner(replica, MANAGED_FOLDER).await,
+            [format!("{PROJECT}|managed")],
+            "replica {}",
+            replica.index
+        );
+        assert_eq!(folders_and_grants(replica).await, every_folder_and_grant());
+        replica.check_invariants().await;
+    }
+
+    // The forger's own writer would hold its forged operation and stop sealing, so only the
+    // honest replicas converge.
+    replicas.remove(1);
+    converge(&mut replicas).await;
+    assert_converged(&mut replicas).await;
+    for replica in &mut replicas {
+        assert_eq!(
+            folder_owner(replica, MANAGED_FOLDER).await,
+            [format!("{PROJECT}|managed")]
+        );
+    }
+}
+
+#[test]
+fn a_forged_external_create_on_a_managed_key_is_held() {
+    block_on(assert_forged_managed_key_create_is_held(vec![
+        Field::Text(PROJECT.to_owned()),
+        Field::Text("external".to_owned()),
+        Field::Null,
+        Field::Integer(0),
+        Field::Text(CREATED.to_owned()),
+    ]));
+}
+
+#[test]
+fn a_forged_external_create_under_another_project_on_a_managed_key_is_held() {
+    block_on(assert_forged_managed_key_create_is_held(vec![
+        Field::Text(OTHER_PROJECT.to_owned()),
+        Field::Text("external".to_owned()),
+        Field::Null,
+        Field::Integer(0),
+        Field::Text(CREATED.to_owned()),
+    ]));
+}
+
+#[test]
+fn a_forged_managed_create_of_another_project_on_a_managed_key_is_held() {
+    block_on(assert_forged_managed_key_create_is_held(vec![
+        Field::Text(OTHER_PROJECT.to_owned()),
+        Field::Text("managed".to_owned()),
+        Field::Text(format!("projects/{OTHER_PROJECT}")),
+        Field::Integer(0),
+        Field::Text(CREATED.to_owned()),
+    ]));
+}
+
+#[test]
+fn seeded_managed_folders_are_keyed_by_their_project() {
+    block_on(async {
+        let mut replica = Replica::new(0, 96).await;
+        let rows = texts(
+            &mut replica,
+            "SELECT id || '|' || project_id FROM project_working_folders WHERE kind = 'managed'",
+        )
+        .await;
+        assert!(!rows.is_empty());
+        for row in rows {
+            let (folder, project) = row.split_once('|').unwrap();
+            assert_eq!(
+                ganbaru_working_folders::managed_folder_project(folder).as_deref(),
+                Some(project),
+                "{folder}"
+            );
+        }
+    });
+}
+
+#[test]
+fn an_external_folder_with_a_client_key_replicates() {
+    const CLIENT_FOLDER: &str = "working-folder:external:0f8e2c4a-6b1d-4e3f-9a7c-5d2b8e1f0a63";
+    block_on(async {
+        let created = quoted(CREATED);
+        let mut replicas = shared(
+            2,
+            &format!(
+                "INSERT INTO project_working_folders
+                     (id, project_id, display_name, kind, managed_relative_path, created_at,
+                      updated_at)
+                 VALUES ({folder}, {project}, 'Repository', 'external', NULL, {created},
+                         {created});",
+                folder = quoted(CLIENT_FOLDER),
+                project = quoted(PROJECT),
+            ),
+        )
+        .await;
+        assert_eq!(
+            folder_owner(&mut replicas[1], CLIENT_FOLDER).await,
+            [format!("{PROJECT}|external")]
+        );
+        assert_converged(&mut replicas).await;
     });
 }

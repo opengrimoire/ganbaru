@@ -2,4 +2,4 @@
 
 pub mod canonical;
 mod engine;
-mod rule;
+pub(crate) mod rule;

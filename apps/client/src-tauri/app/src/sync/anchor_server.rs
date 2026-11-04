@@ -1,7 +1,8 @@
-//! Adding an always-on anchor server to the active vault from an admin desktop, and recovering a
-//! vault through such a server on a new desktop after every device was lost.
+//! Adding an always-on anchor server to the active vault from an admin desktop, joining the vault
+//! such a server runs from a desktop that never met another device, and recovering a vault through
+//! it after every device was lost.
 //!
-//! A server dials nobody, so both flows run in reverse over a setup conversation this device opens
+//! A server dials nobody, so every flow runs in reverse over a setup conversation this device opens
 //! with the code the operator printed. No admin key or person key leaves this device.
 
 use super::authority;
@@ -10,19 +11,22 @@ use super::host::{AppHost, SyncHost};
 use super::server::{SyncServerAdded, SyncServerError, admin_context};
 use super::service::{AuthorityAction, SyncRuntime, blocking};
 use super::writer::ensure_device_key;
-use super::{AnsweredKitKeys, RECOVERY_KIT_MISMATCH, RecoveryBinding};
+use super::{AnsweredKitKeys, CopyProof, JoinedKeys, RECOVERY_KIT_MISMATCH, RecoveryBinding};
 use crate::vault::handoff::pairing::{PairingManager, PinnedCharter, random_token};
 use crate::vault::handoff::protocol::encode_sync_charter;
 use crate::vault::handoff::receiver::{ReceiveOutcome, receive_recovered};
 use crate::vault::handoff::snapshot::{archive_active_vault, bundle_metadata};
 use crate::vault::quiescence::begin_snapshot_quiescence;
+use ganbaru_contacts::PersonPublicKey;
 use ganbaru_handoff::protocol::anchor::{AnchorSetupCode, AnchorSpace};
 use ganbaru_handoff::protocol::decode_sync_admin_key;
 use ganbaru_sync::{AuthorizationView, Engine, EnrolledDevice, local};
 use ganbaru_sync_contracts::authorization::Server;
-use ganbaru_sync_contracts::{DeviceKind, DeviceRole, KitCode, RecoveryPublicKeys};
+use ganbaru_sync_contracts::{
+    AdminPublicKey, DeviceKind, DeviceRole, KitCode, RecoveryPublicKeys, SignedCharter,
+};
 use ganbaru_sync_replica::anchor_setup::{
-    AnchorSetupError, SetupConnection, open_setup, setup_target,
+    AnchorSetupError, JoinOutcome, JoinRequest, SetupConnection, open_setup, setup_target,
 };
 use ganbaru_sync_replica::authority::{
     Enrollment, ensure_admin_key, kit_public_keys, recovery_enrollment,
@@ -212,6 +216,55 @@ pub(super) async fn add_anchor_server<R: Runtime>(
     Ok(SyncServerAdded::Active)
 }
 
+/// The vault a setup connection's server runs, with the charter this device then pins. Refused
+/// when the server runs nothing yet or that vault is already open here.
+fn served_space<R: Runtime>(
+    app: &AppHandle<R>,
+    connection: &SetupConnection,
+) -> Result<(AnchorSpace, SignedCharter, PersonPublicKey), String> {
+    let space = connection
+        .identity()
+        .space
+        .clone()
+        .ok_or_else(|| "this server runs no vault yet".to_string())?;
+    let pinned = PinnedCharter {
+        charter: space.charter.clone(),
+        person_key: space.person_key.clone(),
+    };
+    let (charter, person_key) = super::host::charter_trust(&pinned, &space.vault_id)?;
+    if AppHost::of(app).active_vault_id()? == space.vault_id {
+        return Err("this vault is already open on this device".to_string());
+    }
+    Ok((space, charter, person_key))
+}
+
+/// The enrollment of this desktop as an admin of `vault_id`, creating its keys on first use, with
+/// the admin key it holds.
+async fn own_enrollment<R: Runtime>(
+    app: &AppHandle<R>,
+    vault_id: &str,
+    label: String,
+) -> Result<(Enrollment, AdminPublicKey), String> {
+    let store = AppHost::of(app).key_store()?;
+    let owned_vault_id = vault_id.to_string();
+    let (device, admin) = blocking(move || {
+        Ok((
+            ensure_device_key(store.as_ref(), &owned_vault_id)?,
+            ensure_admin_key(store.as_ref(), &owned_vault_id)?,
+        ))
+    })
+    .await?;
+    let pairing = app.state::<PairingManager>();
+    let enrollment = Enrollment {
+        device_id: pairing.device_id()?,
+        device_key: device.public_key(),
+        tls_fingerprint: Sha256::digest(pairing.certificate()?.as_ref()).into(),
+        label,
+        device_kind: DeviceKind::Desktop,
+    };
+    Ok((enrollment, admin.public_key()))
+}
+
 /// Recovers the vault an anchor server runs on this new desktop: proves the code, derives the
 /// recovery admin key from `kit` in memory, enrolls this desktop as an admin through the server,
 /// and copies the vault into a new folder. The server must name the kit's admin key before the
@@ -230,45 +283,18 @@ pub async fn sync_recover_through_server(
     let mut connection = open(&app, &code, None)
         .await
         .map_err(|error| error.to_string())?;
-    let space = connection
-        .identity()
-        .space
-        .clone()
-        .ok_or_else(|| "this server runs no vault yet".to_string())?;
-    let pinned = PinnedCharter {
-        charter: space.charter.clone(),
-        person_key: space.person_key.clone(),
-    };
-    let (charter, person_key) = super::host::charter_trust(&pinned, &space.vault_id)?;
-    if AppHost::of(&app).active_vault_id()? == space.vault_id {
-        return Err("this vault is already open on this device".to_string());
-    }
+    let (space, charter, person_key) = served_space(&app, &connection)?;
     let answered = server_names_kit(&space, &kit_keys)?;
-    let host = AppHost::of(&app);
-    let files = host.sync_files(&space.vault_id)?;
+    let files = AppHost::of(&app).sync_files(&space.vault_id)?;
     if !files.server_sync_path().exists() {
-        let store = host.key_store()?;
-        let vault_id = space.vault_id.clone();
-        let (device, admin) = blocking(move || {
-            Ok((
-                ensure_device_key(store.as_ref(), &vault_id)?,
-                ensure_admin_key(store.as_ref(), &vault_id)?,
-            ))
-        })
-        .await?;
-        let pairing = app.state::<PairingManager>();
+        let label = RECOVERED_DESKTOP_LABEL.to_string();
+        let (enrollment, admin_key) = own_enrollment(&app, &space.vault_id, label).await?;
         let proposal = recovery_enrollment(
             charter.charter.space,
             charter.hash(),
             &kit,
-            Enrollment {
-                device_id: pairing.device_id()?,
-                device_key: device.public_key(),
-                tls_fingerprint: Sha256::digest(pairing.certificate()?.as_ref()).into(),
-                label: RECOVERED_DESKTOP_LABEL.to_string(),
-                device_kind: DeviceKind::Desktop,
-            },
-            admin.public_key(),
+            enrollment,
+            admin_key,
             super::now_ms()?,
         )?;
         connection
@@ -281,8 +307,66 @@ pub async fn sync_recover_through_server(
     let binding = RecoveryBinding {
         charter,
         person_key,
-        kit: kit_keys,
-        answered,
+        proof: CopyProof::Kit {
+            keys: kit_keys,
+            answered,
+        },
+    };
+    receive_recovered(app, setup_target(&code), space.vault_id, binding).await
+}
+
+/// Refusal of a join the server holds until the vault's anchor collects it. The webview maps it
+/// to a localized message, so the text is stable.
+pub(crate) const JOIN_WAITING_FOR_ANCHOR: &str =
+    "the server holds this enrollment until the vault's anchor is online";
+
+/// Joins the vault an always-on server runs on this desktop, which needs no other device: proves
+/// the code, asks the server to enroll this desktop as an admin, and copies the vault into a new
+/// folder. The code is the trust: only a shell on the server prints it, and it pins the server's
+/// certificate. The copy opens only when its log verifies under the charter the server answered
+/// and enrolls this desktop with the keys it joined with. A copy that failed after the
+/// enrollment, or a join the server holds for its anchor, is repeated with a fresh code.
+#[tauri::command]
+pub async fn sync_join_through_server(
+    app: AppHandle,
+    code: String,
+) -> Result<ReceiveOutcome, String> {
+    let code = AnchorSetupCode::from_text(code.trim())?;
+    let mut connection = open(&app, &code, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    let (space, charter, person_key) = served_space(&app, &connection)?;
+    let label = crate::vault::handoff::suggested_device_label();
+    let (enrollment, admin_key) = own_enrollment(&app, &space.vault_id, label.clone()).await?;
+    let joined = JoinedKeys {
+        device_id: enrollment.device_id.clone(),
+        device_key: enrollment.device_key,
+        admin_key,
+    };
+    let files = AppHost::of(&app).sync_files(&space.vault_id)?;
+    if !files.server_sync_path().exists() {
+        let request = JoinRequest {
+            device_id: enrollment.device_id,
+            device_label: label,
+            device_key: enrollment.device_key,
+            admin_key,
+            tls_fingerprint: enrollment.tls_fingerprint,
+        };
+        match connection
+            .join(&request)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            JoinOutcome::Enrolled(_) => {}
+            JoinOutcome::WaitingForAnchor => return Err(JOIN_WAITING_FOR_ANCHOR.to_string()),
+        }
+        blocking(move || files.mark_server_sync()).await?;
+    }
+    drop(connection);
+    let binding = RecoveryBinding {
+        charter,
+        person_key,
+        proof: CopyProof::Joined(joined),
     };
     receive_recovered(app, setup_target(&code), space.vault_id, binding).await
 }

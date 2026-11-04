@@ -661,7 +661,7 @@ pub(crate) fn handoff_suggested_device_label() -> String {
 }
 
 #[cfg(target_os = "android")]
-fn suggested_device_label() -> String {
+pub(crate) fn suggested_device_label() -> String {
     std::process::Command::new("getprop")
         .arg("ro.product.model")
         .output()
@@ -673,7 +673,7 @@ fn suggested_device_label() -> String {
 }
 
 #[cfg(desktop)]
-fn suggested_device_label() -> String {
+pub(crate) fn suggested_device_label() -> String {
     std::env::var("HOSTNAME")
         .ok()
         .and_then(|label| normalized_device_label(&label))
@@ -686,7 +686,7 @@ fn suggested_device_label() -> String {
 }
 
 #[cfg(target_os = "ios")]
-fn suggested_device_label() -> String {
+pub(crate) fn suggested_device_label() -> String {
     "Phone".to_string()
 }
 

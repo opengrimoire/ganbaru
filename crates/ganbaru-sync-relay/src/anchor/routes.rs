@@ -11,12 +11,14 @@ use ganbaru_handoff::pairing::{PinnedCharter, certificate_fingerprint};
 use ganbaru_handoff::protocol::anchor::{self, AnchorSpace, SETUP_REFUSED_CODE};
 use ganbaru_handoff::protocol::relay::RelaySetupToken;
 use ganbaru_handoff::protocol::{
-    self, BundleMetadata, ControlMessage, encode_sync_admin_key, encode_sync_charter,
-    encode_sync_device_key, read_control_limited, relay, validate_identifier, write_control,
+    self, BundleMetadata, ControlMessage, decode_certificate_fingerprint, decode_sync_admin_key,
+    decode_sync_device_key, encode_sync_admin_key, encode_sync_charter, encode_sync_device_key,
+    read_control_limited, relay, validate_identifier, write_control,
 };
-use ganbaru_sync::{Engine, local};
+use ganbaru_sync::{AuthorizationView, Engine, SpaceContext, local};
+use ganbaru_sync_contracts::{AdminPublicKey, DeviceKind, DeviceRole};
 use ganbaru_sync_replica::anchor_link::local_compatibility;
-use ganbaru_sync_replica::authority::ensure_admin_key;
+use ganbaru_sync_replica::authority::{Enrollment, admin_enroll_entry, ensure_admin_key, propose};
 use ganbaru_sync_replica::hub::SyncHub;
 use ganbaru_sync_replica::serve::bundles::MemberBundles;
 use ganbaru_sync_replica::serve::{
@@ -48,6 +50,34 @@ pub struct SetupRoute {
     pub upload: tokio::sync::Mutex<()>,
     /// Held while a proof binds the setup secret to its vault.
     pub binding: std::sync::Mutex<()>,
+}
+
+/// A desktop's request to join the vault, decoded from a validated [`ControlMessage::AnchorJoin`].
+struct JoinRequest {
+    enrollment: Enrollment,
+    admin_key: AdminPublicKey,
+}
+
+impl JoinRequest {
+    fn decode(
+        device_id: String,
+        label: String,
+        device_key: &str,
+        admin_key: &str,
+        tls_fingerprint: &str,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            enrollment: Enrollment {
+                device_id,
+                device_key: decode_sync_device_key(device_key)?,
+                tls_fingerprint: decode_certificate_fingerprint(tls_fingerprint)
+                    .ok_or_else(|| "the device fingerprint is malformed".to_string())?,
+                label,
+                device_kind: DeviceKind::Desktop,
+            },
+            admin_key: decode_sync_admin_key(admin_key)?,
+        })
+    }
 }
 
 /// The routes of an anchor listener.
@@ -318,6 +348,22 @@ impl SetupRoute {
             Ok(ControlMessage::AnchorRecover { proposal }) => {
                 self.recover(stream, vault_id, proposal).await
             }
+            Ok(ControlMessage::AnchorJoin {
+                device_id,
+                device_label,
+                device_key,
+                admin_key,
+                tls_fingerprint,
+            }) => {
+                let request = JoinRequest::decode(
+                    device_id,
+                    device_label,
+                    &device_key,
+                    &admin_key,
+                    &tls_fingerprint,
+                )?;
+                self.join(stream, vault_id, request).await
+            }
             Ok(_) => {
                 send_error(
                     stream,
@@ -448,6 +494,84 @@ impl SetupRoute {
             super::state::consume_setup_secret(self.host.paths())?;
         }
         timeout_control(write_control(stream, &answer)).await
+    }
+
+    /// Enrolls the desktop that proved the secret as an admin, signed with this server's admin
+    /// key. A desktop the selected log already enrolls with the same keys gets the current
+    /// revision, so a retry after the anchor collected the proposal succeeds. The secret is spent
+    /// once the log enrolls the desktop.
+    async fn join(
+        &self,
+        stream: &mut ServerStream,
+        vault_id: &str,
+        request: JoinRequest,
+    ) -> Result<(), String> {
+        let Some((ctx, view)) = self.authorization(vault_id).await? else {
+            return refuse_setup(stream, "this server does not run that vault yet").await;
+        };
+        let enrolled = view
+            .devices
+            .iter()
+            .find(|device| device.device_id == request.enrollment.device_id);
+        if let Some(device) = enrolled {
+            let same = device.removed_revision.is_none()
+                && device.device_key == request.enrollment.device_key
+                && device.tls_fingerprint == request.enrollment.tls_fingerprint
+                && device.role == DeviceRole::Admin(request.admin_key);
+            if !same {
+                return refuse_setup(stream, "the vault already knows this device id").await;
+            }
+            super::state::consume_setup_secret(self.host.paths())?;
+            let answer = ControlMessage::SyncProposed {
+                revision: Some(view.revision),
+                rejection: None,
+            };
+            return timeout_control(write_control(stream, &answer)).await;
+        }
+        let keys = self.host.keys();
+        let owned_vault_id = vault_id.to_string();
+        let admin = blocking(move || ensure_admin_key(&keys, &owned_vault_id)).await?;
+        let now_ms = u64::try_from(unix_time_ms())
+            .map_err(|_| "the system clock is before the Unix epoch".to_string())?;
+        let proposal = propose(
+            ctx.space,
+            view.charter,
+            &admin,
+            admin_enroll_entry(request.enrollment, request.admin_key),
+            now_ms,
+        )?;
+        self.recover(stream, vault_id, protocol::encode_sync_proposal(&proposal))
+            .await
+    }
+
+    /// The space context and selected authorization of `vault_id`, `None` when this server does
+    /// not run it.
+    async fn authorization(
+        &self,
+        vault_id: &str,
+    ) -> Result<Option<(SpaceContext, AuthorizationView)>, String> {
+        let Some(active) = self.host.activation()? else {
+            return Ok(None);
+        };
+        if active.vault_id != vault_id {
+            return Ok(None);
+        }
+        let pool = self.host.connect_for_sync().await?;
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|error| format!("open the vault: {error}"))?;
+        let Some(ctx) = local::space_context(&mut conn, vault_id)
+            .await
+            .map_err(|error| format!("read sync space: {error}"))?
+        else {
+            return Ok(None);
+        };
+        let view = Engine::vault()
+            .authorization(&mut conn, &ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?;
+        Ok(view.map(|view| (ctx, view)))
     }
 }
 

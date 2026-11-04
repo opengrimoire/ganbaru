@@ -195,6 +195,18 @@ pub fn enroll_entry(enrollment: Enrollment) -> Entry {
     })
 }
 
+/// The entry that enrolls a desktop as an admin holding `admin_key`.
+pub fn admin_enroll_entry(enrollment: Enrollment, admin_key: AdminPublicKey) -> Entry {
+    Entry::Enroll(Enroll {
+        device_id: enrollment.device_id,
+        device_key: enrollment.device_key,
+        tls_fingerprint: enrollment.tls_fingerprint,
+        label: enrollment.label,
+        device_kind: enrollment.device_kind,
+        role: DeviceRole::Admin(admin_key),
+    })
+}
+
 /// The entry that removes a device.
 pub fn remove_entry(device_id: &str) -> Entry {
     Entry::Remove(Remove {
@@ -770,15 +782,13 @@ pub fn recovery_enrollment(
     now_ms: u64,
 ) -> Result<SignedProposal, String> {
     let recovery = kit_admin(kit_code)?;
-    let entry = Entry::Enroll(Enroll {
-        role: DeviceRole::Admin(admin_key),
-        device_id: enrollment.device_id,
-        device_key: enrollment.device_key,
-        tls_fingerprint: enrollment.tls_fingerprint,
-        label: enrollment.label,
-        device_kind: enrollment.device_kind,
-    });
-    propose(space, charter, &recovery, entry, now_ms)
+    propose(
+        space,
+        charter,
+        &recovery,
+        admin_enroll_entry(enrollment, admin_key),
+        now_ms,
+    )
 }
 
 /// The enrolled devices other than `own_device_id`, the anchor, and servers that are not removed and

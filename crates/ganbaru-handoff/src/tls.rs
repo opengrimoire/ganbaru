@@ -184,11 +184,15 @@ mod tests {
         let (linked_root, linked) = device_certificate("linked");
         let (other_root, other) = device_certificate("other");
         let verifier = PinnedClientVerifier::new(std::slice::from_ref(&linked));
+        let now = UnixTime::since_unix_epoch(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after the Unix epoch"),
+        );
 
-        let accepted = verifier.verify_client_cert(&linked, &[], UnixTime::now());
-        let unknown = verifier.verify_client_cert(&other, &[], UnixTime::now());
-        let chained =
-            verifier.verify_client_cert(&linked, std::slice::from_ref(&other), UnixTime::now());
+        let accepted = verifier.verify_client_cert(&linked, &[], now);
+        let unknown = verifier.verify_client_cert(&other, &[], now);
+        let chained = verifier.verify_client_cert(&linked, std::slice::from_ref(&other), now);
         let _ = std::fs::remove_dir_all(linked_root);
         let _ = std::fs::remove_dir_all(other_root);
 

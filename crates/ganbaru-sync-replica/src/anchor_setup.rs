@@ -4,7 +4,8 @@
 //! client certificate, proves the setup secret, and learns the keys the server enrolls with. Once
 //! the selected log enrolls the server, a second setup connection uploads the snapshot it runs.
 //! After every device is lost, a new device proves a fresh secret and sends a proposal the
-//! recovery admin key signed over the same connection.
+//! recovery admin key signed over the same connection. A desktop that never met another device
+//! instead asks the server to enroll it, signed with the server's own admin key.
 
 use crate::anchor_link::{
     ServerStream, ServerTarget, dial_server, local_compatibility, request_on,
@@ -20,7 +21,9 @@ use ganbaru_handoff::protocol::{
     self, BundleMetadata, ControlMessage, decode_sync_admin_key, decode_sync_device_key,
     read_control, relay, write_control,
 };
-use ganbaru_sync_contracts::{Server, ServerMode, SignedProposal};
+use ganbaru_sync_contracts::{
+    AdminPublicKey, DevicePublicKey, ProposalRejection, Server, ServerMode, SignedProposal,
+};
 use std::fmt;
 use std::path::Path;
 use std::time::Duration;
@@ -83,6 +86,31 @@ pub struct ServerIdentity {
     pub enrollment: ServerEnrollment,
     /// The space the server already runs, unverified until the caller checks its charter.
     pub space: Option<AnchorSpace>,
+}
+
+/// The keys a desktop asks a server to enroll it with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JoinRequest {
+    pub device_id: String,
+    pub device_label: String,
+    pub device_key: DevicePublicKey,
+    pub admin_key: AdminPublicKey,
+    /// SHA-256 of the certificate this desktop dials members with.
+    pub tls_fingerprint: [u8; 32],
+}
+
+/// How a server answered a request to join its vault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinOutcome {
+    /// The authorization log enrolls this desktop at this revision.
+    Enrolled(u64),
+    /// The server holds the enrollment until the anchor collects it; retry once the anchor is
+    /// online.
+    WaitingForAnchor,
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// A setup connection after the device proved the secret.
@@ -238,6 +266,41 @@ impl SetupConnection {
                 "the server rejected the recovery proposal with code {rejection}"
             ))),
             other => Err(unexpected(other, "the recovery proposal")),
+        }
+    }
+
+    /// Asks the server to enroll this desktop as an admin of the vault it runs. The server signs
+    /// the enrollment with its own admin key, so no other device needs to be online, but only the
+    /// anchor can sequence it.
+    pub async fn join(&mut self, request: &JoinRequest) -> Result<JoinOutcome, AnchorSetupError> {
+        let answer = request_on(
+            &mut self.stream,
+            &ControlMessage::AnchorJoin {
+                device_id: request.device_id.clone(),
+                device_label: request.device_label.clone(),
+                device_key: protocol::encode_sync_device_key(&request.device_key),
+                admin_key: protocol::encode_sync_admin_key(&request.admin_key),
+                tls_fingerprint: lowercase_hex(&request.tls_fingerprint),
+            },
+        )
+        .await?;
+        let not_anchor = ProposalRejection::NotAnchor.as_u8();
+        match answer {
+            ControlMessage::SyncProposed {
+                revision: Some(revision),
+                ..
+            } => Ok(JoinOutcome::Enrolled(revision)),
+            ControlMessage::SyncProposed {
+                rejection: Some(rejection),
+                ..
+            } if rejection == not_anchor => Ok(JoinOutcome::WaitingForAnchor),
+            ControlMessage::SyncProposed {
+                rejection: Some(rejection),
+                ..
+            } => Err(AnchorSetupError::Other(format!(
+                "the server rejected the enrollment with code {rejection}"
+            ))),
+            other => Err(unexpected(other, "the enrollment")),
         }
     }
 }

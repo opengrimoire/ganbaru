@@ -517,9 +517,9 @@ async fn receive_recovered_copy(
     })
 }
 
-/// Holds the recovered copy of `vault_id` staged at `staging` to the kit `binding` names. A copy
-/// that fails is removed. A copy that does not belong to the kit also removes the recovery
-/// marker at `marker`, so the next attempt asks the server again before it signs anything; a
+/// Holds the copy of `vault_id` staged at `staging` to the proof `binding` names. A copy that
+/// fails is removed. A copy that does not satisfy the proof also removes the server sync marker
+/// at `marker`, so the next attempt asks the server again before it signs anything; a
 /// copy that only failed to read keeps it, so a retry skips the enrollment it already sent.
 #[cfg(desktop)]
 async fn settle_recovered_copy(
@@ -544,7 +544,7 @@ async fn settle_recovered_copy(
             {
                 eprintln!("failed to remove the server sync marker: {error}");
             }
-            Err(crate::sync::RECOVERY_KIT_MISMATCH.to_string())
+            Err(binding.proof.mismatch().to_string())
         }
         crate::sync::RecoveredCopyError::Failed(error) => Err(error),
     }

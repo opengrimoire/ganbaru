@@ -659,6 +659,7 @@ commands.allow = [
   "sync_contests",
   "sync_create_recovery_kit",
   "sync_force_anchor",
+  "sync_join_through_server",
   "sync_late_change_discard",
   "sync_late_change_restore",
   "sync_late_changes",

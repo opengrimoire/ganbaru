@@ -21,7 +21,7 @@ use ganbaru_handoff::protocol::decode_sync_charter;
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync::{ChangeNotice, Engine, Hooks, SpaceContext};
 #[cfg(desktop)]
-use ganbaru_sync_contracts::{AdminPublicKey, RecoveryPublicKeys};
+use ganbaru_sync_contracts::{AdminPublicKey, DevicePublicKey, DeviceRole, RecoveryPublicKeys};
 use ganbaru_sync_contracts::{SignedCharter, SpaceId};
 use ganbaru_sync_replica::assets::AssetStore;
 use ganbaru_sync_replica::recovery::RecoveryRestorers;
@@ -224,32 +224,88 @@ pub(crate) struct AnsweredKitKeys {
     pub recovery_admin_key: AdminPublicKey,
 }
 
-/// What a recovered copy must prove before it activates.
+/// Refusal of a vault copy from a server whose log does not enroll this desktop with the keys it
+/// joined with. The webview maps it to a localized message, so the text is stable.
+#[cfg(desktop)]
+pub(crate) const JOINED_COPY_MISMATCH: &str =
+    "the vault on this server does not enroll this device";
+
+/// The keys a desktop joined a server's vault with.
+#[cfg(desktop)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct JoinedKeys {
+    pub device_id: String,
+    pub device_key: DevicePublicKey,
+    pub admin_key: AdminPublicKey,
+}
+
+/// What ties a copy from a server to this desktop beyond its charter.
+#[cfg(desktop)]
+#[derive(Clone, Debug)]
+pub(crate) enum CopyProof {
+    /// The log names the recovery kit through a key the server answered.
+    Kit {
+        keys: RecoveryPublicKeys,
+        answered: AnsweredKitKeys,
+    },
+    /// The log enrolls this desktop as an admin with the keys it joined with.
+    Joined(JoinedKeys),
+}
+
+#[cfg(desktop)]
+impl CopyProof {
+    /// The stable refusal of a copy that does not satisfy this proof.
+    pub(crate) fn mismatch(&self) -> &'static str {
+        match self {
+            Self::Kit { .. } => RECOVERY_KIT_MISMATCH,
+            Self::Joined(_) => JOINED_COPY_MISMATCH,
+        }
+    }
+
+    fn holds(&self, view: &ganbaru_sync::AuthorizationView) -> bool {
+        match self {
+            Self::Kit { keys, answered } => {
+                let kit = keys.admin;
+                let paired = (view.kit_admin_key == kit && answered.kit_admin_key == kit)
+                    || (view.recovery_admin_key == kit && answered.recovery_admin_key == kit);
+                paired && ganbaru_sync_replica::authority::log_names_kit(view, keys)
+            }
+            Self::Joined(joined) => view.devices.iter().any(|device| {
+                device.device_id == joined.device_id
+                    && device.removed_revision.is_none()
+                    && device.device_key == joined.device_key
+                    && device.role == DeviceRole::Admin(joined.admin_key)
+            }),
+        }
+    }
+}
+
+/// What a copy from a server must prove before it activates.
 #[cfg(desktop)]
 #[derive(Clone, Debug)]
 pub(crate) struct RecoveryBinding {
     pub charter: SignedCharter,
     pub person_key: PersonPublicKey,
-    pub kit: RecoveryPublicKeys,
-    pub answered: AnsweredKitKeys,
+    pub proof: CopyProof,
 }
 
-/// Why a recovered copy did not prove it belongs to the kit.
+/// Why a copy from a server did not prove it belongs to this desktop.
 #[cfg(desktop)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RecoveredCopyError {
     /// The staged charter differs, no authorization log survives verification, or the log does
-    /// not name the kit through a key the server answered.
+    /// not satisfy the binding's proof.
     Mismatch,
-    /// I/O and SQLite errors, which say nothing about the kit.
+    /// I/O and SQLite errors, which say nothing about the vault.
     Failed(String),
 }
 
-/// Verifies the recovered copy of `vault_id` staged at `staging` against `binding`: its log must
-/// verify under the charter the recovery enrolled under and name the kit through a key the
-/// server answered, the kit key as the kit key or the recovery key as the recovery key. A server
-/// that learned the kit's admin key from the enrollment cannot move it into the other slot of
-/// a log it forged.
+/// Verifies the copy of `vault_id` staged at `staging` against `binding`: its log must verify
+/// under the charter the enrollment was signed under and satisfy the proof. A kit proof needs the
+/// log to name the kit through a key the server answered, the kit key as the kit key or the
+/// recovery key as the recovery key, so a server that learned the kit's admin key from the
+/// enrollment cannot move it into the other slot of a log it forged. A joined proof needs the log
+/// to enroll this desktop as an admin with the keys it joined with.
 #[cfg(desktop)]
 pub(crate) async fn verify_recovered_copy(
     staging: &std::path::Path,
@@ -312,14 +368,7 @@ async fn verify_recovered_log(
             RecoveredCopyError::Failed(format!("read the recovered copy's sync log: {error}"))
         })?
         .ok_or(RecoveredCopyError::Mismatch)?;
-    let kit = binding.kit.admin;
-    let answered = &binding.answered;
-    let paired = (view.kit_admin_key == kit && answered.kit_admin_key == kit)
-        || (view.recovery_admin_key == kit && answered.recovery_admin_key == kit);
-    if view.charter != binding.charter.hash()
-        || !ganbaru_sync_replica::authority::log_names_kit(&view, &binding.kit)
-        || !paired
-    {
+    if view.charter != binding.charter.hash() || !binding.proof.holds(&view) {
         return Err(RecoveredCopyError::Mismatch);
     }
     Ok(())

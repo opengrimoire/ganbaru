@@ -1,18 +1,20 @@
 //! A copy recovered through a server opens only when its log names the kit through a key the
-//! server answered before the kit's public key left this device.
+//! server answered before the kit's public key left this device, and a copy joined through a
+//! server only when its log enrolls this desktop with the keys it joined with.
 
 use super::settle_recovered_copy;
 use crate::sync::{
-    AnsweredKitKeys, RECOVERY_KIT_MISMATCH, RecoveredCopyError, RecoveryBinding,
-    verify_recovered_copy,
+    AnsweredKitKeys, CopyProof, JOINED_COPY_MISMATCH, JoinedKeys, RECOVERY_KIT_MISMATCH,
+    RecoveredCopyError, RecoveryBinding, verify_recovered_copy,
 };
 use crate::vault::APP_SQLITE_FILE;
 use ganbaru_contacts::{PersonKeyPair, PersonPublicKey};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync::{Engine, LocalWriter, SequenceReservation, local};
 use ganbaru_sync_contracts::{
-    AdminKeyPair, AdminPublicKey, DeviceKeyPair, Entry, RecoveryPublicKeys, RecoverySeed, SetRole,
-    SignedCharter, WriterCertificate, WriterKeyPair, sign_certificate,
+    AdminKeyPair, AdminPublicKey, DeviceKeyPair, DeviceKind, DeviceRole, Enroll, Entry,
+    RecoveryPublicKeys, RecoverySeed, SetRole, SignedCharter, WriterCertificate, WriterKeyPair,
+    sign_certificate,
 };
 use ganbaru_sync_replica::authority::{self, AnchorKeys, Founding, charter_hash, ensure_charter};
 use std::path::{Path, PathBuf};
@@ -181,10 +183,12 @@ fn binding(
     RecoveryBinding {
         charter,
         person_key,
-        kit,
-        answered: AnsweredKitKeys {
-            kit_admin_key,
-            recovery_admin_key,
+        proof: CopyProof::Kit {
+            keys: kit,
+            answered: AnsweredKitKeys {
+                kit_admin_key,
+                recovery_admin_key,
+            },
         },
     }
 }
@@ -351,4 +355,70 @@ async fn recovery_accepts_the_printed_and_replaced_kits() {
         "the verified copy stays staged to activate"
     );
     assert!(marker.exists());
+}
+
+fn admin_enrollment(device_id: &str, device: &DeviceKeyPair, admin: &AdminKeyPair) -> Entry {
+    Entry::Enroll(Enroll {
+        device_id: device_id.to_string(),
+        device_key: device.public_key(),
+        tls_fingerprint: [76; 32],
+        label: "Work desktop".to_string(),
+        device_kind: DeviceKind::Desktop,
+        role: DeviceRole::Admin(admin.public_key()),
+    })
+}
+
+#[tokio::test]
+async fn a_joined_copy_opens_only_when_its_log_enrolls_this_desktop() {
+    let device = DeviceKeyPair::from_seed(&[77; 32]).unwrap();
+    let admin = AdminKeyPair::from_seed(&[78; 32]).unwrap();
+    let joined = JoinedKeys {
+        device_id: "device-joined".to_string(),
+        device_key: device.public_key(),
+        admin_key: admin.public_key(),
+    };
+    let proof = |trust: (SignedCharter, PersonPublicKey), joined: JoinedKeys| RecoveryBinding {
+        charter: trust.0,
+        person_key: trust.1,
+        proof: CopyProof::Joined(joined),
+    };
+
+    let root = TempDir::new();
+    let staging = root.0.join("staging");
+    let trust = stage_log(
+        &staging,
+        keys_of(VICTIM),
+        vec![(
+            anchor_admin(),
+            admin_enrollment("device-joined", &device, &admin),
+        )],
+    )
+    .await;
+    assert_eq!(
+        verify_recovered_copy(&staging, VAULT_ID, &proof(trust.clone(), joined.clone())).await,
+        Ok(())
+    );
+    let other_admin = JoinedKeys {
+        admin_key: AdminKeyPair::from_seed(&[79; 32]).unwrap().public_key(),
+        ..joined.clone()
+    };
+    assert_eq!(
+        verify_recovered_copy(&staging, VAULT_ID, &proof(trust, other_admin)).await,
+        Err(RecoveredCopyError::Mismatch),
+        "the log must enroll the admin key this desktop holds"
+    );
+
+    let forged_root = TempDir::new();
+    let forged_staging = forged_root.0.join("staging");
+    let trust = stage_log(&forged_staging, keys_of(VICTIM), Vec::new()).await;
+    let marker = forged_root.0.join("server-sync");
+    write_marker(&marker);
+    let settled =
+        settle_recovered_copy(&forged_staging, &marker, VAULT_ID, &proof(trust, joined)).await;
+    assert_eq!(settled, Err(JOINED_COPY_MISMATCH.to_string()));
+    assert!(!forged_staging.exists(), "the refused copy is removed");
+    assert!(
+        !marker.exists(),
+        "a mismatch withdraws the server sync marker"
+    );
 }

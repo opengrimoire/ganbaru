@@ -18,7 +18,9 @@ use ganbaru_sync_contracts::{
     SignedCharter, WriterCertificate, WriterKeyPair, sign_certificate, sign_charter,
 };
 use ganbaru_sync_replica::anchor_link::{dial_server, local_compatibility, request_on};
-use ganbaru_sync_replica::anchor_setup::{AnchorSetupError, open_setup, setup_target};
+use ganbaru_sync_replica::anchor_setup::{
+    AnchorSetupError, JoinOutcome, JoinRequest, open_setup, setup_target,
+};
 use ganbaru_sync_replica::assets::STALE_STAGING_AGE;
 use ganbaru_sync_replica::authority::{
     self, AnchorKeys, Enrollment, Founding, charter_hash, ensure_charter,
@@ -681,6 +683,75 @@ fn a_recovery_kit_enrolls_a_new_desktop_through_the_server_as_anchor() {
                 device.device_id == "device-recovered"
                     && device.role == DeviceRole::Admin(admin.public_key())
             }));
+        })
+        .await;
+    });
+}
+
+#[test]
+fn a_desktop_joins_through_the_server_as_anchor_with_a_fresh_code() {
+    block_on(async {
+        let founder = Founder::new().await;
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor(root, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+            let server = enroll_and_upload(&founder, &code).await;
+            wait_for_anchor(root, &server).await;
+            let admin = AdminKeyPair::from_seed(&[51; 32]).unwrap();
+            let request = JoinRequest {
+                device_id: "device-joined".to_string(),
+                device_label: "Work desktop".to_string(),
+                device_key: DeviceKeyPair::from_seed(&[50; 32]).unwrap().public_key(),
+                admin_key: admin.public_key(),
+                tls_fingerprint: [52; 32],
+            };
+
+            let joined = printed_code(root, &endpoint);
+            let mut connection = open_setup(&joined, APP_VERSION, None, LoopbackPolicy::Allow)
+                .await
+                .unwrap();
+            let JoinOutcome::Enrolled(revision) = connection.join(&request).await.unwrap() else {
+                panic!("the anchor sequences the enrollment at once");
+            };
+            let view = anchor_view(root).await;
+            assert!(view.devices.iter().any(|device| {
+                device.device_id == "device-joined"
+                    && device.kind == DeviceKind::Desktop
+                    && device.role == DeviceRole::Admin(admin.public_key())
+                    && device.removed_revision.is_none()
+            }));
+            assert!(
+                matches!(
+                    open_setup(&joined, APP_VERSION, None, LoopbackPolicy::Allow).await,
+                    Err(AnchorSetupError::Refused)
+                ),
+                "an enrollment spends the code"
+            );
+
+            let again = printed_code(root, &endpoint);
+            let mut connection = open_setup(&again, APP_VERSION, None, LoopbackPolicy::Allow)
+                .await
+                .unwrap();
+            assert_eq!(
+                connection.join(&request).await.unwrap(),
+                JoinOutcome::Enrolled(revision),
+                "the same keys join again without a new entry"
+            );
+
+            let other = printed_code(root, &endpoint);
+            let mut connection = open_setup(&other, APP_VERSION, None, LoopbackPolicy::Allow)
+                .await
+                .unwrap();
+            let impostor = JoinRequest {
+                device_key: DeviceKeyPair::from_seed(&[53; 32]).unwrap().public_key(),
+                ..request
+            };
+            assert_eq!(
+                connection.join(&impostor).await,
+                Err(AnchorSetupError::Refused),
+                "another key cannot take an enrolled device id"
+            );
         })
         .await;
     });

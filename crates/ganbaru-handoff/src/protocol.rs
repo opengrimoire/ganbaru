@@ -543,6 +543,19 @@ pub enum ControlMessage {
     AnchorRecover {
         proposal: String,
     },
+    /// Asks the server to enroll this desktop as an admin of the vault it runs, signed with the
+    /// server's own admin key. Proving a fresh code already takes a shell on the server, which
+    /// holds an admin key and the plain vault, so the code grants nothing the server lacks.
+    /// [`Self::SyncProposed`] answers it, with the current revision when the log already enrolls
+    /// these keys.
+    AnchorJoin {
+        device_id: String,
+        device_label: String,
+        device_key: String,
+        admin_key: String,
+        /// SHA-256 of the certificate this desktop dials members with, as lowercase hex.
+        tls_fingerprint: String,
+    },
     Error {
         code: String,
         message: String,
@@ -1087,6 +1100,19 @@ impl ControlMessage {
             }
             Self::AnchorActivated { vault_id } => validate_identifier("vault id", vault_id)?,
             Self::AnchorRecover { proposal } => decode_sync_proposal(proposal).map(drop)?,
+            Self::AnchorJoin {
+                device_id,
+                device_label,
+                device_key,
+                admin_key,
+                tls_fingerprint,
+            } => {
+                validate_identifier("device id", device_id)?;
+                validate_device_label("device label", device_label)?;
+                decode_sync_device_key(device_key)?;
+                decode_sync_admin_key(admin_key)?;
+                validate_certificate_fingerprint("device fingerprint", tls_fingerprint)?;
+            }
             Self::Error { code, message, .. } => {
                 validate_identifier("error code", code)?;
                 if message.is_empty() || message.len() > 1024 {
@@ -2672,6 +2698,41 @@ mod tests {
         ];
         for message in malformed {
             assert!(message.validate().is_err(), "{message:?}");
+        }
+    }
+
+    #[test]
+    fn anchor_join_requires_valid_keys_and_a_canonical_fingerprint() {
+        let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[4; 32])
+            .unwrap()
+            .public_key();
+        let join = |device_id: &str, admin_key: String, tls_fingerprint: String| {
+            ControlMessage::AnchorJoin {
+                device_id: device_id.to_string(),
+                device_label: "Work desktop".to_string(),
+                device_key: encode_sync_device_key(&test_device_key()),
+                admin_key,
+                tls_fingerprint,
+            }
+        };
+        let fingerprint = "ab".repeat(32);
+        let valid = join(
+            "desktop-1",
+            encode_sync_admin_key(&admin),
+            fingerprint.clone(),
+        );
+        assert!(valid.validate().is_ok());
+        for invalid in [
+            join("", encode_sync_admin_key(&admin), fingerprint.clone()),
+            join("desktop-1", "not a key".to_string(), fingerprint.clone()),
+            join(
+                "desktop-1",
+                encode_sync_admin_key(&admin),
+                fingerprint.to_uppercase(),
+            ),
+            join("desktop-1", encode_sync_admin_key(&admin), "ab".repeat(31)),
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?}");
         }
     }
 }

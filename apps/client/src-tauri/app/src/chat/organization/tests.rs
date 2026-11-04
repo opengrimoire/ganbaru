@@ -1295,7 +1295,7 @@ fn recovery_after_a_stop_starts_accepted_unattended_work_and_leaves_the_rest_at_
             .unwrap();
         assert_eq!(
             adopted,
-            [assignment_id.clone()],
+            std::slice::from_ref(&assignment_id),
             "recovery starts work whose teammate this device accepted"
         );
         assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 1);

@@ -8,7 +8,7 @@ use super::activation::{Upload, activate};
 use super::host::AnchorHost;
 use crate::server::unix_time_ms;
 use ganbaru_handoff::pairing::{PinnedCharter, certificate_fingerprint};
-use ganbaru_handoff::protocol::anchor::{self, AnchorSpace, SETUP_REFUSED_CODE};
+use ganbaru_handoff::protocol::anchor::{self, AnchorSpace, NO_VAULT_CODE, SETUP_REFUSED_CODE};
 use ganbaru_handoff::protocol::relay::RelaySetupToken;
 use ganbaru_handoff::protocol::{
     self, BundleMetadata, ControlMessage, decode_certificate_fingerprint, decode_sync_admin_key,
@@ -39,6 +39,7 @@ const CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
 const UPLOAD_BUSY_CODE: &str = "upload_busy";
 const UPLOAD_REFUSED_CODE: &str = "upload_refused";
 const WRONG_CODE: &str = "this setup code is wrong, used, or expired";
+const NO_VAULT: &str = "this server runs no vault yet";
 
 /// Setup state shared by every connection.
 pub struct SetupRoute {
@@ -205,6 +206,7 @@ impl SetupRoute {
         }
         let vault_id = match self.proven_vault(&secret, vault_id)? {
             Ok(vault_id) => vault_id,
+            Err(NO_VAULT) => return send_error(stream, NO_VAULT_CODE, NO_VAULT, false).await,
             Err(message) => return refuse_setup(stream, message).await,
         };
         let identity = self.identity(&vault_id).await?;
@@ -263,7 +265,7 @@ impl SetupRoute {
                 }
             }
             (None, Some(active)) => Ok(active.vault_id),
-            (None, None) => Err("this server runs no vault yet"),
+            (None, None) => Err(NO_VAULT),
         })
     }
 
@@ -507,7 +509,7 @@ impl SetupRoute {
         request: JoinRequest,
     ) -> Result<(), String> {
         let Some((ctx, view)) = self.authorization(vault_id).await? else {
-            return refuse_setup(stream, "this server does not run that vault yet").await;
+            return send_error(stream, NO_VAULT_CODE, NO_VAULT, false).await;
         };
         let enrolled = view
             .devices

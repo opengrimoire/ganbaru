@@ -48,7 +48,7 @@ Relay: holds encrypted changes for devices that are not online together. It cann
   ganbaru-server help
 
 anchor               runs the anchor on 0.0.0.0:43823 unless --listen is given.
-anchor setup         prints a setup code, valid for 15 minutes and one vault, to paste in a desktop:
+anchor setup         prints a setup code, valid for 10 minutes and one vault, to paste in a desktop:
                      one that adds this server, or a new one that joins through it.
 anchor backup        writes an encrypted backup that opens with the recovery kit. Stop the anchor first.
 relay                runs the relay on 0.0.0.0:43823 unless --listen is given. The quota applies to each vault.

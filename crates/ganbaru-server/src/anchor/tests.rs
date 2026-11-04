@@ -488,6 +488,26 @@ fn a_wrong_or_replaced_code_opens_nothing_and_keeps_the_newest_secret() {
 }
 
 #[test]
+fn a_server_without_a_vault_says_so_instead_of_refusing_the_code() {
+    block_on(async {
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor(root, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+            let error = open_setup(&code, APP_VERSION, None, LoopbackPolicy::Allow)
+                .await
+                .err()
+                .expect("a server without a vault has nothing to join");
+            assert_eq!(error, AnchorSetupError::NoVault);
+            open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
+                .await
+                .expect("the code still sets up a vault afterwards");
+        })
+        .await;
+    });
+}
+
+#[test]
 fn a_setup_code_binds_to_the_first_proven_vault() {
     const OTHER_VAULT_ID: &str = "vault-anchor-other";
     block_on(async {

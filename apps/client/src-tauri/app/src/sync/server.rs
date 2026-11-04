@@ -100,6 +100,7 @@ impl From<AnchorSetupError> for SyncServerError {
             AnchorSetupError::ServerNeedsUpdate => Self::ServerNeedsUpdate,
             AnchorSetupError::DeviceNeedsUpdate => Self::DeviceNeedsUpdate,
             AnchorSetupError::Refused => Self::SetupRefused,
+            AnchorSetupError::NoVault => String::from("the server runs no vault yet").into(),
             AnchorSetupError::Unreachable(detail) => {
                 eprintln!("sync server: could not reach the server: {detail}");
                 Self::Unreachable

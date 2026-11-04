@@ -138,7 +138,7 @@ A setup code holds up to four addresses. Give the local one first, because many 
 
 ## Add the server to your vault
 
-A setup code works for 15 minutes and one vault. Print a new one when it expires.
+A setup code works for 10 minutes and one vault. Print a new one when it expires.
 
 1. On a desktop that is an admin of the vault, open Settings > Data, paste the code in the server section, and confirm the warning. A desktop linked to nothing can add one too.
 2. For an anchor, keep **Make this server the anchor** checked. If the current anchor device is off, the desktop waits for it; once it is on, enter the same code again, or a new one if it expired.

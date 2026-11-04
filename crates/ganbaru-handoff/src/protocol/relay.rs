@@ -50,7 +50,7 @@ pub const RELAY_WAIT_TIMEOUT: Duration = Duration::from_secs(12);
 /// Bytes of a one-time setup token.
 pub const RELAY_SETUP_TOKEN_BYTES: usize = 32;
 /// How long a setup token can claim a space.
-pub const RELAY_SETUP_TOKEN_LIFETIME: Duration = Duration::from_secs(15 * 60);
+pub const RELAY_SETUP_TOKEN_LIFETIME: Duration = Duration::from_secs(10 * 60);
 /// Text prefix of a relay setup code.
 pub const RELAY_SETUP_TEXT_PREFIX: &str = "ganbaru-relay:";
 /// Longest refusal message on the wire.

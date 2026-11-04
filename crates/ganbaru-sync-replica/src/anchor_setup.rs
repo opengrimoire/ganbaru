@@ -14,8 +14,8 @@ use crate::service::ServerEnrollment;
 use ganbaru_handoff::dial::LoopbackPolicy;
 use ganbaru_handoff::pairing::PinnedCharter;
 use ganbaru_handoff::protocol::anchor::{
-    self, AnchorSetupCode, AnchorSpace, DEVICE_NEEDS_UPDATE_CODE, SERVER_NEEDS_UPDATE_CODE,
-    SETUP_REFUSED_CODE,
+    self, AnchorSetupCode, AnchorSpace, DEVICE_NEEDS_UPDATE_CODE, NO_VAULT_CODE,
+    SERVER_NEEDS_UPDATE_CODE, SETUP_REFUSED_CODE,
 };
 use ganbaru_handoff::protocol::{
     self, BundleMetadata, ControlMessage, decode_sync_admin_key, decode_sync_device_key,
@@ -45,6 +45,8 @@ pub enum AnchorSetupError {
     Refused,
     /// No address in the code accepted a connection.
     Unreachable(String),
+    /// The server runs no vault yet, so there is nothing to join or recover.
+    NoVault,
     /// Anything else, as text for the person.
     Other(String),
 }
@@ -55,6 +57,7 @@ impl fmt::Display for AnchorSetupError {
             Self::ServerNeedsUpdate => formatter.write_str("the server needs an update"),
             Self::DeviceNeedsUpdate => formatter.write_str("this device needs an update"),
             Self::Refused => formatter.write_str("the server refused this setup code"),
+            Self::NoVault => formatter.write_str("this server runs no vault yet"),
             Self::Unreachable(detail) => write!(formatter, "{}: {detail}", DialError::UNREACHABLE),
             Self::Other(message) => formatter.write_str(message),
         }
@@ -81,6 +84,7 @@ fn refusal(code: &str, message: String) -> AnchorSetupError {
         SERVER_NEEDS_UPDATE_CODE => AnchorSetupError::ServerNeedsUpdate,
         DEVICE_NEEDS_UPDATE_CODE => AnchorSetupError::DeviceNeedsUpdate,
         SETUP_REFUSED_CODE => AnchorSetupError::Refused,
+        NO_VAULT_CODE => AnchorSetupError::NoVault,
         _ => AnchorSetupError::Other(message),
     }
 }

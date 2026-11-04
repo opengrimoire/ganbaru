@@ -25,6 +25,8 @@ pub const SERVER_NEEDS_UPDATE_CODE: &str = "server_needs_update";
 pub const DEVICE_NEEDS_UPDATE_CODE: &str = "device_needs_update";
 /// Error code for a setup secret that is wrong, used, or expired.
 pub const SETUP_REFUSED_CODE: &str = "setup_refused";
+/// Error code for a proven setup that asks for a vault the server does not run yet.
+pub const NO_VAULT_CODE: &str = "no_vault";
 
 const ANCHOR_SETUP_MAGIC: &[u8; 4] = b"GBAN";
 const PROOF_CONTEXT: &[u8] = b"ganbaru-sync/anchor-setup-proof/v1";

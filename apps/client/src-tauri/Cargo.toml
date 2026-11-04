@@ -1,6 +1,6 @@
 [package]
 name = "ganbaru"
-version = "0.1.12"
+version = "0.1.13"
 description = "Ganbaru Tauri application"
 authors.workspace = true
 license.workspace = true

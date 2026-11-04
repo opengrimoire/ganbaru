@@ -86,8 +86,6 @@ export const sync = {
     codeLabel: "Server setup code",
     codePlaceholder: "ganbaru-relay:… or ganbaru-anchor:…",
     takeAnchor: "Make this server the anchor, so devices keep syncing while every computer is off",
-    unreviewed: "I understand that the server encryption has not had an external security review yet",
-    unreviewedAnchor: "I understand that this server can read my whole vault, and that this feature has not had an external security review yet",
     anchorReadable: "An anchor server holds the vault keys and can read everything in the vault. Encryption does not protect the vault from this server. Use an anchor only on hardware you own, and a relay on a rented server.",
     add: "Add server",
     adding: "Adding server…",
@@ -112,7 +110,6 @@ export const sync = {
     removedRelayKept: "Server removed, but the relay could not be asked to delete what it stores. It holds only encrypted data it cannot read.",
     removedAnchor: "Server removed. To end its access to the vault, also remove it from the device list, then delete its data directory.",
     errors: {
-      unacknowledged: "Confirm that you understand the server encryption has not had an external review.",
       invalidCode: "That is not a server setup code. Copy the whole code from the server and try again.",
       setupRefused: "The server refused this code. It may be wrong, used, or expired. Run anchor setup on the server for a new one.",
       unreachable: "This computer could not reach the server. Check that it is running, and if it has a firewall, allow its port (43823 by default) from this network.",

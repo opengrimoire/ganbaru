@@ -7,7 +7,6 @@
     recoverVaultThroughServer,
     releaseStarterVault,
   } from "$lib/api/vault-handoff";
-  import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     activateModalFocus,
@@ -67,7 +66,6 @@
   let serverCode = $state("");
   let kit = $state("");
   let useKit = $state(false);
-  let acknowledged = $state(false);
   let serverBusy = $state(false);
   let serverError = $state<string | null>(null);
   let serverNotice = $state<string | null>(null);
@@ -76,7 +74,7 @@
     !anyBusy
       && (source === "computer"
         ? code.trim() !== ""
-        : acknowledged && serverCode.trim() !== "" && (!useKit || kit.trim() !== "")),
+        : serverCode.trim() !== "" && (!useKit || kit.trim() !== "")),
   );
 
   function close(): void {
@@ -132,7 +130,7 @@
   async function startOnServer(typedCode: string): Promise<void> {
     try {
       await releaseStarterVault();
-      const step = await addSyncServer(typedCode, acknowledged, true);
+      const step = await addSyncServer(typedCode, true);
       if (step === "waitingForAnchor") {
         serverNotice = t("sync.server.anchorWaiting");
         return;
@@ -297,10 +295,6 @@
           </button>
           <p class="text-[0.8rem] leading-5 text-muted-foreground">{t("vaultHandoff.serverConnect.kitDescription")}</p>
         {/if}
-        <label class="mt-3 flex min-w-0 items-start gap-2 text-[0.8rem] leading-5 text-foreground">
-          <Checkbox class="mt-0.5" bind:checked={acknowledged} disabled={serverBusy} />
-          <span class="min-w-0">{t("sync.server.unreviewedAnchor")}</span>
-        </label>
         {#if serverError}
           <p id="server-connect-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{serverError}</p>
         {:else if serverNotice}

@@ -54,8 +54,6 @@ use tauri::State;
     )
 )]
 pub enum SyncServerError {
-    /// The user did not confirm that the server cryptography has had no external review.
-    Unacknowledged,
     /// The text is not a server setup code.
     InvalidCode,
     /// The anchor server refused the setup secret, which is wrong, used, or expired.
@@ -310,21 +308,15 @@ async fn newest_space_key<R: Runtime>(
 }
 
 /// On a live admin desktop, adds the server a pasted setup code names to the active vault.
-/// `acknowledged_unreviewed` confirms the user accepted that the server cryptography has had no
-/// external review. `take_anchor` asks an anchor server to take the anchor once it can; a relay
-/// ignores it.
+/// `take_anchor` asks an anchor server to take the anchor once it can; a relay ignores it.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn sync_add_server<R: Runtime>(
     app: AppHandle<R>,
     runtime: State<'_, SyncRuntime>,
     code: String,
-    acknowledged_unreviewed: bool,
     take_anchor: bool,
 ) -> Result<SyncServerAdded, SyncServerError> {
-    if !acknowledged_unreviewed {
-        return Err(SyncServerError::Unacknowledged);
-    }
     let code = parse_setup_code(&code)?;
     let founded = ensure_sync_space(&app, &runtime).await?;
     let added = match code {

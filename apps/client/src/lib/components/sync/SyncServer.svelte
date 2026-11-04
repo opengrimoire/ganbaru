@@ -38,7 +38,6 @@
   let loadFailed = $state(false);
   let busy = $state(false);
   let code = $state("");
-  let acknowledged = $state(false);
   let takeAnchor = $state(true);
   /** Whether an anchor server is being added and the form stays up to repeat it with the same code. */
   let resuming = $state(false);
@@ -72,16 +71,15 @@
   async function add(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     const entered = code.trim();
-    if (busy || entered.length === 0 || !acknowledged) return;
+    if (busy || entered.length === 0) return;
     busy = true;
     message = "";
     failed = false;
     try {
-      const step = await addSyncServer(entered, acknowledged, isAnchorCode && takeAnchor);
+      const step = await addSyncServer(entered, isAnchorCode && takeAnchor);
       resuming = step === "waitingForAnchor";
       if (!resuming) {
         code = "";
-        acknowledged = false;
       }
       message = addedMessage(step);
       await refresh();
@@ -180,10 +178,6 @@
           bind:value={code}
           disabled={busy}
         />
-        <label class="flex min-w-0 items-start gap-2 text-[0.8rem] leading-5 text-foreground">
-          <Checkbox class="mt-0.5" bind:checked={acknowledged} disabled={busy} />
-          <span class="min-w-0">{isAnchorCode ? t("sync.server.unreviewedAnchor") : t("sync.server.unreviewed")}</span>
-        </label>
         {#if isAnchorCode}
           <p class="text-[0.8rem] leading-5 text-foreground">{t("sync.server.anchorReadable")}</p>
           <label class="flex min-w-0 items-start gap-2 text-[0.8rem] leading-5 text-foreground">
@@ -192,7 +186,7 @@
           </label>
         {/if}
         <div class="flex flex-wrap gap-2">
-          <button type="submit" class={buttonClass} disabled={busy || !acknowledged || code.trim().length === 0}>
+          <button type="submit" class={buttonClass} disabled={busy || code.trim().length === 0}>
             {busy ? t("sync.server.adding") : t("sync.server.add")}
           </button>
         </div>

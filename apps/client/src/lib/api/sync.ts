@@ -1065,7 +1065,6 @@ export const SYNC_SERVER_ADD_STEPS = ["proposed", "waitingForAnchor", "active"] 
 export type SyncServerAddStep = (typeof SYNC_SERVER_ADD_STEPS)[number];
 
 export const SYNC_SERVER_ERROR_CODES = [
-  "unacknowledged",
   "invalidCode",
   "setupRefused",
   "unreachable",
@@ -1161,16 +1160,11 @@ async function invokeServerCommand(command: string, args?: Record<string, unknow
 
 /**
  * On a live admin desktop, adds the relay or anchor server a pasted setup code names to the vault.
- * `acknowledgedUnreviewed` confirms the user accepted that the server cryptography has had no
- * external review; the command refuses without it. `takeAnchor` asks an anchor server to take the
- * anchor once it can. A `waitingForAnchor` answer is repeated with the same code.
+ * `takeAnchor` asks an anchor server to take the anchor once it can. A `waitingForAnchor` answer is
+ * repeated with the same code.
  */
-export async function addSyncServer(
-  code: string,
-  acknowledgedUnreviewed: boolean,
-  takeAnchor: boolean,
-): Promise<SyncServerAddStep> {
-  const step = await invokeServerCommand("sync_add_server", { code, acknowledgedUnreviewed, takeAnchor });
+export async function addSyncServer(code: string, takeAnchor: boolean): Promise<SyncServerAddStep> {
+  const step = await invokeServerCommand("sync_add_server", { code, takeAnchor });
   return readEnum(step, SYNC_SERVER_ADD_STEPS, "sync server add step");
 }
 

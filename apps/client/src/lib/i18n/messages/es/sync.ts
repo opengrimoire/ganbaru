@@ -92,8 +92,6 @@ export const sync = {
     codeLabel: "Código de configuración del servidor",
     codePlaceholder: "ganbaru-relay:… o ganbaru-anchor:…",
     takeAnchor: "Hacer de este servidor el ancla, para que los dispositivos sigan sincronizándose con todas las computadoras apagadas",
-    unreviewed: "Entiendo que el cifrado del servidor aún no ha tenido una revisión de seguridad externa",
-    unreviewedAnchor: "Entiendo que este servidor puede leer toda mi bóveda y que esta función aún no ha tenido una revisión de seguridad externa",
     anchorReadable: "Un servidor ancla guarda las claves de la bóveda y puede leer todo su contenido. El cifrado no protege la bóveda de este servidor. Usa un ancla solo en hardware propio, y un relé en un servidor rentado.",
     add: "Agregar servidor",
     adding: "Agregando servidor…",
@@ -118,7 +116,6 @@ export const sync = {
     removedRelayKept: "Servidor quitado, pero no se pudo pedir al relé que borre lo que guarda. Solo tiene datos cifrados que no puede leer.",
     removedAnchor: "Servidor quitado. Para terminar su acceso a la bóveda, quítalo también de la lista de dispositivos y borra su directorio de datos.",
     errors: {
-      unacknowledged: "Confirma que entiendes que el cifrado del servidor no ha tenido una revisión externa.",
       invalidCode: "Eso no es un código de configuración de servidor. Copia el código completo del servidor e inténtalo de nuevo.",
       setupRefused: "El servidor rechazó este código. Puede ser incorrecto, estar usado o haber vencido. Ejecuta anchor setup en el servidor para obtener otro.",
       unreachable: "Esta computadora no pudo llegar al servidor. Comprueba que esté en marcha y, si tiene un cortafuegos, permite su puerto (43823 por defecto) desde esta red.",

@@ -168,23 +168,22 @@ describe("sync API boundary", () => {
     expect(() => mapSyncServerRemoval({ relayCleared: "yes", problem: null })).toThrow();
 
     vi.mocked(invoke).mockResolvedValueOnce("proposed");
-    await expect(addSyncServer("ganbaru-relay:CODE", true, false)).resolves.toBe("proposed");
+    await expect(addSyncServer("ganbaru-relay:CODE", false)).resolves.toBe("proposed");
     expect(invoke).toHaveBeenLastCalledWith("sync_add_server", {
       code: "ganbaru-relay:CODE",
-      acknowledgedUnreviewed: true,
       takeAnchor: false,
     });
     vi.mocked(invoke).mockRejectedValueOnce({ code: "relay", problem: "alreadyClaimed" });
-    await expect(addSyncServer("ganbaru-relay:CODE", true, false)).rejects.toMatchObject({
+    await expect(addSyncServer("ganbaru-relay:CODE", false)).rejects.toMatchObject({
       code: "relay",
       problem: "alreadyClaimed",
     });
     vi.mocked(invoke).mockResolvedValueOnce("waitingForAnchor");
-    await expect(addSyncServer("ganbaru-anchor:CODE", true, true)).resolves.toBe("waitingForAnchor");
+    await expect(addSyncServer("ganbaru-anchor:CODE", true)).resolves.toBe("waitingForAnchor");
     vi.mocked(invoke).mockResolvedValueOnce("teleported");
-    await expect(addSyncServer("ganbaru-anchor:CODE", true, true)).rejects.toThrow();
+    await expect(addSyncServer("ganbaru-anchor:CODE", true)).rejects.toThrow();
     vi.mocked(invoke).mockRejectedValueOnce({ code: "serverNeedsUpdate" });
-    await expect(addSyncServer("ganbaru-anchor:CODE", true, true)).rejects.toMatchObject({
+    await expect(addSyncServer("ganbaru-anchor:CODE", true)).rejects.toMatchObject({
       code: "serverNeedsUpdate",
       problem: null,
     });

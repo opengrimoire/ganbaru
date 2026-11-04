@@ -3,9 +3,11 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Monitor from "@lucide/svelte/icons/monitor";
   import ScanLine from "@lucide/svelte/icons/scan-line";
+  import Server from "@lucide/svelte/icons/server";
   import Settings from "@lucide/svelte/icons/settings";
   import Smartphone from "@lucide/svelte/icons/smartphone";
   import { onMount, untrack } from "svelte";
+  import { getSyncServerStatus, type SyncServerView } from "$lib/api/sync";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -75,6 +77,8 @@
   let status = $state<PairingStatus | null>(
     untrack(() => initialStatus ?? getCachedPairingStatus() ?? null),
   );
+  /** The vault's server, listed with the devices in the sync control. */
+  let server = $state<SyncServerView | null>(null);
   let invitation = $state<PairingInvitation | null>(untrack(() => initialInvitation));
   let deviceIdsAtInvitation = new Set(
     untrack(() => status?.devices.map((device) => device.deviceId) ?? []),
@@ -467,7 +471,17 @@
     if (outcome.activated) onActivated?.();
   }
 
+  /** Reads the vault's server for the sync control; without it the control lists devices only. */
+  async function loadServer(): Promise<void> {
+    try {
+      server = await getSyncServerStatus();
+    } catch (cause: unknown) {
+      console.warn("sync server status could not be loaded", cause);
+    }
+  }
+
   onMount(() => {
+    if (presentation === "control") void loadServer();
     const prepareOnboarding = (): void => {
       if (presentation !== "onboarding" || status?.linked) return;
       if (platform === "desktop") {
@@ -569,6 +583,17 @@
         </p>
       {/if}
     {:else}
+      {#if presentation === "control" && server}
+        <div class={`flex w-full min-w-0 items-center gap-2 px-3 ${platform === "android" ? "min-h-12" : "py-1.5"}`}>
+          <Server size={14} strokeWidth={1.8} class="shrink-0 opacity-70" aria-hidden="true" />
+          <div class="flex min-w-0 flex-1 items-baseline gap-1 overflow-hidden whitespace-nowrap">
+            <div class="min-w-0 truncate text-sm text-foreground">
+              {server.mode === "anchor" ? t("vaultHandoff.anchorServer") : t("vaultHandoff.relayServer")}
+            </div>
+            <span class="shrink-0 text-sm text-foreground">{t("vaultHandoff.linkedLabel")}</span>
+          </div>
+        </div>
+      {/if}
       {#if status.devices.length > 0 && presentation !== "onboarding"}
         {#each status.devices as device (device.deviceId)}
           <div class={presentation === "control"
@@ -599,17 +624,11 @@
         {/each}
       {:else}
         {#if presentation === "control"}
-          <div class={`flex w-full min-w-0 items-center justify-between gap-3 px-3 text-sm text-muted-foreground ${platform === "android" ? "min-h-12" : "h-8"}`}>
-            <span class="min-w-0 truncate">{t("vaultHandoff.notLinked")}</span>
-            <button
-              type="button"
-              class="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              aria-label={t("settings.section.data")}
-              onclick={() => onOpenDataSettings?.()}
-            >
-              <Settings size={14} strokeWidth={1.8} aria-hidden="true" />
-            </button>
-          </div>
+          {#if !server}
+            <div class={`flex w-full min-w-0 items-center px-3 text-sm text-muted-foreground ${platform === "android" ? "min-h-12" : "h-8"}`}>
+              <span class="min-w-0 truncate">{t("vaultHandoff.notLinked")}</span>
+            </div>
+          {/if}
         {:else if presentation !== "onboarding"}
           <p class="px-1 py-1 text-[0.866667rem] text-muted-foreground">{t("vaultHandoff.notLinked")}</p>
         {/if}
@@ -791,6 +810,13 @@
     {/if}
 
     </fieldset>
+    {#if presentation === "control" && onOpenDataSettings}
+      <div class="mx-3 my-1.5 border-t border-border"></div>
+      <button type="button" class={`${controlButtonClass} text-muted-foreground hover:text-foreground`} onclick={onOpenDataSettings}>
+        <span class="min-w-0 truncate">{t("vaultHandoff.syncSettings")}</span>
+        <Settings size={14} strokeWidth={1.8} class="shrink-0 opacity-70" aria-hidden="true" />
+      </button>
+    {/if}
     {#if presentation === "settings" && !status.linked && !status.serverSync}
       <SyncRecoveryKitSetup {buttonClass} printable={platform === "desktop"} />
       {#if platform === "desktop"}

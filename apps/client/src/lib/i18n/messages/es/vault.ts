@@ -107,6 +107,9 @@ export const vaultHandoff = {
   networkAccessDevelopmentUnavailable:
     "Esta versión de desarrollo para Linux no puede usar el asistente de firewall empaquetado. Usa una versión empaquetada o configura el firewall manualmente para vincular un teléfono.",
   notLinked: "No hay dispositivos vinculados",
+  anchorServer: "Servidor ancla",
+  relayServer: "Servidor relé",
+  syncSettings: "Ajustes de sincronización",
   devicesHeading: "Dispositivos",
   desktopDevice: "Computadora",
   androidDevice: "Teléfono",

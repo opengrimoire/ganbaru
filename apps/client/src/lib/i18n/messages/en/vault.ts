@@ -99,6 +99,9 @@ export const vaultHandoff = {
   networkAccessDevelopmentUnavailable:
     "This Linux development build cannot use the packaged firewall helper. Use a packaged build or configure the firewall manually to link a phone.",
   notLinked: "No devices linked",
+  anchorServer: "Anchor server",
+  relayServer: "Relay server",
+  syncSettings: "Sync settings",
   devicesHeading: "Devices",
   desktopDevice: "Desktop",
   androidDevice: "Phone",

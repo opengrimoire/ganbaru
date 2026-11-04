@@ -225,12 +225,13 @@ fn a_promoted_desktop_takes_the_anchor_and_collects_what_the_hub_holds() {
             ),
             (LAPTOP_DEVICE, 1, handover)
         );
-        // The admin hub still reconciles links, but never proposes removing itself or the
-        // anchor, which it does not link to as a peer.
+        // The admin hub still removes the devices it unlinked, but never itself or the anchor,
+        // and never a device it simply has no link to.
         assert_eq!(
-            authority::unlinked_devices(&hub_view, HUB_DEVICE, |device| device == PHONE_DEVICE),
+            authority::unlinked_devices(&hub_view, HUB_DEVICE, |device| device != PHONE_DEVICE),
             vec![TABLET_DEVICE.to_string()]
         );
+        assert!(authority::unlinked_devices(&hub_view, HUB_DEVICE, |_| false).is_empty());
 
         // The hub no longer anchors: it holds what devices propose for the laptop to collect.
         let wearable = enroll_mobile(space, charter, "device-watch", 40);

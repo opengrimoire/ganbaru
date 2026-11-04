@@ -782,12 +782,13 @@ pub fn recovery_enrollment(
 }
 
 /// The enrolled devices other than `own_device_id`, the anchor, and servers that are not removed and
-/// for which `linked` is false. An admin hub proposes their removal, because the coordinator
-/// links every device of the space.
+/// for which `unlinked` is true. An admin hub proposes their removal. Only an explicit unlink
+/// counts: a device can join through an anchor server without ever linking to this hub, so an
+/// absent link is not a removal.
 pub fn unlinked_devices(
     view: &AuthorizationView,
     own_device_id: &str,
-    linked: impl Fn(&str) -> bool,
+    unlinked: impl Fn(&str) -> bool,
 ) -> Vec<String> {
     view.devices
         .iter()
@@ -796,7 +797,7 @@ pub fn unlinked_devices(
                 && device.kind != DeviceKind::Server
                 && device.device_id != view.anchor_device_id
                 && device.device_id != own_device_id
-                && !linked(&device.device_id)
+                && unlinked(&device.device_id)
         })
         .map(|device| device.device_id.clone())
         .collect()

@@ -3487,17 +3487,12 @@ impl<'a, H: SyncHost> Session<'a, H> {
                         .any(|device| device.device_id == peer.device_id)
                 })
                 .collect();
-            // Pairing records describe a coordinator's links. A server links nobody, and a device
-            // recovered through a server starts with none, so neither reads an absent link as
-            // a removal.
-            let recovered = self.files.server_recovery_path().exists();
-            let remove = if self.host.is_server() || recovered {
-                Vec::new()
-            } else {
-                authority::unlinked_devices(&view, &own_device_id, |device_id| {
-                    peers.iter().any(|peer| peer.device_id == device_id)
-                })
-            };
+            // Only devices this coordinator unlinked are removed. Devices that joined through a
+            // server never link here, so an absent link is not a removal.
+            let revoked = manager.revoked_device_ids(vault_id)?;
+            let remove = authority::unlinked_devices(&view, &own_device_id, |device_id| {
+                revoked.contains(device_id)
+            });
             let mut changes = authority::Reconciliation {
                 remove,
                 ..Default::default()

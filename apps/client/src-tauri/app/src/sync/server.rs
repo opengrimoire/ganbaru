@@ -60,6 +60,8 @@ pub enum SyncServerError {
     InvalidCode,
     /// The anchor server refused the setup secret, which is wrong, used, or expired.
     SetupRefused,
+    /// No address of the anchor server accepted a connection.
+    Unreachable,
     /// The anchor server speaks an older protocol than this device.
     ServerNeedsUpdate,
     /// The anchor server speaks a newer protocol than this device.
@@ -98,6 +100,10 @@ impl From<AnchorSetupError> for SyncServerError {
             AnchorSetupError::ServerNeedsUpdate => Self::ServerNeedsUpdate,
             AnchorSetupError::DeviceNeedsUpdate => Self::DeviceNeedsUpdate,
             AnchorSetupError::Refused => Self::SetupRefused,
+            AnchorSetupError::Unreachable(detail) => {
+                eprintln!("sync server: could not reach the server: {detail}");
+                Self::Unreachable
+            }
             AnchorSetupError::Other(detail) => detail.into(),
         }
     }
@@ -582,6 +588,10 @@ mod tests {
         assert_eq!(
             SyncServerError::from(AnchorSetupError::Refused),
             SyncServerError::SetupRefused
+        );
+        assert_eq!(
+            SyncServerError::from(AnchorSetupError::Unreachable("timed out".to_string())),
+            SyncServerError::Unreachable
         );
         assert_eq!(
             SyncServerError::from(AnchorSetupError::Other("reset".to_string())),

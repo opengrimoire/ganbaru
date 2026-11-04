@@ -170,6 +170,7 @@ export const vaultHandoff = {
       noVault: "Este servidor aún no ejecuta ninguna bóveda. Agrégalo primero desde una computadora que tenga la bóveda.",
       alreadyOpen: "Esta bóveda ya está abierta en este dispositivo.",
       wrongKit: "Este kit de recuperación no pertenece a la bóveda de este servidor. Revisa el kit y el código de configuración.",
+      unreachable: "Esta computadora no pudo llegar al servidor. Comprueba que esté en marcha y, si tiene un cortafuegos, permite su puerto (43823 por defecto) desde esta red.",
       failed: "Esta computadora no pudo conectarse al servidor. Comprueba que el servidor esté en marcha e inténtalo de nuevo con un código de configuración nuevo.",
     },
   },

@@ -115,6 +115,7 @@ export const sync = {
       unacknowledged: "Confirm that you understand the server encryption has not had an external review.",
       invalidCode: "That is not a server setup code. Copy the whole code from the server and try again.",
       setupRefused: "The server refused this code. It may be wrong, used, or expired. Run anchor setup on the server for a new one.",
+      unreachable: "This computer could not reach the server. Check that it is running, and if it has a firewall, allow its port (43823 by default) from this network.",
       serverNeedsUpdate: "The server runs an older version. Update it and try again.",
       deviceNeedsUpdate: "The server runs a newer version. Update Ganbaru and try again.",
       serverIsAnchor: "This server is the anchor. Take the anchor on this computer first.",
@@ -127,7 +128,7 @@ export const sync = {
       failed: "The server could not be changed. Try again.",
     },
     problems: {
-      unreachable: "The relay could not be reached, or its certificate did not match.",
+      unreachable: "The relay could not be reached, or its certificate did not match. If it has a firewall, allow its port (43823 by default).",
       incompatible: "The relay uses another protocol version. Update Ganbaru or the relay.",
       notClaimed: "The relay does not hold this vault. An admin may have removed it from the relay.",
       alreadyClaimed: "The relay already holds this vault.",

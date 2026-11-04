@@ -162,6 +162,7 @@ export const vaultHandoff = {
       noVault: "This server runs no vault yet. Add it from a desktop that has the vault first.",
       alreadyOpen: "This vault is already open on this device.",
       wrongKit: "This recovery kit does not belong to the vault on this server. Check the kit and the setup code.",
+      unreachable: "This computer could not reach the server. Check that it is running, and if it has a firewall, allow its port (43823 by default) from this network.",
       failed: "This computer could not connect to the server. Check that the server is running, then try again with a new setup code.",
     },
   },

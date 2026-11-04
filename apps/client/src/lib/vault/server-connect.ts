@@ -30,5 +30,8 @@ export function serverConnectError(cause: unknown, t: Translate): string {
   if (message.includes("does not belong to the vault")) {
     return t("vaultHandoff.serverConnect.errors.wrongKit");
   }
+  if (message.includes("could not reach the server")) {
+    return t("vaultHandoff.serverConnect.errors.unreachable");
+  }
   return t("vaultHandoff.serverConnect.errors.failed");
 }

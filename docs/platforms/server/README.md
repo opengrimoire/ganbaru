@@ -23,6 +23,7 @@ Pick one mode per server, and one server per vault.
 
 - A Linux machine that stays on, x86_64 or 64-bit ARM. A relay fits the smallest rented server; an anchor needs disk for the whole vault.
 - TCP port 43823 reachable from your devices, through a VPN or a forwarded port. No domain or certificate is needed: devices pin the server's certificate. Do not put a TLS-terminating proxy in front of it; plain TCP forwarding is fine.
+- If the machine has a firewall (Fedora and many servers turn one on), allow the port: `sudo ufw allow 43823/tcp`, or `sudo firewall-cmd --permanent --add-port=43823/tcp && sudo firewall-cmd --reload`. Docker usually opens published ports by itself. `setup` prints the same reminder, and the app says so when it cannot reach the server.
 - The same version as your app. Ganbaru updates itself, so let the server update too ([Updates](#updates)).
 
 Below, `<address>` is an address your devices can reach, and `anchor` can be replaced by `relay`. `ganbaru-server help` lists every command.

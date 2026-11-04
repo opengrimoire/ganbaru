@@ -1068,6 +1068,7 @@ export const SYNC_SERVER_ERROR_CODES = [
   "unacknowledged",
   "invalidCode",
   "setupRefused",
+  "unreachable",
   "serverNeedsUpdate",
   "deviceNeedsUpdate",
   "serverIsAnchor",

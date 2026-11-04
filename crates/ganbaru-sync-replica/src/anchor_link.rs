@@ -23,7 +23,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 
-/// How long one address gets to accept a connection and finish the handshake.
+/// How long one address gets to accept a connection, and then to finish the handshake.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a request may take. A server answers proposals through its own pass, which is
 /// bounded well below this.
@@ -104,52 +104,121 @@ fn client_config(
     Ok(Arc::new(config))
 }
 
+/// Why a dial to a server failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DialError {
+    /// No address accepted a TCP connection: the server is down, the address is wrong, or a
+    /// firewall drops the port.
+    Unreachable(String),
+    /// An address accepted the connection, or the dial could not start, and it still failed.
+    Failed(String),
+}
+
+impl DialError {
+    /// Prefix of the unreachable text, which callers that only see text match on.
+    pub const UNREACHABLE: &'static str = "could not reach the server";
+}
+
+impl std::fmt::Display for DialError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreachable(detail) => write!(formatter, "{}: {detail}", Self::UNREACHABLE),
+            Self::Failed(detail) => formatter.write_str(detail),
+        }
+    }
+}
+
+impl From<DialError> for String {
+    fn from(error: DialError) -> Self {
+        error.to_string()
+    }
+}
+
+/// Why one address failed: before the TCP connection, or after it.
+enum AttemptError {
+    Connect(String),
+    Handshake(String),
+}
+
 async fn handshake(
     config: &Arc<rustls::ClientConfig>,
     address: SocketAddr,
-) -> Result<ServerStream, String> {
-    let socket = TcpStream::connect(address)
-        .await
-        .map_err(|error| format!("connect to server: {error}"))?;
-    let name =
-        ServerName::try_from(SERVER_NAME).map_err(|_| "server TLS name is invalid".to_string())?;
-    TlsConnector::from(config.clone())
-        .connect(name, socket)
-        .await
-        .map_err(|error| format!("establish pinned server connection: {error}"))
+) -> Result<ServerStream, AttemptError> {
+    let socket = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(address)).await {
+        Ok(Ok(socket)) => socket,
+        Ok(Err(error)) => {
+            return Err(AttemptError::Connect(format!(
+                "connect to {address}: {error}"
+            )));
+        }
+        Err(_) => {
+            return Err(AttemptError::Connect(format!(
+                "connecting to {address} timed out"
+            )));
+        }
+    };
+    let name = ServerName::try_from(SERVER_NAME)
+        .map_err(|_| AttemptError::Handshake("server TLS name is invalid".to_string()))?;
+    let connecting = TlsConnector::from(config.clone()).connect(name, socket);
+    match tokio::time::timeout(CONNECT_TIMEOUT, connecting).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(error)) => Err(AttemptError::Handshake(format!(
+            "establish pinned server connection: {error}"
+        ))),
+        Err(_) => Err(AttemptError::Handshake(format!(
+            "the server at {address} did not finish the handshake in time"
+        ))),
+    }
 }
 
 /// Dials `target`'s endpoints in order. Each resolved address passes the configured server dial
-/// rule first, see [`authorize_server_dial_target`].
+/// rule first, see [`authorize_server_dial_target`]. The error is [`DialError::Unreachable`]
+/// only when no address accepted a connection.
 pub async fn dial_server(
     target: &ServerTarget,
     identity: Option<TlsIdentity>,
     loopback: LoopbackPolicy,
-) -> Result<ServerStream, String> {
-    let config = client_config(target, identity)?;
-    let mut last = "the server has no reachable address".to_string();
+) -> Result<ServerStream, DialError> {
+    let config = client_config(target, identity).map_err(DialError::Failed)?;
+    let mut last = DialError::Failed("the server has no reachable address".to_string());
+    let mut reached = false;
     for endpoint in &target.endpoints {
         let addresses: Vec<SocketAddr> =
             match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::lookup_host(endpoint)).await {
                 Ok(Ok(addresses)) => addresses.collect(),
                 Ok(Err(error)) => {
-                    last = format!("resolve server address {endpoint}: {error}");
+                    if !reached {
+                        last = DialError::Unreachable(format!("resolve {endpoint}: {error}"));
+                    }
                     continue;
                 }
                 Err(_) => {
-                    last = format!("resolving server address {endpoint} timed out");
+                    if !reached {
+                        last = DialError::Unreachable(format!("resolving {endpoint} timed out"));
+                    }
                     continue;
                 }
             };
         for address in addresses {
             if let Err(error) = authorize_server_dial_target(address, loopback) {
-                last = format!("server address {address} is not allowed: {error:?}");
+                if !reached {
+                    last = DialError::Failed(format!(
+                        "server address {address} is not allowed: {error:?}"
+                    ));
+                }
                 continue;
             }
-            match tokio::time::timeout(CONNECT_TIMEOUT, handshake(&config, address)).await {
-                Ok(Ok(stream)) => return Ok(stream),
-                Ok(Err(error)) => last = error,
-                Err(_) => last = format!("connecting to server address {address} timed out"),
+            match handshake(&config, address).await {
+                Ok(stream) => return Ok(stream),
+                Err(AttemptError::Connect(detail)) => {
+                    if !reached {
+                        last = DialError::Unreachable(detail);
+                    }
+                }
+                Err(AttemptError::Handshake(detail)) => {
+                    reached = true;
+                    last = DialError::Failed(detail);
+                }
             }
         }
     }
@@ -206,5 +275,69 @@ pub async fn protocol_gap(transport: &ServerTransport, app_version: &str) -> Opt
             Some(anchor::DEVICE_NEEDS_UPDATE_CODE)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(endpoint: String) -> ServerTarget {
+        ServerTarget {
+            endpoints: vec![endpoint],
+            certificate_fingerprint: [7; 32],
+        }
+    }
+
+    #[tokio::test]
+    async fn a_closed_port_is_unreachable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = dial_server(&target(address.to_string()), None, LoopbackPolicy::Allow)
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(error, DialError::Unreachable(_)), "{error:?}");
+        assert!(error.to_string().starts_with(DialError::UNREACHABLE));
+    }
+
+    #[tokio::test]
+    async fn a_server_that_accepts_and_fails_the_handshake_is_not_unreachable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let closer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket);
+        });
+        let error = dial_server(&target(address.to_string()), None, LoopbackPolicy::Allow)
+            .await
+            .err()
+            .unwrap();
+        closer.await.unwrap();
+        assert!(matches!(error, DialError::Failed(_)), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn an_answering_address_outranks_a_later_unreachable_one() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let answering = listener.local_addr().unwrap();
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed_address = closed.local_addr().unwrap();
+        drop(closed);
+        let closer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket);
+        });
+        let target = ServerTarget {
+            endpoints: vec![answering.to_string(), closed_address.to_string()],
+            certificate_fingerprint: [7; 32],
+        };
+        let error = dial_server(&target, None, LoopbackPolicy::Allow)
+            .await
+            .err()
+            .unwrap();
+        closer.await.unwrap();
+        assert!(matches!(error, DialError::Failed(_)), "{error:?}");
     }
 }

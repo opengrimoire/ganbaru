@@ -8,7 +8,7 @@
 //! instead asks the server to enroll it, signed with the server's own admin key.
 
 use crate::anchor_link::{
-    ServerStream, ServerTarget, dial_server, local_compatibility, request_on,
+    DialError, ServerStream, ServerTarget, dial_server, local_compatibility, request_on,
 };
 use crate::service::ServerEnrollment;
 use ganbaru_handoff::dial::LoopbackPolicy;
@@ -43,6 +43,8 @@ pub enum AnchorSetupError {
     DeviceNeedsUpdate,
     /// The setup secret is wrong, used, or expired.
     Refused,
+    /// No address in the code accepted a connection.
+    Unreachable(String),
     /// Anything else, as text for the person.
     Other(String),
 }
@@ -53,6 +55,7 @@ impl fmt::Display for AnchorSetupError {
             Self::ServerNeedsUpdate => formatter.write_str("the server needs an update"),
             Self::DeviceNeedsUpdate => formatter.write_str("this device needs an update"),
             Self::Refused => formatter.write_str("the server refused this setup code"),
+            Self::Unreachable(detail) => write!(formatter, "{}: {detail}", DialError::UNREACHABLE),
             Self::Other(message) => formatter.write_str(message),
         }
     }
@@ -61,6 +64,15 @@ impl fmt::Display for AnchorSetupError {
 impl From<String> for AnchorSetupError {
     fn from(message: String) -> Self {
         Self::Other(message)
+    }
+}
+
+impl From<DialError> for AnchorSetupError {
+    fn from(error: DialError) -> Self {
+        match error {
+            DialError::Unreachable(detail) => Self::Unreachable(detail),
+            DialError::Failed(detail) => Self::Other(detail),
+        }
     }
 }
 

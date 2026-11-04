@@ -121,6 +121,7 @@ export const sync = {
       unacknowledged: "Confirma que entiendes que el cifrado del servidor no ha tenido una revisión externa.",
       invalidCode: "Eso no es un código de configuración de servidor. Copia el código completo del servidor e inténtalo de nuevo.",
       setupRefused: "El servidor rechazó este código. Puede ser incorrecto, estar usado o haber vencido. Ejecuta anchor setup en el servidor para obtener otro.",
+      unreachable: "Esta computadora no pudo llegar al servidor. Comprueba que esté en marcha y, si tiene un cortafuegos, permite su puerto (43823 por defecto) desde esta red.",
       serverNeedsUpdate: "El servidor usa una versión anterior. Actualízalo e inténtalo de nuevo.",
       deviceNeedsUpdate: "El servidor usa una versión más nueva. Actualiza Ganbaru e inténtalo de nuevo.",
       serverIsAnchor: "Este servidor es el ancla. Toma el ancla en esta computadora primero.",
@@ -133,7 +134,7 @@ export const sync = {
       failed: "No se pudo cambiar el servidor. Inténtalo de nuevo.",
     },
     problems: {
-      unreachable: "No se pudo llegar al relé, o su certificado no coincidió.",
+      unreachable: "No se pudo llegar al relé, o su certificado no coincidió. Si tiene un cortafuegos, permite su puerto (43823 por defecto).",
       incompatible: "El relé usa otra versión de protocolo. Actualiza Ganbaru o el relé.",
       notClaimed: "El relé no guarda esta bóveda. Quizá un administrador lo quitó del relé.",
       alreadyClaimed: "El relé ya guarda esta bóveda.",

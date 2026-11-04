@@ -5,9 +5,23 @@ use crate::identity::RelayIdentity;
 use crate::store::RelayStore;
 use ganbaru_handoff::protocol::QrMatrix;
 use ganbaru_handoff::protocol::relay::{
-    RELAY_SETUP_TOKEN_LIFETIME, RelaySetupCode, RelaySetupToken,
+    RELAY_PORT, RELAY_SETUP_TOKEN_LIFETIME, RelaySetupCode, RelaySetupToken,
 };
 use std::fmt::Write as _;
+
+/// Appends the reminder to open the server port. A container cannot see the host firewall, so it
+/// is printed whether or not one is active.
+pub fn write_firewall_hint(text: &mut String) {
+    let _ = writeln!(
+        text,
+        "If this machine has a firewall, allow TCP port {RELAY_PORT} (or your --listen port) so devices can reach it:"
+    );
+    let _ = writeln!(text, "  ufw:       sudo ufw allow {RELAY_PORT}/tcp");
+    let _ = writeln!(
+        text,
+        "  firewalld: sudo firewall-cmd --permanent --add-port={RELAY_PORT}/tcp && sudo firewall-cmd --reload"
+    );
+}
 
 /// Light modules around a QR code, as the QR specification asks.
 const QR_QUIET_ZONE: usize = 4;
@@ -95,5 +109,6 @@ pub fn describe(issued: &IssuedSetupCode, identity: &RelayIdentity) -> Result<St
         text,
         "The code works once, for one space, for {minutes} minutes. Keep it private until it is used."
     );
+    write_firewall_hint(&mut text);
     Ok(text)
 }

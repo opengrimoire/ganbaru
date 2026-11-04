@@ -17,6 +17,7 @@ describe("serverConnectError", () => {
     ["this server runs no vault yet", `${errors}.noVault`],
     ["this vault is already open on this device", `${errors}.alreadyOpen`],
     ["this recovery kit does not belong to the vault on this server", `${errors}.wrongKit`],
+    ["could not reach the server: connecting to 192.168.1.20:43823 timed out", `${errors}.unreachable`],
   ])("names what to fix for %s", (cause, expected) => {
     expect(serverConnectError(cause, t)).toBe(expected);
     expect(serverConnectError(new Error(cause), t)).toBe(expected);

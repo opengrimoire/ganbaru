@@ -19,7 +19,7 @@ use crate::config::{AnchorBackupConfig, AnchorConfig, AnchorSetupConfig};
 use crate::limits::{anchor_connection_limits, anchor_pre_auth_policy};
 use crate::lock_data_dir;
 use crate::server::unix_time_ms;
-use crate::setup::render_qr;
+use crate::setup::{render_qr, write_firewall_hint};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::pairing::{PairingManager, certificate_fingerprint, random_token};
 use ganbaru_handoff::protocol::anchor::{ANCHOR_SETUP_LIFETIME, AnchorSetupCode};
@@ -232,6 +232,7 @@ fn describe_setup(code: &AnchorSetupCode) -> Result<String, String> {
         text,
         "The code works for {minutes} minutes and for one vault, the first one a device proves it for, and the newest code replaces older ones. Keep it private until the server is set up."
     );
+    write_firewall_hint(&mut text);
     Ok(text)
 }
 

@@ -2,7 +2,7 @@
 
 This file records reviewed Rust and npm advisory exceptions and allowed warnings. Lockfiles and current command output are authoritative; an old date or prior clean result is not evidence for the current lockfile.
 
-As of 2026-10-28, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the one reviewed ignore below, and `pnpm -w run audit:rust` exits successfully with the two configured ignores and eleven allowed warnings listed below.
+As of 2026-11-04, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the one reviewed ignore below, and `pnpm -w run audit:rust` exits successfully with no configured ignores and the ten allowed warnings listed below.
 
 A successful Rust audit exit does not mean warning-free. The cargo-audit output policy allows warnings, so maintainers must review new unsound, unmaintained, and yanked findings separately.
 
@@ -17,16 +17,7 @@ Run `validate:full` for dependency, lockfile, release, audit, and other security
 
 ## Configured vulnerability ignores
 
-These advisories are ignored in `.cargo/audit.toml` after path review. Each ignore is conditional and must be removed when its assumptions stop holding.
-
-### RUSTSEC-2026-0194 and RUSTSEC-2026-0195, quick-xml denial of service
-
-Affected quick-xml versions are locked through constrained paths:
-
-- `wayland-scanner` parses dependency-owned Wayland protocol XML at compile time.
-- `tauri-winrt-notification` uses the XML escaping helper to build Windows notifications and does not invoke the affected reader, duplicate-attribute, or namespace parsing paths.
-
-The vulnerable parsing is not reachable from user-controlled runtime XML. Remove the ignores when these dependencies accept fixed quick-xml releases, or immediately if a runtime parser reaches an affected version.
+`.cargo/audit.toml` ignores no Rust advisories. An ignore is added only after path review recorded here, and is removed when its assumptions stop holding.
 
 ## Configured npm ignores
 
@@ -52,10 +43,6 @@ RUSTSEC-2025-0075, RUSTSEC-2025-0080, RUSTSEC-2025-0081, RUSTSEC-2025-0098, and 
 ### D-Bus split crates
 
 RUSTSEC-2026-0370, RUSTSEC-2026-0371, and RUSTSEC-2026-0372 report zvariant, zbus_names, and zvariant_derive as unmaintained because zbus 6 absorbed them. They are reached through zbus 5 in notify-rust (Linux notifications) and secret-service (the Linux keyring store). Remove them when those dependencies move to zbus 6.
-
-### Tokio AsyncFd
-
-RUSTSEC-2026-0386 reports that tokio's safe `AsyncFd` constructors accept file descriptors they do not own, which can lead to a use-after-free if the descriptor is closed and reused while the `AsyncFd` lives. First-party code does not construct `AsyncFd`. Remove the warning by moving to a patched tokio release (1.53.3 or later) once it passes dependency review.
 
 ## Bundled SQLite
 

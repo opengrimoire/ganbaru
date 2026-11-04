@@ -114,7 +114,7 @@ where
             return;
         };
         let wait = handle.wait_for_action_async(|response| {
-            if let notify_rust::ActionResponse::Custom(action) = response {
+            if let Some(action) = response_action(response) {
                 on_action(action);
             }
         });
@@ -129,6 +129,18 @@ where
                 eprintln!("{error_context}: {error}");
             }
         });
+    }
+}
+
+/// Returns the action key a notification response invoked, reporting a body click as the D-Bus
+/// `"default"` key, or `None` when the notification closed or received a reply.
+#[cfg(target_os = "linux")]
+fn response_action(response: &notify_rust::NotificationResponse) -> Option<&str> {
+    match response {
+        notify_rust::NotificationResponse::Default => Some("default"),
+        notify_rust::NotificationResponse::Action(action) => Some(action),
+        notify_rust::NotificationResponse::Reply(_)
+        | notify_rust::NotificationResponse::Closed(_) => None,
     }
 }
 
@@ -569,10 +581,10 @@ pub(crate) fn show_native_focus_alert(
     tauri::async_runtime::spawn(async move {
         let _slot = action_slot;
         let wait = handle.wait_for_action_async(|response| {
-            let notify_rust::ActionResponse::Custom(action) = response else {
+            let Some(action) = response_action(response) else {
                 return;
             };
-            if *action == "default" {
+            if action == "default" {
                 if crate::pomodoro::native_runtime::presentation_is_current(
                     &app,
                     context.vault_generation,
@@ -766,5 +778,28 @@ mod focus_alert_tests {
             assert!(NativeFocusAlertActions::Paused.intent(action).is_none());
             assert!(warning.intent(action).is_none());
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn notification_responses_map_to_action_keys() {
+        use notify_rust::{CloseReason, NotificationResponse};
+
+        assert_eq!(
+            response_action(&NotificationResponse::Default),
+            Some("default")
+        );
+        assert_eq!(
+            response_action(&NotificationResponse::Action("resume".into())),
+            Some("resume")
+        );
+        assert_eq!(
+            response_action(&NotificationResponse::Reply("text".into())),
+            None
+        );
+        assert_eq!(
+            response_action(&NotificationResponse::Closed(CloseReason::Dismissed)),
+            None
+        );
     }
 }

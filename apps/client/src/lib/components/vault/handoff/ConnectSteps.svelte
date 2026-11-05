@@ -273,16 +273,17 @@
         <ol class="flex flex-col">
           <li class="flex gap-3">
             {@render step(1, 3, "text")}
-            <div class="min-w-0 flex-1 pt-0.5 pb-4">
-              <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.install")}</p>
+            <p class="min-w-0 flex-1 pt-0.5 pb-4 text-sm leading-5 text-foreground">
+              {t("vaultHandoff.serverConnect.installPrefix")}
               <button
                 type="button"
-                class="mt-1 inline-flex items-center gap-1 text-[0.8rem] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                class="inline-flex items-baseline gap-0.5 text-primary underline underline-offset-2 hover:text-primary/80"
                 onclick={() => void openServerGuide()}
               >
-                {t("sync.server.guide")}<ExternalLink size={12} aria-hidden="true" />
+                {t("vaultHandoff.serverConnect.installLink")}<ExternalLink size={12} class="self-center" aria-hidden="true" />
               </button>
-            </div>
+              {t("vaultHandoff.serverConnect.installSuffix")}
+            </p>
           </li>
           <li class="flex gap-3">
             {@render step(2, 3, "text")}

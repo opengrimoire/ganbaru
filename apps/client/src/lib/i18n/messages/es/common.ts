@@ -5,6 +5,8 @@ export const common = {
   appName: "Ganbaru",
   cancel: "Cancelar",
   close: "Cerrar",
+  clearCode: "Borrar código",
+  clearKit: "Borrar kit de recuperación",
   back: "Atrás",
   confirm: "Confirmar",
   save: "Guardar",

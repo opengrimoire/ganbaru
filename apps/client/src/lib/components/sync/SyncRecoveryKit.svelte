@@ -2,6 +2,7 @@
   import type { SyncAuthorityDevice, SyncContests, SyncPendingRecoveryKit } from "$lib/api/sync";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import MaskedCodeInput from "$lib/components/ui/MaskedCodeInput.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -175,9 +176,10 @@
         <label class="text-[0.8rem] text-muted-foreground" for="sync-recovery-kit-rotate-code">
           {t("sync.kit.rotateDescription")}
         </label>
-        <input
+        <MaskedCodeInput
           id="sync-recovery-kit-rotate-code"
           class="field h-9 w-full px-3 font-mono text-sm"
+          clearLabel={t("common.clearKit")}
           dir="ltr"
           autocomplete="off"
           autocapitalize="characters"
@@ -215,9 +217,10 @@
       <label class="text-[0.8rem] text-muted-foreground" for="sync-recovery-kit-code">
         {contested ? t("sync.kit.contestDescription") : use === "force" ? t("sync.kit.forceDescription") : t("sync.kit.useDescription")}
       </label>
-      <input
+      <MaskedCodeInput
         id="sync-recovery-kit-code"
         class="field h-9 w-full px-3 font-mono text-sm"
+        clearLabel={t("common.clearKit")}
         dir="ltr"
         autocomplete="off"
         autocapitalize="characters"

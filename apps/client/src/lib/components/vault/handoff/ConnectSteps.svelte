@@ -245,7 +245,7 @@
                 bind:input={pairingInput}
                 bind:value={code}
                 id="pairing-code"
-                clearLabel={t("vaultHandoff.clearCode")}
+                clearLabel={t("common.clearCode")}
                 autocomplete="off"
                 spellcheck="false"
                 class="field h-8 w-full px-3 text-sm"
@@ -313,7 +313,7 @@
                 bind:input={serverInput}
                 bind:value={serverCode}
                 id="server-connect-code"
-                clearLabel={t("vaultHandoff.clearCode")}
+                clearLabel={t("common.clearCode")}
                 class="field h-8 w-full px-3 font-mono text-sm"
                 dir="ltr"
                 autocomplete="off"
@@ -339,7 +339,7 @@
               bind:input={kitInput}
               bind:value={kit}
               id="server-connect-kit"
-              clearLabel={t("vaultHandoff.clearKit")}
+              clearLabel={t("common.clearKit")}
               class="field h-8 w-full px-3 font-mono text-sm"
               dir="ltr"
               autocomplete="off"

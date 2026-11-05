@@ -126,7 +126,7 @@
         bind:input={codeInput}
         bind:value={code}
         id="mobile-server-code"
-        clearLabel={t("vaultHandoff.clearCode")}
+        clearLabel={t("common.clearCode")}
         class="field h-11 w-full px-3 font-mono text-sm"
         dir="ltr"
         autocomplete="off"
@@ -153,7 +153,7 @@
         bind:input={kitInput}
         bind:value={kit}
         id="mobile-server-kit"
-        clearLabel={t("vaultHandoff.clearKit")}
+        clearLabel={t("common.clearKit")}
         class="field h-11 w-full px-3 font-mono text-sm"
         dir="ltr"
         autocomplete="off"

@@ -112,8 +112,6 @@ export const vaultHandoff = {
     copy: "Copy its pairing code",
   },
   codePlaceholder: "Pairing code",
-  clearCode: "Clear code",
-  clearKit: "Clear recovery kit",
   codeInvalid: "That pairing code is not valid. Copy a new code from the other computer and try again.",
   codeExpired: "That pairing code has expired. Get a new code from the other computer and try again.",
   connectAction: "Connect",

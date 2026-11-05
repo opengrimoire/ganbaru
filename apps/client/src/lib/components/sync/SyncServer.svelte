@@ -11,6 +11,7 @@
   } from "$lib/api/sync";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import MaskedCodeInput from "$lib/components/ui/MaskedCodeInput.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { SERVER_GUIDE_URL, syncServerErrorLabel, syncServerLines } from "$lib/sync/server";
@@ -166,9 +167,10 @@
     {#if canManage}
       <form class="flex min-w-0 flex-col gap-2 px-1" onsubmit={(event) => void add(event)}>
         <label class="text-[0.8rem] text-muted-foreground" for="sync-server-code">{t("sync.server.codeLabel")}</label>
-        <input
+        <MaskedCodeInput
           id="sync-server-code"
           class="field h-9 w-full px-3 font-mono text-sm"
+          clearLabel={t("common.clearCode")}
           dir="ltr"
           autocomplete="off"
           autocapitalize="off"

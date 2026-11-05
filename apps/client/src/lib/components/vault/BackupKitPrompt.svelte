@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import MaskedCodeInput from "$lib/components/ui/MaskedCodeInput.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { acquireSecureWindow, type SecureWindowRelease } from "$lib/mobile/secure-window";
   import {
@@ -37,7 +38,7 @@
   );
   const backdropPress = createBackdropPress();
   let element = $state<HTMLDivElement | undefined>();
-  let input = $state<HTMLTextAreaElement | null>(null);
+  let input = $state<HTMLInputElement | null>(null);
   let code = $state("");
   const canSubmit = $derived(code.trim() !== "");
 
@@ -59,7 +60,7 @@
       event.stopPropagation();
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !(event.target instanceof HTMLButtonElement)) {
       event.preventDefault();
       event.stopPropagation();
       submit();
@@ -128,19 +129,20 @@
         </h2>
         <p class="text-[0.866667rem] text-foreground">{t("settings.data.kitPromptMessage")}</p>
       </div>
-      <label class="flex flex-col gap-1.5">
-        <span class="text-[0.8rem] text-muted-foreground">{t("settings.data.kitPromptLabel")}</span>
-        <textarea
-          bind:this={input}
+      <div class="flex flex-col gap-1.5">
+        <label class="text-[0.8rem] text-muted-foreground" for="backup-kit-prompt-code">{t("settings.data.kitPromptLabel")}</label>
+        <MaskedCodeInput
+          bind:input
           bind:value={code}
-          rows="3"
+          id="backup-kit-prompt-code"
+          clearLabel={t("common.clearKit")}
           autocomplete="off"
           autocapitalize="characters"
           spellcheck="false"
-          class="field resize-none font-mono text-[0.866667rem] tracking-wider"
+          class="field h-9 w-full px-3 font-mono text-[0.866667rem] tracking-wider"
           dir="ltr"
-        ></textarea>
-      </label>
+        />
+      </div>
       {#if refusal}
         <p role="alert" class="text-[0.8rem] leading-5 text-destructive">
           {backupRefusalMessage(refusal, t)}

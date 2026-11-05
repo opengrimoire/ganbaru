@@ -477,8 +477,8 @@
             />
           </div>
         {:else}
-          <!-- On a phone the prompt continues the last step under its camera or field; a desktop sets it off below the steps. -->
-          <p in:swapIn={swap} out:swapOut={swap} class={cn("text-[0.8rem] leading-5 text-muted-foreground", mobile ? cn("mt-3", stepTextIndentClass) : "mt-4 border-t border-border pt-3")}>
+          <!-- On a phone the prompt centers under the camera or field without a divider; a desktop sets it off below the steps. -->
+          <p in:swapIn={swap} out:swapOut={swap} class={cn("text-[0.8rem] leading-5 text-muted-foreground", mobile ? "mt-4 text-center" : "mt-4 border-t border-border pt-3")}>
             {t("vaultHandoff.serverConnect.kitPrompt")}
             <button
               type="button"

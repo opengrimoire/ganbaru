@@ -113,7 +113,6 @@ export const vaultHandoff = {
   computerSteps: {
     open: "On your other computer, open",
     copy: "Copy its pairing code",
-    paste: "Paste it here",
   },
   codePlaceholder: "Pairing code",
   codeInvalid: "That pairing code is not valid. Copy a new code from the other computer and try again.",
@@ -151,8 +150,8 @@ export const vaultHandoff = {
     server: "a server",
   },
   serverConnect: {
-    run: "On your Ganbaru server, run",
-    pasteCode: "Paste the code it prints",
+    install: "Set up ganbaru-server on a computer that stays on, such as a home server or NAS",
+    run: "On that server, run",
     outcome: "This computer joins the vault the server runs, in a new folder.",
     startOutcome: "This computer joins the vault the server runs, in a new folder. An empty server receives this vault instead and becomes its anchor.",
     open: "Connect to a server",

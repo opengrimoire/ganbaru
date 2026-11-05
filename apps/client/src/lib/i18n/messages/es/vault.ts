@@ -121,7 +121,6 @@ export const vaultHandoff = {
   computerSteps: {
     open: "En tu otra computadora, abre",
     copy: "Copia su código de vinculación",
-    paste: "Pégalo aquí",
   },
   codePlaceholder: "Código de vinculación",
   codeInvalid: "Ese código de vinculación no es válido. Copia uno nuevo de la otra computadora e inténtalo de nuevo.",
@@ -159,8 +158,8 @@ export const vaultHandoff = {
     server: "un servidor",
   },
   serverConnect: {
-    run: "En tu servidor de Ganbaru, ejecuta",
-    pasteCode: "Pega el código que imprime",
+    install: "Instala ganbaru-server en una computadora que siempre esté encendida, como un servidor doméstico o un NAS",
+    run: "En ese servidor, ejecuta",
     outcome: "Esta computadora se une a la bóveda que ejecuta el servidor, en una carpeta nueva.",
     startOutcome: "Esta computadora se une a la bóveda que ejecuta el servidor, en una carpeta nueva. Un servidor vacío recibe esta bóveda y se convierte en su ancla.",
     open: "Conectar con un servidor",

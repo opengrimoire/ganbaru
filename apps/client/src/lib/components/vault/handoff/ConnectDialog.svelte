@@ -119,7 +119,7 @@
 
   async function openServerGuide(): Promise<void> {
     try {
-      await openUrl(`${SERVER_GUIDE_URL}#adding-a-device-through-the-server`);
+      await openUrl(SERVER_GUIDE_URL);
     } catch (cause: unknown) {
       console.warn("server setup guide could not be opened", cause);
     }
@@ -272,8 +272,8 @@
       </span>
     </h2>
 
-    {#snippet step(number: number, last: boolean)}
-      <span aria-hidden="true" class="relative flex w-6 shrink-0 justify-center">
+    {#snippet step(number: number, last: boolean, beside: "text" | "field")}
+      <span aria-hidden="true" class={cn("relative flex w-6 shrink-0 justify-center", beside === "field" && "pt-2")}>
         <span class="flex size-6 items-center justify-center rounded-full bg-primary/12 text-xs font-semibold text-primary tabular-nums">
           {stepNumber(number)}
         </span>
@@ -285,7 +285,7 @@
       {#if source === "computer"}
         <ol class="flex flex-col">
           <li class="flex gap-3 pb-4">
-            {@render step(1, false)}
+            {@render step(1, false, "text")}
             <p class="min-w-0 pt-0.5 text-sm leading-5 text-foreground">
               {t("vaultHandoff.computerSteps.open")}
               <span class="ms-0.5 inline-flex items-center gap-0.5 rounded-md bg-muted px-1.5 py-px align-baseline text-[0.8rem] font-medium whitespace-nowrap">
@@ -294,13 +294,12 @@
             </p>
           </li>
           <li class="flex gap-3 pb-4">
-            {@render step(2, false)}
+            {@render step(2, false, "text")}
             <p class="min-w-0 pt-0.5 text-sm leading-5 text-foreground">{t("vaultHandoff.computerSteps.copy")}</p>
           </li>
           <li class="flex gap-3">
-            {@render step(3, true)}
-            <div class="min-w-0 flex-1 pt-0.5">
-              <label class="block text-sm leading-5 text-foreground" for="pairing-code">{t("vaultHandoff.computerSteps.paste")}</label>
+            {@render step(3, true, "field")}
+            <div class="min-w-0 flex-1">
               <input
                 bind:this={pairingInput}
                 bind:value={code}
@@ -308,8 +307,9 @@
                 type="text"
                 autocomplete="off"
                 spellcheck="false"
-                class="field mt-2 h-10 w-full px-3 text-sm"
+                class="field h-10 w-full px-3 text-sm"
                 placeholder={t("vaultHandoff.codePlaceholder")}
+                aria-label={t("vaultHandoff.codePlaceholder")}
                 aria-invalid={error !== null}
                 aria-describedby={error ? "pairing-code-error" : undefined}
                 disabled={busy}
@@ -329,31 +329,36 @@
       {:else}
         <ol class="flex flex-col">
           <li class="flex gap-3 pb-4">
-            {@render step(1, false)}
+            {@render step(1, false, "text")}
             <div class="min-w-0 flex-1 pt-0.5">
-              <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.run")}</p>
-              <code class="mt-2 flex min-h-9 items-center gap-2 overflow-x-auto rounded-md bg-muted px-3 font-mono text-[0.8rem] whitespace-nowrap text-foreground" dir="ltr">
-                <span class="text-muted-foreground select-none" aria-hidden="true">$</span>{SERVER_SETUP_COMMAND}
-              </code>
+              <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.install")}</p>
               <button
                 type="button"
-                class="mt-1.5 inline-flex items-center gap-1 text-[0.8rem] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                class="mt-1 inline-flex items-center gap-1 text-[0.8rem] text-muted-foreground underline underline-offset-2 hover:text-foreground"
                 onclick={() => void openServerGuide()}
               >
                 {t("sync.server.guide")}<ExternalLink size={12} aria-hidden="true" />
               </button>
             </div>
           </li>
-          <li class="flex gap-3">
-            {@render step(2, true)}
+          <li class="flex gap-3 pb-4">
+            {@render step(2, false, "text")}
             <div class="min-w-0 flex-1 pt-0.5">
-              <label class="block text-sm leading-5 text-foreground" for="server-connect-code">{t("vaultHandoff.serverConnect.pasteCode")}</label>
+              <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.run")}</p>
+              <code class="mt-2 flex min-h-9 items-center gap-2 overflow-x-auto rounded-md bg-muted px-3 font-mono text-[0.8rem] whitespace-nowrap text-foreground" dir="ltr">
+                <span class="text-muted-foreground select-none" aria-hidden="true">$</span>{SERVER_SETUP_COMMAND}
+              </code>
+            </div>
+          </li>
+          <li class="flex gap-3">
+            {@render step(3, true, "field")}
+            <div class="min-w-0 flex-1">
               <input
                 bind:this={serverInput}
                 bind:value={serverCode}
                 id="server-connect-code"
                 type="text"
-                class="field mt-2 h-10 w-full px-3 font-mono text-sm"
+                class="field h-10 w-full px-3 font-mono text-sm"
                 dir="ltr"
                 autocomplete="off"
                 autocapitalize="off"

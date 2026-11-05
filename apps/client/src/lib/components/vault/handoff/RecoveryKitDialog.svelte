@@ -15,9 +15,8 @@
 
   /**
    * A phone's modal for entering the recovery kit code that lets it join a server that refused it.
-   * It hands the typed code back on confirm and keeps nothing once it closes. The modal hangs from the top
-   * of the screen, so the soft keyboard never covers it and the WebView shrinking for it does not move it,
-   * and the page underneath stops scrolling while it shows.
+   * It hands the typed code back on confirm and keeps nothing once it closes. The page underneath stops
+   * scrolling while it shows.
    */
   let {
     confirmLabel,
@@ -91,8 +90,8 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   bind:this={overlay}
-  class="fixed z-90 flex items-start justify-center"
-  style="left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height); padding: calc(var(--safe-area-top) + 4rem) calc(var(--safe-area-right) + 1rem) calc(var(--safe-area-bottom) + 1rem) calc(var(--safe-area-left) + 1rem);"
+  class="fixed z-90 flex items-center justify-center"
+  style="left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height); padding: calc(var(--safe-area-top) + 1rem) calc(var(--safe-area-right) + 1rem) calc(var(--safe-area-bottom) + 1rem) calc(var(--safe-area-left) + 1rem);"
   onpointerdown={backdropPress.start}
   onclick={(event) => { event.stopPropagation(); if (backdropPress.isClick(event)) onCancel(); }}
 >

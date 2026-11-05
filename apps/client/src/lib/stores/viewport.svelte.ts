@@ -48,12 +48,14 @@ interface KeyboardSurface {
 }
 
 let keyboardSurface: KeyboardSurface | null = null;
+let bottomChromeHeight = $state(0);
 
 const sizeClass = $derived(classifyViewport(width, height));
 const isShort = $derived(height < 480);
 const canShowDenseChrome = $derived(isSizeClassAtLeast(sizeClass, "regular") && !isShort);
 const orientation = $derived(viewportOrientation(width, height));
 const keyboardOpen = $derived(keyboardInset > 0 || nativeKeyboardHeight > 0);
+const bottomChromeCovered = $derived(keyboardOpen && keyboardInset >= bottomChromeHeight);
 
 interface ViewportSnapshot {
   width: number;
@@ -173,7 +175,7 @@ function applyKeyboardShift(keyboardTop: number, safeTop: number): void {
 /**
  * Read the viewport and publish it as CSS variables. While the soft keyboard is open, the surface holding focus
  * follows it: `--keyboard-inset` is how far the keyboard reaches above the bottom safe area, the page shrinks by
- * `--page-keyboard-inset` when it holds focus, a lifted modal surface takes `--keyboard-surface-height` as its
+ * `--page-keyboard-inset` when it holds focus once the keyboard covers the bottom chrome, a lifted modal surface takes `--keyboard-surface-height` as its
  * `--visual-viewport-height`, and a shifted one moves up by its `--keyboard-shift`. Everything behind that surface
  * keeps its size. On Android the keyboard height comes from the shell alone, which reports it on every frame of the
  * keyboard slide.
@@ -213,7 +215,8 @@ function refreshViewport(): void {
   root.style.setProperty("--visual-viewport-offset-left", `${next.offsetLeft}px`);
   root.style.setProperty("--keyboard-inset", `${nextKeyboardInset}px`);
   root.style.setProperty("--keyboard-surface-height", `${surfaceHeight}px`);
-  root.style.setProperty("--page-keyboard-inset", `${keyboardSurface ? 0 : nextKeyboardInset}px`);
+  const pageFollows = keyboardSurface === null && keyboardIsOpen && nextKeyboardInset >= bottomChromeHeight;
+  root.style.setProperty("--page-keyboard-inset", `${pageFollows ? nextKeyboardInset : 0}px`);
   applyAndroidSystemBarInsets(root, systemBars);
   root.dataset.orientation = viewportOrientation(next.width, next.height);
   root.dataset.input = next.coarsePointer ? "coarse" : "fine";
@@ -278,6 +281,13 @@ export function getViewport() {
     get keyboardOpen(): boolean {
       return keyboardOpen;
     },
+    /**
+     * Whether an open soft keyboard covers the bottom chrome set by {@link setKeyboardBottomChrome}. The chrome stays
+     * in place under a keyboard that is still sliding over it, and the page starts to follow only once it is covered.
+     */
+    get bottomChromeCovered(): boolean {
+      return bottomChromeCovered;
+    },
     /** Viewport coordinate of the top edge of an open soft keyboard, or the visual viewport bottom while it is hidden. */
     get visibleBottom(): number {
       return offsetTop + visibleHeight;
@@ -307,4 +317,16 @@ export function getViewport() {
       return !isSizeClassAtLeast(sizeClass, minimum);
     },
   };
+}
+
+/**
+ * Set the height of the chrome along the bottom safe area, such as the bottom tab bar, in viewport pixels. The soft
+ * keyboard slides over that chrome before the page follows it, so the page content stays still until the keyboard
+ * covers the chrome and never drops below where the chrome ends.
+ */
+export function setKeyboardBottomChrome(height: number): void {
+  const next = Number.isFinite(height) ? Math.max(0, height) : 0;
+  if (next === bottomChromeHeight) return;
+  bottomChromeHeight = next;
+  if (initialized) refreshViewport();
 }

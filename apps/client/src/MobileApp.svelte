@@ -38,7 +38,7 @@
   import { getNavigation } from "$lib/stores/navigation.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
-  import { getViewport } from "$lib/stores/viewport.svelte";
+  import { getViewport, setKeyboardBottomChrome } from "$lib/stores/viewport.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { mark as perfMark } from "$lib/stores/perf-log.svelte";
@@ -80,7 +80,8 @@
   const calendars = getCalendars();
   const pomodoro = getPomodoro();
   const mobileBackStack = getMobileBackStack();
-  getZoom().reapply();
+  const zoom = getZoom();
+  zoom.reapply();
   const localization = getLocalization();
   const { t } = localization;
   const androidSystemBackAvailable = platformHasCapability(
@@ -155,7 +156,7 @@
     mobileNavigationPresentation(viewport.layoutWidth),
   );
   const useNavigationRail = $derived(navigationPresentation === "rail");
-  const bottomNavigationVisible = $derived(!useNavigationRail && !viewport.keyboardOpen);
+  const bottomNavigationVisible = $derived(!useNavigationRail && !viewport.bottomChromeCovered);
   const suspendInfo = $derived(pomodoro.suspendedAway);
   const suspendDecisionOpen = $derived(suspendInfo !== null);
   const modalOpen = $derived(
@@ -760,6 +761,13 @@
   $effect(() => {
     if (!viewport.keyboardOpen) return;
     revealFocusedTextEntry(document, viewport.visibleBottom);
+  });
+
+  // The keyboard slides over the bottom tab bar before the page follows it, so content never drops below the bar.
+  $effect(() => {
+    const declared = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--mobile-bottom-nav-h"));
+    setKeyboardBottomChrome(useNavigationRail || !Number.isFinite(declared) ? 0 : declared * zoom.level);
+    return () => setKeyboardBottomChrome(0);
   });
 
   $effect(() => {

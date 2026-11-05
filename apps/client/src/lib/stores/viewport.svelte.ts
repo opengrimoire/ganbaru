@@ -6,6 +6,7 @@ import {
 import {
   ANDROID_INSETS_EVENT_NAME,
   calculateKeyboardInset,
+  keyboardSafeAreaOverlap,
   parseAndroidKeyboardHeight,
   parseAndroidSystemBarInsets,
   resolvePointerCapabilities,
@@ -13,6 +14,7 @@ import {
   type SystemBarInsets,
   type ViewportOrientation,
 } from "$lib/viewport";
+import { KEYBOARD_SURFACE_ATTRIBUTE, keyboardSurfaceMode, keyboardSurfaceOf } from "$lib/mobile/keyboard";
 
 const DEFAULT_WIDTH = 1200;
 const DEFAULT_HEIGHT = 800;
@@ -25,9 +27,11 @@ let offsetTop = $state(0);
 let offsetLeft = $state(0);
 let keyboardInset = $state(0);
 let nativeKeyboardHeight = $state(0);
+let visibleHeight = $state(DEFAULT_HEIGHT);
 let coarsePointer = $state(false);
 let hoverAvailable = $state(true);
 let initialized = false;
+let keyboardSurface: HTMLElement | null = null;
 
 const sizeClass = $derived(classifyViewport(width, height));
 const isShort = $derived(height < 480);
@@ -109,8 +113,7 @@ function readAndroidKeyboardHeight(): number {
   }
 }
 
-function applyAndroidSystemBarInsets(root: HTMLElement): void {
-  const insets = readAndroidSystemBarInsets();
+function applyAndroidSystemBarInsets(root: HTMLElement, insets: SystemBarInsets | null): void {
   if (insets === null) return;
   root.style.setProperty("--safe-area-top", `${insets.top}px`);
   root.style.setProperty("--safe-area-right", `${insets.right}px`);
@@ -118,26 +121,51 @@ function applyAndroidSystemBarInsets(root: HTMLElement): void {
   root.style.setProperty("--safe-area-left", `${insets.left}px`);
 }
 
+/** Mark `next` as the surface following the keyboard, measuring whether it lifts before it starts to follow. */
+function applyKeyboardSurface(next: HTMLElement | null, viewportHeight: number): void {
+  if (next === keyboardSurface) return;
+  keyboardSurface?.removeAttribute(KEYBOARD_SURFACE_ATTRIBUTE);
+  keyboardSurface = next;
+  next?.setAttribute(KEYBOARD_SURFACE_ATTRIBUTE, keyboardSurfaceMode(next, viewportHeight));
+}
+
+/**
+ * Read the viewport and publish it as CSS variables. While the soft keyboard is open, the surface holding focus
+ * follows it: `--keyboard-inset` is how far the keyboard reaches above the bottom safe area, the page shrinks by
+ * `--page-keyboard-inset` when it holds focus, and a modal surface holding focus takes `--keyboard-surface-height`
+ * as its `--visual-viewport-height`. Everything behind that surface keeps its size.
+ */
 function refreshViewport(): void {
   const next = readViewport();
+  const systemBars = readAndroidSystemBarInsets();
+  const androidKeyboard = readAndroidKeyboardHeight();
+  const overlap = keyboardSafeAreaOverlap(androidKeyboard, systemBars?.bottom ?? 0);
+  const nextKeyboardInset = Math.max(next.keyboardInset, overlap);
+  const surfaceHeight = Math.max(0, next.height - overlap);
   width = next.width;
   height = next.height;
   layoutWidth = next.layoutWidth;
   layoutHeight = next.layoutHeight;
   offsetTop = next.offsetTop;
   offsetLeft = next.offsetLeft;
-  keyboardInset = next.keyboardInset;
-  nativeKeyboardHeight = readAndroidKeyboardHeight();
+  keyboardInset = nextKeyboardInset;
+  nativeKeyboardHeight = androidKeyboard;
+  visibleHeight = Math.max(0, next.height - androidKeyboard);
   coarsePointer = next.coarsePointer;
   hoverAvailable = next.hoverAvailable;
 
+  const keyboardIsOpen = nextKeyboardInset > 0 || androidKeyboard > 0;
+  applyKeyboardSurface(keyboardIsOpen ? keyboardSurfaceOf(document.activeElement) : null, next.layoutHeight);
+
   const root = document.documentElement;
   root.style.setProperty("--visual-viewport-width", `${next.width}px`);
-  root.style.setProperty("--visual-viewport-height", `${next.height}px`);
+  root.style.setProperty("--visual-viewport-height", `${keyboardSurface ? next.height : surfaceHeight}px`);
   root.style.setProperty("--visual-viewport-offset-top", `${next.offsetTop}px`);
   root.style.setProperty("--visual-viewport-offset-left", `${next.offsetLeft}px`);
-  root.style.setProperty("--keyboard-inset", `${next.keyboardInset}px`);
-  applyAndroidSystemBarInsets(root);
+  root.style.setProperty("--keyboard-inset", `${nextKeyboardInset}px`);
+  root.style.setProperty("--keyboard-surface-height", `${surfaceHeight}px`);
+  root.style.setProperty("--page-keyboard-inset", `${keyboardSurface ? 0 : nextKeyboardInset}px`);
+  applyAndroidSystemBarInsets(root, systemBars);
   root.dataset.orientation = viewportOrientation(next.width, next.height);
   root.dataset.input = next.coarsePointer ? "coarse" : "fine";
 }
@@ -160,6 +188,8 @@ function initializeViewportTracking(): void {
   window.addEventListener(ANDROID_INSETS_EVENT_NAME, onResize);
   window.visualViewport?.addEventListener("resize", onResize);
   window.visualViewport?.addEventListener("scroll", onResize);
+  document.addEventListener("focusin", onResize);
+  document.addEventListener("focusout", onResize);
   for (const query of ["(pointer: coarse)", "(hover: hover)"]) {
     const mediaQuery = readMediaQuery(query);
     if (typeof mediaQuery?.addEventListener === "function") {
@@ -191,13 +221,17 @@ export function getViewport() {
     get offsetLeft(): number {
       return offsetLeft;
     },
-    /** Height of a soft keyboard that overlays the page without resizing it; zero where the shell resizes instead. */
+    /** How far an open soft keyboard reaches above the bottom safe area, or zero while it is hidden. */
     get keyboardInset(): number {
       return keyboardInset;
     },
-    /** Whether a soft keyboard is open, whether it overlays the page or the shell resized the page above it. */
+    /** Whether a soft keyboard is open, including while it slides in or out. */
     get keyboardOpen(): boolean {
       return keyboardOpen;
+    },
+    /** Viewport coordinate of the top edge of an open soft keyboard, or the visual viewport bottom while it is hidden. */
+    get visibleBottom(): number {
+      return offsetTop + visibleHeight;
     },
     get orientation(): ViewportOrientation {
       return orientation;

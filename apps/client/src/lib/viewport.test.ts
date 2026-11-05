@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateKeyboardInset,
+  keyboardSafeAreaOverlap,
   parseAndroidKeyboardHeight,
   parseAndroidSystemBarInsets,
   resolvePointerCapabilities,
@@ -39,6 +40,24 @@ describe("parseAndroidKeyboardHeight", () => {
     expect(parseAndroidKeyboardHeight("-1")).toBeNull();
     expect(parseAndroidKeyboardHeight("4097")).toBeNull();
     expect(parseAndroidKeyboardHeight(312)).toBeNull();
+  });
+});
+
+describe("keyboardSafeAreaOverlap", () => {
+  it("measures how far the keyboard reaches above the navigation bar it covers", () => {
+    expect(keyboardSafeAreaOverlap(312, 48)).toBe(264);
+    expect(keyboardSafeAreaOverlap(312.4, 0)).toBe(312);
+  });
+
+  it("is zero while the keyboard is hidden or still below the safe area", () => {
+    expect(keyboardSafeAreaOverlap(0, 48)).toBe(0);
+    expect(keyboardSafeAreaOverlap(20, 48)).toBe(0);
+  });
+
+  it("ignores invalid measurements and a negative safe area", () => {
+    expect(keyboardSafeAreaOverlap(Number.NaN, 48)).toBe(0);
+    expect(keyboardSafeAreaOverlap(312, Number.POSITIVE_INFINITY)).toBe(0);
+    expect(keyboardSafeAreaOverlap(312, -10)).toBe(312);
   });
 });
 

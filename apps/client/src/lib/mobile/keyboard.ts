@@ -61,11 +61,43 @@ function scrollContainerOf(element: HTMLElement): HTMLElement | null {
 }
 
 /**
- * Scroll the focused text field's caret into the area left above the soft keyboard. The WebView usually does this
- * itself after it shrinks; this covers a caret inside a tall editable block, which the WebView reveals only by the
- * block's edge.
+ * Attribute that marks the surface following the soft keyboard. Its value is `lift` when the surface reaches the
+ * bottom of the viewport, so its bottom edge rises above the keyboard too.
  */
-export function revealFocusedTextEntry(doc: Document = document): void {
+export const KEYBOARD_SURFACE_ATTRIBUTE = "data-keyboard-surface";
+
+/** Value of {@link KEYBOARD_SURFACE_ATTRIBUTE} for a surface whose bottom edge rises above the keyboard. */
+export const KEYBOARD_SURFACE_LIFT = "lift";
+
+/**
+ * Return the surface that follows the soft keyboard while `element` has focus: the fixed layer of the innermost modal
+ * dialog holding it, or null when focus is on the page itself. Pages and dialogs behind that surface keep their size.
+ */
+export function keyboardSurfaceOf(element: Element | null): HTMLElement | null {
+  const dialog = element?.closest('[aria-modal="true"]');
+  if (!(dialog instanceof HTMLElement)) return null;
+  const view = dialog.ownerDocument.defaultView;
+  if (!view) return dialog;
+  for (let current: HTMLElement | null = dialog; current; current = current.parentElement) {
+    if (view.getComputedStyle(current).position === "fixed") return current;
+  }
+  return dialog;
+}
+
+/**
+ * Return the {@link KEYBOARD_SURFACE_ATTRIBUTE} value for `surface` in a viewport `viewportHeight` tall, measured
+ * before the surface follows the keyboard. Anchored popovers that end above the viewport bottom keep their bottom edge.
+ */
+export function keyboardSurfaceMode(surface: Element, viewportHeight: number): string {
+  return surface.getBoundingClientRect().bottom >= viewportHeight - 1 ? KEYBOARD_SURFACE_LIFT : "";
+}
+
+/**
+ * Scroll the focused text field's caret into the area above the soft keyboard, whose top edge is `visibleBottom` in
+ * viewport coordinates. The surface holding the field shrinks above the keyboard, and this keeps the caret inside
+ * it, including a caret inside a tall editable block.
+ */
+export function revealFocusedTextEntry(doc: Document = document, visibleBottom?: number): void {
   const element = doc.activeElement;
   if (!isTextEntryElement(element)) return;
   const container = scrollContainerOf(element);
@@ -74,7 +106,10 @@ export function revealFocusedTextEntry(doc: Document = document): void {
   const containerRect = container.getBoundingClientRect();
   const visible = {
     top: Math.max(containerRect.top, 0),
-    bottom: Math.min(containerRect.bottom, view?.visualViewport?.height ?? view?.innerHeight ?? containerRect.bottom),
+    bottom: Math.min(
+      containerRect.bottom,
+      visibleBottom ?? view?.visualViewport?.height ?? view?.innerHeight ?? containerRect.bottom,
+    ),
   };
   const delta = revealScrollDelta(caretSpan(element), visible, KEYBOARD_REVEAL_MARGIN_PX);
   if (delta !== 0) container.scrollTop += delta;

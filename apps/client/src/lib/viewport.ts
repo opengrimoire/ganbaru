@@ -41,8 +41,8 @@ export function parseAndroidSystemBarInsets(value: unknown): SystemBarInsets | n
 }
 
 /**
- * Parse the Android soft keyboard height bridge response, in CSS pixels. The native shell already resizes the WebView
- * above the keyboard, so this reports that a keyboard is open rather than an area the page must avoid.
+ * Parse the Android soft keyboard height bridge response, in CSS pixels. It is the height the keyboard covers from the
+ * bottom edge of the WebView, navigation bar included, and it follows the keyboard while it slides.
  */
 export function parseAndroidKeyboardHeight(value: unknown): number | null {
   if (typeof value !== "string" || value.trim() === "") return null;
@@ -52,11 +52,19 @@ export function parseAndroidKeyboardHeight(value: unknown): number | null {
 }
 
 /**
+ * Returns how far a keyboard of `keyboardHeight` reaches above the bottom safe area of `safeBottom`. A surface that
+ * pads its bottom by the safe area keeps its content above the keyboard by ending this much higher.
+ */
+export function keyboardSafeAreaOverlap(keyboardHeight: number, safeBottom: number): number {
+  if (!Number.isFinite(keyboardHeight) || !Number.isFinite(safeBottom)) return 0;
+  return Math.max(0, Math.round(keyboardHeight - Math.max(0, safeBottom)));
+}
+
+/**
  * Returns the part of the layout viewport hidden below the visual viewport.
  *
- * A soft keyboard that overlays the page without resizing it shows up here.
- * The Android shell resizes the WebView above the keyboard instead, so this
- * stays zero there and the keyboard bridge reports that it is open.
+ * A soft keyboard that shrinks the visual viewport without resizing the page shows up here. The Android WebView keeps
+ * its full size under the keyboard, so this stays zero there and the keyboard bridge reports the height instead.
  */
 export function calculateKeyboardInset(
   layoutHeight: number,

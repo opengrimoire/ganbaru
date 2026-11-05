@@ -8,15 +8,13 @@
     trapModalTabKey,
   } from "$lib/modal-focus";
   import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
-  import { lockAncestorScroll } from "$lib/mobile/scroll-lock";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { createBackdropPress } from "$lib/utils/backdrop-press";
 
   /**
    * A phone's modal for entering the recovery kit code that lets it join a server that refused it.
-   * It hands the typed code back on confirm and keeps nothing once it closes. The page underneath stops
-   * scrolling while it shows.
+   * It hands the typed code back on confirm and keeps nothing once it closes.
    */
   let {
     confirmLabel,
@@ -34,7 +32,6 @@
   const mobileBackStack = getMobileBackStack();
   const androidSystemBackAvailable = platformHasCapability(BUILD_PLATFORM_PROFILE, "system.android-back");
   const backdropPress = createBackdropPress();
-  let overlay = $state<HTMLDivElement | null>(null);
   let dialog = $state<HTMLDivElement | null>(null);
   let input = $state<HTMLInputElement | null>(null);
   let kit = $state("");
@@ -71,7 +68,6 @@
       ? mobileBackStack.activate({ handle: () => onCancel() })
       : () => undefined;
     const deactivateKeyboard = activateModalKeyboardLayer(handleKeydown);
-    const unlockScroll = overlay ? lockAncestorScroll(overlay) : () => undefined;
     let deactivateFocus = (): void => undefined;
     void tick().then(() => {
       // A phone opens the keyboard only once the user taps the field.
@@ -80,7 +76,6 @@
     return () => {
       deactivateMobileBack();
       deactivateKeyboard();
-      unlockScroll();
       deactivateFocus();
     };
   });
@@ -89,7 +84,6 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  bind:this={overlay}
   class="fixed z-90 flex items-center justify-center"
   style="left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height); padding: calc(var(--safe-area-top) + 1rem) calc(var(--safe-area-right) + 1rem) calc(var(--safe-area-bottom) + 1rem) calc(var(--safe-area-left) + 1rem);"
   onpointerdown={backdropPress.start}

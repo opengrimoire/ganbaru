@@ -11,7 +11,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
-import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -59,7 +58,10 @@ private class AndroidInsetsBridge(displayDensity: Float) {
   fun systemBars(): String = listOf(top, right, bottom, left)
     .joinToString(",") { value -> toCssPixels(value).toString() }
 
-  /** Height of the soft keyboard below the WebView, in CSS pixels, or zero while it is hidden. */
+  /**
+   * Height the soft keyboard covers from the bottom edge of the WebView, navigation bar included, in CSS pixels, or
+   * zero while it is hidden. It changes on every frame while the keyboard slides on Android 11 and later.
+   */
   @JavascriptInterface
   @Synchronized
   fun keyboard(): String = toCssPixels(keyboard).toString()
@@ -68,21 +70,21 @@ private class AndroidInsetsBridge(displayDensity: Float) {
 }
 
 /**
- * Keeps the WebView above the soft keyboard. The activity draws edge to edge, so the system does not resize the
- * WebView for the keyboard; the bottom margin does instead, which lets the page shrink and the browser keep the
- * focused field visible. While the keyboard slides in on Android 11 and later, the WebView keeps its size until the
- * animation ends so no empty band shows above the moving keyboard; it grows back as soon as the keyboard starts
- * hiding, under the keyboard.
+ * Follows the soft keyboard without resizing the WebView. The activity draws edge to edge, so the keyboard slides over
+ * the page, and the page lifts the surface holding the focused field by the reported height. On Android 11 and later
+ * the height follows every frame of the keyboard animation, so that surface moves with the keyboard while the rest of
+ * the page keeps its size; earlier versions report the height once the keyboard settles.
  */
-private class KeyboardResizer(private val webView: WebView) {
-  private var appliedBottom = 0
-  private var pendingBottom: Int? = null
+private class KeyboardTracker(private val webView: WebView) {
+  private var height = 0
+  private var settledHeight = 0
   private var keyboardAnimating = false
 
+  /** Current keyboard height over the bottom edge of the WebView, in device pixels. */
   val bottom: Int
-    get() = appliedBottom
+    get() = height
 
-  fun attach(onApplied: () -> Unit) {
+  fun attach(onChanged: () -> Unit) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
     ViewCompat.setWindowInsetsAnimationCallback(
       webView,
@@ -96,36 +98,34 @@ private class KeyboardResizer(private val webView: WebView) {
         override fun onProgress(
           insets: WindowInsetsCompat,
           runningAnimations: MutableList<WindowInsetsAnimationCompat>,
-        ): WindowInsetsCompat = insets
+        ): WindowInsetsCompat {
+          val keyboardMoving = runningAnimations.any { it.typeMask and WindowInsetsCompat.Type.ime() != 0 }
+          if (keyboardMoving && set(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)) onChanged()
+          return insets
+        }
 
         override fun onEnd(animation: WindowInsetsAnimationCompat) {
           if (animation.typeMask and WindowInsetsCompat.Type.ime() == 0) return
           keyboardAnimating = false
-          val pending = pendingBottom ?: return
-          pendingBottom = null
-          apply(pending)
-          onApplied()
+          if (set(settledHeight)) onChanged()
         }
       },
     )
   }
 
-  /** Resize for the keyboard height [keyboardBottom], and report whether the WebView changed size now. */
+  /**
+   * Records [keyboardBottom], the height the keyboard settles at, and reports whether the current height changed. While
+   * the keyboard animates, the animation frames report the height instead.
+   */
   fun update(keyboardBottom: Int): Boolean {
-    if (keyboardAnimating && keyboardBottom > appliedBottom) {
-      pendingBottom = keyboardBottom
-      return false
-    }
-    pendingBottom = null
-    return apply(keyboardBottom)
+    settledHeight = keyboardBottom
+    if (keyboardAnimating) return false
+    return set(keyboardBottom)
   }
 
-  private fun apply(keyboardBottom: Int): Boolean {
-    if (keyboardBottom == appliedBottom) return false
-    val params = webView.layoutParams as? ViewGroup.MarginLayoutParams ?: return false
-    appliedBottom = keyboardBottom
-    params.bottomMargin = keyboardBottom
-    webView.layoutParams = params
+  private fun set(value: Int): Boolean {
+    if (value == height) return false
+    height = value
     return true
   }
 }
@@ -290,24 +290,22 @@ class MainActivity : TauriActivity() {
     webView.addJavascriptInterface(androidInsetsBridge, ANDROID_INSETS_BRIDGE_NAME)
     webView.addJavascriptInterface(androidAppearanceBridge, ANDROID_APPEARANCE_BRIDGE_NAME)
     webView.addJavascriptInterface(androidMediaVolumeBridge, ANDROID_MEDIA_VOLUME_BRIDGE_NAME)
-    val keyboardResizer = KeyboardResizer(webView)
+    val keyboardTracker = KeyboardTracker(webView)
     var systemBars = Insets.NONE
     fun publishInsets() {
-      // The keyboard covers the navigation bar, so the WebView keeps only the part of it the keyboard leaves visible.
-      val keyboard = keyboardResizer.bottom
       androidInsetsBridge.update(
         top = systemBars.top,
         right = systemBars.right,
-        bottom = (systemBars.bottom - keyboard).coerceAtLeast(0),
+        bottom = systemBars.bottom,
         left = systemBars.left,
-        keyboard = keyboard,
+        keyboard = keyboardTracker.bottom,
       )
       webView.evaluateJavascript(
         "window.dispatchEvent(new Event('$ANDROID_INSETS_EVENT_NAME'))",
         null,
       )
     }
-    keyboardResizer.attach(::publishInsets)
+    keyboardTracker.attach(::publishInsets)
     ViewCompat.setOnApplyWindowInsetsListener(webView) { _, windowInsets ->
       systemBars = windowInsets.getInsets(
         WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
@@ -318,7 +316,7 @@ class MainActivity : TauriActivity() {
       } else {
         0
       }
-      keyboardResizer.update(keyboardBottom)
+      keyboardTracker.update(keyboardBottom)
       publishInsets()
       windowInsets
     }

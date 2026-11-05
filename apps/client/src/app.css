@@ -218,6 +218,8 @@
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-left: env(safe-area-inset-left, 0px);
   --keyboard-inset: 0px;
+  --page-keyboard-inset: 0px;
+  --keyboard-surface-height: 100vh;
   --visual-viewport-width: 100vw;
   --visual-viewport-height: 100vh;
   --visual-viewport-offset-top: 0px;
@@ -488,11 +490,11 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
     --collection-table-row-height: 2.75rem;
   }
   .mobile-viewport-height {
-    height: 100%;
+    height: calc(100% - var(--page-keyboard-inset));
   }
   @supports (height: 100dvh) {
     .mobile-viewport-height {
-      height: 100dvh;
+      height: calc(100dvh - var(--page-keyboard-inset));
     }
   }
   @media (any-pointer: coarse) and (any-hover: none) {
@@ -501,7 +503,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
     }
   }
   html[data-shell="mobile"] :where(button, a, input, select, textarea) {
-    scroll-margin-bottom: calc(var(--keyboard-inset) + var(--safe-area-bottom));
+    scroll-margin-bottom: var(--safe-area-bottom);
   }
   ::selection {
     color: inherit;
@@ -517,6 +519,17 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   html[data-theme-switching="true"] *::after {
     transition: none !important;
   }
+}
+
+/*
+ * The modal surface holding focus follows the soft keyboard while the page and dialogs behind it keep their size.
+ * These rules stay outside the layers so they win over positioning utilities such as inset-0; inline styles still win.
+ */
+html[data-shell="mobile"] [data-keyboard-surface] {
+  --visual-viewport-height: var(--keyboard-surface-height);
+}
+html[data-shell="mobile"] [data-keyboard-surface="lift"] {
+  bottom: var(--keyboard-inset);
 }
 
 @layer utilities {

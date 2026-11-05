@@ -755,14 +755,11 @@
     }
   }
 
-  // Once the keyboard opens or grows, keep the caret above it after the WebView finishes its own focus scrolling.
+  // The surface holding the caret shrinks on every frame of the keyboard slide, so the caret is kept above the
+  // keyboard on the same frame.
   $effect(() => {
     if (!viewport.keyboardOpen) return;
-    void viewport.height;
-    let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => revealFocusedTextEntry());
-    });
-    return () => cancelAnimationFrame(frame);
+    revealFocusedTextEntry(document, viewport.visibleBottom);
   });
 
   $effect(() => {
@@ -980,7 +977,7 @@
 <div
   class="mobile-app-shell mobile-viewport-height flex w-screen flex-col overflow-hidden text-foreground"
   data-size-class={viewport.sizeClass}
-  style="background-color: var(--cal-bg); width: calc(100vw * var(--mobile-interface-scale-inverse, 1)); height: calc(100vh * var(--mobile-interface-scale-inverse, 1)); height: calc(100dvh * var(--mobile-interface-scale-inverse, 1)); padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);"
+  style="background-color: var(--cal-bg); width: calc(100vw * var(--mobile-interface-scale-inverse, 1)); height: calc((100vh - var(--page-keyboard-inset)) * var(--mobile-interface-scale-inverse, 1)); height: calc((100dvh - var(--page-keyboard-inset)) * var(--mobile-interface-scale-inverse, 1)); padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);"
 >
   {#if !backendReady && !loadError}
     <section

@@ -78,10 +78,10 @@ export const vaultHandoff = {
   description: "Administra tus dispositivos conectados",
   desktopOnboardingTitle: "Conecta tu teléfono",
   desktopOnboardingDescription:
-    "Instala Ganbaru en tu teléfono y escanea este código QR en la aplicación para vincular tus dispositivos.",
+    "Instala Ganbaru en tu teléfono y escanea este código QR en la aplicación para vincular tus dispositivos",
   androidOnboardingTitle: "Conecta con tu computadora",
   androidOnboardingDescription:
-    "Usa Ganbaru en este teléfono para escanear el código QR mostrado en tu computadora.",
+    "¿Ya usas Ganbaru en una computadora? Escanea el código QR de vinculación en sus Ajustes > Datos",
   stepOne: "Paso 1",
   stepTwo: "Paso 2",
   networkAccessDescription:
@@ -127,12 +127,12 @@ export const vaultHandoff = {
   copyCodeFailed: "No se pudo copiar el código de vinculación.",
   enrollmentApprovalTitle: "¿Aprobar este dispositivo?",
   enrollmentApprovalInstructions:
-    "Apruébalo solo si el dispositivo muestra este mismo código. Si no, recházalo: alguien más podría tener tu código de vinculación.",
+    "Apruébalo solo si el otro dispositivo muestra este mismo código",
   enrollmentCode: "Código de confirmación",
   enrollmentApprove: "Aprobar",
   enrollmentDecline: "Rechazar",
-  enrollmentWaitingTitle: "Confirma en la otra computadora",
-  enrollmentWaiting: "La otra computadora muestra un código. Aprueba este dispositivo cuando su código coincide con este.",
+  enrollmentWaitingTitle: "Confirma en tu otro dispositivo",
+  enrollmentWaiting: "Apruébalo ahí si muestra este mismo código",
   enrollmentDeclined: "La otra computadora rechazó este dispositivo. Obtén ahí un código de vinculación nuevo e inténtalo de nuevo.",
   enrollmentUnanswered:
     "La otra computadora no aprobó este dispositivo a tiempo. Mantén abierto su código de vinculación e inténtalo de nuevo.",
@@ -201,7 +201,8 @@ export const vaultHandoff = {
   recoverMessage:
     "Usa esto solo si la computadora coordinadora ya no volverá a estar disponible. Este dispositivo olvida a su coordinador y a sus dispositivos vinculados, y conserva esta copia como su propia bóveda. Los cambios hechos en otros dispositivos ya no se sincronizarán con ella.",
   workingCopy: "Copiando la bóveda vinculada a este dispositivo...",
-  linkedSuccessfully: (device: string) => `${device} se vinculó correctamente.`,
+  linkedTitle: (device: string) => `${device} está vinculado`,
+  linkedDescription: "Tus dispositivos ya se sincronizan entre sí",
   linkedLabel: "vinculado",
   unlinked: "Dispositivo desvinculado.",
   revokedByCoordinator:

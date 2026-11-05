@@ -44,6 +44,7 @@
   } from "$lib/vault/handoff-workflow";
   import EnrollmentApproval from "./EnrollmentApproval.svelte";
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
+  import LinkedDeviceSuccess from "./LinkedDeviceSuccess.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
 
   type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "bootstrap" | "unlink" | "recover" | "linkFolder";
@@ -540,21 +541,19 @@
 {/snippet}
 
 <section class={presentation === "control" ? "" : "flex flex-col gap-4"}>
-  {#if presentation === "onboarding" && platform === "desktop"}
+  {#if presentation === "onboarding" && platform === "desktop" && status?.linked !== true}
     <div class="space-y-2 text-center">
       <h1 class="text-2xl font-semibold leading-tight text-foreground min-[560px]:text-3xl">
         {t("vaultHandoff.desktopOnboardingTitle")}
       </h1>
-      {#if status?.linked !== true}
-        <button
-          type="button"
-          class="text-sm text-muted-foreground hover:text-foreground disabled:opacity-55"
-          disabled={busy !== null}
-          onclick={() => { codeDialogVisible = true; error = null; codeError = null; }}
-        >
-          {t("vaultHandoff.linkThisComputer")}
-        </button>
-      {/if}
+      <button
+        type="button"
+        class="text-sm text-muted-foreground hover:text-foreground disabled:opacity-55"
+        disabled={busy !== null}
+        onclick={() => { codeDialogVisible = true; error = null; codeError = null; }}
+      >
+        {t("vaultHandoff.linkThisComputer")}
+      </button>
     </div>
   {/if}
   {#if presentation === "settings"}
@@ -600,9 +599,9 @@
       {#if bootstrapReplicaOnLink && !status.replicaReady}
         {@render onboardingLoader()}
       {:else}
-        <p class="text-center text-base font-medium leading-6 text-foreground">
-          {t("vaultHandoff.linkedSuccessfully", status.peerLabel ?? t("vaultHandoff.desktopDevice"))}
-        </p>
+        <LinkedDeviceSuccess
+          device={status.peerLabel ?? t(platform === "android" ? "vaultHandoff.desktopDevice" : "vaultHandoff.androidDevice")}
+        />
       {/if}
     {:else}
       {#if presentation === "control" && server}

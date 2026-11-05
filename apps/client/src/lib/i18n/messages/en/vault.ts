@@ -70,10 +70,10 @@ export const vaultHandoff = {
   description: "Manage your connected devices",
   desktopOnboardingTitle: "Connect your phone",
   desktopOnboardingDescription:
-    "Install Ganbaru on your phone and scan this QR code in the app to link your devices.",
+    "Install Ganbaru on your phone and scan this QR code in the app to link your devices",
   androidOnboardingTitle: "Connect to your computer",
   androidOnboardingDescription:
-    "Use Ganbaru on this phone to scan the QR code shown on your computer.",
+    "Already use Ganbaru on a computer? Scan the pairing QR code in its Settings > Data",
   stepOne: "Step 1",
   stepTwo: "Step 2",
   networkAccessDescription:
@@ -119,12 +119,12 @@ export const vaultHandoff = {
   copyCodeFailed: "The pairing code could not be copied.",
   enrollmentApprovalTitle: "Approve this device?",
   enrollmentApprovalInstructions:
-    "Approve only if the device shows this same code. If it does not, decline: someone else may have your pairing code.",
+    "Approve only if the other device shows this same code",
   enrollmentCode: "Confirmation code",
   enrollmentApprove: "Approve",
   enrollmentDecline: "Decline",
-  enrollmentWaitingTitle: "Confirm on the other computer",
-  enrollmentWaiting: "The other computer shows a code. It approves this device when its code matches this one.",
+  enrollmentWaitingTitle: "Confirm on your other device",
+  enrollmentWaiting: "Approve there if it shows this same code",
   enrollmentDeclined: "The other computer declined this device. Get a new pairing code there and try again.",
   enrollmentUnanswered:
     "The other computer did not approve this device in time. Keep its pairing code open, then try again.",
@@ -193,7 +193,8 @@ export const vaultHandoff = {
   recoverMessage:
     "Use this only if the coordinating computer is gone for good. This device forgets its coordinator and linked devices and keeps this copy as its own vault. Changes made elsewhere will no longer sync with it.",
   workingCopy: "Copying the linked vault to this device...",
-  linkedSuccessfully: (device: string) => `${device} was successfully linked.`,
+  linkedTitle: (device: string) => `${device} is linked`,
+  linkedDescription: "Your devices now sync with each other",
   linkedLabel: "linked",
   unlinked: "Device unlinked.",
   revokedByCoordinator:

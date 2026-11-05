@@ -90,7 +90,7 @@
   <div class={platform === "desktop"
     ? "mx-auto flex w-full max-w-4xl flex-col gap-6"
     : "mx-auto flex w-full max-w-md flex-col gap-6"}>
-    {#if platform === "android"}
+    {#if platform === "android" && status?.linked !== true}
       <div class="space-y-2 text-center">
         <h1 class="text-2xl font-semibold leading-tight text-foreground min-[560px]:text-3xl">
           {t("vaultHandoff.androidOnboardingTitle")}

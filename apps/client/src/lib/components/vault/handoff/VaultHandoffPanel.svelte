@@ -647,8 +647,9 @@
 
 <section class={presentation === "control" ? "" : "flex flex-col gap-4"}>
   {#if presentation === "onboarding" && platform === "desktop" && status?.linked !== true}
-    <h1 class="text-center text-2xl leading-snug font-semibold text-foreground min-[560px]:text-3xl">
-      {t("vaultHandoff.connectTitle")}
+    <!-- The choices take their own line, so the title stays about as wide as the panel below it. -->
+    <h1 class="mb-2 text-center text-2xl leading-snug font-semibold text-foreground min-[560px]:text-3xl">
+      <span class="block">{t("vaultHandoff.connectTitle")}</span>
       <ConnectSourceTabs
         sources={onboardingSources}
         active={onboardingSource}

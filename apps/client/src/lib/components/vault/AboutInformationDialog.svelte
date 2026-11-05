@@ -6,8 +6,11 @@
   import { activateModalFocus, activateModalKeyboardLayer, trapModalTabKey } from "$lib/modal-focus";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
+  import { parseLicenseText } from "$lib/utils/license-text";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import licenseText from "../../../../../../LICENSE?raw";
+
+  const licenseBlocks = parseLicenseText(licenseText);
 
   let { kind, onClose }: { kind: "license" | "acknowledgments"; onClose: () => void } = $props();
   const { t } = getLocalization();
@@ -55,7 +58,32 @@
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div bind:this={content} use:scrollEdgeFadeAction role="document" aria-label={title} tabindex="0" class="min-h-0 overflow-y-auto overscroll-contain pr-4 outline-none sm:pr-5">
       {#if kind === "license"}
-        <pre class="wrap-break-word whitespace-pre-wrap text-xs leading-5 text-foreground" data-selectable-content>{licenseText}</pre>
+        <div class="flex flex-col gap-3 text-sm leading-6 text-foreground wrap-break-word" lang="en" dir="ltr" data-selectable-content>
+          {#each licenseBlocks as block, index (index)}
+            {#if block.kind === "title"}
+              <div class="pr-10 pb-2">
+                <h2 class="text-base font-semibold leading-snug">{block.lines[0]}</h2>
+                {#each block.lines.slice(1) as line, lineIndex (lineIndex)}
+                  <p class="text-xs text-muted-foreground">{line}</p>
+                {/each}
+              </div>
+            {:else if block.kind === "heading"}
+              <h3 class="pt-4 font-semibold">{block.text}</h3>
+            {:else if block.kind === "section"}
+              <h4 class="pt-2 font-semibold">{block.text}</h4>
+            {:else if block.kind === "item"}
+              <p class="pl-4">{block.text}</p>
+            {:else if block.kind === "notice"}
+              <div class="rounded-md bg-muted/40 px-3 py-2 text-xs leading-5">
+                {#each block.lines as line, lineIndex (lineIndex)}
+                  <p>{line}</p>
+                {/each}
+              </div>
+            {:else}
+              <p>{block.text}</p>
+            {/if}
+          {/each}
+        </div>
       {:else}
         <AboutAcknowledgments showHeading={false} />
       {/if}

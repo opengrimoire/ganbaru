@@ -50,7 +50,7 @@ describe("server lines", () => {
     });
     expect(lines.slice(2)).toEqual([
       "Not reachable right now",
-      "The relay could not be reached, or its certificate did not match.",
+      "The relay could not be reached, or its certificate did not match. If it has a firewall, allow its port (43823 by default).",
     ]);
   });
 

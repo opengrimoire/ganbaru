@@ -1,14 +1,14 @@
 <script lang="ts">
   import CircleCheck from "@lucide/svelte/icons/circle-check";
-  import { prefersReducedMotion } from "svelte/motion";
   import { fade, scale } from "svelte/transition";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { prefersReducedMotion } from "$lib/utils/smooth-swap";
 
   /** Confirms in onboarding that `device` is now linked, in place of the linking instructions. */
   let { device }: { device: string } = $props();
 
   const { t } = getLocalization();
-  const duration = $derived(prefersReducedMotion.current ? 0 : 220);
+  const duration = prefersReducedMotion() ? 0 : 220;
 </script>
 
 <div class="flex flex-col items-center gap-3 text-center" role="status" in:fade|global={{ duration }}>

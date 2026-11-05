@@ -116,7 +116,8 @@ export const vaultHandoff = {
   clearKit: "Clear recovery kit",
   codeInvalid: "That pairing code is not valid. Copy a new code from the other computer and try again.",
   codeExpired: "That pairing code has expired. Get a new code from the other computer and try again.",
-  linkDevice: "Link device",
+  connectAction: "Connect",
+  connectingAction: "Connecting…",
   copyCode: "Copy pairing code",
   codeCopied: "Pairing code copied",
   copyCodeFailed: "The pairing code could not be copied.",
@@ -166,8 +167,6 @@ export const vaultHandoff = {
     kitDescription: "Only needed when the server refuses to add this device on its own.",
     kitPrompt: "Refused by the server?",
     kitLabel: "Recovery kit code",
-    action: "Connect",
-    connecting: "Connecting…",
     errors: {
       code: "The server refused this setup code. Print a new one on the server, then try again.",
       kit: "This recovery kit code is mistyped. Check each group.",

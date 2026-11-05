@@ -29,7 +29,7 @@ describe("smooth swap", () => {
     expect(config.css?.(0.25, 0.75)).toBe("opacity: 0.25");
   });
 
-  it("starts arriving content after the leaving content is gone and releases a pin left by an interrupted outro", () => {
+  it("starts arriving content once the leaving content is gone and the height has nearly settled, and releases a pin left by an interrupted outro", () => {
     const node = element(36, 12, 320);
     swapOut(node, SMOOTH_SWAP_TIMING);
     const config = swapIn(node, SMOOTH_SWAP_TIMING);
@@ -37,14 +37,15 @@ describe("smooth swap", () => {
     expect(node.style.top).toBe("");
     expect(node.style.width).toBe("");
     expect(node.style.margin).toBe("");
-    expect(config.delay).toBe(SMOOTH_SWAP_TIMING.fadeOutMs);
+    expect(config.delay).toBe(SMOOTH_SWAP_TIMING.fadeInDelayMs);
+    expect(SMOOTH_SWAP_TIMING.fadeInDelayMs).toBeGreaterThanOrEqual(SMOOTH_SWAP_TIMING.fadeOutMs);
     expect(config.duration).toBe(SMOOTH_SWAP_TIMING.fadeInMs);
   });
 
   it("leaves content in the flow and drops all motion when the user prefers less", () => {
     vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("reduce") }));
     const timing = smoothSwapTiming();
-    expect(timing).toEqual({ heightMs: 0, fadeOutMs: 0, fadeInMs: 0 });
+    expect(timing).toEqual({ heightMs: 0, fadeOutMs: 0, fadeInDelayMs: 0, fadeInMs: 0 });
     const node = element(36, 12, 320);
     expect(swapOut(node, timing).duration).toBe(0);
     expect(node.style.position).toBe("");

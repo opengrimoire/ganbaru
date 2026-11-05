@@ -187,7 +187,7 @@
   <div class="flex flex-col gap-2">
     <button type="button" class={primaryButtonClass} disabled={!canSubmit} onclick={() => void connect()}>
       {#if busy}<LoaderCircle size={14} class="animate-spin" />{/if}
-      {busy ? t("vaultHandoff.serverConnect.connecting") : t("vaultHandoff.serverConnect.action")}
+      {busy ? t("vaultHandoff.connectingAction") : t("vaultHandoff.connectAction")}
     </button>
     <button type="button" class={buttonClass} disabled={busy} onclick={onCancel}>
       {t("vaultHandoff.serverConnect.useComputer")}

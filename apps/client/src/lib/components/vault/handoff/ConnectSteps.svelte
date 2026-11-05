@@ -11,6 +11,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { onMount, tick, type Snippet } from "svelte";
+  import { fade } from "svelte/transition";
   import { addSyncServer, SyncServerError } from "$lib/api/sync";
   import {
     joinVaultThroughServer,
@@ -217,30 +218,10 @@
   </span>
 {/snippet}
 
-{#snippet footer(panelSource: ConnectSource)}
-  <div class="mt-5 flex justify-end gap-2">
-    {@render actions?.()}
-    <button
-      type="button"
-      data-connect-submit
-      class="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-55"
-      disabled={!canSubmit}
-      onclick={submit}
-    >
-      {#if anyBusy}<LoaderCircle size={14} class="animate-spin" />{/if}
-      {#if panelSource === "computer"}
-        {t("vaultHandoff.linkDevice")}
-      {:else}
-        {serverBusy ? t("vaultHandoff.serverConnect.connecting") : t("vaultHandoff.serverConnect.action")}
-      {/if}
-    </button>
-  </div>
-{/snippet}
-
-<!-- Each source carries its own buttons, so a switch is one swap: the old content fades, the panel eases to the new height, and the new content fades in. -->
-<div {@attach smoothHeight(swap)}>
+<!-- A switch is one swap: the old content fades, the panel eases to the new height, and the new content fades in. The buttons hang from the panel's bottom edge, so they stay in place between sources and glide with the height instead of jumping; the steps keep room for them (pb-14 matches the footer's h-14). -->
+<div class="relative" {@attach smoothHeight(swap)}>
   <!-- svelte-ignore a11y_interactive_supports_focus -->
-  <div id={panelId} role="tabpanel" aria-labelledby={labelledBy} class="relative" onkeydown={submitOnEnter}>
+  <div id={panelId} role="tabpanel" aria-labelledby={labelledBy} class={cn("relative", source !== null && "pb-14")} onkeydown={submitOnEnter}>
     {#if source === "computer"}
       <div in:swapIn={swap} out:swapOut={swap} class="mx-auto w-full max-w-md min-w-0">
         <ol class="flex flex-col">
@@ -286,7 +267,6 @@
             <EnrollmentCodeWaiting code={enrollmentCode} />
           </div>
         {/if}
-        {@render footer("computer")}
       </div>
     {:else if source === "server"}
       <div in:swapIn={swap} out:swapOut={swap} class="mx-auto w-full max-w-md min-w-0">
@@ -386,7 +366,6 @@
         {:else if serverNotice}
           <p in:swapIn={swap} out:swapOut={swap} role="status" class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">{serverNotice}</p>
         {/if}
-        {@render footer("server")}
       </div>
     {:else if children}
       <div in:swapIn={swap} out:swapOut={swap} class="min-w-0">
@@ -394,4 +373,23 @@
       </div>
     {/if}
   </div>
+  {#if source !== null}
+    <div
+      in:fade={{ delay: swap.fadeInDelayMs, duration: swap.fadeInMs }}
+      out:fade={{ duration: swap.fadeOutMs }}
+      class="absolute inset-x-0 bottom-0 mx-auto flex h-14 max-w-md items-end justify-end gap-2"
+    >
+      {@render actions?.()}
+      <button
+        type="button"
+        data-connect-submit
+        class="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-55"
+        disabled={!canSubmit}
+        onclick={submit}
+      >
+        {#if anyBusy}<LoaderCircle size={14} class="animate-spin" />{/if}
+        {anyBusy ? t("vaultHandoff.connectingAction") : t("vaultHandoff.connectAction")}
+      </button>
+    </div>
+  {/if}
 </div>

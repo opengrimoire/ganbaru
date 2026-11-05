@@ -84,6 +84,18 @@ describe("ConnectSteps inline with ConnectSourceTabs", () => {
     expect(onSubmit).toHaveBeenCalledWith("pairing-code");
   });
 
+  it("keeps one Connect button in place while switching between the computer and server steps", async () => {
+    tab("computer").click();
+    flushSync();
+    const button = target.querySelector("[data-connect-submit]");
+    expect(button?.textContent?.trim()).toBe("Connect");
+    tab("server").click();
+    flushSync();
+    await vi.waitFor(() => expect(target.querySelector("#pairing-code")).toBeNull());
+    expect(target.querySelectorAll("[data-connect-submit]")).toHaveLength(1);
+    expect(target.querySelector("[data-connect-submit]")).toBe(button);
+  });
+
   it("removes the steps and their submit button when the caller's panel returns", async () => {
     tab("server").click();
     flushSync();

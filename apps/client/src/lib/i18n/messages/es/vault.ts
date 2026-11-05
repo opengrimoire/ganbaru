@@ -124,7 +124,8 @@ export const vaultHandoff = {
   clearKit: "Borrar kit de recuperación",
   codeInvalid: "Ese código de vinculación no es válido. Copia uno nuevo de la otra computadora e inténtalo de nuevo.",
   codeExpired: "Ese código de vinculación venció. Obtén uno nuevo de la otra computadora e inténtalo de nuevo.",
-  linkDevice: "Vincular dispositivo",
+  connectAction: "Conectar",
+  connectingAction: "Conectando…",
   copyCode: "Copiar código de vinculación",
   codeCopied: "Código de vinculación copiado",
   copyCodeFailed: "No se pudo copiar el código de vinculación.",
@@ -174,8 +175,6 @@ export const vaultHandoff = {
     kitDescription: "Solo hace falta cuando el servidor se niega a agregar este dispositivo por sí mismo.",
     kitPrompt: "¿El servidor rechazó este dispositivo?",
     kitLabel: "Código del kit de recuperación",
-    action: "Conectar",
-    connecting: "Conectando…",
     errors: {
       code: "El servidor rechazó este código de configuración. Imprime uno nuevo en el servidor e inténtalo de nuevo.",
       kit: "Este código del kit de recuperación está mal escrito. Revisa cada grupo.",

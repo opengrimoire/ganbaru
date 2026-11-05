@@ -8,12 +8,20 @@ export interface SmoothSwapTiming {
   heightMs: number;
   /** How long leaving content takes to fade out. */
   fadeOutMs: number;
-  /** How long arriving content takes to fade in, after the leaving content is gone. */
+  /**
+   * How long arriving content waits before it fades in. It waits until the height has nearly settled, so a growing
+   * container never reveals visible content from the top down.
+   */
+  fadeInDelayMs: number;
+  /** How long arriving content takes to fade in. */
   fadeInMs: number;
 }
 
-/** The default timing: content leaves quickly, the height settles, and the new content fades in as it does. */
-export const SMOOTH_SWAP_TIMING: SmoothSwapTiming = { heightMs: 320, fadeOutMs: 120, fadeInMs: 220 };
+/** The default timing: content leaves quickly, the height settles, and then the new content fades in. */
+export const SMOOTH_SWAP_TIMING: SmoothSwapTiming = { heightMs: 280, fadeOutMs: 120, fadeInDelayMs: 220, fadeInMs: 200 };
+
+/** No motion at all, for users who ask the system for less. */
+const NO_MOTION: SmoothSwapTiming = { heightMs: 0, fadeOutMs: 0, fadeInDelayMs: 0, fadeInMs: 0 };
 
 /** Ease for height changes that starts fast and settles softly. */
 const HEIGHT_EASING = "cubic-bezier(0.2, 0, 0, 1)";
@@ -30,11 +38,11 @@ export function prefersReducedMotion(): boolean {
 
 /** {@link SMOOTH_SWAP_TIMING}, or no motion at all when the user prefers less. */
 export function smoothSwapTiming(): SmoothSwapTiming {
-  return prefersReducedMotion() ? { heightMs: 0, fadeOutMs: 0, fadeInMs: 0 } : SMOOTH_SWAP_TIMING;
+  return prefersReducedMotion() ? NO_MOTION : SMOOTH_SWAP_TIMING;
 }
 
 /**
- * Animates the element's height whenever its only child changes size, from whatever height it shows at that moment.
+ * Animates the element's height whenever its first child changes size, from whatever height it shows at that moment.
  * The child is the content box: it must be `position: relative` so {@link swapOut} can pin leaving content inside it,
  * and pinned content leaves its height, so the container moves straight to the arriving content's height.
  */
@@ -88,10 +96,10 @@ export function swapOut(node: HTMLElement, timing: SmoothSwapTiming): Transition
 }
 
 /**
- * Svelte intro that waits for leaving content to fade out, then fades the element in. It also releases the pin
+ * Svelte intro that waits for the leaving content to fade and the height to settle, then fades the element in. It also releases the pin
  * {@link swapOut} set, for content that returns before its outro finishes.
  */
 export function swapIn(node: HTMLElement, timing: SmoothSwapTiming): TransitionConfig {
   for (const property of PINNED_PROPERTIES) node.style.removeProperty(property);
-  return { delay: timing.fadeOutMs, duration: timing.fadeInMs, easing: linear, css: (t) => `opacity: ${t}` };
+  return { delay: timing.fadeInDelayMs, duration: timing.fadeInMs, easing: linear, css: (t) => `opacity: ${t}` };
 }

@@ -76,13 +76,7 @@ export const language = {
 export const vaultHandoff = {
   heading: "Dispositivos vinculados",
   description: "Administra tus dispositivos conectados",
-  desktopOnboardingDescription:
-    "Instala Ganbaru en tu teléfono y escanea este código QR en la aplicación para vincular tus dispositivos",
   androidOnboardingTitle: "Conecta este teléfono",
-  androidOnboardingDescription:
-    "¿Ya usas Ganbaru en una computadora o en tu propio servidor? Escanea el código QR que te muestra",
-  stepOne: "Paso 1",
-  stepTwo: "Paso 2",
   networkAccessDescription:
     "Permite que Ganbaru reciba conexiones de tu teléfono en esta red.",
   allowNetworkAccess: "Permitir conexión del teléfono",
@@ -110,7 +104,6 @@ export const vaultHandoff = {
   devicesHeading: "Dispositivos",
   desktopDevice: "Computadora",
   androidDevice: "Teléfono",
-  linkToDesktop: "Vincular con computadora",
   createQr: "Mostrar código QR de vinculación",
   linkAnotherDevice: "Vincular otro dispositivo",
   enterCode: "Conectar con una computadora o servidor",
@@ -118,6 +111,13 @@ export const vaultHandoff = {
   computerSteps: {
     open: "En tu otra computadora, abre",
     copy: "Copia su código de vinculación",
+    openOnComputer: "En tu computadora, abre",
+    showQr: "Muestra su código QR de vinculación",
+    scan: "Escanéalo con este teléfono",
+  },
+  phoneSteps: {
+    install: "Instala Ganbaru en tu teléfono",
+    scan: "Ábrelo y escanea este código QR",
   },
   codePlaceholder: "Código de vinculación",
   codeInvalid: "Ese código de vinculación no es válido. Copia uno nuevo de la otra computadora e inténtalo de nuevo.",
@@ -149,10 +149,14 @@ export const vaultHandoff = {
   refreshingCode: "Renovando código...",
   scanQr: "Escanear código QR de la computadora",
   cameraStarting: "Iniciando cámara",
+  cameraFailed: "No se pudo iniciar la cámara.",
+  pasteInstead: "Pegar el código",
+  scanInstead: "Escanear el código QR",
   notNow: "Ahora no",
   continue: "Continuar",
   connectTabs: {
     phone: "tu teléfono",
+    yourComputer: "tu computadora",
     computer: "otra computadora",
     server: "un servidor",
   },
@@ -165,14 +169,11 @@ export const vaultHandoff = {
     commandCopied: "Comando copiado",
     outcome: "Esta computadora se une a la bóveda del servidor en una carpeta nueva.",
     startOutcome: "Si el servidor es nuevo, recibe una copia de esta bóveda. Si ya tiene una, esta computadora se une a esa bóveda en una carpeta nueva.",
-    open: "Conectar con un servidor",
-    phoneDescription: "En tu servidor de Ganbaru, ejecuta ganbaru-server anchor setup y luego escanea el código QR que muestra o pega su código. Este teléfono se une a la bóveda que ejecuta el servidor, que reemplaza la bóveda de aquí. Lo que ya hayas agregado aquí se respalda antes.",
+    scanStep: "Escanea el código QR que muestra",
+    phoneOutcome: "Este teléfono se une a la bóveda del servidor en lugar de la de aquí. Lo que hayas agregado aquí se respalda antes.",
     scan: "Escanear el código QR del servidor",
-    paste: "Pegar el código",
-    useComputer: "Conectar con una computadora",
     codeLabel: "Código de configuración del servidor",
     useKit: "Usar el kit de recuperación",
-    kitDescription: "Solo hace falta cuando el servidor se niega a agregar este dispositivo por sí mismo.",
     kitPrompt: "¿El servidor rechazó este dispositivo?",
     kitLabel: "Código del kit de recuperación",
     errors: {

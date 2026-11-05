@@ -2,7 +2,6 @@
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Monitor from "@lucide/svelte/icons/monitor";
-  import ScanLine from "@lucide/svelte/icons/scan-line";
   import Server from "@lucide/svelte/icons/server";
   import Settings from "@lucide/svelte/icons/settings";
   import Smartphone from "@lucide/svelte/icons/smartphone";
@@ -43,11 +42,9 @@
     hasNewLinkedDevice,
   } from "$lib/vault/handoff-workflow";
   import EnrollmentApproval from "./EnrollmentApproval.svelte";
-  import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
   import LinkedDeviceSuccess from "./LinkedDeviceSuccess.svelte";
-  import MobilePairingScanner from "./MobilePairingScanner.svelte";
-  import MobileServerConnect from "./MobileServerConnect.svelte";
   import ConnectSourceTabs from "./ConnectSourceTabs.svelte";
+  import ConnectStep from "./ConnectStep.svelte";
   import ConnectSteps, { type ConnectSource } from "./ConnectSteps.svelte";
 
   type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "bootstrap" | "unlink" | "recover" | "linkFolder";
@@ -89,16 +86,15 @@
   let deviceIdsAtInvitation = new Set(
     untrack(() => status?.devices.map((device) => device.deviceId) ?? []),
   );
-  let scanning = $state(false);
-  /** Whether this phone is connecting to an anchor server instead of a computer. */
-  let serverConnecting = $state(false);
   let codeDialogVisible = $state(false);
-  /** Where the desktop onboarding connects this computer: a phone scans its code, or it joins another vault. */
-  let onboardingSource = $state<"phone" | ConnectSource>("phone");
+  /**
+   * Where this device gets a vault: on desktop a phone can scan this computer's code, while a phone
+   * always joins another computer or a server, since two phones cannot link directly.
+   */
+  let onboardingSource = $state<"phone" | ConnectSource>(untrack(() => platform === "android" ? "computer" : "phone"));
   let onboardingServerBusy = $state(false);
   let onboardingSteps = $state<{ focusField: () => Promise<void> } | null>(null);
   let qrDialogVisible = $state(false);
-  let scannerVersion = $state(0);
   let busy = $state<BusyAction | null>(untrack(() => status ? null : "status"));
   let statusRefreshing = false;
   let notice = $state<string | null>(null);
@@ -129,11 +125,18 @@
   const controlButtonClass = $derived(
     `flex min-w-0 w-full items-center justify-between gap-4 overflow-hidden px-3 text-left text-sm transition-colors ${platform === "android" ? "min-h-12 active:bg-accent" : "py-1.5 hover:bg-accent"} disabled:cursor-not-allowed disabled:text-muted-foreground/50`,
   );
-  const onboardingSources = $derived<{ id: "phone" | ConnectSource; label: string }[]>([
-    { id: "phone", label: t("vaultHandoff.connectTabs.phone") },
-    { id: "computer", label: t("vaultHandoff.connectTabs.computer") },
-    { id: "server", label: t("vaultHandoff.connectTabs.server") },
-  ]);
+  const onboardingSources = $derived<{ id: "phone" | ConnectSource; label: string }[]>(
+    platform === "android"
+      ? [
+          { id: "computer", label: t("vaultHandoff.connectTabs.yourComputer") },
+          { id: "server", label: t("vaultHandoff.connectTabs.server") },
+        ]
+      : [
+          { id: "phone", label: t("vaultHandoff.connectTabs.phone") },
+          { id: "computer", label: t("vaultHandoff.connectTabs.computer") },
+          { id: "server", label: t("vaultHandoff.connectTabs.server") },
+        ],
+  );
   /** Whether a connection is running, which keeps the onboarding on its current source. */
   const onboardingConnectBusy = $derived(busy === "status" || busy === "pair" || onboardingServerBusy);
   const desktopNetworkAccessSetting = $derived(
@@ -366,7 +369,6 @@
   }
 
   async function acceptInvitation(encoded: string): Promise<void> {
-    const fromCodeField = platform === "desktop";
     busy = "pair";
     error = null;
     codeError = null;
@@ -375,7 +377,6 @@
       const deviceLabel = await readSuggestedDeviceLabel();
       enrollmentCode = await readEnrollmentCode(encoded);
       await enrollWithDesktop(encoded, deviceLabel);
-      scanning = false;
       const next = await loadStatus();
       if (
         platform === "android"
@@ -390,15 +391,7 @@
       codeDialogVisible = false;
       codeError = null;
     } catch (cause) {
-      if (fromCodeField) {
-        codeError = formatPairingCodeError(cause, t);
-      } else {
-        fail(cause);
-        if (platform === "android") {
-          scannerVersion += 1;
-          scanning = true;
-        }
-      }
+      codeError = formatPairingCodeError(cause, t);
     } finally {
       enrollmentCode = null;
       busy = null;
@@ -534,12 +527,8 @@
     if (presentation === "control") void loadServer();
     if (presentation === "onboarding" && platform === "desktop" && desktopQrAvailable) void loadQrCode();
     const prepareOnboarding = (): void => {
-      if (presentation !== "onboarding" || status?.linked) return;
-      if (platform === "desktop") {
-        if (!invitation) void showInvitation();
-      } else {
-        scanning = true;
-      }
+      if (presentation !== "onboarding" || status?.linked || platform !== "desktop") return;
+      if (!invitation) void showInvitation();
     };
     if (status) {
       onStatusChange?.(status);
@@ -577,68 +566,61 @@
 
 {#snippet phonePanel(current: PairingStatus)}
   {#if desktopQrAvailable && (invitation || current.pendingEnrollment)}
-    <div class={networkStepsVisible
-      ? "grid items-start gap-7 min-[800px]:grid-cols-2 min-[800px]:gap-10"
-      : "flex flex-col items-center gap-4"}>
-      {#if networkStepsVisible}
-        <div class="flex flex-col items-center gap-3 px-1 text-center">
-          <div class="space-y-1">
-            <p class="text-base font-semibold text-foreground">
-              {t("vaultHandoff.stepOne")}
-            </p>
-            <p class="mx-auto max-w-88 text-sm leading-6 text-muted-foreground">
-              {t("vaultHandoff.networkAccessDescription")}
-            </p>
-          </div>
-          {#if networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired"}
-            <button
-              type="button"
-              class={`${buttonClass} bg-background`}
-              disabled={busy !== null}
-              onclick={() => { confirmation = "network"; }}
-            >
-              {#if busy === "network"}<LoaderCircle size={14} class="animate-spin" />{/if}
-              {t("vaultHandoff.allowNetworkAccess")}
-            </button>
-          {:else if networkAccess?.state === "granted" || networkAccess?.state === "notRequired"}
-            <p class="text-[0.8rem] leading-5 text-muted-foreground">
-              {t("vaultHandoff.networkAccessGranted")}
-            </p>
-          {:else if networkAccess?.state === "manualActionRequired"}
-            <Notice class="text-[0.8rem] leading-5" tone="warning" copy={false} message={t("vaultHandoff.networkAccessManual")} />
+    <!-- The same numbered steps as the other sources, with the firewall step first when this computer needs it. -->
+    <div class="mx-auto flex w-full max-w-md min-w-0 flex-col items-center gap-4">
+      {#if current.pendingEnrollment}
+        <EnrollmentApproval
+          pending={current.pendingEnrollment}
+          busy={busy === "approval"}
+          onRespond={(approve) => void respondToPendingEnrollment(approve)}
+        />
+      {:else if invitation}
+        {@const offset = networkStepsVisible ? 1 : 0}
+        {@const total = 2 + offset}
+        <ol class="flex w-full flex-col">
+          {#if networkStepsVisible}
+            <ConnectStep number={1} {total}>
+              <div class="flex min-w-0 flex-1 flex-col items-start gap-2 pt-0.5 pb-4">
+                <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.networkAccessDescription")}</p>
+                {#if networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired"}
+                  <button
+                    type="button"
+                    class={`${buttonClass} bg-background`}
+                    disabled={busy !== null}
+                    onclick={() => { confirmation = "network"; }}
+                  >
+                    {#if busy === "network"}<LoaderCircle size={14} class="animate-spin" />{/if}
+                    {t("vaultHandoff.allowNetworkAccess")}
+                  </button>
+                {:else if networkAccess?.state === "granted" || networkAccess?.state === "notRequired"}
+                  <p class="text-[0.8rem] leading-5 text-muted-foreground">{t("vaultHandoff.networkAccessGranted")}</p>
+                {:else if networkAccess?.state === "manualActionRequired"}
+                  <Notice class="text-[0.8rem] leading-5" tone="warning" copy={false} message={t("vaultHandoff.networkAccessManual")} />
+                {/if}
+                {#if networkError}
+                  <Notice class="text-[0.8rem] leading-5" message={networkError} />
+                {/if}
+              </div>
+            </ConnectStep>
           {/if}
-          {#if networkError}
-            <Notice class="w-full max-w-88 justify-center text-[0.8rem] leading-5" message={networkError} />
-          {/if}
-        </div>
+          <ConnectStep number={1 + offset} {total}>
+            <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">{t("vaultHandoff.phoneSteps.install")}</p>
+          </ConnectStep>
+          <ConnectStep number={2 + offset} {total}>
+            <div class="min-w-0 flex-1 pt-0.5">
+              <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.phoneSteps.scan")}</p>
+              {#if PairingQrCode}
+                <div class="mt-3 w-full max-w-64">
+                  <PairingQrCode {invitation} onExpired={() => void showInvitation()} />
+                </div>
+              {/if}
+            </div>
+          </ConnectStep>
+        </ol>
       {/if}
-
-      <div class="flex min-w-0 flex-col items-center gap-4">
-        {#if current.pendingEnrollment}
-          <EnrollmentApproval
-            pending={current.pendingEnrollment}
-            busy={busy === "approval"}
-            onRespond={(approve) => void respondToPendingEnrollment(approve)}
-          />
-        {:else if invitation}
-          <div class="space-y-1 px-1 text-center">
-            {#if networkStepsVisible}
-              <p class="text-base font-semibold text-foreground">
-                {t("vaultHandoff.stepTwo")}
-              </p>
-            {/if}
-            <p class="mx-auto max-w-sm text-sm leading-6 text-muted-foreground">
-              {t("vaultHandoff.desktopOnboardingDescription")}
-            </p>
-          </div>
-          {#if PairingQrCode}
-            <PairingQrCode {invitation} onExpired={() => void showInvitation()} />
-          {/if}
-        {/if}
-        {#if approvalError}
-          <Notice class="w-full max-w-88 justify-center text-[0.8rem] leading-5" message={approvalError} />
-        {/if}
-      </div>
+      {#if approvalError}
+        <Notice class="w-full max-w-88 justify-center text-[0.8rem] leading-5" message={approvalError} />
+      {/if}
     </div>
   {:else if error}
     <div class="flex min-h-56">
@@ -656,18 +638,21 @@
 {/snippet}
 
 <section class={presentation === "control" ? "" : "flex flex-col gap-4"}>
-  {#if presentation === "onboarding" && platform === "desktop" && status?.linked !== true}
+  {#snippet connectSourceTabs()}
+    <ConnectSourceTabs
+      sources={onboardingSources}
+      active={onboardingSource}
+      disabled={onboardingConnectBusy}
+      idPrefix="onboarding-connect-tab"
+      panelId="onboarding-connect-panel"
+      onChoose={chooseOnboardingSource}
+    />
+  {/snippet}
+  {#if presentation === "onboarding" && status?.linked !== true}
     <!-- A narrower, balanced title wraps into two even lines instead of one line twice as wide as the panel below it. -->
     <h1 class="mx-auto mb-2 max-w-2xl text-center text-2xl leading-snug font-semibold text-balance text-foreground min-[560px]:text-3xl">
       {t("vaultHandoff.connectTitle")}
-      <ConnectSourceTabs
-        sources={onboardingSources}
-        active={onboardingSource}
-        disabled={onboardingConnectBusy}
-        idPrefix="onboarding-connect-tab"
-        panelId="onboarding-connect-panel"
-        onChoose={chooseOnboardingSource}
-      />
+      {@render connectSourceTabs()}
     </h1>
   {/if}
   {#if presentation === "settings"}
@@ -798,39 +783,29 @@
       >
         {@render phonePanel(status)}
       </ConnectSteps>
-    {:else if !status.linked && platform === "android"}
-      {#if enrollmentCode}
-        <EnrollmentCodeWaiting code={enrollmentCode} />
-      {:else if serverConnecting}
-        <MobileServerConnect
-          onActivated={() => { serverConnecting = false; onActivated?.(); }}
-          onCancel={() => { serverConnecting = false; scannerVersion += 1; scanning = presentation === "onboarding"; }}
-        />
-      {:else}
-        {#if scanning}
-          {#key scannerVersion}
-            <MobilePairingScanner
-              disabled={busy !== null}
-              onInvitation={acceptInvitation}
-              onError={(cause) => { fail(cause); scanning = false; }}
-            />
-          {/key}
-        {:else}
-          <button type="button" class={primaryButtonClass} disabled={busy !== null} onclick={() => { scanning = true; error = null; }}>
-            <ScanLine size={14} strokeWidth={2} aria-hidden="true" />
-            {t("vaultHandoff.linkToDesktop")}
-          </button>
-        {/if}
-        <button
-          type="button"
-          class={`${buttonClass} min-h-11`}
-          disabled={busy !== null}
-          onclick={() => { scanning = false; error = null; serverConnecting = true; }}
-        >
-          <Server size={14} strokeWidth={2} aria-hidden="true" />
-          {t("vaultHandoff.serverConnect.open")}
-        </button>
+    {:else if !status.linked && platform === "android" && presentation !== "control"}
+      <!-- A phone links only to a computer or a server, so it has no QR code of its own to show. -->
+      {#if presentation === "settings"}
+        <p class="px-1 text-[0.866667rem] leading-6 text-foreground">
+          {t("vaultHandoff.connectTitle")}
+          {@render connectSourceTabs()}
+        </p>
       {/if}
+      <ConnectSteps
+        bind:this={onboardingSteps}
+        bind:serverBusy={onboardingServerBusy}
+        platform="android"
+        autoScan={presentation === "onboarding"}
+        source={onboardingSource === "phone" ? "computer" : onboardingSource}
+        busy={busy === "pair"}
+        {enrollmentCode}
+        error={codeError}
+        panelId="onboarding-connect-panel"
+        labelledBy={`onboarding-connect-tab-${onboardingSource}`}
+        onSubmit={acceptInvitation}
+        onEdit={() => { codeError = null; }}
+        onServerActivated={() => onActivated?.()}
+      />
     {/if}
 
     {#if presentation === "control" || (status.linked && presentation !== "onboarding")}

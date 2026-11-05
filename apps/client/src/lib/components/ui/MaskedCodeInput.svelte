@@ -62,6 +62,11 @@
     replace(masked ? "" : event.currentTarget.value, false);
   }
 
+  /** Sets a code that came from outside the field, such as a scanned QR code, masked as a pasted one. */
+  export function fill(text: string): void {
+    replace(text.trim(), true);
+  }
+
   function clear(): void {
     replace("", false);
     input?.focus();

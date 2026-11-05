@@ -68,13 +68,7 @@ export const language = {
 export const vaultHandoff = {
   heading: "Linked devices",
   description: "Manage your connected devices",
-  desktopOnboardingDescription:
-    "Install Ganbaru on your phone and scan this QR code in the app to link your devices",
   androidOnboardingTitle: "Connect this phone",
-  androidOnboardingDescription:
-    "Already use Ganbaru on a computer or your own server? Scan the QR code it shows",
-  stepOne: "Step 1",
-  stepTwo: "Step 2",
   networkAccessDescription:
     "Allow Ganbaru to receive connections from your phone on this network.",
   allowNetworkAccess: "Allow phone connection",
@@ -102,7 +96,6 @@ export const vaultHandoff = {
   devicesHeading: "Devices",
   desktopDevice: "Desktop",
   androidDevice: "Phone",
-  linkToDesktop: "Link to desktop",
   createQr: "Show pairing QR code",
   linkAnotherDevice: "Link another device",
   enterCode: "Connect to a computer or server",
@@ -110,6 +103,13 @@ export const vaultHandoff = {
   computerSteps: {
     open: "On your other computer, open",
     copy: "Copy its pairing code",
+    openOnComputer: "On your computer, open",
+    showQr: "Show its pairing QR code",
+    scan: "Scan it with this phone",
+  },
+  phoneSteps: {
+    install: "Install Ganbaru on your phone",
+    scan: "Open it and scan this QR code",
   },
   codePlaceholder: "Pairing code",
   codeInvalid: "That pairing code is not valid. Copy a new code from the other computer and try again.",
@@ -141,10 +141,14 @@ export const vaultHandoff = {
   refreshingCode: "Refreshing code...",
   scanQr: "Scan desktop QR code",
   cameraStarting: "Starting camera",
+  cameraFailed: "The camera could not start.",
+  pasteInstead: "Paste the code instead",
+  scanInstead: "Scan the QR code instead",
   notNow: "Not now",
   continue: "Continue",
   connectTabs: {
     phone: "your phone",
+    yourComputer: "your computer",
     computer: "another computer",
     server: "a server",
   },
@@ -157,14 +161,11 @@ export const vaultHandoff = {
     commandCopied: "Command copied",
     outcome: "This computer joins the server's vault in a new folder.",
     startOutcome: "If the server is new, it gets a copy of this vault. If it already has one, this computer joins that vault in a new folder.",
-    open: "Connect to a server",
-    phoneDescription: "On your Ganbaru server, run ganbaru-server anchor setup, then scan the QR code it shows or paste its code. This phone joins the vault the server runs, which replaces the vault here. Anything you already added here is backed up first.",
+    scanStep: "Scan the QR code it shows",
+    phoneOutcome: "This phone joins the server's vault in place of the one here. Anything you added here is backed up first.",
     scan: "Scan server QR code",
-    paste: "Paste the code instead",
-    useComputer: "Connect to a computer instead",
     codeLabel: "Server setup code",
     useKit: "Use the recovery kit instead",
-    kitDescription: "Only needed when the server refuses to add this device on its own.",
     kitPrompt: "Refused by the server?",
     kitLabel: "Recovery kit code",
     errors: {

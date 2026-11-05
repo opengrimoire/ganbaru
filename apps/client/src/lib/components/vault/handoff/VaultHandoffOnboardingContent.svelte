@@ -101,27 +101,14 @@
     </svg>
   </section>
 {:else}
-<!-- On desktop the content hangs from the top, so the source choices in the title stay put while the panel below changes height. -->
+<!-- The content hangs from the top, so the source choices in the title stay put while the panel below changes height. -->
 <section
-  class={platform === "desktop"
-    ? "mx-auto grid min-h-full w-full max-w-5xl content-start px-4 pt-[max(2rem,12vh)] pb-8 min-[560px]:px-8"
-    : "mx-auto grid min-h-full w-full max-w-5xl content-center px-4 py-8 min-[560px]:px-8"}
+  class="mx-auto grid min-h-full w-full max-w-5xl content-start px-4 pt-[max(2rem,12vh)] pb-8 min-[560px]:px-8"
   data-vault-handoff-onboarding={platform}
 >
   <div class={platform === "desktop"
     ? "mx-auto flex w-full max-w-4xl flex-col gap-6"
     : "mx-auto flex w-full max-w-md flex-col gap-6"}>
-    {#if platform === "android" && status?.linked !== true}
-      <div class="space-y-2 text-center">
-        <h1 class="text-2xl font-semibold leading-tight text-foreground min-[560px]:text-3xl">
-          {t("vaultHandoff.androidOnboardingTitle")}
-        </h1>
-        <p class="text-sm leading-6 text-muted-foreground">
-          {t("vaultHandoff.androidOnboardingDescription")}
-        </p>
-      </div>
-    {/if}
-
     <VaultHandoffPanel
       {platform}
       {initialInvitation}

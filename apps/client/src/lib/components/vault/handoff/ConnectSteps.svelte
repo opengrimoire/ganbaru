@@ -1,5 +1,5 @@
 <script module lang="ts">
-  /** Where this computer gets a vault it does not have yet. */
+  /** Where this device gets a vault it does not have yet. */
   export type ConnectSource = "computer" | "server";
 </script>
 
@@ -10,34 +10,39 @@
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { onMount, tick, type Snippet } from "svelte";
+  import { onMount, tick, untrack, type Snippet } from "svelte";
   import { fade } from "svelte/transition";
   import { addSyncServer, SyncServerError } from "$lib/api/sync";
   import {
+    decodeServerSetupQr,
     joinVaultThroughServer,
     recoverVaultThroughServer,
     releaseStarterVault,
   } from "$lib/api/vault-handoff";
   import MaskedCodeInput from "$lib/components/ui/MaskedCodeInput.svelte";
-  import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { SERVER_GUIDE_URL, syncServerErrorLabel } from "$lib/sync/server";
   import { cn } from "$lib/utils";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
   import { smoothHeight, smoothSwapTiming, swapIn, swapOut } from "$lib/utils/smooth-swap";
   import { isServerWithoutVault, serverConnectError } from "$lib/vault/server-connect";
+  import ConnectStep from "./ConnectStep.svelte";
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
+  import MobilePairingScanner from "./MobilePairingScanner.svelte";
 
   /**
-   * The steps that connect this computer to a vault it does not have yet: through another
-   * computer's pairing code, or through the setup code an anchor server printed. The server path
-   * may add the recovery kit, which leaves its field when it is submitted and is kept nowhere else.
-   * When `startOnEmptyServer` is set, a server that runs no vault yet receives the active vault and
+   * The steps that connect this device to a vault it does not have yet: through another
+   * computer's pairing code, or through the setup code an anchor server printed. On Android each
+   * code can be scanned from its QR code or pasted. The server path may add the recovery kit,
+   * which leaves its field when it is submitted and is kept nowhere else. When
+   * `startOnEmptyServer` is set, a server that runs no vault yet receives the active vault and
    * becomes its anchor instead. A null `source` shows `children` in the same place, so a caller can
    * offer another way to connect and every switch grows or shrinks the panel once.
    */
   let {
     source,
+    platform = "desktop",
+    autoScan = false,
     busy,
     enrollmentCode,
     error,
@@ -52,6 +57,9 @@
     children,
   }: {
     source: ConnectSource | null;
+    platform?: "desktop" | "android";
+    /** Whether Android starts with the camera instead of the code field. */
+    autoScan?: boolean;
     /** Whether a pairing code is being used, which the caller owns. */
     busy: boolean;
     /** The code to compare with the coordinator while it decides whether to link this device. */
@@ -65,7 +73,8 @@
     panelId: string;
     /** Id of the tab that labels the panel. */
     labelledBy: string;
-    onSubmit: (code: string) => void;
+    /** Uses a pairing code; a scanner starts again once the returned promise settles. */
+    onSubmit: (code: string) => void | Promise<void>;
     onEdit: () => void;
     /** Called once the vault copied from the server is the active vault. */
     onServerActivated: () => void;
@@ -80,10 +89,11 @@
   /** How long the copy button shows that the command was copied. */
   const COPY_FEEDBACK_MS = 2_000;
 
-  const localization = getLocalization();
-  const { t } = localization;
+  const { t } = getLocalization();
+  const mobile = untrack(() => platform === "android");
   let pairingInput = $state<HTMLInputElement | null>(null);
   let serverInput = $state<HTMLInputElement | null>(null);
+  let serverField = $state<ReturnType<typeof MaskedCodeInput> | null>(null);
   let kitInput = $state<HTMLInputElement | null>(null);
   let code = $state("");
   let serverCode = $state("");
@@ -93,15 +103,25 @@
   let serverNotice = $state<string | null>(null);
   let commandCopied = $state(false);
   let copyFeedbackTimer: number | undefined;
+  /** Which sources show the camera instead of the code field; only Android scans. */
+  const scanning = $state<Record<ConnectSource, boolean>>(
+    untrack(() => ({ computer: mobile && autoScan, server: mobile && autoScan })),
+  );
+  /** Bumped to start a fresh scanner after a scanned pairing code was used. */
+  let scanAttempt = $state(0);
+  let cameraFailed = $state(false);
   /** Sources, the kit field, and messages fade while the panel eases to its new height, so it never jumps. */
   const swap = smoothSwapTiming();
   const anyBusy = $derived(busy || serverBusy);
+  /** A scanner submits on its own, so the submit button shows only beside a code field. */
+  const footerShown = $derived(source !== null && !scanning[source]);
   const canSubmit = $derived(
     !anyBusy
       && (source === "computer"
         ? code.trim() !== ""
         : source === "server" && serverCode.trim() !== "" && (!useKit || kit.trim() !== "")),
   );
+  const fieldHeight = mobile ? "h-11" : "h-8";
 
   /** Focuses the code field of the shown source once it is on screen. */
   export async function focusField(): Promise<void> {
@@ -112,7 +132,7 @@
   /** Uses the shown source's code, when it is complete and nothing is running. */
   export function submit(): void {
     if (!canSubmit) return;
-    if (source === "computer") onSubmit(code.trim());
+    if (source === "computer") void onSubmit(code.trim());
     else void connectServer();
   }
 
@@ -130,11 +150,6 @@
     }
   }
 
-  function stepNumber(value: number): string {
-    return formatNumber(localization.locale, value);
-  }
-
-
   async function copyCommand(): Promise<void> {
     try {
       await writeTextToClipboard(SERVER_SETUP_COMMAND);
@@ -145,6 +160,35 @@
     commandCopied = true;
     window.clearTimeout(copyFeedbackTimer);
     copyFeedbackTimer = window.setTimeout(() => { commandCopied = false; }, COPY_FEEDBACK_MS);
+  }
+
+  /** Switches a source between the camera and its code field, focusing the field when it appears. */
+  function showScanner(which: ConnectSource, on: boolean): void {
+    if (anyBusy) return;
+    scanning[which] = on;
+    cameraFailed = false;
+    if (!on) void focusField();
+  }
+
+  function cameraUnavailable(which: ConnectSource, cause: unknown): void {
+    console.warn("the camera could not start", cause);
+    scanning[which] = false;
+    cameraFailed = true;
+    void focusField();
+  }
+
+  async function scannedPairing(text: string): Promise<void> {
+    await onSubmit(text.trim());
+    scanAttempt += 1;
+  }
+
+  /** Puts a scanned server code in its field, masked, and connects unless the kit is still missing. */
+  async function scannedServer(text: string): Promise<void> {
+    scanning.server = false;
+    await tick();
+    serverField?.fill(text);
+    if (canSubmit) submit();
+    else if (useKit) kitInput?.focus();
   }
 
   async function showKit(): Promise<void> {
@@ -207,60 +251,97 @@
   onMount(() => () => window.clearTimeout(copyFeedbackTimer));
 </script>
 
-<!-- The marker column spans its whole row, so each line runs from one circle to the next. Next to a field, the circle drops to the field's center. -->
-{#snippet step(number: number, total: number, beside: "text" | "field")}
-  <span aria-hidden="true" class="flex w-6 shrink-0 flex-col items-center">
-    <span class={cn("w-px shrink-0", beside === "field" ? "h-1" : "h-0", number > 1 && "bg-primary/25")}></span>
-    <span class="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/12 text-xs font-semibold text-primary tabular-nums">
-      {stepNumber(number)}
-    </span>
-    <span class={cn("w-px flex-1", number < total && "bg-primary/25")}></span>
+{#snippet settingsPath()}
+  <span class="ms-0.5 inline-flex items-center gap-0.5 rounded-md bg-muted px-1.5 py-px align-baseline text-[0.8rem] font-medium whitespace-nowrap">
+    {t("settings.title")}<ChevronRight size={12} class="text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />{t("settings.section.data")}
   </span>
+{/snippet}
+
+{#snippet scanner(which: ConnectSource)}
+  <div class="mt-2 w-full max-w-72">
+    {#if which === "computer"}
+      {#key scanAttempt}
+        <MobilePairingScanner
+          disabled={busy}
+          onInvitation={scannedPairing}
+          onError={(cause) => cameraUnavailable("computer", cause)}
+        />
+      {/key}
+    {:else}
+      <MobilePairingScanner
+        decode={decodeServerSetupQr}
+        label={t("vaultHandoff.serverConnect.scan")}
+        disabled={serverBusy}
+        onInvitation={scannedServer}
+        onError={(cause) => cameraUnavailable("server", cause)}
+      />
+    {/if}
+  </div>
+{/snippet}
+
+<!-- On Android each code comes from the camera or the field, so a link under the last step switches between them. -->
+{#snippet scanToggle(which: ConnectSource)}
+  {#if mobile}
+    {#if cameraFailed && !scanning[which]}
+      <p class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">{t("vaultHandoff.cameraFailed")}</p>
+    {/if}
+    <button
+      type="button"
+      class="mt-1 min-h-11 text-start text-[0.8rem] text-muted-foreground underline underline-offset-2"
+      disabled={anyBusy}
+      onclick={() => showScanner(which, !scanning[which])}
+    >
+      {scanning[which] ? t("vaultHandoff.pasteInstead") : t("vaultHandoff.scanInstead")}
+    </button>
+  {/if}
 {/snippet}
 
 <!-- A switch is one swap: the old content fades, the panel eases to the new height, and the new content fades in. The buttons hang from the panel's bottom edge, so they stay in place between sources and glide with the height instead of jumping; the steps keep room for them (pb-14 matches the footer's h-14). -->
 <div class="relative" {@attach smoothHeight(swap)}>
   <!-- svelte-ignore a11y_interactive_supports_focus -->
-  <div id={panelId} role="tabpanel" aria-labelledby={labelledBy} class={cn("relative", source !== null && "pb-14")} onkeydown={submitOnEnter}>
+  <div id={panelId} role="tabpanel" aria-labelledby={labelledBy} class={cn("relative", footerShown && "pb-14")} onkeydown={submitOnEnter}>
     {#if source === "computer"}
       <div in:swapIn={swap} out:swapOut={swap} class="mx-auto w-full max-w-md min-w-0">
         <ol class="flex flex-col">
-          <li class="flex gap-3">
-            {@render step(1, 3, "text")}
+          <ConnectStep number={1} total={3}>
             <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
-              {t("vaultHandoff.computerSteps.open")}
-              <span class="ms-0.5 inline-flex items-center gap-0.5 rounded-md bg-muted px-1.5 py-px align-baseline text-[0.8rem] font-medium whitespace-nowrap">
-                {t("settings.title")}<ChevronRight size={12} class="text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />{t("settings.section.data")}
-              </span>
+              {mobile ? t("vaultHandoff.computerSteps.openOnComputer") : t("vaultHandoff.computerSteps.open")}
+              {@render settingsPath()}
             </p>
-          </li>
-          <li class="flex gap-3">
-            {@render step(2, 3, "text")}
-            <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">{t("vaultHandoff.computerSteps.copy")}</p>
-          </li>
-          <li class="flex gap-3">
-            {@render step(3, 3, "field")}
+          </ConnectStep>
+          <ConnectStep number={2} total={3}>
+            <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
+              {mobile ? t("vaultHandoff.computerSteps.showQr") : t("vaultHandoff.computerSteps.copy")}
+            </p>
+          </ConnectStep>
+          <ConnectStep number={3} total={3} beside={scanning.computer ? "text" : "field"}>
             <div class="min-w-0 flex-1">
-              <MaskedCodeInput
-                bind:input={pairingInput}
-                bind:value={code}
-                id="pairing-code"
-                clearLabel={t("common.clearCode")}
-                autocomplete="off"
-                spellcheck="false"
-                class="field h-8 w-full px-3 text-sm"
-                placeholder={t("vaultHandoff.codePlaceholder")}
-                aria-label={t("vaultHandoff.codePlaceholder")}
-                aria-invalid={error !== null}
-                aria-describedby={error ? "pairing-code-error" : undefined}
-                disabled={busy}
-                oninput={onEdit}
-              />
+              {#if scanning.computer}
+                <p class="pt-0.5 text-sm leading-5 text-foreground">{t("vaultHandoff.computerSteps.scan")}</p>
+                {@render scanner("computer")}
+              {:else}
+                <MaskedCodeInput
+                  bind:input={pairingInput}
+                  bind:value={code}
+                  id="pairing-code"
+                  clearLabel={t("common.clearCode")}
+                  autocomplete="off"
+                  spellcheck="false"
+                  class={cn("field w-full px-3 text-sm", fieldHeight)}
+                  placeholder={t("vaultHandoff.codePlaceholder")}
+                  aria-label={t("vaultHandoff.codePlaceholder")}
+                  aria-invalid={error !== null}
+                  aria-describedby={error ? "pairing-code-error" : undefined}
+                  disabled={busy}
+                  oninput={onEdit}
+                />
+              {/if}
               {#if error}
                 <p in:swapIn={swap} out:swapOut={swap} id="pairing-code-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{error}</p>
               {/if}
+              {@render scanToggle("computer")}
             </div>
-          </li>
+          </ConnectStep>
         </ol>
         {#if busy && enrollmentCode}
           <div in:swapIn={swap} out:swapOut={swap} class="mt-5">
@@ -271,8 +352,7 @@
     {:else if source === "server"}
       <div in:swapIn={swap} out:swapOut={swap} class="mx-auto w-full max-w-md min-w-0">
         <ol class="flex flex-col">
-          <li class="flex gap-3">
-            {@render step(1, 3, "text")}
+          <ConnectStep number={1} total={3}>
             <p class="min-w-0 flex-1 pt-0.5 pb-4 text-sm leading-5 text-foreground">
               {t("vaultHandoff.serverConnect.installPrefix")}
               <button
@@ -284,9 +364,8 @@
               </button>
               {t("vaultHandoff.serverConnect.installSuffix")}
             </p>
-          </li>
-          <li class="flex gap-3">
-            {@render step(2, 3, "text")}
+          </ConnectStep>
+          <ConnectStep number={2} total={3}>
             <div class="min-w-0 flex-1 pt-0.5 pb-4">
               <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.run")}</p>
               <div class="mt-2 flex h-8 items-center gap-2 rounded-md bg-muted ps-3 pe-1" dir="ltr">
@@ -296,7 +375,7 @@
                 <button
                   type="button"
                   data-copy-command
-                  class="flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-background hover:text-foreground"
+                  class="flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-background hover:text-foreground pointer-coarse:size-9"
                   title={commandCopied ? t("vaultHandoff.serverConnect.commandCopied") : t("vaultHandoff.serverConnect.copyCommand")}
                   aria-label={commandCopied ? t("vaultHandoff.serverConnect.commandCopied") : t("vaultHandoff.serverConnect.copyCommand")}
                   onclick={() => void copyCommand()}
@@ -305,32 +384,40 @@
                 </button>
               </div>
             </div>
-          </li>
-          <li class="flex gap-3">
-            {@render step(3, 3, "field")}
+          </ConnectStep>
+          <ConnectStep number={3} total={3} beside={scanning.server ? "text" : "field"}>
             <div class="min-w-0 flex-1">
-              <MaskedCodeInput
-                bind:input={serverInput}
-                bind:value={serverCode}
-                id="server-connect-code"
-                clearLabel={t("common.clearCode")}
-                class="field h-8 w-full px-3 font-mono text-sm"
-                dir="ltr"
-                autocomplete="off"
-                autocapitalize="off"
-                spellcheck="false"
-                placeholder="ganbaru-anchor:…"
-                aria-label={t("vaultHandoff.serverConnect.codeLabel")}
-                aria-invalid={serverError !== null}
-                aria-describedby={serverError ? "server-connect-error" : "server-connect-outcome"}
-                disabled={serverBusy}
-                oninput={() => { serverError = null; }}
-              />
+              {#if scanning.server}
+                <p class="pt-0.5 text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.scanStep")}</p>
+                {@render scanner("server")}
+              {:else}
+                <MaskedCodeInput
+                  bind:this={serverField}
+                  bind:input={serverInput}
+                  bind:value={serverCode}
+                  id="server-connect-code"
+                  clearLabel={t("common.clearCode")}
+                  class={cn("field w-full px-3 font-mono text-sm", fieldHeight)}
+                  dir="ltr"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  placeholder="ganbaru-anchor:…"
+                  aria-label={t("vaultHandoff.serverConnect.codeLabel")}
+                  aria-invalid={serverError !== null}
+                  aria-describedby={serverError ? "server-connect-error" : "server-connect-outcome"}
+                  disabled={serverBusy}
+                  oninput={() => { serverError = null; }}
+                />
+              {/if}
               <p id="server-connect-outcome" class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">
-                {startOnEmptyServer ? t("vaultHandoff.serverConnect.startOutcome") : t("vaultHandoff.serverConnect.outcome")}
+                {mobile
+                  ? t("vaultHandoff.serverConnect.phoneOutcome")
+                  : startOnEmptyServer ? t("vaultHandoff.serverConnect.startOutcome") : t("vaultHandoff.serverConnect.outcome")}
               </p>
+              {@render scanToggle("server")}
             </div>
-          </li>
+          </ConnectStep>
         </ol>
         {#if useKit}
           <div in:swapIn={swap} out:swapOut={swap} class="mt-4 min-w-0">
@@ -340,7 +427,7 @@
               bind:value={kit}
               id="server-connect-kit"
               clearLabel={t("common.clearKit")}
-              class="field h-8 w-full px-3 font-mono text-sm"
+              class={cn("field w-full px-3 font-mono text-sm", fieldHeight)}
               dir="ltr"
               autocomplete="off"
               autocapitalize="off"
@@ -374,7 +461,7 @@
       </div>
     {/if}
   </div>
-  {#if source !== null}
+  {#if footerShown}
     <div
       in:fade={{ delay: swap.fadeInDelayMs, duration: swap.fadeInMs }}
       out:fade={{ duration: swap.fadeOutMs }}
@@ -384,7 +471,7 @@
       <button
         type="button"
         data-connect-submit
-        class="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-55"
+        class="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-55 pointer-coarse:min-h-11"
         disabled={!canSubmit}
         onclick={submit}
       >

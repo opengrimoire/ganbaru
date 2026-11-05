@@ -2,12 +2,15 @@
 
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import ConnectAndroidHarness from "./ConnectAndroidHarness.test.svelte";
 import ConnectInlineHarness from "./ConnectInlineHarness.test.svelte";
 
 vi.mock("$lib/api/vault-handoff", () => ({
   joinVaultThroughServer: vi.fn(),
   recoverVaultThroughServer: vi.fn(),
   releaseStarterVault: vi.fn(),
+  decodePairingQr: vi.fn(),
+  decodeServerSetupQr: vi.fn(),
 }));
 
 /** jsdom has no Web Animations API, so transitions get an animation that finishes on the next microtask. */
@@ -105,5 +108,48 @@ describe("ConnectSteps inline with ConnectSourceTabs", () => {
     await vi.waitFor(() => expect(target.querySelector("[data-connect-submit]")).toBeNull());
     expect(target.querySelector("#server-connect-code")).toBeNull();
     expect(target.querySelector("[data-phone-panel]")).not.toBeNull();
+  });
+});
+
+describe("ConnectSteps on Android", () => {
+  let target: HTMLDivElement;
+  let component: ReturnType<typeof mount> | null = null;
+  const onSubmit = vi.fn();
+
+  function render(autoScan: boolean): void {
+    component = mount(ConnectAndroidHarness, { target, props: { source: "computer", autoScan, onSubmit } });
+    flushSync();
+  }
+
+  function link(text: string): HTMLButtonElement | undefined {
+    return [...target.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === text);
+  }
+
+  beforeEach(() => {
+    onSubmit.mockReset();
+    target = document.createElement("div");
+    document.body.append(target);
+  });
+
+  afterEach(async () => {
+    if (component) await unmount(component);
+    target.remove();
+    component = null;
+  });
+
+  it("starts with the code field and offers the scanner when it does not scan first", () => {
+    render(false);
+    expect(target.querySelector("#pairing-code")).not.toBeNull();
+    expect(target.querySelector("[data-connect-submit]")).not.toBeNull();
+    expect(link("Scan the QR code instead")).toBeDefined();
+  });
+
+  it("returns to the code field with a notice when the camera cannot start", async () => {
+    render(false);
+    link("Scan the QR code instead")?.click();
+    flushSync();
+    await vi.waitFor(() => expect(target.textContent).toContain("The camera could not start."));
+    expect(target.querySelector("#pairing-code")).not.toBeNull();
+    expect(link("Scan the QR code instead")).toBeDefined();
   });
 });

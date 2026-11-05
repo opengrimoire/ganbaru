@@ -81,7 +81,7 @@ export const vaultHandoff = {
     "Instala Ganbaru en tu teléfono y escanea este código QR en la aplicación para vincular tus dispositivos",
   androidOnboardingTitle: "Conecta con tu computadora",
   androidOnboardingDescription:
-    "¿Ya usas Ganbaru en una computadora? Escanea el código QR de vinculación en sus Ajustes > Datos",
+    "¿Ya usas Ganbaru en una computadora? Escanea el código QR de vinculación que te muestra",
   stepOne: "Paso 1",
   stepTwo: "Paso 2",
   networkAccessDescription:

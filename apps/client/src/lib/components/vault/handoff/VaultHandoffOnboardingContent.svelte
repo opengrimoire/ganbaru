@@ -101,8 +101,11 @@
     </svg>
   </section>
 {:else}
+<!-- On desktop the content hangs from the top, so the source choices in the title stay put while the panel below changes height. -->
 <section
-  class="mx-auto grid min-h-full w-full max-w-5xl content-center px-4 py-8 min-[560px]:px-8"
+  class={platform === "desktop"
+    ? "mx-auto grid min-h-full w-full max-w-5xl content-start px-4 pt-[max(2rem,12vh)] pb-8 min-[560px]:px-8"
+    : "mx-auto grid min-h-full w-full max-w-5xl content-center px-4 py-8 min-[560px]:px-8"}
   data-vault-handoff-onboarding={platform}
 >
   <div class={platform === "desktop"

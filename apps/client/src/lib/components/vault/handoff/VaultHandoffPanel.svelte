@@ -78,6 +78,8 @@
 
   const { t } = getLocalization();
   const desktopQrAvailable = __GANBARU_BUILD_PLATFORM__ !== "android";
+  /** The QR code view, loaded with the onboarding so the code arrives with its panel instead of after it. */
+  let PairingQrCode = $state<typeof import("./PairingQrCode.svelte").default | null>(null);
   let status = $state<PairingStatus | null>(
     untrack(() => initialStatus ?? getCachedPairingStatus() ?? null),
   );
@@ -520,8 +522,17 @@
     }
   }
 
+  async function loadQrCode(): Promise<void> {
+    try {
+      PairingQrCode = (await import("./PairingQrCode.svelte")).default;
+    } catch (cause: unknown) {
+      console.warn("the pairing QR code view could not be loaded", cause);
+    }
+  }
+
   onMount(() => {
     if (presentation === "control") void loadServer();
+    if (presentation === "onboarding" && platform === "desktop" && desktopQrAvailable) void loadQrCode();
     const prepareOnboarding = (): void => {
       if (presentation !== "onboarding" || status?.linked) return;
       if (platform === "desktop") {
@@ -620,10 +631,9 @@
               {t("vaultHandoff.desktopOnboardingDescription")}
             </p>
           </div>
-          {#await import("./PairingQrCode.svelte") then module}
-            {@const PairingQrCode = module.default}
+          {#if PairingQrCode}
             <PairingQrCode {invitation} onExpired={() => void showInvitation()} />
-          {/await}
+          {/if}
         {/if}
         {#if approvalError}
           <Notice class="w-full max-w-88 justify-center text-[0.8rem] leading-5" message={approvalError} />

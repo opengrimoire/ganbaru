@@ -23,7 +23,7 @@
   import { SERVER_GUIDE_URL, syncServerErrorLabel } from "$lib/sync/server";
   import { cn } from "$lib/utils";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
-  import { growThenFade } from "$lib/utils/grow-then-fade";
+  import { smoothHeight, smoothSwapTiming, swapIn, swapOut } from "$lib/utils/smooth-swap";
   import { isServerWithoutVault, serverConnectError } from "$lib/vault/server-connect";
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
 
@@ -78,8 +78,6 @@
   const SERVER_SETUP_COMMAND = "ganbaru-server anchor setup";
   /** How long the copy button shows that the command was copied. */
   const COPY_FEEDBACK_MS = 2_000;
-  /** How long switching sources, the kit field, and messages take, so the panel never jumps in height. */
-  const PANEL_MOTION_MS = 260;
 
   const localization = getLocalization();
   const { t } = localization;
@@ -94,7 +92,8 @@
   let serverNotice = $state<string | null>(null);
   let commandCopied = $state(false);
   let copyFeedbackTimer: number | undefined;
-  const panelMotion = { duration: prefersReducedMotion() ? 0 : PANEL_MOTION_MS };
+  /** Sources, the kit field, and messages fade while the panel eases to its new height, so it never jumps. */
+  const swap = smoothSwapTiming();
   const anyBusy = $derived(busy || serverBusy);
   const canSubmit = $derived(
     !anyBusy
@@ -134,9 +133,6 @@
     return formatNumber(localization.locale, value);
   }
 
-  function prefersReducedMotion(): boolean {
-    return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  }
 
   async function copyCommand(): Promise<void> {
     try {
@@ -221,122 +217,142 @@
   </span>
 {/snippet}
 
-<!-- Every source shares one cell, so switching grows or shrinks the panel once while the content fades. -->
-<!-- svelte-ignore a11y_interactive_supports_focus -->
-<div id={panelId} role="tabpanel" aria-labelledby={labelledBy} class="grid items-start" onkeydown={submitOnEnter}>
-  {#if source === "computer"}
-    <div transition:growThenFade={panelMotion} class="col-start-1 row-start-1 mx-auto w-full max-w-md min-w-0">
-      <ol class="flex flex-col">
-        <li class="flex gap-3">
-          {@render step(1, 3, "text")}
-          <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
-            {t("vaultHandoff.computerSteps.open")}
-            <span class="ms-0.5 inline-flex items-center gap-0.5 rounded-md bg-muted px-1.5 py-px align-baseline text-[0.8rem] font-medium whitespace-nowrap">
-              {t("settings.title")}<ChevronRight size={12} class="text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />{t("settings.section.data")}
-            </span>
-          </p>
-        </li>
-        <li class="flex gap-3">
-          {@render step(2, 3, "text")}
-          <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">{t("vaultHandoff.computerSteps.copy")}</p>
-        </li>
-        <li class="flex gap-3">
-          {@render step(3, 3, "field")}
-          <div class="min-w-0 flex-1">
-            <MaskedCodeInput
-              bind:input={pairingInput}
-              bind:value={code}
-              id="pairing-code"
-              clearLabel={t("vaultHandoff.clearCode")}
-              autocomplete="off"
-              spellcheck="false"
-              class="field h-8 w-full px-3 text-sm"
-              placeholder={t("vaultHandoff.codePlaceholder")}
-              aria-label={t("vaultHandoff.codePlaceholder")}
-              aria-invalid={error !== null}
-              aria-describedby={error ? "pairing-code-error" : undefined}
-              disabled={busy}
-              oninput={onEdit}
-            />
-            {#if error}
-              <p transition:growThenFade={panelMotion} id="pairing-code-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{error}</p>
-            {/if}
-          </div>
-        </li>
-      </ol>
-      {#if busy && enrollmentCode}
-        <div transition:growThenFade={panelMotion} class="mt-5">
-          <EnrollmentCodeWaiting code={enrollmentCode} />
-        </div>
+{#snippet footer(panelSource: ConnectSource)}
+  <div class="mt-5 flex justify-end gap-2">
+    {@render actions?.()}
+    <button
+      type="button"
+      data-connect-submit
+      class="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-55"
+      disabled={!canSubmit}
+      onclick={submit}
+    >
+      {#if anyBusy}<LoaderCircle size={14} class="animate-spin" />{/if}
+      {#if panelSource === "computer"}
+        {t("vaultHandoff.linkDevice")}
+      {:else}
+        {serverBusy ? t("vaultHandoff.serverConnect.connecting") : t("vaultHandoff.serverConnect.action")}
       {/if}
-    </div>
-  {:else if source === "server"}
-    <div transition:growThenFade={panelMotion} class="col-start-1 row-start-1 mx-auto w-full max-w-md min-w-0">
-      <ol class="flex flex-col">
-        <li class="flex gap-3">
-          {@render step(1, 3, "text")}
-          <div class="min-w-0 flex-1 pt-0.5 pb-4">
-            <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.install")}</p>
-            <button
-              type="button"
-              class="mt-1 inline-flex items-center gap-1 text-[0.8rem] text-muted-foreground underline underline-offset-2 hover:text-foreground"
-              onclick={() => void openServerGuide()}
-            >
-              {t("sync.server.guide")}<ExternalLink size={12} aria-hidden="true" />
-            </button>
+    </button>
+  </div>
+{/snippet}
+
+<!-- Each source carries its own buttons, so a switch is one swap: the old content fades, the panel eases to the new height, and the new content fades in. -->
+<div {@attach smoothHeight(swap)}>
+  <!-- svelte-ignore a11y_interactive_supports_focus -->
+  <div id={panelId} role="tabpanel" aria-labelledby={labelledBy} class="relative" onkeydown={submitOnEnter}>
+    {#if source === "computer"}
+      <div in:swapIn={swap} out:swapOut={swap} class="mx-auto w-full max-w-md min-w-0">
+        <ol class="flex flex-col">
+          <li class="flex gap-3">
+            {@render step(1, 3, "text")}
+            <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
+              {t("vaultHandoff.computerSteps.open")}
+              <span class="ms-0.5 inline-flex items-center gap-0.5 rounded-md bg-muted px-1.5 py-px align-baseline text-[0.8rem] font-medium whitespace-nowrap">
+                {t("settings.title")}<ChevronRight size={12} class="text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />{t("settings.section.data")}
+              </span>
+            </p>
+          </li>
+          <li class="flex gap-3">
+            {@render step(2, 3, "text")}
+            <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">{t("vaultHandoff.computerSteps.copy")}</p>
+          </li>
+          <li class="flex gap-3">
+            {@render step(3, 3, "field")}
+            <div class="min-w-0 flex-1">
+              <MaskedCodeInput
+                bind:input={pairingInput}
+                bind:value={code}
+                id="pairing-code"
+                clearLabel={t("vaultHandoff.clearCode")}
+                autocomplete="off"
+                spellcheck="false"
+                class="field h-8 w-full px-3 text-sm"
+                placeholder={t("vaultHandoff.codePlaceholder")}
+                aria-label={t("vaultHandoff.codePlaceholder")}
+                aria-invalid={error !== null}
+                aria-describedby={error ? "pairing-code-error" : undefined}
+                disabled={busy}
+                oninput={onEdit}
+              />
+              {#if error}
+                <p in:swapIn={swap} out:swapOut={swap} id="pairing-code-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{error}</p>
+              {/if}
+            </div>
+          </li>
+        </ol>
+        {#if busy && enrollmentCode}
+          <div in:swapIn={swap} out:swapOut={swap} class="mt-5">
+            <EnrollmentCodeWaiting code={enrollmentCode} />
           </div>
-        </li>
-        <li class="flex gap-3">
-          {@render step(2, 3, "text")}
-          <div class="min-w-0 flex-1 pt-0.5 pb-4">
-            <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.run")}</p>
-            <div class="mt-2 flex h-8 items-center gap-2 rounded-md bg-muted ps-3 pe-1" dir="ltr">
-              <code class="min-w-0 flex-1 overflow-x-auto font-mono text-[0.8rem] whitespace-nowrap text-foreground">
-                <span class="text-muted-foreground select-none" aria-hidden="true">$</span> {SERVER_SETUP_COMMAND}
-              </code>
+        {/if}
+        {@render footer("computer")}
+      </div>
+    {:else if source === "server"}
+      <div in:swapIn={swap} out:swapOut={swap} class="mx-auto w-full max-w-md min-w-0">
+        <ol class="flex flex-col">
+          <li class="flex gap-3">
+            {@render step(1, 3, "text")}
+            <div class="min-w-0 flex-1 pt-0.5 pb-4">
+              <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.install")}</p>
               <button
                 type="button"
-                data-copy-command
-                class="flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-background hover:text-foreground"
-                title={commandCopied ? t("vaultHandoff.serverConnect.commandCopied") : t("vaultHandoff.serverConnect.copyCommand")}
-                aria-label={commandCopied ? t("vaultHandoff.serverConnect.commandCopied") : t("vaultHandoff.serverConnect.copyCommand")}
-                onclick={() => void copyCommand()}
+                class="mt-1 inline-flex items-center gap-1 text-[0.8rem] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                onclick={() => void openServerGuide()}
               >
-                {#if commandCopied}<Check size={14} aria-hidden="true" />{:else}<Copy size={14} aria-hidden="true" />{/if}
+                {t("sync.server.guide")}<ExternalLink size={12} aria-hidden="true" />
               </button>
             </div>
-          </div>
-        </li>
-        <li class="flex gap-3">
-          {@render step(3, 3, "field")}
-          <div class="min-w-0 flex-1">
-            <MaskedCodeInput
-              bind:input={serverInput}
-              bind:value={serverCode}
-              id="server-connect-code"
-              clearLabel={t("vaultHandoff.clearCode")}
-              class="field h-8 w-full px-3 font-mono text-sm"
-              dir="ltr"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-              placeholder="ganbaru-anchor:…"
-              aria-label={t("vaultHandoff.serverConnect.codeLabel")}
-              aria-invalid={serverError !== null}
-              aria-describedby={serverError ? "server-connect-error" : "server-connect-outcome"}
-              disabled={serverBusy}
-              oninput={() => { serverError = null; }}
-            />
-            <p id="server-connect-outcome" class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">
-              {startOnEmptyServer ? t("vaultHandoff.serverConnect.startOutcome") : t("vaultHandoff.serverConnect.outcome")}
-            </p>
-          </div>
-        </li>
-      </ol>
-      <!-- The kit field and the prompt that reveals it share one cell, like the sources. -->
-      <div class="grid items-start">
+          </li>
+          <li class="flex gap-3">
+            {@render step(2, 3, "text")}
+            <div class="min-w-0 flex-1 pt-0.5 pb-4">
+              <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.run")}</p>
+              <div class="mt-2 flex h-8 items-center gap-2 rounded-md bg-muted ps-3 pe-1" dir="ltr">
+                <code class="min-w-0 flex-1 overflow-x-auto font-mono text-[0.8rem] whitespace-nowrap text-foreground">
+                  <span class="text-muted-foreground select-none" aria-hidden="true">$</span> {SERVER_SETUP_COMMAND}
+                </code>
+                <button
+                  type="button"
+                  data-copy-command
+                  class="flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-background hover:text-foreground"
+                  title={commandCopied ? t("vaultHandoff.serverConnect.commandCopied") : t("vaultHandoff.serverConnect.copyCommand")}
+                  aria-label={commandCopied ? t("vaultHandoff.serverConnect.commandCopied") : t("vaultHandoff.serverConnect.copyCommand")}
+                  onclick={() => void copyCommand()}
+                >
+                  {#if commandCopied}<Check size={14} aria-hidden="true" />{:else}<Copy size={14} aria-hidden="true" />{/if}
+                </button>
+              </div>
+            </div>
+          </li>
+          <li class="flex gap-3">
+            {@render step(3, 3, "field")}
+            <div class="min-w-0 flex-1">
+              <MaskedCodeInput
+                bind:input={serverInput}
+                bind:value={serverCode}
+                id="server-connect-code"
+                clearLabel={t("vaultHandoff.clearCode")}
+                class="field h-8 w-full px-3 font-mono text-sm"
+                dir="ltr"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="ganbaru-anchor:…"
+                aria-label={t("vaultHandoff.serverConnect.codeLabel")}
+                aria-invalid={serverError !== null}
+                aria-describedby={serverError ? "server-connect-error" : "server-connect-outcome"}
+                disabled={serverBusy}
+                oninput={() => { serverError = null; }}
+              />
+              <p id="server-connect-outcome" class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">
+                {startOnEmptyServer ? t("vaultHandoff.serverConnect.startOutcome") : t("vaultHandoff.serverConnect.outcome")}
+              </p>
+            </div>
+          </li>
+        </ol>
         {#if useKit}
-          <div transition:growThenFade={panelMotion} class="col-start-1 row-start-1 mt-4 min-w-0">
+          <div in:swapIn={swap} out:swapOut={swap} class="mt-4 min-w-0">
             <label class="mb-1 block text-[0.8rem] text-muted-foreground" for="server-connect-kit">{t("vaultHandoff.serverConnect.kitLabel")}</label>
             <MaskedCodeInput
               bind:input={kitInput}
@@ -353,7 +369,7 @@
             />
           </div>
         {:else}
-          <p transition:growThenFade={panelMotion} class="col-start-1 row-start-1 mt-4 border-t border-border pt-3 text-[0.8rem] leading-5 text-muted-foreground">
+          <p in:swapIn={swap} out:swapOut={swap} class="mt-4 border-t border-border pt-3 text-[0.8rem] leading-5 text-muted-foreground">
             {t("vaultHandoff.serverConnect.kitPrompt")}
             <button
               type="button"
@@ -365,36 +381,17 @@
             </button>
           </p>
         {/if}
+        {#if serverError}
+          <p in:swapIn={swap} out:swapOut={swap} id="server-connect-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{serverError}</p>
+        {:else if serverNotice}
+          <p in:swapIn={swap} out:swapOut={swap} role="status" class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">{serverNotice}</p>
+        {/if}
+        {@render footer("server")}
       </div>
-      {#if serverError}
-        <p transition:growThenFade={panelMotion} id="server-connect-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{serverError}</p>
-      {:else if serverNotice}
-        <p transition:growThenFade={panelMotion} role="status" class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">{serverNotice}</p>
-      {/if}
-    </div>
-  {:else if children}
-    <div transition:growThenFade={panelMotion} class="col-start-1 row-start-1 min-w-0">
-      {@render children()}
-    </div>
-  {/if}
-</div>
-
-{#if source !== null}
-  <div transition:growThenFade={panelMotion} class="mx-auto mt-5 flex w-full max-w-md justify-end gap-2">
-    {@render actions?.()}
-    <button
-      type="button"
-      data-connect-submit
-      class="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-55"
-      disabled={!canSubmit}
-      onclick={submit}
-    >
-      {#if anyBusy}<LoaderCircle size={14} class="animate-spin" />{/if}
-      {#if source === "computer"}
-        {t("vaultHandoff.linkDevice")}
-      {:else}
-        {serverBusy ? t("vaultHandoff.serverConnect.connecting") : t("vaultHandoff.serverConnect.action")}
-      {/if}
-    </button>
+    {:else if children}
+      <div in:swapIn={swap} out:swapOut={swap} class="min-w-0">
+        {@render children()}
+      </div>
+    {/if}
   </div>
-{/if}
+</div>

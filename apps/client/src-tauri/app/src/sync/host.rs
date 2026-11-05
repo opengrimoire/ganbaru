@@ -20,7 +20,6 @@ use ganbaru_handoff::pairing::{CoordinatorPin, PinnedCharter};
 use ganbaru_handoff::protocol::decode_sync_charter;
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync::{ChangeNotice, Engine, Hooks, SpaceContext};
-#[cfg(desktop)]
 use ganbaru_sync_contracts::{AdminPublicKey, DevicePublicKey, DeviceRole, RecoveryPublicKeys};
 use ganbaru_sync_contracts::{SignedCharter, SpaceId};
 use ganbaru_sync_replica::assets::AssetStore;
@@ -212,26 +211,22 @@ pub(crate) async fn prepare_staged_copy<R: Runtime>(
 
 /// Refusal of a recovery kit that does not belong to the vault a server runs. The webview maps
 /// it to a localized message, so the text is stable.
-#[cfg(desktop)]
 pub(crate) const RECOVERY_KIT_MISMATCH: &str =
     "this recovery kit does not belong to the vault on this server";
 
 /// The two admin keys the server answered before the kit's public key left this device.
-#[cfg(desktop)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AnsweredKitKeys {
     pub kit_admin_key: AdminPublicKey,
     pub recovery_admin_key: AdminPublicKey,
 }
 
-/// Refusal of a vault copy from a server whose log does not enroll this desktop with the keys it
+/// Refusal of a vault copy from a server whose log does not enroll this device with the keys it
 /// joined with. The webview maps it to a localized message, so the text is stable.
-#[cfg(desktop)]
 pub(crate) const JOINED_COPY_MISMATCH: &str =
     "the vault on this server does not enroll this device";
 
-/// The keys a desktop joined a server's vault with.
-#[cfg(desktop)]
+/// The keys a device joined a server's vault with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct JoinedKeys {
     pub device_id: String,
@@ -239,8 +234,7 @@ pub(crate) struct JoinedKeys {
     pub admin_key: AdminPublicKey,
 }
 
-/// What ties a copy from a server to this desktop beyond its charter.
-#[cfg(desktop)]
+/// What ties a copy from a server to this device beyond its charter.
 #[derive(Clone, Debug)]
 pub(crate) enum CopyProof {
     /// The log names the recovery kit through a key the server answered.
@@ -248,11 +242,10 @@ pub(crate) enum CopyProof {
         keys: RecoveryPublicKeys,
         answered: AnsweredKitKeys,
     },
-    /// The log enrolls this desktop as an admin with the keys it joined with.
+    /// The log enrolls this device as an admin with the keys it joined with.
     Joined(JoinedKeys),
 }
 
-#[cfg(desktop)]
 impl CopyProof {
     /// The stable refusal of a copy that does not satisfy this proof.
     pub(crate) fn mismatch(&self) -> &'static str {
@@ -281,7 +274,6 @@ impl CopyProof {
 }
 
 /// What a copy from a server must prove before it activates.
-#[cfg(desktop)]
 #[derive(Clone, Debug)]
 pub(crate) struct RecoveryBinding {
     pub charter: SignedCharter,
@@ -289,8 +281,7 @@ pub(crate) struct RecoveryBinding {
     pub proof: CopyProof,
 }
 
-/// Why a copy from a server did not prove it belongs to this desktop.
-#[cfg(desktop)]
+/// Why a copy from a server did not prove it belongs to this device.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RecoveredCopyError {
     /// The staged charter differs, no authorization log survives verification, or the log does
@@ -305,8 +296,7 @@ pub(crate) enum RecoveredCopyError {
 /// log to name the kit through a key the server answered, the kit key as the kit key or the
 /// recovery key as the recovery key, so a server that learned the kit's admin key from the
 /// enrollment cannot move it into the other slot of a log it forged. A joined proof needs the log
-/// to enroll this desktop as an admin with the keys it joined with.
-#[cfg(desktop)]
+/// to enroll this device as an admin with the keys it joined with.
 pub(crate) async fn verify_recovered_copy(
     staging: &std::path::Path,
     vault_id: &str,
@@ -329,7 +319,6 @@ pub(crate) async fn verify_recovered_copy(
 }
 
 /// Checks the open recovered copy `conn` of `vault_id`, see [`verify_recovered_copy`].
-#[cfg(desktop)]
 async fn verify_recovered_log(
     conn: &mut sqlx::SqliteConnection,
     vault_id: &str,

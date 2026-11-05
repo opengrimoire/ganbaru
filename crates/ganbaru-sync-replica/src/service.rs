@@ -21,8 +21,9 @@ mod server;
 pub mod status;
 pub mod transport;
 
+pub use crate::anchor_setup::ServerEnrollment;
 #[cfg(desktop)]
-pub use anchor::{AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision, ServerEnrollment};
+pub use anchor::{AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision};
 #[cfg(desktop)]
 use anchor::{AuthorityRequest, ForwardRequest};
 pub use host::{SYNC_DIRECTORY, SyncHost};

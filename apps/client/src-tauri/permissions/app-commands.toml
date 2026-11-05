@@ -658,6 +658,7 @@ commands.allow = [
   "sync_contest_yield",
   "sync_contests",
   "sync_create_recovery_kit",
+  "sync_decode_server_qr",
   "sync_force_anchor",
   "sync_join_through_server",
   "sync_late_change_discard",

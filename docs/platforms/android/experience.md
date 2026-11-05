@@ -21,12 +21,13 @@ Projects, Notes, and Chat share one context model. On phones, the top bar shows 
 - **Pomodoro, Quick notes, and the compact Music player** float above the active destination within the visible safe viewport. The Music library builder expands to a full-screen workspace.
 - **Settings** keeps the desktop category structure where a shared preference or Android equivalent exists and omits unsupported controls, including keyboard shortcuts. Anti-distraction settings include shared usage limits, Android selected-app rules and access status, and read-only browser and desktop configuration from the portable vault.
 
-## Linking with a desktop
+## Linking with a desktop or server
 
 The linking protocol, snapshot copies, and data protections are owned by [device linking and synchronization](../../data/sync.md). Android adds these interaction rules:
 
 - First use starts with a localized welcome screen (license summary, source link, full AGPL 3.0 text, and acknowledgments), then creates or restores the private vault, completes the Android access review, and shows a full-screen desktop-linking scanner. A missing or invalid configured vault leads to vault recovery instead.
 - The scanner uses the rear camera, requests camera access in context, and decodes the desktop's QR invitation, which carries the private-LAN endpoint and pinned coordinator identity. The user never types an address or configures a server. After a scan, the phone shows a confirmation code and waits until the desktop user approves the matching code there.
+- The linking screen also offers **Connect to a server**: the phone joins the vault an anchor server runs from the QR code `ganbaru-server anchor setup` shows, or its pasted text code, optionally with the recovery kit ([Server](../server/README.md#adding-a-device-through-the-server)). The copy replaces the phone's vault, backed up first unless it is the untouched first-run vault. A server that runs no vault yet is refused, because a phone cannot found a vault on a server; a desktop adds that server first.
 - An untouched first-run vault is replaced directly by the initial desktop snapshot. **Not now** finishes onboarding with an independent vault and permanently disables that shortcut. Closing the scanner without choosing either leaves onboarding unfinished.
 - A linked-device control placed after Pomodoro lists linked devices and opens fresh copy, unlink, and recovery actions. With no relationship it opens the same scanner. Data settings is the fallback management surface.
 - Before the phone holds a copy of the linked vault, the linking flow offers `Copy vault to this device`, which copies the vault from the coordinator after confirmation. Once copied, the phone writes like every other linked device.

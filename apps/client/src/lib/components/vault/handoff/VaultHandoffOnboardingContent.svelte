@@ -7,6 +7,7 @@
   } from "$lib/api/vault-handoff";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { completeVaultHandoffOnboarding } from "$lib/vault/handoff-onboarding";
+  import { getActiveVaultInfo } from "$lib/vault/state";
   import VaultHandoffPanel from "./VaultHandoffPanel.svelte";
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
 
@@ -44,14 +45,31 @@
     }
   }
 
+  /**
+   * The vault that is active now, which differs from `vaultId` once a linked or server copy
+   * replaced the vault onboarding started with.
+   */
+  async function activeVaultId(): Promise<string | null> {
+    try {
+      return (await getActiveVaultInfo())?.vaultId ?? null;
+    } catch (error) {
+      console.warn("the active vault could not be read after onboarding", error);
+      return null;
+    }
+  }
+
   async function leave(persistCompletion: boolean): Promise<void> {
     if (completing) return;
     completing = true;
     try {
       if (!persistCompletion) await releaseStarterVault();
+      const activeId = persistCompletion ? await activeVaultId() : null;
       await onComplete();
       const storage = safeStorage();
-      if (storage) completeVaultHandoffOnboarding(storage, vaultId);
+      if (storage) {
+        completeVaultHandoffOnboarding(storage, vaultId);
+        if (activeId && activeId !== vaultId) completeVaultHandoffOnboarding(storage, activeId);
+      }
     } catch (error) {
       completing = false;
       console.error("Failed to leave linking onboarding:", error);

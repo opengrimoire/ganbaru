@@ -222,3 +222,21 @@ describe("local copy recovery", () => {
     expect(invokeMock).toHaveBeenCalledWith("handoff_recover_local_copy");
   });
 });
+
+describe("server setup QR", () => {
+  it("passes the frame to the native decoder and answers the pasteable code", async () => {
+    invokeMock.mockResolvedValue("ganbaru-anchor:abc");
+    const { decodeServerSetupQr } = await import("./vault-handoff");
+
+    await expect(decodeServerSetupQr(2, 1, new Uint8Array([0, 255]))).resolves.toBe("ganbaru-anchor:abc");
+    expect(invokeMock).toHaveBeenCalledWith("sync_decode_server_qr", { width: 2, height: 1, luma: [0, 255] });
+  });
+
+  it("refuses an answer that is not a server setup code", async () => {
+    const { decodeServerSetupQr } = await import("./vault-handoff");
+    for (const answer of [null, 7, "ganbaru-relay:abc"]) {
+      invokeMock.mockResolvedValueOnce(answer);
+      await expect(decodeServerSetupQr(1, 1, new Uint8Array([0]))).rejects.toThrow("Invalid server setup QR response");
+    }
+  });
+});

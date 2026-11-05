@@ -68,6 +68,16 @@ impl AnchorSetupCode {
         ))
     }
 
+    /// Finds the setup code a server printed as a QR code in a grayscale camera frame.
+    pub fn from_qr_luma(width: usize, height: usize, luma: &[u8]) -> Result<Self, String> {
+        Self::from_bytes(&super::decode_qr_bytes_luma(
+            width,
+            height,
+            luma,
+            ANCHOR_SETUP_MAGIC,
+        )?)
+    }
+
     /// Parses the text form.
     pub fn from_text(text: &str) -> Result<Self, String> {
         let encoded = text
@@ -212,6 +222,35 @@ mod tests {
         assert!(RelaySetupCode::from_bytes(&bytes).is_err());
         let relay = code().0.to_bytes().unwrap();
         assert!(AnchorSetupCode::from_bytes(&relay).is_err());
+    }
+
+    /// A grayscale frame of `bytes` as a QR code, eight pixels per module with a quiet zone.
+    fn qr_frame(bytes: &[u8]) -> (usize, Vec<u8>) {
+        let matrix = crate::protocol::qr_matrix_for_bytes(bytes).unwrap();
+        let (scale, quiet) = (8, 4);
+        let side = (matrix.width + quiet * 2) * scale;
+        let mut image = vec![255_u8; side * side];
+        for (index, _) in matrix.modules.iter().enumerate().filter(|(_, dark)| **dark) {
+            let (x, y) = (index % matrix.width, index / matrix.width);
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    image[((y + quiet) * scale + dy) * side + (x + quiet) * scale + dx] = 0;
+                }
+            }
+        }
+        (side, image)
+    }
+
+    #[test]
+    fn a_printed_setup_qr_decodes_and_a_relay_qr_does_not() {
+        let (side, frame) = qr_frame(&code().to_bytes().unwrap());
+        assert_eq!(
+            AnchorSetupCode::from_qr_luma(side, side, &frame).unwrap(),
+            code()
+        );
+        let (side, frame) = qr_frame(&code().0.to_bytes().unwrap());
+        assert!(AnchorSetupCode::from_qr_luma(side, side, &frame).is_err());
+        assert!(AnchorSetupCode::from_qr_luma(0, 0, &[]).is_err());
     }
 
     #[test]

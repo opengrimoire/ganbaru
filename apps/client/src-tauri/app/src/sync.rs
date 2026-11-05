@@ -21,6 +21,7 @@ pub(crate) mod key_protection;
 mod recovery;
 mod recovery_kit;
 pub(crate) mod server;
+pub(crate) mod server_join;
 mod service;
 mod status;
 mod transport;
@@ -34,9 +35,8 @@ use ganbaru_sync_replica::{assets, writer};
 #[cfg(target_os = "linux")]
 pub(crate) use connectivity::firewall::changed as firewall_changed;
 pub(crate) use ganbaru_sync_replica::now_ms;
-#[cfg(all(desktop, test))]
+#[cfg(test)]
 pub(crate) use host::JOINED_COPY_MISMATCH;
-#[cfg(desktop)]
 pub(crate) use host::{
     AnsweredKitKeys, CopyProof, JoinedKeys, RECOVERY_KIT_MISMATCH, RecoveredCopyError,
     RecoveryBinding, verify_recovered_copy,

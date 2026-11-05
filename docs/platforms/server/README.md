@@ -16,7 +16,7 @@ This is the setup guide. Every step is a command you can paste, so you can also 
 
 Pick one mode per server, and one server per vault.
 
-- **Anchor** (recommended on hardware you own, such as a home server, NAS, or old PC): a full, always-on copy of the vault. It keeps every device syncing while your computers are off, takes the anchor role, and lets a new computer [join through it](#adding-a-desktop-through-the-server). It holds the vault keys and can read the whole vault, so encryption does not protect the vault from that machine.
+- **Anchor** (recommended on hardware you own, such as a home server, NAS, or old PC): a full, always-on copy of the vault. It keeps every device syncing while your computers are off, takes the anchor role, and lets a new computer or phone [join through it](#adding-a-device-through-the-server). It holds the vault keys and can read the whole vault, so encryption does not protect the vault from that machine.
 - **Relay** (for a rented server): stores encrypted changes until your devices pick them up. It cannot read them; it sees only sizes, timing, and opaque ids. It keeps at most 2 GiB per vault for 90 days (`--quota-mib`, `--max-age-days`).
 
 ## What you need
@@ -147,15 +147,18 @@ Every linked device then learns the server and dials it from any network.
 
 An anchor takes the anchor role only when it is added. If a desktop later takes the anchor, or you kept it on a desktop, the server keeps serving but cannot take it back: remove the server and add it again on an empty data folder. The recovery kit also cannot be regenerated while a server is the anchor; take the anchor to a desktop first.
 
-## Adding a desktop through the server
+## Adding a device through the server
 
-A new computer, such as a work PC or one replacing every lost device, can join through an anchor server without meeting another device.
+A new computer or phone, such as a work PC or one replacing every lost device, can join through an anchor server without meeting another device.
 
 1. Run `anchor setup` on the server for a fresh code.
 2. On the new computer, choose **or connect this computer to another computer or a server** on the first launch, or **Connect to a computer or server** in Settings > Data. Open **A server** and paste the code. The server adds the computer as an admin and it copies the vault. On the first launch, a server that runs no vault yet receives this computer's vault instead and becomes its anchor.
-3. If the server refuses, for example because its admin key was removed, choose **Use the recovery kit instead** and enter the kit too.
+3. On a phone, choose **Connect to a server** on the first launch or in Settings > Data, then scan the QR code `anchor setup` shows or paste its code. The copy replaces the vault on the phone, and anything already added there is backed up first. A phone cannot put its vault on an empty server yet; add the server from a desktop first.
+4. If the server refuses, for example because its admin key was removed, choose **Use the recovery kit instead** and enter the kit too.
 
-The code alone is enough because printing it takes a shell on the server, which can already read the vault. The new computer opens the copy only when the vault's log adds this computer's own keys. Until a linked device shares the person key with it, it cannot sign contact cards or requests. If the copy fails, repeat with a fresh code.
+A device that joins this way is an admin of the vault. If it is your only device besides the server, keep the recovery kit safe: it is how you recover through the server if you lose the device.
+
+The code alone is enough because printing it takes a shell on the server, which can already read the vault. The new device opens the copy only when the vault's log adds this device's own keys. Until a linked device shares the person key with it, it cannot sign contact cards or requests. If the copy fails, repeat with a fresh code.
 
 ## Updates
 

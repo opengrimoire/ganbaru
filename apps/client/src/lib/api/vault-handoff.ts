@@ -355,8 +355,30 @@ export async function requestVaultBootstrap(): Promise<VaultBootstrapOutcome> {
 }
 
 /**
- * On a desktop that is not linked yet, joins the vault an anchor server runs with the setup code it
- * printed. The server enrolls this desktop as an admin, and the vault is copied into a new folder.
+ * Reads the setup code an anchor server printed as a QR code from a bounded grayscale camera frame.
+ *
+ * @returns The setup code in the text form a person can paste.
+ */
+export async function decodeServerSetupQr(
+  width: number,
+  height: number,
+  luma: Uint8Array,
+): Promise<string> {
+  const value = await invoke<unknown>("sync_decode_server_qr", {
+    width,
+    height,
+    luma: Array.from(luma),
+  });
+  if (typeof value !== "string" || !value.startsWith("ganbaru-anchor:")) {
+    throw new Error("Invalid server setup QR response");
+  }
+  return value;
+}
+
+/**
+ * On a device that is not linked yet, joins the vault an anchor server runs with the setup code it
+ * printed. The server enrolls this device as an admin. A desktop copies the vault into a new
+ * folder; a phone replaces its vault, backing it up first unless it is the untouched starter vault.
  * It rejects with a waiting message while the server is not the vault's anchor.
  *
  * @returns The validated outcome of the copy.
@@ -366,8 +388,9 @@ export async function joinVaultThroughServer(code: string): Promise<VaultBootstr
 }
 
 /**
- * On a new desktop, recovers the vault an anchor server runs with the setup code it printed and
- * the recovery kit, which enrolls this desktop as an admin and copies the vault into a new folder.
+ * On a new device, recovers the vault an anchor server runs with the setup code it printed and
+ * the recovery kit, which enrolls this device as an admin and copies the vault here the same way
+ * a join does.
  *
  * @returns The validated outcome of the copy.
  */

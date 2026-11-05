@@ -39,7 +39,7 @@ Android 10, API level 29, is the minimum supported version. The app uses one Act
 - Canonical user data stays in the active vault.
 - The default Android vault is application-private and can be removed by uninstall.
 - Portable backup and restore are explicit user workflows.
-- The app does not request broad storage, broad package visibility, overlay, screen capture, contacts, microphone, or location authority. Camera access is requested only from the user-initiated desktop-linking QR scanner.
+- The app does not request broad storage, broad package visibility, overlay, screen capture, contacts, microphone, or location authority. Camera access is requested only from the user-initiated desktop-linking and server setup QR scanners.
 - Desktop processes and capabilities are excluded at build time, not merely hidden in the UI.
 - JavaScript timers do not own background deadlines.
 - Permission denial leaves truthful recovery and useful unaffected features.

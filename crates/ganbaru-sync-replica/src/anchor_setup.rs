@@ -4,13 +4,12 @@
 //! client certificate, proves the setup secret, and learns the keys the server enrolls with. Once
 //! the selected log enrolls the server, a second setup connection uploads the snapshot it runs.
 //! After every device is lost, a new device proves a fresh secret and sends a proposal the
-//! recovery admin key signed over the same connection. A desktop that never met another device
+//! recovery admin key signed over the same connection. A device that never met another device
 //! instead asks the server to enroll it, signed with the server's own admin key.
 
 use crate::anchor_link::{
     DialError, ServerStream, ServerTarget, dial_server, local_compatibility, request_on,
 };
-use crate::service::ServerEnrollment;
 use ganbaru_handoff::dial::LoopbackPolicy;
 use ganbaru_handoff::pairing::PinnedCharter;
 use ganbaru_handoff::protocol::anchor::{
@@ -96,6 +95,18 @@ fn unexpected(answer: ControlMessage, doing: &str) -> AnchorSetupError {
     }
 }
 
+/// What an admin device learned from a server that proved its setup conversation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerEnrollment {
+    pub device_id: String,
+    pub device_key: DevicePublicKey,
+    pub label: String,
+    /// The admin key the server generated for itself; the server's private key never leaves it.
+    pub admin_key: AdminPublicKey,
+    /// The configuration that tells members to dial it.
+    pub server: Server,
+}
+
 /// What a server told a device that proved its setup secret.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerIdentity {
@@ -104,21 +115,21 @@ pub struct ServerIdentity {
     pub space: Option<AnchorSpace>,
 }
 
-/// The keys a desktop asks a server to enroll it with.
+/// The keys a device asks a server to enroll it with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JoinRequest {
     pub device_id: String,
     pub device_label: String,
     pub device_key: DevicePublicKey,
     pub admin_key: AdminPublicKey,
-    /// SHA-256 of the certificate this desktop dials members with.
+    /// SHA-256 of the certificate this device dials members with.
     pub tls_fingerprint: [u8; 32],
 }
 
 /// How a server answered a request to join its vault.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JoinOutcome {
-    /// The authorization log enrolls this desktop at this revision.
+    /// The authorization log enrolls this device at this revision.
     Enrolled(u64),
     /// The server holds the enrollment until the anchor collects it; retry once the anchor is
     /// online.
@@ -285,7 +296,7 @@ impl SetupConnection {
         }
     }
 
-    /// Asks the server to enroll this desktop as an admin of the vault it runs. The server signs
+    /// Asks the server to enroll this device as an admin of the vault it runs. The server signs
     /// the enrollment with its own admin key, so no other device needs to be online, but only the
     /// anchor can sequence it.
     pub async fn join(&mut self, request: &JoinRequest) -> Result<JoinOutcome, AnchorSetupError> {

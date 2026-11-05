@@ -12,7 +12,7 @@ Android requests access in context, only after the user enables a feature that n
 | Usage Access | Count explicitly selected packages and reconcile selected-app limits | No Android usage counting or limit enforcement; configuration remains readable. |
 | Accessibility Service | Observe selected package transitions and perform Home for matching rules | No selected-app blocking; usage counting may remain if Usage Access is granted. |
 | Document tree and file grants | Import, restore, selected Music tree, and managed files | Only the selected action fails; no broad storage fallback is requested. |
-| Camera runtime permission | Scan a desktop pairing QR code while the user is on the linking screen | Linking remains available later from Data settings; no image or video is stored. |
+| Camera runtime permission | Scan a desktop pairing QR code or a server setup QR code while the user is on the linking screen | Linking remains available later from Data settings; no image or video is stored. |
 | Network state (`ACCESS_NETWORK_STATE`, normal permission) | Background sync network constraints and default network change triggers | Granted at install; there is no denial path. |
 
 ## Special-access disclosure

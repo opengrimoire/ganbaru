@@ -8,6 +8,7 @@
 //! through forward requests and sequences it with its own writer.
 
 use super::{Session, SyncHost, acquire, blocking};
+use crate::anchor_setup::ServerEnrollment;
 use crate::authority::{self, ForcedHandover, ensure_admin_key};
 use crate::client::{self, PeerIds, SyncTransport};
 use crate::now_ms;
@@ -17,9 +18,9 @@ use ganbaru_handoff::pairing::PairingManager;
 use ganbaru_handoff::protocol::decode_sync_admin_key;
 use ganbaru_sync::{AuthorizationView, ContestEntry};
 use ganbaru_sync_contracts::{
-    AdminKeyPair, AdminPublicKey, DeviceKind, DevicePublicKey, DeviceRole, Digest32, Enroll, Entry,
-    KitCode, LateResolution, LateRow, ProposalRejection, RecoverySeed, ResolveLate, RowKey, Server,
-    ServerConfig, SignedProposal, TableId, VersionVector,
+    AdminKeyPair, DeviceKind, DeviceRole, Digest32, Enroll, Entry, KitCode, LateResolution,
+    LateRow, ProposalRejection, RecoverySeed, ResolveLate, RowKey, Server, ServerConfig,
+    SignedProposal, TableId, VersionVector,
 };
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
@@ -61,18 +62,6 @@ pub enum AuthorityAction {
     EnrollServer(ServerEnrollment),
     /// Propose the vault's server configuration: the server devices reach, or none.
     SetServer(Option<Server>),
-}
-
-/// What an admin device learned from a server that proved its setup conversation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServerEnrollment {
-    pub device_id: String,
-    pub device_key: DevicePublicKey,
-    pub label: String,
-    /// The admin key the server generated for itself; the server's private key never leaves it.
-    pub admin_key: AdminPublicKey,
-    /// The configuration that tells members to dial it.
-    pub server: Server,
 }
 
 /// A forced handover a person asks for. Its debug form never shows the kit code.

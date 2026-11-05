@@ -46,6 +46,7 @@
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
   import LinkedDeviceSuccess from "./LinkedDeviceSuccess.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
+  import MobileServerConnect from "./MobileServerConnect.svelte";
 
   type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "bootstrap" | "unlink" | "recover" | "linkFolder";
 
@@ -85,6 +86,8 @@
     untrack(() => status?.devices.map((device) => device.deviceId) ?? []),
   );
   let scanning = $state(false);
+  /** Whether this phone is connecting to an anchor server instead of a computer. */
+  let serverConnecting = $state(false);
   let codeDialogVisible = $state(false);
   let qrDialogVisible = $state(false);
   let scannerVersion = $state(0);
@@ -684,18 +687,34 @@
     {:else if !status.linked && platform === "android"}
       {#if enrollmentCode}
         <EnrollmentCodeWaiting code={enrollmentCode} />
-      {:else if scanning}
-        {#key scannerVersion}
-          <MobilePairingScanner
-            disabled={busy !== null}
-            onInvitation={acceptInvitation}
-            onError={(cause) => { fail(cause); scanning = false; }}
-          />
-        {/key}
+      {:else if serverConnecting}
+        <MobileServerConnect
+          onActivated={() => { serverConnecting = false; onActivated?.(); }}
+          onCancel={() => { serverConnecting = false; scannerVersion += 1; scanning = presentation === "onboarding"; }}
+        />
       {:else}
-        <button type="button" class={primaryButtonClass} disabled={busy !== null} onclick={() => { scanning = true; error = null; }}>
-          <ScanLine size={14} strokeWidth={2} aria-hidden="true" />
-          {t("vaultHandoff.linkToDesktop")}
+        {#if scanning}
+          {#key scannerVersion}
+            <MobilePairingScanner
+              disabled={busy !== null}
+              onInvitation={acceptInvitation}
+              onError={(cause) => { fail(cause); scanning = false; }}
+            />
+          {/key}
+        {:else}
+          <button type="button" class={primaryButtonClass} disabled={busy !== null} onclick={() => { scanning = true; error = null; }}>
+            <ScanLine size={14} strokeWidth={2} aria-hidden="true" />
+            {t("vaultHandoff.linkToDesktop")}
+          </button>
+        {/if}
+        <button
+          type="button"
+          class={`${buttonClass} min-h-11`}
+          disabled={busy !== null}
+          onclick={() => { scanning = false; error = null; serverConnecting = true; }}
+        >
+          <Server size={14} strokeWidth={2} aria-hidden="true" />
+          {t("vaultHandoff.serverConnect.open")}
         </button>
       {/if}
     {/if}

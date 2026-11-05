@@ -417,12 +417,13 @@ async fn receive(
     })
 }
 
-/// Copies the vault a new desktop just recovered through its server into a new folder and opens
-/// it. The recovery enrolled this desktop, so the server admits it without a coordinator pin. A
-/// copy is settled once it opens, so an unanswered acknowledgement only leaves the server to
-/// release its reservation when it expires. The copy is verified against `binding`: the charter
-/// the recovery enrolled under and the kit keys the server answered.
-#[cfg(desktop)]
+/// Copies the vault a new device just joined or recovered through its server and opens it: on a
+/// computer in a new folder, on Android in place of the phone's vault, which is backed up first
+/// unless it is the untouched starter. The enrollment admits this device without a coordinator
+/// pin. A copy is settled once it opens, so an unanswered acknowledgement only leaves the server
+/// to release its reservation when it expires. The copy is verified against `binding`: the
+/// charter the enrollment was signed under, and the kit keys the server answered or the keys this
+/// device joined with.
 pub(crate) async fn receive_recovered(
     app: tauri::AppHandle,
     target: ganbaru_sync_replica::anchor_link::ServerTarget,
@@ -444,7 +445,6 @@ pub(crate) async fn receive_recovered(
     result
 }
 
-#[cfg(desktop)]
 async fn receive_recovered_copy(
     app: &tauri::AppHandle,
     source: BundleSource,
@@ -452,7 +452,10 @@ async fn receive_recovered_copy(
     cancellation: &TransferCancellation,
 ) -> Result<ReceiveOutcome, String> {
     let pairing = app.state::<PairingManager>().inner().clone();
+    #[cfg(desktop)]
     let folder = prepare_link_folder(app)?;
+    #[cfg(not(desktop))]
+    let previous = replaced_vault_policy(app)?;
     let FetchedBundle {
         source,
         metadata,
@@ -464,8 +467,11 @@ async fn receive_recovered_copy(
         cancellation,
     )
     .await?;
+    #[cfg(desktop)]
     let staging =
         crate::vault::backup::handoff_staging_path_in(&folder.parent, &metadata.transfer_id);
+    #[cfg(not(desktop))]
+    let staging = handoff_staging_path(app, &metadata.transfer_id)?;
     let marker = crate::sync::sync_files(app, &metadata.vault_id)?.server_sync_path();
     let staged = async {
         crate::vault::backup::stage_handoff_archive(&archive, &staging, &metadata.vault_id).await?;
@@ -484,16 +490,28 @@ async fn receive_recovered_copy(
         discard_refused_copy(&pairing, &staging, &metadata.transfer_id);
     }
     staged?;
-    let target = resolve_staged_link_folder(&folder, &staging)?;
-    crate::vault::backup::activate_handoff_in_new_folder(
+    #[cfg(desktop)]
+    {
+        let target = resolve_staged_link_folder(&folder, &staging)?;
+        crate::vault::backup::activate_handoff_in_new_folder(
+            app,
+            &staging,
+            target,
+            &metadata.transfer_id,
+            &metadata.vault_id,
+        )
+        .await?;
+        app.state::<ReceiverLifecycle>().set_link_folder(None)?;
+    }
+    #[cfg(not(desktop))]
+    activate_handoff(
         app,
         &staging,
-        target,
         &metadata.transfer_id,
         &metadata.vault_id,
+        previous,
     )
     .await?;
-    app.state::<ReceiverLifecycle>().set_link_folder(None)?;
     let pending = PendingAcknowledgement {
         vault_id: metadata.vault_id.clone(),
         device_id: pairing.device_id()?,
@@ -521,7 +539,6 @@ async fn receive_recovered_copy(
 /// fails is removed. A copy that does not satisfy the proof also removes the server sync marker
 /// at `marker`, so the next attempt asks the server again before it signs anything; a
 /// copy that only failed to read keeps it, so a retry skips the enrollment it already sent.
-#[cfg(desktop)]
 async fn settle_recovered_copy(
     staging: &std::path::Path,
     marker: &std::path::Path,

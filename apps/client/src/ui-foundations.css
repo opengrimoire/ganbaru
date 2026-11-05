@@ -227,6 +227,43 @@ html[data-shell="mobile"] {
   }
 }
 
+/*
+ * Flashes the selection color behind an element twice, to point at what must happen first when an action cannot run
+ * yet, such as the setting it waits for. Re-create the element, for example with a Svelte key block, to replay it.
+ */
+@utility attention-flash {
+  position: relative;
+  isolation: isolate;
+  &::before {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: var(--selection-background);
+    opacity: 0;
+    pointer-events: none;
+    content: "";
+    animation: attention-flash 720ms ease-in-out;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    &::before {
+      animation-duration: 1ms;
+    }
+  }
+}
+
+@keyframes attention-flash {
+  0%,
+  50%,
+  100% {
+    opacity: 0;
+  }
+  25%,
+  75% {
+    opacity: 1;
+  }
+}
+
 /* A borderless input inside a `field` wrapper. */
 @utility field-bare {
   min-width: 0;

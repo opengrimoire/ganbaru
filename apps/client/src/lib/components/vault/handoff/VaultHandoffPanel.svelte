@@ -11,6 +11,7 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { cn } from "$lib/utils";
   import {
     cancelDesktopBundleReceive,
     createPairingInvitation,
@@ -130,6 +131,13 @@
       || networkAccess?.state === "granted"
       || networkAccess?.state === "notRequired",
   );
+  /** Whether this desktop must allow phone connections through the firewall before another device can link. */
+  const networkAccessBlocksLinking = $derived(
+    desktopNetworkAccessSetting
+      && (networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired"),
+  );
+  /** Bumped to replay the flash on the Local network access setting, which re-creates the row. */
+  let networkFlash = $state(0);
   const networkAccessDescription = $derived(
     networkAccess?.state === "notRequired"
       ? t("vaultHandoff.networkAccessNotRequired")
@@ -280,7 +288,15 @@
     }
   }
 
+  /**
+   * Opens the pairing QR code, or flashes the Local network access setting when the firewall would keep the other
+   * device out, since the code cannot work until that is allowed.
+   */
   function openInvitationDialog(): void {
+    if (networkAccessBlocksLinking) {
+      networkFlash += 1;
+      return;
+    }
     qrDialogVisible = true;
     if (busy === "invite") return;
     invitation = null;
@@ -544,13 +560,20 @@
   {#if presentation === "settings"}
     <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("vaultHandoff.heading")}</h2>
     {#if desktopNetworkAccessSetting}
-      <SwitchField
-        label={t("vaultHandoff.networkAccessHeading")}
-        description={networkAccessDescription}
-        checked={networkAccessEnabled}
-        disabled={controlsBusy || networkAccess?.state === "notRequired" || networkAccess?.state === "manualActionRequired"}
-        onChange={setNetworkAccess}
-      />
+      {#key networkFlash}
+        <div class={cn("rounded-md", networkFlash > 0 && "attention-flash")}>
+          <SwitchField
+            label={t("vaultHandoff.networkAccessHeading")}
+            description={networkAccessDescription}
+            checked={networkAccessEnabled}
+            disabled={controlsBusy || networkAccess?.state === "notRequired" || networkAccess?.state === "manualActionRequired"}
+            onChange={setNetworkAccess}
+          />
+        </div>
+      {/key}
+      {#if networkError}
+        <Notice class="px-1 text-[0.8rem] leading-5" message={networkError} />
+      {/if}
     {/if}
   {/if}
 
@@ -824,11 +847,6 @@
       <SyncSection
         {buttonClass}
         mobileLayout={platform === "android"}
-        onAllowNetworkAccess={desktopNetworkAccessSetting
-          && !controlsBusy
-          && (networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired")
-          ? () => setNetworkAccess(true)
-          : undefined}
         onRecoverLocalCopy={recoverAvailable && busy === null ? () => { confirmation = "recover"; } : undefined}
         onFreshCopy={isCoordinatorClient && status.replicaReady ? getFreshCopy : undefined}
       />
@@ -916,14 +934,10 @@
     {@const PairingQrDialog = module.default}
     <PairingQrDialog
       {invitation}
-      {networkAccess}
-      networkBusy={busy === "network"}
-      {networkError}
       invitationError={busy === "invite" ? null : error}
       pendingEnrollment={status?.pendingEnrollment ?? null}
       approvalBusy={busy === "approval"}
       {approvalError}
-      onGrantNetworkAccess={() => { confirmation = "network"; }}
       onRefresh={() => void showInvitation()}
       onRetry={() => showInvitation()}
       onRespondEnrollment={(approve) => void respondToPendingEnrollment(approve)}

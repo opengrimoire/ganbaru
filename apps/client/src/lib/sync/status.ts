@@ -7,7 +7,7 @@ import type {
   SyncStatusView,
 } from "$lib/api/sync";
 import type { AppLocale } from "$lib/i18n/locales";
-import { formatDateTime, formatList, formatNumber, formatRelativeMinutes } from "$lib/i18n/formatters";
+import { formatDateTime, formatNumber, formatRelativeMinutes } from "$lib/i18n/formatters";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import type { SyncPresentationRegistry } from "./presentation-registry";
 
@@ -53,11 +53,6 @@ export function syncHeldLines(t: Translate, status: SyncStatusView): string[] {
   if (status.held.newerManifest > 0) lines.push(t("sync.heldNewerManifest", status.held.newerManifest));
   if (status.held.invalid > 0) lines.push(t("sync.heldInvalid", status.held.invalid));
   return lines;
-}
-
-/** Explains what syncs, listing the features of the registered domains. */
-export function syncDescription(t: Translate, locale: AppLocale, presentations: SyncPresentationRegistry): string {
-  return t("sync.description", formatList(locale, presentations.labels(t), { type: "conjunction" }));
 }
 
 /** A conflict line of one replicated table. */
@@ -174,17 +169,13 @@ export function syncConnectionLabel(t: Translate, status: SyncStatusView): strin
 }
 
 /** A recovery action a degraded reason offers. */
-export type SyncDegradedAction = "openBatterySettings" | "allowNetworkAccess" | "allowPeerConnections";
+export type SyncDegradedAction = "openBatterySettings";
 
 /** Labels the button that runs a degraded reason's recovery action. */
 export function syncDegradedActionLabel(t: Translate, action: SyncDegradedAction): string {
   switch (action) {
     case "openBatterySettings":
       return t("sync.degraded.openBatterySettings");
-    case "allowNetworkAccess":
-      return t("sync.degraded.allowNetworkAccess");
-    case "allowPeerConnections":
-      return t("sync.degraded.allowPeerConnections");
   }
 }
 
@@ -196,25 +187,23 @@ export interface SyncDegradedRow {
 }
 
 /**
- * Explains each degraded reason with its recovery action. The firewall reason has an action only
- * on the coordinator, where this device can allow its listener through the firewall; a member
- * desktop whose own listener the firewall blocks gets its own reason with the same grant.
+ * Explains each degraded reason with its recovery action. A firewall that blocks this desktop's own listener, on
+ * the coordinator or on a member, has no row: the Local network access setting above the section already shows and
+ * changes it.
  */
 export function syncDegradedRows(t: Translate, status: SyncStatusView): SyncDegradedRow[] {
-  return status.degraded.map((reason) => {
+  return status.degraded.flatMap((reason): SyncDegradedRow[] => {
     switch (reason) {
       case "backgroundRestricted":
-        return { reason, label: t("sync.degraded.backgroundRestricted"), action: "openBatterySettings" };
+        return [{ reason, label: t("sync.degraded.backgroundRestricted"), action: "openBatterySettings" }];
       case "standbyRestricted":
-        return { reason, label: t("sync.degraded.standbyRestricted"), action: "openBatterySettings" };
+        return [{ reason, label: t("sync.degraded.standbyRestricted"), action: "openBatterySettings" }];
       case "localNetworkDenied":
-        return { reason, label: t("sync.degraded.localNetworkDenied"), action: null };
+        return [{ reason, label: t("sync.degraded.localNetworkDenied"), action: null }];
       case "firewallAuthorizationRequired":
-        return status.role === "hub"
-          ? { reason, label: t("sync.degraded.firewallHub"), action: "allowNetworkAccess" }
-          : { reason, label: t("sync.degraded.firewallClient"), action: null };
+        return status.role === "hub" ? [] : [{ reason, label: t("sync.degraded.firewallClient"), action: null }];
       case "firewallPeerListenerBlocked":
-        return { reason, label: t("sync.degraded.firewallPeers"), action: "allowPeerConnections" };
+        return [];
     }
   });
 }

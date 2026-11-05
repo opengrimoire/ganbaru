@@ -1,6 +1,4 @@
 export const sync = {
-  heading: "Sync",
-  description: (features: string) => `${features} sync between your linked devices when both are on the same network.`,
   state: {
     off: "Off",
     idle: "Up to date",
@@ -153,12 +151,8 @@ export const sync = {
     backgroundRestricted: "Android restricts Ganbaru in the background, so sync waits until you open the app.",
     standbyRestricted: "Android rarely lets Ganbaru run in the background, so sync can be late.",
     localNetworkDenied: "This device is not allowed to reach your other devices on the local network. Allow local network access for Ganbaru in the system settings.",
-    firewallHub: "The firewall keeps your other devices from reaching this device.",
     firewallClient: "Your main device was not found on the network. A firewall on this device may be blocking it.",
     openBatterySettings: "Open battery settings",
-    allowNetworkAccess: "Allow network access",
-    firewallPeers: "The firewall keeps your other devices from connecting to this device directly, so sync waits for your main device.",
-    allowPeerConnections: "Allow peers to connect",
   },
   recovery: {
     heading: "Recently deleted with unsaved edits",

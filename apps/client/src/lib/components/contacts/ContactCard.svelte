@@ -215,7 +215,7 @@
     </div>
     {#if detail?.blocking}
       {#key detailFlash}
-        <p class={cn("contacts-card-blocker", detailFlash > 0 && "contacts-card-blocker-flash")} role="status"><span class="flex h-lh shrink-0 items-center text-status-tentative"><CircleAlert size={ACTION_ICON_SIZE} /></span>{detail.message}</p>
+        <p class={cn("contacts-card-blocker", detailFlash > 0 && "attention-flash")} role="status"><span class="flex h-lh shrink-0 items-center text-status-tentative"><CircleAlert size={ACTION_ICON_SIZE} /></span>{detail.message}</p>
       {/key}
     {:else if detail}
       <p class="text-[0.8rem] text-muted-foreground">{detail.message}</p>
@@ -257,17 +257,11 @@
   .contacts-card-action[aria-disabled="true"] { cursor: not-allowed; }
   .contacts-card-action-blocked { color: var(--muted-foreground); opacity: 0.5; }
   .contacts-card-blocker { position: relative; isolation: isolate; display: flex; align-items: flex-start; gap: 0.375rem; margin-inline: -0.375rem; border-radius: 0.375rem; padding: 0.125rem 0.375rem; color: var(--foreground); font-size: calc(0.8rem * var(--type-scale)); }
-  .contacts-card-blocker-flash::before { position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--selection-background); opacity: 0; pointer-events: none; content: ""; animation: contacts-card-blocker-flash 720ms ease-in-out; }
-  @keyframes contacts-card-blocker-flash {
-    0%, 50%, 100% { opacity: 0; }
-    25%, 75% { opacity: 1; }
-  }
   .contacts-card-spin { animation: contacts-card-spin 480ms ease-in-out; }
   @keyframes contacts-card-spin {
     to { transform: rotate(360deg); }
   }
   @media (prefers-reduced-motion: reduce) {
-    .contacts-card-blocker-flash::before { animation-duration: 1ms; }
     .contacts-card-spin { animation: none; }
   }
   .contacts-card-toggle { display: grid; width: 1.25rem; height: 1.25rem; flex: 0 0 auto; place-items: center; border-radius: var(--floating-item-radius); color: var(--muted-foreground); }

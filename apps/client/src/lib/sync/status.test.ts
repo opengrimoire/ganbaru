@@ -5,11 +5,9 @@ import {
   canRequestSync,
   syncClockAheadLines,
   syncConnectionLabel,
-  syncDegradedActionLabel,
   syncDegradedRows,
   formatSyncTime,
   syncConflictLines,
-  syncDescription,
   syncDeviceAcknowledgementLines,
   syncDeviceName,
   syncHeldLines,
@@ -75,14 +73,6 @@ describe("sync status presentation", () => {
       { table: "tasks", line: t("sync.conflicts", 1) },
     ]);
     expect(syncConflictLines(t, presentations, status({}))).toEqual([]);
-  });
-
-  it("lists the features of every registered domain in the description", () => {
-    const presentations = new SyncPresentationRegistry()
-      .register({ label: () => "Quick notes", tables: { quick_notes: {} }, changed: () => {} });
-    expect(syncDescription(t, "en", presentations)).toBe(t("sync.description", "Quick notes"));
-    presentations.register({ label: () => "Calendar", tables: { events: {} }, changed: () => {} });
-    expect(syncDescription(t, "en", presentations)).toBe(t("sync.description", "Quick notes and Calendar"));
   });
 
   it("totals recovery offers across tables", () => {
@@ -194,28 +184,14 @@ describe("sync connectivity", () => {
     expect(rows.every((row) => !row.label.startsWith("sync."))).toBe(true);
   });
 
-  it("offers the firewall action only on the coordinator", () => {
-    expect(syncDegradedRows(t, status({ state: "idle", role: "hub", degraded: ["firewallAuthorizationRequired"] })))
-      .toEqual([{
-        reason: "firewallAuthorizationRequired",
-        label: "The firewall keeps your other devices from reaching this device.",
-        action: "allowNetworkAccess",
-      }]);
-    expect(syncDegradedRows(t, status({ state: "idle", role: "hub" }))).toEqual([]);
-  });
-
-  it("offers the peer firewall grant to a member desktop whose listener is blocked", () => {
+  it("leaves desktop firewall access to the local network access setting", () => {
+    expect(syncDegradedRows(t, status({ state: "idle", role: "hub", degraded: ["firewallAuthorizationRequired"] }))).toEqual([]);
     const rows = syncDegradedRows(t, status({
       state: "idle",
       role: "client",
       degraded: ["firewallAuthorizationRequired", "firewallPeerListenerBlocked"],
     }));
-    expect(rows.map((row) => [row.reason, row.action])).toEqual([
-      ["firewallAuthorizationRequired", null],
-      ["firewallPeerListenerBlocked", "allowPeerConnections"],
-    ]);
-    expect(syncDegradedActionLabel(t, "allowPeerConnections")).toBe("Allow peers to connect");
-    expect(syncDegradedActionLabel(t, "allowNetworkAccess")).toBe("Allow network access");
+    expect(rows.map((row) => [row.reason, row.action])).toEqual([["firewallAuthorizationRequired", null]]);
   });
 });
 
@@ -279,7 +255,7 @@ describe("relay delivery counts", () => {
   it("says when the relay has not answered at all", () => {
     const lines = syncRelayLines(t, "en", status({ state: "error", relay: { ...relay, problem: "unreachable" } }), NOW);
     expect(lines.slice(1)).toEqual([
-      "Relay: The relay could not be reached, or its certificate did not match.",
+      t("sync.relay.problem", syncRelayProblemLabel(t, "unreachable")),
       "The relay has not answered since the app started",
     ]);
   });

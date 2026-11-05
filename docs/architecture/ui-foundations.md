@@ -59,6 +59,7 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 - The notice sits where the failed content would have been: `inline` inside the row, panel, or banner that owns it, `fill` centered in a failed view or pane, and `floating` as a small centered surface only when a dialog or panel with no host surface failed to open. A floating notice always offers a close button so the user can back out.
 - Retry turns while the retried work is pending and shows a check when it succeeds; a handler that reports its own errors resolves `false` so a failed attempt never shows the check; copy shows a check when the message reaches the clipboard. Copy is hidden when the message is fixed text with no detail worth sharing.
 - `tone="warning"` tints the icon for conditions that limit a feature without being a failure, such as an unavailable provider.
+- An action that waits for a setting or another step points at it with the `attention-flash` utility instead of a notice or dialog: the element that needs attention flashes the selection color twice, and each new attempt replays it.
 
 ## Loading
 

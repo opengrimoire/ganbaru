@@ -4,7 +4,6 @@
   import Copy from "@lucide/svelte/icons/copy";
   import { onMount, tick } from "svelte";
   import type {
-    DesktopNetworkAccess,
     PairingInvitation,
     PendingEnrollment,
   } from "$lib/api/vault-handoff";
@@ -20,28 +19,20 @@
 
   let {
     invitation,
-    networkAccess,
-    networkBusy,
-    networkError,
     invitationError,
     pendingEnrollment,
     approvalBusy,
     approvalError,
-    onGrantNetworkAccess,
     onRefresh,
     onRetry,
     onRespondEnrollment,
     onClose,
   }: {
     invitation: PairingInvitation | null;
-    networkAccess: DesktopNetworkAccess | null;
-    networkBusy: boolean;
-    networkError: string | null;
     invitationError: string | null;
     pendingEnrollment: PendingEnrollment | null;
     approvalBusy: boolean;
     approvalError: string | null;
-    onGrantNetworkAccess: () => void;
     onRefresh: () => void;
     onRetry: () => unknown;
     onRespondEnrollment: (approve: boolean) => void;
@@ -169,28 +160,6 @@
     </div>
     {#if copyFailed}
       <Notice class="mt-2 justify-center text-[0.8rem]" copy={false} message={t("vaultHandoff.copyCodeFailed")} />
-    {/if}
-
-    {#if networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired"}
-      <div class="mt-4 space-y-2 text-center">
-        <p class="text-[0.8rem] leading-5 text-muted-foreground">
-          {t("vaultHandoff.networkAccessDescription")}
-        </p>
-        <button
-          type="button"
-          class="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-55"
-          disabled={networkBusy}
-          onclick={onGrantNetworkAccess}
-        >
-          {#if networkBusy}<LoaderCircle size={14} class="animate-spin" />{/if}
-          {t("vaultHandoff.allowNetworkAccess")}
-        </button>
-      </div>
-    {:else if networkAccess?.state === "manualActionRequired"}
-      <Notice class="mt-4 justify-center text-[0.8rem] leading-5" tone="warning" copy={false} message={t("vaultHandoff.networkAccessManual")} />
-    {/if}
-    {#if networkError}
-      <Notice class="mt-3 justify-center text-[0.8rem] leading-5" message={networkError} />
     {/if}
   </div>
 </div>

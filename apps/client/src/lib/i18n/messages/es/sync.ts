@@ -2,9 +2,6 @@ import type { sync as enSync } from "../en/sync";
 import type { MessageShape } from "../types";
 
 export const sync = {
-  heading: "Sincronización",
-  description: (features: string) =>
-    `Se sincroniza entre tus dispositivos vinculados cuando ambos están en la misma red: ${features}.`,
   state: {
     off: "Desactivada",
     idle: "Al día",
@@ -159,12 +156,8 @@ export const sync = {
     backgroundRestricted: "Android restringe Ganbaru en segundo plano, así que la sincronización espera hasta que abras la app.",
     standbyRestricted: "Android rara vez deja que Ganbaru funcione en segundo plano, así que la sincronización puede retrasarse.",
     localNetworkDenied: "Este dispositivo no tiene permiso para llegar a tus otros dispositivos en la red local. Permite el acceso a la red local para Ganbaru en los ajustes del sistema.",
-    firewallHub: "El cortafuegos impide que tus otros dispositivos lleguen a este.",
     firewallClient: "No se encontró tu dispositivo principal en la red. Puede que un cortafuegos de este dispositivo lo esté bloqueando.",
     openBatterySettings: "Abrir ajustes de batería",
-    allowNetworkAccess: "Permitir acceso a la red",
-    firewallPeers: "El cortafuegos impide que tus otros dispositivos se conecten directamente a este, así que la sincronización espera a tu dispositivo principal.",
-    allowPeerConnections: "Permitir conexiones de otros dispositivos",
   },
   recovery: {
     heading: "Eliminado recientemente con ediciones sin guardar",

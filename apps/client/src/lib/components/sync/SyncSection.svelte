@@ -13,7 +13,6 @@
     syncDegradedActionLabel,
     syncDegradedRows,
     type SyncDegradedAction,
-    syncDescription,
     syncHeldLines,
     syncLastExchangeLabel,
     syncDeliveryLines,
@@ -55,14 +54,11 @@
   let {
     buttonClass,
     mobileLayout = false,
-    onAllowNetworkAccess,
     onRecoverLocalCopy,
     onFreshCopy,
   }: {
     buttonClass: string;
     mobileLayout?: boolean;
-    /** Starts allowing this desktop's sync listener through the firewall, when this device can. */
-    onAllowNetworkAccess?: () => void;
     /** Starts recovering this local copy as a separate vault, when this device can. */
     onRecoverLocalCopy?: () => void;
     /** Copies the linked vault to this device again after sync reported that it must; absent where this device cannot receive one. */
@@ -85,7 +81,6 @@
   const acknowledgementLines = $derived(syncDeviceAcknowledgementLines(t, localization.locale, status, now));
   const conflictLines = $derived(syncConflictLines(t, syncPresentations, status));
   const recoveryTotal = $derived(syncRecoveryTotal(status));
-  const description = $derived(syncDescription(t, localization.locale, syncPresentations));
   const stateLabel = $derived(syncStateLabel(t, status.state));
   const connectionLabel = $derived(syncConnectionLabel(t, status));
   const relayLines = $derived(syncRelayLines(t, localization.locale, status, now));
@@ -156,16 +151,12 @@
     }
   }
 
-  /** Whether this section can run `action` here. */
+  /** Whether this section can run `action` here: battery settings open only on Android. */
   function canRunDegradedAction(action: SyncDegradedAction): boolean {
-    return action === "openBatterySettings" ? mobileLayout : onAllowNetworkAccess !== undefined;
+    return action === "openBatterySettings" && mobileLayout;
   }
 
-  async function runDegradedAction(action: SyncDegradedAction): Promise<void> {
-    if (action === "allowNetworkAccess" || action === "allowPeerConnections") {
-      onAllowNetworkAccess?.();
-      return;
-    }
+  async function runDegradedAction(): Promise<void> {
     try {
       await openMobileBackgroundExecutionSettings("battery");
     } catch (cause: unknown) {
@@ -226,11 +217,6 @@
 </script>
 
 <div class="flex min-w-0 flex-col gap-3">
-  <div class="px-1 py-1">
-    <div class="text-[0.866667rem] text-foreground">{t("sync.heading")}</div>
-    <div class="mt-0.5 text-[0.8rem] text-muted-foreground">{description}</div>
-  </div>
-
   {#if status.state !== "off"}
     <div class="flex flex-col gap-1 px-1 text-[0.8rem] leading-5" role="status">
       <div class="flex items-center gap-2 text-foreground">
@@ -298,7 +284,7 @@
           {@const action = row.action}
           <Notice tone="warning" role="status" copy={false} message={row.label}>
             {#snippet actions()}
-              <button type="button" class="notice-action-text" onclick={() => void runDegradedAction(action)}>
+              <button type="button" class="notice-action-text" onclick={() => void runDegradedAction()}>
                 {syncDegradedActionLabel(t, action)}
               </button>
             {/snippet}

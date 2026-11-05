@@ -849,6 +849,45 @@ fn a_backup_needs_a_stopped_activated_server() {
 }
 
 #[test]
+fn an_activated_server_answers_a_sync_hello_with_its_state() {
+    block_on(async {
+        let founder = Founder::new().await;
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor(root, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+            let server = enroll_and_upload(&founder, &code).await;
+            wait_for_anchor(root, &server).await;
+            let paths = DataPaths::new(root.to_path_buf());
+            let (device_id, pairing, _) = super::open_identity(&paths).unwrap();
+            let host =
+                super::AnchorHost::new(paths, device_id, pairing, DatabasePoolRegistry::default());
+            let hub = ganbaru_sync_replica::service::server_hub(
+                &host,
+                &ganbaru_sync_replica::service::SyncRuntime::default(),
+                host.own_device_id().to_string(),
+            );
+            let hello = protocol::ControlMessage::SyncHello {
+                protocol_version: protocol::PROTOCOL_VERSION,
+                vault_id: VAULT_ID.to_string(),
+                device_id: FOUNDER.to_string(),
+                manifest_version: Engine::vault().manifest().version,
+                stored: Vec::new(),
+                probe: None,
+                listening: Vec::new(),
+            };
+            let answer = hub.respond(hello).await;
+            assert!(
+                matches!(answer, protocol::ControlMessage::SyncState { .. }),
+                "{answer:?}"
+            );
+            host.pools().close_all().await.unwrap();
+        })
+        .await;
+    });
+}
+
+#[test]
 fn anchor_activation_record_damage_still_lets_the_anchor_start() {
     block_on(async {
         let data = TempDir::new();

@@ -41,7 +41,7 @@ use crate::authority::{
 use crate::carry_forward;
 use crate::client::{ClientSession, Exchange, ForkPoint, PeerIds, SyncTransport};
 #[cfg(desktop)]
-use crate::hub::{HubForwards, HubProposals, HubStability};
+use crate::hub::{HubContact, HubContactSource, HubForwards, HubProposals, HubStability};
 use crate::hub::{HubVault, OpenHubVault, SyncHub};
 use crate::keys::SpaceKeys;
 use crate::now_ms;
@@ -690,10 +690,26 @@ pub fn member_hub<H: SyncHost>(host: &H, runtime: &SyncRuntime) -> SyncHub {
 }
 
 /// The hub an always-on server runs: a member hub that also answers an anchor's forward request,
-/// because a server dials nobody and its own proposals leave only that way.
+/// because a server dials nobody and its own proposals leave only that way. `device_id` is the
+/// server's own device, which its contact leaves out.
 #[cfg(desktop)]
-pub fn server_hub<H: SyncHost>(host: &H, runtime: &SyncRuntime) -> SyncHub {
-    member_hub(host, runtime).with_forwards(hub_forwards(runtime))
+pub fn server_hub<H: SyncHost>(host: &H, runtime: &SyncRuntime, device_id: String) -> SyncHub {
+    member_hub(host, runtime)
+        .with_forwards(hub_forwards(runtime))
+        .with_contact(server_contact(host, device_id))
+}
+
+/// The contact a server reports: the members its peer book knows and no endpoint of its own,
+/// since devices reach a server at the address the selected log names.
+#[cfg(desktop)]
+fn server_contact<H: SyncHost>(host: &H, device_id: String) -> HubContactSource {
+    let host = host.clone();
+    Arc::new(move |vault_id: &str| {
+        let book = peers::read_peer_book(&host, vault_id);
+        Ok(HubContact {
+            members: peers::reported_members(&device_id, Vec::new(), &book),
+        })
+    })
 }
 
 /// Adds the stability report and proposal sequencing a desktop member serves once it anchors.

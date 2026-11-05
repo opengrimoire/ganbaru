@@ -155,7 +155,7 @@ async fn serve_with(
             spawner: tokio::runtime::Handle::current(),
         },
     );
-    let hub = server_hub(&host, &runtime);
+    let hub = server_hub(&host, &runtime, host.own_device_id().to_string());
     let route = SetupRoute {
         host: host.clone(),
         hub: hub.clone(),

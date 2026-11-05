@@ -78,22 +78,27 @@
     return null;
   }
 
+  /** Opens a vault and keeps its button busy afterwards, since `onReady` replaces this screen. */
   async function chooseVault(mode: "default" | "restore" | "import"): Promise<void> {
     if (busy) return;
     busy = mode;
     setupError = null;
+    let opened = false;
     try {
       const info = mode === "default"
         ? await useDefaultVault()
         : mode === "restore"
           ? await restoreBackup()
           : await pickOpenVault();
-      if (info) onReady(info);
+      if (info) {
+        opened = true;
+        onReady(info);
+      }
     } catch (cause) {
       console.warn(`Could not ${mode} the vault:`, cause);
       setupError = { raw: cause, action: mode };
     } finally {
-      busy = null;
+      if (!opened) busy = null;
     }
   }
 

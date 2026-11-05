@@ -173,7 +173,6 @@ export const vaultHandoff = {
     outcome: "Esta computadora se une a la bóveda del servidor en una carpeta nueva.",
     startOutcome: "Si el servidor es nuevo, recibe una copia de esta bóveda. Si ya tiene una, esta computadora se une a esa bóveda en una carpeta nueva.",
     scanStep: "Escanea el código QR que muestra",
-    phoneOutcome: "Este teléfono se une a la bóveda del servidor en lugar de la de aquí. Lo que hayas agregado aquí se respalda antes.",
     scan: "Escanear el código QR del servidor",
     codeLabel: "Código de configuración del servidor",
     useKit: "Usar el kit de recuperación",

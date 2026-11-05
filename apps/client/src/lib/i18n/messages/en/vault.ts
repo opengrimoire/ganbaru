@@ -165,7 +165,6 @@ export const vaultHandoff = {
     outcome: "This computer joins the server's vault in a new folder.",
     startOutcome: "If the server is new, it gets a copy of this vault. If it already has one, this computer joins that vault in a new folder.",
     scanStep: "Scan the QR code it shows",
-    phoneOutcome: "This phone joins the server's vault in place of the one here. Anything you added here is backed up first.",
     scan: "Scan server QR code",
     codeLabel: "Server setup code",
     useKit: "Use the recovery kit instead",

@@ -407,16 +407,16 @@
                   placeholder="ganbaru-anchor:…"
                   aria-label={t("vaultHandoff.serverConnect.codeLabel")}
                   aria-invalid={serverError !== null}
-                  aria-describedby={serverError ? "server-connect-error" : "server-connect-outcome"}
+                  aria-describedby={serverError ? "server-connect-error" : mobile ? undefined : "server-connect-outcome"}
                   disabled={serverBusy}
                   oninput={() => { serverError = null; }}
                 />
               {/if}
-              <p id="server-connect-outcome" class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">
-                {mobile
-                  ? t("vaultHandoff.serverConnect.phoneOutcome")
-                  : startOnEmptyServer ? t("vaultHandoff.serverConnect.startOutcome") : t("vaultHandoff.serverConnect.outcome")}
-              </p>
+              {#if !mobile}
+                <p id="server-connect-outcome" class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">
+                  {startOnEmptyServer ? t("vaultHandoff.serverConnect.startOutcome") : t("vaultHandoff.serverConnect.outcome")}
+                </p>
+              {/if}
               {@render scanToggle("server")}
             </div>
           </ConnectStep>

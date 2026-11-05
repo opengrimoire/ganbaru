@@ -107,8 +107,8 @@
   data-vault-handoff-onboarding={platform}
 >
   <div class={platform === "desktop"
-    ? "mx-auto flex w-full max-w-4xl flex-col gap-6"
-    : "mx-auto flex w-full max-w-md flex-col gap-6"}>
+    ? "mx-auto flex w-full max-w-4xl flex-col gap-3"
+    : "mx-auto flex w-full max-w-md flex-col gap-3"}>
     <VaultHandoffPanel
       {platform}
       {initialInvitation}
@@ -134,7 +134,7 @@
         <button
           use:onboardingPrimaryAction
           type="button"
-          class="min-h-11 self-center rounded-md px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+          class="min-h-9 self-center rounded-md px-4 py-1.5 text-sm pointer-coarse:min-h-11 font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
           onclick={() => void leave(false)}
         >
           {t("vaultHandoff.notNow")}

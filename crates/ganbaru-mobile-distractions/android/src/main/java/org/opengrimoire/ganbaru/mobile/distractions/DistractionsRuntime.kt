@@ -274,9 +274,10 @@ internal object DistractionsAccess {
     return manager.getEnabledAccessibilityServiceList(
       android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK,
     ).any { info ->
+      // Release and development builds share the service class, so only this package's service counts.
       val serviceInfo = info.resolveInfo?.serviceInfo ?: return@any false
-      serviceInfo.name == DistractionsAccessibilityService::class.java.name
-        || serviceInfo.name.endsWith(".DistractionsAccessibilityService")
+      serviceInfo.packageName == context.packageName
+        && serviceInfo.name == DistractionsAccessibilityService::class.java.name
     }
   }
 }

@@ -14,7 +14,16 @@ import {
   type SystemBarInsets,
   type ViewportOrientation,
 } from "$lib/viewport";
-import { KEYBOARD_SURFACE_ATTRIBUTE, keyboardSurfaceMode, keyboardSurfaceOf } from "$lib/mobile/keyboard";
+import {
+  KEYBOARD_REVEAL_MARGIN_PX,
+  KEYBOARD_SHIFT_PROPERTY,
+  KEYBOARD_SURFACE_ATTRIBUTE,
+  keyboardSurfaceMode,
+  keyboardSurfaceOf,
+  keyboardSurfaceShift,
+  type KeyboardSurfaceMode,
+  type VerticalSpan,
+} from "$lib/mobile/keyboard";
 
 const DEFAULT_WIDTH = 1200;
 const DEFAULT_HEIGHT = 800;
@@ -31,7 +40,14 @@ let visibleHeight = $state(DEFAULT_HEIGHT);
 let coarsePointer = $state(false);
 let hoverAvailable = $state(true);
 let initialized = false;
-let keyboardSurface: HTMLElement | null = null;
+/** The surface following the soft keyboard, with its dialog's span measured before it started to follow. */
+interface KeyboardSurface {
+  layer: HTMLElement;
+  mode: KeyboardSurfaceMode;
+  dialog: VerticalSpan;
+}
+
+let keyboardSurface: KeyboardSurface | null = null;
 
 const sizeClass = $derived(classifyViewport(width, height));
 const isShort = $derived(height < 480);
@@ -121,27 +137,55 @@ function applyAndroidSystemBarInsets(root: HTMLElement, insets: SystemBarInsets 
   root.style.setProperty("--safe-area-left", `${insets.left}px`);
 }
 
-/** Mark `next` as the surface following the keyboard, measuring whether it lifts before it starts to follow. */
-function applyKeyboardSurface(next: HTMLElement | null, viewportHeight: number): void {
-  if (next === keyboardSurface) return;
-  keyboardSurface?.removeAttribute(KEYBOARD_SURFACE_ATTRIBUTE);
-  keyboardSurface = next;
-  next?.setAttribute(KEYBOARD_SURFACE_ATTRIBUTE, keyboardSurfaceMode(next, viewportHeight));
+/** Whether the Android shell reports the keyboard height, so the page follows the keyboard on every frame. */
+function hasAndroidInsetsBridge(): boolean {
+  return typeof window !== "undefined" && window.GanbaruAndroidInsets !== undefined;
+}
+
+/**
+ * Mark `next` as the surface following the keyboard, measuring how it follows before it starts to. `viewportHeight`
+ * and `safeBottom` are the viewport height and bottom safe area at rest.
+ */
+function applyKeyboardSurface(next: HTMLElement | null, viewportHeight: number, safeBottom: number): void {
+  if (next === (keyboardSurface?.layer ?? null)) return;
+  keyboardSurface?.layer.removeAttribute(KEYBOARD_SURFACE_ATTRIBUTE);
+  keyboardSurface?.layer.style.removeProperty(KEYBOARD_SHIFT_PROPERTY);
+  keyboardSurface = null;
+  if (!next) return;
+  const dialog = document.activeElement?.closest('[aria-modal="true"]') ?? next;
+  const { top, bottom } = dialog.getBoundingClientRect();
+  keyboardSurface = { layer: next, mode: keyboardSurfaceMode(dialog, viewportHeight, safeBottom), dialog: { top, bottom } };
+  next.setAttribute(KEYBOARD_SURFACE_ATTRIBUTE, keyboardSurface.mode);
+}
+
+/** Move a shifted surface up just far enough that its dialog stays clear of a keyboard whose top is `keyboardTop`. */
+function applyKeyboardShift(keyboardTop: number, safeTop: number): void {
+  if (keyboardSurface?.mode !== "shift") return;
+  const shift = keyboardSurfaceShift(
+    keyboardSurface.dialog,
+    keyboardTop,
+    safeTop + KEYBOARD_REVEAL_MARGIN_PX,
+    KEYBOARD_REVEAL_MARGIN_PX,
+  );
+  keyboardSurface.layer.style.setProperty(KEYBOARD_SHIFT_PROPERTY, `${shift}px`);
 }
 
 /**
  * Read the viewport and publish it as CSS variables. While the soft keyboard is open, the surface holding focus
  * follows it: `--keyboard-inset` is how far the keyboard reaches above the bottom safe area, the page shrinks by
- * `--page-keyboard-inset` when it holds focus, and a modal surface holding focus takes `--keyboard-surface-height`
- * as its `--visual-viewport-height`. Everything behind that surface keeps its size.
+ * `--page-keyboard-inset` when it holds focus, a lifted modal surface takes `--keyboard-surface-height` as its
+ * `--visual-viewport-height`, and a shifted one moves up by its `--keyboard-shift`. Everything behind that surface
+ * keeps its size. On Android the keyboard height comes from the shell alone, which reports it on every frame of the
+ * keyboard slide.
  */
 function refreshViewport(): void {
   const next = readViewport();
   const systemBars = readAndroidSystemBarInsets();
   const androidKeyboard = readAndroidKeyboardHeight();
   const overlap = keyboardSafeAreaOverlap(androidKeyboard, systemBars?.bottom ?? 0);
-  const nextKeyboardInset = Math.max(next.keyboardInset, overlap);
+  const nextKeyboardInset = hasAndroidInsetsBridge() ? overlap : Math.max(next.keyboardInset, overlap);
   const surfaceHeight = Math.max(0, next.height - overlap);
+  const nextVisibleHeight = Math.max(0, next.height - androidKeyboard);
   width = next.width;
   height = next.height;
   layoutWidth = next.layoutWidth;
@@ -150,12 +194,17 @@ function refreshViewport(): void {
   offsetLeft = next.offsetLeft;
   keyboardInset = nextKeyboardInset;
   nativeKeyboardHeight = androidKeyboard;
-  visibleHeight = Math.max(0, next.height - androidKeyboard);
+  visibleHeight = nextVisibleHeight;
   coarsePointer = next.coarsePointer;
   hoverAvailable = next.hoverAvailable;
 
   const keyboardIsOpen = nextKeyboardInset > 0 || androidKeyboard > 0;
-  applyKeyboardSurface(keyboardIsOpen ? keyboardSurfaceOf(document.activeElement) : null, next.layoutHeight);
+  applyKeyboardSurface(
+    keyboardIsOpen ? keyboardSurfaceOf(document.activeElement) : null,
+    next.layoutHeight,
+    systemBars?.bottom ?? 0,
+  );
+  applyKeyboardShift(next.offsetTop + nextVisibleHeight, systemBars?.top ?? 0);
 
   const root = document.documentElement;
   root.style.setProperty("--visual-viewport-width", `${next.width}px`);

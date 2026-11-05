@@ -522,14 +522,17 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 }
 
 /*
- * The modal surface holding focus follows the soft keyboard while the page and dialogs behind it keep their size.
+ * The modal surface holding focus follows the soft keyboard while the page and dialogs behind it keep their size. A
+ * surface that fills the screen lifts its bottom edge above the keyboard; any other surface keeps its size and moves
+ * up only when the keyboard would cover it.
  * These rules stay outside the layers so they win over positioning utilities such as inset-0; inline styles still win.
  */
-html[data-shell="mobile"] [data-keyboard-surface] {
-  --visual-viewport-height: var(--keyboard-surface-height);
-}
 html[data-shell="mobile"] [data-keyboard-surface="lift"] {
+  --visual-viewport-height: var(--keyboard-surface-height);
   bottom: var(--keyboard-inset);
+}
+html[data-shell="mobile"] [data-keyboard-surface="shift"] {
+  translate: 0 calc(-1 * var(--keyboard-shift, 0px));
 }
 
 @layer utilities {

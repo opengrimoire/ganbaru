@@ -63,8 +63,9 @@ export function keyboardSafeAreaOverlap(keyboardHeight: number, safeBottom: numb
 /**
  * Returns the part of the layout viewport hidden below the visual viewport.
  *
- * A soft keyboard that shrinks the visual viewport without resizing the page shows up here. The Android WebView keeps
- * its full size under the keyboard, so this stays zero there and the keyboard bridge reports the height instead.
+ * A soft keyboard that shrinks the visual viewport without resizing the page shows up here. The Android shell keeps
+ * keyboard insets away from the WebView, which would otherwise shrink its visual viewport at once to the final keyboard
+ * height, and reports the height through its bridge on every frame instead.
  */
 export function calculateKeyboardInset(
   layoutHeight: number,

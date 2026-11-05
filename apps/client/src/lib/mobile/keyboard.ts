@@ -61,13 +61,19 @@ function scrollContainerOf(element: HTMLElement): HTMLElement | null {
 }
 
 /**
- * Attribute that marks the surface following the soft keyboard. Its value is `lift` when the surface reaches the
- * bottom of the viewport, so its bottom edge rises above the keyboard too.
+ * Attribute that marks the surface following the soft keyboard. Its value is a {@link KeyboardSurfaceMode}.
  */
 export const KEYBOARD_SURFACE_ATTRIBUTE = "data-keyboard-surface";
 
-/** Value of {@link KEYBOARD_SURFACE_ATTRIBUTE} for a surface whose bottom edge rises above the keyboard. */
-export const KEYBOARD_SURFACE_LIFT = "lift";
+/** CSS variable on a shifted surface holding how far it moves up, in CSS pixels. */
+export const KEYBOARD_SHIFT_PROPERTY = "--keyboard-shift";
+
+/**
+ * How a surface follows the soft keyboard. A `lift` surface fills the screen down to its bottom edge, so its bottom
+ * edge rises above the keyboard and its content shrinks with it. A `shift` surface, such as a centered dialog or an
+ * anchored popover, keeps its size and moves up only as far as needed to stay clear of the keyboard.
+ */
+export type KeyboardSurfaceMode = "lift" | "shift";
 
 /**
  * Return the surface that follows the soft keyboard while `element` has focus: the fixed layer of the innermost modal
@@ -85,11 +91,22 @@ export function keyboardSurfaceOf(element: Element | null): HTMLElement | null {
 }
 
 /**
- * Return the {@link KEYBOARD_SURFACE_ATTRIBUTE} value for `surface` in a viewport `viewportHeight` tall, measured
- * before the surface follows the keyboard. Anchored popovers that end above the viewport bottom keep their bottom edge.
+ * Return how the surface holding `dialog` follows the keyboard, measured before it follows: `lift` when the dialog
+ * reaches the bottom safe area of a viewport `viewportHeight` tall, and `shift` otherwise.
  */
-export function keyboardSurfaceMode(surface: Element, viewportHeight: number): string {
-  return surface.getBoundingClientRect().bottom >= viewportHeight - 1 ? KEYBOARD_SURFACE_LIFT : "";
+export function keyboardSurfaceMode(dialog: Element, viewportHeight: number, safeBottom: number): KeyboardSurfaceMode {
+  const reach = viewportHeight - Math.max(0, safeBottom) - 1;
+  return dialog.getBoundingClientRect().bottom >= reach ? "lift" : "shift";
+}
+
+/**
+ * Return how far a shifted surface moves up so `dialog`, measured at rest, ends `margin` above `keyboardTop`. It stays
+ * still while the keyboard does not reach it, and never moves the dialog's top above `topLimit`.
+ */
+export function keyboardSurfaceShift(dialog: VerticalSpan, keyboardTop: number, topLimit: number, margin: number): number {
+  const needed = dialog.bottom + margin - keyboardTop;
+  if (!Number.isFinite(needed) || needed <= 0) return 0;
+  return Math.max(0, Math.round(Math.min(needed, dialog.top - topLimit)));
 }
 
 /**

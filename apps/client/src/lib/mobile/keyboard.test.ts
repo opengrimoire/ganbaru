@@ -2,10 +2,10 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  KEYBOARD_SURFACE_LIFT,
   isTextEntryElement,
   keyboardSurfaceMode,
   keyboardSurfaceOf,
+  keyboardSurfaceShift,
   revealScrollDelta,
 } from "./keyboard";
 
@@ -107,18 +107,45 @@ describe("keyboardSurfaceOf", () => {
 });
 
 describe("keyboardSurfaceMode", () => {
-  function surfaceEndingAt(bottom: number): HTMLElement {
-    const surface = document.createElement("div");
-    surface.getBoundingClientRect = () => new DOMRect(0, 0, 100, bottom);
-    return surface;
+  function dialogEndingAt(bottom: number): HTMLElement {
+    const dialog = document.createElement("div");
+    dialog.getBoundingClientRect = () => new DOMRect(0, 0, 100, bottom);
+    return dialog;
   }
 
-  it("lifts a surface that reaches the bottom of the viewport", () => {
-    expect(keyboardSurfaceMode(surfaceEndingAt(800), 800)).toBe(KEYBOARD_SURFACE_LIFT);
-    expect(keyboardSurfaceMode(surfaceEndingAt(799.5), 800)).toBe(KEYBOARD_SURFACE_LIFT);
+  it("lifts a dialog that reaches the bottom of the viewport", () => {
+    expect(keyboardSurfaceMode(dialogEndingAt(800), 800, 0)).toBe("lift");
+    expect(keyboardSurfaceMode(dialogEndingAt(799.5), 800, 0)).toBe("lift");
   });
 
-  it("keeps the bottom edge of a popover that ends above the viewport bottom", () => {
-    expect(keyboardSurfaceMode(surfaceEndingAt(500), 800)).toBe("");
+  it("lifts a dialog that ends at the bottom safe area", () => {
+    expect(keyboardSurfaceMode(dialogEndingAt(752), 800, 48)).toBe("lift");
+  });
+
+  it("shifts a centered dialog or popover that ends above the bottom safe area", () => {
+    expect(keyboardSurfaceMode(dialogEndingAt(500), 800, 48)).toBe("shift");
+    expect(keyboardSurfaceMode(dialogEndingAt(736), 800, 48)).toBe("shift");
+  });
+});
+
+describe("keyboardSurfaceShift", () => {
+  const dialog = { top: 300, bottom: 500 };
+
+  it("keeps a dialog still while the keyboard does not reach it", () => {
+    expect(keyboardSurfaceShift(dialog, 800, 40, 16)).toBe(0);
+    expect(keyboardSurfaceShift(dialog, 516, 40, 16)).toBe(0);
+  });
+
+  it("moves a dialog up only as far as the keyboard covers it", () => {
+    expect(keyboardSurfaceShift(dialog, 450, 40, 16)).toBe(66);
+  });
+
+  it("never moves the dialog top above the limit", () => {
+    expect(keyboardSurfaceShift(dialog, 100, 40, 16)).toBe(260);
+    expect(keyboardSurfaceShift({ top: 20, bottom: 500 }, 300, 40, 16)).toBe(0);
+  });
+
+  it("ignores a keyboard top that is not a number", () => {
+    expect(keyboardSurfaceShift(dialog, Number.NaN, 40, 16)).toBe(0);
   });
 });

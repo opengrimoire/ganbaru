@@ -179,6 +179,10 @@ export const vaultHandoff = {
     useKit: "Usar el kit de recuperación",
     kitPrompt: "¿El servidor rechazó este dispositivo?",
     kitLabel: "Código del kit de recuperación",
+    kitDialogTitle: "Usar el kit de recuperación",
+    kitDialogMessage: "Escribe el código del kit de recuperación que guardaste. Permite que este teléfono se una aunque el servidor lo haya rechazado.",
+    kitAdded: "Kit de recuperación agregado.",
+    removeKit: "Quitar",
     errors: {
       code: "El servidor rechazó este código de configuración. Imprime uno nuevo en el servidor e inténtalo de nuevo.",
       kit: "Este código del kit de recuperación está mal escrito. Revisa cada grupo.",

@@ -30,6 +30,7 @@
   import ConnectStep, { stepCenteredBlockClass, stepTextIndentClass } from "./ConnectStep.svelte";
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
+  import RecoveryKitDialog from "./RecoveryKitDialog.svelte";
   import SettingsPath from "./SettingsPath.svelte";
 
   /**
@@ -101,6 +102,8 @@
   let serverCode = $state("");
   let kit = $state("");
   let useKit = $state(false);
+  /** Whether a phone shows the modal that takes the recovery kit code; a desktop shows a field instead. */
+  let kitDialogOpen = $state(false);
   let serverError = $state<string | null>(null);
   let serverNotice = $state<string | null>(null);
   let commandCopied = $state(false);
@@ -213,10 +216,26 @@
     kitInput?.focus();
   }
 
+  /** Keeps the kit code from a phone's modal and connects at once when the server code is already in. */
+  function kitEntered(value: string): void {
+    kit = value;
+    useKit = true;
+    kitDialogOpen = false;
+    serverError = null;
+    if (serverCode.trim() !== "") submit();
+  }
+
+  function removeKit(): void {
+    kit = "";
+    useKit = false;
+  }
+
   async function connectServer(): Promise<void> {
     const typedCode = serverCode.trim();
     const typedKit = useKit ? kit.trim() : "";
     kit = "";
+    // A phone's kit lives only in its modal, so a failed try asks for it again from the prompt.
+    if (mobile) useKit = false;
     serverBusy = true;
     serverError = null;
     serverNotice = null;
@@ -452,8 +471,20 @@
             </div>
           </ConnectStep>
         </ol>
-        {#if useKit}
-          <div in:swapIn={swap} out:swapOut={swap} class={cn("min-w-0", mobile ? cn("mt-3", stepTextIndentClass) : "mt-4")}>
+        {#if mobile && useKit}
+          <p in:swapIn={swap} out:swapOut={swap} role="status" class="mt-4 text-center text-[0.8rem] leading-5 text-muted-foreground">
+            {t("vaultHandoff.serverConnect.kitAdded")}
+            <button
+              type="button"
+              class="text-foreground underline underline-offset-2 hover:text-primary"
+              disabled={serverBusy}
+              onclick={removeKit}
+            >
+              {t("vaultHandoff.serverConnect.removeKit")}
+            </button>
+          </p>
+        {:else if useKit}
+          <div in:swapIn={swap} out:swapOut={swap} class="mt-4 min-w-0">
             <label class="mb-1 block text-[0.8rem] text-muted-foreground" for="server-connect-kit">{t("vaultHandoff.serverConnect.kitLabel")}</label>
             <MaskedCodeInput
               bind:input={kitInput}
@@ -477,7 +508,7 @@
               type="button"
               class="text-foreground underline underline-offset-2 hover:text-primary"
               disabled={serverBusy}
-              onclick={() => void showKit()}
+              onclick={() => { if (mobile) kitDialogOpen = true; else void showKit(); }}
             >
               {t("vaultHandoff.serverConnect.useKit")}
             </button>
@@ -515,3 +546,10 @@
     </div>
   {/if}
 </div>
+{#if mobile && kitDialogOpen}
+  <RecoveryKitDialog
+    confirmLabel={serverCode.trim() !== "" ? t("vaultHandoff.connectAction") : t("common.done")}
+    onConfirm={kitEntered}
+    onCancel={() => { kitDialogOpen = false; }}
+  />
+{/if}

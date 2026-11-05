@@ -171,6 +171,10 @@ export const vaultHandoff = {
     useKit: "Use the recovery kit instead",
     kitPrompt: "Refused by the server?",
     kitLabel: "Recovery kit code",
+    kitDialogTitle: "Use the recovery kit",
+    kitDialogMessage: "Enter the code from the recovery kit you saved. It lets this phone join even if the server refused it.",
+    kitAdded: "Recovery kit added.",
+    removeKit: "Remove",
     errors: {
       code: "The server refused this setup code. Print a new one on the server, then try again.",
       kit: "This recovery kit code is mistyped. Check each group.",

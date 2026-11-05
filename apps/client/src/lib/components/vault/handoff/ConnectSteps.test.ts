@@ -2,6 +2,7 @@
 
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { recoverVaultThroughServer } from "$lib/api/vault-handoff";
 import ConnectAndroidHarness from "./ConnectAndroidHarness.test.svelte";
 import ConnectInlineHarness from "./ConnectInlineHarness.test.svelte";
 
@@ -129,6 +130,7 @@ describe("ConnectSteps on Android", () => {
 
   beforeEach(() => {
     onSubmit.mockReset();
+    vi.mocked(recoverVaultThroughServer).mockReset();
     target = document.createElement("div");
     document.body.append(target);
   });
@@ -155,5 +157,52 @@ describe("ConnectSteps on Android", () => {
     await vi.waitFor(() => expect(target.textContent).toContain("The camera could not start."));
     expect(target.querySelector("#pairing-code")).not.toBeNull();
     expect(modeTab("paste").getAttribute("aria-selected")).toBe("true");
+  });
+
+  function type(selector: string, value: string): void {
+    const input = document.querySelector<HTMLInputElement>(selector);
+    if (!input) throw new Error(`missing ${selector}`);
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+  }
+
+  function openKitDialog(): void {
+    const prompt = [...target.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Use the recovery kit instead");
+    if (!prompt) throw new Error("missing recovery kit prompt");
+    prompt.click();
+    flushSync();
+  }
+
+  it("takes the recovery kit in a modal and connects with it once the server code is in", async () => {
+    vi.mocked(recoverVaultThroughServer).mockResolvedValue({ transferId: null, inProgress: false, activated: true });
+    component = mount(ConnectAndroidHarness, { target, props: { source: "server", autoScan: false, onSubmit } });
+    flushSync();
+    type("#server-connect-code", "ganbaru-anchor:server");
+    openKitDialog();
+    expect(target.querySelector("#server-connect-kit")).toBeNull();
+    const confirm = document.querySelector<HTMLButtonElement>("[data-kit-confirm]");
+    expect(confirm?.textContent?.trim()).toBe("Connect");
+    expect(confirm?.disabled).toBe(true);
+    type("#recovery-kit-code", "kit-code");
+    confirm?.click();
+    flushSync();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await vi.waitFor(() => expect(recoverVaultThroughServer).toHaveBeenCalledWith("ganbaru-anchor:server", "kit-code"));
+  });
+
+  it("keeps a phone's kit until the server code arrives and lets it be removed", () => {
+    component = mount(ConnectAndroidHarness, { target, props: { source: "server", autoScan: false, onSubmit } });
+    flushSync();
+    openKitDialog();
+    expect(document.querySelector("[data-kit-confirm]")?.textContent?.trim()).toBe("Done");
+    type("#recovery-kit-code", "kit-code");
+    document.querySelector<HTMLButtonElement>("[data-kit-confirm]")?.click();
+    flushSync();
+    expect(recoverVaultThroughServer).not.toHaveBeenCalled();
+    expect(target.textContent).toContain("Recovery kit added.");
+    [...target.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Remove")?.click();
+    flushSync();
+    expect(target.textContent).toContain("Refused by the server?");
   });
 });

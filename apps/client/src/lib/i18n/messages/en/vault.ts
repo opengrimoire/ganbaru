@@ -106,7 +106,6 @@ export const vaultHandoff = {
     copy: "Copy its pairing code",
     openOnComputer: "On your computer, open",
     showQr: "Show its pairing QR code",
-    scan: "Scan it with this phone",
   },
   phoneSteps: {
     install: "Install Ganbaru on your phone",
@@ -143,8 +142,12 @@ export const vaultHandoff = {
   scanQr: "Scan desktop QR code",
   cameraStarting: "Starting camera",
   cameraFailed: "The camera could not start.",
-  pasteInstead: "Paste the code instead",
-  scanInstead: "Scan the QR code instead",
+  codeMode: {
+    scan: "Scan",
+    paste: "paste",
+    computerCode: "its code",
+    serverCode: "the code it shows",
+  },
   notNow: "Not now",
   continue: "Continue",
   connectTabs: {
@@ -164,7 +167,6 @@ export const vaultHandoff = {
     commandCopied: "Command copied",
     outcome: "This computer joins the server's vault in a new folder.",
     startOutcome: "If the server is new, it gets a copy of this vault. If it already has one, this computer joins that vault in a new folder.",
-    scanStep: "Scan the QR code it shows",
     scan: "Scan server QR code",
     codeLabel: "Server setup code",
     useKit: "Use the recovery kit instead",

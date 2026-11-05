@@ -11,6 +11,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { onMount, tick, untrack, type Snippet } from "svelte";
+  import type { HTMLAttributes } from "svelte/elements";
   import { fade } from "svelte/transition";
   import { addSyncServer, SyncServerError } from "$lib/api/sync";
   import {
@@ -26,6 +27,7 @@
   import { writeTextToClipboard } from "$lib/utils/clipboard";
   import { smoothHeight, smoothSwapTiming, swapIn, swapOut } from "$lib/utils/smooth-swap";
   import { isServerWithoutVault, serverConnectError } from "$lib/vault/server-connect";
+  import ConnectSourceTabs from "./ConnectSourceTabs.svelte";
   import ConnectStep, { stepCenteredBlockClass } from "./ConnectStep.svelte";
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
@@ -162,12 +164,25 @@
     copyFeedbackTimer = window.setTimeout(() => { commandCopied = false; }, COPY_FEEDBACK_MS);
   }
 
-  /** Switches a source between the camera and its code field, focusing the field when it appears. */
-  function showScanner(which: ConnectSource, on: boolean): void {
-    if (anyBusy) return;
+  /**
+   * Switches a source between the camera and its code field. The field takes focus when it appears,
+   * unless the keyboard chose it, which keeps focus on the scan and paste tabs.
+   */
+  function showScanner(which: ConnectSource, on: boolean, focus = true): void {
+    if (anyBusy || scanning[which] === on) return;
     scanning[which] = on;
     cameraFailed = false;
-    if (!on) void focusField();
+    if (!on && focus) void focusField();
+  }
+
+  /** Attributes of the camera or field under the scan and paste tabs, which make it their tab panel on Android. */
+  function codeInputPanel(which: ConnectSource): HTMLAttributes<HTMLDivElement> {
+    if (!mobile) return {};
+    return {
+      id: `${which}-code-input`,
+      role: "tabpanel",
+      "aria-labelledby": `${which}-code-mode-${scanning[which] ? "scan" : "paste"}`,
+    };
   }
 
   function cameraUnavailable(which: ConnectSource, cause: unknown): void {
@@ -258,7 +273,7 @@
 {/snippet}
 
 {#snippet scanner(which: ConnectSource)}
-  <div class={cn("mt-3", stepCenteredBlockClass)}>
+  <div class={cn("mt-1", stepCenteredBlockClass)}>
     <div class="w-full max-w-80">
       {#if which === "computer"}
         {#key scanAttempt}
@@ -281,20 +296,27 @@
   </div>
 {/snippet}
 
-<!-- On Android each code comes from the camera or the field, so a link under the last step switches between them. -->
-{#snippet scanToggle(which: ConnectSource)}
-  {#if mobile}
-    {#if cameraFailed && !scanning[which]}
-      <p class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">{t("vaultHandoff.cameraFailed")}</p>
-    {/if}
-    <button
-      type="button"
-      class="mt-1 min-h-11 text-start text-[0.8rem] text-muted-foreground underline underline-offset-2"
+<!-- On Android each code comes from the camera or the field, so the last step names both as tabs, as the title names the sources. -->
+{#snippet codeMode(which: ConnectSource)}
+  <p class="pt-0.5 pb-2 text-sm leading-5 text-foreground">
+    <ConnectSourceTabs
+      sources={[
+        { id: "scan", label: t("vaultHandoff.codeMode.scan") },
+        { id: "paste", label: t("vaultHandoff.codeMode.paste") },
+      ]}
+      active={scanning[which] ? "scan" : "paste"}
       disabled={anyBusy}
-      onclick={() => showScanner(which, !scanning[which])}
-    >
-      {scanning[which] ? t("vaultHandoff.pasteInstead") : t("vaultHandoff.scanInstead")}
-    </button>
+      idPrefix={`${which}-code-mode`}
+      panelId={`${which}-code-input`}
+      onChoose={(mode, fromKeyboard) => showScanner(which, mode === "scan", !fromKeyboard)}
+    />
+    {which === "computer" ? t("vaultHandoff.codeMode.computerCode") : t("vaultHandoff.codeMode.serverCode")}
+  </p>
+{/snippet}
+
+{#snippet cameraNotice(which: ConnectSource)}
+  {#if mobile && cameraFailed && !scanning[which]}
+    <p class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">{t("vaultHandoff.cameraFailed")}</p>
   {/if}
 {/snippet}
 
@@ -316,32 +338,34 @@
               {mobile ? t("vaultHandoff.computerSteps.showQr") : t("vaultHandoff.computerSteps.copy")}
             </p>
           </ConnectStep>
-          <ConnectStep number={3} total={3} beside={scanning.computer ? "text" : "field"}>
+          <ConnectStep number={3} total={3} beside={mobile ? "text" : "field"}>
             <div class="min-w-0 flex-1">
-              {#if scanning.computer}
-                <p class="pt-0.5 text-sm leading-5 text-foreground">{t("vaultHandoff.computerSteps.scan")}</p>
-                {@render scanner("computer")}
-              {:else}
-                <MaskedCodeInput
-                  bind:input={pairingInput}
-                  bind:value={code}
-                  id="pairing-code"
-                  clearLabel={t("common.clearCode")}
-                  autocomplete="off"
-                  spellcheck="false"
-                  class={cn("field w-full px-3 text-sm", fieldHeight)}
-                  placeholder={t("vaultHandoff.codePlaceholder")}
-                  aria-label={t("vaultHandoff.codePlaceholder")}
-                  aria-invalid={error !== null}
-                  aria-describedby={error ? "pairing-code-error" : undefined}
-                  disabled={busy}
-                  oninput={onEdit}
-                />
-              {/if}
+              {#if mobile}{@render codeMode("computer")}{/if}
+              <div {...codeInputPanel("computer")}>
+                {#if scanning.computer}
+                  {@render scanner("computer")}
+                {:else}
+                  <MaskedCodeInput
+                    bind:input={pairingInput}
+                    bind:value={code}
+                    id="pairing-code"
+                    clearLabel={t("common.clearCode")}
+                    autocomplete="off"
+                    spellcheck="false"
+                    class={cn("field w-full px-3 text-sm", fieldHeight)}
+                    placeholder={t("vaultHandoff.codePlaceholder")}
+                    aria-label={t("vaultHandoff.codePlaceholder")}
+                    aria-invalid={error !== null}
+                    aria-describedby={error ? "pairing-code-error" : undefined}
+                    disabled={busy}
+                    oninput={onEdit}
+                  />
+                {/if}
+              </div>
               {#if error}
                 <p in:swapIn={swap} out:swapOut={swap} id="pairing-code-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{error}</p>
               {/if}
-              {@render scanToggle("computer")}
+              {@render cameraNotice("computer")}
             </div>
           </ConnectStep>
         </ol>
@@ -387,37 +411,39 @@
               </div>
             </div>
           </ConnectStep>
-          <ConnectStep number={3} total={3} beside={scanning.server ? "text" : "field"}>
+          <ConnectStep number={3} total={3} beside={mobile ? "text" : "field"}>
             <div class="min-w-0 flex-1">
-              {#if scanning.server}
-                <p class="pt-0.5 text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.scanStep")}</p>
-                {@render scanner("server")}
-              {:else}
-                <MaskedCodeInput
-                  bind:this={serverField}
-                  bind:input={serverInput}
-                  bind:value={serverCode}
-                  id="server-connect-code"
-                  clearLabel={t("common.clearCode")}
-                  class={cn("field w-full px-3 font-mono text-sm", fieldHeight)}
-                  dir="ltr"
-                  autocomplete="off"
-                  autocapitalize="off"
-                  spellcheck="false"
-                  placeholder="ganbaru-anchor:…"
-                  aria-label={t("vaultHandoff.serverConnect.codeLabel")}
-                  aria-invalid={serverError !== null}
-                  aria-describedby={serverError ? "server-connect-error" : mobile ? undefined : "server-connect-outcome"}
-                  disabled={serverBusy}
-                  oninput={() => { serverError = null; }}
-                />
-              {/if}
+              {#if mobile}{@render codeMode("server")}{/if}
+              <div {...codeInputPanel("server")}>
+                {#if scanning.server}
+                  {@render scanner("server")}
+                {:else}
+                  <MaskedCodeInput
+                    bind:this={serverField}
+                    bind:input={serverInput}
+                    bind:value={serverCode}
+                    id="server-connect-code"
+                    clearLabel={t("common.clearCode")}
+                    class={cn("field w-full px-3 font-mono text-sm", fieldHeight)}
+                    dir="ltr"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    placeholder="ganbaru-anchor:…"
+                    aria-label={t("vaultHandoff.serverConnect.codeLabel")}
+                    aria-invalid={serverError !== null}
+                    aria-describedby={serverError ? "server-connect-error" : mobile ? undefined : "server-connect-outcome"}
+                    disabled={serverBusy}
+                    oninput={() => { serverError = null; }}
+                  />
+                {/if}
+              </div>
               {#if !mobile}
                 <p id="server-connect-outcome" class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">
                   {startOnEmptyServer ? t("vaultHandoff.serverConnect.startOutcome") : t("vaultHandoff.serverConnect.outcome")}
                 </p>
               {/if}
-              {@render scanToggle("server")}
+              {@render cameraNotice("server")}
             </div>
           </ConnectStep>
         </ol>

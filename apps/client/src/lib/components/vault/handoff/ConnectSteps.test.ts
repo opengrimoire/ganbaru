@@ -121,8 +121,10 @@ describe("ConnectSteps on Android", () => {
     flushSync();
   }
 
-  function link(text: string): HTMLButtonElement | undefined {
-    return [...target.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === text);
+  function modeTab(mode: "scan" | "paste"): HTMLButtonElement {
+    const button = target.querySelector<HTMLButtonElement>(`#computer-code-mode-${mode}`);
+    if (!button) throw new Error(`missing ${mode} tab`);
+    return button;
   }
 
   beforeEach(() => {
@@ -137,19 +139,21 @@ describe("ConnectSteps on Android", () => {
     component = null;
   });
 
-  it("starts with the code field and offers the scanner when it does not scan first", () => {
+  it("names scanning and pasting as tabs in the last step and starts on paste when it does not scan first", () => {
     render(false);
+    expect(target.querySelector("ol > li:last-child p")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Scan or paste its code");
+    expect(modeTab("paste").getAttribute("aria-selected")).toBe("true");
+    expect(target.querySelector("#computer-code-input")?.getAttribute("aria-labelledby")).toBe("computer-code-mode-paste");
     expect(target.querySelector("#pairing-code")).not.toBeNull();
     expect(target.querySelector("[data-connect-submit]")).not.toBeNull();
-    expect(link("Scan the QR code instead")).toBeDefined();
   });
 
   it("returns to the code field with a notice when the camera cannot start", async () => {
     render(false);
-    link("Scan the QR code instead")?.click();
+    modeTab("scan").click();
     flushSync();
     await vi.waitFor(() => expect(target.textContent).toContain("The camera could not start."));
     expect(target.querySelector("#pairing-code")).not.toBeNull();
-    expect(link("Scan the QR code instead")).toBeDefined();
+    expect(modeTab("paste").getAttribute("aria-selected")).toBe("true");
   });
 });

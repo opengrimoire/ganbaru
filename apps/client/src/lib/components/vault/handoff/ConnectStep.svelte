@@ -5,6 +5,9 @@
    * column (`w-6`) and its gap (`gap-3`).
    */
   export const stepCenteredBlockClass = "-ms-9 flex justify-center";
+
+  /** Indent that lines a block after the list up with the steps' text column, past the marker column and its gap. */
+  export const stepTextIndentClass = "ms-9";
 </script>
 
 <script lang="ts">

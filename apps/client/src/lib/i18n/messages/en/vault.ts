@@ -161,7 +161,7 @@ export const vaultHandoff = {
   serverConnect: {
     installPrefix: "Use",
     installLink: "this guide",
-    installSuffix: "to set up ganbaru-server on a computer that stays on, such as a home server or NAS",
+    installSuffix: "to set up ganbaru-server on a computer that's always on, such as a home server or NAS",
     run: "On that server, run",
     copyCommand: "Copy command",
     commandCopied: "Command copied",

@@ -28,7 +28,7 @@
   import { smoothHeight, smoothSwapTiming, swapIn, swapOut } from "$lib/utils/smooth-swap";
   import { isServerWithoutVault, serverConnectError } from "$lib/vault/server-connect";
   import ConnectSourceTabs from "./ConnectSourceTabs.svelte";
-  import ConnectStep, { stepCenteredBlockClass } from "./ConnectStep.svelte";
+  import ConnectStep, { stepCenteredBlockClass, stepTextIndentClass } from "./ConnectStep.svelte";
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
 
@@ -448,7 +448,7 @@
           </ConnectStep>
         </ol>
         {#if useKit}
-          <div in:swapIn={swap} out:swapOut={swap} class="mt-4 min-w-0">
+          <div in:swapIn={swap} out:swapOut={swap} class={cn("min-w-0", mobile ? cn("mt-3", stepTextIndentClass) : "mt-4")}>
             <label class="mb-1 block text-[0.8rem] text-muted-foreground" for="server-connect-kit">{t("vaultHandoff.serverConnect.kitLabel")}</label>
             <MaskedCodeInput
               bind:input={kitInput}
@@ -465,7 +465,8 @@
             />
           </div>
         {:else}
-          <p in:swapIn={swap} out:swapOut={swap} class="mt-4 border-t border-border pt-3 text-[0.8rem] leading-5 text-muted-foreground">
+          <!-- On a phone the prompt continues the last step under its camera or field; a desktop sets it off below the steps. -->
+          <p in:swapIn={swap} out:swapOut={swap} class={cn("text-[0.8rem] leading-5 text-muted-foreground", mobile ? cn("mt-3", stepTextIndentClass) : "mt-4 border-t border-border pt-3")}>
             {t("vaultHandoff.serverConnect.kitPrompt")}
             <button
               type="button"
@@ -478,9 +479,9 @@
           </p>
         {/if}
         {#if serverError}
-          <p in:swapIn={swap} out:swapOut={swap} id="server-connect-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{serverError}</p>
+          <p in:swapIn={swap} out:swapOut={swap} id="server-connect-error" role="alert" class={cn("mt-2 text-[0.8rem] leading-5 text-destructive", mobile && stepTextIndentClass)}>{serverError}</p>
         {:else if serverNotice}
-          <p in:swapIn={swap} out:swapOut={swap} role="status" class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">{serverNotice}</p>
+          <p in:swapIn={swap} out:swapOut={swap} role="status" class={cn("mt-2 text-[0.8rem] leading-5 text-muted-foreground", mobile && stepTextIndentClass)}>{serverNotice}</p>
         {/if}
       </div>
     {:else if children}

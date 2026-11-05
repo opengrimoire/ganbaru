@@ -82,7 +82,7 @@ export const distractions = {
     reselectForAndroid: "Vuelve a elegir esta app para activar el bloqueo en Android",
     disclosureBlockingTitle: "¿Permitir bloquear apps seleccionadas?",
     disclosureBlockingMessage:
-      "Ganbaru usa Accesibilidad de Android para observar qué app se activa. Te devuelve al inicio cuando aplica una regla o límite seleccionado y solo guarda en este dispositivo el uso y los bloqueos de las apps seleccionadas. Estos datos nunca se comparten. No lee contenido de pantalla, texto, toques, contraseñas ni notificaciones. Android abrirá Ganbaru directamente cuando sea compatible. Si no, abre Servicios descargados o instalados, elige Ganbaru y actívalo.",
+      "Ganbaru usa Accesibilidad de Android para observar qué app se activa. Te devuelve al inicio cuando aplica una regla o límite seleccionado y solo guarda en este dispositivo el uso y los bloqueos de las apps seleccionadas. Estos datos nunca se comparten. No lee contenido de pantalla, texto, toques, contraseñas ni notificaciones. Si Android no abre Ganbaru directamente, búscalo en Accesibilidad, en Apps descargadas o Aplicaciones instaladas, y actívalo.",
     agreeAndReview: "Aceptar y revisar",
     notNow: "Ahora no",
     channelName: "Bloqueos de distracciones",

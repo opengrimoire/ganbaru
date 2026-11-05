@@ -56,6 +56,7 @@
     onSubmit,
     onEdit,
     onServerActivated,
+    loading = false,
     actions,
     children,
   }: {
@@ -85,6 +86,11 @@
     actions?: Snippet;
     /** The panel shown while `source` is null. */
     children?: Snippet;
+    /**
+     * Whether `children` is still loading. The panel jumps to the height of loaded content instead of easing, so
+     * the first view appears complete and only switches between sources animate.
+     */
+    loading?: boolean;
   } = $props();
 
   /** The command an anchor server operator runs to print a setup code. */
@@ -117,6 +123,21 @@
   let cameraFailed = $state(false);
   /** Sources, the kit field, and messages fade while the panel eases to its new height, so it never jumps. */
   const swap = smoothSwapTiming();
+  /** Whether height changes jump; it stays set for the frame that lays out the content that ended the loading. */
+  let snapHeight = untrack(() => loading);
+
+  $effect(() => {
+    if (loading) {
+      snapHeight = true;
+      return;
+    }
+    if (!snapHeight) return;
+    // The loaded content lays out after the next frame starts, and its resize arrives before the second one.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => { snapHeight = false; });
+    });
+    return () => cancelAnimationFrame(frame);
+  });
   const anyBusy = $derived(busy || serverBusy);
   /** A scanner submits on its own, so the submit button shows only beside a code field. */
   const footerShown = $derived(source !== null && !scanning[source]);
@@ -334,7 +355,7 @@
 {/snippet}
 
 <!-- A switch is one swap: the old content fades, the panel eases to the new height, and the new content fades in. The buttons hang from the panel's bottom edge, so they stay in place between sources and glide with the height instead of jumping; the steps keep room for them (pb-14 matches the footer's h-14). -->
-<div class="relative" {@attach smoothHeight(swap)}>
+<div class="relative" {@attach smoothHeight(swap, () => snapHeight)}>
   <!-- svelte-ignore a11y_interactive_supports_focus -->
   <div id={panelId} role="tabpanel" aria-labelledby={labelledBy} class={cn("relative", footerShown && "pb-14")} onkeydown={submitOnEnter}>
     {#if source === "computer"}

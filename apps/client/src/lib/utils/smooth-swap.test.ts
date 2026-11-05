@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SMOOTH_SWAP_TIMING, smoothSwapTiming, swapIn, swapOut } from "./smooth-swap";
+import { SMOOTH_SWAP_TIMING, smoothHeight, smoothSwapTiming, swapIn, swapOut } from "./smooth-swap";
 
 function element(offsetTop: number, offsetLeft: number, width: number): HTMLElement {
   const node = document.createElement("div");
@@ -49,5 +49,35 @@ describe("smooth swap", () => {
     const node = element(36, 12, 320);
     expect(swapOut(node, timing).duration).toBe(0);
     expect(node.style.position).toBe("");
+  });
+
+  it("eases height changes and jumps while the content is still loading", () => {
+    let notify = (): void => {};
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { notify = callback; }
+      observe(): void {}
+      disconnect(): void {}
+    });
+    const container = document.createElement("div");
+    const content = document.createElement("div");
+    container.append(content);
+    let height = 100;
+    Object.defineProperty(content, "offsetHeight", { get: () => height });
+    const animate = vi.fn(() => ({ cancel: () => {}, onfinish: null }) as unknown as Animation);
+    container.animate = animate;
+    let loading = true;
+    smoothHeight(SMOOTH_SWAP_TIMING, () => loading)(container);
+
+    height = 300;
+    notify();
+    expect(animate).not.toHaveBeenCalled();
+
+    loading = false;
+    height = 180;
+    notify();
+    expect(animate).toHaveBeenCalledWith(
+      [{ height: "300px" }, { height: "180px" }],
+      expect.objectContaining({ duration: SMOOTH_SWAP_TIMING.heightMs }),
+    );
   });
 });

@@ -53,8 +53,11 @@ function clipOverflow(): "clip" | "hidden" {
  * Animates the element's height whenever its first child changes size, from whatever height it shows at that moment.
  * The child is the content box: it must be `position: relative` so {@link swapOut} can pin leaving content inside it,
  * and pinned content leaves its height, so the container moves straight to the arriving content's height.
+ *
+ * @param timing How long the height takes to settle.
+ * @param snap Whether the next height change should jump instead of easing, for content that is still loading.
  */
-export function smoothHeight(timing: SmoothSwapTiming): Attachment<HTMLElement> {
+export function smoothHeight(timing: SmoothSwapTiming, snap: () => boolean = () => false): Attachment<HTMLElement> {
   return (container) => {
     const content = container.firstElementChild;
     if (!(content instanceof HTMLElement) || typeof ResizeObserver === "undefined") return;
@@ -74,7 +77,7 @@ export function smoothHeight(timing: SmoothSwapTiming): Attachment<HTMLElement> 
       settled = next;
       animation?.cancel();
       finish();
-      if (timing.heightMs <= 0 || Math.abs(from - next) < 1) return;
+      if (timing.heightMs <= 0 || Math.abs(from - next) < 1 || snap()) return;
       container.style.overflow = clipOverflow();
       animation = container.animate(
         [{ height: `${from}px` }, { height: `${next}px` }],

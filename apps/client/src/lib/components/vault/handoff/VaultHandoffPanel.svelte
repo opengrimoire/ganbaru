@@ -78,6 +78,8 @@
   const desktopQrAvailable = __GANBARU_BUILD_PLATFORM__ !== "android";
   /** The QR code view, loaded with the onboarding so the code arrives with its panel instead of after it. */
   let PairingQrCode = $state<typeof import("./PairingQrCode.svelte").default | null>(null);
+  /** Whether the onboarding still waits for the QR code view, so the phone steps appear with their code. */
+  let qrViewLoading = $state(untrack(() => presentation === "onboarding" && platform === "desktop" && desktopQrAvailable));
   let status = $state<PairingStatus | null>(
     untrack(() => initialStatus ?? getCachedPairingStatus() ?? null),
   );
@@ -179,6 +181,10 @@
   );
   /** A linked device whose copy is ready can keep it as a vault of its own. */
   const recoverAvailable = $derived(status?.replicaReady === true && isCoordinatorClient);
+  /** Whether the phone steps still show their loader instead of the steps or an error. */
+  const phoneStepsLoading = $derived(
+    !status?.pendingEnrollment && !(invitation && !qrViewLoading) && error === null,
+  );
   /** Failures that replace the content they block render in that place instead of the trailing error line. */
   const errorShownInPlace = $derived(
     error !== null
@@ -523,6 +529,8 @@
       PairingQrCode = (await import("./PairingQrCode.svelte")).default;
     } catch (cause: unknown) {
       console.warn("the pairing QR code view could not be loaded", cause);
+    } finally {
+      qrViewLoading = false;
     }
   }
 
@@ -568,7 +576,7 @@
 {/snippet}
 
 {#snippet phonePanel(current: PairingStatus)}
-  {#if desktopQrAvailable && (invitation || current.pendingEnrollment)}
+  {#if desktopQrAvailable && (current.pendingEnrollment || (invitation && !qrViewLoading))}
     <!-- The same numbered steps as the other sources, with the firewall step first when this computer needs it. -->
     <div class="mx-auto flex w-full max-w-md min-w-0 flex-col items-center gap-4">
       {#if current.pendingEnrollment}
@@ -808,6 +816,7 @@
         busy={busy === "pair"}
         {enrollmentCode}
         error={codeError}
+        loading={onboardingSource === "phone" && phoneStepsLoading}
         startOnEmptyServer
         panelId="onboarding-connect-panel"
         labelledBy={`onboarding-connect-tab-${onboardingSource}`}

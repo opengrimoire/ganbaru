@@ -96,8 +96,6 @@ export const vaultHandoff = {
   networkAccessRevoked: "Phone connection access was removed.",
   networkAccessManual:
     "Ganbaru cannot request network access automatically on this Linux system.",
-  networkAccessDevelopmentUnavailable:
-    "This Linux development build cannot use the packaged firewall helper. Use a packaged build or configure the firewall manually to link a phone.",
   notLinked: "No devices linked",
   anchorServer: "Anchor server",
   relayServer: "Relay server",

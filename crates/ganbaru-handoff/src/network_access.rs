@@ -49,6 +49,9 @@ const NEIGHBOR_COMPLETE: u32 = 0x2;
 const PACKAGED_APP_PATH: &str = "/usr/bin/ganbaru";
 /// Installed path of the root-run helper that the polkit policy names.
 const PACKAGED_HELPER_PATH: &str = "/usr/lib/ganbaru/ganbaru-linking-firewall";
+/// File name of the helper that Cargo builds next to a development app in the target folder.
+#[cfg(debug_assertions)]
+const DEVELOPMENT_HELPER_FILE_NAME: &str = "ganbaru-linking-firewall";
 const PRIVILEGED_HELPER_ARGUMENT: &str = "--manage-linking-firewall";
 const REVOKE_ALL_OPERATION: &str = "revoke-all";
 /// Fixed locations of the system commands the app and the helper run. Each must be a regular
@@ -969,14 +972,15 @@ fn can_request_authorization(scopes: &[AuthorizedScope]) -> bool {
         })
 }
 
-/// Adds or removes the rules of `scopes`. The packaged app hands them all to the helper in one
-/// authorized call; other builds apply each through the firewall command.
+/// Adds or removes the rules of `scopes`. The packaged app, and a development build whose helper
+/// Cargo built, hand them all to the helper in one authorized call; other builds apply each
+/// through the firewall command, which asks for the password once per rule.
 fn apply_scopes(scopes: &[AuthorizedScope], grant: bool) -> Result<(), String> {
     for scope in scopes {
         validate_authorized_scope(scope)?;
     }
-    if let Some(helper) = trusted_packaged_helper() {
-        return apply_with_packaged_helper(&helper, scopes, grant);
+    if let Some(helper) = trusted_packaged_helper().or_else(development_helper) {
+        return apply_with_helper(&helper, scopes, grant);
     }
     apply_each(scopes, grant, |scope| match scope.firewall {
         FirewallKind::Ufw => apply_ufw(scope, grant),
@@ -1011,8 +1015,7 @@ fn apply_each(
 }
 
 /// Returns the packaged helper when this process is the packaged app and the helper is a
-/// regular file that only root can replace. Other builds apply rules through the firewall
-/// command directly.
+/// regular file that only root can replace.
 fn trusted_packaged_helper() -> Option<PathBuf> {
     let current = std::env::current_exe().ok()?.canonicalize().ok()?;
     if current != Path::new(PACKAGED_APP_PATH).canonicalize().ok()? {
@@ -1028,16 +1031,29 @@ fn trusted_packaged_helper() -> Option<PathBuf> {
     .then(|| helper.to_path_buf())
 }
 
+/// In a development build, the helper Cargo built next to the running app, so a flow asks for
+/// the password once as the packaged app does. The prompt names the helper and every rule, and
+/// the helper validates each rule again as root. The developer can replace this binary, which a
+/// development build accepts: only a process already running as that user could swap it, and
+/// such a process could ask for the password itself.
+#[cfg(debug_assertions)]
+fn development_helper() -> Option<PathBuf> {
+    let app = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let helper = app.parent()?.join(DEVELOPMENT_HELPER_FILE_NAME);
+    helper.symlink_metadata().ok()?.is_file().then_some(helper)
+}
+
+#[cfg(not(debug_assertions))]
+fn development_helper() -> Option<PathBuf> {
+    None
+}
+
 /// Whether only root can change the entry: owned by root and not group or world writable.
 fn root_controlled(metadata: &fs::Metadata) -> bool {
     metadata.uid() == 0 && metadata.mode() & 0o022 == 0
 }
 
-fn apply_with_packaged_helper(
-    helper: &Path,
-    scopes: &[AuthorizedScope],
-    grant: bool,
-) -> Result<(), String> {
+fn apply_with_helper(helper: &Path, scopes: &[AuthorizedScope], grant: bool) -> Result<(), String> {
     let arguments = privileged_helper_arguments(scopes, grant)?;
     let pkexec = required_command(PKEXEC_PATHS, "pkexec")?;
     let mut command = Command::new(pkexec);

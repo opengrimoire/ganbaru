@@ -231,19 +231,74 @@ fn interface_addresses() -> Vec<IpAddr> {
     Vec::new()
 }
 
-/// Interface addresses that are not loopback and not known to be down.
+/// Interface addresses that are not loopback, not known to be down, and not on a host-only
+/// bridge.
 #[cfg(desktop)]
 fn up_interfaces() -> Vec<if_addrs::Interface> {
+    let host_only = host_only_bridges();
     match if_addrs::get_if_addrs() {
         Ok(interfaces) => interfaces
             .into_iter()
-            .filter(|interface| !interface.is_loopback() && !is_down(&interface.oper_status))
+            .filter(|interface| {
+                !interface.is_loopback()
+                    && !is_down(&interface.oper_status)
+                    && !host_only.contains(&interface.name)
+            })
             .collect(),
         Err(error) => {
             eprintln!("list local network interfaces: {error}");
             Vec::new()
         }
     }
+}
+
+/// Linux bridges that carry no default route, such as the ones Docker and libvirt create for
+/// containers and virtual machines on this host. No other device reaches this host through them,
+/// so their addresses are neither reported nor opened in the firewall. A bridge that carries
+/// the default route, as on a host that bridges its LAN port, is kept.
+#[cfg(target_os = "linux")]
+fn host_only_bridges() -> Vec<String> {
+    let routed = default_route_interfaces(
+        &std::fs::read_to_string("/proc/net/route").unwrap_or_default(),
+        &std::fs::read_to_string("/proc/net/ipv6_route").unwrap_or_default(),
+    );
+    let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().join("bridge").is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| !routed.contains(name))
+        .collect()
+}
+
+#[cfg(all(desktop, not(target_os = "linux")))]
+fn host_only_bridges() -> Vec<String> {
+    Vec::new()
+}
+
+/// The interfaces of the default routes in `/proc/net/route` and `/proc/net/ipv6_route`
+/// contents.
+#[cfg(target_os = "linux")]
+fn default_route_interfaces(ipv4: &str, ipv6: &str) -> Vec<String> {
+    const IPV4_ANY: &str = "00000000";
+    const IPV6_ANY: &str = "00000000000000000000000000000000";
+    let ipv4_routes = ipv4.lines().skip(1).filter_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        (fields.len() > 7 && fields[1] == IPV4_ANY && fields[7] == IPV4_ANY).then(|| fields[0])
+    });
+    let ipv6_routes = ipv6.lines().filter_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        (fields.len() == 10 && fields[0] == IPV6_ANY && fields[1] == "00").then(|| fields[9])
+    });
+    let mut interfaces: Vec<String> = Vec::new();
+    for interface in ipv4_routes.chain(ipv6_routes) {
+        if interface != "lo" && !interfaces.iter().any(|known| known == interface) {
+            interfaces.push(interface.to_string());
+        }
+    }
+    interfaces
 }
 
 #[cfg(desktop)]
@@ -427,5 +482,22 @@ mod tests {
             vec!["10.0.0.5:1".to_string()]
         });
         assert_eq!(refreshed, vec!["10.0.0.5:1".to_string()]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_route_interfaces_name_only_default_routes() {
+        let ipv4 = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+            wlp2s0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n\
+            wlp2s0\t0001A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0\n\
+            docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n";
+        let ipv6 = "fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001 docker0\n\
+            00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000258 00000009 00000000 00400003 enp3s0\n\
+            00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200 lo\n";
+        assert_eq!(
+            default_route_interfaces(ipv4, ipv6),
+            vec!["wlp2s0".to_string(), "enp3s0".to_string()]
+        );
+        assert!(default_route_interfaces("", "").is_empty());
     }
 }

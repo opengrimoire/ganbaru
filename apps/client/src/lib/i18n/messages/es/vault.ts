@@ -104,8 +104,6 @@ export const vaultHandoff = {
   networkAccessRevoked: "Se quitó el acceso para conectar el teléfono.",
   networkAccessManual:
     "Ganbaru no puede solicitar acceso a la red automáticamente en este sistema Linux.",
-  networkAccessDevelopmentUnavailable:
-    "Esta versión de desarrollo para Linux no puede usar el asistente de firewall empaquetado. Usa una versión empaquetada o configura el firewall manualmente para vincular un teléfono.",
   notLinked: "No hay dispositivos vinculados",
   anchorServer: "Servidor ancla",
   relayServer: "Servidor relé",

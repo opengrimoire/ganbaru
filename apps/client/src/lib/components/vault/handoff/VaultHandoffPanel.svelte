@@ -73,7 +73,6 @@
 
   const { t } = getLocalization();
   const desktopQrAvailable = __GANBARU_BUILD_PLATFORM__ !== "android";
-  const developmentLinuxBuild = import.meta.env.DEV && __GANBARU_BUILD_PLATFORM__ === "linux";
   let status = $state<PairingStatus | null>(
     untrack(() => initialStatus ?? getCachedPairingStatus() ?? null),
   );
@@ -693,14 +692,12 @@
                 {t("vaultHandoff.networkAccessDescription")}
               </p>
             </div>
-            {#if networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired" || (developmentLinuxBuild && networkAccess?.state === "manualActionRequired")}
+            {#if networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired"}
               <button
                 type="button"
-                class={`${buttonClass} bg-background ${developmentLinuxBuild ? "cursor-not-allowed opacity-55" : ""}`}
-                data-app-tooltip={developmentLinuxBuild ? t("vaultHandoff.networkAccessDevelopmentUnavailable") : undefined}
-                aria-disabled={developmentLinuxBuild}
+                class={`${buttonClass} bg-background`}
                 disabled={busy !== null}
-                onclick={() => { if (!developmentLinuxBuild) confirmation = "network"; }}
+                onclick={() => { confirmation = "network"; }}
               >
                 {#if busy === "network"}<LoaderCircle size={14} class="animate-spin" />{/if}
                 {t("vaultHandoff.allowNetworkAccess")}

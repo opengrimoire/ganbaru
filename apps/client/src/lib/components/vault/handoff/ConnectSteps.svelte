@@ -5,7 +5,6 @@
 
 <script lang="ts">
   import Check from "@lucide/svelte/icons/check";
-  import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Copy from "@lucide/svelte/icons/copy";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
@@ -31,6 +30,7 @@
   import ConnectStep, { stepCenteredBlockClass, stepTextIndentClass } from "./ConnectStep.svelte";
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
+  import SettingsPath from "./SettingsPath.svelte";
 
   /**
    * The steps that connect this device to a vault it does not have yet: through another
@@ -266,13 +266,6 @@
   onMount(() => () => window.clearTimeout(copyFeedbackTimer));
 </script>
 
-{#snippet settingsPath(toLinkedDevices: boolean)}
-  <span class="ms-0.5 inline-flex items-center gap-0.5 rounded-md bg-muted px-1.5 py-px align-baseline text-[0.8rem] font-medium whitespace-nowrap">
-    {t("settings.title")}<ChevronRight size={12} class="text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />{t("settings.section.data")}
-    {#if toLinkedDevices}<ChevronRight size={12} class="text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />{t("vaultHandoff.heading")}{/if}
-  </span>
-{/snippet}
-
 {#snippet scanner(which: ConnectSource)}
   <div class={cn("mt-1", stepCenteredBlockClass)}>
     <div class="w-full max-w-80">
@@ -311,7 +304,7 @@
       panelId={`${which}-code-input`}
       onChoose={(mode, fromKeyboard) => showScanner(which, mode === "scan", !fromKeyboard)}
     />
-    {which === "computer" ? t("vaultHandoff.codeMode.computerCode") : t("vaultHandoff.codeMode.serverCode")}
+    {which === "computer" ? t("vaultHandoff.codeMode.pairingCode") : t("vaultHandoff.codeMode.serverCode")}
   </p>
 {/snippet}
 
@@ -336,14 +329,14 @@
             <ConnectStep number={2} total={3}>
               <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
                 {t("vaultHandoff.computerSteps.goTo")}
-                {@render settingsPath(true)}
+                <SettingsPath toLinkedDevices />
               </p>
             </ConnectStep>
           {:else}
             <ConnectStep number={1} total={3}>
               <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
                 {t("vaultHandoff.computerSteps.open")}
-                {@render settingsPath(false)}
+                <SettingsPath />
               </p>
             </ConnectStep>
             <ConnectStep number={2} total={3}>

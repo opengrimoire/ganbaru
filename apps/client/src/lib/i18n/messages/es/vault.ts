@@ -117,7 +117,6 @@ export const vaultHandoff = {
   },
   phoneSteps: {
     install: "Instala Ganbaru en tu teléfono",
-    scan: "Ábrelo y escanea este código QR",
   },
   codePlaceholder: "Código de vinculación",
   codeInvalid: "Ese código de vinculación no es válido. Copia uno nuevo de la otra computadora e inténtalo de nuevo.",
@@ -153,7 +152,7 @@ export const vaultHandoff = {
   codeMode: {
     scan: "Escanea",
     paste: "pega",
-    computerCode: "el código de vinculación",
+    pairingCode: "el código de vinculación",
     serverCode: "el código que muestra",
   },
   notNow: "Ahora no",

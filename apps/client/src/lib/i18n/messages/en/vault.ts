@@ -109,7 +109,6 @@ export const vaultHandoff = {
   },
   phoneSteps: {
     install: "Install Ganbaru on your phone",
-    scan: "Open it and scan this QR code",
   },
   codePlaceholder: "Pairing code",
   codeInvalid: "That pairing code is not valid. Copy a new code from the other computer and try again.",
@@ -145,7 +144,7 @@ export const vaultHandoff = {
   codeMode: {
     scan: "Scan",
     paste: "paste",
-    computerCode: "the pairing code",
+    pairingCode: "the pairing code",
     serverCode: "the code it shows",
   },
   notNow: "Not now",

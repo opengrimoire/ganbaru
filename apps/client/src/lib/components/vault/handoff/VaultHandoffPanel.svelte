@@ -46,6 +46,7 @@
   import ConnectSourceTabs from "./ConnectSourceTabs.svelte";
   import ConnectStep, { stepCenteredBlockClass } from "./ConnectStep.svelte";
   import ConnectSteps, { type ConnectSource } from "./ConnectSteps.svelte";
+  import SettingsPath from "./SettingsPath.svelte";
 
   type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "bootstrap" | "unlink" | "recover" | "linkFolder";
 
@@ -87,6 +88,8 @@
     untrack(() => status?.devices.map((device) => device.deviceId) ?? []),
   );
   let codeDialogVisible = $state(false);
+  /** Whether the phone steps show the pairing QR code or its text code to paste on the phone. */
+  let phoneCodeView = $state<"qr" | "code">("qr");
   /**
    * Where this device gets a vault: on desktop a phone can scan this computer's code, while a phone
    * always joins another computer or a server, since two phones cannot link directly.
@@ -576,7 +579,7 @@
         />
       {:else if invitation}
         {@const offset = networkStepsVisible ? 1 : 0}
-        {@const total = 2 + offset}
+        {@const total = 3 + offset}
         <ol class="flex w-full flex-col">
           {#if networkStepsVisible}
             <ConnectStep number={1} {total}>
@@ -607,12 +610,36 @@
             <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">{t("vaultHandoff.phoneSteps.install")}</p>
           </ConnectStep>
           <ConnectStep number={2 + offset} {total}>
+            <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
+              {t("vaultHandoff.computerSteps.goTo")}
+              <SettingsPath toLinkedDevices />
+            </p>
+          </ConnectStep>
+          <ConnectStep number={3 + offset} {total}>
             <div class="min-w-0 flex-1 pt-0.5">
-              <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.phoneSteps.scan")}</p>
+              <!-- The phone scans the QR code or pastes the text code, so the step names both as tabs, as the phone's own last step does. -->
+              <p class="text-sm leading-5 text-foreground">
+                <ConnectSourceTabs
+                  sources={[
+                    { id: "qr", label: t("vaultHandoff.codeMode.scan") },
+                    { id: "code", label: t("vaultHandoff.codeMode.paste") },
+                  ]}
+                  active={phoneCodeView}
+                  idPrefix="phone-code-mode"
+                  panelId="phone-code-view"
+                  onChoose={(view) => { phoneCodeView = view; }}
+                />
+                {t("vaultHandoff.codeMode.pairingCode")}
+              </p>
               {#if PairingQrCode}
-                <div class={cn("mt-4", stepCenteredBlockClass)}>
+                <div
+                  id="phone-code-view"
+                  role="tabpanel"
+                  aria-labelledby={`phone-code-mode-${phoneCodeView}`}
+                  class={cn("mt-4", stepCenteredBlockClass)}
+                >
                   <div class="w-full max-w-72">
-                    <PairingQrCode {invitation} onExpired={() => void showInvitation()} />
+                    <PairingQrCode {invitation} view={phoneCodeView} onExpired={() => void showInvitation()} />
                   </div>
                 </div>
               {/if}

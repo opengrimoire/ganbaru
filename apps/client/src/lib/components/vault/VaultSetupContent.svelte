@@ -30,7 +30,7 @@
 </script>
 
 <section class="h-full overflow-y-auto px-4 min-[560px]:px-8 min-[760px]:px-10">
-  <div class="mx-auto grid min-h-full w-full max-w-2xl grid-rows-[minmax(4.5rem,1fr)_auto_minmax(4.5rem,1fr)] py-5 min-[760px]:py-8">
+  <div class="mx-auto grid min-h-full w-full max-w-160 grid-rows-[minmax(4.5rem,1fr)_auto_minmax(4.5rem,1fr)] py-5 min-[760px]:py-8">
     <div class="flex items-end pb-4">
       <VaultLanguageDropdown />
     </div>

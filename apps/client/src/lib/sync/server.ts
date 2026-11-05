@@ -2,6 +2,9 @@ import type { SyncServerError, SyncServerView } from "$lib/api/sync";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import { syncRelayProblemLabel } from "./status";
 
+/** The published self-hosted server setup guide; sections are linked by their heading anchors. */
+export const SERVER_GUIDE_URL = "https://github.com/opengrimoire/ganbaru/blob/main/docs/platforms/server/README.md";
+
 /** Hexadecimal characters per group when a certificate fingerprint is shown. */
 const FINGERPRINT_GROUP = 4;
 

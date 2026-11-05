@@ -91,6 +91,22 @@ describe("ConnectDialog", () => {
     expect(joinVaultThroughServer).not.toHaveBeenCalled();
   });
 
+  it("moves between the sources with the arrow keys and keeps one tab in the tab order", async () => {
+    const computer = target.querySelector<HTMLButtonElement>("#connect-tab-computer");
+    const server = target.querySelector<HTMLButtonElement>("#connect-tab-server");
+    if (!computer || !server) throw new Error("missing source tabs");
+    expect([computer.tabIndex, server.tabIndex]).toEqual([0, -1]);
+    computer.focus();
+    computer.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await vi.waitFor(() => expect(document.activeElement).toBe(server));
+    expect(server.getAttribute("aria-selected")).toBe("true");
+    expect([computer.tabIndex, server.tabIndex]).toEqual([-1, 0]);
+    expect(field("server-connect-code")).toBeTruthy();
+    server.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await vi.waitFor(() => expect(document.activeElement).toBe(computer));
+    expect(field("pairing-code")).toBeTruthy();
+  });
+
   it("joins through the server with only the trimmed setup code", async () => {
     joinVaultThroughServer.mockResolvedValue(ACTIVATED);
     await chooseServer();

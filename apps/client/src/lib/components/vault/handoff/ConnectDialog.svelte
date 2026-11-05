@@ -1,5 +1,8 @@
 <script lang="ts">
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import ExternalLink from "@lucide/svelte/icons/external-link";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import { onMount, tick } from "svelte";
   import { addSyncServer, SyncServerError } from "$lib/api/sync";
   import {
@@ -7,6 +10,7 @@
     recoverVaultThroughServer,
     releaseStarterVault,
   } from "$lib/api/vault-handoff";
+  import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     activateModalFocus,
@@ -14,7 +18,7 @@
     trapModalTabKey,
   } from "$lib/modal-focus";
   import { cn } from "$lib/utils";
-  import { syncServerErrorLabel } from "$lib/sync/server";
+  import { SERVER_GUIDE_URL, syncServerErrorLabel } from "$lib/sync/server";
   import { isServerWithoutVault, serverConnectError } from "$lib/vault/server-connect";
 
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
@@ -52,7 +56,11 @@
 
   type Source = "computer" | "server";
 
-  const { t } = getLocalization();
+  /** The command an anchor server operator runs to print a setup code. */
+  const SERVER_SETUP_COMMAND = "ganbaru-server anchor setup";
+
+  const localization = getLocalization();
+  const { t } = localization;
   const sources: { id: Source; label: () => string }[] = [
     { id: "computer", label: () => t("vaultHandoff.connectTabs.computer") },
     { id: "server", label: () => t("vaultHandoff.connectTabs.server") },
@@ -81,11 +89,44 @@
     if (!serverBusy) onClose();
   }
 
-  async function choose(next: Source): Promise<void> {
+  /** Shows `next`, focusing its tab when chosen from the keyboard and its code field otherwise. */
+  async function choose(next: Source, focusTab = false): Promise<void> {
     if (anyBusy) return;
     source = next;
     await tick();
-    (next === "computer" ? pairingInput : serverInput)?.focus();
+    if (focusTab) dialog?.querySelector<HTMLElement>(`#connect-tab-${next}`)?.focus();
+    else (next === "computer" ? pairingInput : serverInput)?.focus();
+  }
+
+  /**
+   * Moves between the two sources with the arrow, Home, and End keys while a source tab has focus,
+   * as a tab list does, and answers whether it claimed the key.
+   */
+  function handleTabKeydown(event: KeyboardEvent): boolean {
+    if (!(event.target instanceof HTMLElement) || event.target.getAttribute("role") !== "tab") return false;
+    const current = sources.findIndex((entry) => entry.id === source);
+    const last = sources.length - 1;
+    const target = event.key === "ArrowRight" || event.key === "ArrowDown"
+      ? (current + 1) % sources.length
+      : event.key === "ArrowLeft" || event.key === "ArrowUp"
+        ? (current + last) % sources.length
+        : event.key === "Home" ? 0 : event.key === "End" ? last : null;
+    if (target === null) return false;
+    event.preventDefault();
+    void choose(sources[target].id, true);
+    return true;
+  }
+
+  async function openServerGuide(): Promise<void> {
+    try {
+      await openUrl(`${SERVER_GUIDE_URL}#adding-a-device-through-the-server`);
+    } catch (cause: unknown) {
+      console.warn("server setup guide could not be opened", cause);
+    }
+  }
+
+  function stepNumber(value: number): string {
+    return formatNumber(localization.locale, value);
   }
 
   async function showKit(): Promise<void> {
@@ -157,6 +198,10 @@
       event.stopPropagation();
       return;
     }
+    if (handleTabKeydown(event)) {
+      event.stopPropagation();
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -199,78 +244,135 @@
     onclick={(event) => event.stopPropagation()}
     onkeydown={handleKeydown}
   >
-    <h2 id="connect-dialog-title" class="text-base font-semibold text-foreground">
-      {t("vaultHandoff.codeDialogTitle")}
+    <h2 id="connect-dialog-title" class="text-lg leading-8 font-semibold text-foreground">
+      {t("vaultHandoff.connectTitle")}
+      <span class="inline-flex flex-wrap items-baseline gap-x-1.5" role="tablist" aria-orientation="horizontal">
+        {#each sources as entry, index (entry.id)}
+          {@const active = source === entry.id}
+          {#if index > 0}<span class="font-normal text-muted-foreground">{t("vaultHandoff.connectOr")}</span>{/if}
+          <button
+            type="button"
+            role="tab"
+            id={`connect-tab-${entry.id}`}
+            aria-selected={active}
+            aria-controls="connect-dialog-panel"
+            tabindex={active ? 0 : -1}
+            class={cn(
+              "rounded-sm whitespace-nowrap underline decoration-2 underline-offset-6 transition-colors disabled:pointer-events-none",
+              active
+                ? "text-foreground decoration-primary"
+                : "cursor-pointer text-muted-foreground decoration-muted-foreground/40 decoration-dotted hover:text-foreground hover:decoration-foreground/60",
+            )}
+            disabled={anyBusy}
+            onclick={() => void choose(entry.id)}
+          >
+            {entry.label()}
+          </button>
+        {/each}
+      </span>
     </h2>
-    <div class="mt-3 grid grid-cols-2 gap-1 rounded-md border border-border bg-card p-1 dark:bg-transparent" role="tablist" aria-label={t("vaultHandoff.codeDialogTitle")}>
-      {#each sources as entry (entry.id)}
-        {@const active = source === entry.id}
-        <button
-          type="button"
-          role="tab"
-          id={`connect-tab-${entry.id}`}
-          aria-selected={active}
-          aria-controls="connect-dialog-panel"
-          class={cn(
-            "flex min-h-7 items-center justify-center rounded-sm px-3 text-center text-[0.8rem] font-medium text-muted-foreground",
-            active && "bg-background text-foreground dark:bg-foreground/5",
-          )}
-          disabled={anyBusy}
-          onclick={() => void choose(entry.id)}
-        >
-          {entry.label()}
-        </button>
-      {/each}
-    </div>
 
-    <div id="connect-dialog-panel" role="tabpanel" aria-labelledby={`connect-tab-${source}`} class="mt-4">
+    {#snippet step(number: number, last: boolean)}
+      <span aria-hidden="true" class="relative flex w-6 shrink-0 justify-center">
+        <span class="flex size-6 items-center justify-center rounded-full bg-primary/12 text-xs font-semibold text-primary tabular-nums">
+          {stepNumber(number)}
+        </span>
+        {#if !last}<span class="absolute top-7.5 bottom-1.5 w-px bg-border"></span>{/if}
+      </span>
+    {/snippet}
+
+    <div id="connect-dialog-panel" role="tabpanel" aria-labelledby={`connect-tab-${source}`} class="mt-5">
       {#if source === "computer"}
-        <p class="text-[0.866667rem] leading-5 text-muted-foreground">{t("vaultHandoff.codeInstructions")}</p>
-        <input
-          bind:this={pairingInput}
-          bind:value={code}
-          type="text"
-          autocomplete="off"
-          spellcheck="false"
-          class="field mt-4 h-10 w-full px-3 text-sm"
-          placeholder={t("vaultHandoff.codePlaceholder")}
-          aria-label={t("vaultHandoff.codePlaceholder")}
-          aria-invalid={error !== null}
-          aria-describedby={error ? "pairing-code-error" : undefined}
-          disabled={busy}
-          oninput={onEdit}
-        />
+        <ol class="flex flex-col">
+          <li class="flex gap-3 pb-4">
+            {@render step(1, false)}
+            <p class="min-w-0 pt-0.5 text-sm leading-5 text-foreground">
+              {t("vaultHandoff.computerSteps.open")}
+              <span class="ms-0.5 inline-flex items-center gap-0.5 rounded-md bg-muted px-1.5 py-px align-baseline text-[0.8rem] font-medium whitespace-nowrap">
+                {t("settings.title")}<ChevronRight size={12} class="text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />{t("settings.section.data")}
+              </span>
+            </p>
+          </li>
+          <li class="flex gap-3 pb-4">
+            {@render step(2, false)}
+            <p class="min-w-0 pt-0.5 text-sm leading-5 text-foreground">{t("vaultHandoff.computerSteps.copy")}</p>
+          </li>
+          <li class="flex gap-3">
+            {@render step(3, true)}
+            <div class="min-w-0 flex-1 pt-0.5">
+              <label class="block text-sm leading-5 text-foreground" for="pairing-code">{t("vaultHandoff.computerSteps.paste")}</label>
+              <input
+                bind:this={pairingInput}
+                bind:value={code}
+                id="pairing-code"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                class="field mt-2 h-10 w-full px-3 text-sm"
+                placeholder={t("vaultHandoff.codePlaceholder")}
+                aria-invalid={error !== null}
+                aria-describedby={error ? "pairing-code-error" : undefined}
+                disabled={busy}
+                oninput={onEdit}
+              />
+              {#if error}
+                <p id="pairing-code-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{error}</p>
+              {/if}
+            </div>
+          </li>
+        </ol>
         {#if busy && enrollmentCode}
           <div class="mt-5">
             <EnrollmentCodeWaiting code={enrollmentCode} />
           </div>
         {/if}
-        {#if error}
-          <p id="pairing-code-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{error}</p>
-        {/if}
       {:else}
-        <p class="text-[0.866667rem] leading-5 text-muted-foreground">
-          {startOnEmptyServer ? t("vaultHandoff.serverConnect.startDescription") : t("vaultHandoff.serverConnect.description")}
-        </p>
-        <label class="mt-4 block text-[0.8rem] text-muted-foreground" for="server-connect-code">{t("vaultHandoff.serverConnect.codeLabel")}</label>
-        <input
-          bind:this={serverInput}
-          bind:value={serverCode}
-          id="server-connect-code"
-          type="text"
-          class="field mt-1 h-10 w-full px-3 font-mono text-sm"
-          dir="ltr"
-          autocomplete="off"
-          autocapitalize="off"
-          spellcheck="false"
-          placeholder="ganbaru-anchor:…"
-          aria-invalid={serverError !== null}
-          aria-describedby={serverError ? "server-connect-error" : undefined}
-          disabled={serverBusy}
-          oninput={() => { serverError = null; }}
-        />
+        <ol class="flex flex-col">
+          <li class="flex gap-3 pb-4">
+            {@render step(1, false)}
+            <div class="min-w-0 flex-1 pt-0.5">
+              <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.run")}</p>
+              <code class="mt-2 flex min-h-9 items-center gap-2 overflow-x-auto rounded-md bg-muted px-3 font-mono text-[0.8rem] whitespace-nowrap text-foreground" dir="ltr">
+                <span class="text-muted-foreground select-none" aria-hidden="true">$</span>{SERVER_SETUP_COMMAND}
+              </code>
+              <button
+                type="button"
+                class="mt-1.5 inline-flex items-center gap-1 text-[0.8rem] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                onclick={() => void openServerGuide()}
+              >
+                {t("sync.server.guide")}<ExternalLink size={12} aria-hidden="true" />
+              </button>
+            </div>
+          </li>
+          <li class="flex gap-3">
+            {@render step(2, true)}
+            <div class="min-w-0 flex-1 pt-0.5">
+              <label class="block text-sm leading-5 text-foreground" for="server-connect-code">{t("vaultHandoff.serverConnect.pasteCode")}</label>
+              <input
+                bind:this={serverInput}
+                bind:value={serverCode}
+                id="server-connect-code"
+                type="text"
+                class="field mt-2 h-10 w-full px-3 font-mono text-sm"
+                dir="ltr"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="ganbaru-anchor:…"
+                aria-label={t("vaultHandoff.serverConnect.codeLabel")}
+                aria-invalid={serverError !== null}
+                aria-describedby={serverError ? "server-connect-error" : "server-connect-outcome"}
+                disabled={serverBusy}
+                oninput={() => { serverError = null; }}
+              />
+              <p id="server-connect-outcome" class="mt-2 text-[0.8rem] leading-5 text-muted-foreground">
+                {startOnEmptyServer ? t("vaultHandoff.serverConnect.startOutcome") : t("vaultHandoff.serverConnect.outcome")}
+              </p>
+            </div>
+          </li>
+        </ol>
         {#if useKit}
-          <label class="mt-3 block text-[0.8rem] text-muted-foreground" for="server-connect-kit">{t("vaultHandoff.serverConnect.kitLabel")}</label>
+          <label class="mt-4 block text-[0.8rem] text-muted-foreground" for="server-connect-kit">{t("vaultHandoff.serverConnect.kitLabel")}</label>
           <input
             bind:this={kitInput}
             bind:value={kit}
@@ -285,15 +387,17 @@
             oninput={() => { serverError = null; }}
           />
         {:else}
-          <button
-            type="button"
-            class="mt-3 text-[0.8rem] text-muted-foreground underline underline-offset-2 hover:text-foreground"
-            disabled={serverBusy}
-            onclick={() => void showKit()}
-          >
-            {t("vaultHandoff.serverConnect.useKit")}
-          </button>
-          <p class="text-[0.8rem] leading-5 text-muted-foreground">{t("vaultHandoff.serverConnect.kitDescription")}</p>
+          <p class="mt-4 border-t border-border pt-3 text-[0.8rem] leading-5 text-muted-foreground">
+            {t("vaultHandoff.serverConnect.kitPrompt")}
+            <button
+              type="button"
+              class="text-foreground underline underline-offset-2 hover:text-primary"
+              disabled={serverBusy}
+              onclick={() => void showKit()}
+            >
+              {t("vaultHandoff.serverConnect.useKit")}
+            </button>
+          </p>
         {/if}
         {#if serverError}
           <p id="server-connect-error" role="alert" class="mt-2 text-[0.8rem] leading-5 text-destructive">{serverError}</p>

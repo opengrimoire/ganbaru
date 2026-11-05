@@ -13,7 +13,7 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { syncServerErrorLabel, syncServerLines } from "$lib/sync/server";
+  import { SERVER_GUIDE_URL, syncServerErrorLabel, syncServerLines } from "$lib/sync/server";
 
   let {
     buttonClass,
@@ -28,7 +28,6 @@
   } = $props();
 
   /** The self-hosted server guide, which also explains syncing devices in different places. */
-  const SERVER_GUIDE_URL = "https://github.com/opengrimoire/ganbaru/blob/main/docs/platforms/server/README.md";
   /** The text every anchor server setup code starts with. */
   const ANCHOR_CODE_PREFIX = "ganbaru-anchor:";
 

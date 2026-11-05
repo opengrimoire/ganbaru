@@ -104,8 +104,8 @@ export const vaultHandoff = {
   computerSteps: {
     open: "On your other computer, open",
     copy: "Copy its pairing code",
-    openOnComputer: "On your computer, open",
-    showQr: "Show its pairing QR code",
+    install: "Install Ganbaru on your computer",
+    goTo: "Go to",
   },
   phoneSteps: {
     install: "Install Ganbaru on your phone",
@@ -145,7 +145,7 @@ export const vaultHandoff = {
   codeMode: {
     scan: "Scan",
     paste: "paste",
-    computerCode: "its code",
+    computerCode: "the pairing code",
     serverCode: "the code it shows",
   },
   notNow: "Not now",

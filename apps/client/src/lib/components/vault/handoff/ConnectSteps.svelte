@@ -266,9 +266,10 @@
   onMount(() => () => window.clearTimeout(copyFeedbackTimer));
 </script>
 
-{#snippet settingsPath()}
+{#snippet settingsPath(toLinkedDevices: boolean)}
   <span class="ms-0.5 inline-flex items-center gap-0.5 rounded-md bg-muted px-1.5 py-px align-baseline text-[0.8rem] font-medium whitespace-nowrap">
     {t("settings.title")}<ChevronRight size={12} class="text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />{t("settings.section.data")}
+    {#if toLinkedDevices}<ChevronRight size={12} class="text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />{t("vaultHandoff.heading")}{/if}
   </span>
 {/snippet}
 
@@ -327,17 +328,28 @@
     {#if source === "computer"}
       <div in:swapIn={swap} out:swapOut={swap} class="mx-auto w-full max-w-md min-w-0">
         <ol class="flex flex-col">
-          <ConnectStep number={1} total={3}>
-            <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
-              {mobile ? t("vaultHandoff.computerSteps.openOnComputer") : t("vaultHandoff.computerSteps.open")}
-              {@render settingsPath()}
-            </p>
-          </ConnectStep>
-          <ConnectStep number={2} total={3}>
-            <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
-              {mobile ? t("vaultHandoff.computerSteps.showQr") : t("vaultHandoff.computerSteps.copy")}
-            </p>
-          </ConnectStep>
+          <!-- A phone may be the first device with Ganbaru, so its steps start with installing the desktop app. -->
+          {#if mobile}
+            <ConnectStep number={1} total={3}>
+              <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">{t("vaultHandoff.computerSteps.install")}</p>
+            </ConnectStep>
+            <ConnectStep number={2} total={3}>
+              <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
+                {t("vaultHandoff.computerSteps.goTo")}
+                {@render settingsPath(true)}
+              </p>
+            </ConnectStep>
+          {:else}
+            <ConnectStep number={1} total={3}>
+              <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
+                {t("vaultHandoff.computerSteps.open")}
+                {@render settingsPath(false)}
+              </p>
+            </ConnectStep>
+            <ConnectStep number={2} total={3}>
+              <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">{t("vaultHandoff.computerSteps.copy")}</p>
+            </ConnectStep>
+          {/if}
           <ConnectStep number={3} total={3} beside={mobile ? "text" : "field"}>
             <div class="min-w-0 flex-1">
               {#if mobile}{@render codeMode("computer")}{/if}

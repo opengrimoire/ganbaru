@@ -141,7 +141,7 @@ describe("ConnectSteps on Android", () => {
 
   it("names scanning and pasting as tabs in the last step and starts on paste when it does not scan first", () => {
     render(false);
-    expect(target.querySelector("ol > li:last-child p")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Scan or paste its code");
+    expect(target.querySelector("ol > li:last-child p")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Scan or paste the pairing code");
     expect(modeTab("paste").getAttribute("aria-selected")).toBe("true");
     expect(target.querySelector("#computer-code-input")?.getAttribute("aria-labelledby")).toBe("computer-code-mode-paste");
     expect(target.querySelector("#pairing-code")).not.toBeNull();

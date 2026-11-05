@@ -112,8 +112,8 @@ export const vaultHandoff = {
   computerSteps: {
     open: "En tu otra computadora, abre",
     copy: "Copia su código de vinculación",
-    openOnComputer: "En tu computadora, abre",
-    showQr: "Muestra su código QR de vinculación",
+    install: "Instala Ganbaru en tu computadora",
+    goTo: "Ve a",
   },
   phoneSteps: {
     install: "Instala Ganbaru en tu teléfono",
@@ -153,7 +153,7 @@ export const vaultHandoff = {
   codeMode: {
     scan: "Escanea",
     paste: "pega",
-    computerCode: "su código",
+    computerCode: "el código de vinculación",
     serverCode: "el código que muestra",
   },
   notNow: "Ahora no",

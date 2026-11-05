@@ -26,7 +26,7 @@
   import { writeTextToClipboard } from "$lib/utils/clipboard";
   import { smoothHeight, smoothSwapTiming, swapIn, swapOut } from "$lib/utils/smooth-swap";
   import { isServerWithoutVault, serverConnectError } from "$lib/vault/server-connect";
-  import ConnectStep from "./ConnectStep.svelte";
+  import ConnectStep, { stepCenteredBlockClass } from "./ConnectStep.svelte";
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
 
@@ -258,24 +258,26 @@
 {/snippet}
 
 {#snippet scanner(which: ConnectSource)}
-  <div class="mt-2 w-full max-w-72">
-    {#if which === "computer"}
-      {#key scanAttempt}
+  <div class={cn("mt-3", stepCenteredBlockClass)}>
+    <div class="w-full max-w-80">
+      {#if which === "computer"}
+        {#key scanAttempt}
+          <MobilePairingScanner
+            disabled={busy}
+            onInvitation={scannedPairing}
+            onError={(cause) => cameraUnavailable("computer", cause)}
+          />
+        {/key}
+      {:else}
         <MobilePairingScanner
-          disabled={busy}
-          onInvitation={scannedPairing}
-          onError={(cause) => cameraUnavailable("computer", cause)}
+          decode={decodeServerSetupQr}
+          label={t("vaultHandoff.serverConnect.scan")}
+          disabled={serverBusy}
+          onInvitation={scannedServer}
+          onError={(cause) => cameraUnavailable("server", cause)}
         />
-      {/key}
-    {:else}
-      <MobilePairingScanner
-        decode={decodeServerSetupQr}
-        label={t("vaultHandoff.serverConnect.scan")}
-        disabled={serverBusy}
-        onInvitation={scannedServer}
-        onError={(cause) => cameraUnavailable("server", cause)}
-      />
-    {/if}
+      {/if}
+    </div>
   </div>
 {/snippet}
 

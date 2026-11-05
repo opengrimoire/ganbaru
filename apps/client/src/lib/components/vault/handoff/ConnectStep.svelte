@@ -1,3 +1,12 @@
+<script lang="ts" module>
+  /**
+   * Classes for a block in the last step that centers across the whole list instead of the step's
+   * text column, such as a QR code or a camera view. The negative start margin spans the marker
+   * column (`w-6`) and its gap (`gap-3`).
+   */
+  export const stepCenteredBlockClass = "-ms-9 flex justify-center";
+</script>
+
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { formatNumber } from "$lib/i18n/formatters";

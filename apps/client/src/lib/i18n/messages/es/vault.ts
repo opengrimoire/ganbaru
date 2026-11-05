@@ -108,6 +108,7 @@ export const vaultHandoff = {
   linkAnotherDevice: "Vincular otro dispositivo",
   enterCode: "Conectar con una computadora o servidor",
   connectTitle: "Conectar con",
+  connectTitleYour: "Conectar con tu",
   computerSteps: {
     open: "En tu otra computadora, abre",
     copy: "Copia su código de vinculación",
@@ -156,7 +157,9 @@ export const vaultHandoff = {
   continue: "Continuar",
   connectTabs: {
     phone: "tu teléfono",
-    yourComputer: "tu computadora",
+    phoneComputer: "computadora",
+    phoneServer: "servidor",
+    phoneServerLead: "un",
     computer: "otra computadora",
     server: "un servidor",
   },

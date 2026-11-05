@@ -7,7 +7,8 @@
   /**
    * The places to connect to, written into a heading as a localized "or" list, such as "your phone,
    * another computer, or a server". Each place is a tab that switches the panel below, and the
-   * arrow, Home, and End keys move between them as in a tab list.
+   * arrow, Home, and End keys move between them as in a tab list. A source's `lead`, such as an
+   * article, stays outside its tab and on the same line.
    */
   let {
     sources,
@@ -17,7 +18,7 @@
     panelId,
     onChoose,
   }: {
-    sources: readonly { id: Id; label: string }[];
+    sources: readonly { id: Id; label: string; lead?: string }[];
     active: Id;
     disabled?: boolean;
     /** Prefix of each tab's id, followed by its source id. */
@@ -63,7 +64,8 @@
     {:else}
       {@const source = sources[part.index]}
       {@const selected = source.id === active}
-      <button
+      <!-- A lead stays on its tab's line; the tags touch so no stray space lands before the next separator. -->
+      <span class="whitespace-nowrap">{#if source.lead}<span class="font-normal text-muted-foreground">{`${source.lead} `}</span>{/if}<button
         bind:this={tabs[part.index]}
         type="button"
         role="tab"
@@ -81,7 +83,7 @@
         onclick={() => onChoose(source.id, false)}
       >
         {source.label}
-      </button>
+      </button></span>
     {/if}
   {/each}
 </span>

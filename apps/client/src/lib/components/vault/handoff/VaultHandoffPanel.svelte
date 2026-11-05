@@ -44,7 +44,7 @@
   import EnrollmentApproval from "./EnrollmentApproval.svelte";
   import LinkedDeviceSuccess from "./LinkedDeviceSuccess.svelte";
   import ConnectSourceTabs from "./ConnectSourceTabs.svelte";
-  import ConnectStep from "./ConnectStep.svelte";
+  import ConnectStep, { stepCenteredBlockClass } from "./ConnectStep.svelte";
   import ConnectSteps, { type ConnectSource } from "./ConnectSteps.svelte";
 
   type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "bootstrap" | "unlink" | "recover" | "linkFolder";
@@ -125,11 +125,11 @@
   const controlButtonClass = $derived(
     `flex min-w-0 w-full items-center justify-between gap-4 overflow-hidden px-3 text-left text-sm transition-colors ${platform === "android" ? "min-h-12 active:bg-accent" : "py-1.5 hover:bg-accent"} disabled:cursor-not-allowed disabled:text-muted-foreground/50`,
   );
-  const onboardingSources = $derived<{ id: "phone" | ConnectSource; label: string }[]>(
+  const onboardingSources = $derived<{ id: "phone" | ConnectSource; label: string; lead?: string }[]>(
     platform === "android"
       ? [
-          { id: "computer", label: t("vaultHandoff.connectTabs.yourComputer") },
-          { id: "server", label: t("vaultHandoff.connectTabs.server") },
+          { id: "computer", label: t("vaultHandoff.connectTabs.phoneComputer") },
+          { id: "server", label: t("vaultHandoff.connectTabs.phoneServer"), lead: t("vaultHandoff.connectTabs.phoneServerLead") },
         ]
       : [
           { id: "phone", label: t("vaultHandoff.connectTabs.phone") },
@@ -610,8 +610,10 @@
             <div class="min-w-0 flex-1 pt-0.5">
               <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.phoneSteps.scan")}</p>
               {#if PairingQrCode}
-                <div class="mt-3 w-full max-w-64">
-                  <PairingQrCode {invitation} onExpired={() => void showInvitation()} />
+                <div class={cn("mt-4", stepCenteredBlockClass)}>
+                  <div class="w-full max-w-72">
+                    <PairingQrCode {invitation} onExpired={() => void showInvitation()} />
+                  </div>
                 </div>
               {/if}
             </div>
@@ -651,7 +653,12 @@
   {#if presentation === "onboarding" && status?.linked !== true}
     <!-- A narrower, balanced title wraps into two even lines instead of one line twice as wide as the panel below it. -->
     <h1 class="mx-auto mb-2 max-w-2xl text-center text-2xl leading-snug font-semibold text-balance text-foreground min-[560px]:text-3xl">
-      {t("vaultHandoff.connectTitle")}
+      {#if platform === "android"}
+        <!-- The phone title ends its first line on the possessive, so both sources share the second line. -->
+        <span class="block">{t("vaultHandoff.connectTitleYour")}</span>
+      {:else}
+        {t("vaultHandoff.connectTitle")}
+      {/if}
       {@render connectSourceTabs()}
     </h1>
   {/if}
@@ -787,7 +794,7 @@
       <!-- A phone links only to a computer or a server, so it has no QR code of its own to show. -->
       {#if presentation === "settings"}
         <p class="px-1 text-[0.866667rem] leading-6 text-foreground">
-          {t("vaultHandoff.connectTitle")}
+          {t("vaultHandoff.connectTitleYour")}
           {@render connectSourceTabs()}
         </p>
       {/if}

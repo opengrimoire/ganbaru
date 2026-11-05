@@ -152,6 +152,8 @@ export const vaultHandoff = {
   serverConnect: {
     install: "Set up ganbaru-server on a computer that stays on, such as a home server or NAS",
     run: "On that server, run",
+    copyCommand: "Copy command",
+    commandCopied: "Command copied",
     outcome: "This computer joins the vault the server runs, in a new folder.",
     startOutcome: "This computer joins the vault the server runs, in a new folder. An empty server receives this vault instead and becomes its anchor.",
     open: "Connect to a server",

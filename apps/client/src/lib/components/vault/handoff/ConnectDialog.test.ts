@@ -1,17 +1,30 @@
 // @vitest-environment jsdom
 
 import { flushSync, mount, tick, unmount } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VaultBootstrapOutcome } from "$lib/api/vault-handoff";
 import ConnectDialog from "./ConnectDialog.svelte";
 
 const joinVaultThroughServer = vi.hoisted(() => vi.fn<(code: string) => Promise<VaultBootstrapOutcome>>());
 const recoverVaultThroughServer = vi.hoisted(() => vi.fn<(code: string, kit: string) => Promise<VaultBootstrapOutcome>>());
 vi.mock("$lib/api/vault-handoff", () => ({ joinVaultThroughServer, recoverVaultThroughServer }));
+const writeTextToClipboard = vi.hoisted(() => vi.fn<(text: string) => Promise<void>>());
+vi.mock("$lib/utils/clipboard", () => ({ writeTextToClipboard }));
 
 const CODE = "ganbaru-anchor:abc";
 const KIT = "AAAA-BBBB-CCCC";
 const ACTIVATED: VaultBootstrapOutcome = { transferId: "t", activated: true, inProgress: false };
+
+/** jsdom has no Web Animations API, so transitions get an animation that finishes on the next microtask. */
+function finishedAnimation(): Animation {
+  const animation = { onfinish: null, cancel: () => undefined, currentTime: 0, playState: "finished", effect: null } as unknown as Animation;
+  queueMicrotask(() => animation.onfinish?.(new Event("finish") as AnimationPlaybackEvent));
+  return animation;
+}
+
+beforeAll(() => {
+  Element.prototype.animate = finishedAnimation;
+});
 
 describe("ConnectDialog", () => {
   let target: HTMLDivElement;
@@ -23,6 +36,7 @@ describe("ConnectDialog", () => {
   beforeEach(() => {
     joinVaultThroughServer.mockReset();
     recoverVaultThroughServer.mockReset();
+    writeTextToClipboard.mockReset();
     onSubmit.mockReset();
     onClose.mockReset();
     onServerActivated.mockReset();
@@ -105,6 +119,30 @@ describe("ConnectDialog", () => {
     server.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     await vi.waitFor(() => expect(document.activeElement).toBe(computer));
     expect(field("pairing-code")).toBeTruthy();
+  });
+
+  it("copies the server setup command and confirms it on the button", async () => {
+    writeTextToClipboard.mockResolvedValue(undefined);
+    await chooseServer();
+    const copy = target.querySelector<HTMLButtonElement>("[data-copy-command]");
+    if (!copy) throw new Error("missing copy button");
+    const idleLabel = copy.getAttribute("aria-label");
+    copy.click();
+    await vi.waitFor(() => expect(copy.getAttribute("aria-label")).not.toBe(idleLabel));
+    expect(writeTextToClipboard).toHaveBeenCalledWith("ganbaru-server anchor setup");
+  });
+
+  it("keeps the copy label when the clipboard refuses", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    writeTextToClipboard.mockRejectedValue(new Error("denied"));
+    await chooseServer();
+    const copy = target.querySelector<HTMLButtonElement>("[data-copy-command]");
+    if (!copy) throw new Error("missing copy button");
+    const idleLabel = copy.getAttribute("aria-label");
+    copy.click();
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+    flushSync();
+    expect(copy.getAttribute("aria-label")).toBe(idleLabel);
   });
 
   it("joins through the server with only the trimmed setup code", async () => {

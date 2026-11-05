@@ -160,6 +160,8 @@ export const vaultHandoff = {
   serverConnect: {
     install: "Instala ganbaru-server en una computadora que siempre esté encendida, como un servidor doméstico o un NAS",
     run: "En ese servidor, ejecuta",
+    copyCommand: "Copiar comando",
+    commandCopied: "Comando copiado",
     outcome: "Esta computadora se une a la bóveda que ejecuta el servidor, en una carpeta nueva.",
     startOutcome: "Esta computadora se une a la bóveda que ejecuta el servidor, en una carpeta nueva. Un servidor vacío recibe esta bóveda y se convierte en su ancla.",
     open: "Conectar con un servidor",

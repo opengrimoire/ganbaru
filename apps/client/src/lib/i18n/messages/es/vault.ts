@@ -76,7 +76,6 @@ export const language = {
 export const vaultHandoff = {
   heading: "Dispositivos vinculados",
   description: "Administra tus dispositivos conectados",
-  desktopOnboardingTitle: "Conecta tu teléfono",
   desktopOnboardingDescription:
     "Instala Ganbaru en tu teléfono y escanea este código QR en la aplicación para vincular tus dispositivos",
   androidOnboardingTitle: "Conecta este teléfono",
@@ -115,9 +114,7 @@ export const vaultHandoff = {
   createQr: "Mostrar código QR de vinculación",
   linkAnotherDevice: "Vincular otro dispositivo",
   enterCode: "Conectar con una computadora o servidor",
-  linkThisComputer: "o conecta esta computadora con otra computadora o un servidor",
   connectTitle: "Conectar con",
-  connectOr: "o",
   computerSteps: {
     open: "En tu otra computadora, abre",
     copy: "Copia su código de vinculación",
@@ -156,6 +153,7 @@ export const vaultHandoff = {
   notNow: "Ahora no",
   continue: "Continuar",
   connectTabs: {
+    phone: "tu teléfono",
     computer: "otra computadora",
     server: "un servidor",
   },

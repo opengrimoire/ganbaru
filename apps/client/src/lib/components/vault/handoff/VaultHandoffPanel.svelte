@@ -47,6 +47,8 @@
   import LinkedDeviceSuccess from "./LinkedDeviceSuccess.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
   import MobileServerConnect from "./MobileServerConnect.svelte";
+  import ConnectSourceTabs from "./ConnectSourceTabs.svelte";
+  import ConnectSteps, { type ConnectSource } from "./ConnectSteps.svelte";
 
   type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "bootstrap" | "unlink" | "recover" | "linkFolder";
 
@@ -89,6 +91,10 @@
   /** Whether this phone is connecting to an anchor server instead of a computer. */
   let serverConnecting = $state(false);
   let codeDialogVisible = $state(false);
+  /** Where the desktop onboarding connects this computer: a phone scans its code, or it joins another vault. */
+  let onboardingSource = $state<"phone" | ConnectSource>("phone");
+  let onboardingServerBusy = $state(false);
+  let onboardingSteps = $state<{ focusField: () => Promise<void> } | null>(null);
   let qrDialogVisible = $state(false);
   let scannerVersion = $state(0);
   let busy = $state<BusyAction | null>(untrack(() => status ? null : "status"));
@@ -121,6 +127,13 @@
   const controlButtonClass = $derived(
     `flex min-w-0 w-full items-center justify-between gap-4 overflow-hidden px-3 text-left text-sm transition-colors ${platform === "android" ? "min-h-12 active:bg-accent" : "py-1.5 hover:bg-accent"} disabled:cursor-not-allowed disabled:text-muted-foreground/50`,
   );
+  const onboardingSources = $derived<{ id: "phone" | ConnectSource; label: string }[]>([
+    { id: "phone", label: t("vaultHandoff.connectTabs.phone") },
+    { id: "computer", label: t("vaultHandoff.connectTabs.computer") },
+    { id: "server", label: t("vaultHandoff.connectTabs.server") },
+  ]);
+  /** Whether a connection is running, which keeps the onboarding on its current source. */
+  const onboardingConnectBusy = $derived(busy === "status" || busy === "pair" || onboardingServerBusy);
   const desktopNetworkAccessSetting = $derived(
     presentation === "settings"
       && platform === "desktop"
@@ -342,8 +355,16 @@
     else confirmation = "networkRevoke";
   }
 
+  /** Shows `next` below the onboarding title, focusing its code field unless the keyboard chose it from the tabs. */
+  function chooseOnboardingSource(next: "phone" | ConnectSource, fromKeyboard: boolean): void {
+    if (onboardingConnectBusy) return;
+    onboardingSource = next;
+    codeError = null;
+    if (!fromKeyboard && next !== "phone") void onboardingSteps?.focusField();
+  }
+
   async function acceptInvitation(encoded: string): Promise<void> {
-    const fromCodeDialog = platform === "desktop" && codeDialogVisible;
+    const fromCodeField = platform === "desktop";
     busy = "pair";
     error = null;
     codeError = null;
@@ -367,7 +388,7 @@
       codeDialogVisible = false;
       codeError = null;
     } catch (cause) {
-      if (fromCodeDialog) {
+      if (fromCodeField) {
         codeError = formatPairingCodeError(cause, t);
       } else {
         fail(cause);
@@ -543,21 +564,100 @@
   </div>
 {/snippet}
 
+{#snippet phonePanel(current: PairingStatus)}
+  {#if desktopQrAvailable && (invitation || current.pendingEnrollment)}
+    <div class={networkStepsVisible
+      ? "grid items-start gap-7 min-[800px]:grid-cols-2 min-[800px]:gap-10"
+      : "flex flex-col items-center gap-4"}>
+      {#if networkStepsVisible}
+        <div class="flex flex-col items-center gap-3 px-1 text-center">
+          <div class="space-y-1">
+            <p class="text-base font-semibold text-foreground">
+              {t("vaultHandoff.stepOne")}
+            </p>
+            <p class="mx-auto max-w-88 text-sm leading-6 text-muted-foreground">
+              {t("vaultHandoff.networkAccessDescription")}
+            </p>
+          </div>
+          {#if networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired"}
+            <button
+              type="button"
+              class={`${buttonClass} bg-background`}
+              disabled={busy !== null}
+              onclick={() => { confirmation = "network"; }}
+            >
+              {#if busy === "network"}<LoaderCircle size={14} class="animate-spin" />{/if}
+              {t("vaultHandoff.allowNetworkAccess")}
+            </button>
+          {:else if networkAccess?.state === "granted" || networkAccess?.state === "notRequired"}
+            <p class="text-[0.8rem] leading-5 text-muted-foreground">
+              {t("vaultHandoff.networkAccessGranted")}
+            </p>
+          {:else if networkAccess?.state === "manualActionRequired"}
+            <Notice class="text-[0.8rem] leading-5" tone="warning" copy={false} message={t("vaultHandoff.networkAccessManual")} />
+          {/if}
+          {#if networkError}
+            <Notice class="w-full max-w-88 justify-center text-[0.8rem] leading-5" message={networkError} />
+          {/if}
+        </div>
+      {/if}
+
+      <div class="flex min-w-0 flex-col items-center gap-4">
+        {#if current.pendingEnrollment}
+          <EnrollmentApproval
+            pending={current.pendingEnrollment}
+            busy={busy === "approval"}
+            onRespond={(approve) => void respondToPendingEnrollment(approve)}
+          />
+        {:else if invitation}
+          <div class="space-y-1 px-1 text-center">
+            {#if networkStepsVisible}
+              <p class="text-base font-semibold text-foreground">
+                {t("vaultHandoff.stepTwo")}
+              </p>
+            {/if}
+            <p class="mx-auto max-w-sm text-sm leading-6 text-muted-foreground">
+              {t("vaultHandoff.desktopOnboardingDescription")}
+            </p>
+          </div>
+          {#await import("./PairingQrCode.svelte") then module}
+            {@const PairingQrCode = module.default}
+            <PairingQrCode {invitation} onExpired={() => void showInvitation()} />
+          {/await}
+        {/if}
+        {#if approvalError}
+          <Notice class="w-full max-w-88 justify-center text-[0.8rem] leading-5" message={approvalError} />
+        {/if}
+      </div>
+    </div>
+  {:else if error}
+    <div class="flex min-h-56">
+      <Notice
+        layout="fill"
+        class="text-sm"
+        message={error}
+        retryLabel={t("vaultHandoff.retry")}
+        onRetry={() => (busy !== null ? undefined : showInvitation())}
+      />
+    </div>
+  {:else}
+    {@render onboardingLoader()}
+  {/if}
+{/snippet}
+
 <section class={presentation === "control" ? "" : "flex flex-col gap-4"}>
   {#if presentation === "onboarding" && platform === "desktop" && status?.linked !== true}
-    <div class="space-y-2 text-center">
-      <h1 class="text-2xl font-semibold leading-tight text-foreground min-[560px]:text-3xl">
-        {t("vaultHandoff.desktopOnboardingTitle")}
-      </h1>
-      <button
-        type="button"
-        class="text-sm text-muted-foreground hover:text-foreground disabled:opacity-55"
-        disabled={busy !== null}
-        onclick={() => { codeDialogVisible = true; error = null; codeError = null; }}
-      >
-        {t("vaultHandoff.linkThisComputer")}
-      </button>
-    </div>
+    <h1 class="text-center text-2xl leading-snug font-semibold text-foreground min-[560px]:text-3xl">
+      {t("vaultHandoff.connectTitle")}
+      <ConnectSourceTabs
+        sources={onboardingSources}
+        active={onboardingSource}
+        disabled={onboardingConnectBusy}
+        idPrefix="onboarding-connect-tab"
+        panelId="onboarding-connect-panel"
+        onChoose={chooseOnboardingSource}
+      />
+    </h1>
   {/if}
   {#if presentation === "settings"}
     <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("vaultHandoff.heading")}</h2>
@@ -670,20 +770,23 @@
           </button>
         {/if}
       </div>
-    {:else if !status.linked && platform === "desktop" && presentation === "onboarding" && !invitation && !status.pendingEnrollment}
-      {#if error}
-        <div class="flex min-h-56">
-          <Notice
-            layout="fill"
-            class="text-sm"
-            message={error}
-            retryLabel={t("vaultHandoff.retry")}
-            onRetry={() => (busy !== null ? undefined : showInvitation())}
-          />
-        </div>
-      {:else}
-        {@render onboardingLoader()}
-      {/if}
+    {:else if !status.linked && platform === "desktop" && presentation === "onboarding"}
+      <ConnectSteps
+        bind:this={onboardingSteps}
+        bind:serverBusy={onboardingServerBusy}
+        source={onboardingSource === "phone" ? null : onboardingSource}
+        busy={busy === "pair"}
+        {enrollmentCode}
+        error={codeError}
+        startOnEmptyServer
+        panelId="onboarding-connect-panel"
+        labelledBy={`onboarding-connect-tab-${onboardingSource}`}
+        onSubmit={(code) => void acceptInvitation(code)}
+        onEdit={() => { codeError = null; }}
+        onServerActivated={() => onActivated?.()}
+      >
+        {@render phonePanel(status)}
+      </ConnectSteps>
     {:else if !status.linked && platform === "android"}
       {#if enrollmentCode}
         <EnrollmentCodeWaiting code={enrollmentCode} />
@@ -717,73 +820,6 @@
           {t("vaultHandoff.serverConnect.open")}
         </button>
       {/if}
-    {/if}
-
-    {#if desktopQrAvailable && platform === "desktop" && (invitation || status.pendingEnrollment) && presentation === "onboarding"}
-      <div class={networkStepsVisible
-        ? "grid items-start gap-7 min-[800px]:grid-cols-2 min-[800px]:gap-10"
-        : "flex flex-col items-center gap-4"}>
-        {#if networkStepsVisible}
-          <div class="flex flex-col items-center gap-3 px-1 text-center">
-            <div class="space-y-1">
-              <p class="text-base font-semibold text-foreground">
-                {t("vaultHandoff.stepOne")}
-              </p>
-              <p class="mx-auto max-w-88 text-sm leading-6 text-muted-foreground">
-                {t("vaultHandoff.networkAccessDescription")}
-              </p>
-            </div>
-            {#if networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired"}
-              <button
-                type="button"
-                class={`${buttonClass} bg-background`}
-                disabled={busy !== null}
-                onclick={() => { confirmation = "network"; }}
-              >
-                {#if busy === "network"}<LoaderCircle size={14} class="animate-spin" />{/if}
-                {t("vaultHandoff.allowNetworkAccess")}
-              </button>
-            {:else if networkAccess?.state === "granted" || networkAccess?.state === "notRequired"}
-              <p class="text-[0.8rem] leading-5 text-muted-foreground">
-                {t("vaultHandoff.networkAccessGranted")}
-              </p>
-            {:else if networkAccess?.state === "manualActionRequired"}
-              <Notice class="text-[0.8rem] leading-5" tone="warning" copy={false} message={t("vaultHandoff.networkAccessManual")} />
-            {/if}
-            {#if networkError}
-              <Notice class="w-full max-w-88 justify-center text-[0.8rem] leading-5" message={networkError} />
-            {/if}
-          </div>
-        {/if}
-
-        <div class="flex min-w-0 flex-col items-center gap-4">
-          {#if status.pendingEnrollment}
-            <EnrollmentApproval
-              pending={status.pendingEnrollment}
-              busy={busy === "approval"}
-              onRespond={(approve) => void respondToPendingEnrollment(approve)}
-            />
-          {:else if invitation}
-            <div class="space-y-1 px-1 text-center">
-              {#if networkStepsVisible}
-                <p class="text-base font-semibold text-foreground">
-                  {t("vaultHandoff.stepTwo")}
-                </p>
-              {/if}
-              <p class="mx-auto max-w-sm text-sm leading-6 text-muted-foreground">
-                {t("vaultHandoff.desktopOnboardingDescription")}
-              </p>
-            </div>
-            {#await import("./PairingQrCode.svelte") then module}
-              {@const PairingQrCode = module.default}
-              <PairingQrCode {invitation} onExpired={() => void showInvitation()} />
-            {/await}
-          {/if}
-          {#if approvalError}
-            <Notice class="w-full max-w-88 justify-center text-[0.8rem] leading-5" message={approvalError} />
-          {/if}
-        </div>
-      </div>
     {/if}
 
     {#if presentation === "control" || (status.linked && presentation !== "onboarding")}
@@ -971,7 +1007,6 @@
       busy={busy === "pair"}
       {enrollmentCode}
       error={codeError}
-      startOnEmptyServer={presentation === "onboarding"}
       onSubmit={(code) => void acceptInvitation(code)}
       onEdit={() => { codeError = null; }}
       onClose={() => { if (busy !== "pair") { codeDialogVisible = false; codeError = null; } }}

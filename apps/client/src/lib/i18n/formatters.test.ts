@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatDateTime,
   formatList,
+  formatListParts,
   formatNumber,
   formatRelativeDays,
   formatRelativeMinutes,
@@ -41,6 +42,21 @@ describe("locale-aware formatters", () => {
     expect(formatList("es", ["Calendario", "Pomodoro", "Música"])).toBe(
       "Calendario, Pomodoro y Música",
     );
+  });
+
+  it("splits a list into value indexes and the locale's separators", () => {
+    expect(formatListParts("en", ["phone", "computer", "server"], { type: "disjunction" })).toEqual([
+      { type: "value", index: 0 },
+      { type: "separator", text: ", " },
+      { type: "value", index: 1 },
+      { type: "separator", text: ", or " },
+      { type: "value", index: 2 },
+    ]);
+    expect(formatListParts("es", ["siete", "ocho"], { type: "disjunction" })).toEqual([
+      { type: "value", index: 0 },
+      { type: "separator", text: " u " },
+      { type: "value", index: 1 },
+    ]);
   });
 
   it("returns locale plural categories", () => {

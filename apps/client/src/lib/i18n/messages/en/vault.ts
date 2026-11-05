@@ -68,7 +68,6 @@ export const language = {
 export const vaultHandoff = {
   heading: "Linked devices",
   description: "Manage your connected devices",
-  desktopOnboardingTitle: "Connect your phone",
   desktopOnboardingDescription:
     "Install Ganbaru on your phone and scan this QR code in the app to link your devices",
   androidOnboardingTitle: "Connect this phone",
@@ -107,9 +106,7 @@ export const vaultHandoff = {
   createQr: "Show pairing QR code",
   linkAnotherDevice: "Link another device",
   enterCode: "Connect to a computer or server",
-  linkThisComputer: "or connect this computer to another computer or a server",
   connectTitle: "Connect to",
-  connectOr: "or",
   computerSteps: {
     open: "On your other computer, open",
     copy: "Copy its pairing code",
@@ -148,6 +145,7 @@ export const vaultHandoff = {
   notNow: "Not now",
   continue: "Continue",
   connectTabs: {
+    phone: "your phone",
     computer: "another computer",
     server: "a server",
   },

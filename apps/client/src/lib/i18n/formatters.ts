@@ -25,6 +25,24 @@ export function formatList(
   return new Intl.ListFormat(locale, options).format(values);
 }
 
+/** One piece of a localized list: a value by its index in the input, or the separator text between values. */
+export type ListPart = { type: "value"; index: number } | { type: "separator"; text: string };
+
+/**
+ * Splits a localized list into its values and separators, so each value can render as its own element, such as a
+ * button, while the locale still decides the commas and conjunction around them.
+ */
+export function formatListParts(
+  locale: AppLocale,
+  values: readonly string[],
+  options: Intl.ListFormatOptions = {},
+): ListPart[] {
+  let index = 0;
+  return new Intl.ListFormat(locale, options).formatToParts(values).map((part): ListPart =>
+    part.type === "element" ? { type: "value", index: index++ } : { type: "separator", text: part.value },
+  );
+}
+
 export function pluralCategory(
   locale: AppLocale,
   value: number,

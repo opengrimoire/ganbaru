@@ -145,6 +145,20 @@ describe("ConnectDialog", () => {
     expect(copy.getAttribute("aria-label")).toBe(idleLabel);
   });
 
+  it("shows a pasted setup code by its ends and joins with the whole code", async () => {
+    const pasted = "ganbaru-anchor:AbCdEfGhIjKlMnOpQrSt";
+    joinVaultThroughServer.mockResolvedValue(ACTIVATED);
+    await chooseServer();
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { getData: () => `${pasted}\n` } });
+    field("server-connect-code").dispatchEvent(event);
+    flushSync();
+    expect(field("server-connect-code").value).toBe("ganbaru-anchor:AbCd••••QrSt");
+    expect(target.textContent).not.toContain(pasted);
+    await submit();
+    expect(joinVaultThroughServer).toHaveBeenCalledWith(pasted);
+  });
+
   it("joins through the server with only the trimmed setup code", async () => {
     joinVaultThroughServer.mockResolvedValue(ACTIVATED);
     await chooseServer();

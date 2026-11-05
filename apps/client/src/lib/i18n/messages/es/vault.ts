@@ -123,6 +123,8 @@ export const vaultHandoff = {
     copy: "Copia su código de vinculación",
   },
   codePlaceholder: "Código de vinculación",
+  clearCode: "Borrar código",
+  clearKit: "Borrar kit de recuperación",
   codeInvalid: "Ese código de vinculación no es válido. Copia uno nuevo de la otra computadora e inténtalo de nuevo.",
   codeExpired: "Ese código de vinculación venció. Obtén uno nuevo de la otra computadora e inténtalo de nuevo.",
   linkDevice: "Vincular dispositivo",

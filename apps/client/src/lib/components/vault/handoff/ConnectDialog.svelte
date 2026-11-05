@@ -25,6 +25,7 @@
   import { growThenFade } from "$lib/utils/grow-then-fade";
   import { isServerWithoutVault, serverConnectError } from "$lib/vault/server-connect";
 
+  import MaskedCodeInput from "$lib/components/ui/MaskedCodeInput.svelte";
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
 
   /**
@@ -332,11 +333,11 @@
             <li class="flex gap-3">
               {@render step(3, 3, "field")}
               <div class="min-w-0 flex-1">
-                <input
-                  bind:this={pairingInput}
+                <MaskedCodeInput
+                  bind:input={pairingInput}
                   bind:value={code}
                   id="pairing-code"
-                  type="text"
+                  clearLabel={t("vaultHandoff.clearCode")}
                   autocomplete="off"
                   spellcheck="false"
                   class="field h-8 w-full px-3 text-sm"
@@ -399,11 +400,11 @@
             <li class="flex gap-3">
               {@render step(3, 3, "field")}
               <div class="min-w-0 flex-1">
-                <input
-                  bind:this={serverInput}
+                <MaskedCodeInput
+                  bind:input={serverInput}
                   bind:value={serverCode}
                   id="server-connect-code"
-                  type="text"
+                  clearLabel={t("vaultHandoff.clearCode")}
                   class="field h-8 w-full px-3 font-mono text-sm"
                   dir="ltr"
                   autocomplete="off"
@@ -426,13 +427,13 @@
           <div class="grid items-start">
             {#if useKit}
               <div transition:growThenFade={panelMotion} class="col-start-1 row-start-1 mt-4 min-w-0">
-                <label class="block text-[0.8rem] text-muted-foreground" for="server-connect-kit">{t("vaultHandoff.serverConnect.kitLabel")}</label>
-                <input
-                  bind:this={kitInput}
+                <label class="mb-1 block text-[0.8rem] text-muted-foreground" for="server-connect-kit">{t("vaultHandoff.serverConnect.kitLabel")}</label>
+                <MaskedCodeInput
+                  bind:input={kitInput}
                   bind:value={kit}
                   id="server-connect-kit"
-                  type="text"
-                  class="field mt-1 h-8 w-full px-3 font-mono text-sm"
+                  clearLabel={t("vaultHandoff.clearKit")}
+                  class="field h-8 w-full px-3 font-mono text-sm"
                   dir="ltr"
                   autocomplete="off"
                   autocapitalize="off"

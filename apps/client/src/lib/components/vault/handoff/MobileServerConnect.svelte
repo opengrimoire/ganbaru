@@ -9,6 +9,7 @@
   } from "$lib/api/vault-handoff";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { serverConnectError } from "$lib/vault/server-connect";
+  import MaskedCodeInput from "$lib/components/ui/MaskedCodeInput.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
 
   /**
@@ -120,13 +121,13 @@
     </button>
   {:else}
     <div>
-      <label class="block text-[0.8rem] text-muted-foreground" for="mobile-server-code">{t("vaultHandoff.serverConnect.codeLabel")}</label>
-      <input
-        bind:this={codeInput}
+      <label class="mb-1 block text-[0.8rem] text-muted-foreground" for="mobile-server-code">{t("vaultHandoff.serverConnect.codeLabel")}</label>
+      <MaskedCodeInput
+        bind:input={codeInput}
         bind:value={code}
         id="mobile-server-code"
-        type="text"
-        class="field mt-1 h-11 w-full px-3 font-mono text-sm"
+        clearLabel={t("vaultHandoff.clearCode")}
+        class="field h-11 w-full px-3 font-mono text-sm"
         dir="ltr"
         autocomplete="off"
         autocapitalize="off"
@@ -147,13 +148,13 @@
 
   {#if useKit}
     <div>
-      <label class="block text-[0.8rem] text-muted-foreground" for="mobile-server-kit">{t("vaultHandoff.serverConnect.kitLabel")}</label>
-      <input
-        bind:this={kitInput}
+      <label class="mb-1 block text-[0.8rem] text-muted-foreground" for="mobile-server-kit">{t("vaultHandoff.serverConnect.kitLabel")}</label>
+      <MaskedCodeInput
+        bind:input={kitInput}
         bind:value={kit}
         id="mobile-server-kit"
-        type="text"
-        class="field mt-1 h-11 w-full px-3 font-mono text-sm"
+        clearLabel={t("vaultHandoff.clearKit")}
+        class="field h-11 w-full px-3 font-mono text-sm"
         dir="ltr"
         autocomplete="off"
         autocapitalize="off"

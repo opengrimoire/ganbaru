@@ -9,7 +9,7 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 ## Where it lives
 
 - `apps/client/src/ui-foundations.css` defines the tokens and Tailwind utilities below.
-- `apps/client/src/lib/components/ui/` holds the shared components: `Checkbox`, `Switch`, `SwitchField`, `Select`, `SearchField`, `ConfirmDialog`, `ActionToast`, `Notice`, `Loading`, and the tooltip host.
+- `apps/client/src/lib/components/ui/` holds the shared components: `Checkbox`, `Switch`, `SwitchField`, `Select`, `SearchField`, `MaskedCodeInput`, `ConfirmDialog`, `ActionToast`, `Notice`, `Loading`, and the tooltip host.
 - `apps/client/src/lib/components/ui/floating-width.ts` mirrors the width utilities for positioning code.
 - `apps/client/src/lib/utils/scroll-edge-fade.ts` and `apps/client/src/lib/utils/menu-aim.ts` own scroll fades and hover-submenu behavior.
 
@@ -47,6 +47,7 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 - `field` styles a text input, textarea, or a wrapper that holds a borderless `field-bare` input with icons. Fields are transparent with a thin border; `aria-invalid="true"` on the input marks an error border that stays while focused.
 - Text entry never shows a focus contour, ring, border change, or fill; the caret is enough. The global keyboard focus outline excludes text entry for the same reason. Buttons, checkboxes, and switches keep the keyboard focus outline.
 - Checkboxes use `ui/Checkbox`, a native input drawn with theme tokens. Use `indeterminate` for partly selected parents, and wrap it in a `<label>` with visible text when the label is visible.
+- Fields that take a pasted secret code (pairing codes, server setup codes, recovery kits) use `ui/MaskedCodeInput`: a pasted code shows only its scheme and its first and last four characters, so it can be checked against its source without the whole secret on screen. Typed text stays visible so it can be checked character by character.
 - On and off settings use `ui/Switch` or `ui/SwitchField`. Inside floating panels the switch uses its `compact` size so it sits within the panel row. A switch that saves quickly stays enabled while saving and ignores repeated presses instead, so the cursor and colors do not flash. Choices from a list use `ui/Select`, never a native `<select>`, so menus match the rest of the app.
 
 ## Unavailable controls

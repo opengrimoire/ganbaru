@@ -42,6 +42,14 @@ export function smoothSwapTiming(): SmoothSwapTiming {
 }
 
 /**
+ * The overflow that hides content past a growing container's edge. `clip` makes no scroll container, so focusing a
+ * field that is still past the edge cannot scroll the content out of place; `hidden` is the fallback.
+ */
+function clipOverflow(): "clip" | "hidden" {
+  return typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("overflow", "clip") ? "clip" : "hidden";
+}
+
+/**
  * Animates the element's height whenever its first child changes size, from whatever height it shows at that moment.
  * The child is the content box: it must be `position: relative` so {@link swapOut} can pin leaving content inside it,
  * and pinned content leaves its height, so the container moves straight to the arriving content's height.
@@ -56,6 +64,7 @@ export function smoothHeight(timing: SmoothSwapTiming): Attachment<HTMLElement> 
     function finish(): void {
       animation = null;
       container.style.overflow = "";
+      container.scrollTop = 0;
     }
 
     const observer = new ResizeObserver(() => {
@@ -66,7 +75,7 @@ export function smoothHeight(timing: SmoothSwapTiming): Attachment<HTMLElement> 
       animation?.cancel();
       finish();
       if (timing.heightMs <= 0 || Math.abs(from - next) < 1) return;
-      container.style.overflow = "hidden";
+      container.style.overflow = clipOverflow();
       animation = container.animate(
         [{ height: `${from}px` }, { height: `${next}px` }],
         { duration: timing.heightMs, easing: HEIGHT_EASING },

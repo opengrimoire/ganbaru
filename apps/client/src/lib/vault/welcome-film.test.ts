@@ -131,28 +131,30 @@ describe("the film's session", () => {
     expect(filmSessionMoment(0)).toEqual({ kind: "focus", remainingSeconds: 3000, totalSeconds: 3000 });
     expect(filmSessionMoment(49.5)).toEqual({ kind: "focus", remainingSeconds: 30, totalSeconds: 3000 });
     expect(filmSessionMoment(50)).toEqual({ kind: "break", remainingSeconds: 600, totalSeconds: 600 });
-    expect(filmSessionMoment(155)).toEqual({ kind: "break", remainingSeconds: 600, totalSeconds: 900 });
+    expect(filmSessionMoment(185)).toEqual({ kind: "break", remainingSeconds: 600, totalSeconds: 900 });
     expect(filmSessionMoment(FILM_SESSION_MINUTES)).toEqual({ kind: "done" });
   });
 
-  it("draws an Extended event that ends during a focus, then carries its rhythm into a Creative event", () => {
+  it("draws an Extended event that ends during its third focus, then carries its rhythm into a Creative event", () => {
     const extended = COUNT_PRESET_RHYTHMS.extended;
     const creative = COUNT_PRESET_RHYTHMS.creative;
     expect(FILM_CHAIN.map((event) => event.preset)).toEqual(["extended", "creative"]);
-    const lastFocus = FILM_DRAWN_MINUTES - (extended.focusDurationMinutes + extended.shortBreakMinutes);
+    const lastFocus = FILM_DRAWN_MINUTES - 2 * (extended.focusDurationMinutes + extended.shortBreakMinutes);
     expect(lastFocus).toBeGreaterThan(0);
     expect(lastFocus).toBeLessThan(extended.focusDurationMinutes);
-    expect(FILM_SESSION.slice(0, 3)).toEqual([
+    expect(FILM_SESSION.slice(0, 5)).toEqual([
+      { kind: "focus", minutes: extended.focusDurationMinutes },
+      { kind: "break", minutes: extended.shortBreakMinutes },
       { kind: "focus", minutes: extended.focusDurationMinutes },
       { kind: "break", minutes: extended.shortBreakMinutes },
       { kind: "focus", minutes: lastFocus },
     ]);
-    expect(FILM_SESSION.slice(3)).toEqual([
-      { kind: "break", minutes: creative.shortBreakMinutes },
-      { kind: "focus", minutes: creative.focusDurationMinutes },
+    expect(FILM_SESSION.slice(5)).toEqual([
       { kind: "break", minutes: creative.shortBreakMinutes },
       { kind: "focus", minutes: creative.focusDurationMinutes },
       { kind: "break", minutes: creative.longBreakMinutes },
+      { kind: "focus", minutes: creative.focusDurationMinutes },
+      { kind: "break", minutes: creative.shortBreakMinutes },
       { kind: "focus", minutes: FILM_SESSION_MINUTES - (FILM_BREAKS.at(-1)?.end ?? 0) },
     ]);
   });
@@ -171,7 +173,7 @@ describe("the film's session", () => {
 
   it("marks its breaks before they happen, with one long break", () => {
     expect(FILM_BREAKS[0]).toEqual({ start: 50, end: 60, long: false });
-    expect(FILM_BREAKS.filter((pause) => pause.long)).toEqual([{ start: 150, end: 165, long: true }]);
+    expect(FILM_BREAKS.filter((pause) => pause.long)).toEqual([{ start: 180, end: 195, long: true }]);
   });
 
   it("records focus up to the current minute and skips the break", () => {

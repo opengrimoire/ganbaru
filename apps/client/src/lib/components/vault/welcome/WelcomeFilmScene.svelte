@@ -160,7 +160,7 @@
   const MUSIC_ICONS: readonly FilmIcon[] = ["music"];
   const MEETING_ICONS: readonly FilmIcon[] = ["repeat", "meeting"];
 
-  /** Lunch, the same hour every day. */
+  /** Lunch, the same hour on every other day of the week. */
   const LUNCH: FilmEvent = { start: 12 * 60, end: 13 * 60, color: EATING, title: "lunch", icons: LUNCH_ICONS };
 
   /**
@@ -201,10 +201,9 @@
     ],
   ];
 
-  /** The film's own day: the session drawn on it, the planned event after it, then lunch. */
+  /** The film's own day: the session drawn on it and the planned event right after it. */
   const FILM_DAY: readonly FilmEvent[] = [
     { start: DRAWN_END, end: SESSION_END, color: BLUE, title: "readSources", icons: MUSIC_ICONS },
-    LUNCH,
   ];
 
   const now = new Date();

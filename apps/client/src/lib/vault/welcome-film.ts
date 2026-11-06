@@ -47,14 +47,14 @@ export const FILM_PULL_BACK_MS = 1200;
 export const FILM_REPLAN_MS = 700;
 
 /**
- * The film's session, in session minutes: an Extended event drawn in the film, ending partway through its second focus,
+ * The film's session, in session minutes: a long Extended event drawn in the film, ending partway through its third focus,
  * then a Creative event already planned right after it. Back to back, they share one rail and the rhythm carries on
  * from one into the other, so the planned event's breaks move well ahead once the drawn event joins it. Both end on
  * the half hour or the hour, as people plan events.
  */
 export const FILM_CHAIN: readonly FilmFocusEvent[] = [
-  { start: 0, end: 90, preset: "extended" },
-  { start: 90, end: 180, preset: "creative" },
+  { start: 0, end: 150, preset: "extended" },
+  { start: 150, end: 240, preset: "creative" },
 ];
 
 /** The length of the event drawn in the film. */

@@ -67,6 +67,7 @@ export const mobile = {
     guideBackgroundSettings: "Ajustes en segundo plano",
     guideNoRestrictions: "Sin restricciones",
     guideUsageAccess: "Apps con acceso de uso",
+    guideAccessibility: "Accesibilidad",
     guidePermitUsageAccess: "Permitir acceso de uso",
     guideDownloadedServices: "Servicios descargados",
     guideServiceLabel: "Bloqueo de aplicaciones de Ganbaru",

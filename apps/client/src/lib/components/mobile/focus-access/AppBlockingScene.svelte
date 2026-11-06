@@ -87,12 +87,12 @@
 {#snippet detail()}
   <GuideHeader title={service} />
   <div class="mx-3 flex items-center gap-2 py-1">
-    <GuideLine class="w-24" />
-    <span class="ml-auto"><GuideToggle on={phase >= 8} tapping={phase === 5} /></span>
+    <span class="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{t("mobile.focusOnboarding.guideAccessibility")}</span>
+    <GuideToggle on={phase >= 8} tapping={phase === 5} />
   </div>
   <div class="flex flex-col gap-1.5 px-3 pt-3">
-    <GuideLine class="w-36" />
-    <GuideLine class="w-28" />
+    <GuideLine class="w-full bg-foreground/8" />
+    <GuideLine class="w-28 bg-foreground/8" />
   </div>
 {/snippet}
 
@@ -102,18 +102,42 @@
 
 <div
   class={cn(
-    "absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 rounded-t-2xl border-t border-border bg-card px-3 pb-3 pt-4 transition-transform duration-400 ease-out motion-reduce:transition-none",
+    "absolute inset-0 bg-black/50 transition-opacity duration-400 ease-out motion-reduce:transition-none",
+    confirming ? "opacity-100" : "opacity-0",
+  )}
+></div>
+<!-- Android's confirmation sheet: the service's icon, a title, a paragraph, the two kinds of access it grants, then the
+     buttons. -->
+<div
+  class={cn(
+    "absolute inset-x-0 bottom-0 top-10 flex flex-col rounded-t-2xl bg-card px-3 pb-3 pt-4 transition-transform duration-400 ease-out motion-reduce:transition-none",
     confirming ? "translate-y-0" : "translate-y-full",
   )}
 >
-  <GuideAppIcon class="size-7" />
-  <div class="flex w-full flex-col gap-1.5">
-    <GuideLine class="w-full" />
-    <GuideLine class="w-32" />
-    <GuideLine class="w-full" />
-    <GuideLine class="w-24" />
+  <div class="flex flex-col items-center gap-2">
+    <GuideAppIcon class="size-6" />
+    <GuideLine class="w-32 bg-foreground/25" />
+    <GuideLine class="w-12 bg-foreground/25" />
   </div>
-  <div class="grid w-full grid-cols-2 gap-2 text-xs font-medium">
+  <div class="mt-3 flex flex-col gap-1">
+    <GuideLine class="w-full" />
+    <GuideLine class="w-full" />
+    <GuideLine class="w-16" />
+  </div>
+  <div class="mt-3 flex flex-col gap-2.5">
+    {#each [["w-24", ["w-full", "w-20"]], ["w-28", ["w-full", "w-full", "w-14"]]] as const as [titleWidth, lineWidths] (titleWidth)}
+      <div class="flex items-start gap-2">
+        <span class="size-4 shrink-0 rounded-md bg-foreground/10"></span>
+        <div class="flex flex-1 flex-col gap-1 pt-0.5">
+          <GuideLine class={cn("bg-foreground/25", titleWidth)} />
+          {#each lineWidths as lineWidth, index (index)}
+            <GuideLine class={cn("bg-foreground/8", lineWidth)} />
+          {/each}
+        </div>
+      </div>
+    {/each}
+  </div>
+  <div class="mt-auto grid w-full grid-cols-2 gap-2 text-xs font-medium">
     <span class="flex h-7 items-center justify-center rounded-full bg-foreground/8 text-foreground">{t("mobile.focusOnboarding.guideDeny")}</span>
     <span class="relative flex h-7 items-center justify-center rounded-full bg-foreground/8 text-primary">
       {t("mobile.focusOnboarding.guideAllow")}

@@ -64,6 +64,7 @@ export const mobile = {
     guideBackgroundSettings: "Background settings",
     guideNoRestrictions: "No restrictions",
     guideUsageAccess: "Apps with usage access",
+    guideAccessibility: "Accessibility",
     guidePermitUsageAccess: "Permit usage access",
     guideDownloadedServices: "Downloaded services",
     guideServiceLabel: "Ganbaru app blocking",

@@ -101,8 +101,14 @@
                 <span lang={choice.titleLang ?? undefined} class="block truncate text-base font-medium text-foreground">
                   {choice.title}
                 </span>
-                <span lang={choice.detailLang} dir="ltr" class="block truncate text-left text-sm text-muted-foreground">
-                  {choice.detail}
+                <span dir="ltr" class="block truncate text-left text-sm text-muted-foreground">
+                  <span lang={choice.detailLang}>{choice.detail}</span>
+                  {#if choice.preferredPlanned}
+                    <span aria-hidden="true"> · </span>
+                    <span lang={choice.preferredPlanned.lang} dir={choice.preferredPlanned.direction}>
+                      {choice.preferredPlanned.text}
+                    </span>
+                  {/if}
                 </span>
               </span>
               <span

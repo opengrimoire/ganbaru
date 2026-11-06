@@ -4,11 +4,13 @@ import {
   DEFAULT_LOCALE,
   LOCALE_METADATA,
   PLANNED_LOCALES,
+  matchAppLocale,
   parseLanguagePreference,
   resolveLanguagePreference,
   type AppLocale,
   type LanguagePreference,
   type LocaleDirection,
+  type PlannedLocale,
 } from "./locales";
 
 export const PRE_VAULT_LANGUAGE_STORAGE_KEY = "ganbaru.preVaultLanguagePreference";
@@ -24,6 +26,17 @@ export interface PreVaultLanguageChoice {
   readonly detail: string;
   /** The language `detail` is written in. */
   readonly detailLang: AppLocale;
+  /** On the system option, a planned language the system prefers over the one it resolves to. */
+  readonly preferredPlanned: PreferredPlannedLanguage | null;
+}
+
+/** A planned language the system prefers, named with a coming soon fragment, both in that language. */
+export interface PreferredPlannedLanguage {
+  /** The BCP 47 tag of the language `text` is written in. */
+  readonly lang: string;
+  readonly direction: LocaleDirection;
+  /** The language's own name followed by its coming soon fragment in parentheses. */
+  readonly text: string;
 }
 
 /** A planned language on the welcome language screen, shown turned off. */
@@ -111,6 +124,48 @@ export function resolvedSystemLanguageName(candidates: readonly string[]): strin
   return LOCALE_METADATA[locale]?.nativeLabel ?? LOCALE_METADATA[DEFAULT_LOCALE].nativeLabel;
 }
 
+/**
+ * The planned language the system ranks above every app locale, or null when an app locale or nothing planned comes
+ * first. A system locale matches a planned language by language and, where the plan names them, script and region;
+ * failing that, by language alone, so `pt-AO` still finds Portuguese.
+ */
+export function preferredPlannedLanguage(candidates: readonly string[]): PreferredPlannedLanguage | null {
+  for (const candidate of candidates) {
+    if (matchAppLocale(candidate)) return null;
+    const planned = matchPlannedLocale(candidate);
+    if (planned) {
+      return {
+        lang: planned.id,
+        direction: planned.direction,
+        text: `${planned.nativeLabel} (${planned.comingSoon})`,
+      };
+    }
+  }
+  return null;
+}
+
+function matchPlannedLocale(candidate: string): PlannedLocale | null {
+  const wanted = maximizedLocale(candidate);
+  if (!wanted) return null;
+  let sameLanguage: PlannedLocale | null = null;
+  for (const planned of PLANNED_LOCALES) {
+    const offered = new Intl.Locale(planned.id);
+    if (offered.language !== wanted.language) continue;
+    sameLanguage ??= planned;
+    const scriptMatches = !offered.script || offered.script === wanted.script;
+    const regionMatches = !offered.region || offered.region === wanted.region;
+    if (scriptMatches && regionMatches) return planned;
+  }
+  return sameLanguage;
+}
+
+function maximizedLocale(candidate: string): Intl.Locale | null {
+  try {
+    return new Intl.Locale(candidate.trim()).maximize();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The welcome language screen's choices: following the system first, naming the language it resolves to, then every
@@ -131,6 +186,7 @@ export function preVaultLanguageChoices(
       titleLang: null,
       detail: LOCALE_METADATA[systemLocale].nativeLabel,
       detailLang: systemLocale,
+      preferredPlanned: preferredPlannedLanguage(systemCandidates),
     },
     ...locales.map((locale) => ({
       value: locale,
@@ -138,6 +194,7 @@ export function preVaultLanguageChoices(
       titleLang: DEFAULT_LOCALE,
       detail: LOCALE_METADATA[locale].nativeLabel,
       detailLang: locale,
+      preferredPlanned: null,
     })),
   ];
 }

@@ -17,7 +17,7 @@ Selectors are designed for someone looking for their language even when they can
 
 ## Before a vault exists
 
-First run opens on a dedicated language screen, the only place a language is chosen before a vault exists. It lists following the system (naming the language that resolves to), then every app language, then the planned languages dimmed. Because no vault exists yet, the choice is applied at once without persisting and kept as a temporary setup preference. After the user creates or imports a folder, it is copied into `preferences.language` and cleared. Boot checks this temporary value before mounting so no screen paints in the wrong language during the handoff.
+First run opens on a dedicated language screen, the only place a language is chosen before a vault exists. It lists following the system (naming the language that resolves to and, when the system prefers a planned language, that language marked as coming soon in its own words), then every app language, then the planned languages dimmed. Because no vault exists yet, the choice is applied at once without persisting and kept as a temporary setup preference. After the user creates or imports a folder, it is copied into `preferences.language` and cleared. Boot checks this temporary value before mounting so no screen paints in the wrong language during the handoff.
 
 ## Runtime behavior
 

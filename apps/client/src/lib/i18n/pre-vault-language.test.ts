@@ -4,6 +4,7 @@ import {
   PRE_VAULT_LANGUAGE_STORAGE_KEY,
   clearPreVaultLanguagePreference,
   plannedLanguageEntries,
+  preferredPlannedLanguage,
   preVaultLanguageChoices,
   readPreVaultLanguagePreference,
   resolvedSystemLanguageName,
@@ -69,6 +70,7 @@ describe("pre-vault language preference", () => {
       titleLang: null,
       detail: "Español",
       detailLang: "es",
+      preferredPlanned: null,
     });
   });
 
@@ -119,5 +121,37 @@ describe("pre-vault language preference", () => {
     expect(new Set(entries.map((entry) => entry.notice)).size).toBe(entries.length);
     expect(entries.find((entry) => entry.id === "fr")?.notice).toBe("Bientôt disponible. Veuillez m’excuser pour la gêne occasionnée.");
     expect(entries.find((entry) => entry.id === "ar")).toMatchObject({ notice: "قريبًا. أعتذر عن الإزعاج.", direction: "rtl" });
+  });
+
+  it("names a planned language the system prefers over the language it resolves to", () => {
+    expect(preferredPlannedLanguage(["fr-FR"])).toEqual({ lang: "fr", direction: "ltr", text: "Français (bientôt disponible)" });
+    expect(preferredPlannedLanguage(["fr-CA", "es-MX"])?.lang).toBe("fr");
+    expect(preferredPlannedLanguage(["ar-EG"])).toMatchObject({ lang: "ar", direction: "rtl" });
+    expect(preVaultLanguageChoices(["fr-FR"], "System language")[0]).toMatchObject({
+      detail: "English",
+      preferredPlanned: { lang: "fr" },
+    });
+  });
+
+  it("names no planned language when an app language comes first or nothing planned matches", () => {
+    expect(preferredPlannedLanguage(["es-MX", "fr-FR"])).toBeNull();
+    expect(preferredPlannedLanguage(["en-GB"])).toBeNull();
+    expect(preferredPlannedLanguage(["sw-KE"])).toBeNull();
+    expect(preferredPlannedLanguage(["not a locale"])).toBeNull();
+    expect(preferredPlannedLanguage([])).toBeNull();
+    expect(preVaultLanguageChoices(["fr-FR"], "System language").slice(1).every((choice) => choice.preferredPlanned === null)).toBe(true);
+  });
+
+  it("matches planned variants by script and region, then by language alone", () => {
+    expect(preferredPlannedLanguage(["pt-PT"])?.lang).toBe("pt-PT");
+    expect(preferredPlannedLanguage(["pt"])?.lang).toBe("pt-BR");
+    expect(preferredPlannedLanguage(["pt-AO"])?.lang).toBe("pt-BR");
+    expect(preferredPlannedLanguage(["zh-TW"])?.lang).toBe("zh-Hant");
+    expect(preferredPlannedLanguage(["zh-CN"])?.lang).toBe("zh-Hans");
+    expect(preferredPlannedLanguage(["iw-IL"])?.lang).toBe("he");
+  });
+
+  it("gives every planned language a coming soon fragment", () => {
+    for (const locale of PLANNED_LOCALES) expect(locale.comingSoon.trim()).not.toBe("");
   });
 });

@@ -1,16 +1,9 @@
 export const vaultSetup = {
   welcomeHeadline: "Plan your day. Then actually do it.",
   welcomeBody: "Plan in the calendar, focus right from it, and watch your week fill with the work you actually did.",
-  welcomeFreeOpenSource: "Free and open source",
-  welcomeNoAccount: "No account",
-  welcomeLocalData: "Your data stays on your devices",
   film: {
     description:
       "A short animation of a day in the app: a Focus session is planned in the calendar, runs through its break and its finish, then sits among the week's other sessions as the view pulls back.",
-    actPlan: "Plan",
-    actFocus: "Focus",
-    actProgress: "Progress",
-    replay: "Replay",
     writeChapter: "Write chapter 3",
     reviewNotes: "Review notes",
     lunch: "Lunch",
@@ -23,10 +16,9 @@ export const vaultSetup = {
   },
   about: {
     headline: "Free, open, and yours.",
-    body: "No ads, no subscriptions, and no tracking. Ganbaru is funded by donations.",
-    freeOpenSourceBody: "Every feature is free. The code is public under the AGPL 3.0, so anyone can read, audit, or improve it.",
-    noAccountBody: "Open the app and start. There is nothing to sign up for and nothing to sign in to.",
-    localDataBody: "Everything lives in a folder on your device. Linked devices sync with each other, never through servers of ours.",
+    body: "No account, no ads, and no tracking. Your data stays on your devices and syncs between them, never through servers of ours.",
+    sceneDescription:
+      "A short animation of one Ganbaru folder on a computer and a phone: its items travel straight from one device to the other and an edit travels back, then a sweep shows the open code underneath both screens.",
   },
   stepProgress: (current: number, total: number) => `Step ${current} of ${total}`,
   licenseButton: "License (AGPL 3.0)",

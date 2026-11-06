@@ -7,7 +7,6 @@ import {
   FILM_SESSION,
   FILM_SESSION_MINUTES,
   easeInOutCubic,
-  filmAct,
   filmClockMinute,
   filmFocusSpans,
   filmSessionMinute,
@@ -131,15 +130,5 @@ describe("the film's session", () => {
     expect(filmFocusSpans(20)).toEqual([{ start: 0, end: 20 }]);
     expect(filmFocusSpans(28)).toEqual([{ start: 0, end: 25 }]);
     expect(filmFocusSpans(40)).toEqual([{ start: 0, end: 25 }, { start: 30, end: 40 }]);
-  });
-});
-
-describe("filmAct", () => {
-  it("moves through plan, focus, and progress", () => {
-    expect(filmAct(0)).toEqual({ act: "plan", progress: 0 });
-    expect(filmAct(FILM_BEATS.focusStart / 2).act).toBe("plan");
-    expect(filmAct(FILM_BEATS.focusStart)).toEqual({ act: "focus", progress: 0 });
-    expect(filmAct(FILM_BEATS.pullBack).act).toBe("progress");
-    expect(filmAct(FILM_BEATS.end)).toEqual({ act: "progress", progress: 1 });
   });
 });

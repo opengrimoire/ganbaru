@@ -10,9 +10,6 @@ import { createPresetPomodoroConfig, deriveRhythmPlan, type PomodoroPresetKey } 
 /** One point of a curve: `[x, y]`, with x strictly increasing across a curve. */
 export type FilmKeyframe = readonly [x: number, y: number];
 
-/** The three chapters the film is told in, shown under it as it plays. */
-export type FilmAct = "plan" | "focus" | "progress";
-
 /** A span of session minutes. */
 export interface FilmSpan {
   start: number;
@@ -42,13 +39,6 @@ export const FILM_BEATS = {
 
 /** How long the pull back from the day to the week takes. */
 export const FILM_PULL_BACK_MS = 1200;
-
-/** Where each chapter starts; each runs until the next one starts, and the last until the end. */
-const ACT_STARTS: readonly (readonly [FilmAct, number])[] = [
-  ["plan", 0],
-  ["focus", FILM_BEATS.focusStart],
-  ["progress", FILM_BEATS.pullBack],
-];
 
 /** The Focus preset the film's sessions run with. */
 export const FILM_FOCUS_PRESET: PomodoroPresetKey = "creative";
@@ -192,13 +182,4 @@ export function filmFocusSpans(minute: number): FilmSpan[] {
   return phaseSpans("focus")
     .filter((span) => minute > span.start)
     .map((span) => ({ start: span.start, end: Math.min(span.end, minute) }));
-}
-
-/** The chapter playing at `elapsed`, and how far through it the film is, from 0 to 1. */
-export function filmAct(elapsed: number): { act: FilmAct; progress: number } {
-  let index = 0;
-  while (index < ACT_STARTS.length - 1 && elapsed >= ACT_STARTS[index + 1][1]) index += 1;
-  const [act, start] = ACT_STARTS[index];
-  const end = index < ACT_STARTS.length - 1 ? ACT_STARTS[index + 1][1] : FILM_BEATS.end;
-  return { act, progress: filmSpan(elapsed, start, end) };
 }

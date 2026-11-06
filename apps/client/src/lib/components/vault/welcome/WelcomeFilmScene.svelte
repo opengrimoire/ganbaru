@@ -23,9 +23,12 @@
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
   const DAYS_W = CANVAS_W - GUTTER_W;
 
-  /** The canvas plus its one pixel border, for the player to fit. */
-  export const FILM_SCENE_WIDTH = CANVAS_W + 2;
-  export const FILM_SCENE_HEIGHT = CANVAS_H + 2;
+  /** The bezel around the canvas, matching the drawn phones of the Android access guides (`p-1.5`). */
+  const BEZEL = 6;
+
+  /** The canvas plus its bezel, for the player to fit. */
+  export const FILM_SCENE_WIDTH = CANVAS_W + 2 * BEZEL;
+  export const FILM_SCENE_HEIGHT = CANVAS_H + 2 * BEZEL;
 </script>
 
 <script lang="ts">
@@ -325,164 +328,166 @@
   </div>
 {/snippet}
 
-<div
-  class="relative box-content flex flex-col overflow-hidden rounded-2xl border border-border bg-(--cal-bg) text-foreground shadow-xl"
-  style:width={`${CANVAS_W}px`}
-  style:height={`${CANVAS_H}px`}
->
-  <!-- The top bar's Focus timer: its ring, and the time left once a session runs. -->
-  <div class="flex shrink-0 items-center justify-end bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
-    {#if focusing && moment.kind !== "done"}
-      <span class="grid h-8 grid-flow-col place-items-center gap-1.5 rounded-full bg-accent/70 pr-2.5 pl-1.5 text-sm font-medium text-foreground tabular-nums">
-        <PomodoroProgressRing
-          active
-          remainingSeconds={moment.remainingSeconds}
-          totalSeconds={moment.totalSeconds}
-          size={20}
-          trackClass="stroke-muted-foreground/35"
-          progressClass="text-foreground/76 stroke-foreground/76"
-        />
-        {formatBlockedScreenDuration(moment.remainingSeconds)}
-      </span>
-    {:else}
-      <span class="grid size-8 place-items-center rounded-full text-muted-foreground">
-        <PomodoroProgressRing
-          active={false}
-          remainingSeconds={0}
-          totalSeconds={0}
-          size={20}
-          trackClass="stroke-muted-foreground/35"
-        />
-      </span>
-    {/if}
-  </div>
-
-  <!-- The week view's header row: the time zone over the gutter, then each day's name and number. -->
-  <div class="flex shrink-0 border-b border-sidebar" style:height={`${HEADER_H}px`}>
-    <span class="flex shrink-0 items-center justify-center text-[0.866667rem]" style:width={`${GUTTER_W}px`}>{timezoneLabel}</span>
-    {#each days as day (day.offset)}
-      <div
-        class="flex min-w-0 basis-0 items-center justify-center overflow-hidden whitespace-nowrap"
-        style:flex-grow={day.offset === 0 ? 1 : otherGrow}
-      >
-        <span class="text-[0.866667rem]" style:color={day.offset < 0 ? "var(--muted-foreground)" : "var(--foreground)"}>
-          {#if dayFormat !== "none"}{formatDayName(day.date, dayFormat, localization.locale)}&nbsp;{/if}{day.date.getDate()}
+<div class="rounded-3xl bg-foreground/6 p-1.5">
+  <div
+    class="relative flex flex-col overflow-hidden rounded-2xl bg-(--cal-bg) text-foreground"
+    style:width={`${CANVAS_W}px`}
+    style:height={`${CANVAS_H}px`}
+  >
+    <!-- The top bar's Focus timer: its ring, and the time left once a session runs. -->
+    <div class="flex shrink-0 items-center justify-end bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
+      {#if focusing && moment.kind !== "done"}
+        <span class="grid h-8 grid-flow-col place-items-center gap-1.5 rounded-full bg-accent/70 pr-2.5 pl-1.5 text-sm font-medium text-foreground tabular-nums">
+          <PomodoroProgressRing
+            active
+            remainingSeconds={moment.remainingSeconds}
+            totalSeconds={moment.totalSeconds}
+            size={20}
+            trackClass="stroke-muted-foreground/35"
+            progressClass="text-foreground/76 stroke-foreground/76"
+          />
+          {formatBlockedScreenDuration(moment.remainingSeconds)}
         </span>
-      </div>
-    {/each}
-  </div>
+      {:else}
+        <span class="grid size-8 place-items-center rounded-full text-muted-foreground">
+          <PomodoroProgressRing
+            active={false}
+            remainingSeconds={0}
+            totalSeconds={0}
+            size={20}
+            trackClass="stroke-muted-foreground/35"
+          />
+        </span>
+      {/if}
+    </div>
 
-  <div class="relative flex min-h-0 flex-1">
-    <!-- The time gutter. -->
-    <div class="relative shrink-0" style:width={`${GUTTER_W}px`}>
-      {#each hours as hour (hour)}
-        <span
-          class="absolute -translate-x-1/2 whitespace-nowrap text-[0.733333rem] leading-none antialiased"
-          style:top={`calc(${y(hour * 60)}px - 0.45em)`}
-          style:left={preferences.calendarTimeFormat === "12h" ? "calc(50% - 0.2px)" : "50%"}
-          style:color="var(--cal-time-label)"
-        >{hourLabel(hour)}</span>
+    <!-- The week view's header row: the time zone over the gutter, then each day's name and number. -->
+    <div class="flex shrink-0 border-b border-sidebar" style:height={`${HEADER_H}px`}>
+      <span class="flex shrink-0 items-center justify-center text-[0.866667rem]" style:width={`${GUTTER_W}px`}>{timezoneLabel}</span>
+      {#each days as day (day.offset)}
+        <div
+          class="flex min-w-0 basis-0 items-center justify-center overflow-hidden whitespace-nowrap"
+          style:flex-grow={day.offset === 0 ? 1 : otherGrow}
+        >
+          <span class="text-[0.866667rem]" style:color={day.offset < 0 ? "var(--muted-foreground)" : "var(--foreground)"}>
+            {#if dayFormat !== "none"}{formatDayName(day.date, dayFormat, localization.locale)}&nbsp;{/if}{day.date.getDate()}
+          </span>
+        </div>
       {/each}
     </div>
 
-    <div class="relative flex min-w-0 flex-1">
-      <div class="pointer-events-none absolute inset-0 z-1">
+    <div class="relative flex min-h-0 flex-1">
+      <!-- The time gutter. -->
+      <div class="relative shrink-0" style:width={`${GUTTER_W}px`}>
         {#each hours as hour (hour)}
-          <div class="absolute inset-x-0 h-0 border-b border-(--cal-gridline)" style:top={`${y(hour * 60)}px`}></div>
+          <span
+            class="absolute -translate-x-1/2 whitespace-nowrap text-[0.733333rem] leading-none antialiased"
+            style:top={`calc(${y(hour * 60)}px - 0.45em)`}
+            style:left={preferences.calendarTimeFormat === "12h" ? "calc(50% - 0.2px)" : "50%"}
+            style:color="var(--cal-time-label)"
+          >{hourLabel(hour)}</span>
         {/each}
       </div>
 
-      {#each days as day (day.offset)}
-        {@const isToday = day.offset === 0}
-        {@const fill = weekFill(day.offset)}
-        <div
-          class={cn("relative min-w-0 basis-0", !isToday && "overflow-hidden")}
-          style:flex-grow={isToday ? 1 : otherGrow}
-          style:border-left={isToday || otherGrow > 0 ? "1px solid var(--cal-gridline)" : undefined}
-        >
-          {#each day.events as event (event.start)}
-            {#if event.focus}
-              {@render rail(event.start, event.end, event.focus === "planned" ? [] : clip(event.focus, fill), false, 1)}
-            {/if}
+      <div class="relative flex min-w-0 flex-1">
+        <div class="pointer-events-none absolute inset-0 z-1">
+          {#each hours as hour (hour)}
+            <div class="absolute inset-x-0 h-0 border-b border-(--cal-gridline)" style:top={`${y(hour * 60)}px`}></div>
           {/each}
+        </div>
 
-          {#if isToday}
-            {@render rail(
-              SESSION_START,
-              SESSION_END,
-              filmFocusSpans(sessionMinute),
-              focusing && moment.kind === "break",
-              saved ? railReveal : 0,
-            )}
-          {/if}
-
-          <div class="absolute inset-y-0 right-0" style:left={`${EVENT_LEFT}px`}>
+        {#each days as day (day.offset)}
+          {@const isToday = day.offset === 0}
+          {@const fill = weekFill(day.offset)}
+          <div
+            class={cn("relative min-w-0 basis-0", !isToday && "overflow-hidden")}
+            style:flex-grow={isToday ? 1 : otherGrow}
+            style:border-left={isToday || otherGrow > 0 ? "1px solid var(--cal-gridline)" : undefined}
+          >
             {#each day.events as event (event.start)}
-              {@render eventBlock(event.start, event.end, event.color, title(event.title), isPast(day.offset, event.end), false)}
+              {#if event.focus}
+                {@render rail(event.start, event.end, event.focus === "planned" ? [] : clip(event.focus, fill), false, 1)}
+              {/if}
             {/each}
 
             {#if isToday}
-              {#if creating}
-                {@render eventBlock(SESSION_START, SESSION_START + drawnMinutes, undefined, t("calendar.event.noTitle"), false, true)}
-              {:else if saved}
-                {@render eventBlock(SESSION_START, SESSION_END, undefined, title("writeChapter"), isPast(0, SESSION_END), false)}
-              {/if}
+              {@render rail(
+                SESSION_START,
+                SESSION_END,
+                filmFocusSpans(sessionMinute),
+                focusing && moment.kind === "break",
+                saved ? railReveal : 0,
+              )}
+            {/if}
 
-              <!-- The press that draws the session, following its growing edge. -->
-              {#if pressOpacity > 0}
-                <span
-                  class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-                  style:top={`${y(SESSION_START + drawnMinutes)}px`}
-                  style:opacity={pressOpacity}
-                ></span>
+            <div class="absolute inset-y-0 right-0" style:left={`${EVENT_LEFT}px`}>
+              {#each day.events as event (event.start)}
+                {@render eventBlock(event.start, event.end, event.color, title(event.title), isPast(day.offset, event.end), false)}
+              {/each}
+
+              {#if isToday}
+                {#if creating}
+                  {@render eventBlock(SESSION_START, SESSION_START + drawnMinutes, undefined, t("calendar.event.noTitle"), false, true)}
+                {:else if saved}
+                  {@render eventBlock(SESSION_START, SESSION_END, undefined, title("writeChapter"), isPast(0, SESSION_END), false)}
+                {/if}
+
+                <!-- The press that draws the session, following its growing edge. -->
+                {#if pressOpacity > 0}
+                  <span
+                    class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
+                    style:top={`${y(SESSION_START + drawnMinutes)}px`}
+                    style:opacity={pressOpacity}
+                  ></span>
+                {/if}
               {/if}
+            </div>
+
+            {#if isToday}
+              <!-- The current time, walking up to the session and through it. -->
+              <div class="pointer-events-none absolute inset-x-0" style:top={`${y(clock)}px`} style:z-index="46">
+                <div
+                  class={cn("absolute size-2.5 shrink-0 rounded-full", settled && "film-breathe")}
+                  style:background-color="var(--cal-current-time)"
+                  style:left="-5px"
+                  style:top="-5px"
+                ></div>
+                <div class="absolute inset-x-0 h-[2.3px]" style:background-color="var(--cal-current-time)" style:top="-1.15px"></div>
+              </div>
             {/if}
           </div>
-
-          {#if isToday}
-            <!-- The current time, walking up to the session and through it. -->
-            <div class="pointer-events-none absolute inset-x-0" style:top={`${y(clock)}px`} style:z-index="46">
-              <div
-                class={cn("absolute size-2.5 shrink-0 rounded-full", settled && "film-breathe")}
-                style:background-color="var(--cal-current-time)"
-                style:left="-5px"
-                style:top="-5px"
-              ></div>
-              <div class="absolute inset-x-0 h-[2.3px]" style:background-color="var(--cal-current-time)" style:top="-1.15px"></div>
-            </div>
-          {/if}
-        </div>
-      {/each}
+        {/each}
+      </div>
     </div>
+
+    <!-- The break screen, with its date and time, countdown, and keys. -->
+    {#if breakScreen > 0}
+      <div class="film-screen absolute inset-0 z-50 flex flex-col items-center justify-center" style={screenStyle(breakPalette, breakScreen)}>
+        <p class="film-screen-small film-screen-main absolute inset-x-0 top-4 px-4 text-center">
+          {formatBlockedScreenDateTime(new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, clock), localization.locale)}
+        </p>
+        <p class="film-screen-timer film-screen-main tabular-nums">{formatBlockedScreenDuration(breakSeconds)}</p>
+        {#if !mobileShell}
+          <div class="film-screen-hints film-screen-subtle absolute inset-x-0 bottom-5 flex flex-col items-center gap-1.5 px-4 text-center">
+            {#if extensionHint && breakCopy.primaryHint}
+              <p>{t("pomodoroOverlay.press")} <span class="film-screen-main">{extensionHint}</span> {t("pomodoroOverlay.to")} {breakCopy.primaryHint.label}</p>
+            {/if}
+            {#if endBreakHint && breakCopy.secondaryHint}
+              <p>{t("pomodoroOverlay.press")} <span class="film-screen-main">{endBreakHint}</span> {t("pomodoroOverlay.to")} {breakCopy.secondaryHint.label}</p>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- The finished screen once the session ends. -->
+    {#if finishedScreen > 0}
+      <div class="film-screen absolute inset-0 z-50 flex flex-col items-center justify-center gap-8 px-4 text-center" style={screenStyle(finishedPalette, finishedScreen)}>
+        <p class="film-screen-title film-screen-main">{finishedCopy.title}</p>
+        <p class="film-screen-small film-screen-muted">{finishedCopy.subtitle}</p>
+      </div>
+    {/if}
   </div>
-
-  <!-- The break screen, with its date and time, countdown, and keys. -->
-  {#if breakScreen > 0}
-    <div class="film-screen absolute inset-0 z-50 flex flex-col items-center justify-center" style={screenStyle(breakPalette, breakScreen)}>
-      <p class="film-screen-small film-screen-main absolute inset-x-0 top-4 px-4 text-center">
-        {formatBlockedScreenDateTime(new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, clock), localization.locale)}
-      </p>
-      <p class="film-screen-timer film-screen-main tabular-nums">{formatBlockedScreenDuration(breakSeconds)}</p>
-      {#if !mobileShell}
-        <div class="film-screen-hints film-screen-subtle absolute inset-x-0 bottom-5 flex flex-col items-center gap-1.5 px-4 text-center">
-          {#if extensionHint && breakCopy.primaryHint}
-            <p>{t("pomodoroOverlay.press")} <span class="film-screen-main">{extensionHint}</span> {t("pomodoroOverlay.to")} {breakCopy.primaryHint.label}</p>
-          {/if}
-          {#if endBreakHint && breakCopy.secondaryHint}
-            <p>{t("pomodoroOverlay.press")} <span class="film-screen-main">{endBreakHint}</span> {t("pomodoroOverlay.to")} {breakCopy.secondaryHint.label}</p>
-          {/if}
-        </div>
-      {/if}
-    </div>
-  {/if}
-
-  <!-- The finished screen once the session ends. -->
-  {#if finishedScreen > 0}
-    <div class="film-screen absolute inset-0 z-50 flex flex-col items-center justify-center gap-8 px-4 text-center" style={screenStyle(finishedPalette, finishedScreen)}>
-      <p class="film-screen-title film-screen-main">{finishedCopy.title}</p>
-      <p class="film-screen-small film-screen-muted">{finishedCopy.subtitle}</p>
-    </div>
-  {/if}
 </div>
 
 <style>

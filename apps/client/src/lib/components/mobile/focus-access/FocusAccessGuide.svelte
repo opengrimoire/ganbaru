@@ -7,6 +7,7 @@
     type FocusAccessStep,
   } from "$lib/mobile/focus-access-steps";
   import { cn } from "$lib/utils";
+  import { SCENE_RESTART_FADE_MS, SCENE_RESTART_PAUSE_MS } from "$lib/utils/scene-loop";
   import AppBlockingScene from "./AppBlockingScene.svelte";
   import AutostartScene from "./AutostartScene.svelte";
   import BatteryScene from "./BatteryScene.svelte";
@@ -20,10 +21,6 @@
    */
   let { step, appLabel }: { step: FocusAccessStep; appLabel: string } = $props();
 
-  /** How long the drawing fades out, and back in, when it starts over. */
-  const RESTART_FADE_MS = 600;
-  /** How long the screen stays blank between the fade out and the fade back in. */
-  const RESTART_PAUSE_MS = 250;
   const { t } = getLocalization();
   const phases = untrack(() => FOCUS_ACCESS_GUIDES[step]);
 
@@ -81,7 +78,7 @@
         cycle += 1;
         restarting = false;
         hold();
-      }, RESTART_FADE_MS + RESTART_PAUSE_MS);
+      }, SCENE_RESTART_FADE_MS + SCENE_RESTART_PAUSE_MS);
     };
     hold();
     return () => window.clearTimeout(timer);
@@ -103,7 +100,7 @@
             "relative h-72 w-52 overflow-hidden rounded-3xl bg-background transition-opacity ease-in-out motion-reduce:transition-none",
             restarting && "opacity-0",
           )}
-          style:transition-duration={`${RESTART_FADE_MS}ms`}
+          style:transition-duration={`${SCENE_RESTART_FADE_MS}ms`}
         >
           {#key cycle}
             <div class="absolute inset-0">

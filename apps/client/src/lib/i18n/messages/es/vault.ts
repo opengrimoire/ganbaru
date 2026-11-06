@@ -9,16 +9,9 @@ import type { MessageShape } from "../types";
 export const vaultSetup = {
   welcomeHeadline: "Planea tu día. Y cúmplelo de verdad.",
   welcomeBody: "Planea en el calendario, enfócate desde ahí y mira cómo tu semana se llena con el trabajo que de verdad hiciste.",
-  welcomeFreeOpenSource: "Gratis y de código abierto",
-  welcomeNoAccount: "Sin cuentas",
-  welcomeLocalData: "Tus datos se quedan en tus dispositivos",
   film: {
     description:
       "Una breve animación de un día en la app: se planea una sesión de enfoque en el calendario, pasa por su descanso y su final, y luego aparece junto a las demás sesiones de la semana.",
-    actPlan: "Planea",
-    actFocus: "Enfócate",
-    actProgress: "Avanza",
-    replay: "Volver a ver",
     writeChapter: "Escribir capítulo 3",
     reviewNotes: "Revisar notas",
     lunch: "Comida",
@@ -31,10 +24,9 @@ export const vaultSetup = {
   },
   about: {
     headline: "Gratis, abierto y tuyo.",
-    body: "Sin anuncios, sin suscripciones y sin rastreo. Ganbaru se financia con donaciones.",
-    freeOpenSourceBody: "Todas las funciones son gratis. El código es público bajo la AGPL 3.0, así que cualquiera puede leerlo, auditarlo o mejorarlo.",
-    noAccountBody: "Abre la app y empieza. No hay nada que registrar ni cuenta con la que iniciar sesión.",
-    localDataBody: "Todo vive en una carpeta de tu dispositivo. Los dispositivos vinculados se sincronizan entre sí, nunca a través de servidores nuestros.",
+    body: "Sin cuentas, sin anuncios y sin rastreo. Tus datos se quedan en tus dispositivos y se sincronizan entre ellos, nunca a través de servidores nuestros.",
+    sceneDescription:
+      "Una breve animación de una carpeta de Ganbaru en una computadora y un teléfono: sus elementos viajan directo de un dispositivo al otro y un cambio vuelve, y luego un barrido muestra el código abierto debajo de ambas pantallas.",
   },
   stepProgress: (current: number, total: number) => `Paso ${current} de ${total}`,
   licenseButton: "Licencia (AGPL 3.0)",

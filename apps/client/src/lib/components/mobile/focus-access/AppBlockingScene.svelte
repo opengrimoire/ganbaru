@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import type { Snippet } from "svelte";
   import { cn } from "$lib/utils";
@@ -38,11 +39,31 @@
 {/snippet}
 
 {#snippet accessibility()}
-  <GuideHeader title={t("mobile.focusOnboarding.guideAccessibility")} />
-  <div class="flex flex-col">
-    <div class="flex flex-col gap-1.5 px-3 py-2.5"><GuideLine class="w-24" /><GuideLine class="w-32" /></div>
-    <div class="flex flex-col gap-1.5 px-3 py-2.5"><GuideLine class="w-28" /><GuideLine class="w-20" /></div>
-    <div class="relative flex items-center gap-2 px-3 py-2.5">
+  <div class="flex flex-col gap-3 px-3 pb-2 pt-3">
+    <ArrowLeft class="size-3.5 text-muted-foreground" aria-hidden="true" />
+    <div class="flex items-center gap-2.5">
+      <GuideLine class="h-2 w-11 bg-foreground/30" />
+      {#each ["w-9", "w-11", "w-12"] as tabWidth (tabWidth)}
+        <GuideLine class={cn("h-2", tabWidth)} />
+      {/each}
+    </div>
+  </div>
+  <div class="mx-3 flex flex-col divide-y divide-border">
+    <div class="flex items-center gap-2 py-2.5">
+      <GuideLine class="w-20 bg-foreground/25" />
+      <GuideLine class="ml-auto w-14" />
+      <ChevronRight class="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+    </div>
+    <div class="flex items-center gap-2 py-2.5">
+      <div class="flex flex-1 flex-col gap-1.5">
+        <GuideLine class="w-24 bg-foreground/25" />
+        <GuideLine class="w-full bg-foreground/8" />
+        <GuideLine class="w-12 bg-foreground/8" />
+      </div>
+      <GuideLine class="w-5" />
+      <ChevronRight class="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+    </div>
+    <div class="relative flex items-center gap-2 py-2.5">
       <span class="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{t("mobile.focusOnboarding.guideDownloadedServices")}</span>
       <ChevronRight class="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
       <GuideTap active={phase === 1} />

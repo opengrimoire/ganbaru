@@ -68,7 +68,6 @@ export const mobile = {
     guideNoRestrictions: "Sin restricciones",
     guideUsageAccess: "Apps con acceso de uso",
     guidePermitUsageAccess: "Permitir acceso de uso",
-    guideAccessibility: "Accesibilidad",
     guideDownloadedServices: "Servicios descargados",
     guideServiceLabel: "Bloqueo de aplicaciones de Ganbaru",
     guideOff: "Desactivado",

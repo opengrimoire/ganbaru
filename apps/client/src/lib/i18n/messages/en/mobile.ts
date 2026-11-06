@@ -46,7 +46,7 @@ export const mobile = {
       `${app} can limit how long you use the apps that distract you each day. Without this permission, it can't measure that time, so limits won't work.`,
     usageAccessSees: "The app only counts time spent in apps.",
     usageAccessNeverSees: "The app never sees what you do in them.",
-    appBlockingTitle: "Stop procrastinating on your phone",
+    appBlockingTitle: "Stop procrastinating",
     appBlockingBody: (app: string) =>
       `${app} can block the apps you choose while you work or once you reach a limit, taking you back to the Home screen. Without this permission, it can't block anything.`,
     appBlockingSees: "The app only sees which app is open.",

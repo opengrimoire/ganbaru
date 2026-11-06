@@ -302,13 +302,14 @@
               <p class="mt-3 text-xs leading-5 text-muted-foreground">{t("mobile.focusOnboarding.privacyNote")}</p>
             {/if}
 
-            <div class="flex flex-1 flex-col pt-8">
+            <!-- The body text's line spacing adds about 4px above, so the top padding is one step smaller to center the guide. -->
+            <div class="flex flex-1 flex-col pb-8 pt-7">
               <FocusAccessGuide step={current} {appLabel} />
             </div>
           </div>
         {/key}
 
-        <div class="mt-6 flex flex-col gap-1">
+        <div class="flex flex-col gap-1">
           {#if outcome === "returned" && detectable}
             <p class="pb-1 text-center text-sm text-muted-foreground" role="status">{t("mobile.focusOnboarding.stillOff")}</p>
           {/if}

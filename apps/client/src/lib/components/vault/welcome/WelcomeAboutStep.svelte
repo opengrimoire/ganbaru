@@ -12,7 +12,7 @@
    * The welcome screen about the app itself: free and open source, no account, and data kept on the user's devices,
    * with the license, acknowledgments, and source code one tap away.
    */
-  let { header, actions }: { header: Snippet; actions: Snippet } = $props();
+  let { actions }: { actions: Snippet } = $props();
 
   const { t } = getLocalization();
   const SOURCE_URL = "https://github.com/opengrimoire/ganbaru";
@@ -42,7 +42,6 @@
 
 <section class="@container h-full overflow-x-hidden overflow-y-auto">
   <div class="mx-auto flex min-h-full w-full max-w-4xl flex-col px-4 pb-6 pt-8 @min-[560px]:px-8 @min-[860px]:px-12 @min-[860px]:py-10">
-    <div class="flex shrink-0 items-start">{@render header()}</div>
 
     <div class="flex flex-1 flex-col justify-center gap-7 py-6 @min-[860px]:gap-10">
       <div class="max-w-2xl space-y-2 @min-[860px]:space-y-4">

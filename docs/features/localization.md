@@ -16,7 +16,7 @@ Selectors are designed for someone looking for their language even when they can
 
 ## Before a vault exists
 
-The first-run data-folder screen has a compact searchable language selector. Because no vault exists yet, the choice is applied without persisting and kept as a temporary setup preference. After the user creates or imports a folder, it is copied into `preferences.language` and cleared. Boot checks this temporary value before mounting so neither screen paints in the wrong language during the handoff. Adding the selector or an error message must not shift the main setup content.
+First run opens on a dedicated language screen, the only place a language is chosen before a vault exists. It lists following the system (naming the language that resolves to) and every app language by its own name. Because no vault exists yet, the choice is applied at once without persisting and kept as a temporary setup preference. After the user creates or imports a folder, it is copied into `preferences.language` and cleared. Boot checks this temporary value before mounting so no screen paints in the wrong language during the handoff.
 
 ## Runtime behavior
 

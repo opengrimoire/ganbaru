@@ -1,15 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { APP_LOCALES, type AppLocale } from "./locales";
 import {
   PRE_VAULT_LANGUAGE_STORAGE_KEY,
   clearPreVaultLanguagePreference,
-  languageMatchesQuery,
-  languageOptionSearchText,
+  preVaultLanguageChoices,
   readPreVaultLanguagePreference,
   resolvedSystemLanguageName,
-  selectedLanguageName,
   writePreVaultLanguagePreference,
-  type LanguageOption,
 } from "./pre-vault-language";
+
+function englishNames(locale: AppLocale): string {
+  return locale === "en" ? "English" : "Spanish";
+}
 
 function storageWith(initial: Record<string, string> = {}): Storage {
   const values = new Map(Object.entries(initial));
@@ -61,20 +63,32 @@ describe("pre-vault language preference", () => {
     expect(resolvedSystemLanguageName(["fr-CA"])).toBe("English");
   });
 
-  it("shows the resolved locale name for system and explicit locale names otherwise", () => {
-    expect(selectedLanguageName("system", "es")).toBe("Español");
-    expect(selectedLanguageName("en", "es")).toBe("English");
+  it("lists the system first, naming the language it resolves to in that language", () => {
+    const [system] = preVaultLanguageChoices(["es-MX"], "System language", englishNames);
+
+    expect(system).toEqual({
+      value: "system",
+      title: "System language",
+      titleLang: null,
+      detail: "Español",
+      detailLang: "es",
+    });
   });
 
-  it("matches search text across labels, details, and locale metadata", () => {
-    const option: LanguageOption = {
-      value: "es",
-      label: "Español",
-      searchText: languageOptionSearchText("es", "Español", "Spanish"),
-    };
+  it("names every app locale by its own name, qualified only where the interface name differs", () => {
+    const choices = preVaultLanguageChoices(["en-US"], "System language", englishNames);
 
-    expect(languageMatchesQuery(option, "span")).toBe(true);
-    expect(languageMatchesQuery(option, "españ")).toBe(true);
-    expect(languageMatchesQuery(option, "japanese")).toBe(false);
+    expect(choices.map((choice) => choice.value)).toEqual(["system", ...APP_LOCALES]);
+    expect(choices.find((choice) => choice.value === "en")).toMatchObject({ title: "English", titleLang: "en", detail: null });
+    expect(choices.find((choice) => choice.value === "es")).toMatchObject({ title: "Español", titleLang: "es", detail: "Spanish" });
+  });
+
+  it("drops the qualifier for the interface's own language when it is shown in another", () => {
+    const spanishNames = (locale: AppLocale): string => (locale === "en" ? "Inglés" : "Español");
+    const choices = preVaultLanguageChoices(["fr-CA"], "Idioma del sistema", spanishNames);
+
+    expect(choices[0].detail).toBe("English");
+    expect(choices.find((choice) => choice.value === "en")?.detail).toBe("Inglés");
+    expect(choices.find((choice) => choice.value === "es")?.detail).toBeNull();
   });
 });

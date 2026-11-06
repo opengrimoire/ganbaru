@@ -5,13 +5,13 @@
   import { cn } from "$lib/utils";
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
   import { WELCOME_STEPS, welcomeStepAt } from "$lib/vault/welcome-steps";
-  import VaultLanguageDropdown from "./VaultLanguageDropdown.svelte";
   import WelcomeAboutStep from "./welcome/WelcomeAboutStep.svelte";
   import WelcomeCalendarStep from "./welcome/WelcomeCalendarStep.svelte";
+  import WelcomeLanguageStep from "./welcome/WelcomeLanguageStep.svelte";
 
   /**
-   * The welcome screens before vault setup: one per feature, then the app's credentials. Each screen lays out its own
-   * content and places the shared language picker and navigation where it fits. Continue on the last screen hands
+   * The welcome screens before vault setup: the language, one per feature, then the app's credentials. Each screen
+   * lays out its own content and places the shared navigation where it fits. Continue on the last screen hands
    * over to vault setup. `step` is bindable so a shell can show the progress in its own chrome; with `showStepDots`,
    * the screens show it beside their navigation instead.
    */
@@ -34,10 +34,6 @@
     if (index > 0) step = index - 1;
   }
 </script>
-
-{#snippet header()}
-  <VaultLanguageDropdown />
-{/snippet}
 
 {#snippet actions()}
   <div class="flex items-center gap-2">
@@ -71,8 +67,10 @@
   </div>
 {/snippet}
 
-{#if current === "calendar"}
-  <WelcomeCalendarStep {header} {actions} />
+{#if current === "language"}
+  <WelcomeLanguageStep {actions} />
+{:else if current === "calendar"}
+  <WelcomeCalendarStep {actions} />
 {:else}
-  <WelcomeAboutStep {header} {actions} />
+  <WelcomeAboutStep {actions} />
 {/if}

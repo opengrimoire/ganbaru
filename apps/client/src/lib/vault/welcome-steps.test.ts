@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { WELCOME_STEPS, welcomeProgress, welcomeStepAt } from "./welcome-steps";
 
 describe("welcome steps", () => {
-  it("opens on the Calendar and ends on the app's credentials", () => {
-    expect(WELCOME_STEPS[0]).toBe("calendar");
+  it("opens on the language, then the Calendar, and ends on the app's credentials", () => {
+    expect(WELCOME_STEPS.slice(0, 2)).toEqual(["language", "calendar"]);
     expect(WELCOME_STEPS.at(-1)).toBe("about");
   });
 

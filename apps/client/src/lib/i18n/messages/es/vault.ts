@@ -25,6 +25,10 @@ export const vaultSetup = {
     draftOutline: "Escribir esquema",
     readSources: "Leer fuentes",
   },
+  language: {
+    headline: "Elige tu idioma",
+    body: "Puedes cambiarlo cuando quieras en Ajustes.",
+  },
   about: {
     headline: "Gratis, abierto y tuyo.",
     body: "Sin anuncios, sin suscripciones y sin rastreo. Ganbaru se financia con donaciones.",
@@ -46,9 +50,6 @@ export const vaultSetup = {
   useDefaultFolder: "Usar la carpeta predeterminada",
   changeFolder: "Cambiar carpeta",
   importFolder: "Importar carpeta",
-  languageSelectorLabel: "Elegir idioma",
-  languageSearchPlaceholder: "Buscar idiomas...",
-  noLanguagesFound: "No se encontraron idiomas.",
 } as const satisfies MessageShape<typeof enVaultSetup>;
 
 export const dataFolderError = {

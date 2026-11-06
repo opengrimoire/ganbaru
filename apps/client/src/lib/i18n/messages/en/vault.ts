@@ -17,6 +17,10 @@ export const vaultSetup = {
     draftOutline: "Draft outline",
     readSources: "Read sources",
   },
+  language: {
+    headline: "Choose your language",
+    body: "You can change it anytime in Settings.",
+  },
   about: {
     headline: "Free, open, and yours.",
     body: "No ads, no subscriptions, and no tracking. Ganbaru is funded by donations.",
@@ -38,9 +42,6 @@ export const vaultSetup = {
   useDefaultFolder: "Use the default folder",
   changeFolder: "Change folder",
   importFolder: "Import folder",
-  languageSelectorLabel: "Choose language",
-  languageSearchPlaceholder: "Search languages...",
-  noLanguagesFound: "No languages found.",
 } as const;
 
 export const dataFolderError = {

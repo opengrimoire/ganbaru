@@ -17,6 +17,7 @@ import {
   filmSessionMinute,
   filmSessionMoment,
   filmSpan,
+  filmWorkday,
   monotoneCurve,
 } from "./welcome-film";
 import { COUNT_PRESET_RHYTHMS } from "$lib/pomodoro/rhythm";
@@ -130,34 +131,34 @@ describe("the film's session", () => {
     expect(filmSessionMoment(0)).toEqual({ kind: "focus", remainingSeconds: 3000, totalSeconds: 3000 });
     expect(filmSessionMoment(49.5)).toEqual({ kind: "focus", remainingSeconds: 30, totalSeconds: 3000 });
     expect(filmSessionMoment(50)).toEqual({ kind: "break", remainingSeconds: 600, totalSeconds: 600 });
-    expect(filmSessionMoment(200)).toEqual({ kind: "break", remainingSeconds: 600, totalSeconds: 900 });
+    expect(filmSessionMoment(155)).toEqual({ kind: "break", remainingSeconds: 600, totalSeconds: 900 });
     expect(filmSessionMoment(FILM_SESSION_MINUTES)).toEqual({ kind: "done" });
   });
 
-  it("draws an Extended event that ends just short of a break, then carries its rhythm into a long Creative event", () => {
+  it("draws an Extended event that ends during a focus, then carries its rhythm into a Creative event", () => {
     const extended = COUNT_PRESET_RHYTHMS.extended;
     const creative = COUNT_PRESET_RHYTHMS.creative;
     expect(FILM_CHAIN.map((event) => event.preset)).toEqual(["extended", "creative"]);
-    const lastFocus = FILM_DRAWN_MINUTES - 2 * (extended.focusDurationMinutes + extended.shortBreakMinutes);
+    const lastFocus = FILM_DRAWN_MINUTES - (extended.focusDurationMinutes + extended.shortBreakMinutes);
     expect(lastFocus).toBeGreaterThan(0);
     expect(lastFocus).toBeLessThan(extended.focusDurationMinutes);
-    expect(FILM_SESSION.slice(0, 5)).toEqual([
-      { kind: "focus", minutes: extended.focusDurationMinutes },
-      { kind: "break", minutes: extended.shortBreakMinutes },
+    expect(FILM_SESSION.slice(0, 3)).toEqual([
       { kind: "focus", minutes: extended.focusDurationMinutes },
       { kind: "break", minutes: extended.shortBreakMinutes },
       { kind: "focus", minutes: lastFocus },
     ]);
-    expect(FILM_SESSION.slice(5)).toEqual([
+    expect(FILM_SESSION.slice(3)).toEqual([
+      { kind: "break", minutes: creative.shortBreakMinutes },
+      { kind: "focus", minutes: creative.focusDurationMinutes },
       { kind: "break", minutes: creative.shortBreakMinutes },
       { kind: "focus", minutes: creative.focusDurationMinutes },
       { kind: "break", minutes: creative.longBreakMinutes },
-      { kind: "focus", minutes: creative.focusDurationMinutes },
-      { kind: "break", minutes: creative.shortBreakMinutes },
-      { kind: "focus", minutes: creative.focusDurationMinutes },
-      { kind: "break", minutes: creative.shortBreakMinutes },
-      { kind: "focus", minutes: FILM_SESSION_MINUTES - 270 },
+      { kind: "focus", minutes: FILM_SESSION_MINUTES - (FILM_BREAKS.at(-1)?.end ?? 0) },
     ]);
+  });
+
+  it("ends both events on the half hour or the hour", () => {
+    for (const event of FILM_CHAIN) expect(event.end % 30).toBe(0);
   });
 
   it("moves the planned event's breaks once the drawn event joins its rail", () => {
@@ -170,7 +171,7 @@ describe("the film's session", () => {
 
   it("marks its breaks before they happen, with one long break", () => {
     expect(FILM_BREAKS[0]).toEqual({ start: 50, end: 60, long: false });
-    expect(FILM_BREAKS.filter((pause) => pause.long)).toEqual([{ start: 195, end: 210, long: true }]);
+    expect(FILM_BREAKS.filter((pause) => pause.long)).toEqual([{ start: 150, end: 165, long: true }]);
   });
 
   it("records focus up to the current minute and skips the break", () => {
@@ -234,5 +235,24 @@ describe("filmDayRails", () => {
       expect(pieces.at(-1)?.end).toBe(rail.end);
       pieces.slice(1).forEach((piece, index) => expect(piece.start).toBe(pieces[index].end));
     }
+  });
+});
+
+describe("filmWorkday", () => {
+  /** The week of Monday 2026-11-02, in local time. */
+  const day = (date: number, hour = 10) => new Date(2026, 10, date, hour);
+
+  it("keeps Tuesday to Friday as they are", () => {
+    for (const date of [3, 4, 5, 6]) expect(filmWorkday(day(date))).toEqual(new Date(2026, 10, date));
+  });
+
+  it("moves Saturday, Sunday, and Monday to that week's Friday", () => {
+    expect(filmWorkday(day(7))).toEqual(new Date(2026, 10, 6));
+    expect(filmWorkday(day(8, 23))).toEqual(new Date(2026, 10, 6));
+    expect(filmWorkday(day(2, 0))).toEqual(new Date(2026, 10, 6));
+  });
+
+  it("crosses a month boundary", () => {
+    expect(filmWorkday(new Date(2026, 10, 30))).toEqual(new Date(2026, 11, 4));
   });
 });

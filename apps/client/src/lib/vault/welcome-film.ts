@@ -47,13 +47,14 @@ export const FILM_PULL_BACK_MS = 1200;
 export const FILM_REPLAN_MS = 700;
 
 /**
- * The film's session, in session minutes: a long Extended event drawn in the film, ending just before its third break,
- * then a long Creative event already planned right after it. Back to back, they share one rail and the rhythm carries
- * on from one into the other, so the planned event's breaks move well ahead once the drawn event joins it.
+ * The film's session, in session minutes: an Extended event drawn in the film, ending partway through its second focus,
+ * then a Creative event already planned right after it. Back to back, they share one rail and the rhythm carries on
+ * from one into the other, so the planned event's breaks move well ahead once the drawn event joins it. Both end on
+ * the half hour or the hour, as people plan events.
  */
 export const FILM_CHAIN: readonly FilmFocusEvent[] = [
-  { start: 0, end: 165, preset: "extended" },
-  { start: 165, end: 285, preset: "creative" },
+  { start: 0, end: 90, preset: "extended" },
+  { start: 90, end: 180, preset: "creative" },
 ];
 
 /** The length of the event drawn in the film. */
@@ -288,4 +289,21 @@ export function filmRailBreaks(elapsed: number): FilmSpan[] {
     };
   });
   return [...drawn, ...planned].map(({ start, end }) => ({ start, end }));
+}
+
+/** `Date.getDay()` for Sunday, Monday, and Friday. */
+const SUNDAY = 0;
+const MONDAY = 1;
+const FRIDAY = 5;
+
+/**
+ * The day the film plays out on: `now`'s own day from Tuesday to Friday, or that week's Friday on a Saturday, Sunday,
+ * or Monday, so the film's day always sits inside a Monday to Friday week with at least one day before it.
+ */
+export function filmWorkday(now: Date): Date {
+  const weekday = now.getDay();
+  // Weeks run Monday to Sunday, so Sunday counts as day seven.
+  const dayOfWeek = weekday === SUNDAY ? 7 : weekday;
+  const offset = dayOfWeek > MONDAY && dayOfWeek <= FRIDAY ? 0 : FRIDAY - dayOfWeek;
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
 }

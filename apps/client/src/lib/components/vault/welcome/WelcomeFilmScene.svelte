@@ -88,6 +88,7 @@
     filmSessionMinute,
     filmSessionMoment,
     filmSpan,
+    filmWorkday,
     type FilmRail,
     type FilmSpan,
   } from "$lib/vault/welcome-film";
@@ -159,47 +160,66 @@
   const MUSIC_ICONS: readonly FilmIcon[] = ["music"];
   const MEETING_ICONS: readonly FilmIcon[] = ["repeat", "meeting"];
 
+  /** Lunch, the same hour every day. */
+  const LUNCH: FilmEvent = { start: 12 * 60, end: 13 * 60, color: EATING, title: "lunch", icons: LUNCH_ICONS };
+
   /**
-   * The days shown once the view pulls back, as offsets from today, and what else each day holds. Focus events run
-   * back to back with different presets, so their rails show the rhythm carrying from one event into the next, with
-   * its long break after the fourth focus.
+   * What the workweek holds from Monday to Friday. Events start and end on the hour or the half hour, as people plan
+   * them, except Tuesday's first event, which starts a little late. Focus events run back to back with different
+   * presets, so their rails show the rhythm carrying from one event into the next.
    */
-  const WEEK: readonly { offset: number; events: readonly FilmEvent[] }[] = [
-    { offset: -3, events: [
-      { start: 540, end: 610, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
-      { start: 610, end: 705, color: CYAN, title: "draftOutline", preset: "creative" },
-      { start: 720, end: 780, color: EATING, title: "lunch", icons: LUNCH_ICONS },
-    ] },
-    { offset: -2, events: [
-      { start: 530, end: 620, color: CYAN, title: "draftOutline", preset: "deep" },
-      { start: 620, end: 690, color: PURPLE, title: "reviewNotes", preset: "creative" },
-      { start: 730, end: 790, color: EATING, title: "lunch", icons: LUNCH_ICONS },
-      { start: 795, end: 840, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
-    ] },
-    { offset: -1, events: [
+  const WORKWEEK: readonly (readonly FilmEvent[])[] = [
+    [
+      { start: 540, end: 600, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
+      { start: 600, end: 690, color: CYAN, title: "draftOutline", preset: "creative" },
+      LUNCH,
+      { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
+    ],
+    [
+      { start: 550, end: 630, color: CYAN, title: "draftOutline", preset: "deep" },
+      { start: 630, end: 690, color: PURPLE, title: "reviewNotes", preset: "creative" },
+      LUNCH,
+      { start: 810, end: 870, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
+    ],
+    [
       { start: 540, end: 600, color: CYAN, title: "draftOutline", preset: "creative" },
-      { start: 600, end: 715, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
-      { start: 730, end: 790, color: EATING, title: "lunch", icons: LUNCH_ICONS },
-      { start: 795, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
-    ] },
-    { offset: 0, events: [
-      { start: DRAWN_END, end: SESSION_END, color: BLUE, title: "readSources", icons: MUSIC_ICONS },
-      { start: SESSION_END + 15, end: SESSION_END + 75, color: EATING, title: "lunch", icons: LUNCH_ICONS },
-    ] },
-    { offset: 1, events: [
-      { start: SESSION_START, end: 600, color: TAUPE, title: "writeChapter", preset: "creative" },
-      { start: 600, end: 690, color: PURPLE, title: "reviewNotes", preset: "balanced" },
-      { start: 720, end: 780, color: EATING, title: "lunch", icons: LUNCH_ICONS },
-      { start: 795, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
-    ] },
+      { start: 600, end: 690, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
+      LUNCH,
+      { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
+    ],
+    [
+      { start: 540, end: 630, color: TAUPE, title: "writeChapter", preset: "creative" },
+      { start: 630, end: 690, color: PURPLE, title: "reviewNotes", preset: "balanced" },
+      LUNCH,
+      { start: 810, end: 870, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
+    ],
+    [
+      { start: 570, end: 660, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
+      { start: 660, end: 720, color: PURPLE, title: "reviewNotes", preset: "creative" },
+      LUNCH,
+      { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
+    ],
+  ];
+
+  /** The film's own day: the session drawn on it, the planned event after it, then lunch. */
+  const FILM_DAY: readonly FilmEvent[] = [
+    { start: DRAWN_END, end: SESSION_END, color: BLUE, title: "readSources", icons: MUSIC_ICONS },
+    LUNCH,
   ];
 
   const now = new Date();
-  const days = WEEK.map((day) => ({
-    ...day,
-    date: new Date(now.getFullYear(), now.getMonth(), now.getDate() + day.offset),
-    rails: filmDayRails(day.events.flatMap((event) => (event.preset ? [{ start: event.start, end: event.end, preset: event.preset }] : []))),
-  }));
+  const filmDate = filmWorkday(now);
+  /** The workweek around the film's day, with each day's offset from it. */
+  const days = WORKWEEK.map((template, weekday) => {
+    const offset = weekday + 1 - filmDate.getDay();
+    const events = offset === 0 ? FILM_DAY : template;
+    return {
+      offset,
+      events,
+      date: new Date(filmDate.getFullYear(), filmDate.getMonth(), filmDate.getDate() + offset),
+      rails: filmDayRails(events.flatMap((event) => (event.preset ? [{ start: event.start, end: event.end, preset: event.preset }] : []))),
+    };
+  });
   const timezone = getLocalTimezone();
   const timezoneLabel = getTimezoneInfo(timezone).acronym;
 
@@ -217,7 +237,7 @@
    * The drawn event ends with a later Focus event still ahead today, so it is an event finished. The planned event ends
    * the day's Focus, so it completes the day, or the workweek on a Friday, as the Focus runtime classifies it.
    */
-  const dayDoneState: PomodoroCompletionScreenState = now.getDay() === FRIDAY ? "workweek_complete" : "day_complete";
+  const dayDoneState: PomodoroCompletionScreenState = filmDate.getDay() === FRIDAY ? "workweek_complete" : "day_complete";
   const eventFinishedCopy = $derived(pomodoroBlockedScreenCopy("event_finished", t));
   const dayDoneCopy = $derived(pomodoroBlockedScreenCopy(dayDoneState, t));
   const breakPalette = pomodoroBlockedScreenPalette("break_countdown");
@@ -562,7 +582,7 @@
     {#if breakScreen > 0}
       <div class="film-screen absolute inset-0 z-50 flex flex-col items-center justify-center" style={screenStyle(breakPalette, breakScreen)}>
         <p class="film-screen-small film-screen-main absolute inset-x-0 top-4 px-4 text-center">
-          {formatBlockedScreenDateTime(new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, clock), localization.locale)}
+          {formatBlockedScreenDateTime(new Date(filmDate.getFullYear(), filmDate.getMonth(), filmDate.getDate(), 0, clock), localization.locale)}
         </p>
         <p class="film-screen-timer film-screen-main tabular-nums">{formatBlockedScreenDuration(breakSeconds)}</p>
         {#if !mobileShell}

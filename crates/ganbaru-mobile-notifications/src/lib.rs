@@ -13,7 +13,7 @@ mod mobile;
 #[cfg(target_os = "android")]
 pub use mobile::{
     BackgroundExecutionStatus, DeviceLocalTimeFact, ExactAlarmStatus, MobileNotifications,
-    MobileNotificationsExt, NativeFocusLifecycle,
+    MobileNotificationsExt, NativeFocusLifecycle, NativeFocusNotificationAction,
 };
 
 #[cfg(target_os = "android")]

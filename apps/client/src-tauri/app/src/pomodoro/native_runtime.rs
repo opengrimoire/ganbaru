@@ -46,6 +46,9 @@ const ACTIVE_TICK_INTERVAL_MS: i64 = 1000;
 const PAUSED_PRESENTATION_INTERVAL_MS: i64 = 180;
 const ERROR_RETRY_INTERVAL_MS: i64 = 5000;
 const FREEZE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// The Android ongoing notification action that resumes a manual pause.
+#[cfg(target_os = "android")]
+const NOTIFICATION_RESUME_ACTION: &str = "resume";
 pub(crate) const EFFECT_LEASE_MS: i64 = 15_000;
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -187,6 +190,12 @@ enum Request {
         intent: FocusIntent,
         context: FocusNativeContext,
     },
+    /// Resume pressed on the Android ongoing notification for the run and phase it displayed.
+    #[cfg(target_os = "android")]
+    NotificationResume {
+        run_id: String,
+        segment_id: String,
+    },
     Snapshot,
     Freeze {
         revision: u64,
@@ -250,7 +259,7 @@ struct Owner {
     last_clock: Option<clock::ClockObservation>,
     calendar_undo: Option<calendar_edit::UndoSlot>,
     idle_grace: clock::IdleGraceClock,
-    #[cfg(desktop)]
+    #[cfg(any(desktop, target_os = "android"))]
     native_command_sequence: u64,
     effects: delivery::DeliveryHandle,
     subscriptions: subscriptions::Subscriptions<Channel<FocusNotice>>,
@@ -359,7 +368,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
             last_clock: None,
             calendar_undo: None,
             idle_grace: clock::IdleGraceClock::default(),
-            #[cfg(desktop)]
+            #[cfg(any(desktop, target_os = "android"))]
             native_command_sequence: 0,
             effects: delivery,
             subscriptions: subscriptions::Subscriptions::default(),
@@ -937,6 +946,46 @@ impl Owner {
                     intent,
                 };
                 self.execute(&command, observed_now, Some(context.vault_generation))
+                    .await?;
+            }
+            #[cfg(target_os = "android")]
+            Request::NotificationResume { run_id, segment_id } => {
+                let snapshot = self.projection.snapshot.as_ref().ok_or_else(|| {
+                    error(
+                        FocusErrorCode::Unavailable,
+                        "Notification Resume has no current execution",
+                    )
+                })?;
+                let displayed_phase = snapshot.mode == FocusMode::ManualPause
+                    && snapshot.run.as_ref().is_some_and(|run| run.id == run_id)
+                    && snapshot
+                        .segment
+                        .as_ref()
+                        .is_some_and(|segment| segment.id == segment_id);
+                if !displayed_phase {
+                    return Err(error(
+                        FocusErrorCode::StaleRevision,
+                        "Notification Resume belongs to a superseded run, phase, or mode",
+                    ));
+                }
+                let revision = snapshot.revision;
+                let generation = self.projection.vault_generation;
+                self.native_command_sequence =
+                    self.native_command_sequence.checked_add(1).ok_or_else(|| {
+                        error(
+                            FocusErrorCode::Unavailable,
+                            "Native Focus command sequence is exhausted",
+                        )
+                    })?;
+                let command = FocusCommand {
+                    command_id: format!(
+                        "android-notification-focus-{generation}-{revision}-{}",
+                        self.native_command_sequence
+                    ),
+                    expected_revision: revision,
+                    intent: FocusIntent::Resume,
+                };
+                self.execute(&command, observed_now, Some(generation))
                     .await?;
             }
             Request::Snapshot | Request::Resume { .. } => {
@@ -1589,6 +1638,7 @@ impl Owner {
         use ganbaru_mobile_notifications::MobileNotificationsExt;
         let app = self.app.clone();
         let state = self.app.state::<FocusRuntimeState>().inner().clone();
+        let sender = state.sender.clone();
         let channel = tauri::ipc::Channel::new(move |body| {
             let observation: ganbaru_mobile_notifications::NativeFocusLifecycle =
                 body.deserialize()?;
@@ -1602,8 +1652,28 @@ impl Owner {
             }
             Ok(())
         });
+        let actions = tauri::ipc::Channel::new(move |body| {
+            let action: ganbaru_mobile_notifications::NativeFocusNotificationAction =
+                body.deserialize()?;
+            if action.action != NOTIFICATION_RESUME_ACTION {
+                eprintln!("Ignored unknown Android Focus notification action");
+                return Ok(());
+            }
+            if let Err(error) = sender.try_send(Message {
+                request: Request::NotificationResume {
+                    run_id: action.run_id,
+                    segment_id: action.phase_id,
+                },
+                response: None,
+            }) {
+                eprintln!("Enqueue Android Focus notification Resume: {error}");
+            }
+            Ok(())
+        });
         tauri::async_runtime::spawn_blocking(move || {
-            app.mobile_notifications().attach_focus_lifecycle(channel)
+            let notifications = app.mobile_notifications();
+            notifications.attach_focus_lifecycle(channel)?;
+            notifications.attach_focus_actions(actions)
         })
         .await
         .map_err(|error| error.to_string())??;

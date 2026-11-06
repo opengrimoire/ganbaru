@@ -18,7 +18,7 @@ The tray mirrors the app chrome ring's focus-only metric and pause state, and st
 
 ## Android ongoing notification
 
-Android shows an ongoing notification during active focus, break, and manual pause, with a system countdown to the deadline and a progress indicator. It names the event when available, otherwise the phase. Paused state is explicit.
+Android shows an ongoing notification during active focus, break, and manual pause, with a system countdown to the deadline and a progress indicator. It names the event when available, otherwise the phase. Paused state is explicit, and a manual pause offers a Resume action bound to the paused run and phase. Pressing it resumes without opening the app when Ganbaru is running, and opens the app to resume when it is not.
 
 A foreground service and the native accepted phase own background continuity. Notification visibility is not the correctness boundary, because newer Android versions allow individual dismissal. Phase-completion alerts use a separate channel. See [Android native services](../../platforms/android/native-services-and-data.md).
 

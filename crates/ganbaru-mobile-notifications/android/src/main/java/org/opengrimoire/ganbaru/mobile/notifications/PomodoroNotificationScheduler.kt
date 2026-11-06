@@ -20,8 +20,8 @@ internal const val POMODORO_ALERTS_CHANNEL_ID = "pomodoro-alerts-v1"
 internal const val POMODORO_NOTIFICATION_ID = 1_500_000_001
 internal const val POMODORO_ALERT_NOTIFICATION_ID = 1_500_000_002
 private const val POMODORO_NOTIFICATION_STORE = "GANBARU_POMODORO_NOTIFICATION_STORE"
-private const val POMODORO_NOTIFICATION_KEY = "acceptedPhaseV2"
-private const val POMODORO_COPY_KEY = "notificationCopyV1"
+private const val POMODORO_NOTIFICATION_KEY = "acceptedPhaseV3"
+private const val POMODORO_COPY_KEY = "notificationCopyV2"
 private const val POMODORO_COMPLETION_KEY = "lastCompletedPhaseV1"
 private const val POMODORO_ALARM_REQUEST_CODE = 1_500_000_003
 private const val EXTRA_RUN_ID = "ganbaruPomodoroRunId"
@@ -50,6 +50,7 @@ internal data class PomodoroNotificationCopy(
   val shortBreakTitle: String,
   val longBreakTitle: String,
   val pausedText: String,
+  val resumeLabel: String,
   val focusCompleteTitle: String,
   val breakCompleteTitle: String,
   val sessionCompleteText: String,
@@ -63,6 +64,8 @@ internal data class PomodoroNotificationProjection(
   val eventEndsAtEpochMs: Long,
   val generatedAtEpochMs: Long,
   val isRunning: Boolean,
+  /** Whether the paused notification may offer Resume: only a manual pause, which Resume ends. */
+  val isResumable: Boolean,
   val remainingSeconds: Int,
   val totalSeconds: Int,
   val configJson: String,
@@ -106,6 +109,7 @@ internal object PomodoroNotificationScheduler {
     .put("shortBreakTitle", copy.shortBreakTitle)
     .put("longBreakTitle", copy.longBreakTitle)
     .put("pausedText", copy.pausedText)
+    .put("resumeLabel", copy.resumeLabel)
     .put("focusCompleteTitle", copy.focusCompleteTitle)
     .put("breakCompleteTitle", copy.breakCompleteTitle)
     .put("sessionCompleteText", copy.sessionCompleteText)
@@ -119,6 +123,7 @@ internal object PomodoroNotificationScheduler {
     shortBreakTitle = copy.getString("shortBreakTitle"),
     longBreakTitle = copy.getString("longBreakTitle"),
     pausedText = copy.getString("pausedText"),
+    resumeLabel = copy.getString("resumeLabel"),
     focusCompleteTitle = copy.getString("focusCompleteTitle"),
     breakCompleteTitle = copy.getString("breakCompleteTitle"),
     sessionCompleteText = copy.getString("sessionCompleteText"),
@@ -278,6 +283,17 @@ internal object PomodoroNotificationScheduler {
       .setShowWhen(projection.isRunning)
     if (!projection.isRunning) {
       builder.setContentText(projection.copy.pausedText)
+      if (projection.isResumable && isPublishedPhase) {
+        builder.addAction(
+          focusResumeAction(
+            context,
+            projection.copy.resumeLabel,
+            notificationIcon(context),
+            projection.runId,
+            phase.id,
+          ),
+        )
+      }
     }
     if (projection.isRunning) {
       builder
@@ -356,6 +372,9 @@ internal object PomodoroNotificationScheduler {
   }
 
   internal fun validate(projection: PomodoroNotificationProjection) {
+    require(!projection.isResumable || !projection.isRunning) {
+      "Only a paused Pomodoro phase can offer Resume"
+    }
     require(projection.runId.isNotBlank() && projection.runId.length <= 128) {
       "Pomodoro run ID must contain 1 to 128 characters"
     }
@@ -411,6 +430,7 @@ internal object PomodoroNotificationScheduler {
       copy.shortBreakTitle,
       copy.longBreakTitle,
       copy.pausedText,
+      copy.resumeLabel,
       copy.focusCompleteTitle,
       copy.breakCompleteTitle,
       copy.sessionCompleteText,
@@ -471,6 +491,7 @@ internal object PomodoroNotificationScheduler {
     .put("eventEndsAtEpochMs", projection.eventEndsAtEpochMs)
     .put("generatedAtEpochMs", projection.generatedAtEpochMs)
     .put("isRunning", projection.isRunning)
+    .put("isResumable", projection.isResumable)
     .put("remainingSeconds", projection.remainingSeconds)
     .put("totalSeconds", projection.totalSeconds)
     .put("configJson", projection.configJson)
@@ -513,6 +534,7 @@ internal object PomodoroNotificationScheduler {
       eventEndsAtEpochMs = value.getLong("eventEndsAtEpochMs"),
       generatedAtEpochMs = value.getLong("generatedAtEpochMs"),
       isRunning = value.getBoolean("isRunning"),
+      isResumable = value.getBoolean("isResumable"),
       remainingSeconds = value.getInt("remainingSeconds"),
       totalSeconds = value.getInt("totalSeconds"),
       configJson = value.getString("configJson"),

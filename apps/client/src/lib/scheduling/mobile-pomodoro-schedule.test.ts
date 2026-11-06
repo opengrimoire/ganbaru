@@ -23,7 +23,7 @@ it("supplies notification language without any execution or deadline fields", ()
   expect(Object.keys(copy).sort()).toEqual([
     "alertsChannelDescription", "alertsChannelName", "breakCompleteTitle", "channelDescription",
     "channelName", "focusCompleteTitle", "focusTitle", "longBreakTitle", "pausedText",
-    "sessionCompleteText", "shortBreakTitle",
+    "resumeLabel", "sessionCompleteText", "shortBreakTitle",
   ]);
   const translated = buildMobileFocusNotificationCopy(((key: string) => `translated:${key}`) as Translate);
   expect(translated.focusTitle).toBe("translated:pomodoroNotification.focusTitle");

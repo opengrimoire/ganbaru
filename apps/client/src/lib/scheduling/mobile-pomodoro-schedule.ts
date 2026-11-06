@@ -18,6 +18,7 @@ export function buildMobileFocusNotificationCopy(t: Translate) {
     shortBreakTitle: t("pomodoroNotification.shortBreakTitle"),
     longBreakTitle: t("pomodoroNotification.longBreakTitle"),
     pausedText: t("pomodoroNotification.pausedText"),
+    resumeLabel: t("pomodoroNotification.resumeFocusLabel"),
     focusCompleteTitle: t("pomodoroNotification.focusCompleteTitle"),
     breakCompleteTitle: t("pomodoroNotification.breakCompleteTitle"),
     sessionCompleteText: t("pomodoroNotification.sessionCompleteText"),

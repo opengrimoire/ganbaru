@@ -21,6 +21,7 @@ pub(crate) struct FocusNotificationCopy {
     short_break_title: String,
     long_break_title: String,
     paused_text: String,
+    resume_label: String,
     focus_complete_title: String,
     break_complete_title: String,
     session_complete_text: String,
@@ -37,6 +38,7 @@ impl FocusNotificationCopy {
             &self.short_break_title,
             &self.long_break_title,
             &self.paused_text,
+            &self.resume_label,
             &self.focus_complete_title,
             &self.break_complete_title,
             &self.session_complete_text,
@@ -72,6 +74,8 @@ struct AcceptedNotification {
     event_ends_at_epoch_ms: i64,
     generated_at_epoch_ms: i64,
     is_running: bool,
+    /// Whether the notification may offer Resume: only a manual pause, which Resume ends.
+    is_resumable: bool,
     remaining_seconds: i64,
     total_seconds: i64,
     config_json: String,
@@ -147,6 +151,7 @@ fn accepted_notification(
             phase_end,
             remaining_ms,
             running,
+            resumable: snapshot.mode == FocusMode::ManualPause,
         },
         copy,
     )
@@ -158,6 +163,7 @@ struct NotificationTiming {
     phase_end: i64,
     remaining_ms: i64,
     running: bool,
+    resumable: bool,
 }
 
 fn notification_payload(
@@ -195,6 +201,7 @@ fn notification_payload(
         event_ends_at_epoch_ms: run.planned_end_ms,
         generated_at_epoch_ms: timing.now,
         is_running: timing.running,
+        is_resumable: timing.resumable,
         remaining_seconds,
         total_seconds,
         config_json: serde_json::to_string(&run.configuration)
@@ -240,6 +247,7 @@ fn completion_notification(
             phase_end: ended_at,
             remaining_ms: 0,
             running: false,
+            resumable: false,
         },
         copy,
     )

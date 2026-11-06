@@ -55,6 +55,15 @@ pub struct NativeFocusLifecycle {
     pub elapsed_realtime_ms: i64,
 }
 
+/// An action the user pressed on the Android ongoing Focus notification, bound to the run and phase it displayed.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeFocusNotificationAction {
+    pub action: String,
+    pub run_id: String,
+    pub phase_id: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CalendarChannelRequest<'a> {
@@ -186,6 +195,17 @@ impl<R: Runtime> MobileNotifications<R> {
         self.0
             .run_mobile_plugin("attachFocusLifecycle", Request { channel })
             .map_err(|error| format!("Attach Android Focus lifecycle observation: {error}"))
+    }
+
+    /// Attach the callback that receives ongoing Focus notification actions. Rust revalidates each action.
+    pub fn attach_focus_actions(&self, channel: tauri::ipc::Channel) -> Result<(), String> {
+        #[derive(Serialize)]
+        struct Request {
+            channel: tauri::ipc::Channel,
+        }
+        self.0
+            .run_mobile_plugin("attachFocusActions", Request { channel })
+            .map_err(|error| format!("Attach Android Focus notification actions: {error}"))
     }
 
     /// Resolve historical local dates and hours using Android's current device zone.

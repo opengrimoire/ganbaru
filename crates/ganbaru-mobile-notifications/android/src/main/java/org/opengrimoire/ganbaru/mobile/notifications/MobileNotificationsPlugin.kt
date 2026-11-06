@@ -66,6 +66,7 @@ internal class PomodoroNotificationCopyArgs {
   lateinit var shortBreakTitle: String
   lateinit var longBreakTitle: String
   lateinit var pausedText: String
+  lateinit var resumeLabel: String
   lateinit var focusCompleteTitle: String
   lateinit var breakCompleteTitle: String
   lateinit var sessionCompleteText: String
@@ -79,6 +80,7 @@ internal class PomodoroNotificationStateArgs {
   var eventEndsAtEpochMs: Long = 0
   var generatedAtEpochMs: Long = 0
   var isRunning: Boolean = false
+  var isResumable: Boolean = false
   var remainingSeconds: Int = 0
   var totalSeconds: Int = 0
   lateinit var configJson: String
@@ -143,6 +145,11 @@ internal class AttachFocusLifecycleArgs {
 }
 
 @InvokeArg
+internal class AttachFocusActionsArgs {
+  lateinit var channel: Channel
+}
+
+@InvokeArg
 internal class DeviceLocalTimeArgs {
   var instants: List<Long> = listOf()
 }
@@ -164,6 +171,15 @@ class MobileNotificationsPlugin(private val activity: Activity) : Plugin(activit
   @Command
   fun attachFocusLifecycle(invoke: Invoke) {
     focusLifecycle.attach(invoke.parseArgs(AttachFocusLifecycleArgs::class.java).channel)
+    invoke.resolve()
+  }
+
+  @Command
+  fun attachFocusActions(invoke: Invoke) {
+    FocusNotificationActionBridge.attach(
+      activity.applicationContext,
+      invoke.parseArgs(AttachFocusActionsArgs::class.java).channel,
+    )
     invoke.resolve()
   }
 
@@ -581,7 +597,7 @@ class MobileNotificationsPlugin(private val activity: Activity) : Plugin(activit
 private fun PomodoroNotificationCopyArgs.toCopy(): PomodoroNotificationCopy =
   PomodoroNotificationCopy(
     channelName, channelDescription, alertsChannelName, alertsChannelDescription,
-    focusTitle, shortBreakTitle, longBreakTitle, pausedText,
+    focusTitle, shortBreakTitle, longBreakTitle, pausedText, resumeLabel,
     focusCompleteTitle, breakCompleteTitle, sessionCompleteText,
   )
 
@@ -594,6 +610,7 @@ private fun PomodoroNotificationStateArgs.toProjection(): PomodoroNotificationPr
     eventEndsAtEpochMs = eventEndsAtEpochMs,
     generatedAtEpochMs = generatedAtEpochMs,
     isRunning = isRunning,
+    isResumable = isResumable,
     remainingSeconds = remainingSeconds,
     totalSeconds = totalSeconds,
     configJson = configJson,
@@ -615,6 +632,7 @@ private fun PomodoroNotificationStateArgs.toProjection(): PomodoroNotificationPr
       shortBreakTitle = copy.shortBreakTitle,
       longBreakTitle = copy.longBreakTitle,
       pausedText = copy.pausedText,
+      resumeLabel = copy.resumeLabel,
       focusCompleteTitle = copy.focusCompleteTitle,
       breakCompleteTitle = copy.breakCompleteTitle,
       sessionCompleteText = copy.sessionCompleteText,
@@ -630,6 +648,7 @@ private fun PomodoroNotificationProjection.toResponse(): JSObject = JSObject().a
   put("eventEndsAtEpochMs", eventEndsAtEpochMs)
   put("generatedAtEpochMs", generatedAtEpochMs)
   put("isRunning", isRunning)
+  put("isResumable", isResumable)
   put("remainingSeconds", remainingSeconds)
   put("totalSeconds", totalSeconds)
   put("configJson", configJson)

@@ -1,14 +1,23 @@
 <script lang="ts" module>
   import { GUTTER_WIDTH_PER_TIMEZONE } from "$lib/calendar/timezone-utils";
+  import { calendarZoomGridMinutesForPercent, calendarZoomHourHeightForPercent } from "$lib/calendar/zoom-levels";
 
-  /** Canvas geometry in logical pixels, matching the Calendar's own measures at its default zoom. */
+  /**
+   * The Calendar zoom the film is drawn at: one of the Calendar's own levels, close enough for a five minute break to
+   * read on the Focus rail.
+   */
+  const FILM_ZOOM_PERCENT = 150;
+
+  /** Canvas geometry in logical pixels, matching the Calendar's own measures at the film's zoom. */
   const CANVAS_W = 360;
   const TOP_BAR_H = 36;
   const HEADER_H = 40;
-  const HOUR_PX = 50;
+  const HOUR_PX = calendarZoomHourHeightForPercent(FILM_ZOOM_PERCENT);
+  /** How the drawn event snaps while it is dragged out, in minutes, as the Calendar snaps at the film's zoom. */
+  const CREATE_SNAP_MINUTES = calendarZoomGridMinutesForPercent(FILM_ZOOM_PERCENT);
   /** The visible part of the day, in minutes since midnight, as if the grid were scrolled to the morning. */
-  const VIEW_START = 8 * 60 + 30;
-  const VIEW_MINUTES = 5 * 60;
+  const VIEW_START = 8 * 60 + 40;
+  const VIEW_MINUTES = 200;
   const BODY_H = (VIEW_MINUTES / 60) * HOUR_PX;
   const CANVAS_H = TOP_BAR_H + HEADER_H + BODY_H;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
@@ -86,8 +95,6 @@
   const EVENT_LEFT = RAIL_W + 4;
   /** Minimum height for an event to show its time under its title. */
   const EVENT_TIME_MIN_PX = 32;
-  /** How the drawn event snaps while it is dragged out, in minutes. */
-  const CREATE_SNAP_MINUTES = 10;
   const PRESS_FADE_MS = 140;
   const RAIL_REVEAL_MS = 450;
   const SCREEN_FADE_MS = 260;
@@ -101,8 +108,9 @@
   /** The session starts at nine. */
   const SESSION_START = 9 * 60;
   const SESSION_END = SESSION_START + FILM_SESSION_MINUTES;
-  const FULL_SESSION: readonly FilmSpan[] = [{ start: 0, end: 50 }, { start: 60, end: FILM_SESSION_MINUTES }];
-  const SHORT_SESSION: readonly FilmSpan[] = [{ start: 0, end: 50 }, { start: 60, end: 95 }];
+  /** A session run to its end, and one stopped ten minutes early, as the week's rails record them. */
+  const FULL_SESSION: readonly FilmSpan[] = filmFocusSpans(FILM_SESSION_MINUTES);
+  const SHORT_SESSION: readonly FilmSpan[] = filmFocusSpans(FILM_SESSION_MINUTES - 10);
 
   /** Palette slots, so the drawing follows the active theme's event colors. The session keeps the default color. */
   const BLUE = 18;
@@ -124,23 +132,25 @@
   const WEEK: readonly { offset: number; events: readonly FilmEvent[] }[] = [
     { offset: -3, events: [
       { start: SESSION_START, end: SESSION_END, color: CYAN, title: "draftOutline", focus: FULL_SESSION },
-      { start: 750, end: 810, color: ORANGE, title: "lunch" },
+      { start: 640, end: 680, color: BLUE, title: "readSources" },
+      { start: 700, end: 760, color: ORANGE, title: "lunch" },
     ] },
     { offset: -2, events: [
       { start: 570, end: 570 + FILM_SESSION_MINUTES, color: BLUE, title: "readSources", focus: SHORT_SESSION },
-      { start: 720, end: 765, color: PURPLE, title: "reviewNotes" },
+      { start: 660, end: 700, color: PURPLE, title: "reviewNotes" },
     ] },
     { offset: -1, events: [
       { start: SESSION_START, end: SESSION_END, color: CYAN, title: "draftOutline", focus: FULL_SESSION },
-      { start: 690, end: 735, color: BLUE, title: "readSources" },
+      { start: 620, end: 660, color: BLUE, title: "readSources" },
+      { start: 700, end: 760, color: ORANGE, title: "lunch" },
     ] },
     { offset: 0, events: [
-      { start: 660, end: 705, color: PURPLE, title: "reviewNotes" },
-      { start: 750, end: 810, color: ORANGE, title: "lunch" },
+      { start: 630, end: 670, color: PURPLE, title: "reviewNotes" },
+      { start: 700, end: 760, color: ORANGE, title: "lunch" },
     ] },
     { offset: 1, events: [
       { start: SESSION_START, end: SESSION_END, color: undefined, title: "writeChapter", focus: "planned" },
-      { start: 690, end: 735, color: PURPLE, title: "reviewNotes" },
+      { start: 640, end: 680, color: PURPLE, title: "reviewNotes" },
     ] },
   ];
   const PAST_DAYS = WEEK.filter((day) => day.offset < 0).length;
@@ -152,7 +162,7 @@
   }));
   const timezone = getLocalTimezone();
   const timezoneLabel = getTimezoneInfo(timezone).acronym;
-  const hours = Array.from({ length: VIEW_MINUTES / 60 }, (_, index) => Math.ceil(VIEW_START / 60) + index)
+  const hours = Array.from({ length: Math.ceil(VIEW_MINUTES / 60) }, (_, index) => Math.ceil(VIEW_START / 60) + index)
     .filter((hour) => hour * 60 > VIEW_START && hour * 60 < VIEW_START + VIEW_MINUTES);
 
   const breakCopy = $derived(pomodoroBlockedScreenCopy("break_countdown", t));

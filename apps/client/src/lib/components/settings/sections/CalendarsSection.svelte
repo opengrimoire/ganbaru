@@ -20,11 +20,8 @@
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import {
-    CALENDAR_ZOOM_PERCENT_LEVELS,
-    calendarZoomGridMinutesForPercent,
-    getCalendarZoom,
-  } from "$lib/stores/calendar-zoom.svelte";
+  import { CALENDAR_ZOOM_PERCENT_LEVELS, calendarZoomGridMinutesForPercent } from "$lib/calendar/zoom-levels";
+  import { getCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import { DEFAULT_CALENDAR_TIME_FORMAT, isCalendarTimeFormat } from "$lib/stores/preference-options";
   import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
   import { cn } from "$lib/utils";

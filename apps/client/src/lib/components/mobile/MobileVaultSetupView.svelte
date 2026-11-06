@@ -10,6 +10,7 @@
   import VaultWelcomeContent from "$lib/components/vault/VaultWelcomeContent.svelte";
   import MobileOnboardingProgress from "./MobileOnboardingProgress.svelte";
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
+  import { welcomeProgress } from "$lib/vault/welcome-steps";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     formatVaultError,
@@ -42,6 +43,7 @@
   let busy = $state<"default" | "restore" | "import" | null>(null);
   let setupError = $state<SetupError | null>(null);
   let welcomeComplete = $state(false);
+  let welcomeStep = $state(0);
   const kitPrompt = createBackupKitPrompt();
   const error = $derived(
     !setupError
@@ -155,9 +157,12 @@
   class="mobile-viewport-height flex w-screen flex-col overflow-hidden bg-background pb-(--safe-area-bottom) pt-(--safe-area-top) text-foreground"
   style="padding-left: var(--safe-area-left); padding-right: var(--safe-area-right);"
 >
-  <MobileOnboardingProgress stage={welcomeComplete ? "vault" : "welcome"}>
+  <MobileOnboardingProgress
+    stage={welcomeComplete ? "vault" : "welcome"}
+    fraction={welcomeComplete ? 1 : welcomeProgress(welcomeStep)}
+  >
     {#if !welcomeComplete}
-      <VaultWelcomeContent onContinue={() => { welcomeComplete = true; }} />
+      <VaultWelcomeContent bind:step={welcomeStep} showStepDots={false} onContinue={() => { welcomeComplete = true; }} />
     {:else}
       <VaultSetupContent
         title={t("mobile.vaultSetup.title")}

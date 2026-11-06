@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   FILM_BEATS,
   FILM_BREAKS,
+  FILM_FOCUS_PRESET,
   FILM_LEAD_IN_MINUTES,
+  FILM_SESSION,
   FILM_SESSION_MINUTES,
   easeInOutCubic,
   filmAct,
@@ -13,6 +15,7 @@ import {
   filmSpan,
   monotoneCurve,
 } from "./welcome-film";
+import { COUNT_PRESET_RHYTHMS } from "$lib/pomodoro/rhythm";
 
 describe("monotoneCurve", () => {
   const points = [[0, 0], [100, 10], [200, 12], [300, 40]] as const;
@@ -91,8 +94,8 @@ describe("the film's session", () => {
   });
 
   it("spans the break exactly while the break screen is up", () => {
-    expect(filmSessionMinute(FILM_BEATS.breakStart)).toBeCloseTo(50, 9);
-    expect(filmSessionMinute(FILM_BEATS.breakEnd)).toBeCloseTo(60, 9);
+    expect(filmSessionMinute(FILM_BEATS.breakStart)).toBeCloseTo(FILM_BREAKS[0].start, 9);
+    expect(filmSessionMinute(FILM_BEATS.breakEnd)).toBeCloseTo(FILM_BREAKS[0].end, 9);
   });
 
   it("slows down during the break so its countdown can be read", () => {
@@ -102,22 +105,32 @@ describe("the film's session", () => {
   });
 
   it("counts down each phase and finishes as done", () => {
-    expect(filmSessionMoment(0)).toEqual({ kind: "focus", remainingSeconds: 3000, totalSeconds: 3000 });
-    expect(filmSessionMoment(49.5)).toEqual({ kind: "focus", remainingSeconds: 30, totalSeconds: 3000 });
-    expect(filmSessionMoment(50)).toEqual({ kind: "break", remainingSeconds: 600, totalSeconds: 600 });
-    expect(filmSessionMoment(65)).toEqual({ kind: "focus", remainingSeconds: 2700, totalSeconds: 3000 });
+    expect(filmSessionMoment(0)).toEqual({ kind: "focus", remainingSeconds: 1500, totalSeconds: 1500 });
+    expect(filmSessionMoment(24.5)).toEqual({ kind: "focus", remainingSeconds: 30, totalSeconds: 1500 });
+    expect(filmSessionMoment(25)).toEqual({ kind: "break", remainingSeconds: 300, totalSeconds: 300 });
+    expect(filmSessionMoment(35)).toEqual({ kind: "focus", remainingSeconds: 900, totalSeconds: 1200 });
     expect(filmSessionMoment(FILM_SESSION_MINUTES)).toEqual({ kind: "done" });
   });
 
+  it("runs the creative preset's rhythm and ends on focus", () => {
+    const creative = COUNT_PRESET_RHYTHMS[FILM_FOCUS_PRESET];
+    expect(FILM_FOCUS_PRESET).toBe("creative");
+    expect(FILM_SESSION).toEqual([
+      { kind: "focus", minutes: creative.focusDurationMinutes },
+      { kind: "break", minutes: creative.shortBreakMinutes },
+      { kind: "focus", minutes: FILM_SESSION_MINUTES - creative.focusDurationMinutes - creative.shortBreakMinutes },
+    ]);
+  });
+
   it("marks its break before it happens", () => {
-    expect(FILM_BREAKS).toEqual([{ start: 50, end: 60 }]);
+    expect(FILM_BREAKS).toEqual([{ start: 25, end: 30 }]);
   });
 
   it("records focus up to the current minute and skips the break", () => {
     expect(filmFocusSpans(0)).toEqual([]);
-    expect(filmFocusSpans(30)).toEqual([{ start: 0, end: 30 }]);
-    expect(filmFocusSpans(55)).toEqual([{ start: 0, end: 50 }]);
-    expect(filmFocusSpans(80)).toEqual([{ start: 0, end: 50 }, { start: 60, end: 80 }]);
+    expect(filmFocusSpans(20)).toEqual([{ start: 0, end: 20 }]);
+    expect(filmFocusSpans(28)).toEqual([{ start: 0, end: 25 }]);
+    expect(filmFocusSpans(40)).toEqual([{ start: 0, end: 25 }, { start: 30, end: 40 }]);
   });
 });
 

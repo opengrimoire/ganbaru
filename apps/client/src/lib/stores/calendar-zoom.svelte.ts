@@ -1,12 +1,15 @@
+import {
+  CALENDAR_ZOOM_PERCENT_LEVELS,
+  calendarGridMinutesForHourHeight,
+  calendarZoomHourHeightForPercent,
+} from "$lib/calendar/zoom-levels";
 import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
 import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
 
 const STORAGE_KEY = "ganbaru-calendar-zoom";
 export const CALENDAR_ZOOM_FRAME_EVENT = "ganbaru-calendar-zoom-frame";
-const DEFAULT_HOUR_HEIGHT = 50;
-export const CALENDAR_ZOOM_PERCENT_LEVELS = [50, 75, 100, 125, 150, 200, 300, 400] as const;
 const ZOOM_LEVELS: readonly number[] = CALENDAR_ZOOM_PERCENT_LEVELS.map(
-  (percent) => (DEFAULT_HOUR_HEIGHT * percent) / 100,
+  (percent) => calendarZoomHourHeightForPercent(percent),
 );
 const DEFAULT_INDEX = CALENDAR_ZOOM_PERCENT_LEVELS.indexOf(100);
 const ANIMATION_DURATION_MS = 150;
@@ -31,17 +34,6 @@ function loadSaved(): number {
   const parsed = parseFloat(saved);
   if (Number.isNaN(parsed)) return ZOOM_LEVELS[DEFAULT_INDEX];
   return parsed;
-}
-
-function deriveGridMinutes(height: number): number {
-  if (height >= 120) return 5;
-  if (height >= 60) return 10;
-  if (height >= 40) return 15;
-  return 30;
-}
-
-export function calendarZoomGridMinutesForPercent(percent: number): number {
-  return deriveGridMinutes((DEFAULT_HOUR_HEIGHT * percent) / 100);
 }
 
 function easeOutCubic(t: number): number {
@@ -194,7 +186,7 @@ function createCalendarZoom({ persists }: CalendarZoomOptions) {
       return hourHeight;
     },
     get gridMinutes() {
-      return deriveGridMinutes(hourHeight);
+      return calendarGridMinutesForHourHeight(hourHeight);
     },
     get isAnimating() {
       return gestureActive || animating;
@@ -243,7 +235,7 @@ function createCalendarZoom({ persists }: CalendarZoomOptions) {
       return Math.round((hourHeight / ZOOM_LEVELS[DEFAULT_INDEX]) * 100);
     },
     setZoomPercent(percent: number) {
-      setZoomIndex(findClosestIndex((DEFAULT_HOUR_HEIGHT * percent) / 100));
+      setZoomIndex(findClosestIndex(calendarZoomHourHeightForPercent(percent)));
     },
     /** Zoom one level with smooth animation. */
     zoomStep(direction: 1 | -1) {

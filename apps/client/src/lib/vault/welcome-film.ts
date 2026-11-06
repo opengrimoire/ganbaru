@@ -5,6 +5,8 @@
  * the reduced-motion still is simply the last frame.
  */
 
+import { createPresetPomodoroConfig, deriveRhythmPlan, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
+
 /** One point of a curve: `[x, y]`, with x strictly increasing across a curve. */
 export type FilmKeyframe = readonly [x: number, y: number];
 
@@ -48,15 +50,20 @@ const ACT_STARTS: readonly (readonly [FilmAct, number])[] = [
   ["progress", FILM_BEATS.pullBack],
 ];
 
-/** The session's phases in minutes, as Focus runs them: work, a break, then work again. */
-export const FILM_SESSION: readonly { kind: "focus" | "break"; minutes: number }[] = [
-  { kind: "focus", minutes: 50 },
-  { kind: "break", minutes: 10 },
-  { kind: "focus", minutes: 50 },
-];
+/** The Focus preset the film's sessions run with. */
+export const FILM_FOCUS_PRESET: PomodoroPresetKey = "creative";
 
-/** The session's length in minutes. */
-export const FILM_SESSION_MINUTES = FILM_SESSION.reduce((total, phase) => total + phase.minutes, 0);
+/** The session's length in minutes: long enough for one break of the preset, ending on focus. */
+export const FILM_SESSION_MINUTES = 50;
+
+/** The session's phases in minutes, planned by Focus's own rhythm for the preset and the session's length. */
+export const FILM_SESSION: readonly { kind: "focus" | "break"; minutes: number }[] = deriveRhythmPlan(
+  createPresetPomodoroConfig(FILM_FOCUS_PRESET),
+  FILM_SESSION_MINUTES,
+).segments.map((segment) => ({
+  kind: segment.phase === "focus" ? "focus" : "break",
+  minutes: segment.endOffsetMinutes - segment.startOffsetMinutes,
+}));
 
 /** Where each phase of `kind` falls in the session, in session minutes. */
 function phaseSpans(kind: "focus" | "break"): FilmSpan[] {
@@ -76,11 +83,12 @@ export const FILM_BREAKS: readonly FilmSpan[] = phaseSpans("break");
  * The session's minutes against film time. Work hurries along, the break slows down so its screen can be read and
  * reaches its end exactly as the break screen lifts, and the second half hurries to the end of the session.
  */
+const FILM_BREAK: FilmSpan = FILM_BREAKS[0] ?? { start: FILM_SESSION_MINUTES, end: FILM_SESSION_MINUTES };
 const SESSION_CLOCK: readonly FilmKeyframe[] = [
   [FILM_BEATS.focusStart + 200, 0],
-  [FILM_BEATS.breakStart - 300, 47],
-  [FILM_BEATS.breakStart, 50],
-  [FILM_BEATS.breakEnd, 60],
+  [FILM_BEATS.breakStart - 300, FILM_BREAK.start - 2],
+  [FILM_BEATS.breakStart, FILM_BREAK.start],
+  [FILM_BEATS.breakEnd, FILM_BREAK.end],
   [FILM_BEATS.sessionEnd - 250, FILM_SESSION_MINUTES - 2],
   [FILM_BEATS.sessionEnd, FILM_SESSION_MINUTES],
 ];

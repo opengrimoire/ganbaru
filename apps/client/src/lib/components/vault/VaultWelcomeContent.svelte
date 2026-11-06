@@ -1,104 +1,78 @@
 <script lang="ts">
+  import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
-  import CodeXml from "@lucide/svelte/icons/code-xml";
-  import ExternalLink from "@lucide/svelte/icons/external-link";
-  import LockKeyhole from "@lucide/svelte/icons/lock-keyhole";
-  import UserRoundX from "@lucide/svelte/icons/user-round-x";
-  import { openUrl } from "@tauri-apps/plugin-opener";
-  import type { Component } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { cn } from "$lib/utils";
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
-  import AboutInformationDialog from "./AboutInformationDialog.svelte";
+  import { WELCOME_STEPS, welcomeStepAt } from "$lib/vault/welcome-steps";
   import VaultLanguageDropdown from "./VaultLanguageDropdown.svelte";
-  import WelcomeFilm from "./welcome/WelcomeFilm.svelte";
+  import WelcomeAboutStep from "./welcome/WelcomeAboutStep.svelte";
+  import WelcomeCalendarStep from "./welcome/WelcomeCalendarStep.svelte";
 
   /**
-   * The first onboarding screen: a short film of a day in the app next to the pitch, the credentials that set the app
-   * apart, and links to the license, acknowledgments, and source. Wide containers place the film beside the text;
-   * narrow ones stack it above, and it steps aside when there is no room for it. Continue works at any moment.
+   * The welcome screens before vault setup: one per feature, then the app's credentials. Each screen lays out its own
+   * content and places the shared language picker and navigation where it fits. Continue on the last screen hands
+   * over to vault setup. `step` is bindable so a shell can show the progress in its own chrome; with `showStepDots`,
+   * the screens show it beside their navigation instead.
    */
-  let { onContinue }: { onContinue: () => void } = $props();
+  let {
+    step = $bindable(0),
+    showStepDots = true,
+    onContinue,
+  }: { step?: number; showStepDots?: boolean; onContinue: () => void } = $props();
 
   const { t } = getLocalization();
-  const SOURCE_URL = "https://github.com/opengrimoire/ganbaru";
-  const linkClass = "inline-flex min-h-10 items-center gap-1.5 text-sm font-medium text-foreground underline-offset-4 hover:underline";
+  const current = $derived(welcomeStepAt(step));
+  const index = $derived(WELCOME_STEPS.indexOf(current));
 
-  let informationDialog = $state<"license" | "acknowledgments" | null>(null);
-  let sourceError = $state(false);
+  function next(): void {
+    if (index < WELCOME_STEPS.length - 1) step = index + 1;
+    else onContinue();
+  }
 
-  const credentials = $derived<readonly { icon: Component<{ size?: number; strokeWidth?: number; "aria-hidden"?: boolean | "true" | "false" }>; label: string }[]>([
-    { icon: CodeXml, label: t("vaultSetup.welcomeFreeOpenSource") },
-    { icon: UserRoundX, label: t("vaultSetup.welcomeNoAccount") },
-    { icon: LockKeyhole, label: t("vaultSetup.welcomeLocalData") },
-  ]);
-
-  async function openSource(): Promise<void> {
-    sourceError = false;
-    try {
-      await openUrl(SOURCE_URL);
-    } catch (error: unknown) {
-      console.warn("Failed to open source repository:", error);
-      sourceError = true;
-    }
+  function back(): void {
+    if (index > 0) step = index - 1;
   }
 </script>
 
-<section class="@container h-full overflow-x-hidden overflow-y-auto">
-  <div
-    class="mx-auto flex min-h-full w-full max-w-300 flex-col px-4 pb-6 pt-8 @min-[560px]:px-8 @min-[860px]:grid @min-[860px]:grid-cols-[minmax(18rem,26rem)_minmax(0,1fr)] @min-[860px]:grid-rows-[auto_minmax(0,1fr)] @min-[860px]:gap-x-10 @min-[860px]:px-12 @min-[860px]:py-10"
-  >
-    <div class="flex shrink-0 items-start"><VaultLanguageDropdown /></div>
+{#snippet header()}
+  <VaultLanguageDropdown />
+{/snippet}
 
-    <WelcomeFilm class="min-h-0 flex-1 py-3 @min-[860px]:col-start-2 @min-[860px]:row-span-2 @min-[860px]:row-start-1 @min-[860px]:py-0" />
-
-    <div class="shrink-0 space-y-4 @min-[860px]:col-start-1 @min-[860px]:row-start-2 @min-[860px]:self-center @min-[860px]:space-y-6">
-      <div class="space-y-2 @min-[860px]:space-y-4">
-        <h1 class="text-2xl font-semibold leading-tight tracking-tight text-balance text-foreground @min-[560px]:text-3xl @min-[860px]:text-4xl">
-          {t("vaultSetup.welcomeHeadline")}
-        </h1>
-        <p class="text-sm leading-6 text-pretty text-muted-foreground @min-[560px]:text-base @min-[560px]:leading-7">
-          {t("vaultSetup.welcomeBody")}
-        </p>
-      </div>
-
-      <ul class="flex flex-wrap gap-x-4 gap-y-1.5 text-xs font-medium text-foreground @min-[560px]:text-sm">
-        {#each credentials as credential (credential.label)}
-          <li class="inline-flex items-center gap-1.5">
-            <credential.icon size={15} strokeWidth={1.8} aria-hidden="true" />
-            {credential.label}
-          </li>
+{#snippet actions()}
+  <div class="flex items-center gap-2">
+    {#if index > 0}
+      <button
+        type="button"
+        class="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+        onclick={back}
+      >
+        <ArrowLeft size={16} strokeWidth={1.8} aria-hidden="true" />
+        {t("common.back")}
+      </button>
+    {/if}
+    <button
+      use:onboardingPrimaryAction
+      type="button"
+      class="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 @min-[560px]:flex-none"
+      onclick={next}
+    >
+      {t("vaultSetup.continue")}
+      <ArrowRight size={16} strokeWidth={1.8} aria-hidden="true" />
+    </button>
+    {#if showStepDots}
+      <span class="ml-auto flex shrink-0 gap-1.5 pl-3" aria-hidden="true">
+        {#each WELCOME_STEPS as dot, dotIndex (dot)}
+          <span class={cn("h-1 w-4 rounded-full", dotIndex <= index ? "bg-primary" : "bg-foreground/15")}></span>
         {/each}
-      </ul>
-
-      <div class="space-y-3 border-t border-border pt-3 @min-[860px]:pt-4">
-        <div class="flex flex-wrap gap-x-5">
-          <button type="button" class={linkClass} onclick={() => { informationDialog = "license"; }}>
-            {t("vaultSetup.licenseButton")}
-          </button>
-          <button type="button" class={linkClass} onclick={() => { informationDialog = "acknowledgments"; }}>
-            {t("settings.about.acknowledgmentsHeading")}
-          </button>
-          <button type="button" class={linkClass} onclick={() => void openSource()}>
-            {t("vaultSetup.sourceCode")}
-            <ExternalLink size={14} strokeWidth={1.8} aria-hidden="true" />
-          </button>
-        </div>
-        {#if sourceError}<p role="alert" class="text-sm text-destructive">{t("vaultSetup.sourceOpenError")}</p>{/if}
-
-        <button
-          use:onboardingPrimaryAction
-          type="button"
-          class="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 @min-[560px]:w-auto"
-          onclick={onContinue}
-        >
-          {t("vaultSetup.continue")}
-          <ArrowRight size={16} strokeWidth={1.8} aria-hidden="true" />
-        </button>
-      </div>
-    </div>
+      </span>
+      <span class="sr-only">{t("vaultSetup.stepProgress", index + 1, WELCOME_STEPS.length)}</span>
+    {/if}
   </div>
-</section>
+{/snippet}
 
-{#if informationDialog}
-  <AboutInformationDialog kind={informationDialog} onClose={() => { informationDialog = null; }} />
+{#if current === "calendar"}
+  <WelcomeCalendarStep {header} {actions} />
+{:else}
+  <WelcomeAboutStep {header} {actions} />
 {/if}

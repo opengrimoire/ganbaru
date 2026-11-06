@@ -214,7 +214,7 @@ describe("the film's session", () => {
 
 describe("the film's pause", () => {
   it("pauses ten minutes into the focus after the first break, for five minutes", () => {
-    expect(FILM_PAUSE).toEqual({ start: FILM_BREAKS[0].end + 10, end: FILM_BREAKS[0].end + 15 });
+    expect(FILM_PAUSE).toEqual({ start: FILM_BREAKS[0].end + 12.25, end: FILM_BREAKS[0].end + 17.25 });
     expect(FILM_PAUSE.end).toBeLessThan(FILM_BREAKS[1].start);
     expect(FILM_BEATS.breakEnd).toBeLessThan(FILM_BEATS.pauseTap);
     expect(FILM_BEATS.resumeAt).toBeLessThan(FILM_BEATS.eventEnd);

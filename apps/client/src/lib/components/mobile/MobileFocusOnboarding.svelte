@@ -282,11 +282,7 @@
         {/if}
 
         {#key current}
-          <div class="flex flex-1 flex-col justify-center py-6" in:fly={{ x: 24, duration: enterMs }}>
-            <div class="flex justify-center pb-8">
-              <FocusAccessGuide step={current} {appLabel} />
-            </div>
-
+          <div class="flex flex-1 flex-col pt-8" in:fly={{ x: 24, duration: enterMs }}>
             <div class="space-y-2">
               <h1 class="text-2xl font-semibold leading-tight text-foreground">{stepTitle(current)}</h1>
               <p class="text-sm leading-6 text-muted-foreground">{stepBody(current)}</p>
@@ -308,6 +304,10 @@
               </ul>
               <p class="mt-3 text-xs leading-5 text-muted-foreground">{t("mobile.focusOnboarding.privacyNote")}</p>
             {/if}
+
+            <div class="flex flex-1 items-center justify-center pt-8">
+              <FocusAccessGuide step={current} {appLabel} />
+            </div>
           </div>
         {/key}
 

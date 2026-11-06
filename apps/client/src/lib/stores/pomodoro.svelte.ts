@@ -1,13 +1,11 @@
 import { NativeFocusClient, reportIdleOverlayVisible, type FocusControlScope } from "$lib/api/focus";
 import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
-import { focusDisplayElapsedSeconds, focusDisplayRemainingSeconds, focusNeedsVisualClock, focusSegmentForRail, focusSnapshotAgeMs, type FocusIntent, type FocusProjection } from "$lib/pomodoro/native-focus";
+import { FOCUS_VISUAL_INTERVAL_MS, focusDisplayElapsedSeconds, focusDisplayRemainingSeconds, focusNeedsVisualClock, focusPausedPulseAmount, focusSegmentForRail, focusSnapshotAgeMs, type FocusIntent, type FocusProjection } from "$lib/pomodoro/native-focus";
 import { DEFAULT_POMODORO_CONFIG, type PomodoroConfig } from "$lib/pomodoro/rhythm";
 import type { PersistedSegment } from "$lib/calendar/types";
 
-const VISUAL_INTERVAL_MS = 180;
 const MAX_PRESENTATION_SEGMENTS = 128;
 const FOCUS_EXTENSION_SECONDS = 180;
-const PAUSE_PULSE = [0, 0, 0, 0, 0, 0.067, 0.25, 0.5, 0.75, 0.933, 1, 1, 1, 1, 1, 1, 0.933, 0.75, 0.5, 0.25, 0.067, 0] as const;
 let projection = $state.raw<FocusProjection | null>(null);
 let segments = $state<PersistedSegment[]>([]);
 let segmentVersion = $state(0);
@@ -47,7 +45,7 @@ function syncVisualClock(): void {
   const needed = presentationActive && focusNeedsVisualClock(projection?.snapshot);
   if (needed && visualTimer === null) {
     visualNow = performance.now();
-    visualTimer = setInterval(() => { visualNow = performance.now(); }, VISUAL_INTERVAL_MS);
+    visualTimer = setInterval(() => { visualNow = performance.now(); }, FOCUS_VISUAL_INTERVAL_MS);
   } else if (!needed && visualTimer !== null) {
     clearInterval(visualTimer);
     visualTimer = null;
@@ -103,7 +101,7 @@ export function getPomodoro() {
       const snapshot = projection?.snapshot;
       return isActive() && snapshot?.segment?.phase === "focus" && (snapshot.mode === "running" || snapshot.mode === "manual_pause");
     },
-    get pausedPulseAmount() { return projection?.snapshot?.mode === "manual_pause" ? PAUSE_PULSE[Math.floor(visualNow / VISUAL_INTERVAL_MS) % PAUSE_PULSE.length] : 0; },
+    get pausedPulseAmount() { return projection?.snapshot?.mode === "manual_pause" ? focusPausedPulseAmount(visualNow) : 0; },
     get formattedTime() { const seconds = remainingSeconds(); return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`; },
     get activeOccurrenceId() { return isActive() ? projection?.snapshot?.run?.occurrenceId ?? null : null; },
     get activeRunId() { return isActive() ? projection?.snapshot?.run?.id ?? null : null; },

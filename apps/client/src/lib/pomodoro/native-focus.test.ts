@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { focusDisplayElapsedSeconds, focusDisplayRemainingSeconds, focusNeedsVisualClock, focusProjectionIsCurrent, focusSnapshotAgeMs, parseFocusCommandResult, parseFocusNotice, parseFocusProjection } from "./native-focus";
+import { FOCUS_VISUAL_INTERVAL_MS, focusDisplayElapsedSeconds, focusDisplayRemainingSeconds, focusNeedsVisualClock, focusPausedPulseAmount, focusProjectionIsCurrent, focusSnapshotAgeMs, parseFocusCommandResult, parseFocusNotice, parseFocusProjection } from "./native-focus";
 import { DEFAULT_POMODORO_CONFIG } from "./rhythm";
 import { focusProjection } from "./native-focus.test-helpers";
 
@@ -123,5 +123,18 @@ describe("native Focus response boundaries", () => {
     expect(focusNeedsVisualClock(state)).toBe(false);
     expect(focusNeedsVisualClock({ ...state, idleStartedAtMs: 95_000 })).toBe(true);
     expect(focusNeedsVisualClock({ ...state, returnStartedAtMs: 95_000 })).toBe(true);
+  });
+});
+
+describe("focusPausedPulseAmount", () => {
+  it("rests, fades fully, and returns once per cycle, stepping on the visual clock", () => {
+    const steps = Array.from({ length: 44 }, (_, step) => focusPausedPulseAmount(step * FOCUS_VISUAL_INTERVAL_MS));
+    const cycle = steps.slice(0, 22);
+    expect(cycle[0]).toBe(0);
+    expect(Math.max(...cycle)).toBe(1);
+    expect(cycle.at(-1)).toBe(0);
+    expect(steps.slice(22)).toEqual(cycle);
+    expect(focusPausedPulseAmount(FOCUS_VISUAL_INTERVAL_MS - 1)).toBe(cycle[0]);
+    for (const amount of steps) expect(amount).toBeGreaterThanOrEqual(0);
   });
 });

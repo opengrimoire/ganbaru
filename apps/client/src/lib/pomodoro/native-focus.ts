@@ -140,6 +140,18 @@ export function focusSnapshotAgeMs(snapshot: FocusSnapshot | null | undefined, w
   return snapshot ? Math.max(0, wallNowMs - snapshot.observedAtMs) : 0;
 }
 
+/** How often Focus displays redraw between snapshots, which also steps the paused ring's pulse. */
+export const FOCUS_VISUAL_INTERVAL_MS = 180;
+
+/** One cycle of the paused ring's pulse, one step per visual interval: a rest, a fade, a hold, and a return. */
+const PAUSED_PULSE = [0, 0, 0, 0, 0, 0.067, 0.25, 0.5, 0.75, 0.933, 1, 1, 1, 1, 1, 1, 0.933, 0.75, 0.5, 0.25, 0.067, 0] as const;
+
+/** How far the paused ring's pulse has faded at `visualNowMs`, from 0 to 1. */
+export function focusPausedPulseAmount(visualNowMs: number): number {
+  const step = Math.floor(Math.max(0, visualNowMs) / FOCUS_VISUAL_INTERVAL_MS) % PAUSED_PULSE.length;
+  return PAUSED_PULSE[step];
+}
+
 /** Interpolate the remaining time for display without passing the accepted event end. */
 export function focusDisplayRemainingSeconds(snapshot: FocusSnapshot, visualElapsedMs: number): number {
   const elapsed = Math.max(0, visualElapsedMs);

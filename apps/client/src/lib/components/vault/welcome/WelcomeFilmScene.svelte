@@ -39,7 +39,11 @@
 <script lang="ts">
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import type { EventColor } from "$lib/calendar/types";
+  import ClockPlus from "@lucide/svelte/icons/clock-plus";
+  import Coffee from "@lucide/svelte/icons/coffee";
   import Music from "@lucide/svelte/icons/eighth-notes";
+  import PauseIcon from "@lucide/svelte/icons/pause";
+  import PlayIcon from "@lucide/svelte/icons/play";
   import Repeat from "@lucide/svelte/icons/repeat";
   import Users from "@lucide/svelte/icons/users";
   import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
@@ -55,6 +59,7 @@
   } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
+  import { focusPausedPulseAmount } from "$lib/pomodoro/native-focus";
   import {
     formatBlockedScreenDateTime,
     formatBlockedScreenDuration,
@@ -80,14 +85,18 @@
     FILM_PLANNED_RAIL,
     FILM_PULL_BACK_MS,
     FILM_SESSION_MINUTES,
+    FILM_TAP_MS,
     easeInOutCubic,
     filmClockMinute,
     filmDayRails,
     filmFocusSpans,
+    filmPaused,
     filmRailBreaks,
+    filmRingMenu,
     filmSessionMinute,
     filmSessionMoment,
     filmSpan,
+    filmTap,
     filmWorkday,
     type FilmRail,
     type FilmSpan,
@@ -110,6 +119,13 @@
   const FRIDAY = 5;
   /** The desktop title bar's icon size, which its Focus ring follows. */
   const TITLE_ICON_SIZE = 14;
+  /** The Focus menu's icons and how much its extend item adds, as the menu draws them. */
+  const MENU_ICON_SIZE = 14;
+  const MENU_ICON_STROKE_WIDTH = 1.8;
+  const FOCUS_EXTENSION_MINUTES = 3;
+  /** Where the Focus menu opens under its ring: below the title bar on desktop, a little lower on a phone. */
+  const MENU_TOP_PX = mobileShell ? TOP_BAR_H + 4 : TOP_BAR_H;
+  const MENU_RIGHT_PX = mobileShell ? 8 : 6;
 
   /** The Calendar's Focus rail, and the event area it keeps beside it on every event. */
   const RAIL_LEFT = 2;
@@ -256,6 +272,16 @@
   /** The session's breaks in minutes of the day, sliding into place as the drawn event joins the planned one. */
   const todayBreaks = $derived(inDay(filmRailBreaks(elapsed)));
 
+  /** The pause from the Focus ring: a tap opens its menu, a tap on its first item pauses or resumes Focus. */
+  const paused = $derived(filmPaused(elapsed));
+  const ringMenu = $derived(filmRingMenu(elapsed));
+  const ringTouch = $derived(
+    filmTap(elapsed, FILM_BEATS.pauseTap + FILM_TAP_MS) + filmTap(elapsed, FILM_BEATS.resumeTap + FILM_TAP_MS),
+  );
+  const menuItemTouch = $derived(filmTap(elapsed, FILM_BEATS.pauseStart) + filmTap(elapsed, FILM_BEATS.resumeAt));
+  const ringRemaining = $derived(moment.kind === "done" ? 0 : moment.remainingSeconds);
+  const ringTotal = $derived(moment.kind === "done" ? 0 : moment.totalSeconds);
+
   /** The session while it is dragged out, then saved. */
   const drawn = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.createStart, FILM_BEATS.createEnd)));
   const drawnMinutes = $derived(
@@ -307,6 +333,11 @@
     const hour = Math.floor(minuteOfDay / 60);
     const minute = Math.round(minuteOfDay % 60);
     return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+
+  /** A Focus countdown as the ring's menu shows it, in minutes and seconds. */
+  function timerLabel(seconds: number): string {
+    return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
   }
 
   function timeRange(start: number, end: number): string {
@@ -387,6 +418,15 @@
   </div>
 {/snippet}
 
+{#snippet touch(opacity: number, position: string)}
+  {#if opacity > 0}
+    <span
+      class={cn("pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35", position)}
+      style:opacity
+    ></span>
+  {/if}
+{/snippet}
+
 {#snippet eventBlock(
   start: number,
   end: number,
@@ -443,30 +483,69 @@
     {#if mobileShell}
       <!-- The top bar's Focus ring, on its own. -->
       <div class="flex shrink-0 items-center justify-end bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
-        <span class="grid size-8 place-items-center rounded-full text-muted-foreground">
+        <span
+          class={cn(
+            "relative grid size-8 place-items-center rounded-full text-muted-foreground",
+            (focusing || ringMenu) && "bg-accent/70 text-foreground",
+          )}
+        >
           <PomodoroProgressRing
-            active={focusing && moment.kind !== "done"}
-            remainingSeconds={moment.kind === "done" ? 0 : moment.remainingSeconds}
-            totalSeconds={moment.kind === "done" ? 0 : moment.totalSeconds}
+            active={focusing}
+            remainingSeconds={ringRemaining}
+            totalSeconds={ringTotal}
+            {paused}
+            pausedPulseAmount={paused ? focusPausedPulseAmount(elapsed) : null}
             size={20}
             trackClass="stroke-muted-foreground/35"
             progressClass="text-foreground/76 stroke-foreground/76"
           />
+          {@render touch(ringTouch, "left-1/2 top-1/2")}
         </span>
       </div>
     {:else}
       <!-- The title bar's Focus ring, on its own. -->
       <div class="flex shrink-0 items-center justify-end bg-sidebar pr-1.5" style:height={`${TOP_BAR_H}px`}>
-        <span class="grid size-7 place-items-center">
+        <span class={cn("relative grid size-7 place-items-center rounded-lg", ringMenu && "bg-sidebar-accent")}>
           <PomodoroProgressRing
-            active={focusing && moment.kind !== "done"}
-            remainingSeconds={moment.kind === "done" ? 0 : moment.remainingSeconds}
-            totalSeconds={moment.kind === "done" ? 0 : moment.totalSeconds}
+            active={focusing}
+            remainingSeconds={ringRemaining}
+            totalSeconds={ringTotal}
+            {paused}
+            pausedPulseAmount={paused ? focusPausedPulseAmount(elapsed) : null}
             size={TITLE_ICON_SIZE + 0.5}
             trackClass="stroke-foreground/20 dark:stroke-white/20"
             progressClass="text-foreground/68 dark:text-white/76 stroke-foreground/68 dark:stroke-white/76"
           />
+          {@render touch(ringTouch, "left-1/2 top-1/2")}
         </span>
+      </div>
+    {/if}
+
+    <!-- The Focus ring's menu, open while it is used to pause and resume Focus. -->
+    {#if ringMenu}
+      <div
+        class="surface-floating surface-floating-body pointer-events-none absolute z-50 w-floating-sm"
+        style:top={`${MENU_TOP_PX}px`}
+        style:right={`${MENU_RIGHT_PX}px`}
+      >
+        <div class="menu-label tabular-nums">{t("titleBar.pomodoro.left", timerLabel(ringRemaining))}</div>
+        <div class="menu-item relative justify-between gap-4 whitespace-nowrap" data-highlighted={menuItemTouch > 0 ? "" : undefined}>
+          <span>{ringMenu === "resume" ? t("titleBar.pomodoro.resumeFocus") : t("titleBar.pomodoro.pauseFocus")}</span>
+          {#if ringMenu === "resume"}
+            <PlayIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
+          {:else}
+            <PauseIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
+          {/if}
+          {@render touch(menuItemTouch, "left-2/5 top-1/2")}
+        </div>
+        <div class="menu-item justify-between gap-4 whitespace-nowrap">
+          <span>{t("titleBar.pomodoro.extendFocusMinutes", FOCUS_EXTENSION_MINUTES)}</span>
+          <ClockPlus class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
+        </div>
+        <div class="menu-item justify-between gap-4 whitespace-nowrap">
+          <span>{t("titleBar.pomodoro.goToBreakNow")}</span>
+          <Coffee class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
+        </div>
       </div>
     {/if}
 

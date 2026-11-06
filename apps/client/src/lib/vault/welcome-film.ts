@@ -1,9 +1,9 @@
 /**
  * Timing for the welcome film: one continuous take of a day in the app. A Focus session is planned in the Calendar
- * ahead of another, runs through its first break to its end, carries on through the next event to the end of the day's
- * Focus, then is seen among the week's other sessions as the view pulls back. Every moment is derived from the
- * milliseconds elapsed since the film started, so a frame is a pure function of time and the reduced-motion still is
- * simply the last frame.
+ * ahead of another, runs through its first break, is paused for a while from the Focus ring, runs to its end, carries
+ * on through the next event to the end of the day's Focus, then is seen among the week's other sessions as the view
+ * pulls back. Every moment is derived from the milliseconds elapsed since the film started, so a frame is a pure
+ * function of time and the reduced-motion still is simply the last frame.
  */
 
 import { createPresetPomodoroConfig, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
@@ -29,16 +29,28 @@ export const FILM_BEATS = {
   /** The break screen covers the app for the length of the break. */
   breakStart: 4100,
   breakEnd: 5200,
+  /**
+   * A tap on the Focus ring opens its menu, and a tap on its first item pauses Focus. A while later the same two taps
+   * resume it.
+   */
+  pauseTap: 5800,
+  pauseStart: 6620,
+  resumeTap: 8120,
+  resumeAt: 8940,
   /** The drawn event ends, its finished screen shows, and the planned event carries on once it lifts. */
-  eventEnd: 6900,
-  eventOut: 7650,
+  eventEnd: 10440,
+  eventOut: 11190,
   /** The planned event ends the day's Focus, the day's completed screen shows, and the app returns. */
-  sessionEnd: 9500,
-  finishedOut: 10350,
+  sessionEnd: 13040,
+  finishedOut: 13890,
   /** The camera pulls back from the day to the week. */
-  pullBack: 10600,
-  end: 12900,
+  pullBack: 14140,
+  end: 16440,
 } as const;
+
+/** How long a tap on the Focus ring or its menu takes, and how quickly the touch fades in and out. */
+export const FILM_TAP_MS = 220;
+const FILM_TAP_FADE_MS = 60;
 
 /** How long the pull back from the day to the week takes. */
 export const FILM_PULL_BACK_MS = 1200;
@@ -77,24 +89,24 @@ export const FILM_SESSION: readonly { kind: "focus" | "break"; minutes: number }
   .sort((left, right) => left.span.start - right.span.start)
   .map(({ kind, span }) => ({ kind, minutes: span.end - span.start }));
 
-/** Where each phase of `kind` falls in the session, in session minutes. */
-function phaseSpans(kind: "focus" | "break"): FilmSpan[] {
-  const spans: FilmSpan[] = [];
-  let start = 0;
-  for (const phase of FILM_SESSION) {
-    if (phase.kind === kind) spans.push({ start, end: start + phase.minutes });
-    start += phase.minutes;
-  }
-  return spans;
-}
-
 /** The session's breaks, which the Focus rail marks before they happen. */
 export const FILM_BREAKS: readonly FilmBreak[] = FILM_RAIL.breaks;
 
+/** How far into the focus after the first break Focus is paused, and for how long, in minutes. */
+const FILM_PAUSE_INTO_FOCUS_MINUTES = 10;
+const FILM_PAUSE_MINUTES = 5;
+
+/** The manual pause, in session minutes: partway through the focus that follows the first break. */
+export const FILM_PAUSE: FilmSpan = {
+  start: (FILM_RAIL.focus[1]?.start ?? 0) + FILM_PAUSE_INTO_FOCUS_MINUTES,
+  end: (FILM_RAIL.focus[1]?.start ?? 0) + FILM_PAUSE_INTO_FOCUS_MINUTES + FILM_PAUSE_MINUTES,
+};
+
 /**
- * The session's minutes against film time. Work hurries along, the break slows down so its screen can be read and
- * reaches its end exactly as the break screen lifts, then the session hurries to the drawn event's end, holds while its
- * finished screen is up, and hurries on through the planned event to the session's end.
+ * The session's minutes against film time, as the current time reads them. Work hurries along, the break slows down
+ * so its screen can be read and reaches its end exactly as the break screen lifts, then the time holds while the Focus
+ * ring's menu is open, walks through the pause, and hurries to the drawn event's end, holds while its finished screen
+ * is up, and hurries on through the planned event to the session's end.
  */
 const FILM_BREAK: FilmSpan = FILM_BREAKS[0] ?? { start: FILM_SESSION_MINUTES, end: FILM_SESSION_MINUTES };
 const SESSION_CLOCK: readonly FilmKeyframe[] = [
@@ -102,6 +114,10 @@ const SESSION_CLOCK: readonly FilmKeyframe[] = [
   [FILM_BEATS.breakStart - 300, FILM_BREAK.start - 2],
   [FILM_BEATS.breakStart, FILM_BREAK.start],
   [FILM_BEATS.breakEnd, FILM_BREAK.end],
+  [FILM_BEATS.pauseTap, FILM_PAUSE.start],
+  [FILM_BEATS.pauseStart, FILM_PAUSE.start],
+  [FILM_BEATS.resumeTap, FILM_PAUSE.end],
+  [FILM_BEATS.resumeAt, FILM_PAUSE.end],
   [FILM_BEATS.eventEnd - 250, FILM_DRAWN_MINUTES - 2],
   [FILM_BEATS.eventEnd, FILM_DRAWN_MINUTES],
   [FILM_BEATS.eventOut, FILM_DRAWN_MINUTES],
@@ -248,47 +264,122 @@ export function filmClockMinute(elapsed: number): number {
   return elapsed < FILM_BEATS.focusStart ? monotoneCurve(LEAD_IN_CLOCK, elapsed) : filmSessionMinute(elapsed);
 }
 
-/** The Focus phase and its remaining time once `minute` minutes of the session have passed. */
+/** How many minutes Focus has spent paused once `minute` minutes of the session have passed. */
+export function filmPausedMinutes(minute: number): number {
+  return Math.min(FILM_PAUSE.end, Math.max(FILM_PAUSE.start, minute)) - FILM_PAUSE.start;
+}
+
+/**
+ * The session's breaks once `minute` minutes of it have passed, as the running Focus projects them. A pause freezes
+ * what is left of the focus while the current time moves on, so the drawn event's later breaks wait for it: they start
+ * later by the minutes paused so far and stay clipped to the event. The planned event keeps the rhythm the Calendar
+ * planned for it from the drawn event's schedule, so its breaks stay where they are.
+ */
+function runBreaks(minute: number): FilmSpan[] {
+  const paused = filmPausedMinutes(minute);
+  return FILM_BREAKS.flatMap(({ start, end }) => {
+    if (start < FILM_PAUSE.start || start >= FILM_DRAWN_MINUTES) return [{ start, end }];
+    if (start + paused >= FILM_DRAWN_MINUTES) return [];
+    return [{ start: start + paused, end: Math.min(FILM_DRAWN_MINUTES, end + paused) }];
+  });
+}
+
+/** The session's phases once `minute` minutes of it have passed: focus fills the room between the run's breaks. */
+function runPhases(minute: number): { kind: "focus" | "break"; span: FilmSpan }[] {
+  const phases: { kind: "focus" | "break"; span: FilmSpan }[] = [];
+  let cursor = 0;
+  for (const pause of runBreaks(minute)) {
+    if (pause.start > cursor) phases.push({ kind: "focus", span: { start: cursor, end: pause.start } });
+    phases.push({ kind: "break", span: pause });
+    cursor = pause.end;
+  }
+  if (cursor < FILM_SESSION_MINUTES) phases.push({ kind: "focus", span: { start: cursor, end: FILM_SESSION_MINUTES } });
+  return phases;
+}
+
+/** The pause so far once `minute` minutes of the session have passed, in session minutes. */
+function pauseSoFar(minute: number): FilmSpan {
+  return { start: FILM_PAUSE.start, end: FILM_PAUSE.start + filmPausedMinutes(minute) };
+}
+
+/** How many minutes `left` and `right` share. */
+function overlap(left: FilmSpan, right: FilmSpan): number {
+  return Math.max(0, Math.min(left.end, right.end) - Math.max(left.start, right.start));
+}
+
+/**
+ * The Focus phase and its remaining time once `minute` minutes of the session have passed. A paused focus keeps its
+ * remaining time while the current time moves on, and its length leaves the pause out.
+ */
 export function filmSessionMoment(minute: number): FilmSessionMoment {
-  let start = 0;
-  for (const phase of FILM_SESSION) {
-    const end = start + phase.minutes;
-    if (minute < end) {
+  const pause = pauseSoFar(minute);
+  for (const { kind, span } of runPhases(minute)) {
+    if (minute < span.end) {
+      const paused = kind === "focus" ? overlap(span, pause) : 0;
       return {
-        kind: phase.kind,
-        remainingSeconds: Math.max(0, Math.ceil((end - minute) * 60)),
-        totalSeconds: phase.minutes * 60,
+        kind,
+        remainingSeconds: Math.max(0, Math.ceil((span.end - minute) * 60)),
+        totalSeconds: Math.round((span.end - span.start - paused) * 60),
       };
     }
-    start = end;
   }
   return { kind: "done" };
 }
 
-/** The focus the session has recorded by `minute`, as the rail fills it in, in session minutes. */
+/** Whether Focus is paused at `elapsed`: from the tap that pauses it to the tap that resumes it. */
+export function filmPaused(elapsed: number): boolean {
+  return elapsed >= FILM_BEATS.pauseStart && elapsed < FILM_BEATS.resumeAt;
+}
+
+/** The Focus ring's menu at `elapsed`: closed, open with its pause item, or open with its resume item. */
+export function filmRingMenu(elapsed: number): "pause" | "resume" | null {
+  if (elapsed >= FILM_BEATS.pauseTap + FILM_TAP_MS && elapsed < FILM_BEATS.pauseStart) return "pause";
+  if (elapsed >= FILM_BEATS.resumeTap + FILM_TAP_MS && elapsed < FILM_BEATS.resumeAt) return "resume";
+  return null;
+}
+
+/** How visible the touch of a tap ending at `end` is at `elapsed`, from 0 to 1. */
+export function filmTap(elapsed: number, end: number): number {
+  const start = end - FILM_TAP_MS;
+  return filmSpan(elapsed, start, start + FILM_TAP_FADE_MS) * (1 - filmSpan(elapsed, end - FILM_TAP_FADE_MS, end));
+}
+
+/**
+ * The focus the session has recorded by `minute`, as the rail fills it in, in session minutes. The pause leaves a
+ * gap in the focus it interrupted.
+ */
 export function filmFocusSpans(minute: number): FilmSpan[] {
-  return phaseSpans("focus")
-    .filter((span) => minute > span.start)
-    .map((span) => ({ start: span.start, end: Math.min(span.end, minute) }));
+  const pause = pauseSoFar(minute);
+  return runPhases(minute).flatMap(({ kind, span }) => {
+    if (kind !== "focus" || minute <= span.start) return [];
+    const recorded = { start: span.start, end: Math.min(span.end, minute) };
+    if (overlap(recorded, pause) === 0) return [recorded];
+    return [
+      { start: recorded.start, end: pause.start },
+      { start: pause.end, end: recorded.end },
+    ].filter((part) => part.end > part.start);
+  });
 }
 
 /**
  * The session's breaks as the rail shows them at `elapsed`, in session minutes. Once the drawn event is saved, the
  * planned event's breaks slide from where they fell on its own rail to where the joined rail plans them, growing or
  * shrinking into their new lengths. The Calendar replans at once; the film eases the move so the change can be seen.
- * The drawn event's own breaks appear with it.
+ * The drawn event's own breaks appear with it, and those after the pause move later with the current time while it
+ * lasts, as the Calendar moves them.
  */
 export function filmRailBreaks(elapsed: number): FilmSpan[] {
   const progress = easeInOutCubic(filmSpan(elapsed, FILM_BEATS.createSaved, FILM_BEATS.createSaved + FILM_REPLAN_MS));
-  const drawn = FILM_BREAKS.filter((pause) => pause.start < FILM_DRAWN_MINUTES);
-  const planned = FILM_BREAKS.filter((pause) => pause.start >= FILM_DRAWN_MINUTES).map((target, index) => {
+  const breaks = runBreaks(filmClockMinute(elapsed));
+  const drawn = breaks.filter((pause) => pause.start < FILM_DRAWN_MINUTES);
+  const planned = breaks.filter((pause) => pause.start >= FILM_DRAWN_MINUTES).map((target, index) => {
     const from = FILM_PLANNED_RAIL.breaks[index] ?? target;
     return {
       start: from.start + (target.start - from.start) * progress,
       end: from.end + (target.end - from.end) * progress,
     };
   });
-  return [...drawn, ...planned].map(({ start, end }) => ({ start, end }));
+  return [...drawn, ...planned];
 }
 
 /** `Date.getDay()` for Sunday, Monday, and Friday. */

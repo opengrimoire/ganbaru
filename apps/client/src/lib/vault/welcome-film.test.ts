@@ -5,18 +5,24 @@ import {
   FILM_CHAIN,
   FILM_DRAWN_MINUTES,
   FILM_LEAD_IN_MINUTES,
+  FILM_PAUSE,
   FILM_PLANNED_RAIL,
   FILM_REPLAN_MS,
   FILM_SESSION,
   FILM_SESSION_MINUTES,
+  FILM_TAP_MS,
   easeInOutCubic,
   filmClockMinute,
   filmDayRails,
   filmFocusSpans,
+  filmPaused,
+  filmPausedMinutes,
   filmRailBreaks,
+  filmRingMenu,
   filmSessionMinute,
   filmSessionMoment,
   filmSpan,
+  filmTap,
   filmWorkday,
   monotoneCurve,
 } from "./welcome-film";
@@ -189,7 +195,7 @@ describe("the film's session", () => {
     const plannedPart = (elapsed: number) => filmRailBreaks(elapsed).slice(drawnBreaks);
     expect(plannedPart(FILM_BEATS.createSaved)).toEqual(FILM_PLANNED_RAIL.breaks.map(({ start, end }) => ({ start, end })));
     expect(filmRailBreaks(settled)).toEqual(FILM_BREAKS.map(({ start, end }) => ({ start, end })));
-    expect(filmRailBreaks(FILM_BEATS.end)).toEqual(filmRailBreaks(settled));
+    expect(filmRailBreaks(FILM_BEATS.pauseStart)).toEqual(filmRailBreaks(settled));
     let previous = plannedPart(FILM_BEATS.createSaved);
     for (let elapsed = FILM_BEATS.createSaved; elapsed <= settled; elapsed += 25) {
       const current = plannedPart(elapsed);
@@ -203,6 +209,90 @@ describe("the film's session", () => {
 
   it("finishes the replan before Focus starts", () => {
     expect(FILM_BEATS.createSaved + FILM_REPLAN_MS).toBeLessThan(FILM_BEATS.focusStart);
+  });
+});
+
+describe("the film's pause", () => {
+  it("pauses ten minutes into the focus after the first break, for five minutes", () => {
+    expect(FILM_PAUSE).toEqual({ start: FILM_BREAKS[0].end + 10, end: FILM_BREAKS[0].end + 15 });
+    expect(FILM_PAUSE.end).toBeLessThan(FILM_BREAKS[1].start);
+    expect(FILM_BEATS.breakEnd).toBeLessThan(FILM_BEATS.pauseTap);
+    expect(FILM_BEATS.resumeAt).toBeLessThan(FILM_BEATS.eventEnd);
+  });
+
+  it("holds the current time while the ring's menu is open and walks it through the pause", () => {
+    for (let elapsed = FILM_BEATS.pauseTap; elapsed <= FILM_BEATS.pauseStart; elapsed += 50) {
+      expect(filmSessionMinute(elapsed)).toBeCloseTo(FILM_PAUSE.start, 9);
+    }
+    for (let elapsed = FILM_BEATS.resumeTap; elapsed <= FILM_BEATS.resumeAt; elapsed += 50) {
+      expect(filmSessionMinute(elapsed)).toBeCloseTo(FILM_PAUSE.end, 9);
+    }
+    expect(filmPausedMinutes(FILM_PAUSE.start - 1)).toBe(0);
+    expect(filmPausedMinutes(FILM_PAUSE.start + 2)).toBe(2);
+    expect(filmPausedMinutes(FILM_DRAWN_MINUTES)).toBe(FILM_PAUSE.end - FILM_PAUSE.start);
+  });
+
+  it("opens the ring's menu to pause, keeps it closed while paused, then opens it to resume", () => {
+    expect(filmRingMenu(FILM_BEATS.pauseTap)).toBeNull();
+    expect(filmRingMenu(FILM_BEATS.pauseTap + FILM_TAP_MS)).toBe("pause");
+    expect(filmRingMenu(FILM_BEATS.pauseStart)).toBeNull();
+    expect(filmRingMenu(FILM_BEATS.resumeTap + FILM_TAP_MS)).toBe("resume");
+    expect(filmRingMenu(FILM_BEATS.resumeAt)).toBeNull();
+    expect(filmPaused(FILM_BEATS.pauseStart - 1)).toBe(false);
+    expect(filmPaused(FILM_BEATS.pauseStart)).toBe(true);
+    expect(filmPaused(FILM_BEATS.resumeAt - 1)).toBe(true);
+    expect(filmPaused(FILM_BEATS.resumeAt)).toBe(false);
+  });
+
+  it("shows a touch only while its tap lasts", () => {
+    const end = FILM_BEATS.pauseStart;
+    expect(filmTap(end - FILM_TAP_MS - 1, end)).toBe(0);
+    expect(filmTap(end - FILM_TAP_MS / 2, end)).toBe(1);
+    expect(filmTap(end, end)).toBe(0);
+  });
+
+  it("keeps the focus's remaining time while paused and leaves the pause out of its length", () => {
+    const left = (FILM_BREAKS[1].start - FILM_PAUSE.start) * 60;
+    const total = (FILM_BREAKS[1].start - FILM_BREAKS[0].end) * 60;
+    for (const minute of [FILM_PAUSE.start, FILM_PAUSE.start + 2.5, FILM_PAUSE.end]) {
+      expect(filmSessionMoment(minute)).toEqual({ kind: "focus", remainingSeconds: left, totalSeconds: total });
+    }
+    expect(filmSessionMoment(FILM_PAUSE.end + 5)).toEqual({ kind: "focus", remainingSeconds: left - 300, totalSeconds: total });
+  });
+
+  it("starts the next break later by the pause and shortens the drawn event's last focus to its end", () => {
+    const paused = FILM_PAUSE.end - FILM_PAUSE.start;
+    const breakStart = FILM_BREAKS[1].start + paused;
+    expect(filmSessionMoment(breakStart - 1).kind).toBe("focus");
+    expect(filmSessionMoment(breakStart)).toEqual({ kind: "break", remainingSeconds: 600, totalSeconds: 600 });
+    const lastFocus = FILM_DRAWN_MINUTES - FILM_BREAKS[1].end - paused;
+    expect(filmSessionMoment(FILM_BREAKS[1].end + paused)).toEqual({
+      kind: "focus", remainingSeconds: lastFocus * 60, totalSeconds: lastFocus * 60,
+    });
+  });
+
+  it("leaves a gap in the recorded focus while paused", () => {
+    const before = [{ start: 0, end: 50 }, { start: 60, end: FILM_PAUSE.start }];
+    expect(filmFocusSpans(FILM_PAUSE.start + 3)).toEqual(before);
+    expect(filmFocusSpans(FILM_PAUSE.end)).toEqual(before);
+    expect(filmFocusSpans(FILM_PAUSE.end + 5)).toEqual([...before, { start: FILM_PAUSE.end, end: FILM_PAUSE.end + 5 }]);
+    expect(filmFocusSpans(130)).toEqual([...before, { start: FILM_PAUSE.end, end: 115 }, { start: 125, end: 130 }]);
+  });
+
+  it("moves the drawn event's next break later while paused and leaves the planned event's breaks in place", () => {
+    const planned = (elapsed: number) => filmRailBreaks(elapsed).filter((pause) => pause.start >= FILM_DRAWN_MINUTES);
+    let previous = filmRailBreaks(FILM_BEATS.pauseStart)[1].start;
+    expect(previous).toBe(FILM_BREAKS[1].start);
+    for (let elapsed = FILM_BEATS.pauseStart; elapsed <= FILM_BEATS.resumeTap; elapsed += 25) {
+      const current = filmRailBreaks(elapsed);
+      expect(current[0].start).toBe(FILM_BREAKS[0].start);
+      expect(current[1].start).toBeGreaterThanOrEqual(previous - 1e-9);
+      expect(current[1].end - current[1].start).toBeCloseTo(FILM_BREAKS[1].end - FILM_BREAKS[1].start, 9);
+      expect(planned(elapsed)).toEqual(planned(FILM_BEATS.pauseStart));
+      previous = current[1].start;
+    }
+    expect(previous).toBeCloseTo(FILM_BREAKS[1].start + FILM_PAUSE.end - FILM_PAUSE.start, 9);
+    expect(filmRailBreaks(FILM_BEATS.end)).toEqual(filmRailBreaks(FILM_BEATS.resumeTap));
   });
 });
 

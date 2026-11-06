@@ -17,7 +17,6 @@ import {
   filmSessionMinute,
   filmSessionMoment,
   filmSpan,
-  filmRecordedRail,
   filmWorkday,
   monotoneCurve,
 } from "./welcome-film";
@@ -257,39 +256,5 @@ describe("filmWorkday", () => {
 
   it("crosses a month boundary", () => {
     expect(filmWorkday(new Date(2026, 10, 30))).toEqual(new Date(2026, 11, 4));
-  });
-});
-
-describe("filmRecordedRail", () => {
-  /** Creative from nine to half past ten: focus 540 to 565, break 565 to 570, and so on. */
-  const [rail] = filmDayRails([{ start: 540, end: 630, preset: "creative" }]);
-
-  it("keeps the plan without pauses", () => {
-    expect(filmRecordedRail(rail, [])).toEqual(rail);
-  });
-
-  it("leaves a pause empty and carries every later phase that much later", () => {
-    const recorded = filmRecordedRail(rail, [{ at: 550, minutes: 3 }]);
-    expect(recorded.focus.slice(0, 3)).toEqual([
-      { start: 540, end: 550 },
-      { start: 553, end: 568 },
-      { start: 573, end: 598 },
-    ]);
-    expect(recorded.breaks.map((pause) => pause.start)).toEqual(rail.breaks.map((pause) => pause.start + 3));
-  });
-
-  it("adds up several pauses and still ends the rail with its events", () => {
-    const recorded = filmRecordedRail(rail, [{ at: 580, minutes: 2 }, { at: 550, minutes: 3 }]);
-    expect(recorded.end).toBe(rail.end);
-    expect(recorded.breaks[1].start).toBe(rail.breaks[1].start + 5);
-    const pieces = [...recorded.focus, ...recorded.breaks].sort((left, right) => left.start - right.start);
-    expect(pieces.at(-1)?.end).toBe(rail.end);
-    expect(pieces.every((piece) => piece.end > piece.start && piece.end <= rail.end)).toBe(true);
-    const covered = pieces.reduce((total, piece) => total + piece.end - piece.start, 0);
-    expect(covered).toBe(rail.end - rail.start - 5);
-  });
-
-  it("ignores a pause that does not fall in focus", () => {
-    expect(filmRecordedRail(rail, [{ at: 567, minutes: 2 }, { at: 700, minutes: 2 }])).toEqual(rail);
   });
 });

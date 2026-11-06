@@ -88,9 +88,7 @@
     filmSessionMinute,
     filmSessionMoment,
     filmSpan,
-    filmRecordedRail,
     filmWorkday,
-    type FilmPause,
     type FilmRail,
     type FilmSpan,
   } from "$lib/vault/welcome-film";
@@ -154,12 +152,6 @@
     icons?: readonly FilmIcon[];
   }
 
-  /** A weekday of the film's week: its events, and the short pauses its recorded Focus shows. */
-  interface FilmWorkday {
-    events: readonly FilmEvent[];
-    pauses?: readonly FilmPause[];
-  }
-
   /** The Calendar's icon order on an event. */
   const ICON_ORDER: readonly FilmIcon[] = ["music", "repeat", "meeting"];
   /** Minimum height for an event to show its icons. */
@@ -174,54 +166,39 @@
   /**
    * What the workweek holds from Monday to Friday. Events start and end on the hour or the half hour, as people plan
    * them, except Tuesday's first event, which starts a little late. Focus events run back to back with different
-   * presets, so their rails show the rhythm carrying from one event into the next, and most days have a pause or a
-   * short pause that their recorded rail leaves empty.
+   * presets, so their rails show the rhythm carrying from one event into the next.
    */
-  const WORKWEEK: readonly FilmWorkday[] = [
-    {
-      events: [
-        { start: 540, end: 600, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
-        { start: 600, end: 690, color: CYAN, title: "draftOutline", preset: "creative" },
-        LUNCH,
-        { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
-      ],
-      pauses: [{ at: 556, minutes: 2 }, { at: 590, minutes: 3 }, { at: 646, minutes: 2 }],
-    },
-    {
-      events: [
-        { start: 550, end: 630, color: CYAN, title: "draftOutline", preset: "deep" },
-        { start: 630, end: 690, color: PURPLE, title: "reviewNotes", preset: "creative" },
-        LUNCH,
-        { start: 810, end: 870, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
-      ],
-      pauses: [{ at: 571, minutes: 2 }, { at: 612, minutes: 2 }, { at: 649, minutes: 4 }],
-    },
-    {
-      events: [
-        { start: 540, end: 600, color: CYAN, title: "draftOutline", preset: "creative" },
-        { start: 600, end: 690, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
-        LUNCH,
-        { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
-      ],
-      pauses: [{ at: 552, minutes: 3 }, { at: 616, minutes: 2 }, { at: 663, minutes: 2 }],
-    },
-    {
-      events: [
-        { start: 540, end: 630, color: TAUPE, title: "writeChapter", preset: "creative" },
-        { start: 630, end: 690, color: PURPLE, title: "reviewNotes", preset: "balanced" },
-        LUNCH,
-        { start: 810, end: 870, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
-      ],
-      pauses: [{ at: 581, minutes: 2 }],
-    },
-    {
-      events: [
-        { start: 570, end: 660, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
-        { start: 660, end: 720, color: PURPLE, title: "reviewNotes", preset: "creative" },
-        LUNCH,
-        { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
-      ],
-    },
+  const WORKWEEK: readonly (readonly FilmEvent[])[] = [
+    [
+      { start: 540, end: 600, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
+      { start: 600, end: 690, color: CYAN, title: "draftOutline", preset: "creative" },
+      LUNCH,
+      { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
+    ],
+    [
+      { start: 550, end: 630, color: CYAN, title: "draftOutline", preset: "deep" },
+      { start: 630, end: 690, color: PURPLE, title: "reviewNotes", preset: "creative" },
+      LUNCH,
+      { start: 810, end: 870, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
+    ],
+    [
+      { start: 540, end: 600, color: CYAN, title: "draftOutline", preset: "creative" },
+      { start: 600, end: 690, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
+      LUNCH,
+      { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
+    ],
+    [
+      { start: 540, end: 630, color: TAUPE, title: "writeChapter", preset: "creative" },
+      { start: 630, end: 690, color: PURPLE, title: "reviewNotes", preset: "balanced" },
+      LUNCH,
+      { start: 810, end: 870, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
+    ],
+    [
+      { start: 570, end: 660, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
+      { start: 660, end: 720, color: PURPLE, title: "reviewNotes", preset: "creative" },
+      LUNCH,
+      { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
+    ],
   ];
 
   /** The film's own day: the session drawn on it, the planned event right after it, then a late lunch. */
@@ -232,16 +209,15 @@
 
   const now = new Date();
   const filmDate = filmWorkday(now);
-  /** The workweek around the film's day, with each day's offset from it. Past days show their rails as recorded. */
-  const days = WORKWEEK.map((workday, weekday) => {
+  /** The workweek around the film's day, with each day's offset from it. */
+  const days = WORKWEEK.map((template, weekday) => {
     const offset = weekday + 1 - filmDate.getDay();
-    const events = offset === 0 ? FILM_DAY : workday.events;
+    const events = offset === 0 ? FILM_DAY : template;
     return {
       offset,
       events,
       date: new Date(filmDate.getFullYear(), filmDate.getMonth(), filmDate.getDate() + offset),
-      rails: filmDayRails(events.flatMap((event) => (event.preset ? [{ start: event.start, end: event.end, preset: event.preset }] : [])))
-        .map((planned) => (offset < 0 ? filmRecordedRail(planned, workday.pauses ?? []) : planned)),
+      rails: filmDayRails(events.flatMap((event) => (event.preset ? [{ start: event.start, end: event.end, preset: event.preset }] : []))),
     };
   });
   const timezone = getLocalTimezone();

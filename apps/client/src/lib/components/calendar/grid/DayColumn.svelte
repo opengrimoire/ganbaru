@@ -13,13 +13,15 @@
     formatTimeRange,
   } from "$lib/calendar/utils";
   import { computeDayTimelineBands } from "$lib/pomodoro/segments";
+  import { BreakMarkMotion, type BreakMark, type BreakMarkOwner } from "$lib/pomodoro/break-mark-motion";
+  import { prefersReducedMotion } from "$lib/utils/smooth-swap";
   import { isPendingCreateEventId, PENDING_CREATE_ID } from "$lib/components/calendar/display-events";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import EventBlock from "./EventBlock.svelte";
   import { getEventIndicatorState } from "./event-indicators";
   import { CALENDAR_ZOOM_FRAME_EVENT, useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import Music from "@lucide/svelte/icons/eighth-notes";
   import Repeat from "@lucide/svelte/icons/repeat";
   import Video from "@lucide/svelte/icons/video";
@@ -210,7 +212,7 @@
   });
 
 
-  const timelineBands = $derived.by(() => {
+  const timeline = $derived.by(() => {
     void pomodoro.breakOvertimeSeconds;
     void currentTimeMinute; // re-run every second (even during pause)
     const dayMidnight = parseCalendarDate(`${dateStr} 00:00`);
@@ -257,7 +259,7 @@
       });
     }
 
-    return computeDayTimelineBands(pomodoroEvents, {
+    const bands = computeDayTimelineBands(pomodoroEvents, {
       activeOccurrenceId: pomodoro.activeOccurrenceId,
       segments: pomodoro.segments,
       remainingSeconds: pomodoro.remainingSeconds,
@@ -266,7 +268,45 @@
       currentConfig: pomodoro.currentConfig,
       breakOvertimeSeconds: pomodoro.breakOvertimeSeconds,
     }, dayStartMs, nowMs, persistedSegmentsByEvent);
+    const owners = new Map<string, BreakMarkOwner>(pomodoroEvents.map((event) => [
+      event.id, { startMinute: event.startMinute, endMinute: event.endMinute },
+    ]));
+    return { bands, owners };
   });
+  const timelineBands = $derived(timeline.bands);
+
+  // Break marks ease into replanned places instead of jumping; see BreakMarkMotion for what moves and what snaps.
+  const breakMotion = new BreakMarkMotion();
+  let breakMarks = $state.raw<BreakMark[]>([]);
+  let breakMotionDate: string | null = null;
+  let breakMotionFrame = 0;
+  let breakMotionTime = 0;
+
+  $effect.pre(() => {
+    const { bands, owners } = timeline;
+    if (dateStr !== breakMotionDate) {
+      breakMotion.clear();
+      breakMotionDate = dateStr;
+    }
+    breakMotion.retarget(bands, owners, prefersReducedMotion());
+    breakMarks = breakMotion.marks();
+    requestBreakMotionFrame();
+  });
+
+  function requestBreakMotionFrame(): void {
+    if (breakMotionFrame !== 0 || !breakMotion.moving) return;
+    breakMotionTime = performance.now();
+    breakMotionFrame = requestAnimationFrame(stepBreakMotion);
+  }
+
+  function stepBreakMotion(now: number): void {
+    breakMotion.step((now - breakMotionTime) / 1000);
+    breakMotionTime = now;
+    breakMarks = breakMotion.marks();
+    breakMotionFrame = breakMotion.moving ? requestAnimationFrame(stepBreakMotion) : 0;
+  }
+
+  onDestroy(() => cancelAnimationFrame(breakMotionFrame));
 
   function timelineBandKey(band: TimelineBand, index: number): string {
     return `${band.phase}:${band.status}:${band.topMinute.toFixed(3)}:${band.heightMinutes.toFixed(3)}:${index}`;
@@ -588,14 +628,15 @@
         ></div>
       {/each}
       <!-- Break bands (on top of focus fills) -->
-      {#each timelineBands.filter(b => b.phase !== "focus" && b.topMinute < seg.end && b.topMinute + b.heightMinutes > seg.start) as band, bandIndex (timelineBandKey(band, bandIndex))}
+      {#each breakMarks.filter(mark => mark.topMinute < seg.end && mark.topMinute + mark.heightMinutes > seg.start) as mark (mark.key)}
         <div
-          class="absolute left-0 right-0 {band.status === 'active' ? 'break-band-active' : ''}"
+          class="absolute left-0 right-0 {mark.status === 'active' ? 'break-band-active' : ''}"
           style="
-            top: {((band.topMinute - seg.start) / (seg.end - seg.start)) * 100}%;
-            height: {Math.max((band.heightMinutes / (seg.end - seg.start)) * 100, 0.5)}%;
+            top: {((mark.topMinute - seg.start) / (seg.end - seg.start)) * 100}%;
+            height: {Math.max((mark.heightMinutes / (seg.end - seg.start)) * 100, 0.5)}%;
             background-color: var(--cal-timeline-break);
           "
+          style:opacity={mark.status === "active" || mark.opacity >= 1 ? null : mark.opacity}
         ></div>
       {/each}
     </div>

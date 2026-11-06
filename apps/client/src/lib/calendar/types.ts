@@ -352,6 +352,10 @@ export interface TimelineBand {
   heightMinutes: number; // duration in minutes
   phase: SegmentPhase;
   status: SegmentStatus;
+  /** The Calendar event whose rhythm or history the band shows. */
+  ownerId: string;
+  /** Whether the band is planned from its owner's own start, so it moves with the owner when the owner moves. */
+  anchored: boolean;
 }
 
 export interface DragState {

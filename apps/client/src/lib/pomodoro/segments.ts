@@ -176,6 +176,9 @@ export function computeDayTimelineBands(
       const planned = computePlannedSegments(
         event.config, durationMinutes, inheritedFocusMinutes, inheritedRhythmPosition,
       );
+      // A window that opens at the owner's own start moves with the owner; one opened by now or by an earlier
+      // owner's end stays where it is when the owner moves.
+      const anchored = cursorMs === owner.startMs;
       for (const segment of planned) {
         if (segment.phase === "focus") continue;
         bands.push({
@@ -183,6 +186,8 @@ export function computeDayTimelineBands(
           heightMinutes: segment.endOffsetMinutes - segment.startOffsetMinutes,
           phase: segment.phase,
           status: "planned",
+          ownerId: event.id,
+          anchored,
         });
       }
     }
@@ -301,7 +306,7 @@ function emitFocusFillBands(
     const endMinute = Math.min(rawEndMinute, ev.endMinute);
     const heightMinutes = endMinute - topMinute;
     if (heightMinutes > 0) {
-      bands.push({ topMinute, heightMinutes, phase: "focus", status });
+      bands.push({ topMinute, heightMinutes, phase: "focus", status, ownerId: ev.id, anchored: false });
     }
   }
 }
@@ -349,7 +354,7 @@ function projectActiveSegments(
         const topMinute = (startMs - dayStartMs) / 60000;
         const heightMinutes = (endMs - startMs) / 60000;
         if (topMinute + heightMinutes > ev.startMinute && topMinute < ev.endMinute) {
-          bands.push({ topMinute, heightMinutes, phase: seg.phase, status: seg.status });
+          bands.push({ topMinute, heightMinutes, phase: seg.phase, status: seg.status, ownerId: ev.id, anchored: false });
         }
       }
     } else if (i === activeIdx) {
@@ -368,7 +373,7 @@ function projectActiveSegments(
         const topMinute = (startMs - dayStartMs) / 60000;
         const heightMinutes = (endMs - startMs) / 60000;
         if (heightMinutes > 0 && topMinute + heightMinutes > ev.startMinute && topMinute < ev.endMinute) {
-          bands.push({ topMinute, heightMinutes, phase: seg.phase, status: "active" });
+          bands.push({ topMinute, heightMinutes, phase: seg.phase, status: "active", ownerId: ev.id, anchored: false });
         }
       }
     }
@@ -410,7 +415,7 @@ function emitProjectedFutureBreakBands(
     const topMinute = (cursor - dayStartMs) / 60000;
     const heightMinutes = (breakEnd - cursor) / 60000;
     if (heightMinutes > 0 && topMinute + heightMinutes > ev.startMinute && topMinute < ev.endMinute) {
-      bands.push({ topMinute, heightMinutes, phase: breakPhase, status: "planned" });
+      bands.push({ topMinute, heightMinutes, phase: breakPhase, status: "planned", ownerId: ev.id, anchored: false });
     }
 
     cursor += breakDurationMs;
@@ -443,7 +448,7 @@ function projectPersistedSegments(
       const topMinute = (startMs - dayStartMs) / 60000;
       const heightMinutes = (endMs - startMs) / 60000;
       if (topMinute + heightMinutes > ev.startMinute && topMinute < ev.endMinute) {
-        bands.push({ topMinute, heightMinutes, phase: seg.phase, status: seg.status });
+        bands.push({ topMinute, heightMinutes, phase: seg.phase, status: seg.status, ownerId: ev.id, anchored: false });
       }
     }
   }

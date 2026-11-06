@@ -39,6 +39,7 @@ Theme tokens own the colors, with no extra shade for active, projected, or histo
 - Focus fill runs from a segment's actual start to its end (or now while active), minus every pause. One segment with several pauses shows several bands. Future focus is never painted as done.
 - Persisted breaks show only the interval that actually ran, capped at planned end plus ten seconds. Extensions move the planned end and therefore count.
 - Projected breaks come from the current run plan. When an event still has time but no active run, projections restart from now to show that recovery remains reachable. Projections are never persisted, and a break that never starts leaves no historical marker.
+- When a planned break moves because an adjacent or overlapping event, the event's length, or its Focus settings changed, its marker slides to the new place instead of jumping, and a break gained or lost fades in or out. Markers move with a dragged event at once, like the event itself, appear and disappear with their event's rail, stay clipped to their event, and never animate recorded or active breaks. Reduced motion moves them at once.
 - Historical fill renders from the original occurrence identity, so recurrence edits never move past focus onto a newly edited schedule.
 
 ## Visibility matrix

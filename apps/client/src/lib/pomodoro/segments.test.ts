@@ -310,8 +310,22 @@ describe("computeDayTimelineBands", () => {
     const ev = makeEvent("A", 10, 12);
     const bands = computeDayTimelineBands([ev], null, DAY_MS, PAST_NOW);
     expect(bands.length).toBe(2);
-    expect(bands[0]).toEqual({ topMinute: 640, heightMinutes: 5, phase: "short_break", status: "planned" });
-    expect(bands[1]).toEqual({ topMinute: 685, heightMinutes: 5, phase: "short_break", status: "planned" });
+    expect(bands[0]).toEqual({ topMinute: 640, heightMinutes: 5, phase: "short_break", status: "planned", ownerId: "A", anchored: true });
+    expect(bands[1]).toEqual({ topMinute: 685, heightMinutes: 5, phase: "short_break", status: "planned", ownerId: "A", anchored: true });
+  });
+
+  it("anchors planned breaks to their owner only when the plan opens at the owner's own start", () => {
+    const adjacent = computeDayTimelineBands([makeEvent("A", 10, 11), makeEvent("B", 11, 13)], null, DAY_MS, PAST_NOW);
+    expect(adjacent.filter((band) => band.ownerId === "B").every((band) => band.anchored)).toBe(true);
+
+    const cut = computeDayTimelineBands([makeEvent("A", 10, 12), makeEvent("B", 11, 14)], null, DAY_MS, PAST_NOW);
+    const cutBreaks = cut.filter((band) => band.ownerId === "B");
+    expect(cutBreaks.length).toBeGreaterThan(0);
+    expect(cutBreaks.every((band) => !band.anchored && band.topMinute >= 12 * 60)).toBe(true);
+
+    const fromNow = computeDayTimelineBands([makeEvent("A", 9, 12)], null, DAY_MS, DAY_MS + 10 * 3_600_000);
+    expect(fromNow.length).toBeGreaterThan(0);
+    expect(fromNow.every((band) => band.ownerId === "A" && !band.anchored)).toBe(true);
   });
 
   it("inherits focus and rhythm position across sequential events", () => {
@@ -401,7 +415,7 @@ describe("computeDayTimelineBands", () => {
 
     const bands = computeDayTimelineBands([outer, nested], null, DAY_MS, nowMs);
     expect(bands[0]).toEqual({
-      topMinute: 640, heightMinutes: 5, phase: "short_break", status: "planned",
+      topMinute: 640, heightMinutes: 5, phase: "short_break", status: "planned", ownerId: "nested", anchored: false,
     });
     expect(bands.filter((band) => band.topMinute >= 660)[0].topMinute).toBe(685);
     expect(bands).toEqual(computeDayTimelineBands([nested, outer], null, DAY_MS, nowMs));
@@ -426,7 +440,7 @@ describe("computeDayTimelineBands", () => {
 
     const bands = computeDayTimelineBands([outer, nested], active, DAY_MS, startedAt + 15 * 60_000);
     expect(bands[0]).toEqual({
-      topMinute: 600, heightMinutes: 15, phase: "focus", status: "active",
+      topMinute: 600, heightMinutes: 15, phase: "focus", status: "active", ownerId: "nested", anchored: false,
     });
     expect(bands.find((band) => band.status === "planned")?.topMinute).toBe(625);
   });
@@ -468,6 +482,8 @@ describe("computeDayTimelineBands", () => {
       heightMinutes: 5,
       phase: "short_break",
       status: "planned",
+      ownerId: "A",
+      anchored: false,
     });
   });
 
@@ -496,6 +512,8 @@ describe("computeDayTimelineBands", () => {
       heightMinutes: 5,
       phase: "short_break",
       status: "planned",
+      ownerId: "A",
+      anchored: false,
     });
   });
 
@@ -608,6 +626,8 @@ describe("computeDayTimelineBands", () => {
       heightMinutes: 5,
       phase: "short_break",
       status: "planned",
+      ownerId: "A",
+      anchored: false,
     });
   });
 
@@ -881,6 +901,8 @@ describe("computeDayTimelineBands", () => {
       heightMinutes: 5,
       phase: "short_break",
       status: "planned",
+      ownerId: "A",
+      anchored: false,
     });
   });
 

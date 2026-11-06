@@ -116,13 +116,17 @@ export const FOCUS_ACCESS_GUIDES: Readonly<Record<FocusAccessStep, readonly Focu
     { durationMs: TAP_MS, caption: "no-restrictions" },
     { durationMs: 2_200, caption: "no-restrictions" },
   ],
-  // The warning's OK counts down one second per phase, and the box is checked during the count.
+  // The warning's OK counts down one second per phase. The box is checked only after the count ends, as reading the
+  // warning first is what the countdown asks for, and OK is tapped once it unlocks.
   "usage-access": [
     { durationMs: 1_100, caption: "turn-on" },
     { durationMs: TAP_MS, caption: "turn-on" },
     { durationMs: COUNTDOWN_TICK_MS, caption: "accept-warning" },
     { durationMs: COUNTDOWN_TICK_MS, caption: "accept-warning" },
     { durationMs: COUNTDOWN_TICK_MS, caption: "accept-warning" },
+    { durationMs: COUNTDOWN_TICK_MS, caption: "accept-warning" },
+    { durationMs: COUNTDOWN_TICK_MS, caption: "accept-warning" },
+    { durationMs: TAP_MS, caption: "accept-warning" },
     { durationMs: TAP_MS, caption: "accept-warning" },
     { durationMs: TAP_MS, caption: "accept-warning" },
     { durationMs: 2_000, caption: "accept-warning" },

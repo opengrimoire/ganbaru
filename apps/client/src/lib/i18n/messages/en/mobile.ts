@@ -39,7 +39,7 @@ export const mobile = {
       `Your phone stops closed apps from starting on their own. Without this permission, reminders for sessions and breaks may never arrive while ${app} is closed.`,
     batteryTitle: "Keep the app running in the background",
     batteryBody: (app: string) =>
-      `Without this permission, Android can pause ${app} while you use other apps, so its notifications may arrive late or not at all.`,
+      `When you use battery saver, Android pauses apps in the background. Without this permission, that includes ${app}, so its notifications may arrive late or not at all.`,
     usageAccessTitle: "Set limits for distracting apps",
     usageAccessBody: (app: string) =>
       `Without this permission, ${app} can't tell how long you've used the apps you choose, so daily limits won't work.`,

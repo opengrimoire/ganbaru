@@ -102,20 +102,12 @@ describe("pre-vault language preference", () => {
   it("names planned languages in English, alphabetically, with their own names underneath", () => {
     const entries = plannedLanguageEntries();
 
-    expect(entries.map((entry) => entry.title)).toEqual([
-      "Arabic",
-      "Chinese (Simplified)",
-      "French",
-      "German",
-      "Hindi",
-      "Indonesian",
-      "Italian",
-      "Japanese",
-      "Korean",
-      "Portuguese (Brazil)",
-      "Russian",
-      "Turkish",
-    ]);
+    const titles = entries.map((entry) => entry.title);
+
+    expect(titles).toEqual([...titles].sort(new Intl.Collator("en").compare));
+    expect(titles.slice(0, 5)).toEqual(["Arabic", "Bengali", "Catalan", "Chinese (Simplified)", "Chinese (Traditional)"]);
+    expect(titles.filter((title) => title.startsWith("Portuguese"))).toEqual(["Portuguese (Brazil)", "Portuguese (Portugal)"]);
+    expect(titles.at(-1)).toBe("Vietnamese");
     expect(entries.find((entry) => entry.id === "ja")?.detail).toBe("日本語");
     expect(entries.find((entry) => entry.id === "ar")?.detail).toBe("العربية");
   });

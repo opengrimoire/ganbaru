@@ -28,7 +28,7 @@ export const vaultSetup = {
   language: {
     headline: "Elige tu idioma",
     body: "Puedes cambiarlo después en Ajustes > Apariencia.",
-    plannedHeading: "Llegarán en una versión futura",
+    plannedNote: "Los idiomas atenuados llegarán en una versión futura.",
   },
   about: {
     headline: "Gratis, abierto y tuyo.",

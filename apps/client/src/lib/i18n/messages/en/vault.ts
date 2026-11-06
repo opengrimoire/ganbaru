@@ -20,7 +20,7 @@ export const vaultSetup = {
   language: {
     headline: "Choose your language",
     body: "You can change it later in Settings > Appearance.",
-    plannedHeading: "Coming in a future version",
+    plannedNote: "Dimmed languages are coming in a future version.",
   },
   about: {
     headline: "Free, open, and yours.",

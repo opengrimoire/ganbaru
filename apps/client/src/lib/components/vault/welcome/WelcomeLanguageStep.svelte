@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Info from "@lucide/svelte/icons/info";
   import type { Snippet } from "svelte";
   import type { LanguagePreference } from "$lib/i18n/locales";
   import {
@@ -89,23 +90,23 @@
             </span>
           </label>
         {/each}
-      </div>
-
-      <div class="space-y-2">
-        <h2 id="{headingId}-planned" class="px-4 text-sm font-medium text-muted-foreground">
-          {t("vaultSetup.language.plannedHeading")}
-        </h2>
-        <ul aria-labelledby="{headingId}-planned" class="grid gap-1.5">
-          {#each planned as entry (entry.id)}
-            <li class="flex min-h-14 flex-col justify-center rounded-lg px-4 py-2.5 opacity-55">
+        {#each planned as entry (entry.id)}
+          <label class="flex min-h-14 items-center rounded-lg px-4 py-2.5 opacity-55">
+            <input type="radio" name="{headingId}-language" value={entry.id} disabled aria-describedby="{headingId}-planned" class="sr-only" />
+            <span class="min-w-0 flex-1">
               <span lang="en" class="block truncate text-base font-medium text-foreground">{entry.title}</span>
               <span lang={entry.id} dir="ltr" class="block truncate text-left text-sm text-muted-foreground">
                 {entry.detail}
               </span>
-            </li>
-          {/each}
-        </ul>
+            </span>
+          </label>
+        {/each}
       </div>
+
+      <p id="{headingId}-planned" class="flex items-start gap-2 px-4 text-sm leading-5 text-muted-foreground">
+        <Info size={16} strokeWidth={1.8} aria-hidden="true" class="mt-0.5 shrink-0" />
+        {t("vaultSetup.language.plannedNote")}
+      </p>
     </div>
   </div>
 

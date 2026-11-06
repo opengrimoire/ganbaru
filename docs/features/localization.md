@@ -1,6 +1,6 @@
 # Localization
 
-**Partial.** All normal app chrome and main feature surfaces use a typed message catalog. English is the canonical catalog and Spanish is the first translation. Missing translations fall back to English per message key, so the app stays usable while catalogs evolve.
+**Partial.** All normal app chrome and main feature surfaces use a typed message catalog. English is the canonical catalog and Spanish is the first translation. Missing translations fall back to English per message key, so the app stays usable while catalogs evolve. Planned translations, in order: Brazilian Portuguese, French, German, Italian, Japanese, Korean, Simplified Chinese, Russian, Hindi, Arabic (the first right-to-left locale), Turkish, and Indonesian. The welcome language screen lists them by their own names as coming in a future version, and they cannot be chosen until their catalogs ship.
 
 ## Language preference
 

@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { APP_LOCALES, type AppLocale } from "./locales";
+import { describe, expect, it, vi } from "vitest";
+import { APP_LOCALES, PLANNED_LOCALES, type AppLocale } from "./locales";
 import {
   PRE_VAULT_LANGUAGE_STORAGE_KEY,
   clearPreVaultLanguagePreference,
+  plannedLanguageEntries,
   preVaultLanguageChoices,
   readPreVaultLanguagePreference,
   resolvedSystemLanguageName,
@@ -81,6 +82,33 @@ describe("pre-vault language preference", () => {
     expect(choices.map((choice) => choice.value)).toEqual(["system", ...APP_LOCALES]);
     expect(choices.find((choice) => choice.value === "en")).toMatchObject({ title: "English", titleLang: "en", detail: "English" });
     expect(choices.find((choice) => choice.value === "es")).toMatchObject({ title: "Español", titleLang: "es", detail: "Spanish" });
+  });
+
+  it("lists the planned languages by their own names, apart from the languages that already ship", () => {
+    const entries = plannedLanguageEntries("en");
+
+    expect(entries.map((entry) => entry.id)).toEqual(PLANNED_LOCALES.map((locale) => locale.id));
+    expect(new Set(entries.map((entry) => entry.id)).size).toBe(entries.length);
+    for (const entry of entries) {
+      expect(APP_LOCALES.some((locale) => entry.id.split("-")[0] === locale)).toBe(false);
+    }
+    expect(entries.find((entry) => entry.id === "ja")?.title).toBe("日本語");
+    expect(entries.find((entry) => entry.id === "ar")?.direction).toBe("rtl");
+  });
+
+  it("names planned languages in the interface language, starting with a capital", () => {
+    expect(plannedLanguageEntries("en").find((entry) => entry.id === "fr")?.detail).toBe("French");
+    expect(plannedLanguageEntries("es").find((entry) => entry.id === "fr")?.detail).toBe("Francés");
+    expect(plannedLanguageEntries("es").find((entry) => entry.id === "de")?.detail).toBe("Alemán");
+  });
+
+  it("falls back to the English name when the platform cannot name a planned language", () => {
+    vi.stubGlobal("Intl", { ...Intl, DisplayNames: undefined });
+    try {
+      expect(plannedLanguageEntries("es").find((entry) => entry.id === "fr")?.detail).toBe("French");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("keeps each language's own name while the second line follows the interface language", () => {

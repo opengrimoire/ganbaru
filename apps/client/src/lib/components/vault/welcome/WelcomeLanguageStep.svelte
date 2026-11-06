@@ -3,6 +3,7 @@
   import type { AppLocale, LanguagePreference } from "$lib/i18n/locales";
   import {
     browserLocaleCandidates,
+    plannedLanguageEntries,
     preVaultLanguageChoices,
     writePreVaultLanguagePreference,
   } from "$lib/i18n/pre-vault-language";
@@ -29,6 +30,7 @@
   const choices = $derived(
     preVaultLanguageChoices(systemCandidates, t("language.systemOption"), (locale) => t(LANGUAGE_NAME_KEYS[locale])),
   );
+  const planned = $derived(plannedLanguageEntries(localization.locale));
 
   function safeStorage(): Storage | undefined {
     try {
@@ -44,9 +46,9 @@
   }
 </script>
 
-<section class="@container h-full overflow-x-hidden overflow-y-auto">
-  <div class="mx-auto flex min-h-full w-full max-w-xl flex-col px-4 pb-6 pt-8 @min-[560px]:px-8 @min-[860px]:py-10">
-    <div class="flex flex-1 flex-col gap-8 pb-6 pt-4 @min-[560px]:pt-10 @min-[860px]:gap-10 @min-[860px]:pt-16">
+<section class="@container flex h-full flex-col">
+  <div class="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+    <div class="mx-auto flex w-full max-w-xl flex-col gap-8 px-4 pb-6 pt-12 @min-[560px]:px-8 @min-[560px]:pt-18 @min-[860px]:gap-10 @min-[860px]:pt-26">
       <div class="space-y-2 @min-[860px]:space-y-3">
         <h1 id="{headingId}-heading" class="text-2xl font-semibold leading-tight tracking-tight text-balance text-foreground @min-[560px]:text-3xl @min-[860px]:text-4xl">
           {t("vaultSetup.language.headline")}
@@ -93,8 +95,26 @@
           </label>
         {/each}
       </div>
-    </div>
 
-    <div class="shrink-0 border-t border-border pt-4">{@render actions()}</div>
+      <div class="space-y-2">
+        <h2 id="{headingId}-planned" class="px-4 text-sm font-medium text-muted-foreground">
+          {t("vaultSetup.language.plannedHeading")}
+        </h2>
+        <ul aria-labelledby="{headingId}-planned" class="grid gap-1.5 @min-[480px]:grid-cols-2">
+          {#each planned as entry (entry.id)}
+            <li class="min-w-0 rounded-lg px-4 py-2 opacity-55">
+              <span lang={entry.id} dir={entry.direction} class="block truncate text-start text-sm font-medium text-foreground">
+                {entry.title}
+              </span>
+              <span class="block truncate text-xs text-muted-foreground">{entry.detail}</span>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="mx-auto w-full max-w-xl shrink-0 px-4 pb-6 @min-[560px]:px-8 @min-[860px]:pb-10">
+    <div class="border-t border-border pt-4">{@render actions()}</div>
   </div>
 </section>

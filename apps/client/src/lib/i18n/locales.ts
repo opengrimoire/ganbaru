@@ -34,6 +34,32 @@ export const LOCALE_METADATA: Readonly<Record<AppLocale, LocaleMetadata>> =
     }),
   });
 
+/** A language planned for a later release: shown as coming, never selectable, and not an app locale yet. */
+export interface PlannedLocale {
+  /** The BCP 47 tag the translation will use. */
+  readonly id: string;
+  /** The English name, used where the platform cannot name the language in the interface language. */
+  readonly label: string;
+  readonly nativeLabel: string;
+  readonly direction: LocaleDirection;
+}
+
+/** The languages planned after English and Spanish, in their intended order. */
+export const PLANNED_LOCALES: readonly PlannedLocale[] = Object.freeze([
+  { id: "pt-BR", label: "Brazilian Portuguese", nativeLabel: "Português (Brasil)", direction: "ltr" },
+  { id: "fr", label: "French", nativeLabel: "Français", direction: "ltr" },
+  { id: "de", label: "German", nativeLabel: "Deutsch", direction: "ltr" },
+  { id: "it", label: "Italian", nativeLabel: "Italiano", direction: "ltr" },
+  { id: "ja", label: "Japanese", nativeLabel: "日本語", direction: "ltr" },
+  { id: "ko", label: "Korean", nativeLabel: "한국어", direction: "ltr" },
+  { id: "zh-Hans", label: "Simplified Chinese", nativeLabel: "简体中文", direction: "ltr" },
+  { id: "ru", label: "Russian", nativeLabel: "Русский", direction: "ltr" },
+  { id: "hi", label: "Hindi", nativeLabel: "हिन्दी", direction: "ltr" },
+  { id: "ar", label: "Arabic", nativeLabel: "العربية", direction: "rtl" },
+  { id: "tr", label: "Turkish", nativeLabel: "Türkçe", direction: "ltr" },
+  { id: "id", label: "Indonesian", nativeLabel: "Bahasa Indonesia", direction: "ltr" },
+]);
+
 const APP_LOCALE_SET = new Set<string>(APP_LOCALES);
 const LANGUAGE_PREFERENCE_SET = new Set<string>(LANGUAGE_PREFERENCES);
 

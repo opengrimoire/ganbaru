@@ -3,10 +3,12 @@ import {
   DEFAULT_LANGUAGE_PREFERENCE,
   DEFAULT_LOCALE,
   LOCALE_METADATA,
+  PLANNED_LOCALES,
   parseLanguagePreference,
   resolveLanguagePreference,
   type AppLocale,
   type LanguagePreference,
+  type LocaleDirection,
 } from "./locales";
 
 export const PRE_VAULT_LANGUAGE_STORAGE_KEY = "ganbaru.preVaultLanguagePreference";
@@ -22,6 +24,44 @@ export interface PreVaultLanguageChoice {
   readonly detail: string;
   /** The language `detail` is written in, or null when it is in the interface language. */
   readonly detailLang: AppLocale | null;
+}
+
+/** A planned language on the welcome language screen, shown turned off. */
+export interface PlannedLanguageEntry {
+  readonly id: string;
+  /** The language's own name, written in that language. */
+  readonly title: string;
+  readonly direction: LocaleDirection;
+  /** The language's name in the interface language. */
+  readonly detail: string;
+}
+
+/**
+ * The planned languages, each by its own name with its name in `interfaceLocale` underneath. Names come from the
+ * platform's language display names, sentence-capitalized; where the platform cannot name one, the English name
+ * stands in.
+ */
+export function plannedLanguageEntries(interfaceLocale: AppLocale): PlannedLanguageEntry[] {
+  let names: Intl.DisplayNames | null = null;
+  try {
+    names = new Intl.DisplayNames([interfaceLocale], { type: "language", fallback: "none" });
+  } catch {
+    names = null;
+  }
+  return PLANNED_LOCALES.map((locale) => {
+    const localized = names?.of(locale.id);
+    return {
+      id: locale.id,
+      title: locale.nativeLabel,
+      direction: locale.direction,
+      detail: localized ? capitalizeFirst(localized, interfaceLocale) : locale.label,
+    };
+  });
+}
+
+function capitalizeFirst(text: string, locale: AppLocale): string {
+  const [first = "", ...rest] = Array.from(text);
+  return first.toLocaleUpperCase(locale) + rest.join("");
 }
 
 /** The locales the browser or webview reports, most preferred first. */

@@ -262,3 +262,25 @@ export function filmFocusSpans(minute: number): FilmSpan[] {
     .filter((span) => minute > span.start)
     .map((span) => ({ start: span.start, end: Math.min(span.end, minute) }));
 }
+
+/** How long the planned event's breaks take to slide to where the rail replans them once the drawn event joins it. */
+export const FILM_REPLAN_MS = 700;
+
+/**
+ * The session's breaks as the rail shows them at `elapsed`, in session minutes. Once the drawn event is saved, the
+ * planned event's breaks slide from where they fell on its own rail to where the joined rail plans them, growing or
+ * shrinking into their new lengths. The Calendar replans at once; the film eases the move so the change can be seen.
+ * The drawn event's own breaks appear with it.
+ */
+export function filmRailBreaks(elapsed: number): FilmSpan[] {
+  const progress = easeInOutCubic(filmSpan(elapsed, FILM_BEATS.createSaved, FILM_BEATS.createSaved + FILM_REPLAN_MS));
+  const drawn = FILM_BREAKS.filter((pause) => pause.start < FILM_DRAWN_MINUTES);
+  const planned = FILM_BREAKS.filter((pause) => pause.start >= FILM_DRAWN_MINUTES).map((target, index) => {
+    const from = FILM_PLANNED_RAIL.breaks[index] ?? target;
+    return {
+      start: from.start + (target.start - from.start) * progress,
+      end: from.end + (target.end - from.end) * progress,
+    };
+  });
+  return [...drawn, ...planned].map(({ start, end }) => ({ start, end }));
+}

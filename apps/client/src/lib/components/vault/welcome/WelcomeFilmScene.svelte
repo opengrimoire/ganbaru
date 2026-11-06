@@ -76,7 +76,6 @@
   import { cn } from "$lib/utils";
   import {
     FILM_BEATS,
-    FILM_BREAKS,
     FILM_DRAWN_MINUTES,
     FILM_PLANNED_RAIL,
     FILM_PULL_BACK_MS,
@@ -85,6 +84,7 @@
     filmClockMinute,
     filmDayRails,
     filmFocusSpans,
+    filmRailBreaks,
     filmSessionMinute,
     filmSessionMoment,
     filmSpan,
@@ -127,8 +127,6 @@
   const SESSION_START = 9 * 60;
   const DRAWN_END = SESSION_START + FILM_DRAWN_MINUTES;
   const SESSION_END = SESSION_START + FILM_SESSION_MINUTES;
-  /** The session's planned breaks, in minutes of the day. */
-  const TODAY_BREAKS = inDay(FILM_BREAKS);
   /** The planned event's breaks while it has its rail to itself. */
   const PLANNED_BREAKS = inDay(FILM_PLANNED_RAIL.breaks);
 
@@ -235,6 +233,8 @@
   const sessionMinute = $derived(filmSessionMinute(elapsed));
   const moment = $derived(filmSessionMoment(sessionMinute));
   const focusing = $derived(elapsed >= FILM_BEATS.focusStart && moment.kind !== "done");
+  /** The session's breaks in minutes of the day, sliding into place as the drawn event joins the planned one. */
+  const todayBreaks = $derived(inDay(filmRailBreaks(elapsed)));
 
   /** The session while it is dragged out, then saved. */
   const drawn = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.createStart, FILM_BEATS.createEnd)));
@@ -355,7 +355,7 @@
         style:background-color="var(--cal-timeline-focus)"
       ></div>
     {/each}
-    {#each breaks as band (band.start)}
+    {#each breaks as band, index (index)}
       <div
         class="absolute inset-x-0"
         style:top={`${((band.start - start) / length) * 100}%`}
@@ -504,7 +504,7 @@
                 SESSION_START,
                 SESSION_END,
                 inDay(filmFocusSpans(sessionMinute)),
-                TODAY_BREAKS,
+                todayBreaks,
                 focusing && moment.kind === "break",
               )}
             {/if}

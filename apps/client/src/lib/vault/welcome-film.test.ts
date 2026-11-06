@@ -6,12 +6,14 @@ import {
   FILM_DRAWN_MINUTES,
   FILM_LEAD_IN_MINUTES,
   FILM_PLANNED_RAIL,
+  FILM_REPLAN_MS,
   FILM_SESSION,
   FILM_SESSION_MINUTES,
   easeInOutCubic,
   filmClockMinute,
   filmDayRails,
   filmFocusSpans,
+  filmRailBreaks,
   filmSessionMinute,
   filmSessionMoment,
   filmSpan,
@@ -170,6 +172,28 @@ describe("the film's session", () => {
     expect(filmFocusSpans(20)).toEqual([{ start: 0, end: 20 }]);
     expect(filmFocusSpans(55)).toEqual([{ start: 0, end: 50 }]);
     expect(filmFocusSpans(70)).toEqual([{ start: 0, end: 50 }, { start: 60, end: 70 }]);
+  });
+
+  it("slides the planned event's breaks earlier into the joined rail's plan once the drawn event is saved", () => {
+    const settled = FILM_BEATS.createSaved + FILM_REPLAN_MS;
+    const drawnBreaks = FILM_BREAKS.filter((pause) => pause.start < FILM_DRAWN_MINUTES).length;
+    const plannedPart = (elapsed: number) => filmRailBreaks(elapsed).slice(drawnBreaks);
+    expect(plannedPart(FILM_BEATS.createSaved)).toEqual(FILM_PLANNED_RAIL.breaks.map(({ start, end }) => ({ start, end })));
+    expect(filmRailBreaks(settled)).toEqual(FILM_BREAKS.map(({ start, end }) => ({ start, end })));
+    expect(filmRailBreaks(FILM_BEATS.end)).toEqual(filmRailBreaks(settled));
+    let previous = plannedPart(FILM_BEATS.createSaved);
+    for (let elapsed = FILM_BEATS.createSaved; elapsed <= settled; elapsed += 25) {
+      const current = plannedPart(elapsed);
+      current.forEach((pause, index) => {
+        expect(pause.start).toBeLessThanOrEqual(previous[index].start + 1e-9);
+        expect(pause.end).toBeGreaterThan(pause.start);
+      });
+      previous = current;
+    }
+  });
+
+  it("finishes the replan before Focus starts", () => {
+    expect(FILM_BEATS.createSaved + FILM_REPLAN_MS).toBeLessThan(FILM_BEATS.focusStart);
   });
 });
 

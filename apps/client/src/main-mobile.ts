@@ -20,6 +20,8 @@ import { hydrateUserThemes } from "$lib/stores/theme.svelte";
 (globalThis as unknown as { Temporal: typeof Temporal }).Temporal = Temporal;
 applyPlatformProfileToDocument();
 installModalKeyboardRouter();
+/** Starts system bar inset tracking before any screen mounts; the store loads in the chunk the app shell shares. */
+const viewportTracking = import("$lib/stores/viewport.svelte").then((viewport) => viewport.initializeViewportTracking());
 
 type MountedRoot = ReturnType<typeof mount>;
 type MobileAppComponent = typeof import("./MobileApp.svelte").default;
@@ -118,6 +120,7 @@ async function mountMobileVaultHandoffOnboarding(vaultId: string) {
 }
 
 const appPromise = (async () => {
+  await viewportTracking;
   const preVaultPreference = readPreVaultLanguagePreference(safeStorage());
   await getLocalization().setLanguagePreference(
     preVaultPreference ?? DEFAULT_LANGUAGE_PREFERENCE,

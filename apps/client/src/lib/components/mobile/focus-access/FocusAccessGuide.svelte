@@ -106,7 +106,7 @@
       </ol>
     </div>
     {#key caption}
-      <span aria-hidden="true" class="col-start-1 row-start-1" in:fade={{ duration: fadeMs }} out:fade={{ duration: fadeMs }}>{caption}</span>
+      <span aria-hidden="true" class="col-start-1 row-start-1" in:fade={{ duration: fadeMs, delay: fadeMs }} out:fade={{ duration: fadeMs }}>{caption}</span>
     {/key}
   </figcaption>
 </figure>

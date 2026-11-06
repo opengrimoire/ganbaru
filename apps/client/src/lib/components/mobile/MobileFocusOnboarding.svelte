@@ -282,8 +282,8 @@
         {/if}
 
         {#key current}
-          <div class="flex flex-1 flex-col" in:fly={{ x: 24, duration: enterMs }}>
-            <div class="flex flex-1 items-center justify-center py-6">
+          <div class="flex flex-1 flex-col justify-center py-6" in:fly={{ x: 24, duration: enterMs }}>
+            <div class="flex justify-center pb-8">
               <FocusAccessGuide step={current} {appLabel} />
             </div>
 

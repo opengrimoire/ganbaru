@@ -222,7 +222,11 @@ function refreshViewport(): void {
   root.dataset.input = next.coarsePointer ? "coarse" : "fine";
 }
 
-function initializeViewportTracking(): void {
+/**
+ * Start tracking the viewport, keyboard, and Android system bar insets into root CSS variables. Idempotent; bootstraps
+ * call it before mounting any screen so screens shown before the app shell also respect the system bars.
+ */
+export function initializeViewportTracking(): void {
   if (initialized || typeof window === "undefined") return;
   initialized = true;
   refreshViewport();

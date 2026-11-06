@@ -11,7 +11,7 @@ export const vaultSetup = {
   welcomeBody: "Planea en el calendario, enfócate desde ahí y mira cómo tu semana se llena con el trabajo que de verdad hiciste.",
   film: {
     description:
-      "Una breve animación de un día en la app: se planea una sesión de enfoque en el calendario, pasa por su descanso y su final, y luego aparece junto a las demás sesiones de la semana, donde las sesiones seguidas comparten un mismo ritmo de descansos cortos y largos.",
+      "Una breve animación de un día en la app: se planea en el calendario una sesión larga con el Pomodoro Creativo justo antes de otra con el Pomodoro Extendido, y su riel de enfoque compartido lleva un solo ritmo por ambas, con descansos cortos y largos. Las sesiones pasan por un descanso hasta su final, y luego aparecen junto a las demás sesiones de la semana.",
     writeChapter: "Escribir capítulo 3",
     reviewNotes: "Revisar notas",
     lunch: "Comida",

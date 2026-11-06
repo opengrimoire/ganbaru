@@ -3,10 +3,10 @@
   import { calendarZoomGridMinutesForPercent, calendarZoomHourHeightForPercent } from "$lib/calendar/zoom-levels";
 
   /**
-   * The Calendar zoom the film is drawn at: one of the Calendar's own levels, close enough for a five minute break to
-   * read on the Focus rail.
+   * The Calendar zoom the film is drawn at: the Calendar's default level, which fits the whole session in view while a
+   * five minute break still reads on the Focus rail.
    */
-  const FILM_ZOOM_PERCENT = 150;
+  const FILM_ZOOM_PERCENT = 100;
 
   /** Canvas geometry in logical pixels, matching the Calendar's own measures at the film's zoom. */
   const CANVAS_W = 360;
@@ -17,9 +17,9 @@
   const CREATE_SNAP_MINUTES = calendarZoomGridMinutesForPercent(FILM_ZOOM_PERCENT);
   /** Where the visible part of the day starts, in minutes since midnight, as if the grid were scrolled to the morning. */
   const VIEW_START = 8 * 60 + 40;
-  /** How much of the day shows: the morning's sessions at least, and on to the early afternoon in a tall room. */
-  const MIN_VIEW_MINUTES = 200;
-  const MAX_VIEW_MINUTES = 320;
+  /** How much of the day shows: the whole session at least, and on into the afternoon in a tall room. */
+  const MIN_VIEW_MINUTES = 300;
+  const MAX_VIEW_MINUTES = 420;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
   const DAYS_W = CANVAS_W - GUTTER_W;
 
@@ -33,9 +33,6 @@
 </script>
 
 <script lang="ts">
-  import Minus from "@lucide/svelte/icons/minus";
-  import Square from "@lucide/svelte/icons/square";
-  import X from "@lucide/svelte/icons/x";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import type { EventColor } from "$lib/calendar/types";
   import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
@@ -72,6 +69,8 @@
   import {
     FILM_BEATS,
     FILM_BREAKS,
+    FILM_DRAWN_MINUTES,
+    FILM_PLANNED_RAIL,
     FILM_PULL_BACK_MS,
     FILM_SESSION_MINUTES,
     easeInOutCubic,
@@ -98,7 +97,7 @@
   const theme = getTheme();
   const preferences = getPreferences();
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
-  /** The desktop title bar's icon size. */
+  /** The desktop title bar's icon size, which its Focus ring follows. */
   const TITLE_ICON_SIZE = 14;
 
   /** The Calendar's Focus rail, and the event area it keeps beside it on every event. */
@@ -108,7 +107,7 @@
   /** Minimum height for an event to show its time under its title. */
   const EVENT_TIME_MIN_PX = 32;
   const PRESS_FADE_MS = 140;
-  const RAIL_REVEAL_MS = 450;
+  const RAIL_REVEAL_MS = 800;
   const SCREEN_FADE_MS = 260;
   /** The week's recorded focus fills in one day after another once the view has pulled back. */
   const WEEK_FILL_DELAY_MS = 350;
@@ -117,11 +116,14 @@
   /** The Calendar's pulse on a break that is running. */
   const BREAK_PULSE_MS = 1500;
 
-  /** The session starts at nine. */
+  /** The session starts at nine: the drawn event, then the planned one right after it. */
   const SESSION_START = 9 * 60;
+  const DRAWN_END = SESSION_START + FILM_DRAWN_MINUTES;
   const SESSION_END = SESSION_START + FILM_SESSION_MINUTES;
   /** The session's planned breaks, in minutes of the day. */
   const TODAY_BREAKS = inDay(FILM_BREAKS);
+  /** The planned event's breaks while it has its rail to itself. */
+  const PLANNED_BREAKS = inDay(FILM_PLANNED_RAIL.breaks);
 
   /** Palette slots, so the drawing follows the active theme's event colors. The session keeps the default color. */
   const BLUE = 18;
@@ -162,9 +164,8 @@
       { start: 730, end: 790, color: ORANGE, title: "lunch" },
     ] },
     { offset: 0, events: [
-      { start: 630, end: 670, color: PURPLE, title: "reviewNotes" },
-      { start: 700, end: 760, color: ORANGE, title: "lunch" },
-      { start: 790, end: 830, color: BLUE, title: "readSources" },
+      { start: DRAWN_END, end: SESSION_END, color: BLUE, title: "readSources" },
+      { start: SESSION_END + 15, end: SESSION_END + 75, color: ORANGE, title: "lunch" },
     ] },
     { offset: 1, events: [
       { start: SESSION_START, end: 600, color: undefined, title: "writeChapter", preset: "creative" },
@@ -209,7 +210,7 @@
   /** The session while it is dragged out, then saved. */
   const drawn = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.createStart, FILM_BEATS.createEnd)));
   const drawnMinutes = $derived(
-    Math.max(CREATE_SNAP_MINUTES, Math.round((drawn * FILM_SESSION_MINUTES) / CREATE_SNAP_MINUTES) * CREATE_SNAP_MINUTES),
+    Math.max(CREATE_SNAP_MINUTES, Math.round((drawn * FILM_DRAWN_MINUTES) / CREATE_SNAP_MINUTES) * CREATE_SNAP_MINUTES),
   );
   const creating = $derived(elapsed >= FILM_BEATS.createStart && elapsed < FILM_BEATS.createSaved);
   const saved = $derived(elapsed >= FILM_BEATS.createSaved);
@@ -218,6 +219,10 @@
       * (1 - filmSpan(elapsed, FILM_BEATS.createEnd, FILM_BEATS.createEnd + PRESS_FADE_MS)),
   );
   const railReveal = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.railIn, FILM_BEATS.railIn + RAIL_REVEAL_MS)));
+  /** How much of the planned event's own rail the joined rail has covered, from its top, from 0 to 1. */
+  const plannedHidden = $derived(
+    saved ? Math.min(1, Math.max(0, (railReveal * FILM_SESSION_MINUTES - FILM_DRAWN_MINUTES) / (FILM_SESSION_MINUTES - FILM_DRAWN_MINUTES))) : 0,
+  );
 
   /** The pull back: other days open beside today, which narrows to one column of the week. */
   const pullBack = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.pullBack, FILM_BEATS.pullBack + FILM_PULL_BACK_MS)));
@@ -317,6 +322,7 @@
   breaks: readonly FilmSpan[],
   activeBreak: boolean,
   reveal: number,
+  hiddenTop = 0,
 )}
   {@const length = end - start}
   <div
@@ -327,7 +333,7 @@
     style:height={`${px(length)}px`}
     style:background-color="var(--cal-timeline-rail)"
     style:border-radius="3px"
-    style:clip-path={reveal < 1 ? `inset(0 0 ${(1 - reveal) * 100}% 0)` : undefined}
+    style:clip-path={reveal < 1 || hiddenTop > 0 ? `inset(${hiddenTop * 100}% 0 ${(1 - reveal) * 100}% 0)` : undefined}
   >
     {#each recorded as band (band.start)}
       <div
@@ -403,8 +409,8 @@
         {/if}
       </div>
     {:else}
-      <!-- The title bar: the Focus ring alone, then the window controls. -->
-      <div class="flex shrink-0 items-center justify-end gap-0.5 bg-sidebar pr-1.5 text-foreground/68 dark:text-white/76" style:height={`${TOP_BAR_H}px`}>
+      <!-- The title bar's Focus ring, on its own. -->
+      <div class="flex shrink-0 items-center justify-end bg-sidebar pr-1.5" style:height={`${TOP_BAR_H}px`}>
         <span class="grid size-7 place-items-center">
           <PomodoroProgressRing
             active={focusing && moment.kind !== "done"}
@@ -415,9 +421,6 @@
             progressClass="text-foreground/68 dark:text-white/76 stroke-foreground/68 dark:stroke-white/76"
           />
         </span>
-        <span class="ml-1.5 grid size-7 place-items-center"><Minus size={TITLE_ICON_SIZE} strokeWidth={1.5} aria-hidden="true" /></span>
-        <span class="grid size-7 place-items-center"><Square size={TITLE_ICON_SIZE} strokeWidth={1.5} aria-hidden="true" /></span>
-        <span class="grid size-7 place-items-center"><X size={TITLE_ICON_SIZE} strokeWidth={1.5} aria-hidden="true" /></span>
       </div>
     {/if}
 
@@ -467,6 +470,11 @@
               {@render rail(dayRail.start, dayRail.end, recordedFocus(dayRail, day.offset), dayRail.breaks, false, 1)}
             {/each}
 
+            {#if isToday && plannedHidden < 1}
+              <!-- The planned event's own rail, replanned from the top as the drawn event's rail joins it. -->
+              {@render rail(DRAWN_END, SESSION_END, [], PLANNED_BREAKS, false, 1, plannedHidden)}
+            {/if}
+
             {#if isToday}
               {@render rail(
                 SESSION_START,
@@ -487,7 +495,7 @@
                 {#if creating}
                   {@render eventBlock(SESSION_START, SESSION_START + drawnMinutes, undefined, t("calendar.event.noTitle"), false, true)}
                 {:else if saved}
-                  {@render eventBlock(SESSION_START, SESSION_END, undefined, title("writeChapter"), isPast(0, SESSION_END), false)}
+                  {@render eventBlock(SESSION_START, DRAWN_END, undefined, title("writeChapter"), isPast(0, DRAWN_END), false)}
                 {/if}
 
                 <!-- The press that draws the session, following its growing edge. -->

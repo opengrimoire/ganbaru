@@ -1,11 +1,11 @@
 /**
- * Timing for the welcome film: one continuous take of a day in the app. A Focus session is planned in the Calendar,
- * run through its break and its finish, then seen among the week's other sessions as the view pulls back. Every
- * moment is derived from the milliseconds elapsed since the film started, so a frame is a pure function of time and
- * the reduced-motion still is simply the last frame.
+ * Timing for the welcome film: one continuous take of a day in the app. A Focus session is planned in the Calendar
+ * ahead of another, runs through its first break and on through both events, then is seen among the week's other
+ * sessions as the view pulls back. Every moment is derived from the milliseconds elapsed since the film started, so a
+ * frame is a pure function of time and the reduced-motion still is simply the last frame.
  */
 
-import { createPresetPomodoroConfig, deriveRhythmPlan, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
+import { createPresetPomodoroConfig, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
 import { computeDayTimelineBands } from "$lib/pomodoro/segments";
 
 /** One point of a curve: `[x, y]`, with x strictly increasing across a curve. */
@@ -21,40 +21,55 @@ export interface FilmSpan {
 export const FILM_BEATS = {
   /** A press drags the session out on the empty day, and letting go saves it. */
   createStart: 500,
-  createEnd: 1150,
-  createSaved: 1300,
-  /** The session's Focus rail appears beside it, with its planned break marked. */
-  railIn: 1450,
+  createEnd: 1300,
+  createSaved: 1450,
+  /** The session's Focus rail appears beside it, carrying the rhythm on into the planned event. */
+  railIn: 1600,
   /** The current time reaches the session and Focus starts. */
-  focusStart: 2400,
+  focusStart: 2700,
   /** The break screen covers the app for the length of the break. */
-  breakStart: 3800,
-  breakEnd: 4900,
+  breakStart: 4100,
+  breakEnd: 5200,
   /** The session ends, the finished screen shows, and the app returns. */
-  sessionEnd: 6150,
-  finishedOut: 7000,
+  sessionEnd: 8600,
+  finishedOut: 9450,
   /** The camera pulls back from the day to the week. */
-  pullBack: 7250,
-  end: 9600,
+  pullBack: 9700,
+  end: 12000,
 } as const;
 
 /** How long the pull back from the day to the week takes. */
 export const FILM_PULL_BACK_MS = 1200;
 
-/** The Focus preset the film's sessions run with. */
-export const FILM_FOCUS_PRESET: PomodoroPresetKey = "creative";
+/**
+ * The film's session, in session minutes: a long Creative event, with a full cycle and a little more, drawn in the
+ * film, then a long Extended event already planned right after it. Back to back, they share one rail and the rhythm
+ * carries on from one into the other, so both lengths of focus and break show side by side.
+ */
+export const FILM_CHAIN: readonly FilmFocusEvent[] = [
+  { start: 0, end: 150, preset: "creative" },
+  { start: 150, end: 270, preset: "extended" },
+];
 
-/** The session's length in minutes: long enough for one break of the preset, ending on focus. */
-export const FILM_SESSION_MINUTES = 50;
+/** The length of the event drawn in the film. */
+export const FILM_DRAWN_MINUTES = FILM_CHAIN[0].end;
 
-/** The session's phases in minutes, planned by Focus's own rhythm for the preset and the session's length. */
-export const FILM_SESSION: readonly { kind: "focus" | "break"; minutes: number }[] = deriveRhythmPlan(
-  createPresetPomodoroConfig(FILM_FOCUS_PRESET),
-  FILM_SESSION_MINUTES,
-).segments.map((segment) => ({
-  kind: segment.phase === "focus" ? "focus" : "break",
-  minutes: segment.endOffsetMinutes - segment.startOffsetMinutes,
-}));
+/** The session's length: both events, end to end. */
+export const FILM_SESSION_MINUTES = FILM_CHAIN[FILM_CHAIN.length - 1].end;
+
+/** The session's rail, planned by the Calendar's own rhythm across both events. */
+export const FILM_RAIL: FilmRail = filmDayRails(FILM_CHAIN)[0];
+
+/** The planned event's rail on its own, before the drawn event joins it. */
+export const FILM_PLANNED_RAIL: FilmRail = filmDayRails(FILM_CHAIN.slice(1))[0];
+
+/** The session's phases in order, in minutes. */
+export const FILM_SESSION: readonly { kind: "focus" | "break"; minutes: number }[] = [
+  ...FILM_RAIL.focus.map((span) => ({ kind: "focus" as const, span })),
+  ...FILM_RAIL.breaks.map((span) => ({ kind: "break" as const, span })),
+]
+  .sort((left, right) => left.span.start - right.span.start)
+  .map(({ kind, span }) => ({ kind, minutes: span.end - span.start }));
 
 /** Where each phase of `kind` falls in the session, in session minutes. */
 function phaseSpans(kind: "focus" | "break"): FilmSpan[] {
@@ -68,11 +83,11 @@ function phaseSpans(kind: "focus" | "break"): FilmSpan[] {
 }
 
 /** The session's breaks, which the Focus rail marks before they happen. */
-export const FILM_BREAKS: readonly FilmSpan[] = phaseSpans("break");
+export const FILM_BREAKS: readonly FilmBreak[] = FILM_RAIL.breaks;
 
 /**
  * The session's minutes against film time. Work hurries along, the break slows down so its screen can be read and
- * reaches its end exactly as the break screen lifts, and the second half hurries to the end of the session.
+ * reaches its end exactly as the break screen lifts, and the rest hurries through both events to the session's end.
  */
 const FILM_BREAK: FilmSpan = FILM_BREAKS[0] ?? { start: FILM_SESSION_MINUTES, end: FILM_SESSION_MINUTES };
 const SESSION_CLOCK: readonly FilmKeyframe[] = [

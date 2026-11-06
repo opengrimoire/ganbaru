@@ -49,7 +49,7 @@ fn apply_linux_notification_hints(
 }
 
 /// Notifications that may listen for an action at once; further ones show without action buttons.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 const MAX_NOTIFICATION_ACTION_WAITS: usize = 16;
 /// How long a shown notification keeps listening for its action.
 #[cfg(any(target_os = "linux", test))]
@@ -58,7 +58,7 @@ const MAX_NOTIFICATION_SUMMARY_CHARS: usize = 160;
 const MAX_NOTIFICATION_BODY_CHARS: usize = 1_000;
 const NOTIFICATION_TRUNCATION_MARK: char = '\u{2026}';
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 static NOTIFICATION_ACTION_WAITS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| {
         std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_NOTIFICATION_ACTION_WAITS))
@@ -66,7 +66,7 @@ static NOTIFICATION_ACTION_WAITS: std::sync::LazyLock<std::sync::Arc<tokio::sync
 
 /// Takes one action wait slot, or strips the action buttons when every slot is taken so the
 /// notification never offers an action nothing listens for.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 fn reserve_action_wait(
     slots: &std::sync::Arc<tokio::sync::Semaphore>,
     notification: &mut Notification,
@@ -92,9 +92,10 @@ async fn listen_for_action(
 
 /// Shows a notification off the calling thread and runs `on_action` for the action the user picks.
 ///
-/// On Linux each listening notification holds one of `MAX_NOTIFICATION_ACTION_WAITS` slots for at
-/// most `NOTIFICATION_ACTION_WAIT`, so repeated requests cannot pin threads or connections; once the
-/// slots are taken, notifications still show but without action buttons.
+/// Each listening notification holds one of `MAX_NOTIFICATION_ACTION_WAITS` slots, so repeated
+/// requests cannot pin threads or connections; once the slots are taken, notifications still show
+/// but without action buttons. On Linux a slot is held for at most `NOTIFICATION_ACTION_WAIT`; a
+/// Windows toast holds its slot until it is activated or leaves the screen.
 fn spawn_notification<F>(notification: Notification, error_context: &'static str, on_action: F)
 where
     F: FnOnce(&str) + Send + 'static,
@@ -121,7 +122,31 @@ where
         listen_for_action(action_slot, wait).await;
     });
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut notification = notification;
+        let action_slot = reserve_action_wait(&NOTIFICATION_ACTION_WAITS, &mut notification);
+        let handle = match notification.show() {
+            Ok(handle) => handle,
+            Err(error) => {
+                eprintln!("{error_context}: {error}");
+                return;
+            }
+        };
+        let Some(_action_slot) = action_slot else {
+            return;
+        };
+        let waited = handle.wait_for_response(|response: &notify_rust::NotificationResponse| {
+            if let Some(action) = response_action(response) {
+                on_action(action);
+            }
+        });
+        if let Err(error) = waited {
+            eprintln!("{error_context}: {error}");
+        }
+    });
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = on_action;
         tauri::async_runtime::spawn_blocking(move || {
@@ -134,7 +159,7 @@ where
 
 /// Returns the action key a notification response invoked, reporting a body click as the D-Bus
 /// `"default"` key, or `None` when the notification closed or received a reply.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn response_action(response: &notify_rust::NotificationResponse) -> Option<&str> {
     match response {
         notify_rust::NotificationResponse::Default => Some("default"),
@@ -465,21 +490,22 @@ pub(crate) enum NativeFocusAlert {
     },
 }
 
-#[cfg(target_os = "linux")]
+/// Focus alerts that may listen for an action at once; further ones show without action buttons.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 static FOCUS_ALERT_ACTIONS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 const FOCUS_EXTENSION_SECONDS: i64 = 180;
 const PAUSED_ALERT_TIMEOUT_MS: i64 = 15_000;
 
 #[derive(Clone, Copy)]
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 enum NativeFocusAlertActions {
     Ending { allow_extension: bool },
     Paused,
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 impl NativeFocusAlertActions {
     fn intent(self, action: &str) -> Option<ganbaru_pomodoro::FocusIntent> {
         match (self, action) {
@@ -500,7 +526,39 @@ impl NativeFocusAlertActions {
     }
 }
 
+/// Applies the Focus control a notification response picked, after raising the main window for a
+/// body click, only while the presentation that showed the alert is current.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn answer_native_focus_alert(
+    app: &tauri::AppHandle,
+    context: &crate::pomodoro::native_runtime::FocusNativeContext,
+    actions: NativeFocusAlertActions,
+    response: &notify_rust::NotificationResponse,
+) {
+    let Some(action) = response_action(response) else {
+        return;
+    };
+    if action == "default"
+        && crate::pomodoro::native_runtime::presentation_is_current(
+            app,
+            context.vault_generation,
+            context.revision,
+        )
+    {
+        focus_main_window(app.clone());
+    }
+    if let Some(intent) = actions.intent(action)
+        && let Err(error) =
+            crate::pomodoro::native_runtime::native_control_in_context(app, intent, context.clone())
+    {
+        eprintln!("Native Focus notification action: {error}");
+    }
+}
+
 /// Show localized text and bind supported actions to the displayed native run and phase.
+///
+/// Linux and Windows offer the action buttons while a Focus alert slot is free; otherwise the
+/// alert still shows, without buttons.
 pub(crate) fn show_native_focus_alert(
     app: tauri::AppHandle,
     context: crate::pomodoro::native_runtime::FocusNativeContext,
@@ -513,12 +571,7 @@ pub(crate) fn show_native_focus_alert(
     ) {
         return Err("Native Focus alert was superseded or expired".into());
     }
-    #[cfg(target_os = "linux")]
-    let action_slot = FOCUS_ALERT_ACTIONS
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| "Native Focus notification actions are still occupied".to_string())?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     let actions = match &alert {
         NativeFocusAlert::Ending { extend_label, .. } => NativeFocusAlertActions::Ending {
             allow_extension: extend_label.is_some(),
@@ -535,11 +588,11 @@ pub(crate) fn show_native_focus_alert(
         } => {
             set_notification_text(&mut notification, &title, "Focus", None);
             notification.id(9001);
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             if let Some(label) = extend_label {
                 notification.action("add_time", &label);
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             let _ = extend_label;
             remaining_ms.clamp(1, i32::MAX as i64)
         }
@@ -551,11 +604,11 @@ pub(crate) fn show_native_focus_alert(
         } => {
             set_notification_text(&mut notification, &title, "Focus", Some(&body));
             notification.id(9003);
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             notification
                 .action("resume", &resume_label)
                 .action("stop_asking", &dismiss_label);
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             let _ = (resume_label, dismiss_label);
             PAUSED_ALERT_TIMEOUT_MS
         }
@@ -569,48 +622,41 @@ pub(crate) fn show_native_focus_alert(
     ) {
         return Err("Native Focus alert context changed before publication".into());
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let action_slot = reserve_action_wait(&FOCUS_ALERT_ACTIONS, &mut notification);
     let handle = notification
         .show()
         .map_err(|error| format!("Show native Focus alert: {error}"))?;
-    #[cfg(not(target_os = "linux"))]
-    notification
-        .show()
-        .map_err(|error| format!("Show native Focus alert: {error}"))?;
     #[cfg(target_os = "linux")]
-    tauri::async_runtime::spawn(async move {
-        let _slot = action_slot;
-        let wait = handle.wait_for_action_async(|response| {
-            let Some(action) = response_action(response) else {
-                return;
-            };
-            if action == "default" {
-                if crate::pomodoro::native_runtime::presentation_is_current(
-                    &app,
-                    context.vault_generation,
-                    context.revision,
-                ) {
-                    focus_main_window(app.clone());
-                }
-            }
-            let intent = actions.intent(action);
-            if let Some(intent) = intent
-                && let Err(error) = crate::pomodoro::native_runtime::native_control_in_context(
-                    &app,
-                    intent,
-                    context.clone(),
-                )
+    if let Some(action_slot) = action_slot {
+        tauri::async_runtime::spawn(async move {
+            let _slot = action_slot;
+            let wait = handle.wait_for_action_async(|response| {
+                answer_native_focus_alert(&app, &context, actions, response);
+            });
+            if tokio::time::timeout(std::time::Duration::from_millis(timeout_ms as u64), wait)
+                .await
+                .is_err()
             {
+                handle.close_async().await;
+            }
+        });
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(action_slot) = action_slot {
+        tauri::async_runtime::spawn_blocking(move || {
+            let _slot = action_slot;
+            let waited =
+                handle.wait_for_response(|response: &notify_rust::NotificationResponse| {
+                    answer_native_focus_alert(&app, &context, actions, response);
+                });
+            if let Err(error) = waited {
                 eprintln!("Native Focus notification action: {error}");
             }
         });
-        if tokio::time::timeout(std::time::Duration::from_millis(timeout_ms as u64), wait)
-            .await
-            .is_err()
-        {
-            handle.close_async().await;
-        }
-    });
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    let _ = (handle, timeout_ms);
     Ok(())
 }
 
@@ -780,7 +826,7 @@ mod focus_alert_tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn notification_responses_map_to_action_keys() {
         use notify_rust::{CloseReason, NotificationResponse};

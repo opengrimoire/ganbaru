@@ -68,8 +68,8 @@ The title-bar ring, tray icon, Android ongoing notification, and Calendar rail s
 
 Native notifications identify the current transition and offer only actions the platform and state can perform truthfully. Rust owns scheduling; Svelte supplies bounded localized text.
 
-- Desktop focus ending warnings fire once per accepted deadline. Linux notification actions carry the displayed run, phase, and vault identity and offer extension only while it is still available.
-- Manual-pause reminders repeat at the configured interval (3, 5, 10, or 15 minutes, or off) until dismissed, resumed, stopped, or the event ends. Implementation gap: the native owner currently repeats them every minute and does not read this setting.
+- Desktop focus ending warnings fire once per accepted deadline. Linux and Windows notification actions carry the displayed run, phase, and vault identity and offer extension only while it is still available.
+- Manual-pause reminders repeat at the configured interval (3, 5, 10, or 15 minutes, or off) until dismissed, resumed, stopped, or the event ends. They offer Resume and Stop asking, bound to the paused run and phase. Implementation gap: the native owner currently repeats them every minute and does not read this setting.
 - Delayed wakes coalesce rather than replaying missed alerts.
 - Android schedules commitment and accepted-phase deadline reminders natively while the Activity is absent. A reminder never creates execution.
 - Delivery failures and permission denial never change execution history or prevent timer use. Exact-alarm denial on Android uses a less precise fallback and explains the consequence.

@@ -27,7 +27,7 @@ export const vaultSetup = {
   },
   language: {
     headline: "Elige tu idioma",
-    body: "Puedes cambiarlo después en",
+    body: "Puedes cambiarlo después en Ajustes > Apariencia.",
   },
   about: {
     headline: "Gratis, abierto y tuyo.",

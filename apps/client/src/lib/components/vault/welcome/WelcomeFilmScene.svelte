@@ -61,6 +61,7 @@
     pomodoroBlockedScreenCopy,
     pomodoroBlockedScreenPalette,
     type PomodoroBlockedScreenPalette,
+    type PomodoroCompletionScreenState,
   } from "$lib/pomodoro/blocked-screen";
   import {
     DEFAULT_FOCUS_BREAK_END_ESC_PRESSES,
@@ -101,6 +102,8 @@
   const theme = getTheme();
   const preferences = getPreferences();
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
+  /** `Date.getDay()` for Friday, the day that completes the workweek. */
+  const FRIDAY = 5;
   /** The desktop title bar's icon size, which its Focus ring follows. */
   const TITLE_ICON_SIZE = 14;
 
@@ -111,12 +114,7 @@
   /** Minimum height for an event to show its time under its title. */
   const EVENT_TIME_MIN_PX = 32;
   const PRESS_FADE_MS = 140;
-  const RAIL_REVEAL_MS = 800;
   const SCREEN_FADE_MS = 260;
-  /** The week's recorded focus fills in one day after another once the view has pulled back. */
-  const WEEK_FILL_DELAY_MS = 350;
-  const WEEK_FILL_MS = 800;
-  const WEEK_FILL_STAGGER_MS = 180;
   /** The Calendar's pulse on a break that is running. */
   const BREAK_PULSE_MS = 1500;
 
@@ -177,7 +175,6 @@
       { start: 720, end: 780, color: ORANGE, title: "lunch" },
     ] },
   ];
-  const PAST_DAYS = WEEK.filter((day) => day.offset < 0).length;
 
   const now = new Date();
   const days = WEEK.map((day) => ({
@@ -198,9 +195,16 @@
   );
 
   const breakCopy = $derived(pomodoroBlockedScreenCopy("break_countdown", t));
-  const finishedCopy = $derived(pomodoroBlockedScreenCopy("event_finished", t));
+  /**
+   * The drawn event ends with a later Focus event still ahead today, so it is an event finished. The planned event ends
+   * the day's Focus, so it completes the day, or the workweek on a Friday, as the Focus runtime classifies it.
+   */
+  const dayDoneState: PomodoroCompletionScreenState = now.getDay() === FRIDAY ? "workweek_complete" : "day_complete";
+  const eventFinishedCopy = $derived(pomodoroBlockedScreenCopy("event_finished", t));
+  const dayDoneCopy = $derived(pomodoroBlockedScreenCopy(dayDoneState, t));
   const breakPalette = pomodoroBlockedScreenPalette("break_countdown");
-  const finishedPalette = pomodoroBlockedScreenPalette("event_finished");
+  const eventFinishedPalette = pomodoroBlockedScreenPalette("event_finished");
+  const dayDonePalette = pomodoroBlockedScreenPalette(dayDoneState);
   const extensionHint = formatBreakExtensionHint(0, DEFAULT_FOCUS_BREAK_EXTENSION_LIMIT, undefined, t) !== null
     ? formatBreakExtensionShortcut()
     : null;
@@ -223,11 +227,6 @@
     filmSpan(elapsed, FILM_BEATS.createStart - PRESS_FADE_MS, FILM_BEATS.createStart)
       * (1 - filmSpan(elapsed, FILM_BEATS.createEnd, FILM_BEATS.createEnd + PRESS_FADE_MS)),
   );
-  const railReveal = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.railIn, FILM_BEATS.railIn + RAIL_REVEAL_MS)));
-  /** How much of the planned event's own rail the joined rail has covered, from its top, from 0 to 1. */
-  const plannedHidden = $derived(
-    saved ? Math.min(1, Math.max(0, (railReveal * FILM_SESSION_MINUTES - FILM_DRAWN_MINUTES) / (FILM_SESSION_MINUTES - FILM_DRAWN_MINUTES))) : 0,
-  );
 
   /** The pull back: other days open beside today, which narrows to one column of the week. */
   const pullBack = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.pullBack, FILM_BEATS.pullBack + FILM_PULL_BACK_MS)));
@@ -235,7 +234,8 @@
   const dayFormat = $derived(dayNameFormatForWidth((canvasW - GUTTER_W) / (1 + (days.length - 1) * otherGrow)));
 
   const breakScreen = $derived(screenAlpha(FILM_BEATS.breakStart, FILM_BEATS.breakEnd + SCREEN_FADE_MS));
-  const finishedScreen = $derived(screenAlpha(FILM_BEATS.sessionEnd, FILM_BEATS.finishedOut));
+  const eventFinishedScreen = $derived(screenAlpha(FILM_BEATS.eventEnd, FILM_BEATS.eventOut));
+  const dayDoneScreen = $derived(screenAlpha(FILM_BEATS.sessionEnd, FILM_BEATS.finishedOut));
   /** The break's countdown, held at zero while its screen lifts. */
   const breakSeconds = $derived(moment.kind === "break" ? moment.remainingSeconds : 0);
   const breakPulse = $derived(0.7 - 0.2 * Math.cos((2 * Math.PI * elapsed) / BREAK_PULSE_MS));
@@ -297,17 +297,9 @@
     return offset < 0 || (offset === 0 && end <= clock);
   }
 
-  /** How much of a past day's rails is filled with recorded focus, from 0 to 1, as the week fills in. */
-  function weekFill(offset: number): number {
-    if (offset >= 0) return 1;
-    const start = FILM_BEATS.pullBack + WEEK_FILL_DELAY_MS + (offset + PAST_DAYS) * WEEK_FILL_STAGGER_MS;
-    return easeInOutCubic(filmSpan(elapsed, start, start + WEEK_FILL_MS));
-  }
-
-  /** The focus a rail of the week shows: recorded on past days as the week fills in, none yet on days to come. */
-  function recordedFocus(rail: FilmRail, offset: number): FilmSpan[] {
-    if (offset >= 0) return [];
-    return clip(rail.focus, rail.start + weekFill(offset) * (rail.end - rail.start));
+  /** The focus a rail of the week shows: all of it recorded on past days, none yet on days to come. */
+  function recordedFocus(rail: FilmRail, offset: number): readonly FilmSpan[] {
+    return offset < 0 ? rail.focus : [];
   }
 
   /** Session minutes as minutes of the day. */
@@ -315,9 +307,6 @@
     return spans.map((span) => ({ start: SESSION_START + span.start, end: SESSION_START + span.end }));
   }
 
-  function clip(spans: readonly FilmSpan[], minute: number): FilmSpan[] {
-    return spans.filter((span) => minute > span.start).map((span) => ({ start: span.start, end: Math.min(span.end, minute) }));
-  }
 </script>
 
 {#snippet rail(
@@ -326,8 +315,6 @@
   recorded: readonly FilmSpan[],
   breaks: readonly FilmSpan[],
   activeBreak: boolean,
-  reveal: number,
-  hiddenTop = 0,
 )}
   {@const length = end - start}
   <div
@@ -338,7 +325,6 @@
     style:height={`${px(length)}px`}
     style:background-color="var(--cal-timeline-rail)"
     style:border-radius="3px"
-    style:clip-path={reveal < 1 || hiddenTop > 0 ? `inset(${hiddenTop * 100}% 0 ${(1 - reveal) * 100}% 0)` : undefined}
   >
     {#each recorded as band (band.start)}
       <div
@@ -459,22 +445,19 @@
             style:border-left={isToday || otherGrow > 0 ? "1px solid var(--cal-gridline)" : undefined}
           >
             {#each day.rails as dayRail (dayRail.start)}
-              {@render rail(dayRail.start, dayRail.end, recordedFocus(dayRail, day.offset), dayRail.breaks, false, 1)}
+              {@render rail(dayRail.start, dayRail.end, recordedFocus(dayRail, day.offset), dayRail.breaks, false)}
             {/each}
 
-            {#if isToday && plannedHidden < 1}
-              <!-- The planned event's own rail, replanned from the top as the drawn event's rail joins it. -->
-              {@render rail(DRAWN_END, SESSION_END, [], PLANNED_BREAKS, false, 1, plannedHidden)}
-            {/if}
-
-            {#if isToday}
+            {#if isToday && !saved}
+              <!-- The planned event's own rail, until the drawn event joins it and the rail is replanned across both. -->
+              {@render rail(DRAWN_END, SESSION_END, [], PLANNED_BREAKS, false)}
+            {:else if isToday}
               {@render rail(
                 SESSION_START,
                 SESSION_END,
                 inDay(filmFocusSpans(sessionMinute)),
                 TODAY_BREAKS,
                 focusing && moment.kind === "break",
-                saved ? railReveal : 0,
               )}
             {/if}
 
@@ -538,13 +521,18 @@
       </div>
     {/if}
 
-    <!-- The finished screen once the session ends. -->
-    {#if finishedScreen > 0}
-      <div class="film-screen absolute inset-0 z-50 flex flex-col items-center justify-center gap-8 px-4 text-center" style={screenStyle(finishedPalette, finishedScreen)}>
-        <p class="film-screen-title film-screen-main">{finishedCopy.title}</p>
-        <p class="film-screen-small film-screen-muted">{finishedCopy.subtitle}</p>
-      </div>
-    {/if}
+    <!-- The completion screens: the drawn event finished, then the day's Focus completed. -->
+    {#each [
+      { alpha: eventFinishedScreen, palette: eventFinishedPalette, copy: eventFinishedCopy },
+      { alpha: dayDoneScreen, palette: dayDonePalette, copy: dayDoneCopy },
+    ] as completion, index (index)}
+      {#if completion.alpha > 0}
+        <div class="film-screen absolute inset-0 z-50 flex flex-col items-center justify-center gap-8 px-4 text-center" style={screenStyle(completion.palette, completion.alpha)}>
+          <p class="film-screen-title film-screen-main">{completion.copy.title}</p>
+          <p class="film-screen-small film-screen-muted">{completion.copy.subtitle}</p>
+        </div>
+      {/if}
+    {/each}
   </div>
 </div>
 

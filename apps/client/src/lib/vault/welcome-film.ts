@@ -1,8 +1,9 @@
 /**
  * Timing for the welcome film: one continuous take of a day in the app. A Focus session is planned in the Calendar
- * ahead of another, runs through its first break and on through both events, then is seen among the week's other
- * sessions as the view pulls back. Every moment is derived from the milliseconds elapsed since the film started, so a
- * frame is a pure function of time and the reduced-motion still is simply the last frame.
+ * ahead of another, runs through its first break to its end, carries on through the next event to the end of the day's
+ * Focus, then is seen among the week's other sessions as the view pulls back. Every moment is derived from the
+ * milliseconds elapsed since the film started, so a frame is a pure function of time and the reduced-motion still is
+ * simply the last frame.
  */
 
 import { createPresetPomodoroConfig, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
@@ -23,19 +24,20 @@ export const FILM_BEATS = {
   createStart: 500,
   createEnd: 1300,
   createSaved: 1450,
-  /** The session's Focus rail appears beside it, carrying the rhythm on into the planned event. */
-  railIn: 1600,
   /** The current time reaches the session and Focus starts. */
   focusStart: 2700,
   /** The break screen covers the app for the length of the break. */
   breakStart: 4100,
   breakEnd: 5200,
-  /** The session ends, the finished screen shows, and the app returns. */
-  sessionEnd: 8600,
-  finishedOut: 9450,
+  /** The drawn event ends, its finished screen shows, and the planned event carries on once it lifts. */
+  eventEnd: 6900,
+  eventOut: 7650,
+  /** The planned event ends the day's Focus, the day's completed screen shows, and the app returns. */
+  sessionEnd: 9500,
+  finishedOut: 10350,
   /** The camera pulls back from the day to the week. */
-  pullBack: 9700,
-  end: 12000,
+  pullBack: 10600,
+  end: 12900,
 } as const;
 
 /** How long the pull back from the day to the week takes. */
@@ -87,7 +89,8 @@ export const FILM_BREAKS: readonly FilmBreak[] = FILM_RAIL.breaks;
 
 /**
  * The session's minutes against film time. Work hurries along, the break slows down so its screen can be read and
- * reaches its end exactly as the break screen lifts, and the rest hurries through both events to the session's end.
+ * reaches its end exactly as the break screen lifts, then the session hurries to the drawn event's end, holds while its
+ * finished screen is up, and hurries on through the planned event to the session's end.
  */
 const FILM_BREAK: FilmSpan = FILM_BREAKS[0] ?? { start: FILM_SESSION_MINUTES, end: FILM_SESSION_MINUTES };
 const SESSION_CLOCK: readonly FilmKeyframe[] = [
@@ -95,6 +98,9 @@ const SESSION_CLOCK: readonly FilmKeyframe[] = [
   [FILM_BEATS.breakStart - 300, FILM_BREAK.start - 2],
   [FILM_BEATS.breakStart, FILM_BREAK.start],
   [FILM_BEATS.breakEnd, FILM_BREAK.end],
+  [FILM_BEATS.eventEnd - 250, FILM_DRAWN_MINUTES - 2],
+  [FILM_BEATS.eventEnd, FILM_DRAWN_MINUTES],
+  [FILM_BEATS.eventOut, FILM_DRAWN_MINUTES],
   [FILM_BEATS.sessionEnd - 250, FILM_SESSION_MINUTES - 2],
   [FILM_BEATS.sessionEnd, FILM_SESSION_MINUTES],
 ];

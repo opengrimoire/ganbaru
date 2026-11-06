@@ -3,7 +3,7 @@ export const vaultSetup = {
   welcomeBody: "Plan in the calendar, focus right from it, and watch your week fill with the work you actually did.",
   film: {
     description:
-      "A short animation of a day in the app: a long session with the Creative Pomodoro is planned in the calendar right before one with the Extended Pomodoro, and their shared Focus rail carries one rhythm through both, with short and long breaks. The sessions run through a break to their finish, then sit among the week's other sessions as the view pulls back.",
+      "A short animation of a day in the app: a long session with the Creative Pomodoro is planned in the calendar right before one with the Extended Pomodoro, and their shared Focus rail carries one rhythm through both, with short and long breaks. The first session runs through a break to its finish, the second carries on to complete the day, and both then sit among the week's other sessions as the view pulls back.",
     writeChapter: "Write chapter 3",
     reviewNotes: "Review notes",
     lunch: "Lunch",

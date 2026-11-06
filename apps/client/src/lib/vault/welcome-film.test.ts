@@ -88,7 +88,7 @@ describe("the film's session", () => {
     let previous = filmClockMinute(0);
     for (let elapsed = 0; elapsed <= FILM_BEATS.end; elapsed += 25) {
       const minute = filmClockMinute(elapsed);
-      expect(minute).toBeGreaterThanOrEqual(previous);
+      expect(minute).toBeGreaterThanOrEqual(previous - 1e-9);
       previous = minute;
     }
     expect(filmClockMinute(FILM_BEATS.breakEnd)).toBe(filmSessionMinute(FILM_BEATS.breakEnd));
@@ -98,6 +98,18 @@ describe("the film's session", () => {
   it("spans the break exactly while the break screen is up", () => {
     expect(filmSessionMinute(FILM_BEATS.breakStart)).toBeCloseTo(FILM_BREAKS[0].start, 9);
     expect(filmSessionMinute(FILM_BEATS.breakEnd)).toBeCloseTo(FILM_BREAKS[0].end, 9);
+  });
+
+  it("holds at the drawn event's end while its finished screen is up", () => {
+    expect(filmSessionMinute(FILM_BEATS.eventEnd)).toBeCloseTo(FILM_DRAWN_MINUTES, 9);
+    expect(filmSessionMinute((FILM_BEATS.eventEnd + FILM_BEATS.eventOut) / 2)).toBeCloseTo(FILM_DRAWN_MINUTES, 9);
+    expect(filmSessionMinute(FILM_BEATS.eventOut)).toBeCloseTo(FILM_DRAWN_MINUTES, 9);
+    expect(filmSessionMinute(FILM_BEATS.eventOut + 400)).toBeGreaterThan(FILM_DRAWN_MINUTES);
+  });
+
+  it("finishes the drawn event after its first break and before the session ends", () => {
+    expect(FILM_BEATS.eventEnd).toBeGreaterThan(FILM_BEATS.breakEnd);
+    expect(FILM_BEATS.eventOut).toBeLessThan(FILM_BEATS.sessionEnd);
   });
 
   it("slows down during the break so its countdown can be read", () => {

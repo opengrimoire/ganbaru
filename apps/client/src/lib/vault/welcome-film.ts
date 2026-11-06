@@ -91,11 +91,11 @@ export const FILM_SESSION: readonly { kind: "focus" | "break"; minutes: number }
 
 /** The session's breaks, which the Focus rail marks before they happen. */
 export const FILM_BREAKS: readonly FilmBreak[] = FILM_RAIL.breaks;
+
 /**
  * How far into the focus after the first break Focus is paused, and for how long, in minutes. The pause lands off the
  * minute so the ring menu's countdown reads as time already spent rather than a fresh timer.
  */
-/** How far into the focus after the first break Focus is paused, and for how long, in minutes. */
 const FILM_PAUSE_INTO_FOCUS_MINUTES = 12.25;
 const FILM_PAUSE_MINUTES = 5;
 

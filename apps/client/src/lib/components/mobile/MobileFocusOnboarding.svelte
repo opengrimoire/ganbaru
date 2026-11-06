@@ -217,8 +217,8 @@
   function stepBoundary(step: FocusAccessStep): { sees: string; neverSees: string } | null {
     if (!focusAccessSensitive(step)) return null;
     return step === "usage-access"
-      ? { sees: t("mobile.focusOnboarding.usageAccessSees", appLabel), neverSees: t("mobile.focusOnboarding.usageAccessNeverSees", appLabel) }
-      : { sees: t("mobile.focusOnboarding.appBlockingSees", appLabel), neverSees: t("mobile.focusOnboarding.appBlockingNeverSees", appLabel) };
+      ? { sees: t("mobile.focusOnboarding.usageAccessSees"), neverSees: t("mobile.focusOnboarding.usageAccessNeverSees") }
+      : { sees: t("mobile.focusOnboarding.appBlockingSees"), neverSees: t("mobile.focusOnboarding.appBlockingNeverSees") };
   }
 
   function primaryLabel(step: FocusAccessStep): string {
@@ -282,11 +282,10 @@
               <h1 class="text-2xl font-semibold leading-tight text-foreground">{stepTitle(current)}</h1>
               <p class="text-sm leading-6 text-muted-foreground">{stepBody(current)}</p>
               {#if boundary}
-                <ul class="list-disc space-y-1 pl-5 text-sm leading-6 text-muted-foreground">
-                  <li>{t("mobile.focusOnboarding.privacyPoint")}</li>
-                  <li>{boundary.sees}</li>
-                  <li>{boundary.neverSees}</li>
-                </ul>
+                <!-- "It" in these refers to the app named in the paragraph above, so the data line comes last. -->
+                <p class="text-sm leading-6 text-muted-foreground">{boundary.sees}</p>
+                <p class="text-sm leading-6 text-muted-foreground">{boundary.neverSees}</p>
+                <p class="text-sm leading-6 text-muted-foreground">{t("mobile.focusOnboarding.privacyPoint")}</p>
               {/if}
               {#if current === "battery" && statuses.background?.backgroundRestricted}
                 <p class="text-sm leading-6 text-foreground">{t("mobile.focusOnboarding.backgroundRestricted")}</p>

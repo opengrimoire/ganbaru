@@ -31,7 +31,7 @@ export const mobile = {
     stillOff: "Sigue desactivado",
     stillOffAction: (action: string) => `${action} (sigue desactivado)`,
     openError: "No se pudieron abrir los ajustes de Android.",
-    privacyPoint: "Tus datos se quedan en tus dispositivos y nunca se nos envían",
+    privacyPoint: "Tus datos se quedan en tus dispositivos.",
     notificationsTitle: "No te pierdas tus descansos",
     notificationsBody: (app: string) =>
       `Sin notificaciones, ${app} no puede avisarte cuándo tomar un descanso ni cuándo toca una sesión planeada.`,
@@ -47,13 +47,13 @@ export const mobile = {
     usageAccessTitle: "Pon límites a las apps que te distraen",
     usageAccessBody: (app: string) =>
       `${app} puede limitar cuánto tiempo usas cada día las apps que te distraen. Sin este permiso, no puede medir ese tiempo, así que los límites no funcionarán.`,
-    usageAccessSees: (app: string) => `${app} solo cuenta el tiempo que pasas en las apps que elijas`,
-    usageAccessNeverSees: (app: string) => `${app} no puede ver lo que haces dentro de esas apps`,
+    usageAccessSees: "Solo cuenta el tiempo que pasas en las apps que elijas.",
+    usageAccessNeverSees: "No puede ver lo que haces dentro de esas apps.",
     appBlockingTitle: "Bloquea apps durante el Enfoque",
     appBlockingBody: (app: string) =>
       `${app} puede bloquear las apps que elijas durante el Enfoque o cuando llegas a un límite, y te lleva a la pantalla de inicio. Sin este permiso, no puede bloquear nada.`,
-    appBlockingSees: (app: string) => `${app} solo revisa qué app está abierta`,
-    appBlockingNeverSees: (app: string) => `${app} no puede leer tu pantalla, mensajes ni contraseñas`,
+    appBlockingSees: "Solo revisa qué app está abierta.",
+    appBlockingNeverSees: "No puede leer tu pantalla, mensajes ni contraseñas.",
     captionAllow: (app: string) => `Permite las notificaciones de ${app}`,
     captionSearch: (app: string) => `Busca ${app}`,
     captionTurnOn: "Actívalo",

@@ -35,17 +35,17 @@ export const FILM_BEATS = {
    */
   pauseTap: 5800,
   pauseStart: 6620,
-  resumeTap: 8120,
-  resumeAt: 8940,
+  resumeTap: 8420,
+  resumeAt: 9240,
   /** The drawn event ends, its finished screen shows, and the planned event carries on once it lifts. */
-  eventEnd: 10440,
-  eventOut: 11190,
+  eventEnd: 10740,
+  eventOut: 11490,
   /** The planned event ends the day's Focus, the day's completed screen shows, and the app returns. */
-  sessionEnd: 13040,
-  finishedOut: 13890,
+  sessionEnd: 13340,
+  finishedOut: 14190,
   /** The camera pulls back from the day to the week. */
-  pullBack: 14140,
-  end: 16440,
+  pullBack: 14440,
+  end: 16740,
 } as const;
 
 /** How long a tap on the Focus ring or its menu takes, and how quickly the touch fades in and out. */

@@ -37,15 +37,20 @@
 </script>
 
 <script lang="ts">
+  import PomodoroMenuVolume from "$lib/components/pomodoro/PomodoroMenuVolume.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import type { EventColor } from "$lib/calendar/types";
   import ClockPlus from "@lucide/svelte/icons/clock-plus";
   import Coffee from "@lucide/svelte/icons/coffee";
   import Music from "@lucide/svelte/icons/eighth-notes";
+  import ExternalLink from "@lucide/svelte/icons/external-link";
   import PauseIcon from "@lucide/svelte/icons/pause";
   import PlayIcon from "@lucide/svelte/icons/play";
   import Repeat from "@lucide/svelte/icons/repeat";
+  import SkipBack from "@lucide/svelte/icons/skip-back";
+  import SkipForward from "@lucide/svelte/icons/skip-forward";
   import Users from "@lucide/svelte/icons/users";
+  import { DEFAULT_PLAYBACK_SNAPSHOT, MAX_VOLUME } from "$lib/music/playback";
   import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
   import {
     dayNameFormatForWidth,
@@ -545,6 +550,25 @@
         <div class="menu-item justify-between gap-4 whitespace-nowrap">
           <span>{t("titleBar.pomodoro.goToBreakNow")}</span>
           <Coffee class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
+        </div>
+        <div role="separator" class="menu-separator"></div>
+        <div class="menu-label"><span class="block truncate">{t("titleBar.music.noMusicLoaded")}</span></div>
+        <div class="menu-item justify-between gap-4 whitespace-nowrap" aria-disabled="true">
+          <span>{t("titleBar.music.play")}</span>
+          <PlayIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
+        </div>
+        <div class="menu-item justify-between gap-4 whitespace-nowrap" aria-disabled="true">
+          <span>{t("titleBar.music.previous")}</span>
+          <SkipBack class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
+        </div>
+        <div class="menu-item justify-between gap-4 whitespace-nowrap" aria-disabled="true">
+          <span>{t("titleBar.music.next")}</span>
+          <SkipForward class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
+        </div>
+        <PomodoroMenuVolume value={DEFAULT_PLAYBACK_SNAPSHOT.volume} max={MAX_VOLUME} />
+        <div class="menu-item justify-between gap-4 whitespace-nowrap">
+          <span>{t("titleBar.music.open")}</span>
+          <ExternalLink class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
         </div>
       </div>
     {/if}

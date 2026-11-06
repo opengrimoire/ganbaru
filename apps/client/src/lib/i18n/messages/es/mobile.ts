@@ -47,13 +47,13 @@ export const mobile = {
     usageAccessTitle: "Pon límites a las apps que te distraen",
     usageAccessBody: (app: string) =>
       `${app} puede limitar cuánto tiempo usas cada día las apps que te distraen. Sin este permiso, no puede medir ese tiempo, así que los límites no funcionarán.`,
-    usageAccessSees: "Solo cuenta el tiempo que pasas en las apps.",
-    usageAccessNeverSees: "No puede ver lo que haces en ellas.",
+    usageAccessSees: "La app solo mide tu tiempo en las apps.",
+    usageAccessNeverSees: "La app nunca ve lo que haces en ellas.",
     appBlockingTitle: "Bloquea apps durante el Enfoque",
     appBlockingBody: (app: string) =>
       `${app} puede bloquear las apps que elijas durante el Enfoque o cuando llegas a un límite, y te lleva a la pantalla de inicio. Sin este permiso, no puede bloquear nada.`,
-    appBlockingSees: "Solo revisa qué app está abierta.",
-    appBlockingNeverSees: "No puede leer tu pantalla, mensajes ni contraseñas.",
+    appBlockingSees: "La app solo ve qué app está abierta.",
+    appBlockingNeverSees: "La app nunca lee lo que hay en tu pantalla.",
     captionAllow: (app: string) => `Permite las notificaciones de ${app}`,
     captionSearch: (app: string) => `Busca ${app}`,
     captionTurnOn: "Actívalo",

@@ -282,7 +282,7 @@
               <h1 class="text-2xl font-semibold leading-tight text-foreground">{stepTitle(current)}</h1>
               <p class="text-sm leading-6 text-muted-foreground">{stepBody(current)}</p>
               {#if boundary}
-                <!-- "It" in these refers to the app named in the paragraph above, so the data line comes last. -->
+                <!-- The data line comes last so the two lines about what the app does follow its description. -->
                 <p class="text-sm leading-6 text-muted-foreground">{boundary.sees}</p>
                 <p class="text-sm leading-6 text-muted-foreground">{boundary.neverSees}</p>
                 <p class="text-sm leading-6 text-muted-foreground">{t("mobile.focusOnboarding.privacyPoint")}</p>

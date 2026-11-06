@@ -43,6 +43,9 @@ export const FILM_BEATS = {
 /** How long the pull back from the day to the week takes. */
 export const FILM_PULL_BACK_MS = 1200;
 
+/** How long the planned event's breaks take to slide to where the rail replans them once the drawn event joins it. */
+export const FILM_REPLAN_MS = 700;
+
 /**
  * The film's session, in session minutes: a long Extended event drawn in the film, ending just before its third break,
  * then a long Creative event already planned right after it. Back to back, they share one rail and the rhythm carries
@@ -108,9 +111,14 @@ const SESSION_CLOCK: readonly FilmKeyframe[] = [
 /** How many minutes before the session the current time starts, so it can be seen walking up to it. */
 export const FILM_LEAD_IN_MINUTES = 14;
 
-/** The current time against film time before Focus starts, in minutes relative to the session's start. */
+/**
+ * The current time against film time before Focus starts, in minutes relative to the session's start. It holds still
+ * while the event is drawn and the rail replans, since drawing an event takes far less than a minute, then walks up
+ * to the session.
+ */
 const LEAD_IN_CLOCK: readonly FilmKeyframe[] = [
   [0, -FILM_LEAD_IN_MINUTES],
+  [FILM_BEATS.createSaved + FILM_REPLAN_MS, -FILM_LEAD_IN_MINUTES],
   [FILM_BEATS.focusStart, 0],
 ];
 
@@ -262,9 +270,6 @@ export function filmFocusSpans(minute: number): FilmSpan[] {
     .filter((span) => minute > span.start)
     .map((span) => ({ start: span.start, end: Math.min(span.end, minute) }));
 }
-
-/** How long the planned event's breaks take to slide to where the rail replans them once the drawn event joins it. */
-export const FILM_REPLAN_MS = 700;
 
 /**
  * The session's breaks as the rail shows them at `elapsed`, in session minutes. Once the drawn event is saved, the

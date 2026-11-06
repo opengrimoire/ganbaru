@@ -84,6 +84,12 @@ describe("the film's session", () => {
     expect(filmSessionMinute(FILM_BEATS.sessionEnd)).toBe(FILM_SESSION_MINUTES);
   });
 
+  it("holds the current time still while the event is drawn and the rail replans", () => {
+    for (let elapsed = 0; elapsed <= FILM_BEATS.createSaved + FILM_REPLAN_MS; elapsed += 50) {
+      expect(filmClockMinute(elapsed)).toBeCloseTo(-FILM_LEAD_IN_MINUTES, 9);
+    }
+  });
+
   it("walks the current time up to the session as Focus starts, then follows it", () => {
     expect(filmClockMinute(0)).toBe(-FILM_LEAD_IN_MINUTES);
     expect(filmClockMinute(FILM_BEATS.focusStart)).toBe(0);

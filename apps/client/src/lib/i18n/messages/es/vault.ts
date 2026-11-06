@@ -7,7 +7,28 @@ import type {
 import type { MessageShape } from "../types";
 
 export const vaultSetup = {
-  welcomeTitle: "Gratis y de código abierto",
+  welcomeHeadline: "Planea tu día. Y cúmplelo de verdad.",
+  welcomeBody: "Calendario, sesiones de enfoque y proyectos funcionan como uno solo, para que el tiempo que planeas se convierta en progreso visible.",
+  welcomeFreeOpenSource: "Gratis y de código abierto",
+  welcomeNoAccount: "Sin cuentas",
+  welcomeLocalData: "Tus datos se quedan en tus dispositivos",
+  film: {
+    description:
+      "Una breve animación de un día en la app: se planea una sesión de trabajo en el calendario, se mantiene mientras se bloquea una app que distrae y se toma un descanso, y luego cuenta para su proyecto mientras aparece la semana.",
+    actPlan: "Planea",
+    actFocus: "Enfócate",
+    actProgress: "Avanza",
+    replay: "Volver a ver",
+    writeChapter: "Escribir capítulo 3",
+    reviewNotes: "Revisar notas",
+    lunch: "Comida",
+    focus: "Enfoque",
+    break: "Descanso",
+    blocked: "Bloqueada",
+    sessionDone: "Sesión completada",
+    project: "Tesis",
+    tasksDone: (done: number, total: number) => `${done} de ${total} tareas`,
+  },
   licenseButton: "Licencia (AGPL 3.0)",
   sourceCode: "Código fuente",
   sourceOpenError: "No se pudo abrir el código fuente. Visita github.com/opengrimoire/ganbaru en tu navegador.",

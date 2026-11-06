@@ -29,7 +29,6 @@ export const mobile = {
     stillOffAction: (action: string) => `${action} (still off)`,
     openError: "Android settings could not be opened.",
     privacyPoint: "Your data stays on your devices and is never sent to us",
-    turnOffNote: "You can turn it off anytime in Android settings.",
     notificationsTitle: "Don't miss your breaks",
     notificationsBody: (app: string) =>
       `Without notifications, ${app} can't tell you when to take a break or when a planned session is due.`,
@@ -45,13 +44,13 @@ export const mobile = {
     usageAccessTitle: "Set limits for distracting apps",
     usageAccessBody: (app: string) =>
       `${app} can limit how long you use the apps that distract you each day. Without this permission, it can't measure that time, so limits won't work.`,
-    usageAccessSees: "Only the time spent in the apps you choose",
-    usageAccessNeverSees: "Never what you do or see inside them",
+    usageAccessSees: (app: string) => `${app} only counts the time you spend in the apps you choose`,
+    usageAccessNeverSees: (app: string) => `${app} can't see what you do inside those apps`,
     appBlockingTitle: "Block apps during Focus",
     appBlockingBody: (app: string) =>
       `${app} can block the apps you choose during Focus or once you reach a limit, taking you back to the Home screen. Without this permission, it can't block anything.`,
-    appBlockingSees: "Only which app is open",
-    appBlockingNeverSees: "Never your screen, messages, taps, or passwords",
+    appBlockingSees: (app: string) => `${app} only checks which app is open`,
+    appBlockingNeverSees: (app: string) => `${app} can't read your screen, messages, or passwords`,
     captionAllow: (app: string) => `Allow notifications for ${app}`,
     captionSearch: (app: string) => `Search for ${app}`,
     captionTurnOn: "Turn it on",

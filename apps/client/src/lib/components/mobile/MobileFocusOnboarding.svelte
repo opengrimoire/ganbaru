@@ -220,8 +220,8 @@
   function stepBoundary(step: FocusAccessStep): { sees: string; neverSees: string } | null {
     if (!focusAccessSensitive(step)) return null;
     return step === "usage-access"
-      ? { sees: t("mobile.focusOnboarding.usageAccessSees"), neverSees: t("mobile.focusOnboarding.usageAccessNeverSees") }
-      : { sees: t("mobile.focusOnboarding.appBlockingSees"), neverSees: t("mobile.focusOnboarding.appBlockingNeverSees") };
+      ? { sees: t("mobile.focusOnboarding.usageAccessSees", appLabel), neverSees: t("mobile.focusOnboarding.usageAccessNeverSees", appLabel) }
+      : { sees: t("mobile.focusOnboarding.appBlockingSees", appLabel), neverSees: t("mobile.focusOnboarding.appBlockingNeverSees", appLabel) };
   }
 
   function primaryLabel(step: FocusAccessStep): string {
@@ -300,11 +300,10 @@
                   {boundary.sees}
                 </li>
                 <li class="flex items-start gap-2.5">
-                  <EyeOff class="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <EyeOff class="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
                   {boundary.neverSees}
                 </li>
               </ul>
-              <p class="mt-3 text-xs leading-5 text-muted-foreground">{t("mobile.focusOnboarding.turnOffNote")}</p>
             {/if}
 
             <!-- The body text's line spacing adds about 4px above, so the top padding is one step smaller to center the guide. -->

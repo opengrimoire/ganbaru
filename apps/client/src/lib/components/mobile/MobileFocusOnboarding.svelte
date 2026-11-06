@@ -3,6 +3,7 @@
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
+  import ShieldCheck from "@lucide/svelte/icons/shield-check";
   import { onMount } from "svelte";
   import { fly } from "svelte/transition";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -291,6 +292,10 @@
             {#if boundary}
               <ul class="mt-4 space-y-2.5 text-sm leading-5 text-foreground">
                 <li class="flex items-start gap-2.5">
+                  <ShieldCheck class="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
+                  {t("mobile.focusOnboarding.privacyPoint")}
+                </li>
+                <li class="flex items-start gap-2.5">
                   <Eye class="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
                   {boundary.sees}
                 </li>
@@ -299,7 +304,7 @@
                   {boundary.neverSees}
                 </li>
               </ul>
-              <p class="mt-3 text-xs leading-5 text-muted-foreground">{t("mobile.focusOnboarding.privacyNote")}</p>
+              <p class="mt-3 text-xs leading-5 text-muted-foreground">{t("mobile.focusOnboarding.turnOffNote")}</p>
             {/if}
 
             <!-- The body text's line spacing adds about 4px above, so the top padding is one step smaller to center the guide. -->

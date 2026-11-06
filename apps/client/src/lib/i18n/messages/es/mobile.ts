@@ -30,7 +30,8 @@ export const mobile = {
     done: "Listo",
     stillOff: "Sigue desactivado",
     openError: "No se pudieron abrir los ajustes de Android.",
-    privacyNote: "Se queda en este dispositivo. Puedes desactivarlo cuando quieras en los ajustes de Android.",
+    privacyPoint: "Tus datos se quedan en tus dispositivos y nunca se nos envían",
+    turnOffNote: "Puedes desactivarlo cuando quieras en los ajustes de Android.",
     notificationsTitle: "No te pierdas tus descansos",
     notificationsBody: (app: string) =>
       `Sin notificaciones, ${app} no puede avisarte cuándo tomar un descanso ni cuándo toca una sesión planeada.`,
@@ -45,12 +46,12 @@ export const mobile = {
       `Cuando usas el ahorro de batería, Android pausa las apps en segundo plano. Sin este permiso, ${app} también se pausa, así que las notificaciones podrían llegar tarde o no llegar y la sincronización con tus otros dispositivos podría retrasarse.`,
     usageAccessTitle: "Pon límites a las apps que te distraen",
     usageAccessBody: (app: string) =>
-      `Sin este permiso, ${app} no puede saber cuánto tiempo usas las apps que elijas, así que los límites diarios no funcionarán.`,
+      `${app} puede limitar cuánto tiempo usas cada día las apps que te distraen. Sin este permiso, no puede medir ese tiempo, así que los límites no funcionarán.`,
     usageAccessSees: "Solo el tiempo en las apps que elijas",
     usageAccessNeverSees: "Nunca lo que haces o ves dentro de ellas",
     appBlockingTitle: "Bloquea apps durante el Enfoque",
     appBlockingBody: (app: string) =>
-      `Sin este permiso, ${app} no puede bloquear las apps que elijas. Cuando aplica una regla o un límite, te lleva a la pantalla de inicio.`,
+      `${app} puede bloquear las apps que elijas durante el Enfoque o cuando llegas a un límite, y te lleva a la pantalla de inicio. Sin este permiso, no puede bloquear nada.`,
     appBlockingSees: "Solo qué app está abierta",
     appBlockingNeverSees: "Nunca tu pantalla, mensajes, toques ni contraseñas",
     captionAllow: (app: string) => `Permite las notificaciones de ${app}`,

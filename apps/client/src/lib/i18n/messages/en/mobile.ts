@@ -27,7 +27,8 @@ export const mobile = {
     done: "Done",
     stillOff: "Still off",
     openError: "Android settings could not be opened.",
-    privacyNote: "Stays on this device. You can turn it off anytime in Android settings.",
+    privacyPoint: "Your data stays on your devices and is never sent to us",
+    turnOffNote: "You can turn it off anytime in Android settings.",
     notificationsTitle: "Don't miss your breaks",
     notificationsBody: (app: string) =>
       `Without notifications, ${app} can't tell you when to take a break or when a planned session is due.`,
@@ -42,12 +43,12 @@ export const mobile = {
       `When you use battery saver, Android pauses apps in the background. Without this permission, ${app} gets paused too, so notifications may arrive late or not at all and sync with your other devices may be delayed.`,
     usageAccessTitle: "Set limits for distracting apps",
     usageAccessBody: (app: string) =>
-      `Without this permission, ${app} can't tell how long you've used the apps you choose, so daily limits won't work.`,
+      `${app} can limit how long you use the apps that distract you each day. Without this permission, it can't measure that time, so limits won't work.`,
     usageAccessSees: "Only the time spent in the apps you choose",
     usageAccessNeverSees: "Never what you do or see inside them",
     appBlockingTitle: "Block apps during Focus",
     appBlockingBody: (app: string) =>
-      `Without this permission, ${app} can't block the apps you choose. When a rule or limit applies, it takes you back to the Home screen.`,
+      `${app} can block the apps you choose during Focus or once you reach a limit, taking you back to the Home screen. Without this permission, it can't block anything.`,
     appBlockingSees: "Only which app is open",
     appBlockingNeverSees: "Never your screen, messages, taps, or passwords",
     captionAllow: (app: string) => `Allow notifications for ${app}`,

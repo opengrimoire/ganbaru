@@ -11,7 +11,7 @@ export const vaultSetup = {
   welcomeBody: "Planea en el calendario, enfócate desde ahí y mira cómo tu semana se llena con el trabajo que de verdad hiciste.",
   film: {
     description:
-      "Una breve animación de un día en la app: se planea una sesión de enfoque en el calendario, pasa por su descanso y su final, y luego aparece junto a las demás sesiones de la semana.",
+      "Una breve animación de un día en la app: se planea una sesión de enfoque en el calendario, pasa por su descanso y su final, y luego aparece junto a las demás sesiones de la semana, donde las sesiones seguidas comparten un mismo ritmo de descansos cortos y largos.",
     writeChapter: "Escribir capítulo 3",
     reviewNotes: "Revisar notas",
     lunch: "Comida",
@@ -23,10 +23,10 @@ export const vaultSetup = {
     body: "Puedes cambiarlo después en Ajustes > Apariencia.",
   },
   about: {
-    headline: "Gratis, abierto y tuyo.",
+    headline: "Gratis y de código abierto",
     body: "Sin cuentas, sin anuncios y sin rastreo. Tus datos se quedan en tus dispositivos y se sincronizan entre ellos, nunca a través de servidores nuestros.",
     sceneDescription:
-      "Una breve animación de una carpeta de Ganbaru en una computadora y un teléfono: sus elementos viajan directo de un dispositivo al otro y un cambio vuelve, y luego un barrido muestra el código abierto debajo de ambas pantallas.",
+      "Una breve animación del código de Ganbaru, abierto para que cualquiera lo lea: una copia llega a los dispositivos de cinco personas, y cada uno se llena después con las cosas propias de esa persona.",
   },
   stepProgress: (current: number, total: number) => `Paso ${current} de ${total}`,
   licenseButton: "Licencia (AGPL 3.0)",

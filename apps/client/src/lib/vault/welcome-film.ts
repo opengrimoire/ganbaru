@@ -6,6 +6,7 @@
  */
 
 import { createPresetPomodoroConfig, deriveRhythmPlan, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
+import { computeDayTimelineBands } from "$lib/pomodoro/segments";
 
 /** One point of a curve: `[x, y]`, with x strictly increasing across a curve. */
 export type FilmKeyframe = readonly [x: number, y: number];
@@ -145,6 +146,63 @@ export function filmSpan(elapsed: number, start: number, end: number): number {
 /** Eases a 0 to 1 progress so it starts and ends gently. */
 export function easeInOutCubic(progress: number): number {
   return progress < 0.5 ? 4 * progress ** 3 : 1 - (-2 * progress + 2) ** 3 / 2;
+}
+
+/** A Focus event elsewhere in the film's week, in minutes of its day, with the preset it runs. */
+export interface FilmFocusEvent {
+  start: number;
+  end: number;
+  preset: PomodoroPresetKey;
+}
+
+/** A break on a rail, in minutes of the day. */
+export interface FilmBreak extends FilmSpan {
+  long: boolean;
+}
+
+/** One Focus rail: back-to-back Focus events share it, as in the Calendar. Spans are in minutes of the day. */
+export interface FilmRail extends FilmSpan {
+  breaks: FilmBreak[];
+  /** The focus between the breaks, which the rail fills in once it is recorded. */
+  focus: FilmSpan[];
+}
+
+/**
+ * The Focus rails of one day, planned exactly as the Calendar plans them: back-to-back events share a rail and carry
+ * their rhythm into the next event, whatever its preset, so a long break can fall in the second event of a chain.
+ */
+export function filmDayRails(events: readonly FilmFocusEvent[]): FilmRail[] {
+  const bands = computeDayTimelineBands(
+    events.map((event, index) => ({
+      id: `film-${index}`,
+      config: createPresetPomodoroConfig(event.preset),
+      startMs: event.start * 60_000,
+      endMs: event.end * 60_000,
+      startMinute: event.start,
+      endMinute: event.end,
+    })),
+    null,
+    0,
+    0,
+  );
+  const rails: FilmRail[] = [];
+  for (const event of [...events].sort((left, right) => left.start - right.start)) {
+    const last = rails.at(-1);
+    if (last && event.start <= last.end) last.end = Math.max(last.end, event.end);
+    else rails.push({ start: event.start, end: event.end, breaks: [], focus: [] });
+  }
+  for (const rail of rails) {
+    rail.breaks = bands
+      .filter((band) => band.phase !== "focus" && band.topMinute >= rail.start && band.topMinute < rail.end)
+      .map((band) => ({ start: band.topMinute, end: band.topMinute + band.heightMinutes, long: band.phase === "long_break" }));
+    let cursor = rail.start;
+    for (const pause of rail.breaks) {
+      if (pause.start > cursor) rail.focus.push({ start: cursor, end: pause.start });
+      cursor = pause.end;
+    }
+    if (cursor < rail.end) rail.focus.push({ start: cursor, end: rail.end });
+  }
+  return rails;
 }
 
 /** The session's minutes since it started at a moment of the film, from 0 to the session's length. */

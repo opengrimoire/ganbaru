@@ -6,32 +6,35 @@
   /**
    * Plays a welcome scene on a loop, zoomed to the room it is given: it runs to its end, rests on its last frame, then
    * fades out and starts over on its own, as the Android access guides do. With reduced motion it shows the last
-   * frame as a still. When the room is too small for the drawing to stay legible, it steps aside and leaves the space
-   * to the text. The drawing is sized with CSS zoom rather than a transform, so its text is laid out and rasterized at
-   * the final size instead of being scaled.
+   * frame as a still. The drawing keeps its width and takes the height the room suggests within its bounds, so a tall
+   * room such as a phone's gets a taller drawing instead of empty space. When the room is too small for the drawing to
+   * stay legible, it steps aside and leaves the space to the text. The drawing is sized with CSS zoom rather than a
+   * transform, so its text is laid out and rasterized at the final size instead of being scaled.
    */
   let {
     width: sceneWidth,
-    height: sceneHeight,
+    minHeight,
+    maxHeight = minHeight,
     duration,
     description,
     frame,
     class: className = "",
   }: {
-    /** The drawing's size in logical pixels. */
+    /** The drawing's width and the bounds of its height, in logical pixels. */
     width: number;
-    height: number;
+    minHeight: number;
+    maxHeight?: number;
     /** How long one run of the scene lasts, in milliseconds. */
     duration: number;
     /** What the scene shows, for screen readers. */
     description: string;
-    /** Draws the scene at a moment, given in milliseconds from its start. */
-    frame: Snippet<[number]>;
+    /** Draws the scene at a moment, given in milliseconds from its start, at a height within its bounds. */
+    frame: Snippet<[elapsed: number, height: number]>;
     class?: string;
   } = $props();
 
-  /** Breathing room around the drawing. */
-  const SCENE_MARGIN = 16;
+  /** Breathing room above and below the drawing; the step's own padding already keeps it off the sides. */
+  const SCENE_MARGIN_Y = 16;
   /** Below this scale the drawing stops reading as the app; above it, it starts to look like a poster. */
   const MIN_ZOOM = 0.55;
   const MAX_ZOOM = 1.45;
@@ -47,11 +50,13 @@
   let cycle = $state(0);
   let restarting = $state(false);
 
-  const fit = $derived(
-    roomWidth > 0 && roomHeight > 0
-      ? Math.min((roomWidth - SCENE_MARGIN) / sceneWidth, (roomHeight - SCENE_MARGIN) / sceneHeight)
-      : 0,
+  const widthZoom = $derived(roomWidth / sceneWidth);
+  const sceneHeight = $derived(
+    widthZoom > 0 && roomHeight > SCENE_MARGIN_Y
+      ? Math.floor(Math.min(maxHeight, Math.max(minHeight, (roomHeight - SCENE_MARGIN_Y) / Math.min(MAX_ZOOM, widthZoom))))
+      : minHeight,
   );
+  const fit = $derived(roomHeight > SCENE_MARGIN_Y ? Math.min(widthZoom, (roomHeight - SCENE_MARGIN_Y) / sceneHeight) : 0);
   const shown = $derived(fit >= MIN_ZOOM);
   const zoom = $derived(Math.min(MAX_ZOOM, fit));
 
@@ -113,7 +118,7 @@
             style:transition-duration={`${SCENE_RESTART_FADE_MS}ms`}
           >
             {#key cycle}
-              {@render frame(elapsed)}
+              {@render frame(elapsed, sceneHeight)}
             {/key}
           </div>
         </div>

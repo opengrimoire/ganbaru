@@ -15,25 +15,30 @@
   const HOUR_PX = calendarZoomHourHeightForPercent(FILM_ZOOM_PERCENT);
   /** How the drawn event snaps while it is dragged out, in minutes, as the Calendar snaps at the film's zoom. */
   const CREATE_SNAP_MINUTES = calendarZoomGridMinutesForPercent(FILM_ZOOM_PERCENT);
-  /** The visible part of the day, in minutes since midnight, as if the grid were scrolled to the morning. */
+  /** Where the visible part of the day starts, in minutes since midnight, as if the grid were scrolled to the morning. */
   const VIEW_START = 8 * 60 + 40;
-  const VIEW_MINUTES = 200;
-  const BODY_H = (VIEW_MINUTES / 60) * HOUR_PX;
-  const CANVAS_H = TOP_BAR_H + HEADER_H + BODY_H;
+  /** How much of the day shows: the morning's sessions at least, and on to the early afternoon in a tall room. */
+  const MIN_VIEW_MINUTES = 200;
+  const MAX_VIEW_MINUTES = 320;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
   const DAYS_W = CANVAS_W - GUTTER_W;
 
   /** The bezel around the canvas, matching the drawn phones of the Android access guides (`p-1.5`). */
   const BEZEL = 6;
 
-  /** The canvas plus its bezel, for the player to fit. */
+  /** The canvas plus its bezel at its smallest and largest, for the player to fit. */
   export const FILM_SCENE_WIDTH = CANVAS_W + 2 * BEZEL;
-  export const FILM_SCENE_HEIGHT = CANVAS_H + 2 * BEZEL;
+  export const FILM_SCENE_MIN_HEIGHT = TOP_BAR_H + HEADER_H + (MIN_VIEW_MINUTES / 60) * HOUR_PX + 2 * BEZEL;
+  export const FILM_SCENE_MAX_HEIGHT = TOP_BAR_H + HEADER_H + (MAX_VIEW_MINUTES / 60) * HOUR_PX + 2 * BEZEL;
 </script>
 
 <script lang="ts">
+  import Minus from "@lucide/svelte/icons/minus";
+  import Square from "@lucide/svelte/icons/square";
+  import X from "@lucide/svelte/icons/x";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import type { EventColor } from "$lib/calendar/types";
+  import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
   import {
     dayNameFormatForWidth,
     formatDayName,
@@ -71,10 +76,12 @@
     FILM_SESSION_MINUTES,
     easeInOutCubic,
     filmClockMinute,
+    filmDayRails,
     filmFocusSpans,
     filmSessionMinute,
     filmSessionMoment,
     filmSpan,
+    type FilmRail,
     type FilmSpan,
   } from "$lib/vault/welcome-film";
 
@@ -84,13 +91,15 @@
    * of `elapsed`, with no CSS transitions, so text is never handed to a compositing layer mid-animation and keeps its
    * rendering from frame to frame.
    */
-  let { elapsed }: { elapsed: number } = $props();
+  let { elapsed, height }: { elapsed: number; height: number } = $props();
 
   const localization = getLocalization();
   const { t } = localization;
   const theme = getTheme();
   const preferences = getPreferences();
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
+  /** The desktop title bar's icon size. */
+  const TITLE_ICON_SIZE = 14;
 
   /** The Calendar's Focus rail, and the event area it keeps beside it on every event. */
   const RAIL_LEFT = 2;
@@ -111,9 +120,8 @@
   /** The session starts at nine. */
   const SESSION_START = 9 * 60;
   const SESSION_END = SESSION_START + FILM_SESSION_MINUTES;
-  /** A session run to its end, and one stopped ten minutes early, as the week's rails record them. */
-  const FULL_SESSION: readonly FilmSpan[] = filmFocusSpans(FILM_SESSION_MINUTES);
-  const SHORT_SESSION: readonly FilmSpan[] = filmFocusSpans(FILM_SESSION_MINUTES - 10);
+  /** The session's planned breaks, in minutes of the day. */
+  const TODAY_BREAKS = inDay(FILM_BREAKS);
 
   /** Palette slots, so the drawing follows the active theme's event colors. The session keeps the default color. */
   const BLUE = 18;
@@ -127,33 +135,41 @@
     end: number;
     color: EventColor | undefined;
     title: FilmTitle;
-    /** A Focus event's recorded focus, in session minutes, or `planned` before it has run. */
-    focus?: readonly FilmSpan[] | "planned";
+    /** The Focus preset of a Focus event. */
+    preset?: PomodoroPresetKey;
   }
 
-  /** The days shown once the view pulls back, as offsets from today, and what else each day holds. */
+  /**
+   * The days shown once the view pulls back, as offsets from today, and what else each day holds. Focus events run
+   * back to back with different presets, so their rails show the rhythm carrying from one event into the next, with
+   * its long break after the fourth focus.
+   */
   const WEEK: readonly { offset: number; events: readonly FilmEvent[] }[] = [
     { offset: -3, events: [
-      { start: SESSION_START, end: SESSION_END, color: CYAN, title: "draftOutline", focus: FULL_SESSION },
-      { start: 640, end: 680, color: BLUE, title: "readSources" },
-      { start: 700, end: 760, color: ORANGE, title: "lunch" },
+      { start: 540, end: 610, color: BLUE, title: "readSources", preset: "balanced" },
+      { start: 610, end: 705, color: CYAN, title: "draftOutline", preset: "creative" },
+      { start: 720, end: 780, color: ORANGE, title: "lunch" },
     ] },
     { offset: -2, events: [
-      { start: 570, end: 570 + FILM_SESSION_MINUTES, color: BLUE, title: "readSources", focus: SHORT_SESSION },
-      { start: 660, end: 700, color: PURPLE, title: "reviewNotes" },
+      { start: 530, end: 620, color: CYAN, title: "draftOutline", preset: "deep" },
+      { start: 620, end: 690, color: PURPLE, title: "reviewNotes", preset: "creative" },
+      { start: 730, end: 790, color: ORANGE, title: "lunch" },
+      { start: 795, end: 840, color: BLUE, title: "readSources", preset: "deep" },
     ] },
     { offset: -1, events: [
-      { start: SESSION_START, end: SESSION_END, color: CYAN, title: "draftOutline", focus: FULL_SESSION },
-      { start: 620, end: 660, color: BLUE, title: "readSources" },
-      { start: 700, end: 760, color: ORANGE, title: "lunch" },
+      { start: 540, end: 600, color: CYAN, title: "draftOutline", preset: "creative" },
+      { start: 600, end: 715, color: BLUE, title: "readSources", preset: "deep" },
+      { start: 730, end: 790, color: ORANGE, title: "lunch" },
     ] },
     { offset: 0, events: [
       { start: 630, end: 670, color: PURPLE, title: "reviewNotes" },
       { start: 700, end: 760, color: ORANGE, title: "lunch" },
+      { start: 790, end: 830, color: BLUE, title: "readSources" },
     ] },
     { offset: 1, events: [
-      { start: SESSION_START, end: SESSION_END, color: undefined, title: "writeChapter", focus: "planned" },
-      { start: 640, end: 680, color: PURPLE, title: "reviewNotes" },
+      { start: SESSION_START, end: 600, color: undefined, title: "writeChapter", preset: "creative" },
+      { start: 600, end: 690, color: PURPLE, title: "reviewNotes", preset: "balanced" },
+      { start: 720, end: 780, color: ORANGE, title: "lunch" },
     ] },
   ];
   const PAST_DAYS = WEEK.filter((day) => day.offset < 0).length;
@@ -162,11 +178,18 @@
   const days = WEEK.map((day) => ({
     ...day,
     date: new Date(now.getFullYear(), now.getMonth(), now.getDate() + day.offset),
+    rails: filmDayRails(day.events.flatMap((event) => (event.preset ? [{ start: event.start, end: event.end, preset: event.preset }] : []))),
   }));
   const timezone = getLocalTimezone();
   const timezoneLabel = getTimezoneInfo(timezone).acronym;
-  const hours = Array.from({ length: Math.ceil(VIEW_MINUTES / 60) }, (_, index) => Math.ceil(VIEW_START / 60) + index)
-    .filter((hour) => hour * 60 > VIEW_START && hour * 60 < VIEW_START + VIEW_MINUTES);
+
+  /** The canvas inside its bezel, and how much of the day it shows. */
+  const canvasH = $derived(height - 2 * BEZEL);
+  const viewMinutes = $derived(((canvasH - TOP_BAR_H - HEADER_H) / HOUR_PX) * 60);
+  const hours = $derived(
+    Array.from({ length: Math.ceil(viewMinutes / 60) + 1 }, (_, index) => Math.ceil(VIEW_START / 60) + index)
+      .filter((hour) => hour * 60 > VIEW_START && hour * 60 < VIEW_START + viewMinutes),
+  );
 
   const breakCopy = $derived(pomodoroBlockedScreenCopy("break_countdown", t));
   const finishedCopy = $derived(pomodoroBlockedScreenCopy("event_finished", t));
@@ -264,11 +287,22 @@
     return offset < 0 || (offset === 0 && end <= clock);
   }
 
-  /** How much of a past day's recorded focus is drawn, in session minutes, as the week fills in. */
+  /** How much of a past day's rails is filled with recorded focus, from 0 to 1, as the week fills in. */
   function weekFill(offset: number): number {
-    if (offset >= 0) return FILM_SESSION_MINUTES;
+    if (offset >= 0) return 1;
     const start = FILM_BEATS.pullBack + WEEK_FILL_DELAY_MS + (offset + PAST_DAYS) * WEEK_FILL_STAGGER_MS;
-    return easeInOutCubic(filmSpan(elapsed, start, start + WEEK_FILL_MS)) * FILM_SESSION_MINUTES;
+    return easeInOutCubic(filmSpan(elapsed, start, start + WEEK_FILL_MS));
+  }
+
+  /** The focus a rail of the week shows: recorded on past days as the week fills in, none yet on days to come. */
+  function recordedFocus(rail: FilmRail, offset: number): FilmSpan[] {
+    if (offset >= 0) return [];
+    return clip(rail.focus, rail.start + weekFill(offset) * (rail.end - rail.start));
+  }
+
+  /** Session minutes as minutes of the day. */
+  function inDay(spans: readonly FilmSpan[]): FilmSpan[] {
+    return spans.map((span) => ({ start: SESSION_START + span.start, end: SESSION_START + span.end }));
   }
 
   function clip(spans: readonly FilmSpan[], minute: number): FilmSpan[] {
@@ -276,7 +310,14 @@
   }
 </script>
 
-{#snippet rail(start: number, end: number, recorded: readonly FilmSpan[], activeBreak: boolean, reveal: number)}
+{#snippet rail(
+  start: number,
+  end: number,
+  recorded: readonly FilmSpan[],
+  breaks: readonly FilmSpan[],
+  activeBreak: boolean,
+  reveal: number,
+)}
   {@const length = end - start}
   <div
     class="pointer-events-none absolute z-3 overflow-hidden"
@@ -291,15 +332,15 @@
     {#each recorded as band (band.start)}
       <div
         class="absolute inset-x-0"
-        style:top={`${(band.start / length) * 100}%`}
+        style:top={`${((band.start - start) / length) * 100}%`}
         style:height={`${((band.end - band.start) / length) * 100}%`}
         style:background-color="var(--cal-timeline-focus)"
       ></div>
     {/each}
-    {#each FILM_BREAKS as band (band.start)}
+    {#each breaks as band (band.start)}
       <div
         class="absolute inset-x-0"
-        style:top={`${(band.start / length) * 100}%`}
+        style:top={`${((band.start - start) / length) * 100}%`}
         style:height={`${((band.end - band.start) / length) * 100}%`}
         style:background-color="var(--cal-timeline-break)"
         style:opacity={activeBreak ? breakPulse : undefined}
@@ -332,34 +373,53 @@
   <div
     class="relative flex flex-col overflow-hidden rounded-2xl bg-(--cal-bg) text-foreground"
     style:width={`${CANVAS_W}px`}
-    style:height={`${CANVAS_H}px`}
+    style:height={`${canvasH}px`}
   >
-    <!-- The top bar's Focus timer: its ring, and the time left once a session runs. -->
-    <div class="flex shrink-0 items-center justify-end bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
-      {#if focusing && moment.kind !== "done"}
-        <span class="grid h-8 grid-flow-col place-items-center gap-1.5 rounded-full bg-accent/70 pr-2.5 pl-1.5 text-sm font-medium text-foreground tabular-nums">
+    {#if mobileShell}
+      <!-- The top bar's Focus timer: its ring, and the time left once a session runs. -->
+      <div class="flex shrink-0 items-center justify-end bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
+        {#if focusing && moment.kind !== "done"}
+          <span class="grid h-8 grid-flow-col place-items-center gap-1.5 rounded-full bg-accent/70 pr-2.5 pl-1.5 text-sm font-medium text-foreground tabular-nums">
+            <PomodoroProgressRing
+              active
+              remainingSeconds={moment.remainingSeconds}
+              totalSeconds={moment.totalSeconds}
+              size={20}
+              trackClass="stroke-muted-foreground/35"
+              progressClass="text-foreground/76 stroke-foreground/76"
+            />
+            {formatBlockedScreenDuration(moment.remainingSeconds)}
+          </span>
+        {:else}
+          <span class="grid size-8 place-items-center rounded-full text-muted-foreground">
+            <PomodoroProgressRing
+              active={false}
+              remainingSeconds={0}
+              totalSeconds={0}
+              size={20}
+              trackClass="stroke-muted-foreground/35"
+            />
+          </span>
+        {/if}
+      </div>
+    {:else}
+      <!-- The title bar: the Focus ring alone, then the window controls. -->
+      <div class="flex shrink-0 items-center justify-end gap-0.5 bg-sidebar pr-1.5 text-foreground/68 dark:text-white/76" style:height={`${TOP_BAR_H}px`}>
+        <span class="grid size-7 place-items-center">
           <PomodoroProgressRing
-            active
-            remainingSeconds={moment.remainingSeconds}
-            totalSeconds={moment.totalSeconds}
-            size={20}
-            trackClass="stroke-muted-foreground/35"
-            progressClass="text-foreground/76 stroke-foreground/76"
-          />
-          {formatBlockedScreenDuration(moment.remainingSeconds)}
-        </span>
-      {:else}
-        <span class="grid size-8 place-items-center rounded-full text-muted-foreground">
-          <PomodoroProgressRing
-            active={false}
-            remainingSeconds={0}
-            totalSeconds={0}
-            size={20}
-            trackClass="stroke-muted-foreground/35"
+            active={focusing && moment.kind !== "done"}
+            remainingSeconds={moment.kind === "done" ? 0 : moment.remainingSeconds}
+            totalSeconds={moment.kind === "done" ? 0 : moment.totalSeconds}
+            size={TITLE_ICON_SIZE + 0.5}
+            trackClass="stroke-foreground/20 dark:stroke-white/20"
+            progressClass="text-foreground/68 dark:text-white/76 stroke-foreground/68 dark:stroke-white/76"
           />
         </span>
-      {/if}
-    </div>
+        <span class="ml-1.5 grid size-7 place-items-center"><Minus size={TITLE_ICON_SIZE} strokeWidth={1.5} aria-hidden="true" /></span>
+        <span class="grid size-7 place-items-center"><Square size={TITLE_ICON_SIZE} strokeWidth={1.5} aria-hidden="true" /></span>
+        <span class="grid size-7 place-items-center"><X size={TITLE_ICON_SIZE} strokeWidth={1.5} aria-hidden="true" /></span>
+      </div>
+    {/if}
 
     <!-- The week view's header row: the time zone over the gutter, then each day's name and number. -->
     <div class="flex shrink-0 border-b border-sidebar" style:height={`${HEADER_H}px`}>
@@ -398,23 +458,21 @@
 
         {#each days as day (day.offset)}
           {@const isToday = day.offset === 0}
-          {@const fill = weekFill(day.offset)}
           <div
             class={cn("relative min-w-0 basis-0", !isToday && "overflow-hidden")}
             style:flex-grow={isToday ? 1 : otherGrow}
             style:border-left={isToday || otherGrow > 0 ? "1px solid var(--cal-gridline)" : undefined}
           >
-            {#each day.events as event (event.start)}
-              {#if event.focus}
-                {@render rail(event.start, event.end, event.focus === "planned" ? [] : clip(event.focus, fill), false, 1)}
-              {/if}
+            {#each day.rails as dayRail (dayRail.start)}
+              {@render rail(dayRail.start, dayRail.end, recordedFocus(dayRail, day.offset), dayRail.breaks, false, 1)}
             {/each}
 
             {#if isToday}
               {@render rail(
                 SESSION_START,
                 SESSION_END,
-                filmFocusSpans(sessionMinute),
+                inDay(filmFocusSpans(sessionMinute)),
+                TODAY_BREAKS,
                 focusing && moment.kind === "break",
                 saved ? railReveal : 0,
               )}

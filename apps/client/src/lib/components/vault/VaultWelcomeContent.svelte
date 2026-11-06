@@ -66,7 +66,7 @@
     {/key}
   </div>
 
-  <div class="mx-auto w-full max-w-xl shrink-0 px-4 pb-6 @min-[560px]:px-8 @min-[860px]:pb-10">
+  <div class="mx-auto w-full max-w-180 shrink-0 px-4 pb-6 @min-[560px]:px-8 @min-[760px]:px-10 @min-[860px]:pb-10">
     <div class="flex items-center gap-2 border-t border-border pt-4">
       {#if index > 0}
         <button

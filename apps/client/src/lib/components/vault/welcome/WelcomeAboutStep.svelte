@@ -4,13 +4,13 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { ABOUT_BEATS } from "$lib/vault/welcome-about-scene";
   import AboutInformationDialog from "../AboutInformationDialog.svelte";
-  import WelcomeAboutScene, { ABOUT_SCENE_HEIGHT, ABOUT_SCENE_WIDTH } from "./WelcomeAboutScene.svelte";
+  import WelcomeAboutScene, { ABOUT_SCENE_MAX_HEIGHT, ABOUT_SCENE_MIN_HEIGHT, ABOUT_SCENE_WIDTH } from "./WelcomeAboutScene.svelte";
   import WelcomeScene from "./WelcomeScene.svelte";
   import WelcomeSceneStep from "./WelcomeSceneStep.svelte";
 
   /**
    * The welcome screen about the app itself: free and open source, no account, and data kept on the user's devices,
-   * told by a scene of one vault on two devices, with the license, acknowledgments, and source code one tap away.
+   * told by a scene of the app's public code copied to anyone who wants it, with the license, acknowledgments, and source code one tap away.
    */
   const { t } = getLocalization();
   const SOURCE_URL = "https://github.com/opengrimoire/ganbaru";
@@ -52,11 +52,12 @@
   <WelcomeScene
     class="flex-1"
     width={ABOUT_SCENE_WIDTH}
-    height={ABOUT_SCENE_HEIGHT}
+    minHeight={ABOUT_SCENE_MIN_HEIGHT}
+    maxHeight={ABOUT_SCENE_MAX_HEIGHT}
     duration={ABOUT_BEATS.end}
     description={t("vaultSetup.about.sceneDescription")}
   >
-    {#snippet frame(elapsed)}<WelcomeAboutScene {elapsed} />{/snippet}
+    {#snippet frame(elapsed, height)}<WelcomeAboutScene {elapsed} {height} />{/snippet}
   </WelcomeScene>
 </WelcomeSceneStep>
 

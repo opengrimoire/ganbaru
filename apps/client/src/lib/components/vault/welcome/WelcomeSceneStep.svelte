@@ -15,10 +15,10 @@
 </script>
 
 <section class="flex h-full flex-col overflow-x-hidden overflow-y-auto">
-  <div class="mx-auto w-full max-w-xl shrink-0 px-4 pt-12 @min-[560px]:px-8 @min-[560px]:pt-18 @min-[860px]:pt-26">
+  <div class="mx-auto w-full max-w-180 shrink-0 px-4 pt-12 @min-[560px]:px-8 @min-[760px]:px-10 @min-[560px]:pt-18 @min-[860px]:pt-26">
     <WelcomeStepHeader {headline} {body}>{@render details?.()}</WelcomeStepHeader>
   </div>
-  <div class="mx-auto flex min-h-0 w-full max-w-xl flex-1 flex-col px-4 py-6 @min-[560px]:px-8">
+  <div class="mx-auto flex min-h-0 w-full max-w-180 flex-1 flex-col px-4 py-6 @min-[560px]:px-8 @min-[760px]:px-10">
     {@render children()}
   </div>
 </section>

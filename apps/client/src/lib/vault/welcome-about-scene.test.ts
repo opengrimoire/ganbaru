@@ -1,104 +1,105 @@
 import { describe, expect, it } from "vitest";
 import {
   ABOUT_BEATS,
-  ABOUT_ITEM_COUNT,
-  aboutCodeReveal,
-  aboutComputerItem,
-  aboutEdit,
-  aboutLink,
-  aboutPackets,
-  aboutPhone,
-  aboutPhoneItem,
-  aboutSweeping,
+  ABOUT_CODE_LINES,
+  ABOUT_COPY_ORDER,
+  ABOUT_RECIPIENT_COUNT,
+  ABOUT_SCREEN_ROWS,
+  aboutCard,
+  aboutCodeLine,
+  aboutCopy,
+  aboutRecipient,
+  aboutScreenRow,
 } from "./welcome-about-scene";
 
-const ITEMS = Array.from({ length: ABOUT_ITEM_COUNT }, (_, index) => index);
+const LINES = Array.from({ length: ABOUT_CODE_LINES }, (_, index) => index);
+const DEVICES = Array.from({ length: ABOUT_RECIPIENT_COUNT }, (_, index) => index);
+const ROWS = Array.from({ length: ABOUT_SCREEN_ROWS }, (_, index) => index);
 
-/** Every millisecond step of the scene, for properties that must hold throughout. */
+/** Every step of the scene, for properties that must hold throughout. */
 function moments(step = 10): number[] {
   return Array.from({ length: Math.floor(ABOUT_BEATS.end / step) + 1 }, (_, index) => index * step);
 }
 
+/** The first moment `value` becomes positive. */
+function firstPositive(value: (elapsed: number) => number): number {
+  return moments(5).find((elapsed) => value(elapsed) > 0) ?? Infinity;
+}
+
+/** The first moment `value` reaches 1. */
+function firstComplete(value: (elapsed: number) => number): number {
+  return moments(5).find((elapsed) => value(elapsed) >= 1) ?? Infinity;
+}
+
 describe("welcome about scene", () => {
-  it("starts on an empty computer with no phone, link, changes in flight, or code", () => {
-    for (const index of ITEMS) {
-      expect(aboutComputerItem(0, index)).toBe(0);
-      expect(aboutPhoneItem(0, index)).toBe(0);
-    }
-    expect(aboutPhone(0)).toBe(0);
-    expect(aboutLink(0)).toBe(0);
-    expect(aboutPackets(0)).toEqual([]);
-    expect(aboutCodeReveal(0)).toBe(0);
-  });
-
-  it("fills the computer one item after another before the phone arrives", () => {
-    for (const index of ITEMS.slice(1)) {
-      const halfway = moments().find((moment) => aboutComputerItem(moment, index) >= 0.5) ?? Infinity;
-      expect(aboutComputerItem(halfway, index - 1)).toBeGreaterThan(aboutComputerItem(halfway, index));
-    }
-    expect(aboutComputerItem(ABOUT_BEATS.phoneIn, ABOUT_ITEM_COUNT - 1)).toBe(1);
-    expect(aboutLink(ABOUT_BEATS.linkIn)).toBe(0);
-    expect(aboutPhone(ABOUT_BEATS.linkIn)).toBe(1);
-  });
-
-  it("shows an item on the phone only after a change has travelled all the way to it", () => {
-    for (const index of ITEMS) {
-      const shown = moments(1).find((moment) => aboutPhoneItem(moment, index) > 0) ?? Infinity;
-      const inFlight = moments(1).filter((moment) => moment < shown && aboutPackets(moment).length > 0);
-      expect(inFlight.length).toBeGreaterThan(0);
-      expect(aboutLink(shown)).toBe(1);
+  it("starts empty: no code, devices, copies, or items", () => {
+    expect(aboutCard(0)).toBe(0);
+    for (const line of LINES) expect(aboutCodeLine(0, line)).toBe(0);
+    for (const device of DEVICES) {
+      expect(aboutRecipient(0, device)).toBe(0);
+      expect(aboutCopy(0, device)).toBe(0);
+      for (const row of ROWS) expect(aboutScreenRow(0, device, row)).toBe(0);
     }
   });
 
-  it("only lists changes on their way, each between the two devices", () => {
-    for (const moment of moments()) {
-      for (const position of aboutPackets(moment)) {
-        expect(position).toBeGreaterThanOrEqual(0);
-        expect(position).toBeLessThanOrEqual(1);
+  it("writes the code out line by line before any device appears", () => {
+    const lastLine = firstComplete((elapsed) => aboutCodeLine(elapsed, ABOUT_CODE_LINES - 1));
+    const firstDevice = Math.min(...DEVICES.map((device) => firstPositive((elapsed) => aboutRecipient(elapsed, device))));
+    expect(lastLine).toBeLessThanOrEqual(firstDevice);
+    for (const line of LINES.slice(1)) {
+      expect(firstPositive((elapsed) => aboutCodeLine(elapsed, line)))
+        .toBeGreaterThan(firstPositive((elapsed) => aboutCodeLine(elapsed, line - 1)));
+    }
+  });
+
+  it("sends each copy only to a device that is already there", () => {
+    for (const device of DEVICES) {
+      const shown = firstComplete((elapsed) => aboutRecipient(elapsed, device));
+      expect(firstPositive((elapsed) => aboutCopy(elapsed, device))).toBeGreaterThanOrEqual(shown);
+    }
+  });
+
+  it("fills a device with its own items only after its copy arrives", () => {
+    for (const device of DEVICES) {
+      const arrival = firstComplete((elapsed) => aboutCopy(elapsed, device));
+      for (const row of ROWS) {
+        expect(firstPositive((elapsed) => aboutScreenRow(elapsed, device, row))).toBeGreaterThanOrEqual(arrival);
       }
     }
-    expect(aboutPackets(ABOUT_BEATS.syncStart)).toEqual([]);
-    expect(aboutPackets(ABOUT_BEATS.syncStart + 100)).toHaveLength(1);
   });
 
-  it("sends the edit from the phone back to the computer once every item has synced", () => {
-    expect(ITEMS.every((index) => aboutPhoneItem(ABOUT_BEATS.editStart, index) === 1)).toBe(true);
-    const departure = moments(1).find((moment) => aboutEdit(moment).phone === 1) ?? Infinity;
-    const path = moments(1)
-      .filter((moment) => moment > departure && aboutEdit(moment).computer === 0)
-      .flatMap((moment) => aboutPackets(moment));
-    expect(path[0]).toBeGreaterThan(0.9);
-    expect(path.at(-1)).toBeLessThan(0.1);
-    expect(path.every((position, index) => index === 0 || position <= path[index - 1])).toBe(true);
+  it("sends the copies from the middle outwards", () => {
+    const departures = ABOUT_COPY_ORDER.map((device) => firstPositive((elapsed) => aboutCopy(elapsed, device)));
+    expect(departures).toEqual([...departures].sort((left, right) => left - right));
+    expect(new Set(ABOUT_COPY_ORDER)).toEqual(new Set(DEVICES));
   });
 
-  it("highlights the edit while it travels and lets it fade before the sweep", () => {
-    const travelling = moments().find((moment) => aboutPackets(moment).length > 0 && moment > ABOUT_BEATS.editStart) ?? 0;
-    expect(aboutEdit(travelling).highlight).toBe(1);
-    expect(aboutEdit(ABOUT_BEATS.sweepIn)).toEqual({ phone: 1, computer: 1, highlight: 0 });
-  });
-
-  it("opens the code across the scene, holds it, and closes it again", () => {
-    expect(aboutCodeReveal(ABOUT_BEATS.sweepIn)).toBe(0);
-    expect(aboutSweeping(ABOUT_BEATS.sweepIn + 300)).toBe(true);
-    expect(aboutCodeReveal(ABOUT_BEATS.sweepOut)).toBe(1);
-    expect(aboutSweeping(ABOUT_BEATS.sweepOut)).toBe(false);
-    expect(aboutCodeReveal(ABOUT_BEATS.sweepOut + 300)).toBeLessThan(1);
-    const reveals = moments().filter((moment) => moment >= ABOUT_BEATS.sweepIn).map(aboutCodeReveal);
-    expect(reveals.every((reveal) => reveal >= 0 && reveal <= 1)).toBe(true);
-  });
-
-  it("ends on both devices synced and showing the app, which is the reduced-motion still", () => {
+  it("ends with the code written and every device holding its copy and its own items", () => {
     const end = ABOUT_BEATS.end;
-    for (const index of ITEMS) {
-      expect(aboutComputerItem(end, index)).toBe(1);
-      expect(aboutPhoneItem(end, index)).toBe(1);
+    expect(aboutCard(end)).toBe(1);
+    for (const line of LINES) expect(aboutCodeLine(end, line)).toBe(1);
+    for (const device of DEVICES) {
+      expect(aboutRecipient(end, device)).toBe(1);
+      expect(aboutCopy(end, device)).toBe(1);
+      for (const row of ROWS) expect(aboutScreenRow(end, device, row)).toBe(1);
     }
-    expect(aboutPhone(end)).toBe(1);
-    expect(aboutLink(end)).toBe(1);
-    expect(aboutPackets(end)).toEqual([]);
-    expect(aboutEdit(end)).toEqual({ phone: 1, computer: 1, highlight: 0 });
-    expect(aboutCodeReveal(end)).toBe(0);
-    expect(aboutSweeping(end)).toBe(false);
+  });
+
+  it("keeps every value between 0 and 1 throughout", () => {
+    for (const elapsed of moments()) {
+      const values = [
+        aboutCard(elapsed),
+        ...LINES.map((line) => aboutCodeLine(elapsed, line)),
+        ...DEVICES.flatMap((device) => [
+          aboutRecipient(elapsed, device),
+          aboutCopy(elapsed, device),
+          ...ROWS.map((row) => aboutScreenRow(elapsed, device, row)),
+        ]),
+      ];
+      for (const value of values) {
+        expect(value).toBeGreaterThanOrEqual(0);
+        expect(value).toBeLessThanOrEqual(1);
+      }
+    }
   });
 });

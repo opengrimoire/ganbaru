@@ -8,6 +8,7 @@ import {
   FILM_SESSION_MINUTES,
   easeInOutCubic,
   filmClockMinute,
+  filmDayRails,
   filmFocusSpans,
   filmSessionMinute,
   filmSessionMoment,
@@ -130,5 +131,39 @@ describe("the film's session", () => {
     expect(filmFocusSpans(20)).toEqual([{ start: 0, end: 20 }]);
     expect(filmFocusSpans(28)).toEqual([{ start: 0, end: 25 }]);
     expect(filmFocusSpans(40)).toEqual([{ start: 0, end: 25 }, { start: 30, end: 40 }]);
+  });
+});
+
+describe("filmDayRails", () => {
+  /** Balanced then Creative, back to back from nine: the second event inherits the third rhythm position. */
+  const chain = [
+    { start: 540, end: 610, preset: "balanced" },
+    { start: 610, end: 705, preset: "creative" },
+  ] as const;
+
+  it("shares one rail between back-to-back events and keeps separate events apart", () => {
+    const rails = filmDayRails([...chain, { start: 720, end: 750, preset: "creative" }]);
+    expect(rails.map(({ start, end }) => ({ start, end }))).toEqual([{ start: 540, end: 705 }, { start: 720, end: 750 }]);
+  });
+
+  it("carries the rhythm across presets, so the fourth focus of the chain ends in a long break", () => {
+    const [rail] = filmDayRails(chain);
+    expect(rail.breaks).toEqual([
+      { start: 570, end: 575, long: false },
+      { start: 605, end: 610, long: false },
+      { start: 635, end: 640, long: false },
+      { start: 665, end: 680, long: true },
+    ]);
+    const [alone] = filmDayRails([chain[1]]);
+    expect(alone.breaks.some((pause) => pause.long)).toBe(false);
+  });
+
+  it("fills the rail with focus everywhere a break is not", () => {
+    for (const rail of filmDayRails(chain)) {
+      const pieces = [...rail.focus, ...rail.breaks].sort((left, right) => left.start - right.start);
+      expect(pieces[0].start).toBe(rail.start);
+      expect(pieces.at(-1)?.end).toBe(rail.end);
+      pieces.slice(1).forEach((piece, index) => expect(piece.start).toBe(pieces[index].end));
+    }
   });
 });

@@ -8,8 +8,12 @@
    */
   const FILM_ZOOM_PERCENT = 100;
 
-  /** Canvas geometry in logical pixels, matching the Calendar's own measures at the film's zoom. */
-  const CANVAS_W = 360;
+  /**
+   * Canvas geometry in logical pixels, matching the Calendar's own measures at the film's zoom. The width is chosen by
+   * the room between these bounds, so a wide window gets wider day columns.
+   */
+  const MIN_CANVAS_W = 360;
+  const MAX_CANVAS_W = 628;
   const TOP_BAR_H = 36;
   const HEADER_H = 40;
   const HOUR_PX = calendarZoomHourHeightForPercent(FILM_ZOOM_PERCENT);
@@ -21,13 +25,13 @@
   const MIN_VIEW_MINUTES = 300;
   const MAX_VIEW_MINUTES = 420;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
-  const DAYS_W = CANVAS_W - GUTTER_W;
 
   /** The bezel around the canvas, matching the drawn phones of the Android access guides (`p-1.5`). */
   const BEZEL = 6;
 
   /** The canvas plus its bezel at its smallest and largest, for the player to fit. */
-  export const FILM_SCENE_WIDTH = CANVAS_W + 2 * BEZEL;
+  export const FILM_SCENE_MIN_WIDTH = MIN_CANVAS_W + 2 * BEZEL;
+  export const FILM_SCENE_MAX_WIDTH = MAX_CANVAS_W + 2 * BEZEL;
   export const FILM_SCENE_MIN_HEIGHT = TOP_BAR_H + HEADER_H + (MIN_VIEW_MINUTES / 60) * HOUR_PX + 2 * BEZEL;
   export const FILM_SCENE_MAX_HEIGHT = TOP_BAR_H + HEADER_H + (MAX_VIEW_MINUTES / 60) * HOUR_PX + 2 * BEZEL;
 </script>
@@ -90,7 +94,7 @@
    * of `elapsed`, with no CSS transitions, so text is never handed to a compositing layer mid-animation and keeps its
    * rendering from frame to frame.
    */
-  let { elapsed, height }: { elapsed: number; height: number } = $props();
+  let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
   const localization = getLocalization();
   const { t } = localization;
@@ -185,6 +189,7 @@
   const timezoneLabel = getTimezoneInfo(timezone).acronym;
 
   /** The canvas inside its bezel, and how much of the day it shows. */
+  const canvasW = $derived(width - 2 * BEZEL);
   const canvasH = $derived(height - 2 * BEZEL);
   const viewMinutes = $derived(((canvasH - TOP_BAR_H - HEADER_H) / HOUR_PX) * 60);
   const hours = $derived(
@@ -227,7 +232,7 @@
   /** The pull back: other days open beside today, which narrows to one column of the week. */
   const pullBack = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.pullBack, FILM_BEATS.pullBack + FILM_PULL_BACK_MS)));
   const otherGrow = $derived(pullBack);
-  const dayFormat = $derived(dayNameFormatForWidth(DAYS_W / (1 + (days.length - 1) * otherGrow)));
+  const dayFormat = $derived(dayNameFormatForWidth((canvasW - GUTTER_W) / (1 + (days.length - 1) * otherGrow)));
 
   const breakScreen = $derived(screenAlpha(FILM_BEATS.breakStart, FILM_BEATS.breakEnd + SCREEN_FADE_MS));
   const finishedScreen = $derived(screenAlpha(FILM_BEATS.sessionEnd, FILM_BEATS.finishedOut));
@@ -378,35 +383,22 @@
 <div class="rounded-3xl bg-foreground/6 p-1.5">
   <div
     class="relative flex flex-col overflow-hidden rounded-2xl bg-(--cal-bg) text-foreground"
-    style:width={`${CANVAS_W}px`}
+    style:width={`${canvasW}px`}
     style:height={`${canvasH}px`}
   >
     {#if mobileShell}
-      <!-- The top bar's Focus timer: its ring, and the time left once a session runs. -->
+      <!-- The top bar's Focus ring, on its own. -->
       <div class="flex shrink-0 items-center justify-end bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
-        {#if focusing && moment.kind !== "done"}
-          <span class="grid h-8 grid-flow-col place-items-center gap-1.5 rounded-full bg-accent/70 pr-2.5 pl-1.5 text-sm font-medium text-foreground tabular-nums">
-            <PomodoroProgressRing
-              active
-              remainingSeconds={moment.remainingSeconds}
-              totalSeconds={moment.totalSeconds}
-              size={20}
-              trackClass="stroke-muted-foreground/35"
-              progressClass="text-foreground/76 stroke-foreground/76"
-            />
-            {formatBlockedScreenDuration(moment.remainingSeconds)}
-          </span>
-        {:else}
-          <span class="grid size-8 place-items-center rounded-full text-muted-foreground">
-            <PomodoroProgressRing
-              active={false}
-              remainingSeconds={0}
-              totalSeconds={0}
-              size={20}
-              trackClass="stroke-muted-foreground/35"
-            />
-          </span>
-        {/if}
+        <span class="grid size-8 place-items-center rounded-full text-muted-foreground">
+          <PomodoroProgressRing
+            active={focusing && moment.kind !== "done"}
+            remainingSeconds={moment.kind === "done" ? 0 : moment.remainingSeconds}
+            totalSeconds={moment.kind === "done" ? 0 : moment.totalSeconds}
+            size={20}
+            trackClass="stroke-muted-foreground/35"
+            progressClass="text-foreground/76 stroke-foreground/76"
+          />
+        </span>
       </div>
     {:else}
       <!-- The title bar's Focus ring, on its own. -->

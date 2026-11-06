@@ -1,10 +1,12 @@
 <script lang="ts" module>
-  /** Canvas geometry in logical pixels: a fixed width, and a height the room chooses between these bounds. */
-  const CANVAS_W = 384;
+  /** Canvas geometry in logical pixels: a width and a height the room chooses between these bounds. */
+  const MIN_CANVAS_W = 384;
+  const MAX_CANVAS_W = 600;
   const MIN_CANVAS_H = 256;
   const MAX_CANVAS_H = 360;
 
-  export const ABOUT_SCENE_WIDTH = CANVAS_W;
+  export const ABOUT_SCENE_MIN_WIDTH = MIN_CANVAS_W;
+  export const ABOUT_SCENE_MAX_WIDTH = MAX_CANVAS_W;
   export const ABOUT_SCENE_MIN_HEIGHT = MIN_CANVAS_H;
   export const ABOUT_SCENE_MAX_HEIGHT = MAX_CANVAS_H;
 </script>
@@ -33,7 +35,7 @@
    * code is shared with everyone while what each person keeps stays theirs. Every style is a function of `elapsed`,
    * with no CSS transitions, so text is never handed to a compositing layer mid-animation.
    */
-  let { elapsed, height }: { elapsed: number; height: number } = $props();
+  let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
   const { t } = getLocalization();
   const theme = getTheme();
@@ -41,7 +43,6 @@
   /** The public code, centered at the top. */
   const CARD_W = 156;
   const CARD_H = 104;
-  const CARD_LEFT = (CANVAS_W - CARD_W) / 2;
   const CARD_HEADER_H = 26;
   const CODE_LINE_H = 11;
   /** How far the code and the devices rise into place as they appear. */
@@ -74,7 +75,10 @@
     [0, [[8, "plain"]]],
   ];
 
-  /** A person's device below the code, with its center, how far the arc lifts it, and that person's colors. */
+  /**
+   * A person's device below the code, with its center on the narrowest canvas, how far the arc lifts it, and that person's colors. A
+   * wider canvas spreads the devices apart while the outermost keep their distance from the edges.
+   */
   interface Recipient {
     kind: "laptop" | "phone";
     x: number;
@@ -96,11 +100,22 @@
     phone: { width: 32, height: 56, base: 0 },
   } as const;
   const LAPTOP_BASE_H = 4;
+  /** The center of the narrowest canvas, and how far the outermost device sits from its edges. */
+  const MIN_CENTER = MIN_CANVAS_W / 2;
+  const EDGE = Math.min(...RECIPIENTS.map((recipient) => recipient.x), ...RECIPIENTS.map((recipient) => MIN_CANVAS_W - recipient.x));
+
+  const center = $derived(width / 2);
+  const spread = $derived((center - EDGE) / (MIN_CENTER - EDGE));
 
   const pad = $derived(MIN_PAD + (height - MIN_CANVAS_H) * PAD_SHARE);
   const cardTop = $derived(pad);
   const cardBottom = $derived(cardTop + CARD_H);
   const card = $derived(aboutCard(elapsed));
+
+  /** The center of device `index`, spread across the canvas. */
+  function deviceX(index: number): number {
+    return center + (RECIPIENTS[index].x - MIN_CENTER) * spread;
+  }
 
   /** The bottom of device `index`, where it rests on the arc. */
   function deviceBottom(index: number): number {
@@ -116,8 +131,8 @@
 
   /** Where the copy for device `index` leaves the code, and where it lands. */
   function copyPath(index: number): { x1: number; y1: number; x2: number; y2: number } {
-    const x = RECIPIENTS[index].x;
-    return { x1: CANVAS_W / 2 + (x - CANVAS_W / 2) * FAN, y1: cardBottom, x2: x, y2: deviceTop(index) - 4 };
+    const x = deviceX(index);
+    return { x1: center + (x - center) * FAN, y1: cardBottom, x2: x, y2: deviceTop(index) - 4 };
   }
 
   function toneColor(tone: CodeTone): string {
@@ -145,9 +160,9 @@
   </div>
 {/snippet}
 
-<div class="relative" style:width={`${CANVAS_W}px`} style:height={`${height}px`}>
+<div class="relative" style:width={`${width}px`} style:height={`${height}px`}>
   <!-- The copies' paths, each drawn as its copy travels, and the copies on their way. -->
-  <svg class="absolute inset-0 overflow-visible" width={CANVAS_W} {height} aria-hidden="true">
+  <svg class="absolute inset-0 overflow-visible" {width} {height} aria-hidden="true">
     {#each RECIPIENTS as _, index (index)}
       {@const copy = aboutCopy(elapsed, index)}
       {#if copy > 0}
@@ -177,7 +192,7 @@
   {#if card > 0}
     <div
       class="absolute rounded-3xl bg-foreground/6 p-1.5"
-      style:left={`${CARD_LEFT}px`}
+      style:left={`${center - CARD_W / 2}px`}
       style:top={`${cardTop + (1 - card) * RISE}px`}
       style:width={`${CARD_W}px`}
       style:height={`${CARD_H}px`}
@@ -213,7 +228,7 @@
       {@const size = DEVICE_SIZE[recipient.kind]}
       {@const person = getEventColor(recipient.person, theme.current)}
       {@const top = deviceTop(index) + (1 - shown) * RISE}
-      <div class="absolute" style:left={`${recipient.x - size.width / 2}px`} style:top={`${top}px`} style:opacity={shown}>
+      <div class="absolute" style:left={`${deviceX(index) - size.width / 2}px`} style:top={`${top}px`} style:opacity={shown}>
         <div
           class="bg-foreground/6 p-1"
           class:rounded-lg={recipient.kind === "laptop"}

@@ -12,7 +12,8 @@
    * transform, so its text is laid out and rasterized at the final size instead of being scaled.
    */
   let {
-    width: sceneWidth,
+    minWidth,
+    maxWidth = minWidth,
     minHeight,
     maxHeight = minHeight,
     duration,
@@ -20,16 +21,17 @@
     frame,
     class: className = "",
   }: {
-    /** The drawing's width and the bounds of its height, in logical pixels. */
-    width: number;
+    /** The bounds of the drawing's width and height, in logical pixels. */
+    minWidth: number;
+    maxWidth?: number;
     minHeight: number;
     maxHeight?: number;
     /** How long one run of the scene lasts, in milliseconds. */
     duration: number;
     /** What the scene shows, for screen readers. */
     description: string;
-    /** Draws the scene at a moment, given in milliseconds from its start, at a height within its bounds. */
-    frame: Snippet<[elapsed: number, height: number]>;
+    /** Draws the scene at a moment, given in milliseconds from its start, at a size within its bounds. */
+    frame: Snippet<[elapsed: number, width: number, height: number]>;
     class?: string;
   } = $props();
 
@@ -50,15 +52,19 @@
   let cycle = $state(0);
   let restarting = $state(false);
 
-  const widthZoom = $derived(roomWidth / sceneWidth);
-  const sceneHeight = $derived(
-    widthZoom > 0 && roomHeight > SCENE_MARGIN_Y
-      ? Math.floor(Math.min(maxHeight, Math.max(minHeight, (roomHeight - SCENE_MARGIN_Y) / Math.min(MAX_ZOOM, widthZoom))))
-      : minHeight,
-  );
-  const fit = $derived(roomHeight > SCENE_MARGIN_Y ? Math.min(widthZoom, (roomHeight - SCENE_MARGIN_Y) / sceneHeight) : 0);
+  /** The room left for the drawing once its vertical breathing room is set aside. */
+  const roomY = $derived(Math.max(0, roomHeight - SCENE_MARGIN_Y));
+  /** The largest zoom at which the drawing's smallest size still fits, so the drawing grows before it zooms. */
+  const baseZoom = $derived(Math.min(MAX_ZOOM, roomWidth / minWidth, roomY / minHeight));
+  const sceneWidth = $derived(baseZoom > 0 ? Math.floor(clamp(roomWidth / baseZoom, minWidth, maxWidth)) : minWidth);
+  const sceneHeight = $derived(baseZoom > 0 ? Math.floor(clamp(roomY / baseZoom, minHeight, maxHeight)) : minHeight);
+  const fit = $derived(Math.min(roomWidth / sceneWidth, roomY / sceneHeight));
   const shown = $derived(fit >= MIN_ZOOM);
   const zoom = $derived(Math.min(MAX_ZOOM, fit));
+
+  function clamp(value: number, low: number, high: number): number {
+    return Math.min(high, Math.max(low, value));
+  }
 
   let frameRequest = 0;
   let timer = 0;
@@ -118,7 +124,7 @@
             style:transition-duration={`${SCENE_RESTART_FADE_MS}ms`}
           >
             {#key cycle}
-              {@render frame(elapsed, sceneHeight)}
+              {@render frame(elapsed, sceneWidth, sceneHeight)}
             {/key}
           </div>
         </div>

@@ -4,7 +4,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { ABOUT_BEATS } from "$lib/vault/welcome-about-scene";
   import AboutInformationDialog from "../AboutInformationDialog.svelte";
-  import WelcomeAboutScene, { ABOUT_SCENE_MAX_HEIGHT, ABOUT_SCENE_MIN_HEIGHT, ABOUT_SCENE_WIDTH } from "./WelcomeAboutScene.svelte";
+  import WelcomeAboutScene, { ABOUT_SCENE_MAX_HEIGHT, ABOUT_SCENE_MAX_WIDTH, ABOUT_SCENE_MIN_HEIGHT, ABOUT_SCENE_MIN_WIDTH } from "./WelcomeAboutScene.svelte";
   import WelcomeScene from "./WelcomeScene.svelte";
   import WelcomeSceneStep from "./WelcomeSceneStep.svelte";
 
@@ -51,13 +51,14 @@
 
   <WelcomeScene
     class="flex-1"
-    width={ABOUT_SCENE_WIDTH}
+    minWidth={ABOUT_SCENE_MIN_WIDTH}
+    maxWidth={ABOUT_SCENE_MAX_WIDTH}
     minHeight={ABOUT_SCENE_MIN_HEIGHT}
     maxHeight={ABOUT_SCENE_MAX_HEIGHT}
     duration={ABOUT_BEATS.end}
     description={t("vaultSetup.about.sceneDescription")}
   >
-    {#snippet frame(elapsed, height)}<WelcomeAboutScene {elapsed} {height} />{/snippet}
+    {#snippet frame(elapsed, width, height)}<WelcomeAboutScene {elapsed} {width} {height} />{/snippet}
   </WelcomeScene>
 </WelcomeSceneStep>
 

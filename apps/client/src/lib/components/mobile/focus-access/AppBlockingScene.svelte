@@ -73,17 +73,14 @@
 
 {#snippet services()}
   <GuideHeader title={t("mobile.focusOnboarding.guideDownloadedServices")} />
-  <div class="flex flex-col">
-    <div class="flex items-center gap-2 px-3 py-2">
-      <span class="size-6 shrink-0 rounded-full bg-foreground/12"></span>
-      <GuideLine class="w-20" />
+  <div class="relative flex items-center gap-2 px-3 py-2.5">
+    <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+      <span class="truncate text-xs font-medium leading-tight text-foreground">{service}</span>
+      <GuideLine class="w-20 bg-foreground/8" />
     </div>
-    <div class="relative flex items-center gap-2 px-3 py-2">
-      <GuideAppIcon />
-      <span class="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{service}</span>
-      <span class="shrink-0 text-[0.625rem] text-muted-foreground">{t("mobile.focusOnboarding.guideOff")}</span>
-      <GuideTap active={phase === 3} />
-    </div>
+    <span class="shrink-0 text-[0.625rem] text-muted-foreground">{t("mobile.focusOnboarding.guideOff")}</span>
+    <ChevronRight class="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+    <GuideTap active={phase === 3} />
   </div>
 {/snippet}
 

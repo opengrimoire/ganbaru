@@ -6,6 +6,7 @@
     type PairingStatus,
   } from "$lib/api/vault-handoff";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { cn } from "$lib/utils";
   import { completeVaultHandoffOnboarding } from "$lib/vault/handoff-onboarding";
   import { getActiveVaultInfo } from "$lib/vault/state";
   import VaultHandoffPanel from "./VaultHandoffPanel.svelte";
@@ -101,9 +102,13 @@
     </svg>
   </section>
 {:else}
-<!-- The content hangs from the top, so the source choices in the title stay put while the panel below changes height. -->
+<!-- The content hangs from the top, so the source choices in the title stay put while the panel below changes height. Android starts
+     it higher so the tallest panel fits a phone screen without scrolling. -->
 <section
-  class="mx-auto grid min-h-full w-full max-w-5xl content-start px-4 pt-[max(2rem,12vh)] pb-8 min-[560px]:px-8"
+  class={cn(
+    "mx-auto grid min-h-full w-full max-w-5xl content-start px-4 pb-8 min-[560px]:px-8",
+    platform === "android" ? "pt-[max(2rem,7vh)]" : "pt-[max(2rem,12vh)]",
+  )}
   data-vault-handoff-onboarding={platform}
 >
   <div class={platform === "desktop"

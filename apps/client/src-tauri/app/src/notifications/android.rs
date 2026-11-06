@@ -15,6 +15,7 @@ pub struct MobileExactAlarmStatus {
 #[serde(rename_all = "camelCase")]
 pub struct MobileBackgroundExecutionStatus {
     manufacturer: String,
+    app_label: String,
     autostart_settings_available: bool,
     background_restricted: bool,
     battery_optimization_exempt: bool,
@@ -32,6 +33,7 @@ pub fn mobile_notification_background_execution_status<R: Runtime>(
         let status = app.mobile_notifications().background_execution_status()?;
         Ok(MobileBackgroundExecutionStatus {
             manufacturer: status.manufacturer,
+            app_label: status.app_label,
             autostart_settings_available: status.autostart_settings_available,
             background_restricted: status.background_restricted,
             battery_optimization_exempt: status.battery_optimization_exempt,

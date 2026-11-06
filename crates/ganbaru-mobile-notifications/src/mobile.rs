@@ -29,6 +29,7 @@ pub struct ExactAlarmStatus {
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundExecutionStatus {
     pub manufacturer: String,
+    pub app_label: String,
     pub autostart_settings_available: bool,
     pub background_restricted: bool,
     pub battery_optimization_exempt: bool,

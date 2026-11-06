@@ -1,0 +1,112 @@
+<script lang="ts">
+  import { onMount, untrack } from "svelte";
+  import { fade } from "svelte/transition";
+  import { getLocalization } from "$lib/i18n/translator.svelte";
+  import {
+    FOCUS_ACCESS_GUIDES,
+    type FocusAccessGuideCaption,
+    type FocusAccessStep,
+  } from "$lib/mobile/focus-access-steps";
+  import { cn } from "$lib/utils";
+  import { prefersReducedMotion } from "$lib/utils/smooth-swap";
+  import AppBlockingScene from "./AppBlockingScene.svelte";
+  import AutostartScene from "./AutostartScene.svelte";
+  import BatteryScene from "./BatteryScene.svelte";
+  import ExactAlarmScene from "./ExactAlarmScene.svelte";
+  import NotificationsScene from "./NotificationsScene.svelte";
+  import UsageAccessScene from "./UsageAccessScene.svelte";
+
+  /**
+   * A looping drawing of the Android screens a step opens, with the instruction for each moment underneath. The drawing
+   * is decorative; screen readers get the instructions as a list instead.
+   */
+  let { step, appLabel }: { step: FocusAccessStep; appLabel: string } = $props();
+
+  /** How long the drawing fades out before it starts over. */
+  const RESTART_FADE_MS = 300;
+  const { t } = getLocalization();
+  const phases = untrack(() => FOCUS_ACCESS_GUIDES[step]);
+  const fadeMs = prefersReducedMotion() ? 0 : 180;
+
+  let phase = $state(0);
+  let cycle = $state(0);
+  let restarting = $state(false);
+
+  const caption = $derived(captionText(phases[phase].caption));
+  const instructions = $derived([...new Set(phases.map((entry) => captionText(entry.caption)))]);
+
+  function captionText(caption: FocusAccessGuideCaption): string {
+    switch (caption) {
+      case "allow": return t("mobile.focusOnboarding.captionAllow", appLabel);
+      case "search": return t("mobile.focusOnboarding.captionSearch", appLabel);
+      case "turn-on": return t("mobile.focusOnboarding.captionTurnOn");
+      case "no-restrictions": return t("mobile.focusOnboarding.captionNoRestrictions");
+      case "accept-warning": return t("mobile.focusOnboarding.captionAcceptWarning");
+      case "open-downloaded": return t("mobile.focusOnboarding.captionOpenDownloaded");
+      case "choose-service": return t("mobile.focusOnboarding.captionChooseService", t("mobile.focusOnboarding.guideServiceLabel"));
+      case "tap-allow": return t("mobile.focusOnboarding.captionTapAllow");
+    }
+  }
+
+  onMount(() => {
+    let timer = 0;
+    const hold = (): void => {
+      timer = window.setTimeout(advance, phases[phase].durationMs);
+    };
+    const advance = (): void => {
+      if (phase < phases.length - 1) {
+        phase += 1;
+        hold();
+        return;
+      }
+      restarting = true;
+      timer = window.setTimeout(() => {
+        phase = 0;
+        cycle += 1;
+        restarting = false;
+        hold();
+      }, RESTART_FADE_MS);
+    };
+    hold();
+    return () => window.clearTimeout(timer);
+  });
+</script>
+
+<figure class="flex flex-col items-center gap-3">
+  <div aria-hidden="true" class="rounded-4xl bg-foreground/6 p-1.5">
+    <div
+      class={cn(
+        "relative h-[min(18rem,40svh)] w-52 overflow-hidden rounded-3xl bg-background transition-opacity duration-300 motion-reduce:transition-none",
+        restarting && "opacity-0",
+      )}
+    >
+      {#key cycle}
+        <div class="absolute inset-0">
+          {#if step === "notifications"}
+            <NotificationsScene {phase} {appLabel} />
+          {:else if step === "exact-alarm"}
+            <ExactAlarmScene {phase} {appLabel} />
+          {:else if step === "autostart"}
+            <AutostartScene {phase} {appLabel} />
+          {:else if step === "battery"}
+            <BatteryScene {phase} {appLabel} />
+          {:else if step === "usage-access"}
+            <UsageAccessScene {phase} {appLabel} />
+          {:else}
+            <AppBlockingScene {phase} />
+          {/if}
+        </div>
+      {/key}
+    </div>
+  </div>
+  <figcaption class="grid min-h-10 w-full max-w-72 place-items-center text-center text-sm font-medium leading-5 text-foreground">
+    <div class="sr-only">
+      <ol>
+        {#each instructions as instruction (instruction)}<li>{instruction}</li>{/each}
+      </ol>
+    </div>
+    {#key caption}
+      <span aria-hidden="true" class="col-start-1 row-start-1" in:fade={{ duration: fadeMs }} out:fade={{ duration: fadeMs }}>{caption}</span>
+    {/key}
+  </figcaption>
+</figure>

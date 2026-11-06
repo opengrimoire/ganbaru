@@ -17,7 +17,7 @@ Android requests access in context, only after the user enables a feature that n
 
 ## Special-access disclosure
 
-Usage Access and Accessibility have separate localized disclosures immediately before opening system settings. Each states what is observed, what is not observed, the action performed, and that access can be revoked.
+Usage Access and Accessibility have separate localized disclosures immediately before opening system settings. Each states what is observed, what is not observed, the action performed, and that access can be revoked. The Focus onboarding asks for each access on its own screen, with a short reason and an animated guide of the system screens it opens; the screens for Usage Access and Accessibility are their disclosures. Settings pages keep a confirmation dialog as the disclosure.
 
 Returning from settings refreshes actual platform state. Manufacturer autostart settings have no reliable enabled query, so the app records only that the user reviewed the page and never displays a false granted state.
 

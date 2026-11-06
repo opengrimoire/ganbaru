@@ -15,6 +15,8 @@ type WritableStorage = Pick<Storage, "setItem">;
 
 export interface MobileBackgroundExecutionStatus {
   manufacturer: string;
+  /** The launcher label of this build, such as Ganbaru or Ganbaru Dev, as Android settings list it. */
+  appLabel: string;
   autostartSettingsAvailable: boolean;
   backgroundRestricted: boolean;
   batteryOptimizationExempt: boolean;
@@ -31,12 +33,16 @@ export function parseMobileBackgroundExecutionStatus(
   if (!isRecord(value)) throw new Error("Android background status must be an object");
   const {
     manufacturer,
+    appLabel,
     autostartSettingsAvailable,
     backgroundRestricted,
     batteryOptimizationExempt,
   } = value;
   if (typeof manufacturer !== "string" || manufacturer.length > 80) {
     throw new Error("Android background status has an invalid manufacturer");
+  }
+  if (typeof appLabel !== "string" || appLabel.trim().length === 0 || appLabel.length > 80) {
+    throw new Error("Android background status has an invalid app label");
   }
   if (typeof autostartSettingsAvailable !== "boolean") {
     throw new Error("Android background status has an invalid autostart availability");
@@ -49,6 +55,7 @@ export function parseMobileBackgroundExecutionStatus(
   }
   return {
     manufacturer,
+    appLabel,
     autostartSettingsAvailable,
     backgroundRestricted,
     batteryOptimizationExempt,

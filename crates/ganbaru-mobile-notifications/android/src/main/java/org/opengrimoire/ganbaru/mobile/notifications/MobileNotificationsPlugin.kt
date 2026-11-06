@@ -395,6 +395,7 @@ class MobileNotificationsPlugin(private val activity: Activity) : Plugin(activit
     val backgroundRestricted = activityManager.isBackgroundRestricted
     invoke.resolve(JSObject().apply {
       put("manufacturer", Build.MANUFACTURER.trim().take(80))
+      put("appLabel", activity.applicationInfo.loadLabel(activity.packageManager).toString().trim().take(80))
       put(
         "autostartSettingsAvailable",
         backgroundSettingsIntents(BackgroundSettingsDestination.AUTOSTART).any(::isResolvable),

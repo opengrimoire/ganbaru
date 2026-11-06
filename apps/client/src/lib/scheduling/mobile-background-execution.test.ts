@@ -11,20 +11,33 @@ describe("mobile background execution status", () => {
   it("accepts a bounded native status", () => {
     expect(parseMobileBackgroundExecutionStatus({
       manufacturer: "Honor",
+      appLabel: "Ganbaru Dev",
       autostartSettingsAvailable: true,
       backgroundRestricted: false,
       batteryOptimizationExempt: false,
     })).toEqual({
       manufacturer: "Honor",
+      appLabel: "Ganbaru Dev",
       autostartSettingsAvailable: true,
       backgroundRestricted: false,
       batteryOptimizationExempt: false,
     });
   });
 
+  it("rejects an empty app label", () => {
+    expect(() => parseMobileBackgroundExecutionStatus({
+      manufacturer: "Example",
+      appLabel: " ",
+      autostartSettingsAvailable: true,
+      backgroundRestricted: false,
+      batteryOptimizationExempt: true,
+    })).toThrow("invalid app label");
+  });
+
   it("rejects a missing autostart availability", () => {
     expect(() => parseMobileBackgroundExecutionStatus({
       manufacturer: "Example",
+      appLabel: "Ganbaru",
       backgroundRestricted: false,
       batteryOptimizationExempt: true,
     })).toThrow("invalid autostart availability");
@@ -33,6 +46,7 @@ describe("mobile background execution status", () => {
   it("rejects a missing background restriction state", () => {
     expect(() => parseMobileBackgroundExecutionStatus({
       manufacturer: "Example",
+      appLabel: "Ganbaru",
       autostartSettingsAvailable: false,
       batteryOptimizationExempt: false,
     })).toThrow("invalid restriction state");

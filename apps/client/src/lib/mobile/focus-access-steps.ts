@@ -87,6 +87,8 @@ export type FocusAccessGuideCaption =
   | "tap-allow";
 
 const TAP_MS = 750;
+/** One second of a drawn countdown, so the numbers tick like the real one. */
+const COUNTDOWN_TICK_MS = 1_000;
 
 /**
  * The guide animation for each step, as phases a scene draws by index. Taps hold briefly so the person sees where to
@@ -114,12 +116,14 @@ export const FOCUS_ACCESS_GUIDES: Readonly<Record<FocusAccessStep, readonly Focu
     { durationMs: TAP_MS, caption: "no-restrictions" },
     { durationMs: 2_200, caption: "no-restrictions" },
   ],
+  // The warning's OK counts down one second per phase, and the box is checked during the count.
   "usage-access": [
     { durationMs: 1_100, caption: "turn-on" },
     { durationMs: TAP_MS, caption: "turn-on" },
-    { durationMs: 1_300, caption: "accept-warning" },
+    { durationMs: COUNTDOWN_TICK_MS, caption: "accept-warning" },
+    { durationMs: COUNTDOWN_TICK_MS, caption: "accept-warning" },
+    { durationMs: COUNTDOWN_TICK_MS, caption: "accept-warning" },
     { durationMs: TAP_MS, caption: "accept-warning" },
-    { durationMs: 900, caption: "accept-warning" },
     { durationMs: TAP_MS, caption: "accept-warning" },
     { durationMs: 2_000, caption: "accept-warning" },
   ],

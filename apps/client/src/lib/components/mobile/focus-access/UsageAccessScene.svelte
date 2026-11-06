@@ -3,38 +3,37 @@
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import { cn } from "$lib/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import GuideAppIcon from "./GuideAppIcon.svelte";
   import GuideHeader from "./GuideHeader.svelte";
   import GuideLine from "./GuideLine.svelte";
   import GuideTap from "./GuideTap.svelte";
   import GuideToggle from "./GuideToggle.svelte";
 
   /**
-   * Android's Usage access list: turn the app on, then accept the full-screen warning by checking the box and tapping
-   * OK once it unlocks.
+   * Android's Usage access page for the app: turn its switch on, then accept the full-screen warning by checking the
+   * box and tapping OK once its countdown ends.
    */
-  let { phase, appLabel }: { phase: number; appLabel: string } = $props();
+  let { phase }: { phase: number } = $props();
+
+  /** The phase the warning opens on; its OK counts down one second per phase from there. */
+  const WARNING_PHASE = 2;
+  const COUNTDOWN_SECONDS = 3;
 
   const { t } = getLocalization();
-  const warning = $derived(phase >= 2 && phase <= 5);
+  const warning = $derived(phase >= WARNING_PHASE && phase <= 6);
   const aware = $derived(phase >= 4);
+  const secondsLeft = $derived(Math.max(0, WARNING_PHASE + COUNTDOWN_SECONDS - phase));
+  const okReady = $derived(aware && secondsLeft === 0);
 </script>
 
 <GuideHeader title={t("mobile.focusOnboarding.guideUsageAccess")} />
-<div class="flex flex-col">
-  <div class="flex items-center gap-2 px-3 py-2">
-    <span class="size-6 shrink-0 rounded-full bg-foreground/12"></span>
-    <GuideLine class="w-20" />
-  </div>
-  <div class="flex items-center gap-2 px-3 py-2">
-    <GuideAppIcon />
-    <span class="min-w-0 truncate text-xs font-medium text-foreground">{appLabel}</span>
-    <span class="ml-auto"><GuideToggle on={phase >= 6} tapping={phase === 1} /></span>
-  </div>
-  <div class="flex items-center gap-2 px-3 py-2">
-    <span class="size-6 shrink-0 rounded-full bg-foreground/12"></span>
-    <GuideLine class="w-14" />
-  </div>
+<div class="flex items-center gap-2 px-3 py-2">
+  <span class="min-w-0 flex-1 text-xs font-medium leading-snug text-foreground">{t("mobile.focusOnboarding.guidePermitUsageAccess")}</span>
+  <GuideToggle on={phase >= 7} tapping={phase === 1} />
+</div>
+<div class="flex flex-col gap-1.5 px-3 pt-3">
+  <GuideLine class="w-full" />
+  <GuideLine class="w-full" />
+  <GuideLine class="w-24" />
 </div>
 
 <div
@@ -70,12 +69,12 @@
     <span class="flex h-7 items-center justify-center rounded-full bg-foreground/8 text-foreground">{t("mobile.focusOnboarding.guideCancel")}</span>
     <span
       class={cn(
-        "relative flex h-7 items-center justify-center rounded-full transition-colors duration-200",
-        aware ? "bg-destructive text-destructive-foreground" : "bg-destructive/25 text-destructive-foreground/60",
+        "relative flex h-7 items-center justify-center rounded-full tabular-nums transition-colors duration-200",
+        okReady ? "bg-destructive text-destructive-foreground" : "bg-destructive/25 text-destructive-foreground/60",
       )}
     >
-      {t("mobile.focusOnboarding.guideOk")}
-      <GuideTap active={phase === 5} />
+      {secondsLeft > 0 ? t("mobile.focusOnboarding.guideOkCountdown", secondsLeft) : t("mobile.focusOnboarding.guideOk")}
+      <GuideTap active={phase === 6} />
     </span>
   </div>
 </div>

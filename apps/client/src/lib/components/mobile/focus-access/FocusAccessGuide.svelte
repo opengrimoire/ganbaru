@@ -116,7 +116,7 @@
               {:else if step === "battery"}
                 <BatteryScene {phase} {appLabel} />
               {:else if step === "usage-access"}
-                <UsageAccessScene {phase} {appLabel} />
+                <UsageAccessScene {phase} />
               {:else}
                 <AppBlockingScene {phase} />
               {/if}

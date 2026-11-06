@@ -149,11 +149,10 @@
           : t("titleBar.control.pomodoro")}
         aria-haspopup="menu"
         aria-expanded={pomodoroOpen}
-        class={cn(utilityButtonClass, pomodoroActive && "w-auto px-1", (pomodoroOpen || pomodoroActive) && "text-foreground")}
+        class={cn(utilityButtonClass, (pomodoroOpen || pomodoroActive) && "text-foreground")}
       >
         <span class={cn(
           utilityIconClass,
-          pomodoroActive && "w-auto grid-flow-col gap-1.5 pr-2.5 pl-1.5 text-sm font-medium tabular-nums",
           (pomodoroOpen || pomodoroActive) && "bg-accent/70",
         )}>
           <PomodoroProgressRing
@@ -166,7 +165,6 @@
             trackClass="stroke-muted-foreground/35"
             progressClass="text-foreground/76 stroke-foreground/76"
           />
-          {#if pomodoroActive}<span aria-hidden="true">{pomodoroTime}</span>{/if}
         </span>
       </button>
       {#if pomodoroOpen}

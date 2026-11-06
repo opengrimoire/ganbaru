@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
-  import { fade } from "svelte/transition";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     FOCUS_ACCESS_GUIDES,
@@ -8,7 +7,6 @@
     type FocusAccessStep,
   } from "$lib/mobile/focus-access-steps";
   import { cn } from "$lib/utils";
-  import { prefersReducedMotion } from "$lib/utils/smooth-swap";
   import AppBlockingScene from "./AppBlockingScene.svelte";
   import AutostartScene from "./AutostartScene.svelte";
   import BatteryScene from "./BatteryScene.svelte";
@@ -17,8 +15,8 @@
   import UsageAccessScene from "./UsageAccessScene.svelte";
 
   /**
-   * A looping drawing of the Android screens a step opens, with the instruction for each moment underneath. The drawing
-   * is decorative; screen readers get the instructions as a list instead.
+   * A looping drawing of the Android screens a step opens. The drawing is decorative; screen readers get the
+   * instructions it shows as a list instead.
    */
   let { step, appLabel }: { step: FocusAccessStep; appLabel: string } = $props();
 
@@ -26,7 +24,6 @@
   const RESTART_FADE_MS = 300;
   const { t } = getLocalization();
   const phases = untrack(() => FOCUS_ACCESS_GUIDES[step]);
-  const fadeMs = prefersReducedMotion() ? 0 : 180;
 
   /** The drawn phone at zoom 1, matching its `h-72 w-52` screen plus the `p-1.5` bezel. */
   const PHONE_HEIGHT_PX = 300;
@@ -43,7 +40,6 @@
   let cycle = $state(0);
   let restarting = $state(false);
 
-  const caption = $derived(captionText(phases[phase].caption));
   const instructions = $derived([...new Set(phases.map((entry) => captionText(entry.caption)))]);
 
   /** The phone's zoom that fills the room left between the text and the actions, within readable bounds. */
@@ -90,7 +86,7 @@
   });
 </script>
 
-<figure class="flex w-full flex-1 flex-col items-center gap-3">
+<figure class="flex w-full flex-1 flex-col items-center">
   <!-- The phone sits out of the flow so its zoom never changes the room it is measured against. -->
   <div
     aria-hidden="true"
@@ -127,14 +123,9 @@
       </div>
     </div>
   </div>
-  <figcaption class="grid min-h-10 w-full max-w-72 place-items-center text-center text-sm font-medium leading-5 text-foreground">
-    <div class="sr-only">
-      <ol>
-        {#each instructions as instruction (instruction)}<li>{instruction}</li>{/each}
-      </ol>
-    </div>
-    {#key caption}
-      <span aria-hidden="true" class="col-start-1 row-start-1" in:fade={{ duration: fadeMs, delay: fadeMs }} out:fade={{ duration: fadeMs }}>{caption}</span>
-    {/key}
+  <figcaption class="sr-only">
+    <ol>
+      {#each instructions as instruction (instruction)}<li>{instruction}</li>{/each}
+    </ol>
   </figcaption>
 </figure>

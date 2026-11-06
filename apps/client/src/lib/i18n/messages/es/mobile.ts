@@ -33,21 +33,21 @@ export const mobile = {
       `Sin notificaciones, ${app} no puede avisarte cuándo tomar un descanso ni cuándo toca una sesión planeada.`,
     notificationsAction: "Permitir notificaciones",
     exactAlarmTitle: "Recordatorios a tiempo",
-    exactAlarmBody: "Sin esto, Android puede retrasar varios minutos los recordatorios de tus sesiones planeadas, sobre todo con el teléfono en reposo.",
+    exactAlarmBody: "Sin este permiso, Android puede retrasar varios minutos los recordatorios de tus sesiones planeadas, sobre todo con el teléfono en reposo.",
     autostartTitle: "Recordatorios aunque esté cerrada",
     autostartBody: (app: string) =>
-      `Tu teléfono impide que las apps cerradas se inicien solas. Sin esto, ${app} no puede recordarte tus sesiones ni tus descansos mientras está cerrada.`,
+      `Tu teléfono impide que las apps cerradas se inicien solas. Sin este permiso, los recordatorios de sesiones y descansos podrían no llegar mientras ${app} esté cerrada.`,
     batteryTitle: "Mantén tu temporizador activo",
     batteryBody: (app: string) =>
-      `Sin esto, el ahorro de batería puede detener ${app} mientras usas otras apps, y quizá nunca te enteres de que terminó una sesión.`,
+      `Sin este permiso, el ahorro de batería puede detener ${app} mientras usas otras apps, y quizá nunca te enteres de que terminó una sesión.`,
     usageAccessTitle: "Pon límites a las apps que te distraen",
     usageAccessBody: (app: string) =>
-      `Sin esto, ${app} no puede saber cuánto tiempo usas las apps que elijas, así que los límites diarios no funcionarán.`,
+      `Sin este permiso, ${app} no puede saber cuánto tiempo usas las apps que elijas, así que los límites diarios no funcionarán.`,
     usageAccessSees: "Solo el tiempo en las apps que elijas",
     usageAccessNeverSees: "Nunca lo que haces o ves dentro de ellas",
     appBlockingTitle: "Bloquea apps durante el Enfoque",
     appBlockingBody: (app: string) =>
-      `Sin esto, ${app} no puede bloquear las apps que elijas. Cuando aplica una regla o un límite, te lleva a la pantalla de inicio.`,
+      `Sin este permiso, ${app} no puede bloquear las apps que elijas. Cuando aplica una regla o un límite, te lleva a la pantalla de inicio.`,
     appBlockingSees: "Solo qué app está abierta",
     appBlockingNeverSees: "Nunca tu pantalla, mensajes, toques ni contraseñas",
     captionAllow: (app: string) => `Permite las notificaciones de ${app}`,

@@ -30,21 +30,21 @@ export const mobile = {
       `Without notifications, ${app} can't tell you when to take a break or when a planned session is due.`,
     notificationsAction: "Allow notifications",
     exactAlarmTitle: "Get reminders on time",
-    exactAlarmBody: "Without this, Android can delay reminders for your planned sessions by several minutes, especially while your phone sleeps.",
+    exactAlarmBody: "Without this permission, Android can delay reminders for your planned sessions by several minutes, especially while your phone sleeps.",
     autostartTitle: "Keep reminders on when closed",
     autostartBody: (app: string) =>
-      `Your phone stops closed apps from starting on their own. Without this, ${app} can't remind you about sessions or breaks while it's closed.`,
+      `Your phone stops closed apps from starting on their own. Without this permission, reminders for sessions and breaks may never arrive while ${app} is closed.`,
     batteryTitle: "Keep your timer running",
     batteryBody: (app: string) =>
-      `Without this, battery saver can stop ${app} while you use other apps, and you may never hear when a session ends.`,
+      `Without this permission, battery saver can stop ${app} while you use other apps, and you may never hear when a session ends.`,
     usageAccessTitle: "Set limits for distracting apps",
     usageAccessBody: (app: string) =>
-      `Without this, ${app} can't tell how long you've used the apps you choose, so daily limits won't work.`,
+      `Without this permission, ${app} can't tell how long you've used the apps you choose, so daily limits won't work.`,
     usageAccessSees: "Only the time spent in the apps you choose",
     usageAccessNeverSees: "Never what you do or see inside them",
     appBlockingTitle: "Block apps during Focus",
     appBlockingBody: (app: string) =>
-      `Without this, ${app} can't block the apps you choose. When a rule or limit applies, it takes you back to the Home screen.`,
+      `Without this permission, ${app} can't block the apps you choose. When a rule or limit applies, it takes you back to the Home screen.`,
     appBlockingSees: "Only which app is open",
     appBlockingNeverSees: "Never your screen, messages, taps, or passwords",
     captionAllow: (app: string) => `Allow notifications for ${app}`,

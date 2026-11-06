@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { scrollEdgeFade, scrollEdgeFadeAction } from "./scroll-edge-fade";
+import { limitScrollEdgeFade, scrollEdgeFade, scrollEdgeFadeAction } from "./scroll-edge-fade";
 
 describe("scroll edge fade", () => {
   it("does not fade content that fits", () => {
@@ -20,6 +20,15 @@ describe("scroll edge fade", () => {
   it("fades only the top at the end, tolerating fractional offsets", () => {
     expect(scrollEdgeFade({ scrollTop: 200, scrollHeight: 400, clientHeight: 200 })).toBe("top");
     expect(scrollEdgeFade({ scrollTop: 199.5, scrollHeight: 400, clientHeight: 200 })).toBe("top");
+  });
+
+  it("drops the top fade for bottom-only containers and keeps every fade otherwise", () => {
+    expect(limitScrollEdgeFade("top", "bottom")).toBe("none");
+    expect(limitScrollEdgeFade("both", "bottom")).toBe("bottom");
+    expect(limitScrollEdgeFade("bottom", "bottom")).toBe("bottom");
+    expect(limitScrollEdgeFade("none", "bottom")).toBe("none");
+    expect(limitScrollEdgeFade("both", "both")).toBe("both");
+    expect(limitScrollEdgeFade("top", "both")).toBe("top");
   });
 });
 
@@ -70,6 +79,21 @@ describe("scroll edge fade action", () => {
     node.append(document.createElement("div"));
     await Promise.resolve();
     expect(node.getAttribute("data-scroll-fade")).toBe("bottom");
+    action.destroy();
+  });
+
+  it("fades only the bottom edge of a bottom-only container while scrolled", () => {
+    const node = scroller({ scrollHeight: 400, clientHeight: 200 });
+    node.scrollTop = 100;
+    const action = scrollEdgeFadeAction(node, { edges: "bottom" });
+    expect(node.getAttribute("data-scroll-fade")).toBe("bottom");
+
+    node.scrollTop = 200;
+    node.dispatchEvent(new Event("scroll"));
+    expect(node.hasAttribute("data-scroll-fade")).toBe(false);
+
+    action.update({});
+    expect(node.getAttribute("data-scroll-fade")).toBe("top");
     action.destroy();
   });
 });

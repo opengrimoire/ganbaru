@@ -17,19 +17,33 @@ export function scrollEdgeFade(metrics: { scrollTop: number; scrollHeight: numbe
   return down ? "bottom" : "none";
 }
 
+/** Which edges a container lets fade. */
+export type ScrollEdgeFadeEdges = "both" | "bottom";
+
+/** Keep only the fades `edges` allows, so a bottom-only container never fades its top. */
+export function limitScrollEdgeFade(fade: ScrollEdgeFade, edges: ScrollEdgeFadeEdges): ScrollEdgeFade {
+  if (edges === "both") return fade;
+  return fade === "bottom" || fade === "both" ? "bottom" : "none";
+}
+
 /**
  * Svelte action that fades a scroll container's top or bottom edge while content lies beyond it.
- * It sets `data-scroll-fade` on the node, which the global stylesheet turns into a mask, and refreshes on scroll, on size changes of the node or its children, and when children are added or removed.
+ * It sets `data-scroll-fade` on the node, which the global stylesheet turns into a mask, limited to `edges` (both by default), and refreshes on scroll, on size changes of the node or its children, and when children are added or removed.
  */
-export function scrollEdgeFadeAction(node: HTMLElement) {
+export function scrollEdgeFadeAction(node: HTMLElement, options: { edges?: ScrollEdgeFadeEdges } = {}) {
+  let edges = options.edges ?? "both";
   const refresh = () => {
-    const fade = scrollEdgeFade(node);
+    const fade = limitScrollEdgeFade(scrollEdgeFade(node), edges);
     if (fade === "none") node.removeAttribute("data-scroll-fade");
     else node.setAttribute("data-scroll-fade", fade);
   };
   const stop = observeScrollContent(node, refresh);
   node.addEventListener("scroll", refresh, { passive: true });
   return {
+    update(next: { edges?: ScrollEdgeFadeEdges } = {}) {
+      edges = next.edges ?? "both";
+      refresh();
+    },
     destroy() {
       stop();
       node.removeEventListener("scroll", refresh);

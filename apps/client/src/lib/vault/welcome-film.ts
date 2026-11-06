@@ -44,13 +44,13 @@ export const FILM_BEATS = {
 export const FILM_PULL_BACK_MS = 1200;
 
 /**
- * The film's session, in session minutes: a long Creative event, with a full cycle and a little more, drawn in the
- * film, then a long Extended event already planned right after it. Back to back, they share one rail and the rhythm
- * carries on from one into the other, so both lengths of focus and break show side by side.
+ * The film's session, in session minutes: a long Extended event drawn in the film, ending just before its third break,
+ * then a long Creative event already planned right after it. Back to back, they share one rail and the rhythm carries
+ * on from one into the other, so the planned event's breaks move well ahead once the drawn event joins it.
  */
 export const FILM_CHAIN: readonly FilmFocusEvent[] = [
-  { start: 0, end: 150, preset: "creative" },
-  { start: 150, end: 270, preset: "extended" },
+  { start: 0, end: 165, preset: "extended" },
+  { start: 165, end: 285, preset: "creative" },
 ];
 
 /** The length of the event drawn in the film. */

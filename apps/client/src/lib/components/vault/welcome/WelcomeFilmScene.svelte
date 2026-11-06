@@ -22,7 +22,7 @@
   /** Where the visible part of the day starts, in minutes since midnight, as if the grid were scrolled to the morning. */
   const VIEW_START = 8 * 60 + 40;
   /** How much of the day shows: the whole session at least, and on into the afternoon in a tall room. */
-  const MIN_VIEW_MINUTES = 300;
+  const MIN_VIEW_MINUTES = 315;
   const MAX_VIEW_MINUTES = 420;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
 

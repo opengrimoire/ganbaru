@@ -119,35 +119,36 @@ describe("the film's session", () => {
   });
 
   it("counts down each phase and finishes as done", () => {
-    expect(filmSessionMoment(0)).toEqual({ kind: "focus", remainingSeconds: 1500, totalSeconds: 1500 });
-    expect(filmSessionMoment(24.5)).toEqual({ kind: "focus", remainingSeconds: 30, totalSeconds: 1500 });
-    expect(filmSessionMoment(25)).toEqual({ kind: "break", remainingSeconds: 300, totalSeconds: 300 });
-    expect(filmSessionMoment(120)).toEqual({ kind: "break", remainingSeconds: 600, totalSeconds: 900 });
+    expect(filmSessionMoment(0)).toEqual({ kind: "focus", remainingSeconds: 3000, totalSeconds: 3000 });
+    expect(filmSessionMoment(49.5)).toEqual({ kind: "focus", remainingSeconds: 30, totalSeconds: 3000 });
+    expect(filmSessionMoment(50)).toEqual({ kind: "break", remainingSeconds: 600, totalSeconds: 600 });
+    expect(filmSessionMoment(200)).toEqual({ kind: "break", remainingSeconds: 600, totalSeconds: 900 });
     expect(filmSessionMoment(FILM_SESSION_MINUTES)).toEqual({ kind: "done" });
   });
 
-  it("draws a Creative event with a full cycle and more, then carries its rhythm into a long Extended event", () => {
-    const creative = COUNT_PRESET_RHYTHMS.creative;
+  it("draws an Extended event that ends just short of a break, then carries its rhythm into a long Creative event", () => {
     const extended = COUNT_PRESET_RHYTHMS.extended;
-    expect(FILM_CHAIN.map((event) => event.preset)).toEqual(["creative", "extended"]);
-    const cycle = 4 * creative.focusDurationMinutes + 3 * creative.shortBreakMinutes + creative.longBreakMinutes;
-    expect(FILM_DRAWN_MINUTES).toBeGreaterThan(cycle);
-    expect(FILM_SESSION.slice(0, 8)).toEqual([
-      { kind: "focus", minutes: creative.focusDurationMinutes },
-      { kind: "break", minutes: creative.shortBreakMinutes },
-      { kind: "focus", minutes: creative.focusDurationMinutes },
-      { kind: "break", minutes: creative.shortBreakMinutes },
-      { kind: "focus", minutes: creative.focusDurationMinutes },
+    const creative = COUNT_PRESET_RHYTHMS.creative;
+    expect(FILM_CHAIN.map((event) => event.preset)).toEqual(["extended", "creative"]);
+    const lastFocus = FILM_DRAWN_MINUTES - 2 * (extended.focusDurationMinutes + extended.shortBreakMinutes);
+    expect(lastFocus).toBeGreaterThan(0);
+    expect(lastFocus).toBeLessThan(extended.focusDurationMinutes);
+    expect(FILM_SESSION.slice(0, 5)).toEqual([
+      { kind: "focus", minutes: extended.focusDurationMinutes },
+      { kind: "break", minutes: extended.shortBreakMinutes },
+      { kind: "focus", minutes: extended.focusDurationMinutes },
+      { kind: "break", minutes: extended.shortBreakMinutes },
+      { kind: "focus", minutes: lastFocus },
+    ]);
+    expect(FILM_SESSION.slice(5)).toEqual([
       { kind: "break", minutes: creative.shortBreakMinutes },
       { kind: "focus", minutes: creative.focusDurationMinutes },
       { kind: "break", minutes: creative.longBreakMinutes },
-    ]);
-    expect(FILM_SESSION.slice(8)).toEqual([
-      { kind: "focus", minutes: extended.focusDurationMinutes },
-      { kind: "break", minutes: extended.shortBreakMinutes },
-      { kind: "focus", minutes: extended.focusDurationMinutes },
-      { kind: "break", minutes: extended.shortBreakMinutes },
-      { kind: "focus", minutes: FILM_SESSION_MINUTES - 250 },
+      { kind: "focus", minutes: creative.focusDurationMinutes },
+      { kind: "break", minutes: creative.shortBreakMinutes },
+      { kind: "focus", minutes: creative.focusDurationMinutes },
+      { kind: "break", minutes: creative.shortBreakMinutes },
+      { kind: "focus", minutes: FILM_SESSION_MINUTES - 270 },
     ]);
   });
 
@@ -155,19 +156,20 @@ describe("the film's session", () => {
     const planned = FILM_PLANNED_RAIL.breaks.map((pause) => pause.start);
     const joined = FILM_BREAKS.filter((pause) => pause.start >= FILM_DRAWN_MINUTES).map((pause) => pause.start);
     expect(planned).not.toEqual(joined);
-    expect(joined[0] - FILM_DRAWN_MINUTES).toBeLessThan(planned[0] - FILM_DRAWN_MINUTES);
+    expect(joined[0]).toBe(FILM_DRAWN_MINUTES);
+    expect(planned[0] - FILM_DRAWN_MINUTES).toBeGreaterThan(0);
   });
 
   it("marks its breaks before they happen, with one long break", () => {
-    expect(FILM_BREAKS[0]).toEqual({ start: 25, end: 30, long: false });
-    expect(FILM_BREAKS.filter((pause) => pause.long)).toEqual([{ start: 115, end: 130, long: true }]);
+    expect(FILM_BREAKS[0]).toEqual({ start: 50, end: 60, long: false });
+    expect(FILM_BREAKS.filter((pause) => pause.long)).toEqual([{ start: 195, end: 210, long: true }]);
   });
 
   it("records focus up to the current minute and skips the break", () => {
     expect(filmFocusSpans(0)).toEqual([]);
     expect(filmFocusSpans(20)).toEqual([{ start: 0, end: 20 }]);
-    expect(filmFocusSpans(28)).toEqual([{ start: 0, end: 25 }]);
-    expect(filmFocusSpans(40)).toEqual([{ start: 0, end: 25 }, { start: 30, end: 40 }]);
+    expect(filmFocusSpans(55)).toEqual([{ start: 0, end: 50 }]);
+    expect(filmFocusSpans(70)).toEqual([{ start: 0, end: 50 }, { start: 60, end: 70 }]);
   });
 });
 

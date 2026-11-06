@@ -1,6 +1,8 @@
 <script lang="ts">
   import { useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import {
+    CALENDAR_SCROLLBAR_TRACK_PX,
+    calendarScrollbarThumb,
     CALENDAR_FORWARDED_WHEEL_EVENT,
     getSmoothScrollDelta,
     type CalendarForwardedWheelDetail,
@@ -23,7 +25,6 @@
   } = $props();
 
   const calendarZoom = useCalendarZoom();
-  const SCROLLBAR_VISIBILITY_THRESHOLD_PX = 2;
 
   let trackEl: HTMLDivElement | undefined = $state();
   let thumbTop = $state(0);
@@ -39,19 +40,9 @@
     // scroll or resize event after the zoom animation completes.
     if (calendarZoom.isAnimating) return;
     if (!scrollContainer || !trackEl) return;
-    const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
-    const scrollRange = scrollHeight - clientHeight;
-    if (scrollRange <= SCROLLBAR_VISIBILITY_THRESHOLD_PX) {
-      thumbHeight = 0;
-      thumbTop = 0;
-      return;
-    }
-    const trackHeight = trackEl.clientHeight;
-    const ratio = clientHeight / scrollHeight;
-    thumbHeight = Math.max(ratio * trackHeight, 24);
-    thumbTop = scrollRange > 0
-      ? (scrollTop / scrollRange) * (trackHeight - thumbHeight)
-      : 0;
+    const thumb = calendarScrollbarThumb(scrollContainer, trackEl.clientHeight);
+    thumbTop = thumb.top;
+    thumbHeight = thumb.height;
   }
 
   $effect(() => {
@@ -165,7 +156,7 @@
 <div
   bind:this={trackEl}
   class="{wheelPassthrough ? 'pointer-events-none' : 'pointer-events-auto'} absolute right-0 z-48"
-  style="top: {stickyTop}px; bottom: {stickyBottom}px; width: 8px;"
+  style="top: {stickyTop}px; bottom: {stickyBottom}px; width: {CALENDAR_SCROLLBAR_TRACK_PX}px;"
   onpointerdown={handleTrackPointerDown}
   onpointermove={handlePointerMove}
   onpointerup={handlePointerUp}

@@ -44,6 +44,38 @@ export function smoothScrollMaxScrollTop(el: Pick<HTMLElement, "scrollHeight" | 
   return Math.max(0, el.scrollHeight - el.clientHeight);
 }
 
+/** Scroll range below which the Calendar hides its scrollbar thumb, in pixels. */
+const CALENDAR_SCROLLBAR_VISIBILITY_THRESHOLD_PX = 2;
+/** Width of the Calendar's scrollbar track, which overlays the right edge of the grid, in pixels. */
+export const CALENDAR_SCROLLBAR_TRACK_PX = 8;
+/** Shortest the Calendar's scrollbar thumb gets, in pixels. */
+const CALENDAR_SCROLLBAR_MIN_THUMB_PX = 24;
+
+/** The Calendar scrollbar thumb's offset and height in its track, both in pixels. */
+export interface CalendarScrollbarThumb {
+  top: number;
+  height: number;
+}
+
+/**
+ * Place the Calendar's scrollbar thumb for a scroll position. The thumb takes the visible share of the content, never
+ * shorter than a grabbable minimum, and has no height when there is nothing to scroll.
+ *
+ * @param scroll The scroll container's offset, content height, and visible height.
+ * @param trackHeight The height of the track the thumb moves in.
+ * @returns The thumb's offset and height in the track.
+ */
+export function calendarScrollbarThumb(
+  scroll: Pick<HTMLElement, "scrollTop" | "scrollHeight" | "clientHeight">,
+  trackHeight: number,
+): CalendarScrollbarThumb {
+  const scrollRange = smoothScrollMaxScrollTop(scroll);
+  if (scrollRange <= CALENDAR_SCROLLBAR_VISIBILITY_THRESHOLD_PX) return { top: 0, height: 0 };
+  const height = Math.max((scroll.clientHeight / scroll.scrollHeight) * trackHeight, CALENDAR_SCROLLBAR_MIN_THUMB_PX);
+  const progress = Math.min(1, Math.max(0, scroll.scrollTop / scrollRange));
+  return { top: progress * (trackHeight - height), height };
+}
+
 /** Convert wheel delta units into direct scroll pixels. */
 export function wheelDeltaToScrollPixels(
   delta: number,

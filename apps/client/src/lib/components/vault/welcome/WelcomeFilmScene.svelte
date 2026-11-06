@@ -1,4 +1,5 @@
 <script lang="ts" module>
+  import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
   import { GUTTER_WIDTH_PER_TIMEZONE } from "$lib/calendar/timezone-utils";
   import { calendarZoomGridMinutesForPercent, calendarZoomHourHeightForPercent } from "$lib/calendar/zoom-levels";
 
@@ -252,6 +253,14 @@
     Array.from({ length: Math.ceil(viewMinutes / 60) + 1 }, (_, index) => Math.ceil(VIEW_START / 60) + index)
       .filter((hour) => hour * 60 > VIEW_START && hour * 60 < VIEW_START + viewMinutes),
   );
+  /** The Calendar's scrollbar thumb, placed as if the whole day's grid were scrolled to the visible part. */
+  const scrollThumb = $derived.by(() => {
+    const visibleHeight = canvasH - TOP_BAR_H - HEADER_H;
+    return calendarScrollbarThumb(
+      { scrollTop: (VIEW_START / 60) * HOUR_PX, scrollHeight: 24 * HOUR_PX, clientHeight: visibleHeight },
+      visibleHeight,
+    );
+  });
 
   const breakCopy = $derived(pomodoroBlockedScreenCopy("break_countdown", t));
   /**
@@ -589,6 +598,17 @@
     </div>
 
     <div class="relative flex min-h-0 flex-1">
+      <!-- The Calendar's scrollbar, over the right edge of the grid as in the week view. -->
+      {#if scrollThumb.height > 0}
+        <div class="absolute inset-y-0 right-0 z-48" style:width={`${CALENDAR_SCROLLBAR_TRACK_PX}px`}>
+          <div
+            class="absolute inset-x-0.5 rounded-full"
+            style:top={`${scrollThumb.top}px`}
+            style:height={`${scrollThumb.height}px`}
+            style:background-color="var(--cal-scrollbar-thumb, var(--muted))"
+          ></div>
+        </div>
+      {/if}
       <!-- The time gutter. -->
       <div class="relative shrink-0" style:width={`${GUTTER_W}px`}>
         {#each hours as hour (hour)}

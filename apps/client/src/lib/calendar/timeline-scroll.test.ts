@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  calendarScrollbarThumb,
   calendarTimelineScrollSpeedForDistance,
   calendarTimelineWheelMultiplierForDeltaPixels,
   CALENDAR_TIMELINE_LOW_DELTA_WHEEL_MULTIPLIER,
@@ -54,5 +55,28 @@ describe("wheelDeltaToScrollPixels", () => {
 
     expect(calendarTimelineScrollSpeedForDistance(reference * 2)).toBeGreaterThan(baseSpeed);
     expect(calendarTimelineScrollSpeedForDistance(reference * 10)).toBeCloseTo(baseSpeed * 2);
+  });
+});
+
+describe("calendarScrollbarThumb", () => {
+  it("sizes the thumb to the visible share and moves it across the free track", () => {
+    const scroll = { scrollHeight: 2400, clientHeight: 600 };
+    expect(calendarScrollbarThumb({ ...scroll, scrollTop: 0 }, 600)).toEqual({ top: 0, height: 150 });
+    expect(calendarScrollbarThumb({ ...scroll, scrollTop: 900 }, 600)).toEqual({ top: 225, height: 150 });
+    expect(calendarScrollbarThumb({ ...scroll, scrollTop: 1800 }, 600)).toEqual({ top: 450, height: 150 });
+  });
+
+  it("keeps a grabbable thumb on very long content", () => {
+    expect(calendarScrollbarThumb({ scrollTop: 0, scrollHeight: 100_000, clientHeight: 500 }, 500).height).toBe(24);
+  });
+
+  it("hides the thumb when there is nothing to scroll", () => {
+    expect(calendarScrollbarThumb({ scrollTop: 0, scrollHeight: 601, clientHeight: 600 }, 600)).toEqual({ top: 0, height: 0 });
+  });
+
+  it("keeps the thumb inside the track when scrolled past either end", () => {
+    const scroll = { scrollHeight: 2400, clientHeight: 600 };
+    expect(calendarScrollbarThumb({ ...scroll, scrollTop: -40 }, 600).top).toBe(0);
+    expect(calendarScrollbarThumb({ ...scroll, scrollTop: 1900 }, 600).top).toBe(450);
   });
 });

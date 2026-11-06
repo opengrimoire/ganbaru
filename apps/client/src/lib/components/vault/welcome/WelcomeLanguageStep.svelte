@@ -11,6 +11,7 @@
   } from "$lib/i18n/pre-vault-language";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   /**
    * The first welcome screen: the app's language. Each language is named in English with its own name underneath, so
@@ -68,7 +69,7 @@
 </script>
 
 <section class="@container flex h-full flex-col">
-  <div class="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+  <div use:scrollEdgeFadeAction class="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
     <div class="mx-auto flex w-full max-w-xl flex-col gap-8 px-4 pb-6 pt-12 @min-[560px]:px-8 @min-[560px]:pt-18 @min-[860px]:gap-10 @min-[860px]:pt-26">
       <div class="space-y-2 @min-[860px]:space-y-3">
         <h1 id="{headingId}-heading" class="text-2xl font-semibold leading-tight tracking-tight text-balance text-foreground @min-[560px]:text-3xl @min-[860px]:text-4xl">

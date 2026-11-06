@@ -1,7 +1,5 @@
 <script lang="ts">
   import Check from "@lucide/svelte/icons/check";
-  import ScanSearch from "@lucide/svelte/icons/scan-search";
-  import Settings from "@lucide/svelte/icons/settings";
   import { cn } from "$lib/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import GuideHeader from "./GuideHeader.svelte";
@@ -28,7 +26,6 @@
   const secondsLeft = $derived(Math.max(0, WARNING_PHASE + COUNTDOWN_SECONDS - phase));
   const okReady = $derived(aware && secondsLeft === 0);
   const granted = $derived(phase > OK_TAP_PHASE);
-  const permissions = [ScanSearch, Settings];
 </script>
 
 <GuideHeader title={t("mobile.focusOnboarding.guideUsageAccess")} />
@@ -63,13 +60,11 @@
     <GuideLine class="w-20" />
   </div>
   <div class="mt-4 flex flex-col gap-3">
-    {#each permissions as Icon, index (index)}
+    {#each ["w-28", "w-20"] as titleWidth (titleWidth)}
       <div class="flex items-start gap-2">
-        <span class="flex size-5 shrink-0 items-center justify-center rounded-md bg-foreground/10">
-          <Icon class="size-3 text-foreground/70" aria-hidden="true" />
-        </span>
+        <span class="size-5 shrink-0 rounded-md bg-foreground/10"></span>
         <div class="flex flex-1 flex-col gap-1 pt-0.5">
-          <GuideLine class={cn("bg-foreground/25", index === 0 ? "w-28" : "w-20")} />
+          <GuideLine class={cn("bg-foreground/25", titleWidth)} />
           <GuideLine class="w-full bg-foreground/8" />
           <GuideLine class="w-14 bg-foreground/8" />
         </div>

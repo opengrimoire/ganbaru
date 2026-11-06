@@ -227,10 +227,10 @@
   function primaryLabel(step: FocusAccessStep): string {
     if (outcome === "granted") return t("mobile.focusOnboarding.done");
     if (continueAfterReturn) return t("mobile.focusOnboarding.continue");
-    if (step === "notifications" && statuses.notifications?.permission === "prompt") {
-      return t("mobile.focusOnboarding.notificationsAction");
-    }
-    return t("mobile.focusOnboarding.openSettings");
+    const action = step === "notifications" && statuses.notifications?.permission === "prompt"
+      ? t("mobile.focusOnboarding.notificationsAction")
+      : t("mobile.focusOnboarding.openSettings");
+    return outcome === "returned" && detectable ? t("mobile.focusOnboarding.stillOffAction", action) : action;
   }
 
   onMount(() => {
@@ -316,7 +316,7 @@
 
         <div class="flex flex-col gap-1">
           {#if outcome === "returned" && detectable}
-            <p class="pb-1 text-center text-sm text-muted-foreground" role="status">{t("mobile.focusOnboarding.stillOff")}</p>
+            <p class="sr-only" role="status">{t("mobile.focusOnboarding.stillOff")}</p>
           {/if}
           <button
             use:onboardingPrimaryAction

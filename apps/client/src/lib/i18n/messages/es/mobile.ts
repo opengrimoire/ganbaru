@@ -29,6 +29,7 @@ export const mobile = {
     notNow: "Ahora no",
     done: "Listo",
     stillOff: "Sigue desactivado",
+    stillOffAction: (action: string) => `${action} (sigue desactivado)`,
     openError: "No se pudieron abrir los ajustes de Android.",
     privacyPoint: "Tus datos se quedan en tus dispositivos y nunca se nos envían",
     turnOffNote: "Puedes desactivarlo cuando quieras en los ajustes de Android.",

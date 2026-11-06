@@ -26,6 +26,7 @@ export const mobile = {
     notNow: "Not now",
     done: "Done",
     stillOff: "Still off",
+    stillOffAction: (action: string) => `${action} (still off)`,
     openError: "Android settings could not be opened.",
     privacyPoint: "Your data stays on your devices and is never sent to us",
     turnOffNote: "You can turn it off anytime in Android settings.",

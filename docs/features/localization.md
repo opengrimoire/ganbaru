@@ -1,6 +1,6 @@
 # Localization
 
-**Partial.** All normal app chrome and main feature surfaces use a typed message catalog. English is the canonical catalog and Spanish is the first translation. Missing translations fall back to English per message key, so the app stays usable while catalogs evolve. Planned translations, in order: Brazilian Portuguese, French, German, Italian, Japanese, Korean, Simplified Chinese, Russian, Hindi, Arabic (the first right-to-left locale), Turkish, and Indonesian. The welcome language screen lists them by their own names as coming in a future version, and they cannot be chosen until their catalogs ship.
+**Partial.** All normal app chrome and main feature surfaces use a typed message catalog. English is the canonical catalog and Spanish is the first translation. Missing translations fall back to English per message key, so the app stays usable while catalogs evolve. Planned translations, in order: Brazilian Portuguese, French, German, Italian, Japanese, Korean, Simplified Chinese, Russian, Hindi, Arabic (the first right-to-left locale), Turkish, and Indonesian. The welcome language screen lists them below the available languages as coming in a future version, and they cannot be chosen until their catalogs ship.
 
 ## Language preference
 
@@ -12,11 +12,12 @@ Selectors are designed for someone looking for their language even when they can
 
 - Explicit languages always appear as autonyms (`English`, `Español`), never translated into the current UI language.
 - Non-language options are localized. The system option shows the resolved language in parentheses, such as `System language (Español)`.
+- The welcome language screen is the exception: it names each language in English with its autonym underneath, so the alphabetical order (after the system option) reads the same in every UI language, and it keeps every name left-aligned, right-to-left autonyms included.
 - Search matches the autonym, the name in the current UI language, locale IDs, and useful aliases, so both `Spanish` and `Español` find Spanish.
 
 ## Before a vault exists
 
-First run opens on a dedicated language screen, the only place a language is chosen before a vault exists. It lists following the system (naming the language that resolves to) and every app language by its own name. Because no vault exists yet, the choice is applied at once without persisting and kept as a temporary setup preference. After the user creates or imports a folder, it is copied into `preferences.language` and cleared. Boot checks this temporary value before mounting so no screen paints in the wrong language during the handoff.
+First run opens on a dedicated language screen, the only place a language is chosen before a vault exists. It lists following the system (naming the language that resolves to), then every app language, then the planned languages turned off. Because no vault exists yet, the choice is applied at once without persisting and kept as a temporary setup preference. After the user creates or imports a folder, it is copied into `preferences.language` and cleared. Boot checks this temporary value before mounting so no screen paints in the wrong language during the handoff.
 
 ## Runtime behavior
 

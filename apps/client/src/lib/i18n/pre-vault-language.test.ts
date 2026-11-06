@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { APP_LOCALES, PLANNED_LOCALES, type AppLocale } from "./locales";
+import { describe, expect, it } from "vitest";
+import { APP_LOCALES, PLANNED_LOCALES } from "./locales";
 import {
   PRE_VAULT_LANGUAGE_STORAGE_KEY,
   clearPreVaultLanguagePreference,
@@ -9,10 +9,6 @@ import {
   resolvedSystemLanguageName,
   writePreVaultLanguagePreference,
 } from "./pre-vault-language";
-
-function englishNames(locale: AppLocale): string {
-  return locale === "en" ? "English" : "Spanish";
-}
 
 function storageWith(initial: Record<string, string> = {}): Storage {
   const values = new Map(Object.entries(initial));
@@ -65,7 +61,7 @@ describe("pre-vault language preference", () => {
   });
 
   it("lists the system first, naming the language it resolves to in that language", () => {
-    const [system] = preVaultLanguageChoices(["es-MX"], "System language", englishNames);
+    const [system] = preVaultLanguageChoices(["es-MX"], "System language");
 
     expect(system).toEqual({
       value: "system",
@@ -76,47 +72,51 @@ describe("pre-vault language preference", () => {
     });
   });
 
-  it("names every app locale by its own name, with its name in the interface language underneath", () => {
-    const choices = preVaultLanguageChoices(["en-US"], "System language", englishNames);
+  it("names every app locale in English, alphabetically, with its own name underneath", () => {
+    const choices = preVaultLanguageChoices(["en-US"], "System language");
 
-    expect(choices.map((choice) => choice.value)).toEqual(["system", ...APP_LOCALES]);
-    expect(choices.find((choice) => choice.value === "en")).toMatchObject({ title: "English", titleLang: "en", detail: "English" });
-    expect(choices.find((choice) => choice.value === "es")).toMatchObject({ title: "Español", titleLang: "es", detail: "Spanish" });
+    expect(choices.map((choice) => choice.value)).toEqual(["system", "en", "es"]);
+    expect(new Set(choices.map((choice) => choice.value))).toEqual(new Set(["system", ...APP_LOCALES]));
+    expect(choices[1]).toMatchObject({ title: "English", titleLang: "en", detail: "English", detailLang: "en" });
+    expect(choices[2]).toMatchObject({ title: "Spanish", titleLang: "en", detail: "Español", detailLang: "es" });
   });
 
-  it("lists the planned languages by their own names, apart from the languages that already ship", () => {
-    const entries = plannedLanguageEntries("en");
+  it("keeps the language names fixed while only the system label follows the interface language", () => {
+    const english = preVaultLanguageChoices(["fr-CA"], "System language");
+    const spanish = preVaultLanguageChoices(["fr-CA"], "Idioma del sistema");
 
-    expect(entries.map((entry) => entry.id)).toEqual(PLANNED_LOCALES.map((locale) => locale.id));
+    expect(spanish[0]).toMatchObject({ title: "Idioma del sistema", detail: "English" });
+    expect(spanish.slice(1)).toEqual(english.slice(1));
+  });
+
+  it("lists every planned language once, apart from the languages that already ship", () => {
+    const entries = plannedLanguageEntries();
+
+    expect(new Set(entries.map((entry) => entry.id))).toEqual(new Set(PLANNED_LOCALES.map((locale) => locale.id)));
     expect(new Set(entries.map((entry) => entry.id)).size).toBe(entries.length);
     for (const entry of entries) {
       expect(APP_LOCALES.some((locale) => entry.id.split("-")[0] === locale)).toBe(false);
     }
-    expect(entries.find((entry) => entry.id === "ja")?.title).toBe("日本語");
-    expect(entries.find((entry) => entry.id === "ar")?.direction).toBe("rtl");
   });
 
-  it("names planned languages in the interface language, starting with a capital", () => {
-    expect(plannedLanguageEntries("en").find((entry) => entry.id === "fr")?.detail).toBe("French");
-    expect(plannedLanguageEntries("es").find((entry) => entry.id === "fr")?.detail).toBe("Francés");
-    expect(plannedLanguageEntries("es").find((entry) => entry.id === "de")?.detail).toBe("Alemán");
-  });
+  it("names planned languages in English, alphabetically, with their own names underneath", () => {
+    const entries = plannedLanguageEntries();
 
-  it("falls back to the English name when the platform cannot name a planned language", () => {
-    vi.stubGlobal("Intl", { ...Intl, DisplayNames: undefined });
-    try {
-      expect(plannedLanguageEntries("es").find((entry) => entry.id === "fr")?.detail).toBe("French");
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("keeps each language's own name while the second line follows the interface language", () => {
-    const spanishNames = (locale: AppLocale): string => (locale === "en" ? "Inglés" : "Español");
-    const choices = preVaultLanguageChoices(["fr-CA"], "Idioma del sistema", spanishNames);
-
-    expect(choices[0].detail).toBe("English");
-    expect(choices.find((choice) => choice.value === "en")).toMatchObject({ title: "English", detail: "Inglés" });
-    expect(choices.find((choice) => choice.value === "es")).toMatchObject({ title: "Español", detail: "Español" });
+    expect(entries.map((entry) => entry.title)).toEqual([
+      "Arabic",
+      "Chinese (Simplified)",
+      "French",
+      "German",
+      "Hindi",
+      "Indonesian",
+      "Italian",
+      "Japanese",
+      "Korean",
+      "Portuguese (Brazil)",
+      "Russian",
+      "Turkish",
+    ]);
+    expect(entries.find((entry) => entry.id === "ja")?.detail).toBe("日本語");
+    expect(entries.find((entry) => entry.id === "ar")?.detail).toBe("العربية");
   });
 });

@@ -8,7 +8,6 @@ import {
   resolveLanguagePreference,
   type AppLocale,
   type LanguagePreference,
-  type LocaleDirection,
 } from "./locales";
 
 export const PRE_VAULT_LANGUAGE_STORAGE_KEY = "ganbaru.preVaultLanguagePreference";
@@ -16,52 +15,36 @@ export const PRE_VAULT_LANGUAGE_STORAGE_KEY = "ganbaru.preVaultLanguagePreferenc
 /** One choice on the welcome language screen. */
 export interface PreVaultLanguageChoice {
   readonly value: LanguagePreference;
-  /** The main label: a language's own name, or the localized system option. */
+  /** The main label: a language's English name, or the localized system option. */
   readonly title: string;
   /** The language `title` is written in, or null when it is in the interface language. */
   readonly titleLang: AppLocale | null;
-  /** A second line that names the title in the interface language, or the language the system option resolves to. */
+  /** The second line: the language's own name, or the own name of the language the system option resolves to. */
   readonly detail: string;
-  /** The language `detail` is written in, or null when it is in the interface language. */
-  readonly detailLang: AppLocale | null;
+  /** The language `detail` is written in. */
+  readonly detailLang: AppLocale;
 }
 
 /** A planned language on the welcome language screen, shown turned off. */
 export interface PlannedLanguageEntry {
+  /** The BCP 47 tag the translation will use, which is also the language of `detail`. */
   readonly id: string;
-  /** The language's own name, written in that language. */
+  /** The English name. */
   readonly title: string;
-  readonly direction: LocaleDirection;
-  /** The language's name in the interface language. */
+  /** The language's own name, written in that language. */
   readonly detail: string;
 }
 
-/**
- * The planned languages, each by its own name with its name in `interfaceLocale` underneath. Names come from the
- * platform's language display names, sentence-capitalized; where the platform cannot name one, the English name
- * stands in.
- */
-export function plannedLanguageEntries(interfaceLocale: AppLocale): PlannedLanguageEntry[] {
-  let names: Intl.DisplayNames | null = null;
-  try {
-    names = new Intl.DisplayNames([interfaceLocale], { type: "language", fallback: "none" });
-  } catch {
-    names = null;
-  }
-  return PLANNED_LOCALES.map((locale) => {
-    const localized = names?.of(locale.id);
-    return {
-      id: locale.id,
-      title: locale.nativeLabel,
-      direction: locale.direction,
-      detail: localized ? capitalizeFirst(localized, interfaceLocale) : locale.label,
-    };
-  });
-}
+const ENGLISH_NAME_ORDER = new Intl.Collator(DEFAULT_LOCALE);
 
-function capitalizeFirst(text: string, locale: AppLocale): string {
-  const [first = "", ...rest] = Array.from(text);
-  return first.toLocaleUpperCase(locale) + rest.join("");
+/**
+ * The planned languages, each by its English name with its own name underneath, in the alphabetical order of the
+ * English names. English names lead so the order reads the same whatever the interface language.
+ */
+export function plannedLanguageEntries(): PlannedLanguageEntry[] {
+  return PLANNED_LOCALES.map((locale) => ({ id: locale.id, title: locale.label, detail: locale.nativeLabel })).sort(
+    (a, b) => ENGLISH_NAME_ORDER.compare(a.title, b.title),
+  );
 }
 
 /** The locales the browser or webview reports, most preferred first. */
@@ -119,16 +102,19 @@ export function resolvedSystemLanguageName(candidates: readonly string[]): strin
   return LOCALE_METADATA[locale]?.nativeLabel ?? LOCALE_METADATA[DEFAULT_LOCALE].nativeLabel;
 }
 
+
 /**
  * The welcome language screen's choices: following the system first, naming the language it resolves to, then every
- * app locale by its own name with its name in the interface language underneath.
+ * app locale by its English name with its own name underneath, in the alphabetical order of the English names.
  */
 export function preVaultLanguageChoices(
   systemCandidates: readonly string[],
   systemLabel: string,
-  localizedName: (locale: AppLocale) => string,
 ): PreVaultLanguageChoice[] {
   const systemLocale = resolvedSystemLocale(systemCandidates);
+  const locales = [...APP_LOCALES].sort((a, b) =>
+    ENGLISH_NAME_ORDER.compare(LOCALE_METADATA[a].label, LOCALE_METADATA[b].label),
+  );
   return [
     {
       value: DEFAULT_LANGUAGE_PREFERENCE,
@@ -137,12 +123,12 @@ export function preVaultLanguageChoices(
       detail: LOCALE_METADATA[systemLocale].nativeLabel,
       detailLang: systemLocale,
     },
-    ...APP_LOCALES.map((locale) => ({
+    ...locales.map((locale) => ({
       value: locale,
-      title: LOCALE_METADATA[locale].nativeLabel,
-      titleLang: locale,
-      detail: localizedName(locale),
-      detailLang: null,
+      title: LOCALE_METADATA[locale].label,
+      titleLang: DEFAULT_LOCALE,
+      detail: LOCALE_METADATA[locale].nativeLabel,
+      detailLang: locale,
     })),
   ];
 }

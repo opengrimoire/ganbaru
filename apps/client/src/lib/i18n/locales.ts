@@ -38,7 +38,7 @@ export const LOCALE_METADATA: Readonly<Record<AppLocale, LocaleMetadata>> =
 export interface PlannedLocale {
   /** The BCP 47 tag the translation will use. */
   readonly id: string;
-  /** The English name, used where the platform cannot name the language in the interface language. */
+  /** The English name, with any variant in parentheses so it sorts under the base language. */
   readonly label: string;
   readonly nativeLabel: string;
   readonly direction: LocaleDirection;
@@ -46,13 +46,13 @@ export interface PlannedLocale {
 
 /** The languages planned after English and Spanish, in their intended order. */
 export const PLANNED_LOCALES: readonly PlannedLocale[] = Object.freeze([
-  { id: "pt-BR", label: "Brazilian Portuguese", nativeLabel: "Português (Brasil)", direction: "ltr" },
+  { id: "pt-BR", label: "Portuguese (Brazil)", nativeLabel: "Português (Brasil)", direction: "ltr" },
   { id: "fr", label: "French", nativeLabel: "Français", direction: "ltr" },
   { id: "de", label: "German", nativeLabel: "Deutsch", direction: "ltr" },
   { id: "it", label: "Italian", nativeLabel: "Italiano", direction: "ltr" },
   { id: "ja", label: "Japanese", nativeLabel: "日本語", direction: "ltr" },
   { id: "ko", label: "Korean", nativeLabel: "한국어", direction: "ltr" },
-  { id: "zh-Hans", label: "Simplified Chinese", nativeLabel: "简体中文", direction: "ltr" },
+  { id: "zh-Hans", label: "Chinese (Simplified)", nativeLabel: "简体中文", direction: "ltr" },
   { id: "ru", label: "Russian", nativeLabel: "Русский", direction: "ltr" },
   { id: "hi", label: "Hindi", nativeLabel: "हिन्दी", direction: "ltr" },
   { id: "ar", label: "Arabic", nativeLabel: "العربية", direction: "rtl" },

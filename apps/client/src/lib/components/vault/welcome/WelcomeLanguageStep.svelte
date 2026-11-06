@@ -1,18 +1,20 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import type { AppLocale, LanguagePreference } from "$lib/i18n/locales";
+  import type { LanguagePreference } from "$lib/i18n/locales";
   import {
     browserLocaleCandidates,
     plannedLanguageEntries,
     preVaultLanguageChoices,
     writePreVaultLanguagePreference,
   } from "$lib/i18n/pre-vault-language";
-  import { getLocalization, type TranslationKey } from "$lib/i18n/translator.svelte";
+  import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
 
   /**
-   * The first welcome screen: the app's language. Each language is named in its own words, and choosing one applies
-   * it at once, so the rest of the welcome reads in it. The choice is remembered until vault setup saves it.
+   * The first welcome screen: the app's language. Each language is named in English with its own name underneath, so
+   * the alphabetical order stays the same whatever the interface language, and every name reads left to right here.
+   * Choosing one applies it at once, so the rest of the welcome reads in it. The choice is remembered until vault
+   * setup saves it.
    */
   let { actions }: { actions: Snippet } = $props();
 
@@ -20,17 +22,10 @@
   const { t } = localization;
   const headingId = $props.id();
 
-  const LANGUAGE_NAME_KEYS = {
-    en: "language.englishOption",
-    es: "language.spanishOption",
-  } as const satisfies Record<AppLocale, TranslationKey>;
-
   const systemCandidates = browserLocaleCandidates(typeof navigator === "undefined" ? undefined : navigator);
   const preference = $derived(localization.languagePreference);
-  const choices = $derived(
-    preVaultLanguageChoices(systemCandidates, t("language.systemOption"), (locale) => t(LANGUAGE_NAME_KEYS[locale])),
-  );
-  const planned = $derived(plannedLanguageEntries(localization.locale));
+  const choices = $derived(preVaultLanguageChoices(systemCandidates, t("language.systemOption")));
+  const planned = plannedLanguageEntries();
 
   function safeStorage(): Storage | undefined {
     try {
@@ -79,7 +74,7 @@
               <span lang={choice.titleLang ?? undefined} class="block truncate text-base font-medium text-foreground">
                 {choice.title}
               </span>
-              <span lang={choice.detailLang ?? undefined} class="block truncate text-sm text-muted-foreground">
+              <span lang={choice.detailLang} dir="ltr" class="block truncate text-left text-sm text-muted-foreground">
                 {choice.detail}
               </span>
             </span>
@@ -100,13 +95,13 @@
         <h2 id="{headingId}-planned" class="px-4 text-sm font-medium text-muted-foreground">
           {t("vaultSetup.language.plannedHeading")}
         </h2>
-        <ul aria-labelledby="{headingId}-planned" class="grid gap-1.5 @min-[480px]:grid-cols-2">
+        <ul aria-labelledby="{headingId}-planned" class="grid gap-1.5">
           {#each planned as entry (entry.id)}
-            <li class="min-w-0 rounded-lg px-4 py-2 opacity-55">
-              <span lang={entry.id} dir={entry.direction} class="block truncate text-start text-sm font-medium text-foreground">
-                {entry.title}
+            <li class="flex min-h-14 flex-col justify-center rounded-lg px-4 py-2.5 opacity-55">
+              <span lang="en" class="block truncate text-base font-medium text-foreground">{entry.title}</span>
+              <span lang={entry.id} dir="ltr" class="block truncate text-left text-sm text-muted-foreground">
+                {entry.detail}
               </span>
-              <span class="block truncate text-xs text-muted-foreground">{entry.detail}</span>
             </li>
           {/each}
         </ul>

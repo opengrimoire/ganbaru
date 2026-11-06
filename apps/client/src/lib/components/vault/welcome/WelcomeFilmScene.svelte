@@ -166,7 +166,8 @@
   const PURPLE = 22;
   const CYAN = 16;
   const LAVENDER = 20;
-  const TAUPE = 28;
+  /** The Thesis project's color, the eighth swatch of the color picker. */
+  const THESIS = 7;
   const EATING = 13;
 
   type FilmTitle = "writeChapter" | "reviewNotes" | "lunch" | "draftOutline" | "readSources" | "teamMeeting";
@@ -218,7 +219,7 @@
       { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
     ],
     [
-      { start: 540, end: 630, color: TAUPE, title: "writeChapter", preset: "creative" },
+      { start: 540, end: 630, color: THESIS, title: "writeChapter", preset: "creative" },
       { start: 630, end: 690, color: PURPLE, title: "reviewNotes", preset: "balanced" },
       LUNCH,
       { start: 810, end: 870, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
@@ -694,13 +695,13 @@
                   {@render eventBlock(
                     SESSION_START,
                     SESSION_START + drawnMinutes,
-                    projectPicked ? TAUPE : undefined,
+                    projectPicked ? THESIS : undefined,
                     typedTitle || t("calendar.event.noTitle"),
                     false,
                     true,
                   )}
                 {:else if saved}
-                  {@render eventBlock(SESSION_START, DRAWN_END, TAUPE, title("writeChapter"), isPast(0, DRAWN_END), false, true)}
+                  {@render eventBlock(SESSION_START, DRAWN_END, THESIS, title("writeChapter"), isPast(0, DRAWN_END), false, true)}
                 {/if}
 
                 <!-- The press that draws the session, following its growing edge. -->
@@ -762,7 +763,7 @@
         date={filmDate}
         start={SESSION_START}
         end={DRAWN_END}
-        projectColor={TAUPE}
+        projectColor={THESIS}
         title={title("writeChapter")}
       />
     {/if}

@@ -40,9 +40,9 @@ export const mobile = {
     autostartTitle: "Recibe recordatorios aunque la app esté cerrada",
     autostartBody: (app: string) =>
       `Tu teléfono impide que las apps cerradas se inicien solas. Sin este permiso, los recordatorios de sesiones y descansos podrían no llegar mientras ${app} esté cerrada.`,
-    batteryTitle: "Recibe notificaciones aunque uses el ahorro de batería",
+    batteryTitle: "Mantén la app funcionando con el ahorro de batería",
     batteryBody: (app: string) =>
-      `Cuando usas el ahorro de batería, Android pausa las apps en segundo plano. Sin este permiso, eso incluye a ${app}, y sus notificaciones podrían llegar tarde o no llegar.`,
+      `Cuando usas el ahorro de batería, Android pausa las apps en segundo plano. Sin este permiso, eso incluye a ${app}: las notificaciones podrían llegar tarde o no llegar, y la sincronización con tus otros dispositivos podría retrasarse.`,
     usageAccessTitle: "Pon límites a las apps que te distraen",
     usageAccessBody: (app: string) =>
       `Sin este permiso, ${app} no puede saber cuánto tiempo usas las apps que elijas, así que los límites diarios no funcionarán.`,

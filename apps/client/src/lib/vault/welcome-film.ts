@@ -307,3 +307,19 @@ export function filmWorkday(now: Date): Date {
   const offset = dayOfWeek > MONDAY && dayOfWeek <= FRIDAY ? 0 : FRIDAY - dayOfWeek;
   return new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
 }
+
+/** `spans` with every part that falls in one of `gaps` cut out, as a recorded rail leaves a pause or an absence empty. */
+export function filmSpansWithout(spans: readonly FilmSpan[], gaps: readonly FilmSpan[]): FilmSpan[] {
+  const ordered = [...gaps].sort((left, right) => left.start - right.start);
+  const result: FilmSpan[] = [];
+  for (const span of spans) {
+    let cursor = span.start;
+    for (const gap of ordered) {
+      if (gap.end <= cursor || gap.start >= span.end) continue;
+      if (gap.start > cursor) result.push({ start: cursor, end: gap.start });
+      cursor = Math.max(cursor, gap.end);
+    }
+    if (cursor < span.end) result.push({ start: cursor, end: span.end });
+  }
+  return result;
+}

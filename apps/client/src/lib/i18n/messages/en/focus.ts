@@ -22,6 +22,7 @@ export const pomodoroOverlay = {
   dayCompletedTitle: "Day completed",
   workweekCompletedTitle: "Workweek completed",
   pressAnyKey: "press any key to continue",
+  tapToContinue: "tap to continue",
   resumeFocus: "resume focus",
   restartFocus: "restart focus",
   extendBreak: "extend the break",

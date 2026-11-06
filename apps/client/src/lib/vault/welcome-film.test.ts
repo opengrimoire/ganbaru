@@ -17,6 +17,7 @@ import {
   filmSessionMinute,
   filmSessionMoment,
   filmSpan,
+  filmSpansWithout,
   filmWorkday,
   monotoneCurve,
 } from "./welcome-film";
@@ -256,5 +257,35 @@ describe("filmWorkday", () => {
 
   it("crosses a month boundary", () => {
     expect(filmWorkday(new Date(2026, 10, 30))).toEqual(new Date(2026, 11, 4));
+  });
+});
+
+describe("filmSpansWithout", () => {
+  const focus = [{ start: 0, end: 30 }, { start: 35, end: 60 }];
+
+  it("leaves a gap inside a span empty", () => {
+    expect(filmSpansWithout(focus, [{ start: 10, end: 18 }])).toEqual([
+      { start: 0, end: 10 },
+      { start: 18, end: 30 },
+      { start: 35, end: 60 },
+    ]);
+  });
+
+  it("trims gaps that cross a span's edges and drops a span a gap covers", () => {
+    expect(filmSpansWithout(focus, [{ start: 25, end: 40 }])).toEqual([{ start: 0, end: 25 }, { start: 40, end: 60 }]);
+    expect(filmSpansWithout(focus, [{ start: -5, end: 30 }])).toEqual([{ start: 35, end: 60 }]);
+  });
+
+  it("handles unordered and overlapping gaps", () => {
+    expect(filmSpansWithout(focus, [{ start: 50, end: 55 }, { start: 5, end: 10 }, { start: 8, end: 12 }])).toEqual([
+      { start: 0, end: 5 },
+      { start: 12, end: 30 },
+      { start: 35, end: 50 },
+      { start: 55, end: 60 },
+    ]);
+  });
+
+  it("keeps the spans as they are without gaps", () => {
+    expect(filmSpansWithout(focus, [])).toEqual(focus);
   });
 });

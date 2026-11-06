@@ -29,6 +29,7 @@ export const pomodoroOverlay = {
   dayCompletedTitle: "Día completado",
   workweekCompletedTitle: "Semana laboral completada",
   pressAnyKey: "pulsa cualquier tecla para continuar",
+  tapToContinue: "toca para continuar",
   resumeFocus: "reanudar enfoque",
   restartFocus: "reiniciar enfoque",
   extendBreak: "extender el descanso",

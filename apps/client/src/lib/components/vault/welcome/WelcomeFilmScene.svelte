@@ -41,6 +41,7 @@
   import PomodoroMenuVolume from "$lib/components/pomodoro/PomodoroMenuVolume.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
+  import WelcomeFilmNotification, { type FilmNotificationKind } from "$lib/components/vault/welcome/WelcomeFilmNotification.svelte";
   import type { EventPanelAnchor } from "$lib/utils/responsive";
   import type { EventColor } from "$lib/calendar/types";
   import ClockPlus from "@lucide/svelte/icons/clock-plus";
@@ -52,7 +53,6 @@
   import Repeat from "@lucide/svelte/icons/repeat";
   import SkipBack from "@lucide/svelte/icons/skip-back";
   import SkipForward from "@lucide/svelte/icons/skip-forward";
-  import Timer from "@lucide/svelte/icons/timer";
   import Users from "@lucide/svelte/icons/users";
   import { DEFAULT_PLAYBACK_SNAPSHOT, MAX_VOLUME } from "$lib/music/playback";
   import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
@@ -140,8 +140,6 @@
   /** Where the Focus menu opens under its ring: below the title bar on desktop, a little lower on a phone. */
   const MENU_TOP_PX = mobileShell ? TOP_BAR_H + 4 : TOP_BAR_H;
   const MENU_RIGHT_PX = mobileShell ? 8 : 6;
-  /** The gap between the paused notification and the canvas edges. */
-  const NOTIFICATION_MARGIN_PX = 8;
 
   /** The Calendar's Focus rail, and the event area it keeps beside it on every event. */
   const RAIL_LEFT = 2;
@@ -307,25 +305,16 @@
   const ringRemaining = $derived(moment.kind === "done" ? 0 : moment.remainingSeconds);
   const ringTotal = $derived(moment.kind === "done" ? 0 : moment.totalSeconds);
   /**
-   * The paused notification the app sends, drawn as this platform shows it: a phone's ongoing Focus notification, a
-   * Windows toast, or a Linux banner. Its Resume action is what resumes Focus.
+   * The paused notification the app sends, drawn as this platform's system shows it: Android's ongoing Focus
+   * notification, a Windows toast, or a GNOME banner on Linux. Its Resume action is what resumes Focus.
    */
-  const notificationStyle: "phone" | "windows" | "linux" = mobileShell
-    ? "phone"
+  const notificationKind: FilmNotificationKind = mobileShell
+    ? "android"
     : BUILD_PLATFORM === "windows"
       ? "windows"
-      : "linux";
+      : "gnome";
   const notification = $derived(filmNotification(elapsed));
   const resumeTouch = $derived(filmTap(elapsed, FILM_BEATS.resumeAt));
-  /** How far the notification sits past its edge of the canvas: its own size plus its margin while hidden, none at rest. */
-  const notificationOffset = $derived(`calc(${1 - notification} * (100% + ${NOTIFICATION_MARGIN_PX}px))`);
-  const notificationTransform = $derived(
-    notificationStyle === "windows"
-      ? `translateX(${notificationOffset})`
-      : notificationStyle === "linux"
-        ? `translate(-50%, calc(-1 * ${notificationOffset}))`
-        : `translateY(calc(-1 * ${notificationOffset}))`,
-  );
   /** The paused phase's progress, as the phone's ongoing notification draws it. */
   const notificationProgress = $derived(ringTotal > 0 ? (ringTotal - ringRemaining) / ringTotal : 0);
 
@@ -788,45 +777,15 @@
       />
     {/if}
 
-    <!-- The paused notification, as this platform shows it, until its Resume action is pressed. -->
+    <!-- The paused notification, drawn as the system shows it, until its Resume action is pressed. -->
     {#if notification > 0}
-      <div
-        class={cn(
-          "surface-floating pointer-events-none absolute z-50 p-2.5",
-          notificationStyle === "phone" && "inset-x-2 top-2",
-          notificationStyle === "linux" && "top-2 left-1/2 w-floating-sm",
-          notificationStyle === "windows" && "right-2 bottom-2 w-floating-sm",
-        )}
-        style:transform={notificationTransform}
-      >
-        <div class="flex items-center gap-1.5 text-[0.733333rem] text-muted-foreground">
-          <Timer class="shrink-0" size={12} />
-          <span class="truncate">{t("common.appName")}</span>
-        </div>
-        {#if notificationStyle === "phone"}
-          <p class="mt-1 truncate font-medium">{title("writeChapter")}</p>
-          <p class="text-muted-foreground">{t("pomodoroNotification.pausedText")}</p>
-          <div class="mt-2 h-1 overflow-hidden rounded-full bg-muted">
-            <div class="h-full rounded-full bg-primary" style:width={`${notificationProgress * 100}%`}></div>
-          </div>
-          <div class="mt-1.5 flex">
-            <span class={cn("relative -ml-2 rounded-md px-2 py-1 font-medium text-primary", resumeTouch > 0 && "bg-accent")}>
-              {t("pomodoroNotification.resumeFocusLabel")}
-              {@render touch(resumeTouch, "left-1/2 top-1/2")}
-            </span>
-          </div>
-        {:else}
-          <p class="mt-1 font-medium">{t("pomodoroNotification.pausedReminderTitle")}</p>
-          <p class="text-muted-foreground">{t("pomodoroNotification.pausedReminderBody")}</p>
-          <div class="mt-2 grid grid-cols-2 gap-1.5 text-center">
-            <span class={cn("relative rounded-md px-2 py-1", resumeTouch > 0 ? "bg-accent" : "bg-muted")}>
-              <span class="block truncate">{t("pomodoroNotification.resumeFocusLabel")}</span>
-              {@render touch(resumeTouch, "left-1/2 top-1/2")}
-            </span>
-            <span class="truncate rounded-md bg-muted px-2 py-1">{t("pomodoroNotification.dismissPromptsLabel")}</span>
-          </div>
-        {/if}
-      </div>
+      <WelcomeFilmNotification
+        kind={notificationKind}
+        shown={notification}
+        {resumeTouch}
+        eventTitle={title("writeChapter")}
+        progress={notificationProgress}
+      />
     {/if}
 
     <!-- The completion screens: the drawn event finished, then the day's Focus completed. -->

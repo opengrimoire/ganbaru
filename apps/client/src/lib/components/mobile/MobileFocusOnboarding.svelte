@@ -1,9 +1,6 @@
 <script lang="ts">
   import Check from "@lucide/svelte/icons/check";
-  import Eye from "@lucide/svelte/icons/eye";
-  import EyeOff from "@lucide/svelte/icons/eye-off";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import ShieldCheck from "@lucide/svelte/icons/shield-check";
   import { onMount } from "svelte";
   import { fly } from "svelte/transition";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -284,27 +281,17 @@
             <div class="space-y-2">
               <h1 class="text-2xl font-semibold leading-tight text-foreground">{stepTitle(current)}</h1>
               <p class="text-sm leading-6 text-muted-foreground">{stepBody(current)}</p>
+              {#if boundary}
+                <ul class="list-disc space-y-1 pl-5 text-sm leading-6 text-muted-foreground">
+                  <li>{t("mobile.focusOnboarding.privacyPoint")}</li>
+                  <li>{boundary.sees}</li>
+                  <li>{boundary.neverSees}</li>
+                </ul>
+              {/if}
               {#if current === "battery" && statuses.background?.backgroundRestricted}
                 <p class="text-sm leading-6 text-foreground">{t("mobile.focusOnboarding.backgroundRestricted")}</p>
               {/if}
             </div>
-
-            {#if boundary}
-              <ul class="mt-4 space-y-2.5 text-sm leading-5 text-foreground">
-                <li class="flex items-start gap-2.5">
-                  <ShieldCheck class="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
-                  {t("mobile.focusOnboarding.privacyPoint")}
-                </li>
-                <li class="flex items-start gap-2.5">
-                  <Eye class="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
-                  {boundary.sees}
-                </li>
-                <li class="flex items-start gap-2.5">
-                  <EyeOff class="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
-                  {boundary.neverSees}
-                </li>
-              </ul>
-            {/if}
 
             <!-- The body text's line spacing adds about 4px above, so the top padding is one step smaller to center the guide. -->
             <div class="flex flex-1 flex-col pb-8 pt-7">

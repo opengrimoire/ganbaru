@@ -140,10 +140,22 @@
   </div>
 
   <div class="mx-auto w-full max-w-xl shrink-0 px-4 pb-6 @min-[560px]:px-8 @min-[860px]:pb-10">
-    <div class="border-t border-border pt-4">{@render actions()}</div>
+    <div class="relative border-t border-border pt-4">
+      {#if notice}
+        <div class="pointer-events-none absolute inset-x-0 bottom-full z-70 flex justify-center pb-3">
+          <div class="pointer-events-auto">
+            <ActionToast
+              anchored
+              wrap
+              message={notice.notice}
+              messageLang={notice.id}
+              messageDir={notice.direction}
+              onDismiss={dismissNotice}
+            />
+          </div>
+        </div>
+      {/if}
+      {@render actions()}
+    </div>
   </div>
-
-  {#if notice}
-    <ActionToast message={notice.notice} messageLang={notice.id} messageDir={notice.direction} onDismiss={dismissNotice} />
-  {/if}
 </section>

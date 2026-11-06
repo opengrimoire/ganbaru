@@ -13,6 +13,8 @@
     dismissLabel,
     variant = "default",
     stacked = false,
+    anchored = false,
+    wrap = false,
     controlsVisible = true,
     reserveActionLabel,
     onAction,
@@ -27,6 +29,10 @@
     dismissLabel?: string;
     variant?: "default" | "success" | "error";
     stacked?: boolean;
+    /** Leave placement to the parent instead of floating above the viewport's bottom edge. */
+    anchored?: boolean;
+    /** Wrap a long message onto more lines instead of truncating it. */
+    wrap?: boolean;
     controlsVisible?: boolean;
     reserveActionLabel?: string;
     onAction?: () => void | Promise<void>;
@@ -68,13 +74,14 @@
 <div
   role="status"
   aria-live="polite"
-  style:bottom={viewportBottom}
+  style:bottom={anchored ? undefined : viewportBottom}
   class={cn(
-    "fixed left-1/2 z-70 flex w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-3 rounded-floating border px-3 py-2 text-[0.866667rem] shadow-floating",
+    "z-70 flex w-[min(22rem,calc(100vw-2rem))] items-center gap-3 rounded-floating border px-3 py-2 text-[0.866667rem] shadow-floating",
+    !anchored && "fixed left-1/2 -translate-x-1/2",
     toastVariantClass,
   )}
 >
-  <span class="min-w-0 flex-1 truncate"><span lang={messageLang} dir={messageDir}>{message}</span></span>
+  <span class={cn("min-w-0 flex-1", wrap ? "text-pretty" : "truncate")}><span lang={messageLang} dir={messageDir}>{message}</span></span>
   {#if controlsVisible && actionLabel && onAction}
     <button
       type="button"

@@ -42,24 +42,24 @@ export interface PlannedLocale {
   readonly label: string;
   readonly nativeLabel: string;
   readonly direction: LocaleDirection;
-  /** A short note, written in the language itself, that it is coming in a future version. */
+  /** A short note, written in the language itself, that it is coming soon, with an apology. */
   readonly comingNotice: string;
 }
 
 /** The languages planned after English and Spanish, in their intended order. */
 export const PLANNED_LOCALES: readonly PlannedLocale[] = Object.freeze([
-  { id: "pt-BR", label: "Portuguese (Brazil)", nativeLabel: "Português (Brasil)", direction: "ltr", comingNotice: "Disponível em uma versão futura." },
-  { id: "fr", label: "French", nativeLabel: "Français", direction: "ltr", comingNotice: "Disponible dans une version future." },
-  { id: "de", label: "German", nativeLabel: "Deutsch", direction: "ltr", comingNotice: "In einer zukünftigen Version verfügbar." },
-  { id: "it", label: "Italian", nativeLabel: "Italiano", direction: "ltr", comingNotice: "Disponibile in una versione futura." },
-  { id: "ja", label: "Japanese", nativeLabel: "日本語", direction: "ltr", comingNotice: "今後のバージョンで対応予定です。" },
-  { id: "ko", label: "Korean", nativeLabel: "한국어", direction: "ltr", comingNotice: "향후 버전에서 지원될 예정입니다." },
-  { id: "zh-Hans", label: "Chinese (Simplified)", nativeLabel: "简体中文", direction: "ltr", comingNotice: "将在未来版本中提供。" },
-  { id: "ru", label: "Russian", nativeLabel: "Русский", direction: "ltr", comingNotice: "Появится в одной из следующих версий." },
-  { id: "hi", label: "Hindi", nativeLabel: "हिन्दी", direction: "ltr", comingNotice: "भविष्य के संस्करण में उपलब्ध होगी।" },
-  { id: "ar", label: "Arabic", nativeLabel: "العربية", direction: "rtl", comingNotice: "ستتوفر في إصدار مستقبلي." },
-  { id: "tr", label: "Turkish", nativeLabel: "Türkçe", direction: "ltr", comingNotice: "Gelecek bir sürümde kullanılabilir olacak." },
-  { id: "id", label: "Indonesian", nativeLabel: "Bahasa Indonesia", direction: "ltr", comingNotice: "Akan tersedia di versi mendatang." },
+  { id: "pt-BR", label: "Portuguese (Brazil)", nativeLabel: "Português (Brasil)", direction: "ltr", comingNotice: "Em breve. Peço desculpas pelo inconveniente." },
+  { id: "fr", label: "French", nativeLabel: "Français", direction: "ltr", comingNotice: "Bientôt disponible. Veuillez m’excuser pour la gêne occasionnée." },
+  { id: "de", label: "German", nativeLabel: "Deutsch", direction: "ltr", comingNotice: "Demnächst verfügbar. Ich bitte die Unannehmlichkeiten zu entschuldigen." },
+  { id: "it", label: "Italian", nativeLabel: "Italiano", direction: "ltr", comingNotice: "Presto disponibile. Mi scuso per il disagio." },
+  { id: "ja", label: "Japanese", nativeLabel: "日本語", direction: "ltr", comingNotice: "近日対応予定です。ご不便をおかけして申し訳ありません。" },
+  { id: "ko", label: "Korean", nativeLabel: "한국어", direction: "ltr", comingNotice: "곧 지원될 예정입니다. 불편을 드려 죄송합니다." },
+  { id: "zh-Hans", label: "Chinese (Simplified)", nativeLabel: "简体中文", direction: "ltr", comingNotice: "即将推出。给您带来不便，敬请谅解。" },
+  { id: "ru", label: "Russian", nativeLabel: "Русский", direction: "ltr", comingNotice: "Скоро появится. Приношу извинения за неудобства." },
+  { id: "hi", label: "Hindi", nativeLabel: "हिन्दी", direction: "ltr", comingNotice: "जल्द ही आ रही है। असुविधा के लिए मुझे खेद है।" },
+  { id: "ar", label: "Arabic", nativeLabel: "العربية", direction: "rtl", comingNotice: "قريبًا. أعتذر عن الإزعاج." },
+  { id: "tr", label: "Turkish", nativeLabel: "Türkçe", direction: "ltr", comingNotice: "Çok yakında. Verdiğim rahatsızlık için özür dilerim." },
+  { id: "id", label: "Indonesian", nativeLabel: "Bahasa Indonesia", direction: "ltr", comingNotice: "Segera hadir. Mohon maaf atas ketidaknyamanannya." },
 ]);
 
 const APP_LOCALE_SET = new Set<string>(APP_LOCALES);

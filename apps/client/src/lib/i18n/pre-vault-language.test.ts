@@ -125,7 +125,7 @@ describe("pre-vault language preference", () => {
 
     for (const entry of entries) expect(entry.notice.trim()).not.toBe("");
     expect(new Set(entries.map((entry) => entry.notice)).size).toBe(entries.length);
-    expect(entries.find((entry) => entry.id === "fr")?.notice).toBe("Disponible dans une version future.");
-    expect(entries.find((entry) => entry.id === "ar")).toMatchObject({ notice: "ستتوفر في إصدار مستقبلي.", direction: "rtl" });
+    expect(entries.find((entry) => entry.id === "fr")?.notice).toBe("Bientôt disponible. Veuillez m’excuser pour la gêne occasionnée.");
+    expect(entries.find((entry) => entry.id === "ar")).toMatchObject({ notice: "قريبًا. أعتذر عن الإزعاج.", direction: "rtl" });
   });
 });

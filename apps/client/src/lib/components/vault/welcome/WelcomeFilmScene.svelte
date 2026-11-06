@@ -40,6 +40,8 @@
 <script lang="ts">
   import PomodoroMenuVolume from "$lib/components/pomodoro/PomodoroMenuVolume.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
+  import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
+  import type { EventPanelAnchor } from "$lib/utils/responsive";
   import type { EventColor } from "$lib/calendar/types";
   import ClockPlus from "@lucide/svelte/icons/clock-plus";
   import Coffee from "@lucide/svelte/icons/coffee";
@@ -102,8 +104,11 @@
     filmRingMenu,
     filmSessionMinute,
     filmSessionMoment,
+    filmPanelOpen,
+    filmProjectPicked,
     filmSpan,
     filmTap,
+    filmTypedTitle,
     filmWorkday,
     type FilmRail,
     type FilmSpan,
@@ -138,6 +143,8 @@
   const RAIL_LEFT = 2;
   const RAIL_W = 6;
   const EVENT_LEFT = RAIL_W + 4;
+  /** The gridline on a day column's left edge. */
+  const DAY_BORDER_PX = 1;
   /** The Calendar's slight separation above an event that starts right as another ends. */
   const EVENT_GAP_PX = 2;
   /** Minimum height for an event to show its time under its title. */
@@ -304,6 +311,20 @@
   );
   const creating = $derived(elapsed >= FILM_BEATS.createStart && elapsed < FILM_BEATS.createSaved);
   const saved = $derived(elapsed >= FILM_BEATS.createSaved);
+  /** The drawn event's title as it is typed into the event panel, and whether its project has been picked. */
+  const typedTitle = $derived(filmTypedTitle(elapsed, title("writeChapter")));
+  const projectPicked = $derived(filmProjectPicked(elapsed));
+  /** The event panel's anchor: the drawn event, in today's column while it still fills the grid. */
+  const panelAnchor = $derived.by<EventPanelAnchor>(() => {
+    const columnLeft = GUTTER_W + DAY_BORDER_PX + EVENT_LEFT;
+    const blockWidth = ((canvasW - columnLeft) * (100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT)) / 100;
+    return {
+      x: columnLeft + blockWidth,
+      y: TOP_BAR_H + HEADER_H + y(SESSION_START),
+      width: blockWidth,
+      height: px(FILM_DRAWN_MINUTES),
+    };
+  });
   const pressOpacity = $derived(
     filmSpan(elapsed, FILM_BEATS.createStart - PRESS_FADE_MS, FILM_BEATS.createStart)
       * (1 - filmSpan(elapsed, FILM_BEATS.createEnd, FILM_BEATS.createEnd + PRESS_FADE_MS)),
@@ -641,7 +662,7 @@
               {@render rail(dayRail.start, dayRail.end, recordedFocus(dayRail, day.offset), dayRail.breaks, false)}
             {/each}
 
-            {#if isToday && !saved}
+            {#if isToday && elapsed < FILM_BEATS.panelOpen}
               <!-- The planned event's own rail, until the drawn event joins it and the rail is replanned across both. -->
               {@render rail(DRAWN_END, SESSION_END, [], PLANNED_BREAKS, false)}
             {:else if isToday}
@@ -670,7 +691,14 @@
 
               {#if isToday}
                 {#if creating}
-                  {@render eventBlock(SESSION_START, SESSION_START + drawnMinutes, undefined, t("calendar.event.noTitle"), false, true)}
+                  {@render eventBlock(
+                    SESSION_START,
+                    SESSION_START + drawnMinutes,
+                    projectPicked ? TAUPE : undefined,
+                    typedTitle || t("calendar.event.noTitle"),
+                    false,
+                    true,
+                  )}
                 {:else if saved}
                   {@render eventBlock(SESSION_START, DRAWN_END, TAUPE, title("writeChapter"), isPast(0, DRAWN_END), false, true)}
                 {/if}
@@ -721,6 +749,22 @@
           </div>
         {/if}
       </div>
+    {/if}
+
+    <!-- The event panel on the drawn event, where its project is picked and its title typed before it is saved. -->
+    {#if filmPanelOpen(elapsed)}
+      <WelcomeFilmEventPanel
+        {elapsed}
+        canvasWidth={canvasW}
+        canvasHeight={canvasH}
+        titleBarHeight={TOP_BAR_H}
+        anchor={panelAnchor}
+        date={filmDate}
+        start={SESSION_START}
+        end={DRAWN_END}
+        projectColor={TAUPE}
+        title={title("writeChapter")}
+      />
     {/if}
 
     <!-- The completion screens: the drawn event finished, then the day's Focus completed. -->

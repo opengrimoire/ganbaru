@@ -3,6 +3,7 @@ import {
   FILM_BEATS,
   FILM_BREAKS,
   FILM_CHAIN,
+  FILM_DEFAULT_RAIL,
   FILM_DRAWN_MINUTES,
   FILM_LEAD_IN_MINUTES,
   FILM_PAUSE,
@@ -15,14 +16,17 @@ import {
   filmClockMinute,
   filmDayRails,
   filmFocusSpans,
+  filmPanelOpen,
   filmPaused,
   filmPausedMinutes,
+  filmProjectPicker,
   filmRailBreaks,
   filmRingMenu,
   filmSessionMinute,
   filmSessionMoment,
   filmSpan,
   filmTap,
+  filmTypedTitle,
   filmWorkday,
   monotoneCurve,
 } from "./welcome-film";
@@ -91,8 +95,8 @@ describe("the film's session", () => {
     expect(filmSessionMinute(FILM_BEATS.sessionEnd)).toBe(FILM_SESSION_MINUTES);
   });
 
-  it("holds the current time still while the event is drawn and the rail replans", () => {
-    for (let elapsed = 0; elapsed <= FILM_BEATS.createSaved + FILM_REPLAN_MS; elapsed += 50) {
+  it("holds the current time still while the event is drawn, set up, and saved", () => {
+    for (let elapsed = 0; elapsed <= FILM_BEATS.createSaved; elapsed += 50) {
       expect(filmClockMinute(elapsed)).toBeCloseTo(-FILM_LEAD_IN_MINUTES, 9);
     }
   });
@@ -129,7 +133,7 @@ describe("the film's session", () => {
 
   it("slows down during the break so its countdown can be read", () => {
     const breakRate = filmSessionMinute(FILM_BEATS.breakStart + 600) - filmSessionMinute(FILM_BEATS.breakStart + 500);
-    const focusRate = filmSessionMinute(3100) - filmSessionMinute(3000);
+    const focusRate = filmSessionMinute(FILM_BEATS.focusStart + 500) - filmSessionMinute(FILM_BEATS.focusStart + 400);
     expect(breakRate).toBeLessThan(focusRate / 3);
   });
 
@@ -189,26 +193,69 @@ describe("the film's session", () => {
     expect(filmFocusSpans(70)).toEqual([{ start: 0, end: 50 }, { start: 60, end: 70 }]);
   });
 
-  it("slides the planned event's breaks earlier into the joined rail's plan once the drawn event is saved", () => {
-    const settled = FILM_BEATS.createSaved + FILM_REPLAN_MS;
-    const drawnBreaks = FILM_BREAKS.filter((pause) => pause.start < FILM_DRAWN_MINUTES).length;
-    const plannedPart = (elapsed: number) => filmRailBreaks(elapsed).slice(drawnBreaks);
-    expect(plannedPart(FILM_BEATS.createSaved)).toEqual(FILM_PLANNED_RAIL.breaks.map(({ start, end }) => ({ start, end })));
-    expect(filmRailBreaks(settled)).toEqual(FILM_BREAKS.map(({ start, end }) => ({ start, end })));
-    expect(filmRailBreaks(FILM_BEATS.pauseStart)).toEqual(filmRailBreaks(settled));
-    let previous = plannedPart(FILM_BEATS.createSaved);
-    for (let elapsed = FILM_BEATS.createSaved; elapsed <= settled; elapsed += 25) {
-      const current = plannedPart(elapsed);
+  it("replans the rail with the default rhythm once the drawn event joins it, then with the project's", () => {
+    const spans = (breaks: readonly { start: number; end: number }[]) => breaks.map(({ start, end }) => ({ start, end }));
+    expect(filmRailBreaks(FILM_BEATS.panelOpen)).toEqual(spans(FILM_PLANNED_RAIL.breaks));
+    expect(filmRailBreaks(FILM_BEATS.projectPick)).toEqual(spans(FILM_DEFAULT_RAIL.breaks));
+    expect(filmRailBreaks(FILM_BEATS.projectPick + FILM_REPLAN_MS)).toEqual(spans(FILM_BREAKS));
+    expect(filmRailBreaks(FILM_BEATS.pauseStart)).toEqual(spans(FILM_BREAKS));
+  });
+
+  it("gives the drawn event a different rhythm by default than its project's", () => {
+    const drawn = (breaks: readonly { start: number }[]) => breaks.filter((pause) => pause.start < FILM_DRAWN_MINUTES);
+    expect(drawn(FILM_DEFAULT_RAIL.breaks).length).toBeGreaterThan(drawn(FILM_BREAKS).length);
+    expect(FILM_DEFAULT_RAIL.breaks.map((pause) => pause.start)).not.toEqual(FILM_BREAKS.map((pause) => pause.start));
+  });
+
+  it("slides the planned event's breaks earlier through both replans and never leaves an empty break", () => {
+    const planned = (elapsed: number) => filmRailBreaks(elapsed).filter((pause) => pause.start >= FILM_DRAWN_MINUTES);
+    let previous = planned(FILM_BEATS.panelOpen);
+    for (let elapsed = FILM_BEATS.panelOpen; elapsed <= FILM_BEATS.projectPick + FILM_REPLAN_MS; elapsed += 25) {
+      const current = planned(elapsed);
+      expect(current).toHaveLength(previous.length);
       current.forEach((pause, index) => {
         expect(pause.start).toBeLessThanOrEqual(previous[index].start + 1e-9);
-        expect(pause.end).toBeGreaterThan(pause.start);
       });
+      for (const pause of filmRailBreaks(elapsed)) expect(pause.end).toBeGreaterThan(pause.start);
       previous = current;
     }
   });
 
-  it("finishes the replan before Focus starts", () => {
-    expect(FILM_BEATS.createSaved + FILM_REPLAN_MS).toBeLessThan(FILM_BEATS.focusStart);
+  it("finishes both replans before the event is saved", () => {
+    expect(FILM_BEATS.panelOpen + FILM_REPLAN_MS).toBeLessThan(FILM_BEATS.projectPick);
+    expect(FILM_BEATS.projectPick + FILM_REPLAN_MS).toBeLessThan(FILM_BEATS.createSaved);
+  });
+});
+
+describe("the film's event panel", () => {
+  it("opens when the drawn event is let go and closes when it is saved", () => {
+    expect(filmPanelOpen(FILM_BEATS.panelOpen - 1)).toBe(false);
+    expect(filmPanelOpen(FILM_BEATS.panelOpen)).toBe(true);
+    expect(filmPanelOpen(FILM_BEATS.createSaved - 1)).toBe(true);
+    expect(filmPanelOpen(FILM_BEATS.createSaved)).toBe(false);
+    expect(FILM_BEATS.createEnd).toBeLessThan(FILM_BEATS.panelOpen);
+  });
+
+  it("opens the project picker's groups, then a group's projects, and closes it on the pick", () => {
+    expect(filmProjectPicker(FILM_BEATS.projectTap - 1)).toBeNull();
+    expect(filmProjectPicker(FILM_BEATS.projectTap)).toBe("groups");
+    expect(filmProjectPicker(FILM_BEATS.groupTap)).toBe("projects");
+    expect(filmProjectPicker(FILM_BEATS.projectPick)).toBeNull();
+    expect(FILM_BEATS.projectPick).toBeLessThan(FILM_BEATS.typeStart);
+    expect(FILM_BEATS.typeEnd).toBeLessThan(FILM_BEATS.createSaved);
+  });
+
+  it("types the title a whole character at a time", () => {
+    const title = "Écrire ✍️";
+    expect(filmTypedTitle(FILM_BEATS.typeStart, title)).toBe("");
+    expect(filmTypedTitle(FILM_BEATS.typeEnd, title)).toBe(title);
+    let previous = "";
+    for (let elapsed = FILM_BEATS.typeStart; elapsed <= FILM_BEATS.typeEnd; elapsed += 20) {
+      const typed = filmTypedTitle(elapsed, title);
+      expect(title.startsWith(typed)).toBe(true);
+      expect(Array.from(typed).length - Array.from(previous).length).toBeLessThanOrEqual(1);
+      previous = typed;
+    }
   });
 });
 

@@ -430,7 +430,14 @@ export class EventPanelDateTimeController {
   }
 }
 
-function displayCanonicalTime(value: string, timeFormat: CalendarTimeFormat): string {
+/**
+ * Show a canonical `HH:MM` time in the chosen time format, as the event panel shows it in its time inputs.
+ *
+ * @param value The canonical 24-hour time, or an empty string.
+ * @param timeFormat The time format to show it in.
+ * @returns The time as shown, such as `9:00am` in the 12-hour format, or an empty string.
+ */
+export function displayCanonicalTime(value: string, timeFormat: CalendarTimeFormat): string {
   if (!value) return "";
   const [hourText, minuteText] = value.split(":");
   const hour = Number(hourText);

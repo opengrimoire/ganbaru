@@ -19,7 +19,8 @@ import {
 } from "./geometry";
 
 const DEFAULT_PANEL_HEIGHT = 540;
-const PANEL_MAX_WIDTH = Math.round(EVENT_PANEL_MAX_WIDTH * 1.08);
+/** The widest the floating event panel gets, which also decides when it moves to a bottom sheet. */
+export const PANEL_MAX_WIDTH = Math.round(EVENT_PANEL_MAX_WIDTH * 1.08);
 const PANEL_GAP = EVENT_PANEL_EDGE_MARGIN;
 const TITLE_BAR_HEIGHT = EVENT_PANEL_TITLE_BAR_HEIGHT;
 const HEIGHT_TOLERANCE = 2;

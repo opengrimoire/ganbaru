@@ -1,6 +1,6 @@
 /**
- * Timing for the welcome film: one continuous take of a day in the app. A Focus session is planned in the Calendar
- * ahead of another, runs through its first break, is paused for a while from the Focus ring, runs to its end, carries
+ * Timing for the welcome film: one continuous take of a day in the app. A Focus session is drawn in the Calendar ahead
+ * of another, given a project and a title in the event panel, runs through its first break, is paused for a while from the Focus ring, runs to its end, carries
  * on through the next event to the end of the day's Focus, then is seen among the week's other sessions as the view
  * pulls back. Every moment is derived from the milliseconds elapsed since the film started, so a frame is a pure
  * function of time and the reduced-motion still is simply the last frame.
@@ -18,34 +18,45 @@ export interface FilmSpan {
   end: number;
 }
 
-/** Moments of the film, in milliseconds from its start. */
+/** Moments of the film, in milliseconds from its start. A tap's beat is the moment it lands. */
 export const FILM_BEATS = {
-  /** A press drags the session out on the empty day, and letting go saves it. */
+  /** A press drags the session out on the empty day, and letting go opens the event panel on it. */
   createStart: 500,
   createEnd: 1300,
-  createSaved: 1450,
+  panelOpen: 1450,
+  /**
+   * A tap on the project trigger opens the project picker, a tap on a group opens its projects, and a tap on a project
+   * picks it, which gives the event the project's color and Focus rhythm.
+   */
+  projectTap: 2050,
+  groupTap: 2650,
+  projectPick: 3250,
+  /** The title is typed, then a tap on Save saves the event and closes the panel. */
+  typeStart: 3650,
+  typeEnd: 4550,
+  createSaved: 5000,
   /** The current time reaches the session and Focus starts. */
-  focusStart: 2700,
+  focusStart: 5800,
   /** The break screen covers the app for the length of the break. */
-  breakStart: 4100,
-  breakEnd: 5200,
+  breakStart: 7200,
+  breakEnd: 8300,
   /**
    * A tap on the Focus ring opens its menu, and a tap on its first item pauses Focus. A while later the same two taps
    * resume it.
    */
-  pauseTap: 5800,
-  pauseStart: 6880,
-  resumeTap: 8380,
-  resumeAt: 9460,
+  pauseTap: 8900,
+  pauseStart: 9980,
+  resumeTap: 11480,
+  resumeAt: 12560,
   /** The drawn event ends, its finished screen shows, and the planned event carries on once it lifts. */
-  eventEnd: 10960,
-  eventOut: 11710,
+  eventEnd: 14060,
+  eventOut: 14810,
   /** The planned event ends the day's Focus, the day's completed screen shows, and the app returns. */
-  sessionEnd: 13560,
-  finishedOut: 14410,
+  sessionEnd: 16660,
+  finishedOut: 17510,
   /** The camera pulls back from the day to the week. */
-  pullBack: 14660,
-  end: 16960,
+  pullBack: 17760,
+  end: 20060,
 } as const;
 
 /** How long a tap on the Focus ring or its menu takes, and how quickly the touch fades in and out. */
@@ -55,8 +66,11 @@ const FILM_TAP_FADE_MS = 60;
 /** How long the pull back from the day to the week takes. */
 export const FILM_PULL_BACK_MS = 1200;
 
-/** How long the planned event's breaks take to slide to where the rail replans them once the drawn event joins it. */
+/** How long the rail's breaks take to slide to where the rail replans them, as the drawn event joins it or changes. */
 export const FILM_REPLAN_MS = 700;
+
+/** How long the current time holds once the event is saved before it walks up to the session. */
+const FILM_SAVED_HOLD_MS = 250;
 
 /**
  * The film's session, in session minutes: a long Extended event drawn in the film, ending partway through its third focus,
@@ -80,6 +94,18 @@ export const FILM_RAIL: FilmRail = filmDayRails(FILM_CHAIN)[0];
 
 /** The planned event's rail on its own, before the drawn event joins it. */
 export const FILM_PLANNED_RAIL: FilmRail = filmDayRails(FILM_CHAIN.slice(1))[0];
+
+/** The Focus preset a new event starts with in the event panel. */
+export const FILM_DEFAULT_PRESET: PomodoroPresetKey = "adaptive";
+
+/**
+ * The session's rail while the drawn event still has a new event's default Focus rhythm, before a project gives it the
+ * project's own.
+ */
+export const FILM_DEFAULT_RAIL: FilmRail = filmDayRails([
+  { ...FILM_CHAIN[0], preset: FILM_DEFAULT_PRESET },
+  ...FILM_CHAIN.slice(1),
+])[0];
 
 /** The session's phases in order, in minutes. */
 export const FILM_SESSION: readonly { kind: "focus" | "break"; minutes: number }[] = [
@@ -133,12 +159,11 @@ export const FILM_LEAD_IN_MINUTES = 14;
 
 /**
  * The current time against film time before Focus starts, in minutes relative to the session's start. It holds still
- * while the event is drawn and the rail replans, since drawing an event takes far less than a minute, then walks up
- * to the session.
+ * while the event is drawn, set up, and saved, since that takes far less than a minute, then walks up to the session.
  */
 const LEAD_IN_CLOCK: readonly FilmKeyframe[] = [
   [0, -FILM_LEAD_IN_MINUTES],
-  [FILM_BEATS.createSaved + FILM_REPLAN_MS, -FILM_LEAD_IN_MINUTES],
+  [FILM_BEATS.createSaved + FILM_SAVED_HOLD_MS, -FILM_LEAD_IN_MINUTES],
   [FILM_BEATS.focusStart, 0],
 ];
 
@@ -365,24 +390,77 @@ export function filmFocusSpans(minute: number): FilmSpan[] {
 }
 
 /**
- * The session's breaks as the rail shows them at `elapsed`, in session minutes. Once the drawn event is saved, the
- * planned event's breaks slide from where they fell on its own rail to where the joined rail plans them, growing or
- * shrinking into their new lengths. The Calendar replans at once; the film eases the move so the change can be seen.
- * The drawn event's own breaks appear with it, and those after the pause move later with the current time while it
- * lasts, as the Calendar moves them.
+ * Moves breaks from `from` to `to` by `progress`, pairing them in order. A break with no partner shrinks away into its
+ * middle, or grows out of its middle, and breaks with no length left are dropped.
+ */
+function slideBreaks(from: readonly FilmSpan[], to: readonly FilmSpan[], progress: number): FilmSpan[] {
+  const middle = (span: FilmSpan): FilmSpan => ({ start: (span.start + span.end) / 2, end: (span.start + span.end) / 2 });
+  return Array.from({ length: Math.max(from.length, to.length) }, (_, index) => {
+    const source = from[index] ?? middle(to[index]);
+    const target = to[index] ?? middle(from[index]);
+    return {
+      start: source.start + (target.start - source.start) * progress,
+      end: source.end + (target.end - source.end) * progress,
+    };
+  }).filter((span) => span.end > span.start);
+}
+
+/** The breaks that fall in the drawn event, and those in the planned event. */
+function splitBreaks(breaks: readonly FilmSpan[]): { drawn: FilmSpan[]; planned: FilmSpan[] } {
+  return {
+    drawn: breaks.filter((pause) => pause.start < FILM_DRAWN_MINUTES),
+    planned: breaks.filter((pause) => pause.start >= FILM_DRAWN_MINUTES),
+  };
+}
+
+/** How far the rail has replanned after a change at `beat`, eased, from 0 to 1. */
+function replanProgress(elapsed: number, beat: number): number {
+  return easeInOutCubic(filmSpan(elapsed, beat, beat + FILM_REPLAN_MS));
+}
+
+/**
+ * The session's breaks as the rail shows them at `elapsed`, in session minutes. Once the drawn event is let go, it
+ * joins the planned event's rail with a new event's default rhythm: its own breaks grow in, and the planned event's
+ * breaks slide from where they fell on its own rail to where the joined rail plans them. Picking a project gives it the
+ * project's rhythm and the rail replans again. The Calendar replans at once; the film eases each move so the change
+ * can be seen. The drawn event's breaks after the pause move later with the current time while it lasts, as the
+ * Calendar moves them.
  */
 export function filmRailBreaks(elapsed: number): FilmSpan[] {
-  const progress = easeInOutCubic(filmSpan(elapsed, FILM_BEATS.createSaved, FILM_BEATS.createSaved + FILM_REPLAN_MS));
-  const breaks = runBreaks(filmClockMinute(elapsed));
-  const drawn = breaks.filter((pause) => pause.start < FILM_DRAWN_MINUTES);
-  const planned = breaks.filter((pause) => pause.start >= FILM_DRAWN_MINUTES).map((target, index) => {
-    const from = FILM_PLANNED_RAIL.breaks[index] ?? target;
-    return {
-      start: from.start + (target.start - from.start) * progress,
-      end: from.end + (target.end - from.end) * progress,
-    };
-  });
-  return [...drawn, ...planned];
+  const joined = replanProgress(elapsed, FILM_BEATS.panelOpen);
+  const picked = replanProgress(elapsed, FILM_BEATS.projectPick);
+  const defaults = splitBreaks(FILM_DEFAULT_RAIL.breaks);
+  const target = splitBreaks(runBreaks(filmClockMinute(elapsed)));
+  return [
+    ...slideBreaks(slideBreaks([], defaults.drawn, joined), target.drawn, picked),
+    ...slideBreaks(slideBreaks(FILM_PLANNED_RAIL.breaks, defaults.planned, joined), target.planned, picked),
+  ];
+}
+
+/** Whether the event panel is open at `elapsed`: from letting go of the drawn event until Save is tapped. */
+export function filmPanelOpen(elapsed: number): boolean {
+  return elapsed >= FILM_BEATS.panelOpen && elapsed < FILM_BEATS.createSaved;
+}
+
+/**
+ * The project picker's open pane at `elapsed`: the groups after the project trigger is tapped, then a group's projects
+ * once the group is tapped, until a project is picked.
+ */
+export function filmProjectPicker(elapsed: number): "groups" | "projects" | null {
+  if (elapsed >= FILM_BEATS.groupTap && elapsed < FILM_BEATS.projectPick) return "projects";
+  if (elapsed >= FILM_BEATS.projectTap && elapsed < FILM_BEATS.groupTap) return "groups";
+  return null;
+}
+
+/** Whether the drawn event has its project's color and rhythm at `elapsed`. */
+export function filmProjectPicked(elapsed: number): boolean {
+  return elapsed >= FILM_BEATS.projectPick;
+}
+
+/** As much of `title` as has been typed at `elapsed`, a whole character at a time. */
+export function filmTypedTitle(elapsed: number, title: string): string {
+  const characters = Array.from(title);
+  return characters.slice(0, Math.floor(filmSpan(elapsed, FILM_BEATS.typeStart, FILM_BEATS.typeEnd) * characters.length)).join("");
 }
 
 /** `Date.getDay()` for Sunday, Monday, and Friday. */

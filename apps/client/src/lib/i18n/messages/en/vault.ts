@@ -3,13 +3,18 @@ export const vaultSetup = {
   welcomeBody: "Plan in the calendar, focus right from it, and watch your week fill with the work you actually did.",
   film: {
     description:
-      "A short animation of a day in the app: a long session with the Extended Pomodoro is planned in the calendar right before one with the Creative Pomodoro, and their shared Focus rail carries one rhythm through both, so the second session's breaks move earlier as the first one joins it. The first session runs through a break to its finish, the second carries on to complete the day, and both then sit among the week's other events as the view pulls back, where icons mark the repeating lunches, the sessions with music, and the meetings.",
+      "A short animation of a day in the app: a long session is drawn in the calendar right before one already planned with the Creative Pomodoro, and the event panel opens on it. Picking the Thesis project from the University group gives the session the project's color and its Extended Pomodoro, so only the title is typed before saving. The two sessions share one Focus rail that carries one rhythm through both, so the second session's breaks move as the first one joins it and takes its project's rhythm. The first session runs through a break to its finish, the second carries on to complete the day, and both then sit among the week's other events as the view pulls back, where icons mark the repeating lunches, the sessions with music, and the meetings.",
     writeChapter: "Write chapter 3",
     reviewNotes: "Review notes",
     lunch: "Lunch",
     draftOutline: "Draft outline",
     readSources: "Read sources",
     teamMeeting: "Team meeting",
+    universityGroup: "University",
+    healthGroup: "Health",
+    personalGroup: "Personal",
+    thesisProject: "Thesis",
+    assignmentsProject: "Assignments",
   },
   language: {
     headline: "Choose your language",

@@ -11,13 +11,18 @@ export const vaultSetup = {
   welcomeBody: "Planea en el calendario, enfócate desde ahí y mira cómo tu semana se llena con el trabajo que de verdad hiciste.",
   film: {
     description:
-      "Una breve animación de un día en la app: se planea en el calendario una sesión larga con el Pomodoro Extendido justo antes de otra con el Pomodoro Creativo, y su riel de enfoque compartido lleva un solo ritmo por ambas, así que los descansos de la segunda sesión se adelantan cuando la primera se une a ella. La primera sesión pasa por un descanso hasta su final, la segunda continúa hasta completar el día, y luego ambas aparecen junto a los demás eventos de la semana, donde unos íconos marcan las comidas que se repiten, las sesiones con música y las reuniones.",
+      "Una breve animación de un día en la app: se dibuja en el calendario una sesión larga justo antes de otra ya planeada con el Pomodoro Creativo, y el panel del evento se abre sobre ella. Al elegir el proyecto Tesis del grupo Universidad, la sesión toma el color del proyecto y su Pomodoro Extendido, así que solo se escribe el título antes de guardar. Las dos sesiones comparten un riel de enfoque que lleva un solo ritmo por ambas, así que los descansos de la segunda sesión se mueven cuando la primera se une a ella y toma el ritmo de su proyecto. La primera sesión pasa por un descanso hasta su final, la segunda continúa hasta completar el día, y luego ambas aparecen junto a los demás eventos de la semana, donde unos íconos marcan las comidas que se repiten, las sesiones con música y las reuniones.",
     writeChapter: "Escribir capítulo 3",
     reviewNotes: "Revisar notas",
     lunch: "Comida",
     draftOutline: "Escribir esquema",
     readSources: "Leer fuentes",
     teamMeeting: "Reunión de equipo",
+    universityGroup: "Universidad",
+    healthGroup: "Salud",
+    personalGroup: "Personal",
+    thesisProject: "Tesis",
+    assignmentsProject: "Tareas",
   },
   language: {
     headline: "Elige tu idioma",

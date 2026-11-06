@@ -111,6 +111,8 @@
   const RAIL_LEFT = 2;
   const RAIL_W = 6;
   const EVENT_LEFT = RAIL_W + 4;
+  /** The Calendar's slight separation above an event that starts right as another ends. */
+  const EVENT_GAP_PX = 2;
   /** Minimum height for an event to show its time under its title. */
   const EVENT_TIME_MIN_PX = 32;
   const PRESS_FADE_MS = 140;
@@ -346,12 +348,20 @@
   </div>
 {/snippet}
 
-{#snippet eventBlock(start: number, end: number, color: EventColor | undefined, label: string, past: boolean, outline: boolean)}
+{#snippet eventBlock(
+  start: number,
+  end: number,
+  color: EventColor | undefined,
+  label: string,
+  past: boolean,
+  outline: boolean,
+  eventBelow = false,
+)}
   {@const colors = outline ? getEventColor(color, theme.current) : eventColors(color, past)}
   <div
     class="absolute inset-x-0 flex overflow-hidden rounded text-[0.8rem] leading-tight"
     style:top={`${y(start)}px`}
-    style:height={`${px(end - start)}px`}
+    style:height={`${px(end - start) - (eventBelow ? EVENT_GAP_PX : 0)}px`}
     style:background-color={colors.bg}
     style:color={colors.text}
     style:outline={outline ? `2px solid color-mix(in oklab, ${colors.bg} 65%, ${calendarDark ? "white" : "black"})` : undefined}
@@ -463,14 +473,22 @@
 
             <div class="absolute inset-y-0 right-0" style:left={`${EVENT_LEFT}px`}>
               {#each day.events as event (event.start)}
-                {@render eventBlock(event.start, event.end, event.color, title(event.title), isPast(day.offset, event.end), false)}
+                {@render eventBlock(
+                  event.start,
+                  event.end,
+                  event.color,
+                  title(event.title),
+                  isPast(day.offset, event.end),
+                  false,
+                  day.events.some((other) => other.start === event.end),
+                )}
               {/each}
 
               {#if isToday}
                 {#if creating}
                   {@render eventBlock(SESSION_START, SESSION_START + drawnMinutes, undefined, t("calendar.event.noTitle"), false, true)}
                 {:else if saved}
-                  {@render eventBlock(SESSION_START, DRAWN_END, undefined, title("writeChapter"), isPast(0, DRAWN_END), false)}
+                  {@render eventBlock(SESSION_START, DRAWN_END, undefined, title("writeChapter"), isPast(0, DRAWN_END), false, true)}
                 {/if}
 
                 <!-- The press that draws the session, following its growing edge. -->

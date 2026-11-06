@@ -88,8 +88,9 @@
     filmSessionMinute,
     filmSessionMoment,
     filmSpan,
-    filmSpansWithout,
+    filmRecordedRail,
     filmWorkday,
+    type FilmPause,
     type FilmRail,
     type FilmSpan,
   } from "$lib/vault/welcome-film";
@@ -153,10 +154,10 @@
     icons?: readonly FilmIcon[];
   }
 
-  /** A weekday of the film's week: its events, and the moments its Focus was paused or the user was away. */
+  /** A weekday of the film's week: its events, and the short pauses its recorded Focus shows. */
   interface FilmWorkday {
     events: readonly FilmEvent[];
-    idle?: readonly FilmSpan[];
+    pauses?: readonly FilmPause[];
   }
 
   /** The Calendar's icon order on an event. */
@@ -174,7 +175,7 @@
    * What the workweek holds from Monday to Friday. Events start and end on the hour or the half hour, as people plan
    * them, except Tuesday's first event, which starts a little late. Focus events run back to back with different
    * presets, so their rails show the rhythm carrying from one event into the next, and most days have a pause or a
-   * moment away that their recorded rail leaves empty.
+   * short pause that their recorded rail leaves empty.
    */
   const WORKWEEK: readonly FilmWorkday[] = [
     {
@@ -184,7 +185,7 @@
         LUNCH,
         { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
       ],
-      idle: [{ start: 614, end: 622 }],
+      pauses: [{ at: 556, minutes: 2 }, { at: 590, minutes: 3 }, { at: 646, minutes: 2 }],
     },
     {
       events: [
@@ -193,7 +194,7 @@
         LUNCH,
         { start: 810, end: 870, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
       ],
-      idle: [{ start: 568, end: 574 }, { start: 671, end: 683 }],
+      pauses: [{ at: 571, minutes: 2 }, { at: 612, minutes: 2 }, { at: 649, minutes: 4 }],
     },
     {
       events: [
@@ -202,7 +203,7 @@
         LUNCH,
         { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
       ],
-      idle: [{ start: 606, end: 613 }],
+      pauses: [{ at: 552, minutes: 3 }, { at: 616, minutes: 2 }, { at: 663, minutes: 2 }],
     },
     {
       events: [
@@ -211,6 +212,7 @@
         LUNCH,
         { start: 810, end: 870, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
       ],
+      pauses: [{ at: 581, minutes: 2 }],
     },
     {
       events: [
@@ -230,16 +232,16 @@
 
   const now = new Date();
   const filmDate = filmWorkday(now);
-  /** The workweek around the film's day, with each day's offset from it. */
+  /** The workweek around the film's day, with each day's offset from it. Past days show their rails as recorded. */
   const days = WORKWEEK.map((workday, weekday) => {
     const offset = weekday + 1 - filmDate.getDay();
     const events = offset === 0 ? FILM_DAY : workday.events;
     return {
       offset,
       events,
-      idle: offset === 0 ? [] : (workday.idle ?? []),
       date: new Date(filmDate.getFullYear(), filmDate.getMonth(), filmDate.getDate() + offset),
-      rails: filmDayRails(events.flatMap((event) => (event.preset ? [{ start: event.start, end: event.end, preset: event.preset }] : []))),
+      rails: filmDayRails(events.flatMap((event) => (event.preset ? [{ start: event.start, end: event.end, preset: event.preset }] : [])))
+        .map((planned) => (offset < 0 ? filmRecordedRail(planned, workday.pauses ?? []) : planned)),
     };
   });
   const timezone = getLocalTimezone();
@@ -360,12 +362,9 @@
     return offset < 0 || (offset === 0 && end <= clock);
   }
 
-  /**
-   * The focus a rail of the week shows: what was recorded on past days, with the moments the user paused or was away
-   * left empty, and none yet on days to come.
-   */
-  function recordedFocus(rail: FilmRail, offset: number, idle: readonly FilmSpan[]): readonly FilmSpan[] {
-    return offset < 0 ? filmSpansWithout(rail.focus, idle) : [];
+  /** The focus a rail of the week shows: all of it recorded on past days, none yet on days to come. */
+  function recordedFocus(rail: FilmRail, offset: number): readonly FilmSpan[] {
+    return offset < 0 ? rail.focus : [];
   }
 
   /** Session minutes as minutes of the day. */
@@ -538,7 +537,7 @@
             style:border-left={isToday || otherGrow > 0 ? "1px solid var(--cal-gridline)" : undefined}
           >
             {#each day.rails as dayRail (dayRail.start)}
-              {@render rail(dayRail.start, dayRail.end, recordedFocus(dayRail, day.offset, day.idle), dayRail.breaks, false)}
+              {@render rail(dayRail.start, dayRail.end, recordedFocus(dayRail, day.offset), dayRail.breaks, false)}
             {/each}
 
             {#if isToday && !saved}

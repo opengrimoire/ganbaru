@@ -17,7 +17,7 @@ import {
   filmSessionMinute,
   filmSessionMoment,
   filmSpan,
-  filmSpansWithout,
+  filmRecordedRail,
   filmWorkday,
   monotoneCurve,
 } from "./welcome-film";
@@ -260,32 +260,36 @@ describe("filmWorkday", () => {
   });
 });
 
-describe("filmSpansWithout", () => {
-  const focus = [{ start: 0, end: 30 }, { start: 35, end: 60 }];
+describe("filmRecordedRail", () => {
+  /** Creative from nine to half past ten: focus 540 to 565, break 565 to 570, and so on. */
+  const [rail] = filmDayRails([{ start: 540, end: 630, preset: "creative" }]);
 
-  it("leaves a gap inside a span empty", () => {
-    expect(filmSpansWithout(focus, [{ start: 10, end: 18 }])).toEqual([
-      { start: 0, end: 10 },
-      { start: 18, end: 30 },
-      { start: 35, end: 60 },
+  it("keeps the plan without pauses", () => {
+    expect(filmRecordedRail(rail, [])).toEqual(rail);
+  });
+
+  it("leaves a pause empty and carries every later phase that much later", () => {
+    const recorded = filmRecordedRail(rail, [{ at: 550, minutes: 3 }]);
+    expect(recorded.focus.slice(0, 3)).toEqual([
+      { start: 540, end: 550 },
+      { start: 553, end: 568 },
+      { start: 573, end: 598 },
     ]);
+    expect(recorded.breaks.map((pause) => pause.start)).toEqual(rail.breaks.map((pause) => pause.start + 3));
   });
 
-  it("trims gaps that cross a span's edges and drops a span a gap covers", () => {
-    expect(filmSpansWithout(focus, [{ start: 25, end: 40 }])).toEqual([{ start: 0, end: 25 }, { start: 40, end: 60 }]);
-    expect(filmSpansWithout(focus, [{ start: -5, end: 30 }])).toEqual([{ start: 35, end: 60 }]);
+  it("adds up several pauses and still ends the rail with its events", () => {
+    const recorded = filmRecordedRail(rail, [{ at: 580, minutes: 2 }, { at: 550, minutes: 3 }]);
+    expect(recorded.end).toBe(rail.end);
+    expect(recorded.breaks[1].start).toBe(rail.breaks[1].start + 5);
+    const pieces = [...recorded.focus, ...recorded.breaks].sort((left, right) => left.start - right.start);
+    expect(pieces.at(-1)?.end).toBe(rail.end);
+    expect(pieces.every((piece) => piece.end > piece.start && piece.end <= rail.end)).toBe(true);
+    const covered = pieces.reduce((total, piece) => total + piece.end - piece.start, 0);
+    expect(covered).toBe(rail.end - rail.start - 5);
   });
 
-  it("handles unordered and overlapping gaps", () => {
-    expect(filmSpansWithout(focus, [{ start: 50, end: 55 }, { start: 5, end: 10 }, { start: 8, end: 12 }])).toEqual([
-      { start: 0, end: 5 },
-      { start: 12, end: 30 },
-      { start: 35, end: 50 },
-      { start: 55, end: 60 },
-    ]);
-  });
-
-  it("keeps the spans as they are without gaps", () => {
-    expect(filmSpansWithout(focus, [])).toEqual(focus);
+  it("ignores a pause that does not fall in focus", () => {
+    expect(filmRecordedRail(rail, [{ at: 567, minutes: 2 }, { at: 700, minutes: 2 }])).toEqual(rail);
   });
 });

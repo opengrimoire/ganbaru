@@ -308,18 +308,47 @@ export function filmWorkday(now: Date): Date {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
 }
 
-/** `spans` with every part that falls in one of `gaps` cut out, as a recorded rail leaves a pause or an absence empty. */
-export function filmSpansWithout(spans: readonly FilmSpan[], gaps: readonly FilmSpan[]): FilmSpan[] {
-  const ordered = [...gaps].sort((left, right) => left.start - right.start);
-  const result: FilmSpan[] = [];
-  for (const span of spans) {
-    let cursor = span.start;
-    for (const gap of ordered) {
-      if (gap.end <= cursor || gap.start >= span.end) continue;
-      if (gap.start > cursor) result.push({ start: cursor, end: gap.start });
-      cursor = Math.max(cursor, gap.end);
+/** A pause in recorded focus: the minute of the day it started, and how long it lasted. */
+export interface FilmPause {
+  at: number;
+  minutes: number;
+}
+
+/**
+ * A rail as it was recorded on a day the user paused, as Focus records a pause: the countdown freezes, so the gap
+ * stays empty and focus resumes after it with the same time left, carrying every later phase that much later. The
+ * rail still ends with its events. Pauses are short, since a long absence fails the focus instead of pausing it.
+ *
+ * @param rail The rail as it was planned.
+ * @param pauses Pauses in minutes of the day; one that falls outside the rail's focus is ignored.
+ */
+export function filmRecordedRail(rail: FilmRail, pauses: readonly FilmPause[]): FilmRail {
+  const ordered = [...pauses].sort((left, right) => left.at - right.at);
+  const phases = [
+    ...rail.focus.map((span) => ({ span, long: null })),
+    ...rail.breaks.map((span) => ({ span, long: span.long })),
+  ].sort((left, right) => left.span.start - right.span.start);
+  const focus: FilmSpan[] = [];
+  const breaks: FilmBreak[] = [];
+  let shift = 0;
+  for (const { span, long } of phases) {
+    const start = span.start + shift;
+    let end = span.end + shift;
+    if (long !== null) {
+      breaks.push({ start, end, long });
+      continue;
     }
-    if (cursor < span.end) result.push({ start: cursor, end: span.end });
+    let cursor = start;
+    for (const pause of ordered) {
+      if (pause.at <= cursor || pause.at >= end) continue;
+      focus.push({ start: cursor, end: pause.at });
+      cursor = pause.at + pause.minutes;
+      end += pause.minutes;
+      shift += pause.minutes;
+    }
+    focus.push({ start: cursor, end });
   }
-  return result;
+  const clip = <T extends FilmSpan>(spans: T[]): T[] =>
+    spans.filter((span) => span.start < rail.end).map((span) => ({ ...span, end: Math.min(span.end, rail.end) }));
+  return { start: rail.start, end: rail.end, focus: clip(focus), breaks: clip(breaks) };
 }

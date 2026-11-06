@@ -119,4 +119,13 @@ describe("pre-vault language preference", () => {
     expect(entries.find((entry) => entry.id === "ja")?.detail).toBe("日本語");
     expect(entries.find((entry) => entry.id === "ar")?.detail).toBe("العربية");
   });
+
+  it("gives each planned language a note in its own language and direction", () => {
+    const entries = plannedLanguageEntries();
+
+    for (const entry of entries) expect(entry.notice.trim()).not.toBe("");
+    expect(new Set(entries.map((entry) => entry.notice)).size).toBe(entries.length);
+    expect(entries.find((entry) => entry.id === "fr")?.notice).toBe("Disponible dans une version future.");
+    expect(entries.find((entry) => entry.id === "ar")).toMatchObject({ notice: "ستتوفر في إصدار مستقبلي.", direction: "rtl" });
+  });
 });

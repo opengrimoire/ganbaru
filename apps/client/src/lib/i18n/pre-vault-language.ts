@@ -8,6 +8,7 @@ import {
   resolveLanguagePreference,
   type AppLocale,
   type LanguagePreference,
+  type LocaleDirection,
 } from "./locales";
 
 export const PRE_VAULT_LANGUAGE_STORAGE_KEY = "ganbaru.preVaultLanguagePreference";
@@ -33,6 +34,10 @@ export interface PlannedLanguageEntry {
   readonly title: string;
   /** The language's own name, written in that language. */
   readonly detail: string;
+  /** A note, written in that language, that it is coming in a future version. */
+  readonly notice: string;
+  /** The language's text direction, which `notice` keeps while staying left-aligned. */
+  readonly direction: LocaleDirection;
 }
 
 const ENGLISH_NAME_ORDER = new Intl.Collator(DEFAULT_LOCALE);
@@ -42,9 +47,13 @@ const ENGLISH_NAME_ORDER = new Intl.Collator(DEFAULT_LOCALE);
  * English names. English names lead so the order reads the same whatever the interface language.
  */
 export function plannedLanguageEntries(): PlannedLanguageEntry[] {
-  return PLANNED_LOCALES.map((locale) => ({ id: locale.id, title: locale.label, detail: locale.nativeLabel })).sort(
-    (a, b) => ENGLISH_NAME_ORDER.compare(a.title, b.title),
-  );
+  return PLANNED_LOCALES.map((locale) => ({
+    id: locale.id,
+    title: locale.label,
+    detail: locale.nativeLabel,
+    notice: locale.comingNotice,
+    direction: locale.direction,
+  })).sort((a, b) => ENGLISH_NAME_ORDER.compare(a.title, b.title));
 }
 
 /** The locales the browser or webview reports, most preferred first. */

@@ -42,22 +42,24 @@ export interface PlannedLocale {
   readonly label: string;
   readonly nativeLabel: string;
   readonly direction: LocaleDirection;
+  /** A short note, written in the language itself, that it is coming in a future version. */
+  readonly comingNotice: string;
 }
 
 /** The languages planned after English and Spanish, in their intended order. */
 export const PLANNED_LOCALES: readonly PlannedLocale[] = Object.freeze([
-  { id: "pt-BR", label: "Portuguese (Brazil)", nativeLabel: "Português (Brasil)", direction: "ltr" },
-  { id: "fr", label: "French", nativeLabel: "Français", direction: "ltr" },
-  { id: "de", label: "German", nativeLabel: "Deutsch", direction: "ltr" },
-  { id: "it", label: "Italian", nativeLabel: "Italiano", direction: "ltr" },
-  { id: "ja", label: "Japanese", nativeLabel: "日本語", direction: "ltr" },
-  { id: "ko", label: "Korean", nativeLabel: "한국어", direction: "ltr" },
-  { id: "zh-Hans", label: "Chinese (Simplified)", nativeLabel: "简体中文", direction: "ltr" },
-  { id: "ru", label: "Russian", nativeLabel: "Русский", direction: "ltr" },
-  { id: "hi", label: "Hindi", nativeLabel: "हिन्दी", direction: "ltr" },
-  { id: "ar", label: "Arabic", nativeLabel: "العربية", direction: "rtl" },
-  { id: "tr", label: "Turkish", nativeLabel: "Türkçe", direction: "ltr" },
-  { id: "id", label: "Indonesian", nativeLabel: "Bahasa Indonesia", direction: "ltr" },
+  { id: "pt-BR", label: "Portuguese (Brazil)", nativeLabel: "Português (Brasil)", direction: "ltr", comingNotice: "Disponível em uma versão futura." },
+  { id: "fr", label: "French", nativeLabel: "Français", direction: "ltr", comingNotice: "Disponible dans une version future." },
+  { id: "de", label: "German", nativeLabel: "Deutsch", direction: "ltr", comingNotice: "In einer zukünftigen Version verfügbar." },
+  { id: "it", label: "Italian", nativeLabel: "Italiano", direction: "ltr", comingNotice: "Disponibile in una versione futura." },
+  { id: "ja", label: "Japanese", nativeLabel: "日本語", direction: "ltr", comingNotice: "今後のバージョンで対応予定です。" },
+  { id: "ko", label: "Korean", nativeLabel: "한국어", direction: "ltr", comingNotice: "향후 버전에서 지원될 예정입니다." },
+  { id: "zh-Hans", label: "Chinese (Simplified)", nativeLabel: "简体中文", direction: "ltr", comingNotice: "将在未来版本中提供。" },
+  { id: "ru", label: "Russian", nativeLabel: "Русский", direction: "ltr", comingNotice: "Появится в одной из следующих версий." },
+  { id: "hi", label: "Hindi", nativeLabel: "हिन्दी", direction: "ltr", comingNotice: "भविष्य के संस्करण में उपलब्ध होगी।" },
+  { id: "ar", label: "Arabic", nativeLabel: "العربية", direction: "rtl", comingNotice: "ستتوفر في إصدار مستقبلي." },
+  { id: "tr", label: "Turkish", nativeLabel: "Türkçe", direction: "ltr", comingNotice: "Gelecek bir sürümde kullanılabilir olacak." },
+  { id: "id", label: "Indonesian", nativeLabel: "Bahasa Indonesia", direction: "ltr", comingNotice: "Akan tersedia di versi mendatang." },
 ]);
 
 const APP_LOCALE_SET = new Set<string>(APP_LOCALES);

@@ -625,6 +625,12 @@ interface EventWithRange {
 /** Minimum event duration in minutes that maps to MIN_EVENT_HEIGHT at default zoom. */
 const MIN_EVENT_MINUTES = (MIN_EVENT_HEIGHT / 67) * 60;
 
+/**
+ * Share of a day column's event area, in percent, that events leave free on the right so a new event can still be
+ * drawn there.
+ */
+export const CALENDAR_EVENT_RIGHT_GUTTER_PCT = 12;
+
 export function layoutEventsForDay(
   events: CalendarEvent[],
   dateStr?: string,
@@ -698,8 +704,7 @@ export function layoutEventsForDay(
     }
 
     const totalColumns = columns.length;
-    const RIGHT_GUTTER_PCT = 12;
-    const usable = 100 - RIGHT_GUTTER_PCT;
+    const usable = 100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT;
 
     for (let colIdx = 0; colIdx < columns.length; colIdx++) {
       for (const item of columns[colIdx]) {

@@ -54,6 +54,7 @@
   import { DEFAULT_PLAYBACK_SNAPSHOT, MAX_VOLUME } from "$lib/music/playback";
   import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
   import {
+    CALENDAR_EVENT_RIGHT_GUTTER_PCT,
     dayNameFormatForWidth,
     formatDayName,
     formatTimeRange,
@@ -454,7 +455,8 @@
   {@const colors = outline ? getEventColor(color, theme.current) : eventColors(color, past)}
   {@const shownIcons = px(end - start) >= EVENT_ICONS_MIN_PX ? ICON_ORDER.filter((icon) => icons.includes(icon)) : []}
   <div
-    class="absolute inset-x-0 flex overflow-hidden rounded text-[0.8rem] leading-tight"
+    class="absolute left-0 flex overflow-hidden rounded text-[0.8rem] leading-tight"
+    style:width={`${100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT}%`}
     style:top={`${y(start)}px`}
     style:height={`${px(end - start) - (eventBelow ? EVENT_GAP_PX : 0)}px`}
     style:background-color={colors.bg}

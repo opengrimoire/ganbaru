@@ -39,6 +39,9 @@
 <script lang="ts">
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import type { EventColor } from "$lib/calendar/types";
+  import Music from "@lucide/svelte/icons/eighth-notes";
+  import Repeat from "@lucide/svelte/icons/repeat";
+  import Users from "@lucide/svelte/icons/users";
   import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
   import {
     dayNameFormatForWidth,
@@ -129,13 +132,17 @@
   /** The planned event's breaks while it has its rail to itself. */
   const PLANNED_BREAKS = inDay(FILM_PLANNED_RAIL.breaks);
 
-  /** Palette slots, so the drawing follows the active theme's event colors. The session keeps the default color. */
+  /** Palette slots, so the drawing follows the active theme's event colors. Meals take the Eating routine's color. */
   const BLUE = 18;
   const PURPLE = 22;
-  const ORANGE = 7;
   const CYAN = 16;
+  const LAVENDER = 20;
+  const TAUPE = 28;
+  const EATING = 13;
 
-  type FilmTitle = "writeChapter" | "reviewNotes" | "lunch" | "draftOutline" | "readSources";
+  type FilmTitle = "writeChapter" | "reviewNotes" | "lunch" | "draftOutline" | "readSources" | "teamMeeting";
+  /** The Calendar's event icons: a repeating event, one with music, and a meeting. */
+  type FilmIcon = "music" | "repeat" | "meeting";
   interface FilmEvent {
     start: number;
     end: number;
@@ -143,7 +150,16 @@
     title: FilmTitle;
     /** The Focus preset of a Focus event. */
     preset?: PomodoroPresetKey;
+    icons?: readonly FilmIcon[];
   }
+
+  /** The Calendar's icon order on an event. */
+  const ICON_ORDER: readonly FilmIcon[] = ["music", "repeat", "meeting"];
+  /** Minimum height for an event to show its icons. */
+  const EVENT_ICONS_MIN_PX = 17;
+  const LUNCH_ICONS: readonly FilmIcon[] = ["repeat"];
+  const MUSIC_ICONS: readonly FilmIcon[] = ["music"];
+  const MEETING_ICONS: readonly FilmIcon[] = ["repeat", "meeting"];
 
   /**
    * The days shown once the view pulls back, as offsets from today, and what else each day holds. Focus events run
@@ -152,29 +168,31 @@
    */
   const WEEK: readonly { offset: number; events: readonly FilmEvent[] }[] = [
     { offset: -3, events: [
-      { start: 540, end: 610, color: BLUE, title: "readSources", preset: "balanced" },
+      { start: 540, end: 610, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
       { start: 610, end: 705, color: CYAN, title: "draftOutline", preset: "creative" },
-      { start: 720, end: 780, color: ORANGE, title: "lunch" },
+      { start: 720, end: 780, color: EATING, title: "lunch", icons: LUNCH_ICONS },
     ] },
     { offset: -2, events: [
       { start: 530, end: 620, color: CYAN, title: "draftOutline", preset: "deep" },
       { start: 620, end: 690, color: PURPLE, title: "reviewNotes", preset: "creative" },
-      { start: 730, end: 790, color: ORANGE, title: "lunch" },
-      { start: 795, end: 840, color: BLUE, title: "readSources", preset: "deep" },
+      { start: 730, end: 790, color: EATING, title: "lunch", icons: LUNCH_ICONS },
+      { start: 795, end: 840, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
     ] },
     { offset: -1, events: [
       { start: 540, end: 600, color: CYAN, title: "draftOutline", preset: "creative" },
-      { start: 600, end: 715, color: BLUE, title: "readSources", preset: "deep" },
-      { start: 730, end: 790, color: ORANGE, title: "lunch" },
+      { start: 600, end: 715, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
+      { start: 730, end: 790, color: EATING, title: "lunch", icons: LUNCH_ICONS },
+      { start: 795, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
     ] },
     { offset: 0, events: [
-      { start: DRAWN_END, end: SESSION_END, color: BLUE, title: "readSources" },
-      { start: SESSION_END + 15, end: SESSION_END + 75, color: ORANGE, title: "lunch" },
+      { start: DRAWN_END, end: SESSION_END, color: BLUE, title: "readSources", icons: MUSIC_ICONS },
+      { start: SESSION_END + 15, end: SESSION_END + 75, color: EATING, title: "lunch", icons: LUNCH_ICONS },
     ] },
     { offset: 1, events: [
-      { start: SESSION_START, end: 600, color: undefined, title: "writeChapter", preset: "creative" },
+      { start: SESSION_START, end: 600, color: TAUPE, title: "writeChapter", preset: "creative" },
       { start: 600, end: 690, color: PURPLE, title: "reviewNotes", preset: "balanced" },
-      { start: 720, end: 780, color: ORANGE, title: "lunch" },
+      { start: 720, end: 780, color: EATING, title: "lunch", icons: LUNCH_ICONS },
+      { start: 795, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
     ] },
   ];
 
@@ -288,6 +306,7 @@
       case "lunch": return t("vaultSetup.film.lunch");
       case "draftOutline": return t("vaultSetup.film.draftOutline");
       case "readSources": return t("vaultSetup.film.readSources");
+      case "teamMeeting": return t("vaultSetup.film.teamMeeting");
     }
   }
 
@@ -356,8 +375,10 @@
   past: boolean,
   outline: boolean,
   eventBelow = false,
+  icons: readonly FilmIcon[] = [],
 )}
   {@const colors = outline ? getEventColor(color, theme.current) : eventColors(color, past)}
+  {@const shownIcons = px(end - start) >= EVENT_ICONS_MIN_PX ? ICON_ORDER.filter((icon) => icons.includes(icon)) : []}
   <div
     class="absolute inset-x-0 flex overflow-hidden rounded text-[0.8rem] leading-tight"
     style:top={`${y(start)}px`}
@@ -368,7 +389,24 @@
     style:z-index={outline ? 10 : 3}
   >
     <div class="relative min-w-0 flex-1 overflow-hidden px-1 py-0.5">
-      <div class="truncate font-medium">{label}</div>
+      {#if shownIcons.length > 0}
+        <div
+          class="absolute right-1 flex items-center gap-0.5"
+          style:top="5px"
+          style:color={`color-mix(in srgb, ${colors.text} 70%, ${colors.bg})`}
+        >
+          {#each shownIcons as icon (icon)}
+            {#if icon === "music"}
+              <Music size={9} class="shrink-0" />
+            {:else if icon === "repeat"}
+              <Repeat size={9} class="shrink-0" />
+            {:else}
+              <Users size={9} class="shrink-0" />
+            {/if}
+          {/each}
+        </div>
+      {/if}
+      <div class="truncate font-medium" class:pr-5={shownIcons.length > 0}>{label}</div>
       {#if px(end - start) >= EVENT_TIME_MIN_PX}
         <div class="truncate" style:color={`color-mix(in srgb, ${colors.text} 80%, ${colors.bg})`}>{timeRange(start, end)}</div>
       {/if}
@@ -481,6 +519,7 @@
                   isPast(day.offset, event.end),
                   false,
                   day.events.some((other) => other.start === event.end),
+                  event.icons,
                 )}
               {/each}
 
@@ -488,7 +527,7 @@
                 {#if creating}
                   {@render eventBlock(SESSION_START, SESSION_START + drawnMinutes, undefined, t("calendar.event.noTitle"), false, true)}
                 {:else if saved}
-                  {@render eventBlock(SESSION_START, DRAWN_END, undefined, title("writeChapter"), isPast(0, DRAWN_END), false, true)}
+                  {@render eventBlock(SESSION_START, DRAWN_END, TAUPE, title("writeChapter"), isPast(0, DRAWN_END), false, true)}
                 {/if}
 
                 <!-- The press that draws the session, following its growing edge. -->

@@ -8,13 +8,13 @@ import type { MessageShape } from "../types";
 
 export const vaultSetup = {
   welcomeHeadline: "Planea tu día. Y cúmplelo de verdad.",
-  welcomeBody: "Calendario, sesiones de enfoque y proyectos funcionan como uno solo, para que el tiempo que planeas se convierta en progreso visible.",
+  welcomeBody: "Planea en el calendario, enfócate desde ahí y mira cómo tu semana se llena con el trabajo que de verdad hiciste.",
   welcomeFreeOpenSource: "Gratis y de código abierto",
   welcomeNoAccount: "Sin cuentas",
   welcomeLocalData: "Tus datos se quedan en tus dispositivos",
   film: {
     description:
-      "Una breve animación de un día en la app: se planea una sesión de trabajo en el calendario, se mantiene mientras se bloquea una app que distrae y se toma un descanso, y luego cuenta para su proyecto mientras aparece la semana.",
+      "Una breve animación de un día en la app: se planea una sesión de enfoque en el calendario, pasa por su descanso y su final, y luego aparece junto a las demás sesiones de la semana.",
     actPlan: "Planea",
     actFocus: "Enfócate",
     actProgress: "Avanza",
@@ -22,12 +22,8 @@ export const vaultSetup = {
     writeChapter: "Escribir capítulo 3",
     reviewNotes: "Revisar notas",
     lunch: "Comida",
-    focus: "Enfoque",
-    break: "Descanso",
-    blocked: "Bloqueada",
-    sessionDone: "Sesión completada",
-    project: "Tesis",
-    tasksDone: (done: number, total: number) => `${done} de ${total} tareas`,
+    draftOutline: "Escribir esquema",
+    readSources: "Leer fuentes",
   },
   licenseButton: "Licencia (AGPL 3.0)",
   sourceCode: "Código fuente",

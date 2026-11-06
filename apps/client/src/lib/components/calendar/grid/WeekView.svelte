@@ -2,6 +2,7 @@
   import type { CalendarEvent, PersistedSegment, PositionedAllDayEvent, PositionedEvent } from "$lib/calendar/types";
   import type { DayNameFormat, TimezoneAbbrMode } from "$lib/calendar/utils";
   import {
+    dayNameFormatForWidth,
     formatDayName,
     formatDatePart,
     getEventColor,
@@ -129,11 +130,7 @@
     const el = headerCells[0];
     if (!el) return;
     const observer = new ResizeObserver((entries) => {
-      const w = entries[0].contentBoxSize[0].inlineSize;
-      if (w >= 110) dayFormat = "long";
-      else if (w >= 60) dayFormat = "short";
-      else if (w >= 36) dayFormat = "narrow";
-      else dayFormat = "none";
+      dayFormat = dayNameFormatForWidth(entries[0].contentBoxSize[0].inlineSize);
     });
     observer.observe(el);
     return () => observer.disconnect();

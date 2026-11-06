@@ -1,14 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   FILM_BEATS,
+  FILM_BREAKS,
+  FILM_LEAD_IN_MINUTES,
   FILM_SESSION_MINUTES,
   easeInOutCubic,
   filmAct,
-  filmBreakSpans,
+  filmClockMinute,
+  filmFocusSpans,
   filmSessionMinute,
   filmSessionMoment,
   filmSpan,
-  formatFilmCountdown,
   monotoneCurve,
 } from "./welcome-film";
 
@@ -70,15 +72,33 @@ describe("filmSpan and easing", () => {
 });
 
 describe("the film's session", () => {
-  it("is still before Focus starts and complete before it is marked done", () => {
+  it("is still before Focus starts and complete when the session ends", () => {
     expect(filmSessionMinute(FILM_BEATS.focusStart)).toBe(0);
-    expect(filmSessionMinute(FILM_BEATS.sessionDone)).toBe(FILM_SESSION_MINUTES);
+    expect(filmSessionMinute(FILM_BEATS.sessionEnd)).toBe(FILM_SESSION_MINUTES);
   });
 
-  it("slows down while the distracting app is blocked", () => {
-    const blockedRate = filmSessionMinute(FILM_BEATS.distractionBlocked + 50) - filmSessionMinute(FILM_BEATS.distractionBlocked);
-    const runningRate = filmSessionMinute(3400) - filmSessionMinute(3350);
-    expect(blockedRate).toBeLessThan(runningRate / 3);
+  it("walks the current time up to the session as Focus starts, then follows it", () => {
+    expect(filmClockMinute(0)).toBe(-FILM_LEAD_IN_MINUTES);
+    expect(filmClockMinute(FILM_BEATS.focusStart)).toBe(0);
+    let previous = filmClockMinute(0);
+    for (let elapsed = 0; elapsed <= FILM_BEATS.end; elapsed += 25) {
+      const minute = filmClockMinute(elapsed);
+      expect(minute).toBeGreaterThanOrEqual(previous);
+      previous = minute;
+    }
+    expect(filmClockMinute(FILM_BEATS.breakEnd)).toBe(filmSessionMinute(FILM_BEATS.breakEnd));
+    expect(filmClockMinute(FILM_BEATS.end)).toBe(FILM_SESSION_MINUTES);
+  });
+
+  it("spans the break exactly while the break screen is up", () => {
+    expect(filmSessionMinute(FILM_BEATS.breakStart)).toBeCloseTo(50, 9);
+    expect(filmSessionMinute(FILM_BEATS.breakEnd)).toBeCloseTo(60, 9);
+  });
+
+  it("slows down during the break so its countdown can be read", () => {
+    const breakRate = filmSessionMinute(FILM_BEATS.breakStart + 600) - filmSessionMinute(FILM_BEATS.breakStart + 500);
+    const focusRate = filmSessionMinute(3100) - filmSessionMinute(3000);
+    expect(breakRate).toBeLessThan(focusRate / 3);
   });
 
   it("counts down each phase and finishes as done", () => {
@@ -89,10 +109,15 @@ describe("the film's session", () => {
     expect(filmSessionMoment(FILM_SESSION_MINUTES)).toEqual({ kind: "done" });
   });
 
-  it("reports the break once it has begun, clipped to the current minute", () => {
-    expect(filmBreakSpans(50)).toEqual([]);
-    expect(filmBreakSpans(55)).toEqual([{ start: 50, end: 55 }]);
-    expect(filmBreakSpans(90)).toEqual([{ start: 50, end: 60 }]);
+  it("marks its break before it happens", () => {
+    expect(FILM_BREAKS).toEqual([{ start: 50, end: 60 }]);
+  });
+
+  it("records focus up to the current minute and skips the break", () => {
+    expect(filmFocusSpans(0)).toEqual([]);
+    expect(filmFocusSpans(30)).toEqual([{ start: 0, end: 30 }]);
+    expect(filmFocusSpans(55)).toEqual([{ start: 0, end: 50 }]);
+    expect(filmFocusSpans(80)).toEqual([{ start: 0, end: 50 }, { start: 60, end: 80 }]);
   });
 });
 
@@ -101,15 +126,7 @@ describe("filmAct", () => {
     expect(filmAct(0)).toEqual({ act: "plan", progress: 0 });
     expect(filmAct(FILM_BEATS.focusStart / 2).act).toBe("plan");
     expect(filmAct(FILM_BEATS.focusStart)).toEqual({ act: "focus", progress: 0 });
-    expect(filmAct(FILM_BEATS.projectIn).act).toBe("progress");
+    expect(filmAct(FILM_BEATS.pullBack).act).toBe("progress");
     expect(filmAct(FILM_BEATS.end)).toEqual({ act: "progress", progress: 1 });
-  });
-});
-
-describe("formatFilmCountdown", () => {
-  it("formats minutes and padded seconds", () => {
-    expect(formatFilmCountdown(3000)).toBe("50:00");
-    expect(formatFilmCountdown(65)).toBe("1:05");
-    expect(formatFilmCountdown(-3)).toBe("0:00");
   });
 });

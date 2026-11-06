@@ -4,21 +4,21 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
   import { FILM_BEATS, filmAct, type FilmAct } from "$lib/vault/welcome-film";
-  import WelcomeFilmScene from "./WelcomeFilmScene.svelte";
+  import WelcomeFilmScene, { FILM_SCENE_HEIGHT, FILM_SCENE_WIDTH } from "./WelcomeFilmScene.svelte";
 
   /**
-   * Plays the welcome film once, scaled to the room it is given, with its chapters underneath and a replay at the
+   * Plays the welcome film once, zoomed to the room it is given, with its chapters underneath and a replay at the
    * end. With reduced motion it shows the last frame as a still. When the room is too small for the canvas to stay
-   * legible, the film steps aside and leaves the space to the text and actions.
+   * legible, the film steps aside and leaves the space to the text and actions. The canvas is sized with CSS zoom
+   * rather than a transform, so its text is laid out and rasterized at the final size instead of being scaled.
    */
   let { class: className = "" }: { class?: string } = $props();
 
   const { t } = getLocalization();
 
-  /** The scene's canvas plus its border, in logical pixels. */
-  const SCENE_W = 362;
-  const SCENE_H = 306;
-  /** Breathing room around the canvas; its glow may spill past it and is clipped by the page. */
+  const SCENE_W = FILM_SCENE_WIDTH;
+  const SCENE_H = FILM_SCENE_HEIGHT;
+  /** Breathing room around the canvas for its shadow. */
   const SCENE_MARGIN = 16;
   /** Below this scale the drawing stops reading as an app; above it, it starts to look like a poster. */
   const MIN_ZOOM = 0.55;
@@ -104,17 +104,17 @@
 </script>
 
 <figure class={cn("flex min-h-0 flex-col", className)}>
-  <!-- The canvas sits out of the flow so its scale never changes the room it is measured against. -->
+  <!-- The canvas sits out of the flow so its zoom never changes the room it is measured against. -->
   <div class="relative min-h-0 flex-1" bind:clientWidth={width} bind:clientHeight={height} aria-hidden="true">
     {#if shown}
       <div class="absolute inset-0 flex items-center justify-center">
         <div style:width={`${SCENE_W * zoom}px`} style:height={`${SCENE_H * zoom}px`}>
           <div
             class={cn(
-              "origin-top-left transition-opacity ease-in-out motion-reduce:transition-none",
+              "transition-opacity ease-in-out motion-reduce:transition-none",
               fading ? "opacity-0" : "opacity-100",
             )}
-            style:transform={`scale(${zoom})`}
+            style:zoom={zoom}
             style:transition-duration={`${RESTART_FADE_MS}ms`}
           >
             {#key cycle}

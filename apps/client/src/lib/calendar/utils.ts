@@ -374,6 +374,14 @@ export function formatMonthYear(
 
 export type DayNameFormat = "long" | "short" | "narrow" | "none";
 
+/** The widest day name a day column header of `width` pixels can show next to the day number. */
+export function dayNameFormatForWidth(width: number): DayNameFormat {
+  if (width >= 110) return "long";
+  if (width >= 60) return "short";
+  if (width >= 36) return "narrow";
+  return "none";
+}
+
 export function formatDayName(
   date: Date,
   format: DayNameFormat,

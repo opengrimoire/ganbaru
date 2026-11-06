@@ -1,591 +1,534 @@
+<script lang="ts" module>
+  import { GUTTER_WIDTH_PER_TIMEZONE } from "$lib/calendar/timezone-utils";
+
+  /** Canvas geometry in logical pixels, matching the Calendar's own measures at its default zoom. */
+  const CANVAS_W = 360;
+  const TOP_BAR_H = 36;
+  const HEADER_H = 40;
+  const HOUR_PX = 50;
+  /** The visible part of the day, in minutes since midnight, as if the grid were scrolled to the morning. */
+  const VIEW_START = 8 * 60 + 30;
+  const VIEW_MINUTES = 5 * 60;
+  const BODY_H = (VIEW_MINUTES / 60) * HOUR_PX;
+  const CANVAS_H = TOP_BAR_H + HEADER_H + BODY_H;
+  const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
+  const DAYS_W = CANVAS_W - GUTTER_W;
+
+  /** The canvas plus its one pixel border, for the player to fit. */
+  export const FILM_SCENE_WIDTH = CANVAS_W + 2;
+  export const FILM_SCENE_HEIGHT = CANVAS_H + 2;
+</script>
+
 <script lang="ts">
-  import Ban from "@lucide/svelte/icons/ban";
-  import Check from "@lucide/svelte/icons/check";
-  import Coffee from "@lucide/svelte/icons/coffee";
-  import FolderKanban from "@lucide/svelte/icons/folder-kanban";
-  import Gamepad2 from "@lucide/svelte/icons/gamepad-2";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import type { EventColor } from "$lib/calendar/types";
-  import { getEventColor } from "$lib/calendar/utils";
-  import { formatDateTime } from "$lib/i18n/formatters";
+  import {
+    dayNameFormatForWidth,
+    formatDayName,
+    formatTimeRange,
+    getEventColor,
+    getHourInTimezone,
+    getLocalTimezone,
+    getPastEventColor,
+    getTimezoneInfo,
+  } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
+  import {
+    formatBlockedScreenDateTime,
+    formatBlockedScreenDuration,
+    formatBreakEndEarlyShortcut,
+    formatBreakExtensionHint,
+    formatBreakExtensionShortcut,
+    pomodoroBlockedScreenCopy,
+    pomodoroBlockedScreenPalette,
+    type PomodoroBlockedScreenPalette,
+  } from "$lib/pomodoro/blocked-screen";
+  import {
+    DEFAULT_FOCUS_BREAK_END_ESC_PRESSES,
+    DEFAULT_FOCUS_BREAK_EXTENSION_LIMIT,
+  } from "$lib/stores/preference-options";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
+  import { isThemeCalendarDark } from "$lib/themes";
   import { cn } from "$lib/utils";
   import {
     FILM_BEATS,
+    FILM_BREAKS,
     FILM_PULL_BACK_MS,
     FILM_SESSION_MINUTES,
     easeInOutCubic,
-    filmBreakSpans,
+    filmClockMinute,
+    filmFocusSpans,
     filmSessionMinute,
     filmSessionMoment,
     filmSpan,
-    formatFilmCountdown,
+    type FilmSpan,
   } from "$lib/vault/welcome-film";
 
   /**
-   * One frame of the welcome film, drawn from the Calendar's own surfaces: a day column with a Focus rail, the current
-   * time line, and a floating panel. Everything is laid out on a fixed canvas so the choreography lands on exact
-   * points; the player scales the canvas to fit.
+   * One frame of the welcome film, drawn with the Calendar's and Focus's own surfaces: the week grid with its Focus
+   * rails and current time, the top bar's Focus timer, and the break and finished screens. Every style is a function
+   * of `elapsed`, with no CSS transitions, so text is never handed to a compositing layer mid-animation and keeps its
+   * rendering from frame to frame.
    */
   let { elapsed }: { elapsed: number } = $props();
 
   const localization = getLocalization();
   const { t } = localization;
   const theme = getTheme();
+  const preferences = getPreferences();
+  const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
 
-  /** Canvas geometry in logical pixels. The visible day runs from `FIRST_HOUR` for `HOURS` hours. */
-  const CANVAS_W = 360;
-  const HEADER_H = 34;
-  const HOUR_PX = 45;
-  const HOURS = 6;
-  const FIRST_HOUR = 9;
-  const BODY_H = HOUR_PX * HOURS;
-  const CANVAS_H = HEADER_H + BODY_H;
-  const GUTTER_W = 34;
-  const BLOCK_RIGHT = 3;
-  const BADGE = 14;
-  const BADGE_INSET = 4;
-  const PANEL_W = 232;
-  const PANEL_H = 52;
-  const PANEL_INSET = 12;
-  const PANEL_PAD = 12;
-  const PANEL_BAR_BOTTOM = 10;
-  const PANEL_BAR_H = 4;
+  /** The Calendar's Focus rail, and the event area it keeps beside it on every event. */
+  const RAIL_LEFT = 2;
+  const RAIL_W = 6;
+  const EVENT_LEFT = RAIL_W + 4;
+  /** Minimum height for an event to show its time under its title. */
+  const EVENT_TIME_MIN_PX = 32;
+  /** How the drawn event snaps while it is dragged out, in minutes. */
+  const CREATE_SNAP_MINUTES = 10;
+  const PRESS_FADE_MS = 140;
+  const RAIL_REVEAL_MS = 450;
+  const SCREEN_FADE_MS = 260;
+  /** The week's recorded focus fills in one day after another once the view has pulled back. */
+  const WEEK_FILL_DELAY_MS = 350;
+  const WEEK_FILL_MS = 800;
+  const WEEK_FILL_STAGGER_MS = 180;
+  /** The Calendar's pulse on a break that is running. */
+  const BREAK_PULSE_MS = 1500;
 
-  /** The project the session counts toward, before and after it lands. */
-  const PROJECT_TASKS = 8;
-  const PROJECT_DONE_BEFORE = 3;
+  /** The session starts at nine. */
+  const SESSION_START = 9 * 60;
+  const SESSION_END = SESSION_START + FILM_SESSION_MINUTES;
+  const FULL_SESSION: readonly FilmSpan[] = [{ start: 0, end: 50 }, { start: 60, end: FILM_SESSION_MINUTES }];
+  const SHORT_SESSION: readonly FilmSpan[] = [{ start: 0, end: 50 }, { start: 60, end: 95 }];
 
-  /** Days shown once the view pulls back, as offsets from today. Only today is visible before that. */
-  const DAY_OFFSETS = [-3, -2, -1, 0, 1] as const;
-
-  /** Palette slots, so the drawing follows the active theme's event colors. */
+  /** Palette slots, so the drawing follows the active theme's event colors. The session keeps the default color. */
   const BLUE = 18;
   const PURPLE = 22;
   const ORANGE = 7;
   const CYAN = 16;
-  const VIOLET = 23;
 
-  type FocusRail = "live" | "done" | "planned";
-  interface FilmBlock {
+  type FilmTitle = "writeChapter" | "reviewNotes" | "lunch" | "draftOutline" | "readSources";
+  interface FilmEvent {
     start: number;
     end: number;
-    color: EventColor;
-    rail?: FocusRail;
+    color: EventColor | undefined;
+    title: FilmTitle;
+    /** A Focus event's recorded focus, in session minutes, or `planned` before it has run. */
+    focus?: readonly FilmSpan[] | "planned";
   }
 
-  /** The other days' blocks, in minutes from the first hour. Past sessions are done; tomorrow's are planned. */
-  const OTHER_DAYS: Record<number, readonly FilmBlock[]> = {
-    [-3]: [{ start: 0, end: 90, color: CYAN, rail: "done" }, { start: 150, end: 195, color: ORANGE }],
-    [-2]: [{ start: 30, end: 150, color: BLUE, rail: "done" }],
-    [-1]: [{ start: 0, end: 60, color: PURPLE, rail: "done" }, { start: 90, end: 150, color: CYAN, rail: "done" }],
-    1: [{ start: 0, end: FILM_SESSION_MINUTES, color: BLUE, rail: "planned" }, { start: 165, end: 200, color: PURPLE }],
-  };
+  /** The days shown once the view pulls back, as offsets from today, and what else each day holds. */
+  const WEEK: readonly { offset: number; events: readonly FilmEvent[] }[] = [
+    { offset: -3, events: [
+      { start: SESSION_START, end: SESSION_END, color: CYAN, title: "draftOutline", focus: FULL_SESSION },
+      { start: 750, end: 810, color: ORANGE, title: "lunch" },
+    ] },
+    { offset: -2, events: [
+      { start: 570, end: 570 + FILM_SESSION_MINUTES, color: BLUE, title: "readSources", focus: SHORT_SESSION },
+      { start: 720, end: 765, color: PURPLE, title: "reviewNotes" },
+    ] },
+    { offset: -1, events: [
+      { start: SESSION_START, end: SESSION_END, color: CYAN, title: "draftOutline", focus: FULL_SESSION },
+      { start: 690, end: 735, color: BLUE, title: "readSources" },
+    ] },
+    { offset: 0, events: [
+      { start: 660, end: 705, color: PURPLE, title: "reviewNotes" },
+      { start: 750, end: 810, color: ORANGE, title: "lunch" },
+    ] },
+    { offset: 1, events: [
+      { start: SESSION_START, end: SESSION_END, color: undefined, title: "writeChapter", focus: "planned" },
+      { start: 690, end: 735, color: PURPLE, title: "reviewNotes" },
+    ] },
+  ];
+  const PAST_DAYS = WEEK.filter((day) => day.offset < 0).length;
 
-  const today = new Date();
-  const days = DAY_OFFSETS.map((offset) => {
-    const date = new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset);
-    return { offset, date };
-  });
-  const hourLabels = Array.from({ length: HOURS - 1 }, (_, index) => index + 1);
+  const now = new Date();
+  const days = WEEK.map((day) => ({
+    ...day,
+    date: new Date(now.getFullYear(), now.getMonth(), now.getDate() + day.offset),
+  }));
+  const timezone = getLocalTimezone();
+  const timezoneLabel = getTimezoneInfo(timezone).acronym;
+  const hours = Array.from({ length: VIEW_MINUTES / 60 }, (_, index) => Math.ceil(VIEW_START / 60) + index)
+    .filter((hour) => hour * 60 > VIEW_START && hour * 60 < VIEW_START + VIEW_MINUTES);
 
-  const minute = $derived(filmSessionMinute(elapsed));
-  const created = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.createStart, FILM_BEATS.createEnd)));
-  const pressing = $derived(elapsed >= FILM_BEATS.createStart - 120 && elapsed < FILM_BEATS.createEnd + 160);
-  const focusing = $derived(elapsed >= FILM_BEATS.focusStart);
-  const done = $derived(elapsed >= FILM_BEATS.sessionDone);
-  /** The running phase, held on its last second until the session is marked done. */
-  const running = $derived.by(() => {
-    const moment = filmSessionMoment(Math.min(minute, FILM_SESSION_MINUTES - 0.01));
-    return moment.kind === "done" ? null : moment;
-  });
-  const breaks = $derived(filmBreakSpans(minute));
-  const distraction = $derived(elapsed >= FILM_BEATS.distractionIn && elapsed < FILM_BEATS.distractionOut);
-  const opening = $derived(elapsed >= FILM_BEATS.distractionOpen && elapsed < FILM_BEATS.distractionBlocked);
-  const blocked = $derived(elapsed >= FILM_BEATS.distractionBlocked);
-  const panel = $derived(elapsed < FILM_BEATS.sessionDone ? "session" : elapsed < FILM_BEATS.projectIn ? "done" : "project");
-  const sparkFlying = $derived(elapsed >= FILM_BEATS.sparkStart);
-  const landed = $derived(elapsed >= FILM_BEATS.sparkLand);
-  const pulledBack = $derived(elapsed >= FILM_BEATS.pullBack);
+  const breakCopy = $derived(pomodoroBlockedScreenCopy("break_countdown", t));
+  const finishedCopy = $derived(pomodoroBlockedScreenCopy("event_finished", t));
+  const breakPalette = pomodoroBlockedScreenPalette("break_countdown");
+  const finishedPalette = pomodoroBlockedScreenPalette("event_finished");
+  const extensionHint = formatBreakExtensionHint(0, DEFAULT_FOCUS_BREAK_EXTENSION_LIMIT, undefined, t) !== null
+    ? formatBreakExtensionShortcut()
+    : null;
+  const endBreakHint = formatBreakEndEarlyShortcut(0, DEFAULT_FOCUS_BREAK_END_ESC_PRESSES);
+
+  const calendarDark = $derived(isThemeCalendarDark(theme.current));
+  const clock = $derived(SESSION_START + filmClockMinute(elapsed));
+  const sessionMinute = $derived(filmSessionMinute(elapsed));
+  const moment = $derived(filmSessionMoment(sessionMinute));
+  const focusing = $derived(elapsed >= FILM_BEATS.focusStart && moment.kind !== "done");
+
+  /** The session while it is dragged out, then saved. */
+  const drawn = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.createStart, FILM_BEATS.createEnd)));
+  const drawnMinutes = $derived(
+    Math.max(CREATE_SNAP_MINUTES, Math.round((drawn * FILM_SESSION_MINUTES) / CREATE_SNAP_MINUTES) * CREATE_SNAP_MINUTES),
+  );
+  const creating = $derived(elapsed >= FILM_BEATS.createStart && elapsed < FILM_BEATS.createSaved);
+  const saved = $derived(elapsed >= FILM_BEATS.createSaved);
+  const pressOpacity = $derived(
+    filmSpan(elapsed, FILM_BEATS.createStart - PRESS_FADE_MS, FILM_BEATS.createStart)
+      * (1 - filmSpan(elapsed, FILM_BEATS.createEnd, FILM_BEATS.createEnd + PRESS_FADE_MS)),
+  );
+  const railReveal = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.railIn, FILM_BEATS.railIn + RAIL_REVEAL_MS)));
+
+  /** The pull back: other days open beside today, which narrows to one column of the week. */
+  const pullBack = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.pullBack, FILM_BEATS.pullBack + FILM_PULL_BACK_MS)));
+  const otherGrow = $derived(pullBack);
+  const dayFormat = $derived(dayNameFormatForWidth(DAYS_W / (1 + (days.length - 1) * otherGrow)));
+
+  const breakScreen = $derived(screenAlpha(FILM_BEATS.breakStart, FILM_BEATS.breakEnd + SCREEN_FADE_MS));
+  const finishedScreen = $derived(screenAlpha(FILM_BEATS.sessionEnd, FILM_BEATS.finishedOut));
+  /** The break's countdown, held at zero while its screen lifts. */
+  const breakSeconds = $derived(moment.kind === "break" ? moment.remainingSeconds : 0);
+  const breakPulse = $derived(0.7 - 0.2 * Math.cos((2 * Math.PI * elapsed) / BREAK_PULSE_MS));
   const settled = $derived(elapsed >= FILM_BEATS.end);
-  const projectDone = $derived(landed ? PROJECT_DONE_BEFORE + 1 : PROJECT_DONE_BEFORE);
 
-  const session = $derived(getEventColor(BLUE, theme.current));
-  const project = $derived(getEventColor(CYAN, theme.current));
-  const distractingApp = $derived(getEventColor(VIOLET, theme.current));
+  /** How visible a full screen is: it fades in from `start` and out until `end`. */
+  function screenAlpha(start: number, end: number): number {
+    return filmSpan(elapsed, start, start + SCREEN_FADE_MS) * (1 - filmSpan(elapsed, end - SCREEN_FADE_MS, end));
+  }
 
-  /** The spark leaves the session's done badge and lands where the project's progress is about to grow. */
-  const panelLeft = (CANVAS_W - PANEL_W) / 2;
-  const barWidth = PANEL_W - 2 * PANEL_PAD;
-  const sparkFrom = { x: CANVAS_W - BLOCK_RIGHT - BADGE_INSET - BADGE / 2, y: HEADER_H + BADGE_INSET + BADGE / 2 };
-  const sparkTo = {
-    x: panelLeft + PANEL_PAD + (barWidth * (PROJECT_DONE_BEFORE + 1)) / PROJECT_TASKS,
-    y: CANVAS_H - PANEL_INSET - PANEL_BAR_BOTTOM - PANEL_BAR_H / 2,
-  };
-  const sparkPath = `path("M ${sparkFrom.x} ${sparkFrom.y} C ${sparkFrom.x + 8} ${sparkFrom.y + 110}, ${sparkTo.x + 70} ${sparkTo.y - 30}, ${sparkTo.x} ${sparkTo.y}")`;
+  /** A color at `alpha`, so a screen fades by its colors rather than by opacity. */
+  function fade(color: string, alpha: number): string {
+    return alpha >= 1 ? color : `color-mix(in srgb, ${color} ${alpha * 100}%, transparent)`;
+  }
+
+  function screenStyle(palette: PomodoroBlockedScreenPalette, alpha: number): string {
+    return `--film-screen-bg: ${fade(palette.background, alpha)}; --film-screen-main: ${fade(palette.mainText, alpha)}; --film-screen-muted: ${fade(palette.mutedText, alpha)}; --film-screen-subtle: ${fade(palette.subtleText, alpha)};`;
+  }
+
+  function y(minuteOfDay: number): number {
+    return ((minuteOfDay - VIEW_START) / 60) * HOUR_PX;
+  }
 
   function px(minutes: number): number {
-    return (minutes * HOUR_PX) / 60;
+    return (minutes / 60) * HOUR_PX;
   }
 
-  function hourLabel(hour: number): string {
-    return formatDateTime(localization.locale, new Date(2000, 0, 1, FIRST_HOUR + hour), { hour: "numeric" });
+  function clockLabel(minuteOfDay: number): string {
+    const hour = Math.floor(minuteOfDay / 60);
+    const minute = Math.round(minuteOfDay % 60);
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
   }
 
   function timeRange(start: number, end: number): string {
-    const base = new Date(2000, 0, 1, FIRST_HOUR);
-    const from = new Date(base.getTime() + start * 60_000);
-    const to = new Date(base.getTime() + end * 60_000);
-    return new Intl.DateTimeFormat(localization.locale, { hour: "numeric", minute: "2-digit" }).formatRange(from, to);
+    return formatTimeRange(clockLabel(start), clockLabel(end), preferences.calendarTimeFormat, "compact");
+  }
+
+  function hourLabel(hour: number): string {
+    const label = getHourInTimezone(now, hour, timezone, preferences.calendarTimeFormat, "short");
+    if (preferences.calendarTimeFormat !== "12h") return label;
+    return label.replace(/\b(am|pm)\b$/, (period) => period.toUpperCase());
+  }
+
+  function title(key: FilmTitle): string {
+    switch (key) {
+      case "writeChapter": return t("vaultSetup.film.writeChapter");
+      case "reviewNotes": return t("vaultSetup.film.reviewNotes");
+      case "lunch": return t("vaultSetup.film.lunch");
+      case "draftOutline": return t("vaultSetup.film.draftOutline");
+      case "readSources": return t("vaultSetup.film.readSources");
+    }
+  }
+
+  function eventColors(color: EventColor | undefined, past: boolean) {
+    return preferences.calendarDimPastEvents && past ? getPastEventColor(color, theme.current) : getEventColor(color, theme.current);
+  }
+
+  function isPast(offset: number, end: number): boolean {
+    return offset < 0 || (offset === 0 && end <= clock);
+  }
+
+  /** How much of a past day's recorded focus is drawn, in session minutes, as the week fills in. */
+  function weekFill(offset: number): number {
+    if (offset >= 0) return FILM_SESSION_MINUTES;
+    const start = FILM_BEATS.pullBack + WEEK_FILL_DELAY_MS + (offset + PAST_DAYS) * WEEK_FILL_STAGGER_MS;
+    return easeInOutCubic(filmSpan(elapsed, start, start + WEEK_FILL_MS)) * FILM_SESSION_MINUTES;
+  }
+
+  function clip(spans: readonly FilmSpan[], minute: number): FilmSpan[] {
+    return spans.filter((span) => minute > span.start).map((span) => ({ start: span.start, end: Math.min(span.end, minute) }));
   }
 </script>
 
-{#snippet rail(kind: FocusRail, length: number, fill: number, bands: readonly { start: number; end: number }[])}
+{#snippet rail(start: number, end: number, recorded: readonly FilmSpan[], activeBreak: boolean, reveal: number)}
+  {@const length = end - start}
   <div
-    class="absolute left-0.5 top-0 w-1 overflow-hidden rounded-[3px] bg-(--cal-timeline-rail)"
+    class="pointer-events-none absolute z-3 overflow-hidden"
+    style:left={`${RAIL_LEFT}px`}
+    style:width={`${RAIL_W}px`}
+    style:top={`${y(start)}px`}
     style:height={`${px(length)}px`}
+    style:background-color="var(--cal-timeline-rail)"
+    style:border-radius="3px"
+    style:clip-path={reveal < 1 ? `inset(0 0 ${(1 - reveal) * 100}% 0)` : undefined}
   >
-    {#if kind !== "planned"}
+    {#each recorded as band (band.start)}
       <div
-        class="absolute inset-x-0 top-0 h-full origin-top bg-(--cal-timeline-focus)"
-        style:transform={`scaleY(${fill})`}
+        class="absolute inset-x-0"
+        style:top={`${(band.start / length) * 100}%`}
+        style:height={`${((band.end - band.start) / length) * 100}%`}
+        style:background-color="var(--cal-timeline-focus)"
       ></div>
-      {#each bands as band (band.start)}
-        <div
-          class="absolute inset-x-0 bg-(--cal-timeline-break)"
-          style:top={`${(band.start / length) * 100}%`}
-          style:height={`${((band.end - band.start) / length) * 100}%`}
-        ></div>
-      {/each}
-    {/if}
+    {/each}
+    {#each FILM_BREAKS as band (band.start)}
+      <div
+        class="absolute inset-x-0"
+        style:top={`${(band.start / length) * 100}%`}
+        style:height={`${((band.end - band.start) / length) * 100}%`}
+        style:background-color="var(--cal-timeline-break)"
+        style:opacity={activeBreak ? breakPulse : undefined}
+      ></div>
+    {/each}
   </div>
 {/snippet}
 
-{#snippet otherBlock(block: FilmBlock)}
-  {@const color = getEventColor(block.color, theme.current)}
-  <div class="absolute inset-x-0" style:top={`${px(block.start)}px`} style:height={`${px(block.end - block.start)}px`}>
-    {#if block.rail}
-      {@render rail(block.rail, block.end - block.start, 1, block.end - block.start > 60 ? [{ start: 50, end: 60 }] : [])}
-    {/if}
-    <div
-      class={cn("absolute inset-y-0 right-0.75 flex flex-col gap-1 rounded px-1 py-1.5", block.rail ? "left-2.25" : "left-0.75")}
-      style:background-color={color.bg}
-      style:color={color.text}
-    >
-      <span class="h-1 w-4/5 rounded-full bg-current opacity-60"></span>
-      <span class="h-1 w-1/2 rounded-full bg-current opacity-40"></span>
+{#snippet eventBlock(start: number, end: number, color: EventColor | undefined, label: string, past: boolean, outline: boolean)}
+  {@const colors = outline ? getEventColor(color, theme.current) : eventColors(color, past)}
+  <div
+    class="absolute inset-x-0 flex overflow-hidden rounded text-[0.8rem] leading-tight"
+    style:top={`${y(start)}px`}
+    style:height={`${px(end - start)}px`}
+    style:background-color={colors.bg}
+    style:color={colors.text}
+    style:outline={outline ? `2px solid color-mix(in oklab, ${colors.bg} 65%, ${calendarDark ? "white" : "black"})` : undefined}
+    style:z-index={outline ? 10 : 3}
+  >
+    <div class="relative min-w-0 flex-1 overflow-hidden px-1 py-0.5">
+      <div class="truncate font-medium">{label}</div>
+      {#if px(end - start) >= EVENT_TIME_MIN_PX}
+        <div class="truncate" style:color={`color-mix(in srgb, ${colors.text} 80%, ${colors.bg})`}>{timeRange(start, end)}</div>
+      {/if}
     </div>
   </div>
 {/snippet}
 
-{#snippet todayBlock(start: number, end: number, color: EventColor, title: string, shown: boolean)}
-  {@const entry = getEventColor(color, theme.current)}
-  <div
-    class={cn(
-      "absolute left-0.75 right-0.75 overflow-hidden rounded px-1.5 py-1 transition-[opacity,translate] duration-500 ease-out motion-reduce:transition-none",
-      shown ? "translate-y-0 opacity-100" : "-translate-y-1.5 opacity-0",
-    )}
-    style:top={`${px(start)}px`}
-    style:height={`${px(end - start)}px`}
-    style:background-color={entry.bg}
-    style:color={entry.text}
-  >
-    <p class="truncate text-[0.6875rem] font-medium leading-tight">{title}</p>
-    <p class="truncate text-[0.625rem] leading-tight opacity-85">{timeRange(start, end)}</p>
+<div
+  class="relative box-content flex flex-col overflow-hidden rounded-2xl border border-border bg-(--cal-bg) text-foreground shadow-xl"
+  style:width={`${CANVAS_W}px`}
+  style:height={`${CANVAS_H}px`}
+>
+  <!-- The top bar's Focus timer: its ring, and the time left once a session runs. -->
+  <div class="flex shrink-0 items-center justify-end bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
+    {#if focusing && moment.kind !== "done"}
+      <span class="grid h-8 grid-flow-col place-items-center gap-1.5 rounded-full bg-accent/70 pr-2.5 pl-1.5 text-sm font-medium text-foreground tabular-nums">
+        <PomodoroProgressRing
+          active
+          remainingSeconds={moment.remainingSeconds}
+          totalSeconds={moment.totalSeconds}
+          size={20}
+          trackClass="stroke-muted-foreground/35"
+          progressClass="text-foreground/76 stroke-foreground/76"
+        />
+        {formatBlockedScreenDuration(moment.remainingSeconds)}
+      </span>
+    {:else}
+      <span class="grid size-8 place-items-center rounded-full text-muted-foreground">
+        <PomodoroProgressRing
+          active={false}
+          remainingSeconds={0}
+          totalSeconds={0}
+          size={20}
+          trackClass="stroke-muted-foreground/35"
+        />
+      </span>
+    {/if}
   </div>
-{/snippet}
 
-<!-- The canvas keeps its logical size inside a one pixel border, so the spark path matches the layout exactly. -->
-<div class="relative" style:width={`${CANVAS_W + 2}px`} style:height={`${CANVAS_H + 2}px`}>
-  <!-- A soft light behind the canvas that takes the color of what the film is about: the session, then its result. -->
-  <div class="pointer-events-none absolute -inset-10">
-    <div
-      class="absolute inset-0 transition-opacity duration-1000 ease-out motion-reduce:transition-none"
-      style:background={`radial-gradient(closest-side, color-mix(in srgb, ${session.bg} 22%, transparent), transparent)`}
-      style:opacity={focusing && !done ? 1 : 0}
-    ></div>
-    <div
-      class="absolute inset-0 transition-opacity duration-1000 ease-out motion-reduce:transition-none"
-      style:background="radial-gradient(closest-side, color-mix(in srgb, var(--cal-timeline-focus) 20%, transparent), transparent)"
-      style:opacity={done ? 1 : 0}
-    ></div>
+  <!-- The week view's header row: the time zone over the gutter, then each day's name and number. -->
+  <div class="flex shrink-0 border-b border-sidebar" style:height={`${HEADER_H}px`}>
+    <span class="flex shrink-0 items-center justify-center text-[0.866667rem]" style:width={`${GUTTER_W}px`}>{timezoneLabel}</span>
+    {#each days as day (day.offset)}
+      <div
+        class="flex min-w-0 basis-0 items-center justify-center overflow-hidden whitespace-nowrap"
+        style:flex-grow={day.offset === 0 ? 1 : otherGrow}
+      >
+        <span class="text-[0.866667rem]" style:color={day.offset < 0 ? "var(--muted-foreground)" : "var(--foreground)"}>
+          {#if dayFormat !== "none"}{formatDayName(day.date, dayFormat, localization.locale)}&nbsp;{/if}{day.date.getDate()}
+        </span>
+      </div>
+    {/each}
   </div>
 
-  <div
-    class="film-canvas relative box-content flex overflow-hidden rounded-2xl border border-border bg-(--cal-bg) text-foreground shadow-xl"
-    style:width={`${CANVAS_W}px`}
-    style:height={`${CANVAS_H}px`}
-  >
+  <div class="relative flex min-h-0 flex-1">
     <!-- The time gutter. -->
     <div class="relative shrink-0" style:width={`${GUTTER_W}px`}>
-      <div class="absolute inset-x-0 bottom-0" style:top={`${HEADER_H}px`}>
-        {#each hourLabels as hour (hour)}
-          <span
-            class="film-fade absolute right-1.5 -translate-y-1/2 text-[0.5625rem] leading-none text-(--cal-time-label)"
-            style:top={`${px(hour * 60)}px`}
-          >{hourLabel(hour)}</span>
-        {/each}
-      </div>
+      {#each hours as hour (hour)}
+        <span
+          class="absolute -translate-x-1/2 whitespace-nowrap text-[0.733333rem] leading-none antialiased"
+          style:top={`calc(${y(hour * 60)}px - 0.45em)`}
+          style:left={preferences.calendarTimeFormat === "12h" ? "calc(50% - 0.2px)" : "50%"}
+          style:color="var(--cal-time-label)"
+        >{hourLabel(hour)}</span>
+      {/each}
     </div>
 
     <div class="relative flex min-w-0 flex-1">
-      <div class="film-fade pointer-events-none absolute inset-x-0 bottom-0" style:top={`${HEADER_H}px`}>
-        {#each hourLabels as hour (hour)}
-          <div class="absolute inset-x-0 h-px bg-(--cal-gridline)" style:top={`${px(hour * 60)}px`}></div>
+      <div class="pointer-events-none absolute inset-0 z-1">
+        {#each hours as hour (hour)}
+          <div class="absolute inset-x-0 h-0 border-b border-(--cal-gridline)" style:top={`${y(hour * 60)}px`}></div>
         {/each}
       </div>
 
       {#each days as day (day.offset)}
         {@const isToday = day.offset === 0}
+        {@const fill = weekFill(day.offset)}
         <div
-          class={cn(
-            "film-column relative flex min-w-0 basis-0 flex-col overflow-hidden border-l",
-            isToday || pulledBack ? "border-(--cal-gridline)" : "border-transparent",
-          )}
-          style:flex-grow={isToday || pulledBack ? 1 : 0}
-          style:transition-duration={`${FILM_PULL_BACK_MS}ms`}
+          class={cn("relative min-w-0 basis-0", !isToday && "overflow-hidden")}
+          style:flex-grow={isToday ? 1 : otherGrow}
+          style:border-left={isToday || otherGrow > 0 ? "1px solid var(--cal-gridline)" : undefined}
         >
-          <div
-            class={cn(
-              "flex shrink-0 items-center justify-center gap-1 whitespace-nowrap text-[0.625rem]",
-              !isToday && "film-reveal",
-              !isToday && (pulledBack ? "opacity-100" : "opacity-0"),
+          {#each day.events as event (event.start)}
+            {#if event.focus}
+              {@render rail(event.start, event.end, event.focus === "planned" ? [] : clip(event.focus, fill), false, 1)}
+            {/if}
+          {/each}
+
+          {#if isToday}
+            {@render rail(
+              SESSION_START,
+              SESSION_END,
+              filmFocusSpans(sessionMinute),
+              focusing && moment.kind === "break",
+              saved ? railReveal : 0,
             )}
-            style:height={`${HEADER_H}px`}
-          >
-            <span class="text-(--cal-time-label)">{formatDateTime(localization.locale, day.date, { weekday: "short" })}</span>
-            <span
-              class={cn(
-                "flex size-5 items-center justify-center rounded-full font-medium",
-                isToday ? "bg-primary text-primary-foreground" : "text-foreground",
-              )}
-            >{formatDateTime(localization.locale, day.date, { day: "numeric" })}</span>
-          </div>
+          {/if}
 
-          <div class="relative min-h-0 flex-1">
+          <div class="absolute inset-y-0 right-0" style:left={`${EVENT_LEFT}px`}>
+            {#each day.events as event (event.start)}
+              {@render eventBlock(event.start, event.end, event.color, title(event.title), isPast(day.offset, event.end), false)}
+            {/each}
+
             {#if isToday}
-              <!-- The session being planned, focused on, and finished. -->
-              <div
-                class="absolute inset-x-0 top-0"
-                style:height={`${px(FILM_SESSION_MINUTES)}px`}
-              >
-                <div
-                  class={cn(
-                    "absolute inset-y-0 left-0 w-2 origin-top transition-transform duration-500 ease-out motion-reduce:transition-none",
-                    elapsed >= FILM_BEATS.railIn ? "scale-y-100" : "scale-y-0",
-                  )}
-                >
-                  {@render rail("live", FILM_SESSION_MINUTES, minute / FILM_SESSION_MINUTES, breaks)}
-                </div>
-                <div
-                  class="absolute inset-y-0 left-2.25 overflow-hidden rounded px-1.5 py-1"
-                  style:right={`${BLOCK_RIGHT}px`}
-                  style:background-color={session.bg}
-                  style:color={session.text}
-                  style:clip-path={`inset(0 0 ${(1 - created) * 100}% 0 round 4px)`}
-                >
-                  <div
-                    class={cn(
-                      "transition-opacity duration-300 motion-reduce:transition-none",
-                      elapsed >= FILM_BEATS.createEnd ? "opacity-100" : "opacity-0",
-                    )}
-                  >
-                    <p class="truncate pr-4 text-[0.6875rem] font-medium leading-tight">{t("vaultSetup.film.writeChapter")}</p>
-                    <p class="truncate text-[0.625rem] leading-tight opacity-85">{timeRange(0, FILM_SESSION_MINUTES)}</p>
-                  </div>
-                  <span
-                    class={cn(
-                      "absolute flex items-center justify-center rounded-full bg-white/90 text-(--cal-timeline-focus) transition-[scale,opacity] duration-400 ease-[cubic-bezier(0.34,1.56,0.64,1)] motion-reduce:transition-none",
-                      done ? "scale-100 opacity-100" : "scale-50 opacity-0",
-                    )}
-                    style:top={`${BADGE_INSET}px`}
-                    style:right={`${BADGE_INSET}px`}
-                    style:width={`${BADGE}px`}
-                    style:height={`${BADGE}px`}
-                  >
-                    <Check class="size-2.5" strokeWidth={3.5} aria-hidden="true" />
-                  </span>
-                </div>
-              </div>
-
-              {@render todayBlock(120, 165, PURPLE, t("vaultSetup.film.reviewNotes"), elapsed >= FILM_BEATS.reviewIn)}
-              {@render todayBlock(210, 255, ORANGE, t("vaultSetup.film.lunch"), elapsed >= FILM_BEATS.lunchIn)}
+              {#if creating}
+                {@render eventBlock(SESSION_START, SESSION_START + drawnMinutes, undefined, t("calendar.event.noTitle"), false, true)}
+              {:else if saved}
+                {@render eventBlock(SESSION_START, SESSION_END, undefined, title("writeChapter"), isPast(0, SESSION_END), false)}
+              {/if}
 
               <!-- The press that draws the session, following its growing edge. -->
-              <span
-                class={cn(
-                  "pointer-events-none absolute left-3/5 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35 transition-[opacity,scale] duration-200 motion-reduce:hidden",
-                  pressing ? "scale-100 opacity-100" : "scale-150 opacity-0",
-                )}
-                style:top={`${created * px(FILM_SESSION_MINUTES)}px`}
-              ></span>
-
-              <!-- The current time, sweeping through the session as Focus runs. -->
-              <div
-                class={cn(
-                  "pointer-events-none absolute inset-x-0 top-0 z-1 origin-left transition-[scale,opacity] duration-400 ease-out motion-reduce:transition-none",
-                  focusing ? "scale-x-100 opacity-100" : "scale-x-0 opacity-0",
-                )}
-                style:transform={`translateY(${px(minute)}px)`}
-              >
-                <div class="h-0.5 -translate-y-1/2 bg-(--cal-current-time)"></div>
+              {#if pressOpacity > 0}
                 <span
-                  class={cn("absolute -left-1 top-0 size-2 -translate-y-1/2 rounded-full bg-(--cal-current-time)", settled && "film-breathe")}
+                  class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
+                  style:top={`${y(SESSION_START + drawnMinutes)}px`}
+                  style:opacity={pressOpacity}
                 ></span>
-              </div>
-            {:else}
-              <div
-                class={cn("film-reveal absolute inset-0", pulledBack ? "opacity-100" : "opacity-0")}
-              >
-                {#each OTHER_DAYS[day.offset] ?? [] as block (block.start)}
-                  {@render otherBlock(block)}
-                {/each}
-              </div>
+              {/if}
             {/if}
           </div>
+
+          {#if isToday}
+            <!-- The current time, walking up to the session and through it. -->
+            <div class="pointer-events-none absolute inset-x-0" style:top={`${y(clock)}px`} style:z-index="46">
+              <div
+                class={cn("absolute size-2.5 shrink-0 rounded-full", settled && "film-breathe")}
+                style:background-color="var(--cal-current-time)"
+                style:left="-5px"
+                style:top="-5px"
+              ></div>
+              <div class="absolute inset-x-0 h-[2.3px]" style:background-color="var(--cal-current-time)" style:top="-1.15px"></div>
+            </div>
+          {/if}
         </div>
       {/each}
     </div>
-
-    <!-- A distracting app starts to open over the session, is blocked, and falls away. -->
-    <div
-      class={cn(
-        "pointer-events-none absolute inset-0 bg-background/40 transition-opacity duration-300 motion-reduce:transition-none",
-        distraction ? "opacity-100" : "opacity-0",
-      )}
-    ></div>
-    <div
-      class={cn(
-        "pointer-events-none absolute left-1/2 flex -translate-x-1/2 flex-col items-center gap-2 transition-[opacity,translate,scale] motion-reduce:transition-none",
-        distraction
-          ? "translate-y-0 scale-100 opacity-100 duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-          : blocked
-            ? "translate-y-4 scale-90 opacity-0 duration-400 ease-in"
-            : "translate-y-0 scale-50 opacity-0 duration-300",
-      )}
-      style:top={`${HEADER_H + 62}px`}
-    >
-      <div class="relative flex size-11 items-center justify-center">
-        <!-- The app's window grows out of its icon as it opens, then snaps back when it is blocked. -->
-        <span
-          class={cn(
-            "absolute left-1/2 top-1/2 h-24 w-36 -translate-1/2 rounded-xl border border-border bg-card shadow-lg transition-[scale,opacity] motion-reduce:transition-none",
-            opening
-              ? "scale-100 opacity-100 duration-300 ease-out"
-              : "scale-30 opacity-0 duration-200 ease-in",
-          )}
-        ></span>
-        <span
-          class={cn("relative flex size-11 items-center justify-center rounded-[22%] shadow-md", blocked && "film-shake")}
-          style:background-color={distractingApp.bg}
-          style:color={distractingApp.text}
-        >
-          <Gamepad2 class="size-5.5" strokeWidth={1.8} aria-hidden="true" />
-          <span
-            class={cn(
-              "absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground ring-2 ring-(--cal-bg) transition-[scale,opacity] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] motion-reduce:transition-none",
-              blocked ? "scale-100 opacity-100" : "scale-0 opacity-0",
-            )}
-          >
-            <Ban class="size-3" strokeWidth={2.6} aria-hidden="true" />
-          </span>
-        </span>
-      </div>
-      <span
-        class={cn(
-          "rounded-full bg-card px-2 py-0.5 text-[0.625rem] font-medium text-destructive shadow-sm transition-[opacity,translate] duration-300 motion-reduce:transition-none",
-          blocked ? "translate-y-0 opacity-100" : "-translate-y-1 opacity-0",
-        )}
-      >{t("vaultSetup.film.blocked")}</span>
-    </div>
-
-    <!-- The floating panel: the running session, then its result, then the project it counts toward. -->
-    <div
-      class={cn(
-        "surface-floating absolute left-1/2 grid -translate-x-1/2 overflow-hidden rounded-xl transition-[opacity,translate,scale] duration-500 ease-out motion-reduce:transition-none",
-        focusing ? "translate-y-0 scale-100 opacity-100" : "translate-y-3 scale-95 opacity-0",
-      )}
-      style:bottom={`${PANEL_INSET}px`}
-      style:width={`${PANEL_W}px`}
-      style:height={`${PANEL_H}px`}
-    >
-      {#if blocked && !done}
-        <span class="film-pulse pointer-events-none absolute inset-0 rounded-xl"></span>
-      {/if}
-      {#if landed}
-        <span class="film-pulse pointer-events-none absolute inset-0 rounded-xl"></span>
-      {/if}
-
-      <div
-        class={cn(
-          "col-start-1 row-start-1 flex items-center gap-2.5 transition-[opacity,translate] duration-300 motion-reduce:transition-none",
-          panel === "session" ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0",
-        )}
-        style:padding-inline={`${PANEL_PAD}px`}
-      >
-        <span class="relative flex size-7 shrink-0 items-center justify-center">
-          <PomodoroProgressRing
-            active
-            remainingSeconds={running?.remainingSeconds ?? 0}
-            totalSeconds={running?.totalSeconds ?? 1}
-            size={28}
-            strokeWidth={2.2}
-            trackClass="stroke-foreground/12"
-            progressClass={running?.kind === "break" ? "stroke-foreground/55" : "stroke-(--cal-timeline-focus)"}
-          />
-          {#if running?.kind === "break"}
-            <Coffee class="absolute size-3 text-muted-foreground" strokeWidth={2} aria-hidden="true" />
-          {/if}
-        </span>
-        <span class="flex min-w-0 flex-1 flex-col">
-          <span class="truncate text-xs font-semibold leading-tight">
-            {running?.kind === "break" ? t("vaultSetup.film.break") : t("vaultSetup.film.focus")}
-          </span>
-          <span class="truncate text-[0.625rem] leading-tight text-muted-foreground">{t("vaultSetup.film.writeChapter")}</span>
-        </span>
-        <span class="shrink-0 text-sm font-semibold tabular-nums">
-          {formatFilmCountdown(running?.remainingSeconds ?? 0)}
-        </span>
-      </div>
-
-      <div
-        class={cn(
-          "col-start-1 row-start-1 flex items-center gap-2.5 transition-[opacity,translate] duration-300 motion-reduce:transition-none",
-          panel === "done" ? "translate-y-0 opacity-100" : panel === "session" ? "translate-y-2 opacity-0" : "-translate-y-2 opacity-0",
-        )}
-        style:padding-inline={`${PANEL_PAD}px`}
-      >
-        <span class="flex size-7 shrink-0 items-center justify-center rounded-full bg-(--cal-timeline-focus) text-white">
-          <Check class="size-4" strokeWidth={3} aria-hidden="true" />
-        </span>
-        <span class="flex min-w-0 flex-1 flex-col">
-          <span class="truncate text-xs font-semibold leading-tight">{t("vaultSetup.film.sessionDone")}</span>
-          <span class="truncate text-[0.625rem] leading-tight text-muted-foreground">{t("vaultSetup.film.writeChapter")}</span>
-        </span>
-      </div>
-
-      <div
-        class={cn(
-          "relative col-start-1 row-start-1 flex items-start gap-2.5 pt-2 transition-[opacity,translate] duration-300 motion-reduce:transition-none",
-          panel === "project" ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0",
-        )}
-        style:padding-inline={`${PANEL_PAD}px`}
-      >
-        <span
-          class="flex size-6 shrink-0 items-center justify-center rounded-md"
-          style:background-color={`color-mix(in srgb, ${project.bg} 18%, transparent)`}
-          style:color={project.bg}
-        >
-          <FolderKanban class="size-3.5" strokeWidth={2} aria-hidden="true" />
-        </span>
-        <span class="min-w-0 flex-1 truncate pt-0.5 text-xs font-semibold leading-tight">{t("vaultSetup.film.project")}</span>
-        <span class="shrink-0 pt-0.5 text-[0.625rem] tabular-nums text-muted-foreground">
-          {t("vaultSetup.film.tasksDone", projectDone, PROJECT_TASKS)}
-        </span>
-        <span
-          class="absolute overflow-hidden rounded-full bg-foreground/10"
-          style:left={`${PANEL_PAD}px`}
-          style:right={`${PANEL_PAD}px`}
-          style:bottom={`${PANEL_BAR_BOTTOM}px`}
-          style:height={`${PANEL_BAR_H}px`}
-        >
-          <span
-            class="block h-full origin-left rounded-full transition-transform duration-700 ease-out motion-reduce:transition-none"
-            style:background-color={project.bg}
-            style:transform={`scaleX(${projectDone / PROJECT_TASKS})`}
-          ></span>
-        </span>
-      </div>
-    </div>
-
-    <!-- The finished session flies into the project's progress, with a short tail. -->
-    {#each [0, 1, 2] as trail (trail)}
-      <span
-        class={cn(
-          "film-spark pointer-events-none absolute left-0 top-0 rounded-full motion-reduce:hidden",
-          sparkFlying && !landed ? "opacity-100" : "opacity-0",
-        )}
-        style:offset-path={sparkPath}
-        style:offset-distance={sparkFlying ? "100%" : "0%"}
-        style:transition-delay={`${trail * 45}ms`}
-        style:width={`${8 - trail * 2}px`}
-        style:height={`${8 - trail * 2}px`}
-        style:background-color={session.bg}
-        style:box-shadow={trail === 0 ? `0 0 0 3px color-mix(in srgb, ${session.bg} 30%, transparent)` : undefined}
-        style:transition-duration={`${FILM_BEATS.sparkLand - FILM_BEATS.sparkStart}ms, 150ms`}
-      ></span>
-    {/each}
   </div>
+
+  <!-- The break screen, with its date and time, countdown, and keys. -->
+  {#if breakScreen > 0}
+    <div class="film-screen absolute inset-0 z-50 flex flex-col items-center justify-center" style={screenStyle(breakPalette, breakScreen)}>
+      <p class="film-screen-small film-screen-main absolute inset-x-0 top-4 px-4 text-center">
+        {formatBlockedScreenDateTime(new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, clock), localization.locale)}
+      </p>
+      <p class="film-screen-timer film-screen-main tabular-nums">{formatBlockedScreenDuration(breakSeconds)}</p>
+      {#if !mobileShell}
+        <div class="film-screen-hints film-screen-subtle absolute inset-x-0 bottom-5 flex flex-col items-center gap-1.5 px-4 text-center">
+          {#if extensionHint && breakCopy.primaryHint}
+            <p>{t("pomodoroOverlay.press")} <span class="film-screen-main">{extensionHint}</span> {t("pomodoroOverlay.to")} {breakCopy.primaryHint.label}</p>
+          {/if}
+          {#if endBreakHint && breakCopy.secondaryHint}
+            <p>{t("pomodoroOverlay.press")} <span class="film-screen-main">{endBreakHint}</span> {t("pomodoroOverlay.to")} {breakCopy.secondaryHint.label}</p>
+          {/if}
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- The finished screen once the session ends. -->
+  {#if finishedScreen > 0}
+    <div class="film-screen absolute inset-0 z-50 flex flex-col items-center justify-center gap-8 px-4 text-center" style={screenStyle(finishedPalette, finishedScreen)}>
+      <p class="film-screen-title film-screen-main">{finishedCopy.title}</p>
+      <p class="film-screen-small film-screen-muted">{finishedCopy.subtitle}</p>
+    </div>
+  {/if}
 </div>
 
 <style>
-  .film-canvas {
-    animation: film-enter 800ms cubic-bezier(0.2, 0, 0, 1) both;
+  /* The Focus screens at the size they take in a window as small as the canvas. */
+  .film-screen {
+    background: var(--film-screen-bg);
   }
 
-  .film-fade {
-    animation: film-fade 700ms ease-out 250ms both;
+  .film-screen-main {
+    color: var(--film-screen-main);
   }
 
-  .film-column {
-    transition-property: flex-grow, border-color;
-    transition-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  .film-screen-muted {
+    color: var(--film-screen-muted);
   }
 
-  .film-reveal {
-    transition: opacity 900ms ease-out 250ms;
+  .film-screen-subtle {
+    color: var(--film-screen-subtle);
   }
 
-  .film-spark {
-    offset-rotate: 0deg;
-    offset-anchor: center;
-    transition-property: offset-distance, opacity;
-    transition-timing-function: cubic-bezier(0.5, 0, 0.25, 1), linear;
+  .film-screen-small {
+    font-size: calc(0.85rem * var(--type-scale));
+    line-height: 1.25;
   }
 
-  .film-shake {
-    animation: film-shake 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+  .film-screen-hints {
+    font-size: calc(0.6375rem * var(--type-scale));
+    line-height: 1.25;
   }
 
-  .film-pulse {
-    animation: film-pulse 700ms ease-out both;
+  .film-screen-timer {
+    font-size: calc(4.75rem * var(--type-scale));
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+    line-height: 0.85;
   }
 
+  .film-screen-title {
+    font-size: calc(2rem * var(--type-scale));
+    font-weight: 700;
+    letter-spacing: 0;
+    line-height: 0.95;
+  }
+
+  /* The current time keeps breathing on the finished frame; a shadow pulse repaints in place without a layer. */
   .film-breathe {
     animation: film-breathe 2400ms ease-in-out infinite;
   }
 
-  @keyframes film-enter {
-    from { opacity: 0; translate: 0 14px; scale: 0.97; }
-    to { opacity: 1; translate: 0 0; scale: 1; }
-  }
-
-  @keyframes film-fade {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
-  @keyframes film-shake {
-    0%, 100% { translate: 0 0; }
-    20% { translate: -4px 0; rotate: -6deg; }
-    40% { translate: 4px 0; rotate: 5deg; }
-    60% { translate: -3px 0; rotate: -3deg; }
-    80% { translate: 2px 0; rotate: 1deg; }
-  }
-
-  @keyframes film-pulse {
-    from { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--cal-timeline-focus) 70%, transparent); }
-    to { box-shadow: inset 0 0 0 2px transparent; }
-  }
-
   @keyframes film-breathe {
-    0%, 100% { scale: 1; opacity: 1; }
-    50% { scale: 1.6; opacity: 0.55; }
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--cal-current-time) 45%, transparent); }
+    60% { box-shadow: 0 0 0 5px transparent; }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .film-canvas, .film-fade, .film-shake, .film-pulse, .film-breathe { animation: none; }
-    .film-column, .film-reveal { transition: none; }
+    .film-breathe { animation: none; }
   }
 </style>

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  dayNameFormatForWidth,
   parseCalendarDate,
   formatCalendarDate,
   formatCalendarDateWithSeconds,
@@ -1294,5 +1295,18 @@ describe("computeViewWindow", () => {
     const b = computeViewWindow(new Date(2026, 3, 1), "month");
     expect(a.start.toString()).toBe(b.start.toString());
     expect(a.end.toString()).toBe(b.end.toString());
+  });
+});
+
+describe("dayNameFormatForWidth", () => {
+  it("shortens the day name as the column narrows", () => {
+    expect(dayNameFormatForWidth(240)).toBe("long");
+    expect(dayNameFormatForWidth(110)).toBe("long");
+    expect(dayNameFormatForWidth(109.5)).toBe("short");
+    expect(dayNameFormatForWidth(60)).toBe("short");
+    expect(dayNameFormatForWidth(59)).toBe("narrow");
+    expect(dayNameFormatForWidth(36)).toBe("narrow");
+    expect(dayNameFormatForWidth(35)).toBe("none");
+    expect(dayNameFormatForWidth(0)).toBe("none");
   });
 });

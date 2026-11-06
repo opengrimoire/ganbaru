@@ -1,8 +1,8 @@
 /**
- * Timing for the welcome film: one continuous take of a day in the app. A work session is planned in the Calendar,
- * focused on through a blocked distraction and a break, then counted toward its project as the view pulls back to
- * the week. Every moment is derived from the milliseconds elapsed since the film started, so a frame is a pure
- * function of time and the reduced-motion still is simply the last frame.
+ * Timing for the welcome film: one continuous take of a day in the app. A Focus session is planned in the Calendar,
+ * run through its break and its finish, then seen among the week's other sessions as the view pulls back. Every
+ * moment is derived from the milliseconds elapsed since the film started, so a frame is a pure function of time and
+ * the reduced-motion still is simply the last frame.
  */
 
 /** One point of a curve: `[x, y]`, with x strictly increasing across a curve. */
@@ -11,31 +11,31 @@ export type FilmKeyframe = readonly [x: number, y: number];
 /** The three chapters the film is told in, shown under it as it plays. */
 export type FilmAct = "plan" | "focus" | "progress";
 
+/** A span of session minutes. */
+export interface FilmSpan {
+  start: number;
+  end: number;
+}
+
 /** Moments of the film, in milliseconds from its start. */
 export const FILM_BEATS = {
-  /** A press draws the first session onto the empty day. */
-  createStart: 600,
-  createEnd: 1250,
-  /** The session's Focus rail appears along its left edge. */
-  railIn: 1500,
-  reviewIn: 1750,
-  lunchIn: 1950,
-  /** The current time reaches the session and the Focus panel appears. */
-  focusStart: 2500,
-  /** A distracting app starts to open, is blocked, and falls away. */
-  distractionIn: 3850,
-  distractionOpen: 4050,
-  distractionBlocked: 4300,
-  distractionOut: 4800,
-  sessionDone: 6650,
-  /** The panel turns into the project the session belongs to. */
-  projectIn: 7100,
-  /** The finished session flies into the project's progress. */
-  sparkStart: 7300,
-  sparkLand: 7950,
+  /** A press drags the session out on the empty day, and letting go saves it. */
+  createStart: 500,
+  createEnd: 1150,
+  createSaved: 1300,
+  /** The session's Focus rail appears beside it, with its planned break marked. */
+  railIn: 1450,
+  /** The current time reaches the session and Focus starts. */
+  focusStart: 2400,
+  /** The break screen covers the app for the length of the break. */
+  breakStart: 3800,
+  breakEnd: 4900,
+  /** The session ends, the finished screen shows, and the app returns. */
+  sessionEnd: 6150,
+  finishedOut: 7000,
   /** The camera pulls back from the day to the week. */
-  pullBack: 8350,
-  end: 9700,
+  pullBack: 7250,
+  end: 9600,
 } as const;
 
 /** How long the pull back from the day to the week takes. */
@@ -45,7 +45,7 @@ export const FILM_PULL_BACK_MS = 1200;
 const ACT_STARTS: readonly (readonly [FilmAct, number])[] = [
   ["plan", 0],
   ["focus", FILM_BEATS.focusStart],
-  ["progress", FILM_BEATS.projectIn],
+  ["progress", FILM_BEATS.pullBack],
 ];
 
 /** The session's phases in minutes, as Focus runs them: work, a break, then work again. */
@@ -58,20 +58,43 @@ export const FILM_SESSION: readonly { kind: "focus" | "break"; minutes: number }
 /** The session's length in minutes. */
 export const FILM_SESSION_MINUTES = FILM_SESSION.reduce((total, phase) => total + phase.minutes, 0);
 
+/** Where each phase of `kind` falls in the session, in session minutes. */
+function phaseSpans(kind: "focus" | "break"): FilmSpan[] {
+  const spans: FilmSpan[] = [];
+  let start = 0;
+  for (const phase of FILM_SESSION) {
+    if (phase.kind === kind) spans.push({ start, end: start + phase.minutes });
+    start += phase.minutes;
+  }
+  return spans;
+}
+
+/** The session's breaks, which the Focus rail marks before they happen. */
+export const FILM_BREAKS: readonly FilmSpan[] = phaseSpans("break");
+
 /**
- * The session's minutes against film time. Time runs fast, slows almost to a stop while the distracting app is
- * blocked, slows again so the break can be read, then hurries to the end of the session.
+ * The session's minutes against film time. Work hurries along, the break slows down so its screen can be read and
+ * reaches its end exactly as the break screen lifts, and the second half hurries to the end of the session.
  */
 const SESSION_CLOCK: readonly FilmKeyframe[] = [
-  [2800, 0],
-  [3900, 28],
-  [4500, 31],
-  [5050, 50],
-  [5650, 60],
-  [6600, FILM_SESSION_MINUTES],
+  [FILM_BEATS.focusStart + 200, 0],
+  [FILM_BEATS.breakStart - 300, 47],
+  [FILM_BEATS.breakStart, 50],
+  [FILM_BEATS.breakEnd, 60],
+  [FILM_BEATS.sessionEnd - 250, FILM_SESSION_MINUTES - 2],
+  [FILM_BEATS.sessionEnd, FILM_SESSION_MINUTES],
 ];
 
-/** What the Focus panel shows at one moment of the session. */
+/** How many minutes before the session the current time starts, so it can be seen walking up to it. */
+export const FILM_LEAD_IN_MINUTES = 14;
+
+/** The current time against film time before Focus starts, in minutes relative to the session's start. */
+const LEAD_IN_CLOCK: readonly FilmKeyframe[] = [
+  [0, -FILM_LEAD_IN_MINUTES],
+  [FILM_BEATS.focusStart, 0],
+];
+
+/** The Focus phase running at one moment of the session, and what is left of it. */
 export type FilmSessionMoment =
   | { kind: "focus" | "break"; remainingSeconds: number; totalSeconds: number }
   | { kind: "done" };
@@ -131,6 +154,14 @@ export function filmSessionMinute(elapsed: number): number {
   return monotoneCurve(SESSION_CLOCK, elapsed);
 }
 
+/**
+ * The current time at a moment of the film, in minutes relative to the session's start: it walks up to the session,
+ * reaches it as Focus starts, and then follows the session's clock.
+ */
+export function filmClockMinute(elapsed: number): number {
+  return elapsed < FILM_BEATS.focusStart ? monotoneCurve(LEAD_IN_CLOCK, elapsed) : filmSessionMinute(elapsed);
+}
+
 /** The Focus phase and its remaining time once `minute` minutes of the session have passed. */
 export function filmSessionMoment(minute: number): FilmSessionMoment {
   let start = 0;
@@ -148,16 +179,11 @@ export function filmSessionMoment(minute: number): FilmSessionMoment {
   return { kind: "done" };
 }
 
-/** The break spans of the session that have begun by `minute`, clipped to it, in session minutes. */
-export function filmBreakSpans(minute: number): { start: number; end: number }[] {
-  const spans: { start: number; end: number }[] = [];
-  let start = 0;
-  for (const phase of FILM_SESSION) {
-    const end = start + phase.minutes;
-    if (phase.kind === "break" && minute > start) spans.push({ start, end: Math.min(end, minute) });
-    start = end;
-  }
-  return spans;
+/** The focus the session has recorded by `minute`, as the rail fills it in, in session minutes. */
+export function filmFocusSpans(minute: number): FilmSpan[] {
+  return phaseSpans("focus")
+    .filter((span) => minute > span.start)
+    .map((span) => ({ start: span.start, end: Math.min(span.end, minute) }));
 }
 
 /** The chapter playing at `elapsed`, and how far through it the film is, from 0 to 1. */
@@ -167,11 +193,4 @@ export function filmAct(elapsed: number): { act: FilmAct; progress: number } {
   const [act, start] = ACT_STARTS[index];
   const end = index < ACT_STARTS.length - 1 ? ACT_STARTS[index + 1][1] : FILM_BEATS.end;
   return { act, progress: filmSpan(elapsed, start, end) };
-}
-
-/** Formats seconds as a countdown, `m:ss` under an hour. */
-export function formatFilmCountdown(seconds: number): string {
-  const whole = Math.max(0, Math.round(seconds));
-  const minutes = Math.floor(whole / 60);
-  return `${minutes}:${String(whole % 60).padStart(2, "0")}`;
 }

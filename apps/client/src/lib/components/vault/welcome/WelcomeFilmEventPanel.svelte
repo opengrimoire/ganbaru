@@ -60,7 +60,8 @@
    * The event panel of the welcome film, drawn with the event panel's own classes: it opens on the event just drawn,
    * where a project is picked from the project picker, which gives the event the project's color and Focus rhythm, then
    * the title is typed and the event saved. On desktop the panel floats over the Calendar as it would in a window the
-   * size of the canvas, with the picker's dropdown and its projects flyout; on a phone it covers the screen, with the
+   * size of the canvas, with the picker's dropdown and its projects flyout, except that where the Calendar would
+   * center it, the film keeps it to the right so the event stays in view; on a phone it covers the screen, with the
    * picker's full screen dialog. Every frame is a function of `elapsed`.
    */
   let {
@@ -308,13 +309,18 @@
   });
 
   /** Where the floating panel goes across, before it is kept inside the canvas, as the panel places itself. */
+  /** The panel against the canvas's right edge, leaving the drawn event's left part and the Focus rail in view. */
+  function rightAlignedLeft(): number {
+    return canvasWidth - EDGE - panelWidth;
+  }
+
   function floatingLeft(): number {
-    if (layout === "centered") return Math.round((canvasWidth - panelWidth) / 2);
+    if (layout === "centered") return rightAlignedLeft();
     const anchorLeft = anchor.x - anchor.width;
     const requiredSideSpace = panelWidth + EDGE * 2;
     if (anchorLeft >= requiredSideSpace) return anchorLeft - EDGE - panelWidth;
     if (canvasWidth - anchor.x >= requiredSideSpace) return anchor.x + EDGE;
-    return Math.round((canvasWidth - panelWidth) / 2);
+    return rightAlignedLeft();
   }
 
   /**

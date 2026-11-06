@@ -28,35 +28,35 @@ export const FILM_BEATS = {
    * A tap on the project trigger opens the project picker, a tap on a group opens its projects, and a tap on a project
    * picks it, which gives the event the project's color and Focus rhythm.
    */
-  projectTap: 2050,
-  groupTap: 2650,
-  projectPick: 3250,
+  projectTap: 2450,
+  groupTap: 3350,
+  projectPick: 4250,
   /** The title is typed, then a tap on Save saves the event and closes the panel. */
-  typeStart: 3650,
-  typeEnd: 4550,
-  createSaved: 5000,
+  typeStart: 4850,
+  typeEnd: 6050,
+  createSaved: 6750,
   /** The current time reaches the session and Focus starts. */
-  focusStart: 5800,
+  focusStart: 7550,
   /** The break screen covers the app for the length of the break. */
-  breakStart: 7200,
-  breakEnd: 8300,
+  breakStart: 8950,
+  breakEnd: 10050,
   /**
    * A tap on the Focus ring opens its menu, and a tap on its first item pauses Focus. A while later the same two taps
    * resume it.
    */
-  pauseTap: 8900,
-  pauseStart: 9980,
-  resumeTap: 11480,
-  resumeAt: 12560,
+  pauseTap: 10650,
+  pauseStart: 11730,
+  resumeTap: 13230,
+  resumeAt: 14310,
   /** The drawn event ends, its finished screen shows, and the planned event carries on once it lifts. */
-  eventEnd: 14060,
-  eventOut: 14810,
+  eventEnd: 15810,
+  eventOut: 16560,
   /** The planned event ends the day's Focus, the day's completed screen shows, and the app returns. */
-  sessionEnd: 16660,
-  finishedOut: 17510,
+  sessionEnd: 18410,
+  finishedOut: 19260,
   /** The camera pulls back from the day to the week. */
-  pullBack: 17760,
-  end: 20060,
+  pullBack: 19510,
+  end: 21810,
 } as const;
 
 /** How long a tap on the Focus ring or its menu takes, and how quickly the touch fades in and out. */

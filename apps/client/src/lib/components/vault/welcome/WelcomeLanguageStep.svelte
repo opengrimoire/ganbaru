@@ -46,7 +46,7 @@
 
 <section class="@container h-full overflow-x-hidden overflow-y-auto">
   <div class="mx-auto flex min-h-full w-full max-w-xl flex-col px-4 pb-6 pt-8 @min-[560px]:px-8 @min-[860px]:py-10">
-    <div class="flex flex-1 flex-col justify-center gap-8 py-6 @min-[860px]:gap-10">
+    <div class="flex flex-1 flex-col gap-8 pb-6 pt-4 @min-[560px]:pt-10 @min-[860px]:gap-10 @min-[860px]:pt-16">
       <div class="space-y-2 @min-[860px]:space-y-3">
         <h1 id="{headingId}-heading" class="text-2xl font-semibold leading-tight tracking-tight text-balance text-foreground @min-[560px]:text-3xl @min-[860px]:text-4xl">
           {t("vaultSetup.language.headline")}
@@ -61,7 +61,7 @@
           {@const selected = choice.value === preference}
           <label
             class={cn(
-              "flex min-h-16 cursor-pointer items-center gap-4 rounded-lg px-4 py-3 transition-colors has-focus-visible:bg-accent",
+              "flex min-h-14 cursor-pointer items-center gap-4 rounded-lg px-4 py-2.5 transition-colors has-focus-visible:bg-accent",
               selected ? "bg-accent" : "hover:bg-accent/60",
             )}
           >
@@ -74,14 +74,12 @@
               class="sr-only"
             />
             <span class="min-w-0 flex-1">
-              <span lang={choice.titleLang ?? undefined} class="block truncate text-lg font-medium text-foreground @min-[560px]:text-xl">
+              <span lang={choice.titleLang ?? undefined} class="block truncate text-base font-medium text-foreground">
                 {choice.title}
               </span>
-              {#if choice.detail}
-                <span lang={choice.detailLang ?? undefined} class="block truncate text-sm text-muted-foreground">
-                  {choice.detail}
-                </span>
-              {/if}
+              <span lang={choice.detailLang ?? undefined} class="block truncate text-sm text-muted-foreground">
+                {choice.detail}
+              </span>
             </span>
             <span
               aria-hidden="true"

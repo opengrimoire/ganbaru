@@ -18,8 +18,8 @@ export interface PreVaultLanguageChoice {
   readonly title: string;
   /** The language `title` is written in, or null when it is in the interface language. */
   readonly titleLang: AppLocale | null;
-  /** A second line that qualifies the title, or null when it would only repeat it. */
-  readonly detail: string | null;
+  /** A second line that names the title in the interface language, or the language the system option resolves to. */
+  readonly detail: string;
   /** The language `detail` is written in, or null when it is in the interface language. */
   readonly detailLang: AppLocale | null;
 }
@@ -81,7 +81,7 @@ export function resolvedSystemLanguageName(candidates: readonly string[]): strin
 
 /**
  * The welcome language screen's choices: following the system first, naming the language it resolves to, then every
- * app locale by its own name with its name in the interface language underneath when that differs.
+ * app locale by its own name with its name in the interface language underneath.
  */
 export function preVaultLanguageChoices(
   systemCandidates: readonly string[],
@@ -97,16 +97,12 @@ export function preVaultLanguageChoices(
       detail: LOCALE_METADATA[systemLocale].nativeLabel,
       detailLang: systemLocale,
     },
-    ...APP_LOCALES.map((locale) => {
-      const autonym = LOCALE_METADATA[locale].nativeLabel;
-      const name = localizedName(locale);
-      return {
-        value: locale,
-        title: autonym,
-        titleLang: locale,
-        detail: name === autonym ? null : name,
-        detailLang: null,
-      };
-    }),
+    ...APP_LOCALES.map((locale) => ({
+      value: locale,
+      title: LOCALE_METADATA[locale].nativeLabel,
+      titleLang: locale,
+      detail: localizedName(locale),
+      detailLang: null,
+    })),
   ];
 }

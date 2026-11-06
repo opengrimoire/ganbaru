@@ -155,8 +155,7 @@
   class="mobile-viewport-height flex w-screen flex-col overflow-hidden bg-background pb-(--safe-area-bottom) pt-(--safe-area-top) text-foreground"
   style="padding-left: var(--safe-area-left); padding-right: var(--safe-area-right);"
 >
-  <MobileOnboardingProgress stage={welcomeComplete ? "vault" : "welcome"} />
-  <div class="min-h-0 flex-1">
+  <MobileOnboardingProgress stage={welcomeComplete ? "vault" : "welcome"}>
     {#if !welcomeComplete}
       <VaultWelcomeContent onContinue={() => { welcomeComplete = true; }} />
     {:else}
@@ -172,7 +171,7 @@
         {error}
       />
     {/if}
-  </div>
+  </MobileOnboardingProgress>
 </main>
 
 {#if kitPrompt.request}

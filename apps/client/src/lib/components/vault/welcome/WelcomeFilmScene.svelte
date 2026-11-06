@@ -52,6 +52,7 @@
   import Repeat from "@lucide/svelte/icons/repeat";
   import SkipBack from "@lucide/svelte/icons/skip-back";
   import SkipForward from "@lucide/svelte/icons/skip-forward";
+  import Timer from "@lucide/svelte/icons/timer";
   import Users from "@lucide/svelte/icons/users";
   import { DEFAULT_PLAYBACK_SNAPSHOT, MAX_VOLUME } from "$lib/music/playback";
   import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
@@ -67,7 +68,7 @@
     getTimezoneInfo,
   } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
+  import { BUILD_PLATFORM, BUILD_PLATFORM_PROFILE } from "$lib/platform";
   import { focusPausedPulseAmount } from "$lib/pomodoro/native-focus";
   import {
     formatBlockedScreenDateTime,
@@ -101,7 +102,8 @@
     filmFocusSpans,
     filmPaused,
     filmRailBreaks,
-    filmRingMenu,
+    filmNotification,
+    filmRingMenuOpen,
     filmSessionMinute,
     filmSessionMoment,
     filmPanelOpen,
@@ -138,6 +140,8 @@
   /** Where the Focus menu opens under its ring: below the title bar on desktop, a little lower on a phone. */
   const MENU_TOP_PX = mobileShell ? TOP_BAR_H + 4 : TOP_BAR_H;
   const MENU_RIGHT_PX = mobileShell ? 8 : 6;
+  /** The gap between the paused notification and the canvas edges. */
+  const NOTIFICATION_MARGIN_PX = 8;
 
   /** The Calendar's Focus rail, and the event area it keeps beside it on every event. */
   const RAIL_LEFT = 2;
@@ -295,15 +299,35 @@
   /** The session's breaks in minutes of the day, sliding into place as the drawn event joins the planned one. */
   const todayBreaks = $derived(inDay(filmRailBreaks(elapsed)));
 
-  /** The pause from the Focus ring: a tap opens its menu, a tap on its first item pauses or resumes Focus. */
+  /** The pause from the Focus ring: a tap opens its menu, and a tap on its first item pauses Focus. */
   const paused = $derived(filmPaused(elapsed));
-  const ringMenu = $derived(filmRingMenu(elapsed));
-  const ringTouch = $derived(
-    filmTap(elapsed, FILM_BEATS.pauseTap + FILM_TAP_MS) + filmTap(elapsed, FILM_BEATS.resumeTap + FILM_TAP_MS),
-  );
-  const menuItemTouch = $derived(filmTap(elapsed, FILM_BEATS.pauseStart) + filmTap(elapsed, FILM_BEATS.resumeAt));
+  const ringMenuOpen = $derived(filmRingMenuOpen(elapsed));
+  const ringTouch = $derived(filmTap(elapsed, FILM_BEATS.pauseTap + FILM_TAP_MS));
+  const menuItemTouch = $derived(filmTap(elapsed, FILM_BEATS.pauseStart));
   const ringRemaining = $derived(moment.kind === "done" ? 0 : moment.remainingSeconds);
   const ringTotal = $derived(moment.kind === "done" ? 0 : moment.totalSeconds);
+  /**
+   * The paused notification the app sends, drawn as this platform shows it: a phone's ongoing Focus notification, a
+   * Windows toast, or a Linux banner. Its Resume action is what resumes Focus.
+   */
+  const notificationStyle: "phone" | "windows" | "linux" = mobileShell
+    ? "phone"
+    : BUILD_PLATFORM === "windows"
+      ? "windows"
+      : "linux";
+  const notification = $derived(filmNotification(elapsed));
+  const resumeTouch = $derived(filmTap(elapsed, FILM_BEATS.resumeAt));
+  /** How far the notification sits past its edge of the canvas: its own size plus its margin while hidden, none at rest. */
+  const notificationOffset = $derived(`calc(${1 - notification} * (100% + ${NOTIFICATION_MARGIN_PX}px))`);
+  const notificationTransform = $derived(
+    notificationStyle === "windows"
+      ? `translateX(${notificationOffset})`
+      : notificationStyle === "linux"
+        ? `translate(-50%, calc(-1 * ${notificationOffset}))`
+        : `translateY(calc(-1 * ${notificationOffset}))`,
+  );
+  /** The paused phase's progress, as the phone's ongoing notification draws it. */
+  const notificationProgress = $derived(ringTotal > 0 ? (ringTotal - ringRemaining) / ringTotal : 0);
 
   /** The session while it is dragged out, then saved. */
   const drawn = $derived(easeInOutCubic(filmSpan(elapsed, FILM_BEATS.createStart, FILM_BEATS.createEnd)));
@@ -524,7 +548,7 @@
         <span
           class={cn(
             "relative grid size-8 place-items-center rounded-full text-muted-foreground",
-            (focusing || ringMenu) && "bg-accent/70 text-foreground",
+            (focusing || ringMenuOpen) && "bg-accent/70 text-foreground",
           )}
         >
           <PomodoroProgressRing
@@ -543,7 +567,7 @@
     {:else}
       <!-- The title bar's Focus ring, on its own. -->
       <div class="flex shrink-0 items-center justify-end bg-sidebar pr-1.5" style:height={`${TOP_BAR_H}px`}>
-        <span class={cn("relative grid size-7 place-items-center rounded-lg", ringMenu && "bg-sidebar-accent")}>
+        <span class={cn("relative grid size-7 place-items-center rounded-lg", ringMenuOpen && "bg-sidebar-accent")}>
           <PomodoroProgressRing
             active={focusing}
             remainingSeconds={ringRemaining}
@@ -559,8 +583,8 @@
       </div>
     {/if}
 
-    <!-- The Focus ring's menu, open while it is used to pause and resume Focus. -->
-    {#if ringMenu}
+    <!-- The Focus ring's menu, open while it is used to pause Focus. -->
+    {#if ringMenuOpen}
       <div
         class="surface-floating surface-floating-body pointer-events-none absolute z-50 w-floating-sm"
         style:top={`${MENU_TOP_PX}px`}
@@ -568,12 +592,8 @@
       >
         <div class="menu-label tabular-nums">{t("titleBar.pomodoro.left", timerLabel(ringRemaining))}</div>
         <div class="menu-item relative justify-between gap-4 whitespace-nowrap" data-highlighted={menuItemTouch > 0 ? "" : undefined}>
-          <span>{ringMenu === "resume" ? t("titleBar.pomodoro.resumeFocus") : t("titleBar.pomodoro.pauseFocus")}</span>
-          {#if ringMenu === "resume"}
-            <PlayIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-          {:else}
-            <PauseIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-          {/if}
+          <span>{t("titleBar.pomodoro.pauseFocus")}</span>
+          <PauseIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
           {@render touch(menuItemTouch, "left-2/5 top-1/2")}
         </div>
         <div class="menu-item justify-between gap-4 whitespace-nowrap">
@@ -766,6 +786,47 @@
         projectColor={THESIS}
         title={title("writeChapter")}
       />
+    {/if}
+
+    <!-- The paused notification, as this platform shows it, until its Resume action is pressed. -->
+    {#if notification > 0}
+      <div
+        class={cn(
+          "surface-floating pointer-events-none absolute z-50 p-2.5",
+          notificationStyle === "phone" && "inset-x-2 top-2",
+          notificationStyle === "linux" && "top-2 left-1/2 w-floating-sm",
+          notificationStyle === "windows" && "right-2 bottom-2 w-floating-sm",
+        )}
+        style:transform={notificationTransform}
+      >
+        <div class="flex items-center gap-1.5 text-[0.733333rem] text-muted-foreground">
+          <Timer class="shrink-0" size={12} />
+          <span class="truncate">{t("common.appName")}</span>
+        </div>
+        {#if notificationStyle === "phone"}
+          <p class="mt-1 truncate font-medium">{title("writeChapter")}</p>
+          <p class="text-muted-foreground">{t("pomodoroNotification.pausedText")}</p>
+          <div class="mt-2 h-1 overflow-hidden rounded-full bg-muted">
+            <div class="h-full rounded-full bg-primary" style:width={`${notificationProgress * 100}%`}></div>
+          </div>
+          <div class="mt-1.5 flex">
+            <span class={cn("relative -ml-2 rounded-md px-2 py-1 font-medium text-primary", resumeTouch > 0 && "bg-accent")}>
+              {t("pomodoroNotification.resumeFocusLabel")}
+              {@render touch(resumeTouch, "left-1/2 top-1/2")}
+            </span>
+          </div>
+        {:else}
+          <p class="mt-1 font-medium">{t("pomodoroNotification.pausedReminderTitle")}</p>
+          <p class="text-muted-foreground">{t("pomodoroNotification.pausedReminderBody")}</p>
+          <div class="mt-2 grid grid-cols-2 gap-1.5 text-center">
+            <span class={cn("relative rounded-md px-2 py-1", resumeTouch > 0 ? "bg-accent" : "bg-muted")}>
+              <span class="block truncate">{t("pomodoroNotification.resumeFocusLabel")}</span>
+              {@render touch(resumeTouch, "left-1/2 top-1/2")}
+            </span>
+            <span class="truncate rounded-md bg-muted px-2 py-1">{t("pomodoroNotification.dismissPromptsLabel")}</span>
+          </div>
+        {/if}
+      </div>
     {/if}
 
     <!-- The completion screens: the drawn event finished, then the day's Focus completed. -->

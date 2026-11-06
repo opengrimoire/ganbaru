@@ -1,8 +1,8 @@
 /**
  * Timing for the welcome film: one continuous take of a day in the app. A Focus session is drawn in the Calendar ahead
- * of another, given a project and a title in the event panel, runs through its first break, is paused for a while from the Focus ring, runs to its end, carries
- * on through the next event to the end of the day's Focus, then is seen among the week's other sessions as the view
- * pulls back. Every moment is derived from the milliseconds elapsed since the film started, so a frame is a pure
+ * of another, given a project and a title in the event panel, runs through its first break, is paused for a while from
+ * the Focus ring, is resumed from the app's paused notification, runs to its end, carries on through the next event to
+ * the end of the day's Focus, then is seen among the week's other sessions as the view pulls back. Every moment is derived from the milliseconds elapsed since the film started, so a frame is a pure
  * function of time and the reduced-motion still is simply the last frame.
  */
 
@@ -41,27 +41,31 @@ export const FILM_BEATS = {
   breakStart: 8950,
   breakEnd: 10050,
   /**
-   * A tap on the Focus ring opens its menu, and a tap on its first item pauses Focus. A while later the same two taps
-   * resume it.
+   * A tap on the Focus ring opens its menu, and a tap on its first item pauses Focus. A while later the app's paused
+   * notification arrives, and a tap on its Resume button resumes Focus.
    */
   pauseTap: 10650,
   pauseStart: 11730,
-  resumeTap: 13230,
-  resumeAt: 14310,
+  notificationIn: 13230,
+  resumeAt: 14610,
   /** The drawn event ends, its finished screen shows, and the planned event carries on once it lifts. */
-  eventEnd: 15810,
-  eventOut: 16560,
+  eventEnd: 16110,
+  eventOut: 16860,
   /** The planned event ends the day's Focus, the day's completed screen shows, and the app returns. */
-  sessionEnd: 18410,
-  finishedOut: 19260,
+  sessionEnd: 18710,
+  finishedOut: 19560,
   /** The camera pulls back from the day to the week. */
-  pullBack: 19510,
-  end: 21810,
+  pullBack: 19810,
+  end: 22110,
 } as const;
 
 /** How long a tap on the Focus ring or its menu takes, and how quickly the touch fades in and out. */
 export const FILM_TAP_MS = 260;
 const FILM_TAP_FADE_MS = 60;
+
+/** How long the paused notification takes to slide in, and to slide away once its Resume button is pressed. */
+const FILM_NOTIFICATION_IN_MS = 280;
+const FILM_NOTIFICATION_OUT_MS = 220;
 
 /** How long the pull back from the day to the week takes. */
 export const FILM_PULL_BACK_MS = 1200;
@@ -134,8 +138,8 @@ export const FILM_PAUSE: FilmSpan = {
 /**
  * The session's minutes against film time, as the current time reads them. Work hurries along, the break slows down
  * so its screen can be read and reaches its end exactly as the break screen lifts, then the time holds while the Focus
- * ring's menu is open, walks through the pause, and hurries to the drawn event's end, holds while its finished screen
- * is up, and hurries on through the planned event to the session's end.
+ * ring's menu is open, walks through the pause, holds while the paused notification is read, hurries to the drawn
+ * event's end, holds while its finished screen is up, and hurries on through the planned event to the session's end.
  */
 const FILM_BREAK: FilmSpan = FILM_BREAKS[0] ?? { start: FILM_SESSION_MINUTES, end: FILM_SESSION_MINUTES };
 const SESSION_CLOCK: readonly FilmKeyframe[] = [
@@ -145,7 +149,7 @@ const SESSION_CLOCK: readonly FilmKeyframe[] = [
   [FILM_BEATS.breakEnd, FILM_BREAK.end],
   [FILM_BEATS.pauseTap, FILM_PAUSE.start],
   [FILM_BEATS.pauseStart, FILM_PAUSE.start],
-  [FILM_BEATS.resumeTap, FILM_PAUSE.end],
+  [FILM_BEATS.notificationIn, FILM_PAUSE.end],
   [FILM_BEATS.resumeAt, FILM_PAUSE.end],
   [FILM_BEATS.eventEnd - 250, FILM_DRAWN_MINUTES - 2],
   [FILM_BEATS.eventEnd, FILM_DRAWN_MINUTES],
@@ -354,16 +358,24 @@ export function filmSessionMoment(minute: number): FilmSessionMoment {
   return { kind: "done" };
 }
 
-/** Whether Focus is paused at `elapsed`: from the tap that pauses it to the tap that resumes it. */
+/** Whether Focus is paused at `elapsed`: from the tap that pauses it to the tap on the notification that resumes it. */
 export function filmPaused(elapsed: number): boolean {
   return elapsed >= FILM_BEATS.pauseStart && elapsed < FILM_BEATS.resumeAt;
 }
 
-/** The Focus ring's menu at `elapsed`: closed, open with its pause item, or open with its resume item. */
-export function filmRingMenu(elapsed: number): "pause" | "resume" | null {
-  if (elapsed >= FILM_BEATS.pauseTap + FILM_TAP_MS && elapsed < FILM_BEATS.pauseStart) return "pause";
-  if (elapsed >= FILM_BEATS.resumeTap + FILM_TAP_MS && elapsed < FILM_BEATS.resumeAt) return "resume";
-  return null;
+/** Whether the Focus ring's menu is open at `elapsed`: from the tap on the ring to the tap on its pause item. */
+export function filmRingMenuOpen(elapsed: number): boolean {
+  return elapsed >= FILM_BEATS.pauseTap + FILM_TAP_MS && elapsed < FILM_BEATS.pauseStart;
+}
+
+/**
+ * How far the paused notification has come in at `elapsed`, from 0 hidden to 1 shown. It slides in as the app sends
+ * it and slides away once the tap on its Resume button lands, as the system closes it.
+ */
+export function filmNotification(elapsed: number): number {
+  const shown = filmSpan(elapsed, FILM_BEATS.notificationIn, FILM_BEATS.notificationIn + FILM_NOTIFICATION_IN_MS);
+  const gone = filmSpan(elapsed, FILM_BEATS.resumeAt, FILM_BEATS.resumeAt + FILM_NOTIFICATION_OUT_MS);
+  return easeInOutCubic(shown) * (1 - easeInOutCubic(gone));
 }
 
 /** How visible the touch of a tap ending at `end` is at `elapsed`, from 0 to 1. */

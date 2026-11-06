@@ -21,7 +21,8 @@ import {
   filmPausedMinutes,
   filmProjectPicker,
   filmRailBreaks,
-  filmRingMenu,
+  filmNotification,
+  filmRingMenuOpen,
   filmSessionMinute,
   filmSessionMoment,
   filmSpan,
@@ -267,11 +268,11 @@ describe("the film's pause", () => {
     expect(FILM_BEATS.resumeAt).toBeLessThan(FILM_BEATS.eventEnd);
   });
 
-  it("holds the current time while the ring's menu is open and walks it through the pause", () => {
+  it("holds the current time while the ring's menu is open or the notification is read, and walks it through the pause", () => {
     for (let elapsed = FILM_BEATS.pauseTap; elapsed <= FILM_BEATS.pauseStart; elapsed += 50) {
       expect(filmSessionMinute(elapsed)).toBeCloseTo(FILM_PAUSE.start, 9);
     }
-    for (let elapsed = FILM_BEATS.resumeTap; elapsed <= FILM_BEATS.resumeAt; elapsed += 50) {
+    for (let elapsed = FILM_BEATS.notificationIn; elapsed <= FILM_BEATS.resumeAt; elapsed += 50) {
       expect(filmSessionMinute(elapsed)).toBeCloseTo(FILM_PAUSE.end, 9);
     }
     expect(filmPausedMinutes(FILM_PAUSE.start - 1)).toBe(0);
@@ -279,12 +280,16 @@ describe("the film's pause", () => {
     expect(filmPausedMinutes(FILM_DRAWN_MINUTES)).toBe(FILM_PAUSE.end - FILM_PAUSE.start);
   });
 
-  it("opens the ring's menu to pause, keeps it closed while paused, then opens it to resume", () => {
-    expect(filmRingMenu(FILM_BEATS.pauseTap)).toBeNull();
-    expect(filmRingMenu(FILM_BEATS.pauseTap + FILM_TAP_MS)).toBe("pause");
-    expect(filmRingMenu(FILM_BEATS.pauseStart)).toBeNull();
-    expect(filmRingMenu(FILM_BEATS.resumeTap + FILM_TAP_MS)).toBe("resume");
-    expect(filmRingMenu(FILM_BEATS.resumeAt)).toBeNull();
+  it("pauses from the ring's menu and resumes from the paused notification", () => {
+    expect(filmRingMenuOpen(FILM_BEATS.pauseTap)).toBe(false);
+    expect(filmRingMenuOpen(FILM_BEATS.pauseTap + FILM_TAP_MS)).toBe(true);
+    expect(filmRingMenuOpen(FILM_BEATS.pauseStart)).toBe(false);
+    expect(filmRingMenuOpen(FILM_BEATS.resumeAt)).toBe(false);
+    expect(filmNotification(FILM_BEATS.notificationIn)).toBe(0);
+    expect(filmNotification(FILM_BEATS.resumeAt - FILM_TAP_MS)).toBe(1);
+    expect(filmNotification(FILM_BEATS.resumeAt)).toBe(1);
+    expect(filmNotification(FILM_BEATS.eventEnd)).toBe(0);
+    expect(filmNotification(FILM_BEATS.pauseStart)).toBe(0);
     expect(filmPaused(FILM_BEATS.pauseStart - 1)).toBe(false);
     expect(filmPaused(FILM_BEATS.pauseStart)).toBe(true);
     expect(filmPaused(FILM_BEATS.resumeAt - 1)).toBe(true);
@@ -330,7 +335,7 @@ describe("the film's pause", () => {
     const planned = (elapsed: number) => filmRailBreaks(elapsed).filter((pause) => pause.start >= FILM_DRAWN_MINUTES);
     let previous = filmRailBreaks(FILM_BEATS.pauseStart)[1].start;
     expect(previous).toBe(FILM_BREAKS[1].start);
-    for (let elapsed = FILM_BEATS.pauseStart; elapsed <= FILM_BEATS.resumeTap; elapsed += 25) {
+    for (let elapsed = FILM_BEATS.pauseStart; elapsed <= FILM_BEATS.notificationIn; elapsed += 25) {
       const current = filmRailBreaks(elapsed);
       expect(current[0].start).toBe(FILM_BREAKS[0].start);
       expect(current[1].start).toBeGreaterThanOrEqual(previous - 1e-9);
@@ -339,7 +344,7 @@ describe("the film's pause", () => {
       previous = current[1].start;
     }
     expect(previous).toBeCloseTo(FILM_BREAKS[1].start + FILM_PAUSE.end - FILM_PAUSE.start, 9);
-    expect(filmRailBreaks(FILM_BEATS.end)).toEqual(filmRailBreaks(FILM_BEATS.resumeTap));
+    expect(filmRailBreaks(FILM_BEATS.end)).toEqual(filmRailBreaks(FILM_BEATS.notificationIn));
   });
 });
 

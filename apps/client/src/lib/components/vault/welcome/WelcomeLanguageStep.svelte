@@ -1,12 +1,13 @@
 <script lang="ts">
-  import Info from "@lucide/svelte/icons/info";
   import type { Snippet } from "svelte";
+  import ActionToast from "$lib/components/ui/ActionToast.svelte";
   import type { LanguagePreference } from "$lib/i18n/locales";
   import {
     browserLocaleCandidates,
     plannedLanguageEntries,
     preVaultLanguageChoices,
     writePreVaultLanguagePreference,
+    type PlannedLanguageEntry,
   } from "$lib/i18n/pre-vault-language";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
@@ -15,20 +16,42 @@
    * The first welcome screen: the app's language. Each language is named in English with its own name underneath, so
    * the alphabetical order stays the same whatever the interface language, and every name reads left to right here.
    * Choosing one applies it at once, so the rest of the welcome reads in it. The choice is remembered until vault
-   * setup saves it. Planned languages follow, dimmed; touching one tells, in that language, that it is coming.
+   * setup saves it. Planned languages follow, dimmed; touching one shows a toast, in that language, saying it is coming.
    */
   let { actions }: { actions: Snippet } = $props();
 
   const localization = getLocalization();
   const { t } = localization;
   const headingId = $props.id();
+  const NOTICE_TIMEOUT_MS = 3_000;
 
   const systemCandidates = browserLocaleCandidates(typeof navigator === "undefined" ? undefined : navigator);
   const preference = $derived(localization.languagePreference);
   const choices = $derived(preVaultLanguageChoices(systemCandidates, t("language.systemOption")));
   const planned = plannedLanguageEntries();
-  let noticeId = $state<string | null>(null);
-  const notice = $derived(planned.find((entry) => entry.id === noticeId) ?? null);
+  let notice = $state<PlannedLanguageEntry | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function clearNoticeTimer(): void {
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = undefined;
+  }
+
+  function showNotice(entry: PlannedLanguageEntry): void {
+    clearNoticeTimer();
+    notice = entry;
+    noticeTimer = setTimeout(() => {
+      notice = null;
+      noticeTimer = undefined;
+    }, NOTICE_TIMEOUT_MS);
+  }
+
+  function dismissNotice(): void {
+    clearNoticeTimer();
+    notice = null;
+  }
+
+  $effect(() => clearNoticeTimer);
 
   function safeStorage(): Storage | undefined {
     try {
@@ -97,40 +120,30 @@
   
         <ul class="grid gap-1.5">
           {#each planned as entry (entry.id)}
-            {@const active = entry.id === noticeId}
             <li>
               <button
                 type="button"
                 aria-disabled="true"
-                aria-expanded={active}
-                class="flex min-h-14 w-full flex-col justify-center rounded-lg px-4 py-2.5 text-left transition-colors focus-visible:bg-accent/60"
-                onclick={() => (noticeId = active ? null : entry.id)}
+                class="flex min-h-14 w-full flex-col justify-center rounded-lg px-4 py-2.5 text-left opacity-55 transition-colors focus-visible:bg-accent"
+                onclick={() => showNotice(entry)}
               >
-                <span class="block w-full opacity-55">
-                  <span lang="en" class="block truncate text-base font-medium text-foreground">{entry.title}</span>
-                  <span lang={entry.id} dir="ltr" class="block truncate text-left text-sm text-muted-foreground">
-                    {entry.detail}
-                  </span>
+                <span lang="en" class="block w-full truncate text-base font-medium text-foreground">{entry.title}</span>
+                <span lang={entry.id} dir="ltr" class="block w-full truncate text-left text-sm text-muted-foreground">
+                  {entry.detail}
                 </span>
-                {#if active}
-                  <span aria-hidden="true" class="mt-1.5 flex w-full items-start gap-2 text-sm leading-5 text-foreground">
-                    <Info size={16} strokeWidth={1.8} class="mt-0.5 shrink-0" />
-                    <span lang={entry.id} dir={entry.direction} class="min-w-0 flex-1 text-left">{entry.notice}</span>
-                  </span>
-                {/if}
               </button>
             </li>
           {/each}
         </ul>
       </div>
-
-      <p aria-live="polite" class="sr-only">
-        {#if notice}<span lang={notice.id} dir={notice.direction}>{notice.notice}</span>{/if}
-      </p>
     </div>
   </div>
 
   <div class="mx-auto w-full max-w-xl shrink-0 px-4 pb-6 @min-[560px]:px-8 @min-[860px]:pb-10">
     <div class="border-t border-border pt-4">{@render actions()}</div>
   </div>
+
+  {#if notice}
+    <ActionToast message={notice.notice} messageLang={notice.id} messageDir={notice.direction} onDismiss={dismissNotice} />
+  {/if}
 </section>

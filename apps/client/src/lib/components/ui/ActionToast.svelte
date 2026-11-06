@@ -7,6 +7,8 @@
 
   let {
     message,
+    messageLang,
+    messageDir,
     actionLabel,
     dismissLabel,
     variant = "default",
@@ -17,6 +19,10 @@
     onDismiss,
   }: {
     message: string;
+    /** The language of `message` when it differs from the interface language. */
+    messageLang?: string;
+    /** The direction of `message`, isolated so it stays at the toast's start. */
+    messageDir?: "ltr" | "rtl";
     actionLabel?: string;
     dismissLabel?: string;
     variant?: "default" | "success" | "error";
@@ -68,7 +74,7 @@
     toastVariantClass,
   )}
 >
-  <span class="min-w-0 flex-1 truncate">{message}</span>
+  <span class="min-w-0 flex-1 truncate"><span lang={messageLang} dir={messageDir}>{message}</span></span>
   {#if controlsVisible && actionLabel && onAction}
     <button
       type="button"

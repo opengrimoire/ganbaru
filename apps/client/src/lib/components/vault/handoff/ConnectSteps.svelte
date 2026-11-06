@@ -31,7 +31,7 @@
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
   import RecoveryKitDialog from "./RecoveryKitDialog.svelte";
-  import SettingsPath from "./SettingsPath.svelte";
+  import SettingsPath from "$lib/components/settings/SettingsPath.svelte";
 
   /**
    * The steps that connect this device to a vault it does not have yet: through another
@@ -369,14 +369,14 @@
             <ConnectStep number={2} total={3}>
               <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
                 {t("vaultHandoff.computerSteps.goTo")}
-                <SettingsPath toLinkedDevices />
+                <SettingsPath trail={[t("settings.section.data"), t("vaultHandoff.heading")]} />
               </p>
             </ConnectStep>
           {:else}
             <ConnectStep number={1} total={3}>
               <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
                 {t("vaultHandoff.computerSteps.open")}
-                <SettingsPath />
+                <SettingsPath trail={[t("settings.section.data")]} />
               </p>
             </ConnectStep>
             <ConnectStep number={2} total={3}>

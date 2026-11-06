@@ -46,7 +46,7 @@
   import ConnectSourceTabs from "./ConnectSourceTabs.svelte";
   import ConnectStep, { stepCenteredBlockClass } from "./ConnectStep.svelte";
   import ConnectSteps, { type ConnectSource } from "./ConnectSteps.svelte";
-  import SettingsPath from "./SettingsPath.svelte";
+  import SettingsPath from "$lib/components/settings/SettingsPath.svelte";
 
   type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "bootstrap" | "unlink" | "recover" | "linkFolder";
 
@@ -620,7 +620,7 @@
           <ConnectStep number={2 + offset} {total}>
             <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
               {t("vaultHandoff.computerSteps.goTo")}
-              <SettingsPath toLinkedDevices />
+              <SettingsPath trail={[t("settings.section.data"), t("vaultHandoff.heading")]} />
             </p>
           </ConnectStep>
           <ConnectStep number={3 + offset} {total}>

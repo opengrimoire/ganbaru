@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import SettingsPath from "$lib/components/settings/SettingsPath.svelte";
   import type { AppLocale, LanguagePreference } from "$lib/i18n/locales";
   import {
     browserLocaleCandidates,
@@ -53,6 +54,7 @@
         </h1>
         <p class="text-sm leading-6 text-pretty text-muted-foreground @min-[560px]:text-base @min-[560px]:leading-7">
           {t("vaultSetup.language.body")}
+          <SettingsPath trail={[t("settings.section.appearance")]} />
         </p>
       </div>
 

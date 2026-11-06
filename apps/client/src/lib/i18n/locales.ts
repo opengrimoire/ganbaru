@@ -78,6 +78,7 @@ export const PLANNED_LOCALES: readonly PlannedLocale[] = Object.freeze([
   { id: "el", label: "Greek", nativeLabel: "Ελληνικά", direction: "ltr", comingNotice: "Έρχεται σύντομα. Ζητώ συγγνώμη για την ταλαιπωρία." },
   { id: "hu", label: "Hungarian", nativeLabel: "Magyar", direction: "ltr", comingNotice: "Hamarosan. Elnézést kérek a kellemetlenségért." },
   { id: "ms", label: "Malay", nativeLabel: "Bahasa Melayu", direction: "ltr", comingNotice: "Akan datang. Saya mohon maaf atas kesulitan ini." },
+  { id: "he", label: "Hebrew", nativeLabel: "עברית", direction: "rtl", comingNotice: "בקרוב. סליחה על אי הנוחות." },
   { id: "ta", label: "Tamil", nativeLabel: "தமிழ்", direction: "ltr", comingNotice: "விரைவில் வருகிறது. சிரமத்திற்கு வருந்துகிறேன்." },
 ]);
 

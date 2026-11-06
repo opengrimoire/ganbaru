@@ -34,7 +34,7 @@ export const mobile = {
     notificationsAction: "Permitir notificaciones",
     exactAlarmTitle: "Recibe recordatorios a tiempo",
     exactAlarmBody: "Sin este permiso, Android puede retrasar varios minutos los recordatorios de tus sesiones planeadas, sobre todo con el teléfono en reposo.",
-    autostartTitle: "Recibe recordatorios aunque esté cerrada",
+    autostartTitle: "Recibe recordatorios aunque la app esté cerrada",
     autostartBody: (app: string) =>
       `Tu teléfono impide que las apps cerradas se inicien solas. Sin este permiso, los recordatorios de sesiones y descansos podrían no llegar mientras ${app} esté cerrada.`,
     batteryTitle: "Mantén tu temporizador activo",

@@ -28,12 +28,30 @@
   const phases = untrack(() => FOCUS_ACCESS_GUIDES[step]);
   const fadeMs = prefersReducedMotion() ? 0 : 180;
 
+  /** The drawn phone at zoom 1, matching its `h-72 w-52` screen plus the `p-1.5` bezel. */
+  const PHONE_HEIGHT_PX = 300;
+  const PHONE_WIDTH_PX = 220;
+  /** How far the phone shrinks on short screens and grows into spare room before it stops looking like a guide. */
+  const MIN_ZOOM = 0.7;
+  const MAX_ZOOM = 1.35;
+
+  let availableWidth = $state(0);
+  let availableHeight = $state(0);
+  const zoom = $derived(phoneZoom(availableWidth, availableHeight));
+
   let phase = $state(0);
   let cycle = $state(0);
   let restarting = $state(false);
 
   const caption = $derived(captionText(phases[phase].caption));
   const instructions = $derived([...new Set(phases.map((entry) => captionText(entry.caption)))]);
+
+  /** The phone's zoom that fills the room left between the text and the actions, within readable bounds. */
+  function phoneZoom(width: number, height: number): number {
+    if (width <= 0 || height <= 0) return 1;
+    const fit = Math.min(width / PHONE_WIDTH_PX, height / PHONE_HEIGHT_PX);
+    return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, fit));
+  }
 
   function captionText(caption: FocusAccessGuideCaption): string {
     switch (caption) {
@@ -72,31 +90,41 @@
   });
 </script>
 
-<figure class="flex flex-col items-center gap-3">
-  <div aria-hidden="true" class="rounded-4xl bg-foreground/6 p-1.5">
-    <div
-      class={cn(
-        "relative h-[min(18rem,40svh)] w-52 overflow-hidden rounded-3xl bg-background transition-opacity duration-300 motion-reduce:transition-none",
-        restarting && "opacity-0",
-      )}
-    >
-      {#key cycle}
-        <div class="absolute inset-0">
-          {#if step === "notifications"}
-            <NotificationsScene {phase} {appLabel} />
-          {:else if step === "exact-alarm"}
-            <ExactAlarmScene {phase} {appLabel} />
-          {:else if step === "autostart"}
-            <AutostartScene {phase} {appLabel} />
-          {:else if step === "battery"}
-            <BatteryScene {phase} {appLabel} />
-          {:else if step === "usage-access"}
-            <UsageAccessScene {phase} {appLabel} />
-          {:else}
-            <AppBlockingScene {phase} />
-          {/if}
+<figure class="flex w-full flex-1 flex-col items-center gap-3">
+  <!-- The phone sits out of the flow so its zoom never changes the room it is measured against. -->
+  <div
+    aria-hidden="true"
+    class="relative min-h-52 w-full flex-1"
+    bind:clientWidth={availableWidth}
+    bind:clientHeight={availableHeight}
+  >
+    <div class="absolute inset-0 flex items-center justify-center">
+      <div class="rounded-4xl bg-foreground/6 p-1.5" style:zoom={zoom}>
+        <div
+          class={cn(
+            "relative h-72 w-52 overflow-hidden rounded-3xl bg-background transition-opacity duration-300 motion-reduce:transition-none",
+            restarting && "opacity-0",
+          )}
+        >
+          {#key cycle}
+            <div class="absolute inset-0">
+              {#if step === "notifications"}
+                <NotificationsScene {phase} {appLabel} />
+              {:else if step === "exact-alarm"}
+                <ExactAlarmScene {phase} {appLabel} />
+              {:else if step === "autostart"}
+                <AutostartScene {phase} {appLabel} />
+              {:else if step === "battery"}
+                <BatteryScene {phase} {appLabel} />
+              {:else if step === "usage-access"}
+                <UsageAccessScene {phase} {appLabel} />
+              {:else}
+                <AppBlockingScene {phase} />
+              {/if}
+            </div>
+          {/key}
         </div>
-      {/key}
+      </div>
     </div>
   </div>
   <figcaption class="grid min-h-10 w-full max-w-72 place-items-center text-center text-sm font-medium leading-5 text-foreground">

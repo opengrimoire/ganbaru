@@ -31,7 +31,7 @@ export const mobile = {
     notificationsAction: "Allow notifications",
     exactAlarmTitle: "Get reminders on time",
     exactAlarmBody: "Without this permission, Android can delay reminders for your planned sessions by several minutes, especially while your phone sleeps.",
-    autostartTitle: "Get reminders even when closed",
+    autostartTitle: "Get reminders even when the app is closed",
     autostartBody: (app: string) =>
       `Your phone stops closed apps from starting on their own. Without this permission, reminders for sessions and breaks may never arrive while ${app} is closed.`,
     batteryTitle: "Keep your timer running",

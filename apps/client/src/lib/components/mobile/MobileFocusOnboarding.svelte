@@ -305,7 +305,7 @@
               <p class="mt-3 text-xs leading-5 text-muted-foreground">{t("mobile.focusOnboarding.privacyNote")}</p>
             {/if}
 
-            <div class="flex flex-1 items-center justify-center pt-8">
+            <div class="flex flex-1 flex-col pt-8">
               <FocusAccessGuide step={current} {appLabel} />
             </div>
           </div>

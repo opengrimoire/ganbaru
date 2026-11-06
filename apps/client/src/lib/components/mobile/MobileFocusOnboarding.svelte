@@ -205,7 +205,7 @@
 
   function stepBody(step: FocusAccessStep): string {
     switch (step) {
-      case "notifications": return t("mobile.focusOnboarding.notificationsBody");
+      case "notifications": return t("mobile.focusOnboarding.notificationsBody", appLabel);
       case "exact-alarm": return t("mobile.focusOnboarding.exactAlarmBody");
       case "autostart": return t("mobile.focusOnboarding.autostartBody", appLabel);
       case "battery": return t("mobile.focusOnboarding.batteryBody", appLabel);

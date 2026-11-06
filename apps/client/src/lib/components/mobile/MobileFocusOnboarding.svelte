@@ -9,6 +9,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import FocusAccessGuide from "./focus-access/FocusAccessGuide.svelte";
+  import MobileOnboardingProgress from "./MobileOnboardingProgress.svelte";
   import {
     focusAccessGranted,
     focusAccessSensitive,
@@ -261,24 +262,20 @@
 </script>
 
 <main
-  class="mobile-viewport-height w-screen overflow-hidden bg-background pb-(--safe-area-bottom) pt-(--safe-area-top) text-foreground"
+  class="mobile-viewport-height flex w-screen flex-col overflow-hidden bg-background pb-(--safe-area-bottom) pt-(--safe-area-top) text-foreground"
   style="padding-left: var(--safe-area-left); padding-right: var(--safe-area-right);"
 >
-  <section class="h-full overflow-y-auto overflow-x-hidden px-5 min-[560px]:px-8">
+  <MobileOnboardingProgress stage="permissions" fraction={steps?.length ? (index + 1) / steps.length : 0} />
+  <section class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 min-[560px]:px-8">
     {#if steps === null || current === null}
       <div class="flex h-full items-center justify-center text-sm">
         <Loading layout="inline" showLabel label={t("mobile.focusOnboarding.checkingAccess")} />
       </div>
     {:else}
       {@const boundary = stepBoundary(current)}
-      <div class="mx-auto flex min-h-full w-full max-w-md flex-col pb-5 pt-4">
+      <div class="mx-auto flex min-h-full w-full max-w-md flex-col pb-5">
         {#if steps.length > 1}
-          <div class="flex gap-1.5" aria-hidden="true">
-            {#each steps as step, stepIndex (step)}
-              <span class={["h-1 flex-1 rounded-full transition-colors duration-300", stepIndex <= index ? "bg-primary" : "bg-foreground/10"]}></span>
-            {/each}
-          </div>
-          <p class="sr-only">{t("mobile.focusOnboarding.stepProgress", index + 1, steps.length)}</p>
+          <p class="sr-only">{t("mobile.focusOnboarding.permissionProgress", index + 1, steps.length)}</p>
         {/if}
 
         {#key current}

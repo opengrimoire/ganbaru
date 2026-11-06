@@ -15,8 +15,11 @@ export const mobile = {
     restoreBackupFile: "Restore backup file",
     importExistingFolder: "Import existing folder",
   },
-  focusOnboarding: {
+  onboarding: {
     stepProgress: (current: number, total: number) => `Step ${current} of ${total}`,
+  },
+  focusOnboarding: {
+    permissionProgress: (current: number, total: number) => `Permission ${current} of ${total}`,
     openSettings: "Open settings",
     openAgain: "Open settings again",
     continue: "Continue",

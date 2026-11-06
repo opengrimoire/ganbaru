@@ -8,6 +8,7 @@
   import { createBackupKitPrompt } from "$lib/vault/backup-kit-prompt.svelte";
   import { backupRefusalMessage } from "$lib/vault/backup-restore";
   import VaultWelcomeContent from "$lib/components/vault/VaultWelcomeContent.svelte";
+  import MobileOnboardingProgress from "./MobileOnboardingProgress.svelte";
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -151,24 +152,27 @@
 {/snippet}
 
 <main
-  class="mobile-viewport-height w-screen overflow-hidden bg-background pb-(--safe-area-bottom) pt-(--safe-area-top) text-foreground"
+  class="mobile-viewport-height flex w-screen flex-col overflow-hidden bg-background pb-(--safe-area-bottom) pt-(--safe-area-top) text-foreground"
   style="padding-left: var(--safe-area-left); padding-right: var(--safe-area-right);"
 >
-  {#if !welcomeComplete}
-    <VaultWelcomeContent onContinue={() => { welcomeComplete = true; }} />
-  {:else}
-    <VaultSetupContent
-      title={t("mobile.vaultSetup.title")}
-      intro={t("mobile.vaultSetup.intro")}
-      developmentWarning={defaultLocation?.developmentBuild
-        ? t("vaultSetup.developmentBuildWarning", defaultLocation.folderName)
-        : null}
-      location={defaultLocation?.path ?? fallbackDefaultPath}
-      locationLabel={t("mobile.vaultSetup.dataLocation")}
-      actions={setupActions}
-      {error}
-    />
-  {/if}
+  <MobileOnboardingProgress stage={welcomeComplete ? "vault" : "welcome"} />
+  <div class="min-h-0 flex-1">
+    {#if !welcomeComplete}
+      <VaultWelcomeContent onContinue={() => { welcomeComplete = true; }} />
+    {:else}
+      <VaultSetupContent
+        title={t("mobile.vaultSetup.title")}
+        intro={t("mobile.vaultSetup.intro")}
+        developmentWarning={defaultLocation?.developmentBuild
+          ? t("vaultSetup.developmentBuildWarning", defaultLocation.folderName)
+          : null}
+        location={defaultLocation?.path ?? fallbackDefaultPath}
+        locationLabel={t("mobile.vaultSetup.dataLocation")}
+        actions={setupActions}
+        {error}
+      />
+    {/if}
+  </div>
 </main>
 
 {#if kitPrompt.request}

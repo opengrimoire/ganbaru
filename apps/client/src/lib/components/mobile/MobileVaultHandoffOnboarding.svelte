@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { PairingStatus } from "$lib/api/vault-handoff";
   import VaultHandoffOnboardingContent from "$lib/components/vault/handoff/VaultHandoffOnboardingContent.svelte";
+  import MobileOnboardingProgress from "./MobileOnboardingProgress.svelte";
   import { requireActiveVaultIdentity } from "$lib/vault/active-vault";
 
   let {
@@ -17,14 +18,17 @@
 </script>
 
 <main
-  class="mobile-viewport-height w-screen overflow-y-auto bg-background pb-(--safe-area-bottom) pt-(--safe-area-top) text-foreground"
+  class="mobile-viewport-height flex w-screen flex-col overflow-hidden bg-background pb-(--safe-area-bottom) pt-(--safe-area-top) text-foreground"
   style="padding-left: var(--safe-area-left); padding-right: var(--safe-area-right);"
 >
-  <VaultHandoffOnboardingContent
-    platform="android"
-    {vaultId}
-    {initialStatus}
-    {bootstrapReplicaOnLink}
-    {onComplete}
-  />
+  <MobileOnboardingProgress stage="linking" />
+  <div class="min-h-0 flex-1 overflow-y-auto">
+    <VaultHandoffOnboardingContent
+      platform="android"
+      {vaultId}
+      {initialStatus}
+      {bootstrapReplicaOnLink}
+      {onComplete}
+    />
+  </div>
 </main>

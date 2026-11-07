@@ -39,6 +39,7 @@
   import { panelArrowKeyTarget } from "./arrow-nav";
   import { formatCalendarDate } from "$lib/calendar/utils";
   import { EventPanelGeometryController } from "./geometry-controller.svelte";
+  import { EventPanelSheetController } from "./mobile-sheet-controller.svelte";
   import {
     EventPanelSessionController,
     eventPanelHeavyLookupId,
@@ -129,9 +130,12 @@
     onInitialSync,
     onScopeChange,
     onSurfaceStatusChange,
+    gridEditing = false,
   }: {
     mode: "create" | "edit";
     mobileLayout?: boolean;
+    /** Whether the user is moving or resizing this event on the grid, which lowers the mobile sheet to its header. */
+    gridEditing?: boolean;
     panelSessionKey?: number;
     start?: string;
     end?: string;
@@ -366,6 +370,24 @@
   const panelLayout = $derived(geometry.layout);
   const activePanelLayout = $derived(mobileLayout ? "fullscreen" : panelLayout);
   const panelCanDrag = $derived(!mobileLayout && geometry.canDrag);
+  let sheetHeaderEl = $state<HTMLDivElement>();
+  let sheetPeekEndEl = $state<HTMLDivElement>();
+  const sheet = new EventPanelSheetController({
+    enabled: () => mobileLayout && !parked,
+    initialDetent: () => (mode === "create" ? "peek" : "half"),
+    sessionKey: () => panelSessionKey,
+    gridEditing: () => gridEditing,
+    needsRoom: () => openSection !== null
+      || dateTime.startDatePickerOpen
+      || dateTime.endDatePickerOpen
+      || !!dateTime.timePickerTarget,
+    panel: () => geometry.panelEl,
+    header: () => sheetHeaderEl,
+    content: () => geometry.contentEl,
+    peekEnd: () => sheetPeekEndEl,
+    scroll: () => geometry.scrollEl,
+    onClose: () => onClose(),
+  });
   const isDateTimeStacked = $derived(geometry.isDateTimeStacked);
 
   function isSectionEnabled(s: ToggleSection): boolean {
@@ -708,11 +730,8 @@
   // it would overflow the viewport.
   const panelStyle = $derived(geometry.style);
   const parkedPanelStyle = $derived(geometry.parkedStyle);
-  const activePanelStyle = $derived(
-    mobileLayout
-      ? "position:fixed; left:calc(var(--visual-viewport-offset-left) + var(--safe-area-left)); top:calc(var(--visual-viewport-offset-top) + var(--safe-area-top)); width:calc(var(--visual-viewport-width) - var(--safe-area-left) - var(--safe-area-right)); height:calc(var(--visual-viewport-height) - var(--safe-area-top) - var(--safe-area-bottom)); z-index:50;"
-      : panelStyle,
-  );
+  const activePanelStyle = $derived(mobileLayout ? sheet.style : panelStyle);
+  const panelPositionReady = $derived(geometry.positionReady && (!mobileLayout || sheet.ready));
 
 
   const shortDate = $derived.by(() => {
@@ -1034,16 +1053,88 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
   bind:this={geometry.panelEl}
-  class="panel-root flex flex-col"
+  class={cn("panel-root flex flex-col", mobileLayout && !parked && "rounded-t-floating")}
   data-layout={activePanelLayout}
   data-mobile={mobileLayout || undefined}
+  data-sheet-animating={mobileLayout && sheet.animating ? "true" : undefined}
   data-readonly={controlsDisabled || undefined}
   data-parked={parked || undefined}
   aria-hidden={parked || undefined}
-  style="box-shadow: 0 0 2px 0px var(--panel-edge), 0 1px 2px var(--panel-shadow); {parked ? parkedPanelStyle : activePanelStyle} background-color: var(--panel-bg); visibility: {session.initialized && geometry.positionReady && !parked ? 'visible' : 'hidden'};"
+  style="box-shadow: 0 0 2px 0px var(--panel-edge), 0 1px 2px var(--panel-shadow); {parked ? parkedPanelStyle : activePanelStyle} background-color: var(--panel-bg); visibility: {session.initialized && panelPositionReady && !parked ? 'visible' : 'hidden'};"
   onclick={handlePanelClick}
   onkeydown={handlePanelArrowKeydown}
 >
+  {#if mobileLayout && !parked}
+  <!-- Sheet header: dragging it moves the sheet, and it keeps close, delete, and save reachable at every height. -->
+  <div bind:this={sheetHeaderEl} class="sheet-header sticky top-0 z-10 shrink-0 touch-none" style="background-color: var(--sidebar);">
+    <div class="flex justify-center pt-2" aria-hidden="true">
+      <div class="h-1 w-9 rounded-full bg-muted-foreground/40"></div>
+    </div>
+    <div class="flex items-center gap-1 px-1">
+      <button
+        type="button"
+        aria-label={t("common.close")}
+        onclick={onClose}
+        class="panel-chrome flex h-12 w-12 shrink-0 items-center justify-center rounded-floating-item text-muted-foreground active:bg-accent"
+      >
+        <X size={22} aria-hidden="true" />
+      </button>
+      <div class="flex-1"></div>
+      {#if readOnly
+        && !allowPomodoroWhenReadOnly
+        && !(allowDeleteWhenReadOnly && mode === "edit" && (onDelete || onEndEvent) && event)}
+        <span class="px-3 text-[0.8rem] text-muted-foreground/70">{t("calendar.eventPanel.readOnly")}</span>
+      {:else}
+        {#if mode === "edit" && (onDelete || onEndEvent) && event}
+          {@const deleteArmed = actions.deleteArmed && (!deleteEndsEvent || inlineEndEventConfirm)}
+          <button
+            type="button"
+            data-event-panel-delete-action
+            onclick={() => (deleteArmed ? actions.confirmArmedDelete() : actions.armOrConfirmDelete())}
+            disabled={deleteControlsDisabled}
+            aria-label={deleteArmed ? armedDeleteLabel : deleteActionLabel}
+            class={cn(
+              "readonly-interactive flex h-12 shrink-0 items-center justify-center",
+              deleteArmed ? "px-1" : "w-12 rounded-floating-item text-muted-foreground active:bg-accent",
+            )}
+          >
+            <span class={cn(
+              "flex items-center gap-2",
+              deleteArmed && "rounded-floating-item bg-action-danger-armed px-3 py-2 text-[0.866667rem] text-action-danger-armed-foreground",
+            )}>
+              {#if deleteEndsEvent}
+                <Scissors size={18} strokeWidth={1.8} aria-hidden="true" />
+              {:else if deleteAction === "archive"}
+                <Archive size={18} strokeWidth={1.8} aria-hidden="true" />
+              {:else}
+                <Trash2 size={18} strokeWidth={1.8} aria-hidden="true" />
+              {/if}
+              {#if deleteArmed}<span>{armedDeleteLabel}</span>{/if}
+            </span>
+          </button>
+        {/if}
+        {#if !(readOnly && !allowPomodoroWhenReadOnly)}
+          <button
+            type="button"
+            onclick={handleSave}
+            disabled={saveControlsDisabled}
+            class={cn("flex h-12 shrink-0 items-center px-1", pomodoroReadOnlyInteractive && "readonly-interactive")}
+          >
+            <span
+              class={cn(
+                "rounded-floating-item px-4 py-2 text-[0.866667rem] font-medium",
+                saveReady ? "bg-action-confirm text-action-confirm-foreground" : "text-muted-foreground",
+              )}
+              style:background-color={saveReady ? undefined : "var(--panel-contrast)"}
+            >
+              {t("common.save")}
+            </span>
+          </button>
+        {/if}
+      {/if}
+    </div>
+  </div>
+  {:else}
   <!-- Drag handle bar -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
@@ -1068,24 +1159,11 @@
       if (panelCanDrag) geometry.handleDragEnd();
     }}
   >
-    {#if mobileLayout && !parked}
-      <div class="w-12" aria-hidden="true"></div>
-    {/if}
     <div class="flex flex-1 items-center justify-center py-2.5">
       <div class="h-[1.5px] w-9 bg-muted-foreground/50"></div>
     </div>
-    {#if mobileLayout && !parked}
-      <button
-        type="button"
-        aria-label={t("common.close")}
-        onclick={onClose}
-        onpointerdown={(event) => event.stopPropagation()}
-        class="panel-chrome flex h-12 w-12 shrink-0 items-center justify-center text-muted-foreground active:bg-accent"
-      >
-        <X size={22} aria-hidden="true" />
-      </button>
-    {/if}
   </div>
+  {/if}
 
   <div
     class={cn(
@@ -1174,6 +1252,7 @@
     <div class="mt-1.5 flex flex-col gap-px px-1">
       <!-- Date + time -->
       <div
+        bind:this={sheetPeekEndEl}
         class="date-time-grid relative text-[0.866667rem] leading-none"
         data-stacked={isDateTimeStacked || undefined}
       >
@@ -1520,7 +1599,8 @@
     {/if}
   </div>
 
-  <!-- Save (pinned outside scroll) -->
+  <!-- Save (pinned outside scroll); the mobile sheet keeps these actions in its header. -->
+  {#if !mobileLayout || parked}
   <div
     class={cn(
       "shrink-0 px-4",
@@ -1594,6 +1674,7 @@
       </div>
     {/if}
   </div>
+  {/if}
 </div>
 
 <style>
@@ -1635,9 +1716,14 @@
     min-height: 3rem;
   }
 
-  .panel-root[data-mobile="true"] .panel-footer-actions :global(button),
-  .panel-root[data-mobile="true"] .panel-footer-actions :global(div) {
-    min-height: 3rem;
+  .panel-root[data-sheet-animating="true"] {
+    transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .panel-root[data-sheet-animating="true"] {
+      transition-duration: 0ms;
+    }
   }
 
   .date-time-grid {

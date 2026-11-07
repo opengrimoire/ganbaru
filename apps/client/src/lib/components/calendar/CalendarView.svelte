@@ -209,6 +209,8 @@
   // updates before the session closes, so the preview would briefly conflict.
   let suppressEditPreview = $state(false);
   let panelCommitHidden = $state(false);
+  /** Whether a touch is moving, resizing, or drawing an event on the mobile grid. */
+  let mobileGridEditing = $state(false);
   let saveDisplayFreeze = $state<CalendarEvent[] | null>(null);
 
   // Visible viewport window. Navigation commits this target only after the
@@ -827,10 +829,12 @@
 
   function handleMobileTouchEditStart(): void {
     resetMobileSwipe();
+    mobileGridEditing = true;
   }
 
   function handleMobileTouchEditEnd(): void {
     mobileSwipeSuppressClick = true;
+    mobileGridEditing = false;
   }
 
   onDestroy(() => {
@@ -1527,6 +1531,7 @@
     {@const render = panelRender}
     <Panel
       {mobileLayout}
+      gridEditing={mobileGridEditing}
       parked={render.parked}
       mode={render.mode}
       panelSessionKey={render.sessionKey}

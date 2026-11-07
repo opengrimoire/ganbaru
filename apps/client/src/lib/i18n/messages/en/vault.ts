@@ -26,14 +26,14 @@ export const vaultSetup = {
     headline: "Free and open source",
     body: "Your data stays on your devices and syncs directly between them, with no account, ads, or tracking.",
     sceneDescription:
-      "A short animation of a handheld payment terminal with a receipt printer on top. Its screen shows a total that is free and confirms there is nothing to pay. It then prints a receipt that curls over its top and hangs down in front of the screen, end first: a total that is free and, above it, Calendar, Focus, Projects, Notes, Chat, Music, the distraction blocker, and sync, each free. A seal with the Open Grimoire logo, reading AGPL 3.0, open source, then stamps the receipt.",
-    receipt: {
-      confirmed: "Nothing to pay",
-      free: "Free",
-      total: "Total",
-      blocker: "Distraction blocker",
-      sync: "Sync",
-      stamp: "Open source",
+      "A short animation of Ganbaru's public source code repository opening in a browser, with its files and its AGPL 3.0 license in view. A tap on Star then stars the repository.",
+    repository: {
+      public: "Public",
+      fork: "Fork",
+      star: "Star",
+      starred: "Starred",
+      readme: "Readme",
+      license: "AGPL 3.0 license",
     },
   },
   stepProgress: (current: number, total: number) => `Step ${current} of ${total}`,

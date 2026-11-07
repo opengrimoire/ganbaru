@@ -1,145 +1,97 @@
 /**
- * Timing for the welcome scene about the app itself. A payment terminal rises into view, its screen lights up with a
- * total that is free and confirms there is nothing to pay, and it then prints a receipt that curls over its top and
- * hangs down in front of the screen, end first: the barcode and the free total, then every feature priced free, and the
- * header last. The license then stamps the receipt as the reason it stays that way. Every moment is derived from the
- * milliseconds elapsed since the scene started, so a frame is a pure function of time and the reduced-motion still is
- * simply the last frame.
+ * Timing for the welcome scene about the app itself: the app's public source repository opens in a browser, its files
+ * come into view, and a tap stars it. Every moment is derived from the milliseconds elapsed since the scene started, so
+ * a frame is a pure function of time and the reduced-motion still is simply the last frame.
  */
 
-import { easeInOutCubic, filmSpan } from "./welcome-film";
+import { easeInOutCubic, FILM_TAP_MS, filmSpan, filmTap } from "./welcome-film";
 
-/** How many features the receipt lists. */
-export const ABOUT_RECEIPT_ITEMS = 8;
+/** The app's public source repository. */
+export const ABOUT_REPOSITORY = { host: "github.com", owner: "opengrimoire", name: "ganbaru" } as const;
 
-/**
- * One stretch of paper the printer feeds: the blank lead, the header, a rule, a feature, the total, the barcode, or the
- * blank tail.
- */
-export type AboutSegment = "lead" | "header" | "rule" | "item" | "total" | "barcode" | "tail";
+/** The repository's web address. */
+export const ABOUT_REPOSITORY_URL = `https://${ABOUT_REPOSITORY.host}/${ABOUT_REPOSITORY.owner}/${ABOUT_REPOSITORY.name}`;
 
-/** The receipt from top to bottom, as it reads; the printer feeds it end first, from the bottom up. */
-export const ABOUT_SEGMENTS: readonly AboutSegment[] = [
-  "lead",
-  "header",
-  "rule",
-  ...Array.from({ length: ABOUT_RECEIPT_ITEMS }, (): AboutSegment => "item"),
-  "rule",
-  "total",
-  "barcode",
-  "tail",
-];
-
-/** How long the printer takes to feed each kind of segment. */
-const FEED_MS: Readonly<Record<AboutSegment, number>> = {
-  lead: 220,
-  header: 340,
-  rule: 130,
-  item: 200,
-  total: 300,
-  barcode: 340,
-  tail: 220,
-};
-/** The pause after each segment, so the paper feeds in steps as a printer's does. */
-const FEED_GAP_MS = 30;
-
-const PRINTER_IN = 150;
-const PRINTER_IN_MS = 400;
-/** The screen lights up with the total once the terminal is in place. */
-const SCREEN_ON = PRINTER_IN + PRINTER_IN_MS;
-const SCREEN_ON_MS = 260;
-/** How long the total stays on screen before it gives way to the confirmation. */
-const TOTAL_HOLD_MS = 520;
-const TOTAL_OUT_MS = 200;
-/** The confirmation: a ring that draws around a check, which draws in once the ring is mostly closed. */
-const RING_DELAY_MS = 90;
-const RING_MS = 320;
-const CHECK_DELAY_MS = 240;
-const CHECK_MS = 220;
-/** How long the confirmation rests on screen before the receipt starts to print. */
-const CONFIRM_HOLD_MS = 260;
-/** How long after the last segment the stamp starts to come down, how long it takes, and how long the receipt shakes. */
-const STAMP_DELAY_MS = 350;
-const STAMP_MS = 240;
-const IMPACT_MS = 220;
-const END_REST_MS = 600;
-
-const TOTAL_OUT = SCREEN_ON + SCREEN_ON_MS + TOTAL_HOLD_MS;
-const RING_START = TOTAL_OUT + RING_DELAY_MS;
-const CHECK_START = RING_START + CHECK_DELAY_MS;
-const CONFIRMED = CHECK_START + CHECK_MS;
-const PRINT_START = CONFIRMED + CONFIRM_HOLD_MS;
-
-/** When each segment starts to feed, indexed from the top: from the bottom up, each right after the one below it and its pause. */
-function segmentStarts(): number[] {
-  const starts: number[] = new Array<number>(ABOUT_SEGMENTS.length);
-  let next = PRINT_START;
-  for (let index = ABOUT_SEGMENTS.length - 1; index >= 0; index -= 1) {
-    starts[index] = next;
-    next += FEED_MS[ABOUT_SEGMENTS[index]] + FEED_GAP_MS;
-  }
-  return starts;
+/** One entry of the repository's top-level file list. */
+export interface AboutFile {
+  name: string;
+  folder: boolean;
 }
 
-const SEGMENT_STARTS = segmentStarts();
-const PRINT_END = SEGMENT_STARTS[0] + FEED_MS[ABOUT_SEGMENTS[0]];
-const STAMP_START = PRINT_END + STAMP_DELAY_MS;
-const STAMP_LANDED = STAMP_START + STAMP_MS;
+/** The top-level entries the repository page lists, folders first as the repository host sorts them. */
+export const ABOUT_FILES: readonly AboutFile[] = [
+  { name: ".github", folder: true },
+  { name: "apps", folder: true },
+  { name: "crates", folder: true },
+  { name: "docs", folder: true },
+  { name: "extensions", folder: true },
+  { name: "LICENSE", folder: false },
+  { name: "README.md", folder: false },
+];
+
+/** How many rows the repository's file list shows. */
+export const ABOUT_FILE_ROWS = ABOUT_FILES.length;
+
+const PAGE_IN = 150;
+const PAGE_IN_MS = 450;
+/** The file list's rows come in one after another once the page is mostly in place. */
+const ROWS_START = PAGE_IN + 250;
+const ROW_STAGGER_MS = 70;
+const ROW_MS = 260;
+const ROWS_END = ROWS_START + (ABOUT_FILE_ROWS - 1) * ROW_STAGGER_MS + ROW_MS;
+/** How long the page rests once it is shown before the tap on Star lands. */
+const STAR_HOLD_MS = 800;
+const STAR_TAP = ROWS_END + STAR_HOLD_MS;
+/** The button sinks as the tap lands and comes back up as the star fills. */
+const PRESS_IN_MS = 80;
+const PRESS_OUT_MS = 180;
+const STARRED = STAR_TAP + PRESS_IN_MS;
+/** The star pops as it fills, and sparks burst from it. */
+const POP_MS = 420;
+const SPARKS_MS = 560;
+const END_REST_MS = 1800;
 
 /** Moments of the scene, in milliseconds from its start. */
 export const ABOUT_BEATS = {
-  screenOn: SCREEN_ON,
-  confirmed: CONFIRMED,
-  printStart: PRINT_START,
-  printEnd: PRINT_END,
-  stampStart: STAMP_START,
-  stampLanded: STAMP_LANDED,
-  end: STAMP_LANDED + IMPACT_MS + END_REST_MS,
+  rowsEnd: ROWS_END,
+  starTap: STAR_TAP,
+  starred: STARRED,
+  end: STARRED + SPARKS_MS + END_REST_MS,
 } as const;
 
-/** How far the terminal has risen into view, from 0 to 1. */
-export function aboutPrinter(elapsed: number): number {
-  return easeInOutCubic(filmSpan(elapsed, PRINTER_IN, PRINTER_IN + PRINTER_IN_MS));
+/** How far the repository page has come into view, from 0 to 1. */
+export function aboutPage(elapsed: number): number {
+  return easeInOutCubic(filmSpan(elapsed, PAGE_IN, PAGE_IN + PAGE_IN_MS));
 }
 
-/** How brightly the terminal's screen is lit, from 0 to 1. */
-export function aboutScreen(elapsed: number): number {
-  return easeInOutCubic(filmSpan(elapsed, SCREEN_ON, SCREEN_ON + SCREEN_ON_MS));
+/** How far row `row` of the file list has come into view, from 0 to 1. */
+export function aboutRow(elapsed: number, row: number): number {
+  const start = ROWS_START + row * ROW_STAGGER_MS;
+  return easeInOutCubic(filmSpan(elapsed, start, start + ROW_MS));
 }
 
-/** How visible the total is on the screen, from 0 to 1: it appears as the screen lights and leaves for the confirmation. */
-export function aboutTotal(elapsed: number): number {
-  return aboutScreen(elapsed) * (1 - easeInOutCubic(filmSpan(elapsed, TOTAL_OUT, TOTAL_OUT + TOTAL_OUT_MS)));
+/** How visible the touch of the tap on Star is, from 0 to 1. */
+export function aboutTouch(elapsed: number): number {
+  return filmTap(elapsed, STAR_TAP + FILM_TAP_MS);
 }
 
-/** How much of the confirmation's ring has been drawn, from 0 to 1. */
-export function aboutConfirmRing(elapsed: number): number {
-  return easeInOutCubic(filmSpan(elapsed, RING_START, RING_START + RING_MS));
+/** How far the Star button is pressed in, from 0 to 1. */
+export function aboutPress(elapsed: number): number {
+  if (elapsed < STARRED) return easeInOutCubic(filmSpan(elapsed, STAR_TAP, STARRED));
+  return 1 - easeInOutCubic(filmSpan(elapsed, STARRED, STARRED + PRESS_OUT_MS));
 }
 
-/** How much of the confirmation's check has been drawn, from 0 to 1. */
-export function aboutConfirmCheck(elapsed: number): number {
-  return easeInOutCubic(filmSpan(elapsed, CHECK_START, CONFIRMED));
+/** Whether the repository is starred at this moment. */
+export function aboutStarred(elapsed: number): boolean {
+  return elapsed >= STARRED;
 }
 
-/** How much of segment `segment` the printer has fed out, from 0 to 1. */
-export function aboutFeed(elapsed: number, segment: number): number {
-  const start = SEGMENT_STARTS[segment];
-  return easeInOutCubic(filmSpan(elapsed, start, start + FEED_MS[ABOUT_SEGMENTS[segment]]));
+/** How far the star's pop has run as it fills, from 0 to 1. */
+export function aboutPop(elapsed: number): number {
+  return filmSpan(elapsed, STARRED, STARRED + POP_MS);
 }
 
-/** Whether the printer is printing at this moment. */
-export function aboutPrinting(elapsed: number): boolean {
-  return elapsed >= PRINT_START && elapsed < PRINT_END;
-}
-
-/** How far the stamp has come down onto the receipt, from 0 to 1, speeding up as a stamp does. */
-export function aboutStamp(elapsed: number): number {
-  return filmSpan(elapsed, STAMP_START, STAMP_LANDED) ** 2;
-}
-
-/** How hard the receipt shakes from the stamp's impact, from 1 as it lands down to 0. */
-export function aboutImpact(elapsed: number): number {
-  if (elapsed < STAMP_LANDED) return 0;
-  return 1 - easeInOutCubic(filmSpan(elapsed, STAMP_LANDED, STAMP_LANDED + IMPACT_MS));
+/** How far the sparks have flown from the star, from 0 to 1. */
+export function aboutSparks(elapsed: number): number {
+  return filmSpan(elapsed, STARRED, STARRED + SPARKS_MS);
 }

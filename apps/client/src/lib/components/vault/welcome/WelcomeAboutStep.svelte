@@ -2,7 +2,7 @@
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { ABOUT_BEATS } from "$lib/vault/welcome-about-scene";
+  import { ABOUT_BEATS, ABOUT_REPOSITORY_URL } from "$lib/vault/welcome-about-scene";
   import AboutInformationDialog from "../AboutInformationDialog.svelte";
   import WelcomeAboutScene, { ABOUT_SCENE_MAX_HEIGHT, ABOUT_SCENE_MAX_WIDTH, ABOUT_SCENE_MIN_HEIGHT, ABOUT_SCENE_MIN_WIDTH } from "./WelcomeAboutScene.svelte";
   import WelcomeScene from "./WelcomeScene.svelte";
@@ -10,11 +10,10 @@
 
   /**
    * The welcome screen about the app itself: free and open source, no account, and data kept on the user's devices,
-   * told by a scene of a payment terminal that confirms there is nothing to pay and prints a receipt that prices every
-   * feature free and is stamped with the license, and with the license text, acknowledgments, and source code one tap away.
+   * told by a scene of the app's public source repository being starred, and with the license text, acknowledgments, and
+   * source code one tap away.
    */
   const { t } = getLocalization();
-  const SOURCE_URL = "https://github.com/opengrimoire/ganbaru";
   const linkClass = "inline-flex min-h-10 items-center gap-1.5 text-sm font-medium text-foreground underline-offset-4 hover:underline";
 
   let informationDialog = $state<"license" | "acknowledgments" | null>(null);
@@ -23,7 +22,7 @@
   async function openSource(): Promise<void> {
     sourceError = false;
     try {
-      await openUrl(SOURCE_URL);
+      await openUrl(ABOUT_REPOSITORY_URL);
     } catch (error: unknown) {
       console.warn("Failed to open source repository:", error);
       sourceError = true;

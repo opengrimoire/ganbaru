@@ -22,6 +22,11 @@ const MAX_SAMPLES = 8;
 const REVEAL_MARGIN_PX = 16;
 /** Space left above a fully open sheet so the page edge stays visible behind it. */
 export const EVENT_PANEL_SHEET_TOP_GAP = "0.5rem";
+/**
+ * Shortest time the sheet stays lowered for an edit on the grid, in milliseconds, so after a quick edit the sheet lands
+ * before it rises again instead of reversing midway.
+ */
+const MIN_GRID_EDIT_DIP_MS = 450;
 
 export interface EventPanelSheetOptions {
   /** Whether the panel is a mobile bottom sheet; the controller does nothing otherwise. */
@@ -92,8 +97,8 @@ function scrollsGridBehind(target: EventTarget | null, panel: HTMLElement | unde
 /**
  * Presents the mobile event panel as a bottom sheet that rests at a peek, half, or full height, follows vertical
  * drags on its header and content, slides in from the bottom when shown, and lowers to a summary strip while the user
- * edits the event on the grid behind it. A collapsible sheet also rests at that strip after a swipe down or a scroll of
- * the grid instead of closing.
+ * edits the event on the grid behind it, staying there briefly after a quick edit so it never reverses midway. A
+ * collapsible sheet also rests at that strip after a swipe down or a scroll of the grid instead of closing.
  */
 export class EventPanelSheetController {
   detent = $state<BottomSheetDetent>("peek");
@@ -101,6 +106,11 @@ export class EventPanelSheetController {
   entered = $state(false);
   /** Whether the sheet rests at its summary strip after a swipe down or a scroll of the grid behind it. */
   collapsed = $state(false);
+  /** Whether the latest resting change is a dip for an edit on the grid, which moves more gently than a settle. */
+  private dipMotion = $state(false);
+  /** Whether the sheet is lowered for an edit on the grid, held for {@link MIN_GRID_EDIT_DIP_MS} after a quick edit. */
+  private gridEditDip = $state(false);
+  private gridEditDipStartedAt = 0;
   private fullHeight = $state(0);
   private dipHeight = $state(0);
   private peekHeight = $state(0);
@@ -139,6 +149,23 @@ export class EventPanelSheetController {
     });
 
     $effect(() => {
+      if (options.enabled() && options.gridEditing()) {
+        untrack(() => {
+          if (!this.gridEditDip) this.gridEditDipStartedAt = performance.now();
+          this.gridEditDip = true;
+          this.dipMotion = true;
+        });
+        return;
+      }
+      if (!untrack(() => this.gridEditDip)) return;
+      const remaining = MIN_GRID_EDIT_DIP_MS - (performance.now() - this.gridEditDipStartedAt);
+      const timer = setTimeout(() => {
+        this.gridEditDip = false;
+      }, Math.max(0, remaining));
+      return () => clearTimeout(timer);
+    });
+
+    $effect(() => {
       if (!options.enabled() || !options.shown() || this.entered || this.fullHeight <= 0) return;
       let second = 0;
       const first = requestAnimationFrame(() => {
@@ -160,7 +187,7 @@ export class EventPanelSheetController {
       const eventId = options.revealEventId();
       const visible = this.visibleHeight;
       // A collapsed sheet leaves the grid where the user scrolled it.
-      if (!options.enabled() || !eventId || !this.entered || this.dragHeight !== null || options.gridEditing()
+      if (!options.enabled() || !eventId || !this.entered || this.dragHeight !== null || this.gridEditDip
         || this.collapsed) return;
       const frame = requestAnimationFrame(() => this.revealEvent(eventId, visible));
       return () => cancelAnimationFrame(frame);
@@ -237,15 +264,23 @@ export class EventPanelSheetController {
     return this.restingHeight;
   }
 
-  /** Height the sheet rests at when no finger moves it: its summary strip while edited on the grid or collapsed. */
-  private get restingHeight(): number {
-    if (this.options.gridEditing() || this.collapsed) return this.heights.dip;
-    return this.heights[this.detent];
+  /** Whether the sheet shows only its summary strip, for an edit on the grid or after it collapsed. */
+  get lowered(): boolean {
+    return this.gridEditDip || this.collapsed;
   }
 
-  /** Whether position changes animate, which they do except while a finger moves the sheet. */
-  get animating(): boolean {
-    return this.entered && this.dragHeight === null;
+  /** Height the sheet rests at when no finger moves it: its summary strip while lowered. */
+  private get restingHeight(): number {
+    return this.lowered ? this.heights.dip : this.heights[this.detent];
+  }
+
+  /**
+   * How position changes animate: none while a finger moves the sheet, a gentle dip and rise around an edit on the
+   * grid, and a quick settle otherwise.
+   */
+  get motion(): "dip" | "settle" | null {
+    if (!this.entered || this.dragHeight !== null) return null;
+    return this.dipMotion ? "dip" : "settle";
   }
 
   /**
@@ -287,12 +322,14 @@ export class EventPanelSheetController {
   raise(detent: BottomSheetDetent): void {
     this.detent = higherBottomSheetDetent(this.collapsed ? "peek" : this.detent, detent);
     this.collapsed = false;
+    this.dipMotion = false;
   }
 
   /** Lower the sheet to its summary strip, leaving it at the peek once it opens again. */
   collapse(): void {
     if (this.collapsed) return;
     this.collapsed = true;
+    this.dipMotion = false;
     this.detent = "peek";
     this.options.scroll()?.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -396,6 +433,8 @@ export class EventPanelSheetController {
     const low = this.options.collapsible() ? "collapse" : "close";
     const result = settleBottomSheet(released, bottomSheetReleaseVelocity(gesture.samples), this.heights, low);
     this.dragHeight = null;
+    this.dipMotion = false;
+    if (!this.options.gridEditing()) this.gridEditDip = false;
     if (result === "close") {
       this.detent = "peek";
       this.options.onClose();

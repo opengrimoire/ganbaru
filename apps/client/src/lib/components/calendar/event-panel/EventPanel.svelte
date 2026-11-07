@@ -397,7 +397,7 @@
     onClose: () => onClose(),
   });
   /** Whether the sheet shows only its summary strip, while the event is edited on the grid or after a draft collapses. */
-  const sheetCollapsed = $derived(gridEditing || sheet.collapsed);
+  const sheetCollapsed = $derived(sheet.lowered);
   /** Whether a tap on the summary strip opens the sheet again; while the event is edited on the grid it waits instead. */
   const sheetExpandable = $derived(sheet.collapsed && !gridEditing);
   const isDateTimeStacked = $derived(geometry.isDateTimeStacked);
@@ -1072,7 +1072,7 @@
     class={cn("panel-root flex flex-col", mobileLayout && !parked && "rounded-t-floating")}
     data-layout={activePanelLayout}
     data-mobile={mobileLayout || undefined}
-    data-sheet-animating={mobileLayout && sheet.animating ? "true" : undefined}
+    data-sheet-motion={(mobileLayout && sheet.motion) || undefined}
     data-readonly={controlsDisabled || undefined}
     data-parked={parked || undefined}
     aria-hidden={parked || undefined}
@@ -1840,12 +1840,22 @@
     }
   }
 
-  .panel-root[data-sheet-animating="true"] {
+  .panel-root[data-sheet-motion="settle"] {
     transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
 
+  /* The dip around an edit on the grid eases in and out more slowly, so a quick edit reads as one calm motion. */
+  .panel-root[data-sheet-motion="dip"] {
+    transition: transform 400ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .panel-root[data-sheet-motion="dip"] :is(.sheet-grabber-half, .sheet-collapsed-title, .sheet-actions) {
+    transition-duration: 320ms;
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .panel-root[data-sheet-animating="true"] {
+    .panel-root[data-sheet-motion],
+    .panel-root[data-sheet-motion="dip"] :is(.sheet-grabber-half, .sheet-collapsed-title, .sheet-actions) {
       transition-duration: 0ms;
     }
   }

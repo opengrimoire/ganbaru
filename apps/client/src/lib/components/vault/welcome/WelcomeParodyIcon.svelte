@@ -20,8 +20,8 @@
 
 <script lang="ts">
   /**
-   * The icon of a parody app in the distraction blocker's welcome scenes: Y's letter, Bluedit's speech bubble with an
-   * up arrow, and Egogram's camera on its sunset gradient, each on its brand background.
+   * The icon of a parody app in the distraction blocker's welcome scenes: Y's hollow letter, Bluedit's speech bubble
+   * with an up arrow, and Egogram's camera on its sunset gradient, each on its brand background.
    */
   let { app, size }: { app: BlockerApp; size: number } = $props();
 
@@ -38,7 +38,12 @@
 >
   {#if app === "y"}
     <span class="absolute inset-0 rounded-[inherit] ring-1 ring-white/15 ring-inset"></span>
-    <span class="leading-none font-black text-white" style:font-size={`${size * 0.62}px`}>Y</span>
+    <!-- A Y in the hollow and hairline stroke style of a well-known one-letter logo: a hollow band from the top left
+         corner that bends into the stem, met by a thin solid arm from the top right. -->
+    <svg viewBox="0 0 24 24" style:width={glyph} style:height={glyph}>
+      <path d="M4.2 4h3.6l5.8 8.05V20h-3.2v-7.4z" fill="none" stroke="white" stroke-width="1.1" stroke-linejoin="miter" />
+      <path d="M19.7 4l-6.3 7.4" stroke="white" stroke-width="1.6" />
+    </svg>
   {:else if app === "bluedit"}
     <svg viewBox="0 0 24 24" style:width={glyph} style:height={glyph}>
       <path d="M12 3.5c-4.7 0-8.5 3.1-8.5 7 0 2.1 1.1 4 2.9 5.3L5.7 20l3.9-2c.8.2 1.6.3 2.4.3 4.7 0 8.5-3.1 8.5-7s-3.8-7.8-8.5-7.8z" fill="white" />

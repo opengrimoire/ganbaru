@@ -37,15 +37,22 @@
   const HEADER_H = 64;
   /** The event's palette slot, the Calendar scene's Thesis color. */
   const EVENT_COLOR = 7;
-  /** How far the event grows at the peak of a pulse. */
+  /**
+   * How far the event grows at the peak of a pulse, and its height and inset at rest, in pixels. The pulse grows its
+   * box through layout rather than a transform, since a webview under the scene's zoom can leave a shrinking
+   * transform's old paint behind.
+   */
   const PULSE_GROWTH = 0.05;
+  const EVENT_INSET = 6;
+  const EVENT_HEIGHT = 38;
   const VIEW_MINUTES = BLOCKING_DAY_VIEW.end - BLOCKING_DAY_VIEW.start;
   const EVENT_SECONDS = (BLOCKING_EVENT.end - BLOCKING_EVENT.start) * 60;
+  const EVENT_SPAN = at(BLOCKING_EVENT.end) - at(BLOCKING_EVENT.start);
 
   const clock = $derived(blockingClock(elapsed));
   const focusing = $derived(blockingFocusing(elapsed));
   const remaining = $derived(blockingFocusRemaining(elapsed));
-  const pulse = $derived(blockingPulse(elapsed));
+  const growth = $derived(PULSE_GROWTH * Math.sin(Math.PI * blockingPulse(elapsed)));
   const past = $derived(clock >= BLOCKING_EVENT.end);
   const colors = $derived(
     preferences.calendarDimPastEvents && past ? getPastEventColor(EVENT_COLOR, theme.current) : getEventColor(EVENT_COLOR, theme.current),
@@ -73,12 +80,13 @@
     <!-- A strip of the day, with the event that runs Focus and the current time crossing it. -->
     <div class="relative h-13 w-full max-w-120 rounded-xl border border-border bg-background">
       <div
-        class="absolute inset-y-1.5 flex items-center gap-2 overflow-hidden rounded px-2 leading-tight"
-        style:left={`${at(BLOCKING_EVENT.start)}%`}
-        style:width={`${at(BLOCKING_EVENT.end) - at(BLOCKING_EVENT.start)}%`}
+        class="absolute flex items-center gap-2 overflow-hidden rounded px-2 leading-tight"
+        style:left={`${at(BLOCKING_EVENT.start) - (EVENT_SPAN * growth) / 2}%`}
+        style:width={`${EVENT_SPAN * (1 + growth)}%`}
+        style:top={`${EVENT_INSET - (EVENT_HEIGHT * growth) / 2}px`}
+        style:height={`${EVENT_HEIGHT * (1 + growth)}px`}
         style:background-color={colors.bg}
         style:color={colors.text}
-        style:transform={`scale(${1 + PULSE_GROWTH * Math.sin(Math.PI * pulse)})`}
       >
         <div class="min-w-0 flex-1">
           <div class="truncate text-[11px] font-medium">{t("vaultSetup.film.writeChapter")}</div>

@@ -1,15 +1,11 @@
-/**
- * Resting positions of a bottom sheet, from lowest to highest. `peek` shows the sheet's summary, `half` shows its
- * overview (for the event panel, every field and closed section), and `full` shows the whole sheet.
- */
-export type BottomSheetDetent = "peek" | "half" | "full";
+/** Resting positions of a bottom sheet, from lowest to highest: `peek` shows the sheet's summary and `full` the whole sheet. */
+export type BottomSheetDetent = "peek" | "full";
 
 /** Visible heights of a bottom sheet in CSS pixels, measured from the bottom of its area. */
 export interface BottomSheetHeights {
   /** Summary strip only, used while the user edits what the sheet covers or after a sheet collapses. */
   dip: number;
   peek: number;
-  half: number;
   full: number;
 }
 
@@ -26,7 +22,7 @@ export const BOTTOM_SHEET_CLOSE_RATIO = 0.55;
 /** Only samples this recent count toward release velocity, in milliseconds. */
 export const BOTTOM_SHEET_VELOCITY_WINDOW_MS = 100;
 
-const DETENT_ORDER: readonly BottomSheetDetent[] = ["peek", "half", "full"];
+const DETENT_ORDER: readonly BottomSheetDetent[] = ["peek", "full"];
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -34,20 +30,18 @@ function clamp(value: number, min: number, max: number): number {
 
 /**
  * Return the detent heights of a sheet whose full visible height is `fullHeight`, whose summary strip is `dipHeight`
- * tall, whose summary ends `peekHeight` below its top, and whose overview ends `halfHeight` below its top. Every height
- * stays within the sheet, and the detents never cross: dip, peek, half, and full only grow.
+ * tall, and whose summary ends `peekHeight` below its top. Every height stays within the sheet, and the detents never
+ * cross: dip, peek, and full only grow.
  */
 export function bottomSheetHeights(
   fullHeight: number,
   dipHeight: number,
   peekHeight: number,
-  halfHeight: number,
 ): BottomSheetHeights {
   const full = Math.max(0, Math.round(fullHeight));
   const dip = clamp(Math.round(dipHeight), 0, full);
   const peek = clamp(Math.round(peekHeight), dip, full);
-  const half = clamp(Math.round(halfHeight), peek, full);
-  return { dip, peek, half, full };
+  return { dip, peek, full };
 }
 
 /** Return the visible height of `detent`. */

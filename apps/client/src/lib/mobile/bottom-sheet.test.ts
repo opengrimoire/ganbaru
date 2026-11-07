@@ -9,35 +9,25 @@ import {
 } from "./bottom-sheet";
 
 describe("bottomSheetHeights", () => {
-  it("keeps the header, summary, overview, and full heights in order", () => {
-    expect(bottomSheetHeights(800, 60, 180, 480.4)).toEqual({ dip: 60, peek: 180, half: 480, full: 800 });
-  });
-
-  it("raises half to the peek when the overview ends above the summary", () => {
-    const heights = bottomSheetHeights(800, 60, 220, 150);
-    expect(heights.half).toBe(220);
-    expect(heights.peek).toBe(220);
-  });
-
-  it("caps half at the full height when the overview is taller than the sheet", () => {
-    expect(bottomSheetHeights(400, 60, 180, 520).half).toBe(400);
+  it("keeps the header, summary, and full heights in order", () => {
+    expect(bottomSheetHeights(800, 60, 180.4)).toEqual({ dip: 60, peek: 180, full: 800 });
   });
 
   it("clamps every detent inside a sheet shrunk by the keyboard", () => {
-    expect(bottomSheetHeights(120, 60, 180, 480)).toEqual({ dip: 60, peek: 120, half: 120, full: 120 });
+    expect(bottomSheetHeights(120, 60, 180)).toEqual({ dip: 60, peek: 120, full: 120 });
   });
 
   it("never lets the peek fall below the header", () => {
-    expect(bottomSheetHeights(800, 60, 20, 480).peek).toBe(60);
+    expect(bottomSheetHeights(800, 60, 20).peek).toBe(60);
   });
 
   it("returns zero heights before the sheet is measured", () => {
-    expect(bottomSheetHeights(0, 60, 180, 480)).toEqual({ dip: 0, peek: 0, half: 0, full: 0 });
+    expect(bottomSheetHeights(0, 60, 180)).toEqual({ dip: 0, peek: 0, full: 0 });
   });
 });
 
 describe("bottomSheetDragHeight", () => {
-  const heights = bottomSheetHeights(800, 60, 180, 440);
+  const heights = bottomSheetHeights(800, 60, 180);
 
   it("follows the finger up and down", () => {
     expect(bottomSheetDragHeight(180, -100, heights)).toBe(280);
@@ -74,16 +64,17 @@ describe("bottomSheetReleaseVelocity", () => {
 });
 
 describe("settleBottomSheet", () => {
-  const heights = bottomSheetHeights(800, 60, 180, 440);
+  const heights = bottomSheetHeights(800, 60, 180);
 
   it("rests on the nearest detent for a slow release", () => {
     expect(settleBottomSheet(200, 0, heights, "close")).toBe("peek");
-    expect(settleBottomSheet(420, 0, heights, "close")).toBe("half");
+    expect(settleBottomSheet(480, 0, heights, "close")).toBe("peek");
+    expect(settleBottomSheet(500, 0, heights, "close")).toBe("full");
     expect(settleBottomSheet(700, 0, heights, "close")).toBe("full");
   });
 
   it("carries a flick toward the next detent", () => {
-    expect(settleBottomSheet(220, 1.5, heights, "close")).toBe("half");
+    expect(settleBottomSheet(220, 1.5, heights, "close")).toBe("full");
     expect(settleBottomSheet(600, 2, heights, "close")).toBe("full");
     expect(settleBottomSheet(600, -2, heights, "close")).toBe("peek");
   });
@@ -107,7 +98,8 @@ describe("settleBottomSheet", () => {
 describe("higherBottomSheetDetent", () => {
   it("picks the more open detent", () => {
     expect(higherBottomSheetDetent("peek", "full")).toBe("full");
-    expect(higherBottomSheetDetent("half", "peek")).toBe("half");
+    expect(higherBottomSheetDetent("full", "peek")).toBe("full");
+    expect(higherBottomSheetDetent("peek", "peek")).toBe("peek");
   });
 });
 

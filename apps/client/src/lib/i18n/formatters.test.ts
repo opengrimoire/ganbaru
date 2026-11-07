@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  capitalizeLabel,
+  formatDateLabel,
   formatDateTime,
   formatList,
   formatListParts,
@@ -94,5 +96,21 @@ describe("isolateText", () => {
   it("wraps peer text in first-strong isolate marks so it cannot reorder the sentence", () => {
     expect(isolateText("Maryam")).toBe("\u{2068}Maryam\u{2069}");
     expect(`Remove ${isolateText("\u{0645}\u{0631}\u{064A}\u{0645}")}?`).toBe("Remove \u{2068}\u{0645}\u{0631}\u{064A}\u{0645}\u{2069}?");
+  });
+});
+
+describe("capitalized date labels", () => {
+  it("capitalizes Spanish day and month names that the locale writes in lowercase", () => {
+    const saturday = new Date(2026, 10, 7);
+    expect(formatDateLabel("es", saturday, { weekday: "short", month: "short", day: "numeric" })).toBe("Sáb, 7 nov");
+    expect(formatDateLabel("es", saturday, { month: "long", year: "numeric" })).toBe("Noviembre de 2026");
+    expect(formatDateLabel("en", saturday, { weekday: "short", month: "short", day: "numeric" })).toBe("Sat, Nov 7");
+  });
+
+  it("changes only the first letter and leaves empty or non-letter starts alone", () => {
+    expect(capitalizeLabel("domingo 7", "es")).toBe("Domingo 7");
+    expect(capitalizeLabel("7 de noviembre", "es")).toBe("7 de noviembre");
+    expect(capitalizeLabel("", "es")).toBe("");
+    expect(capitalizeLabel("ícaro", ["es"])).toBe("Ícaro");
   });
 });

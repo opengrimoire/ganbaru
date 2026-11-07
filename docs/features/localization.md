@@ -29,7 +29,7 @@ English is typed as the canonical catalog shape and other catalogs must satisfy 
 
 ## Formatting
 
-User-facing dates, times, numbers, plurals, relative minutes, and lists use the locale-aware helpers in `apps/client/src/lib/i18n/formatters.ts`. Do not hardcode `"en"` or `"en-US"` in UI formatting except for external standards, stable interchange formats, or deliberate parsers.
+User-facing dates, times, numbers, plurals, relative minutes, and lists use the locale-aware helpers in `apps/client/src/lib/i18n/formatters.ts`. Do not hardcode `"en"` or `"en-US"` in UI formatting except for external standards, stable interchange formats, or deliberate parsers. Date labels that open with a day or month name start with a capital letter even where the locale writes them in lowercase (Spanish "Sáb, 7 nov", "Noviembre de 2026"), because lowercase reads as broken in headings and buttons.
 
 Storage and interoperability stay canonical and untranslated:
 

@@ -8,6 +8,7 @@
     clampDatePickerActiveDate,
     datePickerMonthNavigationTarget,
   } from "$lib/calendar/date-picker-utils";
+  import { formatDateLabel } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { normalizedDateRange } from "$lib/calendar/date-range-selection";
   import { workCycleRangeForDate } from "$lib/calendar/utils";
@@ -107,16 +108,14 @@
   let headerButtonEl: HTMLButtonElement | undefined = $state();
 
   const monthLabel = $derived(
-    new Date(year, month - 1).toLocaleDateString(locale, {
+    formatDateLabel(locale, new Date(year, month - 1), {
       month: "long",
       year: "numeric",
     }),
   );
   const shortMonths = $derived(
     Array.from({ length: 12 }, (_, index) =>
-      new Intl.DateTimeFormat(locale, { month: "short" }).format(
-        new Date(2024, index, 1),
-      ),
+      formatDateLabel(locale, new Date(2024, index, 1), { month: "short" }),
     ),
   );
   const dayLetters = $derived(

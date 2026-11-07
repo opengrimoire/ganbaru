@@ -5,6 +5,7 @@ import {
   formatCalendarDate,
   formatCalendarDateWithSeconds,
   formatDatePart,
+  formatDayName,
   formatMonthYear,
   startOfWeek,
   getWeekDays,
@@ -96,6 +97,20 @@ describe("formatMonthYear", () => {
     const date = new Date(2026, 8, 1);
     expect(formatMonthYear(date, "en-US")).toBe("September 2026");
     expect(formatMonthYear(date, "en-US", "short")).toBe("Sep 2026");
+  });
+
+  it("capitalizes month names in locales that write them in lowercase", () => {
+    const date = new Date(2026, 10, 1);
+    expect(formatMonthYear(date, "es")).toBe("Noviembre de 2026");
+  });
+});
+
+describe("formatDayName", () => {
+  it("capitalizes day names in locales that write them in lowercase", () => {
+    const sunday = new Date(2026, 10, 8);
+    expect(formatDayName(sunday, "long", "es")).toBe("Domingo");
+    expect(formatDayName(sunday, "long", "en-US")).toBe("Sunday");
+    expect(formatDayName(sunday, "none", "es")).toBe("");
   });
 });
 

@@ -194,12 +194,10 @@
   });
 
 
+  /** The day name and number, as the week view's column headers show them; the toolbar already names the month. */
   const dayLabel = $derived.by(() => {
     const name = formatDayName(anchorDate, dayFormat, locale);
-    const monthStr = anchorDate.toLocaleDateString(locale, {
-      month: dayFormat === "long" ? "long" : "short",
-    });
-    return name ? `${name}, ${monthStr} ${anchorDate.getDate()}` : `${monthStr} ${anchorDate.getDate()}`;
+    return name ? `${name} ${anchorDate.getDate()}` : String(anchorDate.getDate());
   });
 
   const SCROLL_SETTLE_MS = 150;

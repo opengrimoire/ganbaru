@@ -25,6 +25,7 @@
   import type { CalendarDeleteOutcome } from "$lib/api/calendar-edit";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
+  import { formatDateLabel } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import {
@@ -734,7 +735,7 @@
     if (!session.startDate) return "";
     const [y, m, d] = session.startDate.split("-").map(Number);
     const dt = new Date(y, m - 1, d);
-    return dt.toLocaleDateString(locale, { weekday: "short", month: "short", day: "numeric" });
+    return formatDateLabel(locale, dt, { weekday: "short", month: "short", day: "numeric" });
   });
 
   const isCrossMidnight = $derived(
@@ -745,7 +746,7 @@
     if (!session.endDate) return "";
     const [y, m, d] = session.endDate.split("-").map(Number);
     const dt = new Date(y, m - 1, d);
-    return dt.toLocaleDateString(locale, { weekday: "short", month: "short", day: "numeric" });
+    return formatDateLabel(locale, dt, { weekday: "short", month: "short", day: "numeric" });
   });
 
   /** Whether the event starts music in its phases, from the given assignment drafts. */

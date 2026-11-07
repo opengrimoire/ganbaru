@@ -9,6 +9,25 @@ export function formatDateTime(
   return new Intl.DateTimeFormat(locale, options).format(value);
 }
 
+/**
+ * Starts a label with a capital letter in the given locale. Some locales, such as Spanish, write day and month names
+ * in lowercase; the app capitalizes them when they open a label, so "domingo 7" shows as "Domingo 7".
+ */
+export function capitalizeLabel(text: string, locale?: string | readonly string[]): string {
+  const [first = ""] = text;
+  const language = typeof locale === "string" ? locale : locale?.[0];
+  return first.toLocaleUpperCase(language) + text.slice(first.length);
+}
+
+/** Formats a date or time as a label that starts with a capital letter, whatever the locale's own casing. */
+export function formatDateLabel(
+  locale: AppLocale,
+  value: Date | number,
+  options: Intl.DateTimeFormatOptions,
+): string {
+  return capitalizeLabel(formatDateTime(locale, value, options), locale);
+}
+
 export function formatNumber(
   locale: AppLocale,
   value: number,

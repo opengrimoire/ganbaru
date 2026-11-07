@@ -31,6 +31,7 @@
   import { formatNotificationOffset } from "$lib/calendar/event-notifications";
   import type { EventColor } from "$lib/calendar/types";
   import { getEventColor } from "$lib/calendar/utils";
+  import { formatDateLabel } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatShortcut } from "$lib/keyboard-shortcuts";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
@@ -173,7 +174,7 @@
 
   const color = $derived(picked ? projectColor : undefined);
   const preset = $derived<PomodoroPresetKey>(picked ? FILM_CHAIN[0].preset : FILM_DEFAULT_PRESET);
-  const dateLabel = $derived(date.toLocaleDateString(localization.locale, { weekday: "short", month: "short", day: "numeric" }));
+  const dateLabel = $derived(formatDateLabel(localization.locale, date, { weekday: "short", month: "short", day: "numeric" }));
   const startLabel = $derived(displayCanonicalTime(canonicalTime(start), preferences.calendarTimeFormat));
   const endLabel = $derived(displayCanonicalTime(canonicalTime(end), preferences.calendarTimeFormat));
   const sections = $derived.by<FilmSection[]>(() => [

@@ -26,7 +26,7 @@
     type MonthDayLayoutItem,
     type MonthMoreLabelFormatter,
   } from "./month-event-layout";
-  import { formatNumber } from "$lib/i18n/formatters";
+  import { formatDateLabel, formatNumber } from "$lib/i18n/formatters";
   import { getMeetingIndicatorState } from "./event-indicators";
   import Video from "@lucide/svelte/icons/video";
   import MapPin from "@lucide/svelte/icons/map-pin";
@@ -260,12 +260,12 @@
   }
 
   function formatMonthMoreModalTitle(day: Date): string {
-    return new Intl.DateTimeFormat(locale, {
+    return formatDateLabel(locale, day, {
       weekday: "long",
       month: "long",
       day: "numeric",
       year: "numeric",
-    }).format(day);
+    });
   }
 
   function openMonthMoreModal(day: Date, events: CalendarEvent[]): void {

@@ -25,7 +25,7 @@
     trashNotesPage,
     updateNotesDataSourceCalendarView,
   } from "$lib/api/notes";
-  import { formatDateTime, formatList, formatNumber } from "$lib/i18n/formatters";
+  import { formatDateLabel, formatList, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     notesDatabaseCalendarColumns,
@@ -340,7 +340,7 @@
   }
 
   function monthLabel(): string {
-    return formatDateTime(
+    return formatDateLabel(
       localization.locale,
       new Date(`${configuration.range_start}T00:00:00Z`),
       { month: "long", year: "numeric", timeZone: "UTC" },
@@ -353,7 +353,7 @@
 
   function weekdayLabels(): string[] {
     return ["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05", "2026-06-06", "2026-06-07"]
-      .map((date) => formatDateTime(
+      .map((date) => formatDateLabel(
         localization.locale,
         new Date(`${date}T00:00:00Z`),
         { weekday: "short", timeZone: "UTC" },

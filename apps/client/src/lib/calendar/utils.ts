@@ -8,6 +8,7 @@ import type {
 import { Temporal } from "@js-temporal/polyfill";
 import { FALLBACK_COLOR_INDEX, PALETTE_SIZE } from "./types";
 import { blendHex } from "$lib/color/math";
+import { capitalizeLabel } from "$lib/i18n/formatters";
 import {
   DEFAULT_CALENDAR_TIME_FORMAT,
   type CalendarTimeFormat,
@@ -370,7 +371,7 @@ export function formatMonthYear(
   locale?: string | readonly string[],
   month: "long" | "short" = "long",
 ): string {
-  return date.toLocaleDateString(locale, { month, year: "numeric" });
+  return capitalizeLabel(date.toLocaleDateString(locale, { month, year: "numeric" }), locale);
 }
 
 export type DayNameFormat = "long" | "short" | "narrow" | "none";
@@ -389,7 +390,7 @@ export function formatDayName(
   locale?: string | readonly string[],
 ): string {
   if (format === "none") return "";
-  return date.toLocaleDateString(locale, { weekday: format });
+  return capitalizeLabel(date.toLocaleDateString(locale, { weekday: format }), locale);
 }
 
 // Timezone helpers

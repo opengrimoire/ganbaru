@@ -77,6 +77,7 @@
     label={t("projects.detail.startDate")}
     value={startDate}
     time={startTime}
+    timeSubject="start"
     onTimeChange={onStartTimeChange}
     reminderMinutes={startReminderMinutes}
     onReminderChange={onStartReminderChange}
@@ -97,6 +98,7 @@
     label={t("projects.detail.dueDate")}
     value={dueDate}
     time={dueTime}
+    timeSubject="due"
     onTimeChange={onDueTimeChange}
     reminderMinutes={dueReminderMinutes}
     onReminderChange={onDueReminderChange}

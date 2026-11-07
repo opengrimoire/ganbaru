@@ -678,7 +678,7 @@
                 <ClockTimePickerDialog
                   value={timeValue ?? ""}
                   fallback={DEFAULT_TIME_PICKER_ANCHOR}
-                  label={`${dateLabel} ${t("projects.columns.selectHour")}`}
+                  subject={column === "start" ? "start" : "due"}
                   onSelect={(time) => {
                     if (column === "start") onSetStartTime(time);
                     else onSetDueTime(time);

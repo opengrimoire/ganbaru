@@ -61,6 +61,12 @@ export const common = {
   timePicker: {
     selectTime: "Seleccionar hora",
     enterTime: "Escribir hora",
+    selectStartTime: "Seleccionar hora de inicio",
+    enterStartTime: "Escribir hora de inicio",
+    selectEndTime: "Seleccionar hora de fin",
+    enterEndTime: "Escribir hora de fin",
+    selectDueTime: "Seleccionar hora límite",
+    enterDueTime: "Escribir hora límite",
     hour: "Hora",
     minute: "Minuto",
     am: "a. m.",

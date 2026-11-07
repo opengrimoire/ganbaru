@@ -225,7 +225,7 @@
 {/if}
 
 {#if timeOpen && value && TOUCH_PICKERS}
-  <ClockTimePickerDialog value={activeParts?.time ?? ""} fallback={DEFAULT_TIME_ANCHOR} label={t("notes.databaseDateAddTime")}
+  <ClockTimePickerDialog value={activeParts?.time ?? ""} fallback={DEFAULT_TIME_ANCHOR} subject={range ? activeKey : undefined}
     onSelect={pickTime} onCancel={closeTime} />
 {:else if timeOpen && value}
   <div bind:this={timePanel} use:portal={floatingRoot}

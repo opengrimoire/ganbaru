@@ -58,6 +58,12 @@ export const common = {
   timePicker: {
     selectTime: "Select time",
     enterTime: "Enter time",
+    selectStartTime: "Select start time",
+    enterStartTime: "Enter start time",
+    selectEndTime: "Select end time",
+    enterEndTime: "Enter end time",
+    selectDueTime: "Select due time",
+    enterDueTime: "Enter due time",
     hour: "Hour",
     minute: "Minute",
     am: "AM",

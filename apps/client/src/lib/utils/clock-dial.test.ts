@@ -88,6 +88,18 @@ describe("pickClockDialTime", () => {
     expect(pickClockDialTime({ ...base, ...pointAt(42, 0.8), mode: "minute", format: "24h" })).toEqual({ hour: 9, minute: 7 });
     expect(pickClockDialTime({ ...base, ...pointAt(358, 0.5), mode: "minute", format: "24h" }).minute).toBe(0);
   });
+
+  it("snaps minutes to the nearest step, wrapping past the last mark to 0", () => {
+    const tap = { ...base, mode: "minute" as const, format: "24h" as const, minuteStep: 5 };
+    expect(pickClockDialTime({ ...tap, ...pointAt(42, 0.8) })).toEqual({ hour: 9, minute: 5 });
+    expect(pickClockDialTime({ ...tap, ...pointAt(48, 0.8) }).minute).toBe(10);
+    expect(pickClockDialTime({ ...tap, ...pointAt(350, 0.8) }).minute).toBe(0);
+    expect(pickClockDialTime({ ...tap, ...pointAt(340, 0.8) }).minute).toBe(55);
+  });
+
+  it("leaves hours unaffected by the minute step", () => {
+    expect(pickClockDialTime({ ...base, ...pointAt(42, 0.8), mode: "hour", format: "24h", minuteStep: 5 })).toEqual({ hour: 1, minute: 30 });
+  });
 });
 
 describe("clockDialHand", () => {

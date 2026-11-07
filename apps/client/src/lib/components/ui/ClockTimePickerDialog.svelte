@@ -11,6 +11,7 @@
     type ClockDialMode,
     type ClockPeriod,
     type ClockTime,
+    type ClockTimeSubject,
     clockDialHand,
     clockDialItems,
     clockPeriod,
@@ -23,16 +24,18 @@
     stepClockTime,
     withClockPeriod,
   } from "$lib/utils/clock-dial";
+  import { TOUCH_LONG_PRESS_MS, touchMovedBeyondSlop } from "$lib/utils/touch-hold";
   import PickerDialog from "./PickerDialog.svelte";
 
   /**
    * The touch time picker: a clock dial in a dialog. A press or drag on the dial picks the hour, then the dial turns
-   * to minutes; the header fields switch between the two, and the keyboard button swaps the dial for typed fields.
-   * Nothing changes until OK.
+   * to minutes, where a tap lands on the nearest labeled mark and a drag or hold reaches every minute. The header
+   * fields switch between the two, and the keyboard button swaps the dial for typed fields. Nothing changes until OK.
    */
   let {
     value,
     fallback = "",
+    subject = undefined,
     label = undefined,
     onSelect,
     onCancel,
@@ -41,6 +44,8 @@
     value: string;
     /** The `HH:MM` value the dial starts on when `value` is empty. */
     fallback?: string;
+    /** What the time is for, named in the title, such as the start or end of a range. */
+    subject?: ClockTimeSubject | undefined;
     /** Accessible name of the dialog; defaults to the picker title. */
     label?: string | undefined;
     onSelect: (time: string) => void;
@@ -64,13 +69,26 @@
   let minuteInput = $state<HTMLInputElement>();
   let pressing = $state(false);
   let dragged = $state(false);
+  /** Whether the current press picks exact minutes; a plain tap snaps to the labeled marks. */
+  let precise = false;
+  let pressX = 0;
+  let pressY = 0;
+  let pointerX = 0;
+  let pointerY = 0;
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
 
   const period = $derived(clockPeriod(time.hour));
   const items = $derived(clockDialItems(mode, format, period));
   const hand = $derived(clockDialHand(time, mode, format));
   const typedTime = $derived(typing ? parseTypedClockTime(hourText, minuteText, format, period) : time);
-  const handBetweenLabels = $derived(mode === "minute" && time.minute % CLOCK_DIAL_MINUTE_LABEL_STEP !== 0);
-  const selectedValue = $derived(mode === "hour" ? time.hour : time.minute);
+  const title = $derived.by(() => {
+    if (subject === "start") return typing ? t("common.timePicker.enterStartTime") : t("common.timePicker.selectStartTime");
+    if (subject === "end") return typing ? t("common.timePicker.enterEndTime") : t("common.timePicker.selectEndTime");
+    if (subject === "due") return typing ? t("common.timePicker.enterDueTime") : t("common.timePicker.selectDueTime");
+    return typing ? t("common.timePicker.enterTime") : t("common.timePicker.selectTime");
+  });
+
+  $effect(() => clearHold);
 
   let lastRotation = 0;
   /** The hand rotation, continued from the last one so the hand turns the short way. */
@@ -78,6 +96,7 @@
     lastRotation = continuousClockRotation(lastRotation, hand.angle);
     return lastRotation;
   });
+  const handStyle = $derived(`transform: rotate(${rotation}deg); --clock-hand-reach: ${CLOCK_DIAL_RING_RADIUS[hand.ring] * 50}%;`);
 
   function twoDigits(number: number): string {
     return formatNumber(locale, number, { minimumIntegerDigits: 2, useGrouping: false });
@@ -103,17 +122,32 @@
     return `left: ${50 + Math.sin(radians) * radius}%; top: ${50 - Math.cos(radians) * radius}%;`;
   }
 
-  function pointerTime(event: PointerEvent): ClockTime | null {
-    if (!dialElement) return null;
+  /** The time at the last pointer position, snapping minutes to the labeled marks unless the press is precise. */
+  function pointerTime(): ClockTime {
+    if (!dialElement) return time;
     const rect = dialElement.getBoundingClientRect();
     return pickClockDialTime({
-      dx: event.clientX - (rect.left + rect.width / 2),
-      dy: event.clientY - (rect.top + rect.height / 2),
+      dx: pointerX - (rect.left + rect.width / 2),
+      dy: pointerY - (rect.top + rect.height / 2),
       radius: rect.width / 2,
       mode,
       format,
       time,
+      minuteStep: precise ? 1 : CLOCK_DIAL_MINUTE_LABEL_STEP,
     });
+  }
+
+  function clearHold(): void {
+    if (holdTimer !== undefined) clearTimeout(holdTimer);
+    holdTimer = undefined;
+  }
+
+  /** A press held in place switches to exact minutes. */
+  function handleHold(): void {
+    holdTimer = undefined;
+    if (!pressing) return;
+    precise = true;
+    time = pointerTime();
   }
 
   function handlePointerDown(event: PointerEvent): void {
@@ -122,26 +156,40 @@
     dialElement.setPointerCapture(event.pointerId);
     pressing = true;
     dragged = false;
-    time = pointerTime(event) ?? time;
+    precise = false;
+    pressX = pointerX = event.clientX;
+    pressY = pointerY = event.clientY;
+    clearHold();
+    holdTimer = setTimeout(handleHold, TOUCH_LONG_PRESS_MS);
+    time = pointerTime();
   }
 
   function handlePointerMove(event: PointerEvent): void {
     if (!pressing) return;
-    dragged = true;
-    time = pointerTime(event) ?? time;
+    pointerX = event.clientX;
+    pointerY = event.clientY;
+    if (!dragged && touchMovedBeyondSlop(pointerX - pressX, pointerY - pressY)) {
+      dragged = true;
+      precise = true;
+      clearHold();
+    }
+    time = pointerTime();
   }
 
   function handlePointerUp(event: PointerEvent): void {
     if (!pressing) return;
-    pressing = false;
-    dragged = false;
-    time = pointerTime(event) ?? time;
+    pointerX = event.clientX;
+    pointerY = event.clientY;
+    time = pointerTime();
+    endPress();
     if (mode === "hour") mode = "minute";
   }
 
-  function handlePointerCancel(): void {
+  function endPress(): void {
+    clearHold();
     pressing = false;
     dragged = false;
+    precise = false;
   }
 
   function handleDialKeydown(event: KeyboardEvent): void {
@@ -227,11 +275,15 @@
   </div>
 {/snippet}
 
-<PickerDialog label={label ?? t("common.timePicker.selectTime")} onClose={onCancel}>
+{#snippet faceLabels()}
+  {#each items as item (`${item.ring}-${item.value}`)}
+    <span class="clock-label" data-ring={item.ring} style={labelPosition(item.angle, item.ring)}>{faceLabel(item.label)}</span>
+  {/each}
+{/snippet}
+
+<PickerDialog label={label ?? title} onClose={onCancel}>
   <div class="clock-picker px-2 pt-2">
-    <p class="mb-5 text-[0.8rem] text-muted-foreground">
-      {typing ? t("common.timePicker.enterTime") : t("common.timePicker.selectTime")}
-    </p>
+    <p class="mb-5 text-[0.8rem] text-muted-foreground">{title}</p>
 
     {#if typing}
       <div class="flex items-start justify-center gap-1.5">
@@ -278,23 +330,28 @@
         onpointerdown={handlePointerDown}
         onpointermove={handlePointerMove}
         onpointerup={handlePointerUp}
-        onpointercancel={handlePointerCancel}
-        onlostpointercapture={handlePointerCancel}
+        onpointercancel={endPress}
+        onlostpointercapture={endPress}
         onkeydown={handleDialKeydown}
       >
-        <div class="clock-hand" style="transform: rotate({rotation}deg); --clock-hand-reach: {CLOCK_DIAL_RING_RADIUS[hand.ring] * 50}%;">
+        <div class="clock-hand" aria-hidden="true" style={handStyle}>
           <span class="clock-hand-line"></span>
-          <span class="clock-hand-knob" data-between={handBetweenLabels || undefined}></span>
+        </div>
+        {#key mode}
+          <div class="clock-face" aria-hidden="true">{@render faceLabels()}</div>
+        {/key}
+        <!-- The knob repeats the face in its contrast color, clipped to the knob and turned back upright, so the numbers
+             read over the knob as if it sat beneath them. -->
+        <div class="clock-hand" aria-hidden="true" style={handStyle}>
+          <div class="clock-knob">
+            <div class="clock-knob-turn" style="transform: rotate({-rotation}deg);">
+              {#key mode}
+                <div class="clock-face">{@render faceLabels()}</div>
+              {/key}
+            </div>
+          </div>
         </div>
         <span class="clock-center"></span>
-        {#key mode}
-          <div class="clock-face" aria-hidden="true">
-            {#each items as item (`${item.ring}-${item.value}`)}
-              <span class="clock-label" data-ring={item.ring} data-selected={item.value === selectedValue || undefined}
-                style={labelPosition(item.angle, item.ring)}>{faceLabel(item.label)}</span>
-            {/each}
-          </div>
-        {/key}
       </div>
     {/if}
 
@@ -411,32 +468,33 @@
     background-color: var(--primary);
   }
 
-  .clock-hand-knob {
+  .clock-dial[data-animated] .clock-hand-line {
+    transition: height var(--clock-motion);
+  }
+
+  /* The dial is square, so a percentage circle radius is a fraction of its width. */
+  .clock-knob {
     position: absolute;
-    top: calc(50% - var(--clock-hand-reach));
-    left: 50%;
-    width: 18.75%;
-    aspect-ratio: 1;
-    border-radius: 9999px;
+    inset: 0;
     background-color: var(--primary);
-    transform: translate(-50%, -50%);
+    clip-path: circle(9.375% at 50% calc(50% - var(--clock-hand-reach)));
   }
 
-  .clock-dial[data-animated] .clock-hand-line,
-  .clock-dial[data-animated] .clock-hand-knob {
-    transition: height var(--clock-motion), top var(--clock-motion);
-  }
-
-  .clock-hand-knob[data-between]::after {
+  .clock-knob-turn {
     position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 0.375rem;
-    height: 0.375rem;
-    border-radius: 9999px;
-    background-color: var(--primary-foreground);
-    content: "";
-    transform: translate(-50%, -50%);
+    inset: 0;
+  }
+
+  .clock-knob .clock-label {
+    color: var(--primary-foreground);
+  }
+
+  .clock-dial[data-animated] .clock-knob {
+    transition: clip-path var(--clock-motion);
+  }
+
+  .clock-dial[data-animated] .clock-knob-turn {
+    transition: transform var(--clock-motion);
   }
 
   .clock-center {
@@ -471,10 +529,6 @@
     font-size: 0.933333rem;
   }
 
-  .clock-label[data-selected] {
-    color: var(--primary-foreground);
-  }
-
   .clock-action {
     min-height: 3rem;
     padding-inline: 1rem;
@@ -501,7 +555,8 @@
   @media (prefers-reduced-motion: reduce) {
     .clock-dial[data-animated] .clock-hand,
     .clock-dial[data-animated] .clock-hand-line,
-    .clock-dial[data-animated] .clock-hand-knob,
+    .clock-dial[data-animated] .clock-knob,
+    .clock-dial[data-animated] .clock-knob-turn,
     .clock-field {
       transition: none;
     }

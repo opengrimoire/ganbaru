@@ -10,6 +10,9 @@ export interface ClockTime {
 /** Whether the dial is choosing the hour or the minute. */
 export type ClockDialMode = "hour" | "minute";
 
+/** What the picked time is for, which names the picker title; none gives the generic title. */
+export type ClockTimeSubject = "start" | "end" | "due";
+
 /** Half of a 12-hour day. */
 export type ClockPeriod = "am" | "pm";
 
@@ -136,13 +139,14 @@ export function clockDialHand(time: ClockTime, mode: ClockDialMode, format: Cale
  * The time a press or drag on the dial selects.
  *
  * Hours snap to the nearest hour mark, and in 24-hour time the distance from the center picks the ring. Minutes snap
- * to the nearest minute, so a drag reaches every minute and not only the labeled ones. A 12-hour face keeps the
- * current half of the day.
+ * to the nearest multiple of `minuteStep`: a tap lands on a labeled mark, while a drag or hold uses a step of one to
+ * reach every minute. A 12-hour face keeps the current half of the day.
  *
  * @param input.dx Horizontal offset of the pointer from the dial center.
  * @param input.dy Vertical offset of the pointer from the dial center, positive downward.
  * @param input.radius The dial radius in the same units.
  * @param input.time The time before the press.
+ * @param input.minuteStep The minutes a minute pick snaps to; defaults to one.
  */
 export function pickClockDialTime(input: {
   dx: number;
@@ -151,10 +155,13 @@ export function pickClockDialTime(input: {
   mode: ClockDialMode;
   format: CalendarTimeFormat;
   time: ClockTime;
+  minuteStep?: number;
 }): ClockTime {
   const angle = clockDialAngle(input.dx, input.dy);
   if (input.mode === "minute") {
-    return { hour: input.time.hour, minute: Math.round(angle / MINUTE_STEP_DEGREES) % 60 };
+    const step = Math.max(1, Math.round(input.minuteStep ?? 1));
+    const minute = (Math.round(angle / (MINUTE_STEP_DEGREES * step)) * step) % 60;
+    return { hour: input.time.hour, minute };
   }
   const index = Math.round(angle / HOUR_STEP_DEGREES) % 12;
   if (input.format === "12h") {

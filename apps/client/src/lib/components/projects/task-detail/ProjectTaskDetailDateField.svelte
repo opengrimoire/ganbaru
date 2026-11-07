@@ -19,6 +19,7 @@
   import PickerDialog from "$lib/components/ui/PickerDialog.svelte";
   import ClockTimePickerDialog from "$lib/components/ui/ClockTimePickerDialog.svelte";
   import { TOUCH_PICKERS } from "$lib/components/ui/picker-presentation";
+  import type { ClockTimeSubject } from "$lib/utils/clock-dial";
   import { cn } from "$lib/utils";
 
   type MiniDatePickerHighlightMode = "day" | "week" | "workweek" | "none";
@@ -36,6 +37,7 @@
     highlightToday = undefined,
     highlightMode = undefined,
     time = "",
+    timeSubject = undefined,
     onTimeChange = undefined,
     reminderMinutes = null,
     onReminderChange = undefined,
@@ -61,6 +63,8 @@
     highlightMode?: MiniDatePickerHighlightMode | undefined;
     /** The `HH:MM` time of the date, or empty for a whole day. */
     time?: string;
+    /** What the time is for, named in the touch time picker's title. */
+    timeSubject?: ClockTimeSubject | undefined;
     /** Offers a time below the calendar once a date is set; null removes the time. */
     onTimeChange?: ((time: string | null) => void) | undefined;
     onToggle: () => void;
@@ -228,7 +232,8 @@
   </div>
 {/if}
 {#if timeOpen && pickerOpen && value && TOUCH_PICKERS}
-  <ClockTimePickerDialog value={time} fallback={DEFAULT_TIME_ANCHOR} label={`${label ?? clearLabel} ${t("projects.columns.selectHour")}`}
+  <ClockTimePickerDialog value={time} fallback={DEFAULT_TIME_ANCHOR} subject={timeSubject}
+    label={timeSubject ? undefined : `${label ?? clearLabel} ${t("projects.columns.selectHour")}`}
     onSelect={pickTime} onCancel={closeTime} />
 {:else if timeOpen && pickerOpen && value}
   <div bind:this={timePanel} use:portal={trigger?.closest<HTMLElement>("[data-floating-root]") ?? "body"}

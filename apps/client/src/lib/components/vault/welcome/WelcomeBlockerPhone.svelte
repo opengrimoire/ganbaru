@@ -112,7 +112,7 @@
         {#if homeApp === null}
           <span class="h-1 w-5 rounded-full bg-foreground/12"></span>
         {:else}
-          <span class="truncate text-[8px] leading-none" style:max-width={`${cellW + LABEL_OVERHANG}px`}>
+          <span class="truncate text-[8px] leading-tight" style:max-width={`${cellW + LABEL_OVERHANG}px`}>
             {BLOCKER_APP_NAMES[homeApp]}
           </span>
         {/if}

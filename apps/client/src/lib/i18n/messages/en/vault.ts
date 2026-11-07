@@ -1,6 +1,6 @@
 export const vaultSetup = {
-  welcomeHeadline: "Plan your day. Then actually do it.",
-  welcomeBody: "Plan in the calendar, focus right from it, and watch your week fill with the work you actually did.",
+  welcomeHeadline: "Calendar-driven Pomodoro",
+  welcomeBody: "Plan your day as usual and the Pomodoro will run by itself.",
   film: {
     description:
       "A short animation of a day in the app: a long session is drawn in the calendar right before one already planned with the Creative Pomodoro, and the event panel opens on it. Picking the Thesis project from the University group gives the session the project's color and its Extended Pomodoro, so only the title is typed before saving. The two sessions share one Focus rail that carries one rhythm through both, so the second session's breaks move as the first one joins it and takes its project's rhythm. The first session runs through a break to its finish, the second carries on to complete the day, and both then sit among the week's other events as the view pulls back, where icons mark the repeating lunches, the sessions with music, and the meetings.",

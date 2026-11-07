@@ -1,9 +1,9 @@
 <script lang="ts" module>
   /** Canvas geometry in logical pixels: a width and a height the room chooses between these bounds. */
-  const MIN_CANVAS_W = 320;
+  const MIN_CANVAS_W = 300;
   const MAX_CANVAS_W = 520;
-  const MIN_CANVAS_H = 470;
-  const MAX_CANVAS_H = 520;
+  const MIN_CANVAS_H = 490;
+  const MAX_CANVAS_H = 540;
 
   export const ABOUT_SCENE_MIN_WIDTH = MIN_CANVAS_W;
   export const ABOUT_SCENE_MAX_WIDTH = MAX_CANVAS_W;
@@ -35,12 +35,13 @@
 
   /**
    * One frame of the welcome scene about the app itself: a handheld payment terminal, shaped like a phone with a receipt
-   * printer on top, shows a total that is free and confirms there is nothing to pay, then prints the app's features one
-   * per line, each priced free, then a free total, and a rubber stamp with the Open Grimoire logo marks the receipt with
-   * the open source license. The terminal, the thermal paper, and the ink are drawn as the physical things they are, in
-   * their own colors, apart from the printer's lid in the theme's primary color, so the receipt reads as a receipt in
-   * every theme. Every style is a function of `elapsed`, with no CSS transitions, so text is never handed to a
-   * compositing layer mid-animation.
+   * printer on top, shows a total that is free and confirms there is nothing to pay. A receipt then unrolls above it from
+   * the bottom up, its curled edge rising as it goes: the barcode and the free total first, then every feature priced
+   * free, and the header last. A rubber stamp with the Open Grimoire logo then marks the receipt with the open source
+   * license. The terminal, the thermal paper, and the ink are drawn as the physical things they are, in their own colors,
+   * apart from the printer's lid in the theme's primary color, so the receipt reads as a receipt in every theme. Every
+   * style is a function of `elapsed`, with no CSS transitions, so text is never handed to a compositing layer
+   * mid-animation.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -48,58 +49,59 @@
   const { t } = localization;
   const uid = $props.id();
 
-  const RECEIPT_W = 196;
-  /** The height of each kind of segment the printer feeds. */
+  const RECEIPT_W = 156;
+  /** The height of each kind of segment on the receipt. */
   const SEGMENT_H: Readonly<Record<AboutSegment, number>> = {
-    lead: 10,
-    header: 34,
-    rule: 9,
-    item: 13,
-    total: 20,
-    barcode: 28,
-    tail: 8,
+    lead: 12,
+    header: 30,
+    rule: 8,
+    item: 12,
+    total: 18,
+    barcode: 26,
+    tail: 6,
   };
   const PAPER_H = ABOUT_SEGMENTS.reduce((sum, segment) => sum + SEGMENT_H[segment], 0);
-  /** The torn top edge of the paper: the width and depth of each tooth. */
-  const TOOTH_W = 7;
-  const TOOTH_H = 3.5;
+  /** The paper's curled edge: its thickness, how much of it overlaps the flat paper, and the shadow it casts there. */
+  const CURL_H = 12;
+  const CURL_OVERLAP = 3;
+  const CURL_SHADOW_H = 9;
 
   /**
    * The terminal, seen from the front: a phone-shaped body whose top edge holds the paper slot, with the printer's lid
    * rising behind the paper above it.
    */
-  const DEVICE_W = RECEIPT_W + 26;
+  const DEVICE_W = RECEIPT_W + 24;
   const LID_INSET = 3;
-  const LID_H = 20;
+  const LID_H = 16;
   const HEAD_H = 14;
-  const SCREEN_INSET = 10;
-  const SCREEN_H = 200;
+  const SCREEN_INSET = 9;
+  const SCREEN_H = 224;
   const CHIN_H = 22;
   const BODY_H = HEAD_H + SCREEN_H + CHIN_H;
-  const BODY_RADIUS = 24;
-  const HEAD_RADIUS = 9;
-  const SCREEN_RADIUS = 10;
-  const SIDE_BUTTON_Y = 70;
-  const SIDE_BUTTON_H = 34;
+  const BODY_RADIUS = 26;
+  const HEAD_RADIUS = 10;
+  const SCREEN_RADIUS = 12;
+  const SIDE_BUTTON_Y = 64;
+  const SIDE_BUTTON_H = 30;
 
   /** The confirmation on the screen: the ring's size and radius, and the check drawn inside it. */
-  const CONFIRM_SIZE = 48;
-  const CONFIRM_R = 21;
+  const CONFIRM_SIZE = 52;
+  const CONFIRM_R = 23;
   const CONFIRM_CIRCUMFERENCE = 2 * Math.PI * CONFIRM_R;
-  const CHECK_PATH = "M15 24.5 L21.5 31 L33.5 18";
+  const CHECK_PATH = "M16.5 26.5 L23.5 33.5 L36.5 19.5";
   /** How far the screen's text slides as it comes and goes. */
   const SCREEN_SLIDE = 6;
 
   /** How far the terminal rises into place as it appears, and how far the receipt drops when the stamp lands. */
   const RISE = 8;
-  const IMPACT_DROP = 2;
+  const IMPACT_DROP = 1.5;
 
-  const STAMP_SIZE = 88;
+  const STAMP_SIZE = 78;
   const STAMP_TILT = -14;
   const STAMP_SCALE_FROM = 1.7;
   /** Where the stamp's center sits: in from the receipt's right edge, and up from the slot. */
-  const STAMP_INSET_X = 50;
-  const STAMP_RISE = 76;
+  const STAMP_INSET_X = 44;
+  const STAMP_RISE = 70;
   /** The radius the stamp's ring text runs along, and the logo's size, in the stamp's 100 unit drawing. */
   const RING_TEXT_R = 33;
   const LOGO_SIZE = 36;
@@ -109,11 +111,13 @@
 
   /** Bar and space widths of the barcode, alternating, in units of one thin bar. */
   const BARCODE = "21131221312112313122113212311213221131213121132112".split("").map(Number);
-  const BARCODE_UNIT = 1.25;
-  const BARCODE_H = 17;
+  const BARCODE_UNIT = 1.1;
+  const BARCODE_H = 15;
 
   /** Thermal paper, its ink, and the stamp's ink, which keep their own colors in every theme. */
   const PAPER = "linear-gradient(90deg, #eeede8 0%, #fcfbf7 12%, #fdfcf9 88%, #ecebe6 100%)";
+  const CURL =
+    "linear-gradient(180deg, #c9c8c2 0%, #efeee9 28%, #ffffff 46%, #f3f2ed 66%, #d6d5cf 88%, #b9b8b2 100%)";
   const INK = "#28282c";
   const INK_SOFT = "#77777e";
   const INK_RULE = "#b4b4ba";
@@ -146,16 +150,6 @@
   ].slice(0, ABOUT_RECEIPT_ITEMS);
   const FIRST_ITEM = ABOUT_SEGMENTS.indexOf("item");
 
-  /** The torn top edge, as a clip path across the receipt's width. */
-  const TORN_EDGE = (() => {
-    const teeth = Math.ceil(RECEIPT_W / TOOTH_W);
-    const points = Array.from({ length: teeth * 2 + 1 }, (_, index) => {
-      const x = Math.min(RECEIPT_W, (index * TOOTH_W) / 2);
-      return `${x}px ${index % 2 === 0 ? TOOTH_H : 0}px`;
-    });
-    return `polygon(${[...points, "100% 100%", "0 100%"].join(", ")})`;
-  })();
-
   const BARCODE_BARS = (() => {
     let x = 0;
     const bars: { x: number; width: number }[] = [];
@@ -177,15 +171,17 @@
   const center = $derived(width / 2);
   const left = $derived(center - RECEIPT_W / 2);
   const deviceLeft = $derived(center - DEVICE_W / 2);
-  /** The receipt and the terminal, centered together in the canvas, meeting at the slot. */
-  const slotY = $derived((height - PAPER_H - BODY_H) / 2 + PAPER_H);
+  /** The receipt with its curl and the terminal, centered together in the canvas, meeting at the slot. */
+  const slotY = $derived((height - PAPER_H - BODY_H + CURL_H - CURL_OVERLAP) / 2 + PAPER_H);
   const printer = $derived(aboutPrinter(elapsed));
   const screen = $derived(aboutScreen(elapsed));
   const total = $derived(aboutTotal(elapsed));
   const ring = $derived(aboutConfirmRing(elapsed));
   const check = $derived(aboutConfirmCheck(elapsed));
+  /** How much of the receipt has unrolled, measured up from the slot. */
   const fed = $derived(ABOUT_SEGMENTS.reduce((sum, segment, index) => sum + SEGMENT_H[segment] * aboutFeed(elapsed, index), 0));
   const drop = $derived(aboutImpact(elapsed) * IMPACT_DROP);
+  const paperTop = $derived(slotY - fed + drop);
   const stamp = $derived(aboutStamp(elapsed));
   const light = $derived(lightLevel(elapsed));
 
@@ -199,19 +195,19 @@
 {#snippet segmentContent(segment: AboutSegment, index: number)}
   {#if segment === "header"}
     <div class="flex h-full flex-col items-center justify-center gap-0.75">
-      <span class="text-[14px] leading-none font-bold tracking-tight">{t("common.appName")}</span>
-      <span class="font-mono text-[8px] leading-none" style:color={INK_SOFT}>{printedOn}</span>
+      <span class="text-[13px] leading-none font-bold tracking-tight">{t("common.appName")}</span>
+      <span class="font-mono text-[7.5px] leading-none" style:color={INK_SOFT}>{printedOn}</span>
     </div>
   {:else if segment === "rule"}
     <div class="flex h-full items-center"><div class="h-px w-full" style:background-image={dashes}></div></div>
   {:else if segment === "item"}
-    <div class="flex h-full items-center gap-1 font-mono text-[9px]">
+    <div class="flex h-full items-center gap-1 font-mono text-[8px]">
       <span class="min-w-0 truncate">{ITEMS[index - FIRST_ITEM]()}</span>
-      <span class="mb-1 min-w-1.5 flex-1 self-end border-b border-dotted" style:border-color={INK_RULE}></span>
+      <span class="mb-0.75 min-w-1 flex-1 self-end border-b border-dotted" style:border-color={INK_RULE}></span>
       <span>{t("vaultSetup.about.receipt.free")}</span>
     </div>
   {:else if segment === "total"}
-    <div class="flex h-full items-center justify-between font-mono text-[11.5px] font-bold">
+    <div class="flex h-full items-center justify-between font-mono text-[10.5px] font-bold">
       <span>{t("vaultSetup.about.receipt.total")}</span>
       <span>{t("vaultSetup.about.receipt.free")}</span>
     </div>
@@ -250,27 +246,47 @@
         <div class="absolute inset-x-0 top-0 h-1.5" style:background="linear-gradient(180deg, rgb(255 255 255 / 0.22), transparent)"></div>
       </div>
 
-      <!-- The receipt, fed out of the slot: its content rises with the paper, and what is not fed yet stays inside. -->
+      <!-- The flat receipt, unrolled up from the slot: the printed lines stay still as more of them are uncovered. -->
       {#if fed > 0}
         <div
-          class="absolute"
+          class="absolute overflow-hidden"
           style:left={`${left}px`}
-          style:top={`${slotY - fed + drop}px`}
+          style:top={`${paperTop}px`}
           style:width={`${RECEIPT_W}px`}
-          style:height={`${fed}px`}
-          style:filter="drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.25))"
+          style:height={`${slotY - paperTop}px`}
+          style:background={PAPER}
+          style:color={INK}
+          style:box-shadow="0 1px 2px rgb(0 0 0 / 0.2)"
         >
-          <div class="relative h-full overflow-hidden" style:background={PAPER} style:clip-path={TORN_EDGE} style:color={INK}>
-            <div class="px-3">
-              {#each ABOUT_SEGMENTS as segment, index (index)}
-                <div style:height={`${SEGMENT_H[segment]}px`}>{@render segmentContent(segment, index)}</div>
-              {/each}
-            </div>
-            <!-- The paper darkens a little where it goes into the slot. -->
-            <div class="absolute inset-x-0 bottom-0 h-3" style:background="linear-gradient(180deg, transparent, rgb(0 0 0 / 0.16))"></div>
+          <div class="absolute inset-x-0 px-2.5" style:bottom="0" style:height={`${PAPER_H}px`}>
+            {#each ABOUT_SEGMENTS as segment, index (index)}
+              <div style:height={`${SEGMENT_H[segment]}px`}>{@render segmentContent(segment, index)}</div>
+            {/each}
           </div>
+          <!-- The paper darkens a little where it goes into the slot. -->
+          <div class="absolute inset-x-0 bottom-0 h-3" style:background="linear-gradient(180deg, transparent, rgb(0 0 0 / 0.16))"></div>
         </div>
       {/if}
+
+      <!-- The curled edge of the paper, still rolled, rising as the receipt unrolls, with its shadow on the flat paper. -->
+      <div
+        class="absolute"
+        style:left={`${left - 1}px`}
+        style:top={`${paperTop - CURL_H + CURL_OVERLAP}px`}
+        style:width={`${RECEIPT_W + 2}px`}
+        style:height={`${CURL_H}px`}
+      >
+        <div
+          class="absolute inset-x-0.5 top-full"
+          style:height={`${Math.min(CURL_SHADOW_H, fed)}px`}
+          style:background="linear-gradient(180deg, rgb(0 0 0 / 0.18), transparent)"
+        ></div>
+        <div
+          class="absolute inset-0 rounded-[3px]"
+          style:background={CURL}
+          style:box-shadow="0 1px 1.5px rgb(0 0 0 / 0.25)"
+        ></div>
+      </div>
 
       <!-- The body: the slot's tear bar along its top edge, the side button, the screen, and the printer's light. -->
       <div
@@ -310,7 +326,7 @@
           <div class="absolute inset-0" style:background={SCREEN_ON} style:opacity={screen}></div>
           {#if screen > 0}
             <div
-              class="absolute inset-x-0 top-0 flex h-4 items-center justify-between px-2.5 text-[7.5px] font-semibold"
+              class="absolute inset-x-0 top-0 flex h-4 items-center justify-between px-3 text-[7.5px] font-semibold"
               style:color={SCREEN_TEXT}
               style:opacity={screen}
             >

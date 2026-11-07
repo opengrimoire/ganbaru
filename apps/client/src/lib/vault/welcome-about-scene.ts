@@ -1,7 +1,7 @@
 /**
  * Timing for the welcome scene about the app itself. A payment terminal rises into view, its screen lights up with a
- * total that is free and confirms there is nothing to pay, and it then prints a receipt line by line, every feature
- * priced free and the total free as well. The license then stamps the receipt as the reason it stays that way. Every
+ * total that is free and confirms there is nothing to pay, and a receipt then unrolls above it from the bottom up, the
+ * barcode and the free total first, then every feature priced free, and the header last. The license then stamps the receipt as the reason it stays that way. Every
  * moment is derived from the milliseconds elapsed since the scene started, so a frame is a pure function of time and the
  * reduced-motion still is simply the last frame.
  */
@@ -17,7 +17,7 @@ export const ABOUT_RECEIPT_ITEMS = 8;
  */
 export type AboutSegment = "lead" | "header" | "rule" | "item" | "total" | "barcode" | "tail";
 
-/** The receipt from top to bottom, in the order the printer feeds it. */
+/** The receipt from top to bottom, as it reads; the printer reveals it in the opposite order, from the bottom up. */
 export const ABOUT_SEGMENTS: readonly AboutSegment[] = [
   "lead",
   "header",
@@ -69,19 +69,19 @@ const CHECK_START = RING_START + CHECK_DELAY_MS;
 const CONFIRMED = CHECK_START + CHECK_MS;
 const PRINT_START = CONFIRMED + CONFIRM_HOLD_MS;
 
-/** When each segment starts to feed: right after the one before it and its pause. */
+/** When each segment starts to feed, indexed from the top: from the bottom up, each right after the one below it and its pause. */
 function segmentStarts(): number[] {
-  const starts: number[] = [];
+  const starts: number[] = new Array<number>(ABOUT_SEGMENTS.length);
   let next = PRINT_START;
-  for (const segment of ABOUT_SEGMENTS) {
-    starts.push(next);
-    next += FEED_MS[segment] + FEED_GAP_MS;
+  for (let index = ABOUT_SEGMENTS.length - 1; index >= 0; index -= 1) {
+    starts[index] = next;
+    next += FEED_MS[ABOUT_SEGMENTS[index]] + FEED_GAP_MS;
   }
   return starts;
 }
 
 const SEGMENT_STARTS = segmentStarts();
-const PRINT_END = SEGMENT_STARTS[SEGMENT_STARTS.length - 1] + FEED_MS[ABOUT_SEGMENTS[ABOUT_SEGMENTS.length - 1]];
+const PRINT_END = SEGMENT_STARTS[0] + FEED_MS[ABOUT_SEGMENTS[0]];
 const STAMP_START = PRINT_END + STAMP_DELAY_MS;
 const STAMP_LANDED = STAMP_START + STAMP_MS;
 

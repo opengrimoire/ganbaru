@@ -74,14 +74,14 @@ describe("welcome about scene", () => {
   });
 
   it("prints only once the payment is confirmed", () => {
-    expect(firstPositive((elapsed) => aboutFeed(elapsed, 0))).toBeGreaterThan(ABOUT_BEATS.confirmed);
+    expect(firstPositive((elapsed) => aboutFeed(elapsed, ABOUT_SEGMENTS.length - 1))).toBeGreaterThan(ABOUT_BEATS.confirmed);
     expect(aboutPrinting(ABOUT_BEATS.confirmed)).toBe(false);
   });
 
-  it("feeds the segments one at a time, top to bottom", () => {
-    for (const segment of SEGMENTS.slice(1)) {
+  it("reveals the segments one at a time, from the bottom up", () => {
+    for (const segment of SEGMENTS.slice(0, -1)) {
       expect(firstPositive((elapsed) => aboutFeed(elapsed, segment)))
-        .toBeGreaterThan(firstComplete((elapsed) => aboutFeed(elapsed, segment - 1)));
+        .toBeGreaterThan(firstComplete((elapsed) => aboutFeed(elapsed, segment + 1)));
     }
   });
 
@@ -97,7 +97,7 @@ describe("welcome about scene", () => {
   });
 
   it("stamps the receipt only after the whole receipt is printed", () => {
-    const printed = firstComplete((elapsed) => aboutFeed(elapsed, ABOUT_SEGMENTS.length - 1));
+    const printed = firstComplete((elapsed) => aboutFeed(elapsed, 0));
     expect(firstPositive(aboutStamp)).toBeGreaterThan(printed);
   });
 

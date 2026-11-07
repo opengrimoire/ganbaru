@@ -57,7 +57,7 @@
     <div class="relative flex h-7 shrink-0 items-center justify-between bg-background px-2.5">
       <Plus size={14} strokeWidth={2} aria-hidden="true" />
       <span class="absolute left-1/2 flex -translate-x-1/2 items-center gap-0.5">
-        <span class="text-[13px] leading-none font-semibold tracking-tight italic">{BLOCKER_APP_NAMES.egogram}</span>
+        <span class="text-xs leading-none tracking-tight italic">{BLOCKER_APP_NAMES.egogram}</span>
         <ChevronDown size={9} strokeWidth={2.4} aria-hidden="true" />
       </span>
       <Heart size={14} strokeWidth={2} aria-hidden="true" />
@@ -162,13 +162,14 @@
     </div>
   </div>
   {#if phoneEgogram}
-    <!-- Egogram's tab bar, on its home feed: home, short videos, messages, search, and your profile. -->
-    <div class="flex h-7 shrink-0 items-center justify-around border-t border-border bg-background px-1" aria-hidden="true">
-      <span class="grid h-5 w-8 place-items-center rounded-full bg-foreground/10"><House size={12} strokeWidth={2.2} /></span>
-      <SquarePlay size={12} strokeWidth={2} />
-      <Send size={12} strokeWidth={2} />
-      <Search size={12} strokeWidth={2} />
-      <span class="size-3.5 rounded-full bg-foreground/20"></span>
+    <!-- Egogram's tab bar, on its home feed: five equal tabs for home, short videos, messages, search, and your profile,
+         the selected one in a pill that nearly fills its tab. -->
+    <div class="grid h-7 shrink-0 grid-cols-5 items-center border-t border-border bg-background px-0.5" aria-hidden="true">
+      <span class="mx-0.5 grid h-5.5 place-items-center rounded-full bg-foreground/10"><House size={12} strokeWidth={2.2} /></span>
+      <span class="grid place-items-center"><SquarePlay size={12} strokeWidth={2} /></span>
+      <span class="grid place-items-center"><Send size={12} strokeWidth={2} /></span>
+      <span class="grid place-items-center"><Search size={12} strokeWidth={2} /></span>
+      <span class="grid place-items-center"><span class="size-3.5 rounded-full bg-foreground/20"></span></span>
     </div>
   {/if}
 </div>

@@ -6,6 +6,8 @@ interface OutsideCloseOptions {
   getLastDragEndTime: () => number;
   isPanelCommitHidden: () => boolean;
   isSessionClosed: () => boolean;
+  /** Whether a press on `target` leaves the session open and reaches the grid, such as a touch layout moving a draft. */
+  keepsOpenFor?: (target: Element) => boolean;
   onClose: () => void;
 }
 
@@ -88,6 +90,7 @@ export function createCalendarOutsideCloseAction({
   getLastDragEndTime,
   isPanelCommitHidden,
   isSessionClosed,
+  keepsOpenFor,
   onClose,
 }: OutsideCloseOptions) {
   let suppressOutsideClickUntil = 0;
@@ -99,6 +102,7 @@ export function createCalendarOutsideCloseAction({
     if (isPanelOrEventTarget(e.target)) return;
     if (isInteractiveControlTarget(e.target)) return;
     if (!isCalendarEditCloseTarget(e.target)) return;
+    if (e.target instanceof Element && keepsOpenFor?.(e.target)) return;
 
     suppressOutsideClickUntil = performance.now() + 750;
     e.preventDefault();

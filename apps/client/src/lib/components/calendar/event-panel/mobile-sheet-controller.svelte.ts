@@ -32,6 +32,8 @@ export interface EventPanelSheetOptions {
   initialDetent: () => BottomSheetDetent;
   /** Changes whenever the panel starts a new session for another event or draft. */
   sessionKey: () => unknown;
+  /** Whether a swipe down or a scroll of the grid behind lowers the sheet to its summary strip instead of closing it. */
+  collapsible: () => boolean;
   /** Whether the user is moving or resizing the event on the grid behind the sheet. */
   gridEditing: () => boolean;
   /** Whether a picker or section that needs room is open inside the sheet. */
@@ -78,14 +80,27 @@ function nestedControlKeepsDrag(target: Element | null, boundary: HTMLElement | 
 }
 
 /**
+ * Return whether a touch on `target` scrolls the calendar grid behind the sheet rather than moving the event, its
+ * knobs, or the sheet itself.
+ */
+function scrollsGridBehind(target: EventTarget | null, panel: HTMLElement | undefined): boolean {
+  if (!(target instanceof Element) || panel?.contains(target)) return false;
+  if (target.closest("[data-calendar-scroll-container]") === null) return false;
+  return target.closest("[data-event-id], [data-calendar-edit-close-ignore]") === null;
+}
+
+/**
  * Presents the mobile event panel as a bottom sheet that rests at a peek, half, or full height, follows vertical
- * drags on its header and content, slides in from the bottom when shown, and collapses to a summary strip while the user edits
- * the event on the grid behind it.
+ * drags on its header and content, slides in from the bottom when shown, and lowers to a summary strip while the user
+ * edits the event on the grid behind it. A collapsible sheet also rests at that strip after a swipe down or a scroll of
+ * the grid instead of closing.
  */
 export class EventPanelSheetController {
   detent = $state<BottomSheetDetent>("peek");
   dragHeight = $state<number | null>(null);
   entered = $state(false);
+  /** Whether the sheet rests at its summary strip after a swipe down or a scroll of the grid behind it. */
+  collapsed = $state(false);
   private fullHeight = $state(0);
   private dipHeight = $state(0);
   private peekHeight = $state(0);
@@ -115,6 +130,7 @@ export class EventPanelSheetController {
       void options.sessionKey();
       if (!options.enabled()) return;
       this.detent = options.initialDetent();
+      this.collapsed = false;
       this.dragHeight = null;
     });
 
@@ -143,9 +159,44 @@ export class EventPanelSheetController {
     $effect(() => {
       const eventId = options.revealEventId();
       const visible = this.visibleHeight;
-      if (!options.enabled() || !eventId || !this.entered || this.dragHeight !== null || options.gridEditing()) return;
+      // A collapsed sheet leaves the grid where the user scrolled it.
+      if (!options.enabled() || !eventId || !this.entered || this.dragHeight !== null || options.gridEditing()
+        || this.collapsed) return;
       const frame = requestAnimationFrame(() => this.revealEvent(eventId, visible));
       return () => cancelAnimationFrame(frame);
+    });
+
+    $effect(() => {
+      if (!options.enabled() || !options.collapsible()) return;
+      let start: { x: number; y: number } | null = null;
+      const begin = (event: TouchEvent) => {
+        start = null;
+        const touch = event.touches[0];
+        if (event.touches.length !== 1 || !touch || !this.entered || this.collapsed) return;
+        if (!scrollsGridBehind(event.target, options.panel())) return;
+        start = { x: touch.clientX, y: touch.clientY };
+      };
+      const move = (event: TouchEvent) => {
+        const touch = event.touches[0];
+        if (!start || !touch || options.gridEditing()) return;
+        if (Math.hypot(touch.clientX - start.x, touch.clientY - start.y) <= TOUCH_SLOP_PX) return;
+        start = null;
+        this.collapse();
+      };
+      const end = () => {
+        start = null;
+      };
+      const listener = { capture: true, passive: true };
+      window.addEventListener("touchstart", begin, listener);
+      window.addEventListener("touchmove", move, listener);
+      window.addEventListener("touchend", end, listener);
+      window.addEventListener("touchcancel", end, listener);
+      return () => {
+        window.removeEventListener("touchstart", begin, listener);
+        window.removeEventListener("touchmove", move, listener);
+        window.removeEventListener("touchend", end, listener);
+        window.removeEventListener("touchcancel", end, listener);
+      };
     });
 
     $effect(() => {
@@ -183,7 +234,12 @@ export class EventPanelSheetController {
   get visibleHeight(): number {
     if (this.dragHeight !== null) return this.dragHeight;
     if (!this.entered) return 0;
-    if (this.options.gridEditing()) return this.heights.dip;
+    return this.restingHeight;
+  }
+
+  /** Height the sheet rests at when no finger moves it: its summary strip while edited on the grid or collapsed. */
+  private get restingHeight(): number {
+    if (this.options.gridEditing() || this.collapsed) return this.heights.dip;
     return this.heights[this.detent];
   }
 
@@ -229,7 +285,16 @@ export class EventPanelSheetController {
 
   /** Open the sheet at least as far as `detent`. */
   raise(detent: BottomSheetDetent): void {
-    this.detent = higherBottomSheetDetent(this.detent, detent);
+    this.detent = higherBottomSheetDetent(this.collapsed ? "peek" : this.detent, detent);
+    this.collapsed = false;
+  }
+
+  /** Lower the sheet to its summary strip, leaving it at the peek once it opens again. */
+  collapse(): void {
+    if (this.collapsed) return;
+    this.collapsed = true;
+    this.detent = "peek";
+    this.options.scroll()?.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   private measure(
@@ -249,8 +314,7 @@ export class EventPanelSheetController {
   private shows(element: Element): boolean {
     const panel = this.options.panel();
     if (!panel) return false;
-    const resting = this.options.gridEditing() ? this.heights.dip : this.heights[this.detent];
-    return element.getBoundingClientRect().bottom - panel.getBoundingClientRect().top <= resting;
+    return element.getBoundingClientRect().bottom - panel.getBoundingClientRect().top <= this.restingHeight;
   }
 
   /** Scroll the grid holding `eventId` so the event sits above a sheet resting at `visible` height. */
@@ -329,13 +393,19 @@ export class EventPanelSheetController {
     this.gesture = null;
     const released = this.dragHeight;
     if (!gesture || gesture.claimed !== "sheet" || released === null) return;
-    const result = settleBottomSheet(released, bottomSheetReleaseVelocity(gesture.samples), this.heights, true);
+    const low = this.options.collapsible() ? "collapse" : "close";
+    const result = settleBottomSheet(released, bottomSheetReleaseVelocity(gesture.samples), this.heights, low);
     this.dragHeight = null;
     if (result === "close") {
       this.detent = "peek";
       this.options.onClose();
       return;
     }
+    if (result === "collapse") {
+      this.collapse();
+      return;
+    }
+    this.collapsed = false;
     this.settle(result);
   }
 

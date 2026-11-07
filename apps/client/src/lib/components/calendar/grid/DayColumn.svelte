@@ -98,6 +98,8 @@
 
   const TIMED_RENDER_BUFFER_MINUTES = 1440;
   const panelOpen = $derived(!!editingId);
+  /** A touch layout keeps the grid live under an open draft, so a tap or hold there moves the draft. */
+  const gridMovesDraft = $derived(mobileLayout && !!editingId && isPendingCreateEventId(editingId));
 
   const dateStr = $derived(formatDatePart(date));
   const dayEvents = $derived(positionedEvents.map((positionedEvent) => positionedEvent.event));
@@ -548,8 +550,8 @@
       return;
     }
 
-    // No event creation when panel is open
-    if (panelOpen) return;
+    // No event creation when panel is open, except a touch that moves an open draft
+    if (panelOpen && !gridMovesDraft) return;
 
     const timing = getCreateTimingFromOffset(colOffsetY);
 

@@ -549,8 +549,14 @@
     getLastDragEndTime: () => dragController.lastDragEndTime,
     isPanelCommitHidden: () => panelCommitHidden,
     isSessionClosed: () => session.state.mode === "closed",
+    keepsOpenFor: (target) => mobileDraftFollowsGrid() && target.closest("[data-day-column-shell]") !== null,
     onClose: handlePanelClose,
   });
+
+  /** Whether a touch layout keeps an open timed draft through grid taps, holds, and scrolls, moving it instead. */
+  function mobileDraftFollowsGrid(): boolean {
+    return mobileLayout && session.state.mode === "create" && !session.changes?.allDay;
+  }
 
   // Merged event for the panel (original + changes, so panel sees drag/resize updates)
   const panelEvent = $derived.by(() => {
@@ -1016,6 +1022,16 @@
     await openCreate();
   }
 
+  /** Create from a press on the grid; on a touch layout with an open timed draft, the press moves the draft instead. */
+  function handleGridEventCreate(start: string, end: string, allDay?: boolean, createAnchor?: PanelAnchor): Promise<void> {
+    if (!allDay && !panelCommitHidden && mobileDraftFollowsGrid()) {
+      dragController.markInteractionEnd();
+      session.updateChanges({ start, end });
+      return Promise.resolve();
+    }
+    return handleEventCreate(start, end, allDay, createAnchor);
+  }
+
   function formatMinuteOfDay(minute: number): string {
     const hour = Math.floor(minute / 60);
     const minutePart = minute % 60;
@@ -1447,7 +1463,7 @@
         onEventClick={handleEventClick}
         onEventPrefetch={handleEventPrefetch}
         onEventUpdate={handleEventUpdate}
-        onEventCreate={handleEventCreate}
+        onEventCreate={handleGridEventCreate}
         onAddTimezone={(timezone) => viewportController.addTimezone(timezone)}
         onRemoveTimezone={(index) => viewportController.removeTimezone(index)}
         onReorderTimezone={(from, to) => viewportController.reorderTimezone(from, to)}
@@ -1475,7 +1491,7 @@
         onEventClick={handleEventClick}
         onEventPrefetch={handleEventPrefetch}
         onEventUpdate={handleEventUpdate}
-        onEventCreate={handleEventCreate}
+        onEventCreate={handleGridEventCreate}
         onAddTimezone={(timezone) => viewportController.addTimezone(timezone)}
         onRemoveTimezone={(index) => viewportController.removeTimezone(index)}
         onReorderTimezone={(from, to) => viewportController.reorderTimezone(from, to)}

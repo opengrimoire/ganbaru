@@ -79,24 +79,30 @@ describe("settleBottomSheet", () => {
   const heights = bottomSheetHeights(800, 60, 180);
 
   it("rests on the nearest detent for a slow release", () => {
-    expect(settleBottomSheet(200, 0, heights, true)).toBe("peek");
-    expect(settleBottomSheet(420, 0, heights, true)).toBe("half");
-    expect(settleBottomSheet(700, 0, heights, true)).toBe("full");
+    expect(settleBottomSheet(200, 0, heights, "close")).toBe("peek");
+    expect(settleBottomSheet(420, 0, heights, "close")).toBe("half");
+    expect(settleBottomSheet(700, 0, heights, "close")).toBe("full");
   });
 
   it("carries a flick toward the next detent", () => {
-    expect(settleBottomSheet(220, 1.5, heights, true)).toBe("half");
-    expect(settleBottomSheet(600, 2, heights, true)).toBe("full");
-    expect(settleBottomSheet(600, -2, heights, true)).toBe("peek");
+    expect(settleBottomSheet(220, 1.5, heights, "close")).toBe("half");
+    expect(settleBottomSheet(600, 2, heights, "close")).toBe("full");
+    expect(settleBottomSheet(600, -2, heights, "close")).toBe("peek");
   });
 
   it("closes a sheet released well below the peek", () => {
-    expect(settleBottomSheet(60, 0, heights, true)).toBe("close");
-    expect(settleBottomSheet(170, -1, heights, true)).toBe("close");
+    expect(settleBottomSheet(60, 0, heights, "close")).toBe("close");
+    expect(settleBottomSheet(170, -1, heights, "close")).toBe("close");
+  });
+
+  it("collapses instead of closing a sheet that lowers to its summary strip", () => {
+    expect(settleBottomSheet(60, 0, heights, "collapse")).toBe("collapse");
+    expect(settleBottomSheet(170, -1, heights, "collapse")).toBe("collapse");
+    expect(settleBottomSheet(200, 0, heights, "collapse")).toBe("peek");
   });
 
   it("returns to the peek instead of closing when closing is not allowed", () => {
-    expect(settleBottomSheet(20, -1, heights, false)).toBe("peek");
+    expect(settleBottomSheet(20, -1, heights, "peek")).toBe("peek");
   });
 });
 

@@ -6,7 +6,7 @@ export type BottomSheetDetent = "peek" | "half" | "full";
 
 /** Visible heights of a bottom sheet in CSS pixels, measured from the bottom of its area. */
 export interface BottomSheetHeights {
-  /** Summary strip only, used while the user edits what the sheet covers. */
+  /** Summary strip only, used while the user edits what the sheet covers or after a sheet collapses. */
   dip: number;
   peek: number;
   half: number;
@@ -23,7 +23,7 @@ export interface BottomSheetSample {
 export const BOTTOM_SHEET_HALF_RATIO = 0.55;
 /** How far ahead the release velocity carries the sheet before it picks a detent, in milliseconds. */
 export const BOTTOM_SHEET_PROJECTION_MS = 200;
-/** Share of the peek height below which a released sheet closes instead of settling. */
+/** Share of the peek height below which a released sheet closes or collapses instead of settling. */
 export const BOTTOM_SHEET_CLOSE_RATIO = 0.55;
 /** Only samples this recent count toward release velocity, in milliseconds. */
 export const BOTTOM_SHEET_VELOCITY_WINDOW_MS = 100;
@@ -71,17 +71,23 @@ export function bottomSheetReleaseVelocity(samples: readonly BottomSheetSample[]
 }
 
 /**
+ * What a sheet released well below its peek does: `close` dismisses it, `collapse` lowers it to its summary strip, and
+ * `peek` returns it to the peek.
+ */
+export type BottomSheetLowRelease = "close" | "collapse" | "peek";
+
+/**
  * Return where a sheet released at `visible` with `velocity` (pixels per millisecond, positive opens) comes to rest:
- * the detent nearest to where the velocity carries it, or `close` when `closable` and it ends well below the peek.
+ * the detent nearest to where the velocity carries it, or `low` when it ends well below the peek.
  */
 export function settleBottomSheet(
   visible: number,
   velocity: number,
   heights: BottomSheetHeights,
-  closable: boolean,
-): BottomSheetDetent | "close" {
+  low: BottomSheetLowRelease,
+): BottomSheetDetent | "close" | "collapse" {
   const projected = visible + velocity * BOTTOM_SHEET_PROJECTION_MS;
-  if (closable && projected < heights.peek * BOTTOM_SHEET_CLOSE_RATIO) return "close";
+  if (low !== "peek" && projected < heights.peek * BOTTOM_SHEET_CLOSE_RATIO) return low;
   let nearest: BottomSheetDetent = "peek";
   for (const detent of DETENT_ORDER) {
     if (Math.abs(heights[detent] - projected) < Math.abs(heights[nearest] - projected)) nearest = detent;

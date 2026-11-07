@@ -11,7 +11,7 @@ import {
   parseCalendarDate,
 } from "$lib/calendar/utils";
 import { useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
-import { isPendingCreateEventId } from "$lib/components/calendar/display-events";
+import { isPendingCreateEventId, PENDING_CREATE_ID } from "$lib/components/calendar/display-events";
 import { TouchHoldArbiter } from "$lib/utils/touch-hold";
 
 let cursorStyle: HTMLStyleElement | null = null;
@@ -645,6 +645,19 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
     const state = createState;
     finishTouchEditing();
 
+    const movedDraftMinutes = state?.mode === "pending" ? tapMovedDraftMinutes() : undefined;
+    if (state && movedDraftMinutes !== undefined) {
+      createState = null;
+      createPreview = null;
+      createPreviewDate = null;
+      lastPointerEvent = null;
+      config.onEventCreate(
+        minuteOffsetToDateStr(state.dateStr, state.clickStartMinute),
+        minuteOffsetToDateStr(state.dateStr, state.clickStartMinute + movedDraftMinutes),
+      );
+      return;
+    }
+
     if (state?.mode === "pending") {
       const endMinute = clampMinute(
         Math.min(state.clickStartMinute + DEFAULT_CLICK_EVENT_MINUTES, 1440),
@@ -698,6 +711,17 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
     createPreviewDate = null;
     lastPointerEvent = null;
     finishTouchEditing();
+  }
+
+  /**
+   * Return the length in minutes of the open timed draft that a tap on a touch layout moves to the tapped slot, keeping
+   * its length, or undefined when a tap creates a new event instead.
+   */
+  function tapMovedDraftMinutes(): number | undefined {
+    if (!config.mobileLayout()) return undefined;
+    const draft = config.events().find((event) => event.id === PENDING_CREATE_ID);
+    if (!draft || draft.allDay) return undefined;
+    return durationMinutes(draft.start, draft.end);
   }
 
   function notifyTouchEditStart(): void {

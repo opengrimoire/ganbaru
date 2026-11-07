@@ -374,13 +374,14 @@
   const activePanelLayout = $derived(mobileLayout ? "fullscreen" : panelLayout);
   const panelCanDrag = $derived(!mobileLayout && geometry.canDrag);
   let sheetHeaderEl = $state<HTMLDivElement>();
-  let sheetDipEndEl = $state<HTMLDivElement>();
+  let sheetDipEndEl = $state<HTMLButtonElement>();
   let sheetPeekEndEl = $state<HTMLDivElement>();
   const sheet = new EventPanelSheetController({
     enabled: () => mobileLayout && !parked,
     shown: () => session.initialized && geometry.positionReady,
     initialDetent: () => (mode === "create" ? "peek" : "half"),
     sessionKey: () => panelSessionKey,
+    collapsible: () => mode === "create",
     gridEditing: () => gridEditing,
     needsRoom: () => openSection !== null
       || dateTime.startDatePickerOpen
@@ -395,6 +396,10 @@
     revealEventId: () => revealEventId,
     onClose: () => onClose(),
   });
+  /** Whether the sheet shows only its summary strip, while the event is edited on the grid or after a draft collapses. */
+  const sheetCollapsed = $derived(gridEditing || sheet.collapsed);
+  /** Whether a tap on the summary strip opens the sheet again; while the event is edited on the grid it waits instead. */
+  const sheetExpandable = $derived(sheet.collapsed && !gridEditing);
   const isDateTimeStacked = $derived(geometry.isDateTimeStacked);
 
   function isSectionEnabled(s: ToggleSection): boolean {
@@ -1077,12 +1082,13 @@
   >
     {#if mobileLayout && !parked}
     <!-- Sheet header: dragging it moves the sheet, and it keeps close, delete, and save reachable at every height.
-         While the event is edited on the grid, the grabber bends into an up chevron over the event title, and the sheet
-         collapses to that strip so the details visibly wait below. -->
+         While the event is edited on the grid, or a draft is swiped down or the grid scrolled, the grabber bends into an
+         up chevron over the event title, and the sheet collapses to that strip so the details visibly wait below. A
+         collapsed draft opens again from a tap on the strip. -->
     <div
       bind:this={sheetHeaderEl}
       class="sheet-header sticky top-0 z-10 shrink-0 touch-none"
-      data-collapsed={gridEditing || undefined}
+      data-collapsed={sheetCollapsed || undefined}
       style="background-color: var(--panel-bg);"
     >
       <div class="sheet-grabber-block flex items-center justify-center" aria-hidden="true">
@@ -1091,14 +1097,21 @@
           <span class="sheet-grabber-half sheet-grabber-end"></span>
         </div>
       </div>
-      <div
+      <button
         bind:this={sheetDipEndEl}
-        class="sheet-collapsed-title pointer-events-none absolute inset-x-0 top-0 flex items-center justify-center px-4 text-[0.866667rem] font-medium"
-        aria-hidden={!gridEditing || undefined}
+        type="button"
+        class={cn(
+          "sheet-collapsed-title absolute inset-x-0 top-0 flex items-center justify-center px-4 text-[0.866667rem] font-medium",
+          !sheetExpandable && "pointer-events-none",
+        )}
+        disabled={!sheetExpandable}
+        aria-expanded={sheetExpandable ? false : undefined}
+        aria-hidden={!sheetCollapsed || undefined}
+        onclick={() => sheet.raise("peek")}
       >
         <span class="min-w-0 truncate">{session.title.trim() || t("calendar.event.noTitle")}</span>
-      </div>
-      <div class="sheet-actions flex items-center gap-1 px-1" inert={gridEditing}>
+      </button>
+      <div class="sheet-actions flex items-center gap-1 px-1" inert={sheetCollapsed}>
         <button
           type="button"
           aria-label={t("common.close")}

@@ -52,9 +52,9 @@
       <path d="M19.7 4l-6.3 7.4" stroke="white" stroke-width="1.6" />
     </svg>
   {:else if app === "bluedit"}
-    <!-- A round-eared alien whose antenna leans to the left, its head outlined in the brand color to part it from the
-         ears. The view centers the whole alien, antenna included, as the other glyphs are centered. -->
-    <svg viewBox="1 -0.4 22 22" style:width={glyph} style:height={glyph}>
+    <!-- A round-eared, straight-faced alien whose antenna leans to the left, its head outlined in the brand color to part
+         it from the ears. The view centers the whole alien, antenna included, as the other glyphs are centered. -->
+    <svg viewBox="0.7 -0.4 22 22" style:width={glyph} style:height={glyph}>
       <path d="M12.2 9.4L11 3.9L8.4 3.4" fill="none" stroke="white" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round" />
       <circle cx="7.3" cy="3.3" r="1.5" fill="white" />
       <circle cx="4.6" cy="11.6" r="1.9" fill="white" />
@@ -62,7 +62,7 @@
       <ellipse cx="12" cy="14.2" rx="7.6" ry="5.2" fill="white" stroke={PARODY_COLORS.bluedit} stroke-width="0.9" />
       <ellipse cx="9.3" cy="13.4" rx="1.3" ry="1.5" fill={PARODY_COLORS.bluedit} />
       <ellipse cx="14.7" cy="13.4" rx="1.3" ry="1.5" fill={PARODY_COLORS.bluedit} />
-      <path d="M9 16.4q3 2 6 0" fill="none" stroke={PARODY_COLORS.bluedit} stroke-width="0.9" stroke-linecap="round" />
+      <path d="M11 16.9h2" fill="none" stroke={PARODY_COLORS.bluedit} stroke-width="0.9" stroke-linecap="round" />
     </svg>
   {:else if app === "mail"}
     <span class="absolute inset-0 rounded-[inherit] ring-1 ring-black/10 ring-inset"></span>

@@ -1772,7 +1772,7 @@
    * The collapsed strip ends the sheet while it is collapsed. It is as tall as the bottom tab bar, even while the
    * keyboard hides that bar, and the title is centered in the space below the chevron.
    */
-  .sheet-collapsed-title {
+  .panel-root .sheet-collapsed-title {
     padding-top: calc(var(--sheet-grabber-block) + 0.25rem);
     padding-bottom: 0.25rem;
     min-height: var(--mobile-bottom-nav-h);

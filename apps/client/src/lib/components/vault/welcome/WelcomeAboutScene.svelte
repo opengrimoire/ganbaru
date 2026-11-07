@@ -26,7 +26,7 @@
   import Star from "@lucide/svelte/icons/star";
   import Users from "@lucide/svelte/icons/users";
   import { formatNumber } from "$lib/i18n/formatters";
-  import { getLocalization } from "$lib/i18n/translator.svelte";
+  import type { AppLocale } from "$lib/i18n/locales";
   import { BUILD_PLATFORM } from "$lib/platform";
   import {
     ABOUT_FILES,
@@ -45,13 +45,27 @@
    * files, its community documents, and its license in view, and a tap stars it. The page is a plain sketch of a
    * repository page in the theme's colors, with placeholder bars where the description, commit messages, and dates
    * change over time. A wide canvas lays the page out with a sidebar as a repository host does; a narrow one keeps a
-   * single column. Every style is a function of `elapsed`, with no CSS transitions, so text is never handed to a
-   * compositing layer mid-animation.
+   * single column. The page's text stays in English in every app language, as the repository host shows it. Every
+   * style is a function of `elapsed`, with no CSS transitions, so text is never handed to a compositing layer
+   * mid-animation.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
-  const localization = getLocalization();
-  const { t } = localization;
+  /** The repository host's interface is in English only, so the page draws its text and numbers in English. */
+  const PAGE_LOCALE: AppLocale = "en";
+  const PAGE_TEXT = {
+    public: "Public",
+    fork: "Fork",
+    star: "Star",
+    starred: "Starred",
+    readme: "README",
+    license: "AGPL 3.0 license",
+    codeOfConduct: "Code of conduct",
+    contributing: "Contributing",
+    security: "Security",
+    securityPolicy: "Security policy",
+    languages: "Languages",
+  } as const;
 
   /** The window's frame, matching the other welcome scenes. */
   const BEZEL = 6;
@@ -80,15 +94,15 @@
 
   interface RepositoryLink {
     icon: Component<{ size?: number; strokeWidth?: number; "aria-hidden"?: "true" }>;
-    label: () => string;
+    label: string;
   }
 
-  const README: RepositoryLink = { icon: BookOpen, label: () => t("vaultSetup.about.repository.readme") };
-  const LICENSE: RepositoryLink = { icon: Scale, label: () => t("vaultSetup.about.repository.license") };
-  const CODE_OF_CONDUCT: RepositoryLink = { icon: HeartHandshake, label: () => t("vaultSetup.about.repository.codeOfConduct") };
-  const CONTRIBUTING: RepositoryLink = { icon: Users, label: () => t("vaultSetup.about.repository.contributing") };
-  const SECURITY: RepositoryLink = { icon: Shield, label: () => t("vaultSetup.about.repository.security") };
-  const SECURITY_POLICY: RepositoryLink = { icon: Shield, label: () => t("vaultSetup.about.repository.securityPolicy") };
+  const README: RepositoryLink = { icon: BookOpen, label: PAGE_TEXT.readme };
+  const LICENSE: RepositoryLink = { icon: Scale, label: PAGE_TEXT.license };
+  const CODE_OF_CONDUCT: RepositoryLink = { icon: HeartHandshake, label: PAGE_TEXT.codeOfConduct };
+  const CONTRIBUTING: RepositoryLink = { icon: Users, label: PAGE_TEXT.contributing };
+  const SECURITY: RepositoryLink = { icon: Shield, label: PAGE_TEXT.security };
+  const SECURITY_POLICY: RepositoryLink = { icon: Shield, label: PAGE_TEXT.securityPolicy };
 
   /** One language of the repository's code, with its share of the code and the color repository hosts give it. */
   interface RepositoryLanguage {
@@ -149,7 +163,7 @@
 {#snippet link(item: RepositoryLink)}
   <span class="flex h-4 shrink-0 items-center gap-1.5 whitespace-nowrap">
     <item.icon size={13} strokeWidth={1.8} aria-hidden="true" />
-    {item.label()}
+    {item.label}
   </span>
 {/snippet}
 
@@ -157,7 +171,7 @@
   <div class="flex shrink-0 items-center gap-2 text-[11px] font-medium">
     <span class="flex h-7 items-center gap-1.5 rounded-md border border-border bg-foreground/4 px-2.5">
       <GitFork size={13} strokeWidth={1.8} aria-hidden="true" />
-      {t("vaultSetup.about.repository.fork")}
+      {PAGE_TEXT.fork}
     </span>
     <span
       class="flex h-7 items-center gap-1.5 rounded-md border border-border bg-foreground/4 px-2.5"
@@ -183,7 +197,7 @@
           <span class="pointer-events-none absolute size-6 rounded-full bg-foreground/20 ring-2 ring-foreground/35" style:opacity={touch}></span>
         {/if}
       </span>
-      {starred ? t("vaultSetup.about.repository.starred") : t("vaultSetup.about.repository.star")}
+      {starred ? PAGE_TEXT.starred : PAGE_TEXT.star}
     </span>
   </div>
 {/snippet}
@@ -191,6 +205,7 @@
 <div class="rounded-3xl bg-foreground/6 p-1.5" style:width={`${width}px`} style:height={`${height}px`}>
   <div
     class="relative flex flex-col overflow-hidden rounded-2xl bg-background text-foreground"
+    lang={PAGE_LOCALE}
     style:width={`${canvasW}px`}
     style:height={`${canvasH}px`}
   >
@@ -219,7 +234,7 @@
             <span class="font-semibold">{ABOUT_REPOSITORY.name}</span>
           </span>
           <span class="shrink-0 rounded-full border border-border px-1.5 py-px text-[9.5px] text-muted-foreground">
-            {t("vaultSetup.about.repository.public")}
+            {PAGE_TEXT.public}
           </span>
           {#if wide}
             <span class="flex-1"></span>
@@ -266,7 +281,7 @@
                 {#each links as item, index (index)}{@render link(item)}{/each}
               </div>
               <div class="flex flex-col gap-1.5 border-t border-border pt-3">
-                <span class="text-[12px] font-semibold text-foreground">{t("vaultSetup.about.repository.languages")}</span>
+                <span class="text-[12px] font-semibold text-foreground">{PAGE_TEXT.languages}</span>
                 <span class="flex h-1.5 gap-px overflow-hidden rounded-full" aria-hidden="true">
                   {#each LANGUAGES as language (language.name)}
                     <span class="min-w-px" style:flex-grow={language.share} style:background-color={language.color}></span>
@@ -277,7 +292,7 @@
                     <span class="flex items-center gap-1 whitespace-nowrap">
                       <span class="size-1.5 rounded-full" style:background-color={language.color}></span>
                       <span class="font-semibold text-foreground">{language.name}</span>
-                      {formatNumber(localization.locale, language.share, LANGUAGE_SHARE)}
+                      {formatNumber(PAGE_LOCALE, language.share, LANGUAGE_SHARE)}
                     </span>
                   {/each}
                 </span>
@@ -293,7 +308,7 @@
               <span
                 class={`flex h-6 shrink-0 items-center whitespace-nowrap ${item === README ? "border-b-2 border-primary font-semibold text-foreground" : ""}`}
               >
-                {item.label()}
+                {item.label}
               </span>
             {/each}
           </div>

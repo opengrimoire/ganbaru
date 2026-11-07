@@ -30,12 +30,17 @@ export const vaultSetup = {
     headline: "Elige tu idioma",
     body: "Puedes cambiarlo después en Ajustes > Apariencia.",
   },
-  distractions: {
-    headline: "Distracciones en pausa",
-    body: "Los sitios y apps que elijas se quedan cerrados mientras te enfocas.\nLos límites diarios cuentan todos tus dispositivos.",
+  blocking: {
+    headline: "Las distracciones esperan al enfoque",
+    body: "Los sitios y apps que elijas se quedan cerrados durante el enfoque.\nVuelven a abrir cuando termina.",
     sceneDescription:
-      "Una breve animación del navegador de una laptop y un teléfono durante una sesión de enfoque. Un sitio que distrae abierto en el navegador se reemplaza por la página de bloqueo de Ganbaru, y una app que distrae abierta en el teléfono vuelve a la pantalla de inicio con una notificación. Al terminar el enfoque, un límite diario cuenta el tiempo que un sitio y su app usan en ambos dispositivos, y al agotarse la hora ambos se bloquean.",
-    workTab: "Borrador del capítulo 3",
+      "Una breve animación de un evento del Calendario con enfoque, sobre el navegador de una laptop y un teléfono. Bluedit está abierto en el navegador hasta que empieza el evento; entonces la página de bloqueo de Ganbaru lo reemplaza, y Egogram abierto en el teléfono vuelve a la pantalla de inicio con una notificación. Cuando termina el evento, Bluedit vuelve y Egogram abre como siempre.",
+  },
+  limits: {
+    headline: "Límites diarios en cada dispositivo",
+    body: "Dale a un sitio y su app un solo tiempo diario.\nEl tiempo cuenta en cada dispositivo.",
+    sceneDescription:
+      "Una breve animación de un límite diario de una hora para Y. El tiempo en el sitio de Y en el navegador de una laptop y en su app en un teléfono llena una sola barra, cada dispositivo con su color. Al agotarse la hora, la app vuelve a la pantalla de inicio con una notificación y la página de bloqueo de Ganbaru reemplaza el sitio.",
   },
   about: {
     headline: "Gratis y de código abierto",

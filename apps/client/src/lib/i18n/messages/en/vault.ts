@@ -22,12 +22,17 @@ export const vaultSetup = {
     headline: "Choose your language",
     body: "You can change it later in Settings > Appearance.",
   },
-  distractions: {
-    headline: "Distractions on hold",
-    body: "The sites and apps you choose stay closed while you focus.\nDaily limits count every device.",
+  blocking: {
+    headline: "Distractions wait for Focus",
+    body: "The sites and apps you choose stay closed during Focus.\nThey open again when it ends.",
     sceneDescription:
-      "A short animation of a laptop's browser and a phone during a Focus session. A distracting site opened in the browser is replaced by Ganbaru's block page, and a distracting app opened on the phone returns to the home screen with a notification. After Focus ends, a daily limit counts the time one site and its app use across both devices, and once the hour is used up both are blocked.",
-    workTab: "Chapter 3 draft",
+      "A short animation of a Calendar event with Focus, above a laptop's browser and a phone. Bluedit is open in the browser until the event starts; then Ganbaru's block page replaces it, and Egogram opened on the phone returns to the home screen with a notification. When the event ends, Bluedit comes back and Egogram opens as usual.",
+  },
+  limits: {
+    headline: "Daily limits on every device",
+    body: "Give a site and its app one daily budget.\nTime counts on every device.",
+    sceneDescription:
+      "A short animation of a one hour daily limit for Y. Time on Y's website in a laptop's browser and on its app on a phone fills one bar, each device in its own color. When the hour is used up, the app returns to the home screen with a notification and Ganbaru's block page replaces the website.",
   },
   about: {
     headline: "Free and open source",

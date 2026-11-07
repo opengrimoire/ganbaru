@@ -9,9 +9,10 @@
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
   import { WELCOME_STEPS, welcomeStepAt } from "$lib/vault/welcome-steps";
   import WelcomeAboutStep from "./welcome/WelcomeAboutStep.svelte";
+  import WelcomeBlockingStep from "./welcome/WelcomeBlockingStep.svelte";
   import WelcomeCalendarStep from "./welcome/WelcomeCalendarStep.svelte";
-  import WelcomeDistractionsStep from "./welcome/WelcomeDistractionsStep.svelte";
   import WelcomeLanguageStep from "./welcome/WelcomeLanguageStep.svelte";
+  import WelcomeLimitsStep from "./welcome/WelcomeLimitsStep.svelte";
 
   /**
    * The welcome screens before vault setup: the language, one per feature, then the app itself. Every screen shares
@@ -60,8 +61,10 @@
           <WelcomeLanguageStep />
         {:else if current === "calendar"}
           <WelcomeCalendarStep />
-        {:else if current === "distractions"}
-          <WelcomeDistractionsStep />
+        {:else if current === "blocking"}
+          <WelcomeBlockingStep />
+        {:else if current === "limits"}
+          <WelcomeLimitsStep />
         {:else}
           <WelcomeAboutStep />
         {/if}

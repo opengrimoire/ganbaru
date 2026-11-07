@@ -1,0 +1,93 @@
+/**
+ * Shared pieces of the distraction blocker's welcome scenes: the parody apps they draw, what the browser and the phone
+ * show, and the timing of the motions both scenes use. Every value is a pure function of the milliseconds elapsed since
+ * a scene started, so a frame is a pure function of time.
+ */
+
+import { easeInOutCubic, filmSpan } from "./welcome-film";
+
+/** The parody apps the scenes draw, each with a website of the same name. */
+export type BlockerApp = "y" | "bluedit" | "egogram";
+
+/** The parody apps' names, which stay the same in every language. */
+export const BLOCKER_APP_NAMES: Readonly<Record<BlockerApp, string>> = { y: "Y", bluedit: "Bluedit", egogram: "Egogram" };
+
+/** The parody apps' websites. */
+export const BLOCKER_APP_HOSTS: Readonly<Record<BlockerApp, string>> = {
+  y: "y.com",
+  bluedit: "bluedit.com",
+  egogram: "egogram.com",
+};
+
+/** Why a site or an app is blocked: a running Focus phase, or a daily limit that ran out. */
+export type BlockerReason = "focus" | "limit";
+
+/** What the browser's tab shows: the site's feed, scrolled from 0 to 1, or the extension's block page. */
+export type BlockerBrowserPage =
+  | { kind: "feed"; scroll: number }
+  | { kind: "block"; reason: "focus"; minutesLeft: number }
+  | { kind: "block"; reason: "limit" };
+
+/** The app open on the phone, how far it has opened from its icon, and how far its feed has scrolled, each from 0 to 1. */
+export interface BlockerPhoneApp {
+  app: BlockerApp;
+  open: number;
+  scroll: number;
+}
+
+/** The phone's block notification, for which app and why, and how far it has slid in, from 0 to 1. */
+export interface BlockerNotice {
+  app: BlockerApp;
+  reason: BlockerReason;
+  shown: number;
+}
+
+/** A move of the camera on a narrow canvas, toward the browser (0) or the phone (1). */
+export interface BlockerPanMove {
+  start: number;
+  to: 0 | 1;
+}
+
+/** How long an app takes to open from its icon, and to shrink back into it. */
+export const BLOCKER_APP_OPEN_MS = 320;
+const APP_CLOSE_MS = 320;
+/** How long a notification takes to slide in, and away. */
+const NOTICE_IN_MS = 280;
+const NOTICE_OUT_MS = 220;
+/** How long a page takes to fade in once it replaces another. */
+const PAGE_FADE_MS = 220;
+/** How long the camera takes to move between the devices on a narrow canvas. */
+const PAN_MS = 650;
+
+/** Where the camera points on a narrow canvas, from 0 (the browser) to 1 (the phone), after `moves` in time order. */
+export function blockerPan(elapsed: number, moves: readonly BlockerPanMove[]): number {
+  let value = 0;
+  for (const move of moves) {
+    value += (move.to - value) * easeInOutCubic(filmSpan(elapsed, move.start, move.start + PAN_MS));
+  }
+  return value;
+}
+
+/**
+ * How far an app tapped at `tap` has opened, from 0 to 1: it opens from its icon, and shrinks back into it from `home`
+ * when given. 0 before the tap and once it is closed.
+ */
+export function blockerAppOpen(elapsed: number, tap: number, home?: number): number {
+  if (elapsed < tap) return 0;
+  const opened = easeInOutCubic(filmSpan(elapsed, tap, tap + BLOCKER_APP_OPEN_MS));
+  const closed = home === undefined ? 0 : easeInOutCubic(filmSpan(elapsed, home, home + APP_CLOSE_MS));
+  return opened * (1 - closed);
+}
+
+/** How far a notification posted at `posted` has slid in, from 0 to 1, until it slides away from `dismissed` when given. */
+export function blockerNoticeShown(elapsed: number, posted: number, dismissed?: number): number {
+  const shown = easeInOutCubic(filmSpan(elapsed, posted, posted + NOTICE_IN_MS));
+  const gone = dismissed === undefined ? 0 : easeInOutCubic(filmSpan(elapsed, dismissed, dismissed + NOTICE_OUT_MS));
+  return shown * (1 - gone);
+}
+
+/** How far a page has faded in since the last of `changes` it has passed, from 0 to 1; 1 before the first. */
+export function blockerPageIn(elapsed: number, changes: readonly number[]): number {
+  const last = changes.filter((change) => change <= elapsed).at(-1);
+  return last === undefined ? 1 : easeInOutCubic(filmSpan(elapsed, last, last + PAGE_FADE_MS));
+}

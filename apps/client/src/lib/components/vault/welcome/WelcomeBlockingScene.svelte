@@ -4,17 +4,15 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
-  import { blockerSingleTab } from "$lib/vault/welcome-blocker";
   import {
     BLOCKING_DAY_VIEW,
     BLOCKING_EVENT,
-    blockingBrowserPage,
+    blockingBrowser,
     blockingClock,
     blockingEgogramTouch,
     blockingFocusing,
     blockingFocusRemaining,
     blockingNotice,
-    blockingPageIn,
     blockingPan,
     blockingPhoneApp,
     blockingPulse,
@@ -25,8 +23,9 @@
 
   /**
    * One frame of the welcome scene on blocking during Focus: a strip of the day with a Calendar event that runs Focus,
-   * above a laptop's browser on Bluedit and a phone. While the current time crosses the event, the site and the apps
-   * the user chose are blocked; before and after it, they open as usual. Every style is a function of `elapsed`.
+   * above a laptop's browser on Bluedit and a phone. While the current time crosses the event, the sites and the apps
+   * the user chose are blocked however often they are tried; before and after it, they open as usual. Every style is a
+   * function of `elapsed`.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -116,7 +115,7 @@
     </div>
   {/snippet}
   {#snippet browser()}
-    <WelcomeBlockerBrowser frame={blockerSingleTab(blockingBrowserPage(elapsed), blockingPageIn(elapsed))} />
+    <WelcomeBlockerBrowser frame={blockingBrowser(elapsed)} />
   {/snippet}
   {#snippet phone(phoneWidth, phoneHeight)}
     <WelcomeBlockerPhone

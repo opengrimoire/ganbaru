@@ -4,13 +4,13 @@ import {
   BLOCKING_DAY_VIEW,
   BLOCKING_EVENT,
   BLOCKING_STILL,
+  blockingBrowser,
   blockingBrowserPage,
   blockingClock,
   blockingEgogramTouch,
   blockingFocusing,
   blockingFocusRemaining,
   blockingNotice,
-  blockingPageIn,
   blockingPan,
   blockingPhoneApp,
   blockingPulse,
@@ -52,12 +52,30 @@ describe("welcome blocking scene", () => {
   });
 
   it("leaves the site open before and after the event, and blocks it during", () => {
-    expect(blockingBrowserPage(0).kind).toBe("feed");
+    expect(blockingBrowserPage(0)).toMatchObject({ kind: "feed", app: "bluedit" });
     expect(blockingBrowserPage(B.focusStart - 1).kind).toBe("feed");
     expect(blockingBrowserPage(B.focusStart)).toEqual({ kind: "block", app: "bluedit", reason: "focus", minutesLeft: 60 });
-    expect(blockingBrowserPage(B.focusEnd - 1)).toMatchObject({ kind: "block", reason: "focus" });
-    expect(blockingBrowserPage(B.focusEnd).kind).toBe("feed");
+    expect(blockingBrowserPage(B.focusEnd - 1)).toMatchObject({ kind: "block", app: "y", reason: "focus" });
+    expect(blockingBrowserPage(B.focusEnd)).toMatchObject({ kind: "feed", app: "y" });
     expect(blockingBrowserPage(B.end).kind).toBe("feed");
+  });
+
+  it("blocks Y's address typed into the browser during the event", () => {
+    expect(blockingBrowser(B.addressTap - 100).addressTouch).toBeGreaterThan(0);
+    expect(blockingBrowser(B.addressTap).address).toMatchObject({ kind: "typed", text: "" });
+    const typed = blockingBrowser(B.yTypeEnd);
+    expect(typed.address).toMatchObject({ kind: "typed", text: "y.com" });
+    expect(typed.page).toMatchObject({ kind: "block", app: "bluedit" });
+    expect(typed.tabs).toEqual([{ content: "blocked", active: true }]);
+    const loading = blockingBrowser(B.yLoadStart + 100);
+    expect(loading.address).toEqual({ kind: "host", host: "y.com" });
+    expect(loading.loading).toBeGreaterThan(0);
+    expect(loading.page).toMatchObject({ kind: "block", app: "bluedit" });
+    const blocked = blockingBrowser(B.yBlocked);
+    expect(blocked.page).toMatchObject({ kind: "block", app: "y", reason: "focus" });
+    expect(blocked.address).toEqual({ kind: "extension" });
+    expect(blocked.loading).toBe(0);
+    expect(blockingFocusing(B.yBlocked)).toBe(true);
   });
 
   it("says the minutes left in Focus as the timer rounds them", () => {
@@ -77,6 +95,17 @@ describe("welcome blocking scene", () => {
     expect(blockingFocusing(B.egogramTap)).toBe(true);
     expect(blockingPhoneApp(B.egogramHome + 1000)).toBeNull();
     expect(blockingNotice(B.egogramNotice + 1000)).toEqual({ app: "egogram", reason: "focus", shown: 1 });
+    for (const [tap, home] of [
+      [B.retryTap, B.retryHome],
+      [B.retryAgainTap, B.retryAgainHome],
+    ] as const) {
+      expect(blockingFocusing(home)).toBe(true);
+      expect(blockingEgogramTouch(tap - 100)).toBeGreaterThan(0);
+      expect(blockingPhoneApp(tap - 1)).toBeNull();
+      expect(blockingPhoneApp(tap + 300)).toMatchObject({ app: "egogram", scroll: 0 });
+      expect(blockingPhoneApp(home + 400)).toBeNull();
+    }
+    expect(blockingNotice(B.retryNotice + 1000)?.shown).toBe(1);
     expect(blockingNotice(B.focusEnd)).toBeNull();
     expect(blockingFocusing(B.egogramAgainTap)).toBe(false);
     expect(blockingPhoneApp(B.end)).toMatchObject({ app: "egogram", open: 1 });
@@ -86,17 +115,24 @@ describe("welcome blocking scene", () => {
   it("pulses the event only right after each block", () => {
     expect(blockingPulse(B.focusStart - 1)).toBe(0);
     expect(blockingPulse(B.focusStart + 100)).toBeGreaterThan(0);
-    expect(blockingPulse(B.egogramHome + 100)).toBeGreaterThan(0);
+    for (const beat of [B.yBlocked, B.egogramHome, B.retryHome, B.retryAgainHome]) {
+      expect(blockingPulse(beat - 1)).toBe(0);
+      expect(blockingPulse(beat + 100)).toBeGreaterThan(0);
+    }
     expect(blockingPulse(B.focusEnd)).toBe(0);
   });
 
   it("keeps every animated value between 0 and 1", () => {
     for (const elapsed of moments()) {
-      const page = blockingBrowserPage(elapsed);
+      const browser = blockingBrowser(elapsed);
+      const page = browser.page;
+      expect(browser.tabs).toHaveLength(1);
       const values = [
         blockingPan(elapsed),
         blockingPulse(elapsed),
-        blockingPageIn(elapsed),
+        browser.pageIn,
+        browser.loading,
+        browser.addressTouch,
         blockingEgogramTouch(elapsed),
         page.kind === "feed" ? page.scroll : 0,
         blockingPhoneApp(elapsed)?.open ?? 0,
@@ -113,7 +149,7 @@ describe("welcome blocking scene", () => {
   it("shows both devices blocked in its still", () => {
     expect(BLOCKING_STILL).toBeLessThan(B.end);
     expect(blockingBrowserPage(BLOCKING_STILL)).toMatchObject({ kind: "block", reason: "focus" });
-    expect(blockingPageIn(BLOCKING_STILL)).toBe(1);
+    expect(blockingBrowser(BLOCKING_STILL)).toMatchObject({ pageIn: 1, loading: 0, address: { kind: "extension" } });
     expect(blockingNotice(BLOCKING_STILL)?.shown).toBe(1);
     expect(blockingPhoneApp(BLOCKING_STILL)).toBeNull();
     expect(blockingPulse(BLOCKING_STILL)).toBe(0);

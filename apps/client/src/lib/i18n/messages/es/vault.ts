@@ -45,6 +45,8 @@ export const vaultSetup = {
       contributing: "Contribuir",
       license: "Licencia AGPL 3.0",
       security: "Seguridad",
+      securityPolicy: "Política de seguridad",
+      languages: "Lenguajes",
     },
   },
   stepProgress: (current: number, total: number) => `Paso ${current} de ${total}`,

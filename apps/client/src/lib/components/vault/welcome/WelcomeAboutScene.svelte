@@ -25,6 +25,7 @@
   import Shield from "@lucide/svelte/icons/shield";
   import Star from "@lucide/svelte/icons/star";
   import Users from "@lucide/svelte/icons/users";
+  import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM } from "$lib/platform";
   import {
@@ -49,7 +50,8 @@
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
-  const { t } = getLocalization();
+  const localization = getLocalization();
+  const { t } = localization;
 
   /** The window's frame, matching the other welcome scenes. */
   const BEZEL = 6;
@@ -82,18 +84,38 @@
   }
 
   const README: RepositoryLink = { icon: BookOpen, label: () => t("vaultSetup.about.repository.readme") };
+  const LICENSE: RepositoryLink = { icon: Scale, label: () => t("vaultSetup.about.repository.license") };
   const CODE_OF_CONDUCT: RepositoryLink = { icon: HeartHandshake, label: () => t("vaultSetup.about.repository.codeOfConduct") };
   const CONTRIBUTING: RepositoryLink = { icon: Users, label: () => t("vaultSetup.about.repository.contributing") };
-  const LICENSE: RepositoryLink = { icon: Scale, label: () => t("vaultSetup.about.repository.license") };
   const SECURITY: RepositoryLink = { icon: Shield, label: () => t("vaultSetup.about.repository.security") };
-  /** The sidebar lists every link in the repository host's order. */
-  const SIDEBAR_LINKS = [README, CODE_OF_CONDUCT, CONTRIBUTING, LICENSE, SECURITY];
-  /** The single column's footer keeps the readme and the license first, and shows the others only where they fit. */
-  const FOOTER_LINKS = [README, LICENSE, CODE_OF_CONDUCT, CONTRIBUTING, SECURITY];
+  const SECURITY_POLICY: RepositoryLink = { icon: Shield, label: () => t("vaultSetup.about.repository.securityPolicy") };
+
+  /** One language of the repository's code, with its share of the code and the color repository hosts give it. */
+  interface RepositoryLanguage {
+    name: string;
+    share: number;
+    color: string;
+  }
+
+  /** The repository's languages as its host reports them, largest first; a snapshot, not a live figure. */
+  const LANGUAGES: readonly RepositoryLanguage[] = [
+    { name: "Rust", share: 0.546, color: "#dea584" },
+    { name: "TypeScript", share: 0.288, color: "#3178c6" },
+    { name: "Svelte", share: 0.149, color: "#ff3e00" },
+    { name: "Kotlin", share: 0.009, color: "#a97bff" },
+    { name: "JavaScript", share: 0.007, color: "#f1e05a" },
+    { name: "CSS", share: 0.001, color: "#663399" },
+  ];
+  const LANGUAGE_SHARE: Intl.NumberFormatOptions = { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 };
 
   const canvasW = $derived(width - 2 * BEZEL);
   const canvasH = $derived(height - 2 * BEZEL);
   const wide = $derived(canvasW >= SIDEBAR_MIN_W);
+  /**
+   * The repository's documents, the readme and the license first. The sidebar names the security policy in full; the
+   * single column's footer shortens it and shows the documents after the license only where they fit.
+   */
+  const links = $derived([README, LICENSE, CODE_OF_CONDUCT, CONTRIBUTING, wide ? SECURITY_POLICY : SECURITY]);
   const page = $derived(aboutPage(elapsed));
   const touch = $derived(aboutTouch(elapsed));
   const press = $derived(aboutPress(elapsed));
@@ -230,13 +252,30 @@
           </div>
 
           {#if wide}
-            <!-- The sidebar: placeholder bars for the description, then the repository's documents. -->
-            <div class="flex w-40 shrink-0 flex-col gap-3 pt-1 text-[11px] text-muted-foreground">
+            <!-- The sidebar: placeholder bars for the description, the repository's documents, and its languages. -->
+            <div class="flex w-48 shrink-0 flex-col gap-2.5 overflow-hidden pt-1 text-[11px] text-muted-foreground">
               <div class="flex flex-col gap-2">
                 {#each DESCRIPTION_WIDTHS as fraction, index (index)}{@render bar("", fraction)}{/each}
               </div>
-              <div class="flex flex-col gap-2.5">
-                {#each SIDEBAR_LINKS as item, index (index)}{@render link(item)}{/each}
+              <div class="flex flex-col gap-2">
+                {#each links as item, index (index)}{@render link(item)}{/each}
+              </div>
+              <div class="flex flex-col gap-1.5 border-t border-border pt-3">
+                <span class="text-[12px] font-semibold text-foreground">{t("vaultSetup.about.repository.languages")}</span>
+                <span class="flex h-1.5 gap-px overflow-hidden rounded-full" aria-hidden="true">
+                  {#each LANGUAGES as language (language.name)}
+                    <span class="min-w-px" style:flex-grow={language.share} style:background-color={language.color}></span>
+                  {/each}
+                </span>
+                <span class="flex flex-wrap gap-x-2.5 gap-y-1 text-[10px]">
+                  {#each LANGUAGES as language (language.name)}
+                    <span class="flex items-center gap-1 whitespace-nowrap">
+                      <span class="size-1.5 rounded-full" style:background-color={language.color}></span>
+                      <span class="font-semibold text-foreground">{language.name}</span>
+                      {formatNumber(localization.locale, language.share, LANGUAGE_SHARE)}
+                    </span>
+                  {/each}
+                </span>
               </div>
             </div>
           {/if}
@@ -245,7 +284,7 @@
         {#if !wide}
           <!-- The readme and license always show; the other documents wrap out of sight when there is no room for them. -->
           <div class="flex h-4 shrink-0 flex-wrap gap-x-4 gap-y-2 overflow-hidden text-[11px] text-muted-foreground">
-            {#each FOOTER_LINKS as item, index (index)}{@render link(item)}{/each}
+            {#each links as item, index (index)}{@render link(item)}{/each}
           </div>
         {/if}
       </div>

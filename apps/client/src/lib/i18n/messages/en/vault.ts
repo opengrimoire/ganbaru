@@ -37,6 +37,8 @@ export const vaultSetup = {
       contributing: "Contributing",
       license: "AGPL 3.0 license",
       security: "Security",
+      securityPolicy: "Security policy",
+      languages: "Languages",
     },
   },
   stepProgress: (current: number, total: number) => `Step ${current} of ${total}`,

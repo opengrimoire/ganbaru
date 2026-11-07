@@ -32,6 +32,7 @@
     type Theme,
   } from "$lib/themes";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import type { TimedEventDragStartOptions } from "./timed-event-drag-controller.svelte";
 
   const { t } = getLocalization();
 
@@ -81,7 +82,12 @@
     mobileLayout?: boolean;
     onEventClick: (event: CalendarEvent, rect?: DOMRect) => void;
     onEventPrefetch?: (event: CalendarEvent) => void;
-    onDragStart: (eventId: string, e: PointerEvent, forceEdge?: "resize-top" | "resize-bottom") => void;
+    onDragStart: (
+      eventId: string,
+      e: PointerEvent,
+      forceEdge?: "resize-top" | "resize-bottom",
+      options?: TimedEventDragStartOptions,
+    ) => void;
     onCreateStart: (dateStr: string, timing: CreateStartTiming, e: PointerEvent) => void;
     isActiveEvent?: (event: CalendarEvent) => boolean;
     isEventLocked?: (eventId: string) => boolean;
@@ -171,6 +177,24 @@
       return end >= minMinute && start <= maxMinute;
     });
   });
+
+  /** The edited event, at its dragged position while it moves, that shows touch resize knobs on mobile. */
+  const mobileKnobTarget = $derived.by(() => {
+    if (!mobileLayout || !allowPointerEditing || !editingId) return null;
+    return layoutedPreviews.find((pos) => pos.event.id === editingId)
+      ?? renderedPositioned.find((pos) => pos.event.id === editingId)
+      ?? null;
+  });
+
+  function handleMobileKnobPointerDown(
+    eventId: string,
+    edge: "resize-top" | "resize-bottom",
+    e: PointerEvent,
+  ): void {
+    if (e.button !== 0 || draggingEventId) return;
+    e.stopPropagation();
+    onDragStart(eventId, e, edge, { immediate: true });
+  }
 
   const pomodoro = getPomodoro();
   const calendarZoom = useCalendarZoom();
@@ -734,6 +758,38 @@
     </div>
   {/each}
 
+  <!-- Touch resize knobs on the edited event: a finger on a knob resizes at once, without the long press. -->
+  {#if mobileKnobTarget}
+    {@const knobPosition = mobileKnobTarget}
+    {@const knobColor = getEventColor(knobPosition.event.color, theme).bg}
+    <div
+      class="pointer-events-none absolute"
+      aria-hidden="true"
+      style="
+        top: calc({knobPosition.startMinute} / 60 * var(--hour-h) * 1px);
+        height: calc({knobPosition.durationMinutes} / 60 * var(--hour-h) * 1px);
+        left: {knobPosition.left}%;
+        width: {knobPosition.width}%;
+        z-index: 47;
+        --knob-color: {knobColor};
+      "
+    >
+      {#if !knobPosition.isClippedTop}
+        <div
+          class="mobile-resize-knob pointer-events-auto absolute top-0 left-0"
+          onpointerdown={(e) => handleMobileKnobPointerDown(knobPosition.event.id, "resize-top", e)}
+        ></div>
+      {/if}
+      {#if !knobPosition.isClippedBottom}
+        <div
+          class="mobile-resize-knob pointer-events-auto absolute right-0 bottom-0"
+          data-edge="bottom"
+          onpointerdown={(e) => handleMobileKnobPointerDown(knobPosition.event.id, "resize-bottom", e)}
+        ></div>
+      {/if}
+    </div>
+  {/if}
+
   <!-- Create preview (new event being drawn, layout-aware) -->
   {#if createPreview && layoutedCreatePreview}
     {@const previewPosition = layoutedCreatePreview}
@@ -772,6 +828,27 @@
   </div>
 
 <style>
+  /* A touch-sized hit area centered on the event edge around a small visible dot. */
+  .mobile-resize-knob {
+    width: 2.75rem;
+    height: 2.75rem;
+    margin: -1.375rem -0.5rem;
+    touch-action: none;
+  }
+
+  .mobile-resize-knob::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0.875rem;
+    height: 0.875rem;
+    border-radius: 9999px;
+    background-color: var(--cal-bg);
+    border: 2px solid var(--knob-color);
+    transform: translate(-50%, -50%);
+  }
+
   .preview-outline {
     position: absolute;
     outline: 2px solid color-mix(in oklab, var(--event-bg) 65%, var(--outline-mix));

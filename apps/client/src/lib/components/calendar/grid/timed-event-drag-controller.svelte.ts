@@ -43,6 +43,11 @@ export interface CreateStartTiming {
   clickMinute: number;
 }
 
+export interface TimedEventDragStartOptions {
+  /** Start a touch drag at once instead of after the long press, for dedicated touch handles. */
+  immediate?: boolean;
+}
+
 export interface TimedEventDragControllerConfig {
   events: () => CalendarEvent[];
   hourHeight: () => number;
@@ -198,7 +203,12 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
     return isPendingCreateEventId(eventId) || !config.isEventLocked?.(eventId);
   }
 
-  function handleDragStart(eventId: string, e: PointerEvent, forceEdge?: "resize-top" | "resize-bottom") {
+  function handleDragStart(
+    eventId: string,
+    e: PointerEvent,
+    forceEdge?: "resize-top" | "resize-bottom",
+    options: TimedEventDragStartOptions = {},
+  ) {
     if (!canStartDrag(eventId, forceEdge)) return;
     if (config.mobileLayout() && e.pointerType === "touch") {
       touchHold.begin(e, () => {
@@ -207,7 +217,7 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
           return;
         }
         config.onTouchEditStart?.();
-      });
+      }, { immediate: options.immediate });
       return;
     }
     beginDragStart(eventId, e, forceEdge);

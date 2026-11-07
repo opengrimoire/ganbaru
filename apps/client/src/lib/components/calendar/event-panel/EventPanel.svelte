@@ -1769,13 +1769,13 @@
   }
 
   /*
-   * The collapsed strip ends the sheet while it is collapsed: the title sits below the grabber, and the strip is at
-   * least as tall as the bottom tab bar so the sheet covers that bar fully.
+   * The collapsed strip ends the sheet while it is collapsed. It is as tall as the bottom tab bar, even while the
+   * keyboard hides that bar, and the title is centered in the space below the chevron.
    */
   .sheet-collapsed-title {
-    padding-top: var(--sheet-grabber-block);
-    padding-bottom: 0.5rem;
-    min-height: var(--mobile-bottom-chrome-h);
+    padding-top: calc(var(--sheet-grabber-block) + 0.25rem);
+    padding-bottom: 0.25rem;
+    min-height: var(--mobile-bottom-nav-h);
   }
 
   /* The grabber is two overlapping halves that bend at the center into an up chevron while the sheet is collapsed. */

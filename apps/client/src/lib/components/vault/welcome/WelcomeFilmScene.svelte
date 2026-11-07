@@ -29,7 +29,7 @@
    * How much of the day shows: the whole session at least, and on through the afternoon's events in a tall room such
    * as a phone's, where the drawing's width is already at its smallest and only more hours can fill the height.
    */
-  const MIN_VIEW_MINUTES = 330;
+  const MIN_VIEW_MINUTES = 315;
   const MAX_VIEW_MINUTES = 570;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
 
@@ -162,8 +162,8 @@
   /** The Calendar's pulse on a break that is running. */
   const BREAK_PULSE_MS = 1500;
 
-  /** The session starts at half past eight: the drawn event, then the planned one right after it until lunch. */
-  const SESSION_START = 8 * 60 + 30;
+  /** The session starts at eight: the drawn event, then the planned one right after it. */
+  const SESSION_START = 8 * 60;
   const DRAWN_END = SESSION_START + FILM_DRAWN_MINUTES;
   const SESSION_END = SESSION_START + FILM_SESSION_MINUTES;
   /** The planned event's breaks while it has its rail to itself. */
@@ -209,7 +209,7 @@
   const MUSIC_ICONS: readonly FilmIcon[] = ["music"];
   const MEETING_ICONS: readonly FilmIcon[] = ["repeat", "meeting"];
 
-  /** Lunch, at the same hour every day of the week, right as the film's session ends. */
+  /** Lunch, at the same hour every day of the week, a little after the film's session ends. */
   const LUNCH: FilmEvent = { start: 13 * 60, end: 14 * 60, color: EATING, title: "lunch", icons: REPEAT_ICONS };
   /** The team meeting on Monday, Wednesday, and Friday afternoons, and the gym on Tuesday and Thursday evenings. */
   const MEETING: FilmEvent = { start: 14 * 60, end: 15 * 60, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS };
@@ -259,7 +259,7 @@
   ];
 
   /**
-   * The film's own day: the session drawn on it, the planned event right after it until lunch, then an afternoon with
+   * The film's own day: the session drawn on it, the planned event right after it, lunch, then an afternoon with
    * no more Focus, so the planned event completes the day's Focus.
    */
   const FILM_DAY: readonly FilmEvent[] = [

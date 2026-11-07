@@ -11,6 +11,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { normalizedDateRange } from "$lib/calendar/date-range-selection";
   import { workCycleRangeForDate } from "$lib/calendar/utils";
+  import { touchSwipeDirection } from "$lib/utils/touch-hold";
   import { TOUCH_PICKERS } from "./picker-presentation";
 
   const WEEKDAY_HEADER_DATES = [
@@ -100,6 +101,8 @@
   let yearPageStart = $state(initYear - 4);
   let previousSelectedDate = $state<string | undefined>();
   let wheelCooldown = false;
+  let swipeStart: { pointerId: number; x: number; y: number } | null = null;
+  let swiped = false;
   let pickerEl: HTMLDivElement | undefined = $state();
   let headerButtonEl: HTMLButtonElement | undefined = $state();
 
@@ -271,15 +274,8 @@
     else pickerMode = "days";
   }
 
-  function handleWheel(e: WheelEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    if (wheelCooldown) return;
-    if (Math.abs(e.deltaY) < 5) return;
-    wheelCooldown = true;
-
-    const delta = e.deltaY > 0 ? 1 : -1;
-
+  /** Moves to the next or previous page of the current view: a month of days, a year of months, or a page of years. */
+  function stepPage(delta: 1 | -1) {
     if (pickerMode === "days") {
       if (delta > 0) nextMonth();
       else prevMonth();
@@ -289,8 +285,41 @@
     } else {
       yearPageStart += delta * 12;
     }
+  }
 
+  function handleWheel(e: WheelEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (wheelCooldown) return;
+    if (Math.abs(e.deltaY) < 5) return;
+    wheelCooldown = true;
+    stepPage(e.deltaY > 0 ? 1 : -1);
     setTimeout(() => { wheelCooldown = false; }, 300);
+  }
+
+  function handleSwipeStart(e: PointerEvent) {
+    // A swipe that ended over a different element than it started on produces no click to consume the flag.
+    swiped = false;
+    if (e.pointerType === "mouse" || !e.isPrimary) return;
+    swipeStart = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+  }
+
+  /** A swipe left or up turns to the next page and right or down to the previous one, like dragging the page away. */
+  function handleSwipeEnd(e: PointerEvent) {
+    if (!swipeStart || swipeStart.pointerId !== e.pointerId) return;
+    const direction = touchSwipeDirection(e.clientX - swipeStart.x, e.clientY - swipeStart.y);
+    swipeStart = null;
+    if (!direction) return;
+    swiped = true;
+    stepPage(direction === "left" || direction === "up" ? 1 : -1);
+  }
+
+  /** The press that ends a swipe must not also pick the day or month under the finger. */
+  function suppressClickAfterSwipe(e: MouseEvent) {
+    if (!swiped) return;
+    swiped = false;
+    e.preventDefault();
+    e.stopPropagation();
   }
 
   function handleHeaderEnter() {
@@ -568,7 +597,9 @@
 </div>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div data-picker-grid onwheel={handleWheel}>
+<div data-picker-grid class={touch ? "touch-none" : undefined} onwheel={handleWheel}
+  onpointerdown={handleSwipeStart} onpointerup={handleSwipeEnd} onpointercancel={() => { swipeStart = null; }}
+  onclickcapture={suppressClickAfterSwipe}>
   {#if pickerMode === "days"}
     <div class="grid grid-cols-7 gap-x-0 text-center">
       {#each dayLetters as letter}

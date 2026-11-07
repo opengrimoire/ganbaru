@@ -8,8 +8,32 @@ export interface TouchHoldOptions {
   onTap?: (event: PointerEvent) => void;
 }
 
+/** Finger travel along one axis that makes a touch a swipe. */
+export const TOUCH_SWIPE_MIN_PX = 40;
+/** How much a swipe must favor one axis over the other; a stroke near 45 degrees has no reliable direction. */
+const TOUCH_SWIPE_AXIS_RATIO = 1.5;
+
+/** The way a finger moved across the screen. */
+export type TouchSwipeDirection = "left" | "right" | "up" | "down";
+
 export function touchMovedBeyondSlop(deltaX: number, deltaY: number): boolean {
   return Math.hypot(deltaX, deltaY) > TOUCH_SLOP_PX;
+}
+
+/**
+ * Reads a finished touch as a swipe along its dominant axis.
+ *
+ * @param deltaX Horizontal travel from the press, positive to the right.
+ * @param deltaY Vertical travel from the press, positive downward.
+ * @returns The swipe direction, or null when the travel is too short or too diagonal to tell.
+ */
+export function touchSwipeDirection(deltaX: number, deltaY: number): TouchSwipeDirection | null {
+  const horizontal = Math.abs(deltaX);
+  const vertical = Math.abs(deltaY);
+  if (Math.max(horizontal, vertical) < TOUCH_SWIPE_MIN_PX) return null;
+  if (horizontal > vertical * TOUCH_SWIPE_AXIS_RATIO) return deltaX < 0 ? "left" : "right";
+  if (vertical > horizontal * TOUCH_SWIPE_AXIS_RATIO) return deltaY < 0 ? "up" : "down";
+  return null;
 }
 
 /**

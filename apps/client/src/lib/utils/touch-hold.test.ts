@@ -3,6 +3,7 @@ import {
   TOUCH_LONG_PRESS_MS,
   TouchHoldArbiter,
   touchMovedBeyondSlop,
+  touchSwipeDirection,
 } from "./touch-hold";
 
 function pointerEvent(
@@ -40,6 +41,18 @@ describe("touch hold arbitration", () => {
   it("keeps small pointer drift below touch slop", () => {
     expect(touchMovedBeyondSlop(6, 6)).toBe(false);
     expect(touchMovedBeyondSlop(11, 0)).toBe(true);
+  });
+
+  it("reads a swipe along its dominant axis", () => {
+    expect(touchSwipeDirection(-60, 10)).toBe("left");
+    expect(touchSwipeDirection(60, -10)).toBe("right");
+    expect(touchSwipeDirection(5, -50)).toBe("up");
+    expect(touchSwipeDirection(-5, 50)).toBe("down");
+  });
+
+  it("ignores short and diagonal strokes", () => {
+    expect(touchSwipeDirection(-30, 0)).toBeNull();
+    expect(touchSwipeDirection(50, 45)).toBeNull();
   });
 
   it("activates a stationary hold and owns later touch movement", () => {

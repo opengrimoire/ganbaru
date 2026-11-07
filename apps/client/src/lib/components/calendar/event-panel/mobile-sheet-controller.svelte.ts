@@ -22,8 +22,6 @@ const MAX_SAMPLES = 8;
 const REVEAL_MARGIN_PX = 16;
 /** Space left above a fully open sheet so the page edge stays visible behind it. */
 export const EVENT_PANEL_SHEET_TOP_GAP = "0.5rem";
-/** Room kept outside the sheet's sides and top when clipping its hidden part, so its shadow still draws. */
-const SHADOW_CLIP_ALLOWANCE_PX = 16;
 
 export interface EventPanelSheetOptions {
   /** Whether the panel is a mobile bottom sheet; the controller does nothing otherwise. */
@@ -195,20 +193,36 @@ export class EventPanelSheetController {
   }
 
   /**
-   * Inline position of the sheet: fixed between the top safe area and the system navigation (or the keyboard), moved
-   * down by its hidden part, which is clipped so the sheet never draws over the navigation buttons.
+   * Inline style of the frame that holds the sheet: the visible viewport down to the system navigation (or the
+   * keyboard), clipping the sheet's hidden part so it never draws over the navigation buttons. The frame never moves,
+   * so the clip stays still while the sheet's transform animates on the compositor; animating a clip alongside the
+   * transform runs on another thread and lets the sheet's bottom edge lag above the navigation for a few frames.
    */
-  get style(): string {
-    const offset = Math.max(0, this.fullHeight - this.visibleHeight);
+  get frameStyle(): string {
     return [
       "position:fixed",
       "z-index:50",
-      "left:calc(var(--visual-viewport-offset-left) + var(--safe-area-left))",
-      `top:calc(var(--visual-viewport-offset-top) + var(--safe-area-top) + ${EVENT_PANEL_SHEET_TOP_GAP})`,
+      "left:var(--visual-viewport-offset-left)",
+      "top:var(--visual-viewport-offset-top)",
+      "width:var(--visual-viewport-width)",
+      "height:calc(var(--visual-viewport-height) - var(--safe-area-bottom))",
+      "overflow:clip",
+      "pointer-events:none",
+      "",
+    ].join("; ");
+  }
+
+  /** Inline position of the sheet inside its frame: below the top safe area, moved down by its hidden part. */
+  get style(): string {
+    const offset = Math.max(0, this.fullHeight - this.visibleHeight);
+    return [
+      "position:absolute",
+      "pointer-events:auto",
+      "left:var(--safe-area-left)",
+      `top:calc(var(--safe-area-top) + ${EVENT_PANEL_SHEET_TOP_GAP})`,
       "width:calc(var(--visual-viewport-width) - var(--safe-area-left) - var(--safe-area-right))",
       `height:calc(var(--visual-viewport-height) - var(--safe-area-top) - var(--safe-area-bottom) - ${EVENT_PANEL_SHEET_TOP_GAP})`,
       `transform:translate3d(0, ${offset}px, 0)`,
-      `clip-path:inset(-${SHADOW_CLIP_ALLOWANCE_PX}px -${SHADOW_CLIP_ALLOWANCE_PX}px ${offset}px -${SHADOW_CLIP_ALLOWANCE_PX}px)`,
       "",
     ].join("; ");
   }

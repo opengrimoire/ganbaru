@@ -738,6 +738,8 @@
   const panelStyle = $derived(geometry.style);
   const parkedPanelStyle = $derived(geometry.parkedStyle);
   const activePanelStyle = $derived(mobileLayout ? sheet.style : panelStyle);
+  /** The phone sheet sits in a still frame unless parked, which keeps its own off-screen position. */
+  const sheetFramed = $derived(mobileLayout && !parked);
   const panelPositionReady = $derived(geometry.positionReady && (!mobileLayout || sheet.ready));
 
 
@@ -1056,619 +1058,601 @@
   });
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<div
-  bind:this={geometry.panelEl}
-  class={cn("panel-root flex flex-col", mobileLayout && !parked && "rounded-t-floating")}
-  data-layout={activePanelLayout}
-  data-mobile={mobileLayout || undefined}
-  data-sheet-animating={mobileLayout && sheet.animating ? "true" : undefined}
-  data-readonly={controlsDisabled || undefined}
-  data-parked={parked || undefined}
-  aria-hidden={parked || undefined}
-  style="box-shadow: 0 0 2px 0px var(--panel-edge), 0 1px 2px var(--panel-shadow); {parked ? parkedPanelStyle : activePanelStyle} background-color: var(--panel-bg); visibility: {session.initialized && panelPositionReady && !parked ? 'visible' : 'hidden'};"
-  onclick={handlePanelClick}
-  onkeydown={handlePanelArrowKeydown}
->
-  {#if mobileLayout && !parked}
-  <!-- Sheet header: dragging it moves the sheet, and it keeps close, delete, and save reachable at every height.
-       While the event is edited on the grid, the grabber bends into an up chevron over the event title, and the sheet
-       collapses to that strip so the details visibly wait below. -->
-  <div
-    bind:this={sheetHeaderEl}
-    class="sheet-header sticky top-0 z-10 shrink-0 touch-none"
-    data-collapsed={gridEditing || undefined}
-    style="background-color: var(--panel-bg);"
-  >
-    <div class="sheet-grabber-block flex items-center justify-center" aria-hidden="true">
-      <div class="sheet-grabber">
-        <span class="sheet-grabber-half sheet-grabber-start"></span>
-        <span class="sheet-grabber-half sheet-grabber-end"></span>
-      </div>
-    </div>
-    <div
-      bind:this={sheetDipEndEl}
-      class="sheet-collapsed-title pointer-events-none absolute inset-x-0 top-0 flex items-center justify-center px-4 text-[0.866667rem] font-medium"
-      aria-hidden={!gridEditing || undefined}
-    >
-      <span class="min-w-0 truncate">{session.title.trim() || t("calendar.event.noTitle")}</span>
-    </div>
-    <div class="sheet-actions flex items-center gap-1 px-1" inert={gridEditing}>
-      <button
-        type="button"
-        aria-label={t("common.close")}
-        onclick={onClose}
-        class="panel-chrome flex h-12 w-12 shrink-0 items-center justify-center rounded-floating-item text-muted-foreground active:bg-accent"
-      >
-        <X size={22} aria-hidden="true" />
-      </button>
-      <div class="flex-1"></div>
-      {#if readOnly
-        && !allowPomodoroWhenReadOnly
-        && !(allowDeleteWhenReadOnly && mode === "edit" && (onDelete || onEndEvent) && event)}
-        <span class="px-3 text-[0.8rem] text-muted-foreground/70">{t("calendar.eventPanel.readOnly")}</span>
-      {:else}
-        {#if mode === "edit" && (onDelete || onEndEvent) && event}
-          {@const deleteArmed = actions.deleteArmed && (!deleteEndsEvent || inlineEndEventConfirm)}
-          <button
-            type="button"
-            data-event-panel-delete-action
-            onclick={() => (deleteArmed ? actions.confirmArmedDelete() : actions.armOrConfirmDelete())}
-            disabled={deleteControlsDisabled}
-            aria-label={deleteArmed ? armedDeleteLabel : deleteActionLabel}
-            class={cn(
-              "readonly-interactive flex h-12 shrink-0 items-center justify-center",
-              deleteArmed ? "px-1" : "w-12 rounded-floating-item text-muted-foreground active:bg-accent",
-            )}
-          >
-            <span class={cn(
-              "flex items-center gap-2",
-              deleteArmed && "rounded-floating-item bg-action-danger-armed px-3 py-2 text-[0.866667rem] text-action-danger-armed-foreground",
-            )}>
-              {#if deleteEndsEvent}
-                <Scissors size={18} strokeWidth={1.8} aria-hidden="true" />
-              {:else if deleteAction === "archive"}
-                <Archive size={18} strokeWidth={1.8} aria-hidden="true" />
-              {:else}
-                <Trash2 size={18} strokeWidth={1.8} aria-hidden="true" />
-              {/if}
-              {#if deleteArmed}<span>{armedDeleteLabel}</span>{/if}
-            </span>
-          </button>
-        {/if}
-        {#if !(readOnly && !allowPomodoroWhenReadOnly)}
-          <button
-            type="button"
-            onclick={handleSave}
-            disabled={saveControlsDisabled}
-            class={cn("flex h-12 shrink-0 items-center pl-1 pr-3", pomodoroReadOnlyInteractive && "readonly-interactive")}
-          >
-            <!-- The sheet's Save is a neutral pill, unlike the desktop panel's confirm color. -->
-            <span
-              class={cn(
-                "rounded-full px-6 py-2 text-[0.866667rem] font-medium transition-colors",
-                saveReady ? "bg-foreground text-background" : "text-muted-foreground",
-              )}
-              style:background-color={saveReady ? undefined : "var(--panel-contrast)"}
-            >
-              {t("common.save")}
-            </span>
-          </button>
-        {/if}
-      {/if}
-    </div>
-  </div>
-  {:else}
-  <!-- Drag handle bar -->
+<!-- The phone sheet slides inside a still frame that ends above the system navigation; desktop has no frame. -->
+<div class={cn(!sheetFramed && "contents")} style={sheetFramed ? sheet.frameStyle : undefined}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
-    class={cn(
-      "sticky top-0 z-10 flex items-center pl-4 pr-2",
-      panelCanDrag ? "cursor-grab active:cursor-grabbing" : "cursor-default",
-    )}
-    style="background-color: var(--sidebar);"
-    onpointerdown={(event) => {
-      if (panelCanDrag) geometry.handleDragStart(event);
-    }}
-    onpointermove={(event) => {
-      if (panelCanDrag) geometry.handleDragMove(event);
-    }}
-    onpointerup={() => {
-      if (panelCanDrag) geometry.handleDragEnd();
-    }}
-    onpointercancel={() => {
-      if (panelCanDrag) geometry.handleDragEnd();
-    }}
-    onlostpointercapture={() => {
-      if (panelCanDrag) geometry.handleDragEnd();
-    }}
+    bind:this={geometry.panelEl}
+    class={cn("panel-root flex flex-col", mobileLayout && !parked && "rounded-t-floating")}
+    data-layout={activePanelLayout}
+    data-mobile={mobileLayout || undefined}
+    data-sheet-animating={mobileLayout && sheet.animating ? "true" : undefined}
+    data-readonly={controlsDisabled || undefined}
+    data-parked={parked || undefined}
+    aria-hidden={parked || undefined}
+    style="box-shadow: 0 0 2px 0px var(--panel-edge), 0 1px 2px var(--panel-shadow); {parked ? parkedPanelStyle : activePanelStyle} background-color: var(--panel-bg); visibility: {session.initialized && panelPositionReady && !parked ? 'visible' : 'hidden'};"
+    onclick={handlePanelClick}
+    onkeydown={handlePanelArrowKeydown}
   >
-    <div class="flex flex-1 items-center justify-center py-2.5">
-      <div class="h-[1.5px] w-9 bg-muted-foreground/50"></div>
-    </div>
-  </div>
-  {/if}
-
-  <div
-    class={cn(
-      "relative min-h-0",
-      isBodyConstrained ? "flex-1 overflow-hidden" : "shrink-0",
-    )}
-  >
+    {#if mobileLayout && !parked}
+    <!-- Sheet header: dragging it moves the sheet, and it keeps close, delete, and save reachable at every height.
+         While the event is edited on the grid, the grabber bends into an up chevron over the event title, and the sheet
+         collapses to that strip so the details visibly wait below. -->
     <div
-      bind:this={geometry.scrollEl}
-      class={cn(
-        "event-panel-scroll hide-scrollbar overscroll-contain",
-        isBodyConstrained ? "h-full overflow-y-auto" : "overflow-visible",
-      )}
+      bind:this={sheetHeaderEl}
+      class="sheet-header sticky top-0 z-10 shrink-0 touch-none"
+      data-collapsed={gridEditing || undefined}
+      style="background-color: var(--panel-bg);"
     >
-    <div bind:this={geometry.contentEl}>
-    <!-- Main editor: title + date -->
-    <div class={cn("shrink-0 px-4", !mobileLayout && "pt-2.5")}>
-
-    <!-- Scope selector (recurring events only) -->
-    {#if isRecurring}
-      <div class="relative top-0.5 mb-2 grid grid-cols-3 overflow-hidden rounded-sm bg-event-panel-contrast p-0.5 text-[0.733333rem]"
-        role="radiogroup"
-        aria-label={t("calendar.eventPanel.applyChangesTo")}>
-        {#each scopeOptions as option, index}
-          <button
-            role="radio"
-            aria-checked={session.scope === option.value}
-            onclick={() => handleScopeClick(option.value)}
-            onfocus={() => { scopeFocusIndex = index; }}
-            onkeydown={(e) => handlePanelRovingKeydown(e, "scope", index, scopeOptions.length)}
-            data-panel-roving="scope"
-            data-roving-index={index}
-            tabindex={scopeFocusIndex === index ? 0 : -1}
-            disabled={scopeControlsDisabled}
-            class={cn(
-              "readonly-interactive flex min-w-0 items-center justify-center rounded px-2 py-1 text-center font-semibold",
-              session.scope === option.value
-                ? "bg-action-confirm text-action-confirm-foreground"
-                : "text-event-panel-input-text/70",
-            )}
-          >
-            <span class="translate-y-[0.5px]">{option.label}</span>
-          </button>
-        {/each}
+      <div class="sheet-grabber-block flex items-center justify-center" aria-hidden="true">
+        <div class="sheet-grabber">
+          <span class="sheet-grabber-half sheet-grabber-start"></span>
+          <span class="sheet-grabber-half sheet-grabber-end"></span>
+        </div>
       </div>
-    {/if}
-
-    <!-- Title + color circle -->
-    <div class="relative top-0.5 flex items-center gap-2.5 px-1">
-      <div class="title-wrapper relative min-w-0 flex-1">
-        <input
-          bind:this={titleInput}
-          type="text"
-          bind:value={session.title}
-          placeholder={t("calendar.eventPanel.titlePlaceholder")}
-          disabled={controlsDisabled || titleEditBlocked}
-          class="w-full bg-transparent py-0.5 text-[1rem] font-semibold text-foreground outline-none placeholder:text-event-panel-placeholder"
-          oninput={() => session.emitChange()}
-          onkeydown={handleInputKeydown}
-        />
-      </div>
-      <div class="event-identity-controls flex items-center {mobileLayout ? 'gap-1' : 'gap-2.5'}">
-        <ProjectSelector
-          selectedProjectId={session.projectId}
-          disabled={controlsDisabled}
-          {mobileLayout}
-          onSelect={handleProjectSelect}
-          onCreate={handleProjectCreate}
-        />
-        {#if !controlsDisabled}
-          <EventColorPicker
-            color={session.color}
-            theme={theme.current}
-            {mobileLayout}
-            buttonClass="event-identity-trigger"
-            onSelect={(color) => {
-              session.color = color;
-              session.emitChange();
-            }}
-          />
-        {/if}
-      </div>
-    </div>
-    <hr class="border-event-panel-divider mx-1 mt-0.5" />
-
-    <div class="mt-1.5 flex flex-col gap-px px-1">
-      <!-- Date + time -->
       <div
-        bind:this={sheetPeekEndEl}
-        class="date-time-grid relative text-[0.866667rem] leading-none"
-        data-stacked={isDateTimeStacked || undefined}
+        bind:this={sheetDipEndEl}
+        class="sheet-collapsed-title pointer-events-none absolute inset-x-0 top-0 flex items-center justify-center px-4 text-[0.866667rem] font-medium"
+        aria-hidden={!gridEditing || undefined}
       >
-      <!-- Start date -->
-      <div class="relative z-1 min-w-0 justify-self-start">
-        <button bind:this={dateTime.startDateButton}
-          onclick={() => dateTime.toggleDatePicker("start", "pointer")}
-          onkeydown={(e) => dateTime.handleDateButtonKeydown(e, "start")}
-          disabled={startControlsDisabled}
-          class={cn(
-            "date-chip max-w-full rounded py-0.5 text-event-panel-input-text",
-            disabledAffordanceClass(startDisabledAffordance),
-            startControlsDisabled
-              ? ""
-              : dateTime.startDatePickerOpen
-                ? "ring-1 ring-primary/60"
-                : "hover:bg-black/5 dark:hover:bg-black/15",
-          )}>
-          {shortDate}
-        </button>
-
-        <!-- Floating start date picker -->
-        {#if dateTime.startDatePickerOpen}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="fixed inset-0 z-19" onclick={() => { dateTime.startDatePickerOpen = false; }}></div>
-          <div class="absolute left-0 top-full z-20 mt-1 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60">
-            <MiniDatePicker
-              selectedDate={session.startDate}
-              rangeStartDate={session.startDate}
-              rangeEndDate={session.endDate}
-              highlightToday={false}
-              activeHighlight="primary"
-              onSelect={(date, source) => dateTime.selectDate("start", date, source)}
-              onCancel={(source) => dateTime.cancelDatePicker("start", source)}
-            />
-          </div>
-        {/if}
+        <span class="min-w-0 truncate">{session.title.trim() || t("calendar.event.noTitle")}</span>
       </div>
-
-      <!-- Time group, visually hidden when all-day so the date grid keeps its shape. -->
-      <div
-        class="time-group relative {dateTime.timePickerTarget ? 'z-20' : 'z-2'} flex items-center justify-center gap-1.5 py-0.5"
-        class:invisible={session.allDay}
-        class:pointer-events-none={session.allDay}
-        aria-hidden={session.allDay}
-      >
-        <span
-          class="time-input-shell relative z-30 rounded text-center text-event-panel-input-text
-            {preferences.calendarTimeFormat === '12h' ? 'text-[0.8rem]' : 'text-[0.866667rem]'}
-            {startTimeShellStateClass()}"
-          data-value={dateTime.timeInputMirrorValue("start")}>
-          <input bind:this={dateTime.startTimeInput}
-            type="text"
-            data-panel-arrow-nav="true"
-            inputmode={preferences.calendarTimeFormat === "12h" ? "text" : "numeric"}
-            onbeforeinput={(event) => dateTime.handleTimeBeforeInput(event)}
-            oninput={(event) => dateTime.handleTimeDraftInput(event, "start")}
-            onblur={() => dateTime.commitTimeInput("start")}
-            onclick={() => dateTime.handleTimeInputClick("start")}
-            disabled={startControlsDisabled || session.allDay}
-            maxlength={preferences.calendarTimeFormat === "12h" ? 7 : 5}
-            placeholder={preferences.calendarTimeFormat === "12h" ? "h:mmam" : "HH:MM"}
-            class={cn(
-              "time-input bg-transparent px-0 py-0.5 text-center outline-none",
-              disabledAffordanceClass(startDisabledAffordance),
-            )}
-            value={dateTime.timeInputDisplayValue("start")}
-            onkeydown={(event) => dateTime.handleTimeInputKeydown(event, "start")} />
-        </span>
-        <span class="text-muted-foreground/60">-</span>
-        <span
-          class="time-input-shell relative z-30 rounded text-center text-event-panel-input-text
-            {preferences.calendarTimeFormat === '12h' ? 'text-[0.8rem]' : 'text-[0.866667rem]'}
-            {controlsDisabled ? '' : dateTime.timePickerTarget === 'end' ? 'ring-1 ring-primary/60' : 'hover:bg-black/5 dark:hover:bg-black/15'}"
-          data-value={dateTime.timeInputMirrorValue("end")}>
-          <input bind:this={dateTime.endTimeInput}
-            type="text"
-            data-panel-arrow-nav="true"
-            inputmode={preferences.calendarTimeFormat === "12h" ? "text" : "numeric"}
-            onbeforeinput={(event) => dateTime.handleTimeBeforeInput(event)}
-            oninput={(event) => dateTime.handleTimeDraftInput(event, "end")}
-            onblur={() => dateTime.commitTimeInput("end")}
-            onclick={() => dateTime.handleTimeInputClick("end")}
-            disabled={controlsDisabled || session.allDay}
-            maxlength={preferences.calendarTimeFormat === "12h" ? 7 : 5}
-            placeholder={preferences.calendarTimeFormat === "12h" ? "h:mmam" : "HH:MM"}
-            class="time-input bg-transparent px-0 py-0.5 text-center outline-none"
-            value={dateTime.timeInputDisplayValue("end")}
-            onkeydown={(event) => dateTime.handleTimeInputKeydown(event, "end")} />
-        </span>
-
-        <!-- Floating time picker -->
-        {#if dateTime.timePickerTarget}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="fixed inset-0 z-19" onclick={() => dateTime.closeTimePicker("pointer")}></div>
-          {@const isEnd = dateTime.timePickerTarget === 'end'}
-          {@const startMinutes = (() => { const [h, m] = (session.startTime || "0:0").split(":").map(Number); return h * 60 + m; })()}
-          <div class="absolute top-full z-20 mt-1 rounded-lg bg-popover shadow-lg ring-1 ring-border/60"
-            style="left: {isEnd ? '50%' : '0'}; width: {dateTime.timePickerWidth(isEnd)};">
-            <TimePicker
-              currentTime={isEnd ? session.endTime : session.startTime}
-              {isEnd}
-              {startMinutes}
-              focusOnOpen={dateTime.timePickerKeyboardOpen}
-              inputNavigation={dateTime.timePickerInputNavigation}
-              onSelect={(time, source) => dateTime.selectTime(time, source)}
-              onCancel={(source) => dateTime.closeTimePicker(source)}
-              onTypeDigit={(digit) => dateTime.beginTimeTypingFromPicker(digit)} />
-          </div>
-        {/if}
-      </div>
-
-      <!-- End date -->
-      <div class="relative z-1 min-w-0 justify-self-end text-right">
-        <button bind:this={dateTime.endDateButton}
-          onclick={() => dateTime.toggleDatePicker("end", "pointer")}
-          onkeydown={(e) => dateTime.handleDateButtonKeydown(e, "end")}
-          disabled={controlsDisabled}
-          class="date-chip max-w-full rounded py-0.5 text-event-panel-input-text
-            {controlsDisabled ? '' : dateTime.endDatePickerOpen ? 'ring-1 ring-primary/60' : 'hover:bg-black/5 dark:hover:bg-black/15'}">
-          {shortEndDate}
-        </button>
-
-        <!-- Floating end date picker -->
-        {#if dateTime.endDatePickerOpen}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="fixed inset-0 z-19" onclick={() => { dateTime.endDatePickerOpen = false; }}></div>
-          <div class="absolute right-0 top-full z-20 mt-1 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60">
-            <MiniDatePicker
-              selectedDate={session.endDate}
-              rangeStartDate={session.startDate}
-              rangeEndDate={session.endDate}
-              highlightToday={false}
-              activeHighlight="primary"
-              onSelect={(date, source) => dateTime.selectDate("end", date, source)}
-              onCancel={(source) => dateTime.cancelDatePicker("end", source)}
-            />
-          </div>
-        {/if}
-      </div>
-      </div>
-
-    </div>
-
-  </div>
-
-  <!-- Metadata strip -->
-  <div class="flex flex-col gap-3 px-4 pb-0 pt-1.5">
-
-    <!-- All-day / Availability / Visibility -->
-    <div
-      class="flex w-full items-center justify-evenly overflow-hidden rounded-none bg-event-panel-contrast text-[0.733333rem]"
-      role="toolbar"
-      aria-label={t("calendar.eventPanel.metadataControls")}
-    >
-      <!-- All day -->
-      <button
-        onclick={() => dateTime.toggleAllDay()}
-        onfocus={() => { metadataFocusIndex = 0; }}
-        onkeydown={(e) => handlePanelRovingKeydown(e, "metadata", 0, metadataItemCount)}
-        data-panel-roving="metadata"
-        data-roving-index="0"
-        tabindex={!startControlsDisabled && metadataFocusIndex === 0 ? 0 : -1}
-        disabled={startControlsDisabled}
-        class={metadataStartButtonClass()}
-      >
-        {#if session.allDay}
-          <Calendar1 size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
-          <span class="translate-y-[1.13px] truncate">{t("calendar.eventPanel.allDay")}</span>
-        {:else}
-          <Clock4 size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
-          <span class="translate-y-[1.13px] truncate">{t("calendar.eventPanel.timed")}</span>
-        {/if}
-      </button>
-
-      <!-- Show as -->
-      <button
-        onclick={toggleTransparency}
-        onfocus={() => { metadataFocusIndex = 1; }}
-        onkeydown={(e) => handlePanelRovingKeydown(e, "metadata", 1, metadataItemCount)}
-        data-panel-roving="metadata"
-        data-roving-index="1"
-        data-app-tooltip-focus-disabled="true"
-        tabindex={!controlsDisabled && metadataFocusIndex === 1 ? 0 : -1}
-        disabled={controlsDisabled}
-        class={metadataButtonClass()}
-        title={t("calendar.eventPanel.busyTitle")}
-      >
-        {#if session.transparency === "transparent"}
-          <Smile size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
-        {:else}
-          <Ban size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
-        {/if}
-        <span class="translate-y-[1.13px] truncate">{transparencyLabel}</span>
-      </button>
-
-      {#if showHeavySections}
+      <div class="sheet-actions flex items-center gap-1 px-1" inert={gridEditing}>
         <button
-          onclick={toggleVisibility}
-          onfocus={() => { metadataFocusIndex = 2; }}
-          onkeydown={(e) => handlePanelRovingKeydown(e, "metadata", 2, metadataItemCount)}
-          data-panel-roving="metadata"
-          data-roving-index="2"
-          data-app-tooltip-focus-disabled="true"
-          tabindex={!controlsDisabled && metadataFocusIndex === 2 ? 0 : -1}
-          disabled={controlsDisabled}
-          class={metadataButtonClass("capitalize")}
-          title={t("calendar.eventPanel.privateTitle")}
+          type="button"
+          aria-label={t("common.close")}
+          onclick={onClose}
+          class="panel-chrome flex h-12 w-12 shrink-0 items-center justify-center rounded-floating-item text-muted-foreground active:bg-accent"
         >
-          {#if session.visibility === "public"}
-            <Eye size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
-          {:else}
-            <Lock size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
-          {/if}
-          <span class="translate-y-[1.13px] truncate">{visibilityLabel}</span>
+          <X size={22} aria-hidden="true" />
         </button>
-      {/if}
-    </div>
-
-  </div>
-
-  <!-- Feature sections -->
-  <div class="shrink-0 flex flex-col gap-1.5 px-4 py-1.5">
-
-      {#if session.heavyLoadFailed}
-        <Notice
-          role="status"
-          tone="warning"
-          copy={false}
-          message={t(titleEditBlocked || locationEditBlocked
-            ? "calendar.eventPanel.detailsLoadFailedSaveBlocked"
-            : "calendar.eventPanel.detailsLoadFailed")}
-          onRetry={() => session.retryHeavyLoad()}
-        />
-      {/if}
-
-      {#if conflictEventId}
-        <EventConflictNotice eventId={conflictEventId} blocked={externalDirty} onResolved={onClose} />
-      {/if}
-
-      <!-- 1) Meeting -->
-      {#if showHeavySections}
-        <MeetingSection
-          enabled={session.meetingEnabled}
-          bind:url={session.eventUrl}
-          bind:location={session.location}
-          geo={session.geo}
-          bind:attendees={session.attendees}
-          bind:localParticipationStatus={session.localParticipationStatus}
-          bind:guestCanModify={session.guestCanModify}
-          bind:guestCanInviteOthers={session.guestCanInviteOthers}
-          bind:guestCanSeeOtherGuests={session.guestCanSeeOtherGuests}
-          organizer={session.organizer}
-          selfEmail={calendarIdentityEmail}
-          eventTitle={session.title}
-          description={session.description}
-          readOnly={controlsDisabled}
-          locationReadOnly={locationEditBlocked}
-          allowReadOnlyExpand={readOnly && !parked}
-          expanded={openSection === "meeting"}
-          onToggle={() => handleToggle("meeting")}
-          onExpand={() => handleExpand("meeting")}
-          onSurfaceStatusChange={onSurfaceStatusChange}
-          onChange={() => session.emitChange()}
-          onDescriptionChange={(html) => {
-            session.description = html;
-            session.emitChange();
-          }} />
-      {/if}
-
-      <!-- 2) Pomodoro -->
-      {#if timedSectionsVisible}
-        <PomodoroSection
-          enabled={session.pomodoroEnabled}
-          bind:preset={session.pomodoroPreset}
-          bind:focusDurationMinutes={session.focusDurationMinutes}
-          bind:shortBreakMinutes={session.shortBreakMinutes}
-          bind:longBreakMinutes={session.longBreakMinutes}
-          bind:longBreakAfterFocusCount={session.longBreakAfterFocusCount}
-          bind:customRhythmMode={session.customRhythmMode}
-          bind:sequenceSteps={session.sequenceSteps}
-          bind:idleTimeoutEnabled={session.idleTimeoutEnabled}
-          expanded={openSection === "pomodoro"}
-          readonlyInteractive={pomodoroReadOnlyInteractive}
-          idleDetectionAvailable={nativeIdleDetectionAvailable}
-          timingConflict={conflictEventId !== null && hasTimingConflict(calendarConflicts.all, conflictEventId)}
-          onToggle={() => handleToggle("pomodoro")}
-          onExpand={() => handleExpand("pomodoro")}
-          onChange={() => session.emitChange()} />
-      {/if}
-
-      <!-- 3) Notifications -->
-      {#if notificationSchedulingAvailable}
-      <NotificationsSection
-        enabled={session.notificationsEnabled}
-        bind:selected={session.selectedNotificationMinutes}
-        bind:customNotifications={session.customNotifications}
-        expanded={openSection === "notifications"}
-        onToggle={() => { void handleNotificationToggle(); }}
-        onExpand={() => handleExpand("notifications")}
-        onChange={() => session.emitChange()}
-        deliveryNotice={mobileNotificationDeliveryNotice}
-        deliveryActionLabel={mobileNotificationDeliveryAction}
-        deliveryActionBusy={mobileNotificationStatusBusy}
-        onDeliveryAction={() => { void resolveMobileNotificationDelivery(); }} />
-      {/if}
-
-      <!-- 4) Repeat -->
-      <RecurrenceSection
-        bind:recurrence={session.recurrence}
-        startDate={session.startDate}
-        rdate={session.rdate}
-        expanded={openSection === "repeat"}
-        onToggle={() => handleToggle("repeat")}
-        onExpand={() => handleExpand("repeat")}
-        onChange={() => session.emitChange()} />
-
-      <!-- 5) Music -->
-      {#if timedSectionsVisible && musicAssignmentsAvailable}
-        <MusicSection
-          overrides={musicOverrides}
-          snapshots={musicSnapshots}
-          playlists={musicPlaylists}
-          pomodoroEnabled={session.pomodoroEnabled}
-          expanded={openSection === "music"}
-          disabled={controlsDisabled || musicAssignmentsReadyKey !== session.lastInitKey}
-          loading={musicAssignmentsLoading}
-          error={musicAssignmentsError}
-          onOverridesChange={(assignments) => {
-            musicOverrideGeneration += 1;
-            musicOverrides = assignments;
-          }}
-          onExpand={() => handleExpand("music")}
-          onRetry={() => initializeMusicAssignments(session.lastInitKey)} />
-      {/if}
-  </div>
-  </div>
-  </div>
-    {#if isBodyConstrained}
-      <CalendarScrollbar scrollContainer={geometry.scrollEl} wheelPassthrough />
-    {/if}
-  </div>
-
-  <!-- Save (pinned outside scroll); the mobile sheet keeps these actions in its header. -->
-  {#if !mobileLayout || parked}
-  <div
-    class={cn(
-      "shrink-0 px-4",
-      activePanelLayout === "fullscreen" ? "pb-2 pt-1" : "pb-3.5 pt-1.5",
-    )}
-    style="background-color: var(--panel-bg);"
-  >
-    {#if readOnly
-      && !allowPomodoroWhenReadOnly
-      && !(allowDeleteWhenReadOnly && mode === "edit" && (onDelete || onEndEvent) && event)}
-      <div class="flex w-full items-center justify-center rounded-none py-1.5 text-[0.8rem] text-muted-foreground/60"
-        style="background-color: var(--panel-contrast);">
-        {t("calendar.eventPanel.readOnly")}
-      </div>
-    {:else}
-      <div class="panel-footer-actions flex">
-        {#if actions.deleteArmed && mode === "edit" && event && (onDelete || onEndEvent) && (!deleteEndsEvent || inlineEndEventConfirm)}
-          <button
-            type="button"
-            data-event-panel-delete-action
-            onclick={() => actions.confirmArmedDelete()}
-            disabled={deleteControlsDisabled}
-            class="readonly-interactive flex flex-1 items-center justify-center gap-2 py-1.5 text-[0.866667rem] text-action-danger-armed-foreground bg-action-danger-armed">
-            {#if deleteEndsEvent}
-              <Scissors size={14} strokeWidth={1.8} />
-            {:else if deleteAction === "archive"}
-              <Archive size={14} strokeWidth={1.8} />
-            {:else}
-              <Trash2 size={14} strokeWidth={1.8} />
-            {/if}
-            <span>{armedDeleteLabel}</span>
-          </button>
+        <div class="flex-1"></div>
+        {#if readOnly
+          && !allowPomodoroWhenReadOnly
+          && !(allowDeleteWhenReadOnly && mode === "edit" && (onDelete || onEndEvent) && event)}
+          <span class="px-3 text-[0.8rem] text-muted-foreground/70">{t("calendar.eventPanel.readOnly")}</span>
         {:else}
           {#if mode === "edit" && (onDelete || onEndEvent) && event}
+            {@const deleteArmed = actions.deleteArmed && (!deleteEndsEvent || inlineEndEventConfirm)}
             <button
               type="button"
               data-event-panel-delete-action
-              onclick={() => actions.armOrConfirmDelete()}
+              onclick={() => (deleteArmed ? actions.confirmArmedDelete() : actions.armOrConfirmDelete())}
               disabled={deleteControlsDisabled}
+              aria-label={deleteArmed ? armedDeleteLabel : deleteActionLabel}
               class={cn(
-                "readonly-interactive event-panel-delete-icon-button flex w-10 shrink-0 items-center justify-center text-foreground",
+                "readonly-interactive flex h-12 shrink-0 items-center justify-center",
+                deleteArmed ? "px-1" : "w-12 rounded-floating-item text-muted-foreground active:bg-accent",
               )}
-              title={t("calendar.eventPanel.deleteShortcut", deleteActionLabel, formatShortcut("Mod + D"))}>
+            >
+              <span class={cn(
+                "flex items-center gap-2",
+                deleteArmed && "rounded-floating-item bg-action-danger-armed px-3 py-2 text-[0.866667rem] text-action-danger-armed-foreground",
+              )}>
+                {#if deleteEndsEvent}
+                  <Scissors size={18} strokeWidth={1.8} aria-hidden="true" />
+                {:else if deleteAction === "archive"}
+                  <Archive size={18} strokeWidth={1.8} aria-hidden="true" />
+                {:else}
+                  <Trash2 size={18} strokeWidth={1.8} aria-hidden="true" />
+                {/if}
+                {#if deleteArmed}<span>{armedDeleteLabel}</span>{/if}
+              </span>
+            </button>
+          {/if}
+          {#if !(readOnly && !allowPomodoroWhenReadOnly)}
+            <button
+              type="button"
+              onclick={handleSave}
+              disabled={saveControlsDisabled}
+              class={cn("flex h-12 shrink-0 items-center pl-1 pr-3", pomodoroReadOnlyInteractive && "readonly-interactive")}
+            >
+              <!-- The sheet's Save is a neutral pill, unlike the desktop panel's confirm color. -->
+              <span
+                class={cn(
+                  "rounded-full px-6 py-2 text-[0.866667rem] font-medium transition-colors",
+                  saveReady ? "bg-foreground text-background" : "text-muted-foreground",
+                )}
+                style:background-color={saveReady ? undefined : "var(--panel-contrast)"}
+              >
+                {t("common.save")}
+              </span>
+            </button>
+          {/if}
+        {/if}
+      </div>
+    </div>
+    {:else}
+    <!-- Drag handle bar -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class={cn(
+        "sticky top-0 z-10 flex items-center pl-4 pr-2",
+        panelCanDrag ? "cursor-grab active:cursor-grabbing" : "cursor-default",
+      )}
+      style="background-color: var(--sidebar);"
+      onpointerdown={(event) => {
+        if (panelCanDrag) geometry.handleDragStart(event);
+      }}
+      onpointermove={(event) => {
+        if (panelCanDrag) geometry.handleDragMove(event);
+      }}
+      onpointerup={() => {
+        if (panelCanDrag) geometry.handleDragEnd();
+      }}
+      onpointercancel={() => {
+        if (panelCanDrag) geometry.handleDragEnd();
+      }}
+      onlostpointercapture={() => {
+        if (panelCanDrag) geometry.handleDragEnd();
+      }}
+    >
+      <div class="flex flex-1 items-center justify-center py-2.5">
+        <div class="h-[1.5px] w-9 bg-muted-foreground/50"></div>
+      </div>
+    </div>
+    {/if}
+
+    <div
+      class={cn(
+        "relative min-h-0",
+        isBodyConstrained ? "flex-1 overflow-hidden" : "shrink-0",
+      )}
+    >
+      <div
+        bind:this={geometry.scrollEl}
+        class={cn(
+          "event-panel-scroll hide-scrollbar overscroll-contain",
+          isBodyConstrained ? "h-full overflow-y-auto" : "overflow-visible",
+        )}
+      >
+      <div bind:this={geometry.contentEl}>
+      <!-- Main editor: title + date -->
+      <div class={cn("shrink-0 px-4", !mobileLayout && "pt-2.5")}>
+
+      <!-- Scope selector (recurring events only) -->
+      {#if isRecurring}
+        <div class="relative top-0.5 mb-2 grid grid-cols-3 overflow-hidden rounded-sm bg-event-panel-contrast p-0.5 text-[0.733333rem]"
+          role="radiogroup"
+          aria-label={t("calendar.eventPanel.applyChangesTo")}>
+          {#each scopeOptions as option, index}
+            <button
+              role="radio"
+              aria-checked={session.scope === option.value}
+              onclick={() => handleScopeClick(option.value)}
+              onfocus={() => { scopeFocusIndex = index; }}
+              onkeydown={(e) => handlePanelRovingKeydown(e, "scope", index, scopeOptions.length)}
+              data-panel-roving="scope"
+              data-roving-index={index}
+              tabindex={scopeFocusIndex === index ? 0 : -1}
+              disabled={scopeControlsDisabled}
+              class={cn(
+                "readonly-interactive flex min-w-0 items-center justify-center rounded px-2 py-1 text-center font-semibold",
+                session.scope === option.value
+                  ? "bg-action-confirm text-action-confirm-foreground"
+                  : "text-event-panel-input-text/70",
+              )}
+            >
+              <span class="translate-y-[0.5px]">{option.label}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- Title + color circle -->
+      <div class="relative top-0.5 flex items-center gap-2.5 px-1">
+        <div class="title-wrapper relative min-w-0 flex-1">
+          <input
+            bind:this={titleInput}
+            type="text"
+            bind:value={session.title}
+            placeholder={t("calendar.eventPanel.titlePlaceholder")}
+            disabled={controlsDisabled || titleEditBlocked}
+            class="w-full bg-transparent py-0.5 text-[1rem] font-semibold text-foreground outline-none placeholder:text-event-panel-placeholder"
+            oninput={() => session.emitChange()}
+            onkeydown={handleInputKeydown}
+          />
+        </div>
+        <div class="event-identity-controls flex items-center {mobileLayout ? 'gap-1' : 'gap-2.5'}">
+          <ProjectSelector
+            selectedProjectId={session.projectId}
+            disabled={controlsDisabled}
+            {mobileLayout}
+            onSelect={handleProjectSelect}
+            onCreate={handleProjectCreate}
+          />
+          {#if !controlsDisabled}
+            <EventColorPicker
+              color={session.color}
+              theme={theme.current}
+              {mobileLayout}
+              buttonClass="event-identity-trigger"
+              onSelect={(color) => {
+                session.color = color;
+                session.emitChange();
+              }}
+            />
+          {/if}
+        </div>
+      </div>
+      <hr class="border-event-panel-divider mx-1 mt-0.5" />
+
+      <div class="mt-1.5 flex flex-col gap-px px-1">
+        <!-- Date + time -->
+        <div
+          bind:this={sheetPeekEndEl}
+          class="date-time-grid relative text-[0.866667rem] leading-none"
+          data-stacked={isDateTimeStacked || undefined}
+        >
+        <!-- Start date -->
+        <div class="relative z-1 min-w-0 justify-self-start">
+          <button bind:this={dateTime.startDateButton}
+            onclick={() => dateTime.toggleDatePicker("start", "pointer")}
+            onkeydown={(e) => dateTime.handleDateButtonKeydown(e, "start")}
+            disabled={startControlsDisabled}
+            class={cn(
+              "date-chip max-w-full rounded py-0.5 text-event-panel-input-text",
+              disabledAffordanceClass(startDisabledAffordance),
+              startControlsDisabled
+                ? ""
+                : dateTime.startDatePickerOpen
+                  ? "ring-1 ring-primary/60"
+                  : "hover:bg-black/5 dark:hover:bg-black/15",
+            )}>
+            {shortDate}
+          </button>
+
+          <!-- Floating start date picker -->
+          {#if dateTime.startDatePickerOpen}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="fixed inset-0 z-19" onclick={() => { dateTime.startDatePickerOpen = false; }}></div>
+            <div class="absolute left-0 top-full z-20 mt-1 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60">
+              <MiniDatePicker
+                selectedDate={session.startDate}
+                rangeStartDate={session.startDate}
+                rangeEndDate={session.endDate}
+                highlightToday={false}
+                activeHighlight="primary"
+                onSelect={(date, source) => dateTime.selectDate("start", date, source)}
+                onCancel={(source) => dateTime.cancelDatePicker("start", source)}
+              />
+            </div>
+          {/if}
+        </div>
+
+        <!-- Time group, visually hidden when all-day so the date grid keeps its shape. -->
+        <div
+          class="time-group relative {dateTime.timePickerTarget ? 'z-20' : 'z-2'} flex items-center justify-center gap-1.5 py-0.5"
+          class:invisible={session.allDay}
+          class:pointer-events-none={session.allDay}
+          aria-hidden={session.allDay}
+        >
+          <span
+            class="time-input-shell relative z-30 rounded text-center text-event-panel-input-text
+              {preferences.calendarTimeFormat === '12h' ? 'text-[0.8rem]' : 'text-[0.866667rem]'}
+              {startTimeShellStateClass()}"
+            data-value={dateTime.timeInputMirrorValue("start")}>
+            <input bind:this={dateTime.startTimeInput}
+              type="text"
+              data-panel-arrow-nav="true"
+              inputmode={preferences.calendarTimeFormat === "12h" ? "text" : "numeric"}
+              onbeforeinput={(event) => dateTime.handleTimeBeforeInput(event)}
+              oninput={(event) => dateTime.handleTimeDraftInput(event, "start")}
+              onblur={() => dateTime.commitTimeInput("start")}
+              onclick={() => dateTime.handleTimeInputClick("start")}
+              disabled={startControlsDisabled || session.allDay}
+              maxlength={preferences.calendarTimeFormat === "12h" ? 7 : 5}
+              placeholder={preferences.calendarTimeFormat === "12h" ? "h:mmam" : "HH:MM"}
+              class={cn(
+                "time-input bg-transparent px-0 py-0.5 text-center outline-none",
+                disabledAffordanceClass(startDisabledAffordance),
+              )}
+              value={dateTime.timeInputDisplayValue("start")}
+              onkeydown={(event) => dateTime.handleTimeInputKeydown(event, "start")} />
+          </span>
+          <span class="text-muted-foreground/60">-</span>
+          <span
+            class="time-input-shell relative z-30 rounded text-center text-event-panel-input-text
+              {preferences.calendarTimeFormat === '12h' ? 'text-[0.8rem]' : 'text-[0.866667rem]'}
+              {controlsDisabled ? '' : dateTime.timePickerTarget === 'end' ? 'ring-1 ring-primary/60' : 'hover:bg-black/5 dark:hover:bg-black/15'}"
+            data-value={dateTime.timeInputMirrorValue("end")}>
+            <input bind:this={dateTime.endTimeInput}
+              type="text"
+              data-panel-arrow-nav="true"
+              inputmode={preferences.calendarTimeFormat === "12h" ? "text" : "numeric"}
+              onbeforeinput={(event) => dateTime.handleTimeBeforeInput(event)}
+              oninput={(event) => dateTime.handleTimeDraftInput(event, "end")}
+              onblur={() => dateTime.commitTimeInput("end")}
+              onclick={() => dateTime.handleTimeInputClick("end")}
+              disabled={controlsDisabled || session.allDay}
+              maxlength={preferences.calendarTimeFormat === "12h" ? 7 : 5}
+              placeholder={preferences.calendarTimeFormat === "12h" ? "h:mmam" : "HH:MM"}
+              class="time-input bg-transparent px-0 py-0.5 text-center outline-none"
+              value={dateTime.timeInputDisplayValue("end")}
+              onkeydown={(event) => dateTime.handleTimeInputKeydown(event, "end")} />
+          </span>
+
+          <!-- Floating time picker -->
+          {#if dateTime.timePickerTarget}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="fixed inset-0 z-19" onclick={() => dateTime.closeTimePicker("pointer")}></div>
+            {@const isEnd = dateTime.timePickerTarget === 'end'}
+            {@const startMinutes = (() => { const [h, m] = (session.startTime || "0:0").split(":").map(Number); return h * 60 + m; })()}
+            <div class="absolute top-full z-20 mt-1 rounded-lg bg-popover shadow-lg ring-1 ring-border/60"
+              style="left: {isEnd ? '50%' : '0'}; width: {dateTime.timePickerWidth(isEnd)};">
+              <TimePicker
+                currentTime={isEnd ? session.endTime : session.startTime}
+                {isEnd}
+                {startMinutes}
+                focusOnOpen={dateTime.timePickerKeyboardOpen}
+                inputNavigation={dateTime.timePickerInputNavigation}
+                onSelect={(time, source) => dateTime.selectTime(time, source)}
+                onCancel={(source) => dateTime.closeTimePicker(source)}
+                onTypeDigit={(digit) => dateTime.beginTimeTypingFromPicker(digit)} />
+            </div>
+          {/if}
+        </div>
+
+        <!-- End date -->
+        <div class="relative z-1 min-w-0 justify-self-end text-right">
+          <button bind:this={dateTime.endDateButton}
+            onclick={() => dateTime.toggleDatePicker("end", "pointer")}
+            onkeydown={(e) => dateTime.handleDateButtonKeydown(e, "end")}
+            disabled={controlsDisabled}
+            class="date-chip max-w-full rounded py-0.5 text-event-panel-input-text
+              {controlsDisabled ? '' : dateTime.endDatePickerOpen ? 'ring-1 ring-primary/60' : 'hover:bg-black/5 dark:hover:bg-black/15'}">
+            {shortEndDate}
+          </button>
+
+          <!-- Floating end date picker -->
+          {#if dateTime.endDatePickerOpen}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="fixed inset-0 z-19" onclick={() => { dateTime.endDatePickerOpen = false; }}></div>
+            <div class="absolute right-0 top-full z-20 mt-1 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60">
+              <MiniDatePicker
+                selectedDate={session.endDate}
+                rangeStartDate={session.startDate}
+                rangeEndDate={session.endDate}
+                highlightToday={false}
+                activeHighlight="primary"
+                onSelect={(date, source) => dateTime.selectDate("end", date, source)}
+                onCancel={(source) => dateTime.cancelDatePicker("end", source)}
+              />
+            </div>
+          {/if}
+        </div>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- Metadata strip -->
+    <div class="flex flex-col gap-3 px-4 pb-0 pt-1.5">
+
+      <!-- All-day / Availability / Visibility -->
+      <div
+        class="flex w-full items-center justify-evenly overflow-hidden rounded-none bg-event-panel-contrast text-[0.733333rem]"
+        role="toolbar"
+        aria-label={t("calendar.eventPanel.metadataControls")}
+      >
+        <!-- All day -->
+        <button
+          onclick={() => dateTime.toggleAllDay()}
+          onfocus={() => { metadataFocusIndex = 0; }}
+          onkeydown={(e) => handlePanelRovingKeydown(e, "metadata", 0, metadataItemCount)}
+          data-panel-roving="metadata"
+          data-roving-index="0"
+          tabindex={!startControlsDisabled && metadataFocusIndex === 0 ? 0 : -1}
+          disabled={startControlsDisabled}
+          class={metadataStartButtonClass()}
+        >
+          {#if session.allDay}
+            <Calendar1 size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
+            <span class="translate-y-[1.13px] truncate">{t("calendar.eventPanel.allDay")}</span>
+          {:else}
+            <Clock4 size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
+            <span class="translate-y-[1.13px] truncate">{t("calendar.eventPanel.timed")}</span>
+          {/if}
+        </button>
+
+        <!-- Show as -->
+        <button
+          onclick={toggleTransparency}
+          onfocus={() => { metadataFocusIndex = 1; }}
+          onkeydown={(e) => handlePanelRovingKeydown(e, "metadata", 1, metadataItemCount)}
+          data-panel-roving="metadata"
+          data-roving-index="1"
+          data-app-tooltip-focus-disabled="true"
+          tabindex={!controlsDisabled && metadataFocusIndex === 1 ? 0 : -1}
+          disabled={controlsDisabled}
+          class={metadataButtonClass()}
+          title={t("calendar.eventPanel.busyTitle")}
+        >
+          {#if session.transparency === "transparent"}
+            <Smile size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
+          {:else}
+            <Ban size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
+          {/if}
+          <span class="translate-y-[1.13px] truncate">{transparencyLabel}</span>
+        </button>
+
+        {#if showHeavySections}
+          <button
+            onclick={toggleVisibility}
+            onfocus={() => { metadataFocusIndex = 2; }}
+            onkeydown={(e) => handlePanelRovingKeydown(e, "metadata", 2, metadataItemCount)}
+            data-panel-roving="metadata"
+            data-roving-index="2"
+            data-app-tooltip-focus-disabled="true"
+            tabindex={!controlsDisabled && metadataFocusIndex === 2 ? 0 : -1}
+            disabled={controlsDisabled}
+            class={metadataButtonClass("capitalize")}
+            title={t("calendar.eventPanel.privateTitle")}
+          >
+            {#if session.visibility === "public"}
+              <Eye size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
+            {:else}
+              <Lock size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
+            {/if}
+            <span class="translate-y-[1.13px] truncate">{visibilityLabel}</span>
+          </button>
+        {/if}
+      </div>
+
+    </div>
+
+    <!-- Feature sections -->
+    <div class="shrink-0 flex flex-col gap-1.5 px-4 py-1.5">
+
+        {#if session.heavyLoadFailed}
+          <Notice
+            role="status"
+            tone="warning"
+            copy={false}
+            message={t(titleEditBlocked || locationEditBlocked
+              ? "calendar.eventPanel.detailsLoadFailedSaveBlocked"
+              : "calendar.eventPanel.detailsLoadFailed")}
+            onRetry={() => session.retryHeavyLoad()}
+          />
+        {/if}
+
+        {#if conflictEventId}
+          <EventConflictNotice eventId={conflictEventId} blocked={externalDirty} onResolved={onClose} />
+        {/if}
+
+        <!-- 1) Meeting -->
+        {#if showHeavySections}
+          <MeetingSection
+            enabled={session.meetingEnabled}
+            bind:url={session.eventUrl}
+            bind:location={session.location}
+            geo={session.geo}
+            bind:attendees={session.attendees}
+            bind:localParticipationStatus={session.localParticipationStatus}
+            bind:guestCanModify={session.guestCanModify}
+            bind:guestCanInviteOthers={session.guestCanInviteOthers}
+            bind:guestCanSeeOtherGuests={session.guestCanSeeOtherGuests}
+            organizer={session.organizer}
+            selfEmail={calendarIdentityEmail}
+            eventTitle={session.title}
+            description={session.description}
+            readOnly={controlsDisabled}
+            locationReadOnly={locationEditBlocked}
+            allowReadOnlyExpand={readOnly && !parked}
+            expanded={openSection === "meeting"}
+            onToggle={() => handleToggle("meeting")}
+            onExpand={() => handleExpand("meeting")}
+            onSurfaceStatusChange={onSurfaceStatusChange}
+            onChange={() => session.emitChange()}
+            onDescriptionChange={(html) => {
+              session.description = html;
+              session.emitChange();
+            }} />
+        {/if}
+
+        <!-- 2) Pomodoro -->
+        {#if timedSectionsVisible}
+          <PomodoroSection
+            enabled={session.pomodoroEnabled}
+            bind:preset={session.pomodoroPreset}
+            bind:focusDurationMinutes={session.focusDurationMinutes}
+            bind:shortBreakMinutes={session.shortBreakMinutes}
+            bind:longBreakMinutes={session.longBreakMinutes}
+            bind:longBreakAfterFocusCount={session.longBreakAfterFocusCount}
+            bind:customRhythmMode={session.customRhythmMode}
+            bind:sequenceSteps={session.sequenceSteps}
+            bind:idleTimeoutEnabled={session.idleTimeoutEnabled}
+            expanded={openSection === "pomodoro"}
+            readonlyInteractive={pomodoroReadOnlyInteractive}
+            idleDetectionAvailable={nativeIdleDetectionAvailable}
+            timingConflict={conflictEventId !== null && hasTimingConflict(calendarConflicts.all, conflictEventId)}
+            onToggle={() => handleToggle("pomodoro")}
+            onExpand={() => handleExpand("pomodoro")}
+            onChange={() => session.emitChange()} />
+        {/if}
+
+        <!-- 3) Notifications -->
+        {#if notificationSchedulingAvailable}
+        <NotificationsSection
+          enabled={session.notificationsEnabled}
+          bind:selected={session.selectedNotificationMinutes}
+          bind:customNotifications={session.customNotifications}
+          expanded={openSection === "notifications"}
+          onToggle={() => { void handleNotificationToggle(); }}
+          onExpand={() => handleExpand("notifications")}
+          onChange={() => session.emitChange()}
+          deliveryNotice={mobileNotificationDeliveryNotice}
+          deliveryActionLabel={mobileNotificationDeliveryAction}
+          deliveryActionBusy={mobileNotificationStatusBusy}
+          onDeliveryAction={() => { void resolveMobileNotificationDelivery(); }} />
+        {/if}
+
+        <!-- 4) Repeat -->
+        <RecurrenceSection
+          bind:recurrence={session.recurrence}
+          startDate={session.startDate}
+          rdate={session.rdate}
+          expanded={openSection === "repeat"}
+          onToggle={() => handleToggle("repeat")}
+          onExpand={() => handleExpand("repeat")}
+          onChange={() => session.emitChange()} />
+
+        <!-- 5) Music -->
+        {#if timedSectionsVisible && musicAssignmentsAvailable}
+          <MusicSection
+            overrides={musicOverrides}
+            snapshots={musicSnapshots}
+            playlists={musicPlaylists}
+            pomodoroEnabled={session.pomodoroEnabled}
+            expanded={openSection === "music"}
+            disabled={controlsDisabled || musicAssignmentsReadyKey !== session.lastInitKey}
+            loading={musicAssignmentsLoading}
+            error={musicAssignmentsError}
+            onOverridesChange={(assignments) => {
+              musicOverrideGeneration += 1;
+              musicOverrides = assignments;
+            }}
+            onExpand={() => handleExpand("music")}
+            onRetry={() => initializeMusicAssignments(session.lastInitKey)} />
+        {/if}
+    </div>
+    </div>
+    </div>
+      {#if isBodyConstrained}
+        <CalendarScrollbar scrollContainer={geometry.scrollEl} wheelPassthrough />
+      {/if}
+    </div>
+
+    <!-- Save (pinned outside scroll); the mobile sheet keeps these actions in its header. -->
+    {#if !mobileLayout || parked}
+    <div
+      class={cn(
+        "shrink-0 px-4",
+        activePanelLayout === "fullscreen" ? "pb-2 pt-1" : "pb-3.5 pt-1.5",
+      )}
+      style="background-color: var(--panel-bg);"
+    >
+      {#if readOnly
+        && !allowPomodoroWhenReadOnly
+        && !(allowDeleteWhenReadOnly && mode === "edit" && (onDelete || onEndEvent) && event)}
+        <div class="flex w-full items-center justify-center rounded-none py-1.5 text-[0.8rem] text-muted-foreground/60"
+          style="background-color: var(--panel-contrast);">
+          {t("calendar.eventPanel.readOnly")}
+        </div>
+      {:else}
+        <div class="panel-footer-actions flex">
+          {#if actions.deleteArmed && mode === "edit" && event && (onDelete || onEndEvent) && (!deleteEndsEvent || inlineEndEventConfirm)}
+            <button
+              type="button"
+              data-event-panel-delete-action
+              onclick={() => actions.confirmArmedDelete()}
+              disabled={deleteControlsDisabled}
+              class="readonly-interactive flex flex-1 items-center justify-center gap-2 py-1.5 text-[0.866667rem] text-action-danger-armed-foreground bg-action-danger-armed">
               {#if deleteEndsEvent}
                 <Scissors size={14} strokeWidth={1.8} />
               {:else if deleteAction === "archive"}
@@ -1676,30 +1660,51 @@
               {:else}
                 <Trash2 size={14} strokeWidth={1.8} />
               {/if}
+              <span>{armedDeleteLabel}</span>
             </button>
-          {/if}
-          {#if readOnly && !allowPomodoroWhenReadOnly}
-            <div class="flex flex-1 cursor-not-allowed items-center justify-center gap-2 py-1.5 text-[0.866667rem] text-muted-foreground"
-              style="background-color: var(--panel-contrast);">
-              <span>{t("calendar.eventPanel.readOnlyShortcut", formatShortcut("Mod + D"), deleteActionVerb)}</span>
-            </div>
           {:else}
-          <button onclick={handleSave}
-            disabled={saveControlsDisabled}
-            class="flex flex-1 items-center justify-center gap-2 py-1.5 text-[0.866667rem]
-              {pomodoroReadOnlyInteractive ? 'readonly-interactive' : ''}
-              {saveReady
-                ? 'bg-action-confirm text-action-confirm-foreground hover:opacity-90'
-                : 'text-muted-foreground cursor-not-allowed'}"
-            style="background-color: {saveReady ? '' : 'var(--panel-contrast)'};">
-            <span>{t("calendar.eventPanel.saveShortcut", formatShortcut("Mod + Enter"))}</span>
-          </button>
+            {#if mode === "edit" && (onDelete || onEndEvent) && event}
+              <button
+                type="button"
+                data-event-panel-delete-action
+                onclick={() => actions.armOrConfirmDelete()}
+                disabled={deleteControlsDisabled}
+                class={cn(
+                  "readonly-interactive event-panel-delete-icon-button flex w-10 shrink-0 items-center justify-center text-foreground",
+                )}
+                title={t("calendar.eventPanel.deleteShortcut", deleteActionLabel, formatShortcut("Mod + D"))}>
+                {#if deleteEndsEvent}
+                  <Scissors size={14} strokeWidth={1.8} />
+                {:else if deleteAction === "archive"}
+                  <Archive size={14} strokeWidth={1.8} />
+                {:else}
+                  <Trash2 size={14} strokeWidth={1.8} />
+                {/if}
+              </button>
+            {/if}
+            {#if readOnly && !allowPomodoroWhenReadOnly}
+              <div class="flex flex-1 cursor-not-allowed items-center justify-center gap-2 py-1.5 text-[0.866667rem] text-muted-foreground"
+                style="background-color: var(--panel-contrast);">
+                <span>{t("calendar.eventPanel.readOnlyShortcut", formatShortcut("Mod + D"), deleteActionVerb)}</span>
+              </div>
+            {:else}
+            <button onclick={handleSave}
+              disabled={saveControlsDisabled}
+              class="flex flex-1 items-center justify-center gap-2 py-1.5 text-[0.866667rem]
+                {pomodoroReadOnlyInteractive ? 'readonly-interactive' : ''}
+                {saveReady
+                  ? 'bg-action-confirm text-action-confirm-foreground hover:opacity-90'
+                  : 'text-muted-foreground cursor-not-allowed'}"
+              style="background-color: {saveReady ? '' : 'var(--panel-contrast)'};">
+              <span>{t("calendar.eventPanel.saveShortcut", formatShortcut("Mod + Enter"))}</span>
+            </button>
+            {/if}
           {/if}
-        {/if}
-      </div>
+        </div>
+      {/if}
+    </div>
     {/if}
   </div>
-  {/if}
 </div>
 
 <style>
@@ -1822,9 +1827,7 @@
   }
 
   .panel-root[data-sheet-animating="true"] {
-    transition:
-      transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1),
-      clip-path 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
 
   @media (prefers-reduced-motion: reduce) {

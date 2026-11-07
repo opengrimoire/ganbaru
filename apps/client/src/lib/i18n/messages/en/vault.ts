@@ -26,8 +26,9 @@ export const vaultSetup = {
     headline: "Free and open source",
     body: "Your data stays on your devices and syncs directly between them, with no account, ads, or tracking.",
     sceneDescription:
-      "A short animation of a receipt printing line by line: Calendar, Focus, Projects, Notes, Chat, Music, the distraction blocker, and sync, each free, and a total that is free as well. A seal reading AGPL 3.0, open source, then stamps the receipt.",
+      "A short animation of a payment terminal whose screen shows a total that is free and confirms there is nothing to pay. It then prints a receipt line by line: Calendar, Focus, Projects, Notes, Chat, Music, the distraction blocker, and sync, each free, and a total that is free as well. A seal with the Open Grimoire logo, reading AGPL 3.0, open source, then stamps the receipt.",
     receipt: {
+      confirmed: "Nothing to pay",
       free: "Free",
       total: "Total",
       blocker: "Distraction blocker",

@@ -3,11 +3,15 @@ import {
   ABOUT_BEATS,
   ABOUT_RECEIPT_ITEMS,
   ABOUT_SEGMENTS,
+  aboutConfirmCheck,
+  aboutConfirmRing,
   aboutFeed,
   aboutImpact,
   aboutPrinter,
   aboutPrinting,
+  aboutScreen,
   aboutStamp,
+  aboutTotal,
 } from "./welcome-about-scene";
 
 const SEGMENTS = ABOUT_SEGMENTS.map((_, index) => index);
@@ -41,17 +45,37 @@ describe("welcome about scene", () => {
     ]);
   });
 
-  it("starts empty: no printer, paper, or stamp", () => {
+  it("starts empty: no terminal, screen, paper, or stamp", () => {
     expect(aboutPrinter(0)).toBe(0);
+    expect(aboutScreen(0)).toBe(0);
+    expect(aboutTotal(0)).toBe(0);
+    expect(aboutConfirmRing(0)).toBe(0);
+    expect(aboutConfirmCheck(0)).toBe(0);
     for (const segment of SEGMENTS) expect(aboutFeed(0, segment)).toBe(0);
     expect(aboutStamp(0)).toBe(0);
     expect(aboutImpact(0)).toBe(0);
     expect(aboutPrinting(0)).toBe(false);
   });
 
-  it("prints only once the printer is in place", () => {
+  it("lights the screen with the total only once the terminal is in place", () => {
     const placed = firstComplete(aboutPrinter);
-    expect(firstPositive((elapsed) => aboutFeed(elapsed, 0))).toBeGreaterThanOrEqual(placed);
+    expect(firstPositive(aboutScreen)).toBeGreaterThanOrEqual(placed);
+    expect(firstPositive(aboutTotal)).toBeGreaterThanOrEqual(placed);
+    expect(aboutTotal(firstComplete(aboutScreen))).toBe(1);
+  });
+
+  it("confirms after the total has been shown, drawing the ring before the check", () => {
+    const totalShown = firstComplete(aboutTotal);
+    const ringStart = firstPositive(aboutConfirmRing);
+    expect(ringStart).toBeGreaterThan(totalShown);
+    expect(firstPositive(aboutConfirmCheck)).toBeGreaterThan(ringStart);
+    expect(aboutTotal(ringStart)).toBeLessThan(1);
+    expect(firstComplete(aboutConfirmCheck)).toBe(ABOUT_BEATS.confirmed);
+  });
+
+  it("prints only once the payment is confirmed", () => {
+    expect(firstPositive((elapsed) => aboutFeed(elapsed, 0))).toBeGreaterThan(ABOUT_BEATS.confirmed);
+    expect(aboutPrinting(ABOUT_BEATS.confirmed)).toBe(false);
   });
 
   it("feeds the segments one at a time, top to bottom", () => {
@@ -84,9 +108,13 @@ describe("welcome about scene", () => {
     expect(aboutImpact(ABOUT_BEATS.end)).toBe(0);
   });
 
-  it("ends with the receipt printed, stamped, and at rest", () => {
+  it("ends with the payment confirmed and the receipt printed, stamped, and at rest", () => {
     const end = ABOUT_BEATS.end;
     expect(aboutPrinter(end)).toBe(1);
+    expect(aboutScreen(end)).toBe(1);
+    expect(aboutTotal(end)).toBe(0);
+    expect(aboutConfirmRing(end)).toBe(1);
+    expect(aboutConfirmCheck(end)).toBe(1);
     for (const segment of SEGMENTS) expect(aboutFeed(end, segment)).toBe(1);
     expect(aboutStamp(end)).toBe(1);
     expect(aboutImpact(end)).toBe(0);
@@ -95,7 +123,16 @@ describe("welcome about scene", () => {
 
   it("keeps every value between 0 and 1 throughout", () => {
     for (const elapsed of moments()) {
-      const values = [aboutPrinter(elapsed), aboutStamp(elapsed), aboutImpact(elapsed), ...SEGMENTS.map((segment) => aboutFeed(elapsed, segment))];
+      const values = [
+        aboutPrinter(elapsed),
+        aboutScreen(elapsed),
+        aboutTotal(elapsed),
+        aboutConfirmRing(elapsed),
+        aboutConfirmCheck(elapsed),
+        aboutStamp(elapsed),
+        aboutImpact(elapsed),
+        ...SEGMENTS.map((segment) => aboutFeed(elapsed, segment)),
+      ];
       for (const value of values) {
         expect(value).toBeGreaterThanOrEqual(0);
         expect(value).toBeLessThanOrEqual(1);

@@ -10,8 +10,8 @@
 
   /**
    * The welcome screen about the app itself: free and open source, no account, and data kept on the user's devices,
-   * told by a scene of a receipt that prices every feature free and is stamped with the license, and with the license text,
-   * acknowledgments, and source code one tap away.
+   * told by a scene of a payment terminal that confirms there is nothing to pay and prints a receipt that prices every
+   * feature free and is stamped with the license, and with the license text, acknowledgments, and source code one tap away.
    */
   const { t } = getLocalization();
   const SOURCE_URL = "https://github.com/opengrimoire/ganbaru";

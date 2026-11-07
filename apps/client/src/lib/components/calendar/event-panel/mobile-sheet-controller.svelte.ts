@@ -15,7 +15,7 @@ import { prefersReducedMotion } from "$lib/utils/smooth-swap";
 import { TOUCH_SLOP_PX } from "$lib/utils/touch-hold";
 
 /** Space between the summary rows and the bottom of a peeking sheet, in CSS pixels. */
-const PEEK_PADDING_PX = 14;
+export const EVENT_PANEL_SHEET_PEEK_PADDING_PX = 14;
 /** Release samples kept for velocity; older ones fall outside the velocity window anyway. */
 const MAX_SAMPLES = 8;
 /** Space kept between the revealed event and the grid or sheet edges, in CSS pixels. */
@@ -146,7 +146,8 @@ export class EventPanelSheetController {
       const move = (event: TouchEvent) => this.handleTouchMove(event);
       const end = () => this.handleTouchEnd();
       const focus = (event: FocusEvent) => {
-        if (isTextEntryElement(event.target instanceof Element ? event.target : null)) this.raise("full");
+        const target = event.target instanceof Element ? event.target : null;
+        if (target && isTextEntryElement(target) && !this.shows(target)) this.raise("full");
       };
       panel.addEventListener("touchstart", start, { passive: true });
       panel.addEventListener("touchmove", move, { passive: false });
@@ -207,7 +208,15 @@ export class EventPanelSheetController {
     this.fullHeight = panel.clientHeight - paddingBottom;
     this.headerHeight = header.offsetHeight;
     const summaryBottom = peekEnd.getBoundingClientRect().bottom - content.getBoundingClientRect().top;
-    this.peekHeight = header.offsetHeight + summaryBottom + PEEK_PADDING_PX;
+    this.peekHeight = header.offsetHeight + summaryBottom + EVENT_PANEL_SHEET_PEEK_PADDING_PX;
+  }
+
+  /** Whether `element` shows inside the sheet at the height it rests at, so focusing it needs no more room. */
+  private shows(element: Element): boolean {
+    const panel = this.options.panel();
+    if (!panel) return false;
+    const resting = this.options.gridEditing() ? this.heights.dip : this.heights[this.detent];
+    return element.getBoundingClientRect().bottom - panel.getBoundingClientRect().top <= resting;
   }
 
   /** Scroll the grid holding `eventId` so the event sits above a sheet resting at `visible` height. */

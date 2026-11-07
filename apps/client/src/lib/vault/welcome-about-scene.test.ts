@@ -28,13 +28,15 @@ function firstComplete(value: (elapsed: number) => number): number {
 }
 
 describe("welcome about scene", () => {
-  it("lays the receipt out as a header, the features, a rule, and the total, between blank paper", () => {
+  it("lays the receipt out as a header, the features between rules, the total, and a barcode, between blank paper", () => {
     expect(ABOUT_SEGMENTS).toEqual([
       "lead",
       "header",
+      "rule",
       ...Array.from({ length: ABOUT_RECEIPT_ITEMS }, () => "item"),
       "rule",
       "total",
+      "barcode",
       "tail",
     ]);
   });

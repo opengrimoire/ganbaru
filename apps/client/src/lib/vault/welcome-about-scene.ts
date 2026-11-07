@@ -10,27 +10,33 @@ import { easeInOutCubic, filmSpan } from "./welcome-film";
 /** How many features the receipt lists. */
 export const ABOUT_RECEIPT_ITEMS = 8;
 
-/** One stretch of paper the printer feeds: the blank lead, the header, a feature, the rule, the total, or the blank tail. */
-export type AboutSegment = "lead" | "header" | "item" | "rule" | "total" | "tail";
+/**
+ * One stretch of paper the printer feeds: the blank lead, the header, a rule, a feature, the total, the barcode, or the
+ * blank tail.
+ */
+export type AboutSegment = "lead" | "header" | "rule" | "item" | "total" | "barcode" | "tail";
 
 /** The receipt from top to bottom, in the order the printer feeds it. */
 export const ABOUT_SEGMENTS: readonly AboutSegment[] = [
   "lead",
   "header",
+  "rule",
   ...Array.from({ length: ABOUT_RECEIPT_ITEMS }, (): AboutSegment => "item"),
   "rule",
   "total",
+  "barcode",
   "tail",
 ];
 
 /** How long the printer takes to feed each kind of segment. */
 const FEED_MS: Readonly<Record<AboutSegment, number>> = {
-  lead: 250,
-  header: 320,
-  item: 220,
-  rule: 150,
+  lead: 220,
+  header: 340,
+  rule: 130,
+  item: 200,
   total: 300,
-  tail: 260,
+  barcode: 340,
+  tail: 220,
 };
 /** The pause after each segment, so the paper feeds in steps as a printer's does. */
 const FEED_GAP_MS = 30;

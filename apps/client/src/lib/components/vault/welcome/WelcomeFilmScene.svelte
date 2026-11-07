@@ -20,14 +20,17 @@
   const HOUR_PX = calendarZoomHourHeightForPercent(FILM_ZOOM_PERCENT);
   /** How the drawn event snaps while it is dragged out, in minutes, as the Calendar snaps at the film's zoom. */
   const CREATE_SNAP_MINUTES = calendarZoomGridMinutesForPercent(FILM_ZOOM_PERCENT);
-  /** Where the visible part of the day starts, in minutes since midnight, as if the grid were scrolled to the morning. */
-  const VIEW_START = 8 * 60 + 40;
   /**
-   * How much of the day shows: the whole session at least, and on into the late afternoon in a tall room such as a
-   * phone's, where the drawing's width is already at its smallest and only more hours can fill the height.
+   * Where the visible part of the day starts, in minutes since midnight, as if the grid were scrolled to the morning:
+   * a little before eight, so the workday's first hour label shows.
    */
-  const MIN_VIEW_MINUTES = 315;
-  const MAX_VIEW_MINUTES = 540;
+  const VIEW_START = 7 * 60 + 40;
+  /**
+   * How much of the day shows: the whole session at least, and on through the afternoon's events in a tall room such
+   * as a phone's, where the drawing's width is already at its smallest and only more hours can fill the height.
+   */
+  const MIN_VIEW_MINUTES = 330;
+  const MAX_VIEW_MINUTES = 570;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
 
   /** The bezel around the canvas, matching the drawn phones of the Android access guides (`p-1.5`). */
@@ -159,8 +162,8 @@
   /** The Calendar's pulse on a break that is running. */
   const BREAK_PULSE_MS = 1500;
 
-  /** The session starts at nine: the drawn event, then the planned one right after it. */
-  const SESSION_START = 9 * 60;
+  /** The session starts at half past eight: the drawn event, then the planned one right after it until lunch. */
+  const SESSION_START = 8 * 60 + 30;
   const DRAWN_END = SESSION_START + FILM_DRAWN_MINUTES;
   const SESSION_END = SESSION_START + FILM_SESSION_MINUTES;
   /** The planned event's breaks while it has its rail to itself. */
@@ -173,9 +176,19 @@
   const LAVENDER = 20;
   /** The Thesis project's color, the eighth swatch of the color picker. */
   const THESIS = 7;
+  const ASSIGNMENTS = 9;
   const EATING = 13;
+  const EXERCISE = 0;
 
-  type FilmTitle = "writeChapter" | "reviewNotes" | "lunch" | "draftOutline" | "readSources" | "teamMeeting";
+  type FilmTitle =
+    | "writeChapter"
+    | "reviewNotes"
+    | "lunch"
+    | "draftOutline"
+    | "readSources"
+    | "teamMeeting"
+    | "problemSet"
+    | "gym";
   /** The Calendar's event icons: a repeating event, one with music, and a meeting. */
   type FilmIcon = "music" | "repeat" | "meeting";
   interface FilmEvent {
@@ -192,55 +205,67 @@
   const ICON_ORDER: readonly FilmIcon[] = ["music", "repeat", "meeting"];
   /** Minimum height for an event to show its icons. */
   const EVENT_ICONS_MIN_PX = 17;
-  const LUNCH_ICONS: readonly FilmIcon[] = ["repeat"];
+  const REPEAT_ICONS: readonly FilmIcon[] = ["repeat"];
   const MUSIC_ICONS: readonly FilmIcon[] = ["music"];
   const MEETING_ICONS: readonly FilmIcon[] = ["repeat", "meeting"];
 
-  /** Lunch, at the same hour on every other day of the week. */
-  const LUNCH: FilmEvent = { start: 12 * 60, end: 13 * 60, color: EATING, title: "lunch", icons: LUNCH_ICONS };
+  /** Lunch, at the same hour every day of the week, right as the film's session ends. */
+  const LUNCH: FilmEvent = { start: 13 * 60, end: 14 * 60, color: EATING, title: "lunch", icons: REPEAT_ICONS };
+  /** The team meeting on Monday, Wednesday, and Friday afternoons, and the gym on Tuesday and Thursday evenings. */
+  const MEETING: FilmEvent = { start: 14 * 60, end: 15 * 60, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS };
+  const GYM: FilmEvent = { start: 16 * 60, end: 17 * 60, color: EXERCISE, title: "gym", icons: REPEAT_ICONS };
 
   /**
    * What the workweek holds from Monday to Friday. Events start and end on the hour or the half hour, as people plan
-   * them, except Tuesday's first event, which starts a little late. Focus events run back to back with different
-   * presets, so their rails show the rhythm carrying from one event into the next.
+   * them. Each morning is a chain of Focus events back to back with different presets, long enough for a full cycle of
+   * four focuses, so its rail shows the rhythm carrying from one event into the next and reaching its long break.
    */
   const WORKWEEK: readonly (readonly FilmEvent[])[] = [
     [
-      { start: 540, end: 600, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
-      { start: 600, end: 690, color: CYAN, title: "draftOutline", preset: "creative" },
+      { start: 480, end: 600, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
+      { start: 600, end: 720, color: CYAN, title: "draftOutline", preset: "creative" },
       LUNCH,
-      { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
+      MEETING,
+      { start: 900, end: 990, color: ASSIGNMENTS, title: "problemSet", preset: "balanced" },
     ],
     [
-      { start: 550, end: 630, color: CYAN, title: "draftOutline", preset: "deep" },
-      { start: 630, end: 690, color: PURPLE, title: "reviewNotes", preset: "creative" },
+      { start: 510, end: 660, color: CYAN, title: "draftOutline", preset: "deep" },
+      { start: 660, end: 750, color: PURPLE, title: "reviewNotes", preset: "creative" },
       LUNCH,
-      { start: 810, end: 870, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
+      { start: 840, end: 930, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
+      GYM,
     ],
     [
-      { start: 540, end: 600, color: CYAN, title: "draftOutline", preset: "creative" },
-      { start: 600, end: 690, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
+      { start: 480, end: 570, color: ASSIGNMENTS, title: "problemSet", preset: "creative" },
+      { start: 570, end: 720, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
       LUNCH,
-      { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
+      MEETING,
+      { start: 900, end: 990, color: CYAN, title: "draftOutline", preset: "balanced" },
     ],
     [
-      { start: 540, end: 630, color: THESIS, title: "writeChapter", preset: "creative" },
-      { start: 630, end: 690, color: PURPLE, title: "reviewNotes", preset: "balanced" },
+      { start: 480, end: 630, color: THESIS, title: "writeChapter", preset: "extended" },
+      { start: 630, end: 720, color: PURPLE, title: "reviewNotes", preset: "balanced" },
       LUNCH,
-      { start: 810, end: 870, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
+      { start: 870, end: 960, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },
+      GYM,
     ],
     [
-      { start: 570, end: 660, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
-      { start: 660, end: 720, color: PURPLE, title: "reviewNotes", preset: "creative" },
+      { start: 480, end: 630, color: BLUE, title: "readSources", preset: "deep", icons: MUSIC_ICONS },
+      { start: 630, end: 720, color: PURPLE, title: "reviewNotes", preset: "creative" },
       LUNCH,
-      { start: 780, end: 840, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS },
+      MEETING,
+      { start: 900, end: 990, color: ASSIGNMENTS, title: "problemSet", preset: "balanced" },
     ],
   ];
 
-  /** The film's own day: the session drawn on it, the planned event right after it, then a late lunch. */
+  /**
+   * The film's own day: the session drawn on it, the planned event right after it until lunch, then an afternoon with
+   * no more Focus, so the planned event completes the day's Focus.
+   */
   const FILM_DAY: readonly FilmEvent[] = [
     { start: DRAWN_END, end: SESSION_END, color: BLUE, title: "readSources", icons: MUSIC_ICONS },
-    { ...LUNCH, start: SESSION_END, end: SESSION_END + 60 },
+    LUNCH,
+    GYM,
   ];
 
   const now = new Date();
@@ -411,6 +436,8 @@
       case "draftOutline": return t("vaultSetup.film.draftOutline");
       case "readSources": return t("vaultSetup.film.readSources");
       case "teamMeeting": return t("vaultSetup.film.teamMeeting");
+      case "problemSet": return t("vaultSetup.film.problemSet");
+      case "gym": return t("vaultSetup.film.gym");
     }
   }
 

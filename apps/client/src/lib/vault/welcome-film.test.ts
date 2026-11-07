@@ -168,12 +168,20 @@ describe("the film's session", () => {
       { kind: "break", minutes: creative.longBreakMinutes },
       { kind: "focus", minutes: creative.focusDurationMinutes },
       { kind: "break", minutes: creative.shortBreakMinutes },
+      { kind: "focus", minutes: creative.focusDurationMinutes },
+      { kind: "break", minutes: creative.shortBreakMinutes },
       { kind: "focus", minutes: FILM_SESSION_MINUTES - (FILM_BREAKS.at(-1)?.end ?? 0) },
     ]);
   });
 
   it("ends both events on the half hour or the hour", () => {
     for (const event of FILM_CHAIN) expect(event.end % 30).toBe(0);
+  });
+
+  it("keeps as many breaks in the planned event on its own rail as on the default and joined rails", () => {
+    const planned = (breaks: readonly { start: number }[]) => breaks.filter((pause) => pause.start >= FILM_DRAWN_MINUTES).length;
+    expect(planned(FILM_DEFAULT_RAIL.breaks)).toBe(FILM_PLANNED_RAIL.breaks.length);
+    expect(planned(FILM_BREAKS)).toBe(FILM_PLANNED_RAIL.breaks.length);
   });
 
   it("moves the planned event's breaks once the drawn event joins its rail", () => {

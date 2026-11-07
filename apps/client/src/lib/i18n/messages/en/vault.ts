@@ -10,6 +10,8 @@ export const vaultSetup = {
     draftOutline: "Draft outline",
     readSources: "Read sources",
     teamMeeting: "Team meeting",
+    problemSet: "Problem set",
+    gym: "Gym",
     universityGroup: "University",
     healthGroup: "Health",
     personalGroup: "Personal",

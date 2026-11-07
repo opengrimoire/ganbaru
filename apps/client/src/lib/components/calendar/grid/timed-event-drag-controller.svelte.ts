@@ -93,6 +93,8 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
   let scrollUpdateRaf = 0;
   let scrollUpdateContainer: HTMLElement | null = null;
   const touchHold = new TouchHoldArbiter();
+  // Whether the parent was told a touch edit started, so a still tap never collapses the sheet.
+  let touchEditNotified = false;
 
   // Auto-scroll
 
@@ -216,7 +218,8 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
           touchHold.finish();
           return;
         }
-        config.onTouchEditStart?.();
+        // An immediate touch reports the edit once it moves, so a still tap leaves the sheet as is.
+        if (!options.immediate) notifyTouchEditStart();
       }, { immediate: options.immediate });
       return;
     }
@@ -431,6 +434,7 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
       const movedEnough = Math.hypot(dx, dy) >= EVENT_DRAG_THRESHOLD_PX;
       if (!movedEnough) return;
       dragInteractionActive = true;
+      if (touchHold.editingActive) notifyTouchEditStart();
       if (dragState.type === "move") lockCursor("grabbing");
       startAutoScroll();
     }
@@ -503,7 +507,7 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
           touchHold.finish();
           return;
         }
-        config.onTouchEditStart?.();
+        notifyTouchEditStart();
       }, {
         onTap: (releaseEvent) => {
           if (!beginCreateStart(dateStr, timing, e, false)) return;
@@ -696,10 +700,17 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
     finishTouchEditing();
   }
 
+  function notifyTouchEditStart(): void {
+    if (touchEditNotified) return;
+    touchEditNotified = true;
+    config.onTouchEditStart?.();
+  }
+
   function finishTouchEditing(): void {
-    const wasActive = touchHold.editingActive;
+    const wasNotified = touchEditNotified;
+    touchEditNotified = false;
     touchHold.finish();
-    if (wasActive) config.onTouchEditEnd?.();
+    if (wasNotified) config.onTouchEditEnd?.();
   }
 
   onDestroy(() => {

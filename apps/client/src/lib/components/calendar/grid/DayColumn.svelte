@@ -695,7 +695,10 @@
       onClick={(rect) => { if (!didDrag) onEventClick(pos.event, rect); }}
       onPrefetch={() => onEventPrefetch?.(pos.event)}
       onPointerDown={(e) => {
-        if (allowPointerEditing) onDragStart(pos.event.id, e, getEventEdgeFromClick(pos.event.id, e));
+        // The edited event moves at a touch, like its knobs; other events still need a long press.
+        if (allowPointerEditing) {
+          onDragStart(pos.event.id, e, getEventEdgeFromClick(pos.event.id, e), { immediate: pos.event.id === editingId });
+        }
       }}
     />
   {/each}

@@ -1144,10 +1144,11 @@
             disabled={saveControlsDisabled}
             class={cn("flex h-12 shrink-0 items-center px-1", pomodoroReadOnlyInteractive && "readonly-interactive")}
           >
+            <!-- The sheet's Save is a neutral pill, unlike the desktop panel's confirm color. -->
             <span
               class={cn(
-                "rounded-floating-item px-4 py-2 text-[0.866667rem] font-medium",
-                saveReady ? "bg-action-confirm text-action-confirm-foreground" : "text-muted-foreground",
+                "rounded-full px-6 py-2 text-[0.866667rem] font-medium transition-colors",
+                saveReady ? "bg-foreground text-background" : "text-muted-foreground",
               )}
               style:background-color={saveReady ? undefined : "var(--panel-contrast)"}
             >
@@ -1774,7 +1775,7 @@
     height: 100%;
     border-radius: 9999px;
     background-color: color-mix(in srgb, var(--muted-foreground) 40%, var(--panel-bg));
-    transition: transform 200ms ease-out, background-color 200ms ease-out;
+    transition: transform 200ms ease-out;
   }
 
   .sheet-grabber-start {
@@ -1785,10 +1786,6 @@
   .sheet-grabber-end {
     right: 0;
     transform-origin: calc(var(--grabber-thickness) / 2) 50%;
-  }
-
-  .sheet-header[data-collapsed] .sheet-grabber-half {
-    background-color: var(--muted-foreground);
   }
 
   .sheet-header[data-collapsed] .sheet-grabber-start {

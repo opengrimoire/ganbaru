@@ -74,22 +74,46 @@ describe("welcome limits scene", () => {
     expect(limitsNotice(B.limitNotice + 1000)).toEqual({ app: "egogram", reason: "limit", shown: 1 });
   });
 
-  it("types Y's address into a new tab after the limit, and loads the block page", () => {
-    expect(B.newTabTap).toBeGreaterThan(B.limitNotice);
+  it("sends Egogram Home again each time it is opened after the limit, without using more of the budget", () => {
+    for (const [tap, home] of [
+      [B.retryTap, B.retryHome],
+      [B.retryAgainTap, B.retryAgainHome],
+    ] as const) {
+      expect(limitsEgogramTouch(tap - 100)).toBeGreaterThan(0);
+      expect(limitsPhoneApp(tap - 1)).toBeNull();
+      expect(limitsPhoneApp(tap + 300)).toMatchObject({ app: "egogram", scroll: 0 });
+      expect(limitsPhoneApp(home + 400)).toBeNull();
+      expect(limitsUsage(home + 400)).toEqual(limitsUsage(B.limitReached));
+    }
+    expect(limitsNotice(B.retryTap - 1)).toBeNull();
+    expect(limitsNotice(B.retryNotice + 1000)?.shown).toBe(1);
+    expect(limitsNotice(B.retryAgainHome + 400)?.shown).toBe(1);
+  });
+
+  it("types each site of the limit into the browser after it ran out, and loads its block page", () => {
+    expect(B.newTabTap).toBeGreaterThan(B.retryAgainHome);
     expect(limitsBrowser(B.newTabTap - 100).newTabTouch).toBeGreaterThan(0);
     expect(limitsBrowser(B.newTabTap).address).toMatchObject({ kind: "typed", text: "" });
-    expect(limitsBrowser(B.typeStart + (B.typeEnd - B.typeStart) / 2).address).toMatchObject({ kind: "typed", text: "y." });
-    expect(limitsBrowser(B.typeEnd).address).toMatchObject({ kind: "typed", text: "y.com" });
-    const loading = limitsBrowser(B.loadStart + 100);
+    expect(limitsBrowser(B.yTypeStart + (B.yTypeEnd - B.yTypeStart) / 2).address).toMatchObject({ kind: "typed", text: "y." });
+    expect(limitsBrowser(B.yTypeEnd).address).toMatchObject({ kind: "typed", text: "y.com" });
+    const loading = limitsBrowser(B.yLoadStart + 100);
     expect(loading.page.kind).toBe("blank");
     expect(loading.loading).toBeGreaterThan(0);
-    const blocked = limitsBrowser(B.blocked);
+    const blocked = limitsBrowser(B.yBlocked);
     expect(blocked.page).toEqual({ kind: "block", app: "y", reason: "limit" });
     expect(blocked.address).toEqual({ kind: "extension" });
     expect(blocked.tabs.map((tab) => [tab.content, tab.active])).toEqual([
       ["work", false],
       ["blocked", true],
     ]);
+
+    expect(limitsBrowser(B.addressTap - 100).addressTouch).toBeGreaterThan(0);
+    const typing = limitsBrowser(B.egogramTypeEnd);
+    expect(typing.address).toMatchObject({ kind: "typed", text: "egogram.com" });
+    expect(typing.page).toEqual({ kind: "block", app: "y", reason: "limit" });
+    expect(limitsBrowser(B.egogramLoadStart + 100).page).toEqual({ kind: "block", app: "y", reason: "limit" });
+    expect(limitsBrowser(B.egogramBlocked).page).toEqual({ kind: "block", app: "egogram", reason: "limit" });
+    expect(limitsBrowser(B.egogramBlocked).tabs).toHaveLength(2);
   });
 
   it("keeps a single active tab and every animated value between 0 and 1", () => {
@@ -102,6 +126,7 @@ describe("welcome limits scene", () => {
         browser.pageIn,
         browser.loading,
         browser.newTabTouch,
+        browser.addressTouch,
         ...browser.tabs.map((tab) => tab.closeTouch ?? 0),
         browser.page.kind === "feed" ? browser.page.scroll : 0,
         limitsPhoneApp(elapsed)?.open ?? 0,
@@ -117,7 +142,7 @@ describe("welcome limits scene", () => {
 
   it("ends on both devices blocked, as the reduced-motion still", () => {
     const browser = limitsBrowser(B.end);
-    expect(browser.page).toEqual({ kind: "block", app: "y", reason: "limit" });
+    expect(browser.page).toEqual({ kind: "block", app: "egogram", reason: "limit" });
     expect(browser.pageIn).toBe(1);
     expect(browser.loading).toBe(0);
     expect(browser.newTabTouch).toBe(0);

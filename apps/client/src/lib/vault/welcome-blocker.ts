@@ -55,7 +55,7 @@ export type BlockerAddress =
 
 /**
  * One frame of the browser: its tabs, its address bar, the active tab's page and how far it has faded in, how far a
- * page has loaded (0 when none loads), and the tap on the new tab button, each from 0 to 1.
+ * page has loaded (0 when none loads), and the taps on the new tab button and the address bar, each from 0 to 1.
  */
 export interface BlockerBrowserFrame {
   tabs: readonly BlockerTab[];
@@ -64,6 +64,7 @@ export interface BlockerBrowserFrame {
   pageIn: number;
   loading: number;
   newTabTouch: number;
+  addressTouch: number;
 }
 
 /** What a tab showing `page` carries. */
@@ -103,6 +104,7 @@ export function blockerSingleTab(page: BlockerBrowserPage, pageIn: number): Bloc
     pageIn,
     loading: 0,
     newTabTouch: 0,
+    addressTouch: 0,
   };
 }
 

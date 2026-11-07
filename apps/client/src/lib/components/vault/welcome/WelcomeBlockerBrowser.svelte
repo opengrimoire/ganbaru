@@ -102,7 +102,7 @@
       <ArrowLeft size={12} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
       <ArrowRight size={12} strokeWidth={1.8} class="shrink-0 opacity-50" aria-hidden="true" />
       <RotateCw size={11} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
-      <span class="flex h-5 min-w-0 flex-1 items-center gap-1.5 rounded-full bg-foreground/6 px-2.5 text-[10px] text-foreground">
+      <span class="relative flex h-5 min-w-0 flex-1 items-center gap-1.5 rounded-full bg-foreground/6 px-2.5 text-[10px] text-foreground">
         {#if frame.address.kind === "extension"}
           <span class="flex shrink-0 items-center gap-1 rounded-full bg-background px-1.5 py-px">
             <img src={appIconUrl} alt="" class="size-2.5 rounded-full" draggable="false" />
@@ -119,6 +119,7 @@
         {:else}
           <span class="truncate">{frame.address.host}</span>
         {/if}
+        {@render touch(frame.addressTouch)}
       </span>
       <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-full" draggable="false" />
       {#if frame.loading > 0}

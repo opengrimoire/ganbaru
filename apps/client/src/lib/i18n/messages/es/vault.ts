@@ -44,7 +44,7 @@ export const vaultSetup = {
     headline: "Límites diarios en cada dispositivo",
     body: "Junta sitios y apps en un solo tiempo diario.\nEl tiempo cuenta en cada dispositivo.",
     sceneDescription:
-      "Una breve animación de un límite diario de una hora para redes sociales. El tiempo en Y en el navegador de una laptop llena parte de una barra; luego se cierra la pestaña de Y y Egogram en un teléfono llena el resto, cada uno con su color. Al agotarse la hora, Egogram vuelve a la pantalla de inicio con una notificación, y Y escrito de nuevo en una pestaña nueva del navegador abre la página de bloqueo de Ganbaru.",
+      "Una breve animación de un límite diario de una hora para redes sociales que incluye los sitios de Y y Egogram y la app de Egogram. El tiempo en Y en el navegador de una laptop llena parte de una barra; luego se cierra la pestaña de Y y Egogram en un teléfono llena el resto, cada uno con su color. Al agotarse la hora, Egogram vuelve a la pantalla de inicio con una notificación, y cada vez que se abre de nuevo vuelve ahí al instante. De vuelta en la laptop, Y escrito en una pestaña nueva abre la página de bloqueo de Ganbaru, y lo mismo pasa con el sitio de Egogram.",
     limitName: "Redes sociales",
   },
   about: {

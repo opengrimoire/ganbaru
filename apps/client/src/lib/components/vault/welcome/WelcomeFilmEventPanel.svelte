@@ -449,8 +449,8 @@
     >
       {#if mobileLayout}
         <!-- The sheet's header: the grabber, then close and Save. -->
-        <div bind:offsetHeight={barHeight} class="sticky top-0 z-10 shrink-0" style="background-color: var(--sidebar);">
-          <div class="flex justify-center pt-2">
+        <div bind:offsetHeight={barHeight} class="sticky top-0 z-10 shrink-0" style="background-color: var(--panel-bg);">
+          <div class="flex justify-center pt-2 pb-1.5">
             <div class="h-1 w-9 rounded-full bg-muted-foreground/40"></div>
           </div>
           <div class="flex items-center gap-1 px-1">
@@ -482,7 +482,7 @@
         >
           <div bind:offsetHeight={contentHeight}>
             <!-- The title, the project and color triggers, and the date and time. -->
-            <div class="shrink-0 px-4 pt-2.5">
+            <div class={cn("shrink-0 px-4", !mobileLayout && "pt-2.5")}>
               <div class="relative top-0.5 flex items-center gap-2.5 px-1">
                 <div class="title-wrapper relative min-w-0 flex-1" data-focused={typing || undefined}>
                   <div

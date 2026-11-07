@@ -135,7 +135,7 @@
   }: {
     mode: "create" | "edit";
     mobileLayout?: boolean;
-    /** Whether the user is moving or resizing this event on the grid, which lowers the mobile sheet to its header. */
+    /** Whether the user is moving or resizing this event on the grid, which lowers the mobile sheet to its grabber. */
     gridEditing?: boolean;
     /** Grid event the mobile sheet keeps visible above itself, which is the edited event or the new draft. */
     revealEventId?: string;
@@ -374,9 +374,11 @@
   const activePanelLayout = $derived(mobileLayout ? "fullscreen" : panelLayout);
   const panelCanDrag = $derived(!mobileLayout && geometry.canDrag);
   let sheetHeaderEl = $state<HTMLDivElement>();
+  let sheetGrabberEl = $state<HTMLDivElement>();
   let sheetPeekEndEl = $state<HTMLDivElement>();
   const sheet = new EventPanelSheetController({
     enabled: () => mobileLayout && !parked,
+    shown: () => session.initialized && geometry.positionReady,
     initialDetent: () => (mode === "create" ? "peek" : "half"),
     sessionKey: () => panelSessionKey,
     gridEditing: () => gridEditing,
@@ -386,6 +388,7 @@
       || !!dateTime.timePickerTarget,
     panel: () => geometry.panelEl,
     header: () => sheetHeaderEl,
+    grabber: () => sheetGrabberEl,
     content: () => geometry.contentEl,
     peekEnd: () => sheetPeekEndEl,
     scroll: () => geometry.scrollEl,
@@ -1070,8 +1073,8 @@
 >
   {#if mobileLayout && !parked}
   <!-- Sheet header: dragging it moves the sheet, and it keeps close, delete, and save reachable at every height. -->
-  <div bind:this={sheetHeaderEl} class="sheet-header sticky top-0 z-10 shrink-0 touch-none" style="background-color: var(--sidebar);">
-    <div class="flex justify-center pt-2" aria-hidden="true">
+  <div bind:this={sheetHeaderEl} class="sheet-header sticky top-0 z-10 shrink-0 touch-none" style="background-color: var(--panel-bg);">
+    <div bind:this={sheetGrabberEl} class="flex justify-center pt-2 pb-1.5" aria-hidden="true">
       <div class="h-1 w-9 rounded-full bg-muted-foreground/40"></div>
     </div>
     <div class="flex items-center gap-1 px-1">
@@ -1184,7 +1187,7 @@
     >
     <div bind:this={geometry.contentEl}>
     <!-- Main editor: title + date -->
-    <div class="shrink-0 px-4 pt-2.5">
+    <div class={cn("shrink-0 px-4", !mobileLayout && "pt-2.5")}>
 
     <!-- Scope selector (recurring events only) -->
     {#if isRecurring}
@@ -1721,7 +1724,9 @@
   }
 
   .panel-root[data-sheet-animating="true"] {
-    transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    transition:
+      transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      clip-path 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
 
   @media (prefers-reduced-motion: reduce) {

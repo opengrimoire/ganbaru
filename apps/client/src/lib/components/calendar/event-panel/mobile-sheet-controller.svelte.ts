@@ -15,17 +15,21 @@ import { prefersReducedMotion } from "$lib/utils/smooth-swap";
 import { TOUCH_SLOP_PX } from "$lib/utils/touch-hold";
 
 /** Space between the summary rows and the bottom of a peeking sheet, in CSS pixels. */
-export const EVENT_PANEL_SHEET_PEEK_PADDING_PX = 14;
+export const EVENT_PANEL_SHEET_PEEK_PADDING_PX = 10;
 /** Release samples kept for velocity; older ones fall outside the velocity window anyway. */
 const MAX_SAMPLES = 8;
 /** Space kept between the revealed event and the grid or sheet edges, in CSS pixels. */
 const REVEAL_MARGIN_PX = 16;
 /** Space left above a fully open sheet so the page edge stays visible behind it. */
 export const EVENT_PANEL_SHEET_TOP_GAP = "0.5rem";
+/** Room kept outside the sheet's sides and top when clipping its hidden part, so its shadow still draws. */
+const SHADOW_CLIP_ALLOWANCE_PX = 16;
 
 export interface EventPanelSheetOptions {
   /** Whether the panel is a mobile bottom sheet; the controller does nothing otherwise. */
   enabled: () => boolean;
+  /** Whether the panel session is ready to be seen, which starts the slide in from the bottom. */
+  shown: () => boolean;
   /** Where a new panel session comes to rest. */
   initialDetent: () => BottomSheetDetent;
   /** Changes whenever the panel starts a new session for another event or draft. */
@@ -36,6 +40,8 @@ export interface EventPanelSheetOptions {
   needsRoom: () => boolean;
   panel: () => HTMLElement | undefined;
   header: () => HTMLElement | undefined;
+  /** The grabber strip at the top of the header, which stays visible while the user edits on the grid. */
+  grabber: () => HTMLElement | undefined;
   content: () => HTMLElement | undefined;
   /** The last row of the summary shown at the peek. */
   peekEnd: () => HTMLElement | undefined;
@@ -75,19 +81,20 @@ function nestedControlKeepsDrag(target: Element | null, boundary: HTMLElement | 
 
 /**
  * Presents the mobile event panel as a bottom sheet that rests at a peek, half, or full height, follows vertical
- * drags on its header and content, and drops to its header while the user edits the event on the grid behind it.
+ * drags on its header and content, slides in from the bottom when shown, and drops to its grabber while the user edits
+ * the event on the grid behind it.
  */
 export class EventPanelSheetController {
   detent = $state<BottomSheetDetent>("peek");
   dragHeight = $state<number | null>(null);
   entered = $state(false);
   private fullHeight = $state(0);
-  private headerHeight = $state(0);
+  private grabberHeight = $state(0);
   private peekHeight = $state(0);
   private gesture: SheetGesture | null = null;
 
   heights: BottomSheetHeights = $derived(
-    bottomSheetHeights(this.fullHeight, this.headerHeight, this.peekHeight),
+    bottomSheetHeights(this.fullHeight, this.grabberHeight, this.peekHeight),
   );
 
   constructor(private readonly options: EventPanelSheetOptions) {
@@ -95,12 +102,13 @@ export class EventPanelSheetController {
       if (!options.enabled()) return;
       const panel = options.panel();
       const header = options.header();
+      const grabber = options.grabber();
       const content = options.content();
       const peekEnd = options.peekEnd();
-      if (!panel || !header || !content || !peekEnd) return;
-      const measure = () => this.measure(panel, header, content, peekEnd);
+      if (!panel || !header || !grabber || !content || !peekEnd) return;
+      const measure = () => this.measure(panel, header, grabber, content, peekEnd);
       const observer = new ResizeObserver(measure);
-      for (const element of [panel, header, content, peekEnd]) observer.observe(element);
+      for (const element of [panel, header, grabber, content, peekEnd]) observer.observe(element);
       measure();
       return () => observer.disconnect();
     });
@@ -113,7 +121,11 @@ export class EventPanelSheetController {
     });
 
     $effect(() => {
-      if (!options.enabled() || this.entered || this.fullHeight <= 0) return;
+      if (!options.enabled() || !options.shown()) this.entered = false;
+    });
+
+    $effect(() => {
+      if (!options.enabled() || !options.shown() || this.entered || this.fullHeight <= 0) return;
       let second = 0;
       const first = requestAnimationFrame(() => {
         second = requestAnimationFrame(() => {
@@ -182,7 +194,10 @@ export class EventPanelSheetController {
     return this.entered && this.dragHeight === null;
   }
 
-  /** Inline position of the sheet: fixed to the bottom of the visible viewport and moved down by its hidden part. */
+  /**
+   * Inline position of the sheet: fixed between the top safe area and the system navigation (or the keyboard), moved
+   * down by its hidden part, which is clipped so the sheet never draws over the navigation buttons.
+   */
   get style(): string {
     const offset = Math.max(0, this.fullHeight - this.visibleHeight);
     return [
@@ -191,9 +206,9 @@ export class EventPanelSheetController {
       "left:calc(var(--visual-viewport-offset-left) + var(--safe-area-left))",
       `top:calc(var(--visual-viewport-offset-top) + var(--safe-area-top) + ${EVENT_PANEL_SHEET_TOP_GAP})`,
       "width:calc(var(--visual-viewport-width) - var(--safe-area-left) - var(--safe-area-right))",
-      `height:calc(var(--visual-viewport-height) - var(--safe-area-top) - ${EVENT_PANEL_SHEET_TOP_GAP})`,
-      "padding-bottom:var(--safe-area-bottom)",
+      `height:calc(var(--visual-viewport-height) - var(--safe-area-top) - var(--safe-area-bottom) - ${EVENT_PANEL_SHEET_TOP_GAP})`,
       `transform:translate3d(0, ${offset}px, 0)`,
+      `clip-path:inset(-${SHADOW_CLIP_ALLOWANCE_PX}px -${SHADOW_CLIP_ALLOWANCE_PX}px ${offset}px -${SHADOW_CLIP_ALLOWANCE_PX}px)`,
       "",
     ].join("; ");
   }
@@ -203,10 +218,15 @@ export class EventPanelSheetController {
     this.detent = higherBottomSheetDetent(this.detent, detent);
   }
 
-  private measure(panel: HTMLElement, header: HTMLElement, content: HTMLElement, peekEnd: HTMLElement): void {
-    const paddingBottom = Number.parseFloat(getComputedStyle(panel).paddingBottom) || 0;
-    this.fullHeight = panel.clientHeight - paddingBottom;
-    this.headerHeight = header.offsetHeight;
+  private measure(
+    panel: HTMLElement,
+    header: HTMLElement,
+    grabber: HTMLElement,
+    content: HTMLElement,
+    peekEnd: HTMLElement,
+  ): void {
+    this.fullHeight = panel.clientHeight;
+    this.grabberHeight = grabber.offsetHeight;
     const summaryBottom = peekEnd.getBoundingClientRect().bottom - content.getBoundingClientRect().top;
     this.peekHeight = header.offsetHeight + summaryBottom + EVENT_PANEL_SHEET_PEEK_PADDING_PX;
   }

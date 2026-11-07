@@ -178,12 +178,17 @@
     });
   });
 
-  /** The edited event, at its dragged position while it moves, that shows touch resize knobs on mobile. */
-  const mobileKnobTarget = $derived.by(() => {
-    if (!mobileLayout || !allowPointerEditing || !editingId) return null;
-    return layoutedPreviews.find((pos) => pos.event.id === editingId)
-      ?? renderedPositioned.find((pos) => pos.event.id === editingId)
-      ?? null;
+  /**
+   * The event that shows touch resize knobs on mobile: the event being drawn, whose knobs only show
+   * because the drawing finger owns the gesture, or the edited event at its dragged position while it moves.
+   */
+  const mobileKnobTarget = $derived.by((): { position: PositionedEvent; interactive: boolean } | null => {
+    if (!mobileLayout || !allowPointerEditing) return null;
+    if (createPreview && layoutedCreatePreview) return { position: layoutedCreatePreview, interactive: false };
+    if (!editingId) return null;
+    const position = layoutedPreviews.find((pos) => pos.event.id === editingId)
+      ?? renderedPositioned.find((pos) => pos.event.id === editingId);
+    return position ? { position, interactive: true } : null;
   });
 
   function handleMobileKnobPointerDown(
@@ -758,11 +763,14 @@
     </div>
   {/each}
 
-  <!-- Touch resize knobs on the edited event: a finger on a knob resizes at once, without the long press. -->
+  <!-- Touch resize knobs on the edited event: a finger on a knob resizes at once, without the long press.
+       The overlay is exempt from the outside close so a knob touch never reads as a tap on the grid. -->
   {#if mobileKnobTarget}
-    {@const knobPosition = mobileKnobTarget}
+    {@const knobPosition = mobileKnobTarget.position}
+    {@const knobsInteractive = mobileKnobTarget.interactive}
     {@const knobColor = getEventColor(knobPosition.event.color, theme).bg}
     <div
+      data-calendar-edit-close-ignore
       class="pointer-events-none absolute"
       aria-hidden="true"
       style="
@@ -776,13 +784,15 @@
     >
       {#if !knobPosition.isClippedTop}
         <div
-          class="mobile-resize-knob pointer-events-auto absolute top-0 left-0"
+          class="mobile-resize-knob absolute top-0 left-0"
+          class:pointer-events-auto={knobsInteractive}
           onpointerdown={(e) => handleMobileKnobPointerDown(knobPosition.event.id, "resize-top", e)}
         ></div>
       {/if}
       {#if !knobPosition.isClippedBottom}
         <div
-          class="mobile-resize-knob pointer-events-auto absolute right-0 bottom-0"
+          class="mobile-resize-knob absolute right-0 bottom-0"
+          class:pointer-events-auto={knobsInteractive}
           data-edge="bottom"
           onpointerdown={(e) => handleMobileKnobPointerDown(knobPosition.event.id, "resize-bottom", e)}
         ></div>

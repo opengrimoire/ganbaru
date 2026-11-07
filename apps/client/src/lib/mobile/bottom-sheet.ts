@@ -6,7 +6,7 @@ export type BottomSheetDetent = "peek" | "half" | "full";
 
 /** Visible heights of a bottom sheet in CSS pixels, measured from the bottom of its area. */
 export interface BottomSheetHeights {
-  /** Header only, used while the user edits what the sheet covers. */
+  /** Grabber only, used while the user edits what the sheet covers. */
   dip: number;
   peek: number;
   half: number;
@@ -35,13 +35,13 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /**
- * Return the detent heights of a sheet whose full visible height is `fullHeight`, whose header is `headerHeight`
+ * Return the detent heights of a sheet whose full visible height is `fullHeight`, whose grabber strip is `dipHeight`
  * tall, and whose summary ends `peekHeight` below its top. Every height stays within the sheet, and the detents never
  * cross: dip, peek, half, and full only grow.
  */
-export function bottomSheetHeights(fullHeight: number, headerHeight: number, peekHeight: number): BottomSheetHeights {
+export function bottomSheetHeights(fullHeight: number, dipHeight: number, peekHeight: number): BottomSheetHeights {
   const full = Math.max(0, Math.round(fullHeight));
-  const dip = clamp(Math.round(headerHeight), 0, full);
+  const dip = clamp(Math.round(dipHeight), 0, full);
   const peek = clamp(Math.round(peekHeight), dip, full);
   const half = clamp(Math.round(full * BOTTOM_SHEET_HALF_RATIO), peek, full);
   return { dip, peek, half, full };

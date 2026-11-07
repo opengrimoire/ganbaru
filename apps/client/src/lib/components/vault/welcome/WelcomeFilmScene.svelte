@@ -713,13 +713,13 @@
                   {@render eventBlock(SESSION_START, DRAWN_END, THESIS, title("writeChapter"), isPast(0, DRAWN_END), false, true)}
                 {/if}
 
-                <!-- The edited event's resize knobs, as a phone draws them while the event panel is open. -->
-                {#if mobileShell && filmPanelOpen(elapsed)}
+                <!-- The drawn event's resize knobs, as a phone shows them from the start of the drawing until Save. -->
+                {#if mobileShell && creating}
                   <div
                     class="pointer-events-none absolute left-0"
                     style:width={`${100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT}%`}
                     style:top={`${y(SESSION_START)}px`}
-                    style:height={`${px(FILM_DRAWN_MINUTES)}px`}
+                    style:height={`${px(drawnMinutes)}px`}
                     style:z-index="11"
                     style:--knob-color={getEventColor(projectPicked ? THESIS : undefined, theme.current).bg}
                   >

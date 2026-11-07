@@ -12,12 +12,14 @@
   import SquarePlay from "@lucide/svelte/icons/square-play";
   import { BLOCKER_APP_NAMES, type BlockerApp } from "$lib/vault/welcome-blocker";
   import WelcomeParodyIcon, { EGOGRAM_GRADIENT, PARODY_COLORS } from "./WelcomeParodyIcon.svelte";
+  import WelcomeParodyBlueditSite from "./WelcomeParodyBlueditSite.svelte";
   import WelcomeParodyYSite from "./WelcomeParodyYSite.svelte";
 
   /**
-   * A parody app's feed in the distraction blocker's welcome scenes, drawn with placeholder lines: Y's website or posts,
-   * Bluedit's voted threads, or Egogram's stories and photos. It scrolls by `scroll`, from 0 to 1, over `travel` pixels.
-   * On a phone, an app draws its own bars, as its mobile app does, instead of a website's header.
+   * A parody app's feed in the distraction blocker's welcome scenes, drawn with placeholder lines: Y's and Bluedit's
+   * websites in a browser, or on a phone, Y's posts, Bluedit's voted threads, or Egogram's stories and photos. It scrolls
+   * by `scroll`, from 0 to 1, over `travel` pixels. On a phone, an app draws its own bars, as its mobile app does,
+   * instead of a website's header.
    */
   let {
     app,
@@ -54,6 +56,8 @@
 
 {#if app === "y" && !phone}
   <WelcomeParodyYSite {scroll} {travel} />
+{:else if app === "bluedit" && !phone}
+  <WelcomeParodyBlueditSite {scroll} {travel} />
 {:else}
   <div class="flex h-full flex-col overflow-hidden bg-background text-foreground" style:padding-top={`${topInset}px`}>
     {#if phoneEgogram}

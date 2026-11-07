@@ -4,13 +4,13 @@
   import CalendarClock from "@lucide/svelte/icons/calendar-clock";
   import ChartNoAxesColumn from "@lucide/svelte/icons/chart-no-axes-column";
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
-  import Feather from "@lucide/svelte/icons/feather";
   import Heart from "@lucide/svelte/icons/heart";
   import House from "@lucide/svelte/icons/house";
   import Image from "@lucide/svelte/icons/image";
   import Mail from "@lucide/svelte/icons/mail";
   import MapPin from "@lucide/svelte/icons/map-pin";
   import MessageCircle from "@lucide/svelte/icons/message-circle";
+  import Plus from "@lucide/svelte/icons/plus";
   import Repeat2 from "@lucide/svelte/icons/repeat-2";
   import Search from "@lucide/svelte/icons/search";
   import Share from "@lucide/svelte/icons/share";
@@ -75,10 +75,10 @@
         </span>
       </span>
     {/each}
-    <span class="mt-0.5 grid size-5.5 place-items-center rounded-full bg-foreground text-background @lg:hidden">
-      <Feather size={10} strokeWidth={2.2} />
+    <span class="grid size-4.5 place-items-center rounded-full bg-foreground text-background @lg:hidden">
+      <Plus size={9} strokeWidth={2.8} />
     </span>
-    <span class="mt-0.5 mr-2.5 hidden h-5.5 items-center justify-center rounded-full bg-foreground @lg:flex">
+    <span class="mr-2.5 hidden h-4.5 items-center justify-center rounded-full bg-foreground @lg:flex">
       {@render bar("40%", "bg-background/70")}
     </span>
   </nav>

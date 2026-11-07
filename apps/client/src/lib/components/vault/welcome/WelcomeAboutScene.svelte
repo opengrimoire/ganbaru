@@ -76,7 +76,7 @@
   const SPARK_ANGLES = Array.from({ length: SPARK_COUNT }, (_, index) => (index / SPARK_COUNT) * 2 * Math.PI);
   /** The widths of the placeholder commit messages, one per row, and of the description's lines, as fractions of their room. */
   const MESSAGE_WIDTHS = [0.82, 0.64, 0.9, 0.56, 0.74, 0.48, 0.68];
-  const DESCRIPTION_WIDTHS = [1, 0.92, 0.6];
+  const DESCRIPTION_WIDTHS = [1, 0.7];
 
   interface RepositoryLink {
     icon: Component<{ size?: number; strokeWidth?: number; "aria-hidden"?: "true" }>;
@@ -112,8 +112,9 @@
   const canvasH = $derived(height - 2 * BEZEL);
   const wide = $derived(canvasW >= SIDEBAR_MIN_W);
   /**
-   * The repository's documents, the readme and the license first. The sidebar names the security policy in full; the
-   * single column's footer shortens it and shows the documents after the license only where they fit.
+   * The repository's documents, the readme and the license first. The sidebar lists them with icons and names the
+   * security policy in full; the single column shows them as tabs under the files, with the readme's selected, and
+   * shows the tabs after the license only where they fit.
    */
   const links = $derived([README, LICENSE, CODE_OF_CONDUCT, CONTRIBUTING, wide ? SECURITY_POLICY : SECURITY]);
   const page = $derived(aboutPage(elapsed));
@@ -235,7 +236,7 @@
             {#each ABOUT_FILES as file, index (file.name)}
               {@const row = aboutRow(elapsed, index)}
               <div
-                class="flex min-h-6 flex-1 basis-0 items-center gap-2 border-b border-border/60 px-2.5 last:border-b-0"
+                class="flex min-h-5.5 flex-1 basis-0 items-center gap-2 border-b border-border/60 px-2.5 last:border-b-0"
                 style:opacity={row}
                 style:transform={`translateY(${(1 - row) * ROW_RISE}px)`}
               >
@@ -282,9 +283,15 @@
         </div>
 
         {#if !wide}
-          <!-- The readme and license always show; the other documents wrap out of sight when there is no room for them. -->
-          <div class="flex h-4 shrink-0 flex-wrap gap-x-4 gap-y-2 overflow-hidden text-[11px] text-muted-foreground">
-            {#each links as item, index (index)}{@render link(item)}{/each}
+          <!-- The documents' tabs: the readme's is selected, and the tabs after the license wrap out of sight when there is no room for them. -->
+          <div class="flex h-6 shrink-0 flex-wrap gap-x-4 gap-y-2 overflow-hidden border-b border-border text-[11px] text-muted-foreground">
+            {#each links as item, index (index)}
+              <span
+                class={`flex h-6 shrink-0 items-center whitespace-nowrap ${item === README ? "border-b-2 border-primary font-semibold text-foreground" : ""}`}
+              >
+                {item.label()}
+              </span>
+            {/each}
           </div>
         {/if}
       </div>

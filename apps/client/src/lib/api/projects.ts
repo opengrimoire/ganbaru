@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
 import { normalizeEventColor } from "$lib/calendar/utils";
 import { FALLBACK_COLOR_INDEX } from "$lib/calendar/types";
-import { localTimezone } from "$lib/stores/calendar/event-payloads";
+import { getLocalTimezone } from "$lib/calendar/timezone-utils";
 import { toCalendarDate } from "$lib/calendar/db-rows";
 import {
   isNotesPageOpenMode,
@@ -763,7 +763,7 @@ function mapCustomEmoji(row: ProjectCustomEmojiRow): ProjectCustomEmoji {
 }
 
 function mapLinkableEvent(row: ProjectLinkableEventRow): ProjectLinkableEvent {
-  const renderZone = localTimezone();
+  const renderZone = getLocalTimezone();
   const allDay = row.all_day !== 0;
   const color = normalizeEventColor(row.color);
   return {

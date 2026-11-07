@@ -26,7 +26,14 @@ export const vaultSetup = {
     headline: "Free and open source",
     body: "Your data stays on your devices and syncs directly between them, with no account, ads, or tracking.",
     sceneDescription:
-      "A short animation of one person's laptop, desktop, and phone, linked directly to each other with nothing in between: each adds something in turn, and it travels straight to the other two, so all three end up holding the same things.",
+      "A short animation of a receipt printing line by line: Calendar, Focus, Projects, Notes, Chat, Music, the distraction blocker, and sync, each free, and a total that is free as well. A seal reading AGPL 3.0, open source, then stamps the receipt.",
+    receipt: {
+      free: "Free",
+      total: "Total",
+      blocker: "Distraction blocker",
+      sync: "Sync",
+      stamp: "Open source",
+    },
   },
   stepProgress: (current: number, total: number) => `Step ${current} of ${total}`,
   licenseButton: "License (AGPL 3.0)",

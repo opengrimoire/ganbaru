@@ -518,7 +518,7 @@
               onkeydown={handleDateInputKeydown}
               class="w-31 rounded bg-black/5 px-2.5 py-0.5 text-[0.8rem] outline-none dark:bg-black/15
                 {recEndType === 'until' ? 'text-event-panel-input-text' : 'text-muted-foreground'}
-                {pickerOpen ? 'ring-1 ring-primary/60' : 'hover:bg-black/5 dark:hover:bg-black/15'}" />
+                hover:bg-black/5 dark:hover:bg-black/15" />
 
             {#snippet untilCalendar()}
               <MiniDatePicker

@@ -904,11 +904,7 @@
   }
 
   function startTimeShellStateClass(): string {
-    if (!startControlsDisabled) {
-      return dateTime.timePickerTarget === "start"
-        ? "ring-1 ring-primary/60"
-        : "hover:bg-black/5 dark:hover:bg-black/15";
-    }
+    if (!startControlsDisabled) return "hover:bg-black/5 dark:hover:bg-black/15";
     return startDisabledAffordance ? "cursor-not-allowed opacity-60" : "";
   }
 
@@ -1325,11 +1321,7 @@
             class={cn(
               "date-chip max-w-full rounded py-0.5 text-event-panel-input-text",
               disabledAffordanceClass(startDisabledAffordance),
-              startControlsDisabled
-                ? ""
-                : dateTime.startDatePickerOpen
-                  ? "ring-1 ring-primary/60"
-                  : "hover:bg-black/5 dark:hover:bg-black/15",
+              !startControlsDisabled && "hover:bg-black/5 dark:hover:bg-black/15",
             )}>
             {shortDate}
           </button>
@@ -1374,7 +1366,7 @@
           <span
             class="time-input-shell relative z-30 rounded text-center text-event-panel-input-text
               {preferences.calendarTimeFormat === '12h' ? 'text-[0.8rem]' : 'text-[0.866667rem]'}
-              {controlsDisabled ? '' : dateTime.timePickerTarget === 'end' ? 'ring-1 ring-primary/60' : 'hover:bg-black/5 dark:hover:bg-black/15'}"
+              {controlsDisabled ? '' : 'hover:bg-black/5 dark:hover:bg-black/15'}"
             data-value={dateTime.timeInputMirrorValue("end")}>
             <input bind:this={dateTime.endTimeInput}
               type="text"
@@ -1428,7 +1420,7 @@
             onkeydown={(e) => dateTime.handleDateButtonKeydown(e, "end")}
             disabled={controlsDisabled}
             class="date-chip max-w-full rounded py-0.5 text-event-panel-input-text
-              {controlsDisabled ? '' : dateTime.endDatePickerOpen ? 'ring-1 ring-primary/60' : 'hover:bg-black/5 dark:hover:bg-black/15'}">
+              {controlsDisabled ? '' : 'hover:bg-black/5 dark:hover:bg-black/15'}">
             {shortEndDate}
           </button>
 

@@ -39,13 +39,8 @@
   ];
   /** The side bar's collapsed sections, as fractions of the room their headings take. */
   const SECTIONS = [0.7, 0.5];
-  /** The joined communities: each name's width as a fraction of the room, and whether its avatar takes the brand color. */
-  const COMMUNITIES: readonly { name: number; brand: boolean }[] = [
-    { name: 0.75, brand: false },
-    { name: 0.55, brand: true },
-    { name: 0.68, brand: false },
-    { name: 0.48, brand: false },
-  ];
+  /** The joined communities' names, as fractions of the room. */
+  const COMMUNITIES = [0.75, 0.55, 0.68, 0.48];
   /**
    * The feed's posts: the community's and the age's widths in pixels, the title's line widths as fractions of the room,
    * whether media follows, and whether you upvoted it.
@@ -73,12 +68,9 @@
   <!-- The header: the logo and wordmark, the search field, and chat, create, notifications, and your avatar. -->
   <div class="flex h-8 shrink-0 items-center gap-2 border-b border-border px-2.5">
     <Menu size={11} strokeWidth={2} class="shrink-0 @md:hidden" />
-    <span class="flex shrink-0 items-center gap-1">
-      <WelcomeParodyIcon app="bluedit" size={14} />
-      <span class="hidden text-[11px] leading-none font-bold tracking-tight @sm:inline">{BLOCKER_APP_NAMES.bluedit.toLowerCase()}</span>
-    </span>
+    <span class="shrink-0 text-[11px] leading-none font-bold tracking-tight">{BLOCKER_APP_NAMES.bluedit.toLowerCase()}</span>
     <span class="mx-auto flex h-5 max-w-40 min-w-0 flex-1 items-center gap-1.5 rounded-full bg-foreground/8 px-1">
-      <WelcomeParodyIcon app="bluedit" size={12} />
+      <span class="flex shrink-0 overflow-hidden rounded-full"><WelcomeParodyIcon app="bluedit" size={12} /></span>
       {@render bar("40%", "bg-foreground/15")}
     </span>
     <span class="flex shrink-0 items-center gap-2 text-foreground/80">
@@ -111,13 +103,10 @@
         {@render bar("55%", "bg-foreground/12", "h-1")}
         <ChevronUp size={9} strokeWidth={2} class="shrink-0" />
       </span>
-      {#each COMMUNITIES as community, index (index)}
+      {#each COMMUNITIES as fraction, index (index)}
         <span class="flex h-5 shrink-0 items-center gap-1.5 px-1.5">
-          <span
-            class="size-3 shrink-0 rounded-full {community.brand ? '' : 'bg-foreground/15'}"
-            style:background-color={community.brand ? PARODY_COLORS.bluedit : undefined}
-          ></span>
-          <span class="min-w-0 flex-1">{@render bar(`${community.name * 100}%`, "bg-foreground/20")}</span>
+          <span class="size-3 shrink-0 rounded-full bg-foreground/15"></span>
+          <span class="min-w-0 flex-1">{@render bar(`${fraction * 100}%`, "bg-foreground/20")}</span>
           <Star size={8} strokeWidth={2} class="shrink-0 text-muted-foreground" />
         </span>
       {/each}
@@ -133,10 +122,7 @@
         {#each POSTS as post, index (index)}
           <div class="flex flex-col gap-1.5 border-t border-border py-2">
             <span class="flex items-center gap-1">
-              <span
-                class="size-3 shrink-0 rounded-full {index % 2 === 0 ? 'bg-foreground/15' : ''}"
-                style:background-color={index % 2 === 0 ? undefined : PARODY_COLORS.bluedit}
-              ></span>
+              <span class="size-3 shrink-0 rounded-full bg-foreground/15"></span>
               {@render bar(`${post.community}px`, "bg-foreground/40")}
               <span class="size-0.5 shrink-0 rounded-full bg-foreground/30"></span>
               {@render bar(`${post.age}px`, "bg-foreground/12")}

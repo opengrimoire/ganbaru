@@ -28,6 +28,12 @@ export const EVENT_PANEL_SHEET_TOP_GAP = "0.5rem";
  */
 const MIN_GRID_EDIT_DIP_MS = 450;
 
+/**
+ * How the sheet animates to a new resting height: `dip` eases slowly down and back around an edit on the grid, `room`
+ * rises in step with a section sliding open, and `settle` is the quick default.
+ */
+export type EventPanelSheetMotion = "dip" | "room" | "settle";
+
 export interface EventPanelSheetOptions {
   /** Whether the panel is a mobile bottom sheet; the controller does nothing otherwise. */
   enabled: () => boolean;
@@ -108,8 +114,8 @@ export class EventPanelSheetController {
   entered = $state(false);
   /** Whether the sheet rests at its summary strip after a swipe down or a scroll of the grid behind it. */
   collapsed = $state(false);
-  /** Whether the latest resting change is a dip for an edit on the grid, which moves more gently than a settle. */
-  private dipMotion = $state(false);
+  /** How the latest resting change animates; see {@link EventPanelSheetMotion}. */
+  private restMotion = $state<EventPanelSheetMotion>("settle");
   /** Whether the sheet is lowered for an edit on the grid, held for {@link MIN_GRID_EDIT_DIP_MS} after a quick edit. */
   private gridEditDip = $state(false);
   private gridEditDipStartedAt = 0;
@@ -155,6 +161,7 @@ export class EventPanelSheetController {
       if (!this.enabled) return;
       this.detent = untrack(() => options.initialDetent());
       this.collapsed = false;
+      this.restMotion = "settle";
       this.dragHeight = null;
     });
 
@@ -167,7 +174,7 @@ export class EventPanelSheetController {
         untrack(() => {
           if (!this.gridEditDip) this.gridEditDipStartedAt = performance.now();
           this.gridEditDip = true;
-          this.dipMotion = true;
+          this.restMotion = "dip";
         });
         return;
       }
@@ -194,7 +201,7 @@ export class EventPanelSheetController {
     });
 
     $effect(() => {
-      if (this.enabled && this.needsRoom) untrack(() => this.raise("full"));
+      if (this.enabled && this.needsRoom) untrack(() => this.raise("full", "room"));
     });
 
     $effect(() => {
@@ -288,13 +295,10 @@ export class EventPanelSheetController {
     return this.lowered ? this.heights.dip : this.heights[this.detent];
   }
 
-  /**
-   * How position changes animate: none while a finger moves the sheet, a gentle dip and rise around an edit on the
-   * grid, and a quick settle otherwise.
-   */
-  get motion(): "dip" | "settle" | null {
+  /** How position changes animate, or null while a finger moves the sheet or before it slides in. */
+  get motion(): EventPanelSheetMotion | null {
     if (!this.entered || this.dragHeight !== null) return null;
-    return this.dipMotion ? "dip" : "settle";
+    return this.restMotion;
   }
 
   /**
@@ -332,18 +336,18 @@ export class EventPanelSheetController {
     ].join("; ");
   }
 
-  /** Open the sheet at least as far as `detent`. */
-  raise(detent: BottomSheetDetent): void {
+  /** Open the sheet at least as far as `detent`, animating with `motion`. */
+  raise(detent: BottomSheetDetent, motion: "room" | "settle" = "settle"): void {
     this.detent = higherBottomSheetDetent(this.collapsed ? "peek" : this.detent, detent);
     this.collapsed = false;
-    this.dipMotion = false;
+    this.restMotion = motion;
   }
 
   /** Lower the sheet to its summary strip, leaving it at the peek once it opens again. */
   collapse(): void {
     if (this.collapsed) return;
     this.collapsed = true;
-    this.dipMotion = false;
+    this.restMotion = "settle";
     this.detent = "peek";
     this.options.scroll()?.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -453,7 +457,7 @@ export class EventPanelSheetController {
     const low = this.collapsible ? "collapse" : "close";
     const result = settleBottomSheet(released, bottomSheetReleaseVelocity(gesture.samples), this.heights, low);
     this.dragHeight = null;
-    this.dipMotion = false;
+    this.restMotion = "settle";
     if (!this.options.gridEditing()) this.gridEditDip = false;
     if (result === "close") {
       this.detent = "peek";

@@ -4,7 +4,7 @@
   import { createSmoothScroll } from "$lib/calendar/utils";
   import DescriptionEditor from "./DescriptionEditor.svelte";
   import { slide } from "svelte/transition";
-  import { cubicOut } from "svelte/easing";
+  import { eventPanelSectionSlide } from "./section-motion";
   import Users from "@lucide/svelte/icons/users";
   import MapPin from "@lucide/svelte/icons/map-pin";
   import Video from "@lucide/svelte/icons/video";
@@ -70,6 +70,7 @@
     onSurfaceStatusChange?: (status: EventSurfaceStatus | undefined) => void;
     onToggle: () => void;
   } = $props();
+  const sectionSlide = eventPanelSectionSlide();
 
   const localization = getLocalization();
   const { t } = localization;
@@ -249,7 +250,7 @@
     </button>
   </div>
   {#if expanded}
-    <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="meeting" class="flex flex-col gap-2.5 px-3.5 pb-3 pt-3" style="background-color: var(--panel-bg);">
+    <div transition:slide={sectionSlide()} data-section="meeting" class="flex flex-col gap-2.5 px-3.5 pb-3 pt-3" style="background-color: var(--panel-bg);">
       <!-- URL -->
       <div class="meeting-detail-row flex items-center gap-3 text-[0.8rem] leading-none">
         <Video size={14} class="shrink-0 text-foreground" />

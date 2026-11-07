@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { slide } from "svelte/transition";
-  import { cubicOut } from "svelte/easing";
+  import { eventPanelSectionSlide } from "./section-motion";
   import Music from "@lucide/svelte/icons/eighth-notes";
   import MusicPlaylistSelect from "$lib/components/music/MusicPlaylistSelect.svelte";
   import MusicSoundSelect from "$lib/components/music/soundscape/MusicSoundSelect.svelte";
@@ -51,6 +51,7 @@
     onExpand: () => void;
     onRetry: () => void;
   } = $props();
+  const sectionSlide = eventPanelSectionSlide();
 
   const { t } = getLocalization();
   const soundscape = getSoundscapeStore();
@@ -138,7 +139,7 @@
     </button>
   </div>
   {#if expanded}
-    <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="music" class="music-body py-2.5 pl-1" style="background-color: var(--panel-bg);">
+    <div transition:slide={sectionSlide()} data-section="music" class="music-body py-2.5 pl-1" style="background-color: var(--panel-bg);">
       <div class={phaseColumns ? "music-grid phase-columns" : "music-grid"}>
         {#if error}
           <Notice class="col-span-full px-1 text-[0.65rem]" message={error} {onRetry} />

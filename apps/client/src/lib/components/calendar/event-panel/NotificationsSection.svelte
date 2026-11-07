@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { slide } from "svelte/transition";
-  import { cubicOut } from "svelte/easing";
+  import { eventPanelSectionSlide } from "./section-motion";
   import { commitIntegerDraft, moveRovingIndex, panelInputKeydown } from "$lib/calendar/event-panel-utils";
   import { formatNotificationOffset } from "$lib/calendar/event-notifications";
   import Bell from "@lucide/svelte/icons/bell";
@@ -51,6 +51,7 @@
     deliveryActionBusy?: boolean;
     onDeliveryAction?: () => void;
   } = $props();
+  const sectionSlide = eventPanelSectionSlide();
 
   const localization = getLocalization();
   const { t } = localization;
@@ -286,7 +287,7 @@
     </button>
   </div>
   {#if expanded}
-    <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="notifications" class="flex flex-col gap-1.5 p-2.5" style="background-color: var(--panel-bg);">
+    <div transition:slide={sectionSlide()} data-section="notifications" class="flex flex-col gap-1.5 p-2.5" style="background-color: var(--panel-bg);">
       {#if deliveryNotice}
         <div class="mb-1 flex flex-col gap-2 rounded-md border border-warning/35 bg-warning/8 px-2.5 py-2 text-[0.733333rem] leading-5 text-foreground">
           <span>{deliveryNotice}</span>

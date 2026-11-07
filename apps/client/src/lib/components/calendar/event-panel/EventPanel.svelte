@@ -41,6 +41,11 @@
   import { EventPanelGeometryController } from "./geometry-controller.svelte";
   import { EventPanelSheetController } from "./mobile-sheet-controller.svelte";
   import {
+    provideEventPanelSectionLayout,
+    SHEET_SECTION_SLIDE_CSS_EASING,
+    SHEET_SECTION_SLIDE_MS,
+  } from "./section-motion";
+  import {
     EventPanelSessionController,
     eventPanelHeavyLookupId,
   } from "./session-controller.svelte";
@@ -398,6 +403,7 @@
     revealEventId: () => revealEventId,
     onClose: () => onClose(),
   });
+  provideEventPanelSectionLayout(() => (mobileLayout && !parked ? "sheet" : "panel"));
   /** Whether the sheet shows only its summary strip, while the event is edited on the grid or after a draft collapses. */
   const sheetCollapsed = $derived(sheet.lowered);
   /** Whether a tap on the summary strip opens the sheet again; while the event is edited on the grid it waits instead. */
@@ -1078,6 +1084,8 @@
     data-readonly={controlsDisabled || undefined}
     data-parked={parked || undefined}
     aria-hidden={parked || undefined}
+    style:--sheet-room-duration="{SHEET_SECTION_SLIDE_MS}ms"
+    style:--sheet-room-easing={SHEET_SECTION_SLIDE_CSS_EASING}
     style="box-shadow: 0 0 2px 0px var(--panel-edge), 0 1px 2px var(--panel-shadow); {parked ? parkedPanelStyle : activePanelStyle} background-color: var(--panel-bg); visibility: {session.initialized && panelPositionReady && !parked ? 'visible' : 'hidden'};"
     onclick={handlePanelClick}
     onkeydown={handlePanelArrowKeydown}
@@ -1853,6 +1861,11 @@
 
   .panel-root[data-sheet-motion="dip"] :is(.sheet-grabber-half, .sheet-collapsed-title, .sheet-actions) {
     transition-duration: 320ms;
+  }
+
+  /* Rising for an opening section uses the section's own slide time and curve, so the two move as one. */
+  .panel-root[data-sheet-motion="room"] {
+    transition: transform var(--sheet-room-duration) var(--sheet-room-easing);
   }
 
   @media (prefers-reduced-motion: reduce) {

@@ -5,7 +5,7 @@
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
   import { tick } from "svelte";
   import { slide } from "svelte/transition";
-  import { cubicOut } from "svelte/easing";
+  import { eventPanelSectionSlide } from "./section-motion";
   import Repeat from "@lucide/svelte/icons/repeat";
   import { getLocalization } from "$lib/i18n/translator.svelte";
 
@@ -36,6 +36,7 @@
     onExpand: () => void;
     onChange: () => void;
   } = $props();
+  const sectionSlide = eventPanelSectionSlide();
 
   const localization = getLocalization();
   const { t } = localization;
@@ -387,7 +388,7 @@
     </button>
   </div>
   {#if expanded && recurrence}
-    <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="repeat" class="flex flex-col gap-2.5 p-2.5" style="background-color: var(--panel-bg);">
+    <div transition:slide={sectionSlide()} data-section="repeat" class="flex flex-col gap-2.5 p-2.5" style="background-color: var(--panel-bg);">
       <!-- Every N [frequency] -->
       <div class="flex flex-wrap items-center gap-2">
         <span class="shrink-0 text-[0.8rem] text-muted-foreground">{t("calendar.recurrence.every")}</span>

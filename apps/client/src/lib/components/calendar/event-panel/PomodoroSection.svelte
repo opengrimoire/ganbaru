@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { slide } from "svelte/transition";
-  import { cubicOut } from "svelte/easing";
+  import { eventPanelSectionSlide } from "./section-motion";
   import { commitIntegerDraft, moveRovingIndex, panelInputKeydown } from "$lib/calendar/event-panel-utils";
   import Timer from "@lucide/svelte/icons/timer";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -83,6 +83,7 @@
     onExpand: () => void;
     onChange: () => void;
   } = $props();
+  const sectionSlide = eventPanelSectionSlide();
 
   const localization = getLocalization();
   const { t } = localization;
@@ -385,7 +386,7 @@
     </button>
   </div>
   {#if expanded}
-    <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="pomodoro" class="flex flex-col gap-0 p-2.5" style="background-color: var(--panel-bg);">
+    <div transition:slide={sectionSlide()} data-section="pomodoro" class="flex flex-col gap-0 p-2.5" style="background-color: var(--panel-bg);">
       {#each localizedPresetEntries as { key, label, summarySlots }, index}
         <button
           onclick={() => applyPreset(key as PomodoroPreset)}

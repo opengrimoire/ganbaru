@@ -23,11 +23,23 @@ import {
   type BlockerPanMove,
   type BlockerPhoneApp,
 } from "./welcome-blocker";
-import { easeInOutCubic, filmSpan, filmTap, monotoneCurve, type FilmKeyframe } from "./welcome-film";
+import {
+  easeInOutCubic,
+  filmDayRails,
+  filmSpan,
+  filmTap,
+  monotoneCurve,
+  type FilmKeyframe,
+  type FilmRail,
+  type FilmSpan,
+} from "./welcome-film";
 
 /** The Calendar event with Focus, in minutes of the day, and the part of the day the scene's strip shows. */
 export const BLOCKING_EVENT = { start: 10 * 60, end: 11 * 60 } as const;
 export const BLOCKING_DAY_VIEW = { start: 9 * 60 + 40, end: 11 * 60 + 20 } as const;
+
+/** The event's Focus rail, planned by the Calendar's own rhythm for the Creative preset. */
+export const BLOCKING_RAIL: FilmRail = filmDayRails([{ ...BLOCKING_EVENT, preset: "creative" }])[0];
 
 /** Moments of the scene, in milliseconds from its start. A tap's beat is the moment it lands. */
 export const BLOCKING_BEATS = {
@@ -99,6 +111,15 @@ export function blockingFocusing(elapsed: number): boolean {
 export function blockingFocusRemaining(elapsed: number): number {
   const minutes = Math.min(BLOCKING_EVENT.end - BLOCKING_EVENT.start, Math.max(0, BLOCKING_EVENT.end - blockingClock(elapsed)));
   return elapsed >= B.focusEnd ? 0 : minutes * 60;
+}
+
+/**
+ * The focus the rail has recorded, in minutes of the day: its focus spans up to the current time, as the Calendar
+ * fills its rail while Focus runs, and all of them once the event ends.
+ */
+export function blockingRailRecorded(elapsed: number): FilmSpan[] {
+  const now = Math.min(blockingClock(elapsed), BLOCKING_RAIL.end);
+  return BLOCKING_RAIL.focus.filter((span) => span.start < now).map((span) => ({ start: span.start, end: Math.min(span.end, now) }));
 }
 
 /** How far the event's Focus timer has pulsed as it blocks something, from 0 to 1; 0 when it is not pulsing. */

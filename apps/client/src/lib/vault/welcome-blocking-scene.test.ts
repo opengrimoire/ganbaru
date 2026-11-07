@@ -3,6 +3,7 @@ import {
   BLOCKING_BEATS,
   BLOCKING_DAY_VIEW,
   BLOCKING_EVENT,
+  BLOCKING_RAIL,
   BLOCKING_STILL,
   blockingBrowser,
   blockingBrowserPage,
@@ -14,6 +15,7 @@ import {
   blockingPan,
   blockingPhoneApp,
   blockingPulse,
+  blockingRailRecorded,
 } from "./welcome-blocking-scene";
 
 const B = BLOCKING_BEATS;
@@ -110,6 +112,26 @@ describe("welcome blocking scene", () => {
     expect(blockingFocusing(B.egogramAgainTap)).toBe(false);
     expect(blockingPhoneApp(B.end)).toMatchObject({ app: "egogram", open: 1 });
     expect(blockingNotice(B.end)).toBeNull();
+  });
+
+  it("fills the event's rail with focus as the current time crosses it, around its planned breaks", () => {
+    expect(BLOCKING_RAIL).toMatchObject({ start: BLOCKING_EVENT.start, end: BLOCKING_EVENT.end });
+    expect(BLOCKING_RAIL.breaks.length).toBeGreaterThan(0);
+    expect(blockingRailRecorded(0)).toEqual([]);
+    expect(blockingRailRecorded(B.focusStart)).toEqual([]);
+    const now = blockingClock(B.retryAgainHome);
+    expect(blockingRailRecorded(B.retryAgainHome)).toEqual([{ start: BLOCKING_EVENT.start, end: now }]);
+    expect(blockingRailRecorded(B.end)).toEqual(BLOCKING_RAIL.focus);
+    let previous = 0;
+    for (const elapsed of moments()) {
+      const recorded = blockingRailRecorded(elapsed);
+      const minutes = recorded.reduce((sum, span) => sum + span.end - span.start, 0);
+      expect(minutes).toBeGreaterThanOrEqual(previous);
+      for (const span of recorded) {
+        expect(BLOCKING_RAIL.breaks.some((pause) => span.start < pause.end && span.end > pause.start)).toBe(false);
+      }
+      previous = minutes;
+    }
   });
 
   it("pulses the event only right after each block", () => {

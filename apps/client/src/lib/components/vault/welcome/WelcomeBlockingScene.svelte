@@ -7,6 +7,7 @@
   import {
     BLOCKING_DAY_VIEW,
     BLOCKING_EVENT,
+    BLOCKING_RAIL,
     blockingBrowser,
     blockingClock,
     blockingEgogramTouch,
@@ -16,7 +17,9 @@
     blockingPan,
     blockingPhoneApp,
     blockingPulse,
+    blockingRailRecorded,
   } from "$lib/vault/welcome-blocking-scene";
+  import type { FilmSpan } from "$lib/vault/welcome-film";
   import WelcomeBlockerBrowser from "./WelcomeBlockerBrowser.svelte";
   import WelcomeBlockerPhone from "./WelcomeBlockerPhone.svelte";
   import WelcomeBlockerStage from "./WelcomeBlockerStage.svelte";
@@ -42,8 +45,12 @@
    * transform's old paint behind.
    */
   const PULSE_GROWTH = 0.05;
-  const EVENT_INSET = 6;
-  const EVENT_HEIGHT = 38;
+  /** The Focus rail above the event, as thick as the Calendar's and as far from the event, in pixels. */
+  const RAIL_INSET = 4;
+  const RAIL_THICKNESS = 6;
+  const RAIL_GAP = 4;
+  const EVENT_INSET = RAIL_INSET + RAIL_THICKNESS + RAIL_GAP;
+  const EVENT_HEIGHT = 36;
   const VIEW_MINUTES = BLOCKING_DAY_VIEW.end - BLOCKING_DAY_VIEW.start;
   const EVENT_SECONDS = (BLOCKING_EVENT.end - BLOCKING_EVENT.start) * 60;
   const EVENT_SPAN = at(BLOCKING_EVENT.end) - at(BLOCKING_EVENT.start);
@@ -52,6 +59,7 @@
   const focusing = $derived(blockingFocusing(elapsed));
   const remaining = $derived(blockingFocusRemaining(elapsed));
   const growth = $derived(PULSE_GROWTH * Math.sin(Math.PI * blockingPulse(elapsed)));
+  const recorded = $derived(blockingRailRecorded(elapsed));
   const past = $derived(clock >= BLOCKING_EVENT.end);
   const colors = $derived(
     preferences.calendarDimPastEvents && past ? getPastEventColor(EVENT_COLOR, theme.current) : getEventColor(EVENT_COLOR, theme.current),
@@ -74,10 +82,35 @@
   }
 </script>
 
+{#snippet railBand(band: FilmSpan, color: string)}
+  <div
+    class="absolute inset-y-0"
+    style:left={`${((band.start - BLOCKING_RAIL.start) / (BLOCKING_RAIL.end - BLOCKING_RAIL.start)) * 100}%`}
+    style:width={`${((band.end - band.start) / (BLOCKING_RAIL.end - BLOCKING_RAIL.start)) * 100}%`}
+    style:background-color={color}
+  ></div>
+{/snippet}
+
 <WelcomeBlockerStage {width} {height} headerHeight={HEADER_H} pan={blockingPan(elapsed)}>
   {#snippet header()}
-    <!-- A strip of the day, with the event that runs Focus and the current time crossing it. -->
-    <div class="relative h-13 w-full max-w-120 rounded-xl border border-border bg-background">
+    <!-- A strip of the day, with the event that runs Focus under its rail and the current time crossing both. -->
+    <div class="relative h-14 w-full max-w-120 rounded-xl border border-border bg-background">
+      <div
+        class="absolute overflow-hidden"
+        style:left={`${at(BLOCKING_RAIL.start)}%`}
+        style:width={`${at(BLOCKING_RAIL.end) - at(BLOCKING_RAIL.start)}%`}
+        style:top={`${RAIL_INSET}px`}
+        style:height={`${RAIL_THICKNESS}px`}
+        style:background-color="var(--cal-timeline-rail)"
+        style:border-radius="3px"
+      >
+        {#each recorded as band (band.start)}
+          {@render railBand(band, "var(--cal-timeline-focus)")}
+        {/each}
+        {#each BLOCKING_RAIL.breaks as band (band.start)}
+          {@render railBand(band, "var(--cal-timeline-break)")}
+        {/each}
+      </div>
       <div
         class="absolute flex items-center gap-2 overflow-hidden rounded px-2 leading-tight"
         style:left={`${at(BLOCKING_EVENT.start) - (EVENT_SPAN * growth) / 2}%`}

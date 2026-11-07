@@ -93,7 +93,7 @@
           {:else if tab.content === "blank"}
             <span class="min-w-0 flex-1 truncate">{t("vaultSetup.blocker.newTab")}</span>
           {:else if tab.content === "blocked"}
-            <img src={appIconUrl} alt="" class="size-3 shrink-0 rounded-full" draggable="false" />
+            <img src={appIconUrl} alt="" class="size-3 shrink-0 rounded-[22%]" draggable="false" />
             <span class="min-w-0 flex-1 truncate" lang={PAGE_LOCALE}>{PAGE_TEXT.tabTitle}</span>
           {:else}
             <WelcomeParodyIcon app={tab.content} size={11} />
@@ -120,7 +120,7 @@
       <span class="relative flex h-5 min-w-0 flex-1 items-center gap-1.5 rounded-full bg-foreground/6 px-2.5 text-[10px] text-foreground">
         {#if frame.address.kind === "extension"}
           <span class="flex shrink-0 items-center gap-1 rounded-full bg-background px-1.5 py-px">
-            <img src={appIconUrl} alt="" class="size-2.5 rounded-full" draggable="false" />
+            <img src={appIconUrl} alt="" class="size-2.5 rounded-[22%]" draggable="false" />
             {t("common.appName")}
           </span>
           <span class="h-1.5 w-1/4 rounded-full bg-foreground/12"></span>
@@ -134,7 +134,7 @@
         {/if}
         {@render touch(frame.addressTouch)}
       </span>
-      <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-full" draggable="false" />
+      <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-[22%]" draggable="false" />
       {#if frame.loading > 0}
         <span class="absolute bottom-0 left-0 h-0.5 bg-primary" style:width={`${frame.loading * 100}%`}></span>
       {/if}

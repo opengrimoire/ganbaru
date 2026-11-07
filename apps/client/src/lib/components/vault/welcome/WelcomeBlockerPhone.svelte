@@ -96,7 +96,7 @@
             <img
               src={appIconUrl}
               alt=""
-              class="block rounded-full"
+              class="block rounded-[22%]"
               style:width={`${iconSize}px`}
               style:height={`${iconSize}px`}
               draggable="false"

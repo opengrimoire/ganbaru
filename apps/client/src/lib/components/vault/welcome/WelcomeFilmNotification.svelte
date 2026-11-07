@@ -83,7 +83,7 @@
 >
   {#if kind === "gnome"}
     <div class="os-header">
-      <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-full" draggable="false" />
+      <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-[22%]" draggable="false" />
       <span class="truncate">{t("common.appName")}</span>
       <span class="os-close ml-auto">{@render close()}</span>
     </div>
@@ -100,7 +100,7 @@
     </div>
   {:else}
     <div class="os-header">
-      <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-full" draggable="false" />
+      <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-[22%]" draggable="false" />
       <span class="truncate">{t("common.appName")}</span>
       <span class="ml-auto flex items-center gap-3">
         <svg class="size-2.5" viewBox="0 0 10 10" aria-hidden="true">

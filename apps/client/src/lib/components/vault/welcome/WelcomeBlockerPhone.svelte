@@ -7,8 +7,8 @@
   import WelcomeParodyIcon from "./WelcomeParodyIcon.svelte";
 
   /**
-   * A phone in the distraction blocker's welcome scenes, on its home screen with the parody apps and Ganbaru among
-   * unnamed ones. An app opens from its icon and shrinks back into it as Android returns Home, and Ganbaru's block
+   * A phone in the distraction blocker's welcome scenes, on its home screen with the parody apps in a line below
+   * unnamed ones and Ganbaru in the dock. An app opens from its icon and shrinks back into it as Android returns Home, and Ganbaru's block
    * notification slides in from the top as Android draws it.
    */
   let {
@@ -38,27 +38,15 @@
   const GRID_PAD_X = 8;
   const GRID_TOP = STATUS_H + 14;
   const ICON_LABEL_H = 16;
-  /** The home screen's slots, row by row, with the parody apps and Ganbaru among unnamed ones. */
-  const HOME_SLOTS: readonly (BlockerApp | "ganbaru" | null)[] = [
-    null,
-    null,
-    "bluedit",
-    null,
-    null,
-    "egogram",
-    null,
-    "y",
-    null,
-    null,
-    "ganbaru",
-    null,
-  ];
+  /** The home screen's slots, row by row: unnamed apps, with the parody apps in a line on the last row. */
+  const HOME_SLOTS: readonly (BlockerApp | null)[] = [null, null, null, null, null, null, null, null, "y", "egogram", "bluedit", null];
   /** How far a label may spill past its column, in pixels, so a longer name fits before it truncates. */
   const LABEL_OVERHANG = 10;
   /** The block notification's gap from the screen's edges and its body text size, in pixels. */
   const NOTICE_MARGIN = 6;
   const NOTICE_FONT_PX = 9.5;
-  const DOCK_SLOTS = [0, 1, 2, 3];
+  /** The dock's four apps, unnamed but for Ganbaru in the last one. */
+  const DOCK_SLOTS: readonly ("ganbaru" | null)[] = [null, null, null, "ganbaru"];
   const DOCK_BOTTOM = 18;
   /** How far an app's feed scrolls at its end, in pixels. */
   const FEED_TRAVEL = 170;
@@ -79,6 +67,10 @@
   const openOrigin = $derived(app ? slotCenter(HOME_SLOTS.indexOf(app.app)) : { x: screenW / 2, y: screenH / 2 });
 </script>
 
+{#snippet placeholder()}
+  <span class="block rounded-[30%] bg-foreground/10" style:width={`${iconSize}px`} style:height={`${iconSize}px`}></span>
+{/snippet}
+
 <div class="rounded-[26px] bg-foreground/6 p-1.5" style:width={`${width}px`} style:height={`${height}px`}>
   <div class="relative h-full overflow-hidden rounded-[20px] bg-foreground/3 text-foreground">
     <div class="absolute inset-x-0 top-0 z-20 flex items-center gap-1 px-3 text-muted-foreground" style:height={`${STATUS_H}px`}>
@@ -97,7 +89,7 @@
 
     {#each HOME_SLOTS as homeApp, index (index)}
       {@const center = slotCenter(index)}
-      {@const touch = homeApp === null || homeApp === "ganbaru" ? 0 : (touches[homeApp] ?? 0)}
+      {@const touch = homeApp === null ? 0 : (touches[homeApp] ?? 0)}
       <span
         class="absolute flex flex-col items-center gap-1"
         style:left={`${center.x - cellW / 2}px`}
@@ -106,16 +98,7 @@
       >
         <span class="relative">
           {#if homeApp === null}
-            <span class="block rounded-[30%] bg-foreground/10" style:width={`${iconSize}px`} style:height={`${iconSize}px`}></span>
-          {:else if homeApp === "ganbaru"}
-            <img
-              src={appIconUrl}
-              alt=""
-              class="block rounded-[22%]"
-              style:width={`${iconSize}px`}
-              style:height={`${iconSize}px`}
-              draggable="false"
-            />
+            {@render placeholder()}
           {:else}
             <WelcomeParodyIcon app={homeApp} size={iconSize} />
           {/if}
@@ -130,15 +113,26 @@
           <span class="h-1 w-5 rounded-full bg-foreground/12"></span>
         {:else}
           <span class="truncate text-[8px] leading-none" style:max-width={`${cellW + LABEL_OVERHANG}px`}>
-            {homeApp === "ganbaru" ? t("common.appName") : BLOCKER_APP_NAMES[homeApp]}
+            {BLOCKER_APP_NAMES[homeApp]}
           </span>
         {/if}
       </span>
     {/each}
 
     <div class="absolute inset-x-0 flex justify-around px-2" style:bottom={`${DOCK_BOTTOM}px`}>
-      {#each DOCK_SLOTS as index (index)}
-        <span class="block rounded-[30%] bg-foreground/10" style:width={`${iconSize}px`} style:height={`${iconSize}px`}></span>
+      {#each DOCK_SLOTS as dockApp, index (index)}
+        {#if dockApp === "ganbaru"}
+          <img
+            src={appIconUrl}
+            alt=""
+            class="block rounded-[22%]"
+            style:width={`${iconSize}px`}
+            style:height={`${iconSize}px`}
+            draggable="false"
+          />
+        {:else}
+          {@render placeholder()}
+        {/if}
       {/each}
     </div>
     <span class="absolute bottom-1.5 left-1/2 h-1 w-10 -translate-x-1/2 rounded-full bg-foreground/30"></span>

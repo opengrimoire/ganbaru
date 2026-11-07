@@ -1,9 +1,9 @@
 <script lang="ts" module>
   /** Canvas geometry in logical pixels: a width and a height the room chooses between these bounds. */
-  const MIN_CANVAS_W = 384;
-  const MAX_CANVAS_W = 600;
-  const MIN_CANVAS_H = 340;
-  const MAX_CANVAS_H = 400;
+  const MIN_CANVAS_W = 320;
+  const MAX_CANVAS_W = 520;
+  const MIN_CANVAS_H = 470;
+  const MAX_CANVAS_H = 520;
 
   export const ABOUT_SCENE_MIN_WIDTH = MIN_CANVAS_W;
   export const ABOUT_SCENE_MAX_WIDTH = MAX_CANVAS_W;
@@ -34,12 +34,13 @@
   } from "$lib/vault/welcome-about-scene";
 
   /**
-   * One frame of the welcome scene about the app itself: a payment terminal shows a total that is free and confirms there
-   * is nothing to pay, then prints the app's features one per line, each priced free, then a free total, and a rubber
-   * stamp with the Open Grimoire logo marks the receipt with the open source license. The terminal, the thermal paper,
-   * and the ink are drawn as the physical things they are, in their own colors rather than the theme's, so the receipt
-   * reads as a receipt in every theme. Every style is a function of `elapsed`, with no CSS transitions, so text is never
-   * handed to a compositing layer mid-animation.
+   * One frame of the welcome scene about the app itself: a handheld payment terminal, shaped like a phone with a receipt
+   * printer on top, shows a total that is free and confirms there is nothing to pay, then prints the app's features one
+   * per line, each priced free, then a free total, and a rubber stamp with the Open Grimoire logo marks the receipt with
+   * the open source license. The terminal, the thermal paper, and the ink are drawn as the physical things they are, in
+   * their own colors, apart from the printer's lid in the theme's primary color, so the receipt reads as a receipt in
+   * every theme. Every style is a function of `elapsed`, with no CSS transitions, so text is never handed to a
+   * compositing layer mid-animation.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -47,64 +48,69 @@
   const { t } = localization;
   const uid = $props.id();
 
-  const RECEIPT_W = 236;
+  const RECEIPT_W = 196;
   /** The height of each kind of segment the printer feeds. */
   const SEGMENT_H: Readonly<Record<AboutSegment, number>> = {
-    lead: 12,
-    header: 38,
-    rule: 10,
-    item: 14,
-    total: 22,
-    barcode: 34,
-    tail: 10,
+    lead: 10,
+    header: 34,
+    rule: 9,
+    item: 13,
+    total: 20,
+    barcode: 28,
+    tail: 8,
   };
   const PAPER_H = ABOUT_SEGMENTS.reduce((sum, segment) => sum + SEGMENT_H[segment], 0);
   /** The torn top edge of the paper: the width and depth of each tooth. */
   const TOOTH_W = 7;
   const TOOTH_H = 3.5;
 
-  /** The terminal: a top face with the paper slot, seen a little from above, over a front face with the screen and keys. */
-  const PRINTER_W = RECEIPT_W + 64;
-  const TOP_FACE_H = 15;
-  const FRONT_H = 64;
-  const SLOT_Y = 6;
-  const SLOT_W = RECEIPT_W + 16;
-  const SLOT_H = 4;
-  const PRINTER_RADIUS = 14;
-  const SCREEN_W = 150;
-  const SCREEN_H = 44;
-  const KEY_ROWS = 3;
-  const KEY_COLUMNS = 3;
+  /**
+   * The terminal, seen from the front: a phone-shaped body whose top edge holds the paper slot, with the printer's lid
+   * rising behind the paper above it.
+   */
+  const DEVICE_W = RECEIPT_W + 26;
+  const LID_INSET = 3;
+  const LID_H = 20;
+  const HEAD_H = 14;
+  const SCREEN_INSET = 10;
+  const SCREEN_H = 200;
+  const CHIN_H = 22;
+  const BODY_H = HEAD_H + SCREEN_H + CHIN_H;
+  const BODY_RADIUS = 24;
+  const HEAD_RADIUS = 9;
+  const SCREEN_RADIUS = 10;
+  const SIDE_BUTTON_Y = 70;
+  const SIDE_BUTTON_H = 34;
 
   /** The confirmation on the screen: the ring's size and radius, and the check drawn inside it. */
-  const CONFIRM_SIZE = 22;
-  const CONFIRM_R = 9.5;
+  const CONFIRM_SIZE = 48;
+  const CONFIRM_R = 21;
   const CONFIRM_CIRCUMFERENCE = 2 * Math.PI * CONFIRM_R;
-  const CHECK_PATH = "M6.6 11.4 L9.8 14.6 L15.6 8.2";
+  const CHECK_PATH = "M15 24.5 L21.5 31 L33.5 18";
   /** How far the screen's text slides as it comes and goes. */
-  const SCREEN_SLIDE = 4;
+  const SCREEN_SLIDE = 6;
 
   /** How far the terminal rises into place as it appears, and how far the receipt drops when the stamp lands. */
   const RISE = 8;
   const IMPACT_DROP = 2;
 
-  const STAMP_SIZE = 96;
+  const STAMP_SIZE = 88;
   const STAMP_TILT = -14;
   const STAMP_SCALE_FROM = 1.7;
   /** Where the stamp's center sits: in from the receipt's right edge, and up from the slot. */
-  const STAMP_INSET_X = 58;
-  const STAMP_RISE = 74;
+  const STAMP_INSET_X = 50;
+  const STAMP_RISE = 76;
   /** The radius the stamp's ring text runs along, and the logo's size, in the stamp's 100 unit drawing. */
   const RING_TEXT_R = 33;
   const LOGO_SIZE = 36;
 
-  /** How fast the terminal's light blinks while it prints. */
+  /** How fast the printer's light blinks while it prints. */
   const BLINK_RATE = 1 / 70;
 
   /** Bar and space widths of the barcode, alternating, in units of one thin bar. */
   const BARCODE = "21131221312112313122113212311213221131213121132112".split("").map(Number);
-  const BARCODE_UNIT = 1.4;
-  const BARCODE_H = 20;
+  const BARCODE_UNIT = 1.25;
+  const BARCODE_H = 17;
 
   /** Thermal paper, its ink, and the stamp's ink, which keep their own colors in every theme. */
   const PAPER = "linear-gradient(90deg, #eeede8 0%, #fcfbf7 12%, #fdfcf9 88%, #ecebe6 100%)";
@@ -112,21 +118,20 @@
   const INK_SOFT = "#77777e";
   const INK_RULE = "#b4b4ba";
   const STAMP_INK = "#c42f3c";
-  /** The terminal's charcoal body, its slot, keys, and light. */
-  const TOP_FACE = "linear-gradient(180deg, #6a6d74 0%, #52555b 100%)";
-  const TOP_FACE_FRONT = "linear-gradient(180deg, #5a5d63 0%, #52555b 100%)";
-  const FRONT_FACE = "linear-gradient(180deg, #464950 0%, #2d2f33 100%)";
-  const SLOT = "#111113";
-  const KEY = "linear-gradient(180deg, #4b4e55 0%, #3a3d43 100%)";
+  /** The terminal's body, the slot's tear bar, the lid's cylinder shading over the theme color, and the light. */
+  const BODY = "linear-gradient(90deg, #1b1c1f 0%, #2c2e33 10%, #26282c 85%, #18191b 100%)";
+  const BODY_EDGE = "inset 0 1px 0 rgb(255 255 255 / 0.14), inset 1px 0 0 rgb(255 255 255 / 0.05), inset -1px 0 0 rgb(0 0 0 / 0.4)";
+  const TEAR_BAR = "repeating-linear-gradient(90deg, #0d0d0f 0 2px, #3a3c41 2px 3px)";
+  const LID_SHADE =
+    "linear-gradient(90deg, rgb(0 0 0 / 0.32) 0%, rgb(255 255 255 / 0.2) 22%, rgb(255 255 255 / 0.04) 55%, rgb(0 0 0 / 0.3) 100%)";
   const LIGHT = "#4ade80";
-  /** The screen: its bezel, its glass when off and when lit, its text, and the confirmation's green. */
-  const BEZEL = "#141518";
-  const SCREEN_OFF = "#17191c";
-  const SCREEN_ON = "linear-gradient(160deg, #26394a 0%, #142230 100%)";
-  const SCREEN_GLARE = "linear-gradient(115deg, rgb(255 255 255 / 0.09) 0%, rgb(255 255 255 / 0.03) 38%, transparent 40%)";
-  const SCREEN_TEXT = "#f1f5f9";
-  const SCREEN_TEXT_SOFT = "#9fb3c4";
-  const CONFIRM_GREEN = "#4ade80";
+  /** The screen: its glass when off, its light interface when lit, its text, and the confirmation's green. */
+  const SCREEN_OFF = "#0e0f11";
+  const SCREEN_ON = "linear-gradient(180deg, #ffffff 0%, #f1f3f6 100%)";
+  const SCREEN_GLARE = "linear-gradient(120deg, rgb(255 255 255 / 0.1) 0%, rgb(255 255 255 / 0.03) 42%, transparent 44%)";
+  const SCREEN_TEXT = "#1d2127";
+  const SCREEN_TEXT_SOFT = "#6b7280";
+  const CONFIRM_GREEN = "#16a34a";
 
   /** The features the receipt lists, in order. */
   const ITEMS: readonly (() => string)[] = [
@@ -167,14 +172,13 @@
   /** The moment the receipt is printed, fixed for the scene's life. */
   const printedAt = new Date();
   const printedOn = $derived(formatDateTime(localization.locale, printedAt, { dateStyle: "medium", timeStyle: "short" }));
+  const clock = $derived(formatDateTime(localization.locale, printedAt, { timeStyle: "short" }));
 
   const center = $derived(width / 2);
   const left = $derived(center - RECEIPT_W / 2);
-  const printerLeft = $derived(center - PRINTER_W / 2);
-  /** The receipt and the terminal, centered together in the canvas. */
-  const groupTop = $derived((height - PAPER_H - TOP_FACE_H - FRONT_H) / 2);
-  const printerTop = $derived(groupTop + PAPER_H - SLOT_Y);
-  const slotY = $derived(printerTop + SLOT_Y + SLOT_H / 2);
+  const deviceLeft = $derived(center - DEVICE_W / 2);
+  /** The receipt and the terminal, centered together in the canvas, meeting at the slot. */
+  const slotY = $derived((height - PAPER_H - BODY_H) / 2 + PAPER_H);
   const printer = $derived(aboutPrinter(elapsed));
   const screen = $derived(aboutScreen(elapsed));
   const total = $derived(aboutTotal(elapsed));
@@ -185,29 +189,29 @@
   const stamp = $derived(aboutStamp(elapsed));
   const light = $derived(lightLevel(elapsed));
 
-  /** How bright the terminal's light is: dim while it waits, blinking while it prints, and steady once done. */
+  /** How bright the printer's light is: dim while it waits, blinking while it prints, and steady once done. */
   function lightLevel(at: number): number {
     if (aboutPrinting(at)) return 0.55 + 0.45 * Math.sin(at * BLINK_RATE);
-    return at >= ABOUT_BEATS.printEnd ? 1 : 0.3;
+    return at >= ABOUT_BEATS.printEnd ? 1 : 0.25;
   }
 </script>
 
 {#snippet segmentContent(segment: AboutSegment, index: number)}
   {#if segment === "header"}
-    <div class="flex h-full flex-col items-center justify-center gap-0.5">
-      <span class="text-[15px] leading-none font-bold tracking-tight">{t("common.appName")}</span>
-      <span class="font-mono text-[8.5px] leading-none" style:color={INK_SOFT}>{printedOn}</span>
+    <div class="flex h-full flex-col items-center justify-center gap-0.75">
+      <span class="text-[14px] leading-none font-bold tracking-tight">{t("common.appName")}</span>
+      <span class="font-mono text-[8px] leading-none" style:color={INK_SOFT}>{printedOn}</span>
     </div>
   {:else if segment === "rule"}
     <div class="flex h-full items-center"><div class="h-px w-full" style:background-image={dashes}></div></div>
   {:else if segment === "item"}
-    <div class="flex h-full items-center gap-1.5 font-mono text-[10px]">
+    <div class="flex h-full items-center gap-1 font-mono text-[9px]">
       <span class="min-w-0 truncate">{ITEMS[index - FIRST_ITEM]()}</span>
-      <span class="mb-1 min-w-2 flex-1 self-end border-b border-dotted" style:border-color={INK_RULE}></span>
+      <span class="mb-1 min-w-1.5 flex-1 self-end border-b border-dotted" style:border-color={INK_RULE}></span>
       <span>{t("vaultSetup.about.receipt.free")}</span>
     </div>
   {:else if segment === "total"}
-    <div class="flex h-full items-center justify-between font-mono text-[12.5px] font-bold">
+    <div class="flex h-full items-center justify-between font-mono text-[11.5px] font-bold">
       <span>{t("vaultSetup.about.receipt.total")}</span>
       <span>{t("vaultSetup.about.receipt.free")}</span>
     </div>
@@ -225,34 +229,25 @@
 <div class="relative overflow-hidden" style:width={`${width}px`} style:height={`${height}px`}>
   {#if printer > 0}
     <div class="absolute inset-0" style:top={`${(1 - printer) * RISE}px`} style:opacity={printer}>
-      <!-- The terminal's shadow on the table, and the back of its top face, behind the paper. -->
+      <!-- The terminal's shadow on the table, and the printer's lid in the theme's color, behind the paper. -->
       <div
         class="absolute"
-        style:left={`${printerLeft + 10}px`}
-        style:top={`${printerTop + TOP_FACE_H + FRONT_H - 7}px`}
-        style:width={`${PRINTER_W - 20}px`}
-        style:height="16px"
-        style:background="radial-gradient(closest-side, rgb(0 0 0 / 0.35), transparent)"
+        style:left={`${deviceLeft + 12}px`}
+        style:top={`${slotY + BODY_H - 8}px`}
+        style:width={`${DEVICE_W - 24}px`}
+        style:height="18px"
+        style:background="radial-gradient(closest-side, rgb(0 0 0 / 0.38), transparent)"
       ></div>
       <div
-        class="absolute"
-        style:left={`${printerLeft}px`}
-        style:top={`${printerTop}px`}
-        style:width={`${PRINTER_W}px`}
-        style:height={`${TOP_FACE_H}px`}
-        style:border-radius={`${PRINTER_RADIUS}px ${PRINTER_RADIUS}px 0 0`}
-        style:background={TOP_FACE}
-        style:box-shadow="inset 0 1px 0 rgb(255 255 255 / 0.18)"
+        class="absolute overflow-hidden bg-primary"
+        style:left={`${deviceLeft + LID_INSET}px`}
+        style:top={`${slotY - LID_H}px`}
+        style:width={`${DEVICE_W - LID_INSET * 2}px`}
+        style:height={`${LID_H + HEAD_H}px`}
+        style:border-radius={`${LID_H}px ${LID_H}px 0 0`}
       >
-        <div
-          class="absolute rounded-full"
-          style:left={`${(PRINTER_W - SLOT_W) / 2}px`}
-          style:top={`${SLOT_Y}px`}
-          style:width={`${SLOT_W}px`}
-          style:height={`${SLOT_H}px`}
-          style:background-color={SLOT}
-          style:box-shadow="0 1px 0 rgb(255 255 255 / 0.12)"
-        ></div>
+        <div class="absolute inset-0" style:background={LID_SHADE}></div>
+        <div class="absolute inset-x-0 top-0 h-1.5" style:background="linear-gradient(180deg, rgb(255 255 255 / 0.22), transparent)"></div>
       </div>
 
       <!-- The receipt, fed out of the slot: its content rises with the paper, and what is not fed yet stays inside. -->
@@ -263,121 +258,121 @@
           style:top={`${slotY - fed + drop}px`}
           style:width={`${RECEIPT_W}px`}
           style:height={`${fed}px`}
-          style:filter="drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.22))"
+          style:filter="drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.25))"
         >
           <div class="relative h-full overflow-hidden" style:background={PAPER} style:clip-path={TORN_EDGE} style:color={INK}>
-            <div class="px-3.5">
+            <div class="px-3">
               {#each ABOUT_SEGMENTS as segment, index (index)}
                 <div style:height={`${SEGMENT_H[segment]}px`}>{@render segmentContent(segment, index)}</div>
               {/each}
             </div>
             <!-- The paper darkens a little where it goes into the slot. -->
-            <div class="absolute inset-x-0 bottom-0 h-3" style:background="linear-gradient(180deg, transparent, rgb(0 0 0 / 0.14))"></div>
+            <div class="absolute inset-x-0 bottom-0 h-3" style:background="linear-gradient(180deg, transparent, rgb(0 0 0 / 0.16))"></div>
           </div>
         </div>
       {/if}
 
-      <!-- The front of the top face, in front of the paper, and the terminal's front face with its screen, keys, and light. -->
+      <!-- The body: the slot's tear bar along its top edge, the side button, the screen, and the printer's light. -->
       <div
         class="absolute"
-        style:left={`${printerLeft}px`}
+        style:left={`${deviceLeft}px`}
         style:top={`${slotY}px`}
-        style:width={`${PRINTER_W}px`}
-        style:height={`${printerTop + TOP_FACE_H - slotY}px`}
-        style:background={TOP_FACE_FRONT}
-      ></div>
-      <div
-        class="absolute flex items-center justify-between px-3.5"
-        style:left={`${printerLeft}px`}
-        style:top={`${printerTop + TOP_FACE_H}px`}
-        style:width={`${PRINTER_W}px`}
-        style:height={`${FRONT_H}px`}
-        style:border-radius={`0 0 ${PRINTER_RADIUS}px ${PRINTER_RADIUS}px`}
-        style:background={FRONT_FACE}
-        style:box-shadow="inset 0 1px 0 rgb(255 255 255 / 0.1)"
+        style:width={`${DEVICE_W}px`}
+        style:height={`${BODY_H}px`}
+        style:border-radius={`${HEAD_RADIUS}px ${HEAD_RADIUS}px ${BODY_RADIUS}px ${BODY_RADIUS}px`}
+        style:background={BODY}
+        style:box-shadow={BODY_EDGE}
       >
+        <div class="absolute inset-x-3 top-0 h-0.75 rounded-b-xs" style:background={TEAR_BAR}></div>
         <div
-          class="rounded-lg p-0.75"
-          style:background-color={BEZEL}
-          style:box-shadow="0 1px 0 rgb(255 255 255 / 0.1), inset 0 1px 2px rgb(0 0 0 / 0.6)"
-        >
-          <div
-            class="relative overflow-hidden rounded-[5px]"
-            style:width={`${SCREEN_W}px`}
-            style:height={`${SCREEN_H}px`}
-            style:background-color={SCREEN_OFF}
-          >
-            <div class="absolute inset-0" style:background={SCREEN_ON} style:opacity={screen}></div>
-            {#if total > 0}
-              <div
-                class="absolute inset-0 flex flex-col items-center justify-center gap-0.5"
-                style:opacity={total}
-                style:transform={`translateY(${(1 - total) * (ring > 0 ? -SCREEN_SLIDE : SCREEN_SLIDE)}px)`}
-              >
-                <span class="text-[8px] leading-none font-semibold tracking-wider uppercase" style:color={SCREEN_TEXT_SOFT}>
-                  {t("vaultSetup.about.receipt.total")}
-                </span>
-                <span class="text-[16px] leading-none font-bold" style:color={SCREEN_TEXT}>{t("vaultSetup.about.receipt.free")}</span>
-              </div>
-            {/if}
-            {#if ring > 0}
-              <div class="absolute inset-0 flex items-center justify-center gap-1.5 px-2">
-                <svg class="shrink-0" width={CONFIRM_SIZE} height={CONFIRM_SIZE} viewBox={`0 0 ${CONFIRM_SIZE} ${CONFIRM_SIZE}`} aria-hidden="true">
-                  <circle
-                    cx={CONFIRM_SIZE / 2}
-                    cy={CONFIRM_SIZE / 2}
-                    r={CONFIRM_R}
-                    fill={CONFIRM_GREEN}
-                    fill-opacity={0.16 * check}
-                    stroke={CONFIRM_GREEN}
-                    stroke-width="1.8"
-                    stroke-linecap="round"
-                    stroke-dasharray={CONFIRM_CIRCUMFERENCE}
-                    stroke-dashoffset={CONFIRM_CIRCUMFERENCE * (1 - ring)}
-                    transform={`rotate(-90 ${CONFIRM_SIZE / 2} ${CONFIRM_SIZE / 2})`}
-                  />
-                  <path
-                    d={CHECK_PATH}
-                    fill="none"
-                    stroke={CONFIRM_GREEN}
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    pathLength="1"
-                    stroke-dasharray="1"
-                    stroke-dashoffset={1 - check}
-                  />
-                </svg>
-                <span
-                  class="min-w-0 truncate text-[11px] leading-none font-semibold"
-                  style:color={SCREEN_TEXT}
-                  style:opacity={ring}
-                  style:transform={`translateX(${(1 - ring) * -SCREEN_SLIDE}px)`}
-                >
-                  {t("vaultSetup.about.receipt.confirmed")}
-                </span>
-              </div>
-            {/if}
-            <div class="absolute inset-0" style:background={SCREEN_GLARE}></div>
-          </div>
-        </div>
+          class="absolute -right-0.75 w-0.75 rounded-r-xs bg-[#18191b]"
+          style:top={`${SIDE_BUTTON_Y}px`}
+          style:height={`${SIDE_BUTTON_H}px`}
+        ></div>
+        <span
+          class="absolute right-4 size-1.25 rounded-full"
+          style:top={`${HEAD_H / 2 - 1}px`}
+          style:background-color={LIGHT}
+          style:opacity={light}
+          style:box-shadow={`0 0 ${3 + light * 4}px ${LIGHT}`}
+        ></span>
 
-        <div class="flex flex-col items-end gap-1.5">
-          <span
-            class="mr-0.5 size-1.5 rounded-full"
-            style:background-color={LIGHT}
-            style:opacity={light}
-            style:box-shadow={`0 0 ${4 + light * 4}px ${LIGHT}`}
-          ></span>
-          <div class="grid gap-0.75" style:grid-template-columns={`repeat(${KEY_COLUMNS}, 1fr)`}>
-            {#each { length: KEY_ROWS * KEY_COLUMNS } as _, index (index)}
+        <div
+          class="absolute overflow-hidden"
+          style:left={`${SCREEN_INSET}px`}
+          style:top={`${HEAD_H}px`}
+          style:width={`${DEVICE_W - SCREEN_INSET * 2}px`}
+          style:height={`${SCREEN_H}px`}
+          style:border-radius={`${SCREEN_RADIUS}px`}
+          style:background-color={SCREEN_OFF}
+          style:box-shadow="0 0 0 1px rgb(0 0 0 / 0.6)"
+        >
+          <div class="absolute inset-0" style:background={SCREEN_ON} style:opacity={screen}></div>
+          {#if screen > 0}
+            <div
+              class="absolute inset-x-0 top-0 flex h-4 items-center justify-between px-2.5 text-[7.5px] font-semibold"
+              style:color={SCREEN_TEXT}
+              style:opacity={screen}
+            >
+              <span>{clock}</span>
+              <span class="flex items-center gap-px" aria-hidden="true">
+                <span class="h-1.5 w-2.75 rounded-[1.5px] border border-current p-px"><span class="block h-full w-3/4 rounded-[0.5px] bg-current"></span></span>
+                <span class="h-0.75 w-px rounded-r-xs bg-current"></span>
+              </span>
+            </div>
+            <div class="absolute bottom-1.5 left-1/2 h-0.75 w-12 -translate-x-1/2 rounded-full" style:background-color={SCREEN_TEXT} style:opacity={screen * 0.35}></div>
+          {/if}
+          {#if total > 0}
+            <div
+              class="absolute inset-0 flex flex-col items-center justify-center gap-1.5"
+              style:opacity={total}
+              style:transform={`translateY(${(1 - total) * (ring > 0 ? -SCREEN_SLIDE : SCREEN_SLIDE)}px)`}
+            >
+              <span class="text-[10px] leading-none font-semibold tracking-wider uppercase" style:color={SCREEN_TEXT_SOFT}>
+                {t("vaultSetup.about.receipt.total")}
+              </span>
+              <span class="text-[30px] leading-none font-bold tracking-tight" style:color={SCREEN_TEXT}>{t("vaultSetup.about.receipt.free")}</span>
+            </div>
+          {/if}
+          {#if ring > 0}
+            <div class="absolute inset-0 flex flex-col items-center justify-center gap-2.5 px-3">
+              <svg width={CONFIRM_SIZE} height={CONFIRM_SIZE} viewBox={`0 0 ${CONFIRM_SIZE} ${CONFIRM_SIZE}`} aria-hidden="true">
+                <circle
+                  cx={CONFIRM_SIZE / 2}
+                  cy={CONFIRM_SIZE / 2}
+                  r={CONFIRM_R}
+                  fill={CONFIRM_GREEN}
+                  fill-opacity={0.12 * check}
+                  stroke={CONFIRM_GREEN}
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-dasharray={CONFIRM_CIRCUMFERENCE}
+                  stroke-dashoffset={CONFIRM_CIRCUMFERENCE * (1 - ring)}
+                  transform={`rotate(-90 ${CONFIRM_SIZE / 2} ${CONFIRM_SIZE / 2})`}
+                />
+                <path
+                  d={CHECK_PATH}
+                  fill="none"
+                  stroke={CONFIRM_GREEN}
+                  stroke-width="3"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  pathLength="1"
+                  stroke-dasharray="1"
+                  stroke-dashoffset={1 - check}
+                />
+              </svg>
               <span
-                class="h-2 w-4 rounded-[2px]"
-                style:background={KEY}
-                style:box-shadow="inset 0 1px 0 rgb(255 255 255 / 0.12), 0 1px 0 rgb(0 0 0 / 0.4)"
-              ></span>
-            {/each}
-          </div>
+                class="text-center text-[14px] leading-tight font-semibold"
+                style:color={SCREEN_TEXT}
+                style:opacity={ring}
+                style:transform={`translateY(${(1 - ring) * SCREEN_SLIDE}px)`}
+              >
+                {t("vaultSetup.about.receipt.confirmed")}
+              </span>
+            </div>
+          {/if}
+          <div class="absolute inset-0" style:background={SCREEN_GLARE}></div>
         </div>
       </div>
 

@@ -31,11 +31,11 @@
   const HEADER_H = 76;
   /**
    * Palette slots for the limit's entries, so the drawing follows the active theme's event colors: a violet for Y, a
-   * cyan for Bluedit, and a cherry red for Egogram.
+   * cyan for Bluedit, and a pink for Egogram.
    */
   const Y_COLOR = 22;
   const BLUEDIT_COLOR = 16;
-  const EGOGRAM_COLOR = 0;
+  const EGOGRAM_COLOR = 1;
 
   const usage = $derived(limitsUsage(elapsed));
   const yColor = $derived(getEventColor(Y_COLOR, theme.current).bg);

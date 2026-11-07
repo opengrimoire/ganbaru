@@ -20,8 +20,8 @@
 
 <script lang="ts">
   /**
-   * The icon of a parody app in the distraction blocker's welcome scenes: Y's hollow letter, Bluedit's speech bubble
-   * with an up arrow, and Egogram's camera on its sunset gradient, each on its brand background.
+   * The icon of a parody app in the distraction blocker's welcome scenes: Y's hollow letter, Bluedit's alien,
+   * and Egogram's camera on its sunset gradient, each on its brand background.
    */
   let { app, size }: { app: BlockerApp; size: number } = $props();
 
@@ -45,9 +45,17 @@
       <path d="M19.7 4l-6.3 7.4" stroke="white" stroke-width="1.6" />
     </svg>
   {:else if app === "bluedit"}
-    <svg viewBox="0 0 24 24" style:width={glyph} style:height={glyph}>
-      <path d="M12 3.5c-4.7 0-8.5 3.1-8.5 7 0 2.1 1.1 4 2.9 5.3L5.7 20l3.9-2c.8.2 1.6.3 2.4.3 4.7 0 8.5-3.1 8.5-7s-3.8-7.8-8.5-7.8z" fill="white" />
-      <path d="M12 6.8l-3.4 3.6h2.2v3.4h2.4v-3.4h2.2z" fill={PARODY_COLORS.bluedit} />
+    <!-- A round-eared alien whose antenna leans to the left, its head outlined in the brand color to part it from the
+         ears. -->
+    <svg viewBox="1 0 22 22" style:width={glyph} style:height={glyph}>
+      <path d="M12.2 9.4L11 3.9L8.4 3.4" fill="none" stroke="white" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round" />
+      <circle cx="7.3" cy="3.3" r="1.5" fill="white" />
+      <circle cx="4.6" cy="11.6" r="1.9" fill="white" />
+      <circle cx="19.4" cy="11.6" r="1.9" fill="white" />
+      <ellipse cx="12" cy="14.2" rx="7.6" ry="5.2" fill="white" stroke={PARODY_COLORS.bluedit} stroke-width="0.9" />
+      <ellipse cx="9.3" cy="13.4" rx="1.3" ry="1.5" fill={PARODY_COLORS.bluedit} />
+      <ellipse cx="14.7" cy="13.4" rx="1.3" ry="1.5" fill={PARODY_COLORS.bluedit} />
+      <path d="M9 16.4q3 2 6 0" fill="none" stroke={PARODY_COLORS.bluedit} stroke-width="0.9" stroke-linecap="round" />
     </svg>
   {:else}
     <svg viewBox="0 0 24 24" style:width={glyph} style:height={glyph} fill="none" stroke="white" stroke-width="2" stroke-linejoin="round">

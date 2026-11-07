@@ -28,13 +28,13 @@ export const vaultSetup = {
   },
   blocking: {
     headline: "No distractions while you work",
-    body: "Pick the sites and apps that pull you away.\nThey stay closed while the Pomodoro runs, and open again after.",
+    body: "The sites and apps you pick stay closed while the Pomodoro runs, and reopen when it ends.",
     sceneDescription:
       "A short animation of a Calendar event that runs the Pomodoro, above a laptop's browser and a phone. Bluedit is open in the browser until the event starts; then Ganbaru's block page replaces it, and Y typed into the address bar gets the same page. Egogram opened on the phone returns to the home screen with a notification, and so does each try after. When the event ends, Y opens in the browser and Egogram opens as usual.",
   },
   limits: {
     headline: "Shared limits on every device",
-    body: "Give sites and apps one daily time.\nYour laptop and phone spend it together.",
+    body: "Your laptop and phone spend one daily time on the sites and apps you pick.",
     sceneDescription:
       "A short animation of a one hour daily limit for social media that holds the Y and Egogram websites and the Egogram app. Time on Y in a laptop's browser fills part of one bar, then the Y tab is closed and Egogram on a phone fills the rest, each in its own color. When the hour is used up, Egogram returns to the home screen with a notification, and each time it is opened again it returns there at once. Back on the laptop, Y typed into a new tab opens Ganbaru's block page instead, and so does Egogram's website.",
     limitName: "Social media",

@@ -60,7 +60,7 @@ describe("welcome limits scene", () => {
     const closed = limitsBrowser(B.yCloseTap);
     expect(closed.tabs).toEqual([{ content: "mail", active: true }]);
     expect(closed.page).toEqual({ kind: "mail" });
-    expect(closed.address).toEqual({ kind: "host", host: "gnail.com" });
+    expect(closed.address).toEqual({ kind: "host", host: "qnail.com" });
     expect(B.yCloseTap).toBeLessThan(B.egogramTap);
     for (const elapsed of moments()) {
       if (limitsPhoneApp(elapsed)) expect(limitsBrowser(elapsed).tabs.some((tab) => tab.content === "y")).toBe(false);

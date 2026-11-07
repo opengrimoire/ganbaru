@@ -28,7 +28,7 @@
 <script lang="ts">
   /**
    * The icon of a parody app in the distraction blocker's welcome scenes: Y's hollow letter, Bluedit's alien,
-   * Egogram's camera on its sunset gradient, and Gnail's four-color envelope, each on its brand background.
+   * Egogram's camera on its sunset gradient, and Qnail's four-color N, each on its brand background.
    */
   let { app, size }: { app: ParodyIconApp; size: number } = $props();
 
@@ -66,12 +66,12 @@
     </svg>
   {:else if app === "mail"}
     <span class="absolute inset-0 rounded-[inherit] ring-1 ring-black/10 ring-inset"></span>
-    <!-- An envelope drawn as an M in four colors, its sides swapped and its yellow corner moved to the left. -->
-    <svg viewBox="0 0.3 24 24" style:width={glyph} style:height={glyph} fill="none" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M3 8.2v8.8a1.5 1.5 0 0 0 1.5 1.5h2.2v-8.3z" fill={MAIL_COLORS.green} />
-      <path d="M21 8.2v8.8a1.5 1.5 0 0 1-1.5 1.5h-2.2v-8.3z" fill={MAIL_COLORS.blue} />
-      <path d="M4.3 7.4L12 13l7.7-5.6" stroke={MAIL_COLORS.red} stroke-width="2.6" />
-      <path d="M4.3 7.4L6.4 8.9" stroke={MAIL_COLORS.yellow} stroke-width="2.6" />
+    <!-- An N in four colors: a green and a blue leg with rounded tops, joined by a red diagonal with a yellow start. -->
+    <svg viewBox="0 0.5 24 24" style:width={glyph} style:height={glyph} fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 8.5a1.85 1.85 0 0 1 3.7 0v10h-2.2a1.5 1.5 0 0 1-1.5-1.5z" fill={MAIL_COLORS.green} />
+      <path d="M17.3 8.5a1.85 1.85 0 0 1 3.7 0v8.5a1.5 1.5 0 0 1-1.5 1.5h-2.2z" fill={MAIL_COLORS.blue} />
+      <path d="M4.85 7.9L19.1 17.1" stroke={MAIL_COLORS.red} stroke-width="2.6" />
+      <path d="M4.85 7.9L6.85 9.2" stroke={MAIL_COLORS.yellow} stroke-width="2.6" />
     </svg>
   {:else}
     <svg viewBox="0 0.4 24 24" style:width={glyph} style:height={glyph} fill="none" stroke="white" stroke-width="2" stroke-linejoin="round">

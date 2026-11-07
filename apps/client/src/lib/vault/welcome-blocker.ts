@@ -20,7 +20,7 @@ export const BLOCKER_APP_HOSTS: Readonly<Record<BlockerApp, string>> = {
 };
 
 /** The parody mail site the scenes show as work, which the blocker never blocks, and its website. */
-export const BLOCKER_MAIL = { name: "Gnail", host: "gnail.com" } as const;
+export const BLOCKER_MAIL = { name: "Qnail", host: "qnail.com" } as const;
 
 /** Why a site or an app is blocked: a running Focus phase, or a daily limit that ran out. */
 export type BlockerReason = "focus" | "limit";

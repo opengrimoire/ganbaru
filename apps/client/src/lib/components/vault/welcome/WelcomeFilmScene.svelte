@@ -26,10 +26,11 @@
    */
   const VIEW_START = 7 * 60 + 40;
   /**
-   * How much of the day shows: the whole session at least, and on through the afternoon's events in a tall room such
-   * as a phone's, where the drawing's width is already at its smallest and only more hours can fill the height.
+   * How much of the day shows: at least the whole session and the lunch after it, so an event without Focus is always
+   * in view beside the Focus events, and on through the afternoon's events in a tall room such as a phone's, where the
+   * drawing's width is already at its smallest and only more hours can fill the height.
    */
-  const MIN_VIEW_MINUTES = 315;
+  const MIN_VIEW_MINUTES = 14 * 60 - VIEW_START;
   const MAX_VIEW_MINUTES = 570;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
 

@@ -18,9 +18,9 @@
 
   /**
    * One frame of the welcome scene on daily limits: a social media limit, drawn as Settings draws it, above a laptop's
-   * browser and a phone. The limit holds both sites and Egogram's app; time on Y's website and on Egogram's app fills one
-   * budget, each in its own color, until every entry is blocked, however often they are opened again. Every style is a
-   * function of `elapsed`.
+   * browser and a phone. The limit holds Y's and Bluedit's sites and Egogram's app; time on Y's website and on
+   * Egogram's app fills one budget, each in its own color, until every entry is blocked, however often they are opened
+   * again. Every style is a function of `elapsed`.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -32,15 +32,15 @@
   /** Palette slots for the limit's entries, so the drawing follows the active theme's event colors. */
   const BROWSER_COLOR = 18;
   const PHONE_COLOR = 22;
-  const EGOGRAM_SITE_COLOR = 1;
+  const BLUEDIT_SITE_COLOR = 1;
 
   const usage = $derived(limitsUsage(elapsed));
   const browserColor = $derived(getEventColor(BROWSER_COLOR, theme.current).bg);
   const phoneColor = $derived(getEventColor(PHONE_COLOR, theme.current).bg);
-  const egogramSiteColor = $derived(getEventColor(EGOGRAM_SITE_COLOR, theme.current).bg);
+  const blueditSiteColor = $derived(getEventColor(BLUEDIT_SITE_COLOR, theme.current).bg);
   const sources = $derived([
     { label: BLOCKER_APP_HOSTS.y, color: browserColor },
-    { label: BLOCKER_APP_HOSTS.egogram, color: egogramSiteColor },
+    { label: BLOCKER_APP_HOSTS.bluedit, color: blueditSiteColor },
     { label: BLOCKER_APP_NAMES.egogram, color: phoneColor },
   ]);
 

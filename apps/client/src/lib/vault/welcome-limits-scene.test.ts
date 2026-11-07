@@ -108,12 +108,12 @@ describe("welcome limits scene", () => {
     ]);
 
     expect(limitsBrowser(B.addressTap - 100).addressTouch).toBeGreaterThan(0);
-    const typing = limitsBrowser(B.egogramTypeEnd);
-    expect(typing.address).toMatchObject({ kind: "typed", text: "egogram.com" });
+    const typing = limitsBrowser(B.blueditTypeEnd);
+    expect(typing.address).toMatchObject({ kind: "typed", text: "bluedit.com" });
     expect(typing.page).toEqual({ kind: "block", app: "y", reason: "limit" });
-    expect(limitsBrowser(B.egogramLoadStart + 100).page).toEqual({ kind: "block", app: "y", reason: "limit" });
-    expect(limitsBrowser(B.egogramBlocked).page).toEqual({ kind: "block", app: "egogram", reason: "limit" });
-    expect(limitsBrowser(B.egogramBlocked).tabs).toHaveLength(2);
+    expect(limitsBrowser(B.blueditLoadStart + 100).page).toEqual({ kind: "block", app: "y", reason: "limit" });
+    expect(limitsBrowser(B.blueditBlocked).page).toEqual({ kind: "block", app: "bluedit", reason: "limit" });
+    expect(limitsBrowser(B.blueditBlocked).tabs).toHaveLength(2);
   });
 
   it("keeps a single active tab and every animated value between 0 and 1", () => {
@@ -142,7 +142,7 @@ describe("welcome limits scene", () => {
 
   it("ends on both devices blocked, as the reduced-motion still", () => {
     const browser = limitsBrowser(B.end);
-    expect(browser.page).toEqual({ kind: "block", app: "egogram", reason: "limit" });
+    expect(browser.page).toEqual({ kind: "block", app: "bluedit", reason: "limit" });
     expect(browser.pageIn).toBe(1);
     expect(browser.loading).toBe(0);
     expect(browser.newTabTouch).toBe(0);

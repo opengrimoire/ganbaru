@@ -1,5 +1,5 @@
 /**
- * Timing for the welcome scene on daily limits: one social media limit groups the Y and Egogram websites and Egogram's
+ * Timing for the welcome scene on daily limits: one social media limit groups the Y and Bluedit websites and Egogram's
  * phone app, and counts time from both devices. Y's feed scrolls in a laptop's browser beside the inbox until Y's tab
  * is closed; then Egogram opened on a phone uses the rest of the day's budget, returns Home, and posts the limit
  * notification. Each time Egogram is opened again it returns Home at once, and back on the laptop, every site of the
@@ -57,12 +57,12 @@ export const LIMITS_BEATS = {
   yTypeEnd: 14000,
   yLoadStart: 14150,
   yBlocked: 14450,
-  /** A tap on the address bar, Egogram's address is typed, and the page loads into its block page. */
+  /** A tap on the address bar, Bluedit's address is typed, and the page loads into its block page. */
   addressTap: 15400,
-  egogramTypeStart: 15600,
-  egogramTypeEnd: 16250,
-  egogramLoadStart: 16400,
-  egogramBlocked: 16700,
+  blueditTypeStart: 15600,
+  blueditTypeEnd: 16250,
+  blueditLoadStart: 16400,
+  blueditBlocked: 16700,
   end: 18600,
 } as const;
 
@@ -90,12 +90,12 @@ interface SiteAttempt {
 const SITE_ATTEMPTS: readonly SiteAttempt[] = [
   { app: "y", tap: B.newTabTap, typeStart: B.yTypeStart, typeEnd: B.yTypeEnd, loadStart: B.yLoadStart, blocked: B.yBlocked },
   {
-    app: "egogram",
+    app: "bluedit",
     tap: B.addressTap,
-    typeStart: B.egogramTypeStart,
-    typeEnd: B.egogramTypeEnd,
-    loadStart: B.egogramLoadStart,
-    blocked: B.egogramBlocked,
+    typeStart: B.blueditTypeStart,
+    typeEnd: B.blueditTypeEnd,
+    loadStart: B.blueditLoadStart,
+    blocked: B.blueditBlocked,
   },
 ];
 

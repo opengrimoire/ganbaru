@@ -7,6 +7,7 @@
   import appIconUrl from "../../../../../src-tauri/icons/64x64.png";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
+  import WelcomeAndroidNotification from "./WelcomeAndroidNotification.svelte";
 
   /**
    * The paused Focus notification as the operating system draws it, outside the app: a GNOME banner, a Windows toast,
@@ -34,15 +35,11 @@
   const { t } = getLocalization();
   /** The gap between the notification and the canvas edges, in pixels. */
   const MARGIN_PX = 8;
+  /** Android's body text size on the film's canvas, in pixels. */
+  const ANDROID_FONT_PX = 13;
 
   const hidden = $derived(`calc(${1 - shown} * (100% + ${MARGIN_PX}px))`);
-  const transform = $derived(
-    kind === "windows"
-      ? `translateX(${hidden})`
-      : kind === "gnome"
-        ? `translate(-50%, calc(-1 * ${hidden}))`
-        : `translateY(calc(-1 * ${hidden}))`,
-  );
+  const transform = $derived(kind === "windows" ? `translateX(${hidden})` : `translate(-50%, calc(-1 * ${hidden}))`);
 </script>
 
 {#snippet touch()}
@@ -60,6 +57,24 @@
   </svg>
 {/snippet}
 
+{#if kind === "android"}
+  <WelcomeAndroidNotification
+    {shown}
+    margin={MARGIN_PX}
+    fontSize={ANDROID_FONT_PX}
+    title={eventTitle}
+    body={t("pomodoroNotification.pausedText")}
+    class="z-50"
+  >
+    <div class="os-progress"><div class="os-progress-value" style:width={`${progress * 100}%`}></div></div>
+    <div class="flex">
+      <span class={cn("os-action relative", resumeTouch > 0 && "os-action-pressed")}>
+        {t("pomodoroNotification.resumeFocusLabel")}
+        {@render touch()}
+      </span>
+    </div>
+  </WelcomeAndroidNotification>
+{:else}
 <div
   class={cn("os-notification pointer-events-none absolute z-50", `os-${kind}`)}
   style:transform
@@ -83,7 +98,7 @@
       </span>
       <span class="os-button"><span class="block truncate">{t("pomodoroNotification.dismissPromptsLabel")}</span></span>
     </div>
-  {:else if kind === "windows"}
+  {:else}
     <div class="os-header">
       <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-full" draggable="false" />
       <span class="truncate">{t("common.appName")}</span>
@@ -107,37 +122,9 @@
       </span>
       <span class="os-button"><span class="block truncate">{t("pomodoroNotification.dismissPromptsLabel")}</span></span>
     </div>
-  {:else}
-    <div class="flex gap-2.5">
-      <!-- The Focus notification's small icon, the clock Android tints into its circle. -->
-      <span class="os-small-icon">
-        <svg class="size-3" viewBox="0 0 24 24" aria-hidden="true">
-          <path
-            fill="currentColor"
-            d="M12,2A10,10 0,1 0,22 12A10,10 0,0 0,12 2M12,5A7,7 0,1 1,5 12A7,7 0,0 1,12 5M11,7H13V12.4L16.4,14.4L15.4,16.1L11,13.5Z"
-          />
-        </svg>
-      </span>
-      <div class="min-w-0 flex-1">
-        <div class="os-header">
-          <span class="truncate">{t("common.appName")}</span>
-          <svg class="os-chevron ml-auto size-3 shrink-0" viewBox="0 0 12 12" aria-hidden="true">
-            <path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none" />
-          </svg>
-        </div>
-        <p class="os-title truncate">{eventTitle}</p>
-        <p class="os-body">{t("pomodoroNotification.pausedText")}</p>
-        <div class="os-progress"><div class="os-progress-value" style:width={`${progress * 100}%`}></div></div>
-        <div class="flex">
-          <span class={cn("os-action relative", resumeTouch > 0 && "os-action-pressed")}>
-            {t("pomodoroNotification.resumeFocusLabel")}
-            {@render touch()}
-          </span>
-        </div>
-      </div>
-    </div>
   {/if}
 </div>
+{/if}
 
 <style>
   /*
@@ -276,50 +263,7 @@
     border-radius: 4px;
   }
 
-  /* Android: the ongoing Focus notification dropped from the top, with its tinted small icon and text action. */
-  .os-android {
-    top: var(--os-margin);
-    right: var(--os-margin);
-    left: var(--os-margin);
-    padding: 12px 14px 6px 12px;
-    border-radius: 24px;
-    box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
-    font-family: "Google Sans Text", "Google Sans", Roboto, "Noto Sans", sans-serif;
-    font-size: 13px;
-    --os-bg: #f3f3f8;
-    --os-fg: #1b1b1f;
-    --os-muted: #45464f;
-    --os-body: #45464f;
-    --os-accent: #0b57d0;
-    --os-on-accent: #ffffff;
-    --os-track: rgb(11 87 208 / 0.18);
-    --os-button-pressed: rgb(11 87 208 / 0.12);
-  }
-
-  .os-android .os-header {
-    font-size: 11px;
-  }
-
-  .os-android .os-title {
-    margin-top: 2px;
-    font-weight: 500;
-  }
-
-  .os-small-icon {
-    display: grid;
-    flex-shrink: 0;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    border-radius: 9999px;
-    background: var(--os-accent);
-    color: var(--os-on-accent);
-  }
-
-  .os-chevron {
-    color: var(--os-muted);
-  }
-
+  /* Android's progress bar and text action, in the palette the Android notification sets. */
   .os-progress {
     height: 4px;
     margin-top: 8px;
@@ -366,18 +310,6 @@
       --os-border: rgb(255 255 255 / 0.08);
       --os-button: rgb(255 255 255 / 0.06);
       --os-button-pressed: rgb(255 255 255 / 0.1);
-    }
-
-    .os-android {
-      box-shadow: 0 4px 12px rgb(0 0 0 / 0.45);
-      --os-bg: #1f2024;
-      --os-fg: #e3e2e6;
-      --os-muted: #c5c6d0;
-      --os-body: #c5c6d0;
-      --os-accent: #a8c7fa;
-      --os-on-accent: #062e6f;
-      --os-track: rgb(168 199 250 / 0.22);
-      --os-button-pressed: rgb(168 199 250 / 0.16);
     }
   }
 </style>

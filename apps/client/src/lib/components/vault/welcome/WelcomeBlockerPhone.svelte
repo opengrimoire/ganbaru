@@ -2,13 +2,14 @@
   import appIconUrl from "../../../../../src-tauri/icons/64x64.png";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BLOCKER_APP_NAMES, type BlockerApp, type BlockerNotice, type BlockerPhoneApp } from "$lib/vault/welcome-blocker";
+  import WelcomeAndroidNotification from "./WelcomeAndroidNotification.svelte";
   import WelcomeParodyFeed from "./WelcomeParodyFeed.svelte";
   import WelcomeParodyIcon from "./WelcomeParodyIcon.svelte";
 
   /**
-   * A phone in the distraction blocker's welcome scenes, on its home screen with the parody apps in a row above the dock. An
-   * app opens from its icon and shrinks back into it as Android returns Home, and the app's block notification slides
-   * in from the top in Android's own colors, since the system draws it, not the app theme.
+   * A phone in the distraction blocker's welcome scenes, on its home screen with the parody apps and Ganbaru in a row
+   * above the dock. An app opens from its icon and shrinks back into it as Android returns Home, and Ganbaru's block
+   * notification slides in from the top as Android draws it.
    */
   let {
     width,
@@ -36,11 +37,16 @@
   const GRID_COLUMNS = 4;
   const GRID_PAD_X = 8;
   const ICON_LABEL_H = 16;
-  /** The parody apps, in one row centered on the grid just above the dock. */
-  const HOME_APPS: readonly BlockerApp[] = ["y", "egogram", "bluedit"];
+  /** The parody apps and Ganbaru, in one row centered on the grid just above the dock. */
+  const HOME_APPS: readonly (BlockerApp | "ganbaru")[] = ["y", "egogram", "bluedit", "ganbaru"];
   const HOME_ROW_OFFSET = (GRID_COLUMNS - HOME_APPS.length) / 2;
   /** The gap between the apps' labels and the dock. */
   const HOME_ROW_GAP = 10;
+  /** How far a label may spill past its column, in pixels, so a longer name fits before it truncates. */
+  const LABEL_OVERHANG = 10;
+  /** The block notification's gap from the screen's edges and its body text size, in pixels. */
+  const NOTICE_MARGIN = 6;
+  const NOTICE_FONT_PX = 9.5;
   const DOCK_SLOTS = [0, 1, 2, 3];
   const DOCK_BOTTOM = 18;
   /** How far an app's feed scrolls at its end, in pixels. */
@@ -78,6 +84,7 @@
 
     {#each HOME_APPS as homeApp, index (homeApp)}
       {@const center = appCenter(index)}
+      {@const touch = homeApp === "ganbaru" ? 0 : (touches[homeApp] ?? 0)}
       <span
         class="absolute flex flex-col items-center gap-1"
         style:left={`${center.x - cellW / 2}px`}
@@ -85,15 +92,28 @@
         style:width={`${cellW}px`}
       >
         <span class="relative">
-          <WelcomeParodyIcon app={homeApp} size={iconSize} />
-          {#if (touches[homeApp] ?? 0) > 0}
+          {#if homeApp === "ganbaru"}
+            <img
+              src={appIconUrl}
+              alt=""
+              class="block rounded-full"
+              style:width={`${iconSize}px`}
+              style:height={`${iconSize}px`}
+              draggable="false"
+            />
+          {:else}
+            <WelcomeParodyIcon app={homeApp} size={iconSize} />
+          {/if}
+          {#if touch > 0}
             <span
               class="pointer-events-none absolute top-1/2 left-1/2 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-              style:opacity={touches[homeApp]}
+              style:opacity={touch}
             ></span>
           {/if}
         </span>
-        <span class="max-w-full truncate text-[8px] leading-none">{BLOCKER_APP_NAMES[homeApp]}</span>
+        <span class="truncate text-[8px] leading-none" style:max-width={`${cellW + LABEL_OVERHANG}px`}>
+          {homeApp === "ganbaru" ? t("common.appName") : BLOCKER_APP_NAMES[homeApp]}
+        </span>
       </span>
     {/each}
 
@@ -117,45 +137,14 @@
     {/if}
 
     {#if notice}
-      <div
-        class="block-notice absolute inset-x-1.5 top-1.5 z-30 flex gap-2 rounded-2xl px-2.5 py-2"
-        style:transform={`translateY(calc(${-(1 - notice.shown)} * (100% + 8px)))`}
-      >
-        <img src={appIconUrl} alt="" class="mt-px size-4 shrink-0 rounded-full" draggable="false" />
-        <div class="min-w-0 flex-1 leading-tight">
-          <p class="notice-muted truncate text-[8px]">{t("common.appName")}</p>
-          <p class="truncate text-[10px] font-medium">{BLOCKER_APP_NAMES[notice.app]}</p>
-          <p class="notice-muted text-[9px]">
-            {notice.reason === "focus" ? t("settings.distractions.mobile.blockedMessage") : t("settings.distractions.mobile.limitMessage")}
-          </p>
-        </div>
-      </div>
+      <WelcomeAndroidNotification
+        shown={notice.shown}
+        margin={NOTICE_MARGIN}
+        fontSize={NOTICE_FONT_PX}
+        title={BLOCKER_APP_NAMES[notice.app]}
+        body={notice.reason === "focus" ? t("settings.distractions.mobile.blockedMessage") : t("settings.distractions.mobile.limitMessage")}
+        class="z-30"
+      />
     {/if}
   </div>
 </div>
-
-<style>
-  /* Android's Material notification palette, in its light and dark variants, since the system paints it, not the app theme. */
-  .block-notice {
-    background: #f3f3f8;
-    color: #1b1b1f;
-    box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
-    font-family: "Google Sans Text", "Google Sans", Roboto, "Noto Sans", sans-serif;
-  }
-
-  .notice-muted {
-    color: #45464f;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .block-notice {
-      background: #1f2024;
-      color: #e3e2e6;
-      box-shadow: 0 4px 12px rgb(0 0 0 / 0.45);
-    }
-
-    .notice-muted {
-      color: #c5c6d0;
-    }
-  }
-</style>

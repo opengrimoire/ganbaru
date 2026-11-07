@@ -19,6 +19,10 @@
   import { displayCanonicalTime } from "$lib/components/calendar/event-panel/date-time-controller.svelte";
   import { PANEL_MAX_WIDTH } from "$lib/components/calendar/event-panel/geometry-controller.svelte";
   import {
+    EVENT_PANEL_SHEET_PEEK_PADDING_PX,
+    EVENT_PANEL_SHEET_TOP_GAP,
+  } from "$lib/components/calendar/event-panel/mobile-sheet-controller.svelte";
+  import {
     clampFloatingLeft,
     clampFloatingTop,
     getAvailablePanelHeight,
@@ -52,6 +56,7 @@
     filmPanelOpen,
     filmProjectPicked,
     filmProjectPicker,
+    filmSheetRise,
     filmTap,
     filmTypedTitle,
   } from "$lib/vault/welcome-film";
@@ -61,8 +66,9 @@
    * where a project is picked from the project picker, which gives the event the project's color and Focus rhythm, then
    * the title is typed and the event saved. On desktop the panel floats over the Calendar as it would in a window the
    * size of the canvas, with the picker's dropdown and its projects flyout, except that where the Calendar would
-   * center it, the film keeps it to the right so the event stays in view; on a phone it covers the screen, with the
-   * picker's full screen dialog. Every frame is a function of `elapsed`.
+   * center it, the film keeps it to the right so the event stays in view; on a phone it is the bottom sheet, risen to
+   * its peek over the grid with Save in its header, with the picker's full screen dialog. Every frame is a function of
+   * `elapsed`.
    */
   let {
     elapsed,
@@ -202,8 +208,24 @@
   const availableHeight = $derived(getAvailablePanelHeight(canvasHeight, titleBarHeight, EDGE));
   const heightLimit = $derived(layout === "bottom" ? Math.min(560, availableHeight) : availableHeight);
   const constrained = $derived(mobileLayout || shouldConstrainPanelHeight(naturalHeight, heightLimit, HEIGHT_TOLERANCE));
+  /** The phone sheet's root and the last row of its peek, measured to find the peek's height. */
+  let sheetElement = $state<HTMLDivElement>();
+  let peekEndElement = $state<HTMLDivElement>();
+  let peekHeight = $state(0);
+  $effect(() => {
+    void canvasWidth;
+    void canvasHeight;
+    if (!mobileLayout || !layer || !sheetElement || !peekEndElement) return;
+    // The sheet's transform moves both boxes alike, so their distance is the peek wherever the sheet is.
+    const summaryBottom = canvasRect(layer, peekEndElement).bottom - canvasRect(layer, sheetElement).top;
+    peekHeight = Math.round(summaryBottom + EVENT_PANEL_SHEET_PEEK_PADDING_PX);
+  });
+  const sheetVisible = $derived(peekHeight * filmSheetRise(elapsed));
+
   const panelStyle = $derived.by(() => {
-    if (mobileLayout) return "left: 0; right: 0; top: 0; bottom: 0;";
+    if (mobileLayout) {
+      return `left: 0; right: 0; bottom: 0; height: calc(100% - ${EVENT_PANEL_SHEET_TOP_GAP}); transform: translateY(calc(100% - ${sheetVisible}px));`;
+    }
     if (layout === "fullscreen") return `left: ${EDGE}px; right: ${EDGE}px; top: ${minTop}px; bottom: ${EDGE}px;`;
     const heightCss = constrained ? `height: ${Math.round(heightLimit)}px;` : "";
     if (layout === "bottom") {
@@ -364,7 +386,7 @@
   }
 
   /** The floating panel is placed from its measured height, so it stays hidden until its first measure. */
-  const placed = $derived(mobileLayout || naturalHeight > 0);
+  const placed = $derived(mobileLayout ? peekHeight > 0 : naturalHeight > 0);
   const pickerOpen = $derived(pane !== null);
   /** The group row stays highlighted from its tap while its projects are open; the project row while it is tapped. */
   const groupHighlighted = $derived(groupTouch > 0 || pane === "projects");
@@ -420,24 +442,38 @@
 {#if open}
   <div bind:this={layer} class="pointer-events-none absolute inset-0 z-49" style:visibility={placed ? undefined : "hidden"} aria-hidden="true">
     <div
-      class="panel-root absolute flex flex-col"
+      bind:this={sheetElement}
+      class={cn("panel-root absolute flex flex-col", mobileLayout && "rounded-t-floating")}
       data-mobile={mobileLayout || undefined}
       style="box-shadow: 0 0 2px 0px var(--panel-edge), 0 1px 2px var(--panel-shadow); background-color: var(--panel-bg); {panelStyle}"
     >
-      <!-- The drag bar, with the phone's close button. -->
-      <div bind:offsetHeight={barHeight} class="sticky top-0 z-10 flex items-center pl-4 pr-2" style="background-color: var(--sidebar);">
-        {#if mobileLayout}
-          <div class="w-12"></div>
-        {/if}
-        <div class="flex flex-1 items-center justify-center py-2.5">
-          <div class="h-[1.5px] w-9 bg-muted-foreground/50"></div>
-        </div>
-        {#if mobileLayout}
-          <div class="panel-chrome flex h-12 w-12 shrink-0 items-center justify-center text-muted-foreground">
-            <X size={22} />
+      {#if mobileLayout}
+        <!-- The sheet's header: the grabber, then close and Save. -->
+        <div bind:offsetHeight={barHeight} class="sticky top-0 z-10 shrink-0" style="background-color: var(--sidebar);">
+          <div class="flex justify-center pt-2">
+            <div class="h-1 w-9 rounded-full bg-muted-foreground/40"></div>
           </div>
-        {/if}
-      </div>
+          <div class="flex items-center gap-1 px-1">
+            <div class="panel-chrome flex h-12 w-12 shrink-0 items-center justify-center rounded-floating-item text-muted-foreground">
+              <X size={22} />
+            </div>
+            <div class="flex-1"></div>
+            <div class="flex h-12 shrink-0 items-center px-1">
+              <span class="relative rounded-floating-item bg-action-confirm px-4 py-2 text-[0.866667rem] font-medium text-action-confirm-foreground">
+                {t("common.save")}
+                {@render touch(saveTouch, "left-1/2 top-1/2")}
+              </span>
+            </div>
+          </div>
+        </div>
+      {:else}
+        <!-- The drag bar. -->
+        <div bind:offsetHeight={barHeight} class="sticky top-0 z-10 flex items-center pl-4 pr-2" style="background-color: var(--sidebar);">
+          <div class="flex flex-1 items-center justify-center py-2.5">
+            <div class="h-[1.5px] w-9 bg-muted-foreground/50"></div>
+          </div>
+        </div>
+      {/if}
 
       <div class={cn("relative min-h-0", constrained ? "flex-1 overflow-hidden" : "shrink-0")}>
         <div
@@ -494,7 +530,11 @@
               <hr class="border-event-panel-divider mx-1 mt-0.5" />
 
               <div class="mt-1.5 flex flex-col gap-px px-1">
-                <div class="date-time-grid relative text-[0.866667rem] leading-none" data-stacked={panelWidth < 300 || undefined}>
+                <div
+                  bind:this={peekEndElement}
+                  class="date-time-grid relative text-[0.866667rem] leading-none"
+                  data-stacked={panelWidth < 300 || undefined}
+                >
                   <div class="relative z-1 min-w-0 justify-self-start">
                     <div data-control class="date-chip max-w-full rounded py-0.5 text-event-panel-input-text">{dateLabel}</div>
                   </div>
@@ -567,22 +607,24 @@
         </div>
       </div>
 
-      <!-- Save, outside the scrolling body. -->
-      <div
-        bind:offsetHeight={footerHeight}
-        class={cn("shrink-0 px-4", layout === "fullscreen" ? "pb-2 pt-1" : "pb-3.5 pt-1.5")}
-        style="background-color: var(--panel-bg);"
-      >
-        <div class="panel-footer-actions flex">
-          <div
-            data-control
-            class="relative flex flex-1 items-center justify-center gap-2 bg-action-confirm py-1.5 text-[0.866667rem] text-action-confirm-foreground"
-          >
-            <span>{t("calendar.eventPanel.saveShortcut", formatShortcut("Mod + Enter"))}</span>
-            {@render touch(saveTouch, "left-1/2 top-1/2")}
+      {#if !mobileLayout}
+        <!-- Save, outside the scrolling body. -->
+        <div
+          bind:offsetHeight={footerHeight}
+          class={cn("shrink-0 px-4", layout === "fullscreen" ? "pb-2 pt-1" : "pb-3.5 pt-1.5")}
+          style="background-color: var(--panel-bg);"
+        >
+          <div class="panel-footer-actions flex">
+            <div
+              data-control
+              class="relative flex flex-1 items-center justify-center gap-2 bg-action-confirm py-1.5 text-[0.866667rem] text-action-confirm-foreground"
+            >
+              <span>{t("calendar.eventPanel.saveShortcut", formatShortcut("Mod + Enter"))}</span>
+              {@render touch(saveTouch, "left-1/2 top-1/2")}
+            </div>
           </div>
         </div>
-      </div>
+      {/if}
     </div>
 
     {#if pickerOpen && mobileLayout}

@@ -454,6 +454,14 @@ export function filmPanelOpen(elapsed: number): boolean {
   return elapsed >= FILM_BEATS.panelOpen && elapsed < FILM_BEATS.createSaved;
 }
 
+/** How long the phone's event sheet takes to rise to its peek once the drawn event is let go, as the sheet animates. */
+export const FILM_SHEET_RISE_MS = 280;
+
+/** How far the phone's event sheet has risen to its peek at `elapsed`, from 0 to 1, slowing as it settles. */
+export function filmSheetRise(elapsed: number): number {
+  return 1 - (1 - filmSpan(elapsed, FILM_BEATS.panelOpen, FILM_BEATS.panelOpen + FILM_SHEET_RISE_MS)) ** 3;
+}
+
 /**
  * The project picker's open pane at `elapsed`: the groups after the project trigger is tapped, then a group's projects
  * once the group is tapped, until a project is picked.

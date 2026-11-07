@@ -713,6 +713,21 @@
                   {@render eventBlock(SESSION_START, DRAWN_END, THESIS, title("writeChapter"), isPast(0, DRAWN_END), false, true)}
                 {/if}
 
+                <!-- The edited event's resize knobs, as a phone draws them while the event panel is open. -->
+                {#if mobileShell && filmPanelOpen(elapsed)}
+                  <div
+                    class="pointer-events-none absolute left-0"
+                    style:width={`${100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT}%`}
+                    style:top={`${y(SESSION_START)}px`}
+                    style:height={`${px(FILM_DRAWN_MINUTES)}px`}
+                    style:z-index="11"
+                    style:--knob-color={getEventColor(projectPicked ? THESIS : undefined, theme.current).bg}
+                  >
+                    <div class="film-resize-knob absolute left-0 top-0"></div>
+                    <div class="film-resize-knob absolute bottom-0 right-0"></div>
+                  </div>
+                {/if}
+
                 <!-- The press that draws the session, following its growing edge. -->
                 {#if pressOpacity > 0}
                   <span
@@ -807,6 +822,26 @@
 </div>
 
 <style>
+  /* The Calendar's touch resize knob: a dot centered on the event's edge, inset from its side. */
+  .film-resize-knob {
+    width: 2.75rem;
+    height: 2.75rem;
+    margin: -1.375rem -0.5rem;
+  }
+
+  .film-resize-knob::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0.875rem;
+    height: 0.875rem;
+    border-radius: 9999px;
+    background-color: var(--cal-bg);
+    border: 2px solid var(--knob-color);
+    transform: translate(-50%, -50%);
+  }
+
   /* The Focus screens at the size they take in a window as small as the canvas. */
   .film-screen {
     background: var(--film-screen-bg);

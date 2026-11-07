@@ -11,6 +11,7 @@ import {
   FILM_REPLAN_MS,
   FILM_SESSION,
   FILM_SESSION_MINUTES,
+  FILM_SHEET_RISE_MS,
   FILM_TAP_MS,
   easeInOutCubic,
   filmClockMinute,
@@ -23,6 +24,7 @@ import {
   filmRailBreaks,
   filmNotification,
   filmRingMenuOpen,
+  filmSheetRise,
   filmSessionMinute,
   filmSessionMoment,
   filmSpan,
@@ -235,6 +237,15 @@ describe("the film's event panel", () => {
     expect(filmPanelOpen(FILM_BEATS.createSaved - 1)).toBe(true);
     expect(filmPanelOpen(FILM_BEATS.createSaved)).toBe(false);
     expect(FILM_BEATS.createEnd).toBeLessThan(FILM_BEATS.panelOpen);
+  });
+
+  it("raises the phone's sheet to its peek as the panel opens, settling well before the first tap", () => {
+    expect(filmSheetRise(FILM_BEATS.panelOpen)).toBe(0);
+    const half = filmSheetRise(FILM_BEATS.panelOpen + FILM_SHEET_RISE_MS / 2);
+    expect(half).toBeGreaterThan(0.5);
+    expect(half).toBeLessThan(1);
+    expect(filmSheetRise(FILM_BEATS.panelOpen + FILM_SHEET_RISE_MS)).toBe(1);
+    expect(FILM_BEATS.panelOpen + FILM_SHEET_RISE_MS).toBeLessThan(FILM_BEATS.projectTap);
   });
 
   it("opens the project picker's groups, then a group's projects, and closes it on the pick", () => {

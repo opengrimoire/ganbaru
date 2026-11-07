@@ -24,7 +24,7 @@ export const vaultSetup = {
   },
   about: {
     headline: "Free and open source",
-    body: "Your data stays on your devices and syncs directly between them, with no account, ads, or telemetry.",
+    body: "Your data stays on your devices and syncs directly between them, with no account, ads, or telemetry. The app and its code are yours forever.",
     sceneDescription:
       "A short animation of Ganbaru's public source code repository opening in a browser, with its files and its AGPL 3.0 license in view. A tap on Star then stars the repository.",
   },

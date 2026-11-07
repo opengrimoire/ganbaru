@@ -54,7 +54,7 @@ describe("welcome blocking scene", () => {
   it("leaves the site open before and after the event, and blocks it during", () => {
     expect(blockingBrowserPage(0).kind).toBe("feed");
     expect(blockingBrowserPage(B.focusStart - 1).kind).toBe("feed");
-    expect(blockingBrowserPage(B.focusStart)).toEqual({ kind: "block", reason: "focus", minutesLeft: 60 });
+    expect(blockingBrowserPage(B.focusStart)).toEqual({ kind: "block", app: "bluedit", reason: "focus", minutesLeft: 60 });
     expect(blockingBrowserPage(B.focusEnd - 1)).toMatchObject({ kind: "block", reason: "focus" });
     expect(blockingBrowserPage(B.focusEnd).kind).toBe("feed");
     expect(blockingBrowserPage(B.end).kind).toBe("feed");

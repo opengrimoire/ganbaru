@@ -30,6 +30,10 @@ export const vaultSetup = {
     headline: "Elige tu idioma",
     body: "Puedes cambiarlo después en Ajustes > Apariencia.",
   },
+  blocker: {
+    workTab: "Borrador del capítulo 3",
+    newTab: "Nueva pestaña",
+  },
   blocking: {
     headline: "Las distracciones esperan al enfoque",
     body: "Los sitios y apps que elijas se quedan cerrados durante el enfoque.\nVuelven a abrir cuando termina.",
@@ -38,9 +42,10 @@ export const vaultSetup = {
   },
   limits: {
     headline: "Límites diarios en cada dispositivo",
-    body: "Dale a un sitio y su app un solo tiempo diario.\nEl tiempo cuenta en cada dispositivo.",
+    body: "Junta sitios y apps en un solo tiempo diario.\nEl tiempo cuenta en cada dispositivo.",
     sceneDescription:
-      "Una breve animación de un límite diario de una hora para Y. El tiempo en el sitio de Y en el navegador de una laptop y en su app en un teléfono llena una sola barra, cada dispositivo con su color. Al agotarse la hora, la app vuelve a la pantalla de inicio con una notificación y la página de bloqueo de Ganbaru reemplaza el sitio.",
+      "Una breve animación de un límite diario de una hora para redes sociales. El tiempo en Y en el navegador de una laptop llena parte de una barra; luego se cierra la pestaña de Y y Egogram en un teléfono llena el resto, cada uno con su color. Al agotarse la hora, Egogram vuelve a la pantalla de inicio con una notificación, y Y escrito de nuevo en una pestaña nueva del navegador abre la página de bloqueo de Ganbaru.",
+    limitName: "Redes sociales",
   },
   about: {
     headline: "Gratis y de código abierto",

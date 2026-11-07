@@ -22,6 +22,10 @@ export const vaultSetup = {
     headline: "Choose your language",
     body: "You can change it later in Settings > Appearance.",
   },
+  blocker: {
+    workTab: "Chapter 3 draft",
+    newTab: "New tab",
+  },
   blocking: {
     headline: "Distractions wait for Focus",
     body: "The sites and apps you choose stay closed during Focus.\nThey open again when it ends.",
@@ -30,9 +34,10 @@ export const vaultSetup = {
   },
   limits: {
     headline: "Daily limits on every device",
-    body: "Give a site and its app one daily budget.\nTime counts on every device.",
+    body: "Put sites and apps under one daily budget.\nTime counts on every device.",
     sceneDescription:
-      "A short animation of a one hour daily limit for Y. Time on Y's website in a laptop's browser and on its app on a phone fills one bar, each device in its own color. When the hour is used up, the app returns to the home screen with a notification and Ganbaru's block page replaces the website.",
+      "A short animation of a one hour daily limit for social media. Time on Y in a laptop's browser fills part of one bar, then the Y tab is closed and Egogram on a phone fills the rest, each in its own color. When the hour is used up, Egogram returns to the home screen with a notification, and Y typed again in a new browser tab opens Ganbaru's block page instead.",
+    limitName: "Social media",
   },
   about: {
     headline: "Free and open source",

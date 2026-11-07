@@ -22,11 +22,102 @@ export const BLOCKER_APP_HOSTS: Readonly<Record<BlockerApp, string>> = {
 /** Why a site or an app is blocked: a running Focus phase, or a daily limit that ran out. */
 export type BlockerReason = "focus" | "limit";
 
-/** What the browser's tab shows: the site's feed, scrolled from 0 to 1, or the extension's block page. */
+/**
+ * What the browser's active tab shows: a work document, a new tab's empty page, a site's feed scrolled from 0 to 1, or
+ * the extension's block page for a site.
+ */
 export type BlockerBrowserPage =
-  | { kind: "feed"; scroll: number }
-  | { kind: "block"; reason: "focus"; minutesLeft: number }
-  | { kind: "block"; reason: "limit" };
+  | { kind: "work" }
+  | { kind: "blank" }
+  | { kind: "feed"; app: BlockerApp; scroll: number }
+  | { kind: "block"; app: BlockerApp; reason: "focus"; minutesLeft: number }
+  | { kind: "block"; app: BlockerApp; reason: "limit" };
+
+/** What a browser tab carries: a work document, an empty new tab, a site, or the extension's block page. */
+export type BlockerTabContent = "work" | "blank" | "blocked" | BlockerApp;
+
+/** A browser tab, whether it is the active one, and the tap on its close button, from 0 to 1. */
+export interface BlockerTab {
+  content: BlockerTabContent;
+  active: boolean;
+  closeTouch?: number;
+}
+
+/**
+ * What the browser's address bar shows: a page's placeholder address, a site, text being typed with its caret drawn or
+ * not as it blinks, or the extension's page.
+ */
+export type BlockerAddress =
+  | { kind: "placeholder" }
+  | { kind: "host"; host: string }
+  | { kind: "typed"; text: string; caret: boolean }
+  | { kind: "extension" };
+
+/**
+ * One frame of the browser: its tabs, its address bar, the active tab's page and how far it has faded in, how far a
+ * page has loaded (0 when none loads), and the tap on the new tab button, each from 0 to 1.
+ */
+export interface BlockerBrowserFrame {
+  tabs: readonly BlockerTab[];
+  address: BlockerAddress;
+  page: BlockerBrowserPage;
+  pageIn: number;
+  loading: number;
+  newTabTouch: number;
+}
+
+/** What a tab showing `page` carries. */
+export function blockerTabOf(page: BlockerBrowserPage): BlockerTabContent {
+  switch (page.kind) {
+    case "work":
+      return "work";
+    case "blank":
+      return "blank";
+    case "feed":
+      return page.app;
+    case "block":
+      return "blocked";
+  }
+}
+
+/** What the address bar shows for `page` while nothing is typed. */
+export function blockerAddressOf(page: BlockerBrowserPage): BlockerAddress {
+  switch (page.kind) {
+    case "work":
+      return { kind: "placeholder" };
+    case "blank":
+      return { kind: "typed", text: "", caret: false };
+    case "feed":
+      return { kind: "host", host: BLOCKER_APP_HOSTS[page.app] };
+    case "block":
+      return { kind: "extension" };
+  }
+}
+
+/** A browser with a single tab showing `page`, untouched. */
+export function blockerSingleTab(page: BlockerBrowserPage, pageIn: number): BlockerBrowserFrame {
+  return {
+    tabs: [{ content: blockerTabOf(page), active: true }],
+    address: blockerAddressOf(page),
+    page,
+    pageIn,
+    loading: 0,
+    newTabTouch: 0,
+  };
+}
+
+/** The prefix of `text` typed by `elapsed`, one character at a time from `start` to `end`. */
+export function blockerTyped(text: string, start: number, end: number, elapsed: number): string {
+  return text.slice(0, Math.floor(text.length * filmSpan(elapsed, start, end)));
+}
+
+/** How long the text caret stays on, and off, as it blinks. */
+const CARET_BLINK_MS = 530;
+
+/** Whether the text caret is drawn at this moment, as it blinks. */
+export function blockerCaretOn(elapsed: number): boolean {
+  return Math.floor(elapsed / CARET_BLINK_MS) % 2 === 0;
+}
 
 /** The app open on the phone, how far it has opened from its icon, and how far its feed has scrolled, each from 0 to 1. */
 export interface BlockerPhoneApp {

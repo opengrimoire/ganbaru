@@ -11,7 +11,7 @@
   import WelcomeScene from "./WelcomeScene.svelte";
   import WelcomeSceneStep from "./WelcomeSceneStep.svelte";
 
-  /** The welcome screen on daily limits: one budget for a site and its app filled from a laptop and a phone until both are blocked, on a loop. */
+  /** The welcome screen on daily limits: one social media budget filled by Y on a laptop and Egogram on a phone until both are blocked, on a loop. */
   const { t } = getLocalization();
 </script>
 

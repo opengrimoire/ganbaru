@@ -4,13 +4,12 @@ import {
   LIMITS_BROWSER_MINUTES,
   LIMITS_BUDGET_MINUTES,
   LIMITS_PHONE_MINUTES,
-  limitsBrowserPage,
+  limitsBrowser,
+  limitsEgogramTouch,
   limitsNotice,
-  limitsPageIn,
   limitsPan,
   limitsPhoneApp,
   limitsUsage,
-  limitsYTouch,
 } from "./welcome-limits-scene";
 
 const B = LIMITS_BEATS;
@@ -26,15 +25,21 @@ describe("welcome limits scene", () => {
     expect(beats).toEqual([...beats].sort((a, b) => a - b));
   });
 
-  it("starts with Y open in the browser and nothing used", () => {
-    expect(limitsBrowserPage(0)).toEqual({ kind: "feed", scroll: 0 });
+  it("starts with Y open beside a work tab and nothing used", () => {
+    const browser = limitsBrowser(0);
+    expect(browser.page).toEqual({ kind: "feed", app: "y", scroll: 0 });
+    expect(browser.tabs.map((tab) => [tab.content, tab.active])).toEqual([
+      ["work", false],
+      ["y", true],
+    ]);
+    expect(browser.address).toEqual({ kind: "host", host: "y.com" });
     expect(limitsUsage(0)).toEqual({ browser: 0, phone: 0 });
     expect(limitsPhoneApp(0)).toBeNull();
     expect(limitsNotice(0)).toBeNull();
     expect(limitsPan(0)).toBe(0);
   });
 
-  it("fills one budget from the browser, then the phone, reaching it exactly as the limit is reached", () => {
+  it("fills one budget from Y in the browser, then Egogram on the phone, reaching it exactly as the limit is reached", () => {
     expect(LIMITS_BROWSER_MINUTES + LIMITS_PHONE_MINUTES).toBe(LIMITS_BUDGET_MINUTES);
     expect(limitsUsage(B.browserUseEnd)).toEqual({ browser: LIMITS_BROWSER_MINUTES, phone: 0 });
     expect(limitsUsage(B.limitReached)).toEqual({ browser: LIMITS_BROWSER_MINUTES, phone: LIMITS_PHONE_MINUTES });
@@ -44,27 +49,61 @@ describe("welcome limits scene", () => {
       const total = usage.browser + usage.phone;
       expect(total).toBeGreaterThanOrEqual(previous);
       if (elapsed < B.limitReached) expect(total).toBeLessThan(LIMITS_BUDGET_MINUTES);
-      if (usage.phone > 0 && elapsed < B.limitReached) expect(limitsPhoneApp(elapsed)?.app).toBe("y");
+      if (usage.browser > 0 && usage.browser < LIMITS_BROWSER_MINUTES) expect(limitsBrowser(elapsed).page.kind).toBe("feed");
+      if (usage.phone > 0 && elapsed < B.limitReached) expect(limitsPhoneApp(elapsed)?.app).toBe("egogram");
       previous = total;
     }
   });
 
-  it("blocks the site and the app together once the budget runs out", () => {
-    expect(limitsBrowserPage(B.limitReached - 1).kind).toBe("feed");
-    expect(limitsBrowserPage(B.limitReached)).toEqual({ kind: "block", reason: "limit" });
-    expect(limitsPhoneApp(B.limitReached + 1000)).toBeNull();
-    expect(limitsNotice(B.limitNotice - 1)).toBeNull();
-    expect(limitsNotice(B.limitNotice + 1000)).toEqual({ app: "y", reason: "limit", shown: 1 });
+  it("closes Y's tab before Egogram opens on the phone", () => {
+    expect(limitsBrowser(B.yCloseTap - 100).tabs[1]?.closeTouch).toBeGreaterThan(0);
+    const closed = limitsBrowser(B.yCloseTap);
+    expect(closed.tabs).toEqual([{ content: "work", active: true }]);
+    expect(closed.page).toEqual({ kind: "work" });
+    expect(closed.address).toEqual({ kind: "placeholder" });
+    expect(B.yCloseTap).toBeLessThan(B.egogramTap);
+    for (const elapsed of moments()) {
+      if (limitsPhoneApp(elapsed)) expect(limitsBrowser(elapsed).tabs.some((tab) => tab.content === "y")).toBe(false);
+    }
   });
 
-  it("keeps every animated value between 0 and 1", () => {
+  it("sends Egogram Home with the limit notification once the budget runs out", () => {
+    expect(limitsPhoneApp(B.limitReached - 1)?.app).toBe("egogram");
+    expect(limitsPhoneApp(B.limitReached + 1000)).toBeNull();
+    expect(limitsNotice(B.limitNotice - 1)).toBeNull();
+    expect(limitsNotice(B.limitNotice + 1000)).toEqual({ app: "egogram", reason: "limit", shown: 1 });
+  });
+
+  it("types Y's address into a new tab after the limit, and loads the block page", () => {
+    expect(B.newTabTap).toBeGreaterThan(B.limitNotice);
+    expect(limitsBrowser(B.newTabTap - 100).newTabTouch).toBeGreaterThan(0);
+    expect(limitsBrowser(B.newTabTap).address).toMatchObject({ kind: "typed", text: "" });
+    expect(limitsBrowser(B.typeStart + (B.typeEnd - B.typeStart) / 2).address).toMatchObject({ kind: "typed", text: "y." });
+    expect(limitsBrowser(B.typeEnd).address).toMatchObject({ kind: "typed", text: "y.com" });
+    const loading = limitsBrowser(B.loadStart + 100);
+    expect(loading.page.kind).toBe("blank");
+    expect(loading.loading).toBeGreaterThan(0);
+    const blocked = limitsBrowser(B.blocked);
+    expect(blocked.page).toEqual({ kind: "block", app: "y", reason: "limit" });
+    expect(blocked.address).toEqual({ kind: "extension" });
+    expect(blocked.tabs.map((tab) => [tab.content, tab.active])).toEqual([
+      ["work", false],
+      ["blocked", true],
+    ]);
+  });
+
+  it("keeps a single active tab and every animated value between 0 and 1", () => {
     for (const elapsed of moments()) {
-      const page = limitsBrowserPage(elapsed);
+      const browser = limitsBrowser(elapsed);
+      expect(browser.tabs.filter((tab) => tab.active)).toHaveLength(1);
       const values = [
         limitsPan(elapsed),
-        limitsPageIn(elapsed),
-        limitsYTouch(elapsed),
-        page.kind === "feed" ? page.scroll : 0,
+        limitsEgogramTouch(elapsed),
+        browser.pageIn,
+        browser.loading,
+        browser.newTabTouch,
+        ...browser.tabs.map((tab) => tab.closeTouch ?? 0),
+        browser.page.kind === "feed" ? browser.page.scroll : 0,
         limitsPhoneApp(elapsed)?.open ?? 0,
         limitsPhoneApp(elapsed)?.scroll ?? 0,
         limitsNotice(elapsed)?.shown ?? 0,
@@ -77,11 +116,14 @@ describe("welcome limits scene", () => {
   });
 
   it("ends on both devices blocked, as the reduced-motion still", () => {
-    expect(limitsBrowserPage(B.end)).toEqual({ kind: "block", reason: "limit" });
-    expect(limitsPageIn(B.end)).toBe(1);
+    const browser = limitsBrowser(B.end);
+    expect(browser.page).toEqual({ kind: "block", app: "y", reason: "limit" });
+    expect(browser.pageIn).toBe(1);
+    expect(browser.loading).toBe(0);
+    expect(browser.newTabTouch).toBe(0);
     expect(limitsNotice(B.end)?.shown).toBe(1);
     expect(limitsPhoneApp(B.end)).toBeNull();
     expect(limitsPan(B.end)).toBe(0);
-    expect(limitsYTouch(B.end)).toBe(0);
+    expect(limitsEgogramTouch(B.end)).toBe(0);
   });
 });

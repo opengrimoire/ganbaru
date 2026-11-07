@@ -4,6 +4,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
+  import { blockerSingleTab } from "$lib/vault/welcome-blocker";
   import {
     BLOCKING_DAY_VIEW,
     BLOCKING_EVENT,
@@ -33,7 +34,7 @@
   const preferences = getPreferences();
   const theme = getTheme();
 
-  const HEADER_H = 60;
+  const HEADER_H = 64;
   /** The event's palette slot, the Calendar scene's Thesis color. */
   const EVENT_COLOR = 7;
   /** How far the event grows at the peak of a pulse. */
@@ -107,7 +108,7 @@
     </div>
   {/snippet}
   {#snippet browser()}
-    <WelcomeBlockerBrowser app="bluedit" page={blockingBrowserPage(elapsed)} pageIn={blockingPageIn(elapsed)} />
+    <WelcomeBlockerBrowser frame={blockerSingleTab(blockingBrowserPage(elapsed), blockingPageIn(elapsed))} />
   {/snippet}
   {#snippet phone(phoneWidth, phoneHeight)}
     <WelcomeBlockerPhone

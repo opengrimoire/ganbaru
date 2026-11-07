@@ -100,8 +100,8 @@ function feedScroll(elapsed: number): number {
 
 /** What the browser's tab shows at this moment. */
 export function blockingBrowserPage(elapsed: number): BlockerBrowserPage {
-  if (!blockingFocusing(elapsed)) return { kind: "feed", scroll: feedScroll(elapsed) };
-  return { kind: "block", reason: "focus", minutesLeft: Math.ceil(blockingFocusRemaining(elapsed) / 60) };
+  if (!blockingFocusing(elapsed)) return { kind: "feed", app: "bluedit", scroll: feedScroll(elapsed) };
+  return { kind: "block", app: "bluedit", reason: "focus", minutesLeft: Math.ceil(blockingFocusRemaining(elapsed) / 60) };
 }
 
 /** How far the browser's page has faded in since it last changed, from 0 to 1. */

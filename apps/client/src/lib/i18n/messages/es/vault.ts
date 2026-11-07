@@ -35,14 +35,14 @@ export const vaultSetup = {
     newTab: "Nueva pestaña",
   },
   blocking: {
-    headline: "Las distracciones esperan al enfoque",
-    body: "Los sitios y apps que elijas se quedan cerrados durante el enfoque.\nVuelven a abrir cuando termina.",
+    headline: "Sin distracciones mientras trabajas",
+    body: "Elige los sitios y apps que te distraen.\nSe quedan cerrados mientras corre el Pomodoro, y abren de nuevo después.",
     sceneDescription:
-      "Una breve animación de un evento del Calendario con enfoque, sobre el navegador de una laptop y un teléfono. Bluedit está abierto en el navegador hasta que empieza el evento; entonces la página de bloqueo de Ganbaru lo reemplaza, y Egogram abierto en el teléfono vuelve a la pantalla de inicio con una notificación. Cuando termina el evento, Bluedit vuelve y Egogram abre como siempre.",
+      "Una breve animación de un evento del Calendario que corre el Pomodoro, sobre el navegador de una laptop y un teléfono. Bluedit está abierto en el navegador hasta que empieza el evento; entonces la página de bloqueo de Ganbaru lo reemplaza, y Y escrito en la barra de direcciones recibe la misma página. Egogram abierto en el teléfono vuelve a la pantalla de inicio con una notificación, y lo mismo pasa en cada intento. Cuando termina el evento, Y abre en el navegador y Egogram abre como siempre.",
   },
   limits: {
-    headline: "Límites diarios en cada dispositivo",
-    body: "Junta sitios y apps en un solo tiempo diario.\nEl tiempo cuenta en cada dispositivo.",
+    headline: "Límites compartidos en cada dispositivo",
+    body: "Dale a sitios y apps un solo tiempo diario.\nTu laptop y tu teléfono lo gastan juntos.",
     sceneDescription:
       "Una breve animación de un límite diario de una hora para redes sociales que incluye los sitios de Y y Egogram y la app de Egogram. El tiempo en Y en el navegador de una laptop llena parte de una barra; luego se cierra la pestaña de Y y Egogram en un teléfono llena el resto, cada uno con su color. Al agotarse la hora, Egogram vuelve a la pantalla de inicio con una notificación, y cada vez que se abre de nuevo vuelve ahí al instante. De vuelta en la laptop, Y escrito en una pestaña nueva abre la página de bloqueo de Ganbaru, y lo mismo pasa con el sitio de Egogram.",
     limitName: "Redes sociales",

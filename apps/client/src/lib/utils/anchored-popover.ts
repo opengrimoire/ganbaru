@@ -1,4 +1,5 @@
-import { pickSelectPopoverGeometry, type SelectPopoverHorizontalAlign, type SelectPopoverRect } from "./select-popover-position";
+import { safeViewportRect } from "./keep-in-viewport";
+import { pickSelectPopoverGeometry, type SelectPopoverHorizontalAlign } from "./select-popover-position";
 
 /** Options for {@link anchoredPopover}. */
 export interface AnchoredPopoverOptions {
@@ -9,16 +10,6 @@ export interface AnchoredPopoverOptions {
   /** Called on a pointer press outside the popover, its anchor, and `inside`. */
   onOutside: () => void;
   horizontalAlign?: SelectPopoverHorizontalAlign;
-}
-
-/** The visible viewport that floating panels stay inside. */
-function viewportRect(): SelectPopoverRect {
-  const viewport = window.visualViewport;
-  const left = viewport?.offsetLeft ?? 0;
-  const top = viewport?.offsetTop ?? 0;
-  const width = viewport?.width ?? window.innerWidth;
-  const height = viewport?.height ?? window.innerHeight;
-  return { left, top, right: left + width, bottom: top + height, width, height };
 }
 
 /**
@@ -38,7 +29,7 @@ export function anchoredPopover(node: HTMLElement, options: AnchoredPopoverOptio
     node.style.maxWidth = "";
     const geometry = pickSelectPopoverGeometry({
       triggerRect: anchor.getBoundingClientRect(),
-      boundaryRect: viewportRect(),
+      boundaryRect: safeViewportRect(),
       contentHeight: node.scrollHeight,
       contentWidth: node.getBoundingClientRect().width,
       horizontalAlign: current.horizontalAlign ?? "start",

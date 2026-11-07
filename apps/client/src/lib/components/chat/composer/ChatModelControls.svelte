@@ -41,7 +41,7 @@
   import { trapTabFocus } from "$lib/chat/focus-navigation";
   import { isPointerAimingAtSubmenu, SUBMENU_AIM_TOLERANCES } from "$lib/utils/menu-aim";
   import { portal } from "$lib/utils/portal";
-  import { keepInViewport } from "$lib/utils/keep-in-viewport";
+  import { keepInViewport, safeViewportRect } from "$lib/utils/keep-in-viewport";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import ChatProviderIcon from "$lib/components/chat/identity/ChatProviderIcon.svelte";
@@ -341,20 +341,17 @@
   }
 
   function pickerBoundaryRect(): PickerRect {
-    if (!pickerTrigger) {
-      return { top: 0, right: window.innerWidth, bottom: window.innerHeight, left: 0 };
-    }
+    const viewport = safeViewportRect();
+    if (!pickerTrigger) return viewport;
     const boundaryElement = pickerTrigger.closest<HTMLElement>("[data-settings-content]")
       ?? pickerTrigger.closest<HTMLElement>("[data-settings-modal-panel]");
-    if (!boundaryElement) {
-      return { top: 0, right: window.innerWidth, bottom: window.innerHeight, left: 0 };
-    }
+    if (!boundaryElement) return viewport;
     const boundary = boundaryElement.getBoundingClientRect();
     return {
-      top: Math.max(0, boundary.top),
-      right: Math.min(window.innerWidth, boundary.right),
-      bottom: Math.min(window.innerHeight, boundary.bottom),
-      left: Math.max(0, boundary.left),
+      top: Math.max(viewport.top, boundary.top),
+      right: Math.min(viewport.right, boundary.right),
+      bottom: Math.min(viewport.bottom, boundary.bottom),
+      left: Math.max(viewport.left, boundary.left),
     };
   }
 

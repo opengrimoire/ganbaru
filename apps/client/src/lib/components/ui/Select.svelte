@@ -16,6 +16,7 @@
     type SelectPopoverHorizontalAlign,
     type SelectPopoverRect,
   } from "$lib/utils/select-popover-position";
+  import { safeViewportRect } from "$lib/utils/keep-in-viewport";
 
   interface Option {
     value: string;
@@ -138,27 +139,11 @@
   }
 
   function getBoundaryRect(): SelectPopoverRect {
-    if (!triggerEl) {
-      return {
-        top: 0,
-        right: window.innerWidth,
-        bottom: window.innerHeight,
-        left: 0,
-        width: window.innerWidth,
-        height: window.innerHeight,
-      };
-    }
+    const viewportRect = safeViewportRect();
+    if (!triggerEl) return viewportRect;
     const boundaryEl = popoverBoundaryElement
       ?? triggerEl.closest<HTMLElement>("[data-settings-content]")
       ?? triggerEl.closest<HTMLElement>("[data-settings-modal-panel]");
-    const viewportRect: SelectPopoverRect = {
-      top: 0,
-      right: window.innerWidth,
-      bottom: window.innerHeight,
-      left: 0,
-      width: window.innerWidth,
-      height: window.innerHeight,
-    };
     if (!boundaryEl) return viewportRect;
     const boundary = boundaryEl.getBoundingClientRect();
     const top = Math.max(viewportRect.top, boundary.top);

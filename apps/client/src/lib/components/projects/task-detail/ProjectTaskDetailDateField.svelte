@@ -7,6 +7,7 @@
   import { anchoredPopover } from "$lib/utils/anchored-popover";
   import { portal } from "$lib/utils/portal";
   import { pickSelectPopoverGeometry } from "$lib/utils/select-popover-position";
+  import { safeViewportRect } from "$lib/utils/keep-in-viewport";
   import CalendarDays from "@lucide/svelte/icons/calendar-days";
   import Bell from "@lucide/svelte/icons/bell";
   import Clock from "@lucide/svelte/icons/clock";
@@ -105,15 +106,10 @@
   /** Place the calendar beside its field, bounded by the visible viewport. */
   function positionPicker(): void {
     if (!trigger || !popup) return;
-    const viewport = window.visualViewport;
-    const left = viewport?.offsetLeft ?? 0;
-    const top = viewport?.offsetTop ?? 0;
-    const width = viewport?.width ?? window.innerWidth;
-    const height = viewport?.height ?? window.innerHeight;
     const rect = popup.getBoundingClientRect();
     const geometry = pickSelectPopoverGeometry({
       triggerRect: trigger.getBoundingClientRect(),
-      boundaryRect: { left, top, right: left + width, bottom: top + height, width, height },
+      boundaryRect: safeViewportRect(),
       contentHeight: popup.scrollHeight,
       contentWidth: rect.width,
       horizontalAlign: "end",

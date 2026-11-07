@@ -22,6 +22,7 @@
     type SelectPopoverGeometry,
     type SelectPopoverRect,
   } from "$lib/utils/select-popover-position";
+  import { safeViewportRect } from "$lib/utils/keep-in-viewport";
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
@@ -114,14 +115,7 @@
     if (!trigger) return;
     geometry = pickSelectPopoverGeometry({
       triggerRect: rect(trigger.getBoundingClientRect()),
-      boundaryRect: {
-        top: 0,
-        right: window.innerWidth,
-        bottom: window.innerHeight,
-        left: 0,
-        width: window.innerWidth,
-        height: window.innerHeight,
-      },
+      boundaryRect: safeViewportRect(),
       contentHeight: popoverContentHeight() ?? 220,
       contentWidth: popover?.scrollWidth ?? 260,
       horizontalAlign: "start",

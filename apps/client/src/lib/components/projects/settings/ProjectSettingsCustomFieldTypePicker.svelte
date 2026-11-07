@@ -7,6 +7,7 @@
     type SelectPopoverGeometry,
     type SelectPopoverRect,
   } from "$lib/utils/select-popover-position";
+  import { safeViewportRect } from "$lib/utils/keep-in-viewport";
   import { COLLECTION_PROPERTY_ICONS } from "$lib/components/collections/property-icons";
   import { projectCustomFieldKind } from "$lib/components/projects/list/property-kinds";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -59,14 +60,7 @@
   }
 
   function pickerBoundaryRect(): SelectPopoverRect {
-    const viewportRect: SelectPopoverRect = {
-      top: 0,
-      right: window.innerWidth,
-      bottom: window.innerHeight,
-      left: 0,
-      width: window.innerWidth,
-      height: window.innerHeight,
-    };
+    const viewportRect = safeViewportRect();
     if (!triggerElement) return viewportRect;
     const boundaryElement =
       triggerElement.closest<HTMLElement>("[data-settings-content]")

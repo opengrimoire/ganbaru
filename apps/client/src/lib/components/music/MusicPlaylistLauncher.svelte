@@ -26,6 +26,7 @@
     pickSelectPopoverGeometry,
     type SelectPopoverGeometry,
   } from "$lib/utils/select-popover-position";
+  import { safeViewportRect } from "$lib/utils/keep-in-viewport";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
@@ -150,14 +151,7 @@
     const triggerRect = trigger.getBoundingClientRect();
     geometry = pickSelectPopoverGeometry({
       triggerRect,
-      boundaryRect: {
-        top: 0,
-        left: 0,
-        right: window.innerWidth,
-        bottom: window.innerHeight,
-        width: window.innerWidth,
-        height: window.innerHeight,
-      },
+      boundaryRect: safeViewportRect(),
       contentHeight: Math.min(popover?.scrollHeight ?? PLAYLIST_POPOVER_MAX_HEIGHT_PX, PLAYLIST_POPOVER_MAX_HEIGHT_PX),
       contentWidth: PLAYLIST_POPOVER_WIDTH_PX,
       horizontalAlign: "start",

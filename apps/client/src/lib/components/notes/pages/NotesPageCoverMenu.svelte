@@ -29,6 +29,7 @@
   import type { NotesPageCover } from "$lib/notes/types";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { portal } from "$lib/utils/portal";
+  import { safeViewportRect } from "$lib/utils/keep-in-viewport";
   import NotesCoverDesign from "./NotesCoverDesign.svelte";
 
   type CoverTab = "designs" | "upload";
@@ -113,12 +114,7 @@
 
   /** Resolve the same visual viewport boundary used to constrain floating pickers. */
   function viewport(): IconPickerRect {
-    const view = window.visualViewport;
-    const left = view?.offsetLeft ?? 0;
-    const top = view?.offsetTop ?? 0;
-    const width = view?.width ?? window.innerWidth;
-    const height = view?.height ?? window.innerHeight;
-    return { left, top, width, height, right: left + width, bottom: top + height };
+    return safeViewportRect();
   }
 
   /** Position this panel and the optional per-design color panel like the icon picker. */

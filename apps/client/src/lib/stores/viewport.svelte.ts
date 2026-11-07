@@ -49,6 +49,8 @@ interface KeyboardSurface {
 
 let keyboardSurface: KeyboardSurface | null = null;
 let bottomChromeHeight = $state(0);
+/** System bar and display cutout insets reported by the Android shell; zero where no shell reports them. */
+let systemBarInsets = $state<SystemBarInsets>({ top: 0, right: 0, bottom: 0, left: 0 });
 
 const sizeClass = $derived(classifyViewport(width, height));
 const isShort = $derived(height < 480);
@@ -218,6 +220,7 @@ function refreshViewport(): void {
   const pageFollows = keyboardSurface === null && keyboardIsOpen && nextKeyboardInset >= bottomChromeHeight;
   root.style.setProperty("--page-keyboard-inset", `${pageFollows ? nextKeyboardInset : 0}px`);
   applyAndroidSystemBarInsets(root, systemBars);
+  if (systemBars !== null) systemBarInsets = systemBars;
   root.dataset.orientation = viewportOrientation(next.width, next.height);
   root.dataset.input = next.coarsePointer ? "coarse" : "fine";
 }
@@ -295,6 +298,10 @@ export function getViewport() {
     /** Viewport coordinate of the top edge of an open soft keyboard, or the visual viewport bottom while it is hidden. */
     get visibleBottom(): number {
       return offsetTop + visibleHeight;
+    },
+    /** Layout viewport space taken by the system bars and display cutouts, such as the status and navigation bars. */
+    get systemBarInsets(): SystemBarInsets {
+      return systemBarInsets;
     },
     get orientation(): ViewportOrientation {
       return orientation;

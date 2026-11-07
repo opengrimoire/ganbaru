@@ -15,6 +15,7 @@
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { pickSelectPopoverGeometry, type SelectPopoverGeometry } from "$lib/utils/select-popover-position";
+  import { safeViewportRect } from "$lib/utils/keep-in-viewport";
   import AudioLinesXIcon from "./AudioLinesXIcon.svelte";
   import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
 
@@ -97,14 +98,7 @@
     if (!trigger) return;
     geometry = pickSelectPopoverGeometry({
       triggerRect: trigger.getBoundingClientRect(),
-      boundaryRect: {
-        top: 8,
-        left: 8,
-        right: window.innerWidth - 8,
-        bottom: window.innerHeight - 8,
-        width: window.innerWidth - 16,
-        height: window.innerHeight - 16,
-      },
+      boundaryRect: safeViewportRect(),
       contentHeight: Math.min(popover?.scrollHeight ?? POPOVER_MAX_HEIGHT_PX, POPOVER_MAX_HEIGHT_PX),
       contentWidth: POPOVER_WIDTH_PX,
       horizontalAlign: "end",

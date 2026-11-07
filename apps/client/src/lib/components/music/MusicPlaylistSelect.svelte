@@ -21,6 +21,7 @@
     pickSelectPopoverGeometry,
     type SelectPopoverGeometry,
   } from "$lib/utils/select-popover-position";
+  import { safeViewportRect } from "$lib/utils/keep-in-viewport";
 
   let {
     value,
@@ -101,14 +102,7 @@
     const rect = trigger.getBoundingClientRect();
     geometry = pickSelectPopoverGeometry({
       triggerRect: rect,
-      boundaryRect: {
-        top: 8,
-        left: 8,
-        right: window.innerWidth - 8,
-        bottom: window.innerHeight - 8,
-        width: window.innerWidth - 16,
-        height: window.innerHeight - 16,
-      },
+      boundaryRect: safeViewportRect(),
       contentHeight: Math.min(popover?.scrollHeight ?? PLAYLIST_POPOVER_MAX_HEIGHT_PX, PLAYLIST_POPOVER_MAX_HEIGHT_PX),
       contentWidth: PLAYLIST_POPOVER_WIDTH_PX,
       horizontalAlign: "end",

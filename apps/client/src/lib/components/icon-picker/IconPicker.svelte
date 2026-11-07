@@ -81,6 +81,7 @@
   import { resolveAppTokens, resolveCalendarTokens } from "$lib/themes";
   import { cn } from "$lib/utils";
   import { portal } from "$lib/utils/portal";
+  import { safeViewportRect } from "$lib/utils/keep-in-viewport";
   import {
     ensureConfigLoaded,
     getConfigKey,
@@ -478,14 +479,7 @@
   }
 
   function viewportBoundaryRect(): IconPickerRect {
-    return {
-      top: 0,
-      right: window.innerWidth,
-      bottom: window.innerHeight,
-      left: 0,
-      width: window.innerWidth,
-      height: window.innerHeight,
-    };
+    return safeViewportRect();
   }
 
   function panelBoundaryRect(trigger: HTMLElement): IconPickerRect {

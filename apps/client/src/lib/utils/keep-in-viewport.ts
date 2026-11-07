@@ -1,3 +1,6 @@
+import { getViewport } from "$lib/stores/viewport.svelte";
+import type { SystemBarInsets } from "$lib/viewport";
+
 /** Distance kept between a floating panel and the edge of the visible viewport. */
 export const VIEWPORT_EDGE_MARGIN_PX = 8;
 
@@ -27,16 +30,56 @@ function axisShift(start: number, end: number, min: number, max: number): number
   return 0;
 }
 
-function visibleViewport(): ViewportBox {
-  const viewport = window.visualViewport;
-  const left = viewport?.offsetLeft ?? 0;
-  const top = viewport?.offsetTop ?? 0;
-  return {
-    left,
-    top,
-    right: left + (viewport?.width ?? window.innerWidth),
-    bottom: top + (viewport?.height ?? window.innerHeight),
-  };
+/** A box in viewport coordinates with its size. */
+export interface ViewportRect extends ViewportBox {
+  width: number;
+  height: number;
+}
+
+/** What {@link safeViewportRectFrom} needs to know about the viewport, in CSS pixels. */
+export interface SafeViewportInput {
+  /** Visual viewport position and size inside the layout viewport. */
+  offsetLeft: number;
+  offsetTop: number;
+  width: number;
+  height: number;
+  /** Layout viewport size, which the system bar insets are measured from. */
+  layoutWidth: number;
+  layoutHeight: number;
+  insets: SystemBarInsets;
+  /** Top edge of an open soft keyboard, or the visual viewport bottom while it is hidden. */
+  visibleBottom: number;
+}
+
+/** Return the part of the visual viewport that no system bar, display cutout, or soft keyboard covers. */
+export function safeViewportRectFrom(input: SafeViewportInput): ViewportRect {
+  const left = Math.max(input.offsetLeft, input.insets.left);
+  const top = Math.max(input.offsetTop, input.insets.top);
+  const right = Math.max(left, Math.min(input.offsetLeft + input.width, input.layoutWidth - input.insets.right));
+  const bottom = Math.max(top, Math.min(
+    input.offsetTop + input.height,
+    input.layoutHeight - input.insets.bottom,
+    input.visibleBottom,
+  ));
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+/**
+ * Return the part of the visible viewport that floating panels, menus, and popovers stay inside: clear of the status
+ * bar, the system navigation, display cutouts, and an open soft keyboard.
+ */
+export function safeViewportRect(): ViewportRect {
+  const viewport = getViewport();
+  return safeViewportRectFrom({
+    offsetLeft: viewport.offsetLeft,
+    offsetTop: viewport.offsetTop,
+    width: viewport.width,
+    height: viewport.height,
+    layoutWidth: viewport.layoutWidth,
+    layoutHeight: viewport.layoutHeight,
+    insets: viewport.systemBarInsets,
+    visibleBottom: viewport.visibleBottom,
+  });
 }
 
 /**
@@ -52,7 +95,7 @@ export function keepInViewport(node: HTMLElement) {
   function place(): void {
     frame = 0;
     node.style.translate = "";
-    const shift = viewportShift(node.getBoundingClientRect(), visibleViewport());
+    const shift = viewportShift(node.getBoundingClientRect(), safeViewportRect());
     if (shift.x !== 0 || shift.y !== 0) node.style.translate = `${Math.round(shift.x)}px ${Math.round(shift.y)}px`;
   }
 

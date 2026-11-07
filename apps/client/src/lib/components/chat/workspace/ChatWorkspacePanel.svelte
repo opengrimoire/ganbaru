@@ -66,6 +66,7 @@
     type SelectPopoverGeometry,
     type SelectPopoverRect,
   } from "$lib/utils/select-popover-position";
+  import { safeViewportRect } from "$lib/utils/keep-in-viewport";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
@@ -671,14 +672,7 @@
     const triggerRect = panelPickerTrigger.getBoundingClientRect();
     panelPickerGeometry = pickSelectPopoverGeometry({
       triggerRect: rect(triggerRect),
-      boundaryRect: {
-        top: 0,
-        right: window.innerWidth,
-        bottom: window.innerHeight,
-        left: 0,
-        width: window.innerWidth,
-        height: window.innerHeight,
-      },
+      boundaryRect: safeViewportRect(),
       contentHeight: panelPickerContentHeight() ?? 300,
       contentWidth: panelPicker?.scrollWidth ?? FLOATING_WIDTH.md,
       horizontalAlign: triggerRect.left + FLOATING_WIDTH.md <= window.innerWidth - 8 ? "start" : "end",

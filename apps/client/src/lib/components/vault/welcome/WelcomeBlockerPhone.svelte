@@ -6,7 +6,7 @@
   import WelcomeParodyIcon from "./WelcomeParodyIcon.svelte";
 
   /**
-   * A phone in the distraction blocker's welcome scenes, on its home screen with the parody apps among unnamed ones. An
+   * A phone in the distraction blocker's welcome scenes, on its home screen with the parody apps in a row above the dock. An
    * app opens from its icon and shrinks back into it as Android returns Home, and the app's block notification slides
    * in from the top in Android's own colors, since the system draws it, not the app theme.
    */
@@ -35,10 +35,12 @@
   const STATUS_H = 18;
   const GRID_COLUMNS = 4;
   const GRID_PAD_X = 8;
-  const GRID_TOP = STATUS_H + 14;
   const ICON_LABEL_H = 16;
-  /** The home screen's slots, row by row, with the parody apps among unnamed ones. */
-  const HOME_SLOTS: readonly (BlockerApp | null)[] = [null, null, "bluedit", null, null, "egogram", null, "y", null, null, null, null];
+  /** The parody apps, in one row centered on the grid just above the dock. */
+  const HOME_APPS: readonly BlockerApp[] = ["y", "egogram", "bluedit"];
+  const HOME_ROW_OFFSET = (GRID_COLUMNS - HOME_APPS.length) / 2;
+  /** The gap between the apps' labels and the dock. */
+  const HOME_ROW_GAP = 10;
   const DOCK_SLOTS = [0, 1, 2, 3];
   const DOCK_BOTTOM = 18;
   /** How far an app's feed scrolls at its end, in pixels. */
@@ -48,16 +50,14 @@
   const screenH = $derived(height - 2 * BEZEL);
   const cellW = $derived((screenW - 2 * GRID_PAD_X) / GRID_COLUMNS);
   const iconSize = $derived(Math.min(30, Math.floor(cellW - 8)));
-  const rowH = $derived(iconSize + ICON_LABEL_H);
+  const homeRowCenterY = $derived(screenH - DOCK_BOTTOM - iconSize - HOME_ROW_GAP - ICON_LABEL_H - iconSize / 2);
 
-  /** The center of a home screen slot's icon, in pixels from the screen's corner. */
-  function slotCenter(slot: number): { x: number; y: number } {
-    const column = slot % GRID_COLUMNS;
-    const row = Math.floor(slot / GRID_COLUMNS);
-    return { x: GRID_PAD_X + cellW * (column + 0.5), y: GRID_TOP + rowH * row + iconSize / 2 };
+  /** The center of a home screen app's icon, in pixels from the screen's corner. */
+  function appCenter(index: number): { x: number; y: number } {
+    return { x: GRID_PAD_X + cellW * (HOME_ROW_OFFSET + index + 0.5), y: homeRowCenterY };
   }
 
-  const openOrigin = $derived(app ? slotCenter(HOME_SLOTS.indexOf(app.app)) : { x: screenW / 2, y: screenH / 2 });
+  const openOrigin = $derived(app ? appCenter(HOME_APPS.indexOf(app.app)) : { x: screenW / 2, y: screenH / 2 });
 </script>
 
 <div class="rounded-[26px] bg-foreground/6 p-1.5" style:width={`${width}px`} style:height={`${height}px`}>
@@ -76,8 +76,8 @@
       <span class="h-1.5 w-3.5 rounded-xs bg-current opacity-70"></span>
     </div>
 
-    {#each HOME_SLOTS as slot, index (index)}
-      {@const center = slotCenter(index)}
+    {#each HOME_APPS as homeApp, index (homeApp)}
+      {@const center = appCenter(index)}
       <span
         class="absolute flex flex-col items-center gap-1"
         style:left={`${center.x - cellW / 2}px`}
@@ -85,23 +85,15 @@
         style:width={`${cellW}px`}
       >
         <span class="relative">
-          {#if slot}
-            <WelcomeParodyIcon app={slot} size={iconSize} />
-            {#if (touches[slot] ?? 0) > 0}
-              <span
-                class="pointer-events-none absolute top-1/2 left-1/2 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-                style:opacity={touches[slot]}
-              ></span>
-            {/if}
-          {:else}
-            <span class="block rounded-[30%] bg-foreground/10" style:width={`${iconSize}px`} style:height={`${iconSize}px`}></span>
+          <WelcomeParodyIcon app={homeApp} size={iconSize} />
+          {#if (touches[homeApp] ?? 0) > 0}
+            <span
+              class="pointer-events-none absolute top-1/2 left-1/2 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
+              style:opacity={touches[homeApp]}
+            ></span>
           {/if}
         </span>
-        {#if slot}
-          <span class="max-w-full truncate text-[8px] leading-none">{BLOCKER_APP_NAMES[slot]}</span>
-        {:else}
-          <span class="h-1 w-5 rounded-full bg-foreground/12"></span>
-        {/if}
+        <span class="max-w-full truncate text-[8px] leading-none">{BLOCKER_APP_NAMES[homeApp]}</span>
       </span>
     {/each}
 

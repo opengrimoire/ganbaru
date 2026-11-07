@@ -12,9 +12,9 @@
     blockingClock,
     blockingEgogramTouch,
     blockingFocusing,
-    blockingFocusRemaining,
     blockingNotice,
     blockingPan,
+    blockingPhase,
     blockingPhoneApp,
     blockingPulse,
     blockingRailRecorded,
@@ -52,12 +52,11 @@
   const EVENT_INSET = RAIL_INSET + RAIL_THICKNESS + RAIL_GAP;
   const EVENT_HEIGHT = 36;
   const VIEW_MINUTES = BLOCKING_DAY_VIEW.end - BLOCKING_DAY_VIEW.start;
-  const EVENT_SECONDS = (BLOCKING_EVENT.end - BLOCKING_EVENT.start) * 60;
   const EVENT_SPAN = at(BLOCKING_EVENT.end) - at(BLOCKING_EVENT.start);
 
   const clock = $derived(blockingClock(elapsed));
   const focusing = $derived(blockingFocusing(elapsed));
-  const remaining = $derived(blockingFocusRemaining(elapsed));
+  const phase = $derived(blockingPhase(elapsed));
   const growth = $derived(PULSE_GROWTH * Math.sin(Math.PI * blockingPulse(elapsed)));
   const recorded = $derived(blockingRailRecorded(elapsed));
   const past = $derived(clock >= BLOCKING_EVENT.end);
@@ -75,11 +74,6 @@
     return `${String(Math.floor(minuteOfDay / 60)).padStart(2, "0")}:${String(Math.round(minuteOfDay % 60)).padStart(2, "0")}`;
   }
 
-  /** A remaining time as the Focus timer shows it, in minutes and seconds. */
-  function countdown(seconds: number): string {
-    const whole = Math.ceil(seconds);
-    return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
-  }
 </script>
 
 {#snippet railBand(band: FilmSpan, color: string)}
@@ -126,18 +120,17 @@
             {formatTimeRange(clockLabel(BLOCKING_EVENT.start), clockLabel(BLOCKING_EVENT.end), preferences.calendarTimeFormat, "compact")}
           </div>
         </div>
-        {#if focusing}
-          <span class="flex shrink-0 items-center gap-1 text-[10px] tabular-nums">
+        {#if phase}
+          <span class="flex shrink-0">
             <PomodoroProgressRing
               active
-              remainingSeconds={remaining}
-              totalSeconds={EVENT_SECONDS}
+              remainingSeconds={phase.remainingSeconds}
+              totalSeconds={phase.totalSeconds}
               size={14}
               strokeWidth={2}
               trackClass="stroke-current/30"
               progressClass="stroke-current"
             />
-            {countdown(remaining)}
           </span>
         {/if}
       </div>

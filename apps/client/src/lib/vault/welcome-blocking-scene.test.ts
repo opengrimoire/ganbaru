@@ -13,6 +13,7 @@ import {
   blockingFocusRemaining,
   blockingNotice,
   blockingPan,
+  blockingPhase,
   blockingPhoneApp,
   blockingPulse,
   blockingRailRecorded,
@@ -139,14 +140,32 @@ describe("welcome blocking scene", () => {
     }
   });
 
-  it("pulses the event only right after each block", () => {
+  it("pulses the event only as its Focus starts", () => {
     expect(blockingPulse(B.focusStart - 1)).toBe(0);
     expect(blockingPulse(B.focusStart + 100)).toBeGreaterThan(0);
-    for (const beat of [B.yBlocked, B.egogramHome, B.retryHome, B.retryAgainHome]) {
-      expect(blockingPulse(beat - 1)).toBe(0);
-      expect(blockingPulse(beat + 100)).toBeGreaterThan(0);
+    for (const beat of [B.yBlocked, B.egogramHome, B.retryHome, B.retryAgainHome, B.focusEnd]) {
+      expect(blockingPulse(beat + 100)).toBe(0);
     }
-    expect(blockingPulse(B.focusEnd)).toBe(0);
+  });
+
+  it("drains the Focus ring through each focus and break on its own", () => {
+    expect(blockingPhase(B.focusStart - 1)).toBeNull();
+    expect(blockingPhase(B.focusEnd)).toBeNull();
+    const [first] = BLOCKING_RAIL.focus;
+    expect(blockingPhase(B.focusStart)).toEqual({ remainingSeconds: (first.end - first.start) * 60, totalSeconds: (first.end - first.start) * 60 });
+    for (const elapsed of moments()) {
+      const phase = blockingPhase(elapsed);
+      expect(phase !== null).toBe(blockingFocusing(elapsed));
+      if (!phase) continue;
+      const spans = [...BLOCKING_RAIL.focus, ...BLOCKING_RAIL.breaks];
+      expect(spans.some((span) => (span.end - span.start) * 60 === phase.totalSeconds)).toBe(true);
+      expect(phase.remainingSeconds).toBeGreaterThan(0);
+      expect(phase.remainingSeconds).toBeLessThanOrEqual(phase.totalSeconds);
+    }
+    const pause = BLOCKING_RAIL.breaks[0];
+    const inBreak = moments(1).find((elapsed) => blockingClock(elapsed) >= pause.start && blockingClock(elapsed) < pause.end);
+    expect(inBreak).toBeDefined();
+    expect(blockingPhase(inBreak ?? 0)?.totalSeconds).toBe((pause.end - pause.start) * 60);
   });
 
   it("keeps every animated value between 0 and 1", () => {

@@ -35,8 +35,8 @@ import {
 } from "./welcome-film";
 
 /** The Calendar event with Focus, in minutes of the day, and the part of the day the scene's strip shows. */
-export const BLOCKING_EVENT = { start: 10 * 60, end: 12 * 60 } as const;
-export const BLOCKING_DAY_VIEW = { start: 9 * 60 + 40, end: 12 * 60 + 20 } as const;
+export const BLOCKING_EVENT = { start: 10 * 60, end: 11 * 60 + 30 } as const;
+export const BLOCKING_DAY_VIEW = { start: 9 * 60 + 40, end: 11 * 60 + 50 } as const;
 
 /** The event's Focus rail, planned by the Calendar's own rhythm for the Creative preset. */
 export const BLOCKING_RAIL: FilmRail = filmDayRails([{ ...BLOCKING_EVENT, preset: "creative" }])[0];
@@ -75,11 +75,8 @@ const B = BLOCKING_BEATS;
 /** The frame shown as a still with reduced motion: both devices blocked during the event. */
 export const BLOCKING_STILL = B.egogramNotice + 600;
 
-/** How long the event's Focus timer pulses when it blocks something. */
+/** How long the event pulses as its Focus starts. */
 const PULSE_MS = 520;
-
-/** The moments something is blocked, each of which pulses the event's Focus timer. */
-const BLOCKS = [B.focusStart, B.yBlocked, B.egogramHome, B.retryHome, B.retryAgainHome];
 
 /** The current time against scene time, in minutes of the day: it reaches the event, slows through its first minutes, then hurries to its end. */
 const CLOCK: readonly FilmKeyframe[] = [
@@ -122,13 +119,22 @@ export function blockingRailRecorded(elapsed: number): FilmSpan[] {
   return BLOCKING_RAIL.focus.filter((span) => span.start < now).map((span) => ({ start: span.start, end: Math.min(span.end, now) }));
 }
 
-/** How far the event's Focus timer has pulsed as it blocks something, from 0 to 1; 0 when it is not pulsing. */
+/**
+ * The Focus phase the current time is in, as the Focus ring drains it: the seconds left in that focus or break and its
+ * whole length. Null outside the event's Focus.
+ */
+export function blockingPhase(elapsed: number): { remainingSeconds: number; totalSeconds: number } | null {
+  if (!blockingFocusing(elapsed)) return null;
+  const now = blockingClock(elapsed);
+  const phase = [...BLOCKING_RAIL.focus, ...BLOCKING_RAIL.breaks].find((span) => now >= span.start && now < span.end);
+  if (!phase) return null;
+  return { remainingSeconds: (phase.end - now) * 60, totalSeconds: (phase.end - phase.start) * 60 };
+}
+
+/** How far the event has pulsed as its Focus starts and the open site is blocked, from 0 to 1; 0 when it is not pulsing. */
 export function blockingPulse(elapsed: number): number {
-  for (const beat of BLOCKS) {
-    const progress = filmSpan(elapsed, beat, beat + PULSE_MS);
-    if (progress > 0 && progress < 1) return progress;
-  }
-  return 0;
+  const progress = filmSpan(elapsed, B.focusStart, B.focusStart + PULSE_MS);
+  return progress > 0 && progress < 1 ? progress : 0;
 }
 
 /** Where the camera points on a narrow canvas, from 0 (the browser) to 1 (the phone). */

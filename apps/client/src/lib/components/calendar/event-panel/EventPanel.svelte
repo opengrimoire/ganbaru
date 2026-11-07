@@ -135,7 +135,7 @@
   }: {
     mode: "create" | "edit";
     mobileLayout?: boolean;
-    /** Whether the user is moving or resizing this event on the grid, which lowers the mobile sheet to its grabber. */
+    /** Whether the user is moving or resizing this event on the grid, which collapses the mobile sheet to its title strip. */
     gridEditing?: boolean;
     /** Grid event the mobile sheet keeps visible above itself, which is the edited event or the new draft. */
     revealEventId?: string;
@@ -374,7 +374,7 @@
   const activePanelLayout = $derived(mobileLayout ? "fullscreen" : panelLayout);
   const panelCanDrag = $derived(!mobileLayout && geometry.canDrag);
   let sheetHeaderEl = $state<HTMLDivElement>();
-  let sheetGrabberEl = $state<HTMLDivElement>();
+  let sheetDipEndEl = $state<HTMLDivElement>();
   let sheetPeekEndEl = $state<HTMLDivElement>();
   const sheet = new EventPanelSheetController({
     enabled: () => mobileLayout && !parked,
@@ -388,7 +388,7 @@
       || !!dateTime.timePickerTarget,
     panel: () => geometry.panelEl,
     header: () => sheetHeaderEl,
-    grabber: () => sheetGrabberEl,
+    dipEnd: () => sheetDipEndEl,
     content: () => geometry.contentEl,
     peekEnd: () => sheetPeekEndEl,
     scroll: () => geometry.scrollEl,
@@ -1072,12 +1072,29 @@
   onkeydown={handlePanelArrowKeydown}
 >
   {#if mobileLayout && !parked}
-  <!-- Sheet header: dragging it moves the sheet, and it keeps close, delete, and save reachable at every height. -->
-  <div bind:this={sheetHeaderEl} class="sheet-header sticky top-0 z-10 shrink-0 touch-none" style="background-color: var(--panel-bg);">
-    <div bind:this={sheetGrabberEl} class="flex justify-center pt-2 pb-1.5" aria-hidden="true">
-      <div class="h-1 w-9 rounded-full bg-muted-foreground/40"></div>
+  <!-- Sheet header: dragging it moves the sheet, and it keeps close, delete, and save reachable at every height.
+       While the event is edited on the grid, the grabber bends into an up chevron over the event title, and the sheet
+       collapses to that strip so the details visibly wait below. -->
+  <div
+    bind:this={sheetHeaderEl}
+    class="sheet-header sticky top-0 z-10 shrink-0 touch-none"
+    data-collapsed={gridEditing || undefined}
+    style="background-color: var(--panel-bg);"
+  >
+    <div class="sheet-grabber-block flex items-center justify-center" aria-hidden="true">
+      <div class="sheet-grabber">
+        <span class="sheet-grabber-half sheet-grabber-start"></span>
+        <span class="sheet-grabber-half sheet-grabber-end"></span>
+      </div>
     </div>
-    <div class="flex items-center gap-1 px-1">
+    <div
+      bind:this={sheetDipEndEl}
+      class="sheet-collapsed-title pointer-events-none absolute inset-x-0 top-0 flex items-center justify-center px-4 text-[0.866667rem] font-medium"
+      aria-hidden={!gridEditing || undefined}
+    >
+      <span class="min-w-0 truncate">{session.title.trim() || t("calendar.event.noTitle")}</span>
+    </div>
+    <div class="sheet-actions flex items-center gap-1 px-1" inert={gridEditing}>
       <button
         type="button"
         aria-label={t("common.close")}
@@ -1721,6 +1738,90 @@
 
   .panel-root[data-mobile="true"] .time-input-shell {
     min-height: 3rem;
+  }
+
+  .sheet-header {
+    --sheet-grabber-block: 1.125rem;
+  }
+
+  .sheet-grabber-block {
+    height: var(--sheet-grabber-block);
+    padding-top: 0.25rem;
+  }
+
+  /*
+   * The collapsed strip ends the sheet while it is collapsed: the title sits below the grabber, and the strip is at
+   * least as tall as the bottom tab bar so the sheet covers that bar fully.
+   */
+  .sheet-collapsed-title {
+    padding-top: var(--sheet-grabber-block);
+    padding-bottom: 0.5rem;
+    min-height: var(--mobile-bottom-chrome-h);
+  }
+
+  /* The grabber is two overlapping halves that bend at the center into an up chevron while the sheet is collapsed. */
+  .sheet-grabber {
+    --grabber-thickness: 0.25rem;
+    position: relative;
+    width: 2.25rem;
+    height: var(--grabber-thickness);
+  }
+
+  .sheet-grabber-half {
+    position: absolute;
+    top: 0;
+    width: calc(50% + var(--grabber-thickness) / 2);
+    height: 100%;
+    border-radius: 9999px;
+    background-color: color-mix(in srgb, var(--muted-foreground) 40%, var(--panel-bg));
+    transition: transform 200ms ease-out, background-color 200ms ease-out;
+  }
+
+  .sheet-grabber-start {
+    left: 0;
+    transform-origin: calc(100% - var(--grabber-thickness) / 2) 50%;
+  }
+
+  .sheet-grabber-end {
+    right: 0;
+    transform-origin: calc(var(--grabber-thickness) / 2) 50%;
+  }
+
+  .sheet-header[data-collapsed] .sheet-grabber-half {
+    background-color: var(--muted-foreground);
+  }
+
+  .sheet-header[data-collapsed] .sheet-grabber-start {
+    transform: rotate(-20deg);
+  }
+
+  .sheet-header[data-collapsed] .sheet-grabber-end {
+    transform: rotate(20deg);
+  }
+
+  .sheet-collapsed-title,
+  .sheet-actions {
+    transition: opacity 200ms ease-out;
+  }
+
+  .sheet-collapsed-title {
+    opacity: 0;
+  }
+
+  .sheet-header[data-collapsed] .sheet-collapsed-title {
+    opacity: 1;
+  }
+
+  .sheet-header[data-collapsed] .sheet-actions {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sheet-grabber-half,
+    .sheet-collapsed-title,
+    .sheet-actions {
+      transition-duration: 0ms;
+    }
   }
 
   .panel-root[data-sheet-animating="true"] {

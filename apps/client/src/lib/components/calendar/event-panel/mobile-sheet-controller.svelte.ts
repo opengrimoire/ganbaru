@@ -115,6 +115,14 @@ export class EventPanelSheetController {
   private dipHeight = $state(0);
   private peekHeight = $state(0);
   private gesture: SheetGesture | null = null;
+  /**
+   * Option values held as derived primitives, so effects rerun only when a value changes, not whenever the parent
+   * rebuilds the props behind it, such as after every draft edit.
+   */
+  private readonly enabled = $derived.by(() => this.options.enabled());
+  private readonly sessionKey = $derived.by(() => this.options.sessionKey());
+  private readonly collapsible = $derived.by(() => this.options.collapsible());
+  private readonly needsRoom = $derived.by(() => this.options.needsRoom());
 
   heights: BottomSheetHeights = $derived(
     bottomSheetHeights(this.fullHeight, this.dipHeight, this.peekHeight),
@@ -122,7 +130,7 @@ export class EventPanelSheetController {
 
   constructor(private readonly options: EventPanelSheetOptions) {
     $effect(() => {
-      if (!options.enabled()) return;
+      if (!this.enabled) return;
       const panel = options.panel();
       const header = options.header();
       const dipEnd = options.dipEnd();
@@ -137,19 +145,19 @@ export class EventPanelSheetController {
     });
 
     $effect(() => {
-      void options.sessionKey();
-      if (!options.enabled()) return;
-      this.detent = options.initialDetent();
+      void this.sessionKey;
+      if (!this.enabled) return;
+      this.detent = untrack(() => options.initialDetent());
       this.collapsed = false;
       this.dragHeight = null;
     });
 
     $effect(() => {
-      if (!options.enabled() || !options.shown()) this.entered = false;
+      if (!this.enabled || !options.shown()) this.entered = false;
     });
 
     $effect(() => {
-      if (options.enabled() && options.gridEditing()) {
+      if (this.enabled && options.gridEditing()) {
         untrack(() => {
           if (!this.gridEditDip) this.gridEditDipStartedAt = performance.now();
           this.gridEditDip = true;
@@ -166,7 +174,7 @@ export class EventPanelSheetController {
     });
 
     $effect(() => {
-      if (!options.enabled() || !options.shown() || this.entered || this.fullHeight <= 0) return;
+      if (!this.enabled || !options.shown() || this.entered || this.fullHeight <= 0) return;
       let second = 0;
       const first = requestAnimationFrame(() => {
         second = requestAnimationFrame(() => {
@@ -180,21 +188,21 @@ export class EventPanelSheetController {
     });
 
     $effect(() => {
-      if (options.enabled() && options.needsRoom()) untrack(() => this.raise("full"));
+      if (this.enabled && this.needsRoom) untrack(() => this.raise("full"));
     });
 
     $effect(() => {
       const eventId = options.revealEventId();
       const visible = this.visibleHeight;
       // A collapsed sheet leaves the grid where the user scrolled it.
-      if (!options.enabled() || !eventId || !this.entered || this.dragHeight !== null || this.gridEditDip
+      if (!this.enabled || !eventId || !this.entered || this.dragHeight !== null || this.gridEditDip
         || this.collapsed) return;
       const frame = requestAnimationFrame(() => this.revealEvent(eventId, visible));
       return () => cancelAnimationFrame(frame);
     });
 
     $effect(() => {
-      if (!options.enabled() || !options.collapsible()) return;
+      if (!this.enabled || !this.collapsible) return;
       let start: { x: number; y: number } | null = null;
       const begin = (event: TouchEvent) => {
         start = null;
@@ -227,7 +235,7 @@ export class EventPanelSheetController {
     });
 
     $effect(() => {
-      if (!options.enabled()) return;
+      if (!this.enabled) return;
       const panel = options.panel();
       if (!panel) return;
       const start = (event: TouchEvent) => this.handleTouchStart(event);
@@ -430,7 +438,7 @@ export class EventPanelSheetController {
     this.gesture = null;
     const released = this.dragHeight;
     if (!gesture || gesture.claimed !== "sheet" || released === null) return;
-    const low = this.options.collapsible() ? "collapse" : "close";
+    const low = this.collapsible ? "collapse" : "close";
     const result = settleBottomSheet(released, bottomSheetReleaseVelocity(gesture.samples), this.heights, low);
     this.dragHeight = null;
     this.dipMotion = false;

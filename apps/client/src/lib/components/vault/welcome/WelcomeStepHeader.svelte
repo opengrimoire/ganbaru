@@ -1,13 +1,21 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
 
-  /** The title and short text every welcome screen opens with, plus anything that belongs right under the text. */
+  /**
+   * The title and short text every welcome screen opens with, plus anything that belongs right under the text. A line
+   * break in the text holds on the phone shell, where a short closing sentence can read better on its own line, and
+   * becomes a space elsewhere.
+   */
   let {
     headline,
     body,
     headingId,
     children,
   }: { headline: string; body: string; headingId?: string; children?: Snippet } = $props();
+
+  const phoneShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
+  const text = $derived(phoneShell ? body : body.replaceAll("\n", " "));
 </script>
 
 <div class="space-y-2 @min-[860px]:space-y-3">
@@ -17,6 +25,6 @@
   >
     {headline}
   </h1>
-  <p class="text-sm leading-6 text-pretty text-muted-foreground @min-[560px]:text-base @min-[560px]:leading-7">{body}</p>
+  <p class="text-sm leading-6 text-pretty whitespace-pre-line text-muted-foreground @min-[560px]:text-base @min-[560px]:leading-7">{text}</p>
   {@render children?.()}
 </div>

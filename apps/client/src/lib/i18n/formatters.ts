@@ -28,6 +28,23 @@ export function formatDateLabel(
   return capitalizeLabel(formatDateTime(locale, value, options), locale);
 }
 
+/** Locales whose full dates join the weekday to the date without a comma, as in "Viernes 6 de noviembre de 2026". */
+const WEEKDAY_WITHOUT_COMMA_LOCALES: ReadonlySet<AppLocale> = new Set<AppLocale>(["es"]);
+
+/** Formats the full date with its weekday, as a label that starts with a capital letter. */
+export function formatFullDateLabel(
+  locale: AppLocale,
+  value: Date | number,
+  options: Pick<Intl.DateTimeFormatOptions, "timeZone"> = {},
+): string {
+  const parts = new Intl.DateTimeFormat(locale, { ...options, dateStyle: "full" }).formatToParts(value);
+  const dropComma = WEEKDAY_WITHOUT_COMMA_LOCALES.has(locale);
+  const text = parts
+    .map((part, index) => (dropComma && part.type === "literal" && parts[index - 1]?.type === "weekday" ? part.value.replace(",", "") : part.value))
+    .join("");
+  return capitalizeLabel(text, locale);
+}
+
 export function formatNumber(
   locale: AppLocale,
   value: number,

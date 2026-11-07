@@ -1,4 +1,6 @@
 import { formatShortcut } from "$lib/keyboard-shortcuts";
+import { formatDateTime, formatFullDateLabel } from "$lib/i18n/formatters";
+import type { AppLocale } from "$lib/i18n/locales";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import {
   DEFAULT_FOCUS_BREAK_END_ESC_PRESSES,
@@ -184,18 +186,11 @@ export function shouldShowBlockedScreenDateTime(state: PomodoroBlockedScreenStat
 
 export function formatBlockedScreenDateTime(
   date: Date,
-  locales?: Intl.LocalesArgument,
-  options: Intl.DateTimeFormatOptions = {},
+  locale: AppLocale,
+  options: Pick<Intl.DateTimeFormatOptions, "timeZone"> = {},
 ): string {
-  const { dateStyle, timeStyle, ...sharedOptions } = options;
-  const formattedDate = new Intl.DateTimeFormat(locales, {
-    ...sharedOptions,
-    dateStyle: dateStyle ?? "full",
-  }).format(date);
-  const formattedTime = new Intl.DateTimeFormat(locales, {
-    ...sharedOptions,
-    timeStyle: timeStyle ?? "short",
-  }).format(date);
+  const formattedDate = formatFullDateLabel(locale, date, options);
+  const formattedTime = formatDateTime(locale, date, { ...options, timeStyle: "short" });
   return `${formattedDate} | ${formattedTime}`;
 }
 

@@ -38,8 +38,13 @@ describe("blocked pomodoro screen helpers", () => {
 
   it("formats date and time through Intl", () => {
     const date = new Date("2026-05-31T13:45:00Z");
-    const label = formatBlockedScreenDateTime(date, "en-US", { timeZone: "UTC" });
+    const label = formatBlockedScreenDateTime(date, "en", { timeZone: "UTC" });
     expect(label).toBe("Sunday, May 31, 2026 | 1:45 PM");
+  });
+
+  it("capitalizes the Spanish weekday and joins it to the date without a comma", () => {
+    const date = new Date("2026-11-06T18:05:00Z");
+    expect(formatBlockedScreenDateTime(date, "es", { timeZone: "UTC" })).toBe("Viernes 6 de noviembre de 2026 | 18:05");
   });
 
   it("shows date and time except on the break finished screen", () => {

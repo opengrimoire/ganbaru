@@ -34,7 +34,7 @@ export const vaultSetup = {
   },
   limits: {
     headline: "Shared limits on every device",
-    body: "Your laptop and phone spend one daily time on the sites and apps you pick.",
+    body: "Set a daily or weekly limit for the sites and apps you pick, shared by all your devices.",
     sceneDescription:
       "A short animation of a one hour daily limit for social media that holds the Y and Egogram websites and the Egogram app. Time on Y in a laptop's browser fills part of one bar, then the Y tab is closed and Egogram on a phone fills the rest, each in its own color. When the hour is used up, Egogram returns to the home screen with a notification, and each time it is opened again it returns there at once. Back on the laptop, Y typed into a new tab opens Ganbaru's block page instead, and so does Egogram's website.",
     limitName: "Social media",

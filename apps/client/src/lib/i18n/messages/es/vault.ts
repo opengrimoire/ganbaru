@@ -32,7 +32,7 @@ export const vaultSetup = {
   },
   about: {
     headline: "Gratis y de código abierto",
-    body: "Tus datos se quedan en tus dispositivos y se sincronizan directamente entre ellos, sin cuentas, anuncios ni telemetría. La app y su código son tuyos para siempre.",
+    body: "Tus datos se quedan en tus dispositivos y se sincronizan directamente entre ellos, sin cuentas, anuncios ni telemetría. App y código son tuyos para siempre.",
     sceneDescription:
       "Una breve animación del repositorio público del código fuente de Ganbaru abriéndose en un navegador, con sus archivos y su licencia AGPL 3.0 a la vista. Después, un toque en Star le da una estrella al repositorio.",
   },

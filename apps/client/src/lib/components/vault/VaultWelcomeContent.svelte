@@ -10,6 +10,7 @@
   import { WELCOME_STEPS, welcomeStepAt } from "$lib/vault/welcome-steps";
   import WelcomeAboutStep from "./welcome/WelcomeAboutStep.svelte";
   import WelcomeCalendarStep from "./welcome/WelcomeCalendarStep.svelte";
+  import WelcomeDistractionsStep from "./welcome/WelcomeDistractionsStep.svelte";
   import WelcomeLanguageStep from "./welcome/WelcomeLanguageStep.svelte";
 
   /**
@@ -59,6 +60,8 @@
           <WelcomeLanguageStep />
         {:else if current === "calendar"}
           <WelcomeCalendarStep />
+        {:else if current === "distractions"}
+          <WelcomeDistractionsStep />
         {:else}
           <WelcomeAboutStep />
         {/if}

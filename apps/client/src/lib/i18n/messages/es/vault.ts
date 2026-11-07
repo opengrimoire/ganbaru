@@ -30,6 +30,13 @@ export const vaultSetup = {
     headline: "Elige tu idioma",
     body: "Puedes cambiarlo después en Ajustes > Apariencia.",
   },
+  distractions: {
+    headline: "Distracciones en pausa",
+    body: "Los sitios y apps que elijas se quedan cerrados mientras te enfocas.\nLos límites diarios cuentan todos tus dispositivos.",
+    sceneDescription:
+      "Una breve animación del navegador de una laptop y un teléfono durante una sesión de enfoque. Un sitio que distrae abierto en el navegador se reemplaza por la página de bloqueo de Ganbaru, y una app que distrae abierta en el teléfono vuelve a la pantalla de inicio con una notificación. Al terminar el enfoque, un límite diario cuenta el tiempo que un sitio y su app usan en ambos dispositivos, y al agotarse la hora ambos se bloquean.",
+    workTab: "Borrador del capítulo 3",
+  },
   about: {
     headline: "Gratis y de código abierto",
     body: "Tus datos se quedan en tus dispositivos y se sincronizan directamente entre ellos, sin cuentas, anuncios ni telemetría. App y código son tuyos para siempre.",

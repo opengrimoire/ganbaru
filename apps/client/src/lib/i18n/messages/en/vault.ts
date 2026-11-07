@@ -22,6 +22,13 @@ export const vaultSetup = {
     headline: "Choose your language",
     body: "You can change it later in Settings > Appearance.",
   },
+  distractions: {
+    headline: "Distractions on hold",
+    body: "The sites and apps you choose stay closed while you focus.\nDaily limits count every device.",
+    sceneDescription:
+      "A short animation of a laptop's browser and a phone during a Focus session. A distracting site opened in the browser is replaced by Ganbaru's block page, and a distracting app opened on the phone returns to the home screen with a notification. After Focus ends, a daily limit counts the time one site and its app use across both devices, and once the hour is used up both are blocked.",
+    workTab: "Chapter 3 draft",
+  },
   about: {
     headline: "Free and open source",
     body: "Your data stays on your devices and syncs directly between them, with no account, ads, or telemetry.\nApp and code are yours forever.",

@@ -14,7 +14,7 @@ import { isTextEntryElement } from "$lib/mobile/keyboard";
 import { prefersReducedMotion } from "$lib/utils/smooth-swap";
 import { TOUCH_SLOP_PX } from "$lib/utils/touch-hold";
 
-/** Space between the summary rows and the bottom of a peeking sheet, in CSS pixels. */
+/** Space between the last row a peek or half detent shows and the bottom of the sheet, in CSS pixels. */
 export const EVENT_PANEL_SHEET_PEEK_PADDING_PX = 10;
 /** Release samples kept for velocity; older ones fall outside the velocity window anyway. */
 const MAX_SAMPLES = 8;
@@ -50,6 +50,8 @@ export interface EventPanelSheetOptions {
   content: () => HTMLElement | undefined;
   /** The last row of the summary shown at the peek. */
   peekEnd: () => HTMLElement | undefined;
+  /** The last element of the overview shown at the half detent, measured while nothing inside needs room. */
+  halfEnd: () => HTMLElement | undefined;
   scroll: () => HTMLElement | undefined;
   /** Calendar event kept visible on the grid above the sheet while it rests. */
   revealEventId: () => string | undefined;
@@ -114,6 +116,7 @@ export class EventPanelSheetController {
   private fullHeight = $state(0);
   private dipHeight = $state(0);
   private peekHeight = $state(0);
+  private halfHeight = $state(0);
   private gesture: SheetGesture | null = null;
   /**
    * Option values held as derived primitives, so effects rerun only when a value changes, not whenever the parent
@@ -125,22 +128,25 @@ export class EventPanelSheetController {
   private readonly needsRoom = $derived.by(() => this.options.needsRoom());
 
   heights: BottomSheetHeights = $derived(
-    bottomSheetHeights(this.fullHeight, this.dipHeight, this.peekHeight),
+    bottomSheetHeights(this.fullHeight, this.dipHeight, this.peekHeight, this.halfHeight),
   );
 
   constructor(private readonly options: EventPanelSheetOptions) {
     $effect(() => {
       if (!this.enabled) return;
+      // Measures again once an open section or picker closes, so the overview height drops what it added.
+      void this.needsRoom;
       const panel = options.panel();
       const header = options.header();
       const dipEnd = options.dipEnd();
       const content = options.content();
       const peekEnd = options.peekEnd();
-      if (!panel || !header || !dipEnd || !content || !peekEnd) return;
-      const measure = () => this.measure(panel, header, dipEnd, content, peekEnd);
+      const halfEnd = options.halfEnd();
+      if (!panel || !header || !dipEnd || !content || !peekEnd || !halfEnd) return;
+      const measure = () => this.measure(panel, header, dipEnd, content, peekEnd, halfEnd);
       const observer = new ResizeObserver(measure);
-      for (const element of [panel, header, dipEnd, content, peekEnd]) observer.observe(element);
-      measure();
+      for (const element of [panel, header, dipEnd, content, peekEnd, halfEnd]) observer.observe(element);
+      untrack(measure);
       return () => observer.disconnect();
     });
 
@@ -348,11 +354,17 @@ export class EventPanelSheetController {
     dipEnd: HTMLElement,
     content: HTMLElement,
     peekEnd: HTMLElement,
+    halfEnd: HTMLElement,
   ): void {
     this.fullHeight = panel.clientHeight;
     this.dipHeight = dipEnd.getBoundingClientRect().bottom - panel.getBoundingClientRect().top;
-    const summaryBottom = peekEnd.getBoundingClientRect().bottom - content.getBoundingClientRect().top;
-    this.peekHeight = header.offsetHeight + summaryBottom + EVENT_PANEL_SHEET_PEEK_PADDING_PX;
+    const contentTop = content.getBoundingClientRect().top;
+    this.peekHeight = header.offsetHeight + peekEnd.getBoundingClientRect().bottom - contentTop
+      + EVENT_PANEL_SHEET_PEEK_PADDING_PX;
+    // An open section or picker grows the overview, so the half detent keeps the height of the closed one.
+    if (this.needsRoom) return;
+    this.halfHeight = header.offsetHeight + halfEnd.getBoundingClientRect().bottom - contentTop
+      + EVENT_PANEL_SHEET_PEEK_PADDING_PX;
   }
 
   /** Whether `element` shows inside the sheet at the height it rests at, so focusing it needs no more room. */

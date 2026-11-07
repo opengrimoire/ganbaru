@@ -376,6 +376,7 @@
   let sheetHeaderEl = $state<HTMLDivElement>();
   let sheetDipEndEl = $state<HTMLButtonElement>();
   let sheetPeekEndEl = $state<HTMLDivElement>();
+  let sheetHalfEndEl = $state<HTMLDivElement>();
   const sheet = new EventPanelSheetController({
     enabled: () => mobileLayout && !parked,
     shown: () => session.initialized && geometry.positionReady,
@@ -392,6 +393,7 @@
     dipEnd: () => sheetDipEndEl,
     content: () => geometry.contentEl,
     peekEnd: () => sheetPeekEndEl,
+    halfEnd: () => sheetHalfEndEl,
     scroll: () => geometry.scrollEl,
     revealEventId: () => revealEventId,
     onClose: () => onClose(),
@@ -1291,7 +1293,7 @@
       </div>
       <hr class="border-event-panel-divider mx-1 mt-0.5" />
 
-      <div class="mt-1.5 flex flex-col gap-px px-1">
+      <div bind:this={sheetHalfEndEl} class="mt-1.5 flex flex-col gap-px px-1">
         <!-- Date + time -->
         <div
           bind:this={sheetPeekEndEl}

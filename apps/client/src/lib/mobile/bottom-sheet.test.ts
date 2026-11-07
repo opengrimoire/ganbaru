@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  BOTTOM_SHEET_HALF_RATIO,
   bottomSheetDragHeight,
   bottomSheetHeights,
   bottomSheetReleaseVelocity,
@@ -10,36 +9,35 @@ import {
 } from "./bottom-sheet";
 
 describe("bottomSheetHeights", () => {
-  it("keeps the header, summary, half, and full heights in order", () => {
-    expect(bottomSheetHeights(800, 60, 180)).toEqual({
-      dip: 60,
-      peek: 180,
-      half: Math.round(800 * BOTTOM_SHEET_HALF_RATIO),
-      full: 800,
-    });
+  it("keeps the header, summary, overview, and full heights in order", () => {
+    expect(bottomSheetHeights(800, 60, 180, 480.4)).toEqual({ dip: 60, peek: 180, half: 480, full: 800 });
   });
 
-  it("raises half to the peek when the summary is taller than half the sheet", () => {
-    const heights = bottomSheetHeights(300, 60, 220);
+  it("raises half to the peek when the overview ends above the summary", () => {
+    const heights = bottomSheetHeights(800, 60, 220, 150);
     expect(heights.half).toBe(220);
     expect(heights.peek).toBe(220);
   });
 
+  it("caps half at the full height when the overview is taller than the sheet", () => {
+    expect(bottomSheetHeights(400, 60, 180, 520).half).toBe(400);
+  });
+
   it("clamps every detent inside a sheet shrunk by the keyboard", () => {
-    expect(bottomSheetHeights(120, 60, 180)).toEqual({ dip: 60, peek: 120, half: 120, full: 120 });
+    expect(bottomSheetHeights(120, 60, 180, 480)).toEqual({ dip: 60, peek: 120, half: 120, full: 120 });
   });
 
   it("never lets the peek fall below the header", () => {
-    expect(bottomSheetHeights(800, 60, 20).peek).toBe(60);
+    expect(bottomSheetHeights(800, 60, 20, 480).peek).toBe(60);
   });
 
   it("returns zero heights before the sheet is measured", () => {
-    expect(bottomSheetHeights(0, 60, 180)).toEqual({ dip: 0, peek: 0, half: 0, full: 0 });
+    expect(bottomSheetHeights(0, 60, 180, 480)).toEqual({ dip: 0, peek: 0, half: 0, full: 0 });
   });
 });
 
 describe("bottomSheetDragHeight", () => {
-  const heights = bottomSheetHeights(800, 60, 180);
+  const heights = bottomSheetHeights(800, 60, 180, 440);
 
   it("follows the finger up and down", () => {
     expect(bottomSheetDragHeight(180, -100, heights)).toBe(280);
@@ -76,7 +74,7 @@ describe("bottomSheetReleaseVelocity", () => {
 });
 
 describe("settleBottomSheet", () => {
-  const heights = bottomSheetHeights(800, 60, 180);
+  const heights = bottomSheetHeights(800, 60, 180, 440);
 
   it("rests on the nearest detent for a slow release", () => {
     expect(settleBottomSheet(200, 0, heights, "close")).toBe("peek");

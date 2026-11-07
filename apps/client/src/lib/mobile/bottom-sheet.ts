@@ -1,6 +1,6 @@
 /**
- * Resting positions of a bottom sheet, from lowest to highest. `peek` shows the sheet's summary, `half` shows about
- * half the screen, and `full` shows the whole sheet.
+ * Resting positions of a bottom sheet, from lowest to highest. `peek` shows the sheet's summary, `half` shows its
+ * overview (for the event panel, every field and closed section), and `full` shows the whole sheet.
  */
 export type BottomSheetDetent = "peek" | "half" | "full";
 
@@ -19,8 +19,6 @@ export interface BottomSheetSample {
   time: number;
 }
 
-/** Share of the full sheet height shown at the `half` detent. */
-export const BOTTOM_SHEET_HALF_RATIO = 0.55;
 /** How far ahead the release velocity carries the sheet before it picks a detent, in milliseconds. */
 export const BOTTOM_SHEET_PROJECTION_MS = 200;
 /** Share of the peek height below which a released sheet closes or collapses instead of settling. */
@@ -36,14 +34,19 @@ function clamp(value: number, min: number, max: number): number {
 
 /**
  * Return the detent heights of a sheet whose full visible height is `fullHeight`, whose summary strip is `dipHeight`
- * tall, and whose summary ends `peekHeight` below its top. Every height stays within the sheet, and the detents never
- * cross: dip, peek, half, and full only grow.
+ * tall, whose summary ends `peekHeight` below its top, and whose overview ends `halfHeight` below its top. Every height
+ * stays within the sheet, and the detents never cross: dip, peek, half, and full only grow.
  */
-export function bottomSheetHeights(fullHeight: number, dipHeight: number, peekHeight: number): BottomSheetHeights {
+export function bottomSheetHeights(
+  fullHeight: number,
+  dipHeight: number,
+  peekHeight: number,
+  halfHeight: number,
+): BottomSheetHeights {
   const full = Math.max(0, Math.round(fullHeight));
   const dip = clamp(Math.round(dipHeight), 0, full);
   const peek = clamp(Math.round(peekHeight), dip, full);
-  const half = clamp(Math.round(full * BOTTOM_SHEET_HALF_RATIO), peek, full);
+  const half = clamp(Math.round(halfHeight), peek, full);
   return { dip, peek, half, full };
 }
 

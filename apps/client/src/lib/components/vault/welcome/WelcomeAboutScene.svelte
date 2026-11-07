@@ -113,10 +113,14 @@
   const wide = $derived(canvasW >= SIDEBAR_MIN_W);
   /**
    * The repository's documents, the readme and the license first. The sidebar lists them with icons and names the
-   * security policy in full; the single column shows them as tabs under the files, with the readme's selected, and
-   * shows the tabs after the license only where they fit.
+   * security policy in full; the single column shows them as tabs under the files, with the readme's selected, puts
+   * contributing right after the license, and shows the tabs after the license only where they fit.
    */
-  const links = $derived([README, LICENSE, CODE_OF_CONDUCT, CONTRIBUTING, wide ? SECURITY_POLICY : SECURITY]);
+  const links = $derived(
+    wide
+      ? [README, LICENSE, CODE_OF_CONDUCT, CONTRIBUTING, SECURITY_POLICY]
+      : [README, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY],
+  );
   const page = $derived(aboutPage(elapsed));
   const touch = $derived(aboutTouch(elapsed));
   const press = $derived(aboutPress(elapsed));

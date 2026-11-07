@@ -12,249 +12,231 @@
 </script>
 
 <script lang="ts">
-  import CodeXml from "@lucide/svelte/icons/code-xml";
-  import Globe from "@lucide/svelte/icons/globe";
   import User from "@lucide/svelte/icons/user";
   import { getEventColor } from "$lib/calendar/utils";
   import type { EventColor } from "$lib/calendar/types";
-  import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import {
-    ABOUT_CODE_LINES,
-    ABOUT_SCREEN_ROWS,
-    aboutCard,
-    aboutCodeLine,
-    aboutCopy,
-    aboutRecipient,
-    aboutScreenRow,
+    ABOUT_EDIT_ORIGINS,
+    ABOUT_INITIAL_ROWS,
+    ABOUT_LINKS,
+    ABOUT_ROW_COUNT,
+    aboutDevice,
+    aboutLink,
+    aboutRow,
+    aboutRowGlow,
+    aboutTravel,
   } from "$lib/vault/welcome-about-scene";
 
   /**
-   * One frame of the welcome scene about the app itself: its code, written out in the open, and the devices of five
-   * people around it. Each receives its own copy of the code, which then fills with that person's own things, so the
-   * code is shared with everyone while what each person keeps stays theirs. Every style is a function of `elapsed`,
-   * with no CSS transitions, so text is never handed to a compositing layer mid-animation.
+   * One frame of the welcome scene about the app itself: one person's laptop, desktop, and phone, holding the same
+   * things and linked directly to each other, with no machine in the middle. Each device in turn adds something that
+   * travels straight to the other two, so the data lives on the person's devices and moves only between them. Every
+   * style is a function of `elapsed`, with no CSS transitions, so text is never handed to a compositing layer
+   * mid-animation.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
-  const { t } = getLocalization();
   const theme = getTheme();
 
-  /** The public code, centered at the top. */
-  const CARD_W = 156;
-  const CARD_H = 104;
-  const CARD_HEADER_H = 26;
-  const CODE_LINE_H = 11;
-  /** How far the code and the devices rise into place as they appear. */
-  const RISE = 6;
   /** Breathing room at the top and bottom, which grows a little with the canvas. */
   const MIN_PAD = 10;
   const PAD_SHARE = 0.15;
-  /** How far the copies' paths spread along the code's bottom edge, as a share of each device's offset. */
-  const FAN = 0.35;
-  const PACKET = 8;
+  /** How far the laptop and the desktop sit from the center on the narrowest canvas, and how much more a wider one spreads them. */
+  const MIN_SPREAD = 100;
+  const SPREAD_SHARE = 0.3;
+  /** How far the devices rise into place as they appear. */
+  const RISE = 6;
+  /** The space a link leaves between its end and a device. */
+  const LINK_GAP = 6;
+  const PACKET_R = 4;
+  const ROW_H = 10;
 
   /** Palette slots, so the drawing follows the active theme's event colors. */
   const PINK = 1;
   const ORANGE = 7;
-  const YELLOW = 8;
   const GREEN = 12;
-  const TEAL = 14;
-  const CYAN = 16;
   const BLUE = 18;
   const PURPLE = 22;
 
-  type CodeTone = "keyword" | "call" | "text" | "type" | "plain";
-  /** Lines of code as indentation and runs of tokens, each run a width and a tone. */
-  const CODE: readonly (readonly [indent: number, runs: readonly (readonly [width: number, tone: CodeTone])[]])[] = [
-    [0, [[16, "keyword"], [30, "call"], [10, "plain"]]],
-    [1, [[12, "keyword"], [20, "plain"], [36, "text"]]],
-    [1, [[26, "call"], [10, "plain"], [22, "type"]]],
-    [2, [[40, "plain"], [14, "keyword"]]],
-    [1, [[14, "keyword"], [28, "text"]]],
-    [0, [[8, "plain"]]],
-  ];
+  /** The person's things, the same on every device, each a color and how much of the row its text fills. */
+  const ROWS: readonly { color: EventColor; share: number }[] = [
+    { color: BLUE, share: 0.72 },
+    { color: GREEN, share: 0.5 },
+    { color: ORANGE, share: 0.62 },
+    { color: PINK, share: 0.45 },
+    { color: PURPLE, share: 0.56 },
+  ].slice(0, ABOUT_ROW_COUNT);
 
-  /**
-   * A person's device below the code, with its center on the narrowest canvas, how far the arc lifts it, and that person's colors. A
-   * wider canvas spreads the devices apart while the outermost keep their distance from the edges.
-   */
-  interface Recipient {
-    kind: "laptop" | "phone";
-    x: number;
-    lift: number;
-    person: EventColor;
-    items: readonly { color: EventColor; width: number }[];
+  type DeviceKind = "laptop" | "desktop" | "phone";
+  /** The devices in the order the scene counts them: the laptop at the top left, the desktop at the top right, the phone below. */
+  const DEVICES: readonly { kind: DeviceKind; width: number; height: number }[] = [
+    { kind: "laptop", width: 120, height: 76 },
+    { kind: "desktop", width: 132, height: 84 },
+    { kind: "phone", width: 50, height: 92 },
+  ];
+  const LAPTOP_BASE = { width: 140, height: 5 };
+  const DESKTOP_NECK = { width: 16, height: 10 };
+  const DESKTOP_FOOT = { width: 52, height: 4 };
+
+  const BEZEL = "color-mix(in srgb, var(--foreground) 8%, var(--background))";
+  const STAND = "color-mix(in srgb, var(--foreground) 14%, var(--background))";
+
+  interface Box {
+    cx: number;
+    cy: number;
+    width: number;
+    height: number;
   }
-
-  const RECIPIENTS: readonly Recipient[] = [
-    { kind: "laptop", x: 38, lift: 18, person: ORANGE, items: [{ color: BLUE, width: 30 }, { color: GREEN, width: 22 }, { color: ORANGE, width: 26 }] },
-    { kind: "phone", x: 112, lift: 5, person: TEAL, items: [{ color: PURPLE, width: 12 }, { color: YELLOW, width: 9 }, { color: TEAL, width: 11 }] },
-    { kind: "laptop", x: 192, lift: 0, person: PURPLE, items: [{ color: CYAN, width: 24 }, { color: PINK, width: 32 }, { color: PURPLE, width: 20 }] },
-    { kind: "phone", x: 272, lift: 5, person: PINK, items: [{ color: ORANGE, width: 10 }, { color: BLUE, width: 13 }, { color: GREEN, width: 8 }] },
-    { kind: "laptop", x: 346, lift: 18, person: BLUE, items: [{ color: YELLOW, width: 26 }, { color: TEAL, width: 20 }, { color: PINK, width: 30 }] },
-  ];
-
-  const DEVICE_SIZE = {
-    laptop: { width: 66, height: 44, base: 78 },
-    phone: { width: 32, height: 56, base: 0 },
-  } as const;
-  const LAPTOP_BASE_H = 4;
-  /** The center of the narrowest canvas, and how far the outermost device sits from its edges. */
-  const MIN_CENTER = MIN_CANVAS_W / 2;
-  const EDGE = Math.min(...RECIPIENTS.map((recipient) => recipient.x), ...RECIPIENTS.map((recipient) => MIN_CANVAS_W - recipient.x));
 
   const center = $derived(width / 2);
-  const spread = $derived((center - EDGE) / (MIN_CENTER - EDGE));
-
   const pad = $derived(MIN_PAD + (height - MIN_CANVAS_H) * PAD_SHARE);
-  const cardTop = $derived(pad);
-  const cardBottom = $derived(cardTop + CARD_H);
-  const card = $derived(aboutCard(elapsed));
+  const spread = $derived(MIN_SPREAD + (width - MIN_CANVAS_W) * SPREAD_SHARE);
 
-  /** The center of device `index`, spread across the canvas. */
-  function deviceX(index: number): number {
-    return center + (RECIPIENTS[index].x - MIN_CENTER) * spread;
+  /** Where each device's screen sits, before it rises into place. */
+  const boxes = $derived<Box[]>(
+    DEVICES.map((device, index) => {
+      const cx = index === 0 ? center - spread : index === 1 ? center + spread : center;
+      const top = index === 2 ? height - pad - device.height : pad;
+      return { cx, cy: top + device.height / 2, width: device.width, height: device.height };
+    }),
+  );
+
+  /** Where the line from `from` toward `to` leaves `from`'s screen, a small gap beyond its edge. */
+  function edgePoint(from: Box, to: Box): { x: number; y: number } {
+    const dx = to.cx - from.cx;
+    const dy = to.cy - from.cy;
+    const scale = Math.min(
+      dx === 0 ? Infinity : (from.width / 2 + LINK_GAP) / Math.abs(dx),
+      dy === 0 ? Infinity : (from.height / 2 + LINK_GAP) / Math.abs(dy),
+    );
+    return { x: from.cx + dx * scale, y: from.cy + dy * scale };
   }
 
-  /** The bottom of device `index`, where it rests on the arc. */
-  function deviceBottom(index: number): number {
-    return height - pad - RECIPIENTS[index].lift;
+  /** The visible ends of the link between devices `from` and `to`. */
+  function linkEnds(from: number, to: number): { x1: number; y1: number; x2: number; y2: number } {
+    const start = edgePoint(boxes[from], boxes[to]);
+    const end = edgePoint(boxes[to], boxes[from]);
+    return { x1: start.x, y1: start.y, x2: end.x, y2: end.y };
   }
 
-  /** The top of device `index`'s drawing, base included. */
-  function deviceTop(index: number): number {
-    const recipient = RECIPIENTS[index];
-    const size = DEVICE_SIZE[recipient.kind];
-    return deviceBottom(index) - size.height - (recipient.kind === "laptop" ? LAPTOP_BASE_H : 0);
+  /** Where the thing from edit `edit` is on its way from its origin to device `target`. */
+  function packetPoint(edit: number, target: number, progress: number): { x: number; y: number } {
+    const path = linkEnds(ABOUT_EDIT_ORIGINS[edit], target);
+    return { x: path.x1 + (path.x2 - path.x1) * progress, y: path.y1 + (path.y2 - path.y1) * progress };
   }
 
-  /** Where the copy for device `index` leaves the code, and where it lands. */
-  function copyPath(index: number): { x1: number; y1: number; x2: number; y2: number } {
-    const x = deviceX(index);
-    return { x1: center + (x - center) * FAN, y1: cardBottom, x2: x, y2: deviceTop(index) - 4 };
-  }
-
-  function toneColor(tone: CodeTone): string {
-    switch (tone) {
-      case "keyword": return getEventColor(PURPLE, theme.current).bg;
-      case "call": return getEventColor(BLUE, theme.current).bg;
-      case "text": return getEventColor(ORANGE, theme.current).bg;
-      case "type": return getEventColor(CYAN, theme.current).bg;
-      case "plain": return "color-mix(in srgb, var(--foreground) 22%, transparent)";
-    }
+  function rowColor(row: number): string {
+    return getEventColor(ROWS[row].color, theme.current).bg;
   }
 </script>
 
 {#snippet screen(index: number)}
-  {@const recipient = RECIPIENTS[index]}
-  {@const compact = recipient.kind === "phone"}
-  <div class="flex h-full flex-col gap-1" class:px-1.5={!compact} class:pt-1.5={!compact} class:px-1={compact} class:pt-2={compact}>
-    {#each recipient.items.slice(0, ABOUT_SCREEN_ROWS) as entry, row (row)}
-      {@const shown = aboutScreenRow(elapsed, index, row)}
-      <div class="relative flex items-center gap-1" style:top={`${(1 - shown) * 3}px`} style:opacity={shown}>
-        <span class="size-1.5 shrink-0 rounded-[2px]" style:background-color={getEventColor(entry.color, theme.current).bg}></span>
-        <span class="h-0.75 rounded-full bg-foreground/20" style:width={`${entry.width}px`}></span>
+  {@const phone = DEVICES[index].kind === "phone"}
+  <div class="flex h-full flex-col" class:px-1.5={!phone} class:pt-1.5={!phone} class:px-1={phone} class:pt-2.5={phone}>
+    {#each ROWS as _, row (row)}
+      {@const shown = aboutRow(elapsed, index, row)}
+      {@const glow = aboutRowGlow(elapsed, index, row)}
+      <div
+        class="relative flex shrink-0 items-center gap-1 rounded-sm px-0.5"
+        style:height={`${ROW_H}px`}
+        style:top={`${(1 - shown) * 3}px`}
+        style:opacity={shown}
+        style:background-color={glow > 0 ? `color-mix(in srgb, ${rowColor(row)} ${Math.round(glow * 22)}%, transparent)` : undefined}
+      >
+        <span class="size-1.5 shrink-0 rounded-[2px]" style:background-color={rowColor(row)}></span>
+        <span class="h-0.75 rounded-full bg-foreground/20" style:width={`${ROWS[row].share * 100}%`}></span>
       </div>
     {/each}
   </div>
 {/snippet}
 
 <div class="relative" style:width={`${width}px`} style:height={`${height}px`}>
-  <!-- The copies' paths, each drawn as its copy travels, and the copies on their way. -->
+  <!-- The direct links between the devices, and the new things travelling along them. -->
   <svg class="absolute inset-0 overflow-visible" {width} {height} aria-hidden="true">
-    {#each RECIPIENTS as _, index (index)}
-      {@const copy = aboutCopy(elapsed, index)}
-      {#if copy > 0}
-        {@const path = copyPath(index)}
-        {@const x = path.x1 + (path.x2 - path.x1) * copy}
-        {@const y = path.y1 + (path.y2 - path.y1) * copy}
+    {#each ABOUT_LINKS as [from, to], link (link)}
+      {@const drawn = aboutLink(elapsed, link)}
+      {#if drawn > 0}
+        {@const path = linkEnds(from, to)}
         <line
           x1={path.x1}
           y1={path.y1}
-          x2={x}
-          y2={y}
+          x2={path.x1 + (path.x2 - path.x1) * drawn}
+          y2={path.y1 + (path.y2 - path.y1) * drawn}
           class="stroke-muted-foreground"
           stroke-width="1.5"
           stroke-dasharray="3 4"
           stroke-linecap="round"
           opacity="0.5"
         />
-        {#if copy < 1}
-          <circle cx={x} cy={y} r={PACKET / 2 + 3} class="fill-primary" opacity={0.22 * Math.min(1, (1 - copy) * 6)} />
-          <circle cx={x} cy={y} r={PACKET / 2} class="fill-primary" opacity={Math.min(1, copy * 8, (1 - copy) * 6)} />
-        {/if}
+      {/if}
+    {/each}
+    {#each ABOUT_EDIT_ORIGINS as origin, edit (edit)}
+      {@const progress = aboutTravel(elapsed, edit)}
+      {#if progress > 0 && progress < 1}
+        {@const color = rowColor(ABOUT_INITIAL_ROWS + edit)}
+        {@const fade = Math.min(1, progress * 8, (1 - progress) * 6)}
+        {#each DEVICES as _, target (target)}
+          {#if target !== origin}
+            {@const point = packetPoint(edit, target, progress)}
+            <circle cx={point.x} cy={point.y} r={PACKET_R + 3} fill={color} opacity={0.25 * fade} />
+            <circle cx={point.x} cy={point.y} r={PACKET_R} fill={color} opacity={fade} />
+          {/if}
+        {/each}
       {/if}
     {/each}
   </svg>
 
-  <!-- The public code. -->
-  {#if card > 0}
-    <div
-      class="absolute rounded-3xl bg-foreground/6 p-1.5"
-      style:left={`${center - CARD_W / 2}px`}
-      style:top={`${cardTop + (1 - card) * RISE}px`}
-      style:width={`${CARD_W}px`}
-      style:height={`${CARD_H}px`}
-      style:opacity={card}
-    >
-      <div class="h-full overflow-hidden rounded-2xl bg-background px-3">
-        <div class="flex items-center gap-1.5 text-[10px] font-medium text-foreground" style:height={`${CARD_HEADER_H}px`}>
-          <CodeXml size={11} strokeWidth={2} class="text-muted-foreground" aria-hidden="true" />
-          {t("common.appName")}
-          <Globe size={10} strokeWidth={2} class="ml-auto text-muted-foreground" aria-hidden="true" />
-        </div>
-        {#each CODE.slice(0, ABOUT_CODE_LINES) as [indent, runs], line (line)}
-          {@const written = aboutCodeLine(elapsed, line)}
-          <div
-            class="flex items-center gap-1"
-            style:height={`${CODE_LINE_H}px`}
-            style:padding-left={`${indent * 8}px`}
-            style:clip-path={`inset(0 ${(1 - written) * 100}% 0 0)`}
-          >
-            {#each runs as [width, tone], run (run)}
-              <span class="h-1 shrink-0 rounded-full" style:width={`${width}px`} style:background-color={toneColor(tone)}></span>
-            {/each}
-          </div>
-        {/each}
-      </div>
-    </div>
-  {/if}
-
-  <!-- Five people's devices, each holding its own copy and, once it arrives, that person's own things. -->
-  {#each RECIPIENTS as recipient, index (index)}
-    {@const shown = aboutRecipient(elapsed, index)}
+  <!-- One person's devices, each holding the same things. -->
+  {#each DEVICES as device, index (index)}
+    {@const shown = aboutDevice(elapsed, index)}
     {#if shown > 0}
-      {@const size = DEVICE_SIZE[recipient.kind]}
-      {@const person = getEventColor(recipient.person, theme.current)}
-      {@const top = deviceTop(index) + (1 - shown) * RISE}
-      <div class="absolute" style:left={`${deviceX(index) - size.width / 2}px`} style:top={`${top}px`} style:opacity={shown}>
+      {@const box = boxes[index]}
+      <div
+        class="absolute"
+        style:left={`${box.cx - device.width / 2}px`}
+        style:top={`${box.cy - device.height / 2 + (1 - shown) * RISE}px`}
+        style:opacity={shown}
+      >
         <div
-          class="bg-foreground/6 p-1"
-          class:rounded-lg={recipient.kind === "laptop"}
-          class:rounded-xl={recipient.kind === "phone"}
-          style:width={`${size.width}px`}
-          style:height={`${size.height}px`}
+          class="relative p-1"
+          class:rounded-lg={device.kind !== "phone"}
+          class:rounded-xl={device.kind === "phone"}
+          style:width={`${device.width}px`}
+          style:height={`${device.height}px`}
+          style:background-color={BEZEL}
         >
-          <div class="h-full overflow-hidden bg-background" class:rounded-sm={recipient.kind === "laptop"} class:rounded-lg={recipient.kind === "phone"}>
+          <div class="h-full overflow-hidden bg-background" class:rounded-sm={device.kind !== "phone"} class:rounded-lg={device.kind === "phone"}>
             {@render screen(index)}
           </div>
+          <span class="absolute -right-2 -bottom-2 z-10 grid size-4.5 place-items-center rounded-full bg-primary text-primary-foreground ring-2 ring-background">
+            <User size={10} strokeWidth={2.4} aria-hidden="true" />
+          </span>
         </div>
-        {#if recipient.kind === "laptop"}
+        {#if device.kind === "laptop"}
           <div
-            class="relative rounded-b-md bg-foreground/10"
-            style:left={`${(size.width - size.base) / 2}px`}
-            style:width={`${size.base}px`}
-            style:height={`${LAPTOP_BASE_H}px`}
+            class="relative rounded-b-md"
+            style:left={`${(device.width - LAPTOP_BASE.width) / 2}px`}
+            style:width={`${LAPTOP_BASE.width}px`}
+            style:height={`${LAPTOP_BASE.height}px`}
+            style:background-color={STAND}
+          ></div>
+        {:else if device.kind === "desktop"}
+          <div
+            class="relative"
+            style:left={`${(device.width - DESKTOP_NECK.width) / 2}px`}
+            style:width={`${DESKTOP_NECK.width}px`}
+            style:height={`${DESKTOP_NECK.height}px`}
+            style:background-color={BEZEL}
+          ></div>
+          <div
+            class="relative rounded-t-sm"
+            style:left={`${(device.width - DESKTOP_FOOT.width) / 2}px`}
+            style:width={`${DESKTOP_FOOT.width}px`}
+            style:height={`${DESKTOP_FOOT.height}px`}
+            style:background-color={STAND}
           ></div>
         {/if}
-        <span
-          class="absolute -right-2 -bottom-2 grid size-4.5 place-items-center rounded-full ring-2 ring-background"
-          style:background-color={person.bg}
-          style:color={person.text}
-        >
-          <User size={10} strokeWidth={2.4} aria-hidden="true" />
-        </span>
       </div>
     {/if}
   {/each}

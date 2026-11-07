@@ -1,82 +1,98 @@
 /**
- * Timing for the welcome scene about the app itself. The app's code writes itself out in the open, people's devices
- * gather around it, and each one receives its own copy, which then fills with that person's own things. Every moment
- * is derived from the milliseconds elapsed since the scene started, so a frame is a pure function of time and the
- * reduced-motion still is simply the last frame.
+ * Timing for the welcome scene about the app itself. One person's three devices appear holding the same things, link
+ * directly to each other, and then each in turn adds something that travels straight to the other two, so the data
+ * lives on the devices and moves only between them. Every moment is derived from the milliseconds elapsed since the
+ * scene started, so a frame is a pure function of time and the reduced-motion still is simply the last frame.
  */
 
 import { easeInOutCubic, filmSpan } from "./welcome-film";
 
-/** How many lines of code the public code shows. */
-export const ABOUT_CODE_LINES = 6;
+/** How many devices the person has. */
+export const ABOUT_DEVICE_COUNT = 3;
 
-/** How many people's devices receive a copy. */
-export const ABOUT_RECIPIENT_COUNT = 5;
+/** How many things every device already holds when it appears. */
+export const ABOUT_INITIAL_ROWS = 2;
 
-/** How many of a person's own items fill a device once its copy arrives. */
-export const ABOUT_SCREEN_ROWS = 3;
+/** The direct links between the devices, one for every pair, so no device stands between two others. */
+export const ABOUT_LINKS: readonly (readonly [number, number])[] = [
+  [0, 1],
+  [0, 2],
+  [1, 2],
+];
 
-/** The order in which the devices, left to right, appear and receive their copies: from the middle outwards. */
-export const ABOUT_COPY_ORDER: readonly number[] = [2, 1, 3, 0, 4];
+/** The device that adds each new thing, in order: every device writes, and each sends to the other two. */
+export const ABOUT_EDIT_ORIGINS: readonly number[] = [2, 0, 1];
+
+/** How many things every device holds once the scene ends. */
+export const ABOUT_ROW_COUNT = ABOUT_INITIAL_ROWS + ABOUT_EDIT_ORIGINS.length;
 
 /** Moments of the scene, in milliseconds from its start. */
 export const ABOUT_BEATS = {
-  /** The code appears, then writes itself out line by line. */
-  cardIn: 200,
-  codeStart: 600,
-  /** People's devices gather around the code. */
-  devicesIn: 1500,
-  /** A copy of the code travels to each device. */
-  copiesStart: 2300,
-  end: 5900,
+  /** The devices appear, one after another. */
+  devicesIn: 200,
+  /** The links between them draw themselves. */
+  linksStart: 1100,
+  /** The first new thing is added. */
+  editsStart: 2100,
+  end: 6600,
 } as const;
 
-const CARD_IN_MS = 500;
-const CODE_STAGGER_MS = 110;
-const CODE_LINE_MS = 260;
-const DEVICE_STAGGER_MS = 220;
-const DEVICE_IN_MS = 400;
-const COPY_STAGGER_MS = 420;
-const COPY_MS = 750;
-const ROW_STAGGER_MS = 120;
-const ROW_IN_MS = 260;
+const DEVICE_STAGGER_MS = 180;
+const DEVICE_IN_MS = 450;
+const LINK_STAGGER_MS = 150;
+const LINK_MS = 450;
+const EDIT_STAGGER_MS = 1350;
+const ROW_IN_MS = 300;
+const TRAVEL_MS = 600;
+const GLOW_MS = 600;
 
-/** Where device `index` falls in the order of arrival. */
-function rank(index: number): number {
-  const position = ABOUT_COPY_ORDER.indexOf(index);
-  return position < 0 ? index : position;
+/** When edit `edit` starts on its origin. */
+function editStart(edit: number): number {
+  return ABOUT_BEATS.editsStart + edit * EDIT_STAGGER_MS;
 }
 
-/** When the copy for device `index` leaves the code. */
-function copyDeparture(index: number): number {
-  return ABOUT_BEATS.copiesStart + rank(index) * COPY_STAGGER_MS;
+/** When edit `edit` leaves its origin for the other devices. */
+function departure(edit: number): number {
+  return editStart(edit) + ROW_IN_MS;
 }
 
-/** How far the code has appeared, from 0 to 1. */
-export function aboutCard(elapsed: number): number {
-  return easeInOutCubic(filmSpan(elapsed, ABOUT_BEATS.cardIn, ABOUT_BEATS.cardIn + CARD_IN_MS));
+/** When row `row` starts to appear on device `device`. */
+function rowStart(device: number, row: number): number {
+  if (row < ABOUT_INITIAL_ROWS) return ABOUT_BEATS.devicesIn + device * DEVICE_STAGGER_MS;
+  const edit = row - ABOUT_INITIAL_ROWS;
+  return ABOUT_EDIT_ORIGINS[edit] === device ? editStart(edit) : departure(edit) + TRAVEL_MS;
 }
 
-/** How much of code line `line` is written, from 0 to 1. */
-export function aboutCodeLine(elapsed: number, line: number): number {
-  const start = ABOUT_BEATS.codeStart + line * CODE_STAGGER_MS;
-  return easeInOutCubic(filmSpan(elapsed, start, start + CODE_LINE_MS));
-}
-
-/** How far device `index` has appeared, from 0 to 1. */
-export function aboutRecipient(elapsed: number, index: number): number {
-  const start = ABOUT_BEATS.devicesIn + rank(index) * DEVICE_STAGGER_MS;
+/** How far device `device` has appeared, from 0 to 1. */
+export function aboutDevice(elapsed: number, device: number): number {
+  const start = ABOUT_BEATS.devicesIn + device * DEVICE_STAGGER_MS;
   return easeInOutCubic(filmSpan(elapsed, start, start + DEVICE_IN_MS));
 }
 
-/** How far the copy for device `index` has travelled from the code, from 0 to 1 once it has arrived. */
-export function aboutCopy(elapsed: number, index: number): number {
-  const departure = copyDeparture(index);
-  return easeInOutCubic(filmSpan(elapsed, departure, departure + COPY_MS));
+/** How much of link `link` is drawn, from 0 to 1. */
+export function aboutLink(elapsed: number, link: number): number {
+  const start = ABOUT_BEATS.linksStart + link * LINK_STAGGER_MS;
+  return easeInOutCubic(filmSpan(elapsed, start, start + LINK_MS));
 }
 
-/** How far item `row` has appeared on device `index`, from 0 to 1: the device fills only once its copy arrives. */
-export function aboutScreenRow(elapsed: number, index: number, row: number): number {
-  const start = copyDeparture(index) + COPY_MS + row * ROW_STAGGER_MS;
+/** How far the thing added by edit `edit` has travelled from its origin to the other devices, from 0 to 1. */
+export function aboutTravel(elapsed: number, edit: number): number {
+  return easeInOutCubic(filmSpan(elapsed, departure(edit), departure(edit) + TRAVEL_MS));
+}
+
+/** How far row `row` has appeared on device `device`, from 0 to 1. */
+export function aboutRow(elapsed: number, device: number, row: number): number {
+  if (row < ABOUT_INITIAL_ROWS) return aboutDevice(elapsed, device);
+  const start = rowStart(device, row);
   return easeInOutCubic(filmSpan(elapsed, start, start + ROW_IN_MS));
+}
+
+/** How strongly a new row marks itself as new on device `device`, from 0 to 1: it lights up as it lands, then fades. */
+export function aboutRowGlow(elapsed: number, device: number, row: number): number {
+  if (row < ABOUT_INITIAL_ROWS) return 0;
+  const start = rowStart(device, row);
+  if (elapsed < start) return 0;
+  const rise = filmSpan(elapsed, start, start + ROW_IN_MS);
+  const fade = filmSpan(elapsed, start + ROW_IN_MS, start + ROW_IN_MS + GLOW_MS);
+  return rise * (1 - easeInOutCubic(fade));
 }

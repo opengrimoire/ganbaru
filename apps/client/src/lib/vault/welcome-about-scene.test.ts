@@ -1,20 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   ABOUT_BEATS,
-  ABOUT_CODE_LINES,
-  ABOUT_COPY_ORDER,
-  ABOUT_RECIPIENT_COUNT,
-  ABOUT_SCREEN_ROWS,
-  aboutCard,
-  aboutCodeLine,
-  aboutCopy,
-  aboutRecipient,
-  aboutScreenRow,
+  ABOUT_DEVICE_COUNT,
+  ABOUT_EDIT_ORIGINS,
+  ABOUT_INITIAL_ROWS,
+  ABOUT_LINKS,
+  ABOUT_ROW_COUNT,
+  aboutDevice,
+  aboutLink,
+  aboutRow,
+  aboutRowGlow,
+  aboutTravel,
 } from "./welcome-about-scene";
 
-const LINES = Array.from({ length: ABOUT_CODE_LINES }, (_, index) => index);
-const DEVICES = Array.from({ length: ABOUT_RECIPIENT_COUNT }, (_, index) => index);
-const ROWS = Array.from({ length: ABOUT_SCREEN_ROWS }, (_, index) => index);
+const DEVICES = Array.from({ length: ABOUT_DEVICE_COUNT }, (_, index) => index);
+const ROWS = Array.from({ length: ABOUT_ROW_COUNT }, (_, index) => index);
+const EDITS = ABOUT_EDIT_ORIGINS.map((_, index) => index);
 
 /** Every step of the scene, for properties that must hold throughout. */
 function moments(step = 10): number[] {
@@ -32,68 +33,103 @@ function firstComplete(value: (elapsed: number) => number): number {
 }
 
 describe("welcome about scene", () => {
-  it("starts empty: no code, devices, copies, or items", () => {
-    expect(aboutCard(0)).toBe(0);
-    for (const line of LINES) expect(aboutCodeLine(0, line)).toBe(0);
+  it("starts empty: no devices, links, travelling things, or rows", () => {
     for (const device of DEVICES) {
-      expect(aboutRecipient(0, device)).toBe(0);
-      expect(aboutCopy(0, device)).toBe(0);
-      for (const row of ROWS) expect(aboutScreenRow(0, device, row)).toBe(0);
+      expect(aboutDevice(0, device)).toBe(0);
+      for (const row of ROWS) expect(aboutRow(0, device, row)).toBe(0);
+    }
+    for (const link of ABOUT_LINKS.keys()) expect(aboutLink(0, link)).toBe(0);
+    for (const edit of EDITS) expect(aboutTravel(0, edit)).toBe(0);
+  });
+
+  it("links every pair of devices directly, so none stands between two others", () => {
+    const pairs = new Set(ABOUT_LINKS.map(([from, to]) => `${Math.min(from, to)}-${Math.max(from, to)}`));
+    for (const from of DEVICES) {
+      for (const to of DEVICES.filter((device) => device > from)) expect(pairs.has(`${from}-${to}`)).toBe(true);
     }
   });
 
-  it("writes the code out line by line before any device appears", () => {
-    const lastLine = firstComplete((elapsed) => aboutCodeLine(elapsed, ABOUT_CODE_LINES - 1));
-    const firstDevice = Math.min(...DEVICES.map((device) => firstPositive((elapsed) => aboutRecipient(elapsed, device))));
-    expect(lastLine).toBeLessThanOrEqual(firstDevice);
-    for (const line of LINES.slice(1)) {
-      expect(firstPositive((elapsed) => aboutCodeLine(elapsed, line)))
-        .toBeGreaterThan(firstPositive((elapsed) => aboutCodeLine(elapsed, line - 1)));
+  it("lets every device add something", () => {
+    expect(new Set(ABOUT_EDIT_ORIGINS)).toEqual(new Set(DEVICES));
+  });
+
+  it("draws the links only between devices that are already there", () => {
+    const allShown = Math.max(...DEVICES.map((device) => firstComplete((elapsed) => aboutDevice(elapsed, device))));
+    for (const link of ABOUT_LINKS.keys()) {
+      expect(firstPositive((elapsed) => aboutLink(elapsed, link))).toBeGreaterThanOrEqual(allShown);
     }
   });
 
-  it("sends each copy only to a device that is already there", () => {
+  it("shows the same things on every device as it appears", () => {
     for (const device of DEVICES) {
-      const shown = firstComplete((elapsed) => aboutRecipient(elapsed, device));
-      expect(firstPositive((elapsed) => aboutCopy(elapsed, device))).toBeGreaterThanOrEqual(shown);
-    }
-  });
-
-  it("fills a device with its own items only after its copy arrives", () => {
-    for (const device of DEVICES) {
-      const arrival = firstComplete((elapsed) => aboutCopy(elapsed, device));
-      for (const row of ROWS) {
-        expect(firstPositive((elapsed) => aboutScreenRow(elapsed, device, row))).toBeGreaterThanOrEqual(arrival);
+      for (const row of ROWS.slice(0, ABOUT_INITIAL_ROWS)) {
+        for (const elapsed of moments(50)) expect(aboutRow(elapsed, device, row)).toBe(aboutDevice(elapsed, device));
       }
     }
   });
 
-  it("sends the copies from the middle outwards", () => {
-    const departures = ABOUT_COPY_ORDER.map((device) => firstPositive((elapsed) => aboutCopy(elapsed, device)));
-    expect(departures).toEqual([...departures].sort((left, right) => left - right));
-    expect(new Set(ABOUT_COPY_ORDER)).toEqual(new Set(DEVICES));
+  it("sends each new thing only once it is on its origin and every link is drawn", () => {
+    const linksDrawn = Math.max(...[...ABOUT_LINKS.keys()].map((link) => firstComplete((elapsed) => aboutLink(elapsed, link))));
+    for (const edit of EDITS) {
+      const row = ABOUT_INITIAL_ROWS + edit;
+      const origin = ABOUT_EDIT_ORIGINS[edit];
+      const departure = firstPositive((elapsed) => aboutTravel(elapsed, edit));
+      expect(departure).toBeGreaterThanOrEqual(firstComplete((elapsed) => aboutRow(elapsed, origin, row)));
+      expect(firstPositive((elapsed) => aboutRow(elapsed, origin, row))).toBeGreaterThanOrEqual(linksDrawn);
+    }
   });
 
-  it("ends with the code written and every device holding its copy and its own items", () => {
-    const end = ABOUT_BEATS.end;
-    expect(aboutCard(end)).toBe(1);
-    for (const line of LINES) expect(aboutCodeLine(end, line)).toBe(1);
+  it("lands each new thing on the other devices only when it arrives", () => {
+    for (const edit of EDITS) {
+      const row = ABOUT_INITIAL_ROWS + edit;
+      const arrival = firstComplete((elapsed) => aboutTravel(elapsed, edit));
+      for (const device of DEVICES.filter((device) => device !== ABOUT_EDIT_ORIGINS[edit])) {
+        expect(firstPositive((elapsed) => aboutRow(elapsed, device, row))).toBeGreaterThanOrEqual(arrival);
+      }
+    }
+  });
+
+  it("adds one thing at a time, each after the previous one has landed everywhere", () => {
+    for (const edit of EDITS.slice(1)) {
+      const previous = ABOUT_INITIAL_ROWS + edit - 1;
+      const landed = Math.max(...DEVICES.map((device) => firstComplete((elapsed) => aboutRow(elapsed, device, previous))));
+      const origin = ABOUT_EDIT_ORIGINS[edit];
+      expect(firstPositive((elapsed) => aboutRow(elapsed, origin, ABOUT_INITIAL_ROWS + edit))).toBeGreaterThanOrEqual(landed);
+    }
+  });
+
+  it("marks only new rows, and only for a moment", () => {
     for (const device of DEVICES) {
-      expect(aboutRecipient(end, device)).toBe(1);
-      expect(aboutCopy(end, device)).toBe(1);
-      for (const row of ROWS) expect(aboutScreenRow(end, device, row)).toBe(1);
+      for (const row of ROWS.slice(0, ABOUT_INITIAL_ROWS)) {
+        for (const elapsed of moments(50)) expect(aboutRowGlow(elapsed, device, row)).toBe(0);
+      }
+      for (const row of ROWS.slice(ABOUT_INITIAL_ROWS)) {
+        expect(Math.max(...moments().map((elapsed) => aboutRowGlow(elapsed, device, row)))).toBeGreaterThan(0.5);
+      }
+    }
+  });
+
+  it("ends with every device linked, holding every thing, and at rest", () => {
+    const end = ABOUT_BEATS.end;
+    for (const link of ABOUT_LINKS.keys()) expect(aboutLink(end, link)).toBe(1);
+    for (const edit of EDITS) expect(aboutTravel(end, edit)).toBe(1);
+    for (const device of DEVICES) {
+      expect(aboutDevice(end, device)).toBe(1);
+      for (const row of ROWS) {
+        expect(aboutRow(end, device, row)).toBe(1);
+        expect(aboutRowGlow(end, device, row)).toBe(0);
+      }
     }
   });
 
   it("keeps every value between 0 and 1 throughout", () => {
     for (const elapsed of moments()) {
       const values = [
-        aboutCard(elapsed),
-        ...LINES.map((line) => aboutCodeLine(elapsed, line)),
+        ...[...ABOUT_LINKS.keys()].map((link) => aboutLink(elapsed, link)),
+        ...EDITS.map((edit) => aboutTravel(elapsed, edit)),
         ...DEVICES.flatMap((device) => [
-          aboutRecipient(elapsed, device),
-          aboutCopy(elapsed, device),
-          ...ROWS.map((row) => aboutScreenRow(elapsed, device, row)),
+          aboutDevice(elapsed, device),
+          ...ROWS.flatMap((row) => [aboutRow(elapsed, device, row), aboutRowGlow(elapsed, device, row)]),
         ]),
       ];
       for (const value of values) {

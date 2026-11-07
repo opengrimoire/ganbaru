@@ -32,9 +32,9 @@ export const vaultSetup = {
   },
   about: {
     headline: "Gratis y de código abierto",
-    body: "Sin cuentas, sin anuncios y sin rastreo. Tus datos se quedan en tus dispositivos y se sincronizan entre ellos, nunca a través de servidores nuestros.",
+    body: "Tus datos se quedan en tus dispositivos y se sincronizan directamente entre ellos, sin cuentas, anuncios ni rastreo.",
     sceneDescription:
-      "Una breve animación del código de Ganbaru, abierto para que cualquiera lo lea: una copia llega a los dispositivos de cinco personas, y cada uno se llena después con las cosas propias de esa persona.",
+      "Una breve animación de la laptop, la computadora de escritorio y el teléfono de una persona, conectados directamente entre sí sin nada en medio: cada uno agrega algo por turnos, y eso viaja directo a los otros dos, así que los tres terminan con las mismas cosas.",
   },
   stepProgress: (current: number, total: number) => `Paso ${current} de ${total}`,
   licenseButton: "Licencia (AGPL 3.0)",

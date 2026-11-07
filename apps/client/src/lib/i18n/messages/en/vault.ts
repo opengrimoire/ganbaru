@@ -24,9 +24,9 @@ export const vaultSetup = {
   },
   about: {
     headline: "Free and open source",
-    body: "No account, no ads, and no tracking. Your data stays on your devices and syncs between them, never through servers of ours.",
+    body: "Your data stays on your devices and syncs directly between them, with no account, ads, or tracking.",
     sceneDescription:
-      "A short animation of Ganbaru's code, open for anyone to read: a copy of it goes to each of five people's devices, and each one then fills with that person's own things.",
+      "A short animation of one person's laptop, desktop, and phone, linked directly to each other with nothing in between: each adds something in turn, and it travels straight to the other two, so all three end up holding the same things.",
   },
   stepProgress: (current: number, total: number) => `Step ${current} of ${total}`,
   licenseButton: "License (AGPL 3.0)",

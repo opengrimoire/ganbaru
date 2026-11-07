@@ -1171,7 +1171,7 @@
               <!-- The sheet's Save is a neutral pill, unlike the desktop panel's confirm color. -->
               <span
                 class={cn(
-                  "rounded-full px-6 py-2 text-[0.866667rem] font-medium transition-colors",
+                  "flex h-(--sheet-pill-height) items-center rounded-full px-6 text-[0.866667rem] font-medium transition-colors",
                   saveReady ? "bg-foreground text-background" : "text-muted-foreground",
                 )}
                 style:background-color={saveReady ? undefined : "var(--panel-contrast)"}
@@ -1233,7 +1233,12 @@
 
       <!-- Scope selector (recurring events only) -->
       {#if isRecurring}
-        <div class="relative top-0.5 mb-2 grid grid-cols-3 overflow-hidden rounded-sm bg-event-panel-contrast p-0.5 text-[0.733333rem]"
+        <!-- The sheet's scope selector is a neutral pill matching its Save, unlike the desktop panel's confirm color. -->
+        <div
+          class={cn(
+            "relative mb-2 grid grid-cols-3 overflow-hidden bg-event-panel-contrast p-0.5",
+            mobileLayout ? "h-(--sheet-pill-height) rounded-full text-[0.866667rem]" : "top-0.5 rounded-sm text-[0.733333rem]",
+          )}
           role="radiogroup"
           aria-label={t("calendar.eventPanel.applyChangesTo")}>
           {#each scopeOptions as option, index}
@@ -1248,10 +1253,13 @@
               tabindex={scopeFocusIndex === index ? 0 : -1}
               disabled={scopeControlsDisabled}
               class={cn(
-                "readonly-interactive flex min-w-0 items-center justify-center rounded px-2 py-1 text-center font-semibold",
-                session.scope === option.value
-                  ? "bg-action-confirm text-action-confirm-foreground"
-                  : "text-event-panel-input-text/70",
+                "readonly-interactive scope-option flex min-w-0 items-center justify-center text-center",
+                mobileLayout ? "rounded-full font-medium transition-colors" : "rounded px-2 py-1 font-semibold",
+                session.scope !== option.value
+                  ? (mobileLayout ? "text-muted-foreground" : "text-event-panel-input-text/70")
+                  : mobileLayout
+                    ? "bg-foreground text-background"
+                    : "bg-action-confirm text-action-confirm-foreground",
               )}
             >
               <span class="translate-y-[0.5px]">{option.label}</span>
@@ -1328,7 +1336,7 @@
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="fixed inset-0 z-19" onclick={() => { dateTime.startDatePickerOpen = false; }}></div>
-            <div class="absolute left-0 top-full z-20 mt-1 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60">
+            <div class="event-panel-date-picker absolute left-0 top-full z-20 mt-1 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60">
               <MiniDatePicker
                 selectedDate={session.startDate}
                 rangeStartDate={session.startDate}
@@ -1432,7 +1440,7 @@
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="fixed inset-0 z-19" onclick={() => { dateTime.endDatePickerOpen = false; }}></div>
-            <div class="absolute right-0 top-full z-20 mt-1 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60">
+            <div class="event-panel-date-picker absolute right-0 top-full z-20 mt-1 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60">
               <MiniDatePicker
                 selectedDate={session.endDate}
                 rangeStartDate={session.startDate}
@@ -1740,10 +1748,27 @@
     overflow: hidden;
   }
 
+  .panel-root[data-mobile="true"] {
+    /* Touch height of the sheet's controls; section toggles take it as their width too, so they stay square. */
+    --sheet-touch-height: 3rem;
+    /* Height of the sheet's pill controls, Save and the recurring scope selector. */
+    --sheet-pill-height: 2.375rem;
+  }
+
   .panel-root[data-mobile="true"] :global(button),
   .panel-root[data-mobile="true"] :global(input),
   .panel-root[data-mobile="true"] :global(select) {
-    min-height: 3rem;
+    min-height: var(--sheet-touch-height);
+  }
+
+  .panel-root[data-mobile="true"] :global(.section-toggle) {
+    width: var(--sheet-touch-height);
+  }
+
+  /* Pills and the date pickers keep their own compact sizes, as on desktop. */
+  .panel-root[data-mobile="true"] .scope-option,
+  .panel-root[data-mobile="true"] :global(.event-panel-date-picker button) {
+    min-height: 0;
   }
 
   .panel-root[data-mobile="true"] :global([data-section="meeting"] .meeting-detail-row),

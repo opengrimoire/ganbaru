@@ -377,7 +377,7 @@
 <div bind:this={sectionEl} class="flex flex-col rounded-none overflow-hidden" style="background-color: var(--panel-contrast);">
   <div class="section-header flex items-stretch">
     <button onclick={onToggle}
-      class="flex w-10 shrink-0 items-center justify-center
+      class="section-toggle flex w-10 shrink-0 items-center justify-center
         {recurrence ? 'bg-black/3 dark:bg-black/30 text-foreground' : 'text-muted-foreground/50'}">
       <Repeat size={14} />
     </button>
@@ -521,7 +521,7 @@
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div class="fixed inset-0 z-60" onclick={() => { pickerOpen = false; }}></div>
-              <div class="fixed z-61 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60"
+              <div class="event-panel-date-picker fixed z-61 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60"
                 use:positionPicker>
                 <MiniDatePicker
                   selectedDate={recEndDate || defaultUntilDate()}

@@ -374,7 +374,7 @@
 <div bind:this={sectionEl} class="flex flex-col overflow-hidden rounded-none" style="background-color: var(--panel-contrast);">
   <div class="section-header flex items-stretch">
     <button onclick={onToggle}
-      class="flex w-10 shrink-0 items-center justify-center
+      class="section-toggle flex w-10 shrink-0 items-center justify-center
         {readonlyInteractiveClass}
         {enabled ? 'bg-black/3 text-foreground dark:bg-black/30' : 'text-muted-foreground/50'}">
       <Timer size={14} />

@@ -127,7 +127,7 @@
     <button onclick={toggle}
       aria-label={t("calendar.eventPanel.music")}
       aria-pressed={enabled}
-      class="flex w-10 shrink-0 items-center justify-center
+      class="section-toggle flex w-10 shrink-0 items-center justify-center
         {enabled ? 'bg-black/3 text-foreground dark:bg-black/30' : 'text-muted-foreground/50'}">
       <Music size={14} />
     </button>

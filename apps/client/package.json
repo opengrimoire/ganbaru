@@ -17,7 +17,7 @@
     "editor-check": "node scripts/checks/check-tailwind-diagnostics.mjs",
     "generate:chat-file-icons": "node scripts/codegen/generate-chat-file-icons.mjs",
     "generate:codex-protocol": "node scripts/provider-protocols/codex-app-server.mjs --write",
-    "generate:icons": "pnpm run tauri icon src-tauri/icons/icon-manifest.json",
+    "generate:icons": "pnpm run tauri icon src-tauri/icons/icon-manifest.json && node -e \"require('node:fs').copyFileSync('src-tauri/icons/64x64.png', 'static/favicon.png')\"",
     "generate:opencode-protocol": "node scripts/provider-protocols/opencode-openapi.mjs --write",
     "generate:project-emoji-catalog": "node scripts/codegen/generate-project-emoji-catalog.mjs",
     "generate:project-lucide-search-tags": "node scripts/codegen/generate-project-lucide-search-tags.mjs",

@@ -29,19 +29,22 @@
 
   /** The header's height, which holds the limit card's fixed rows, its padding, and its border with room to spare. */
   const HEADER_H = 76;
-  /** Palette slots for the limit's entries, so the drawing follows the active theme's event colors. */
-  const BROWSER_COLOR = 18;
-  const PHONE_COLOR = 22;
-  const BLUEDIT_SITE_COLOR = 1;
+  /**
+   * Palette slots for the limit's entries, so the drawing follows the active theme's event colors: a brown for Y, a
+   * blue for Bluedit, and a cherry red for Egogram.
+   */
+  const Y_COLOR = 26;
+  const BLUEDIT_COLOR = 18;
+  const EGOGRAM_COLOR = 0;
 
   const usage = $derived(limitsUsage(elapsed));
-  const browserColor = $derived(getEventColor(BROWSER_COLOR, theme.current).bg);
-  const phoneColor = $derived(getEventColor(PHONE_COLOR, theme.current).bg);
-  const blueditSiteColor = $derived(getEventColor(BLUEDIT_SITE_COLOR, theme.current).bg);
+  const yColor = $derived(getEventColor(Y_COLOR, theme.current).bg);
+  const egogramColor = $derived(getEventColor(EGOGRAM_COLOR, theme.current).bg);
+  const blueditColor = $derived(getEventColor(BLUEDIT_COLOR, theme.current).bg);
   const sources = $derived([
-    { label: BLOCKER_APP_HOSTS.y, color: browserColor },
-    { label: BLOCKER_APP_HOSTS.bluedit, color: blueditSiteColor },
-    { label: BLOCKER_APP_NAMES.egogram, color: phoneColor },
+    { label: BLOCKER_APP_HOSTS.y, color: yColor },
+    { label: BLOCKER_APP_HOSTS.bluedit, color: blueditColor },
+    { label: BLOCKER_APP_NAMES.egogram, color: egogramColor },
   ]);
 
   /** Minutes of use as Settings shows them, in hours and minutes. */
@@ -68,8 +71,8 @@
         </span>
       </div>
       <div class="flex h-1.5 overflow-hidden rounded-full bg-muted">
-        <span class="h-full" style:width={`${(usage.browser / LIMITS_BUDGET_MINUTES) * 100}%`} style:background-color={browserColor}></span>
-        <span class="h-full" style:width={`${(usage.phone / LIMITS_BUDGET_MINUTES) * 100}%`} style:background-color={phoneColor}></span>
+        <span class="h-full" style:width={`${(usage.browser / LIMITS_BUDGET_MINUTES) * 100}%`} style:background-color={yColor}></span>
+        <span class="h-full" style:width={`${(usage.phone / LIMITS_BUDGET_MINUTES) * 100}%`} style:background-color={egogramColor}></span>
       </div>
       <div class="flex h-5 gap-1.5 text-[10px]">
         {#each sources as source (source.label)}

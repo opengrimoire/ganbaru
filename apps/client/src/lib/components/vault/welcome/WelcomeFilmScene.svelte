@@ -22,9 +22,12 @@
   const CREATE_SNAP_MINUTES = calendarZoomGridMinutesForPercent(FILM_ZOOM_PERCENT);
   /** Where the visible part of the day starts, in minutes since midnight, as if the grid were scrolled to the morning. */
   const VIEW_START = 8 * 60 + 40;
-  /** How much of the day shows: the whole session at least, and on into the afternoon in a tall room. */
+  /**
+   * How much of the day shows: the whole session at least, and on into the late afternoon in a tall room such as a
+   * phone's, where the drawing's width is already at its smallest and only more hours can fill the height.
+   */
   const MIN_VIEW_MINUTES = 315;
-  const MAX_VIEW_MINUTES = 420;
+  const MAX_VIEW_MINUTES = 540;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
 
   /** The bezel around the canvas, matching the drawn phones of the Android access guides (`p-1.5`). */

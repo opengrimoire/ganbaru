@@ -53,8 +53,9 @@
     </svg>
   {:else if app === "bluedit"}
     <!-- A round-eared alien whose antenna leans to the left, its head outlined in the brand color to part it from the
-         ears. -->
-    <svg viewBox="1 0 22 22" style:width={glyph} style:height={glyph}>
+         ears. The view centers its weight, the head and ears, a little below the outline's center, so the thin antenna
+         does not pull the alien low. -->
+    <svg viewBox="1 1.3 22 22" style:width={glyph} style:height={glyph}>
       <path d="M12.2 9.4L11 3.9L8.4 3.4" fill="none" stroke="white" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round" />
       <circle cx="7.3" cy="3.3" r="1.5" fill="white" />
       <circle cx="4.6" cy="11.6" r="1.9" fill="white" />
@@ -67,14 +68,14 @@
   {:else if app === "mail"}
     <span class="absolute inset-0 rounded-[inherit] ring-1 ring-black/10 ring-inset"></span>
     <!-- An envelope drawn as an M in four colors, its sides swapped and its yellow corner moved to the left. -->
-    <svg viewBox="0 0 24 24" style:width={glyph} style:height={glyph} fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <svg viewBox="0 0.3 24 24" style:width={glyph} style:height={glyph} fill="none" stroke-linecap="round" stroke-linejoin="round">
       <path d="M3 8.2v8.8a1.5 1.5 0 0 0 1.5 1.5h2.2v-8.3z" fill={MAIL_COLORS.green} />
       <path d="M21 8.2v8.8a1.5 1.5 0 0 1-1.5 1.5h-2.2v-8.3z" fill={MAIL_COLORS.blue} />
       <path d="M4.3 7.4L12 13l7.7-5.6" stroke={MAIL_COLORS.red} stroke-width="2.6" />
       <path d="M4.3 7.4L6.4 8.9" stroke={MAIL_COLORS.yellow} stroke-width="2.6" />
     </svg>
   {:else}
-    <svg viewBox="0 0 24 24" style:width={glyph} style:height={glyph} fill="none" stroke="white" stroke-width="2" stroke-linejoin="round">
+    <svg viewBox="0 0.4 24 24" style:width={glyph} style:height={glyph} fill="none" stroke="white" stroke-width="2" stroke-linejoin="round">
       <path d="M3.5 9.5a2.5 2.5 0 0 1 2.5-2.5h2.2l1.4-2.2h4.8l1.4 2.2H18a2.5 2.5 0 0 1 2.5 2.5v8a2.5 2.5 0 0 1-2.5 2.5H6a2.5 2.5 0 0 1-2.5-2.5z" />
       <circle cx="12" cy="13.2" r="3.4" />
       <circle cx="17.4" cy="10" r="0.6" fill="white" stroke-width="0.8" />

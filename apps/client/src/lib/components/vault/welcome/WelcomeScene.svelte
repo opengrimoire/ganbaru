@@ -4,8 +4,9 @@
   import { SCENE_RESTART_FADE_MS, SCENE_RESTART_PAUSE_MS } from "$lib/utils/scene-loop";
 
   /**
-   * Plays a welcome scene on a loop, zoomed to the room it is given: it runs to its end, rests on its last frame, then
-   * fades out and starts over on its own, as the Android access guides do. With reduced motion it shows the last
+   * Plays a welcome scene, zoomed to the room it is given: it runs to its end, rests on its last frame, then fades out
+   * and starts over on its own, as the Android access guides do, unless it is told to play once and stay on its last
+   * frame. With reduced motion it shows the last
    * frame as a still. The drawing keeps its width and takes the height the room suggests within its bounds, so a tall
    * room such as a phone's gets a taller drawing instead of empty space. When the room is too small for the drawing to
    * stay legible, it steps aside and leaves the space to the text. The drawing is sized with CSS zoom rather than a
@@ -17,6 +18,7 @@
     minHeight,
     maxHeight = minHeight,
     duration,
+    loop = true,
     description,
     frame,
     class: className = "",
@@ -28,6 +30,8 @@
     maxHeight?: number;
     /** How long one run of the scene lasts, in milliseconds. */
     duration: number;
+    /** Whether the scene starts over once it ends, or stays on its last frame. */
+    loop?: boolean;
     /** What the scene shows, for screen readers. */
     description: string;
     /** Draws the scene at a moment, given in milliseconds from its start, at a size within its bounds. */
@@ -76,7 +80,7 @@
     if (elapsed < duration) frameRequest = requestAnimationFrame(tick);
     else {
       frameRequest = 0;
-      timer = window.setTimeout(restart, END_HOLD_MS);
+      if (loop) timer = window.setTimeout(restart, END_HOLD_MS);
     }
   }
 

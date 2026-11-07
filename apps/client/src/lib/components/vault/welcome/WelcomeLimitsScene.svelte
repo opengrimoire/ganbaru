@@ -30,12 +30,12 @@
   /** The header's height, which holds the limit card's fixed rows, its padding, and its border with room to spare. */
   const HEADER_H = 76;
   /**
-   * Palette slots for the limit's entries, so the drawing follows the active theme's event colors: a brown for Y, a
-   * blue for Bluedit, and a cherry red for Egogram.
+   * Palette slots for the limit's entries, so the drawing follows the active theme's event colors: a blue for Y, a
+   * lighter blue for Bluedit, and a violet for Egogram.
    */
-  const Y_COLOR = 26;
+  const Y_COLOR = 17;
   const BLUEDIT_COLOR = 18;
-  const EGOGRAM_COLOR = 0;
+  const EGOGRAM_COLOR = 24;
 
   const usage = $derived(limitsUsage(elapsed));
   const yColor = $derived(getEventColor(Y_COLOR, theme.current).bg);

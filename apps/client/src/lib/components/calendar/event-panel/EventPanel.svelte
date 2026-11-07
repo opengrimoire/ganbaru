@@ -1770,9 +1770,10 @@
 
   /*
    * The collapsed strip ends the sheet while it is collapsed. It is as tall as the bottom tab bar, even while the
-   * keyboard hides that bar, and the title is centered in the space below the chevron.
+   * keyboard hides that bar, and the title is centered in the space below the chevron. The selector matches the mobile
+   * touch target rule for buttons so this height replaces that minimum.
    */
-  .panel-root .sheet-collapsed-title {
+  .panel-root[data-mobile="true"] .sheet-collapsed-title {
     padding-top: calc(var(--sheet-grabber-block) + 0.25rem);
     padding-bottom: 0.25rem;
     min-height: var(--mobile-bottom-nav-h);

@@ -458,7 +458,7 @@
               <X size={22} />
             </div>
             <div class="flex-1"></div>
-            <div class="flex h-12 shrink-0 items-center px-1">
+            <div class="flex h-12 shrink-0 items-center pl-1 pr-3">
               <span class="relative rounded-full bg-foreground px-6 py-2 text-[0.866667rem] font-medium text-background">
                 {t("common.save")}
                 {@render touch(saveTouch, "left-1/2 top-1/2")}

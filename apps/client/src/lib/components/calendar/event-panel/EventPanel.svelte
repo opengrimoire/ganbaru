@@ -1142,7 +1142,7 @@
             type="button"
             onclick={handleSave}
             disabled={saveControlsDisabled}
-            class={cn("flex h-12 shrink-0 items-center px-1", pomodoroReadOnlyInteractive && "readonly-interactive")}
+            class={cn("flex h-12 shrink-0 items-center pl-1 pr-3", pomodoroReadOnlyInteractive && "readonly-interactive")}
           >
             <!-- The sheet's Save is a neutral pill, unlike the desktop panel's confirm color. -->
             <span

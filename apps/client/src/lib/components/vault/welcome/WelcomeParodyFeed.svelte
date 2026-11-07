@@ -2,7 +2,7 @@
   import ArrowBigDown from "@lucide/svelte/icons/arrow-big-down";
   import ArrowBigUp from "@lucide/svelte/icons/arrow-big-up";
   import type { BlockerApp } from "$lib/vault/welcome-blocker";
-  import WelcomeParodyIcon, { PARODY_COLORS } from "./WelcomeParodyIcon.svelte";
+  import WelcomeParodyIcon, { EGOGRAM_GRADIENT, PARODY_COLORS } from "./WelcomeParodyIcon.svelte";
 
   /**
    * A parody app's feed in the distraction blocker's welcome scenes, drawn with placeholder lines: Y's posts, Bluedit's
@@ -29,7 +29,9 @@
       {#if app === "egogram"}
         <div class="flex shrink-0 gap-2 px-2.5 py-2">
           {#each [0, 1, 2, 3, 4] as index (index)}
-            <span class="size-7 shrink-0 rounded-full border-2 bg-foreground/10" style:border-color={PARODY_COLORS.egogram}></span>
+            <span class="size-7 shrink-0 rounded-full p-0.5" style:background={EGOGRAM_GRADIENT}>
+              <span class="block size-full rounded-full border-2 border-background bg-foreground/10"></span>
+            </span>
           {/each}
         </div>
         {#each [0, 1, 2] as index (index)}

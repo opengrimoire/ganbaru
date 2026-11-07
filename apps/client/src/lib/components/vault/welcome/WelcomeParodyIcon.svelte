@@ -1,14 +1,27 @@
 <script lang="ts" module>
   import type { BlockerApp } from "$lib/vault/welcome-blocker";
 
-  /** The parody apps' brand colors, the same in every theme. */
-  export const PARODY_COLORS: Readonly<Record<BlockerApp, string>> = { y: "#000000", bluedit: "#2f6bff", egogram: "#0f9d8a" };
+  /** The parody apps' accent colors, the same in every theme. */
+  export const PARODY_COLORS: Readonly<Record<BlockerApp, string>> = { y: "#000000", bluedit: "#2f6bff", egogram: "#e8317f" };
+
+  /**
+   * Egogram's sunset gradient, warm from the bottom left corner to violet at the top right, which marks it as a photo
+   * app's parody without copying any brand's exact colors.
+   */
+  export const EGOGRAM_GRADIENT = "radial-gradient(circle at 28% 108%, #ffd76a 0%, #ffb340 10%, #ff5f45 40%, #e8317f 62%, #8b3dff 95%)";
+
+  /** The parody apps' icon backgrounds. */
+  const PARODY_BACKGROUNDS: Readonly<Record<BlockerApp, string>> = {
+    y: PARODY_COLORS.y,
+    bluedit: PARODY_COLORS.bluedit,
+    egogram: EGOGRAM_GRADIENT,
+  };
 </script>
 
 <script lang="ts">
   /**
    * The icon of a parody app in the distraction blocker's welcome scenes: Y's letter, Bluedit's speech bubble with an
-   * up arrow, and Egogram's hand mirror, each on its brand color.
+   * up arrow, and Egogram's camera on its sunset gradient, each on its brand background.
    */
   let { app, size }: { app: BlockerApp; size: number } = $props();
 
@@ -20,7 +33,7 @@
   style:width={`${size}px`}
   style:height={`${size}px`}
   style:border-radius={`${size * 0.26}px`}
-  style:background-color={PARODY_COLORS[app]}
+  style:background={PARODY_BACKGROUNDS[app]}
   aria-hidden="true"
 >
   {#if app === "y"}
@@ -32,10 +45,10 @@
       <path d="M12 6.8l-3.4 3.6h2.2v3.4h2.4v-3.4h2.2z" fill={PARODY_COLORS.bluedit} />
     </svg>
   {:else}
-    <svg viewBox="0 0 24 24" style:width={glyph} style:height={glyph}>
-      <circle cx="12" cy="9.5" r="5.2" fill="none" stroke="white" stroke-width="2.2" />
-      <path d="M9.6 7.6a3 3 0 0 1 2.4-1.3" fill="none" stroke="white" stroke-width="1.4" stroke-linecap="round" />
-      <path d="M12 14.8V21" stroke="white" stroke-width="2.6" stroke-linecap="round" />
+    <svg viewBox="0 0 24 24" style:width={glyph} style:height={glyph} fill="none" stroke="white" stroke-width="2" stroke-linejoin="round">
+      <path d="M3.5 9.5a2.5 2.5 0 0 1 2.5-2.5h2.2l1.4-2.2h4.8l1.4 2.2H18a2.5 2.5 0 0 1 2.5 2.5v8a2.5 2.5 0 0 1-2.5 2.5H6a2.5 2.5 0 0 1-2.5-2.5z" />
+      <circle cx="12" cy="13.2" r="3.4" />
+      <circle cx="17.4" cy="10" r="0.6" fill="white" stroke-width="0.8" />
     </svg>
   {/if}
 </span>

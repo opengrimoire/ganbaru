@@ -1532,6 +1532,7 @@
     <Panel
       {mobileLayout}
       gridEditing={mobileGridEditing}
+      revealEventId={visualEditingId}
       parked={render.parked}
       mode={render.mode}
       panelSessionKey={render.sessionKey}

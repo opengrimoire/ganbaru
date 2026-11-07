@@ -4,18 +4,22 @@ import {
   bottomSheetHeights,
   bottomSheetReleaseVelocity,
   higherBottomSheetDetent,
+  revealScrollDelta,
   settleBottomSheet,
   type BottomSheetDetent,
   type BottomSheetHeights,
   type BottomSheetSample,
 } from "$lib/mobile/bottom-sheet";
 import { isTextEntryElement } from "$lib/mobile/keyboard";
+import { prefersReducedMotion } from "$lib/utils/smooth-swap";
 import { TOUCH_SLOP_PX } from "$lib/utils/touch-hold";
 
 /** Space between the summary rows and the bottom of a peeking sheet, in CSS pixels. */
 const PEEK_PADDING_PX = 14;
 /** Release samples kept for velocity; older ones fall outside the velocity window anyway. */
 const MAX_SAMPLES = 8;
+/** Space kept between the revealed event and the grid or sheet edges, in CSS pixels. */
+const REVEAL_MARGIN_PX = 16;
 /** Space left above a fully open sheet so the page edge stays visible behind it. */
 export const EVENT_PANEL_SHEET_TOP_GAP = "0.5rem";
 
@@ -36,6 +40,8 @@ export interface EventPanelSheetOptions {
   /** The last row of the summary shown at the peek. */
   peekEnd: () => HTMLElement | undefined;
   scroll: () => HTMLElement | undefined;
+  /** Calendar event kept visible on the grid above the sheet while it rests. */
+  revealEventId: () => string | undefined;
   onClose: () => void;
 }
 
@@ -125,6 +131,14 @@ export class EventPanelSheetController {
     });
 
     $effect(() => {
+      const eventId = options.revealEventId();
+      const visible = this.visibleHeight;
+      if (!options.enabled() || !eventId || !this.entered || this.dragHeight !== null || options.gridEditing()) return;
+      const frame = requestAnimationFrame(() => this.revealEvent(eventId, visible));
+      return () => cancelAnimationFrame(frame);
+    });
+
+    $effect(() => {
       if (!options.enabled()) return;
       const panel = options.panel();
       if (!panel) return;
@@ -194,6 +208,26 @@ export class EventPanelSheetController {
     this.headerHeight = header.offsetHeight;
     const summaryBottom = peekEnd.getBoundingClientRect().bottom - content.getBoundingClientRect().top;
     this.peekHeight = header.offsetHeight + summaryBottom + PEEK_PADDING_PX;
+  }
+
+  /** Scroll the grid holding `eventId` so the event sits above a sheet resting at `visible` height. */
+  private revealEvent(eventId: string, visible: number): void {
+    const panel = this.options.panel();
+    const target = document.querySelector(
+      `[data-calendar-scroll-container] [data-event-id="${CSS.escape(eventId)}"]`,
+    );
+    const container = target?.closest<HTMLElement>("[data-calendar-scroll-container]");
+    if (!panel || !target || !container) return;
+    const panelRect = panel.getBoundingClientRect();
+    const currentOffset = new DOMMatrixReadOnly(getComputedStyle(panel).transform).m42;
+    const sheetTop = panelRect.top - currentOffset + Math.max(0, this.fullHeight - visible);
+    const containerRect = container.getBoundingClientRect();
+    const delta = revealScrollDelta(
+      target.getBoundingClientRect(),
+      { top: containerRect.top, bottom: Math.min(containerRect.bottom, sheetTop) },
+      REVEAL_MARGIN_PX,
+    );
+    if (delta !== 0) container.scrollBy({ top: delta, behavior: prefersReducedMotion() ? "auto" : "smooth" });
   }
 
   private settle(detent: BottomSheetDetent): void {

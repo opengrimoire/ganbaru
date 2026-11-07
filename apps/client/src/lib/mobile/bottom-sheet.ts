@@ -93,3 +93,22 @@ export function settleBottomSheet(
 export function higherBottomSheetDetent(a: BottomSheetDetent, b: BottomSheetDetent): BottomSheetDetent {
   return DETENT_ORDER.indexOf(a) >= DETENT_ORDER.indexOf(b) ? a : b;
 }
+
+/** Vertical span on screen, in CSS pixels. */
+export interface VerticalSpan {
+  top: number;
+  bottom: number;
+}
+
+/**
+ * Return how far to scroll content so `target` sits inside `area` with `margin` around it, in CSS pixels; positive
+ * scrolls the content up. A target taller than the area keeps its top visible.
+ */
+export function revealScrollDelta(target: VerticalSpan, area: VerticalSpan, margin: number): number {
+  const top = area.top + margin;
+  const bottom = area.bottom - margin;
+  if (bottom <= top) return 0;
+  if (target.top < top) return target.top - top;
+  if (target.bottom > bottom) return Math.min(target.bottom - bottom, target.top - top);
+  return 0;
+}

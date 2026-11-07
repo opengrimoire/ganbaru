@@ -5,6 +5,7 @@ import {
   bottomSheetHeights,
   bottomSheetReleaseVelocity,
   higherBottomSheetDetent,
+  revealScrollDelta,
   settleBottomSheet,
 } from "./bottom-sheet";
 
@@ -103,5 +104,29 @@ describe("higherBottomSheetDetent", () => {
   it("picks the more open detent", () => {
     expect(higherBottomSheetDetent("peek", "full")).toBe("full");
     expect(higherBottomSheetDetent("half", "peek")).toBe("half");
+  });
+});
+
+describe("revealScrollDelta", () => {
+  const area = { top: 100, bottom: 500 };
+
+  it("leaves a target that already fits", () => {
+    expect(revealScrollDelta({ top: 200, bottom: 300 }, area, 16)).toBe(0);
+  });
+
+  it("scrolls a target hidden under the sheet up above it", () => {
+    expect(revealScrollDelta({ top: 520, bottom: 600 }, area, 16)).toBe(116);
+  });
+
+  it("scrolls a target above the area back down", () => {
+    expect(revealScrollDelta({ top: 40, bottom: 140 }, area, 16)).toBe(-76);
+  });
+
+  it("keeps the top of a target taller than the area visible", () => {
+    expect(revealScrollDelta({ top: 300, bottom: 1000 }, area, 16)).toBe(184);
+  });
+
+  it("does nothing when the sheet leaves no room", () => {
+    expect(revealScrollDelta({ top: 300, bottom: 400 }, { top: 100, bottom: 120 }, 16)).toBe(0);
   });
 });

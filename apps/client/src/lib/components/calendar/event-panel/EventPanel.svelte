@@ -131,11 +131,14 @@
     onScopeChange,
     onSurfaceStatusChange,
     gridEditing = false,
+    revealEventId,
   }: {
     mode: "create" | "edit";
     mobileLayout?: boolean;
     /** Whether the user is moving or resizing this event on the grid, which lowers the mobile sheet to its header. */
     gridEditing?: boolean;
+    /** Grid event the mobile sheet keeps visible above itself, which is the edited event or the new draft. */
+    revealEventId?: string;
     panelSessionKey?: number;
     start?: string;
     end?: string;
@@ -386,6 +389,7 @@
     content: () => geometry.contentEl,
     peekEnd: () => sheetPeekEndEl,
     scroll: () => geometry.scrollEl,
+    revealEventId: () => revealEventId,
     onClose: () => onClose(),
   });
   const isDateTimeStacked = $derived(geometry.isDateTimeStacked);

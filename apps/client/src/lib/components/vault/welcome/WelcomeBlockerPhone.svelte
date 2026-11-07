@@ -39,7 +39,7 @@
   const GRID_TOP = STATUS_H + 14;
   const ICON_LABEL_H = 16;
   /** The home screen's slots, row by row: unnamed apps, with the parody apps in a line on the last row. */
-  const HOME_SLOTS: readonly (BlockerApp | null)[] = [null, null, null, null, null, null, null, null, "y", "egogram", "bluedit", null];
+  const HOME_SLOTS: readonly (BlockerApp | null)[] = [null, null, null, null, null, null, null, null, "egogram", "y", "bluedit", null];
   /** How far a label may spill past its column, in pixels, so a longer name fits before it truncates. */
   const LABEL_OVERHANG = 10;
   /** The block notification's gap from the screen's edges and its body text size, in pixels. */
@@ -145,7 +145,7 @@
         style:opacity={Math.min(1, app.open * 3)}
         style:border-radius={`${20 + (1 - app.open) * 40}px`}
       >
-        <WelcomeParodyFeed app={app.app} scroll={app.scroll} travel={FEED_TRAVEL} topInset={STATUS_H} />
+        <WelcomeParodyFeed app={app.app} scroll={app.scroll} travel={FEED_TRAVEL} topInset={STATUS_H} phone />
       </div>
     {/if}
 

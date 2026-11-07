@@ -125,7 +125,7 @@ function focusBlock(elapsed: number, app: BlockerApp): BlockerBrowserPage {
  * starts, Y's block page once its address loads, and Y's feed scrolling after the event.
  */
 export function blockingBrowserPage(elapsed: number): BlockerBrowserPage {
-  if (elapsed < B.focusStart) return { kind: "feed", app: "bluedit", scroll: 0.35 * easeInOutCubic(filmSpan(elapsed, 300, B.focusStart - 200)) };
+  if (elapsed < B.focusStart) return { kind: "feed", app: "bluedit", scroll: easeInOutCubic(filmSpan(elapsed, 200, B.focusStart - 150)) };
   if (elapsed >= B.focusEnd) return { kind: "feed", app: "y", scroll: 0.45 * easeInOutCubic(filmSpan(elapsed, B.focusEnd + 500, B.end - 300)) };
   return focusBlock(elapsed, elapsed >= B.yBlocked ? "y" : "bluedit");
 }

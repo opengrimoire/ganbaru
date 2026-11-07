@@ -8,7 +8,7 @@
   import appIconUrl from "../../../../../src-tauri/icons/64x64.png";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM } from "$lib/platform";
-  import { BLOCKER_APP_HOSTS, BLOCKER_APP_NAMES, type BlockerBrowserFrame } from "$lib/vault/welcome-blocker";
+  import { BLOCKER_APP_HOSTS, BLOCKER_APP_NAMES, type BlockerApp, type BlockerBrowserFrame } from "$lib/vault/welcome-blocker";
   import WelcomeParodyFeed from "./WelcomeParodyFeed.svelte";
   import WelcomeParodyIcon, { MAIL_COLORS } from "./WelcomeParodyIcon.svelte";
 
@@ -35,8 +35,8 @@
   } as const;
   /** The block page's colors, which the extension keeps dark in every theme. */
   const BLOCK_PAGE = { bg: "#0f1110", fg: "#f4f5f0", muted: "#aab5ac", button: "#f4f5f0", buttonFg: "#101010" } as const;
-  /** How far the feed scrolls at its end, in pixels. */
-  const FEED_TRAVEL = 150;
+  /** How far each site's feed scrolls at its end, in pixels; Bluedit's tall media needs more to read as a scroll. */
+  const FEED_TRAVEL: Readonly<Record<BlockerApp, number>> = { y: 150, bluedit: 280, egogram: 150 };
   /** The inbox's folder labels, as fractions of the side bar's width; the first is the inbox itself, selected. */
   const MAIL_FOLDERS = [0.7, 0.55, 0.8, 0.45, 0.6];
   /** The inbox's messages: each sender's width in pixels, its subject's as a fraction of the room left, and if unread. */
@@ -143,7 +143,7 @@
     <div class="relative min-h-0 flex-1 overflow-hidden">
       <div class="absolute inset-0" style:opacity={frame.pageIn}>
         {#if page.kind === "feed"}
-          <WelcomeParodyFeed app={page.app} scroll={page.scroll} travel={FEED_TRAVEL} />
+          <WelcomeParodyFeed app={page.app} scroll={page.scroll} travel={FEED_TRAVEL[page.app]} />
         {:else if page.kind === "mail"}
           <!-- The inbox: a compose button and folders on the side, and a list of messages, the unread ones darker. -->
           <div class="absolute inset-0 flex overflow-hidden bg-foreground/4">

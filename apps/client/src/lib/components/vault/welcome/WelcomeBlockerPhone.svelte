@@ -7,8 +7,8 @@
   import WelcomeParodyIcon from "./WelcomeParodyIcon.svelte";
 
   /**
-   * A phone in the distraction blocker's welcome scenes, on its home screen with the parody apps and Ganbaru in a row
-   * above the dock. An app opens from its icon and shrinks back into it as Android returns Home, and Ganbaru's block
+   * A phone in the distraction blocker's welcome scenes, on its home screen with the parody apps and Ganbaru among
+   * unnamed ones. An app opens from its icon and shrinks back into it as Android returns Home, and Ganbaru's block
    * notification slides in from the top as Android draws it.
    */
   let {
@@ -36,12 +36,23 @@
   const STATUS_H = 18;
   const GRID_COLUMNS = 4;
   const GRID_PAD_X = 8;
+  const GRID_TOP = STATUS_H + 14;
   const ICON_LABEL_H = 16;
-  /** The parody apps and Ganbaru, in one row centered on the grid just above the dock. */
-  const HOME_APPS: readonly (BlockerApp | "ganbaru")[] = ["y", "egogram", "bluedit", "ganbaru"];
-  const HOME_ROW_OFFSET = (GRID_COLUMNS - HOME_APPS.length) / 2;
-  /** The gap between the apps' labels and the dock. */
-  const HOME_ROW_GAP = 10;
+  /** The home screen's slots, row by row, with the parody apps and Ganbaru among unnamed ones. */
+  const HOME_SLOTS: readonly (BlockerApp | "ganbaru" | null)[] = [
+    null,
+    null,
+    "bluedit",
+    null,
+    null,
+    "egogram",
+    null,
+    "y",
+    null,
+    null,
+    "ganbaru",
+    null,
+  ];
   /** How far a label may spill past its column, in pixels, so a longer name fits before it truncates. */
   const LABEL_OVERHANG = 10;
   /** The block notification's gap from the screen's edges and its body text size, in pixels. */
@@ -56,14 +67,16 @@
   const screenH = $derived(height - 2 * BEZEL);
   const cellW = $derived((screenW - 2 * GRID_PAD_X) / GRID_COLUMNS);
   const iconSize = $derived(Math.min(30, Math.floor(cellW - 8)));
-  const homeRowCenterY = $derived(screenH - DOCK_BOTTOM - iconSize - HOME_ROW_GAP - ICON_LABEL_H - iconSize / 2);
+  const rowH = $derived(iconSize + ICON_LABEL_H);
 
-  /** The center of a home screen app's icon, in pixels from the screen's corner. */
-  function appCenter(index: number): { x: number; y: number } {
-    return { x: GRID_PAD_X + cellW * (HOME_ROW_OFFSET + index + 0.5), y: homeRowCenterY };
+  /** The center of a home screen slot's icon, in pixels from the screen's corner. */
+  function slotCenter(slot: number): { x: number; y: number } {
+    const column = slot % GRID_COLUMNS;
+    const row = Math.floor(slot / GRID_COLUMNS);
+    return { x: GRID_PAD_X + cellW * (column + 0.5), y: GRID_TOP + rowH * row + iconSize / 2 };
   }
 
-  const openOrigin = $derived(app ? appCenter(HOME_APPS.indexOf(app.app)) : { x: screenW / 2, y: screenH / 2 });
+  const openOrigin = $derived(app ? slotCenter(HOME_SLOTS.indexOf(app.app)) : { x: screenW / 2, y: screenH / 2 });
 </script>
 
 <div class="rounded-[26px] bg-foreground/6 p-1.5" style:width={`${width}px`} style:height={`${height}px`}>
@@ -82,9 +95,9 @@
       <span class="h-1.5 w-3.5 rounded-xs bg-current opacity-70"></span>
     </div>
 
-    {#each HOME_APPS as homeApp, index (homeApp)}
-      {@const center = appCenter(index)}
-      {@const touch = homeApp === "ganbaru" ? 0 : (touches[homeApp] ?? 0)}
+    {#each HOME_SLOTS as homeApp, index (index)}
+      {@const center = slotCenter(index)}
+      {@const touch = homeApp === null || homeApp === "ganbaru" ? 0 : (touches[homeApp] ?? 0)}
       <span
         class="absolute flex flex-col items-center gap-1"
         style:left={`${center.x - cellW / 2}px`}
@@ -92,7 +105,9 @@
         style:width={`${cellW}px`}
       >
         <span class="relative">
-          {#if homeApp === "ganbaru"}
+          {#if homeApp === null}
+            <span class="block rounded-[30%] bg-foreground/10" style:width={`${iconSize}px`} style:height={`${iconSize}px`}></span>
+          {:else if homeApp === "ganbaru"}
             <img
               src={appIconUrl}
               alt=""
@@ -111,9 +126,13 @@
             ></span>
           {/if}
         </span>
-        <span class="truncate text-[8px] leading-none" style:max-width={`${cellW + LABEL_OVERHANG}px`}>
-          {homeApp === "ganbaru" ? t("common.appName") : BLOCKER_APP_NAMES[homeApp]}
-        </span>
+        {#if homeApp === null}
+          <span class="h-1 w-5 rounded-full bg-foreground/12"></span>
+        {:else}
+          <span class="truncate text-[8px] leading-none" style:max-width={`${cellW + LABEL_OVERHANG}px`}>
+            {homeApp === "ganbaru" ? t("common.appName") : BLOCKER_APP_NAMES[homeApp]}
+          </span>
+        {/if}
       </span>
     {/each}
 

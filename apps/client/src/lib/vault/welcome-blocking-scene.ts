@@ -35,8 +35,8 @@ import {
 } from "./welcome-film";
 
 /** The Calendar event with Focus, in minutes of the day, and the part of the day the scene's strip shows. */
-export const BLOCKING_EVENT = { start: 10 * 60, end: 11 * 60 } as const;
-export const BLOCKING_DAY_VIEW = { start: 9 * 60 + 40, end: 11 * 60 + 20 } as const;
+export const BLOCKING_EVENT = { start: 10 * 60, end: 12 * 60 } as const;
+export const BLOCKING_DAY_VIEW = { start: 9 * 60 + 40, end: 12 * 60 + 20 } as const;
 
 /** The event's Focus rail, planned by the Calendar's own rhythm for the Creative preset. */
 export const BLOCKING_RAIL: FilmRail = filmDayRails([{ ...BLOCKING_EVENT, preset: "creative" }])[0];

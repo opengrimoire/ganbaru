@@ -24,6 +24,7 @@
   import Minus from "@lucide/svelte/icons/minus";
   import Plus from "@lucide/svelte/icons/plus";
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
+  import PickerDialog from "$lib/components/ui/PickerDialog.svelte";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
 
   const calendarsStore = getCalendars();
@@ -97,15 +98,6 @@
     if (labels.length === 1) return labels[0];
     return formatList(locale, labels, { type: "disjunction" });
   }
-
-  $effect(() => {
-    if (!mobileLayout || !showMiniCalendar) return;
-    return mobileBackStack.activate({
-      handle: () => {
-        showMiniCalendar = false;
-      },
-    });
-  });
 
   $effect(() => {
     if (!mobileLayout || !showAccountPicker) return;
@@ -300,7 +292,19 @@
         <span class="whitespace-nowrap">{mobileLayout && useCompactMonthYear ? compactMonthYear : fullMonthYear}</span>
       </button>
 
-      {#if showMiniCalendar}
+      {#snippet miniCalendar()}
+        <MiniDatePicker
+          selectedDate={anchorDateStr}
+          highlightMode={pickerHighlightMode}
+          onSelect={selectPickerDay}
+          onCancel={closeMiniCalendar}
+        />
+      {/snippet}
+      {#if showMiniCalendar && mobileLayout}
+        <PickerDialog label={t("common.datePicker.selectDate")} onClose={() => closeMiniCalendar()}>
+          {@render miniCalendar()}
+        </PickerDialog>
+      {:else if showMiniCalendar}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div data-calendar-edit-close-ignore class="fixed inset-0 z-40" onclick={() => closeMiniCalendar("pointer")}></div>
@@ -310,12 +314,7 @@
           class="surface-floating absolute left-0 top-full z-50 mt-1 w-56 p-2.5"
           style="--foreground: var(--popover-foreground);"
         >
-          <MiniDatePicker
-            selectedDate={anchorDateStr}
-            highlightMode={pickerHighlightMode}
-            onSelect={selectPickerDay}
-            onCancel={closeMiniCalendar}
-          />
+          {@render miniCalendar()}
         </div>
       {/if}
     </div>

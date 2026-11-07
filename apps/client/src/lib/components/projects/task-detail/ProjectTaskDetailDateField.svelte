@@ -16,6 +16,9 @@
   import DateReminderOptions from "$lib/components/ui/DateReminderOptions.svelte";
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
   import TimePicker from "$lib/components/ui/TimePicker.svelte";
+  import PickerDialog from "$lib/components/ui/PickerDialog.svelte";
+  import ClockTimePickerDialog from "$lib/components/ui/ClockTimePickerDialog.svelte";
+  import { TOUCH_PICKERS } from "$lib/components/ui/picker-presentation";
   import { cn } from "$lib/utils";
 
   type MiniDatePickerHighlightMode = "day" | "week" | "workweek" | "none";
@@ -157,7 +160,7 @@
     <button bind:this={trigger} type="button"
       class={cn("flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-left hover:bg-accent/60", !value && "text-muted-foreground")}
       aria-label={label ? `${label}: ${displayValue}` : displayValue}
-      aria-haspopup="dialog" aria-expanded={pickerOpen} aria-controls={pickerOpen ? pickerId : undefined}
+      aria-haspopup="dialog" aria-expanded={pickerOpen} aria-controls={pickerOpen && !TOUCH_PICKERS ? pickerId : undefined}
       onclick={onToggle}>
       <CalendarDays size={14} strokeWidth={1.75} class="shrink-0 text-muted-foreground" />
       <span class="truncate">{displayValue}</span>
@@ -173,18 +176,7 @@
     {/if}
   </div>
 </div>
-{#if pickerOpen}
-  <div bind:this={popup} use:portal={trigger?.closest<HTMLElement>("[data-floating-root]") ?? "body"}
-    id={pickerId} role="dialog" aria-label={label ?? clearLabel} tabindex="-1" data-app-floating-surface
-    class="task-date-popover surface-floating fixed z-90 w-floating overflow-auto p-3"
-    style={popupStyle}
-    onkeydowncapture={(event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        cancelPicker();
-      }
-    }}>
+{#snippet pickerContent()}
     <MiniDatePicker {selectedDate} {rangeStartDate} {rangeEndDate} small {highlightToday} {highlightMode}
       activeHighlight="primary"
       onSelect={(date) => { onSelect(date); trigger?.focus({ preventScroll: true }); }}
@@ -215,9 +207,30 @@
         }} />
       </div>
     {/if}
+{/snippet}
+{#if pickerOpen && TOUCH_PICKERS}
+  <PickerDialog label={label ?? clearLabel} onClose={cancelPicker}>
+    {@render pickerContent()}
+  </PickerDialog>
+{:else if pickerOpen}
+  <div bind:this={popup} use:portal={trigger?.closest<HTMLElement>("[data-floating-root]") ?? "body"}
+    id={pickerId} role="dialog" aria-label={label ?? clearLabel} tabindex="-1" data-app-floating-surface
+    class="task-date-popover surface-floating fixed z-90 w-floating overflow-auto p-3"
+    style={popupStyle}
+    onkeydowncapture={(event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelPicker();
+      }
+    }}>
+    {@render pickerContent()}
   </div>
 {/if}
-{#if timeOpen && pickerOpen && value}
+{#if timeOpen && pickerOpen && value && TOUCH_PICKERS}
+  <ClockTimePickerDialog value={time} fallback={DEFAULT_TIME_ANCHOR} label={`${label ?? clearLabel} ${t("projects.columns.selectHour")}`}
+    onSelect={pickTime} onCancel={closeTime} />
+{:else if timeOpen && pickerOpen && value}
   <div bind:this={timePanel} use:portal={trigger?.closest<HTMLElement>("[data-floating-root]") ?? "body"}
     role="dialog" aria-label={`${label ?? clearLabel} ${t("projects.columns.selectHour")}`} data-app-floating-surface
     use:anchoredPopover={{ anchor: timeTrigger, onOutside: () => { timeOpen = false; } }}

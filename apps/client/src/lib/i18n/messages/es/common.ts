@@ -55,6 +55,20 @@ export const common = {
     createdAscending: "Creación (más antigua primero)",
     custom: "Personalizado",
   },
+  datePicker: {
+    selectDate: "Seleccionar fecha",
+  },
+  timePicker: {
+    selectTime: "Seleccionar hora",
+    enterTime: "Escribir hora",
+    hour: "Hora",
+    minute: "Minuto",
+    am: "a. m.",
+    pm: "p. m.",
+    typeTime: "Escribir la hora",
+    useClock: "Usar el reloj",
+    ok: "Aceptar",
+  },
   color: {
     edit: "Editar color",
     editNamed: (label: string) => `Editar ${label}`,

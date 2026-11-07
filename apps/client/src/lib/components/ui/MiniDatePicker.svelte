@@ -11,6 +11,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { normalizedDateRange } from "$lib/calendar/date-range-selection";
   import { workCycleRangeForDate } from "$lib/calendar/utils";
+  import { TOUCH_PICKERS } from "./picker-presentation";
 
   const WEEKDAY_HEADER_DATES = [
     new Date(2024, 0, 1),
@@ -31,6 +32,7 @@
     highlightMode = "day",
     highlightToday = true,
     activeHighlight = "accent",
+    touch = TOUCH_PICKERS,
     onSelect,
     onCancel,
   }: {
@@ -42,6 +44,8 @@
     highlightMode?: "day" | "week" | "workweek" | "none";
     highlightToday?: boolean;
     activeHighlight?: "accent" | "primary";
+    /** Touch-size presentation: square days that fill the width, and touch-height month arrows. */
+    touch?: boolean;
     onSelect: (dateStr: string, source?: "keyboard" | "pointer") => void;
     onCancel?: (source?: "keyboard" | "pointer") => void;
   } = $props();
@@ -120,7 +124,11 @@
   const yearPageYears = $derived(Array.from({ length: 12 }, (_, i) => yearPageStart + i));
   const days = $derived.by(() => buildCalendarGrid(year, month, activeDateStr));
 
-  const textSize = $derived(small ? "text-[0.733333rem]" : "text-[0.8rem]");
+  const textSize = $derived(touch ? "text-[0.933333rem]" : small ? "text-[0.733333rem]" : "text-[0.8rem]");
+  const navButtonClass = $derived(
+    `flex ${touch ? "size-12" : "size-6"} items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground`,
+  );
+  const navIconSize = $derived(touch ? 18 : 14);
   const todayStr = $derived.by(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
@@ -490,37 +498,35 @@
       onclick={prevMonth}
       onkeydown={handlePickerKeydown}
       aria-label={t("calendar.toolbar.previous")}
-      data-picker-nav
-      class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+      class={navButtonClass}
     >
-      <ChevronLeft size={14} />
+      <ChevronLeft size={navIconSize} />
     </button>
   {:else if pickerMode === "years"}
     <button
       onclick={() => { yearPageStart -= 12; }}
       onkeydown={handlePickerKeydown}
       aria-label={t("calendar.toolbar.previous")}
-      data-picker-nav
-      class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+      class={navButtonClass}
     >
-      <ChevronLeft size={14} />
+      <ChevronLeft size={navIconSize} />
     </button>
   {:else}
     <button
       onclick={prevYear}
       onkeydown={handlePickerKeydown}
       aria-label={t("calendar.toolbar.previous")}
-      data-picker-nav
-      class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+      class={navButtonClass}
     >
-      <ChevronLeft size={14} />
+      <ChevronLeft size={navIconSize} />
     </button>
   {/if}
 
   <button bind:this={headerButtonEl}
     onclick={handleHeaderClick}
     onkeydown={handlePickerKeydown}
-    class="rounded-md px-2 py-0.5 text-[0.733333rem] font-medium text-foreground outline-none hover:bg-accent
+    class="rounded-md font-medium text-foreground outline-none hover:bg-accent
+      {touch ? 'min-h-12 px-3 text-[0.933333rem]' : 'px-2 py-0.5 text-[0.733333rem]'}
       {activeHighlight === 'primary' ? 'focus:bg-primary focus:text-primary-foreground' : 'focus:bg-accent'}">
     {#if pickerMode === "days"}
       {monthLabel}
@@ -536,30 +542,27 @@
       onclick={nextMonth}
       onkeydown={handlePickerKeydown}
       aria-label={t("calendar.toolbar.next")}
-      data-picker-nav
-      class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+      class={navButtonClass}
     >
-      <ChevronRight size={14} />
+      <ChevronRight size={navIconSize} />
     </button>
   {:else if pickerMode === "years"}
     <button
       onclick={() => { yearPageStart += 12; }}
       onkeydown={handlePickerKeydown}
       aria-label={t("calendar.toolbar.next")}
-      data-picker-nav
-      class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+      class={navButtonClass}
     >
-      <ChevronRight size={14} />
+      <ChevronRight size={navIconSize} />
     </button>
   {:else}
     <button
       onclick={nextYear}
       onkeydown={handlePickerKeydown}
       aria-label={t("calendar.toolbar.next")}
-      data-picker-nav
-      class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+      class={navButtonClass}
     >
-      <ChevronRight size={14} />
+      <ChevronRight size={navIconSize} />
     </button>
   {/if}
 </div>
@@ -569,7 +572,7 @@
   {#if pickerMode === "days"}
     <div class="grid grid-cols-7 gap-x-0 text-center">
       {#each dayLetters as letter}
-        <span class="py-0.5 text-[0.6rem] text-muted-foreground">{letter}</span>
+        <span class="text-muted-foreground {touch ? 'py-1.5 text-[0.733333rem]' : 'py-0.5 text-[0.6rem]'}">{letter}</span>
       {/each}
     </div>
     <div class="grid grid-cols-7 gap-x-0 text-center">
@@ -581,7 +584,7 @@
           disabled={belowMin}
           onkeydown={handlePickerKeydown}
           onclick={() => selectDay(day)}
-          class="flex h-6 w-full items-center justify-center rounded-sm {textSize}
+          class="flex w-full items-center justify-center {touch ? 'aspect-square rounded-md' : 'h-6 rounded-sm'} {textSize}
             {belowMin ? 'cursor-not-allowed' : 'hover:bg-accent'}"
           style={dayButtonStyle(day, belowMin)}
         >{day.day}</button>
@@ -595,7 +598,7 @@
           tabindex={i + 1 === month ? 0 : -1}
           onkeydown={handlePickerKeydown}
           onclick={() => selectMonth(i)}
-          class="rounded-sm py-2 text-center {textSize} font-medium
+          class="rounded-sm text-center {textSize} font-medium {touch ? 'min-h-14' : 'py-2'}
             {i + 1 === month ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'text-foreground hover:bg-accent'}">
           {name}
         </button>
@@ -609,7 +612,7 @@
           tabindex={y === year ? 0 : -1}
           onkeydown={handlePickerKeydown}
           onclick={() => selectYear(y)}
-          class="rounded-sm py-2 text-center {textSize} font-medium
+          class="rounded-sm text-center {textSize} font-medium {touch ? 'min-h-14' : 'py-2'}
             {y === year ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'text-foreground hover:bg-accent'}">
           {y}
         </button>

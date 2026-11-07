@@ -309,7 +309,8 @@ export function durationMinutes(start: string, end: string): number {
   return Math.max(0, (e.getTime() - s.getTime()) / 60000);
 }
 
-function parseClockTime(value: string): { hour: number; minute: number } | undefined {
+/** Parses an `HH:MM` clock time, optionally after a date and a space, into its hour and minute. */
+export function parseClockTime(value: string): { hour: number; minute: number } | undefined {
   const timePart = value.includes(" ") ? value.split(" ")[1] : value;
   const match = timePart.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
   if (!match) return undefined;

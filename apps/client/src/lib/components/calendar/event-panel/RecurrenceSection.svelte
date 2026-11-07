@@ -3,6 +3,8 @@
   import { formatRecurrenceLabel } from "$lib/calendar/rrule";
   import { commitIntegerDraft, moveRovingIndex, panelInputKeydown } from "$lib/calendar/event-panel-utils";
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
+  import PickerDialog from "$lib/components/ui/PickerDialog.svelte";
+  import { TOUCH_PICKERS } from "$lib/components/ui/picker-presentation";
   import { tick } from "svelte";
   import { slide } from "svelte/transition";
   import { eventPanelSectionSlide } from "./section-motion";
@@ -510,6 +512,7 @@
             <input bind:this={endDateInput}
               type="text"
               bind:value={dateText}
+              readonly={TOUCH_PICKERS}
               onclick={() => { if (recEndType !== "until") updateEndType("until"); pickerOpen = !pickerOpen; }}
               onblur={parseDateInput}
               onkeydown={handleDateInputKeydown}
@@ -517,20 +520,26 @@
                 {recEndType === 'until' ? 'text-event-panel-input-text' : 'text-muted-foreground'}
                 {pickerOpen ? 'ring-1 ring-primary/60' : 'hover:bg-black/5 dark:hover:bg-black/15'}" />
 
-            {#if pickerOpen}
+            {#snippet untilCalendar()}
+              <MiniDatePicker
+                selectedDate={recEndDate || defaultUntilDate()}
+                small
+                highlightToday={false}
+                activeHighlight="primary"
+                onSelect={selectCalendarDay}
+                onCancel={cancelCalendarDay}
+              />
+            {/snippet}
+            {#if pickerOpen && TOUCH_PICKERS}
+              <PickerDialog label={t("common.datePicker.selectDate")} onClose={() => cancelCalendarDay()}>
+                {@render untilCalendar()}
+              </PickerDialog>
+            {:else if pickerOpen}
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div class="fixed inset-0 z-60" onclick={() => { pickerOpen = false; }}></div>
-              <div class="event-panel-date-picker fixed z-61 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60"
-                use:positionPicker>
-                <MiniDatePicker
-                  selectedDate={recEndDate || defaultUntilDate()}
-                  small
-                  highlightToday={false}
-                  activeHighlight="primary"
-                  onSelect={selectCalendarDay}
-                  onCancel={cancelCalendarDay}
-                />
+              <div class="fixed z-61 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60" use:positionPicker>
+                {@render untilCalendar()}
               </div>
             {/if}
           </div>

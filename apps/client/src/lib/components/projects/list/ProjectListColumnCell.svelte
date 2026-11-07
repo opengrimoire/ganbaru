@@ -16,6 +16,9 @@
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
   import TimePicker from "$lib/components/ui/TimePicker.svelte";
+  import PickerDialog from "$lib/components/ui/PickerDialog.svelte";
+  import ClockTimePickerDialog from "$lib/components/ui/ClockTimePickerDialog.svelte";
+  import { TOUCH_PICKERS } from "$lib/components/ui/picker-presentation";
   import ProfileAvatar from "$lib/components/profile/ProfileAvatar.svelte";
   import { formatTimeLabel } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -169,8 +172,15 @@
     }
   });
 
+  /** A touch date dialog sits outside the cell and closes from its own backdrop. */
+  const customFieldPanelIsDialog = $derived.by(() => {
+    if (!TOUCH_PICKERS) return false;
+    const fieldId = customFieldIdFromTaskListColumn(column);
+    return projectCustomFields.find((field) => field.id === fieldId)?.fieldType === "date";
+  });
+
   $effect(() => {
-    if (!customFieldPanelOpen) return;
+    if (!customFieldPanelOpen || customFieldPanelIsDialog) return;
     const handlePointerDown = (event: PointerEvent): void => {
       const target = event.target;
       if (!(target instanceof Node)) return;
@@ -600,13 +610,7 @@
       <span class={cn("pointer-events-none relative z-10 block min-w-0 truncate", dateValue ? "text-foreground" : "text-muted-foreground")}>
         {dateButtonText(dateValue, timeValue, emptyDateLabel)}
       </span>
-      {#if dateMenuOpen}
-        <div
-          class="surface-floating fixed z-30 w-floating-sm p-2"
-          role="dialog"
-          aria-label={dateLabel}
-          use:positionDatePickerPanel
-        >
+      {#snippet dateMenuContent()}
           <MiniDatePicker
             selectedDate={datePickerAnchor}
             rangeStartDate={task.startDate}
@@ -670,7 +674,21 @@
                   <Trash2 size={13} strokeWidth={1.75} />
                 </button>
               </div>
-              {#if timePickerOpen}
+              {#if timePickerOpen && TOUCH_PICKERS}
+                <ClockTimePickerDialog
+                  value={timeValue ?? ""}
+                  fallback={DEFAULT_TIME_PICKER_ANCHOR}
+                  label={`${dateLabel} ${t("projects.columns.selectHour")}`}
+                  onSelect={(time) => {
+                    if (column === "start") onSetStartTime(time);
+                    else onSetDueTime(time);
+                    timePickerOpen = false;
+                  }}
+                  onCancel={() => {
+                    timePickerOpen = false;
+                  }}
+                />
+              {:else if timePickerOpen}
                 <div
                   class="project-list-time-panel surface-floating fixed z-40 w-40 overflow-hidden"
                   role="dialog"
@@ -696,6 +714,25 @@
               {/if}
             </div>
           {/if}
+      {/snippet}
+      {#if dateMenuOpen && TOUCH_PICKERS}
+        <PickerDialog
+          label={dateLabel}
+          onClose={() => {
+            if (column === "start") onCloseStartDateMenu();
+            else onCloseDueDateMenu();
+          }}
+        >
+          {@render dateMenuContent()}
+        </PickerDialog>
+      {:else if dateMenuOpen}
+        <div
+          class="surface-floating fixed z-30 w-floating-sm p-2"
+          role="dialog"
+          aria-label={dateLabel}
+          use:positionDatePickerPanel
+        >
+          {@render dateMenuContent()}
         </div>
       {/if}
   {:else if column === "scheduled"}
@@ -810,24 +847,31 @@
               <X size={13} strokeWidth={1.75} />
             </button>
           {/if}
-          {#if customFieldPanelOpen}
+          {#snippet customDatePicker()}
+            <MiniDatePicker
+              selectedDate={customValue?.dateValue ?? todayDate}
+              small
+              highlightMode="none"
+              activeHighlight="primary"
+              onSelect={(dateStr) => {
+                void saveCustomFieldDate(customField, dateStr);
+                customFieldPanelOpen = false;
+              }}
+              onCancel={() => { customFieldPanelOpen = false; }}
+            />
+          {/snippet}
+          {#if customFieldPanelOpen && TOUCH_PICKERS}
+            <PickerDialog label={customField.name} onClose={() => { customFieldPanelOpen = false; }}>
+              {@render customDatePicker()}
+            </PickerDialog>
+          {:else if customFieldPanelOpen}
             <div
               class="surface-floating fixed z-40 w-floating-sm p-2"
               role="dialog"
               aria-label={customField.name}
               use:positionCellMenu={customFieldTriggerEl}
             >
-              <MiniDatePicker
-                selectedDate={customValue?.dateValue ?? todayDate}
-                small
-                highlightMode="none"
-                activeHighlight="primary"
-                onSelect={(dateStr) => {
-                  void saveCustomFieldDate(customField, dateStr);
-                  customFieldPanelOpen = false;
-                }}
-                onCancel={() => { customFieldPanelOpen = false; }}
-              />
+              {@render customDatePicker()}
             </div>
           {/if}
         </div>

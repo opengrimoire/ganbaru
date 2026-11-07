@@ -7,6 +7,9 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import Switch from "$lib/components/ui/Switch.svelte";
   import TimePicker from "$lib/components/ui/TimePicker.svelte";
+  import PickerDialog from "$lib/components/ui/PickerDialog.svelte";
+  import ClockTimePickerDialog from "$lib/components/ui/ClockTimePickerDialog.svelte";
+  import { TOUCH_PICKERS } from "$lib/components/ui/picker-presentation";
   import { formatTimeLabel } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -148,16 +151,7 @@
   }
 </script>
 
-<div bind:this={panel} use:portal={floatingRoot}
-  use:anchoredPopover={{ anchor, inside: [timePanel], onOutside: () => onClose(false) }}
-  {id} role="dialog" aria-label={label} tabindex="-1" data-app-floating-surface data-app-shortcuts="ignore"
-  class="surface-floating fixed z-90 w-floating-sm overflow-auto p-2"
-  onkeydowncapture={(event) => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    event.stopPropagation();
-    onClose(true);
-  }}>
+{#snippet editorContent()}
   {#if value && range}
     <div class="mb-2 grid grid-cols-2 gap-1" role="group" aria-label={label}>
       {#each boundaries as { key, label: boundaryLabel } (key)}
@@ -209,9 +203,31 @@
     </div>
   {/if}
   {#if error}<Notice class="px-2 pt-2 text-panel-detail" message={error} />{/if}
-</div>
+{/snippet}
 
-{#if timeOpen && value}
+{#if TOUCH_PICKERS}
+  <PickerDialog {label} onClose={() => onClose(true)}>
+    <div {id} data-app-shortcuts="ignore">{@render editorContent()}</div>
+  </PickerDialog>
+{:else}
+  <div bind:this={panel} use:portal={floatingRoot}
+    use:anchoredPopover={{ anchor, inside: [timePanel], onOutside: () => onClose(false) }}
+    {id} role="dialog" aria-label={label} tabindex="-1" data-app-floating-surface data-app-shortcuts="ignore"
+    class="surface-floating fixed z-90 w-floating-sm overflow-auto p-2"
+    onkeydowncapture={(event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose(true);
+    }}>
+    {@render editorContent()}
+  </div>
+{/if}
+
+{#if timeOpen && value && TOUCH_PICKERS}
+  <ClockTimePickerDialog value={activeParts?.time ?? ""} fallback={DEFAULT_TIME_ANCHOR} label={t("notes.databaseDateAddTime")}
+    onSelect={pickTime} onCancel={closeTime} />
+{:else if timeOpen && value}
   <div bind:this={timePanel} use:portal={floatingRoot}
     role="dialog" aria-label={t("notes.databaseDateAddTime")} data-app-floating-surface data-app-shortcuts="ignore"
     use:anchoredPopover={{ anchor: timeTrigger, onOutside: () => { timeOpen = false; } }}

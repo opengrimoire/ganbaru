@@ -17,6 +17,8 @@
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import TimePicker from "$lib/components/ui/TimePicker.svelte";
+  import ClockTimePickerDialog from "$lib/components/ui/ClockTimePickerDialog.svelte";
+  import { TOUCH_PICKERS } from "$lib/components/ui/picker-presentation";
   import { formatTimeLabel } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { localTimezone } from "$lib/stores/calendar/event-payloads";
@@ -279,7 +281,14 @@
           <Clock3 size={13} />
           <span>{formatTimeLabel(scheduleTime, preferences.calendarTimeFormat)}</span>
         </button>
-        {#if scheduleTimePickerOpen}
+        {#if scheduleTimePickerOpen && TOUCH_PICKERS}
+          <ClockTimePickerDialog
+            value={scheduleTime}
+            label={t("chat.organization.chooseTime")}
+            onSelect={(time) => { scheduleTime = time; scheduleTimePickerOpen = false; }}
+            onCancel={() => { scheduleTimePickerOpen = false; }}
+          />
+        {:else if scheduleTimePickerOpen}
           <div
             use:portal
             use:positionTimePickerPanel

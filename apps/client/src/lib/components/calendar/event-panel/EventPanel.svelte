@@ -4,6 +4,8 @@
   } from "$lib/calendar/types";
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
   import TimePicker from "$lib/components/ui/TimePicker.svelte";
+  import PickerDialog from "$lib/components/ui/PickerDialog.svelte";
+  import ClockTimePickerDialog from "$lib/components/ui/ClockTimePickerDialog.svelte";
   import EventColorPicker from "$lib/components/calendar/EventColorPicker.svelte";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import MeetingSection from "./MeetingSection.svelte";
@@ -22,7 +24,6 @@
   import { useProjects } from "$lib/stores/projects.svelte";
   import type { CalendarDeleteOutcome } from "$lib/api/calendar-edit";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
@@ -55,6 +56,7 @@
     isEventPanelDeleteActionTarget,
   } from "./actions-controller.svelte";
   import type { PanelSaveData } from "./payloads";
+  import type { EventPanelTimeTarget } from "./date-time-controller.svelte";
   import { getMusicContextAssignments, getMusicPlaylistSummaries } from "$lib/music/platform-library";
   import {
     completeMusicAssignmentDrafts,
@@ -95,7 +97,6 @@
   );
   const projects = useProjects();
   const preferences = getPreferences();
-  const mobileBackStack = getMobileBackStack();
   const viewport = getViewport();
   const localization = getLocalization();
   const { t } = localization;
@@ -387,10 +388,7 @@
     sessionKey: () => panelSessionKey,
     collapsible: () => mode === "create",
     gridEditing: () => gridEditing,
-    needsRoom: () => openSection !== null
-      || dateTime.startDatePickerOpen
-      || dateTime.endDatePickerOpen
-      || !!dateTime.timePickerTarget,
+    needsRoom: () => openSection !== null,
     panel: () => geometry.panelEl,
     header: () => sheetHeaderEl,
     dipEnd: () => sheetDipEndEl,
@@ -689,27 +687,6 @@
       dateTime.closeTimePicker();
       dateTime.restoreTimeInput("start");
     }
-  });
-
-  $effect(() => {
-    if (!dateTime.startDatePickerOpen) return;
-    return mobileBackStack.activate({
-      handle: () => dateTime.cancelDatePicker("start"),
-    });
-  });
-
-  $effect(() => {
-    if (!dateTime.timePickerTarget) return;
-    return mobileBackStack.activate({
-      handle: () => dateTime.closeTimePicker(),
-    });
-  });
-
-  $effect(() => {
-    if (!dateTime.endDatePickerOpen) return;
-    return mobileBackStack.activate({
-      handle: () => dateTime.cancelDatePicker("end"),
-    });
   });
 
   // Sync date and time from the event prop when the event is dragged or resized externally.
@@ -1068,6 +1045,32 @@
   });
 </script>
 
+{#snippet datePicker(target: EventPanelTimeTarget)}
+  {#snippet calendar()}
+    <MiniDatePicker
+      selectedDate={target === "start" ? session.startDate : session.endDate}
+      rangeStartDate={session.startDate}
+      rangeEndDate={session.endDate}
+      highlightToday={false}
+      activeHighlight="primary"
+      onSelect={(date, source) => dateTime.selectDate(target, date, source)}
+      onCancel={(source) => dateTime.cancelDatePicker(target, source)}
+    />
+  {/snippet}
+  {#if mobileLayout}
+    <PickerDialog label={t("common.datePicker.selectDate")} onClose={() => dateTime.cancelDatePicker(target)}>
+      {@render calendar()}
+    </PickerDialog>
+  {:else}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="fixed inset-0 z-19" onclick={() => dateTime.cancelDatePicker(target)}></div>
+    <div class={cn("absolute top-full z-20 mt-1 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60", target === "start" ? "left-0" : "right-0")}>
+      {@render calendar()}
+    </div>
+  {/if}
+{/snippet}
+
 <!-- The phone sheet slides inside a still frame that ends above the system navigation; desktop has no frame. -->
 <div class={cn(!sheetFramed && "contents")} style={sheetFramed ? sheet.frameStyle : undefined}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1331,22 +1334,8 @@
             {shortDate}
           </button>
 
-          <!-- Floating start date picker -->
           {#if dateTime.startDatePickerOpen}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="fixed inset-0 z-19" onclick={() => { dateTime.startDatePickerOpen = false; }}></div>
-            <div class="event-panel-date-picker absolute left-0 top-full z-20 mt-1 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60">
-              <MiniDatePicker
-                selectedDate={session.startDate}
-                rangeStartDate={session.startDate}
-                rangeEndDate={session.endDate}
-                highlightToday={false}
-                activeHighlight="primary"
-                onSelect={(date, source) => dateTime.selectDate("start", date, source)}
-                onCancel={(source) => dateTime.cancelDatePicker("start", source)}
-              />
-            </div>
+            {@render datePicker("start")}
           {/if}
         </div>
 
@@ -1369,7 +1358,8 @@
               onbeforeinput={(event) => dateTime.handleTimeBeforeInput(event)}
               oninput={(event) => dateTime.handleTimeDraftInput(event, "start")}
               onblur={() => dateTime.commitTimeInput("start")}
-              onclick={() => dateTime.handleTimeInputClick("start")}
+              readonly={mobileLayout}
+              onclick={() => mobileLayout ? dateTime.openTimePicker("start") : dateTime.handleTimeInputClick("start")}
               disabled={startControlsDisabled || session.allDay}
               maxlength={preferences.calendarTimeFormat === "12h" ? 7 : 5}
               placeholder={preferences.calendarTimeFormat === "12h" ? "h:mmam" : "HH:MM"}
@@ -1393,7 +1383,8 @@
               onbeforeinput={(event) => dateTime.handleTimeBeforeInput(event)}
               oninput={(event) => dateTime.handleTimeDraftInput(event, "end")}
               onblur={() => dateTime.commitTimeInput("end")}
-              onclick={() => dateTime.handleTimeInputClick("end")}
+              readonly={mobileLayout}
+              onclick={() => mobileLayout ? dateTime.openTimePicker("end") : dateTime.handleTimeInputClick("end")}
               disabled={controlsDisabled || session.allDay}
               maxlength={preferences.calendarTimeFormat === "12h" ? 7 : 5}
               placeholder={preferences.calendarTimeFormat === "12h" ? "h:mmam" : "HH:MM"}
@@ -1402,13 +1393,18 @@
               onkeydown={(event) => dateTime.handleTimeInputKeydown(event, "end")} />
           </span>
 
-          <!-- Floating time picker -->
-          {#if dateTime.timePickerTarget}
+          {#if dateTime.timePickerTarget && mobileLayout}
+            <ClockTimePickerDialog
+              value={dateTime.timePickerTarget === "end" ? session.endTime : session.startTime}
+              fallback={session.startTime}
+              onSelect={(time) => dateTime.selectTime(time)}
+              onCancel={() => dateTime.closeTimePicker()} />
+          {:else if dateTime.timePickerTarget}
+            {@const isEnd = dateTime.timePickerTarget === 'end'}
+            {@const startMinutes = (() => { const [h, m] = (session.startTime || "0:0").split(":").map(Number); return h * 60 + m; })()}
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="fixed inset-0 z-19" onclick={() => dateTime.closeTimePicker("pointer")}></div>
-            {@const isEnd = dateTime.timePickerTarget === 'end'}
-            {@const startMinutes = (() => { const [h, m] = (session.startTime || "0:0").split(":").map(Number); return h * 60 + m; })()}
             <div class="absolute top-full z-20 mt-1 rounded-lg bg-popover shadow-lg ring-1 ring-border/60"
               style="left: {isEnd ? '50%' : '0'}; width: {dateTime.timePickerWidth(isEnd)};">
               <TimePicker
@@ -1435,22 +1431,8 @@
             {shortEndDate}
           </button>
 
-          <!-- Floating end date picker -->
           {#if dateTime.endDatePickerOpen}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="fixed inset-0 z-19" onclick={() => { dateTime.endDatePickerOpen = false; }}></div>
-            <div class="event-panel-date-picker absolute right-0 top-full z-20 mt-1 w-60 rounded-lg bg-popover p-2 shadow-lg ring-1 ring-border/60">
-              <MiniDatePicker
-                selectedDate={session.endDate}
-                rangeStartDate={session.startDate}
-                rangeEndDate={session.endDate}
-                highlightToday={false}
-                activeHighlight="primary"
-                onSelect={(date, source) => dateTime.selectDate("end", date, source)}
-                onCancel={(source) => dateTime.cancelDatePicker("end", source)}
-              />
-            </div>
+            {@render datePicker("end")}
           {/if}
         </div>
         </div>
@@ -1768,25 +1750,6 @@
   /* Pills keep their own compact height. */
   .panel-root[data-mobile="true"] .scope-option {
     min-height: 0;
-  }
-
-  /*
-   * Date pickers widen to seven touch-height columns, capped by the screen, so their day cells and month arrows stay
-   * square at touch size.
-   */
-  .panel-root[data-mobile="true"] :global(.event-panel-date-picker) {
-    width: min(calc(7 * var(--sheet-touch-height) + 1rem), 100vw - 2rem);
-  }
-
-  .panel-root[data-mobile="true"] :global(.event-panel-date-picker [data-date]) {
-    height: auto;
-    min-height: 0;
-    aspect-ratio: 1;
-  }
-
-  .panel-root[data-mobile="true"] :global(.event-panel-date-picker [data-picker-nav]) {
-    width: var(--sheet-touch-height);
-    height: var(--sheet-touch-height);
   }
 
   .panel-root[data-mobile="true"] :global([data-section="meeting"] .meeting-detail-row),

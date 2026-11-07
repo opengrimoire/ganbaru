@@ -52,6 +52,20 @@ export const common = {
     createdAscending: "Created time (old to new)",
     custom: "Custom",
   },
+  datePicker: {
+    selectDate: "Select date",
+  },
+  timePicker: {
+    selectTime: "Select time",
+    enterTime: "Enter time",
+    hour: "Hour",
+    minute: "Minute",
+    am: "AM",
+    pm: "PM",
+    typeTime: "Type the time",
+    useClock: "Use the clock",
+    ok: "OK",
+  },
   color: {
     edit: "Edit color",
     editNamed: (label: string) => `Edit ${label}`,

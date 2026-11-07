@@ -1,6 +1,7 @@
 <script lang="ts">
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
+  import Menu from "@lucide/svelte/icons/menu";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
   import RotateCw from "@lucide/svelte/icons/rotate-cw";
@@ -13,9 +14,9 @@
   import WelcomeParodyIcon, { MAIL_COLORS } from "./WelcomeParodyIcon.svelte";
 
   /**
-   * A laptop's browser in the distraction blocker's welcome scenes, with its tabs and the Ganbaru extension beside the
-   * address bar. A tab shows a parody mail inbox, a new tab, a parody app's website, or the extension's real block page,
-   * which is in English only, so its text stays in English in every app language. It fills the room it is given.
+   * A laptop's browser in the distraction blocker's welcome scenes, with its tabs, and the Ganbaru extension and the
+   * browser's menu beside the address bar. A tab shows a parody mail inbox, a new tab, a parody app's website, or the
+   * extension's real block page, which is in English only, so its text stays in English in every app language. It fills the room it is given.
    */
   let { frame }: { frame: BlockerBrowserFrame } = $props();
 
@@ -135,6 +136,7 @@
         {@render touch(frame.addressTouch)}
       </span>
       <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-[22%]" draggable="false" />
+      <Menu size={12} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
       {#if frame.loading > 0}
         <span class="absolute bottom-0 left-0 h-0.5 bg-primary" style:width={`${frame.loading * 100}%`}></span>
       {/if}

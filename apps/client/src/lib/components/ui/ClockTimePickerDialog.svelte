@@ -443,6 +443,7 @@
     width: min(16.5rem, 100%);
     aspect-ratio: 1;
     border-radius: 9999px;
+    overflow: hidden;
     background-color: var(--clock-tint);
     outline: none;
     touch-action: none;
@@ -472,7 +473,8 @@
     transition: height var(--clock-motion);
   }
 
-  /* The dial is square, so a percentage circle radius is a fraction of its width. */
+  /* The dial is square, so a percentage circle radius is a fraction of its width. The layer fills the dial and turns
+     with the hand, so its corners reach past the dial, which clips them to keep them out of the dialog's scroll area. */
   .clock-knob {
     position: absolute;
     inset: 0;

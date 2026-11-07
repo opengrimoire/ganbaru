@@ -2,8 +2,8 @@
   /** Canvas geometry in logical pixels: a width and a height the room chooses between these bounds. */
   const MIN_CANVAS_W = 300;
   const MAX_CANVAS_W = 520;
-  const MIN_CANVAS_H = 490;
-  const MAX_CANVAS_H = 540;
+  const MIN_CANVAS_H = 340;
+  const MAX_CANVAS_H = 400;
 
   export const ABOUT_SCENE_MIN_WIDTH = MIN_CANVAS_W;
   export const ABOUT_SCENE_MAX_WIDTH = MAX_CANVAS_W;
@@ -35,13 +35,13 @@
 
   /**
    * One frame of the welcome scene about the app itself: a handheld payment terminal, shaped like a phone with a receipt
-   * printer on top, shows a total that is free and confirms there is nothing to pay. A receipt then unrolls above it from
-   * the bottom up, its curled edge rising as it goes: the barcode and the free total first, then every feature priced
-   * free, and the header last. A rubber stamp with the Open Grimoire logo then marks the receipt with the open source
-   * license. The terminal, the thermal paper, and the ink are drawn as the physical things they are, in their own colors,
-   * apart from the printer's lid in the theme's primary color, so the receipt reads as a receipt in every theme. Every
-   * style is a function of `elapsed`, with no CSS transitions, so text is never handed to a compositing layer
-   * mid-animation.
+   * printer on top and standing nearly as tall as the scene, shows a total that is free and confirms there is nothing to
+   * pay. A receipt then curls over the terminal's top and hangs down in front of its screen, end first: the barcode and
+   * the free total, then every feature priced free, and the header last, by the curl. A rubber stamp with the Open
+   * Grimoire logo then marks the receipt with the open source license. The terminal, the thermal paper, and the ink are
+   * drawn as the physical things they are, in their own colors, apart from the printer's lid in the theme's primary color,
+   * so the receipt reads as a receipt in every theme. Every style is a function of `elapsed`, with no CSS transitions, so
+   * text is never handed to a compositing layer mid-animation.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -49,7 +49,7 @@
   const { t } = localization;
   const uid = $props.id();
 
-  const RECEIPT_W = 156;
+  const RECEIPT_W = 146;
   /** The height of each kind of segment on the receipt. */
   const SEGMENT_H: Readonly<Record<AboutSegment, number>> = {
     lead: 12,
@@ -58,31 +58,34 @@
     item: 12,
     total: 18,
     barcode: 26,
-    tail: 6,
+    tail: 8,
   };
   const PAPER_H = ABOUT_SEGMENTS.reduce((sum, segment) => sum + SEGMENT_H[segment], 0);
-  /** The paper's curled edge: its thickness, how much of it overlaps the flat paper, and the shadow it casts there. */
-  const CURL_H = 12;
-  const CURL_OVERLAP = 3;
-  const CURL_SHADOW_H = 9;
+  /** The torn bottom edge of the paper, where it was last cut: the width and depth of each tooth. */
+  const TOOTH_W = 7;
+  const TOOTH_H = 3.5;
+  /** The paper's curl over the top of the terminal: its thickness, and the shadow it casts on the hanging paper. */
+  const CURL_H = 14;
+  const CURL_SHADOW_H = 8;
 
   /**
-   * The terminal, seen from the front: a phone-shaped body whose top edge holds the paper slot, with the printer's lid
-   * rising behind the paper above it.
+   * The terminal, seen from the front: a phone-shaped body as tall as the scene allows, with the printer's lid rising
+   * behind the curl of paper at its top.
    */
-  const DEVICE_W = RECEIPT_W + 24;
-  const LID_INSET = 3;
-  const LID_H = 16;
-  const HEAD_H = 14;
+  const DEVICE_W = RECEIPT_W + 28;
+  const TOP_MARGIN = 22;
+  const BOTTOM_MARGIN = 18;
+  const LID_INSET = 4;
+  const LID_H = 14;
+  const HEAD_H = 26;
   const SCREEN_INSET = 9;
-  const SCREEN_H = 224;
-  const CHIN_H = 22;
-  const BODY_H = HEAD_H + SCREEN_H + CHIN_H;
+  const CHIN_H = 24;
   const BODY_RADIUS = 26;
-  const HEAD_RADIUS = 10;
+  const HEAD_RADIUS = 12;
   const SCREEN_RADIUS = 12;
-  const SIDE_BUTTON_Y = 64;
-  const SIDE_BUTTON_H = 30;
+  const SIDE_BUTTON_Y = 84;
+  const SIDE_BUTTON_H = 34;
+  const LIGHT_INSET = 7;
 
   /** The confirmation on the screen: the ring's size and radius, and the check drawn inside it. */
   const CONFIRM_SIZE = 52;
@@ -92,16 +95,16 @@
   /** How far the screen's text slides as it comes and goes. */
   const SCREEN_SLIDE = 6;
 
-  /** How far the terminal rises into place as it appears, and how far the receipt drops when the stamp lands. */
+  /** How far the terminal rises into place as it appears, and how far the receipt sways when the stamp lands. */
   const RISE = 8;
   const IMPACT_DROP = 1.5;
 
   const STAMP_SIZE = 78;
   const STAMP_TILT = -14;
   const STAMP_SCALE_FROM = 1.7;
-  /** Where the stamp's center sits: in from the receipt's right edge, and up from the slot. */
-  const STAMP_INSET_X = 44;
-  const STAMP_RISE = 70;
+  /** Where the stamp's center sits: in from the receipt's right edge, and up from its bottom edge. */
+  const STAMP_INSET_X = 42;
+  const STAMP_RISE = 74;
   /** The radius the stamp's ring text runs along, and the logo's size, in the stamp's 100 unit drawing. */
   const RING_TEXT_R = 33;
   const LOGO_SIZE = 36;
@@ -114,7 +117,7 @@
   const BARCODE_UNIT = 1.1;
   const BARCODE_H = 15;
 
-  /** Thermal paper, its ink, and the stamp's ink, which keep their own colors in every theme. */
+  /** Thermal paper, its curl, its ink, and the stamp's ink, which keep their own colors in every theme. */
   const PAPER = "linear-gradient(90deg, #eeede8 0%, #fcfbf7 12%, #fdfcf9 88%, #ecebe6 100%)";
   const CURL =
     "linear-gradient(180deg, #c9c8c2 0%, #efeee9 28%, #ffffff 46%, #f3f2ed 66%, #d6d5cf 88%, #b9b8b2 100%)";
@@ -122,10 +125,9 @@
   const INK_SOFT = "#77777e";
   const INK_RULE = "#b4b4ba";
   const STAMP_INK = "#c42f3c";
-  /** The terminal's body, the slot's tear bar, the lid's cylinder shading over the theme color, and the light. */
+  /** The terminal's body, the lid's cylinder shading over the theme color, and the light. */
   const BODY = "linear-gradient(90deg, #1b1c1f 0%, #2c2e33 10%, #26282c 85%, #18191b 100%)";
   const BODY_EDGE = "inset 0 1px 0 rgb(255 255 255 / 0.14), inset 1px 0 0 rgb(255 255 255 / 0.05), inset -1px 0 0 rgb(0 0 0 / 0.4)";
-  const TEAR_BAR = "repeating-linear-gradient(90deg, #0d0d0f 0 2px, #3a3c41 2px 3px)";
   const LID_SHADE =
     "linear-gradient(90deg, rgb(0 0 0 / 0.32) 0%, rgb(255 255 255 / 0.2) 22%, rgb(255 255 255 / 0.04) 55%, rgb(0 0 0 / 0.3) 100%)";
   const LIGHT = "#4ade80";
@@ -150,6 +152,16 @@
   ].slice(0, ABOUT_RECEIPT_ITEMS);
   const FIRST_ITEM = ABOUT_SEGMENTS.indexOf("item");
 
+  /** The torn bottom edge, as a clip path across the receipt's width. */
+  const TORN_EDGE = (() => {
+    const teeth = Math.ceil(RECEIPT_W / TOOTH_W);
+    const points = Array.from({ length: teeth * 2 + 1 }, (_, index) => {
+      const x = Math.min(RECEIPT_W, (index * TOOTH_W) / 2);
+      return `${RECEIPT_W - x}px calc(100% - ${index % 2 === 0 ? TOOTH_H : 0}px)`;
+    });
+    return `polygon(0 0, 100% 0, ${points.join(", ")})`;
+  })();
+
   const BARCODE_BARS = (() => {
     let x = 0;
     const bars: { x: number; width: number }[] = [];
@@ -171,17 +183,20 @@
   const center = $derived(width / 2);
   const left = $derived(center - RECEIPT_W / 2);
   const deviceLeft = $derived(center - DEVICE_W / 2);
-  /** The receipt with its curl and the terminal, centered together in the canvas, meeting at the slot. */
-  const slotY = $derived((height - PAPER_H - BODY_H + CURL_H - CURL_OVERLAP) / 2 + PAPER_H);
+  /** The terminal fills the canvas's height but for room above for the lid and below for its shadow. */
+  const deviceTop = TOP_MARGIN;
+  const deviceH = $derived(height - TOP_MARGIN - BOTTOM_MARGIN);
+  const screenH = $derived(deviceH - HEAD_H - CHIN_H);
+  /** The middle of the curl, where the hanging paper starts. */
+  const curlY = deviceTop + 2;
   const printer = $derived(aboutPrinter(elapsed));
   const screen = $derived(aboutScreen(elapsed));
   const total = $derived(aboutTotal(elapsed));
   const ring = $derived(aboutConfirmRing(elapsed));
   const check = $derived(aboutConfirmCheck(elapsed));
-  /** How much of the receipt has unrolled, measured up from the slot. */
+  /** How much of the receipt hangs down from the curl. */
   const fed = $derived(ABOUT_SEGMENTS.reduce((sum, segment, index) => sum + SEGMENT_H[segment] * aboutFeed(elapsed, index), 0));
-  const drop = $derived(aboutImpact(elapsed) * IMPACT_DROP);
-  const paperTop = $derived(slotY - fed + drop);
+  const sway = $derived(aboutImpact(elapsed) * IMPACT_DROP);
   const stamp = $derived(aboutStamp(elapsed));
   const light = $derived(lightLevel(elapsed));
 
@@ -225,11 +240,11 @@
 <div class="relative overflow-hidden" style:width={`${width}px`} style:height={`${height}px`}>
   {#if printer > 0}
     <div class="absolute inset-0" style:top={`${(1 - printer) * RISE}px`} style:opacity={printer}>
-      <!-- The terminal's shadow on the table, and the printer's lid in the theme's color, behind the paper. -->
+      <!-- The terminal's shadow on the table, and the printer's lid in the theme's color, behind the curl of paper. -->
       <div
         class="absolute"
         style:left={`${deviceLeft + 12}px`}
-        style:top={`${slotY + BODY_H - 8}px`}
+        style:top={`${deviceTop + deviceH - 8}px`}
         style:width={`${DEVICE_W - 24}px`}
         style:height="18px"
         style:background="radial-gradient(closest-side, rgb(0 0 0 / 0.38), transparent)"
@@ -237,77 +252,35 @@
       <div
         class="absolute overflow-hidden bg-primary"
         style:left={`${deviceLeft + LID_INSET}px`}
-        style:top={`${slotY - LID_H}px`}
+        style:top={`${deviceTop - LID_H}px`}
         style:width={`${DEVICE_W - LID_INSET * 2}px`}
-        style:height={`${LID_H + HEAD_H}px`}
+        style:height={`${LID_H + HEAD_RADIUS}px`}
         style:border-radius={`${LID_H}px ${LID_H}px 0 0`}
       >
         <div class="absolute inset-0" style:background={LID_SHADE}></div>
         <div class="absolute inset-x-0 top-0 h-1.5" style:background="linear-gradient(180deg, rgb(255 255 255 / 0.22), transparent)"></div>
       </div>
 
-      <!-- The flat receipt, unrolled up from the slot: the printed lines stay still as more of them are uncovered. -->
-      {#if fed > 0}
-        <div
-          class="absolute overflow-hidden"
-          style:left={`${left}px`}
-          style:top={`${paperTop}px`}
-          style:width={`${RECEIPT_W}px`}
-          style:height={`${slotY - paperTop}px`}
-          style:background={PAPER}
-          style:color={INK}
-          style:box-shadow="0 1px 2px rgb(0 0 0 / 0.2)"
-        >
-          <div class="absolute inset-x-0 px-2.5" style:bottom="0" style:height={`${PAPER_H}px`}>
-            {#each ABOUT_SEGMENTS as segment, index (index)}
-              <div style:height={`${SEGMENT_H[segment]}px`}>{@render segmentContent(segment, index)}</div>
-            {/each}
-          </div>
-          <!-- The paper darkens a little where it goes into the slot. -->
-          <div class="absolute inset-x-0 bottom-0 h-3" style:background="linear-gradient(180deg, transparent, rgb(0 0 0 / 0.16))"></div>
-        </div>
-      {/if}
-
-      <!-- The curled edge of the paper, still rolled, rising as the receipt unrolls, with its shadow on the flat paper. -->
-      <div
-        class="absolute"
-        style:left={`${left - 1}px`}
-        style:top={`${paperTop - CURL_H + CURL_OVERLAP}px`}
-        style:width={`${RECEIPT_W + 2}px`}
-        style:height={`${CURL_H}px`}
-      >
-        <div
-          class="absolute inset-x-0.5 top-full"
-          style:height={`${Math.min(CURL_SHADOW_H, fed)}px`}
-          style:background="linear-gradient(180deg, rgb(0 0 0 / 0.18), transparent)"
-        ></div>
-        <div
-          class="absolute inset-0 rounded-[3px]"
-          style:background={CURL}
-          style:box-shadow="0 1px 1.5px rgb(0 0 0 / 0.25)"
-        ></div>
-      </div>
-
-      <!-- The body: the slot's tear bar along its top edge, the side button, the screen, and the printer's light. -->
+      <!-- The body: the side button, the printer's light, and the screen. -->
       <div
         class="absolute"
         style:left={`${deviceLeft}px`}
-        style:top={`${slotY}px`}
+        style:top={`${deviceTop}px`}
         style:width={`${DEVICE_W}px`}
-        style:height={`${BODY_H}px`}
+        style:height={`${deviceH}px`}
         style:border-radius={`${HEAD_RADIUS}px ${HEAD_RADIUS}px ${BODY_RADIUS}px ${BODY_RADIUS}px`}
         style:background={BODY}
         style:box-shadow={BODY_EDGE}
       >
-        <div class="absolute inset-x-3 top-0 h-0.75 rounded-b-xs" style:background={TEAR_BAR}></div>
         <div
           class="absolute -right-0.75 w-0.75 rounded-r-xs bg-[#18191b]"
           style:top={`${SIDE_BUTTON_Y}px`}
           style:height={`${SIDE_BUTTON_H}px`}
         ></div>
         <span
-          class="absolute right-4 size-1.25 rounded-full"
-          style:top={`${HEAD_H / 2 - 1}px`}
+          class="absolute size-1.25 rounded-full"
+          style:right={`${LIGHT_INSET}px`}
+          style:top={`${HEAD_H - 11}px`}
           style:background-color={LIGHT}
           style:opacity={light}
           style:box-shadow={`0 0 ${3 + light * 4}px ${LIGHT}`}
@@ -318,7 +291,7 @@
           style:left={`${SCREEN_INSET}px`}
           style:top={`${HEAD_H}px`}
           style:width={`${DEVICE_W - SCREEN_INSET * 2}px`}
-          style:height={`${SCREEN_H}px`}
+          style:height={`${screenH}px`}
           style:border-radius={`${SCREEN_RADIUS}px`}
           style:background-color={SCREEN_OFF}
           style:box-shadow="0 0 0 1px rgb(0 0 0 / 0.6)"
@@ -392,6 +365,47 @@
         </div>
       </div>
 
+      <!--
+        The receipt, hanging from the curl in front of the screen: it lengthens downward as it prints, its end leading,
+        so each printed line slides down to make room for the next one at the curl.
+      -->
+      {#if fed > 0}
+        <div
+          class="absolute"
+          style:left={`${left}px`}
+          style:top={`${curlY}px`}
+          style:width={`${RECEIPT_W}px`}
+          style:height={`${fed}px`}
+          style:transform={`translateY(${sway}px)`}
+          style:filter="drop-shadow(0 2px 3px rgb(0 0 0 / 0.3))"
+        >
+          <div class="relative h-full overflow-hidden" style:background={PAPER} style:clip-path={TORN_EDGE} style:color={INK}>
+            <div class="absolute inset-x-0 bottom-0 px-2.5" style:height={`${PAPER_H}px`}>
+              {#each ABOUT_SEGMENTS as segment, index (index)}
+                <div style:height={`${SEGMENT_H[segment]}px`}>{@render segmentContent(segment, index)}</div>
+              {/each}
+            </div>
+            <div
+              class="absolute inset-x-0"
+              style:top={`${CURL_H / 2}px`}
+              style:height={`${CURL_SHADOW_H}px`}
+              style:background="linear-gradient(180deg, rgb(0 0 0 / 0.16), transparent)"
+            ></div>
+          </div>
+        </div>
+      {/if}
+
+      <!-- The curl of paper over the terminal's top, where the receipt comes over from the slot behind it. -->
+      <div
+        class="absolute rounded-[4px]"
+        style:left={`${left - 1}px`}
+        style:top={`${curlY - CURL_H / 2}px`}
+        style:width={`${RECEIPT_W + 2}px`}
+        style:height={`${CURL_H}px`}
+        style:background={CURL}
+        style:box-shadow="0 1px 2px rgb(0 0 0 / 0.3)"
+      ></div>
+
       <!-- The rubber stamp, coming down onto the printed receipt in a textured red ink. -->
       {#if stamp > 0}
         <svg
@@ -400,7 +414,7 @@
           width={STAMP_SIZE}
           height={STAMP_SIZE}
           style:left={`${left + RECEIPT_W - STAMP_INSET_X - STAMP_SIZE / 2}px`}
-          style:top={`${slotY - STAMP_RISE - STAMP_SIZE / 2 + drop}px`}
+          style:top={`${curlY + PAPER_H - STAMP_RISE - STAMP_SIZE / 2 + sway}px`}
           style:opacity={Math.min(1, stamp * 3) * 0.92}
           style:transform={`rotate(${STAMP_TILT}deg) scale(${STAMP_SCALE_FROM - (STAMP_SCALE_FROM - 1) * stamp})`}
           aria-hidden="true"

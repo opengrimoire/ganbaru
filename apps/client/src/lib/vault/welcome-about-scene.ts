@@ -1,9 +1,10 @@
 /**
  * Timing for the welcome scene about the app itself. A payment terminal rises into view, its screen lights up with a
- * total that is free and confirms there is nothing to pay, and a receipt then unrolls above it from the bottom up, the
- * barcode and the free total first, then every feature priced free, and the header last. The license then stamps the receipt as the reason it stays that way. Every
- * moment is derived from the milliseconds elapsed since the scene started, so a frame is a pure function of time and the
- * reduced-motion still is simply the last frame.
+ * total that is free and confirms there is nothing to pay, and it then prints a receipt that curls over its top and
+ * hangs down in front of the screen, end first: the barcode and the free total, then every feature priced free, and the
+ * header last. The license then stamps the receipt as the reason it stays that way. Every moment is derived from the
+ * milliseconds elapsed since the scene started, so a frame is a pure function of time and the reduced-motion still is
+ * simply the last frame.
  */
 
 import { easeInOutCubic, filmSpan } from "./welcome-film";
@@ -17,7 +18,7 @@ export const ABOUT_RECEIPT_ITEMS = 8;
  */
 export type AboutSegment = "lead" | "header" | "rule" | "item" | "total" | "barcode" | "tail";
 
-/** The receipt from top to bottom, as it reads; the printer reveals it in the opposite order, from the bottom up. */
+/** The receipt from top to bottom, as it reads; the printer feeds it end first, from the bottom up. */
 export const ABOUT_SEGMENTS: readonly AboutSegment[] = [
   "lead",
   "header",

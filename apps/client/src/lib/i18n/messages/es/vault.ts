@@ -34,7 +34,7 @@ export const vaultSetup = {
     headline: "Gratis y de código abierto",
     body: "Tus datos se quedan en tus dispositivos y se sincronizan directamente entre ellos, sin cuentas, anuncios ni rastreo.",
     sceneDescription:
-      "Una breve animación de una terminal de pago portátil con una impresora de recibos arriba. Su pantalla muestra un total gratis y confirma que no hay nada que pagar. Después, encima de ella se desenrolla un recibo de abajo hacia arriba: un total gratis y, sobre él, Calendario, Enfoque, Proyectos, Notas, Chat, Música, el bloqueo de distracciones y la sincronización, todos gratis. Al final, un sello con el logo de Open Grimoire que dice AGPL 3.0, código abierto, marca el recibo.",
+      "Una breve animación de una terminal de pago portátil con una impresora de recibos arriba. Su pantalla muestra un total gratis y confirma que no hay nada que pagar. Después imprime un recibo que se curva sobre su parte superior y cuelga delante de la pantalla, empezando por el final: un total gratis y, sobre él, Calendario, Enfoque, Proyectos, Notas, Chat, Música, el bloqueo de distracciones y la sincronización, todos gratis. Al final, un sello con el logo de Open Grimoire que dice AGPL 3.0, código abierto, marca el recibo.",
     receipt: {
       confirmed: "Nada que pagar",
       free: "Gratis",

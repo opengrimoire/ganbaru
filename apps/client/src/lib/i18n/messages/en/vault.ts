@@ -23,7 +23,7 @@ export const vaultSetup = {
     body: "You can change it later in Settings > Appearance.",
   },
   blocker: {
-    workTab: "Chapter 3 draft",
+    mailTab: "Inbox",
     newTab: "New tab",
   },
   blocking: {

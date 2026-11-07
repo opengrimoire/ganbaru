@@ -10,20 +10,27 @@
    */
   export const EGOGRAM_GRADIENT = "radial-gradient(circle at 28% 108%, #ffd76a 0%, #ffb340 10%, #ff5f45 40%, #e8317f 62%, #8b3dff 95%)";
 
+  /** The parody apps the icon draws: the blocked apps, and the mail site the scenes show as work. */
+  export type ParodyIconApp = BlockerApp | "mail";
+
+  /** The mail site's four colors, shifted from a well-known mail logo's so the parody reads without copying it. */
+  export const MAIL_COLORS = { red: "#e5483b", blue: "#3d7cf0", green: "#2fa75a", yellow: "#f6b70f" } as const;
+
   /** The parody apps' icon backgrounds. */
-  const PARODY_BACKGROUNDS: Readonly<Record<BlockerApp, string>> = {
+  const PARODY_BACKGROUNDS: Readonly<Record<ParodyIconApp, string>> = {
     y: PARODY_COLORS.y,
     bluedit: PARODY_COLORS.bluedit,
     egogram: EGOGRAM_GRADIENT,
+    mail: "#ffffff",
   };
 </script>
 
 <script lang="ts">
   /**
    * The icon of a parody app in the distraction blocker's welcome scenes: Y's hollow letter, Bluedit's alien,
-   * and Egogram's camera on its sunset gradient, each on its brand background.
+   * Egogram's camera on its sunset gradient, and Gnail's four-color envelope, each on its brand background.
    */
-  let { app, size }: { app: BlockerApp; size: number } = $props();
+  let { app, size }: { app: ParodyIconApp; size: number } = $props();
 
   const glyph = $derived(`${size * 0.74}px`);
 </script>
@@ -56,6 +63,15 @@
       <ellipse cx="9.3" cy="13.4" rx="1.3" ry="1.5" fill={PARODY_COLORS.bluedit} />
       <ellipse cx="14.7" cy="13.4" rx="1.3" ry="1.5" fill={PARODY_COLORS.bluedit} />
       <path d="M9 16.4q3 2 6 0" fill="none" stroke={PARODY_COLORS.bluedit} stroke-width="0.9" stroke-linecap="round" />
+    </svg>
+  {:else if app === "mail"}
+    <span class="absolute inset-0 rounded-[inherit] ring-1 ring-black/10 ring-inset"></span>
+    <!-- An envelope drawn as an M in four colors, its sides swapped and its yellow corner moved to the left. -->
+    <svg viewBox="0 0 24 24" style:width={glyph} style:height={glyph} fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 8.2v8.8a1.5 1.5 0 0 0 1.5 1.5h2.2v-8.3z" fill={MAIL_COLORS.green} />
+      <path d="M21 8.2v8.8a1.5 1.5 0 0 1-1.5 1.5h-2.2v-8.3z" fill={MAIL_COLORS.blue} />
+      <path d="M4.3 7.4L12 13l7.7-5.6" stroke={MAIL_COLORS.red} stroke-width="2.6" />
+      <path d="M4.3 7.4L6.4 8.9" stroke={MAIL_COLORS.yellow} stroke-width="2.6" />
     </svg>
   {:else}
     <svg viewBox="0 0 24 24" style:width={glyph} style:height={glyph} fill="none" stroke="white" stroke-width="2" stroke-linejoin="round">

@@ -1,7 +1,7 @@
 <script lang="ts">
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
-  import FileText from "@lucide/svelte/icons/file-text";
+  import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
   import RotateCw from "@lucide/svelte/icons/rotate-cw";
   import X from "@lucide/svelte/icons/x";
@@ -10,11 +10,11 @@
   import { BUILD_PLATFORM } from "$lib/platform";
   import { BLOCKER_APP_HOSTS, BLOCKER_APP_NAMES, type BlockerBrowserFrame } from "$lib/vault/welcome-blocker";
   import WelcomeParodyFeed from "./WelcomeParodyFeed.svelte";
-  import WelcomeParodyIcon from "./WelcomeParodyIcon.svelte";
+  import WelcomeParodyIcon, { MAIL_COLORS } from "./WelcomeParodyIcon.svelte";
 
   /**
    * A laptop's browser in the distraction blocker's welcome scenes, with its tabs and the Ganbaru extension beside the
-   * address bar. A tab shows a work document, a new tab, a parody app's website, or the extension's real block page,
+   * address bar. A tab shows a parody mail inbox, a new tab, a parody app's website, or the extension's real block page,
    * which is in English only, so its text stays in English in every app language. It fills the room it is given.
    */
   let { frame }: { frame: BlockerBrowserFrame } = $props();
@@ -37,8 +37,23 @@
   const BLOCK_PAGE = { bg: "#0f1110", fg: "#f4f5f0", muted: "#aab5ac", button: "#f4f5f0", buttonFg: "#101010" } as const;
   /** How far the feed scrolls at its end, in pixels. */
   const FEED_TRAVEL = 150;
-  /** The work document's placeholder lines, as fractions of the page's width; 0 leaves a gap between paragraphs. */
-  const DOC_WIDTHS = [1, 0.94, 0.97, 0.62, 0, 1, 0.9, 0.96, 0.85, 0.48, 0, 0.98, 0.92, 0.7];
+  /** The inbox's folder labels, as fractions of the side bar's width; the first is the inbox itself, selected. */
+  const MAIL_FOLDERS = [0.7, 0.55, 0.8, 0.45, 0.6];
+  /** The inbox's messages: each sender's width in pixels, its subject's as a fraction of the room left, and if unread. */
+  const MAIL_ROWS: readonly { sender: number; subject: number; unread: boolean }[] = [
+    { sender: 42, subject: 0.86, unread: true },
+    { sender: 30, subject: 0.64, unread: true },
+    { sender: 50, subject: 0.92, unread: false },
+    { sender: 36, subject: 0.58, unread: false },
+    { sender: 46, subject: 0.78, unread: false },
+    { sender: 28, subject: 0.7, unread: false },
+    { sender: 40, subject: 0.5, unread: false },
+    { sender: 34, subject: 0.84, unread: false },
+    { sender: 48, subject: 0.66, unread: false },
+    { sender: 32, subject: 0.74, unread: false },
+  ];
+  /** The compose button's and the selected folder's tint, from the mail site's blue. */
+  const COMPOSE_BG = `color-mix(in srgb, ${MAIL_COLORS.blue} 18%, transparent)`;
   /** Apple's windows keep their controls on the left; other systems keep them on the right. */
   const CONTROLS_LEADING = BUILD_PLATFORM === "macos" || BUILD_PLATFORM === "ios";
 
@@ -72,9 +87,9 @@
           class:bg-background={tab.active}
           class:text-muted-foreground={!tab.active}
         >
-          {#if tab.content === "work"}
-            <FileText size={11} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
-            <span class="min-w-0 flex-1 truncate">{t("vaultSetup.blocker.workTab")}</span>
+          {#if tab.content === "mail"}
+            <WelcomeParodyIcon app="mail" size={11} />
+            <span class="min-w-0 flex-1 truncate">{t("vaultSetup.blocker.mailTab")}</span>
           {:else if tab.content === "blank"}
             <span class="min-w-0 flex-1 truncate">{t("vaultSetup.blocker.newTab")}</span>
           {:else if tab.content === "blocked"}
@@ -109,8 +124,6 @@
             {t("common.appName")}
           </span>
           <span class="h-1.5 w-1/4 rounded-full bg-foreground/12"></span>
-        {:else if frame.address.kind === "placeholder"}
-          <span class="h-1.5 w-2/5 rounded-full bg-foreground/12"></span>
         {:else if frame.address.kind === "typed"}
           <span class="flex min-w-0 items-center">
             <span class="truncate whitespace-pre">{frame.address.text}</span>
@@ -131,16 +144,32 @@
       <div class="absolute inset-0" style:opacity={frame.pageIn}>
         {#if page.kind === "feed"}
           <WelcomeParodyFeed app={page.app} scroll={page.scroll} travel={FEED_TRAVEL} />
-        {:else if page.kind === "work"}
-          <div class="absolute inset-0 overflow-hidden bg-foreground/3 px-4 pt-3">
-            <div class="mx-auto flex max-w-64 flex-col gap-1.5 rounded-sm bg-background px-4 py-4">
-              <span class="mb-1.5 block h-2.5 w-1/2 rounded-full bg-foreground/25"></span>
-              {#each DOC_WIDTHS as fraction, index (index)}
-                {#if fraction > 0}
-                  <span class="block h-1.5 shrink-0 rounded-full bg-foreground/12" style:width={`${fraction * 100}%`}></span>
-                {:else}
-                  <span class="block h-1.5 shrink-0"></span>
-                {/if}
+        {:else if page.kind === "mail"}
+          <!-- The inbox: a compose button and folders on the side, and a list of messages, the unread ones darker. -->
+          <div class="absolute inset-0 flex overflow-hidden bg-foreground/4">
+            <div class="flex w-20 shrink-0 flex-col gap-1 px-1.5 pt-2">
+              <span class="mb-1 flex h-6 items-center gap-1.5 rounded-lg px-2" style:background-color={COMPOSE_BG}>
+                <Pencil size={10} strokeWidth={2} class="shrink-0" aria-hidden="true" />
+                <span class="h-1.5 w-7 rounded-full bg-foreground/30"></span>
+              </span>
+              {#each MAIL_FOLDERS as fraction, index (index)}
+                <span class="flex h-3.5 shrink-0 items-center rounded-full px-2" style:background-color={index === 0 ? COMPOSE_BG : undefined}>
+                  <span class="h-1.5 rounded-full bg-foreground/15" style:width={`${fraction * 100}%`}></span>
+                </span>
+              {/each}
+            </div>
+            <div class="mt-1.5 mr-1.5 flex min-w-0 flex-1 flex-col overflow-hidden rounded-t-lg bg-background">
+              {#each MAIL_ROWS as row, index (index)}
+                <span class="flex h-6 shrink-0 items-center gap-2 border-b border-border px-2.5">
+                  <span
+                    class="h-1.5 shrink-0 rounded-full {row.unread ? 'bg-foreground/45' : 'bg-foreground/15'}"
+                    style:width={`${row.sender}px`}
+                  ></span>
+                  <span
+                    class="h-1.5 min-w-0 rounded-full {row.unread ? 'bg-foreground/25' : 'bg-foreground/10'}"
+                    style:width={`${row.subject * 100}%`}
+                  ></span>
+                </span>
               {/each}
             </div>
           </div>

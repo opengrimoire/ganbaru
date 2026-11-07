@@ -1,6 +1,6 @@
 /**
  * Timing for the welcome scene on daily limits: one social media limit groups the Y and Egogram websites and Egogram's
- * phone app, and counts time from both devices. Y's feed scrolls in a laptop's browser beside a work tab until Y's tab
+ * phone app, and counts time from both devices. Y's feed scrolls in a laptop's browser beside the inbox until Y's tab
  * is closed; then Egogram opened on a phone uses the rest of the day's budget, returns Home, and posts the limit
  * notification. Each time Egogram is opened again it returns Home at once, and back on the laptop, every site of the
  * limit typed into the browser opens the extension's block page instead.
@@ -9,6 +9,7 @@
 import {
   BLOCKER_APP_HOSTS,
   BLOCKER_APP_OPEN_MS,
+  BLOCKER_MAIL,
   blockerAppOpen,
   blockerCaretOn,
   blockerNoticeShown,
@@ -36,7 +37,7 @@ export const LIMITS_BEATS = {
   /** Y's feed scrolls in the browser, using part of the budget. */
   browserUseStart: 400,
   browserUseEnd: 3400,
-  /** A tap closes Y's tab, so the work tab shows. */
+  /** A tap closes Y's tab, so the inbox shows. */
   yCloseTap: 3900,
   /** A tap opens Egogram on the phone, which uses the rest of the budget. */
   egogramTap: 5200,
@@ -119,13 +120,13 @@ function beforeAttempt(index: number): { page: BlockerBrowserPage; tab: BlockerT
 
 /** The browser while a site of the limit is typed into it, loads, and is blocked. */
 function attemptFrame(elapsed: number, index: number, attempt: SiteAttempt): Omit<BlockerBrowserFrame, "pageIn" | "newTabTouch" | "addressTouch"> {
-  const work: BlockerTab = { content: "work", active: false };
+  const mail: BlockerTab = { content: "mail", active: false };
   const host = BLOCKER_APP_HOSTS[attempt.app];
   if (elapsed >= attempt.blocked) {
-    return { tabs: [work, { content: "blocked", active: true }], address: { kind: "extension" }, page: { kind: "block", app: attempt.app, reason: "limit" }, loading: 0 };
+    return { tabs: [mail, { content: "blocked", active: true }], address: { kind: "extension" }, page: { kind: "block", app: attempt.app, reason: "limit" }, loading: 0 };
   }
   const before = beforeAttempt(index);
-  const tabs: BlockerTab[] = [work, { content: before.tab, active: true }];
+  const tabs: BlockerTab[] = [mail, { content: before.tab, active: true }];
   if (elapsed >= attempt.loadStart) {
     return { tabs, address: { kind: "host", host }, page: before.page, loading: filmSpan(elapsed, attempt.loadStart, attempt.blocked) };
   }
@@ -135,7 +136,7 @@ function attemptFrame(elapsed: number, index: number, attempt: SiteAttempt): Omi
 }
 
 /**
- * The browser at this moment: a work tab beside Y's tab until it is closed, then a new tab that each site of the limit
+ * The browser at this moment: the inbox beside Y's tab until it is closed, then a new tab that each site of the limit
  * is typed into, one after another.
  */
 export function limitsBrowser(elapsed: number): BlockerBrowserFrame {
@@ -144,7 +145,7 @@ export function limitsBrowser(elapsed: number): BlockerBrowserFrame {
   if (elapsed < B.yCloseTap) {
     const scroll = easeInOutCubic(filmSpan(elapsed, B.browserUseStart, B.browserUseEnd));
     const tabs: BlockerTab[] = [
-      { content: "work", active: false },
+      { content: "mail", active: false },
       { content: "y", active: true, closeTouch: filmTap(elapsed, B.yCloseTap) },
     ];
     return { tabs, address: { kind: "host", host: BLOCKER_APP_HOSTS.y }, page: { kind: "feed", app: "y", scroll }, loading: 0, ...touches };
@@ -152,7 +153,7 @@ export function limitsBrowser(elapsed: number): BlockerBrowserFrame {
   const index = SITE_ATTEMPTS.findLastIndex((attempt) => elapsed >= attempt.tap);
   const attempt = SITE_ATTEMPTS[index];
   if (!attempt) {
-    return { tabs: [{ content: "work", active: true }], address: { kind: "placeholder" }, page: { kind: "work" }, loading: 0, ...touches };
+    return { tabs: [{ content: "mail", active: true }], address: { kind: "host", host: BLOCKER_MAIL.host }, page: { kind: "mail" }, loading: 0, ...touches };
   }
   return { ...attemptFrame(elapsed, index, attempt), ...touches };
 }

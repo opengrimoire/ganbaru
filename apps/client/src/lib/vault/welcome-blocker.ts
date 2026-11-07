@@ -19,22 +19,25 @@ export const BLOCKER_APP_HOSTS: Readonly<Record<BlockerApp, string>> = {
   egogram: "egogram.com",
 };
 
+/** The parody mail site the scenes show as work, which the blocker never blocks, and its website. */
+export const BLOCKER_MAIL = { name: "Gnail", host: "gnail.com" } as const;
+
 /** Why a site or an app is blocked: a running Focus phase, or a daily limit that ran out. */
 export type BlockerReason = "focus" | "limit";
 
 /**
- * What the browser's active tab shows: a work document, a new tab's empty page, a site's feed scrolled from 0 to 1, or
+ * What the browser's active tab shows: the mail inbox, a new tab's empty page, a site's feed scrolled from 0 to 1, or
  * the extension's block page for a site.
  */
 export type BlockerBrowserPage =
-  | { kind: "work" }
+  | { kind: "mail" }
   | { kind: "blank" }
   | { kind: "feed"; app: BlockerApp; scroll: number }
   | { kind: "block"; app: BlockerApp; reason: "focus"; minutesLeft: number }
   | { kind: "block"; app: BlockerApp; reason: "limit" };
 
-/** What a browser tab carries: a work document, an empty new tab, a site, or the extension's block page. */
-export type BlockerTabContent = "work" | "blank" | "blocked" | BlockerApp;
+/** What a browser tab carries: the mail inbox, an empty new tab, a site, or the extension's block page. */
+export type BlockerTabContent = "mail" | "blank" | "blocked" | BlockerApp;
 
 /** A browser tab, whether it is the active one, and the tap on its close button, from 0 to 1. */
 export interface BlockerTab {
@@ -44,11 +47,10 @@ export interface BlockerTab {
 }
 
 /**
- * What the browser's address bar shows: a page's placeholder address, a site, text being typed with its caret drawn or
- * not as it blinks, or the extension's page.
+ * What the browser's address bar shows: a site, text being typed with its caret drawn or not as it blinks, or the
+ * extension's page.
  */
 export type BlockerAddress =
-  | { kind: "placeholder" }
   | { kind: "host"; host: string }
   | { kind: "typed"; text: string; caret: boolean }
   | { kind: "extension" };
@@ -70,8 +72,8 @@ export interface BlockerBrowserFrame {
 /** What a tab showing `page` carries. */
 export function blockerTabOf(page: BlockerBrowserPage): BlockerTabContent {
   switch (page.kind) {
-    case "work":
-      return "work";
+    case "mail":
+      return "mail";
     case "blank":
       return "blank";
     case "feed":
@@ -84,8 +86,8 @@ export function blockerTabOf(page: BlockerBrowserPage): BlockerTabContent {
 /** What the address bar shows for `page` while nothing is typed. */
 export function blockerAddressOf(page: BlockerBrowserPage): BlockerAddress {
   switch (page.kind) {
-    case "work":
-      return { kind: "placeholder" };
+    case "mail":
+      return { kind: "host", host: BLOCKER_MAIL.host };
     case "blank":
       return { kind: "typed", text: "", caret: false };
     case "feed":

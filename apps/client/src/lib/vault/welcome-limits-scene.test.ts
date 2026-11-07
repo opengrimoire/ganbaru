@@ -25,11 +25,11 @@ describe("welcome limits scene", () => {
     expect(beats).toEqual([...beats].sort((a, b) => a - b));
   });
 
-  it("starts with Y open beside a work tab and nothing used", () => {
+  it("starts with Y open beside the inbox and nothing used", () => {
     const browser = limitsBrowser(0);
     expect(browser.page).toEqual({ kind: "feed", app: "y", scroll: 0 });
     expect(browser.tabs.map((tab) => [tab.content, tab.active])).toEqual([
-      ["work", false],
+      ["mail", false],
       ["y", true],
     ]);
     expect(browser.address).toEqual({ kind: "host", host: "y.com" });
@@ -55,12 +55,12 @@ describe("welcome limits scene", () => {
     }
   });
 
-  it("closes Y's tab before Egogram opens on the phone", () => {
+  it("closes Y's tab back to the inbox before Egogram opens on the phone", () => {
     expect(limitsBrowser(B.yCloseTap - 100).tabs[1]?.closeTouch).toBeGreaterThan(0);
     const closed = limitsBrowser(B.yCloseTap);
-    expect(closed.tabs).toEqual([{ content: "work", active: true }]);
-    expect(closed.page).toEqual({ kind: "work" });
-    expect(closed.address).toEqual({ kind: "placeholder" });
+    expect(closed.tabs).toEqual([{ content: "mail", active: true }]);
+    expect(closed.page).toEqual({ kind: "mail" });
+    expect(closed.address).toEqual({ kind: "host", host: "gnail.com" });
     expect(B.yCloseTap).toBeLessThan(B.egogramTap);
     for (const elapsed of moments()) {
       if (limitsPhoneApp(elapsed)) expect(limitsBrowser(elapsed).tabs.some((tab) => tab.content === "y")).toBe(false);
@@ -103,7 +103,7 @@ describe("welcome limits scene", () => {
     expect(blocked.page).toEqual({ kind: "block", app: "y", reason: "limit" });
     expect(blocked.address).toEqual({ kind: "extension" });
     expect(blocked.tabs.map((tab) => [tab.content, tab.active])).toEqual([
-      ["work", false],
+      ["mail", false],
       ["blocked", true],
     ]);
 

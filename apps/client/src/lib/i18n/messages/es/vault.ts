@@ -31,7 +31,7 @@ export const vaultSetup = {
     body: "Puedes cambiarlo después en Ajustes > Apariencia.",
   },
   blocker: {
-    workTab: "Borrador del capítulo 3",
+    mailTab: "Recibidos",
     newTab: "Nueva pestaña",
   },
   blocking: {

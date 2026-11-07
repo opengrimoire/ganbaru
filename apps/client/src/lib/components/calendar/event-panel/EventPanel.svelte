@@ -1765,10 +1765,28 @@
     width: var(--sheet-touch-height);
   }
 
-  /* Pills and the date pickers keep their own compact sizes, as on desktop. */
-  .panel-root[data-mobile="true"] .scope-option,
-  .panel-root[data-mobile="true"] :global(.event-panel-date-picker button) {
+  /* Pills keep their own compact height. */
+  .panel-root[data-mobile="true"] .scope-option {
     min-height: 0;
+  }
+
+  /*
+   * Date pickers widen to seven touch-height columns, capped by the screen, so their day cells and month arrows stay
+   * square at touch size.
+   */
+  .panel-root[data-mobile="true"] :global(.event-panel-date-picker) {
+    width: min(calc(7 * var(--sheet-touch-height) + 1rem), 100vw - 2rem);
+  }
+
+  .panel-root[data-mobile="true"] :global(.event-panel-date-picker [data-date]) {
+    height: auto;
+    min-height: 0;
+    aspect-ratio: 1;
+  }
+
+  .panel-root[data-mobile="true"] :global(.event-panel-date-picker [data-picker-nav]) {
+    width: var(--sheet-touch-height);
+    height: var(--sheet-touch-height);
   }
 
   .panel-root[data-mobile="true"] :global([data-section="meeting"] .meeting-detail-row),

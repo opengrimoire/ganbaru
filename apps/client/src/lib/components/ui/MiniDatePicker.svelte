@@ -490,6 +490,7 @@
       onclick={prevMonth}
       onkeydown={handlePickerKeydown}
       aria-label={t("calendar.toolbar.previous")}
+      data-picker-nav
       class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
     >
       <ChevronLeft size={14} />
@@ -499,6 +500,7 @@
       onclick={() => { yearPageStart -= 12; }}
       onkeydown={handlePickerKeydown}
       aria-label={t("calendar.toolbar.previous")}
+      data-picker-nav
       class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
     >
       <ChevronLeft size={14} />
@@ -508,6 +510,7 @@
       onclick={prevYear}
       onkeydown={handlePickerKeydown}
       aria-label={t("calendar.toolbar.previous")}
+      data-picker-nav
       class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
     >
       <ChevronLeft size={14} />
@@ -533,6 +536,7 @@
       onclick={nextMonth}
       onkeydown={handlePickerKeydown}
       aria-label={t("calendar.toolbar.next")}
+      data-picker-nav
       class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
     >
       <ChevronRight size={14} />
@@ -542,6 +546,7 @@
       onclick={() => { yearPageStart += 12; }}
       onkeydown={handlePickerKeydown}
       aria-label={t("calendar.toolbar.next")}
+      data-picker-nav
       class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
     >
       <ChevronRight size={14} />
@@ -551,6 +556,7 @@
       onclick={nextYear}
       onkeydown={handlePickerKeydown}
       aria-label={t("calendar.toolbar.next")}
+      data-picker-nav
       class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
     >
       <ChevronRight size={14} />

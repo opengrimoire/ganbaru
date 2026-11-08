@@ -163,7 +163,7 @@
    * One frame of the welcome scene on Projects, drawn with the app's own surfaces. In the Novel project's List view, a
    * task is typed into the add row and added, and its status and priority are changed from their cells' menus. Project
    * settings then open from the header on Event defaults, where the event name is typed, a color, a duration, and a
-   * Pomodoro are picked, a playlist is picked for each phase, and the settings are saved, each control scrolled into
+   * Pomodoro are picked, a playlist is picked for each phase, and the settings are saved and closed, each control scrolled into
    * view before its tap. In the Calendar, an event is then dragged out, and picking Novel in its panel gives it every
    * default just saved. Every style is a function of `elapsed`, with no CSS transitions.
    */
@@ -1371,7 +1371,10 @@
         <div class="flex shrink-0 items-center gap-2 px-3 pt-2 pb-1">
           <span class="min-w-0 flex-1 truncate text-[0.8125rem] font-medium">{t("projects.settings.title")}</span>
           <span class="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground"><RotateCcw size={14} /></span>
-          <span class="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground"><X size={15} /></span>
+          <span class="relative grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground">
+            <X size={15} />
+            {@render touch(touches.close, "50%", "50%")}
+          </span>
         </div>
 
         <div bind:this={settingsViewport} class="relative min-h-0 flex-1 overflow-hidden">

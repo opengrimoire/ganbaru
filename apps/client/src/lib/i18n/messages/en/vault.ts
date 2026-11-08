@@ -51,7 +51,7 @@ export const vaultSetup = {
     headline: "Every project with its own defaults",
     body: "Edit tasks right in the list, and new events start with the project's name, color, Pomodoro, and playlists.",
     sceneDescription:
-      "A short animation of the Novel project's List view. The task Draft chapter 2 is added from the bottom of the list, and its status is set to In progress and its priority to High right in the table. The project's settings then open on Event defaults, where the event name is set to Writing session, the color to a new one, the duration to 2 hours, and the Pomodoro to Creative, a playlist is picked for focus, short breaks, and long breaks, and the settings are saved. In the Calendar, an event is then dragged out, and picking Novel for it gives it the name Writing session, the new color, 2 hours, the Creative Pomodoro, and the three playlists.",
+      "A short animation of the Novel project's List view. The task Draft chapter 2 is added from the bottom of the list, and its status is set to In progress and its priority to High right in the table. The project's settings then open on Event defaults, where the event name is set to Writing session, the color to a new one, the duration to 2 hours, and the Pomodoro to Creative, a playlist is picked for focus, short breaks, and long breaks, and the settings are saved and closed. In the Calendar, an event is then dragged out, and picking Novel for it gives it the name Writing session, the new color, 2 hours, the Creative Pomodoro, and the three playlists.",
     project: "Novel",
     eventName: "Writing session",
     task: {

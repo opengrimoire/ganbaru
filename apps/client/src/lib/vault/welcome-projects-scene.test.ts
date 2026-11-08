@@ -153,12 +153,15 @@ describe("welcome projects scene", () => {
     expect(projectsListScroll(B.priorityTap)).toEqual({ status: 1, priority: 1 });
   });
 
-  it("opens the settings with their tap and closes them with Save", () => {
+  it("opens the settings with their tap, keeps them open after Save, and closes them with the close button", () => {
     expect(projectsSettingsShown(B.settingsTap - 1)).toBe(0);
     expect(projectsSettingsOpen(B.settingsTap - 1)).toBe(false);
     expect(projectsSettingsShown(B.nameTap)).toBe(1);
-    expect(projectsSettingsOpen(B.settingsSaveTap - 1)).toBe(true);
-    expect(projectsSettingsOpen(B.settingsSaveTap)).toBe(false);
+    expect(projectsSettingsOpen(B.settingsSaveTap)).toBe(true);
+    expect(projectsSettingsShown(B.settingsCloseTap - 1)).toBe(1);
+    expect(projectsSettingsDirty(B.settingsCloseTap - 1)).toBe(false);
+    expect(projectsSettingsOpen(B.settingsCloseTap - 1)).toBe(true);
+    expect(projectsSettingsOpen(B.settingsCloseTap)).toBe(false);
     expect(projectsSettingsShown(B.end)).toBe(0);
   });
 
@@ -239,10 +242,10 @@ describe("welcome projects scene", () => {
     expect(projectsSettingsDirty(B.settingsSaveTap)).toBe(false);
   });
 
-  it("gives way to the Calendar once the settings are saved", () => {
-    expect(PROJECTS_BEATS.calendarIn).toBeGreaterThan(B.settingsSaveTap);
-    expect(projectsCalendarShown(B.settingsSaveTap)).toBe(0);
-    expect(projectsListShown(B.settingsSaveTap)).toBe(1);
+  it("gives way to the Calendar once the settings are closed", () => {
+    expect(PROJECTS_BEATS.calendarIn).toBeGreaterThan(B.settingsCloseTap);
+    expect(projectsCalendarShown(B.settingsCloseTap)).toBe(0);
+    expect(projectsListShown(B.settingsCloseTap)).toBe(1);
     expect(projectsCalendarShown(B.calendarIn)).toBe(1);
     expect(projectsListShown(B.calendarIn)).toBe(0);
   });

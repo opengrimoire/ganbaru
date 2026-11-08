@@ -2,7 +2,7 @@
  * Timing for the welcome scene on Projects. In the Novel project's List view, a task is typed into the add row at the
  * bottom of the list and added, and its status and priority are changed from their cells in the table. Project settings
  * then open on Event defaults, where an event name is typed, a color, a duration, and a Pomodoro are picked, a playlist
- * is picked for each phase, and the settings are saved, the settings scrolling each control into view before its tap.
+ * is picked for each phase, and the settings are saved and closed, the settings scrolling each control into view before its tap.
  * Then in the Calendar, an event is dragged out and its panel opens, where picking the Novel project gives the event
  * every default just set: its name, color, length, Pomodoro, and playlists. The Music section opens on them, and the
  * event is saved.
@@ -134,70 +134,71 @@ export const PROJECTS_BEATS = {
   statusScrollStart: 2600,
   statusScrollEnd: 3100,
   statusTap: 3500,
-  statusPick: 4300,
+  statusPick: 4800,
   /** The list scrolls on to its priority, a tap opens its menu, and High is picked. */
-  priorityScrollStart: 4600,
-  priorityScrollEnd: 5100,
-  priorityTap: 5500,
-  priorityPick: 6300,
+  priorityScrollStart: 5100,
+  priorityScrollEnd: 5600,
+  priorityTap: 6000,
+  priorityPick: 7300,
   /** A tap on the header's settings button opens Project settings, which scroll to Event defaults. */
-  settingsTap: 7100,
-  nameScrollStart: 7500,
-  nameScrollEnd: 8200,
+  settingsTap: 8100,
+  nameScrollStart: 8500,
+  nameScrollEnd: 9200,
   /** A tap on the event name field focuses it, and the name is typed. */
-  nameTap: 8700,
-  nameTypeStart: 8900,
-  nameTypeEnd: 9800,
+  nameTap: 9700,
+  nameTypeStart: 9900,
+  nameTypeEnd: 10800,
   /**
    * The settings scroll the color into view with room for its palette, a tap opens the palette, a tap picks a swatch,
    * and on desktop a tap beside the palette closes it.
    */
-  colorScrollStart: 10000,
-  colorScrollEnd: 10400,
-  colorTap: 10800,
-  colorPick: 11600,
-  colorDismiss: 12100,
+  colorScrollStart: 11000,
+  colorScrollEnd: 11400,
+  colorTap: 11800,
+  colorPick: 13100,
+  colorDismiss: 13600,
   /** Each of the other pickers is scrolled into view, opens with a tap, and a tap picks an option. */
-  durationScrollStart: 12300,
-  durationScrollEnd: 12700,
-  durationTap: 13000,
-  durationPick: 13800,
-  pomodoroScrollStart: 14000,
-  pomodoroScrollEnd: 14400,
-  pomodoroTap: 14700,
-  pomodoroPick: 15600,
-  focusScrollStart: 15900,
-  focusScrollEnd: 16400,
-  focusTap: 16800,
-  focusPick: 17600,
-  shortBreakScrollStart: 17800,
-  shortBreakScrollEnd: 18200,
-  shortBreakTap: 18500,
-  shortBreakPick: 19300,
-  longBreakScrollStart: 19500,
-  longBreakScrollEnd: 19900,
-  longBreakTap: 20200,
-  longBreakPick: 21000,
-  /** Save settings saves the defaults and closes the panel. */
-  settingsSaveTap: 21800,
+  durationScrollStart: 13800,
+  durationScrollEnd: 14200,
+  durationTap: 14500,
+  durationPick: 15800,
+  pomodoroScrollStart: 16000,
+  pomodoroScrollEnd: 16400,
+  pomodoroTap: 16700,
+  pomodoroPick: 18000,
+  focusScrollStart: 18300,
+  focusScrollEnd: 18800,
+  focusTap: 19200,
+  focusPick: 20500,
+  shortBreakScrollStart: 20700,
+  shortBreakScrollEnd: 21100,
+  shortBreakTap: 21400,
+  shortBreakPick: 22700,
+  longBreakScrollStart: 22900,
+  longBreakScrollEnd: 23300,
+  longBreakTap: 23600,
+  longBreakPick: 24900,
+  /** Save settings saves the defaults and turns back to its idle color, and the close button then closes the panel. */
+  settingsSaveTap: 25700,
+  settingsCloseTap: 27100,
   /** The list gives way to the Calendar. */
-  calendarIn: 22600,
-  /** A press drags a short event out on the empty hour, and letting go opens the event panel on it. */
-  createStart: 23200,
-  createEnd: 23700,
-  panelOpen: 23850,
+  calendarIn: 27800,
+  /** A press drags an event out over the empty hour, and letting go opens the event panel on it. */
+  createStart: 28400,
+  createEnd: 29100,
+  panelOpen: 29250,
   /** The project trigger, then the Personal group, then Novel, which gives the event the project's defaults. */
-  projectTap: 24850,
-  groupTap: 25950,
-  projectPick: 27050,
+  projectTap: 30250,
+  groupTap: 31350,
+  projectPick: 32450,
   /** On the phone, a drag on the sheet's grabber takes it from its peek to its full height. */
-  sheetDragStart: 28000,
-  sheetDragEnd: 28550,
+  sheetDragStart: 33400,
+  sheetDragEnd: 33950,
   /** A tap on the Music section's header opens it on the project's playlists. */
-  musicTap: 29300,
+  musicTap: 34700,
   /** Save saves the event and closes the panel. */
-  eventSaveTap: 31000,
-  end: 32400,
+  eventSaveTap: 36400,
+  end: 37800,
 } as const;
 
 const B = PROJECTS_BEATS;
@@ -209,7 +210,7 @@ export const PROJECTS_END_HOLD_MS = 900;
 export const PROJECTS_STILL = B.musicTap + 1200;
 
 /** The Calendar event, in minutes of the day: the length it is dragged out to, before the project's default replaces it. */
-export const PROJECTS_EVENT = { start: 10 * 60, drawnEnd: 10 * 60 + 30 } as const;
+export const PROJECTS_EVENT = { start: 10 * 60, drawnEnd: 11 * 60 } as const;
 
 /** The event's Focus rail before and after the project is picked, planned by the Calendar's own rhythm. */
 export const PROJECTS_DEFAULT_RAIL: FilmRail = filmDayRails([
@@ -322,16 +323,16 @@ export function projectsOptionHovered(elapsed: number, target: ProjectsSceneCell
   return elapsed >= pick - HOVER_LEAD_MS && elapsed < pick;
 }
 
-/** How far Project settings show, from 0 to 1: they open with the settings tap and close with Save. */
+/** How far Project settings show, from 0 to 1: they open with the settings tap and close with the close button. */
 export function projectsSettingsShown(elapsed: number): number {
   const shown = filmSpan(elapsed, B.settingsTap, B.settingsTap + PANEL_FADE_MS);
-  const gone = filmSpan(elapsed, B.settingsSaveTap, B.settingsSaveTap + PANEL_FADE_MS);
+  const gone = filmSpan(elapsed, B.settingsCloseTap, B.settingsCloseTap + PANEL_FADE_MS);
   return shown * (1 - gone);
 }
 
 /** Whether Project settings are open, which marks the header's settings button as active. */
 export function projectsSettingsOpen(elapsed: number): boolean {
-  return elapsed >= B.settingsTap && elapsed < B.settingsSaveTap;
+  return elapsed >= B.settingsTap && elapsed < B.settingsCloseTap;
 }
 
 /**
@@ -407,7 +408,7 @@ export function projectsSettingsDirty(elapsed: number): boolean {
   return elapsed >= B.nameTypeStart && elapsed < B.settingsSaveTap;
 }
 
-/** How far the list shows, from 0 to 1, as the Calendar fades in over it once the settings are saved. */
+/** How far the list shows, from 0 to 1, as the Calendar fades in over it once the settings are closed. */
 export function projectsListShown(elapsed: number): number {
   return 1 - projectsCalendarShown(elapsed);
 }
@@ -528,6 +529,7 @@ export interface ProjectsSceneTouches {
   playlist: Record<ProjectsScenePhase, number>;
   playlistOption: Record<ProjectsScenePhase, number>;
   save: number;
+  close: number;
 }
 
 /** The scene's touches at `elapsed`; the tap beside the color palette only shows when the palette waits for it. */
@@ -552,5 +554,6 @@ export function projectsTouches(elapsed: number, colorClosesOnPick: boolean): Pr
     playlist: byPhase("tap"),
     playlistOption: byPhase("pick"),
     save: filmTap(elapsed, B.settingsSaveTap),
+    close: filmTap(elapsed, B.settingsCloseTap),
   };
 }

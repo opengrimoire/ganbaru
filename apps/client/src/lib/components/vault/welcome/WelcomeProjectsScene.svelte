@@ -1150,7 +1150,7 @@
                     </CollectionCell>
                   {:else}
                     <CollectionCell>
-                      {#if (column === "assignee" || column === "reviewer") && !added}
+                      {#if column === "assignee" || column === "reviewer"}
                         <ProfileAvatar displayName={personName} imagePath={preferences.profileAvatarImagePath} crop={preferences.profileImageCrop} color={preferences.profileColor} size={24} />
                       {:else if column === "start" || column === "due"}
                         {@const offset = column === "start" ? task.start : task.due}

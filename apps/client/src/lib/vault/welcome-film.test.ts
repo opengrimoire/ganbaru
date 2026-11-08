@@ -497,12 +497,12 @@ describe("the film's desktop pointer", () => {
     expect(welcomeCursorFrame(script, FILM_BEATS.end).pressed).toBe(0);
   });
 
-  it("hides while it waits for Focus to start and for the paused notification, and stays after its last click", () => {
-    for (const elapsed of [FILM_BEATS.createSaved + WELCOME_CURSOR_IDLE_MS + WELCOME_CURSOR_FADE_MS, FILM_BEATS.breakStart, FILM_BEATS.notificationIn - 300]) {
+  it("hides while it waits for Focus to start and for the paused notification, and once Focus has resumed", () => {
+    const resumed = FILM_BEATS.resumeAt + WELCOME_CURSOR_IDLE_MS + WELCOME_CURSOR_FADE_MS;
+    for (const elapsed of [FILM_BEATS.createSaved + WELCOME_CURSOR_IDLE_MS + WELCOME_CURSOR_FADE_MS, FILM_BEATS.breakStart, FILM_BEATS.notificationIn - 300, resumed, FILM_BEATS.end]) {
       expect(welcomeCursorFrame(script, elapsed)).toMatchObject({ shown: 0, away: true });
       expect(welcomeCursorHovered(script, elapsed)).toBeNull();
     }
     for (const { tap } of clicks) expect(welcomeCursorFrame(script, tap - FILM_TAP_MS).shown).toBe(1);
-    expect(welcomeCursorFrame(script, FILM_BEATS.end)).toMatchObject({ shown: 1, away: false });
   });
 });

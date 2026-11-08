@@ -39,6 +39,11 @@ export interface WelcomeCursorStop {
   follow?: boolean;
   /** When the pointer is in use while it rests here, such as while it scrolls what is under it, so it does not hide then. */
   busy?: readonly WelcomeCursorSpan[];
+  /**
+   * Whether the pointer hides once it has rested idle after its last use here, for the last place of a scene that goes
+   * on playing without it. Otherwise it stays after its last use and fades out with the rest of the scene.
+   */
+  hides?: boolean;
 }
 
 /** The places a scene's pointer goes, in order. The first is where it rests as the scene starts. */
@@ -102,6 +107,8 @@ export interface WelcomeCursorClickOptions {
   after?: number;
   /** When the pointer is in use while it rests on the place, such as while it scrolls what is under it. */
   busy?: readonly WelcomeCursorSpan[];
+  /** Whether the pointer hides once it has rested idle after the click, when the scene goes on playing without it. */
+  hides?: boolean;
 }
 
 /**
@@ -109,13 +116,13 @@ export interface WelcomeCursorClickOptions {
  * comes up as the tap lands, after the pointer has travelled to the control and rested on it.
  */
 export function cursorClick(target: string, tap: number, options: WelcomeCursorClickOptions = {}): WelcomeCursorStop {
-  const { anchor, glyph, rest = WELCOME_CURSOR_REST_MS, travel = WELCOME_CURSOR_TRAVEL_MS, after, busy } = options;
+  const { anchor, glyph, rest = WELCOME_CURSOR_REST_MS, travel = WELCOME_CURSOR_TRAVEL_MS, after, busy, hides } = options;
   const pressStart = tap - FILM_TAP_MS;
   const latestArrive = pressStart - rest;
   // A late start eats into the rest before the travel, so the pointer still glides rather than jumps.
   const depart = Math.min(Math.max(after ?? -Infinity, latestArrive - travel), pressStart - WELCOME_CURSOR_MIN_TRAVEL_MS);
   const arrive = Math.min(pressStart, Math.max(latestArrive, depart + WELCOME_CURSOR_MIN_TRAVEL_MS));
-  return { target, anchor, glyph, depart, arrive, press: { start: pressStart, end: tap }, busy };
+  return { target, anchor, glyph, depart, arrive, press: { start: pressStart, end: tap }, busy, hides };
 }
 
 /** A place the pointer moves to and rests on without clicking, such as a control it hovers or a neutral spot. */
@@ -124,8 +131,8 @@ export function cursorRest(
   arrive: number,
   options: Omit<WelcomeCursorClickOptions, "rest" | "after"> = {},
 ): WelcomeCursorStop {
-  const { anchor, glyph, travel = WELCOME_CURSOR_TRAVEL_MS, busy } = options;
-  return { target, anchor, glyph, depart: Math.max(0, arrive - travel), arrive, busy };
+  const { anchor, glyph, travel = WELCOME_CURSOR_TRAVEL_MS, busy, hides } = options;
+  return { target, anchor, glyph, depart: Math.max(0, arrive - travel), arrive, busy, hides };
 }
 
 /** The pointer at `elapsed`. */
@@ -146,7 +153,8 @@ export function welcomeCursorFrame(script: WelcomeCursorScript, elapsed: number)
 /**
  * How far the pointer shows while it is at `stop` until it leaves at `leave`, from 0 to 1. When a wait between its
  * moves, clicks, and other uses is long enough, it fades out once it has rested idle and fades back in just before it
- * is next used. After its last use it stays, so it fades out with the rest of the scene as the scene starts over.
+ * is next used. After its last use it stays, so it fades out with the rest of the scene as the scene starts over,
+ * unless its place says it hides.
  */
 function welcomeCursorPresent(stop: WelcomeCursorStop, leave: number, elapsed: number): number {
   const uses: WelcomeCursorSpan[] = [{ start: stop.depart, end: stop.arrive }, ...(stop.press ? [stop.press] : []), ...(stop.busy ?? [])];
@@ -154,7 +162,7 @@ function welcomeCursorPresent(stop: WelcomeCursorStop, leave: number, elapsed: n
   const nextUse = Math.min(leave, ...uses.filter((use) => use.start > elapsed).map((use) => use.start));
   if (
     elapsed < idleFrom ||
-    nextUse === Infinity ||
+    (nextUse === Infinity && !stop.hides) ||
     nextUse - idleFrom < WELCOME_CURSOR_IDLE_MS + 2 * WELCOME_CURSOR_FADE_MS + WELCOME_CURSOR_AWAY_MIN_MS
   ) {
     return 1;

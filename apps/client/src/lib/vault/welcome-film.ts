@@ -553,7 +553,8 @@ const FILM_CURSOR_AIM_MS = 150;
  * The desktop pointer's path through the film, on the beats of the taps it replaces: it presses on the empty morning
  * and drags the session out by its bottom edge, picks the project in the event panel, hovering its group to show its
  * projects as the desktop picker does, rests in the title while it is typed, saves, then opens the Focus ring's menu,
- * pauses Focus, and resumes it from the paused notification. While nothing needs it for a while it hides where it rests.
+ * pauses Focus, and resumes it from the paused notification. While nothing needs it for a while it hides where it rests,
+ * as it does once Focus has resumed and the session plays on without it.
  * It is built on call rather than at load, since the pointer's timing module
  * reads this one's tap length.
  */
@@ -578,6 +579,6 @@ export function filmCursorScript(): WelcomeCursorScript {
     cursorClick("panel-save", FILM_BEATS.createSaved, { after: FILM_BEATS.typeEnd }),
     cursorClick("film-ring", ringTap, { after: FILM_BEATS.breakEnd }),
     cursorClick("film-ring-pause", FILM_BEATS.pauseStart, { after: ringTap, anchor: [0.4, 0.5] }),
-    cursorClick("notification-action-0", FILM_BEATS.resumeAt, { after: FILM_BEATS.notificationIn }),
+    cursorClick("notification-action-0", FILM_BEATS.resumeAt, { after: FILM_BEATS.notificationIn, hides: true }),
   ];
 }

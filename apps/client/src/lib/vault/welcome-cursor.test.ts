@@ -109,6 +109,15 @@ describe("welcome cursor idling", () => {
     }
   });
 
+  it("hides for good after its last click when its place says so, as a scene plays on without it", () => {
+    const script: WelcomeCursorScript = [cursorRest("start", 0), cursorClick("save", 2000, { hides: true })];
+    expect(welcomeCursorFrame(script, 2000 + WELCOME_CURSOR_IDLE_MS).shown).toBe(1);
+    expect(welcomeCursorFrame(script, 2000 + WELCOME_CURSOR_IDLE_MS + WELCOME_CURSOR_FADE_MS / 2).shown).toBeCloseTo(0.5);
+    for (const elapsed of [2000 + WELCOME_CURSOR_IDLE_MS + WELCOME_CURSOR_FADE_MS, 60_000]) {
+      expect(welcomeCursorFrame(script, elapsed)).toMatchObject({ shown: 0, away: true });
+    }
+  });
+
   it("stays shown while it is in use where it rests, such as while it scrolls, and idles only around that", () => {
     const busy = { start: 2000, end: 3000 };
     const script: WelcomeCursorScript = [cursorRest("start", 0, { busy: [busy] }), cursorClick("save", 6000)];

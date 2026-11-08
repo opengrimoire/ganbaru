@@ -40,7 +40,13 @@ import {
   type MusicScenePlaylist,
 } from "./welcome-music-scene";
 import { FILM_TAP_MS } from "./welcome-film";
-import { welcomeCursorFrame, welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
+import {
+  WELCOME_CURSOR_FADE_MS,
+  WELCOME_CURSOR_IDLE_MS,
+  welcomeCursorFrame,
+  welcomeCursorHovered,
+  welcomeCursorScriptOrdered,
+} from "./welcome-cursor";
 
 const B = MUSIC_BEATS;
 
@@ -318,6 +324,12 @@ describe("welcome music scene", () => {
       expect(group?.arrive).toBe(B.groupTap);
       expect(group?.depart).toBeGreaterThanOrEqual(B.projectTap);
       expect(welcomeCursorHovered(MUSIC_CURSOR_SCRIPT, B.groupTap)).toBe("panel-group");
+    });
+
+    it("hides once the event is saved, while the session plays on without it", () => {
+      expect(welcomeCursorFrame(MUSIC_CURSOR_SCRIPT, B.saveTap).shown).toBe(1);
+      expect(welcomeCursorFrame(MUSIC_CURSOR_SCRIPT, B.saveTap + WELCOME_CURSOR_IDLE_MS + WELCOME_CURSOR_FADE_MS)).toMatchObject({ shown: 0, away: true });
+      expect(welcomeCursorFrame(MUSIC_CURSOR_SCRIPT, B.end)).toMatchObject({ shown: 0, away: true });
     });
 
     it("never leaves a control while its button is held", () => {

@@ -500,5 +500,5 @@ export const MUSIC_CURSOR_SCRIPT: WelcomeCursorScript = [
     }),
     cursorClick("panel-playlist-option", step.closeTap, { after: step.openTap }),
   ]),
-  cursorClick("panel-save", B.saveTap, { after: PICKER_STEPS[PICKER_STEPS.length - 1].closeTap }),
+  cursorClick("panel-save", B.saveTap, { after: PICKER_STEPS[PICKER_STEPS.length - 1].closeTap, hides: true }),
 ];

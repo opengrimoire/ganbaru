@@ -4,6 +4,8 @@ import {
   PROJECTS_BEATS,
   PROJECTS_COLOR,
   PROJECTS_DEFAULT_MINUTES,
+  PROJECTS_DEFAULT_RAIL,
+  PROJECTS_EVENT,
   PROJECTS_NEW_PRIORITY,
   PROJECTS_NEW_STATUS,
   PROJECTS_NEW_TASK,
@@ -12,20 +14,29 @@ import {
   PROJECTS_PRESET,
   PROJECTS_PRIORITY_COLORS,
   PROJECTS_PRIORITY_ORDER,
+  PROJECTS_RAIL,
   PROJECTS_STATUS_COLORS,
   PROJECTS_STATUS_ORDER,
   PROJECTS_STILL,
   projectsAddActive,
+  projectsCalendarShown,
   projectsCellHighlighted,
   projectsCellMenu,
   projectsDefaultColor,
   projectsDefaultMinutes,
   projectsDefaultPreset,
+  projectsEventCreating,
+  projectsEventDrawnIn,
+  projectsEventMinutes,
   projectsEventName,
   projectsEventNameCaretOn,
   projectsEventNameFocused,
+  projectsEventPanelFrame,
+  projectsEventRail,
   projectsListScroll,
+  projectsListShown,
   projectsNewPriority,
+  projectsPanelOpen,
   projectsNewStatus,
   projectsOptionHovered,
   projectsPlaylist,
@@ -39,6 +50,7 @@ import {
   projectsTaskDraft,
   projectsTouches,
   type ProjectsScenePhase,
+  type ProjectsSettingsTarget,
 } from "./welcome-projects-scene";
 
 const B = PROJECTS_BEATS;
@@ -74,8 +86,7 @@ describe("welcome projects scene", () => {
       const values = [
         list.status,
         list.priority,
-        settings.defaults,
-        settings.music,
+        settings.progress,
         projectsSettingsShown(elapsed),
         ...touchValues(elapsed, false),
         ...touchValues(elapsed, true),
@@ -146,16 +157,31 @@ describe("welcome projects scene", () => {
     expect(projectsSettingsShown(B.settingsTap - 1)).toBe(0);
     expect(projectsSettingsOpen(B.settingsTap - 1)).toBe(false);
     expect(projectsSettingsShown(B.nameTap)).toBe(1);
-    expect(projectsSettingsOpen(B.saveTap - 1)).toBe(true);
-    expect(projectsSettingsOpen(B.saveTap)).toBe(false);
+    expect(projectsSettingsOpen(B.settingsSaveTap - 1)).toBe(true);
+    expect(projectsSettingsOpen(B.settingsSaveTap)).toBe(false);
     expect(projectsSettingsShown(B.end)).toBe(0);
   });
 
-  it("scrolls to Event defaults before the name is typed, and to the playlists before their pickers open", () => {
-    expect(projectsSettingsScroll(B.settingsTap)).toEqual({ defaults: 0, music: 0 });
-    expect(projectsSettingsScroll(B.nameTap)).toEqual({ defaults: 1, music: 0 });
-    expect(projectsSettingsScroll(B.pomodoroPick).music).toBe(0);
-    expect(projectsSettingsScroll(B.focusTap)).toEqual({ defaults: 1, music: 1 });
+  it("scrolls each control into view before its tap, from the one before it", () => {
+    expect(projectsSettingsScroll(B.settingsTap)).toEqual({ from: null, to: null, progress: 0 });
+    expect(projectsSettingsScroll(B.nameTap)).toEqual({ from: null, to: "name", progress: 1 });
+    const taps: readonly [ProjectsSettingsTarget, number][] = [
+      ["color", B.colorTap],
+      ["duration", B.durationTap],
+      ["pomodoro", B.pomodoroTap],
+      ["focus", B.focusTap],
+      ["short-break", B.shortBreakTap],
+      ["long-break", B.longBreakTap],
+    ];
+    let previous: ProjectsSettingsTarget = "name";
+    for (const [target, tap] of taps) {
+      expect(projectsSettingsScroll(tap)).toEqual({ from: previous, to: target, progress: 1 });
+      previous = target;
+    }
+    const midColor = projectsSettingsScroll((B.colorScrollStart + B.colorScrollEnd) / 2);
+    expect(midColor.progress).toBeGreaterThan(0);
+    expect(midColor.progress).toBeLessThan(1);
+    expect(projectsSettingsScroll(B.end)).toEqual({ from: "short-break", to: "long-break", progress: 1 });
   });
 
   it("types the event name into its focused field", () => {
@@ -209,19 +235,69 @@ describe("welcome projects scene", () => {
   it("keeps the settings dirty from the first change until they are saved", () => {
     expect(projectsSettingsDirty(B.nameTap)).toBe(false);
     expect(projectsSettingsDirty(B.nameTypeStart)).toBe(true);
-    expect(projectsSettingsDirty(B.saveTap - 1)).toBe(true);
-    expect(projectsSettingsDirty(B.saveTap)).toBe(false);
+    expect(projectsSettingsDirty(B.settingsSaveTap - 1)).toBe(true);
+    expect(projectsSettingsDirty(B.settingsSaveTap)).toBe(false);
   });
 
-  it("shows every default set in its still frame, before Save", () => {
-    expect(PROJECTS_STILL).toBeLessThan(B.saveTap - FILM_TAP_MS);
-    expect(projectsSettingsShown(PROJECTS_STILL)).toBe(1);
-    expect(projectsSettingsPicker(PROJECTS_STILL, false)).toBeNull();
+  it("gives way to the Calendar once the settings are saved", () => {
+    expect(PROJECTS_BEATS.calendarIn).toBeGreaterThan(B.settingsSaveTap);
+    expect(projectsCalendarShown(B.settingsSaveTap)).toBe(0);
+    expect(projectsListShown(B.settingsSaveTap)).toBe(1);
+    expect(projectsCalendarShown(B.calendarIn)).toBe(1);
+    expect(projectsListShown(B.calendarIn)).toBe(0);
+  });
+
+  it("drags the event out to its drawn length, then grows it to the project's default duration once Novel is picked", () => {
+    const drawn = PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start;
+    expect(projectsEventDrawnIn(B.createStart - 1)).toBe(false);
+    expect(projectsEventMinutes(B.createStart)).toBe(0);
+    expect(projectsEventMinutes(B.createEnd)).toBe(drawn);
+    expect(projectsEventMinutes(B.projectPick - 1)).toBe(drawn);
+    expect(projectsEventMinutes(B.end)).toBe(PROJECTS_DEFAULT_MINUTES);
+    expect(projectsEventCreating(B.eventSaveTap - 1)).toBe(true);
+    expect(projectsEventCreating(B.eventSaveTap)).toBe(false);
+    expect(projectsEventDrawnIn(B.end)).toBe(true);
+  });
+
+  it("plans the event's rail from the panel opening, with the project's Pomodoro once picked", () => {
+    expect(projectsEventRail(B.panelOpen - 1)).toBeNull();
+    expect(projectsEventRail(B.panelOpen)).toBe(PROJECTS_DEFAULT_RAIL);
+    expect(projectsEventRail(B.projectPick)).toBe(PROJECTS_RAIL);
+    expect(PROJECTS_RAIL.end - PROJECTS_RAIL.start).toBe(PROJECTS_DEFAULT_MINUTES);
+  });
+
+  it("opens the event panel on the drawn event, and fills it with every project default as Novel is picked", () => {
+    const playlist = (key: string) => ({ icon: `icon-${key}`, name: key });
+    expect(projectsPanelOpen(B.panelOpen - 1)).toBe(false);
+    expect(projectsPanelOpen(B.panelOpen)).toBe(true);
+    expect(projectsPanelOpen(B.eventSaveTap)).toBe(false);
+
+    const before = projectsEventPanelFrame(B.projectPick - 1, NAME, playlist);
+    expect(before.picked).toBe(false);
+    expect(before.typed).toBe("");
+    expect(before.preset).not.toBe(PROJECTS_PRESET);
+    expect(before.music?.enabled).toBe(false);
+
+    const after = projectsEventPanelFrame(B.projectPick, NAME, playlist);
+    expect(after.picked).toBe(true);
+    expect(after.typed).toBe(NAME);
+    expect(after.preset).toBe(PROJECTS_PRESET);
+    expect(after.music?.enabled).toBe(true);
+    expect(after.music?.rows.map((row) => row.playlistName)).toEqual(PROJECTS_PHASES.map((phase) => PROJECTS_PLAYLISTS[phase]));
+    expect(projectsEventPanelFrame(B.projectTap, NAME, playlist).pane).toBe("groups");
+    expect(projectsEventPanelFrame(B.groupTap, NAME, playlist).pane).toBe("projects");
+    expect(after.pane).toBeNull();
+  });
+
+  it("shows the event with every project default in its still frame, its Music section open, before Save", () => {
+    const playlist = (key: string) => ({ icon: key, name: key });
+    expect(PROJECTS_STILL).toBeLessThan(B.eventSaveTap - FILM_TAP_MS);
+    expect(projectsPanelOpen(PROJECTS_STILL)).toBe(true);
+    expect(projectsEventMinutes(PROJECTS_STILL)).toBe(PROJECTS_DEFAULT_MINUTES);
+    const frame = projectsEventPanelFrame(PROJECTS_STILL, NAME, playlist);
+    expect(frame.picked).toBe(true);
+    expect(frame.music?.expanded).toBe(1);
     expect(projectsDefaultColor(PROJECTS_STILL)).toBe(PROJECTS_COLOR);
-    expect(projectsDefaultMinutes(PROJECTS_STILL)).toBe(PROJECTS_DEFAULT_MINUTES);
     expect(projectsDefaultPreset(PROJECTS_STILL)).toBe(PROJECTS_PRESET);
-    for (const phase of PROJECTS_PHASES) expect(projectsPlaylist(PROJECTS_STILL, phase)).toBe(PROJECTS_PLAYLISTS[phase]);
-    expect(projectsNewStatus(PROJECTS_STILL)).toBe(PROJECTS_NEW_STATUS);
-    expect(projectsNewPriority(PROJECTS_STILL)).toBe(PROJECTS_NEW_PRIORITY);
   });
 });

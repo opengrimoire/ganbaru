@@ -81,3 +81,18 @@ export interface WelcomeEventPanelFrame {
   /** How far the panel's body has scrolled to its end when it cannot show everything, from 0 to 1. */
   scroll: number;
 }
+
+/** One row of the drawn project picker: a group or a project, with its icon name and localized label. */
+export interface WelcomeEventPanelPickerRow {
+  id: string;
+  icon: string;
+  label: string;
+}
+
+/** The drawn project picker's groups, the picked group's projects, and the ids of the group and project picked. */
+export interface WelcomeEventPanelPicker {
+  groups: readonly WelcomeEventPanelPickerRow[];
+  projects: readonly WelcomeEventPanelPickerRow[];
+  group: string;
+  project: string;
+}

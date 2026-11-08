@@ -56,10 +56,10 @@ export const vaultSetup = {
     playingNotice: (track: string, playlist: string) => `Reproduciendo ${track} de ${playlist}`,
   },
   projects: {
-    headline: "Planea tareas en una lista y dale a cada proyecto sus valores predeterminados",
-    body: "Agrega tareas y edítalas directo en la tabla, y luego elige el nombre del evento, el color, la duración, el Pomodoro y las playlists con los que empieza cada evento nuevo del proyecto.",
+    headline: "Cada proyecto con sus propios ajustes",
+    body: "Edita tareas directo en la lista, y los eventos nuevos empiezan con el nombre, color, Pomodoro y playlists del proyecto.",
     sceneDescription:
-      "Una breve animación de la vista de lista del proyecto Novela. La tarea Redactar el capítulo 2 se agrega desde el final de la lista, y su estado se cambia a En progreso y su prioridad a Alta directamente en la tabla. Después, la configuración del proyecto se abre en los valores predeterminados de eventos, donde el nombre del evento se fija en Sesión de escritura, el color en uno nuevo, la duración en 2 horas y el Pomodoro en Creativo, se elige una playlist para el enfoque, los descansos cortos y los descansos largos, y la configuración se guarda.",
+      "Una breve animación de la vista de lista del proyecto Novela. La tarea Redactar el capítulo 2 se agrega desde el final de la lista, y su estado se cambia a En progreso y su prioridad a Alta directamente en la tabla. Después, la configuración del proyecto se abre en los valores predeterminados de eventos, donde el nombre del evento se fija en Sesión de escritura, el color en uno nuevo, la duración en 2 horas y el Pomodoro en Creativo, se elige una playlist para el enfoque, los descansos cortos y los descansos largos, y la configuración se guarda. En el Calendario, se arrastra un evento nuevo, y al elegir Novela para él recibe el nombre Sesión de escritura, el color nuevo, 2 horas, el Pomodoro Creativo y las tres playlists.",
     project: "Novela",
     eventName: "Sesión de escritura",
     task: {

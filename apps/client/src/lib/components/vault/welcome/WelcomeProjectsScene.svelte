@@ -1,4 +1,12 @@
 <script lang="ts" module>
+  import { calendarZoomGridMinutesForPercent, calendarZoomHourHeightForPercent } from "$lib/calendar/zoom-levels";
+
+  /** The Calendar zoom the scene's day is drawn at, zoomed in from the default so the short drawn event reads tall. */
+  const SCENE_ZOOM_PERCENT = 150;
+  const HOUR_PX = calendarZoomHourHeightForPercent(SCENE_ZOOM_PERCENT);
+  /** How the event snaps while it is dragged out, in minutes, as the Calendar snaps at the scene's zoom. */
+  const CREATE_SNAP_MINUTES = calendarZoomGridMinutesForPercent(SCENE_ZOOM_PERCENT);
+
   /** Canvas geometry in logical pixels: a width and a height the room chooses between these bounds. */
   const MIN_CANVAS_W = 360;
   const MAX_CANVAS_W = 760;
@@ -20,6 +28,8 @@
   import Columns3 from "@lucide/svelte/icons/columns-3";
   import Music from "@lucide/svelte/icons/eighth-notes";
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
+  import Repeat from "@lucide/svelte/icons/repeat";
+  import Users from "@lucide/svelte/icons/users";
   import Feather from "@lucide/svelte/icons/feather";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import Heart from "@lucide/svelte/icons/heart";
@@ -51,8 +61,22 @@
   import ProjectStatusBadge from "$lib/components/projects/ProjectStatusBadge.svelte";
   import { projectListColumnKind } from "$lib/components/projects/list/property-kinds";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
-  import { FALLBACK_COLOR_INDEX } from "$lib/calendar/types";
-  import { EVENT_COLOR_OPTIONS, getEventColor } from "$lib/calendar/utils";
+  import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
+  import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
+  import { GUTTER_WIDTH_PER_TIMEZONE } from "$lib/calendar/timezone-utils";
+  import { FALLBACK_COLOR_INDEX, type EventColor } from "$lib/calendar/types";
+  import {
+    CALENDAR_EVENT_RIGHT_GUTTER_PCT,
+    dayNameFormatForWidth,
+    EVENT_COLOR_OPTIONS,
+    formatDayName,
+    formatTimeRange,
+    getEventColor,
+    getHourInTimezone,
+    getLocalTimezone,
+    getPastEventColor,
+    getTimezoneInfo,
+  } from "$lib/calendar/utils";
   import { contrastRatio } from "$lib/color/math";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -70,14 +94,19 @@
   import type { ProjectCoreTaskListColumn, ProjectStatus, ProjectStatusCategory } from "$lib/projects/types";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
-  import { resolveCalendarTokens } from "$lib/themes";
+  import { isThemeCalendarDark, resolveCalendarTokens } from "$lib/themes";
   import { cn } from "$lib/utils";
+  import type { EventPanelAnchor } from "$lib/utils/responsive";
   import { pickSelectPopoverGeometry, type SelectPopoverRect } from "$lib/utils/select-popover-position";
-  import { filmWorkday } from "$lib/vault/welcome-film";
+  import type { WelcomeEventPanelPicker } from "$lib/vault/welcome-event-panel";
+  import { filmSpan, filmWorkday, type FilmSpan } from "$lib/vault/welcome-film";
   import { MUSIC_PLAYLISTS, type MusicScenePlaylist } from "$lib/vault/welcome-music-scene";
   import {
+    PROJECTS_BEATS,
+    PROJECTS_CLOCK,
     PROJECTS_COLOR,
     PROJECTS_DEFAULT_MINUTES,
+    PROJECTS_EVENT,
     PROJECTS_NEW_PRIORITY,
     PROJECTS_NEW_STATUS,
     PROJECTS_NEW_TASK,
@@ -86,19 +115,29 @@
     PROJECTS_PRESET,
     PROJECTS_PRIORITY_COLORS,
     PROJECTS_PRIORITY_ORDER,
+    PROJECTS_SETTINGS_TARGETS,
     PROJECTS_STATUS_COLORS,
     PROJECTS_STATUS_ORDER,
     PROJECTS_TASKS,
     projectsAddActive,
+    projectsCalendarShown,
     projectsCellHighlighted,
     projectsCellMenu,
     projectsDefaultColor,
     projectsDefaultMinutes,
     projectsDefaultPreset,
+    projectsEventCreating,
+    projectsEventDrawnIn,
+    projectsEventMinutes,
     projectsEventName,
     projectsEventNameCaretOn,
     projectsEventNameFocused,
+    projectsEventPanelFrame,
+    projectsEventPicked,
+    projectsEventRail,
     projectsListScroll,
+    projectsListShown,
+    projectsPanelOpen,
     projectsNewPriority,
     projectsNewStatus,
     projectsOptionHovered,
@@ -117,14 +156,16 @@
     type ProjectsScenePriority,
     type ProjectsSceneStatus,
     type ProjectsSceneTaskEntry,
+    type ProjectsSettingsTarget,
   } from "$lib/vault/welcome-projects-scene";
 
   /**
    * One frame of the welcome scene on Projects, drawn with the app's own surfaces. In the Novel project's List view, a
    * task is typed into the add row and added, and its status and priority are changed from their cells' menus. Project
-   * settings then open from the header and scroll to Event defaults, where the event name is typed, a color, a duration,
-   * and a Pomodoro are picked, a playlist is picked for each phase, and the settings are saved. Every style is a function
-   * of `elapsed`, with no CSS transitions.
+   * settings then open from the header on Event defaults, where the event name is typed, a color, a duration, and a
+   * Pomodoro are picked, a playlist is picked for each phase, and the settings are saved, each control scrolled into
+   * view before its tap. In the Calendar, an event is then dragged out, and picking Novel in its panel gives it every
+   * default just saved. Every style is a function of `elapsed`, with no CSS transitions.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -168,8 +209,10 @@
   const STACKED_ROWS_W = 480;
   /** Where the Defaults heading rests once the settings scroll to it, below the top of their viewport. */
   const DEFAULTS_SCROLL_PAD = 4;
-  /** Room kept under the playlists once the settings scroll on to them. */
-  const MUSIC_SCROLL_PAD = 12;
+  /** Room kept above or below a settings control once the settings scroll it into view. */
+  const CONTROL_SCROLL_PAD = 8;
+  /** Room kept so a popover that just fits by measure still fits after rounding. */
+  const FIT_SLACK_PX = 1;
   /** The project header's end padding (`px-3`), so the settings button's right edge is known. */
   const HEADER_END_PX = 12;
 
@@ -184,6 +227,45 @@
   /** The playlist picker's width and height caps, as the playlist select sizes it. */
   const PLAYLIST_POPOVER_W = 320;
   const PLAYLIST_POPOVER_MAX_H = 520;
+
+  /** The Calendar's day header and time gutter. */
+  const CAL_HEADER_H = 40;
+  const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
+  /** The Calendar's Focus rail, and the event area it keeps beside it on every event. */
+  const RAIL_LEFT = 2;
+  const RAIL_W = 6;
+  const EVENT_LEFT = RAIL_W + 4;
+  const DAY_BORDER_PX = 1;
+  const EVENT_GAP_PX = 2;
+  const EVENT_TIME_MIN_PX = 32;
+  const EVENT_ICONS_MIN_PX = 17;
+  /** How quickly the press that draws the event fades in and out. */
+  const PRESS_FADE_MS = 140;
+  /** Where the visible part of the day starts, as if the grid were scrolled so the event sits near the top. */
+  const VIEW_START = 9 * 60 + 20;
+
+  /** Palette slots, so the drawing follows the active theme's event colors, as the Calendar film picks them. */
+  const BLUE = 18;
+  const LAVENDER = 20;
+  const EATING = 13;
+
+  type SceneTitle = "readSources" | "lunch" | "teamMeeting";
+  type SceneIcon = "music" | "repeat" | "meeting";
+  interface SceneEvent {
+    start: number;
+    end: number;
+    color: EventColor;
+    title: SceneTitle;
+    icons: readonly SceneIcon[];
+  }
+
+  const ICON_ORDER: readonly SceneIcon[] = ["music", "repeat", "meeting"];
+  /** The rest of the day around the event, clear of the two hours the event grows to. */
+  const DAY_EVENTS: readonly SceneEvent[] = [
+    { start: 8 * 60 + 30, end: 9 * 60 + 30, color: BLUE, title: "readSources", icons: [] },
+    { start: 13 * 60, end: 14 * 60, color: EATING, title: "lunch", icons: ["repeat"] },
+    { start: 14 * 60, end: 15 * 60, color: LAVENDER, title: "teamMeeting", icons: ["repeat", "meeting"] },
+  ];
 
   /** Each status a new project seeds, with its category. */
   const STATUS_CATEGORIES: Readonly<Record<ProjectsSceneStatus, ProjectStatusCategory>> = {
@@ -218,16 +300,15 @@
     priorityMenuHeight: number;
   }
 
-  /** Where the settings' parts sit, measured once the panel lays itself out for the canvas. */
+  /**
+   * Where the settings' parts sit, measured once the panel lays itself out for the canvas. The viewport is within the
+   * panel, and the Defaults heading and the controls are within the settings' content, before any scroll.
+   */
   interface SettingsLayout {
     viewport: Box;
     contentHeight: number;
     defaultsTop: number;
-    playlistsBottom: number;
-    color: Box;
-    duration: Box;
-    pomodoro: Box;
-    playlists: Record<ProjectsScenePhase, Box>;
+    controls: Record<ProjectsSettingsTarget, Box>;
     paletteWidth: number;
     paletteHeight: number;
     durationMenuHeight: number;
@@ -238,10 +319,11 @@
     rem: number;
   }
 
-  const EMPTY_BOX: Box = { top: 0, left: 0, width: 0, height: 0 };
-
-  const sceneDate = filmWorkday(new Date());
+  const now = new Date();
+  const sceneDate = filmWorkday(now);
   const today = isoDay(0);
+  const timezone = getLocalTimezone();
+  const timezoneLabel = getTimezoneInfo(timezone).acronym;
 
   const taskColumns: readonly ProjectCoreTaskListColumn[] = DEFAULT_TASK_LIST_COLUMNS;
   const gridTemplate = projectTaskListGridTemplate(taskColumns);
@@ -274,6 +356,61 @@
   const eventName = $derived(projectsEventName(elapsed, t("vaultSetup.projects.eventName")));
   const openPhase = $derived(picker === "focus" || picker === "short-break" || picker === "long-break" ? picker : null);
 
+  const listShown = $derived(projectsListShown(elapsed));
+  const calendarShown = $derived(projectsCalendarShown(elapsed));
+  const calendarDark = $derived(isThemeCalendarDark(theme.current));
+  const fullEventName = $derived(t("vaultSetup.projects.eventName"));
+  const drawnIn = $derived(projectsEventDrawnIn(elapsed));
+  const creating = $derived(projectsEventCreating(elapsed));
+  const eventPicked = $derived(projectsEventPicked(elapsed));
+  const eventPanelOpen = $derived(projectsPanelOpen(elapsed));
+  const rail = $derived(projectsEventRail(elapsed));
+  /** The event's length: snapped as the Calendar snaps while it is dragged out, then growing to the project's default. */
+  const eventMinutes = $derived(
+    eventPicked
+      ? projectsEventMinutes(elapsed)
+      : Math.max(CREATE_SNAP_MINUTES, Math.round(projectsEventMinutes(elapsed) / CREATE_SNAP_MINUTES) * CREATE_SNAP_MINUTES),
+  );
+  const pressOpacity = $derived(
+    filmSpan(elapsed, PROJECTS_BEATS.createStart - PRESS_FADE_MS, PROJECTS_BEATS.createStart)
+      * (1 - filmSpan(elapsed, PROJECTS_BEATS.createEnd, PROJECTS_BEATS.createEnd + PRESS_FADE_MS)),
+  );
+  const viewMinutes = $derived(((canvasH - TOP_BAR_H - CAL_HEADER_H) / HOUR_PX) * 60);
+  const hours = $derived(
+    Array.from({ length: Math.ceil(viewMinutes / 60) + 1 }, (_, index) => Math.ceil(VIEW_START / 60) + index)
+      .filter((hour) => hour * 60 > VIEW_START && hour * 60 < VIEW_START + viewMinutes),
+  );
+  const scrollThumb = $derived.by(() => {
+    const visibleHeight = canvasH - TOP_BAR_H - CAL_HEADER_H;
+    return calendarScrollbarThumb(
+      { scrollTop: (VIEW_START / 60) * HOUR_PX, scrollHeight: 24 * HOUR_PX, clientHeight: visibleHeight },
+      visibleHeight,
+    );
+  });
+  const dayFormat = $derived(dayNameFormatForWidth(canvasW - GUTTER_W));
+  /** The event panel's anchor: the event as it was drawn, in the day's only column. */
+  const panelAnchor = $derived.by<EventPanelAnchor>(() => {
+    const columnLeft = GUTTER_W + DAY_BORDER_PX + EVENT_LEFT;
+    const blockWidth = ((canvasW - columnLeft) * (100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT)) / 100;
+    return {
+      x: columnLeft + blockWidth,
+      y: TOP_BAR_H + CAL_HEADER_H + y(PROJECTS_EVENT.start),
+      width: blockWidth,
+      height: px(PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start),
+    };
+  });
+  /** The event panel's project picker: the groups the Calendar film shows, with Novel in Personal. */
+  const eventPicker = $derived<WelcomeEventPanelPicker>({
+    groups: [
+      { id: "university", icon: "lucide:graduation-cap", label: t("vaultSetup.film.universityGroup") },
+      { id: "health", icon: "lucide:apple", label: t("vaultSetup.film.healthGroup") },
+      { id: "personal", icon: "lucide:heart", label: t("vaultSetup.film.personalGroup") },
+    ],
+    projects: [{ id: "novel", icon: "lucide:feather", label: t("vaultSetup.projects.project") }],
+    group: "personal",
+    project: "novel",
+  });
+
   /** The tasks the list shows: the General section's, then the added one with the status and priority it has so far. */
   const tasks = $derived<readonly ProjectsSceneTaskEntry[]>(
     taskAdded ? [...PROJECTS_TASKS, { ...PROJECTS_NEW_TASK, status: newStatus, priority: newPriority }] : PROJECTS_TASKS,
@@ -302,10 +439,11 @@
   let priorityCell = $state<HTMLSpanElement>();
   let statusMenu = $state<HTMLDivElement>();
   let priorityMenu = $state<HTMLDivElement>();
+  let settingsPanel = $state<HTMLDivElement>();
   let settingsViewport = $state<HTMLDivElement>();
   let settingsContent = $state<HTMLDivElement>();
   let defaultsSection = $state<HTMLElement>();
-  let playlistRows = $state<HTMLDivElement>();
+  let eventNameTrigger = $state<HTMLSpanElement>();
   let colorTrigger = $state<HTMLDivElement>();
   let durationTrigger = $state<HTMLDivElement>();
   let pomodoroTrigger = $state<HTMLDivElement>();
@@ -320,9 +458,27 @@
   let playlistMenu = $state<HTMLDivElement>();
   let listLayout = $state<ListLayout | null>(null);
   let settingsLayout = $state<SettingsLayout | null>(null);
+  /** Bumped whenever the canvas or the measured content resizes, or fonts finish loading, so the layout is measured again. */
+  let layoutTick = $state(0);
+
+  $effect(() => {
+    const bump = () => {
+      layoutTick += 1;
+    };
+    const observed = [canvas, listContent, settingsContent].filter((element): element is HTMLDivElement => element !== undefined);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(bump);
+    for (const element of observed) observer?.observe(element);
+    const fonts = typeof document === "undefined" ? undefined : document.fonts;
+    fonts?.addEventListener("loadingdone", bump);
+    return () => {
+      observer?.disconnect();
+      fonts?.removeEventListener("loadingdone", bump);
+    };
+  });
 
   /** Measure the list and the settings once they lay themselves out for the canvas and the language. */
   $effect(() => {
+    void layoutTick;
     void canvasW;
     void canvasH;
     void stackedRows;
@@ -340,18 +496,23 @@
     }
     const { focus, "short-break": shortBreak, "long-break": longBreak } = playlistTriggers;
     if (
-      settingsViewport && settingsContent && defaultsSection && playlistRows && colorTrigger && durationTrigger && pomodoroTrigger
-      && focus && shortBreak && longBreak && palette && durationMenu && pomodoroMenu && playlistMenu
+      settingsPanel && settingsViewport && settingsContent && defaultsSection && eventNameTrigger && colorTrigger && durationTrigger
+      && pomodoroTrigger && focus && shortBreak && longBreak && palette && durationMenu && pomodoroMenu && playlistMenu
     ) {
+      const content = settingsContent;
       settingsLayout = {
-        viewport: boxOf(settingsViewport),
-        contentHeight: settingsContent.offsetHeight,
-        defaultsTop: defaultsSection.offsetTop,
-        playlistsBottom: playlistRows.offsetTop + playlistRows.offsetHeight,
-        color: boxOf(colorTrigger),
-        duration: boxOf(durationTrigger),
-        pomodoro: boxOf(pomodoroTrigger),
-        playlists: { focus: boxOf(focus), "short-break": boxOf(shortBreak), "long-break": boxOf(longBreak) },
+        viewport: relBox(settingsViewport, settingsPanel),
+        contentHeight: content.offsetHeight,
+        defaultsTop: relBox(defaultsSection, content).top,
+        controls: {
+          name: relBox(eventNameTrigger, content),
+          color: relBox(colorTrigger, content),
+          duration: relBox(durationTrigger, content),
+          pomodoro: relBox(pomodoroTrigger, content),
+          focus: relBox(focus, content),
+          "short-break": relBox(shortBreak, content),
+          "long-break": relBox(longBreak, content),
+        },
         paletteWidth: palette.offsetWidth,
         paletteHeight: palette.offsetHeight,
         durationMenuHeight: durationMenu.offsetHeight,
@@ -392,16 +553,58 @@
     return { left, top };
   });
 
-  /** How far the settings have scrolled: to the Defaults heading, then on until the playlists are in view. */
+  /**
+   * Where the settings rest for each control: the Defaults heading at the top for the event name, then for every other
+   * control the least scroll from the one before that brings it into view. The color also keeps room for its palette
+   * below or above it on the canvas, so the palette never covers its own trigger on a short canvas.
+   */
+  const settingsOffsets = $derived.by<Record<ProjectsSettingsTarget, number> | null>(() => {
+    const layout = settingsLayout;
+    if (!layout) return null;
+    const viewportHeight = layout.viewport.height;
+    const maxScroll = Math.max(0, layout.contentHeight - viewportHeight);
+    const clamp = (value: number) => Math.min(maxScroll, Math.max(0, value));
+    const base = panel.top + layout.viewport.top;
+    const paletteGap = (PALETTE_PADDING_REM / 2) * layout.rem;
+    const offsets = {} as Record<ProjectsSettingsTarget, number>;
+    let previous = 0;
+    for (const target of PROJECTS_SETTINGS_TARGETS) {
+      const box = layout.controls[target];
+      let offset: number;
+      if (target === "name") {
+        offset = clamp(layout.defaultsTop - DEFAULTS_SCROLL_PAD);
+      } else {
+        const pad = CONTROL_SCROLL_PAD;
+        let low = clamp(box.top + box.height + pad - viewportHeight);
+        let high = Math.max(low, clamp(box.top - pad));
+        if (target === "color") {
+          const belowLow = base + box.top + box.height + paletteGap + layout.paletteHeight + PALETTE_EDGE - canvasH + FIT_SLACK_PX;
+          const aboveHigh = base + box.top - paletteGap - layout.paletteHeight - PALETTE_EDGE - FIT_SLACK_PX;
+          const nearest = (from: number, to: number) => Math.min(to, Math.max(from, previous));
+          const below = belowLow <= high ? { low: Math.max(low, belowLow), high } : null;
+          const above = aboveHigh >= low ? { low, high: Math.min(high, aboveHigh) } : null;
+          const fits = [below, above].filter((range): range is { low: number; high: number } => range !== null && range.low <= range.high);
+          if (fits.length > 0) {
+            const best = fits.reduce((chosen, range) =>
+              Math.abs(nearest(range.low, range.high) - previous) < Math.abs(nearest(chosen.low, chosen.high) - previous) ? range : chosen);
+            low = best.low;
+            high = best.high;
+          }
+        }
+        offset = Math.min(high, Math.max(low, previous));
+      }
+      offsets[target] = offset;
+      previous = offset;
+    }
+    return offsets;
+  });
+
+  /** How far the settings have scrolled, easing from one control's rest to the next as each comes up. */
   const settingsScrollPx = $derived.by(() => {
-    if (!settingsLayout) return 0;
-    const maxScroll = Math.max(0, settingsLayout.contentHeight - settingsLayout.viewport.height);
-    const defaultsTarget = Math.min(maxScroll, Math.max(0, settingsLayout.defaultsTop - DEFAULTS_SCROLL_PAD));
-    const musicTarget = Math.min(
-      maxScroll,
-      Math.max(defaultsTarget, settingsLayout.playlistsBottom + MUSIC_SCROLL_PAD - settingsLayout.viewport.height),
-    );
-    return defaultsTarget * settingsScroll.defaults + (musicTarget - defaultsTarget) * settingsScroll.music;
+    if (!settingsOffsets) return 0;
+    const from = settingsScroll.from ? settingsOffsets[settingsScroll.from] : 0;
+    const to = settingsScroll.to ? settingsOffsets[settingsScroll.to] : 0;
+    return from + (to - from) * settingsScroll.progress;
   });
 
   /** A settings control's trigger as a rectangle on the canvas, at the settings' current scroll. */
@@ -419,7 +622,7 @@
     if (!settingsLayout || (picker !== "duration" && picker !== "pomodoro")) return null;
     const duration = picker === "duration";
     return pickSelectPopoverGeometry({
-      triggerRect: settingsRect(duration ? settingsLayout.duration : settingsLayout.pomodoro),
+      triggerRect: settingsRect(duration ? settingsLayout.controls.duration : settingsLayout.controls.pomodoro),
       boundaryRect: canvasRect,
       contentHeight: duration ? settingsLayout.durationMenuHeight : settingsLayout.pomodoroMenuHeight,
       contentWidth: duration ? settingsLayout.durationMenuWidth : settingsLayout.pomodoroMenuWidth,
@@ -431,7 +634,7 @@
   const playlistGeometry = $derived.by(() => {
     if (!settingsLayout || !openPhase) return null;
     return pickSelectPopoverGeometry({
-      triggerRect: settingsRect(settingsLayout.playlists[openPhase]),
+      triggerRect: settingsRect(settingsLayout.controls[openPhase]),
       boundaryRect: canvasRect,
       contentHeight: settingsLayout.playlistMenuHeight,
       contentWidth: PLAYLIST_POPOVER_W,
@@ -442,7 +645,7 @@
   /** The color palette's place: below its trigger when it fits, above it otherwise, and kept on the canvas. */
   const palettePlace = $derived.by(() => {
     if (!settingsLayout || picker !== "color") return null;
-    const trigger = settingsRect(settingsLayout.color);
+    const trigger = settingsRect(settingsLayout.controls.color);
     const { paletteWidth, paletteHeight } = settingsLayout;
     const offset = (PALETTE_PADDING_REM / 2) * settingsLayout.rem;
     const maxLeft = Math.max(PALETTE_EDGE, canvasW - paletteWidth - PALETTE_EDGE);
@@ -482,9 +685,20 @@
   const memberName = $derived(preferences.profileDisplayName.trim() || t("contacts.you"));
   const memberDetail = $derived(preferences.profileDisplayName.trim() ? t("contacts.you") : null);
 
-  /** An element's place within its positioned parent. */
-  function boxOf(element: HTMLElement): Box {
-    return element ? { top: element.offsetTop, left: element.offsetLeft, width: element.offsetWidth, height: element.offsetHeight } : EMPTY_BOX;
+  /**
+   * An element's place within `ancestor`, in the ancestor's logical pixels, so the scene's scale and any transform the two
+   * share do not count.
+   */
+  function relBox(element: HTMLElement, ancestor: HTMLElement): Box {
+    const rect = element.getBoundingClientRect();
+    const origin = ancestor.getBoundingClientRect();
+    const scale = ancestor.offsetWidth > 0 && origin.width > 0 ? origin.width / ancestor.offsetWidth : 1;
+    return {
+      top: (rect.top - origin.top) / scale,
+      left: (rect.left - origin.left) / scale,
+      width: rect.width / scale,
+      height: rect.height / scale,
+    };
   }
 
   /** An element's place on the canvas, summed through its positioned parents so the scene's scale and scrolls do not count. */
@@ -566,6 +780,46 @@
     return MUSIC_PLAYLISTS.find((entry) => entry.key === key)?.icon ?? "";
   }
 
+  function playlistLookup(key: MusicScenePlaylist): { icon: string; name: string } {
+    return { icon: playlistIcon(key), name: playlistName(key) };
+  }
+
+  function title(key: SceneTitle): string {
+    switch (key) {
+      case "readSources": return t("vaultSetup.film.readSources");
+      case "lunch": return t("vaultSetup.film.lunch");
+      case "teamMeeting": return t("vaultSetup.film.teamMeeting");
+    }
+  }
+
+  function y(minuteOfDay: number): number {
+    return ((minuteOfDay - VIEW_START) / 60) * HOUR_PX;
+  }
+
+  function px(minutes: number): number {
+    return (minutes / 60) * HOUR_PX;
+  }
+
+  function clockLabel(minuteOfDay: number): string {
+    const hour = Math.floor(minuteOfDay / 60);
+    const minute = Math.round(minuteOfDay % 60);
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+
+  function timeRange(start: number, end: number): string {
+    return formatTimeRange(clockLabel(start), clockLabel(end), preferences.calendarTimeFormat, "compact");
+  }
+
+  function hourLabel(hour: number): string {
+    const label = getHourInTimezone(now, hour, timezone, preferences.calendarTimeFormat, "short");
+    if (preferences.calendarTimeFormat !== "12h") return label;
+    return label.replace(/\b(am|pm)\b$/, (period) => period.toUpperCase());
+  }
+
+  function eventColors(color: EventColor | undefined, past: boolean) {
+    return preferences.calendarDimPastEvents && past ? getPastEventColor(color, theme.current) : getEventColor(color, theme.current);
+  }
+
   function phaseLabel(phase: ProjectsScenePhase): string {
     if (showSoundscapes) return t(`music.assignment.phase.${phase}`);
     if (phase === "focus") return t("projects.settings.focusPlaylist");
@@ -640,10 +894,76 @@
   </span>
 {/snippet}
 
+{#snippet eventBlock(
+  start: number,
+  end: number,
+  color: EventColor | undefined,
+  label: string,
+  past: boolean,
+  outline: boolean,
+  eventBelow: boolean,
+  icons: readonly SceneIcon[],
+)}
+  {@const colors = outline ? getEventColor(color, theme.current) : eventColors(color, past)}
+  {@const shownIcons = px(end - start) >= EVENT_ICONS_MIN_PX ? ICON_ORDER.filter((icon) => icons.includes(icon)) : []}
+  <div
+    class="absolute left-0 flex overflow-hidden rounded text-[0.8rem] leading-tight"
+    style:width={`${100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT}%`}
+    style:top={`${y(start)}px`}
+    style:height={`${px(end - start) - (eventBelow ? EVENT_GAP_PX : 0)}px`}
+    style:background-color={colors.bg}
+    style:color={colors.text}
+    style:outline={outline ? `2px solid color-mix(in oklab, ${colors.bg} 65%, ${calendarDark ? "white" : "black"})` : undefined}
+    style:z-index={outline ? 10 : 3}
+  >
+    <div class="relative min-w-0 flex-1 overflow-hidden px-1 py-0.5">
+      {#if shownIcons.length > 0}
+        <div class="absolute right-1 flex items-center gap-0.5" style:top="5px" style:color={`color-mix(in srgb, ${colors.text} 70%, ${colors.bg})`}>
+          {#each shownIcons as icon (icon)}
+            {#if icon === "music"}
+              <Music size={9} class="shrink-0" />
+            {:else if icon === "repeat"}
+              <Repeat size={9} class="shrink-0" />
+            {:else}
+              <Users size={9} class="shrink-0" />
+            {/if}
+          {/each}
+        </div>
+      {/if}
+      <div class="truncate font-medium" class:pr-5={shownIcons.length > 0}>{label}</div>
+      {#if px(end - start) >= EVENT_TIME_MIN_PX}
+        <div class="truncate" style:color={`color-mix(in srgb, ${colors.text} 80%, ${colors.bg})`}>{timeRange(start, end)}</div>
+      {/if}
+    </div>
+  </div>
+{/snippet}
+
+{#snippet focusRail(start: number, end: number, breaks: readonly FilmSpan[])}
+  {@const length = end - start}
+  <div
+    class="pointer-events-none absolute z-3 overflow-hidden"
+    style:left={`${RAIL_LEFT}px`}
+    style:width={`${RAIL_W}px`}
+    style:top={`${y(start)}px`}
+    style:height={`${px(length)}px`}
+    style:background-color="var(--cal-timeline-rail)"
+    style:border-radius="3px"
+  >
+    {#each breaks as band, index (index)}
+      <div
+        class="absolute inset-x-0"
+        style:top={`${((band.start - start) / length) * 100}%`}
+        style:height={`${((band.end - band.start) / length) * 100}%`}
+        style:background-color="var(--cal-timeline-break)"
+      ></div>
+    {/each}
+  </div>
+{/snippet}
+
 {#snippet eventNameControl()}
   {@const focused = projectsEventNameFocused(elapsed)}
   {@const caretOn = projectsEventNameCaretOn(elapsed)}
-  <span class={cn("field relative flex min-w-0 items-center px-2.5 text-left font-medium text-foreground", stackedRows ? "w-full" : "w-44")}>
+  <span bind:this={eventNameTrigger} class={cn("field relative flex min-w-0 items-center px-2.5 text-left font-medium text-foreground", stackedRows ? "w-full" : "w-44")}>
     <span class="min-w-0 truncate">
       {#if eventName}{eventName}{#if focused && caretOn}{@render caret()}{/if}{:else}{#if focused && caretOn}{@render caret()}{/if}<span class="text-muted-foreground">{t("common.none")}</span>{/if}
     </span>
@@ -688,7 +1008,10 @@
     {#if mobileShell}
       <!-- The phone's top bar, with the Novel project's context switcher. -->
       <div class="flex shrink-0 items-center gap-2 bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
-        <span class="flex h-9 min-w-0 items-center gap-2 rounded-full bg-accent/55 pr-2.5 pl-2 text-identity font-medium">
+        <span
+          class="flex h-9 min-w-0 items-center gap-2 rounded-full bg-accent/55 pr-2.5 pl-2 text-identity font-medium"
+          style:opacity={listShown < 1 ? listShown : undefined}
+        >
           <span class="grid size-5 shrink-0 place-items-center"><Feather size={IDENTITY_ICON_SIZE} strokeWidth={IDENTITY_ICON_STROKE_WIDTH} /></span>
           <span class="truncate">{t("vaultSetup.projects.project")}</span>
           <ChevronDown size={16} class="shrink-0 text-muted-foreground" />
@@ -877,6 +1200,122 @@
           </div>
         </div>
       </div>
+
+      <!-- The Calendar's day, as the Calendar film draws it, where the drawn event takes the Novel project's defaults. -->
+      {#if calendarShown > 0}
+        <div class="absolute inset-0 z-45 flex flex-col bg-(--cal-bg)" style:opacity={calendarShown < 1 ? calendarShown : undefined}>
+          <div class="flex shrink-0 border-b border-sidebar" style:height={`${CAL_HEADER_H}px`}>
+            <span class="flex shrink-0 items-center justify-center text-[0.866667rem]" style:width={`${GUTTER_W}px`}>{timezoneLabel}</span>
+            <div class="flex min-w-0 flex-1 items-center justify-center overflow-hidden whitespace-nowrap">
+              <span class="text-[0.866667rem]">
+                {#if dayFormat !== "none"}{formatDayName(sceneDate, dayFormat, localization.locale)}&nbsp;{/if}{sceneDate.getDate()}
+              </span>
+            </div>
+          </div>
+
+          <div class="relative flex min-h-0 flex-1 overflow-hidden">
+            {#if scrollThumb.height > 0}
+              <div class="absolute inset-y-0 right-0 z-48" style:width={`${CALENDAR_SCROLLBAR_TRACK_PX}px`}>
+                <div
+                  class="absolute inset-x-0.5 rounded-full"
+                  style:top={`${scrollThumb.top}px`}
+                  style:height={`${scrollThumb.height}px`}
+                  style:background-color="var(--cal-scrollbar-thumb, var(--muted))"
+                ></div>
+              </div>
+            {/if}
+            <div class="relative shrink-0" style:width={`${GUTTER_W}px`}>
+              {#each hours as hour (hour)}
+                <span
+                  class="absolute -translate-x-1/2 whitespace-nowrap text-[0.733333rem] leading-none antialiased"
+                  style:top={`calc(${y(hour * 60)}px - 0.45em)`}
+                  style:left={preferences.calendarTimeFormat === "12h" ? "calc(50% - 0.2px)" : "50%"}
+                  style:color="var(--cal-time-label)"
+                >{hourLabel(hour)}</span>
+              {/each}
+            </div>
+
+            <div class="relative min-w-0 flex-1" style:border-left="1px solid var(--cal-gridline)">
+              <div class="pointer-events-none absolute inset-0 z-1">
+                {#each hours as hour (hour)}
+                  <div class="absolute inset-x-0 h-0 border-b border-(--cal-gridline)" style:top={`${y(hour * 60)}px`}></div>
+                {/each}
+              </div>
+
+              {#if rail}
+                {@render focusRail(rail.start, rail.end, rail.breaks)}
+              {/if}
+
+              <div class="absolute inset-y-0 right-0" style:left={`${EVENT_LEFT}px`}>
+                {#each DAY_EVENTS as event (event.start)}
+                  {@render eventBlock(
+                    event.start,
+                    event.end,
+                    event.color,
+                    title(event.title),
+                    event.end <= PROJECTS_CLOCK,
+                    false,
+                    DAY_EVENTS.some((other) => other.start === event.end),
+                    event.icons,
+                  )}
+                {/each}
+                {#if creating}
+                  {@render eventBlock(
+                    PROJECTS_EVENT.start,
+                    PROJECTS_EVENT.start + eventMinutes,
+                    eventPicked ? PROJECTS_COLOR : undefined,
+                    eventPicked ? fullEventName : t("calendar.event.noTitle"),
+                    false,
+                    true,
+                    false,
+                    eventPicked ? ["music"] : [],
+                  )}
+                {:else if drawnIn}
+                  {@render eventBlock(
+                    PROJECTS_EVENT.start,
+                    PROJECTS_EVENT.start + PROJECTS_DEFAULT_MINUTES,
+                    PROJECTS_COLOR,
+                    fullEventName,
+                    false,
+                    false,
+                    false,
+                    ["music"],
+                  )}
+                {/if}
+
+                <!-- The drawn event's resize knobs, as a phone shows them from the start of the drawing until Save. -->
+                {#if mobileShell && creating}
+                  <div
+                    class="pointer-events-none absolute left-0"
+                    style:width={`${100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT}%`}
+                    style:top={`${y(PROJECTS_EVENT.start)}px`}
+                    style:height={`${px(eventMinutes)}px`}
+                    style:z-index="11"
+                    style:--knob-color={getEventColor(eventPicked ? PROJECTS_COLOR : undefined, theme.current).bg}
+                  >
+                    <div class="resize-knob absolute top-0 left-0"></div>
+                    <div class="resize-knob absolute right-0 bottom-0"></div>
+                  </div>
+                {/if}
+
+                <!-- The press that draws the event, following its growing edge. -->
+                {#if pressOpacity > 0}
+                  <span
+                    class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
+                    style:top={`${y(PROJECTS_EVENT.start + eventMinutes)}px`}
+                    style:opacity={pressOpacity}
+                  ></span>
+                {/if}
+              </div>
+
+              <div class="pointer-events-none absolute inset-x-0" style:top={`${y(PROJECTS_CLOCK)}px`} style:z-index="46">
+                <div class="absolute size-2.5 shrink-0 rounded-full" style:background-color="var(--cal-current-time)" style:left="-5px" style:top="-5px"></div>
+                <div class="absolute inset-x-0 h-[2.3px]" style:background-color="var(--cal-current-time)" style:top="-1.15px"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      {/if}
     </div>
 
     <!-- The added task's status and priority menus. Both stay laid out while hidden so their size is known before they open. -->
@@ -919,6 +1358,7 @@
 
     <!-- Project settings, as the header's settings button opens them. They stay laid out while hidden so they can be measured. -->
     <div
+      bind:this={settingsPanel}
       class="absolute z-50"
       style:left={`${panel.left}px`}
       style:top={`${panel.top}px`}
@@ -1023,7 +1463,7 @@
                     </span>
                   </div>
                 {/if}
-                <div bind:this={playlistRows} class="phase-music">
+                <div class="phase-music">
                   <div class={cn("phase-music-grid", showSoundscapes && "with-sounds")}>
                     {#each PROJECTS_PHASES as phase (phase)}
                       {@const playlist = projectsPlaylist(elapsed, phase)}
@@ -1209,10 +1649,47 @@
         {/each}
       </div>
     </div>
+
+    <!-- The event panel, where picking the Novel project gives the drawn event the defaults just saved. -->
+    {#if eventPanelOpen}
+      <WelcomeFilmEventPanel
+        frame={projectsEventPanelFrame(elapsed, fullEventName, playlistLookup)}
+        canvasWidth={canvasW}
+        canvasHeight={canvasH}
+        titleBarHeight={TOP_BAR_H}
+        anchor={panelAnchor}
+        date={sceneDate}
+        start={PROJECTS_EVENT.start}
+        end={PROJECTS_EVENT.start + (eventPicked ? PROJECTS_DEFAULT_MINUTES : PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start)}
+        projectColor={PROJECTS_COLOR}
+        title={fullEventName}
+        picker={eventPicker}
+      />
+    {/if}
   </div>
 </div>
 
 <style>
+  /* The phone's resize knobs on an event being created, as the Calendar draws them. */
+  .resize-knob {
+    width: 2.75rem;
+    height: 2.75rem;
+    margin: -1.375rem -0.5rem;
+  }
+
+  .resize-knob::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0.875rem;
+    height: 0.875rem;
+    border-radius: 9999px;
+    background-color: var(--cal-bg);
+    border: 2px solid var(--knob-color);
+    transform: translate(-50%, -50%);
+  }
+
   /* The list's row dividers, as the List view draws them from the content start to just before the right edge. */
   .list-scroll .list-divider {
     position: relative;

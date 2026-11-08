@@ -57,7 +57,12 @@
   import VolumeX from "@lucide/svelte/icons/volume-x";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import AudioLinesXIcon from "$lib/components/music/soundscape/AudioLinesXIcon.svelte";
-  import type { WelcomeEventPanelFrame, WelcomeEventPanelMusicPhase } from "$lib/vault/welcome-event-panel";
+  import type {
+    WelcomeEventPanelFrame,
+    WelcomeEventPanelMusicPhase,
+    WelcomeEventPanelPicker,
+    WelcomeEventPanelPickerRow,
+  } from "$lib/vault/welcome-event-panel";
 
   /**
    * The event panel of the welcome scenes, drawn with the event panel's own classes: it opens on an event, where a
@@ -80,6 +85,7 @@
     end,
     projectColor,
     title,
+    picker,
   }: {
     frame: WelcomeEventPanelFrame;
     canvasWidth: number;
@@ -96,6 +102,8 @@
     projectColor: EventColor;
     /** The title typed into the panel. */
     title: string;
+    /** The project picker's rows and the group and project picked; the Calendar film's when omitted. */
+    picker?: WelcomeEventPanelPicker;
   } = $props();
 
   const localization = getLocalization();
@@ -137,24 +145,25 @@
   const PLAYLIST_PICKER_MAX_HEIGHT = 520;
   const showSounds = platformHasCapability(BUILD_PLATFORM_PROFILE, "music.soundscapes");
 
-  type FilmLabel = "university" | "health" | "personal" | "thesis" | "assignments";
-  interface FilmPickerRow {
-    id: string;
-    icon: string;
-    label: FilmLabel;
-  }
-  /** The project groups, and the projects of the group the session belongs to. */
-  const GROUPS: readonly FilmPickerRow[] = [
-    { id: "university", icon: "lucide:graduation-cap", label: "university" },
-    { id: "health", icon: "lucide:apple", label: "health" },
-    { id: "personal", icon: "lucide:heart", label: "personal" },
-  ];
-  const PROJECTS: readonly FilmPickerRow[] = [
-    { id: "thesis", icon: "lucide:book-open", label: "thesis" },
-    { id: "assignments", icon: "lucide:folder", label: "assignments" },
-  ];
-  const PICKED_GROUP = GROUPS[0];
-  const PICKED_PROJECT = PROJECTS[0];
+  /** The Calendar film's picker: the project groups, and the University group's projects, where Thesis is picked. */
+  const filmPicker = $derived<WelcomeEventPanelPicker>({
+    groups: [
+      { id: "university", icon: "lucide:graduation-cap", label: t("vaultSetup.film.universityGroup") },
+      { id: "health", icon: "lucide:apple", label: t("vaultSetup.film.healthGroup") },
+      { id: "personal", icon: "lucide:heart", label: t("vaultSetup.film.personalGroup") },
+    ],
+    projects: [
+      { id: "thesis", icon: "lucide:book-open", label: t("vaultSetup.film.thesisProject") },
+      { id: "assignments", icon: "lucide:folder", label: t("vaultSetup.film.assignmentsProject") },
+    ],
+    group: "university",
+    project: "thesis",
+  });
+  const shownPicker = $derived(picker ?? filmPicker);
+  const pickerGroups = $derived(shownPicker.groups);
+  const pickerProjects = $derived(shownPicker.projects);
+  const pickedGroup = $derived(pickerGroups.find((row) => row.id === shownPicker.group) ?? pickerGroups[0]);
+  const pickedProject = $derived(pickerProjects.find((row) => row.id === shownPicker.project) ?? pickerProjects[0]);
 
   interface FilmSection {
     key: string;
@@ -344,7 +353,7 @@
       bounds: canvasBounds,
       gap: PICKER_GAP,
       footerHeight: flyoutFooterHeight,
-      projectCount: PROJECTS.length,
+      projectCount: pickerProjects.length,
       visibleRows: SUBPANEL_VISIBLE_ROWS,
       listPadding: SUBPANEL_LIST_PADDING,
       rowHeight: SUBPANEL_ROW_HEIGHT,
@@ -418,16 +427,6 @@
     return t(`music.assignment.phase.${phase}`);
   }
 
-  function rowLabel(label: FilmLabel): string {
-    switch (label) {
-      case "university": return t("vaultSetup.film.universityGroup");
-      case "health": return t("vaultSetup.film.healthGroup");
-      case "personal": return t("vaultSetup.film.personalGroup");
-      case "thesis": return t("vaultSetup.film.thesisProject");
-      case "assignments": return t("vaultSetup.film.assignmentsProject");
-    }
-  }
-
   /** The floating panel is placed from its measured height, so it stays hidden until its first measure. */
   const placed = $derived(mobileLayout ? peekHeight > 0 : naturalHeight > 0);
   const pickerOpen = $derived(pane !== null);
@@ -467,16 +466,16 @@
   </div>
 {/snippet}
 
-{#snippet projectRow(project: FilmPickerRow, mobile: boolean)}
+{#snippet projectRow(project: WelcomeEventPanelPickerRow, mobile: boolean)}
   <div
     class={cn("menu-item relative flex gap-2 text-popover-foreground", mobile && "min-h-12 px-3 text-sm")}
-    data-highlighted={project.id === PICKED_PROJECT.id && projectHighlighted ? "" : undefined}
+    data-highlighted={project.id === pickedProject.id && projectHighlighted ? "" : undefined}
   >
     <StarredIconBadge>
       <ProjectIcon name={project.icon} size={PICKER_ICON_SIZE} strokeWidth={PICKER_ICON_STROKE_WIDTH} emojiScale={PICKER_EMOJI_SCALE} />
     </StarredIconBadge>
-    <span class="min-w-0 flex-1 truncate">{rowLabel(project.label)}</span>
-    {#if project.id === PICKED_PROJECT.id}
+    <span class="min-w-0 flex-1 truncate">{project.label}</span>
+    {#if project.id === pickedProject.id}
       {@render touch(pickTouch, "left-2/5 top-1/2")}
     {/if}
   </div>
@@ -547,7 +546,7 @@
                 >
                   {#if picked}
                     <ProjectIcon
-                      name={PICKED_PROJECT.icon}
+                      name={pickedProject.icon}
                       size={TRIGGER_ICON_SIZE}
                       strokeWidth={TRIGGER_ICON_STROKE_WIDTH}
                       emojiScale={TRIGGER_EMOJI_SCALE}
@@ -750,7 +749,7 @@
                 </div>
               {/if}
               <h2 class="min-w-0 flex-1 truncate px-2 text-base font-semibold">
-                {pane === "projects" ? rowLabel(PICKED_GROUP.label) : t("projects.navigator.pickerLabel")}
+                {pane === "projects" ? pickedGroup.label : t("projects.navigator.pickerLabel")}
               </h2>
               <div class="flex min-h-12 min-w-12 items-center justify-center rounded-xl">
                 <X size={22} strokeWidth={PICKER_ICON_STROKE_WIDTH} />
@@ -762,20 +761,20 @@
             <div class="hide-scrollbar h-full min-h-0 overflow-hidden overscroll-contain px-1 py-2">
               <div class="grid px-1">
                 {#if pane === "projects"}
-                  {#each PROJECTS as project (project.id)}
+                  {#each pickerProjects as project (project.id)}
                     <div class="px-1">{@render projectRow(project, true)}</div>
                   {/each}
                 {:else}
-                  {#each GROUPS as group (group.id)}
+                  {#each pickerGroups as group (group.id)}
                     <div class="px-1">
                       <div
                         class="menu-item relative grid min-h-12 grid-cols-[1.125rem_minmax(0,1fr)_1.5rem] gap-2 px-3"
-                        data-highlighted={group.id === PICKED_GROUP.id && groupHighlighted ? "" : undefined}
+                        data-highlighted={group.id === pickedGroup.id && groupHighlighted ? "" : undefined}
                       >
                         <ProjectIcon name={group.icon} size={PICKER_ICON_SIZE} strokeWidth={PICKER_ICON_STROKE_WIDTH} emojiScale={PICKER_EMOJI_SCALE} class="shrink-0" />
-                        <span class="truncate text-sm">{rowLabel(group.label)}</span>
+                        <span class="truncate text-sm">{group.label}</span>
                         <ChevronRight size={18} strokeWidth={PICKER_ICON_STROKE_WIDTH} class="justify-self-end text-popover-foreground/60" />
-                        {#if group.id === PICKED_GROUP.id}
+                        {#if group.id === pickedGroup.id}
                           {@render touch(groupTouch, "left-2/5 top-1/2")}
                         {/if}
                       </div>
@@ -801,23 +800,23 @@
         <div class="relative min-h-0 flex-1">
           <div class="hide-scrollbar h-full min-h-0 overflow-hidden pb-1 pt-0.5">
             <div class="grid pl-1">
-              {#each GROUPS as group (group.id)}
+              {#each pickerGroups as group (group.id)}
                 <div class="pl-1 pr-1">
-                  {#if group.id === PICKED_GROUP.id}
+                  {#if group.id === pickedGroup.id}
                     <div
                       bind:this={groupRow}
                       class="menu-item relative grid grid-cols-[1rem_minmax(0,1fr)_1rem] gap-2"
                       data-highlighted={groupHighlighted ? "" : undefined}
                     >
                       <ProjectIcon name={group.icon} size={PICKER_ICON_SIZE} strokeWidth={PICKER_ICON_STROKE_WIDTH} emojiScale={PICKER_EMOJI_SCALE} class="shrink-0" />
-                      <span class="truncate">{rowLabel(group.label)}</span>
+                      <span class="truncate">{group.label}</span>
                       <ChevronRight size={13} strokeWidth={PICKER_ICON_STROKE_WIDTH} class="justify-self-end text-popover-foreground/60" />
                       {@render touch(groupTouch, "left-2/5 top-1/2")}
                     </div>
                   {:else}
                     <div class="menu-item grid grid-cols-[1rem_minmax(0,1fr)_1rem] gap-2">
                       <ProjectIcon name={group.icon} size={PICKER_ICON_SIZE} strokeWidth={PICKER_ICON_STROKE_WIDTH} emojiScale={PICKER_EMOJI_SCALE} class="shrink-0" />
-                      <span class="truncate">{rowLabel(group.label)}</span>
+                      <span class="truncate">{group.label}</span>
                       <ChevronRight size={13} strokeWidth={PICKER_ICON_STROKE_WIDTH} class="justify-self-end text-popover-foreground/60" />
                     </div>
                   {/if}
@@ -834,7 +833,7 @@
         <div class="relative min-h-0 flex-1">
           <div class="hide-scrollbar h-full min-h-0 overflow-hidden px-1 py-1">
             <div class="grid">
-              {#each PROJECTS as project (project.id)}
+              {#each pickerProjects as project (project.id)}
                 {@render projectRow(project, false)}
               {/each}
             </div>

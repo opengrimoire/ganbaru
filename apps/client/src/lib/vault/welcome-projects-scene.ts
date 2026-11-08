@@ -1,11 +1,26 @@
 /**
  * Timing for the welcome scene on Projects. In the Novel project's List view, a task is typed into the add row at the
  * bottom of the list and added, and its status and priority are changed from their cells in the table. Project settings
- * then open and scroll to Event defaults, where an event name is typed, a color, a duration, and a Pomodoro are picked,
- * a playlist is picked for each phase, and the settings are saved.
+ * then open on Event defaults, where an event name is typed, a color, a duration, and a Pomodoro are picked, a playlist
+ * is picked for each phase, and the settings are saved, the settings scrolling each control into view before its tap.
+ * Then in the Calendar, an event is dragged out and its panel opens, where picking the Novel project gives the event
+ * every default just set: its name, color, length, Pomodoro, and playlists. The Music section opens on them, and the
+ * event is saved.
  */
 
-import { easeInOutCubic, filmCaretOn, filmSpan, filmTap, filmTyped } from "./welcome-film";
+import type { WelcomeEventPanelFrame } from "./welcome-event-panel";
+import {
+  easeInOutCubic,
+  FILM_DEFAULT_PRESET,
+  FILM_SHEET_RISE_MS,
+  filmCaretOn,
+  filmDayRails,
+  filmPress,
+  filmSpan,
+  filmTap,
+  filmTyped,
+  type FilmRail,
+} from "./welcome-film";
 import type { MusicScenePlaylist } from "./welcome-music-scene";
 import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
 
@@ -26,6 +41,20 @@ export type ProjectsSceneCell = "status" | "priority";
 
 /** The Event defaults pickers the scene opens in the settings. */
 export type ProjectsScenePicker = "color" | "duration" | "pomodoro" | ProjectsScenePhase;
+
+/** The Event defaults controls the settings scroll into view, one at a time, before their taps. */
+export type ProjectsSettingsTarget = "name" | ProjectsScenePicker;
+
+/** The settings controls in the order the scene uses them, which is their order in Event defaults. */
+export const PROJECTS_SETTINGS_TARGETS: readonly ProjectsSettingsTarget[] = [
+  "name",
+  "color",
+  "duration",
+  "pomodoro",
+  "focus",
+  "short-break",
+  "long-break",
+];
 
 /** One task in the Novel project's General section. Dates are days from the scene's day, or null when unset. */
 export interface ProjectsSceneTaskEntry {
@@ -113,33 +142,62 @@ export const PROJECTS_BEATS = {
   priorityPick: 6300,
   /** A tap on the header's settings button opens Project settings, which scroll to Event defaults. */
   settingsTap: 7100,
-  defaultsScrollStart: 7500,
-  defaultsScrollEnd: 8200,
+  nameScrollStart: 7500,
+  nameScrollEnd: 8200,
   /** A tap on the event name field focuses it, and the name is typed. */
   nameTap: 8700,
   nameTypeStart: 8900,
   nameTypeEnd: 9800,
-  /** A tap on the color opens the palette, a tap picks a swatch, and on desktop a tap beside the palette closes it. */
-  colorTap: 10400,
-  colorPick: 11200,
-  colorDismiss: 11700,
-  /** The Duration and Pomodoro pickers each open with a tap, and a tap picks an option. */
-  durationTap: 12300,
-  durationPick: 13100,
-  pomodoroTap: 13700,
-  pomodoroPick: 14600,
-  /** The settings scroll on to the playlists, and each phase's picker opens and takes a playlist. */
-  musicScrollStart: 14900,
-  musicScrollEnd: 15500,
-  focusTap: 16000,
-  focusPick: 16800,
-  shortBreakTap: 17300,
-  shortBreakPick: 18100,
-  longBreakTap: 18600,
-  longBreakPick: 19400,
+  /**
+   * The settings scroll the color into view with room for its palette, a tap opens the palette, a tap picks a swatch,
+   * and on desktop a tap beside the palette closes it.
+   */
+  colorScrollStart: 10000,
+  colorScrollEnd: 10400,
+  colorTap: 10800,
+  colorPick: 11600,
+  colorDismiss: 12100,
+  /** Each of the other pickers is scrolled into view, opens with a tap, and a tap picks an option. */
+  durationScrollStart: 12300,
+  durationScrollEnd: 12700,
+  durationTap: 13000,
+  durationPick: 13800,
+  pomodoroScrollStart: 14000,
+  pomodoroScrollEnd: 14400,
+  pomodoroTap: 14700,
+  pomodoroPick: 15600,
+  focusScrollStart: 15900,
+  focusScrollEnd: 16400,
+  focusTap: 16800,
+  focusPick: 17600,
+  shortBreakScrollStart: 17800,
+  shortBreakScrollEnd: 18200,
+  shortBreakTap: 18500,
+  shortBreakPick: 19300,
+  longBreakScrollStart: 19500,
+  longBreakScrollEnd: 19900,
+  longBreakTap: 20200,
+  longBreakPick: 21000,
   /** Save settings saves the defaults and closes the panel. */
-  saveTap: 20200,
-  end: 21400,
+  settingsSaveTap: 21800,
+  /** The list gives way to the Calendar. */
+  calendarIn: 22600,
+  /** A press drags a short event out on the empty hour, and letting go opens the event panel on it. */
+  createStart: 23200,
+  createEnd: 23700,
+  panelOpen: 23850,
+  /** The project trigger, then the Personal group, then Novel, which gives the event the project's defaults. */
+  projectTap: 24850,
+  groupTap: 25950,
+  projectPick: 27050,
+  /** On the phone, a drag on the sheet's grabber takes it from its peek to its full height. */
+  sheetDragStart: 28000,
+  sheetDragEnd: 28550,
+  /** A tap on the Music section's header opens it on the project's playlists. */
+  musicTap: 29300,
+  /** Save saves the event and closes the panel. */
+  eventSaveTap: 31000,
+  end: 32400,
 } as const;
 
 const B = PROJECTS_BEATS;
@@ -147,13 +205,46 @@ const B = PROJECTS_BEATS;
 /** How long the last frame rests before the scene starts over. */
 export const PROJECTS_END_HOLD_MS = 900;
 
-/** The frame shown as a still with reduced motion: the settings with every event default set, before they are saved. */
-export const PROJECTS_STILL = B.longBreakPick + 400;
+/** The frame shown as a still with reduced motion: the event with every project default, its Music section open. */
+export const PROJECTS_STILL = B.musicTap + 1200;
 
+/** The Calendar event, in minutes of the day: the length it is dragged out to, before the project's default replaces it. */
+export const PROJECTS_EVENT = { start: 10 * 60, drawnEnd: 10 * 60 + 30 } as const;
+
+/** The event's Focus rail before and after the project is picked, planned by the Calendar's own rhythm. */
+export const PROJECTS_DEFAULT_RAIL: FilmRail = filmDayRails([
+  { start: PROJECTS_EVENT.start, end: PROJECTS_EVENT.drawnEnd, preset: FILM_DEFAULT_PRESET },
+])[0];
+export const PROJECTS_RAIL: FilmRail = filmDayRails([
+  { start: PROJECTS_EVENT.start, end: PROJECTS_EVENT.start + PROJECTS_DEFAULT_MINUTES, preset: PROJECTS_PRESET },
+])[0];
+
+/** The current time in the Calendar, in minutes of the day, shortly before the event. */
+export const PROJECTS_CLOCK = PROJECTS_EVENT.start - 20;
 /** How long the settings panel takes to show, and to go once Save is tapped. */
 const PANEL_FADE_MS = 140;
+/** How long the Calendar takes to fade in over the list. */
+const SCREEN_FADE_MS = 300;
 /** How long a cell or a picked option shows as hovered before its tap lands, as the pointer rests on it. */
 const HOVER_LEAD_MS = 420;
+/** How long the event takes to grow to the project's default length once the project is picked. */
+const GROW_MS = 420;
+const SECTION_OPEN_MS = 380;
+const SCROLL_DELAY_MS = 140;
+const SCROLL_MS = 520;
+/** How long the finger rests on the grabber before the sheet follows it. */
+const DRAG_LAND_MS = 160;
+
+/** The scroll that brings each settings control into view, in the order the scene uses them. */
+const SETTINGS_SCROLLS: readonly { target: ProjectsSettingsTarget; start: number; end: number }[] = [
+  { target: "name", start: B.nameScrollStart, end: B.nameScrollEnd },
+  { target: "color", start: B.colorScrollStart, end: B.colorScrollEnd },
+  { target: "duration", start: B.durationScrollStart, end: B.durationScrollEnd },
+  { target: "pomodoro", start: B.pomodoroScrollStart, end: B.pomodoroScrollEnd },
+  { target: "focus", start: B.focusScrollStart, end: B.focusScrollEnd },
+  { target: "short-break", start: B.shortBreakScrollStart, end: B.shortBreakScrollEnd },
+  { target: "long-break", start: B.longBreakScrollStart, end: B.longBreakScrollEnd },
+];
 
 /** The tap that opens each cell menu and the tap that picks its option. */
 const CELL_TAPS: Readonly<Record<ProjectsSceneCell, { tap: number; pick: number }>> = {
@@ -234,23 +325,32 @@ export function projectsOptionHovered(elapsed: number, target: ProjectsSceneCell
 /** How far Project settings show, from 0 to 1: they open with the settings tap and close with Save. */
 export function projectsSettingsShown(elapsed: number): number {
   const shown = filmSpan(elapsed, B.settingsTap, B.settingsTap + PANEL_FADE_MS);
-  const gone = filmSpan(elapsed, B.saveTap, B.saveTap + PANEL_FADE_MS);
+  const gone = filmSpan(elapsed, B.settingsSaveTap, B.settingsSaveTap + PANEL_FADE_MS);
   return shown * (1 - gone);
 }
 
 /** Whether Project settings are open, which marks the header's settings button as active. */
 export function projectsSettingsOpen(elapsed: number): boolean {
-  return elapsed >= B.settingsTap && elapsed < B.saveTap;
+  return elapsed >= B.settingsTap && elapsed < B.settingsSaveTap;
 }
 
 /**
- * How far the settings have scrolled, each from 0 to 1: `defaults` to the Event defaults heading, then `music` on until
- * the playlists are in view.
+ * Where the settings are scrolling: from the control the last scroll brought into view, or from the top when `from` is
+ * null, to the control the current scroll brings into view, `progress` of the way from 0 to 1. Both are null before the
+ * first scroll starts. The scene measures each control to turn this into pixels.
  */
-export function projectsSettingsScroll(elapsed: number): { defaults: number; music: number } {
+export function projectsSettingsScroll(elapsed: number): {
+  from: ProjectsSettingsTarget | null;
+  to: ProjectsSettingsTarget | null;
+  progress: number;
+} {
+  const started = SETTINGS_SCROLLS.filter((scroll) => elapsed >= scroll.start);
+  const current = started.at(-1);
+  if (!current) return { from: null, to: null, progress: 0 };
   return {
-    defaults: easeInOutCubic(filmSpan(elapsed, B.defaultsScrollStart, B.defaultsScrollEnd)),
-    music: easeInOutCubic(filmSpan(elapsed, B.musicScrollStart, B.musicScrollEnd)),
+    from: started.at(-2)?.target ?? null,
+    to: current.target,
+    progress: easeInOutCubic(filmSpan(elapsed, current.start, current.end)),
   };
 }
 
@@ -304,7 +404,109 @@ export function projectsPlaylist(elapsed: number, phase: ProjectsScenePhase): Mu
 
 /** Whether the settings have unsaved changes, so Save settings shows as the primary action. */
 export function projectsSettingsDirty(elapsed: number): boolean {
-  return elapsed >= B.nameTypeStart && elapsed < B.saveTap;
+  return elapsed >= B.nameTypeStart && elapsed < B.settingsSaveTap;
+}
+
+/** How far the list shows, from 0 to 1, as the Calendar fades in over it once the settings are saved. */
+export function projectsListShown(elapsed: number): number {
+  return 1 - projectsCalendarShown(elapsed);
+}
+
+/** How far the Calendar shows, from 0 to 1. */
+export function projectsCalendarShown(elapsed: number): number {
+  return easeInOutCubic(filmSpan(elapsed, B.calendarIn - SCREEN_FADE_MS, B.calendarIn));
+}
+
+/** Whether the event is on the day: from the press that starts drawing it. */
+export function projectsEventDrawnIn(elapsed: number): boolean {
+  return elapsed >= B.createStart;
+}
+
+/** How far the event has been dragged out to its drawn length, from 0 to 1, easing as the press moves. */
+export function projectsEventDrawn(elapsed: number): number {
+  return easeInOutCubic(filmSpan(elapsed, B.createStart, B.createEnd));
+}
+
+/** Whether the event is still being created: from the press that draws it until Save. */
+export function projectsEventCreating(elapsed: number): boolean {
+  return elapsed >= B.createStart && elapsed < B.eventSaveTap;
+}
+
+/** Whether the event panel is open: from letting go of the drawn event until Save is tapped. */
+export function projectsPanelOpen(elapsed: number): boolean {
+  return elapsed >= B.panelOpen && elapsed < B.eventSaveTap;
+}
+
+/** Whether the event has the Novel project, and with it every default the settings saved. */
+export function projectsEventPicked(elapsed: number): boolean {
+  return elapsed >= B.projectPick;
+}
+
+/**
+ * The event's length in minutes: it grows with the press up to its drawn length, then to the project's default
+ * duration once the project is picked.
+ */
+export function projectsEventMinutes(elapsed: number): number {
+  const drawn = PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start;
+  const grown = easeInOutCubic(filmSpan(elapsed, B.projectPick, B.projectPick + GROW_MS));
+  return drawn * projectsEventDrawn(elapsed) + (PROJECTS_DEFAULT_MINUTES - drawn) * grown;
+}
+
+/**
+ * The event's rail at this moment: none while it is still being drawn, then its default rhythm once the panel opens on
+ * it, then the project's once the project is picked.
+ */
+export function projectsEventRail(elapsed: number): FilmRail | null {
+  if (elapsed < B.panelOpen) return null;
+  return projectsEventPicked(elapsed) ? PROJECTS_RAIL : PROJECTS_DEFAULT_RAIL;
+}
+
+/** The project picker's open pane: the groups after the project trigger is tapped, then the group's projects. */
+function projectPane(elapsed: number): "groups" | "projects" | null {
+  if (elapsed >= B.groupTap && elapsed < B.projectPick) return "projects";
+  if (elapsed >= B.projectTap && elapsed < B.groupTap) return "groups";
+  return null;
+}
+
+/**
+ * The event panel at `elapsed`, with the project's event name, which fills the empty title as the project is picked,
+ * and `playlist`'s icon and localized name for each phase's project playlist.
+ */
+export function projectsEventPanelFrame(
+  elapsed: number,
+  eventName: string,
+  playlist: (key: MusicScenePlaylist) => { icon: string; name: string },
+): WelcomeEventPanelFrame {
+  const picked = projectsEventPicked(elapsed);
+  const opened = filmSpan(elapsed, B.musicTap + SCROLL_DELAY_MS, B.musicTap + SCROLL_DELAY_MS + SCROLL_MS);
+  return {
+    sheetRise: 1 - (1 - filmSpan(elapsed, B.panelOpen, B.panelOpen + FILM_SHEET_RISE_MS)) ** 3,
+    sheetExpand: easeInOutCubic(filmSpan(elapsed, B.sheetDragStart, B.sheetDragEnd)),
+    pane: projectPane(elapsed),
+    picked,
+    typed: picked ? eventName : "",
+    typing: false,
+    caretOn: false,
+    touches: {
+      project: filmTap(elapsed, B.projectTap),
+      group: filmTap(elapsed, B.groupTap),
+      projectPick: filmTap(elapsed, B.projectPick),
+      sheetDrag: filmPress(elapsed, B.sheetDragStart - DRAG_LAND_MS, B.sheetDragEnd),
+      music: filmTap(elapsed, B.musicTap),
+      save: filmTap(elapsed, B.eventSaveTap),
+    },
+    preset: picked ? PROJECTS_PRESET : FILM_DEFAULT_PRESET,
+    music: {
+      enabled: picked,
+      expanded: easeInOutCubic(filmSpan(elapsed, B.musicTap, B.musicTap + SECTION_OPEN_MS)),
+      rows: PROJECTS_PHASES.map((phase) => {
+        const { icon, name } = playlist(PROJECTS_PLAYLISTS[phase]);
+        return { phase, playlistIcon: icon, playlistName: name, fill: picked ? 1 : 0, touch: 0 };
+      }),
+      picker: null,
+    },
+    scroll: easeInOutCubic(opened),
+  };
 }
 
 /** The scene's touches, each from 0 to 1 as it shows. */
@@ -349,6 +551,6 @@ export function projectsTouches(elapsed: number, colorClosesOnPick: boolean): Pr
     pomodoroOption: filmTap(elapsed, B.pomodoroPick),
     playlist: byPhase("tap"),
     playlistOption: byPhase("pick"),
-    save: filmTap(elapsed, B.saveTap),
+    save: filmTap(elapsed, B.settingsSaveTap),
   };
 }

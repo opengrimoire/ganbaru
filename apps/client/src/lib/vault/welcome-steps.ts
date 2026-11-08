@@ -1,5 +1,5 @@
 /** The welcome screens shown before vault setup, in order: the language, one per feature, then the app's own credentials. */
-export const WELCOME_STEPS = ["language", "calendar", "blocking", "limits", "music", "projects", "tasks", "about"] as const;
+export const WELCOME_STEPS = ["language", "calendar", "blocking", "limits", "music", "tasks", "projects", "about"] as const;
 
 /** One welcome screen. */
 export type WelcomeStep = (typeof WELCOME_STEPS)[number];

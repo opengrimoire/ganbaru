@@ -87,8 +87,9 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
-  import { COUNT_PRESET_RHYTHMS, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
-  import { PROJECT_POMODORO_PRESET_ORDER, projectPomodoroSummaryLabel } from "$lib/projects/default-pomodoro";
+  import { COUNT_PRESET_RHYTHMS, pomodoroPresetChoices, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
+  import { projectPomodoroSummaryLabel } from "$lib/projects/default-pomodoro";
+  import { DEFAULT_FOCUS_ADAPTIVE_PRESET_ENABLED } from "$lib/stores/preference-options";
   import { projectListDateLabel } from "$lib/projects/list/presentation";
   import {
     projectTaskListGridMinWidth,
@@ -1656,7 +1657,7 @@
           <span class="menu-item justify-between gap-3">
             <span class="grid min-w-0 flex-1 grid-cols-[minmax(max-content,1fr)_max-content] items-center gap-4"><span class="truncate">{t("common.none")}</span></span>
           </span>
-          {#each PROJECT_POMODORO_PRESET_ORDER as preset (preset)}
+          {#each pomodoroPresetChoices(DEFAULT_FOCUS_ADAPTIVE_PRESET_ENABLED) as preset (preset)}
             {@const picked = preset === PROJECTS_PRESET}
             <span data-cursor={picked ? "projects-pomodoro-option" : undefined} class={cn("menu-item relative justify-between gap-3", picked && optionHovered("projects-pomodoro-option", projectsOptionHovered(defaultsElapsed, "pomodoro")) && "bg-accent")}>
               <span class="grid min-w-0 flex-1 grid-cols-[minmax(max-content,1fr)_max-content] items-center gap-4">

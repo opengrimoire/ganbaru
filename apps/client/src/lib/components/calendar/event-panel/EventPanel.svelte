@@ -443,10 +443,7 @@
       }
       if (s === "pomodoro") {
         session.pomodoroEnabled = true;
-        session.pomodoroPreset = "adaptive";
-        session.focusDurationMinutes = 40;
-        session.shortBreakMinutes = 5;
-        session.longBreakMinutes = 10;
+        session.applyDefaultPomodoroPreset();
         session.applyDefaultIdleTimeoutPreference();
       }
       if (s === "notifications") {
@@ -1575,6 +1572,7 @@
             readonlyInteractive={pomodoroReadOnlyInteractive}
             idleDetectionAvailable={nativeIdleDetectionAvailable}
             timingConflict={conflictEventId !== null && hasTimingConflict(calendarConflicts.all, conflictEventId)}
+            experimentalPresetsEnabled={preferences.focusAdaptivePresetEnabled}
             onToggle={() => handleToggle("pomodoro")}
             onExpand={() => handleExpand("pomodoro")}
             onChange={() => session.emitChange()} />

@@ -40,13 +40,6 @@ export interface ProjectGlobalIdleDefaults {
   idleThresholdMinutes: number;
 }
 
-export const PROJECT_POMODORO_PRESET_ORDER: PomodoroPresetKey[] = [
-  "adaptive",
-  "creative",
-  "balanced",
-  "deep",
-  "extended",
-];
 
 export const PROJECT_DEFAULT_CUSTOM_POMODORO: ProjectDefaultPomodoroCustom = {
   focusDurationMinutes: 40,

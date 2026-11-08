@@ -5,12 +5,16 @@ import {
   createCustomCountPomodoroConfig,
   createCustomSequencePomodoroConfig,
   createPresetPomodoroConfig,
+  DEFAULT_POMODORO_CONFIG,
+  DEFAULT_POMODORO_PRESET_KEY,
   deriveInitialPhaseFromInheritedFocus,
   deriveRhythmPlan,
   focusDurationMinutesAtPosition,
   isValidPomodoroConfig,
   nextRhythmPosition,
   phaseDurationMinutesAtPosition,
+  POMODORO_PRESET_ORDER,
+  pomodoroPresetChoices,
   summarizeSequencePomodoroRhythm,
 } from "./rhythm";
 
@@ -201,5 +205,27 @@ describe("pomodoro rhythm engine", () => {
       ...createPresetPomodoroConfig("adaptive"),
       idleTimeoutMinutes: 0,
     })).toBe(false);
+  });
+});
+
+describe("pomodoro preset choices", () => {
+  it("starts new configs from Balanced", () => {
+    expect(DEFAULT_POMODORO_PRESET_KEY).toBe("balanced");
+    expect(DEFAULT_POMODORO_CONFIG).toEqual(createPresetPomodoroConfig("balanced"));
+  });
+
+  it("hides Adaptive while the experimental setting is off", () => {
+    expect(pomodoroPresetChoices(false)).toEqual(["creative", "balanced", "deep", "extended"]);
+    expect(pomodoroPresetChoices(false, "deep")).toEqual(["creative", "balanced", "deep", "extended"]);
+    expect(pomodoroPresetChoices(false, "custom")).toEqual(["creative", "balanced", "deep", "extended"]);
+  });
+
+  it("lists every preset in picker order while the experimental setting is on", () => {
+    expect(pomodoroPresetChoices(true)).toEqual([...POMODORO_PRESET_ORDER]);
+    expect(pomodoroPresetChoices(true, null)).toEqual(["adaptive", "creative", "balanced", "deep", "extended"]);
+  });
+
+  it("keeps Adaptive listed when the edited event or project already uses it", () => {
+    expect(pomodoroPresetChoices(false, "adaptive")).toEqual(["adaptive", "creative", "balanced", "deep", "extended"]);
   });
 });

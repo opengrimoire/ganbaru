@@ -125,6 +125,8 @@ export type FocusIdleThresholdMinutes =
   (typeof FOCUS_IDLE_THRESHOLD_MINUTES_OPTIONS)[number];
 export const DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES: FocusIdleThresholdMinutes = 3;
 export const DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE = true;
+/** The experimental Adaptive preset is offered by default only in development builds. */
+export const DEFAULT_FOCUS_ADAPTIVE_PRESET_ENABLED: boolean = import.meta.env.DEV;
 export const FOCUS_BREAK_SOUND_INTERVAL_SECONDS_OPTIONS = Object.freeze([0, 10, 15, 30, 60] as const);
 export type FocusBreakSoundIntervalSeconds =
   (typeof FOCUS_BREAK_SOUND_INTERVAL_SECONDS_OPTIONS)[number];

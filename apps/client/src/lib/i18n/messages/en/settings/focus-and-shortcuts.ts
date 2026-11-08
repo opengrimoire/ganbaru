@@ -47,6 +47,9 @@ export const focusAndShortcuts = {
     disableBreakExtensionTitle: "Disable break extensions?",
     disableBreakExtensionMessage:
       "The break screen will hide the extension shortcut. You will not be able to add extra break time.",
+    experimentalHeading: "Experimental",
+    adaptivePreset: "Adaptive Pomodoro",
+    adaptivePresetDescription: "Offer the Adaptive preset, which plans each focus and break from your past sessions",
   },
   shortcuts: {
     search: "Search shortcuts",

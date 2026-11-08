@@ -8,6 +8,8 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import {
     COUNT_PRESET_RHYTHMS,
+    DEFAULT_POMODORO_PRESET_KEY,
+    isExperimentalPomodoroPreset,
     MAX_FOCUS_MINUTES,
     MAX_LONG_BREAK_MINUTES,
     MAX_RHYTHM_POSITIONS,
@@ -16,6 +18,7 @@
     MIN_LONG_BREAK_MINUTES,
     MIN_RHYTHM_POSITIONS,
     MIN_SHORT_BREAK_MINUTES,
+    pomodoroPresetChoices,
     summarizeSequencePomodoroRhythm,
     type SequencePomodoroRhythmStep,
   } from "$lib/pomodoro/rhythm";
@@ -34,22 +37,10 @@
     longBreakAfterFocusCount: 4,
   } as const;
   const PRESET_RHYTHMS = COUNT_PRESET_RHYTHMS;
-  const PRESET_ORDER: BuiltInPomodoroPreset[] = [
-    "adaptive",
-    "creative",
-    "balanced",
-    "deep",
-    "extended",
-  ];
-  const PRESET_ENTRIES = PRESET_ORDER.map((key) => [key, PRESET_RHYTHMS[key]]) as Array<[
-    BuiltInPomodoroPreset,
-    typeof PRESET_RHYTHMS[BuiltInPomodoroPreset],
-  ]>;
-  const PRESET_OPTION_COUNT = PRESET_ENTRIES.length + 1;
 
   let {
     enabled,
-    preset = $bindable<PomodoroPreset>("adaptive"),
+    preset = $bindable<PomodoroPreset>(DEFAULT_POMODORO_PRESET_KEY),
     focusDurationMinutes = $bindable(40),
     shortBreakMinutes = $bindable(5),
     longBreakMinutes = $bindable(10),
@@ -61,6 +52,7 @@
     readonlyInteractive = false,
     idleDetectionAvailable = true,
     timingConflict = false,
+    experimentalPresetsEnabled = false,
     onToggle,
     onExpand,
     onChange,
@@ -79,6 +71,8 @@
     idleDetectionAvailable?: boolean;
     /** Whether the event has an open timing conflict, which pauses automatic Focus starts for it. */
     timingConflict?: boolean;
+    /** Whether the experimental presets, such as Adaptive, are offered. */
+    experimentalPresetsEnabled?: boolean;
     onToggle: () => void;
     onExpand: () => void;
     onChange: () => void;
@@ -94,6 +88,18 @@
   let shortBreakDraft = $state("5");
   let longBreakDraft = $state("10");
   let longBreakAfterDraft = $state("4");
+  /**
+   * Whether this section has shown an event using an experimental preset. Its row stays listed after another preset is
+   * picked, so the rows below it do not shift under the pointer.
+   */
+  let experimentalPresetShown = false;
+
+  const presetEntries = $derived.by(() => {
+    const choices = pomodoroPresetChoices(experimentalPresetsEnabled || experimentalPresetShown, preset);
+    if (isExperimentalPomodoroPreset(preset)) experimentalPresetShown = true;
+    return choices.map((key) => [key, PRESET_RHYTHMS[key]] as const);
+  });
+  const presetOptionCount = $derived(presetEntries.length + 1);
 
   $effect(() => {
     focusDurationDraft = formatDurationSlot(focusDurationMinutes);
@@ -113,13 +119,13 @@
 
   $effect(() => {
     const index = preset === "custom"
-      ? PRESET_ENTRIES.length
-      : PRESET_ENTRIES.findIndex(([key]) => key === preset);
+      ? presetEntries.length
+      : presetEntries.findIndex(([key]) => key === preset);
     if (index >= 0) presetFocusIndex = index;
   });
 
   const localizedPresetEntries = $derived(
-    PRESET_ENTRIES.map(([key, rhythm]) => ({
+    presetEntries.map(([key, rhythm]) => ({
       key,
       label: presetLabel(key),
       summarySlots: presetSummarySlots(key, rhythm),
@@ -272,7 +278,7 @@
     if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
     const nextIndex = moveRovingIndex({
       currentIndex: index,
-      itemCount: PRESET_OPTION_COUNT,
+      itemCount: presetOptionCount,
       key: e.key,
       orientation: "vertical",
     });
@@ -419,11 +425,11 @@
         >
           <button
             onclick={() => applyPreset("custom")}
-            onfocus={() => { presetFocusIndex = PRESET_ENTRIES.length; }}
-            onkeydown={(e) => handlePresetKeydown(e, PRESET_ENTRIES.length)}
+            onfocus={() => { presetFocusIndex = presetEntries.length; }}
+            onkeydown={(e) => handlePresetKeydown(e, presetEntries.length)}
             data-pomodoro-roving="preset"
-            data-roving-index={PRESET_ENTRIES.length}
-            tabindex={presetFocusIndex === PRESET_ENTRIES.length ? 0 : -1}
+            data-roving-index={presetEntries.length}
+            tabindex={presetFocusIndex === presetEntries.length ? 0 : -1}
             class="text-left {readonlyInteractiveClass}"
           >
             {t("calendar.pomodoro.custom")}
@@ -465,11 +471,11 @@
       {:else}
         <button
           onclick={() => applyPreset("custom")}
-          onfocus={() => { presetFocusIndex = PRESET_ENTRIES.length; }}
-          onkeydown={(e) => handlePresetKeydown(e, PRESET_ENTRIES.length)}
+          onfocus={() => { presetFocusIndex = presetEntries.length; }}
+          onkeydown={(e) => handlePresetKeydown(e, presetEntries.length)}
           data-pomodoro-roving="preset"
-          data-roving-index={PRESET_ENTRIES.length}
-          tabindex={presetFocusIndex === PRESET_ENTRIES.length ? 0 : -1}
+          data-roving-index={presetEntries.length}
+          tabindex={presetFocusIndex === presetEntries.length ? 0 : -1}
           class="flex items-center gap-2.5 rounded-none px-3 py-1.5 text-left text-[0.8rem] text-foreground {readonlyInteractiveClass}"
         >
           <span>{t("calendar.pomodoro.custom")}</span>

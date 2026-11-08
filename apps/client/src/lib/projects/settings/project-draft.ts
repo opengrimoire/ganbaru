@@ -1,5 +1,5 @@
 import type { EventColor } from "$lib/calendar/types";
-import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
+import { DEFAULT_POMODORO_PRESET_KEY, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
 import {
   PROJECT_DEFAULT_CUSTOM_POMODORO,
   projectCustomPomodoroFromDefaults,
@@ -71,7 +71,7 @@ export function emptyProjectDraft(): ProjectDraft {
     defaultEventTimeMode: "timed",
     defaultEventDurationMinutes: "60",
     defaultPomodoroMode: "preset",
-    defaultPomodoroPresetKey: "adaptive",
+    defaultPomodoroPresetKey: DEFAULT_POMODORO_PRESET_KEY,
     defaultPomodoroFocusMinutes: PROJECT_DEFAULT_CUSTOM_POMODORO.focusDurationMinutes,
     defaultPomodoroShortBreakMinutes: PROJECT_DEFAULT_CUSTOM_POMODORO.shortBreakMinutes,
     defaultPomodoroLongBreakMinutes: PROJECT_DEFAULT_CUSTOM_POMODORO.longBreakMinutes,
@@ -96,7 +96,7 @@ export function projectDraftFromProject(project: Project): ProjectDraft {
     defaultEventTimeMode: project.defaultEventTimeMode,
     defaultEventDurationMinutes: String(project.defaultEventDurationMinutes ?? ""),
     defaultPomodoroMode: project.defaultPomodoroMode,
-    defaultPomodoroPresetKey: project.defaultPomodoroPresetKey ?? "adaptive",
+    defaultPomodoroPresetKey: project.defaultPomodoroPresetKey ?? DEFAULT_POMODORO_PRESET_KEY,
     defaultPomodoroFocusMinutes: customPomodoro.focusDurationMinutes,
     defaultPomodoroShortBreakMinutes: customPomodoro.shortBreakMinutes,
     defaultPomodoroLongBreakMinutes: customPomodoro.longBreakMinutes,
@@ -185,7 +185,7 @@ function projectSettingsProjectPomodoroDraftDirty(
 ): boolean {
   if (draft.defaultPomodoroMode !== project.defaultPomodoroMode) return true;
   if (draft.defaultPomodoroMode === "preset") {
-    return draft.defaultPomodoroPresetKey !== (project.defaultPomodoroPresetKey ?? "adaptive");
+    return draft.defaultPomodoroPresetKey !== (project.defaultPomodoroPresetKey ?? DEFAULT_POMODORO_PRESET_KEY);
   }
   if (draft.defaultPomodoroMode === "custom") {
     const customPomodoro = projectCustomPomodoroFromDefaults(project);

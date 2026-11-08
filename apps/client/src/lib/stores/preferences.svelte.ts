@@ -11,6 +11,7 @@ import {
   DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE,
   DEFAULT_MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC,
   DEFAULT_CALENDAR_TIME_FORMAT,
+  DEFAULT_FOCUS_ADAPTIVE_PRESET_ENABLED,
   DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
   DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
   DEFAULT_FOCUS_BREAK_END_WARNING_SECONDS,
@@ -93,6 +94,7 @@ const CALENDAR_VIEW_MODE_CONFIG_KEY = "preferences.calendarViewMode";
 const CALENDAR_DIM_PAST_EVENTS_CONFIG_KEY = "preferences.calendarDimPastEvents";
 const FOCUS_IDLE_THRESHOLD_MINUTES_CONFIG_KEY = "preferences.focusIdleThresholdMinutes";
 const FOCUS_IDLE_PAUSE_ON_EVENT_CREATE_CONFIG_KEY = "preferences.focusIdlePauseOnEventCreate";
+const FOCUS_ADAPTIVE_PRESET_ENABLED_CONFIG_KEY = "preferences.focusAdaptivePresetEnabled";
 const FOCUS_BREAK_FINISHED_REPEAT_SECONDS_CONFIG_KEY =
   "preferences.focusBreakFinishedRepeatSeconds";
 const FOCUS_BREAK_END_WARNING_SECONDS_CONFIG_KEY =
@@ -215,6 +217,12 @@ function loadSavedFocusIdlePauseOnEventCreate(): boolean {
   return DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE;
 }
 
+function loadSavedFocusAdaptivePresetEnabled(): boolean {
+  const saved = getConfigKey<unknown>(FOCUS_ADAPTIVE_PRESET_ENABLED_CONFIG_KEY, undefined);
+  if (typeof saved === "boolean") return saved;
+  return DEFAULT_FOCUS_ADAPTIVE_PRESET_ENABLED;
+}
+
 function loadSavedFocusBreakFinishedRepeatSeconds(): FocusBreakSoundIntervalSeconds {
   const saved = getConfigKey<unknown>(FOCUS_BREAK_FINISHED_REPEAT_SECONDS_CONFIG_KEY, undefined);
   return parseFocusBreakSoundIntervalSeconds(
@@ -311,6 +319,7 @@ let calendarViewMode = $state<CalendarViewMode>(loadSavedCalendarViewMode());
 let calendarDimPastEvents = $state<boolean>(loadSavedCalendarDimPastEvents());
 let focusIdleThresholdMinutes = $state<number>(loadSavedFocusIdleThresholdMinutes());
 let focusIdlePauseOnEventCreate = $state<boolean>(loadSavedFocusIdlePauseOnEventCreate());
+let focusAdaptivePresetEnabled = $state<boolean>(loadSavedFocusAdaptivePresetEnabled());
 let focusBreakFinishedRepeatSeconds = $state<FocusBreakSoundIntervalSeconds>(
   loadSavedFocusBreakFinishedRepeatSeconds(),
 );
@@ -410,6 +419,7 @@ function reloadSavedPreferences(): void {
   calendarDimPastEvents = loadSavedCalendarDimPastEvents();
   focusIdleThresholdMinutes = loadSavedFocusIdleThresholdMinutes();
   focusIdlePauseOnEventCreate = loadSavedFocusIdlePauseOnEventCreate();
+  focusAdaptivePresetEnabled = loadSavedFocusAdaptivePresetEnabled();
   focusBreakFinishedRepeatSeconds = loadSavedFocusBreakFinishedRepeatSeconds();
   focusBreakEndWarningSeconds = loadSavedFocusBreakEndWarningSeconds();
   focusBreakEndEscPresses = loadSavedFocusBreakEndEscPresses();
@@ -569,6 +579,11 @@ function setFocusIdleThresholdMinutes(value: number): void {
 function setFocusIdlePauseOnEventCreate(value: boolean): void {
   focusIdlePauseOnEventCreate = value;
   setConfigKey(FOCUS_IDLE_PAUSE_ON_EVENT_CREATE_CONFIG_KEY, value);
+}
+
+function setFocusAdaptivePresetEnabled(value: boolean): void {
+  focusAdaptivePresetEnabled = value;
+  setConfigKey(FOCUS_ADAPTIVE_PRESET_ENABLED_CONFIG_KEY, value);
 }
 
 function setFocusBreakFinishedRepeatSeconds(value: number): void {
@@ -774,6 +789,10 @@ export function getPreferences() {
     get focusIdlePauseOnEventCreate(): boolean {
       return focusIdlePauseOnEventCreate;
     },
+    /** Whether pickers offer the experimental Adaptive preset. */
+    get focusAdaptivePresetEnabled(): boolean {
+      return focusAdaptivePresetEnabled;
+    },
     get focusBreakFinishedRepeatSeconds(): FocusBreakSoundIntervalSeconds {
       return focusBreakFinishedRepeatSeconds;
     },
@@ -863,6 +882,7 @@ export function getPreferences() {
     setCalendarDimPastEvents,
     setFocusIdleThresholdMinutes,
     setFocusIdlePauseOnEventCreate,
+    setFocusAdaptivePresetEnabled,
     setFocusBreakFinishedRepeatSeconds,
     setFocusBreakEndWarningSeconds,
     setFocusBreakEndEscPresses,
@@ -909,6 +929,9 @@ export function getPreferences() {
     },
     resetFocusIdlePauseOnEventCreate() {
       setFocusIdlePauseOnEventCreate(DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE);
+    },
+    resetFocusAdaptivePresetEnabled() {
+      setFocusAdaptivePresetEnabled(DEFAULT_FOCUS_ADAPTIVE_PRESET_ENABLED);
     },
     resetFocusBreakFinishedRepeatSeconds() {
       setFocusBreakFinishedRepeatSeconds(DEFAULT_FOCUS_BREAK_FINISHED_REPEAT_SECONDS);

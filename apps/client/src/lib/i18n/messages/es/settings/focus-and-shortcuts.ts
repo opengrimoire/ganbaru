@@ -57,6 +57,9 @@ export const focusAndShortcuts = {
     disableBreakExtensionTitle: "¿Desactivar extensiones de descanso?",
     disableBreakExtensionMessage:
       "La pantalla de descanso ocultará el atajo de extensión. No podrás agregar tiempo extra de descanso.",
+    experimentalHeading: "Experimental",
+    adaptivePreset: "Pomodoro adaptativo",
+    adaptivePresetDescription: "Ofrece el preajuste Adaptativo, que planifica cada enfoque y descanso a partir de tus sesiones anteriores",
   },
   shortcuts: {
     search: "Buscar atajos",

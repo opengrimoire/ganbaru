@@ -4,10 +4,8 @@
   import { FALLBACK_COLOR_INDEX, type EventColor } from "$lib/calendar/types";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
-  import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
-  import {
-    PROJECT_POMODORO_PRESET_ORDER,
-  } from "$lib/projects/default-pomodoro";
+  import { pomodoroPresetChoices, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import {
     projectLifecycleLabel,
   } from "$lib/projects/display";
@@ -104,6 +102,7 @@
   const NEW_TAG_FIRST_COLOR = PROJECT_TAG_DEFAULT_COLOR;
   type SelectOption = { value: string; label: string };
 
+  const preferences = getPreferences();
   const session = createProjectSettingsSession({
     projects,
     onRevealInactive: () => onRevealInactive(),
@@ -131,6 +130,10 @@
 
   const selectedProject = $derived(projects.projectById(projectId));
   const selectedProjectId = $derived(selectedProject?.id ?? null);
+  /** Experimental presets stay listed while the saved project uses one, so its choice remains selectable. */
+  const pomodoroOptions = $derived(
+    pomodoroPresetChoices(preferences.focusAdaptivePresetEnabled, selectedProject?.defaultPomodoroPresetKey),
+  );
   const selectedProjectIdentityLocked = $derived(
     selectedProject ? projectHasLockedSystemIdentity(selectedProject) : false,
   );
@@ -891,7 +894,7 @@
 
           <ProjectSettingsDefaultsSection
             theme={theme.current}
-            pomodoroOptions={PROJECT_POMODORO_PRESET_ORDER}
+            {pomodoroOptions}
             {pomodoroPresetLabel}
             projectDefaultEventNamePlaceholder={selectedProjectIdentityLocked ? selectedProject.name : undefined}
             bind:projectColorDraft={sessionState.projectDraft.color}

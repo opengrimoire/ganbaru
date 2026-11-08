@@ -107,10 +107,49 @@ export const COUNT_PRESET_RHYTHMS: Record<PomodoroPresetKey, CountPomodoroRhythm
   },
 };
 
+/** The preset a new event, project, or Focus config starts with. */
+export const DEFAULT_POMODORO_PRESET_KEY: PomodoroPresetKey = "balanced";
+
+/** Every preset, in the order pickers list them. */
+export const POMODORO_PRESET_ORDER: readonly PomodoroPresetKey[] = Object.freeze([
+  "adaptive",
+  "creative",
+  "balanced",
+  "deep",
+  "extended",
+]);
+
+/** Presets that pickers offer only while the experimental setting that allows them is on. */
+const EXPERIMENTAL_POMODORO_PRESET_KEYS: ReadonlySet<string> = new Set<PomodoroPresetKey>(["adaptive"]);
+
+/**
+ * Whether `key` names a preset that pickers offer only while experimental presets are enabled.
+ *
+ * @param key A preset key, or another picker value such as `custom`.
+ * @returns True for an experimental preset.
+ */
+export function isExperimentalPomodoroPreset(key: string | null | undefined): boolean {
+  return key != null && EXPERIMENTAL_POMODORO_PRESET_KEYS.has(key);
+}
+
+/**
+ * The presets a picker offers, in picker order. Experimental presets are left out unless `experimentalEnabled` is set,
+ * or `current` already uses one, so an existing choice stays visible and selected.
+ *
+ * @param experimentalEnabled Whether the experimental presets setting is on.
+ * @param current The preset the edited event or project uses now, if any.
+ * @returns The presets to list.
+ */
+export function pomodoroPresetChoices(experimentalEnabled: boolean, current?: string | null): PomodoroPresetKey[] {
+  return POMODORO_PRESET_ORDER.filter(
+    (key) => experimentalEnabled || key === current || !isExperimentalPomodoroPreset(key),
+  );
+}
+
 export const DEFAULT_POMODORO_CONFIG: PomodoroConfig = {
-  rhythm: { ...COUNT_PRESET_RHYTHMS.adaptive },
+  rhythm: { ...COUNT_PRESET_RHYTHMS[DEFAULT_POMODORO_PRESET_KEY] },
   rhythmSource: "preset",
-  presetKey: "adaptive",
+  presetKey: DEFAULT_POMODORO_PRESET_KEY,
   idleTimeoutMinutes: null,
 };
 

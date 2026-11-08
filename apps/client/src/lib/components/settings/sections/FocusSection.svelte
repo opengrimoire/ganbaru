@@ -263,6 +263,20 @@
         />
     </div>
   </section>
+
+  <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+
+  <section class="flex flex-col gap-4">
+    <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.focus.experimentalHeading")}</h2>
+    <div class="flex flex-col gap-3">
+      <SwitchField
+        label={t("settings.focus.adaptivePreset")}
+        description={t("settings.focus.adaptivePresetDescription")}
+        checked={preferences.focusAdaptivePresetEnabled}
+        onChange={(checked) => preferences.setFocusAdaptivePresetEnabled(checked)}
+      />
+    </div>
+  </section>
 </div>
 
 {#if showDisableIdlePauseConfirm}

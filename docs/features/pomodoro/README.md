@@ -11,7 +11,7 @@ Pomodoro turns a calendar commitment into an adaptive sequence of focus and reco
 | Manual and Calendar-linked runs | Implemented |
 | Focus, short-break, long-break, pause, resume, stop, and recovery | Implemented |
 | Presets and custom count or sequence rhythms | Implemented |
-| Adaptive focus rhythm | Implemented, tuning ongoing |
+| Adaptive focus rhythm | Implemented, experimental |
 | Idle and suspend detection | Implemented on desktop |
 | Break screen, title-bar ring, tray ring, and Calendar rail | Implemented; desktop acceptance pending |
 | Android accepted-phase notification and Guardian publication | Implemented; device acceptance pending |
@@ -31,6 +31,8 @@ Pomodoro turns a calendar commitment into an adaptive sequence of focus and reco
 ## Rhythm model
 
 A count rhythm defines focus duration, short-break duration, long-break duration, and which focus position receives the long break. A sequence rhythm defines a bounded repeating list of focus and break steps. Presets (`creative`, `balanced`, `deep`, `extended`, and `adaptive`) use the same explicit fields as custom rhythms. Configuration is validated in full before it is accepted; a malformed configuration is rejected without changing the active one.
+
+New events and projects start with `balanced`. Adaptive is experimental while its tuning continues: event and project preset pickers offer it only when Settings > Focus > Experimental enables it (on by default in development builds), and an event or project that already uses it keeps it listed.
 
 Adaptive mode proposes the next rhythm from local completed history and current context, within a fixed safe range and the active event deadline. The visible plan always states the current opportunity and next transition.
 

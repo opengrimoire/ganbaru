@@ -36,11 +36,14 @@ import {
 import { hasMeetingState } from "$lib/calendar/meeting-state";
 import {
   COUNT_PRESET_RHYTHMS,
+  DEFAULT_POMODORO_PRESET_KEY,
   type SequencePomodoroRhythmStep,
 } from "$lib/pomodoro/rhythm";
 import { EventPanelDateTimeController } from "./date-time-controller.svelte";
 
 type PomodoroPreset = "adaptive" | "creative" | "balanced" | "deep" | "extended" | "custom";
+
+const DEFAULT_PRESET_RHYTHM = COUNT_PRESET_RHYTHMS[DEFAULT_POMODORO_PRESET_KEY];
 
 export interface EventPanelSessionProjects {
   projectById(id: string | undefined): Project | undefined;
@@ -100,11 +103,11 @@ export class EventPanelSessionController {
   geo = $state<GeoCoordinates>();
   rdate = $state<string[]>();
   pomodoroEnabled = $state(false);
-  pomodoroPreset = $state<PomodoroPreset>("adaptive");
-  focusDurationMinutes = $state(40);
-  shortBreakMinutes = $state(5);
-  longBreakMinutes = $state(10);
-  longBreakAfterFocusCount = $state(4);
+  pomodoroPreset = $state<PomodoroPreset>(DEFAULT_POMODORO_PRESET_KEY);
+  focusDurationMinutes = $state(DEFAULT_PRESET_RHYTHM.focusDurationMinutes);
+  shortBreakMinutes = $state(DEFAULT_PRESET_RHYTHM.shortBreakMinutes);
+  longBreakMinutes = $state(DEFAULT_PRESET_RHYTHM.longBreakMinutes);
+  longBreakAfterFocusCount = $state(DEFAULT_PRESET_RHYTHM.longBreakAfterFocusCount);
   customRhythmMode = $state<"simple" | "sequence">("simple");
   sequenceSteps = $state<SequencePomodoroRhythmStep[]>([]);
   idleTimeoutEnabled = $state(true);
@@ -176,23 +179,28 @@ export class EventPanelSessionController {
     return this.options.preferences();
   }
 
+  /** Selects the default preset and copies its rhythm into the Focus fields. */
+  applyDefaultPomodoroPreset(): void {
+    this.pomodoroPreset = DEFAULT_POMODORO_PRESET_KEY;
+    this.focusDurationMinutes = DEFAULT_PRESET_RHYTHM.focusDurationMinutes;
+    this.shortBreakMinutes = DEFAULT_PRESET_RHYTHM.shortBreakMinutes;
+    this.longBreakMinutes = DEFAULT_PRESET_RHYTHM.longBreakMinutes;
+    this.longBreakAfterFocusCount = DEFAULT_PRESET_RHYTHM.longBreakAfterFocusCount;
+  }
+
   applyPomodoroConfigDraft(
     config: CalendarEvent["pomodoroConfig"],
     fallbackEnabled: boolean,
   ): void {
     this.pomodoroEnabled = !!config || fallbackEnabled;
     if (!config) {
-      this.focusDurationMinutes = 40;
-      this.shortBreakMinutes = 5;
-      this.longBreakMinutes = 10;
-      this.longBreakAfterFocusCount = 4;
+      this.applyDefaultPomodoroPreset();
       this.customRhythmMode = "simple";
       this.sequenceSteps = [{
         focusDurationMinutes: 40,
         breakPhase: "short_break",
         breakDurationMinutes: 5,
       }];
-      this.pomodoroPreset = "adaptive";
       this.applyDefaultIdleTimeoutPreference();
       return;
     }

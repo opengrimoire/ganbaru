@@ -15,6 +15,7 @@ import {
 import {
   clonePomodoroConfig,
   createPresetPomodoroConfig,
+  DEFAULT_POMODORO_PRESET_KEY,
 } from "$lib/pomodoro/rhythm";
 import {
   hasMeetingState,
@@ -155,7 +156,7 @@ export function buildCreatePanelInitialChanges(
     notifications: [0],
     pomodoroConfig: allDay
       ? undefined
-      : createPresetPomodoroConfig("adaptive", pauseWhenIdle ? thresholdMinutes : null),
+      : createPresetPomodoroConfig(DEFAULT_POMODORO_PRESET_KEY, pauseWhenIdle ? thresholdMinutes : null),
     allDay: allDay || undefined,
     meetingEnabled: undefined,
     location: undefined,

@@ -6,7 +6,7 @@
  * function of time and the reduced-motion still is simply the last frame.
  */
 
-import { createPresetPomodoroConfig, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
+import { createPresetPomodoroConfig, DEFAULT_POMODORO_PRESET_KEY, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
 import { computeDayTimelineBands } from "$lib/pomodoro/segments";
 import { cursorClick, cursorRest, type WelcomeCursorScript } from "./welcome-cursor";
 import type { WelcomeEventPanelFrame } from "./welcome-event-panel";
@@ -104,7 +104,7 @@ export const FILM_RAIL: FilmRail = filmDayRails(FILM_CHAIN)[0];
 export const FILM_PLANNED_RAIL: FilmRail = filmDayRails(FILM_CHAIN.slice(1))[0];
 
 /** The Focus preset a new event starts with in the event panel. */
-export const FILM_DEFAULT_PRESET: PomodoroPresetKey = "adaptive";
+export const FILM_DEFAULT_PRESET: PomodoroPresetKey = DEFAULT_POMODORO_PRESET_KEY;
 
 /**
  * The session's rail while the drawn event still has a new event's default Focus rhythm, before a project gives it the

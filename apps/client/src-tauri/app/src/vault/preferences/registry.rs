@@ -244,6 +244,7 @@ pub(crate) const REGISTRY: &[PreferenceSpec] = &[
         ValueRule::IntegerChoice(&[1, 2, 3, 4, 5, 10, 15]),
     ),
     portable("preferences.focusIdlePauseOnEventCreate", BOOL),
+    portable("preferences.focusAdaptivePresetEnabled", BOOL),
     portable(
         "preferences.focusBreakFinishedRepeatSeconds",
         FOCUS_BREAK_SOUND_INTERVAL,
@@ -493,7 +494,7 @@ mod tests {
         for key in device {
             assert!(device_spec(key).is_some(), "{key}");
         }
-        assert_eq!(specs(Scope::Portable).count(), 54);
+        assert_eq!(specs(Scope::Portable).count(), 55);
         assert_eq!(specs(Scope::Device).count(), 23);
     }
 

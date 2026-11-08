@@ -3,7 +3,7 @@ import type {
   ProjectDefaultIdleSettingsSource,
   ProjectDefaultPomodoroMode,
 } from "./default-pomodoro";
-import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
+import { DEFAULT_POMODORO_PRESET_KEY, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
 import {
   DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
   DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
@@ -193,7 +193,7 @@ export const PROJECT_CREATE_DEFAULTS = {
   defaultEventTimeMode: "timed",
   defaultEventDurationMinutes: null,
   defaultPomodoroMode: "preset",
-  defaultPomodoroPresetKey: "adaptive",
+  defaultPomodoroPresetKey: DEFAULT_POMODORO_PRESET_KEY,
   defaultPomodoroFocusMinutes: null,
   defaultPomodoroShortBreakMinutes: null,
   defaultPomodoroLongBreakMinutes: null,

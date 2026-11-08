@@ -266,7 +266,7 @@ describe("panel initial changes", () => {
       { pauseWhenIdle: false, thresholdMinutes: 7 },
     );
 
-    expect(result.pomodoroConfig).toEqual(createPresetPomodoroConfig("adaptive", null));
+    expect(result.pomodoroConfig).toEqual(createPresetPomodoroConfig("balanced", null));
   });
 
   it("merges project-scoped defaults into create baselines", () => {

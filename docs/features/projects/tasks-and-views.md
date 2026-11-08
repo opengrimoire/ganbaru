@@ -6,7 +6,7 @@ A task has stable identity, project, section, optional parent task, title, descr
 
 Subtasks are normal tasks with a parent. Checklist items are lighter completion records owned by one task. A parent and its descendants keep explicit states; completing a parent does not silently erase open child work.
 
-The project header's add button opens task detail on an empty draft in the default section and status from any view. The draft offers the same sections as an existing task, but nothing is persisted until it is submitted with a title: the task is created first, then its checklist, subtasks, parent, tags, dependencies, scheduled blocks, and custom values are written against it, and any that fail are reported on the created task. Closing a changed draft asks before discarding it.
+The project header's add button opens task detail on an empty draft in the default section and status from any view. The draft offers the same sections as an existing task, but nothing is persisted until it is submitted with a title: the task is created first, then its checklist, subtasks, parent, tags, dependencies, scheduled blocks, and custom values are written against it, and any that fail are reported on the created task. Closing a changed draft asks before discarding it. Adding a task from an add row in the List view creates it in place without opening task detail, and keeps the add row open for the next title.
 
 ## Sections and ordering
 

@@ -27,7 +27,6 @@ export interface ProjectListQuickAddControllerContext {
   getGroupBy: () => ProjectTaskGroupMode;
   getStatuses: () => ProjectStatus[];
   getPriorities: () => ProjectPriorityConfig[];
-  revealTask: (task: ProjectTask | undefined) => void;
   selectProjectFirstMessage: () => string;
   createFailedMessage: (error: unknown) => string;
 }
@@ -196,7 +195,6 @@ export class ProjectListQuickAddController implements ProjectListSubtaskQuickAdd
     const created = await this.createTask(target, this.sectionTaskDrafts[sectionId] ?? "", { sectionId });
     if (!created) return;
     this.sectionTaskDrafts = { ...this.sectionTaskDrafts, [sectionId]: "" };
-    this.context.revealTask(created);
   }
 
   async submitGroupTask(group: ProjectTaskListGroup): Promise<void> {
@@ -210,7 +208,6 @@ export class ProjectListQuickAddController implements ProjectListSubtaskQuickAdd
     });
     if (!created) return;
     this.groupTaskDrafts = { ...this.groupTaskDrafts, [key]: "" };
-    this.context.revealTask(created);
   }
 
   get pending(): boolean {

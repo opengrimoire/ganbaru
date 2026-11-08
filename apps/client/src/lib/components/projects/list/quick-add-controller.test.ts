@@ -12,7 +12,6 @@ function controller(): ProjectListQuickAddController {
     getGroupBy: () => "section",
     getStatuses: () => [],
     getPriorities: () => [],
-    revealTask: vi.fn(),
     selectProjectFirstMessage: () => "Select a project",
     createFailedMessage: () => "Create failed",
   });
@@ -61,7 +60,6 @@ describe("ProjectListQuickAddController", () => {
       getGroupBy: () => "section",
       getStatuses: () => [],
       getPriorities: () => [],
-      revealTask: vi.fn(),
       selectProjectFirstMessage: () => "Select a project",
       createFailedMessage: () => "Create failed",
     });

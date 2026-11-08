@@ -350,14 +350,6 @@
     ));
   }
 
-  /** Opens a task created from the list without touching the view's saved query, even when its filters hide the task. */
-  function revealCreatedTask(task: ProjectTask | undefined): void {
-    if (!task) return;
-    routeUi.selectedTaskId = task.id;
-    routeUi.clearTaskSelection();
-  }
-
-
   async function toggleSectionCollapsed(section: ProjectSection): Promise<void> {
     await projects.updateSection(section, { collapsed: !section.collapsed });
   }
@@ -591,7 +583,6 @@
               onSelectedTaskIdsChange={(taskIds) => {
                 routeUi.selectedTaskIds = taskIds;
               }}
-              onRevealTask={revealCreatedTask}
               onTaskListColumnWidthsChange={(widths, options) => taskQuery.updateColumnWidths(widths, options)}
               onNeedMore={() => taskQuery.loadNextList(routeUi.selectedTaskIds)}
             />

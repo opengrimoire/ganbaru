@@ -86,7 +86,6 @@
     showArchivedTasks,
     onOpenTask,
     onSelectedTaskIdsChange,
-    onRevealTask,
     onTaskListColumnWidthsChange,
     onNeedMore,
   }: {
@@ -110,7 +109,6 @@
     showArchivedTasks: boolean;
     onOpenTask: (task: ProjectTask) => void;
     onSelectedTaskIdsChange: (taskIds: string[]) => void;
-    onRevealTask: (task: ProjectTask | undefined) => void;
     onTaskListColumnWidthsChange: (widths: ProjectTaskListColumnWidths, options?: { persist?: boolean }) => Promise<void>;
     onNeedMore: () => void;
   } = $props();
@@ -134,7 +132,6 @@
     getGroupBy: () => taskGroupBy,
     getStatuses: () => statuses,
     getPriorities: () => priorities,
-    revealTask: (task) => onRevealTask(task),
     selectProjectFirstMessage: () => t("projects.tasks.selectProjectFirst"),
     createFailedMessage: (error) => t(
       "projects.tasks.createFailed",

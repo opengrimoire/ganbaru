@@ -47,6 +47,25 @@ export const vaultSetup = {
       "A short animation of the playlist builder: a track from Local music is added to the Work (focus) playlist, then a video from YouTube to Break (calm). In the Calendar, picking the Thesis project for an event fills its music with the project's playlist for focus, short breaks, and long breaks. When the event's Pomodoro starts on its own, a notification shows a local track from Work (focus) playing automatically, and when the break starts, another shows the YouTube video from Break (calm).",
     playingNotice: (track: string, playlist: string) => `Playing ${track} from ${playlist}`,
   },
+  projects: {
+    headline: "Set up a project once, and every event follows",
+    body: "Give a project its duration, Pomodoro, color, and music, and every task you schedule from its list gets them without any extra setup.",
+    sceneDescription:
+      "A short animation of the Thesis project's List view. Its settings open on Event defaults, where the duration is set to 1 hour and the Pomodoro to Creative, next to the project's color and playlists, and the settings are saved. Back in the list, three tasks are selected and scheduled together, and the form's minutes already read the project's hour. The Calendar then shows three back to back events, one per task, each with the project's color, Pomodoro, and music, and the first one starts on its own.",
+    task: {
+      defineQuestion: "Define research question",
+      writeIntroduction: "Write introduction",
+      analyzeSurvey: "Analyze survey data",
+      draftDiscussion: "Draft discussion",
+      formatReferences: "Format references",
+    },
+    status: {
+      backlog: "Backlog",
+      todo: "To do",
+      inProgress: "In progress",
+      done: "Done",
+    },
+  },
   about: {
     headline: "Free and open source",
     body: "Your data stays on your devices and syncs directly between them, with no account, ads, or telemetry.\nApp and code are yours forever.",

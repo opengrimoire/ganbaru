@@ -55,6 +55,25 @@ export const vaultSetup = {
       "Una breve animación del creador de playlists: una canción de Música local se agrega a la playlist Trabajo (concentración) y luego un video de YouTube a Descanso (tranquilo). En el Calendario, al elegir el proyecto Tesis para un evento, su música se llena con la playlist del proyecto para la concentración, los descansos cortos y los descansos largos. Cuando el Pomodoro del evento empieza solo, una notificación muestra que suena automáticamente una canción local de Trabajo (concentración), y cuando empieza el descanso, otra muestra el video de YouTube de Descanso (tranquilo).",
     playingNotice: (track: string, playlist: string) => `Reproduciendo ${track} de ${playlist}`,
   },
+  projects: {
+    headline: "Configura un proyecto una vez y cada evento lo sigue",
+    body: "Dale a un proyecto su duración, Pomodoro, color y música, y cada tarea que programes desde su lista los tendrá sin configurar nada más.",
+    sceneDescription:
+      "Una breve animación de la vista de lista del proyecto Tesis. Su configuración se abre en los valores predeterminados de eventos, donde la duración se fija en 1 hora y el Pomodoro en Creativo, junto al color y las playlists del proyecto, y la configuración se guarda. De vuelta en la lista, se seleccionan tres tareas y se programan juntas, y los minutos del formulario ya muestran la hora del proyecto. Después, el Calendario muestra tres eventos seguidos, uno por tarea, cada uno con el color, el Pomodoro y la música del proyecto, y el primero empieza solo.",
+    task: {
+      defineQuestion: "Definir la pregunta de investigación",
+      writeIntroduction: "Escribir la introducción",
+      analyzeSurvey: "Analizar los datos de la encuesta",
+      draftDiscussion: "Redactar la discusión",
+      formatReferences: "Dar formato a las referencias",
+    },
+    status: {
+      backlog: "Pendiente",
+      todo: "Por hacer",
+      inProgress: "En progreso",
+      done: "Hecho",
+    },
+  },
   about: {
     headline: "Gratis y de código abierto",
     body: "Tus datos se quedan en tus dispositivos y se sincronizan directamente entre ellos, sin cuentas, anuncios ni telemetría. App y código son tuyos para siempre.",

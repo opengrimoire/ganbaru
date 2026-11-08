@@ -53,8 +53,8 @@
     </svg>
   {:else if app === "bluedit"}
     <!-- A round-eared, straight-faced alien whose antenna leans to the left, its head outlined in the brand color to part
-         it from the ears. The view centers the whole alien, antenna included, as the other glyphs are centered. -->
-    <svg viewBox="0.7 -0.4 22 22" style:width={glyph} style:height={glyph}>
+         it from the ears. The view sits the alien a touch right of center, which reads as centered beside its leaning antenna. -->
+    <svg viewBox="0.3 -0.4 22 22" style:width={glyph} style:height={glyph}>
       <path d="M12.2 9.4L11 3.9L8.4 3.4" fill="none" stroke="white" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round" />
       <circle cx="7.3" cy="3.3" r="1.5" fill="white" />
       <circle cx="4.6" cy="11.6" r="1.9" fill="white" />

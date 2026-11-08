@@ -26,6 +26,8 @@
     indent ? `margin-left: ${indent};` : "",
   ].join(" ") || undefined);
   let input: HTMLInputElement | undefined = $state();
+  /** A one pixel mark at the start of the open field, revealed in place of the field itself. */
+  let fieldStart: HTMLSpanElement | undefined = $state();
   let trigger: HTMLButtonElement | undefined = $state();
   let pending = $state(false);
   let error = $state<string | null>(null);
@@ -35,7 +37,7 @@
     active = true;
     onActiveChange?.(true);
     await tick();
-    input?.focus();
+    focusInput();
   }
 
   async function submit(): Promise<void> {
@@ -49,8 +51,18 @@
     } finally {
       pending = false;
       await tick();
-      input?.focus();
+      focusInput();
     }
+  }
+
+  /**
+   * Focus the field and scroll only as far as its start needs to be in view. A field that spans a row wider than the
+   * table's viewport would otherwise be scrolled flush with the viewport's start edge on focus, even when its start
+   * was already visible.
+   */
+  function focusInput(): void {
+    input?.focus({ preventScroll: true });
+    fieldStart?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
   function cancel(): void {
@@ -65,7 +77,8 @@
 
 <div class={spansRow ? "col-span-full grid min-w-0 grid-cols-subgrid self-stretch" : "min-w-0"}>
   {#if active || draft}
-    <form class={cn("flex min-h-(--collection-table-row-height) min-w-0 items-center gap-1 rounded-md px-2", !spansRow && "bg-accent/20")} style={contentStyle} onsubmit={(event) => { event.preventDefault(); void submit(); }}>
+    <form class={cn("relative flex min-h-(--collection-table-row-height) min-w-0 items-center gap-1 rounded-md px-2", !spansRow && "bg-accent/20")} style={contentStyle} onsubmit={(event) => { event.preventDefault(); void submit(); }}>
+      <span bind:this={fieldStart} class="pointer-events-none absolute inset-y-0 left-0 w-px" aria-hidden="true"></span>
       <input {...inputAttributes} bind:this={input} value={draft} oninput={(event) => { draft = event.currentTarget.value; onDraftChange?.(draft); }} aria-label={label} placeholder={label} disabled={disabled || pending} class="min-h-8 w-full min-w-0 bg-transparent text-collection text-foreground outline-none" onkeydown={(event) => { event.stopPropagation(); if (event.key === "Escape" && !pending) { event.preventDefault(); cancel(); } }} />
       <button type="submit" class="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" disabled={disabled || pending || !draft.trim()} aria-label={label}><Plus class="size-4" /></button>
       <button type="button" class="rounded-md px-2 py-1 text-[0.8rem] text-muted-foreground hover:bg-accent" disabled={pending} onclick={cancel}>{t("common.cancel")}</button>

@@ -78,7 +78,7 @@ describe("project list view helpers", () => {
     expect(projectTaskListColumnTrack("status")).toBe("7.5rem");
     expect(projectTaskListColumnTrack("custom:field-a")).toBe("7.63rem");
     expect(projectTaskListGridTemplate(["status", "custom:field-a"])).toBe(
-      "1.5rem 1.75rem 24rem 7.5rem 7.63rem 2.25rem",
+      "1.5rem 1.75rem 16rem 7.5rem 7.63rem 2.25rem",
     );
     expect(projectTaskListLeadingGridTemplate(["status", "custom:field-a"])).toBe(
       "1.5rem 1.75rem minmax(0, 1fr)",
@@ -104,7 +104,7 @@ describe("project list view helpers", () => {
       statuses: [status("In progress")],
       nameLabel: "Name",
       columnLabel: (column) => column === "start" ? "Start date" : "Status",
-    })).toBe("1.5rem 1.75rem 24rem 7.52rem 8.07rem 2.25rem");
+    })).toBe("1.5rem 1.75rem 16rem 7.52rem 8.07rem 2.25rem");
   });
 
   it("lets custom column headers set the first automatic width up to a cap", () => {
@@ -121,9 +121,9 @@ describe("project list view helpers", () => {
   });
 
   it("keeps the list width to the content tracks instead of the viewport", () => {
-    expect(projectTaskListGridMinWidth([])).toBe("29.5rem");
-    expect(projectTaskListGridMinWidth(["status", "priority", "estimate"])).toBe("47.4rem");
-    expect(projectTaskListGridMinWidth(["status", "start", "due", "priority", "assignee", "reviewer"])).toBe("68.74rem");
+    expect(projectTaskListGridMinWidth([])).toBe("21.5rem");
+    expect(projectTaskListGridMinWidth(["status", "priority", "estimate"])).toBe("39.4rem");
+    expect(projectTaskListGridMinWidth(["status", "start", "due", "priority", "assignee", "reviewer"])).toBe("60.74rem");
   });
 
   it("applies manual column widths over automatic list sizing", () => {

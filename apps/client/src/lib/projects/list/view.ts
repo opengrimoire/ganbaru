@@ -105,7 +105,7 @@ const PROJECT_LIST_TEXT_CHARACTER_REM = 0.42;
 const PROJECT_LIST_HEADER_EXTRA_REM = 0.4;
 const PROJECT_LIST_STATUS_BADGE_EXTRA_REM = 1.55;
 const PROJECT_LIST_DATE_TIME_TEXT = "0000-00-00 00:00";
-const PROJECT_LIST_NAME_WIDTH: ProjectTaskListColumnWidthBounds = { min: 12, autoMin: 24, max: 32 };
+const PROJECT_LIST_NAME_WIDTH: ProjectTaskListColumnWidthBounds = { min: 12, autoMin: 16, max: 21.5 };
 const PROJECT_LIST_COLUMN_WIDTHS = {
   status: { min: 7.5, max: 12 },
   start: { min: 7.75, max: 8.25 },

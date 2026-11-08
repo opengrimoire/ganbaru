@@ -15,7 +15,7 @@
       "roots": [
         "src/lib/components/calendar/CalendarView.svelte"
       ],
-      "maxSourceModules": 228
+      "maxSourceModules": 229
     },
     {
       "name": "projects",

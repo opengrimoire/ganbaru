@@ -19,10 +19,12 @@ import {
   musicPanelOpen,
   musicPhase,
   musicPhaseSeconds,
+  musicPickerPhase,
   musicPlaylistBump,
   musicPlaylistChecked,
   musicPlaylistCount,
   musicRailRecorded,
+  musicSectionOpen,
   musicReviewItem,
   musicReviewItemIn,
   musicReviewProgress,
@@ -143,6 +145,26 @@ describe("welcome music scene", () => {
     expect(musicPanelOpen(B.saveTap)).toBe(false);
   });
 
+  it("opens the Focus, then the short break picker, each on the project playlist and closed by its tap", () => {
+    expect(musicEventPanelFrame(B.focusPickerTap - 1, "Title", lookup).music?.picker).toBeNull();
+    const focus = musicEventPanelFrame(B.focusPickerTap, "Title", lookup).music?.picker;
+    expect(focus?.phase).toBe("focus");
+    expect(focus?.selected).toBe("workFocus");
+    expect(focus?.options.map((option) => [option.key, option.count])).toEqual(
+      MUSIC_PLAYLISTS.map((entry) => [entry.key, entry.tracks + (entry.key === "workFocus" || entry.key === "breakCalm" ? 1 : 0)]),
+    );
+    expect(musicPickerPhase(B.focusOptionTap - 1)).toBe("focus");
+    expect(musicPickerPhase(B.focusOptionTap)).toBeNull();
+    expect(musicPickerPhase(B.breakPickerTap)).toBe("short-break");
+    expect(musicEventPanelFrame(B.breakPickerTap, "Title", lookup).music?.picker?.selected).toBe("breakCalm");
+    expect(musicPickerPhase(B.breakOptionTap)).toBeNull();
+    for (const elapsed of moments()) {
+      const phase = musicPickerPhase(elapsed);
+      if (phase) expect(musicSectionOpen(elapsed)).toBe(1);
+      if (phase) expect(musicPanelOpen(elapsed)).toBe(true);
+    }
+  });
+
   it("moves the current time forward only", () => {
     let previous = musicClock(0);
     for (const elapsed of moments()) {
@@ -163,7 +185,7 @@ describe("welcome music scene", () => {
     expect(seconds.remaining).toBe(seconds.total);
   });
 
-  it("plays each phase's playlist through the ring's menu", () => {
+  it("plays each phase's project playlist", () => {
     expect(musicNowPlaying(B.focusStart - 1)).toBeNull();
     for (const elapsed of moments(100).filter((value) => value >= B.focusStart)) {
       const phase = musicPhase(elapsed);

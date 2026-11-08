@@ -16,6 +16,26 @@ export interface WelcomeEventPanelMusicRow {
   playlistName: string;
   /** How far the row has gone from no playlist to this one, from 0 to 1. */
   fill: number;
+  /** The touch on the row's playlist trigger, from 0 to 1 as it shows. */
+  touch: number;
+}
+
+/** One playlist the playlist picker lists, with its icon, localized name, and track count. */
+export interface WelcomeEventPanelMusicOption {
+  key: string;
+  icon: string;
+  name: string;
+  count: number;
+}
+
+/** A phase's playlist picker, open under or over that row's trigger. */
+export interface WelcomeEventPanelMusicPicker {
+  phase: WelcomeEventPanelMusicPhase;
+  options: readonly WelcomeEventPanelMusicOption[];
+  /** The option the row takes, checked in the list, or null for none. */
+  selected: string | null;
+  /** The touch on the selected option, from 0 to 1 as it shows. */
+  touch: number;
 }
 
 /** The panel's Music section, open below its header. */
@@ -25,6 +45,8 @@ export interface WelcomeEventPanelMusic {
   /** How far the section's body has opened, from 0 to 1. */
   expanded: number;
   rows: readonly WelcomeEventPanelMusicRow[];
+  /** The open playlist picker, or null while every picker is closed. */
+  picker: WelcomeEventPanelMusicPicker | null;
 }
 
 /** The touches on the panel's controls, each from 0 to 1 as it shows. */

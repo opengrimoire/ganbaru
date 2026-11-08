@@ -1,5 +1,6 @@
 <script lang="ts">
   import Ban from "@lucide/svelte/icons/ban";
+  import Check from "@lucide/svelte/icons/check";
   import Bell from "@lucide/svelte/icons/bell";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
@@ -16,6 +17,7 @@
   import { untrack, type Component } from "svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
+  import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { displayCanonicalTime } from "$lib/components/calendar/event-panel/date-time-controller.svelte";
   import { PANEL_MAX_WIDTH } from "$lib/components/calendar/event-panel/geometry-controller.svelte";
   import {
@@ -31,7 +33,7 @@
   import { formatNotificationOffset } from "$lib/calendar/event-notifications";
   import type { EventColor } from "$lib/calendar/types";
   import { getEventColor } from "$lib/calendar/utils";
-  import { formatDateLabel } from "$lib/i18n/formatters";
+  import { formatDateLabel, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatShortcut } from "$lib/keyboard-shortcuts";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
@@ -50,6 +52,7 @@
     pickEventPanelLayout,
     type EventPanelAnchor,
   } from "$lib/utils/responsive";
+  import { pickSelectPopoverGeometry } from "$lib/utils/select-popover-position";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import VolumeX from "@lucide/svelte/icons/volume-x";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
@@ -59,10 +62,11 @@
   /**
    * The event panel of the welcome scenes, drawn with the event panel's own classes: it opens on an event, where a
    * project is picked from the project picker, which gives the event the project's color, Focus rhythm, and music, a
-   * title may be typed and the Music section opened, and the event is saved. On desktop the panel floats over the
-   * Calendar as it would in a window the size of the canvas, with the picker's dropdown and its projects flyout, except
-   * that where the Calendar would center it, the scene keeps it to the right so the event stays in view; on a phone it
-   * is the bottom sheet, risen to its peek over the grid with Save in its header, with the picker's full screen dialog.
+   * title may be typed and the Music section opened with its rows' playlist pickers, and the event is saved. On
+   * desktop the panel floats over the Calendar as it would in a window the size of the canvas, with the picker's
+   * dropdown and its projects flyout, except that where the Calendar would center it, the scene keeps it to the right
+   * so the event stays in view; on a phone it is the bottom sheet, risen to its peek over the grid with Save in its
+   * header, with the picker's full screen dialog.
    * Every frame is a function of `frame`, which the scene computes from its time.
    */
   let {
@@ -125,9 +129,12 @@
   const METADATA_ICON_CLASS = "shrink-0 translate-y-[0.5px]";
   const SECTION_ICON_SIZE = 14;
   /** The Music section's select triggers, as the event panel styles them. */
-  const MUSIC_TRIGGER_CLASS = "flex h-7 w-full min-w-0 items-center gap-2 rounded border-0 bg-black/5 px-2.5 text-left text-[0.8rem] font-normal text-event-panel-input-text dark:bg-black/15";
+  const MUSIC_TRIGGER_CLASS = "relative flex h-7 w-full min-w-0 items-center gap-2 rounded border-0 bg-black/5 px-2.5 text-left text-[0.8rem] font-normal text-event-panel-input-text dark:bg-black/15";
   const MUSIC_ICON_SIZE = 14;
   const MUSIC_ICON_STROKE_WIDTH = 1.5;
+  /** The playlist picker's measures, as the playlist select draws its popover. */
+  const PLAYLIST_PICKER_WIDTH = FLOATING_WIDTH.lg;
+  const PLAYLIST_PICKER_MAX_HEIGHT = 520;
   const showSounds = platformHasCapability(BUILD_PLATFORM_PROFILE, "music.soundscapes");
 
   type FilmLabel = "university" | "health" | "personal" | "thesis" | "assignments";
@@ -257,17 +264,24 @@
   let groupRow = $state<HTMLDivElement>();
   let pickerHeight = $state(0);
   let flyoutFooterHeight = $state(0);
+  /** The Music rows' playlist triggers, by phase, and the open playlist picker's natural height. */
+  const musicTriggers = $state<Partial<Record<WelcomeEventPanelMusicPhase, HTMLDivElement>>>({});
+  let playlistPickerHeight = $state(0);
+  const playlistPicker = $derived(music?.picker ?? null);
   let measured = $state<{
     scroll: ProjectPickerPanelRect;
     colorTrigger: ProjectPickerPanelRect;
     picker: ProjectPickerPanelRect | null;
     groupRow: ProjectPickerPanelRect | null;
+    musicTrigger: ProjectPickerPanelRect | null;
   } | null>(null);
 
   $effect(() => {
     void panelStyle;
     void pickerStyle;
     void pane;
+    void scrollOffset;
+    const musicTrigger = playlistPicker ? musicTriggers[playlistPicker.phase] : undefined;
     if (!layer || !scrollElement || !colorTrigger) {
       measured = null;
       return;
@@ -277,6 +291,7 @@
       colorTrigger: canvasRect(layer, colorTrigger),
       picker: pickerElement ? canvasRect(layer, pickerElement) : null,
       groupRow: groupRow ? canvasRect(layer, groupRow) : null,
+      musicTrigger: musicTrigger ? canvasRect(layer, musicTrigger) : null,
     };
     // The picker is placed from these measures and measured again once placed, so only a real move is written back.
     if (!untrack(() => measured && sameMeasures(measured, next))) measured = next;
@@ -286,7 +301,8 @@
     return sameRect(a.scroll, b.scroll)
       && sameRect(a.colorTrigger, b.colorTrigger)
       && sameRect(a.picker, b.picker)
-      && sameRect(a.groupRow, b.groupRow);
+      && sameRect(a.groupRow, b.groupRow)
+      && sameRect(a.musicTrigger, b.musicTrigger);
   }
 
   function sameRect(a: ProjectPickerPanelRect | null, b: ProjectPickerPanelRect | null): boolean {
@@ -334,6 +350,22 @@
       rowHeight: SUBPANEL_ROW_HEIGHT,
     });
     return `left: ${Math.round(panel.left)}px; top: ${Math.round(panel.top)}px; width: ${Math.round(panel.width)}px; height: ${Math.round(panel.height)}px; max-height: ${Math.round(panel.maxHeight)}px;`;
+  });
+
+  /** The playlist picker against its row's trigger, end aligned to it and kept on the canvas, as the select places it. */
+  const playlistPickerStyle = $derived.by(() => {
+    const triggerRect = measured?.musicTrigger;
+    if (!triggerRect || playlistPickerHeight === 0) return "visibility: hidden;";
+    const geometry = pickSelectPopoverGeometry({
+      triggerRect,
+      boundaryRect: { left: 0, top: 0, right: canvasWidth, bottom: canvasHeight, width: canvasWidth, height: canvasHeight },
+      contentHeight: Math.min(playlistPickerHeight, PLAYLIST_PICKER_MAX_HEIGHT),
+      contentWidth: PLAYLIST_PICKER_WIDTH,
+      horizontalAlign: "end",
+    });
+    const width = geometry.width ?? PLAYLIST_PICKER_WIDTH;
+    const maxHeight = Math.min(geometry.maxHeight, PLAYLIST_PICKER_MAX_HEIGHT);
+    return `left: ${Math.round(geometry.left)}px; top: ${Math.round(geometry.top)}px; width: ${Math.round(width)}px; max-width: ${Math.round(geometry.maxWidth)}px; max-height: ${Math.round(maxHeight)}px;`;
   });
 
   /** Where the floating panel goes across, before it is kept inside the canvas, as the panel places itself. */
@@ -642,7 +674,7 @@
                           {@const none = Math.max(0, 1 - 2 * row.fill)}
                           {@const chosen = Math.max(0, 2 * row.fill - 1)}
                           <span class="music-label truncate text-[0.8rem] text-foreground">{phaseLabel(row.phase)}</span>
-                          <div class={MUSIC_TRIGGER_CLASS}>
+                          <div bind:this={musicTriggers[row.phase]} class={MUSIC_TRIGGER_CLASS}>
                             {#if row.fill < 0.5}
                               <span class="flex min-w-0 flex-1 items-center gap-2" style:opacity={none}>
                                 <VolumeX size={MUSIC_ICON_SIZE} strokeWidth={MUSIC_ICON_STROKE_WIDTH} class="shrink-0 text-muted-foreground" />
@@ -656,7 +688,12 @@
                                 <span class="min-w-0 flex-1 truncate">{row.playlistName}</span>
                               </span>
                             {/if}
-                            <ChevronDown size={13} strokeWidth={2} class="shrink-0 text-muted-foreground" />
+                            <ChevronDown
+                              size={13}
+                              strokeWidth={2}
+                              class={cn("shrink-0 text-muted-foreground", playlistPicker?.phase === row.phase && "rotate-180")}
+                            />
+                            {@render touch(row.touch, "left-1/2 top-1/2")}
                           </div>
                           {#if showSounds}
                             <div class={MUSIC_TRIGGER_CLASS}>
@@ -806,6 +843,37 @@
         </div>
       </div>
     {/if}
+  {/if}
+
+  {#if playlistPicker}
+    <!-- The phase's playlist picker: none, then every playlist with its count, the row's playlist checked. -->
+    <div class="surface-floating absolute z-80 flex min-h-0 flex-col overflow-hidden" style={playlistPickerStyle}>
+      <div bind:offsetHeight={playlistPickerHeight} class="flex flex-col">
+        <div class="shrink-0 px-1.5 pt-1.5">
+          <div class="field flex items-center gap-1.5">
+            <Search size={13} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />
+            <span class="field-bare truncate text-muted-foreground">{t("music.assignment.searchPlaylists")}</span>
+          </div>
+        </div>
+        <div class="surface-floating-body">
+          <div class="menu-item">
+            <VolumeX size={15} strokeWidth={1.75} />
+            <span class="min-w-0 flex-1 truncate font-medium">{t("common.none")}</span>
+            {#if playlistPicker.selected === null}<Check size={14} />{/if}
+          </div>
+          {#each playlistPicker.options as option (option.key)}
+            {@const chosen = option.key === playlistPicker.selected}
+            <div class="menu-item relative" data-highlighted={chosen && playlistPicker.touch > 0 ? "" : undefined}>
+              <span class="grid size-4 shrink-0 place-items-center"><MusicPlaylistIcon icon={option.icon} size={15} /></span>
+              <span class="min-w-0 flex-1 truncate font-medium">{option.name}</span>
+              {#if chosen}<Check size={14} />{/if}
+              <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{formatNumber(localization.locale, option.count)}</span>
+              {#if chosen}{@render touch(playlistPicker.touch, "left-2/5 top-1/2")}{/if}
+            </div>
+          {/each}
+        </div>
+      </div>
+    </div>
   {/if}
 </div>
 

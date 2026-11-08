@@ -19,6 +19,7 @@ import {
   filmDayRails,
   filmCaretOn,
   filmSpan,
+  filmPress,
   filmTap,
   filmTyped,
   monotoneCurve,
@@ -120,25 +121,28 @@ export const MUSIC_BEATS = {
   /** The title is typed. */
   typeStart: 11150,
   typeEnd: 12350,
+  /** On the phone, a drag on the sheet's grabber takes it from its peek to its full height, every section closed. */
+  sheetDragStart: 13100,
+  sheetDragEnd: 13650,
   /** A tap on the Music section's header opens it on the event's playlists. */
-  musicTap: 13300,
+  musicTap: 14500,
   /** A tap on the Focus row's trigger opens its playlist picker, and a tap on its checked playlist closes it. */
-  focusPickerTap: 14700,
-  focusOptionTap: 16000,
+  focusPickerTap: 15900,
+  focusOptionTap: 17200,
   /** The same for the short break's row. */
-  breakPickerTap: 17000,
-  breakOptionTap: 18300,
+  breakPickerTap: 18200,
+  breakOptionTap: 19500,
   /** Save saves the event and closes the panel. */
-  saveTap: 19400,
+  saveTap: 20600,
   /** The event's Focus starts on its own, and the app's notification says which work track autoplays. */
-  focusStart: 20200,
-  focusNoticeIn: 20600,
-  focusNoticeOut: 25000,
+  focusStart: 21400,
+  focusNoticeIn: 21800,
+  focusNoticeOut: 26200,
   /** The break starts, and the notification says which break video autoplays. The scene ends as the break does. */
-  breakStart: 25800,
-  breakNoticeIn: 26200,
-  breakNoticeOut: 30600,
-  end: 31400,
+  breakStart: 27000,
+  breakNoticeIn: 27400,
+  breakNoticeOut: 31800,
+  end: 32600,
 } as const;
 
 const B = MUSIC_BEATS;
@@ -159,9 +163,10 @@ const SCREEN_FADE_MS = 300;
 const BUMP_MS = 520;
 const ITEM_SWAP_MS = 260;
 const SECTION_OPEN_MS = 380;
-const SHEET_EXPAND_MS = 380;
 const SCROLL_DELAY_MS = 140;
 const SCROLL_MS = 520;
+/** How long the finger rests on the grabber before the sheet follows it. */
+const DRAG_LAND_MS = 160;
 /** The Music section's playlist pickers, each open from the tap on its row's trigger to the tap on its playlist. */
 const PICKER_STEPS: readonly { phase: WelcomeEventPanelMusicPhase; openTap: number; closeTap: number }[] = [
   { phase: "focus", openTap: B.focusPickerTap, closeTap: B.focusOptionTap },
@@ -310,7 +315,7 @@ export function musicEventPanelFrame(
   const opened = filmSpan(elapsed, B.musicTap + SCROLL_DELAY_MS, B.musicTap + SCROLL_DELAY_MS + SCROLL_MS);
   return {
     sheetRise: 1 - (1 - filmSpan(elapsed, B.panelOpen, B.panelOpen + FILM_SHEET_RISE_MS)) ** 3,
-    sheetExpand: easeInOutCubic(filmSpan(elapsed, B.musicTap, B.musicTap + SHEET_EXPAND_MS)),
+    sheetExpand: easeInOutCubic(filmSpan(elapsed, B.sheetDragStart, B.sheetDragEnd)),
     pane: projectPane(elapsed),
     picked,
     typed: musicTypedTitle(elapsed, title),
@@ -320,6 +325,7 @@ export function musicEventPanelFrame(
       project: filmTap(elapsed, B.projectTap),
       group: filmTap(elapsed, B.groupTap),
       projectPick: filmTap(elapsed, B.projectPick),
+      sheetDrag: filmPress(elapsed, B.sheetDragStart - DRAG_LAND_MS, B.sheetDragEnd),
       music: filmTap(elapsed, B.musicTap),
       save: filmTap(elapsed, B.saveTap),
     },

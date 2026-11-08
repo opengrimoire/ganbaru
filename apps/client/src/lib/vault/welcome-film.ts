@@ -383,7 +383,11 @@ export function filmNotification(elapsed: number): number {
 
 /** How visible the touch of a tap ending at `end` is at `elapsed`, from 0 to 1. */
 export function filmTap(elapsed: number, end: number): number {
-  const start = end - FILM_TAP_MS;
+  return filmPress(elapsed, end - FILM_TAP_MS, end);
+}
+
+/** How visible a touch held from `start` until it lifts at `end` is at `elapsed`, from 0 to 1, such as a drag's. */
+export function filmPress(elapsed: number, start: number, end: number): number {
   return filmSpan(elapsed, start, start + FILM_TAP_FADE_MS) * (1 - filmSpan(elapsed, end - FILM_TAP_FADE_MS, end));
 }
 
@@ -514,6 +518,7 @@ export function filmEventPanelFrame(elapsed: number, title: string): WelcomeEven
       project: filmTap(elapsed, FILM_BEATS.projectTap),
       group: filmTap(elapsed, FILM_BEATS.groupTap),
       projectPick: filmTap(elapsed, FILM_BEATS.projectPick),
+      sheetDrag: 0,
       music: 0,
       save: filmTap(elapsed, FILM_BEATS.createSaved),
     },

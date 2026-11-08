@@ -493,7 +493,9 @@
       <!-- The sheet's header: the grabber, then close and Save. -->
       <div bind:offsetHeight={barHeight} class="sticky top-0 z-10 shrink-0" style="background-color: var(--panel-bg);">
         <div class="flex justify-center pt-2 pb-1.5">
-          <div class="h-1 w-9 rounded-full bg-muted-foreground/40"></div>
+          <div class="relative h-1 w-9 rounded-full bg-muted-foreground/40">
+            {@render touch(frame.touches.sheetDrag, "left-1/2 top-1/2")}
+          </div>
         </div>
         <div class="flex items-center gap-1 px-1">
           <div class="panel-chrome flex h-12 w-12 shrink-0 items-center justify-center rounded-floating-item text-muted-foreground">

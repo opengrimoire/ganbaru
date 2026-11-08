@@ -37,6 +37,7 @@ import {
   musicTypedTitle,
   type MusicScenePlaylist,
 } from "./welcome-music-scene";
+import { FILM_TAP_MS } from "./welcome-film";
 
 const B = MUSIC_BEATS;
 
@@ -135,6 +136,21 @@ describe("welcome music scene", () => {
     );
     expect(musicEventRail(B.projectPick - 1)).toBe(MUSIC_DEFAULT_RAIL);
     expect(musicEventRail(B.projectPick)).toBe(MUSIC_RAIL);
+  });
+
+  it("drags the phone sheet to its full height with every section closed before Music is tapped", () => {
+    const peek = musicEventPanelFrame(B.sheetDragStart - 200, "Title", lookup);
+    const dragging = musicEventPanelFrame((B.sheetDragStart + B.sheetDragEnd) / 2, "Title", lookup);
+    const full = musicEventPanelFrame(B.sheetDragEnd, "Title", lookup);
+    const beforeTap = musicEventPanelFrame(B.musicTap - FILM_TAP_MS - 1, "Title", lookup);
+    expect(peek.sheetExpand).toBe(0);
+    expect(dragging.touches.sheetDrag).toBe(1);
+    expect(dragging.sheetExpand).toBeGreaterThan(0);
+    expect(full.sheetExpand).toBe(1);
+    expect(full.touches.sheetDrag).toBe(0);
+    expect(beforeTap.sheetExpand).toBe(1);
+    expect(beforeTap.music?.expanded).toBe(0);
+    expect(beforeTap.touches.music).toBe(0);
   });
 
   it("opens the Music section and scrolls to it only after its header is tapped", () => {

@@ -41,6 +41,7 @@
   import ListFilter from "@lucide/svelte/icons/list-filter";
   import MailPlus from "@lucide/svelte/icons/mail-plus";
   import PanelLeft from "@lucide/svelte/icons/panel-left";
+  import PanelRight from "@lucide/svelte/icons/panel-right";
   import Plus from "@lucide/svelte/icons/plus";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Save from "@lucide/svelte/icons/save";
@@ -356,6 +357,8 @@
   const newPriority = $derived(tasksNewPriority(tasksElapsed));
   const listScroll = $derived(tasksListScroll(tasksElapsed));
   const cellMenu = $derived(tasksCellMenu(tasksElapsed));
+  /** Whether the pointer is on the added task's row, from the hover before each cell's tap until its menu closes. */
+  const addedRowHovered = $derived(tasksCellHighlighted(tasksElapsed, "status") || tasksCellHighlighted(tasksElapsed, "priority"));
   const settingsShown = $derived(projectsSettingsShown(defaultsElapsed));
   const settingsOpen = $derived(projectsSettingsOpen(defaultsElapsed));
   const settingsScroll = $derived(projectsSettingsScroll(defaultsElapsed));
@@ -1135,6 +1138,12 @@
                 <div></div>
                 <CollectionCell>
                   <span class="flex h-7 min-w-0 items-center"><span class="truncate text-foreground">{t(`vaultSetup.projects.task.${task.key}`)}</span></span>
+                  <!-- The name cell's Open button, as the row draws it: always on touch, and on the hovered row with a pointer. -->
+                  {#if mobileShell || (added && addedRowHovered)}
+                    <span class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground">
+                      <PanelRight class="size-3.5" aria-hidden="true" /><span>{t("collections.property.open")}</span>
+                    </span>
+                  {/if}
                 </CollectionCell>
                 {#each taskColumns as column (column)}
                   {#if column === "status"}

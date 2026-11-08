@@ -79,8 +79,8 @@ export const vaultSetup = {
     },
   },
   tasks: {
-    headline: "Todas tus tareas de un vistazo",
-    body: "Ve las tareas de cada proyecto en una lista, y agrégalas o cámbialas sin abrir nada.",
+    headline: "Planifica tus tareas en segundos",
+    body: "Agrega tareas a un proyecto y cambia su estado, prioridad y fechas directo desde la tabla.",
     sceneDescription:
       "Una breve animación de la vista de lista del proyecto Novela. La tarea Redactar el capítulo 2 se escribe al final de la lista y se agrega, y luego su estado se cambia a En progreso y su prioridad a Alta desde sus celdas en la tabla.",
   },

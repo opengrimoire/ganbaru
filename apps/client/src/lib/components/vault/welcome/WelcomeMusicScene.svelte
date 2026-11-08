@@ -254,6 +254,8 @@
       Math.round((musicEventDrawn(elapsed) * (MUSIC_EVENT.end - MUSIC_EVENT.start)) / CREATE_SNAP_MINUTES) * CREATE_SNAP_MINUTES,
     ),
   );
+  /** Where the press that drags the event out is, in minutes past its start: on the start line, then smoothly down as the event snaps. */
+  const pressMinutes = $derived(musicEventDrawn(elapsed) * (MUSIC_EVENT.end - MUSIC_EVENT.start));
   const typedTitle = $derived(musicTypedTitle(elapsed, eventTitle));
   const pressOpacity = $derived(
     filmSpan(elapsed, MUSIC_BEATS.createStart - MUSIC_CREATE_PRESS_MS, MUSIC_BEATS.createStart)
@@ -764,12 +766,12 @@
                   <span
                     data-cursor="music-create-edge"
                     class="pointer-events-none absolute left-3/5 size-px"
-                    style:top={`${y(MUSIC_EVENT.start + drawnMinutes)}px`}
+                    style:top={`${y(MUSIC_EVENT.start + pressMinutes)}px`}
                   ></span>
                 {:else if pressOpacity > 0}
                   <span
                     class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-                    style:top={`${y(MUSIC_EVENT.start + drawnMinutes)}px`}
+                    style:top={`${y(MUSIC_EVENT.start + pressMinutes)}px`}
                     style:opacity={pressOpacity}
                   ></span>
                 {/if}

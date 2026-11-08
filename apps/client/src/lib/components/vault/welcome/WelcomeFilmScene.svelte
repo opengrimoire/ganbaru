@@ -364,6 +364,8 @@
   const drawnMinutes = $derived(
     Math.max(CREATE_SNAP_MINUTES, Math.round((drawn * FILM_DRAWN_MINUTES) / CREATE_SNAP_MINUTES) * CREATE_SNAP_MINUTES),
   );
+  /** Where the press that drags the session out is, in minutes past its start: on the start line, then smoothly down as the event snaps. */
+  const pressMinutes = $derived(drawn * FILM_DRAWN_MINUTES);
   const creating = $derived(elapsed >= FILM_BEATS.createStart && elapsed < FILM_BEATS.createSaved);
   const saved = $derived(elapsed >= FILM_BEATS.createSaved);
   /** The drawn event's title as it is typed into the event panel, and whether its project has been picked. */
@@ -788,7 +790,7 @@
                     class="pointer-events-none absolute left-0"
                     style:width={`${100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT}%`}
                     style:top={`${y(SESSION_START)}px`}
-                    style:height={`${px(Math.max(CREATE_SNAP_MINUTES, drawn * FILM_DRAWN_MINUTES))}px`}
+                    style:height={`${px(pressMinutes)}px`}
                   ></span>
                 {/if}
 
@@ -796,7 +798,7 @@
                 {#if mobileShell && pressOpacity > 0}
                   <span
                     class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-                    style:top={`${y(SESSION_START + drawnMinutes)}px`}
+                    style:top={`${y(SESSION_START + pressMinutes)}px`}
                     style:opacity={pressOpacity}
                   ></span>
                 {/if}

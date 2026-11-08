@@ -387,6 +387,8 @@
   const eventPanelOpen = $derived(projectsPanelOpen(defaultsElapsed));
   const rail = $derived(projectsEventRail(defaultsElapsed));
   /** The event's length: snapped as the Calendar snaps while it is dragged out, then growing to the project's default. */
+  /** Where the press that drags the event out is, in minutes past its start: on the start line, then smoothly down as the event snaps. */
+  const pressMinutes = $derived(projectsEventDrawn(defaultsElapsed) * (PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start));
   const eventMinutes = $derived(
     eventPicked
       ? projectsEventMinutes(defaultsElapsed)
@@ -1326,7 +1328,7 @@
                     class="pointer-events-none absolute left-0"
                     style:width={`${100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT}%`}
                     style:top={`${y(PROJECTS_EVENT.start)}px`}
-                    style:height={`${px(projectsEventDrawn(defaultsElapsed) * (PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start))}px`}
+                    style:height={`${px(pressMinutes)}px`}
                   ></span>
                 {/if}
 
@@ -1349,7 +1351,7 @@
                 {#if mobileShell && pressOpacity > 0}
                   <span
                     class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-                    style:top={`${y(PROJECTS_EVENT.start + eventMinutes)}px`}
+                    style:top={`${y(PROJECTS_EVENT.start + pressMinutes)}px`}
                     style:opacity={pressOpacity}
                   ></span>
                 {/if}

@@ -20,7 +20,8 @@ import {
   blockingRailRecorded,
 } from "./welcome-blocking-scene";
 import { BLOCKER_CURSOR } from "./welcome-blocker";
-import { welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
+import { welcomeCursorFrame, welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
+import { FILM_TAP_MS } from "./welcome-film";
 
 const B = BLOCKING_BEATS;
 
@@ -217,7 +218,15 @@ describe("welcome blocking scene", () => {
     expect(welcomeCursorHovered(BLOCKING_CURSOR, 0)).toBe(BLOCKER_CURSOR.page);
     expect(welcomeCursorHovered(BLOCKING_CURSOR, B.focusStart - 1)).toBe(BLOCKER_CURSOR.page);
     expect(welcomeCursorHovered(BLOCKING_CURSOR, B.yScrollStart)).toBe(BLOCKER_CURSOR.page);
-    expect(welcomeCursorHovered(BLOCKING_CURSOR, B.end)).toBe(BLOCKER_CURSOR.page);
+    expect(welcomeCursorHovered(BLOCKING_CURSOR, B.yScrollEnd)).toBe(BLOCKER_CURSOR.page);
+    expect(welcomeCursorFrame(BLOCKING_CURSOR, B.egogramAgainTap)).toMatchObject({ shown: 0, away: true });
     expect(blockingBrowserPage(B.yScrollStart)).toMatchObject({ kind: "feed", app: "y", scroll: 0 });
+  });
+
+  it("stops Y's feed before the phone opens Egogram again, so only one screen moves at a time", () => {
+    expect(blockingBrowserPage(B.yScrollEnd)).toEqual(blockingBrowserPage(B.end));
+    expect(blockingPan(B.yScrollEnd - 1)).toBe(0);
+    expect(blockingPan(B.egogramAgainTap - FILM_TAP_MS)).toBe(1);
+    expect(blockingPhoneApp(B.egogramAgainTap - FILM_TAP_MS)).toBeNull();
   });
 });

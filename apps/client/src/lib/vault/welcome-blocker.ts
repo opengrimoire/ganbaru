@@ -126,9 +126,17 @@ export function blockerAddressClick(tap: number, after?: number): WelcomeCursorS
   return cursorClick(BLOCKER_CURSOR.address, tap, { anchor: ADDRESS_ANCHOR, glyph: "text", after });
 }
 
-/** The pointer resting on the page at `arrive`, at `anchor` on it, scrolling it with the wheel through `scrolls`. */
-export function blockerPageRest(arrive: number, anchor: readonly [x: number, y: number], scrolls?: readonly WelcomeCursorSpan[]): WelcomeCursorStop {
-  return cursorRest(BLOCKER_CURSOR.page, arrive, { anchor, busy: scrolls });
+/**
+ * The pointer resting on the page at `arrive`, at `anchor` on it, scrolling it with the wheel through `scrolls`, and
+ * hiding once idle after them when `hides` is set, as the scene plays on without it.
+ */
+export function blockerPageRest(
+  arrive: number,
+  anchor: readonly [x: number, y: number],
+  scrolls?: readonly WelcomeCursorSpan[],
+  hides?: boolean,
+): WelcomeCursorStop {
+  return cursorRest(BLOCKER_CURSOR.page, arrive, { anchor, busy: scrolls, hides });
 }
 
 /** The prefix of `text` typed by `elapsed`, one character at a time from `start` to `end`. */

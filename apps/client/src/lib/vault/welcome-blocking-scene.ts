@@ -66,19 +66,20 @@ export const BLOCKING_BEATS = {
   retryAgainTap: 9600,
   retryAgainHome: 10150,
   retryNoticeOut: 11000,
-  /** The event ends, so Y's page comes back, and its feed starts scrolling. */
+  /** The event ends, so Y's page comes back, and its feed scrolls. */
   focusEnd: 11600,
   yScrollStart: 12100,
-  /** Egogram opens as usual. */
-  egogramAgainTap: 13600,
-  end: 15600,
+  yScrollEnd: 13700,
+  /** Once Y's feed has stopped, Egogram opens as usual. */
+  egogramAgainTap: 14700,
+  end: 16700,
 } as const;
 
 const B = BLOCKING_BEATS;
 
 /** When Bluedit's feed scrolls before the event, and Y's feed after it. */
 const BLUEDIT_SCROLL: WelcomeCursorSpan = { start: 200, end: B.focusStart - 150 };
-const Y_SCROLL: WelcomeCursorSpan = { start: B.yScrollStart, end: B.end - 300 };
+const Y_SCROLL: WelcomeCursorSpan = { start: B.yScrollStart, end: B.yScrollEnd };
 
 /** The frame shown as a still with reduced motion: both devices blocked during the event. */
 export const BLOCKING_STILL = B.egogramNotice + 600;
@@ -95,11 +96,14 @@ const CLOCK: readonly FilmKeyframe[] = [
   [B.end, BLOCKING_EVENT.end + 8],
 ];
 
-/** Where the camera points on a narrow canvas: the phone for Egogram, the browser for the event's end, then the phone again. */
+/**
+ * Where the camera points on a narrow canvas: the phone for Egogram, the browser for the event's end, then the phone
+ * again once Y's feed has stopped.
+ */
 const PAN_MOVES: readonly BlockerPanMove[] = [
   { start: 4700, to: 1 },
   { start: 10900, to: 0 },
-  { start: 12700, to: 1 },
+  { start: B.yScrollEnd, to: 1 },
 ];
 
 /** The current time, in minutes of the day. */
@@ -179,12 +183,12 @@ export function blockingBrowser(elapsed: number): BlockerBrowserFrame {
 
 /**
  * The browser's mouse pointer: it rests on Bluedit's feed as it scrolls, clicks the address bar once the block page
- * shows, and goes back to the page as Y's feed returns after the event.
+ * shows, goes back to the page as Y's feed returns after the event, and hides once the feed stops and the phone plays on.
  */
 export const BLOCKING_CURSOR: WelcomeCursorScript = [
   blockerPageRest(0, [0.6, 0.55], [BLUEDIT_SCROLL]),
   blockerAddressClick(B.addressTap, B.focusStart),
-  blockerPageRest(B.yScrollStart, [0.55, 0.6], [Y_SCROLL]),
+  blockerPageRest(B.yScrollStart, [0.55, 0.6], [Y_SCROLL], true),
 ];
 
 /** The app open on the phone at this moment, or null on the home screen. */

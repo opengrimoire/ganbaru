@@ -15,6 +15,7 @@ import {
   FILM_TAP_MS,
   easeInOutCubic,
   filmClockMinute,
+  filmCursorScript,
   filmDayRails,
   filmFocusSpans,
   filmPanelOpen,
@@ -34,6 +35,7 @@ import {
   monotoneCurve,
 } from "./welcome-film";
 import { COUNT_PRESET_RHYTHMS } from "$lib/pomodoro/rhythm";
+import { welcomeCursorFrame, welcomeCursorOn, welcomeCursorScriptOrdered } from "./welcome-cursor";
 
 describe("monotoneCurve", () => {
   const points = [[0, 0], [100, 10], [200, 12], [300, 40]] as const;
@@ -417,5 +419,68 @@ describe("filmWorkday", () => {
 
   it("crosses a month boundary", () => {
     expect(filmWorkday(new Date(2026, 10, 30))).toEqual(new Date(2026, 11, 4));
+  });
+});
+
+describe("the film's desktop pointer", () => {
+  const script = filmCursorScript();
+  const stop = (target: string) => {
+    const found = script.find((entry) => entry.target === target);
+    if (!found) throw new Error(`no stop for ${target}`);
+    return found;
+  };
+  /** Each control the pointer clicks, the beat its tap lands on, and the beat that draws the control. */
+  const clicks = [
+    { target: "panel-project", tap: FILM_BEATS.projectTap, shown: FILM_BEATS.panelOpen },
+    { target: "panel-group", tap: FILM_BEATS.groupTap, shown: FILM_BEATS.projectTap },
+    { target: "panel-project-pick", tap: FILM_BEATS.projectPick, shown: FILM_BEATS.groupTap },
+    { target: "panel-save", tap: FILM_BEATS.createSaved, shown: FILM_BEATS.panelOpen },
+    { target: "film-ring", tap: FILM_BEATS.pauseTap + FILM_TAP_MS, shown: FILM_BEATS.breakEnd },
+    { target: "film-ring-pause", tap: FILM_BEATS.pauseStart, shown: FILM_BEATS.pauseTap + FILM_TAP_MS },
+    { target: "notification-action-0", tap: FILM_BEATS.resumeAt, shown: FILM_BEATS.notificationIn },
+  ];
+
+  it("goes from place to place in order", () => {
+    expect(welcomeCursorScriptOrdered(script)).toBe(true);
+  });
+
+  it("releases each click exactly as the tap it replaces lands, after holding it for a tap's length", () => {
+    for (const { target, tap } of clicks) expect(stop(target).press).toEqual({ start: tap - FILM_TAP_MS, end: tap });
+  });
+
+  it("rests on each control from the moment its button goes down until its tap lands", () => {
+    for (const { target, tap } of clicks) {
+      expect(welcomeCursorOn(script, tap - FILM_TAP_MS, target)).toBe(true);
+      expect(welcomeCursorOn(script, tap, target)).toBe(true);
+    }
+  });
+
+  it("leaves for each control only once it is drawn", () => {
+    for (const { target, shown } of clicks) expect(stop(target).depart).toBeGreaterThanOrEqual(shown);
+  });
+
+  it("holds the button through the drag, following the drawn event's edge until it is let go", () => {
+    const drag = stop("film-drag");
+    expect(drag).toMatchObject({ follow: true, depart: FILM_BEATS.createStart, arrive: FILM_BEATS.createEnd });
+    expect(drag.press).toEqual({ start: FILM_BEATS.createStart, end: FILM_BEATS.createEnd });
+    expect(stop("film-slot").arrive).toBeLessThan(FILM_BEATS.createStart);
+    expect(welcomeCursorFrame(script, (FILM_BEATS.createStart + FILM_BEATS.createEnd) / 2).pressed).toBe(1);
+  });
+
+  it("shows the text beam in the title while it is typed", () => {
+    for (const elapsed of [FILM_BEATS.typeStart, FILM_BEATS.typeEnd]) {
+      expect(welcomeCursorOn(script, elapsed, "panel-title")).toBe(true);
+      expect(welcomeCursorFrame(script, elapsed).glyph).toBe("text");
+    }
+  });
+
+  it("hovers the ring menu's pause item while the menu is open", () => {
+    expect(filmRingMenuOpen(stop("film-ring-pause").arrive)).toBe(true);
+  });
+
+  it("presses nothing outside the drag and the clicks", () => {
+    expect(welcomeCursorFrame(script, FILM_BEATS.focusStart).pressed).toBe(0);
+    expect(welcomeCursorFrame(script, FILM_BEATS.end).pressed).toBe(0);
+    expect(welcomeCursorFrame(script, FILM_BEATS.end).to.target).toBe("film-grid");
   });
 });

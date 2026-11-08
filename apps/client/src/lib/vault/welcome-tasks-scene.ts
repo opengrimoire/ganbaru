@@ -3,8 +3,10 @@
  * bottom of the list and added, and its status and priority are changed from their cells in the table.
  */
 
+import { cursorClick, cursorRest, WELCOME_CURSOR_SCROLL_OVERLAP_MS, type WelcomeCursorScript } from "./welcome-cursor";
 import { easeInOutCubic, filmCaretOn, filmSpan, filmTap, filmTyped } from "./welcome-film";
 import {
+  PROJECTS_CURSOR_REST_ANCHOR,
   PROJECTS_HOVER_LEAD_MS,
   type ProjectsScenePriority,
   type ProjectsSceneStatus,
@@ -134,3 +136,16 @@ export function tasksTouches(elapsed: number): TasksSceneTouches {
     priorityOption: filmTap(elapsed, B.priorityPick),
   };
 }
+
+/**
+ * The desktop pointer's path through the scene: it clicks into the add row, stays there while the task is typed, then
+ * opens each cell's menu once the list has scrolled to it and picks its option.
+ */
+export const TASKS_CURSOR: WelcomeCursorScript = [
+  cursorRest("projects-list", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
+  cursorClick("tasks-add", B.addTap, { glyph: "text", after: 0 }),
+  cursorClick("tasks-status", B.statusTap, { glyph: "pointer", after: B.statusScrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
+  cursorClick("tasks-status-option", B.statusPick),
+  cursorClick("tasks-priority", B.priorityTap, { glyph: "pointer", after: B.priorityScrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
+  cursorClick("tasks-priority-option", B.priorityPick),
+];

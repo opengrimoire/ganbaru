@@ -5,6 +5,7 @@
   import { BLOCKER_APP_HOSTS, BLOCKER_APP_NAMES } from "$lib/vault/welcome-blocker";
   import {
     LIMITS_BUDGET_MINUTES,
+    LIMITS_CURSOR,
     limitsBrowser,
     limitsEgogramTouch,
     limitsNotice,
@@ -84,8 +85,8 @@
       </div>
     </div>
   {/snippet}
-  {#snippet browser()}
-    <WelcomeBlockerBrowser frame={limitsBrowser(elapsed)} />
+  {#snippet browser(browserWidth)}
+    <WelcomeBlockerBrowser frame={limitsBrowser(elapsed)} cursor={LIMITS_CURSOR} {elapsed} width={browserWidth} />
   {/snippet}
   {#snippet phone(phoneWidth, phoneHeight)}
     <WelcomeBlockerPhone

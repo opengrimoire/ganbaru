@@ -3,6 +3,7 @@ import {
   LIMITS_BEATS,
   LIMITS_BROWSER_MINUTES,
   LIMITS_BUDGET_MINUTES,
+  LIMITS_CURSOR,
   LIMITS_PHONE_MINUTES,
   limitsBrowser,
   limitsEgogramTouch,
@@ -11,6 +12,8 @@ import {
   limitsPhoneApp,
   limitsUsage,
 } from "./welcome-limits-scene";
+import { BLOCKER_CURSOR, blockerCursorClose } from "./welcome-blocker";
+import { welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
 
 const B = LIMITS_BEATS;
 
@@ -56,7 +59,6 @@ describe("welcome limits scene", () => {
   });
 
   it("closes Y's tab back to the inbox before Egogram opens on the phone", () => {
-    expect(limitsBrowser(B.yCloseTap - 100).tabs[1]?.closeTouch).toBeGreaterThan(0);
     const closed = limitsBrowser(B.yCloseTap);
     expect(closed.tabs).toEqual([{ content: "mail", active: true }]);
     expect(closed.page).toEqual({ kind: "mail" });
@@ -92,7 +94,6 @@ describe("welcome limits scene", () => {
 
   it("types each site of the limit into the browser after it ran out, and loads its block page", () => {
     expect(B.newTabTap).toBeGreaterThan(B.retryAgainHome);
-    expect(limitsBrowser(B.newTabTap - 100).newTabTouch).toBeGreaterThan(0);
     expect(limitsBrowser(B.newTabTap).address).toMatchObject({ kind: "typed", text: "" });
     expect(limitsBrowser(B.yTypeStart + (B.yTypeEnd - B.yTypeStart) / 2).address).toMatchObject({ kind: "typed", text: "y." });
     expect(limitsBrowser(B.yTypeEnd).address).toMatchObject({ kind: "typed", text: "y.com" });
@@ -107,7 +108,6 @@ describe("welcome limits scene", () => {
       ["blocked", true],
     ]);
 
-    expect(limitsBrowser(B.addressTap - 100).addressTouch).toBeGreaterThan(0);
     const typing = limitsBrowser(B.blueditTypeEnd);
     expect(typing.address).toMatchObject({ kind: "typed", text: "bluedit.com" });
     expect(typing.page).toEqual({ kind: "block", app: "y", reason: "limit" });
@@ -125,9 +125,6 @@ describe("welcome limits scene", () => {
         limitsEgogramTouch(elapsed),
         browser.pageIn,
         browser.loading,
-        browser.newTabTouch,
-        browser.addressTouch,
-        ...browser.tabs.map((tab) => tab.closeTouch ?? 0),
         browser.page.kind === "feed" ? browser.page.scroll : 0,
         limitsPhoneApp(elapsed)?.open ?? 0,
         limitsPhoneApp(elapsed)?.scroll ?? 0,
@@ -145,10 +142,35 @@ describe("welcome limits scene", () => {
     expect(browser.page).toEqual({ kind: "block", app: "bluedit", reason: "limit" });
     expect(browser.pageIn).toBe(1);
     expect(browser.loading).toBe(0);
-    expect(browser.newTabTouch).toBe(0);
     expect(limitsNotice(B.end)?.shown).toBe(1);
     expect(limitsPhoneApp(B.end)).toBeNull();
     expect(limitsPan(B.end)).toBe(0);
     expect(limitsEgogramTouch(B.end)).toBe(0);
+  });
+
+  it("moves the browser's pointer in order and lands each click exactly on its tap", () => {
+    expect(welcomeCursorScriptOrdered(LIMITS_CURSOR)).toBe(true);
+    const clicks = LIMITS_CURSOR.filter((stop) => stop.press);
+    expect(clicks.map((stop) => [stop.target, stop.press?.end])).toEqual([
+      [blockerCursorClose("y"), B.yCloseTap],
+      [BLOCKER_CURSOR.newTab, B.newTabTap],
+      [BLOCKER_CURSOR.address, B.addressTap],
+    ]);
+    for (const click of clicks) {
+      expect(welcomeCursorHovered(LIMITS_CURSOR, click.press?.start ?? 0)).toBe(click.target);
+      expect(welcomeCursorHovered(LIMITS_CURSOR, click.press?.end ?? 0)).toBe(click.target);
+    }
+  });
+
+  it("leaves the feed alone while it scrolls, and comes back to the laptop only as the camera does", () => {
+    const close = LIMITS_CURSOR.find((stop) => stop.target === blockerCursorClose("y"));
+    const newTab = LIMITS_CURSOR.find((stop) => stop.target === BLOCKER_CURSOR.newTab);
+    expect(close?.depart).toBeGreaterThanOrEqual(B.browserUseEnd);
+    expect(newTab?.depart).toBeGreaterThanOrEqual(B.browserReturn);
+    expect(welcomeCursorHovered(LIMITS_CURSOR, B.browserUseEnd - 1)).toBe(BLOCKER_CURSOR.page);
+    expect(welcomeCursorHovered(LIMITS_CURSOR, B.egogramTap)).toBe(BLOCKER_CURSOR.page);
+    expect(welcomeCursorHovered(LIMITS_CURSOR, B.yTypeEnd)).toBe(BLOCKER_CURSOR.page);
+    expect(limitsPan(B.browserReturn)).toBe(1);
+    expect(limitsPan(B.newTabTap)).toBe(0);
   });
 });

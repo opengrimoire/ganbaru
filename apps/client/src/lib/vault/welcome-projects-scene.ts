@@ -7,6 +7,14 @@
  * playlists. The Music section opens on them, and the event is saved.
  */
 
+import {
+  cursorClick,
+  cursorRest,
+  WELCOME_CURSOR_REST_MS,
+  WELCOME_CURSOR_SCROLL_OVERLAP_MS,
+  type WelcomeCursorScript,
+  type WelcomeCursorStop,
+} from "./welcome-cursor";
 import type { WelcomeEventPanelFrame } from "./welcome-event-panel";
 import {
   easeInOutCubic,
@@ -457,3 +465,49 @@ export function projectsTouches(elapsed: number): ProjectsSceneTouches {
     close: filmTap(elapsed, B.settingsCloseTap),
   };
 }
+
+/** How long before the drag starts the press that draws the event comes down, for a finger or the mouse button. */
+export const PROJECTS_CREATE_PRESS_MS = 140;
+
+/** Where the desktop pointer rests on the list as the welcome scenes on Projects and on tasks start. */
+export const PROJECTS_CURSOR_REST_ANCHOR = [0.6, 0.3] as const;
+
+/** The desktop pointer opening `picker`'s control once its scroll brings it into view, then picking its option. */
+function pickerClicks(picker: ProjectsScenePicker): WelcomeCursorStop[] {
+  const scroll = SETTINGS_SCROLLS.find((entry) => entry.target === picker);
+  const after = scroll ? scroll.end - WELCOME_CURSOR_SCROLL_OVERLAP_MS : undefined;
+  return [cursorClick(`projects-${picker}`, PICKER_TAPS[picker].tap, { after }), cursorClick(`projects-${picker}-option`, PICKER_TAPS[picker].pick)];
+}
+
+/**
+ * The desktop pointer's path through the scene: it opens the settings, clicks into the event name, opens each picker
+ * and picks its option, saves and closes the settings, drags the event out in the Calendar, picks Novel in its panel,
+ * opens its Music section, and saves it.
+ */
+export const PROJECTS_CURSOR: WelcomeCursorScript = [
+  cursorRest("projects-list", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
+  cursorClick("projects-settings", B.settingsTap, { after: 0 }),
+  cursorClick("projects-name", B.nameTap, { glyph: "text", after: B.nameScrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
+  ...(["color", "duration", "pomodoro", ...PROJECTS_PHASES] as const).flatMap(pickerClicks),
+  cursorClick("projects-save", B.settingsSaveTap, { after: B.longBreakPick }),
+  cursorClick("projects-close", B.settingsCloseTap),
+  {
+    target: "projects-drag",
+    anchor: [0.6, 1],
+    depart: B.calendarIn - SCREEN_FADE_MS,
+    arrive: B.createStart - PROJECTS_CREATE_PRESS_MS - WELCOME_CURSOR_REST_MS,
+  },
+  {
+    target: "projects-drag",
+    anchor: [0.6, 1],
+    depart: B.createStart,
+    arrive: B.createEnd,
+    press: { start: B.createStart - PROJECTS_CREATE_PRESS_MS, end: B.createEnd },
+    follow: true,
+  },
+  cursorClick("panel-project", B.projectTap, { after: B.panelOpen }),
+  cursorClick("panel-group", B.groupTap),
+  cursorClick("panel-project-pick", B.projectPick),
+  cursorClick("panel-music", B.musicTap, { anchor: [0.25, 0.5] }),
+  cursorClick("panel-save", B.eventSaveTap),
+];

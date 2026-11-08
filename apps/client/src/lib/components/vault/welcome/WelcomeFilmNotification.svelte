@@ -18,7 +18,8 @@
   /**
    * A Ganbaru notification as the operating system draws it, outside the app: a GNOME banner, a Windows toast, or an
    * Android notification. It follows the system's light or dark style rather than the app theme, because the system
-   * paints it. Every style is a function of its props, with no CSS transitions.
+   * paints it. Every style is a function of its props, with no CSS transitions. A desktop notification names its actions
+   * `notification-action-0` and on for the scene's mouse pointer, and an Android one shows the touch on them.
    */
   let {
     kind,
@@ -124,10 +125,9 @@
   </div>
   {#if actions.length > 0}
     <div class="os-actions">
-      {#each actions as action (action.label)}
-        <span class={cn("os-button relative", action.touch > 0 && "os-button-pressed")}>
+      {#each actions as action, index (action.label)}
+        <span data-cursor={`notification-action-${index}`} class={cn("os-button relative", action.touch > 0 && "os-button-pressed")}>
           <span class="block truncate">{action.label}</span>
-          {@render touch(action.touch)}
         </span>
       {/each}
     </div>

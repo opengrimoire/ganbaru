@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   ABOUT_BEATS,
+  ABOUT_CURSOR,
+  ABOUT_CURSOR_TARGETS,
   ABOUT_FILE_ROWS,
   ABOUT_REPOSITORY,
   ABOUT_REPOSITORY_URL,
@@ -10,8 +12,9 @@ import {
   aboutRow,
   aboutSparks,
   aboutStarred,
-  aboutTouch,
 } from "./welcome-about-scene";
+import { welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
+import { FILM_TAP_MS } from "./welcome-film";
 
 const ROWS = Array.from({ length: ABOUT_FILE_ROWS }, (_, index) => index);
 
@@ -39,7 +42,6 @@ describe("welcome about scene", () => {
   it("starts empty and unstarred", () => {
     expect(aboutPage(0)).toBe(0);
     for (const row of ROWS) expect(aboutRow(0, row)).toBe(0);
-    expect(aboutTouch(0)).toBe(0);
     expect(aboutPress(0)).toBe(0);
     expect(aboutStarred(0)).toBe(false);
     expect(aboutPop(0)).toBe(0);
@@ -55,7 +57,6 @@ describe("welcome about scene", () => {
   });
 
   it("taps Star only after every row is shown", () => {
-    expect(firstPositive(aboutTouch)).toBeGreaterThan(ABOUT_BEATS.rowsEnd);
     expect(firstPositive(aboutPress)).toBeGreaterThanOrEqual(ABOUT_BEATS.starTap);
   });
 
@@ -75,7 +76,6 @@ describe("welcome about scene", () => {
     const end = ABOUT_BEATS.end;
     expect(aboutPage(end)).toBe(1);
     for (const row of ROWS) expect(aboutRow(end, row)).toBe(1);
-    expect(aboutTouch(end)).toBe(0);
     expect(aboutPress(end)).toBe(0);
     expect(aboutStarred(end)).toBe(true);
     expect(aboutPop(end)).toBe(1);
@@ -86,7 +86,6 @@ describe("welcome about scene", () => {
     for (const elapsed of moments()) {
       const values = [
         aboutPage(elapsed),
-        aboutTouch(elapsed),
         aboutPress(elapsed),
         aboutPop(elapsed),
         aboutSparks(elapsed),
@@ -97,5 +96,23 @@ describe("welcome about scene", () => {
         expect(value).toBeLessThanOrEqual(1);
       }
     }
+  });
+
+  it("clicks Star with the pointer, and the button sinks under it", () => {
+    expect(welcomeCursorScriptOrdered(ABOUT_CURSOR)).toBe(true);
+    const clicks = ABOUT_CURSOR.filter((stop) => stop.press);
+    expect(clicks.map((stop) => [stop.target, stop.press])).toEqual([
+      [ABOUT_CURSOR_TARGETS.star, { start: ABOUT_BEATS.starTap, end: ABOUT_BEATS.starTap + FILM_TAP_MS }],
+    ]);
+    for (const elapsed of [ABOUT_BEATS.starTap, ABOUT_BEATS.starred, ABOUT_BEATS.starTap + FILM_TAP_MS]) {
+      expect(welcomeCursorHovered(ABOUT_CURSOR, elapsed)).toBe(ABOUT_CURSOR_TARGETS.star);
+    }
+  });
+
+  it("keeps the pointer on the address bar until every row is shown", () => {
+    expect(welcomeCursorHovered(ABOUT_CURSOR, 0)).toBe(ABOUT_CURSOR_TARGETS.address);
+    expect(welcomeCursorHovered(ABOUT_CURSOR, ABOUT_BEATS.rowsEnd)).toBe(ABOUT_CURSOR_TARGETS.address);
+    expect(ABOUT_CURSOR[1]?.depart).toBeGreaterThanOrEqual(ABOUT_BEATS.rowsEnd);
+    expect(welcomeCursorHovered(ABOUT_CURSOR, ABOUT_BEATS.end)).toBe(ABOUT_CURSOR_TARGETS.star);
   });
 });

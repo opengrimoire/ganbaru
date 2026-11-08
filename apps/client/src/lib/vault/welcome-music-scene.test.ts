@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MUSIC_BEATS,
+  MUSIC_CURSOR_SCRIPT,
   MUSIC_DEFAULT_RAIL,
   MUSIC_EVENT,
   MUSIC_PLAYLISTS,
@@ -12,6 +13,7 @@ import {
   musicBuilderTouches,
   musicCalendarShown,
   musicClock,
+  musicCursorCard,
   musicEventCreating,
   musicEventDrawn,
   musicEventDrawnIn,
@@ -38,6 +40,7 @@ import {
   type MusicScenePlaylist,
 } from "./welcome-music-scene";
 import { FILM_TAP_MS } from "./welcome-film";
+import { welcomeCursorFrame, welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
 
 const B = MUSIC_BEATS;
 
@@ -272,5 +275,66 @@ describe("welcome music scene", () => {
     expect(musicNotification(MUSIC_STILL)).toBe(1);
     expect(musicPhase(MUSIC_STILL)).toBe("short-break");
     expect(musicNowPlaying(MUSIC_STILL)).toMatchObject({ source: "youtube", playlist: "breakCalm" });
+  });
+
+  describe("desktop pointer", () => {
+    /** Every click the pointer makes, with the beat its touch lands on a phone. */
+    const CLICKS: readonly [target: string, tap: number][] = [
+      [musicCursorCard("workFocus"), B.localPickTap],
+      ["music-save", B.localSaveTap],
+      [musicCursorCard("breakCalm"), B.youtubePickTap],
+      ["music-save", B.youtubeSaveTap],
+      ["panel-project", B.projectTap],
+      ["panel-group", B.groupTap],
+      ["panel-project-pick", B.projectPick],
+      ["panel-music", B.musicTap],
+      ["panel-playlist-focus", B.focusPickerTap],
+      ["panel-playlist-option", B.focusOptionTap],
+      ["panel-playlist-short-break", B.breakPickerTap],
+      ["panel-playlist-option", B.breakOptionTap],
+      ["panel-save", B.saveTap],
+    ];
+
+    it("moves from place to place in order", () => {
+      expect(welcomeCursorScriptOrdered(MUSIC_CURSOR_SCRIPT)).toBe(true);
+    });
+
+    it("lets each click's button up exactly on its tap's beat, after a tap's length held", () => {
+      const clicks = MUSIC_CURSOR_SCRIPT.filter((stop) => stop.press && !stop.follow);
+      expect(clicks.map((stop) => [stop.target, stop.press?.end])).toEqual(CLICKS);
+      for (const stop of clicks) expect(stop.press?.start).toBe((stop.press?.end ?? 0) - FILM_TAP_MS);
+    });
+
+    it("rests on each control for the whole of its click", () => {
+      for (const [target, tap] of CLICKS) {
+        for (const elapsed of [tap - FILM_TAP_MS, tap - 1, tap]) {
+          expect(welcomeCursorHovered(MUSIC_CURSOR_SCRIPT, elapsed), `${target} at ${elapsed}`).toBe(target);
+        }
+      }
+    });
+
+    it("never leaves a control while its button is held", () => {
+      MUSIC_CURSOR_SCRIPT.forEach((stop, index) => {
+        const held = MUSIC_CURSOR_SCRIPT[index - 1]?.press;
+        if (held && !stop.follow) expect(stop.depart).toBeGreaterThanOrEqual(held.end);
+      });
+    });
+
+    it("holds the button on the event's edge from the press that draws it until it is let go", () => {
+      const drag = MUSIC_CURSOR_SCRIPT.find((stop) => stop.follow);
+      expect(drag?.target).toBe("music-create-edge");
+      expect(drag?.press?.end).toBe(B.createEnd);
+      for (const elapsed of [B.createStart - 1, (B.createStart + B.createEnd) / 2, B.createEnd - 100]) {
+        expect(welcomeCursorHovered(MUSIC_CURSOR_SCRIPT, elapsed)).toBe("music-create-edge");
+        expect(welcomeCursorFrame(MUSIC_CURSOR_SCRIPT, elapsed).pressed).toBeGreaterThan(0);
+      }
+      expect(welcomeCursorFrame(MUSIC_CURSOR_SCRIPT, B.createEnd).pressed).toBe(0);
+    });
+
+    it("heads for the Focus picker only once the panel has scrolled the Music section into view", () => {
+      const trigger = MUSIC_CURSOR_SCRIPT.find((stop) => stop.target === "panel-playlist-focus");
+      expect(trigger).toBeDefined();
+      expect(musicEventPanelFrame(trigger?.depart ?? 0, "Title", lookup).scroll).toBe(1);
+    });
   });
 });

@@ -12,6 +12,7 @@ import type {
   WelcomeEventPanelMusicPhase,
   WelcomeEventPanelMusicPicker,
 } from "./welcome-event-panel";
+import { cursorClick, cursorRest, WELCOME_CURSOR_REST_MS, type WelcomeCursorScript } from "./welcome-cursor";
 import {
   easeInOutCubic,
   FILM_DEFAULT_PRESET,
@@ -170,6 +171,10 @@ const ITEM_SWAP_MS = 260;
 const SECTION_OPEN_MS = 380;
 const SCROLL_DELAY_MS = 140;
 const SCROLL_MS = 520;
+/** When the event panel's body has scrolled the opened Music section into view. */
+const PANEL_SCROLL_END = B.musicTap + SCROLL_DELAY_MS + SCROLL_MS;
+/** How long the press that draws the event is held before the event follows it. */
+export const MUSIC_CREATE_PRESS_MS = 140;
 /** How long the finger rests on the grabber before the sheet follows it. */
 const DRAG_LAND_MS = 160;
 /** The Music section's playlist pickers, each open from the tap on its row's trigger to the tap on its playlist. */
@@ -452,3 +457,48 @@ export function musicReviewProgressOfTrack(elapsed: number): number {
   const save = [...REVIEW_STEPS].reverse().find((entry) => elapsed >= entry.saveTap);
   return Math.min(1, (elapsed - (save?.saveTap ?? 0)) * TRACK_PROGRESS_PER_MS);
 }
+
+/** The desktop pointer's resting place as the scene starts: the review's artwork. */
+const CURSOR_START = "music-review-media";
+
+/** The desktop pointer's target on the playlist card the open track joins, at its checkbox. */
+export function musicCursorCard(playlist: MusicScenePlaylist): string {
+  return `music-card-${playlist}`;
+}
+
+/**
+ * The desktop pointer's path through the scene, landing each click on the beat its touch lands on a phone. It checks
+ * each track's playlist card and clicks Save and continue, drags the event out by its growing bottom edge, then in the
+ * event panel picks the project, opens Music and each picker after the panel scrolls it into view, and clicks Save.
+ * The panel focuses its title on its own, so the title is typed without a click. Playlist cards are labels, so the
+ * pointer shows its hand over them; every other control keeps the arrow.
+ */
+export const MUSIC_CURSOR_SCRIPT: WelcomeCursorScript = [
+  cursorRest(CURSOR_START, 0),
+  ...REVIEW_STEPS.flatMap((step, index) => [
+    cursorClick(musicCursorCard(step.playlist), step.pickTap, {
+      glyph: "pointer",
+      after: index > 0 ? REVIEW_STEPS[index - 1].saveTap : undefined,
+    }),
+    cursorClick("music-save", step.saveTap, { after: step.pickTap }),
+  ]),
+  cursorRest("music-create-edge", B.createStart - MUSIC_CREATE_PRESS_MS - WELCOME_CURSOR_REST_MS),
+  {
+    target: "music-create-edge",
+    depart: B.createStart,
+    arrive: B.createStart,
+    follow: true,
+    press: { start: B.createStart - MUSIC_CREATE_PRESS_MS, end: B.createEnd },
+  },
+  cursorClick("panel-project", B.projectTap, { after: B.createEnd }),
+  cursorClick("panel-group", B.groupTap, { after: B.projectTap }),
+  cursorClick("panel-project-pick", B.projectPick, { after: B.groupTap }),
+  cursorClick("panel-music", B.musicTap, { anchor: [0.25, 0.5], after: B.projectPick }),
+  ...PICKER_STEPS.flatMap((step, index) => [
+    cursorClick(`panel-playlist-${step.phase}`, step.openTap, {
+      after: index > 0 ? PICKER_STEPS[index - 1].closeTap : PANEL_SCROLL_END,
+    }),
+    cursorClick("panel-playlist-option", step.closeTap, { after: step.openTap }),
+  ]),
+  cursorClick("panel-save", B.saveTap, { after: PICKER_STEPS[PICKER_STEPS.length - 1].closeTap }),
+];

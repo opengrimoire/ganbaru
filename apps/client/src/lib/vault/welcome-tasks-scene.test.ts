@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
 import { FILM_TAP_MS } from "./welcome-film";
 import { PROJECTS_PRIORITY_ORDER, PROJECTS_STATUS_ORDER } from "./welcome-projects-scene";
 import {
   TASKS_BEATS,
+  TASKS_CURSOR,
   TASKS_NEW_PRIORITY,
   TASKS_NEW_STATUS,
   TASKS_NEW_TASK,
@@ -103,5 +105,34 @@ describe("welcome tasks scene", () => {
     expect(tasksNewPriority(TASKS_STILL)).toBe(TASKS_NEW_PRIORITY);
     expect(tasksCellMenu(TASKS_STILL)).toBeNull();
     expect(Object.values(tasksTouches(TASKS_STILL)).every((touch) => touch === 0)).toBe(true);
+  });
+
+  it("clicks with the desktop pointer on the beats the touches land on, resting on each control through its press", () => {
+    expect(welcomeCursorScriptOrdered(TASKS_CURSOR)).toBe(true);
+    const clicks = TASKS_CURSOR.filter((stop) => stop.press);
+    expect(clicks.map((stop) => [stop.target, stop.press?.end])).toEqual([
+      ["tasks-add", B.addTap],
+      ["tasks-status", B.statusTap],
+      ["tasks-status-option", B.statusPick],
+      ["tasks-priority", B.priorityTap],
+      ["tasks-priority-option", B.priorityPick],
+    ]);
+    for (const stop of clicks) {
+      const press = stop.press;
+      if (!press) continue;
+      expect(press.start).toBe(press.end - FILM_TAP_MS);
+      for (let elapsed = press.start; elapsed <= press.end; elapsed += 10) expect(welcomeCursorHovered(TASKS_CURSOR, elapsed)).toBe(stop.target);
+    }
+  });
+
+  it("types into the add row under a text beam and reaches each cell only once the list has scrolled to it", () => {
+    expect(TASKS_CURSOR.find((stop) => stop.target === "tasks-add")?.glyph).toBe("text");
+    const status = TASKS_CURSOR.find((stop) => stop.target === "tasks-status");
+    const priority = TASKS_CURSOR.find((stop) => stop.target === "tasks-priority");
+    expect(status?.glyph).toBe("pointer");
+    expect(priority?.glyph).toBe("pointer");
+    expect(status?.depart).toBeGreaterThan(B.statusScrollStart);
+    expect(priority?.depart).toBeGreaterThan(B.priorityScrollStart);
+    expect(welcomeCursorHovered(TASKS_CURSOR, B.taskSubmit)).toBe("tasks-add");
   });
 });

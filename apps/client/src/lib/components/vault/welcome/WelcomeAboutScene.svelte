@@ -29,6 +29,8 @@
   import type { AppLocale } from "$lib/i18n/locales";
   import { BUILD_PLATFORM } from "$lib/platform";
   import {
+    ABOUT_CURSOR,
+    ABOUT_CURSOR_TARGETS,
     ABOUT_FILES,
     ABOUT_REPOSITORY,
     aboutPage,
@@ -37,17 +39,18 @@
     aboutRow,
     aboutSparks,
     aboutStarred,
-    aboutTouch,
   } from "$lib/vault/welcome-about-scene";
+  import { welcomeCursorOn } from "$lib/vault/welcome-cursor";
+  import WelcomeCursor from "./WelcomeCursor.svelte";
 
   /**
    * One frame of the welcome scene about the app itself: the app's public source repository opens in a browser, with its
-   * files, its community documents, and its license in view, and a tap stars it. The page is a plain sketch of a
-   * repository page in the theme's colors, with placeholder bars where the description, commit messages, and dates
-   * change over time. A wide canvas lays the page out with a sidebar as a repository host does; a narrow one keeps a
-   * single column. The page's text stays in English in every app language, as the repository host shows it. Every
-   * style is a function of `elapsed`, with no CSS transitions, so text is never handed to a compositing layer
-   * mid-animation.
+   * files, its community documents, and its license in view, and a mouse click stars it. The page is a
+   * plain sketch of a repository page in the theme's colors, with placeholder bars where the description, commit
+   * messages, and dates change over time. A wide canvas lays the page out with a sidebar as a repository host does; a
+   * narrow one keeps a single column. The page's text stays in English in every app language, as the repository host
+   * shows it. Every style is a function of `elapsed`, with no CSS transitions, so text is never handed to a compositing
+   * layer mid-animation.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -136,7 +139,8 @@
       : [README, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY],
   );
   const page = $derived(aboutPage(elapsed));
-  const touch = $derived(aboutTouch(elapsed));
+  /** Whether the pointer rests on Star, which shows its hover as the repository host does. */
+  const starHovered = $derived(welcomeCursorOn(ABOUT_CURSOR, elapsed, ABOUT_CURSOR_TARGETS.star));
   const press = $derived(aboutPress(elapsed));
   const starred = $derived(aboutStarred(elapsed));
   const sparks = $derived(aboutSparks(elapsed));
@@ -174,8 +178,9 @@
       {PAGE_TEXT.fork}
     </span>
     <span
-      class="flex h-7 items-center gap-1.5 rounded-md border border-border bg-foreground/4 px-2.5"
+      class={["flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5", starHovered ? "bg-foreground/8" : "bg-foreground/4"]}
       style:transform={`scale(${1 - PRESS_SCALE * press})`}
+      data-cursor={ABOUT_CURSOR_TARGETS.star}
     >
       <span class="relative flex size-3.25 items-center justify-center">
         <span class="flex" style:transform={`scale(${starScale})`}>
@@ -193,9 +198,6 @@
             ></span>
           {/each}
         {/if}
-        {#if touch > 0}
-          <span class="pointer-events-none absolute size-6 rounded-full bg-foreground/20 ring-2 ring-foreground/35" style:opacity={touch}></span>
-        {/if}
       </span>
       {starred ? PAGE_TEXT.starred : PAGE_TEXT.star}
     </span>
@@ -212,7 +214,10 @@
     <!-- The browser's bar, with the repository's address and the window's controls on the system's side. -->
     <div class="flex h-8 shrink-0 items-center gap-2 border-b border-border px-3">
       {#if CONTROLS_LEADING}{@render controls()}{/if}
-      <span class="min-w-0 flex-1 truncate rounded-full bg-foreground/6 px-2.5 py-0.5 text-center text-[10px] text-muted-foreground">
+      <span
+        class="min-w-0 flex-1 truncate rounded-full bg-foreground/6 px-2.5 py-0.5 text-center text-[10px] text-muted-foreground"
+        data-cursor={ABOUT_CURSOR_TARGETS.address}
+      >
         {ABOUT_REPOSITORY.host}/{ABOUT_REPOSITORY.owner}/{ABOUT_REPOSITORY.name}
       </span>
       {#if !CONTROLS_LEADING}{@render controls()}{/if}
@@ -315,5 +320,6 @@
         {/if}
       </div>
     {/if}
+    <WelcomeCursor script={ABOUT_CURSOR} {elapsed} width={canvasW} />
   </div>
 </div>

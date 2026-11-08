@@ -28,7 +28,7 @@
     headerHeight: number;
     pan: number;
     header: Snippet;
-    browser: Snippet;
+    browser: Snippet<[width: number]>;
     phone: Snippet<[width: number, height: number]>;
   } = $props();
 
@@ -61,7 +61,7 @@
     style:width={`${phoneX + phoneW}px`}
     style:transform={`translateX(${-cameraX}px)`}
   >
-    <div class="absolute top-0 left-0" style:width={`${browserW}px`} style:height={`${bodyH}px`}>{@render browser()}</div>
+    <div class="absolute top-0 left-0" style:width={`${browserW}px`} style:height={`${bodyH}px`}>{@render browser(browserW)}</div>
     <div class="absolute" style:left={`${phoneX}px`} style:top={`${(bodyH - phoneH) / 2}px`}>{@render phone(phoneW, phoneH)}</div>
   </div>
 </div>

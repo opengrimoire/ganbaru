@@ -1,10 +1,11 @@
 /**
  * Timing for the welcome scene about the app itself: the app's public source repository opens in a browser, its files
- * come into view, and a tap stars it. Every moment is derived from the milliseconds elapsed since the scene started, so
- * a frame is a pure function of time and the reduced-motion still is simply the last frame.
+ * come into view, and a mouse click stars it. Every moment is derived from the milliseconds elapsed since the scene
+ * started, so a frame is a pure function of time and the reduced-motion still is simply the last frame.
  */
 
-import { easeInOutCubic, FILM_TAP_MS, filmSpan, filmTap } from "./welcome-film";
+import { cursorClick, cursorRest, type WelcomeCursorScript } from "./welcome-cursor";
+import { easeInOutCubic, FILM_TAP_MS, filmSpan } from "./welcome-film";
 
 /** The app's public source repository. */
 export const ABOUT_REPOSITORY = { host: "github.com", owner: "opengrimoire", name: "ganbaru" } as const;
@@ -70,11 +71,6 @@ export function aboutRow(elapsed: number, row: number): number {
   return easeInOutCubic(filmSpan(elapsed, start, start + ROW_MS));
 }
 
-/** How visible the touch of the tap on Star is, from 0 to 1. */
-export function aboutTouch(elapsed: number): number {
-  return filmTap(elapsed, STAR_TAP + FILM_TAP_MS);
-}
-
 /** How far the Star button is pressed in, from 0 to 1. */
 export function aboutPress(elapsed: number): number {
   if (elapsed < STARRED) return easeInOutCubic(filmSpan(elapsed, STAR_TAP, STARRED));
@@ -95,3 +91,16 @@ export function aboutPop(elapsed: number): number {
 export function aboutSparks(elapsed: number): number {
   return filmSpan(elapsed, STARRED, STARRED + SPARKS_MS);
 }
+
+/** The `data-cursor` names of the places the mouse pointer goes to: the address bar and the Star button. */
+export const ABOUT_CURSOR_TARGETS = { address: "about-address", star: "about-star" } as const;
+
+/**
+ * The mouse pointer, drawn on every build since the browser is a desktop one: it rests on the address bar the
+ * repository was just opened from, with the text beam, then clicks Star once every row is shown, its button held for a
+ * tap's length. Star is a link-like button on the repository host, so the pointer shows the hand over it.
+ */
+export const ABOUT_CURSOR: WelcomeCursorScript = [
+  cursorRest(ABOUT_CURSOR_TARGETS.address, 0, { anchor: [0.62, 0.5], glyph: "text" }),
+  cursorClick(ABOUT_CURSOR_TARGETS.star, STAR_TAP + FILM_TAP_MS, { glyph: "pointer", after: ROWS_END }),
+];

@@ -86,6 +86,7 @@
     projectColor,
     title,
     picker,
+    hovered = null,
   }: {
     frame: WelcomeEventPanelFrame;
     canvasWidth: number;
@@ -104,6 +105,8 @@
     title: string;
     /** The project picker's rows and the group and project picked; the Calendar film's when omitted. */
     picker?: WelcomeEventPanelPicker;
+    /** The `data-cursor` name of the control the desktop pointer rests on, which shows as hovered. */
+    hovered?: string | null;
   } = $props();
 
   const localization = getLocalization();
@@ -431,12 +434,12 @@
   const placed = $derived(mobileLayout ? peekHeight > 0 : naturalHeight > 0);
   const pickerOpen = $derived(pane !== null);
   /** The group row stays highlighted from its tap while its projects are open; the project row while it is tapped. */
-  const groupHighlighted = $derived(groupTouch > 0 || pane === "projects");
-  const projectHighlighted = $derived(pickTouch > 0);
+  const groupHighlighted = $derived(groupTouch > 0 || pane === "projects" || hovered === "panel-group");
+  const projectHighlighted = $derived(pickTouch > 0 || hovered === "panel-project-pick");
 </script>
 
 {#snippet touch(opacity: number, position: string)}
-  {#if opacity > 0}
+  {#if mobileLayout && opacity > 0}
     <span
       class={cn("pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35", position)}
       style:opacity
@@ -468,6 +471,7 @@
 
 {#snippet projectRow(project: WelcomeEventPanelPickerRow, mobile: boolean)}
   <div
+    data-cursor={project.id === pickedProject.id ? "panel-project-pick" : undefined}
     class={cn("menu-item relative flex gap-2 text-popover-foreground", mobile && "min-h-12 px-3 text-sm")}
     data-highlighted={project.id === pickedProject.id && projectHighlighted ? "" : undefined}
   >
@@ -528,7 +532,7 @@
           <!-- The title, the project and color triggers, and the date and time. -->
           <div class={cn("shrink-0 px-4", !mobileLayout && "pt-2.5")}>
             <div class="relative top-0.5 flex items-center gap-2.5 px-1">
-              <div class="title-wrapper relative min-w-0 flex-1" data-focused={typing || undefined}>
+              <div data-cursor="panel-title" class="title-wrapper relative min-w-0 flex-1" data-focused={typing || undefined}>
                 <div
                   class={cn(
                     "w-full overflow-hidden whitespace-pre bg-transparent py-0.5 text-[1rem] font-semibold",
@@ -539,6 +543,7 @@
               <div class={cn("event-identity-controls flex items-center", mobileLayout ? "gap-1" : "gap-2.5")}>
                 <div
                   data-control
+                  data-cursor="panel-project"
                   class={cn(
                     "event-identity-trigger relative flex shrink-0 items-center justify-center text-event-panel-muted-text",
                     mobileLayout ? "min-h-12 min-w-12 rounded-xl" : "size-4.5 rounded-sm",
@@ -661,7 +666,7 @@
                   >
                     <Music size={SECTION_ICON_SIZE} />
                   </div>
-                  <div data-control class="relative flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left">
+                  <div data-control data-cursor="panel-music" class="relative flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left">
                     <span class={cn("translate-y-[1.13px] text-[0.8rem]", musicOn ? "text-foreground" : "text-muted-foreground")}>{t("calendar.eventPanel.music")}</span>
                     <span class="ml-auto min-w-0 translate-y-[1.13px] truncate text-[0.733333rem] text-muted-foreground">{musicSummary}</span>
                     {@render touch(frame.touches.music, "left-1/4 top-1/2")}
@@ -675,7 +680,7 @@
                           {@const none = Math.max(0, 1 - 2 * row.fill)}
                           {@const chosen = Math.max(0, 2 * row.fill - 1)}
                           <span class="music-label truncate text-[0.8rem] text-foreground">{phaseLabel(row.phase)}</span>
-                          <div bind:this={musicTriggers[row.phase]} class={MUSIC_TRIGGER_CLASS}>
+                          <div bind:this={musicTriggers[row.phase]} data-cursor={`panel-playlist-${row.phase}`} class={MUSIC_TRIGGER_CLASS}>
                             {#if row.fill < 0.5}
                               <span class="flex min-w-0 flex-1 items-center gap-2" style:opacity={none}>
                                 <VolumeX size={MUSIC_ICON_SIZE} strokeWidth={MUSIC_ICON_STROKE_WIDTH} class="shrink-0 text-muted-foreground" />
@@ -725,6 +730,7 @@
         <div class="panel-footer-actions flex">
           <div
             data-control
+            data-cursor="panel-save"
             class="relative flex flex-1 items-center justify-center gap-2 bg-action-confirm py-1.5 text-[0.866667rem] text-action-confirm-foreground"
           >
             <span>{t("calendar.eventPanel.saveShortcut", formatShortcut("Mod + Enter"))}</span>
@@ -768,6 +774,7 @@
                   {#each pickerGroups as group (group.id)}
                     <div class="px-1">
                       <div
+                        data-cursor={group.id === pickedGroup.id ? "panel-group" : undefined}
                         class="menu-item relative grid min-h-12 grid-cols-[1.125rem_minmax(0,1fr)_1.5rem] gap-2 px-3"
                         data-highlighted={group.id === pickedGroup.id && groupHighlighted ? "" : undefined}
                       >
@@ -805,6 +812,7 @@
                   {#if group.id === pickedGroup.id}
                     <div
                       bind:this={groupRow}
+                      data-cursor="panel-group"
                       class="menu-item relative grid grid-cols-[1rem_minmax(0,1fr)_1rem] gap-2"
                       data-highlighted={groupHighlighted ? "" : undefined}
                     >
@@ -864,7 +872,7 @@
           </div>
           {#each playlistPicker.options as option (option.key)}
             {@const chosen = option.key === playlistPicker.selected}
-            <div class="menu-item relative" data-highlighted={chosen && playlistPicker.touch > 0 ? "" : undefined}>
+            <div data-cursor={chosen ? "panel-playlist-option" : undefined} class="menu-item relative" data-highlighted={chosen && (playlistPicker.touch > 0 || hovered === "panel-playlist-option") ? "" : undefined}>
               <span class="grid size-4 shrink-0 place-items-center"><MusicPlaylistIcon icon={option.icon} size={15} /></span>
               <span class="min-w-0 flex-1 truncate font-medium">{option.name}</span>
               {#if chosen}<Check size={14} />{/if}

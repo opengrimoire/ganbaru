@@ -44,6 +44,7 @@
   import X from "@lucide/svelte/icons/x";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
+  import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
   import WelcomeFilmNotification, { type FilmNotificationKind } from "$lib/components/vault/welcome/WelcomeFilmNotification.svelte";
   import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
@@ -67,15 +68,19 @@
   import { isThemeCalendarDark } from "$lib/themes";
   import { cn } from "$lib/utils";
   import type { EventPanelAnchor } from "$lib/utils/responsive";
+  import { welcomeCursorHovered } from "$lib/vault/welcome-cursor";
   import { filmSpan, filmWorkday, type FilmSpan } from "$lib/vault/welcome-film";
   import {
     MUSIC_BEATS,
+    MUSIC_CREATE_PRESS_MS,
+    MUSIC_CURSOR_SCRIPT,
     MUSIC_EVENT,
     MUSIC_PLAYLISTS,
     musicBuilderShown,
     musicBuilderTouches,
     musicCalendarShown,
     musicClock,
+    musicCursorCard,
     musicEventCreating,
     musicEventDrawn,
     musicEventDrawnIn,
@@ -109,7 +114,8 @@
    * playlist and a YouTube video to a break playlist. Then the Calendar's day, as the Calendar film draws it, where an
    * event is dragged out and its panel gives it the Thesis project, and with it the project's playlist for each Focus
    * phase, and its title. Once the event's Focus starts on its own, the app's notification says the work track
-   * autoplays, and when its break starts, the break video. Every style is a function of `elapsed`, with no CSS transitions.
+   * autoplays, and when its break starts, the break video. A phone shows its taps as touches, and a desktop as a mouse
+   * pointer that clicks and drags. Every style is a function of `elapsed`, with no CSS transitions.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -154,8 +160,6 @@
   const EVENT_ICONS_MIN_PX = 17;
   /** The Calendar's pulse on a break that is running. */
   const BREAK_PULSE_MS = 1500;
-  /** How quickly the press that draws the event fades in and out. */
-  const PRESS_FADE_MS = 140;
   /** Where the visible part of the day starts, as if the grid were scrolled so the event sits near the top. */
   const VIEW_START = 8 * 60 + 50;
 
@@ -252,8 +256,8 @@
   );
   const typedTitle = $derived(musicTypedTitle(elapsed, eventTitle));
   const pressOpacity = $derived(
-    filmSpan(elapsed, MUSIC_BEATS.createStart - PRESS_FADE_MS, MUSIC_BEATS.createStart)
-      * (1 - filmSpan(elapsed, MUSIC_BEATS.createEnd, MUSIC_BEATS.createEnd + PRESS_FADE_MS)),
+    filmSpan(elapsed, MUSIC_BEATS.createStart - MUSIC_CREATE_PRESS_MS, MUSIC_BEATS.createStart)
+      * (1 - filmSpan(elapsed, MUSIC_BEATS.createEnd, MUSIC_BEATS.createEnd + MUSIC_CREATE_PRESS_MS)),
   );
 
   const viewMinutes = $derived(((canvasH - TOP_BAR_H - HEADER_H) / HOUR_PX) * 60);
@@ -352,7 +356,7 @@
 </script>
 
 {#snippet touch(opacity: number, left: string, top: string)}
-  {#if opacity > 0}
+  {#if mobileShell && opacity > 0}
     <span
       class="pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
       style:left
@@ -410,7 +414,7 @@
         >{t("music.tracks", musicPlaylistCount(elapsed, key))}</span>
       </span>
     </span>
-    <span class="grid h-6 w-6 shrink-0 place-items-center">{@render checkbox(checked)}</span>
+    <span data-cursor={musicCursorCard(key)} class="grid h-6 w-6 shrink-0 place-items-center">{@render checkbox(checked)}</span>
     {#if key === pickedCard}
       {@render touch(pickTouch, "calc(100% - 1.5rem)", "50%")}
     {/if}
@@ -604,6 +608,7 @@
 
                     <div class={cn("mt-4 flex min-w-0 gap-4", tightReview ? "items-start" : "items-center")} style:opacity={reviewIn < 1 ? reviewIn : undefined}>
                       <div
+                        data-cursor="music-review-media"
                         class="relative shrink-0 overflow-hidden rounded-xl"
                         style:height={tightReview ? "5rem" : "7rem"}
                         style:width={reviewItem.source === "youtube" ? (tightReview ? "6.6667rem" : "9.3333rem") : (tightReview ? "5rem" : "7rem")}
@@ -656,7 +661,7 @@
 
             <div class="grid shrink-0 grid-cols-2 gap-3 p-3">
               <span class="review-action border border-border/70 bg-background text-foreground">{t("music.builder.skipTrack")}</span>
-              <span class={cn("review-action relative", anyChecked ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground")}>
+              <span data-cursor="music-save" class={cn("review-action relative", anyChecked ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground")}>
                 <Check size={14} />{t("music.builder.saveAndContinue")}<ChevronRight size={14} />
                 {@render touch(saveTouch, "50%", "50%")}
               </span>
@@ -754,8 +759,14 @@
                   </div>
                 {/if}
 
-                <!-- The press that draws the event, following its growing edge. -->
-                {#if pressOpacity > 0}
+                <!-- The press that draws the event, following its growing edge, or on desktop the spot the pointer drags. -->
+                {#if !mobileShell}
+                  <span
+                    data-cursor="music-create-edge"
+                    class="pointer-events-none absolute left-3/5 size-px"
+                    style:top={`${y(MUSIC_EVENT.start + drawnMinutes)}px`}
+                  ></span>
+                {:else if pressOpacity > 0}
                   <span
                     class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
                     style:top={`${y(MUSIC_EVENT.start + drawnMinutes)}px`}
@@ -798,7 +809,12 @@
         end={MUSIC_EVENT.end}
         projectColor={THESIS}
         title={eventTitle}
+        hovered={mobileShell ? null : welcomeCursorHovered(MUSIC_CURSOR_SCRIPT, elapsed)}
       />
+    {/if}
+
+    {#if !mobileShell}
+      <WelcomeCursor script={MUSIC_CURSOR_SCRIPT} {elapsed} width={canvasW} />
     {/if}
   </div>
 </div>

@@ -47,6 +47,7 @@
 <script lang="ts">
   import PomodoroMenuVolume from "$lib/components/pomodoro/PomodoroMenuVolume.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
+  import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
   import WelcomeFilmNotification, { type FilmNotificationKind } from "$lib/components/vault/welcome/WelcomeFilmNotification.svelte";
   import type { EventPanelAnchor } from "$lib/utils/responsive";
@@ -114,6 +115,7 @@
     filmSessionMinute,
     filmSessionMoment,
     filmEventPanelFrame,
+    filmCursorScript,
     filmPanelOpen,
     filmProjectPicked,
     filmSpan,
@@ -123,6 +125,7 @@
     type FilmRail,
     type FilmSpan,
   } from "$lib/vault/welcome-film";
+  import { welcomeCursorHovered } from "$lib/vault/welcome-cursor";
 
   /**
    * One frame of the welcome film, drawn with the Calendar's and Focus's own surfaces: the week grid with its Focus
@@ -332,6 +335,14 @@
   const ringMenuOpen = $derived(filmRingMenuOpen(elapsed));
   const ringTouch = $derived(filmTap(elapsed, FILM_BEATS.pauseTap + FILM_TAP_MS));
   const menuItemTouch = $derived(filmTap(elapsed, FILM_BEATS.pauseStart));
+  /**
+   * The mouse pointer a desktop build draws in place of the touches, and the control it rests on, which shows as
+   * hovered. A phone keeps its touches.
+   */
+  const cursorScript = filmCursorScript();
+  const hovered = $derived(mobileShell ? null : welcomeCursorHovered(cursorScript, elapsed));
+  /** The ring menu's pause item shows as highlighted while it is touched on a phone, or while the pointer is on it. */
+  const pauseItemHighlighted = $derived(mobileShell ? menuItemTouch > 0 : hovered === "film-ring-pause");
   const ringRemaining = $derived(moment.kind === "done" ? 0 : moment.remainingSeconds);
   const ringTotal = $derived(moment.kind === "done" ? 0 : moment.totalSeconds);
   /**
@@ -501,7 +512,7 @@
 {/snippet}
 
 {#snippet touch(opacity: number, position: string)}
-  {#if opacity > 0}
+  {#if mobileShell && opacity > 0}
     <span
       class={cn("pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35", position)}
       style:opacity
@@ -588,7 +599,10 @@
     {:else}
       <!-- The title bar's Focus ring, on its own. -->
       <div class="flex shrink-0 items-center justify-end bg-sidebar pr-1.5" style:height={`${TOP_BAR_H}px`}>
-        <span class={cn("relative grid size-7 place-items-center rounded-lg", ringMenuOpen && "bg-sidebar-accent")}>
+        <span
+          data-cursor="film-ring"
+          class={cn("relative grid size-7 place-items-center rounded-lg", (ringMenuOpen || hovered === "film-ring") && "bg-sidebar-accent")}
+        >
           <PomodoroProgressRing
             active={focusing}
             remainingSeconds={ringRemaining}
@@ -612,7 +626,11 @@
         style:right={`${MENU_RIGHT_PX}px`}
       >
         <div class="menu-label tabular-nums">{t("titleBar.pomodoro.left", timerLabel(ringRemaining))}</div>
-        <div class="menu-item relative justify-between gap-4 whitespace-nowrap" data-highlighted={menuItemTouch > 0 ? "" : undefined}>
+        <div
+          data-cursor="film-ring-pause"
+          class="menu-item relative justify-between gap-4 whitespace-nowrap"
+          data-highlighted={pauseItemHighlighted ? "" : undefined}
+        >
           <span>{t("titleBar.pomodoro.pauseFocus")}</span>
           <PauseIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
           {@render touch(menuItemTouch, "left-2/5 top-1/2")}
@@ -686,7 +704,7 @@
         {/each}
       </div>
 
-      <div class="relative flex min-w-0 flex-1">
+      <div data-cursor="film-grid" class="relative flex min-w-0 flex-1">
         <div class="pointer-events-none absolute inset-0 z-1">
           {#each hours as hour (hour)}
             <div class="absolute inset-x-0 h-0 border-b border-(--cal-gridline)" style:top={`${y(hour * 60)}px`}></div>
@@ -760,8 +778,22 @@
                   </div>
                 {/if}
 
-                <!-- The press that draws the session, following its growing edge. -->
-                {#if pressOpacity > 0}
+                <!--
+                  Where the desktop pointer presses on the empty slot and drags the session out: its bottom edge follows
+                  the drag smoothly while the event snaps to the grid.
+                -->
+                {#if !mobileShell && elapsed < FILM_BEATS.panelOpen}
+                  <span
+                    data-cursor="film-slot film-drag"
+                    class="pointer-events-none absolute left-0"
+                    style:width={`${100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT}%`}
+                    style:top={`${y(SESSION_START)}px`}
+                    style:height={`${px(Math.max(CREATE_SNAP_MINUTES, drawn * FILM_DRAWN_MINUTES))}px`}
+                  ></span>
+                {/if}
+
+                <!-- The press that draws the session on a phone, following its growing edge. -->
+                {#if mobileShell && pressOpacity > 0}
                   <span
                     class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
                     style:top={`${y(SESSION_START + drawnMinutes)}px`}
@@ -821,6 +853,7 @@
         end={DRAWN_END}
         projectColor={THESIS}
         title={title("writeChapter")}
+        {hovered}
       />
     {/if}
 
@@ -856,6 +889,10 @@
         </div>
       {/if}
     {/each}
+
+    {#if !mobileShell}
+      <WelcomeCursor script={cursorScript} {elapsed} width={canvasW} />
+    {/if}
   </div>
 </div>
 

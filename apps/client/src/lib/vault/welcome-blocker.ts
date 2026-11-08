@@ -4,6 +4,7 @@
  * a scene started, so a frame is a pure function of time.
  */
 
+import { cursorClick, cursorRest, type WelcomeCursorStop } from "./welcome-cursor";
 import { easeInOutCubic, filmSpan } from "./welcome-film";
 
 /** The parody apps the scenes draw, each with a website of the same name. */
@@ -39,11 +40,10 @@ export type BlockerBrowserPage =
 /** What a browser tab carries: the mail inbox, an empty new tab, a site, or the extension's block page. */
 export type BlockerTabContent = "mail" | "blank" | "blocked" | BlockerApp;
 
-/** A browser tab, whether it is the active one, and the tap on its close button, from 0 to 1. */
+/** A browser tab, and whether it is the active one. */
 export interface BlockerTab {
   content: BlockerTabContent;
   active: boolean;
-  closeTouch?: number;
 }
 
 /**
@@ -57,7 +57,7 @@ export type BlockerAddress =
 
 /**
  * One frame of the browser: its tabs, its address bar, the active tab's page and how far it has faded in, how far a
- * page has loaded (0 when none loads), and the taps on the new tab button and the address bar, each from 0 to 1.
+ * page has loaded, from 0 to 1 (0 when none loads). The mouse pointer's clicks on it are each scene's cursor script.
  */
 export interface BlockerBrowserFrame {
   tabs: readonly BlockerTab[];
@@ -65,8 +65,6 @@ export interface BlockerBrowserFrame {
   page: BlockerBrowserPage;
   pageIn: number;
   loading: number;
-  newTabTouch: number;
-  addressTouch: number;
 }
 
 /** What a tab showing `page` carries. */
@@ -97,17 +95,40 @@ export function blockerAddressOf(page: BlockerBrowserPage): BlockerAddress {
   }
 }
 
-/** A browser with a single tab showing `page`, untouched. */
+/** A browser with a single tab showing `page`. */
 export function blockerSingleTab(page: BlockerBrowserPage, pageIn: number): BlockerBrowserFrame {
-  return {
-    tabs: [{ content: blockerTabOf(page), active: true }],
-    address: blockerAddressOf(page),
-    page,
-    pageIn,
-    loading: 0,
-    newTabTouch: 0,
-    addressTouch: 0,
-  };
+  return { tabs: [{ content: blockerTabOf(page), active: true }], address: blockerAddressOf(page), page, pageIn, loading: 0 };
+}
+
+/**
+ * The `data-cursor` names of the browser's places the mouse pointer goes to: the active tab's page, the address bar,
+ * and the new tab button. {@link blockerCursorClose} names each tab's close button.
+ */
+export const BLOCKER_CURSOR = {
+  page: "browser-page",
+  address: "browser-address",
+  newTab: "browser-new-tab",
+} as const;
+
+/** The `data-cursor` name of the close button of the tab carrying `content`. */
+export function blockerCursorClose(content: BlockerTabContent): string {
+  return `browser-close-${content}`;
+}
+
+/** Where the pointer clicks the address bar: toward its start, where the text is, with the text beam. */
+const ADDRESS_ANCHOR = [0.3, 0.5] as const;
+
+/**
+ * A click on the address bar landing at `tap`, after `after` when given, as the browser's text field takes it: the
+ * pointer shows the text beam over the field, as a browser shows it.
+ */
+export function blockerAddressClick(tap: number, after?: number): WelcomeCursorStop {
+  return cursorClick(BLOCKER_CURSOR.address, tap, { anchor: ADDRESS_ANCHOR, glyph: "text", after });
+}
+
+/** The pointer resting on the page at `arrive`, at `anchor` on it, as it does while a page scrolls under the wheel. */
+export function blockerPageRest(arrive: number, anchor: readonly [x: number, y: number]): WelcomeCursorStop {
+  return cursorRest(BLOCKER_CURSOR.page, arrive, { anchor });
 }
 
 /** The prefix of `text` typed by `elapsed`, one character at a time from `start` to `end`. */

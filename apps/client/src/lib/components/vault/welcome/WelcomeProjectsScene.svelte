@@ -66,6 +66,8 @@
   import { projectListColumnKind } from "$lib/components/projects/list/property-kinds";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
+  import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
+  import { welcomeCursorHovered } from "$lib/vault/welcome-cursor";
   import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
   import { GUTTER_WIDTH_PER_TIMEZONE } from "$lib/calendar/timezone-utils";
   import { FALLBACK_COLOR_INDEX, type EventColor } from "$lib/calendar/types";
@@ -109,6 +111,8 @@
     PROJECTS_BEATS,
     PROJECTS_CLOCK,
     PROJECTS_COLOR,
+    PROJECTS_CREATE_PRESS_MS,
+    PROJECTS_CURSOR,
     PROJECTS_DEFAULT_MINUTES,
     PROJECTS_EVENT,
     PROJECTS_PHASES,
@@ -125,6 +129,7 @@
     projectsDefaultMinutes,
     projectsDefaultPreset,
     projectsEventCreating,
+    projectsEventDrawn,
     projectsEventDrawnIn,
     projectsEventMinutes,
     projectsEventName,
@@ -150,6 +155,7 @@
     type ProjectsSettingsTarget,
   } from "$lib/vault/welcome-projects-scene";
   import {
+    TASKS_CURSOR,
     TASKS_NEW_PRIORITY,
     TASKS_NEW_STATUS,
     TASKS_NEW_TASK,
@@ -250,8 +256,6 @@
   const EVENT_GAP_PX = 2;
   const EVENT_TIME_MIN_PX = 32;
   const EVENT_ICONS_MIN_PX = 17;
-  /** How quickly the press that draws the event fades in and out. */
-  const PRESS_FADE_MS = 140;
   /** Where the visible part of the day starts, as if the grid were scrolled so the event sits near the top. */
   const VIEW_START = 9 * 60 + 20;
 
@@ -357,8 +361,11 @@
   const newPriority = $derived(tasksNewPriority(tasksElapsed));
   const listScroll = $derived(tasksListScroll(tasksElapsed));
   const cellMenu = $derived(tasksCellMenu(tasksElapsed));
-  /** Whether the pointer is on the added task's row, from the hover before each cell's tap until its menu closes. */
-  const addedRowHovered = $derived(tasksCellHighlighted(tasksElapsed, "status") || tasksCellHighlighted(tasksElapsed, "priority"));
+  /** The part's desktop pointer, and the place it rests on, as a hover sees it. A phone has touches and no hover. */
+  const cursorScript = $derived(part === "tasks" ? TASKS_CURSOR : PROJECTS_CURSOR);
+  const cursorHovered = $derived(mobileShell ? null : welcomeCursorHovered(cursorScript, elapsed));
+  /** Whether the pointer is on the added task's row, which shows its Open button on desktop. */
+  const addedRowHovered = $derived(cursorHovered === "tasks-status" || cursorHovered === "tasks-priority");
   const settingsShown = $derived(projectsSettingsShown(defaultsElapsed));
   const settingsOpen = $derived(projectsSettingsOpen(defaultsElapsed));
   const settingsScroll = $derived(projectsSettingsScroll(defaultsElapsed));
@@ -386,8 +393,8 @@
       : Math.max(CREATE_SNAP_MINUTES, Math.round(projectsEventMinutes(defaultsElapsed) / CREATE_SNAP_MINUTES) * CREATE_SNAP_MINUTES),
   );
   const pressOpacity = $derived(
-    filmSpan(defaultsElapsed, PROJECTS_BEATS.createStart - PRESS_FADE_MS, PROJECTS_BEATS.createStart)
-      * (1 - filmSpan(defaultsElapsed, PROJECTS_BEATS.createEnd, PROJECTS_BEATS.createEnd + PRESS_FADE_MS)),
+    filmSpan(defaultsElapsed, PROJECTS_BEATS.createStart - PROJECTS_CREATE_PRESS_MS, PROJECTS_BEATS.createStart)
+      * (1 - filmSpan(defaultsElapsed, PROJECTS_BEATS.createEnd, PROJECTS_BEATS.createEnd + PROJECTS_CREATE_PRESS_MS)),
   );
   const viewMinutes = $derived(((canvasH - TOP_BAR_H - CAL_HEADER_H) / HOUR_PX) * 60);
   const hours = $derived(
@@ -838,14 +845,23 @@
     return phase === "short-break" ? t("projects.settings.shortBreakPlaylist") : t("projects.settings.longBreakPlaylist");
   }
 
-  /** The highlight a cell takes as the pointer rests on it and while its menu is open. */
+  /** The highlight a cell takes as the pointer rests on it and while its menu is open, or from its touch on a phone. */
   function cellHighlight(cell: TasksSceneCell): string | undefined {
-    return tasksCellHighlighted(tasksElapsed, cell) ? "linear-gradient(var(--collection-highlight), var(--collection-highlight))" : undefined;
+    const highlighted = mobileShell ? tasksCellHighlighted(tasksElapsed, cell) : cursorHovered === `tasks-${cell}` || cellMenu === cell;
+    return highlighted ? "linear-gradient(var(--collection-highlight), var(--collection-highlight))" : undefined;
+  }
+
+  /**
+   * Whether the option about to be picked shows as hovered: under the pointer on desktop, or just before its touch lands
+   * on a phone, given by `touchHovered`.
+   */
+  function optionHovered(target: string, touchHovered: boolean): boolean {
+    return mobileShell ? touchHovered : cursorHovered === target;
   }
 </script>
 
 {#snippet touch(opacity: number, left: string, top: string)}
-  {#if opacity > 0}
+  {#if mobileShell && opacity > 0}
     <span
       class="pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
       style:left
@@ -974,7 +990,7 @@
 {#snippet eventNameControl()}
   {@const focused = projectsEventNameFocused(defaultsElapsed)}
   {@const caretOn = projectsEventNameCaretOn(defaultsElapsed)}
-  <span bind:this={eventNameTrigger} class={cn("field relative flex min-w-0 items-center px-2.5 text-left font-medium text-foreground", stackedRows ? "w-full" : "w-44")}>
+  <span bind:this={eventNameTrigger} data-cursor="projects-name" class={cn("field relative flex min-w-0 items-center px-2.5 text-left font-medium text-foreground", stackedRows ? "w-full" : "w-44")}>
     <span class="min-w-0 truncate">
       {#if eventName}{eventName}{#if focused && caretOn}{@render caret()}{/if}{:else}{#if focused && caretOn}{@render caret()}{/if}<span class="text-muted-foreground">{t("common.none")}</span>{/if}
     </span>
@@ -983,7 +999,7 @@
 {/snippet}
 
 {#snippet colorControl()}
-  <div bind:this={colorTrigger} class={cn("relative min-w-0", stackedRows ? "w-full" : "w-44")}>
+  <div bind:this={colorTrigger} data-cursor="projects-color" class={cn("relative min-w-0", stackedRows ? "w-full" : "w-44")}>
     <span class="flex h-7 w-full max-w-full items-center justify-between gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground dark:bg-transparent">
       <span class="flex min-w-0 items-center gap-2">
         <span class="h-3.5 w-3.5 shrink-0 rounded-[3px] border border-transparent" style:background-color={getEventColor(selectedColor, theme.current).bg}></span>
@@ -996,14 +1012,14 @@
 {/snippet}
 
 {#snippet durationControl()}
-  <div bind:this={durationTrigger} class={cn("relative min-w-0", stackedRows ? "w-full" : "w-44")}>
+  <div bind:this={durationTrigger} data-cursor="projects-duration" class={cn("relative min-w-0", stackedRows ? "w-full" : "w-44")}>
     {@render selectTrigger(durationLabel, picker === "duration")}
     {@render touch(touches.duration, "50%", "50%")}
   </div>
 {/snippet}
 
 {#snippet pomodoroControl()}
-  <div bind:this={pomodoroTrigger} class={cn("relative min-w-0", stackedRows ? "w-full" : "w-44")}>
+  <div bind:this={pomodoroTrigger} data-cursor="projects-pomodoro" class={cn("relative min-w-0", stackedRows ? "w-full" : "w-44")}>
     {@render selectTrigger(pomodoroLabel, picker === "pomodoro")}
     {@render touch(touches.pomodoro, "50%", "50%")}
   </div>
@@ -1076,7 +1092,7 @@
             <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-foreground"><ArrowUpDown size={TOOL_ICON_SIZE} strokeWidth={TOOL_ICON_STROKE_WIDTH} /></span>
             <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-foreground"><Columns3 size={TOOL_ICON_SIZE} strokeWidth={TOOL_ICON_STROKE_WIDTH} /></span>
             <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-foreground"><Layers size={TOOL_ICON_SIZE} strokeWidth={TOOL_ICON_STROKE_WIDTH} /></span>
-            <span class={cn("relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-foreground", settingsOpen && "bg-accent")}>
+            <span data-cursor="projects-settings" class={cn("relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-foreground", settingsOpen && "bg-accent")}>
               <Settings2 size={TOOL_ICON_SIZE} strokeWidth={TOOL_ICON_STROKE_WIDTH} />
               {@render touch(touches.settings, "50%", "50%")}
             </span>
@@ -1084,7 +1100,7 @@
         </div>
       {/if}
 
-      <div bind:this={listViewport} class="list-scroll relative min-h-0 flex-1 overflow-hidden" style:--list-divider-left={contentStart}>
+      <div bind:this={listViewport} data-cursor="projects-list" class="list-scroll relative min-h-0 flex-1 overflow-hidden" style:--list-divider-left={contentStart}>
         <div
           bind:this={listContent}
           class="flex w-max min-w-full flex-col p-3"
@@ -1148,7 +1164,7 @@
                 {#each taskColumns as column (column)}
                   {#if column === "status"}
                     <CollectionCell style={added ? `background-image: ${cellHighlight("status") ?? "none"}` : undefined}>
-                      {#if added}<span bind:this={statusCell} class="absolute inset-0"></span>{/if}
+                      {#if added}<span bind:this={statusCell} data-cursor="tasks-status" class="absolute inset-0"></span>{/if}
                       <div class="pointer-events-none relative z-10 min-w-0 max-w-full">
                         <ProjectStatusBadge status={sceneStatus(task.status)} theme={theme.current} label={statusName(task.status)} class="text-[0.733333rem]" />
                       </div>
@@ -1156,7 +1172,7 @@
                     </CollectionCell>
                   {:else if column === "priority"}
                     <CollectionCell style={added ? `background-image: ${cellHighlight("priority") ?? "none"}` : undefined}>
-                      {#if added}<span bind:this={priorityCell} class="absolute inset-0"></span>{/if}
+                      {#if added}<span bind:this={priorityCell} data-cursor="tasks-priority" class="absolute inset-0"></span>{/if}
                       <div class="pointer-events-none relative z-10 min-w-0 max-w-full">
                         <span class="flex min-w-0 items-center gap-1.5 text-foreground">
                           <PriorityFlagIcon color={PROJECTS_PRIORITY_COLORS[task.priority]} theme={theme.current} size={13} class="shrink-0" />
@@ -1205,7 +1221,7 @@
                   <span class="col-span-full grid min-h-(--collection-table-row-height) grid-cols-subgrid items-center text-left text-collection text-muted-foreground">
                     <span class="flex min-w-0 items-center gap-2 px-2" style:grid-column="3 / -1">
                       <Plus class="size-4 shrink-0" />
-                      <span class="relative min-w-0">
+                      <span class="relative min-w-0" data-cursor="tasks-add">
                         <span class="block truncate">{t("projects.list.addTaskInSection", t("projects.list.general"))}</span>
                         {@render touch(taskTouches.add, "50%", "50%")}
                       </span>
@@ -1300,6 +1316,20 @@
                   )}
                 {/if}
 
+                <!--
+                  Where the desktop pointer presses on the empty slot and drags the event out: its bottom edge follows
+                  the drag smoothly while the event snaps to the grid.
+                -->
+                {#if !mobileShell && defaultsElapsed < PROJECTS_BEATS.panelOpen}
+                  <span
+                    data-cursor="projects-drag"
+                    class="pointer-events-none absolute left-0"
+                    style:width={`${100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT}%`}
+                    style:top={`${y(PROJECTS_EVENT.start)}px`}
+                    style:height={`${px(projectsEventDrawn(defaultsElapsed) * (PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start))}px`}
+                  ></span>
+                {/if}
+
                 <!-- The drawn event's resize knobs, as a phone shows them from the start of the drawing until Save. -->
                 {#if mobileShell && creating}
                   <div
@@ -1316,7 +1346,7 @@
                 {/if}
 
                 <!-- The press that draws the event, following its growing edge. -->
-                {#if pressOpacity > 0}
+                {#if mobileShell && pressOpacity > 0}
                   <span
                     class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
                     style:top={`${y(PROJECTS_EVENT.start + eventMinutes)}px`}
@@ -1346,7 +1376,7 @@
       >
         {#each PROJECTS_STATUS_ORDER as status (status)}
           {@const picked = status === TASKS_NEW_STATUS}
-          <span class={cn("menu-item relative justify-between", picked && tasksOptionHovered(tasksElapsed, "status") && "bg-accent")}>
+          <span data-cursor={picked ? "tasks-status-option" : undefined} class={cn("menu-item relative justify-between", picked && optionHovered("tasks-status-option", tasksOptionHovered(tasksElapsed, "status")) && "bg-accent")}>
             <ProjectStatusBadge status={sceneStatus(status)} theme={theme.current} label={statusName(status)} class="text-[0.733333rem]" />
             {#if status === newStatus}<Check size={13} strokeWidth={2} class="shrink-0 text-muted-foreground" />{/if}
             {#if picked}{@render touch(taskTouches.statusOption, "2.5rem", "50%")}{/if}
@@ -1363,7 +1393,7 @@
       >
         {#each PROJECTS_PRIORITY_ORDER as priority (priority)}
           {@const picked = priority === TASKS_NEW_PRIORITY}
-          <span class={cn("menu-item relative justify-between", picked && tasksOptionHovered(tasksElapsed, "priority") && "bg-accent")}>
+          <span data-cursor={picked ? "tasks-priority-option" : undefined} class={cn("menu-item relative justify-between", picked && optionHovered("tasks-priority-option", tasksOptionHovered(tasksElapsed, "priority")) && "bg-accent")}>
             <span class="flex min-w-0 items-center gap-1.5 text-foreground">
               <PriorityFlagIcon color={PROJECTS_PRIORITY_COLORS[priority]} theme={theme.current} size={13} class="shrink-0" />
               <span class="min-w-0 truncate">{priorityName(priority)}</span>
@@ -1391,7 +1421,7 @@
           <div class="flex shrink-0 items-center gap-2 px-3 pt-2 pb-1">
             <span class="min-w-0 flex-1 truncate text-[0.8125rem] font-medium">{t("projects.settings.title")}</span>
             <span class="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground"><RotateCcw size={14} /></span>
-            <span class="relative grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground">
+            <span data-cursor="projects-close" class="relative grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground">
               <X size={15} />
               {@render touch(touches.close, "50%", "50%")}
             </span>
@@ -1491,7 +1521,7 @@
                       {#each PROJECTS_PHASES as phase (phase)}
                         {@const playlist = projectsPlaylist(defaultsElapsed, phase)}
                         <span class="phase-music-label min-w-0 truncate text-[0.866667rem] text-foreground">{phaseLabel(phase)}</span>
-                        <div bind:this={playlistTriggers[phase]} class="relative min-w-0">
+                        <div bind:this={playlistTriggers[phase]} data-cursor={`projects-${phase}`} class="relative min-w-0">
                           <span class="flex h-7 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground dark:bg-transparent">
                             {#if playlist === null}
                               <VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />
@@ -1550,6 +1580,7 @@
           <div class="flex shrink-0 items-center gap-2 px-3 pt-1 pb-2">
             <span class="flex-1"></span>
             <span
+              data-cursor="projects-save"
               class={cn(
                 "relative flex min-h-8 items-center gap-1.5 rounded-md px-2 text-[0.8rem] font-medium",
                 dirty ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
@@ -1576,6 +1607,7 @@
       >
         {#each EVENT_COLOR_OPTIONS as option (option)}
           <span
+            data-cursor={option === PROJECTS_COLOR ? "projects-color-option" : undefined}
             class={cn("calendar-color-swatch relative size-5.5 rounded-[3px]", selectedColor === option && "swatch-selected")}
             style:background-color={getEventColor(option, theme.current).bg}
           >
@@ -1598,7 +1630,7 @@
         <div class="surface-floating-body min-h-0 overflow-hidden">
           {#each durationOptions as option (option.value)}
             {@const picked = option.value === PICKED_DURATION}
-            <span class={cn("menu-item relative justify-between gap-3", picked && projectsOptionHovered(defaultsElapsed, "duration") && "bg-accent")}>
+            <span data-cursor={picked ? "projects-duration-option" : undefined} class={cn("menu-item relative justify-between gap-3", picked && optionHovered("projects-duration-option", projectsOptionHovered(defaultsElapsed, "duration")) && "bg-accent")}>
               <span class="flex min-w-0 flex-1 items-center gap-1.5"><span class="truncate">{option.label}</span></span>
               {#if option.value === durationValue}<Check size={12} strokeWidth={2.5} class="shrink-0" />{/if}
               {#if picked}{@render touch(touches.durationOption, "50%", "50%")}{/if}
@@ -1624,7 +1656,7 @@
           </span>
           {#each PROJECT_POMODORO_PRESET_ORDER as preset (preset)}
             {@const picked = preset === PROJECTS_PRESET}
-            <span class={cn("menu-item relative justify-between gap-3", picked && projectsOptionHovered(defaultsElapsed, "pomodoro") && "bg-accent")}>
+            <span data-cursor={picked ? "projects-pomodoro-option" : undefined} class={cn("menu-item relative justify-between gap-3", picked && optionHovered("projects-pomodoro-option", projectsOptionHovered(defaultsElapsed, "pomodoro")) && "bg-accent")}>
               <span class="grid min-w-0 flex-1 grid-cols-[minmax(max-content,1fr)_max-content] items-center gap-4">
                 <span class="truncate">{presetLabel(preset)}</span>
                 <span class="max-w-72 justify-self-end truncate text-panel-detail text-muted-foreground">{projectPomodoroSummaryLabel(COUNT_PRESET_RHYTHMS[preset])}</span>
@@ -1663,7 +1695,7 @@
           </span>
           {#each MUSIC_PLAYLISTS as entry (entry.key)}
             {@const picked = openPhase !== null && PROJECTS_PLAYLISTS[openPhase] === entry.key}
-            <span class={cn("menu-item relative", picked && openPhase && projectsOptionHovered(defaultsElapsed, openPhase) && "bg-accent")}>
+            <span data-cursor={picked && openPhase ? `projects-${openPhase}-option` : undefined} class={cn("menu-item relative", picked && openPhase && optionHovered(`projects-${openPhase}-option`, projectsOptionHovered(defaultsElapsed, openPhase)) && "bg-accent")}>
               <span class="grid size-4 shrink-0 place-items-center"><MusicPlaylistIcon icon={entry.icon} size={15} /></span>
               <span class="min-w-0 flex-1 truncate font-medium">{playlistName(entry.key)}</span>
               <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{formatNumber(localization.locale, entry.tracks)}</span>
@@ -1687,8 +1719,13 @@
           projectColor={PROJECTS_COLOR}
           title={fullEventName}
           picker={eventPicker}
+          hovered={cursorHovered}
         />
       {/if}
+    {/if}
+
+    {#if !mobileShell}
+      <WelcomeCursor script={cursorScript} {elapsed} width={canvasW} />
     {/if}
   </div>
 </div>

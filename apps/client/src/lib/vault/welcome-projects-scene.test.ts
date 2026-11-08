@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
 import { FILM_TAP_MS } from "./welcome-film";
 import {
   PROJECTS_BEATS,
   PROJECTS_COLOR,
+  PROJECTS_CREATE_PRESS_MS,
+  PROJECTS_CURSOR,
   PROJECTS_DEFAULT_MINUTES,
   PROJECTS_DEFAULT_RAIL,
   PROJECTS_EVENT,
@@ -224,5 +227,55 @@ describe("welcome projects scene", () => {
     expect(frame.music?.expanded).toBe(1);
     expect(projectsDefaultColor(PROJECTS_STILL)).toBe(PROJECTS_COLOR);
     expect(projectsDefaultPreset(PROJECTS_STILL)).toBe(PROJECTS_PRESET);
+  });
+
+  it("clicks with the desktop pointer on the beats the touches land on, resting on each control through its press", () => {
+    expect(welcomeCursorScriptOrdered(PROJECTS_CURSOR)).toBe(true);
+    const clicks = PROJECTS_CURSOR.filter((stop) => stop.press && !stop.follow);
+    expect(clicks.map((stop) => [stop.target, stop.press?.end])).toEqual([
+      ["projects-settings", B.settingsTap],
+      ["projects-name", B.nameTap],
+      ["projects-color", B.colorTap],
+      ["projects-color-option", B.colorPick],
+      ["projects-duration", B.durationTap],
+      ["projects-duration-option", B.durationPick],
+      ["projects-pomodoro", B.pomodoroTap],
+      ["projects-pomodoro-option", B.pomodoroPick],
+      ...PROJECTS_PHASES.flatMap((phase) => [
+        [`projects-${phase}`, PHASE_TAPS[phase].tap],
+        [`projects-${phase}-option`, PHASE_TAPS[phase].pick],
+      ]),
+      ["projects-save", B.settingsSaveTap],
+      ["projects-close", B.settingsCloseTap],
+      ["panel-project", B.projectTap],
+      ["panel-group", B.groupTap],
+      ["panel-project-pick", B.projectPick],
+      ["panel-music", B.musicTap],
+      ["panel-save", B.eventSaveTap],
+    ]);
+    for (const stop of clicks) {
+      const press = stop.press;
+      if (!press) continue;
+      expect(press.start).toBe(press.end - FILM_TAP_MS);
+      for (let elapsed = press.start; elapsed <= press.end; elapsed += 10) expect(welcomeCursorHovered(PROJECTS_CURSOR, elapsed)).toBe(stop.target);
+    }
+  });
+
+  it("holds the button down while it drags the event out, following its growing edge", () => {
+    const drag = PROJECTS_CURSOR.find((stop) => stop.follow);
+    expect(drag?.target).toBe("projects-drag");
+    expect(drag?.press).toEqual({ start: B.createStart - PROJECTS_CREATE_PRESS_MS, end: B.createEnd });
+    expect(drag?.depart).toBe(B.createStart);
+    expect(drag?.arrive).toBe(B.createEnd);
+    expect(welcomeCursorHovered(PROJECTS_CURSOR, B.createStart - PROJECTS_CREATE_PRESS_MS)).toBe("projects-drag");
+  });
+
+  it("reaches the event name under a text beam, and each picker only once the settings have scrolled to it", () => {
+    expect(PROJECTS_CURSOR.find((stop) => stop.target === "projects-name")?.glyph).toBe("text");
+    expect(PROJECTS_CURSOR.find((stop) => stop.target === "projects-name")?.depart).toBeGreaterThan(B.nameScrollStart);
+    expect(PROJECTS_CURSOR.find((stop) => stop.target === "projects-color")?.depart).toBeGreaterThan(B.colorScrollStart);
+    for (const phase of PROJECTS_PHASES) {
+      expect(PROJECTS_CURSOR.find((stop) => stop.target === `projects-${phase}`)?.depart).toBeGreaterThan(B.focusScrollStart);
+    }
   });
 });

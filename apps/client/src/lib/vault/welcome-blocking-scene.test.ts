@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BLOCKING_BEATS,
+  BLOCKING_CURSOR,
   BLOCKING_DAY_VIEW,
   BLOCKING_EVENT,
   BLOCKING_RAIL,
@@ -18,6 +19,8 @@ import {
   blockingPulse,
   blockingRailRecorded,
 } from "./welcome-blocking-scene";
+import { BLOCKER_CURSOR } from "./welcome-blocker";
+import { welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
 
 const B = BLOCKING_BEATS;
 
@@ -69,7 +72,6 @@ describe("welcome blocking scene", () => {
   });
 
   it("blocks Y's address typed into the browser during the event", () => {
-    expect(blockingBrowser(B.addressTap - 100).addressTouch).toBeGreaterThan(0);
     expect(blockingBrowser(B.addressTap).address).toMatchObject({ kind: "typed", text: "" });
     const typed = blockingBrowser(B.yTypeEnd);
     expect(typed.address).toMatchObject({ kind: "typed", text: "y.com" });
@@ -178,7 +180,6 @@ describe("welcome blocking scene", () => {
         blockingPulse(elapsed),
         browser.pageIn,
         browser.loading,
-        browser.addressTouch,
         blockingEgogramTouch(elapsed),
         page.kind === "feed" ? page.scroll : 0,
         blockingPhoneApp(elapsed)?.open ?? 0,
@@ -199,5 +200,24 @@ describe("welcome blocking scene", () => {
     expect(blockingNotice(BLOCKING_STILL)?.shown).toBe(1);
     expect(blockingPhoneApp(BLOCKING_STILL)).toBeNull();
     expect(blockingPulse(BLOCKING_STILL)).toBe(0);
+  });
+
+  it("moves the browser's pointer in order and clicks the address bar exactly as its tap lands", () => {
+    expect(welcomeCursorScriptOrdered(BLOCKING_CURSOR)).toBe(true);
+    const clicks = BLOCKING_CURSOR.filter((stop) => stop.press);
+    expect(clicks.map((stop) => [stop.target, stop.press?.end])).toEqual([[BLOCKER_CURSOR.address, B.addressTap]]);
+    for (const click of clicks) {
+      expect(welcomeCursorHovered(BLOCKING_CURSOR, click.press?.start ?? 0)).toBe(click.target);
+      expect(welcomeCursorHovered(BLOCKING_CURSOR, click.press?.end ?? 0)).toBe(click.target);
+    }
+    expect(BLOCKING_CURSOR.find((stop) => stop.target === BLOCKER_CURSOR.address)?.glyph).toBe("text");
+  });
+
+  it("leaves the pointer on the page while it scrolls, and only goes for the address bar once the block page shows", () => {
+    expect(welcomeCursorHovered(BLOCKING_CURSOR, 0)).toBe(BLOCKER_CURSOR.page);
+    expect(welcomeCursorHovered(BLOCKING_CURSOR, B.focusStart - 1)).toBe(BLOCKER_CURSOR.page);
+    expect(welcomeCursorHovered(BLOCKING_CURSOR, B.yScrollStart)).toBe(BLOCKER_CURSOR.page);
+    expect(welcomeCursorHovered(BLOCKING_CURSOR, B.end)).toBe(BLOCKER_CURSOR.page);
+    expect(blockingBrowserPage(B.yScrollStart)).toMatchObject({ kind: "feed", app: "y", scroll: 0 });
   });
 });

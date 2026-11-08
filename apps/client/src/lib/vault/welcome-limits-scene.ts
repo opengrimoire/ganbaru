@@ -9,11 +9,15 @@
 import {
   BLOCKER_APP_HOSTS,
   BLOCKER_APP_OPEN_MS,
+  BLOCKER_CURSOR,
   BLOCKER_MAIL,
+  blockerAddressClick,
   blockerAppOpen,
   blockerCaretOn,
+  blockerCursorClose,
   blockerNoticeShown,
   blockerPageIn,
+  blockerPageRest,
   blockerPan,
   blockerTyped,
   type BlockerApp,
@@ -25,6 +29,7 @@ import {
   type BlockerTab,
   type BlockerTabContent,
 } from "./welcome-blocker";
+import { cursorClick, WELCOME_CURSOR_TRAVEL_MS, type WelcomeCursorScript } from "./welcome-cursor";
 import { easeInOutCubic, filmSpan, filmTap } from "./welcome-film";
 
 /** The daily limit's budget, and how much of it each device uses, in minutes. */
@@ -51,6 +56,8 @@ export const LIMITS_BEATS = {
   retryNotice: 10900,
   retryAgainTap: 11500,
   retryAgainHome: 12050,
+  /** The camera turns back to the browser on a narrow canvas. */
+  browserReturn: 12500,
   /** A tap opens a new tab in the browser, Y's address is typed, and the page loads into the block page. */
   newTabTap: 13300,
   yTypeStart: 13550,
@@ -71,7 +78,7 @@ const B = LIMITS_BEATS;
 /** Where the camera points on a narrow canvas: the phone for Egogram, then the browser for the sites. */
 const PAN_MOVES: readonly BlockerPanMove[] = [
   { start: 4400, to: 1 },
-  { start: 12500, to: 0 },
+  { start: B.browserReturn, to: 0 },
 ];
 
 /** When the phone's use of the budget starts, once the app has opened. */
@@ -119,7 +126,7 @@ function beforeAttempt(index: number): { page: BlockerBrowserPage; tab: BlockerT
 }
 
 /** The browser while a site of the limit is typed into it, loads, and is blocked. */
-function attemptFrame(elapsed: number, index: number, attempt: SiteAttempt): Omit<BlockerBrowserFrame, "pageIn" | "newTabTouch" | "addressTouch"> {
+function attemptFrame(elapsed: number, index: number, attempt: SiteAttempt): Omit<BlockerBrowserFrame, "pageIn"> {
   const mail: BlockerTab = { content: "mail", active: false };
   const host = BLOCKER_APP_HOSTS[attempt.app];
   if (elapsed >= attempt.blocked) {
@@ -141,22 +148,35 @@ function attemptFrame(elapsed: number, index: number, attempt: SiteAttempt): Omi
  */
 export function limitsBrowser(elapsed: number): BlockerBrowserFrame {
   const pageIn = blockerPageIn(elapsed, [B.yCloseTap, B.newTabTap, ...SITE_ATTEMPTS.map((attempt) => attempt.blocked)]);
-  const touches = { pageIn, newTabTouch: filmTap(elapsed, B.newTabTap), addressTouch: filmTap(elapsed, B.addressTap) };
   if (elapsed < B.yCloseTap) {
     const scroll = easeInOutCubic(filmSpan(elapsed, B.browserUseStart, B.browserUseEnd));
     const tabs: BlockerTab[] = [
       { content: "mail", active: false },
-      { content: "y", active: true, closeTouch: filmTap(elapsed, B.yCloseTap) },
+      { content: "y", active: true },
     ];
-    return { tabs, address: { kind: "host", host: BLOCKER_APP_HOSTS.y }, page: { kind: "feed", app: "y", scroll }, loading: 0, ...touches };
+    return { tabs, address: { kind: "host", host: BLOCKER_APP_HOSTS.y }, page: { kind: "feed", app: "y", scroll }, loading: 0, pageIn };
   }
   const index = SITE_ATTEMPTS.findLastIndex((attempt) => elapsed >= attempt.tap);
   const attempt = SITE_ATTEMPTS[index];
   if (!attempt) {
-    return { tabs: [{ content: "mail", active: true }], address: { kind: "host", host: BLOCKER_MAIL.host }, page: { kind: "mail" }, loading: 0, ...touches };
+    return { tabs: [{ content: "mail", active: true }], address: { kind: "host", host: BLOCKER_MAIL.host }, page: { kind: "mail" }, loading: 0, pageIn };
   }
-  return { ...attemptFrame(elapsed, index, attempt), ...touches };
+  return { ...attemptFrame(elapsed, index, attempt), pageIn };
 }
+
+/**
+ * The browser's mouse pointer: it rests on Y's feed as it scrolls, closes Y's tab once the scrolling stops, and rests
+ * on the inbox while the phone is in use. Back on the laptop, it opens a new tab, moves off the tab strip as the tabs
+ * shift, and clicks the address bar for Bluedit's address.
+ */
+export const LIMITS_CURSOR: WelcomeCursorScript = [
+  blockerPageRest(0, [0.6, 0.55]),
+  cursorClick(blockerCursorClose("y"), B.yCloseTap, { after: B.browserUseEnd }),
+  blockerPageRest(B.yCloseTap + WELCOME_CURSOR_TRAVEL_MS, [0.55, 0.45]),
+  cursorClick(BLOCKER_CURSOR.newTab, B.newTabTap, { after: B.browserReturn }),
+  blockerPageRest(B.newTabTap + WELCOME_CURSOR_TRAVEL_MS, [0.5, 0.35]),
+  blockerAddressClick(B.addressTap, B.yBlocked),
+];
 
 /** The app open on the phone at this moment, or null on the home screen. */
 export function limitsPhoneApp(elapsed: number): BlockerPhoneApp | null {

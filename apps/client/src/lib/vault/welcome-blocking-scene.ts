@@ -9,10 +9,12 @@
 import {
   BLOCKER_APP_HOSTS,
   BLOCKER_APP_OPEN_MS,
+  blockerAddressClick,
   blockerAppOpen,
   blockerCaretOn,
   blockerNoticeShown,
   blockerPageIn,
+  blockerPageRest,
   blockerPan,
   blockerSingleTab,
   blockerTyped,
@@ -23,6 +25,7 @@ import {
   type BlockerPanMove,
   type BlockerPhoneApp,
 } from "./welcome-blocker";
+import type { WelcomeCursorScript } from "./welcome-cursor";
 import {
   easeInOutCubic,
   filmDayRails,
@@ -63,8 +66,9 @@ export const BLOCKING_BEATS = {
   retryAgainTap: 9600,
   retryAgainHome: 10150,
   retryNoticeOut: 11000,
-  /** The event ends, so Y's page comes back. */
+  /** The event ends, so Y's page comes back, and its feed starts scrolling. */
   focusEnd: 11600,
+  yScrollStart: 12100,
   /** Egogram opens as usual. */
   egogramAgainTap: 13600,
   end: 15600,
@@ -153,7 +157,7 @@ function focusBlock(elapsed: number, app: BlockerApp): BlockerBrowserPage {
  */
 export function blockingBrowserPage(elapsed: number): BlockerBrowserPage {
   if (elapsed < B.focusStart) return { kind: "feed", app: "bluedit", scroll: easeInOutCubic(filmSpan(elapsed, 200, B.focusStart - 150)) };
-  if (elapsed >= B.focusEnd) return { kind: "feed", app: "y", scroll: 0.45 * easeInOutCubic(filmSpan(elapsed, B.focusEnd + 500, B.end - 300)) };
+  if (elapsed >= B.focusEnd) return { kind: "feed", app: "y", scroll: 0.45 * easeInOutCubic(filmSpan(elapsed, B.yScrollStart, B.end - 300)) };
   return focusBlock(elapsed, elapsed >= B.yBlocked ? "y" : "bluedit");
 }
 
@@ -161,14 +165,23 @@ export function blockingBrowserPage(elapsed: number): BlockerBrowserPage {
 export function blockingBrowser(elapsed: number): BlockerBrowserFrame {
   const page = blockingBrowserPage(elapsed);
   const frame = blockerSingleTab(page, blockerPageIn(elapsed, [B.focusStart, B.yBlocked, B.focusEnd]));
-  const addressTouch = filmTap(elapsed, B.addressTap);
-  if (elapsed < B.addressTap || elapsed >= B.yBlocked) return { ...frame, addressTouch };
+  if (elapsed < B.addressTap || elapsed >= B.yBlocked) return frame;
   const host = BLOCKER_APP_HOSTS.y;
-  if (elapsed >= B.yLoadStart) return { ...frame, address: { kind: "host", host }, loading: filmSpan(elapsed, B.yLoadStart, B.yBlocked), addressTouch };
+  if (elapsed >= B.yLoadStart) return { ...frame, address: { kind: "host", host }, loading: filmSpan(elapsed, B.yLoadStart, B.yBlocked) };
   const typing = elapsed >= B.yTypeStart && elapsed < B.yTypeEnd;
   const text = blockerTyped(host, B.yTypeStart, B.yTypeEnd, elapsed);
-  return { ...frame, address: { kind: "typed", text, caret: typing || blockerCaretOn(elapsed - B.addressTap) }, addressTouch };
+  return { ...frame, address: { kind: "typed", text, caret: typing || blockerCaretOn(elapsed - B.addressTap) } };
 }
+
+/**
+ * The browser's mouse pointer: it rests on Bluedit's feed as it scrolls, clicks the address bar once the block page
+ * shows, and goes back to the page as Y's feed returns after the event.
+ */
+export const BLOCKING_CURSOR: WelcomeCursorScript = [
+  blockerPageRest(0, [0.6, 0.55]),
+  blockerAddressClick(B.addressTap, B.focusStart),
+  blockerPageRest(B.yScrollStart, [0.55, 0.6]),
+];
 
 /** The app open on the phone at this moment, or null on the home screen. */
 export function blockingPhoneApp(elapsed: number): BlockerPhoneApp | null {

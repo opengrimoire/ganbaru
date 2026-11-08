@@ -15,6 +15,7 @@
   import WelcomeLimitsStep from "./welcome/WelcomeLimitsStep.svelte";
   import WelcomeMusicStep from "./welcome/WelcomeMusicStep.svelte";
   import WelcomeProjectsStep from "./welcome/WelcomeProjectsStep.svelte";
+  import WelcomeTasksStep from "./welcome/WelcomeTasksStep.svelte";
 
   /**
    * The welcome screens before vault setup: the language, one per feature, then the app itself. Every screen shares
@@ -71,6 +72,8 @@
           <WelcomeMusicStep />
         {:else if current === "projects"}
           <WelcomeProjectsStep />
+        {:else if current === "tasks"}
+          <WelcomeTasksStep />
         {:else}
           <WelcomeAboutStep />
         {/if}

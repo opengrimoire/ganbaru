@@ -10,7 +10,7 @@
   import WelcomeScene from "./WelcomeScene.svelte";
   import WelcomeSceneStep from "./WelcomeSceneStep.svelte";
 
-  /** The welcome screen on Projects: adding and editing a task in the List view, setting the project's event defaults, then a Calendar event that takes them once the project is picked, on a loop. */
+  /** The welcome screen on project defaults: setting the Novel project's event defaults in its settings, then a Calendar event that takes them once the project is picked, on a loop. */
   const { t } = getLocalization();
 </script>
 
@@ -26,6 +26,6 @@
     still={PROJECTS_STILL}
     description={t("vaultSetup.projects.sceneDescription")}
   >
-    {#snippet frame(elapsed, width, height)}<WelcomeProjectsScene {elapsed} {width} {height} />{/snippet}
+    {#snippet frame(elapsed, width, height)}<WelcomeProjectsScene part="defaults" {elapsed} {width} {height} />{/snippet}
   </WelcomeScene>
 </WelcomeSceneStep>

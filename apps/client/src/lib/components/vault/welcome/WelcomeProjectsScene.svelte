@@ -19,6 +19,9 @@
   export const PROJECTS_SCENE_MAX_WIDTH = MAX_CANVAS_W + 2 * BEZEL;
   export const PROJECTS_SCENE_MIN_HEIGHT = MIN_CANVAS_H + 2 * BEZEL;
   export const PROJECTS_SCENE_MAX_HEIGHT = MAX_CANVAS_H + 2 * BEZEL;
+
+  /** The part of the Novel project a scene shows: its event defaults and their event, or its task list. */
+  export type WelcomeProjectsScenePart = "defaults" | "tasks";
 </script>
 
 <script lang="ts">
@@ -107,9 +110,6 @@
     PROJECTS_COLOR,
     PROJECTS_DEFAULT_MINUTES,
     PROJECTS_EVENT,
-    PROJECTS_NEW_PRIORITY,
-    PROJECTS_NEW_STATUS,
-    PROJECTS_NEW_TASK,
     PROJECTS_PHASES,
     PROJECTS_PLAYLISTS,
     PROJECTS_PRESET,
@@ -119,10 +119,7 @@
     PROJECTS_STATUS_COLORS,
     PROJECTS_STATUS_ORDER,
     PROJECTS_TASKS,
-    projectsAddActive,
     projectsCalendarShown,
-    projectsCellHighlighted,
-    projectsCellMenu,
     projectsDefaultColor,
     projectsDefaultMinutes,
     projectsDefaultPreset,
@@ -135,11 +132,8 @@
     projectsEventPanelFrame,
     projectsEventPicked,
     projectsEventRail,
-    projectsListScroll,
     projectsListShown,
     projectsPanelOpen,
-    projectsNewPriority,
-    projectsNewStatus,
     projectsOptionHovered,
     projectsPlaylist,
     projectsSettingsDirty,
@@ -147,27 +141,45 @@
     projectsSettingsPicker,
     projectsSettingsScroll,
     projectsSettingsShown,
-    projectsTaskAdded,
-    projectsTaskCaretOn,
-    projectsTaskDraft,
     projectsTouches,
-    type ProjectsSceneCell,
     type ProjectsScenePhase,
     type ProjectsScenePriority,
     type ProjectsSceneStatus,
     type ProjectsSceneTaskEntry,
     type ProjectsSettingsTarget,
   } from "$lib/vault/welcome-projects-scene";
+  import {
+    TASKS_NEW_PRIORITY,
+    TASKS_NEW_STATUS,
+    TASKS_NEW_TASK,
+    tasksAddActive,
+    tasksAdded,
+    tasksCaretOn,
+    tasksCellHighlighted,
+    tasksCellMenu,
+    tasksDraft,
+    tasksListScroll,
+    tasksNewPriority,
+    tasksNewStatus,
+    tasksOptionHovered,
+    tasksTouches,
+    type TasksSceneCell,
+  } from "$lib/vault/welcome-tasks-scene";
 
   /**
-   * One frame of the welcome scene on Projects, drawn with the app's own surfaces. In the Novel project's List view, a
-   * task is typed into the add row and added, and its status and priority are changed from their cells' menus. Project
-   * settings then open from the header on Event defaults, where the event name is typed, a color, a duration, and a
-   * Pomodoro are picked, a playlist is picked for each phase, and the settings are saved and closed, each control scrolled into
-   * view before its tap. In the Calendar, an event is then dragged out, and picking Novel in its panel gives it every
-   * default just saved. Every style is a function of `elapsed`, with no CSS transitions.
+   * One frame of a welcome scene on the Novel project, drawn with the app's own surfaces. With `part` on `defaults`,
+   * project settings open from the header in the List view on Event defaults, where the event name is typed, a color, a
+   * duration, and a Pomodoro are picked, a playlist is picked for each phase, and the settings are saved and closed, each
+   * control scrolled into view before its tap. In the Calendar, an event is then dragged out, and picking Novel in its
+   * panel gives it every default just saved. With `part` on `tasks`, a task is typed into the list's add row and added,
+   * and its status and priority are changed from their cells' menus. Every style is a function of `elapsed`, with no CSS
+   * transitions.
    */
-  let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
+  let { part, elapsed, width, height }: { part: WelcomeProjectsScenePart; elapsed: number; width: number; height: number } = $props();
+
+  /** The time into each part's timeline: the part not shown stays at its start, where none of its moments has happened. */
+  const defaultsElapsed = $derived(part === "defaults" ? elapsed : 0);
+  const tasksElapsed = $derived(part === "tasks" ? elapsed : 0);
 
   const localization = getLocalization();
   const { t } = localization;
@@ -336,42 +348,43 @@
   /** The top of the list, below the title bar and the project header. */
   const listTop = TOP_BAR_H + HEADER_H;
 
-  const touches = $derived(projectsTouches(elapsed));
-  const addActive = $derived(projectsAddActive(elapsed));
-  const taskAdded = $derived(projectsTaskAdded(elapsed));
-  const newStatus = $derived(projectsNewStatus(elapsed));
-  const newPriority = $derived(projectsNewPriority(elapsed));
-  const listScroll = $derived(projectsListScroll(elapsed));
-  const cellMenu = $derived(projectsCellMenu(elapsed));
-  const settingsShown = $derived(projectsSettingsShown(elapsed));
-  const settingsOpen = $derived(projectsSettingsOpen(elapsed));
-  const settingsScroll = $derived(projectsSettingsScroll(elapsed));
-  const picker = $derived(projectsSettingsPicker(elapsed));
-  const defaultColor = $derived(projectsDefaultColor(elapsed));
-  const defaultMinutes = $derived(projectsDefaultMinutes(elapsed));
-  const defaultPreset = $derived(projectsDefaultPreset(elapsed));
-  const dirty = $derived(projectsSettingsDirty(elapsed));
-  const eventName = $derived(projectsEventName(elapsed, t("vaultSetup.projects.eventName")));
+  const touches = $derived(projectsTouches(defaultsElapsed));
+  const taskTouches = $derived(tasksTouches(tasksElapsed));
+  const addActive = $derived(tasksAddActive(tasksElapsed));
+  const taskAdded = $derived(tasksAdded(tasksElapsed));
+  const newStatus = $derived(tasksNewStatus(tasksElapsed));
+  const newPriority = $derived(tasksNewPriority(tasksElapsed));
+  const listScroll = $derived(tasksListScroll(tasksElapsed));
+  const cellMenu = $derived(tasksCellMenu(tasksElapsed));
+  const settingsShown = $derived(projectsSettingsShown(defaultsElapsed));
+  const settingsOpen = $derived(projectsSettingsOpen(defaultsElapsed));
+  const settingsScroll = $derived(projectsSettingsScroll(defaultsElapsed));
+  const picker = $derived(projectsSettingsPicker(defaultsElapsed));
+  const defaultColor = $derived(projectsDefaultColor(defaultsElapsed));
+  const defaultMinutes = $derived(projectsDefaultMinutes(defaultsElapsed));
+  const defaultPreset = $derived(projectsDefaultPreset(defaultsElapsed));
+  const dirty = $derived(projectsSettingsDirty(defaultsElapsed));
+  const eventName = $derived(projectsEventName(defaultsElapsed, t("vaultSetup.projects.eventName")));
   const openPhase = $derived(picker === "focus" || picker === "short-break" || picker === "long-break" ? picker : null);
 
-  const listShown = $derived(projectsListShown(elapsed));
-  const calendarShown = $derived(projectsCalendarShown(elapsed));
+  const listShown = $derived(projectsListShown(defaultsElapsed));
+  const calendarShown = $derived(projectsCalendarShown(defaultsElapsed));
   const calendarDark = $derived(isThemeCalendarDark(theme.current));
   const fullEventName = $derived(t("vaultSetup.projects.eventName"));
-  const drawnIn = $derived(projectsEventDrawnIn(elapsed));
-  const creating = $derived(projectsEventCreating(elapsed));
-  const eventPicked = $derived(projectsEventPicked(elapsed));
-  const eventPanelOpen = $derived(projectsPanelOpen(elapsed));
-  const rail = $derived(projectsEventRail(elapsed));
+  const drawnIn = $derived(projectsEventDrawnIn(defaultsElapsed));
+  const creating = $derived(projectsEventCreating(defaultsElapsed));
+  const eventPicked = $derived(projectsEventPicked(defaultsElapsed));
+  const eventPanelOpen = $derived(projectsPanelOpen(defaultsElapsed));
+  const rail = $derived(projectsEventRail(defaultsElapsed));
   /** The event's length: snapped as the Calendar snaps while it is dragged out, then growing to the project's default. */
   const eventMinutes = $derived(
     eventPicked
-      ? projectsEventMinutes(elapsed)
-      : Math.max(CREATE_SNAP_MINUTES, Math.round(projectsEventMinutes(elapsed) / CREATE_SNAP_MINUTES) * CREATE_SNAP_MINUTES),
+      ? projectsEventMinutes(defaultsElapsed)
+      : Math.max(CREATE_SNAP_MINUTES, Math.round(projectsEventMinutes(defaultsElapsed) / CREATE_SNAP_MINUTES) * CREATE_SNAP_MINUTES),
   );
   const pressOpacity = $derived(
-    filmSpan(elapsed, PROJECTS_BEATS.createStart - PRESS_FADE_MS, PROJECTS_BEATS.createStart)
-      * (1 - filmSpan(elapsed, PROJECTS_BEATS.createEnd, PROJECTS_BEATS.createEnd + PRESS_FADE_MS)),
+    filmSpan(defaultsElapsed, PROJECTS_BEATS.createStart - PRESS_FADE_MS, PROJECTS_BEATS.createStart)
+      * (1 - filmSpan(defaultsElapsed, PROJECTS_BEATS.createEnd, PROJECTS_BEATS.createEnd + PRESS_FADE_MS)),
   );
   const viewMinutes = $derived(((canvasH - TOP_BAR_H - CAL_HEADER_H) / HOUR_PX) * 60);
   const hours = $derived(
@@ -411,7 +424,7 @@
 
   /** The tasks the list shows: the General section's, then the added one with the status and priority it has so far. */
   const tasks = $derived<readonly ProjectsSceneTaskEntry[]>(
-    taskAdded ? [...PROJECTS_TASKS, { ...PROJECTS_NEW_TASK, status: newStatus, priority: newPriority }] : PROJECTS_TASKS,
+    taskAdded ? [...PROJECTS_TASKS, { ...TASKS_NEW_TASK, status: newStatus, priority: newPriority }] : PROJECTS_TASKS,
   );
 
   /** Project settings as a toolbar popover places them, or inset below the top bar on a phone. */
@@ -823,8 +836,8 @@
   }
 
   /** The highlight a cell takes as the pointer rests on it and while its menu is open. */
-  function cellHighlight(cell: ProjectsSceneCell): string | undefined {
-    return projectsCellHighlighted(elapsed, cell) ? "linear-gradient(var(--collection-highlight), var(--collection-highlight))" : undefined;
+  function cellHighlight(cell: TasksSceneCell): string | undefined {
+    return tasksCellHighlighted(tasksElapsed, cell) ? "linear-gradient(var(--collection-highlight), var(--collection-highlight))" : undefined;
   }
 </script>
 
@@ -956,8 +969,8 @@
 {/snippet}
 
 {#snippet eventNameControl()}
-  {@const focused = projectsEventNameFocused(elapsed)}
-  {@const caretOn = projectsEventNameCaretOn(elapsed)}
+  {@const focused = projectsEventNameFocused(defaultsElapsed)}
+  {@const caretOn = projectsEventNameCaretOn(defaultsElapsed)}
   <span bind:this={eventNameTrigger} class={cn("field relative flex min-w-0 items-center px-2.5 text-left font-medium text-foreground", stackedRows ? "w-full" : "w-44")}>
     <span class="min-w-0 truncate">
       {#if eventName}{eventName}{#if focused && caretOn}{@render caret()}{/if}{:else}{#if focused && caretOn}{@render caret()}{/if}<span class="text-muted-foreground">{t("common.none")}</span>{/if}
@@ -1115,7 +1128,7 @@
           </div>
 
           {#each tasks as task (task.key)}
-            {@const added = task.key === PROJECTS_NEW_TASK.key}
+            {@const added = task.key === TASKS_NEW_TASK.key}
             <div class="list-divider">
               <CollectionRow template={gridTemplate} minWidth={gridMinWidth} {gutter} divider={false}>
                 <div class="flex h-full items-center justify-center">{#if mobileShell}{@render checkbox()}{/if}</div>
@@ -1130,7 +1143,7 @@
                       <div class="pointer-events-none relative z-10 min-w-0 max-w-full">
                         <ProjectStatusBadge status={sceneStatus(task.status)} theme={theme.current} label={statusName(task.status)} class="text-[0.733333rem]" />
                       </div>
-                      {#if added}{@render touch(touches.status, "2rem", "50%")}{/if}
+                      {#if added}{@render touch(taskTouches.status, "2rem", "50%")}{/if}
                     </CollectionCell>
                   {:else if column === "priority"}
                     <CollectionCell style={added ? `background-image: ${cellHighlight("priority") ?? "none"}` : undefined}>
@@ -1141,7 +1154,7 @@
                           <span class="min-w-0 truncate">{priorityName(task.priority)}</span>
                         </span>
                       </div>
-                      {#if added}{@render touch(touches.priority, "2rem", "50%")}{/if}
+                      {#if added}{@render touch(taskTouches.priority, "2rem", "50%")}{/if}
                     </CollectionCell>
                   {:else}
                     <CollectionCell>
@@ -1168,8 +1181,8 @@
             <CollectionRow template={gridTemplate} minWidth={gridMinWidth} {gutter} divider={false}>
               <div class="col-span-full grid min-w-0 grid-cols-subgrid self-stretch">
                 {#if addActive}
-                  {@const draft = projectsTaskDraft(elapsed, t("vaultSetup.projects.task.draftChapter"))}
-                  {@const caretOn = projectsTaskCaretOn(elapsed)}
+                  {@const draft = tasksDraft(tasksElapsed, t("vaultSetup.projects.task.draftChapter"))}
+                  {@const caretOn = tasksCaretOn(tasksElapsed)}
                   <span class="flex min-h-(--collection-table-row-height) min-w-0 items-center gap-1 rounded-md px-2" style:grid-column="3 / -1">
                     <span class="flex min-h-8 w-full min-w-0 items-center text-collection text-foreground">
                       <span class="min-w-0 truncate">
@@ -1185,7 +1198,7 @@
                       <Plus class="size-4 shrink-0" />
                       <span class="relative min-w-0">
                         <span class="block truncate">{t("projects.list.addTaskInSection", t("projects.list.general"))}</span>
-                        {@render touch(touches.add, "50%", "50%")}
+                        {@render touch(taskTouches.add, "50%", "50%")}
                       </span>
                     </span>
                   </span>
@@ -1313,356 +1326,360 @@
       {/if}
     </div>
 
-    <!-- The added task's status and priority menus. Both stay laid out while hidden so their size is known before they open. -->
-    <div
-      bind:this={statusMenu}
-      class="surface-floating surface-floating-body absolute z-40 w-44"
-      style:left={`${cellMenu === "status" && cellMenuPlace ? cellMenuPlace.left : 0}px`}
-      style:top={`${cellMenu === "status" && cellMenuPlace ? cellMenuPlace.top : 0}px`}
-      style:visibility={cellMenu === "status" && cellMenuPlace ? undefined : "hidden"}
-    >
-      {#each PROJECTS_STATUS_ORDER as status (status)}
-        {@const picked = status === PROJECTS_NEW_STATUS}
-        <span class={cn("menu-item relative justify-between", picked && projectsOptionHovered(elapsed, "status") && "bg-accent")}>
-          <ProjectStatusBadge status={sceneStatus(status)} theme={theme.current} label={statusName(status)} class="text-[0.733333rem]" />
-          {#if status === newStatus}<Check size={13} strokeWidth={2} class="shrink-0 text-muted-foreground" />{/if}
-          {#if picked}{@render touch(touches.statusOption, "2.5rem", "50%")}{/if}
-        </span>
-      {/each}
-    </div>
-
-    <div
-      bind:this={priorityMenu}
-      class="surface-floating surface-floating-body absolute z-40 w-44"
-      style:left={`${cellMenu === "priority" && cellMenuPlace ? cellMenuPlace.left : 0}px`}
-      style:top={`${cellMenu === "priority" && cellMenuPlace ? cellMenuPlace.top : 0}px`}
-      style:visibility={cellMenu === "priority" && cellMenuPlace ? undefined : "hidden"}
-    >
-      {#each PROJECTS_PRIORITY_ORDER as priority (priority)}
-        {@const picked = priority === PROJECTS_NEW_PRIORITY}
-        <span class={cn("menu-item relative justify-between", picked && projectsOptionHovered(elapsed, "priority") && "bg-accent")}>
-          <span class="flex min-w-0 items-center gap-1.5 text-foreground">
-            <PriorityFlagIcon color={PROJECTS_PRIORITY_COLORS[priority]} theme={theme.current} size={13} class="shrink-0" />
-            <span class="min-w-0 truncate">{priorityName(priority)}</span>
+    {#if part === "tasks"}
+      <!-- The added task's status and priority menus. Both stay laid out while hidden so their size is known before they open. -->
+      <div
+        bind:this={statusMenu}
+        class="surface-floating surface-floating-body absolute z-40 w-44"
+        style:left={`${cellMenu === "status" && cellMenuPlace ? cellMenuPlace.left : 0}px`}
+        style:top={`${cellMenu === "status" && cellMenuPlace ? cellMenuPlace.top : 0}px`}
+        style:visibility={cellMenu === "status" && cellMenuPlace ? undefined : "hidden"}
+      >
+        {#each PROJECTS_STATUS_ORDER as status (status)}
+          {@const picked = status === TASKS_NEW_STATUS}
+          <span class={cn("menu-item relative justify-between", picked && tasksOptionHovered(tasksElapsed, "status") && "bg-accent")}>
+            <ProjectStatusBadge status={sceneStatus(status)} theme={theme.current} label={statusName(status)} class="text-[0.733333rem]" />
+            {#if status === newStatus}<Check size={13} strokeWidth={2} class="shrink-0 text-muted-foreground" />{/if}
+            {#if picked}{@render touch(taskTouches.statusOption, "2.5rem", "50%")}{/if}
           </span>
-          {#if priority === newPriority}<Check size={13} strokeWidth={2} class="shrink-0 text-muted-foreground" />{/if}
-          {#if picked}{@render touch(touches.priorityOption, "2.5rem", "50%")}{/if}
-        </span>
-      {/each}
-    </div>
+        {/each}
+      </div>
 
-    <!-- Project settings, as the header's settings button opens them. They stay laid out while hidden so they can be measured. -->
-    <div
-      bind:this={settingsPanel}
-      class="absolute z-50"
-      style:left={`${panel.left}px`}
-      style:top={`${panel.top}px`}
-      style:width={`${panel.width}px`}
-      style:height={`${panel.height}px`}
-      style:opacity={settingsShown < 1 ? settingsShown : undefined}
-      style:visibility={settingsShown > 0 ? undefined : "hidden"}
-    >
-      <div class="surface-floating flex h-full min-h-0 flex-col overflow-hidden">
-        <div class="flex shrink-0 items-center gap-2 px-3 pt-2 pb-1">
-          <span class="min-w-0 flex-1 truncate text-[0.8125rem] font-medium">{t("projects.settings.title")}</span>
-          <span class="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground"><RotateCcw size={14} /></span>
-          <span class="relative grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground">
-            <X size={15} />
-            {@render touch(touches.close, "50%", "50%")}
+      <div
+        bind:this={priorityMenu}
+        class="surface-floating surface-floating-body absolute z-40 w-44"
+        style:left={`${cellMenu === "priority" && cellMenuPlace ? cellMenuPlace.left : 0}px`}
+        style:top={`${cellMenu === "priority" && cellMenuPlace ? cellMenuPlace.top : 0}px`}
+        style:visibility={cellMenu === "priority" && cellMenuPlace ? undefined : "hidden"}
+      >
+        {#each PROJECTS_PRIORITY_ORDER as priority (priority)}
+          {@const picked = priority === TASKS_NEW_PRIORITY}
+          <span class={cn("menu-item relative justify-between", picked && tasksOptionHovered(tasksElapsed, "priority") && "bg-accent")}>
+            <span class="flex min-w-0 items-center gap-1.5 text-foreground">
+              <PriorityFlagIcon color={PROJECTS_PRIORITY_COLORS[priority]} theme={theme.current} size={13} class="shrink-0" />
+              <span class="min-w-0 truncate">{priorityName(priority)}</span>
+            </span>
+            {#if priority === newPriority}<Check size={13} strokeWidth={2} class="shrink-0 text-muted-foreground" />{/if}
+            {#if picked}{@render touch(taskTouches.priorityOption, "2.5rem", "50%")}{/if}
           </span>
-        </div>
+        {/each}
+      </div>
+    {/if}
 
-        <div bind:this={settingsViewport} class="relative min-h-0 flex-1 overflow-hidden">
-          <div
-            bind:this={settingsContent}
-            class="relative flex flex-col gap-3 px-3 pt-1 pb-3"
-            style:transform={settingsScrollPx > 0 ? `translateY(${-settingsScrollPx}px)` : undefined}
-          >
-            <section class="flex flex-col gap-1.5">
-              <div class="flex min-h-7 items-center justify-between gap-3 px-1">
-                <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.settings.identity")}</h2>
-              </div>
-              <div class="flex flex-col gap-1.5">
-                {@render settingsRow(t("projects.settings.name"), nameControl)}
-                {@render settingsRow(t("projects.settings.group"), groupControl)}
-                {@render settingsRow(t("projects.settings.lifecycle"), lifecycleControl)}
-                {@render settingsRow(t("projects.settings.icon"), iconControl)}
-              </div>
-            </section>
+    {#if part === "defaults"}
+      <!-- Project settings, as the header's settings button opens them. They stay laid out while hidden so they can be measured. -->
+      <div
+        bind:this={settingsPanel}
+        class="absolute z-50"
+        style:left={`${panel.left}px`}
+        style:top={`${panel.top}px`}
+        style:width={`${panel.width}px`}
+        style:height={`${panel.height}px`}
+        style:opacity={settingsShown < 1 ? settingsShown : undefined}
+        style:visibility={settingsShown > 0 ? undefined : "hidden"}
+      >
+        <div class="surface-floating flex h-full min-h-0 flex-col overflow-hidden">
+          <div class="flex shrink-0 items-center gap-2 px-3 pt-2 pb-1">
+            <span class="min-w-0 flex-1 truncate text-[0.8125rem] font-medium">{t("projects.settings.title")}</span>
+            <span class="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground"><RotateCcw size={14} /></span>
+            <span class="relative grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground">
+              <X size={15} />
+              {@render touch(touches.close, "50%", "50%")}
+            </span>
+          </div>
 
-            <div class="h-px bg-border/70"></div>
-
-            <section class="flex flex-col gap-2">
-              <div class="flex items-center justify-between gap-2">
-                <div class="flex min-h-7 items-center gap-2">
-                  <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.settings.members.heading")}</h2>
-                  <span class="shrink-0 text-[0.733333rem] text-muted-foreground tabular-nums">1</span>
-                </div>
-                <span class="flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[0.733333rem] text-muted-foreground">
-                  <MailPlus size={14} strokeWidth={1.75} />{t("projects.settings.members.invite")}
-                </span>
-              </div>
-              <ul class="-mx-0.5 grid">
-                <MemberRow name={memberName} detail={memberDetail}>
-                  {#snippet avatar()}<LocalPersonAvatar size={MEMBER_AVATAR_SIZE} />{/snippet}
-                  {#snippet trailing()}<MemberRoleChip label={t("contacts.role.owner")} />{/snippet}
-                </MemberRow>
-              </ul>
-            </section>
-
-            <div class="h-px bg-border/70"></div>
-
-            {#if !mobileShell}
-              <section class="flex flex-col gap-2">
-                <div class="flex items-center justify-between gap-2">
-                  <div class="flex min-h-7 items-center justify-between gap-3 px-1">
-                    <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.settings.workingFolders.title")}</h2>
-                  </div>
-                  <span class="flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[0.733333rem] text-muted-foreground">
-                    <FolderPlus size={14} strokeWidth={1.75} />{t("projects.settings.workingFolders.addExisting")}
-                  </span>
+          <div bind:this={settingsViewport} class="relative min-h-0 flex-1 overflow-hidden">
+            <div
+              bind:this={settingsContent}
+              class="relative flex flex-col gap-3 px-3 pt-1 pb-3"
+              style:transform={settingsScrollPx > 0 ? `translateY(${-settingsScrollPx}px)` : undefined}
+            >
+              <section class="flex flex-col gap-1.5">
+                <div class="flex min-h-7 items-center justify-between gap-3 px-1">
+                  <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.settings.identity")}</h2>
                 </div>
                 <div class="flex flex-col gap-1.5">
-                  <div class={cn("flex min-w-0 justify-between px-1 py-1", stackedRows ? "flex-col items-stretch gap-2" : "items-center gap-4")}>
-                    <div class="flex min-w-0 flex-1 items-center gap-1.5">
-                      <span class="block min-w-0 truncate text-[0.866667rem] text-foreground">{t("vaultSetup.projects.project")}</span>
-                      <span class="inline-flex size-6 shrink-0 items-center justify-center text-muted-foreground"><Ellipsis strokeWidth={1.75} class="size-3.5" /></span>
+                  {@render settingsRow(t("projects.settings.name"), nameControl)}
+                  {@render settingsRow(t("projects.settings.group"), groupControl)}
+                  {@render settingsRow(t("projects.settings.lifecycle"), lifecycleControl)}
+                  {@render settingsRow(t("projects.settings.icon"), iconControl)}
+                </div>
+              </section>
+
+              <div class="h-px bg-border/70"></div>
+
+              <section class="flex flex-col gap-2">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="flex min-h-7 items-center gap-2">
+                    <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.settings.members.heading")}</h2>
+                    <span class="shrink-0 text-[0.733333rem] text-muted-foreground tabular-nums">1</span>
+                  </div>
+                  <span class="flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[0.733333rem] text-muted-foreground">
+                    <MailPlus size={14} strokeWidth={1.75} />{t("projects.settings.members.invite")}
+                  </span>
+                </div>
+                <ul class="-mx-0.5 grid">
+                  <MemberRow name={memberName} detail={memberDetail}>
+                    {#snippet avatar()}<LocalPersonAvatar size={MEMBER_AVATAR_SIZE} />{/snippet}
+                    {#snippet trailing()}<MemberRoleChip label={t("contacts.role.owner")} />{/snippet}
+                  </MemberRow>
+                </ul>
+              </section>
+
+              <div class="h-px bg-border/70"></div>
+
+              {#if !mobileShell}
+                <section class="flex flex-col gap-2">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="flex min-h-7 items-center justify-between gap-3 px-1">
+                      <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.settings.workingFolders.title")}</h2>
                     </div>
-                    <span class={cn("min-w-0 shrink-0", stackedRows ? "w-full" : "w-44")}>
-                      <span class="flex h-7 w-full items-center justify-between gap-2 rounded-md border border-border px-2.5 font-medium text-foreground">
-                        <span class="flex min-w-0 flex-1 items-center gap-1.5">
-                          <WandSparkles size={14} strokeWidth={1.75} class="shrink-0 text-muted-foreground" />
-                          <span class="truncate">{t("projects.settings.workingFolders.providerAutomatic")}</span>
-                        </span>
-                        {@render chevron(false)}
-                      </span>
+                    <span class="flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[0.733333rem] text-muted-foreground">
+                      <FolderPlus size={14} strokeWidth={1.75} />{t("projects.settings.workingFolders.addExisting")}
                     </span>
+                  </div>
+                  <div class="flex flex-col gap-1.5">
+                    <div class={cn("flex min-w-0 justify-between px-1 py-1", stackedRows ? "flex-col items-stretch gap-2" : "items-center gap-4")}>
+                      <div class="flex min-w-0 flex-1 items-center gap-1.5">
+                        <span class="block min-w-0 truncate text-[0.866667rem] text-foreground">{t("vaultSetup.projects.project")}</span>
+                        <span class="inline-flex size-6 shrink-0 items-center justify-center text-muted-foreground"><Ellipsis strokeWidth={1.75} class="size-3.5" /></span>
+                      </div>
+                      <span class={cn("min-w-0 shrink-0", stackedRows ? "w-full" : "w-44")}>
+                        <span class="flex h-7 w-full items-center justify-between gap-2 rounded-md border border-border px-2.5 font-medium text-foreground">
+                          <span class="flex min-w-0 flex-1 items-center gap-1.5">
+                            <WandSparkles size={14} strokeWidth={1.75} class="shrink-0 text-muted-foreground" />
+                            <span class="truncate">{t("projects.settings.workingFolders.providerAutomatic")}</span>
+                          </span>
+                          {@render chevron(false)}
+                        </span>
+                      </span>
+                    </div>
+                  </div>
+                </section>
+
+                <div class="h-px bg-border/70"></div>
+              {/if}
+
+              <section bind:this={defaultsSection} class="flex flex-col gap-1.5">
+                <div class="flex min-h-7 items-center justify-between gap-3 px-1">
+                  <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.settings.defaults")}</h2>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  {@render settingsRow(t("projects.settings.defaultEventName"), eventNameControl)}
+                  {@render settingsRow(t("projects.settings.color"), colorControl)}
+                  {@render settingsRow(t("projects.settings.defaultDuration"), durationControl)}
+                  {@render settingsRow(t("projects.settings.defaultPomodoro"), pomodoroControl)}
+                  {#if idleDetectionAvailable}
+                    <div class="flex items-center justify-between gap-4 px-1 py-1">
+                      <span class="min-w-0 flex-1 text-[0.866667rem] text-foreground">{t("projects.settings.useGlobalIdleSettings")}</span>
+                      <span class="inline-flex h-6 w-10 shrink-0 items-center rounded-full border border-primary bg-primary p-0.5">
+                        <span class="block size-4.5 translate-x-4 rounded-full bg-background"></span>
+                      </span>
+                    </div>
+                  {/if}
+                  <div class="phase-music">
+                    <div class={cn("phase-music-grid", showSoundscapes && "with-sounds")}>
+                      {#each PROJECTS_PHASES as phase (phase)}
+                        {@const playlist = projectsPlaylist(defaultsElapsed, phase)}
+                        <span class="phase-music-label min-w-0 truncate text-[0.866667rem] text-foreground">{phaseLabel(phase)}</span>
+                        <div bind:this={playlistTriggers[phase]} class="relative min-w-0">
+                          <span class="flex h-7 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground dark:bg-transparent">
+                            {#if playlist === null}
+                              <VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />
+                            {:else}
+                              <span class="grid size-3.5 shrink-0 place-items-center text-muted-foreground"><MusicPlaylistIcon icon={playlistIcon(playlist)} size={14} strokeWidth={1.5} /></span>
+                            {/if}
+                            <span class="min-w-0 flex-1 truncate">{playlist === null ? t("common.none") : playlistName(playlist)}</span>
+                            {@render chevron(openPhase === phase)}
+                          </span>
+                          {@render touch(touches.playlist[phase], "50%", "50%")}
+                        </div>
+                        {#if showSoundscapes}
+                          <span class="flex h-7 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground dark:bg-transparent">
+                            <AudioLinesXIcon size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />
+                            <span class="min-w-0 flex-1 truncate">{t("common.none")}</span>
+                            {@render chevron(false)}
+                          </span>
+                        {/if}
+                      {/each}
+                    </div>
                   </div>
                 </div>
               </section>
 
               <div class="h-px bg-border/70"></div>
-            {/if}
 
-            <section bind:this={defaultsSection} class="flex flex-col gap-1.5">
-              <div class="flex min-h-7 items-center justify-between gap-3 px-1">
-                <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.settings.defaults")}</h2>
-              </div>
-              <div class="flex flex-col gap-1.5">
-                {@render settingsRow(t("projects.settings.defaultEventName"), eventNameControl)}
-                {@render settingsRow(t("projects.settings.color"), colorControl)}
-                {@render settingsRow(t("projects.settings.defaultDuration"), durationControl)}
-                {@render settingsRow(t("projects.settings.defaultPomodoro"), pomodoroControl)}
-                {#if idleDetectionAvailable}
-                  <div class="flex items-center justify-between gap-4 px-1 py-1">
-                    <span class="min-w-0 flex-1 text-[0.866667rem] text-foreground">{t("projects.settings.useGlobalIdleSettings")}</span>
-                    <span class="inline-flex h-6 w-10 shrink-0 items-center rounded-full border border-primary bg-primary p-0.5">
-                      <span class="block size-4.5 translate-x-4 rounded-full bg-background"></span>
-                    </span>
-                  </div>
-                {/if}
-                <div class="phase-music">
-                  <div class={cn("phase-music-grid", showSoundscapes && "with-sounds")}>
-                    {#each PROJECTS_PHASES as phase (phase)}
-                      {@const playlist = projectsPlaylist(elapsed, phase)}
-                      <span class="phase-music-label min-w-0 truncate text-[0.866667rem] text-foreground">{phaseLabel(phase)}</span>
-                      <div bind:this={playlistTriggers[phase]} class="relative min-w-0">
-                        <span class="flex h-7 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground dark:bg-transparent">
-                          {#if playlist === null}
-                            <VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />
-                          {:else}
-                            <span class="grid size-3.5 shrink-0 place-items-center text-muted-foreground"><MusicPlaylistIcon icon={playlistIcon(playlist)} size={14} strokeWidth={1.5} /></span>
-                          {/if}
-                          <span class="min-w-0 flex-1 truncate">{playlist === null ? t("common.none") : playlistName(playlist)}</span>
-                          {@render chevron(openPhase === phase)}
-                        </span>
-                        {@render touch(touches.playlist[phase], "50%", "50%")}
-                      </div>
-                      {#if showSoundscapes}
-                        <span class="flex h-7 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground dark:bg-transparent">
-                          <AudioLinesXIcon size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />
-                          <span class="min-w-0 flex-1 truncate">{t("common.none")}</span>
-                          {@render chevron(false)}
-                        </span>
-                      {/if}
-                    {/each}
-                  </div>
+              <section class="flex flex-col gap-0.5">
+                <div class="flex min-h-7 items-center justify-between gap-3 px-1">
+                  <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.settings.tags")}</h2>
                 </div>
-              </div>
-            </section>
+              </section>
 
-            <div class="h-px bg-border/70"></div>
+              <div class="h-px bg-border/70"></div>
 
-            <section class="flex flex-col gap-0.5">
-              <div class="flex min-h-7 items-center justify-between gap-3 px-1">
-                <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.settings.tags")}</h2>
-              </div>
-            </section>
-
-            <div class="h-px bg-border/70"></div>
-
-            <section class="flex flex-col gap-1.5">
-              <div class="flex min-h-7 items-center justify-between gap-3 px-1">
-                <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.customFields.title")}</h2>
-              </div>
-            </section>
-
-            <div class="h-px bg-border/70"></div>
-
-            <section class="flex flex-col gap-1.5">
-              <div class="flex min-h-7 items-center justify-between gap-3 px-1">
-                <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.settings.taskStatuses")}</h2>
-              </div>
-              {#each PROJECTS_STATUS_ORDER as status (status)}
-                <div class="flex min-h-7 items-center gap-2 px-1">
-                  <ProjectStatusBadge status={sceneStatus(status)} theme={theme.current} label={statusName(status)} class="text-[0.733333rem]" />
+              <section class="flex flex-col gap-1.5">
+                <div class="flex min-h-7 items-center justify-between gap-3 px-1">
+                  <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.customFields.title")}</h2>
                 </div>
-              {/each}
-            </section>
+              </section>
+
+              <div class="h-px bg-border/70"></div>
+
+              <section class="flex flex-col gap-1.5">
+                <div class="flex min-h-7 items-center justify-between gap-3 px-1">
+                  <h2 class="truncate text-[0.8rem] font-medium text-foreground">{t("projects.settings.taskStatuses")}</h2>
+                </div>
+                {#each PROJECTS_STATUS_ORDER as status (status)}
+                  <div class="flex min-h-7 items-center gap-2 px-1">
+                    <ProjectStatusBadge status={sceneStatus(status)} theme={theme.current} label={statusName(status)} class="text-[0.733333rem]" />
+                  </div>
+                {/each}
+              </section>
+            </div>
+          </div>
+
+          <div class="flex shrink-0 items-center gap-2 px-3 pt-1 pb-2">
+            <span class="flex-1"></span>
+            <span
+              class={cn(
+                "relative flex min-h-8 items-center gap-1.5 rounded-md px-2 text-[0.8rem] font-medium",
+                dirty ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
+              )}
+            >
+              <Save size={14} strokeWidth={1.75} />{t("projects.settings.save")}
+              {@render touch(touches.save, "50%", "50%")}
+            </span>
           </div>
         </div>
+      </div>
 
-        <div class="flex shrink-0 items-center gap-2 px-3 pt-1 pb-2">
-          <span class="flex-1"></span>
+      <!-- The color palette, as the color picker draws it over the settings. It stays laid out while hidden so its size is known. -->
+      <div
+        bind:this={palette}
+        class="surface-floating absolute z-60 grid gap-2 p-2.5"
+        style:left={`${palettePlace?.left ?? 0}px`}
+        style:top={`${palettePlace?.top ?? 0}px`}
+        style:grid-template-columns="repeat(4, 1.375rem)"
+        style:background-color={paletteBg}
+        style:color={calendarTokens["--cal-time-label"]}
+        style:--selection-border={selectionBorder}
+        style:visibility={palettePlace ? undefined : "hidden"}
+      >
+        {#each EVENT_COLOR_OPTIONS as option (option)}
           <span
-            class={cn(
-              "relative flex min-h-8 items-center gap-1.5 rounded-md px-2 text-[0.8rem] font-medium",
-              dirty ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
-            )}
+            class={cn("calendar-color-swatch relative size-5.5 rounded-[3px]", selectedColor === option && "swatch-selected")}
+            style:background-color={getEventColor(option, theme.current).bg}
           >
-            <Save size={14} strokeWidth={1.75} />{t("projects.settings.save")}
-            {@render touch(touches.save, "50%", "50%")}
+            {#if option === PROJECTS_COLOR}{@render touch(touches.colorOption, "50%", "50%")}{/if}
+          </span>
+        {/each}
+      </div>
+
+      <!-- The Duration and Pomodoro options. Both stay laid out while hidden so their size is known before they open. -->
+      <div
+        bind:this={durationMenu}
+        class="surface-floating absolute z-60 flex flex-col overflow-hidden"
+        style:left={`${selectGeometry && picker === "duration" ? selectGeometry.left : 0}px`}
+        style:top={`${selectGeometry && picker === "duration" ? selectGeometry.top : 0}px`}
+        style:min-width={selectGeometry && picker === "duration" ? `${selectGeometry.minWidth}px` : "max-content"}
+        style:max-width={selectGeometry && picker === "duration" ? `${selectGeometry.maxWidth}px` : "max-content"}
+        style:max-height={selectGeometry && picker === "duration" ? `${selectGeometry.maxHeight}px` : undefined}
+        style:visibility={picker === "duration" ? undefined : "hidden"}
+      >
+        <div class="surface-floating-body min-h-0 overflow-hidden">
+          {#each durationOptions as option (option.value)}
+            {@const picked = option.value === PICKED_DURATION}
+            <span class={cn("menu-item relative justify-between gap-3", picked && projectsOptionHovered(defaultsElapsed, "duration") && "bg-accent")}>
+              <span class="flex min-w-0 flex-1 items-center gap-1.5"><span class="truncate">{option.label}</span></span>
+              {#if option.value === durationValue}<Check size={12} strokeWidth={2.5} class="shrink-0" />{/if}
+              {#if picked}{@render touch(touches.durationOption, "50%", "50%")}{/if}
+            </span>
+          {/each}
+        </div>
+      </div>
+
+      <div
+        bind:this={pomodoroMenu}
+        class="surface-floating absolute z-60 flex flex-col overflow-hidden"
+        style:left={`${selectGeometry && picker === "pomodoro" ? selectGeometry.left : 0}px`}
+        style:top={`${selectGeometry && picker === "pomodoro" ? selectGeometry.top : 0}px`}
+        style:width={selectGeometry && picker === "pomodoro" && selectGeometry.width !== null ? `${selectGeometry.width}px` : undefined}
+        style:min-width={selectGeometry && picker === "pomodoro" ? `${selectGeometry.minWidth}px` : "max-content"}
+        style:max-width={selectGeometry && picker === "pomodoro" ? `${selectGeometry.maxWidth}px` : "max-content"}
+        style:max-height={selectGeometry && picker === "pomodoro" ? `${selectGeometry.maxHeight}px` : undefined}
+        style:visibility={picker === "pomodoro" ? undefined : "hidden"}
+      >
+        <div class="surface-floating-body min-h-0 overflow-hidden">
+          <span class="menu-item justify-between gap-3">
+            <span class="grid min-w-0 flex-1 grid-cols-[minmax(max-content,1fr)_max-content] items-center gap-4"><span class="truncate">{t("common.none")}</span></span>
+          </span>
+          {#each PROJECT_POMODORO_PRESET_ORDER as preset (preset)}
+            {@const picked = preset === PROJECTS_PRESET}
+            <span class={cn("menu-item relative justify-between gap-3", picked && projectsOptionHovered(defaultsElapsed, "pomodoro") && "bg-accent")}>
+              <span class="grid min-w-0 flex-1 grid-cols-[minmax(max-content,1fr)_max-content] items-center gap-4">
+                <span class="truncate">{presetLabel(preset)}</span>
+                <span class="max-w-72 justify-self-end truncate text-panel-detail text-muted-foreground">{projectPomodoroSummaryLabel(COUNT_PRESET_RHYTHMS[preset])}</span>
+              </span>
+              {#if picked}{@render touch(touches.pomodoroOption, "50%", "50%")}{/if}
+            </span>
+          {/each}
+          <span class="menu-item justify-between gap-3">
+            <span class="grid min-w-0 flex-1 grid-cols-[minmax(max-content,1fr)_max-content] items-center gap-4"><span class="truncate">{t("calendar.pomodoro.custom")}</span></span>
           </span>
         </div>
       </div>
-    </div>
 
-    <!-- The color palette, as the color picker draws it over the settings. It stays laid out while hidden so its size is known. -->
-    <div
-      bind:this={palette}
-      class="surface-floating absolute z-60 grid gap-2 p-2.5"
-      style:left={`${palettePlace?.left ?? 0}px`}
-      style:top={`${palettePlace?.top ?? 0}px`}
-      style:grid-template-columns="repeat(4, 1.375rem)"
-      style:background-color={paletteBg}
-      style:color={calendarTokens["--cal-time-label"]}
-      style:--selection-border={selectionBorder}
-      style:visibility={palettePlace ? undefined : "hidden"}
-    >
-      {#each EVENT_COLOR_OPTIONS as option (option)}
-        <span
-          class={cn("calendar-color-swatch relative size-5.5 rounded-[3px]", selectedColor === option && "swatch-selected")}
-          style:background-color={getEventColor(option, theme.current).bg}
-        >
-          {#if option === PROJECTS_COLOR}{@render touch(touches.colorOption, "50%", "50%")}{/if}
-        </span>
-      {/each}
-    </div>
-
-    <!-- The Duration and Pomodoro options. Both stay laid out while hidden so their size is known before they open. -->
-    <div
-      bind:this={durationMenu}
-      class="surface-floating absolute z-60 flex flex-col overflow-hidden"
-      style:left={`${selectGeometry && picker === "duration" ? selectGeometry.left : 0}px`}
-      style:top={`${selectGeometry && picker === "duration" ? selectGeometry.top : 0}px`}
-      style:min-width={selectGeometry && picker === "duration" ? `${selectGeometry.minWidth}px` : "max-content"}
-      style:max-width={selectGeometry && picker === "duration" ? `${selectGeometry.maxWidth}px` : "max-content"}
-      style:max-height={selectGeometry && picker === "duration" ? `${selectGeometry.maxHeight}px` : undefined}
-      style:visibility={picker === "duration" ? undefined : "hidden"}
-    >
-      <div class="surface-floating-body min-h-0 overflow-hidden">
-        {#each durationOptions as option (option.value)}
-          {@const picked = option.value === PICKED_DURATION}
-          <span class={cn("menu-item relative justify-between gap-3", picked && projectsOptionHovered(elapsed, "duration") && "bg-accent")}>
-            <span class="flex min-w-0 flex-1 items-center gap-1.5"><span class="truncate">{option.label}</span></span>
-            {#if option.value === durationValue}<Check size={12} strokeWidth={2.5} class="shrink-0" />{/if}
-            {#if picked}{@render touch(touches.durationOption, "50%", "50%")}{/if}
+      <!-- The open phase's playlists, as the playlist select lists them. It stays laid out while hidden so its height is known. -->
+      <div
+        bind:this={playlistMenu}
+        class="surface-floating absolute z-60 flex min-h-0 flex-col overflow-hidden"
+        style:left={`${playlistGeometry?.left ?? 0}px`}
+        style:top={`${playlistGeometry?.top ?? 0}px`}
+        style:width={`${playlistGeometry?.width ?? PLAYLIST_POPOVER_W}px`}
+        style:max-width={playlistGeometry ? `${playlistGeometry.maxWidth}px` : undefined}
+        style:max-height={`${Math.min(playlistGeometry?.maxHeight ?? PLAYLIST_POPOVER_MAX_H, PLAYLIST_POPOVER_MAX_H)}px`}
+        style:visibility={playlistGeometry ? undefined : "hidden"}
+      >
+        <div class="shrink-0 px-1.5 pt-1.5">
+          <span class="field flex items-center gap-1.5">
+            <Search size={13} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />
+            <span class="min-w-0 flex-1 truncate text-muted-foreground">{t("music.assignment.searchPlaylists")}</span>
           </span>
-        {/each}
-      </div>
-    </div>
-
-    <div
-      bind:this={pomodoroMenu}
-      class="surface-floating absolute z-60 flex flex-col overflow-hidden"
-      style:left={`${selectGeometry && picker === "pomodoro" ? selectGeometry.left : 0}px`}
-      style:top={`${selectGeometry && picker === "pomodoro" ? selectGeometry.top : 0}px`}
-      style:width={selectGeometry && picker === "pomodoro" && selectGeometry.width !== null ? `${selectGeometry.width}px` : undefined}
-      style:min-width={selectGeometry && picker === "pomodoro" ? `${selectGeometry.minWidth}px` : "max-content"}
-      style:max-width={selectGeometry && picker === "pomodoro" ? `${selectGeometry.maxWidth}px` : "max-content"}
-      style:max-height={selectGeometry && picker === "pomodoro" ? `${selectGeometry.maxHeight}px` : undefined}
-      style:visibility={picker === "pomodoro" ? undefined : "hidden"}
-    >
-      <div class="surface-floating-body min-h-0 overflow-hidden">
-        <span class="menu-item justify-between gap-3">
-          <span class="grid min-w-0 flex-1 grid-cols-[minmax(max-content,1fr)_max-content] items-center gap-4"><span class="truncate">{t("common.none")}</span></span>
-        </span>
-        {#each PROJECT_POMODORO_PRESET_ORDER as preset (preset)}
-          {@const picked = preset === PROJECTS_PRESET}
-          <span class={cn("menu-item relative justify-between gap-3", picked && projectsOptionHovered(elapsed, "pomodoro") && "bg-accent")}>
-            <span class="grid min-w-0 flex-1 grid-cols-[minmax(max-content,1fr)_max-content] items-center gap-4">
-              <span class="truncate">{presetLabel(preset)}</span>
-              <span class="max-w-72 justify-self-end truncate text-panel-detail text-muted-foreground">{projectPomodoroSummaryLabel(COUNT_PRESET_RHYTHMS[preset])}</span>
+        </div>
+        <div class="surface-floating-body min-h-0 flex-1 overflow-hidden">
+          <span class="menu-item">
+            <VolumeX size={15} strokeWidth={1.75} />
+            <span class="min-w-0 flex-1 truncate font-medium">{t("common.none")}</span>
+            {#if openPhase && projectsPlaylist(defaultsElapsed, openPhase) === null}<Check size={14} />{/if}
+          </span>
+          {#each MUSIC_PLAYLISTS as entry (entry.key)}
+            {@const picked = openPhase !== null && PROJECTS_PLAYLISTS[openPhase] === entry.key}
+            <span class={cn("menu-item relative", picked && openPhase && projectsOptionHovered(defaultsElapsed, openPhase) && "bg-accent")}>
+              <span class="grid size-4 shrink-0 place-items-center"><MusicPlaylistIcon icon={entry.icon} size={15} /></span>
+              <span class="min-w-0 flex-1 truncate font-medium">{playlistName(entry.key)}</span>
+              <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{formatNumber(localization.locale, entry.tracks)}</span>
+              {#if picked && openPhase}{@render touch(touches.playlistOption[openPhase], "50%", "50%")}{/if}
             </span>
-            {#if picked}{@render touch(touches.pomodoroOption, "50%", "50%")}{/if}
-          </span>
-        {/each}
-        <span class="menu-item justify-between gap-3">
-          <span class="grid min-w-0 flex-1 grid-cols-[minmax(max-content,1fr)_max-content] items-center gap-4"><span class="truncate">{t("calendar.pomodoro.custom")}</span></span>
-        </span>
+          {/each}
+        </div>
       </div>
-    </div>
 
-    <!-- The open phase's playlists, as the playlist select lists them. It stays laid out while hidden so its height is known. -->
-    <div
-      bind:this={playlistMenu}
-      class="surface-floating absolute z-60 flex min-h-0 flex-col overflow-hidden"
-      style:left={`${playlistGeometry?.left ?? 0}px`}
-      style:top={`${playlistGeometry?.top ?? 0}px`}
-      style:width={`${playlistGeometry?.width ?? PLAYLIST_POPOVER_W}px`}
-      style:max-width={playlistGeometry ? `${playlistGeometry.maxWidth}px` : undefined}
-      style:max-height={`${Math.min(playlistGeometry?.maxHeight ?? PLAYLIST_POPOVER_MAX_H, PLAYLIST_POPOVER_MAX_H)}px`}
-      style:visibility={playlistGeometry ? undefined : "hidden"}
-    >
-      <div class="shrink-0 px-1.5 pt-1.5">
-        <span class="field flex items-center gap-1.5">
-          <Search size={13} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />
-          <span class="min-w-0 flex-1 truncate text-muted-foreground">{t("music.assignment.searchPlaylists")}</span>
-        </span>
-      </div>
-      <div class="surface-floating-body min-h-0 flex-1 overflow-hidden">
-        <span class="menu-item">
-          <VolumeX size={15} strokeWidth={1.75} />
-          <span class="min-w-0 flex-1 truncate font-medium">{t("common.none")}</span>
-          {#if openPhase && projectsPlaylist(elapsed, openPhase) === null}<Check size={14} />{/if}
-        </span>
-        {#each MUSIC_PLAYLISTS as entry (entry.key)}
-          {@const picked = openPhase !== null && PROJECTS_PLAYLISTS[openPhase] === entry.key}
-          <span class={cn("menu-item relative", picked && openPhase && projectsOptionHovered(elapsed, openPhase) && "bg-accent")}>
-            <span class="grid size-4 shrink-0 place-items-center"><MusicPlaylistIcon icon={entry.icon} size={15} /></span>
-            <span class="min-w-0 flex-1 truncate font-medium">{playlistName(entry.key)}</span>
-            <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{formatNumber(localization.locale, entry.tracks)}</span>
-            {#if picked && openPhase}{@render touch(touches.playlistOption[openPhase], "50%", "50%")}{/if}
-          </span>
-        {/each}
-      </div>
-    </div>
-
-    <!-- The event panel, where picking the Novel project gives the drawn event the defaults just saved. -->
-    {#if eventPanelOpen}
-      <WelcomeFilmEventPanel
-        frame={projectsEventPanelFrame(elapsed, fullEventName, playlistLookup)}
-        canvasWidth={canvasW}
-        canvasHeight={canvasH}
-        titleBarHeight={TOP_BAR_H}
-        anchor={panelAnchor}
-        date={sceneDate}
-        start={PROJECTS_EVENT.start}
-        end={PROJECTS_EVENT.start + (eventPicked ? PROJECTS_DEFAULT_MINUTES : PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start)}
-        projectColor={PROJECTS_COLOR}
-        title={fullEventName}
-        picker={eventPicker}
-      />
+      <!-- The event panel, where picking the Novel project gives the drawn event the defaults just saved. -->
+      {#if eventPanelOpen}
+        <WelcomeFilmEventPanel
+          frame={projectsEventPanelFrame(defaultsElapsed, fullEventName, playlistLookup)}
+          canvasWidth={canvasW}
+          canvasHeight={canvasH}
+          titleBarHeight={TOP_BAR_H}
+          anchor={panelAnchor}
+          date={sceneDate}
+          start={PROJECTS_EVENT.start}
+          end={PROJECTS_EVENT.start + (eventPicked ? PROJECTS_DEFAULT_MINUTES : PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start)}
+          projectColor={PROJECTS_COLOR}
+          title={fullEventName}
+          picker={eventPicker}
+        />
+      {/if}
     {/if}
   </div>
 </div>

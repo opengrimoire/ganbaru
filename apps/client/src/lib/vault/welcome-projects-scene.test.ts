@@ -6,9 +6,6 @@ import {
   PROJECTS_DEFAULT_MINUTES,
   PROJECTS_DEFAULT_RAIL,
   PROJECTS_EVENT,
-  PROJECTS_NEW_PRIORITY,
-  PROJECTS_NEW_STATUS,
-  PROJECTS_NEW_TASK,
   PROJECTS_PHASES,
   PROJECTS_PLAYLISTS,
   PROJECTS_PRESET,
@@ -18,10 +15,7 @@ import {
   PROJECTS_STATUS_COLORS,
   PROJECTS_STATUS_ORDER,
   PROJECTS_STILL,
-  projectsAddActive,
   projectsCalendarShown,
-  projectsCellHighlighted,
-  projectsCellMenu,
   projectsDefaultColor,
   projectsDefaultMinutes,
   projectsDefaultPreset,
@@ -33,11 +27,8 @@ import {
   projectsEventNameFocused,
   projectsEventPanelFrame,
   projectsEventRail,
-  projectsListScroll,
   projectsListShown,
-  projectsNewPriority,
   projectsPanelOpen,
-  projectsNewStatus,
   projectsOptionHovered,
   projectsPlaylist,
   projectsSettingsDirty,
@@ -45,16 +36,12 @@ import {
   projectsSettingsPicker,
   projectsSettingsScroll,
   projectsSettingsShown,
-  projectsTaskAdded,
-  projectsTaskCaretOn,
-  projectsTaskDraft,
   projectsTouches,
   type ProjectsScenePhase,
   type ProjectsSettingsTarget,
 } from "./welcome-projects-scene";
 
 const B = PROJECTS_BEATS;
-const TITLE = "Draft chapter 2";
 const NAME = "Writing session";
 const PHASE_TAPS: Readonly<Record<ProjectsScenePhase, { tap: number; pick: number }>> = {
   focus: { tap: B.focusTap, pick: B.focusPick },
@@ -81,15 +68,7 @@ describe("welcome projects scene", () => {
 
   it("keeps every fraction between 0 and 1", () => {
     for (const elapsed of moments()) {
-      const list = projectsListScroll(elapsed);
-      const settings = projectsSettingsScroll(elapsed);
-      const values = [
-        list.status,
-        list.priority,
-        settings.progress,
-        projectsSettingsShown(elapsed),
-        ...touchValues(elapsed),
-      ];
+      const values = [projectsSettingsScroll(elapsed).progress, projectsSettingsShown(elapsed), ...touchValues(elapsed)];
       for (const value of values) {
         expect(value).toBeGreaterThanOrEqual(0);
         expect(value).toBeLessThanOrEqual(1);
@@ -100,56 +79,6 @@ describe("welcome projects scene", () => {
   it("lists every default status and priority with the colors a new project seeds", () => {
     expect(PROJECTS_STATUS_ORDER).toHaveLength(Object.keys(PROJECTS_STATUS_COLORS).length);
     expect(PROJECTS_PRIORITY_ORDER).toHaveLength(Object.keys(PROJECTS_PRIORITY_COLORS).length);
-    expect(PROJECTS_STATUS_ORDER).toContain(PROJECTS_NEW_STATUS);
-    expect(PROJECTS_PRIORITY_ORDER).toContain(PROJECTS_NEW_PRIORITY);
-  });
-
-  it("types the task into the add row, adds it with Enter, and keeps the field open and empty", () => {
-    expect(projectsAddActive(B.addTap - 1)).toBe(false);
-    expect(projectsAddActive(B.addTap)).toBe(true);
-    expect(projectsTaskDraft(B.taskTypeStart, TITLE)).toBe("");
-    expect(projectsTaskDraft((B.taskTypeStart + B.taskTypeEnd) / 2, TITLE).length).toBeGreaterThan(0);
-    expect(projectsTaskDraft(B.taskTypeEnd, TITLE)).toBe(TITLE);
-    expect(projectsTaskAdded(B.taskSubmit - 1)).toBe(false);
-    expect(projectsTaskDraft(B.taskSubmit - 1, TITLE)).toBe(TITLE);
-    expect(projectsTaskAdded(B.taskSubmit)).toBe(true);
-    expect(projectsTaskDraft(B.taskSubmit, TITLE)).toBe("");
-    expect(projectsAddActive(B.taskSubmit)).toBe(true);
-    expect(projectsTaskCaretOn((B.taskTypeStart + B.taskTypeEnd) / 2)).toBe(true);
-  });
-
-  it("closes the add field with the tap on the new task's status", () => {
-    expect(projectsAddActive(B.statusTap - 1)).toBe(true);
-    expect(projectsAddActive(B.statusTap)).toBe(false);
-    expect(projectsTaskCaretOn(B.statusTap)).toBe(false);
-  });
-
-  it("adds the task as a new task starts, then sets its status and its priority from their menus", () => {
-    expect(projectsNewStatus(B.statusPick - 1)).toBe(PROJECTS_NEW_TASK.status);
-    expect(projectsNewStatus(B.statusPick)).toBe(PROJECTS_NEW_STATUS);
-    expect(projectsNewPriority(B.priorityPick - 1)).toBe(PROJECTS_NEW_TASK.priority);
-    expect(projectsNewPriority(B.priorityPick)).toBe(PROJECTS_NEW_PRIORITY);
-    expect(PROJECTS_NEW_TASK.status).not.toBe(PROJECTS_NEW_STATUS);
-    expect(PROJECTS_NEW_TASK.priority).not.toBe(PROJECTS_NEW_PRIORITY);
-  });
-
-  it("opens one cell menu at a time, highlighting its cell from the hover before the tap", () => {
-    expect(projectsCellMenu(B.statusTap - 1)).toBeNull();
-    expect(projectsCellHighlighted(B.statusTap - 1, "status")).toBe(true);
-    expect(projectsCellMenu(B.statusTap)).toBe("status");
-    expect(projectsOptionHovered(B.statusPick - 1, "status")).toBe(true);
-    expect(projectsCellMenu(B.statusPick)).toBeNull();
-    expect(projectsCellHighlighted(B.statusPick, "status")).toBe(false);
-    expect(projectsCellHighlighted(B.statusTap, "priority")).toBe(false);
-    expect(projectsCellMenu(B.priorityTap)).toBe("priority");
-    expect(projectsCellMenu(B.priorityPick)).toBeNull();
-    expect(projectsTouches(B.statusTap - FILM_TAP_MS / 2).status).toBeGreaterThan(0);
-  });
-
-  it("scrolls the list to each cell before its tap", () => {
-    expect(projectsListScroll(B.statusScrollStart)).toEqual({ status: 0, priority: 0 });
-    expect(projectsListScroll(B.statusTap)).toEqual({ status: 1, priority: 0 });
-    expect(projectsListScroll(B.priorityTap)).toEqual({ status: 1, priority: 1 });
   });
 
   it("opens the settings with their tap, keeps them open after Save, and closes them with the close button", () => {

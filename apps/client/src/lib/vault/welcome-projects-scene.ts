@@ -1,11 +1,10 @@
 /**
- * Timing for the welcome scene on Projects. In the Novel project's List view, a task is typed into the add row at the
- * bottom of the list and added, and its status and priority are changed from their cells in the table. Project settings
- * then open on Event defaults, where an event name is typed, a color, a duration, and a Pomodoro are picked, a playlist
- * is picked for each phase, and the settings are saved and closed, the settings scrolling each control into view before its tap.
- * Then in the Calendar, an event is dragged out and its panel opens, where picking the Novel project gives the event
- * every default just set: its name, color, length, Pomodoro, and playlists. The Music section opens on them, and the
- * event is saved.
+ * Timing for the welcome scene on Projects, and the Novel project the welcome scenes on Projects and on tasks share. From
+ * the project's List view, Project settings open on Event defaults, where an event name is typed, a color, a duration,
+ * and a Pomodoro are picked, a playlist is picked for each phase, and the settings are saved and closed, the settings
+ * scrolling each control into view before its tap. Then in the Calendar, an event is dragged out and its panel opens,
+ * where picking the Novel project gives the event every default just set: its name, color, length, Pomodoro, and
+ * playlists. The Music section opens on them, and the event is saved.
  */
 
 import type { WelcomeEventPanelFrame } from "./welcome-event-panel";
@@ -35,9 +34,6 @@ export type ProjectsSceneTask = "outlinePlot" | "writeOpening" | "buildCharacter
 
 /** The Pomodoro phases a project picks a playlist for, in the order the settings list them. */
 export type ProjectsScenePhase = "focus" | "short-break" | "long-break";
-
-/** The cell menus the scene opens in the list. */
-export type ProjectsSceneCell = "status" | "priority";
 
 /** The Event defaults pickers the scene opens in the settings. */
 export type ProjectsScenePicker = "color" | "duration" | "pomodoro" | ProjectsScenePhase;
@@ -89,20 +85,13 @@ export const PROJECTS_PRIORITY_COLORS: Readonly<Record<ProjectsScenePriority, nu
   low: 30,
 };
 
-/** The General section's tasks before the scene adds one, in list order. */
+/** The General section's tasks before the scene on tasks adds one, in list order. */
 export const PROJECTS_TASKS: readonly ProjectsSceneTaskEntry[] = [
   { key: "outlinePlot", status: "done", priority: "normal", start: -10, due: -4 },
   { key: "writeOpening", status: "inProgress", priority: "high", start: -2, due: 2 },
   { key: "buildCharacters", status: "todo", priority: "normal", start: 1, due: 5 },
   { key: "researchSetting", status: "backlog", priority: "low", start: null, due: 9 },
 ];
-
-/** The task the scene adds, as a new task starts: the default status and priority, with no dates. */
-export const PROJECTS_NEW_TASK: ProjectsSceneTaskEntry = { key: "draftChapter", status: "todo", priority: "normal", start: null, due: null };
-
-/** The status and priority the added task is given from its cells. */
-export const PROJECTS_NEW_STATUS: ProjectsSceneStatus = "inProgress";
-export const PROJECTS_NEW_PRIORITY: ProjectsScenePriority = "high";
 
 /** The project's event color once it is picked, a palette slot. */
 export const PROJECTS_COLOR = 14;
@@ -125,79 +114,64 @@ export const PROJECTS_PLAYLISTS: Readonly<Record<ProjectsScenePhase, MusicSceneP
 
 /** Moments of the scene, in milliseconds from its start. A tap's beat is the moment it lands. */
 export const PROJECTS_BEATS = {
-  /** A tap on the add row opens its field, a title is typed, and Enter adds the task, keeping the field open. */
-  addTap: 800,
-  taskTypeStart: 1000,
-  taskTypeEnd: 1900,
-  taskSubmit: 2300,
-  /** The list scrolls the new task's status into view, a tap opens its menu and closes the add field, and In progress is picked. */
-  statusScrollStart: 2600,
-  statusScrollEnd: 3100,
-  statusTap: 3500,
-  statusPick: 4800,
-  /** The list scrolls on to its priority, a tap opens its menu, and High is picked. */
-  priorityScrollStart: 5100,
-  priorityScrollEnd: 5600,
-  priorityTap: 6000,
-  priorityPick: 7300,
   /** A tap on the header's settings button opens Project settings, which scroll to Event defaults. */
-  settingsTap: 8100,
-  nameScrollStart: 8500,
-  nameScrollEnd: 9200,
+  settingsTap: 800,
+  nameScrollStart: 1200,
+  nameScrollEnd: 1900,
   /** A tap on the event name field focuses it, and the name is typed. */
-  nameTap: 9700,
-  nameTypeStart: 9900,
-  nameTypeEnd: 10800,
+  nameTap: 2400,
+  nameTypeStart: 2600,
+  nameTypeEnd: 3500,
   /**
    * The settings scroll the color into view with room for its palette, a tap opens the palette, a tap picks a swatch,
    * which closes the palette.
    */
-  colorScrollStart: 11000,
-  colorScrollEnd: 11400,
-  colorTap: 11800,
-  colorPick: 13100,
+  colorScrollStart: 3700,
+  colorScrollEnd: 4100,
+  colorTap: 4500,
+  colorPick: 5800,
   /** Each of the other pickers is scrolled into view, opens with a tap, and a tap picks an option. */
-  durationScrollStart: 13800,
-  durationScrollEnd: 14200,
-  durationTap: 14500,
-  durationPick: 15800,
-  pomodoroScrollStart: 16000,
-  pomodoroScrollEnd: 16400,
-  pomodoroTap: 16700,
-  pomodoroPick: 18000,
-  focusScrollStart: 18300,
-  focusScrollEnd: 18800,
-  focusTap: 19200,
-  focusPick: 20500,
-  shortBreakScrollStart: 20700,
-  shortBreakScrollEnd: 21100,
-  shortBreakTap: 21400,
-  shortBreakPick: 22700,
-  longBreakScrollStart: 22900,
-  longBreakScrollEnd: 23300,
-  longBreakTap: 23600,
-  longBreakPick: 24900,
+  durationScrollStart: 6500,
+  durationScrollEnd: 6900,
+  durationTap: 7200,
+  durationPick: 8500,
+  pomodoroScrollStart: 8700,
+  pomodoroScrollEnd: 9100,
+  pomodoroTap: 9400,
+  pomodoroPick: 10700,
+  focusScrollStart: 11000,
+  focusScrollEnd: 11500,
+  focusTap: 11900,
+  focusPick: 13200,
+  shortBreakScrollStart: 13400,
+  shortBreakScrollEnd: 13800,
+  shortBreakTap: 14100,
+  shortBreakPick: 15400,
+  longBreakScrollStart: 15600,
+  longBreakScrollEnd: 16000,
+  longBreakTap: 16300,
+  longBreakPick: 17600,
   /** Save settings saves the defaults and turns back to its idle color, and the close button then closes the panel. */
-  settingsSaveTap: 25700,
-  settingsCloseTap: 27100,
+  settingsSaveTap: 18400,
+  settingsCloseTap: 19800,
   /** The list gives way to the Calendar. */
-  calendarIn: 27800,
+  calendarIn: 20500,
   /** A press drags an event out over the empty hour, and letting go opens the event panel on it. */
-  createStart: 28400,
-  createEnd: 29100,
-  panelOpen: 29250,
+  createStart: 21100,
+  createEnd: 21800,
+  panelOpen: 21950,
   /** The project trigger, then the Personal group, then Novel, which gives the event the project's defaults. */
-  projectTap: 30250,
-  groupTap: 31350,
-  projectPick: 32450,
+  projectTap: 22950,
+  groupTap: 24050,
+  projectPick: 25150,
   /** On the phone, a drag on the sheet's grabber takes it from its peek to its full height. */
-  sheetDragStart: 33400,
-  sheetDragEnd: 33950,
+  sheetDragStart: 26100,
+  sheetDragEnd: 26650,
   /** A tap on the Music section's header opens it on the project's playlists. */
-  musicTap: 34700,
+  musicTap: 27400,
   /** Save saves the event and closes the panel. */
-  eventSaveTap: 36400,
-  end: 37800,
+  eventSaveTap: 29100,
+  end: 30500,
 } as const;
 
 const B = PROJECTS_BEATS;
@@ -225,8 +199,8 @@ export const PROJECTS_CLOCK = PROJECTS_EVENT.start - 20;
 const PANEL_FADE_MS = 140;
 /** How long the Calendar takes to fade in over the list. */
 const SCREEN_FADE_MS = 300;
-/** How long a cell or a picked option shows as hovered before its tap lands, as the pointer rests on it. */
-const HOVER_LEAD_MS = 420;
+/** How long a list cell or a picked option shows as hovered before its tap lands, as the pointer rests on it. */
+export const PROJECTS_HOVER_LEAD_MS = 420;
 /** How long the event takes to grow to the project's default length once the project is picked. */
 const GROW_MS = 420;
 const SECTION_OPEN_MS = 380;
@@ -246,12 +220,6 @@ const SETTINGS_SCROLLS: readonly { target: ProjectsSettingsTarget; start: number
   { target: "long-break", start: B.longBreakScrollStart, end: B.longBreakScrollEnd },
 ];
 
-/** The tap that opens each cell menu and the tap that picks its option. */
-const CELL_TAPS: Readonly<Record<ProjectsSceneCell, { tap: number; pick: number }>> = {
-  status: { tap: B.statusTap, pick: B.statusPick },
-  priority: { tap: B.priorityTap, pick: B.priorityPick },
-};
-
 /** The tap that opens each picker and the tap that picks its option. */
 const PICKER_TAPS: Readonly<Record<ProjectsScenePicker, { tap: number; pick: number }>> = {
   color: { tap: B.colorTap, pick: B.colorPick },
@@ -262,64 +230,10 @@ const PICKER_TAPS: Readonly<Record<ProjectsScenePicker, { tap: number; pick: num
   "long-break": { tap: B.longBreakTap, pick: B.longBreakPick },
 };
 
-/** Whether the add row's field is open: from its tap until a tap elsewhere in the list closes it. */
-export function projectsAddActive(elapsed: number): boolean {
-  return elapsed >= B.addTap && elapsed < B.statusTap;
-}
-
-/** As much of `title` as the add row's field holds: typed a character at a time, and cleared once the task is added. */
-export function projectsTaskDraft(elapsed: number, title: string): string {
-  return elapsed >= B.taskSubmit ? "" : filmTyped(elapsed, title, B.taskTypeStart, B.taskTypeEnd);
-}
-
-/** Whether the add row's caret shows: steady while typing, then blinking while its field stays open. */
-export function projectsTaskCaretOn(elapsed: number): boolean {
-  return projectsAddActive(elapsed) && filmCaretOn(elapsed, B.taskTypeEnd);
-}
-
-/** Whether the typed task has been added to the list. */
-export function projectsTaskAdded(elapsed: number): boolean {
-  return elapsed >= B.taskSubmit;
-}
-
-/** The added task's status. */
-export function projectsNewStatus(elapsed: number): ProjectsSceneStatus {
-  return elapsed >= B.statusPick ? PROJECTS_NEW_STATUS : PROJECTS_NEW_TASK.status;
-}
-
-/** The added task's priority. */
-export function projectsNewPriority(elapsed: number): ProjectsScenePriority {
-  return elapsed >= B.priorityPick ? PROJECTS_NEW_PRIORITY : PROJECTS_NEW_TASK.priority;
-}
-
-/**
- * How far the list has scrolled sideways, each from 0 to 1: `status` until the added task's status cell is in view,
- * then `priority` on until its priority cell is.
- */
-export function projectsListScroll(elapsed: number): { status: number; priority: number } {
-  return {
-    status: easeInOutCubic(filmSpan(elapsed, B.statusScrollStart, B.statusScrollEnd)),
-    priority: easeInOutCubic(filmSpan(elapsed, B.priorityScrollStart, B.priorityScrollEnd)),
-  };
-}
-
-/** The added task's cell menu that is open, or null while both are closed. */
-export function projectsCellMenu(elapsed: number): ProjectsSceneCell | null {
-  for (const cell of ["status", "priority"] as const) {
-    if (elapsed >= CELL_TAPS[cell].tap && elapsed < CELL_TAPS[cell].pick) return cell;
-  }
-  return null;
-}
-
-/** Whether the added task's `cell` is highlighted: as the pointer rests on it before its tap, and while its menu is open. */
-export function projectsCellHighlighted(elapsed: number, cell: ProjectsSceneCell): boolean {
-  return elapsed >= CELL_TAPS[cell].tap - HOVER_LEAD_MS && elapsed < CELL_TAPS[cell].pick;
-}
-
-/** Whether the option about to be picked in `target`'s open menu or picker shows as hovered, before its tap lands. */
-export function projectsOptionHovered(elapsed: number, target: ProjectsSceneCell | ProjectsScenePicker): boolean {
-  const { pick } = target === "status" || target === "priority" ? CELL_TAPS[target] : PICKER_TAPS[target];
-  return elapsed >= pick - HOVER_LEAD_MS && elapsed < pick;
+/** Whether the option about to be picked in `picker` shows as hovered, before its tap lands. */
+export function projectsOptionHovered(elapsed: number, picker: ProjectsScenePicker): boolean {
+  const { pick } = PICKER_TAPS[picker];
+  return elapsed >= pick - PROJECTS_HOVER_LEAD_MS && elapsed < pick;
 }
 
 /** How far Project settings show, from 0 to 1: they open with the settings tap and close with the close button. */
@@ -510,11 +424,6 @@ export function projectsEventPanelFrame(
 
 /** The scene's touches, each from 0 to 1 as it shows. */
 export interface ProjectsSceneTouches {
-  add: number;
-  status: number;
-  statusOption: number;
-  priority: number;
-  priorityOption: number;
   settings: number;
   name: number;
   color: number;
@@ -534,11 +443,6 @@ export function projectsTouches(elapsed: number): ProjectsSceneTouches {
   const byPhase = (beat: "tap" | "pick") =>
     Object.fromEntries(PROJECTS_PHASES.map((phase) => [phase, filmTap(elapsed, PICKER_TAPS[phase][beat])])) as Record<ProjectsScenePhase, number>;
   return {
-    add: filmTap(elapsed, B.addTap),
-    status: filmTap(elapsed, B.statusTap),
-    statusOption: filmTap(elapsed, B.statusPick),
-    priority: filmTap(elapsed, B.priorityTap),
-    priorityOption: filmTap(elapsed, B.priorityPick),
     settings: filmTap(elapsed, B.settingsTap),
     name: filmTap(elapsed, B.nameTap),
     color: filmTap(elapsed, B.colorTap),

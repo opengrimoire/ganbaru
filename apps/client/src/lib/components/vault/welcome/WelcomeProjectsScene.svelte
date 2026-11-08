@@ -485,8 +485,8 @@
       listLayout = {
         viewportWidth: listViewport.clientWidth,
         contentWidth: listContent.offsetWidth,
-        status: canvasBox(statusCell),
-        priority: canvasBox(priorityCell),
+        status: listCellBox(statusCell, listViewport, listContent),
+        priority: listCellBox(priorityCell, listViewport, listContent),
         menuWidth: statusMenu.offsetWidth,
         statusMenuHeight: statusMenu.offsetHeight,
         priorityMenuHeight: priorityMenu.offsetHeight,
@@ -699,17 +699,15 @@
     };
   }
 
-  /** An element's place on the canvas, summed through its positioned parents so the scene's scale and scrolls do not count. */
-  function canvasBox(element: HTMLElement): Box {
-    let top = 0;
-    let left = 0;
-    let node: Element | null = element;
-    while (node instanceof HTMLElement && node !== canvas) {
-      top += node.offsetTop;
-      left += node.offsetLeft;
-      node = node.offsetParent;
-    }
-    return { top, left, width: element.offsetWidth, height: element.offsetHeight };
+  /**
+   * A list cell's place on the canvas with the list unscrolled: its box within the list content, which carries the
+   * sideways scroll, from where the list viewport sits. Rendered boxes keep the scene's zoom out, which offsets do not
+   * in every webview.
+   */
+  function listCellBox(cell: HTMLElement, viewport: HTMLElement, content: HTMLElement): Box {
+    const inContent = relBox(cell, content);
+    const origin = canvas ? relBox(viewport, canvas) : { top: 0, left: 0 };
+    return { ...inContent, top: origin.top + inContent.top, left: origin.left + inContent.left };
   }
 
   function rootRemPx(): number {

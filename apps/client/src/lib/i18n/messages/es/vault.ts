@@ -33,6 +33,7 @@ export const vaultSetup = {
   blocker: {
     mailTab: "Recibidos",
     newTab: "Nueva pestaña",
+    yTab: (name: string) => `Inicio / ${name}`,
   },
   blocking: {
     headline: "Sin distracciones mientras trabajas",

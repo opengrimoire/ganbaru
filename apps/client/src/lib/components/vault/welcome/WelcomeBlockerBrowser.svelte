@@ -98,7 +98,9 @@
             <span class="min-w-0 flex-1 truncate" lang={PAGE_LOCALE}>{PAGE_TEXT.tabTitle}</span>
           {:else}
             <WelcomeParodyIcon app={tab.content} size={11} />
-            <span class="min-w-0 flex-1 truncate">{BLOCKER_APP_NAMES[tab.content]}</span>
+            <span class="min-w-0 flex-1 truncate">
+              {tab.content === "y" ? t("vaultSetup.blocker.yTab", BLOCKER_APP_NAMES.y) : BLOCKER_APP_NAMES[tab.content]}
+            </span>
           {/if}
           <span class="relative flex shrink-0">
             <X size={10} strokeWidth={1.8} class="opacity-60" aria-hidden="true" />

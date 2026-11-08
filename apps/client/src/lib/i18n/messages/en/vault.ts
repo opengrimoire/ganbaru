@@ -25,6 +25,7 @@ export const vaultSetup = {
   blocker: {
     mailTab: "Inbox",
     newTab: "New tab",
+    yTab: (name: string) => `Home / ${name}`,
   },
   blocking: {
     headline: "No distractions while you work",

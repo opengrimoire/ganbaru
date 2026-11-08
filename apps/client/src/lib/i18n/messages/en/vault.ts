@@ -41,8 +41,8 @@ export const vaultSetup = {
     limitName: "Social media",
   },
   music: {
-    headline: "Music that follows your plan",
-    body: "Mix your own files and YouTube in playlists, and each project plays the right one for work and for breaks.",
+    headline: "The right music plays on its own",
+    body: "Put your songs and YouTube videos into playlists, and each project plays its own when you work and when you take a break.",
     sceneDescription:
       "A short animation of the playlist builder: a track from Local music is added to the Work (focus) playlist, then a video from YouTube to Break (calm). In the Calendar, picking the Thesis project for an event fills its music with the project's playlist for focus, short breaks, and long breaks. When the event's Pomodoro starts on its own, a notification shows a local track from Work (focus) playing automatically, and when the break starts, another shows the YouTube video from Break (calm).",
     playingNotice: (track: string, playlist: string) => `Playing ${track} from ${playlist}`,

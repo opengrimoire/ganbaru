@@ -20,7 +20,7 @@ import {
   blockingRailRecorded,
 } from "./welcome-blocking-scene";
 import { BLOCKER_CURSOR } from "./welcome-blocker";
-import { welcomeCursorFrame, welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
+import { welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
 import { FILM_TAP_MS } from "./welcome-film";
 
 const B = BLOCKING_BEATS;
@@ -219,8 +219,24 @@ describe("welcome blocking scene", () => {
     expect(welcomeCursorHovered(BLOCKING_CURSOR, B.focusStart - 1)).toBe(BLOCKER_CURSOR.page);
     expect(welcomeCursorHovered(BLOCKING_CURSOR, B.yScrollStart)).toBe(BLOCKER_CURSOR.page);
     expect(welcomeCursorHovered(BLOCKING_CURSOR, B.yScrollEnd)).toBe(BLOCKER_CURSOR.page);
-    expect(welcomeCursorFrame(BLOCKING_CURSOR, B.egogramAgainTap)).toMatchObject({ shown: 0, away: true });
     expect(blockingBrowserPage(B.yScrollStart)).toMatchObject({ kind: "feed", app: "y", scroll: 0 });
+  });
+
+  it("leaves past the screen's right edge toward the phone before each turn to it, and glides back in from there", () => {
+    const exits = BLOCKING_CURSOR.filter((stop) => stop.target === BLOCKER_CURSOR.edge);
+    expect(exits).toHaveLength(2);
+    const [first, last] = exits;
+    expect(first.depart).toBeGreaterThanOrEqual(B.yBlocked);
+    expect(first.arrive).toBeLessThan(B.egogramTap - FILM_TAP_MS);
+    expect(blockingPan(first.arrive)).toBe(0);
+    expect(last.depart).toBeGreaterThanOrEqual(B.yScrollEnd);
+    expect(last.arrive).toBeLessThan(B.egogramAgainTap - FILM_TAP_MS);
+    expect(blockingPan(last.arrive)).toBe(0);
+    expect(BLOCKING_CURSOR.at(-1)).toBe(last);
+    const back = BLOCKING_CURSOR[BLOCKING_CURSOR.indexOf(first) + 1];
+    expect(back.target).toBe(BLOCKER_CURSOR.page);
+    expect(back.depart).toBeGreaterThanOrEqual(B.retryNoticeOut);
+    expect(back.arrive).toBeLessThanOrEqual(B.yScrollStart);
   });
 
   it("stops Y's feed before the phone opens Egogram again, so only one screen moves at a time", () => {

@@ -13,7 +13,8 @@ import {
   limitsUsage,
 } from "./welcome-limits-scene";
 import { BLOCKER_CURSOR, blockerCursorClose } from "./welcome-blocker";
-import { welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
+import { WELCOME_CURSOR_TRAVEL_MS, welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
+import { FILM_TAP_MS } from "./welcome-film";
 
 const B = LIMITS_BEATS;
 
@@ -168,9 +169,21 @@ describe("welcome limits scene", () => {
     expect(close?.depart).toBeGreaterThanOrEqual(B.browserUseEnd);
     expect(newTab?.depart).toBeGreaterThanOrEqual(B.browserReturn);
     expect(welcomeCursorHovered(LIMITS_CURSOR, B.browserUseEnd - 1)).toBe(BLOCKER_CURSOR.page);
-    expect(welcomeCursorHovered(LIMITS_CURSOR, B.egogramTap)).toBe(BLOCKER_CURSOR.page);
     expect(welcomeCursorHovered(LIMITS_CURSOR, B.yTypeEnd)).toBe(BLOCKER_CURSOR.page);
     expect(limitsPan(B.browserReturn)).toBe(1);
     expect(limitsPan(B.newTabTap)).toBe(0);
+  });
+
+  it("leaves past the screen's right edge toward the phone before the camera turns to it, and glides back in from there", () => {
+    const index = LIMITS_CURSOR.findIndex((stop) => stop.target === BLOCKER_CURSOR.edge);
+    const exit = LIMITS_CURSOR[index];
+    expect(LIMITS_CURSOR.filter((stop) => stop.target === BLOCKER_CURSOR.edge)).toHaveLength(1);
+    expect(exit.depart).toBeGreaterThanOrEqual(B.yCloseTap);
+    expect(limitsPan(exit.depart)).toBe(0);
+    expect(limitsPan(exit.arrive)).toBe(0);
+    expect(exit.arrive).toBeLessThan(B.egogramTap - FILM_TAP_MS);
+    const back = LIMITS_CURSOR[index + 1];
+    expect(back.target).toBe(BLOCKER_CURSOR.newTab);
+    expect(back.arrive - back.depart).toBe(WELCOME_CURSOR_TRAVEL_MS);
   });
 });

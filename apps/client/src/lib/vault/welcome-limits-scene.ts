@@ -15,6 +15,7 @@ import {
   blockerAppOpen,
   blockerCaretOn,
   blockerCursorClose,
+  blockerEdgeExit,
   blockerNoticeShown,
   blockerPageIn,
   blockerPageRest,
@@ -58,26 +59,35 @@ export const LIMITS_BEATS = {
   retryAgainHome: 12050,
   /** The camera turns back to the browser on a narrow canvas. */
   browserReturn: 12500,
-  /** A tap opens a new tab in the browser, Y's address is typed, and the page loads into the block page. */
-  newTabTap: 13300,
-  yTypeStart: 13550,
-  yTypeEnd: 14000,
-  yLoadStart: 14150,
-  yBlocked: 14450,
+  /**
+   * A tap opens a new tab in the browser, once the pointer has come back in from the screen's edge as the camera turns,
+   * then Y's address is typed, and the page loads into the block page.
+   */
+  newTabTap: 13550,
+  yTypeStart: 13800,
+  yTypeEnd: 14250,
+  yLoadStart: 14400,
+  yBlocked: 14700,
   /** A tap on the address bar, Bluedit's address is typed, and the page loads into its block page. */
-  addressTap: 15400,
-  blueditTypeStart: 15600,
-  blueditTypeEnd: 16250,
-  blueditLoadStart: 16400,
-  blueditBlocked: 16700,
-  end: 18600,
+  addressTap: 15650,
+  blueditTypeStart: 15850,
+  blueditTypeEnd: 16500,
+  blueditLoadStart: 16650,
+  blueditBlocked: 16950,
+  end: 18850,
 } as const;
 
 const B = LIMITS_BEATS;
 
-/** Where the camera points on a narrow canvas: the phone for Egogram, then the browser for the sites. */
+/** When the browser's pointer has gone off the screen's right edge toward the phone, once Y's tab is closed. */
+const POINTER_TO_PHONE = B.yCloseTap + WELCOME_CURSOR_TRAVEL_MS;
+
+/**
+ * Where the camera points on a narrow canvas: the phone for Egogram, turning to it as the pointer leaves for it, then
+ * the browser for the sites.
+ */
 const PAN_MOVES: readonly BlockerPanMove[] = [
-  { start: 4400, to: 1 },
+  { start: POINTER_TO_PHONE, to: 1 },
   { start: B.browserReturn, to: 0 },
 ];
 
@@ -165,14 +175,15 @@ export function limitsBrowser(elapsed: number): BlockerBrowserFrame {
 }
 
 /**
- * The browser's mouse pointer: it rests on Y's feed as it scrolls, closes Y's tab once the scrolling stops, and rests
- * on the inbox while the phone is in use. Back on the laptop, it opens a new tab, moves off the tab strip as the tabs
- * shift, and clicks the address bar for Bluedit's address.
+ * The browser's mouse pointer: it rests on Y's feed as it scrolls, closes Y's tab once the scrolling stops, and leaves
+ * past the screen's right edge toward the phone while the phone is in use. As the camera turns back to the laptop, it
+ * comes back in from that edge to open a new tab, moves off the tab strip as the tabs shift, and clicks the address bar
+ * for Bluedit's address.
  */
 export const LIMITS_CURSOR: WelcomeCursorScript = [
   blockerPageRest(0, [0.6, 0.55], [{ start: B.browserUseStart, end: B.browserUseEnd }]),
   cursorClick(blockerCursorClose("y"), B.yCloseTap, { after: B.browserUseEnd }),
-  blockerPageRest(B.yCloseTap + WELCOME_CURSOR_TRAVEL_MS, [0.55, 0.45]),
+  blockerEdgeExit(POINTER_TO_PHONE),
   cursorClick(BLOCKER_CURSOR.newTab, B.newTabTap, { after: B.browserReturn }),
   blockerPageRest(B.newTabTap + WELCOME_CURSOR_TRAVEL_MS, [0.5, 0.35]),
   blockerAddressClick(B.addressTap, B.yBlocked),

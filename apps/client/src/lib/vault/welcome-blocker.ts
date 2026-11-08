@@ -102,13 +102,26 @@ export function blockerSingleTab(page: BlockerBrowserPage, pageIn: number): Bloc
 
 /**
  * The `data-cursor` names of the browser's places the mouse pointer goes to: the active tab's page, the address bar,
- * and the new tab button. {@link blockerCursorClose} names each tab's close button.
+ * the new tab button, and a spot just past the screen's right edge, toward the phone. {@link blockerCursorClose} names
+ * each tab's close button.
  */
 export const BLOCKER_CURSOR = {
   page: "browser-page",
   address: "browser-address",
   newTab: "browser-new-tab",
+  edge: "browser-edge",
 } as const;
+
+/** Where past the screen's right edge the pointer goes, so the screen's edge hides all of it. */
+const EDGE_ANCHOR = [1, 0.6] as const;
+
+/**
+ * The pointer moving off the screen's right edge, reaching past it at `arrive`, as a mouse pushed toward the phone
+ * beside the laptop when the phone is about to be used. Its next place brings it back in from that edge.
+ */
+export function blockerEdgeExit(arrive: number): WelcomeCursorStop {
+  return cursorRest(BLOCKER_CURSOR.edge, arrive, { anchor: EDGE_ANCHOR });
+}
 
 /** The `data-cursor` name of the close button of the tab carrying `content`. */
 export function blockerCursorClose(content: BlockerTabContent): string {
@@ -126,17 +139,9 @@ export function blockerAddressClick(tap: number, after?: number): WelcomeCursorS
   return cursorClick(BLOCKER_CURSOR.address, tap, { anchor: ADDRESS_ANCHOR, glyph: "text", after });
 }
 
-/**
- * The pointer resting on the page at `arrive`, at `anchor` on it, scrolling it with the wheel through `scrolls`, and
- * hiding once idle after them when `hides` is set, as the scene plays on without it.
- */
-export function blockerPageRest(
-  arrive: number,
-  anchor: readonly [x: number, y: number],
-  scrolls?: readonly WelcomeCursorSpan[],
-  hides?: boolean,
-): WelcomeCursorStop {
-  return cursorRest(BLOCKER_CURSOR.page, arrive, { anchor, busy: scrolls, hides });
+/** The pointer resting on the page at `arrive`, at `anchor` on it, scrolling it with the wheel through `scrolls`. */
+export function blockerPageRest(arrive: number, anchor: readonly [x: number, y: number], scrolls?: readonly WelcomeCursorSpan[]): WelcomeCursorStop {
+  return cursorRest(BLOCKER_CURSOR.page, arrive, { anchor, busy: scrolls });
 }
 
 /** The prefix of `text` typed by `elapsed`, one character at a time from `start` to `end`. */

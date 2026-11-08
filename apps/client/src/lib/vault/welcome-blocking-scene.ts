@@ -12,6 +12,7 @@ import {
   blockerAddressClick,
   blockerAppOpen,
   blockerCaretOn,
+  blockerEdgeExit,
   blockerNoticeShown,
   blockerPageIn,
   blockerPageRest,
@@ -25,7 +26,7 @@ import {
   type BlockerPanMove,
   type BlockerPhoneApp,
 } from "./welcome-blocker";
-import type { WelcomeCursorScript, WelcomeCursorSpan } from "./welcome-cursor";
+import { WELCOME_CURSOR_TRAVEL_MS, type WelcomeCursorScript, type WelcomeCursorSpan } from "./welcome-cursor";
 import {
   easeInOutCubic,
   filmDayRails,
@@ -70,9 +71,9 @@ export const BLOCKING_BEATS = {
   focusEnd: 11600,
   yScrollStart: 12100,
   yScrollEnd: 13700,
-  /** Once Y's feed has stopped, Egogram opens as usual. */
-  egogramAgainTap: 14700,
-  end: 16700,
+  /** Once Y's feed has stopped and the pointer has gone toward the phone, Egogram opens as usual. */
+  egogramAgainTap: 15200,
+  end: 17200,
 } as const;
 
 const B = BLOCKING_BEATS;
@@ -97,13 +98,19 @@ const CLOCK: readonly FilmKeyframe[] = [
 ];
 
 /**
+ * When the browser's pointer has gone off the screen's right edge toward the phone: once Y's block page shows, and once
+ * Y's feed has stopped after the event.
+ */
+const POINTER_TO_PHONE = [4700, B.yScrollEnd + WELCOME_CURSOR_TRAVEL_MS] as const;
+
+/**
  * Where the camera points on a narrow canvas: the phone for Egogram, the browser for the event's end, then the phone
- * again once Y's feed has stopped.
+ * again once Y's feed has stopped. It turns to the phone as the pointer leaves for it.
  */
 const PAN_MOVES: readonly BlockerPanMove[] = [
-  { start: 4700, to: 1 },
+  { start: POINTER_TO_PHONE[0], to: 1 },
   { start: 10900, to: 0 },
-  { start: B.yScrollEnd, to: 1 },
+  { start: POINTER_TO_PHONE[1], to: 1 },
 ];
 
 /** The current time, in minutes of the day. */
@@ -182,13 +189,16 @@ export function blockingBrowser(elapsed: number): BlockerBrowserFrame {
 }
 
 /**
- * The browser's mouse pointer: it rests on Bluedit's feed as it scrolls, clicks the address bar once the block page
- * shows, goes back to the page as Y's feed returns after the event, and hides once the feed stops and the phone plays on.
+ * The browser's mouse pointer: it rests on Bluedit's feed as it scrolls, and clicks the address bar once the block page
+ * shows. It leaves past the screen's right edge toward the phone before the phone is used, comes back in from there to
+ * Y's feed after the event, and leaves the same way once the feed stops.
  */
 export const BLOCKING_CURSOR: WelcomeCursorScript = [
   blockerPageRest(0, [0.6, 0.55], [BLUEDIT_SCROLL]),
   blockerAddressClick(B.addressTap, B.focusStart),
-  blockerPageRest(B.yScrollStart, [0.55, 0.6], [Y_SCROLL], true),
+  blockerEdgeExit(POINTER_TO_PHONE[0]),
+  blockerPageRest(B.yScrollStart, [0.55, 0.6], [Y_SCROLL]),
+  blockerEdgeExit(POINTER_TO_PHONE[1]),
 ];
 
 /** The app open on the phone at this moment, or null on the home screen. */

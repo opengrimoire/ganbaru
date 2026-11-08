@@ -211,10 +211,13 @@
   const saveTouch = $derived(Math.max(builderTouches.localSave, builderTouches.youtubeSave));
   const pickedCard = $derived<MusicScenePlaylist>(reviewItem.source === "local" ? "workFocus" : "breakCalm");
 
-  /** The review's scroll on a narrow builder, which keeps the first two playlist cards above its actions. */
+  /**
+   * The review's scroll on a narrow builder, which keeps the first two playlist cards above its actions. Beside the
+   * tree, the player stays put and only the playlist cards run past the bottom, as the review lays itself out.
+   */
   let reviewViewportHeight = $state(0);
   let reviewLeadHeight = $state(0);
-  const reviewScroll = $derived(Math.max(0, reviewLeadHeight - reviewViewportHeight));
+  const reviewScroll = $derived(withTree ? 0 : Math.max(0, reviewLeadHeight - reviewViewportHeight));
 
   const clock = $derived(musicClock(elapsed));
   const phase = $derived(musicPhase(elapsed));
@@ -560,7 +563,7 @@
             <div class="relative min-h-0 flex-1 overflow-hidden" bind:clientHeight={reviewViewportHeight}>
               <div style:transform={reviewScroll > 0 ? `translateY(${-reviewScroll}px)` : undefined}>
                 <div bind:offsetHeight={reviewLeadHeight}>
-                  <section class="p-2.5">
+                  <section class={withTree ? "px-4 pb-3 pt-2" : "p-2.5"}>
                     <div class="flex items-center justify-between gap-1.5">
                       {#if !withTree}
                         <span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-foreground"><PanelLeft size={14} /></span>
@@ -619,11 +622,11 @@
                       <span class="inline-flex h-8 items-center gap-1.5 rounded-full bg-secondary px-3 text-xs font-medium text-foreground"><Pencil size={13} />{t("music.builder.managePlaylists")}</span>
                     </div>
                   </div>
-                  <div class="playlist-grid grid gap-2 px-3">
+                  <div class={cn("playlist-grid grid gap-2 px-3", withTree && "two-columns")}>
                     {#each LEAD_CARDS as key (key)}{@render playlistCard(key)}{/each}
                   </div>
                 </div>
-                <div class="playlist-grid mt-2 grid gap-2 px-3 pb-3">
+                <div class={cn("playlist-grid mt-2 grid gap-2 px-3 pb-3", withTree && "two-columns")}>
                   {#each MORE_CARDS as key (key)}{@render playlistCard(key)}{/each}
                 </div>
               </div>
@@ -759,6 +762,11 @@
   /* The review's playlist cards and actions, as the review draws them. */
   .playlist-grid {
     grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr));
+  }
+
+  /* Beside the tree, the scene's smaller type fits two cards across the review, as a full size review does. */
+  .playlist-grid.two-columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .review-action {

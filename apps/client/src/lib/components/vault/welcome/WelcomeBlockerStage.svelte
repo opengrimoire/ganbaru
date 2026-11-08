@@ -50,7 +50,7 @@
   const cameraX = $derived(wide ? 0 : pan * (phoneX - (width - phoneW) / 2));
 </script>
 
-<div class="relative overflow-hidden" style:width={`${width}px`} style:height={`${height}px`}>
+<div class="relative overflow-hidden" style:width={`${width}px`} style:height={`${height}px`} data-cursor-root>
   <div class="absolute inset-x-0 top-0 flex items-center justify-center" style:height={`${headerHeight}px`}>
     {@render header()}
   </div>

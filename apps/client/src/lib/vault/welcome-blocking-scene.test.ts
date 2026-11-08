@@ -223,7 +223,7 @@ describe("welcome blocking scene", () => {
   });
 
   it("leaves past the screen's right edge toward the phone before each turn to it, and glides back in from there", () => {
-    const exits = BLOCKING_CURSOR.filter((stop) => stop.target === BLOCKER_CURSOR.edge);
+    const exits = BLOCKING_CURSOR.filter((stop) => stop.target === BLOCKER_CURSOR.toPhone);
     expect(exits).toHaveLength(2);
     const [first, last] = exits;
     expect(first.depart).toBeGreaterThanOrEqual(B.yBlocked);

@@ -102,25 +102,23 @@ export function blockerSingleTab(page: BlockerBrowserPage, pageIn: number): Bloc
 
 /**
  * The `data-cursor` names of the browser's places the mouse pointer goes to: the active tab's page, the address bar,
- * the new tab button, and a spot just past the screen's right edge, toward the phone. {@link blockerCursorClose} names
- * each tab's close button.
+ * the new tab button, and Egogram's icon on the phone beside the laptop, which the pointer heads toward as the phone
+ * is about to be used. {@link blockerCursorClose} names each tab's close button.
  */
 export const BLOCKER_CURSOR = {
   page: "browser-page",
   address: "browser-address",
   newTab: "browser-new-tab",
-  edge: "browser-edge",
+  toPhone: "phone-egogram",
 } as const;
 
-/** Where past the screen's right edge the pointer goes, so the screen's edge hides all of it. */
-const EDGE_ANCHOR = [1, 0.6] as const;
-
 /**
- * The pointer moving off the screen's right edge, reaching past it at `arrive`, as a mouse pushed toward the phone
- * beside the laptop when the phone is about to be used. Its next place brings it back in from that edge.
+ * The pointer moving off the screen's right edge, heading straight for Egogram's icon on the phone and reaching it at
+ * `arrive`, as a mouse pushed toward the phone when the phone is about to be used. The screen's edge hides it as it
+ * crosses, and its next place brings it back in from the phone's direction.
  */
 export function blockerEdgeExit(arrive: number): WelcomeCursorStop {
-  return cursorRest(BLOCKER_CURSOR.edge, arrive, { anchor: EDGE_ANCHOR });
+  return cursorRest(BLOCKER_CURSOR.toPhone, arrive);
 }
 
 /** The `data-cursor` name of the close button of the tab carrying `content`. */

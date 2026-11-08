@@ -236,7 +236,6 @@
         {/if}
       </div>
     </div>
-    <span class="absolute inset-y-0 left-full w-8" data-cursor={BLOCKER_CURSOR.edge} aria-hidden="true"></span>
     <WelcomeCursor script={cursor} {elapsed} width={width - 2 * BEZEL} size={WELCOME_CURSOR_BROWSER_SIZE_PX} />
   </div>
 </div>

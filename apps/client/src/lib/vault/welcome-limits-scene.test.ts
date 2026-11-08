@@ -175,9 +175,9 @@ describe("welcome limits scene", () => {
   });
 
   it("leaves past the screen's right edge toward the phone before the camera turns to it, and glides back in from there", () => {
-    const index = LIMITS_CURSOR.findIndex((stop) => stop.target === BLOCKER_CURSOR.edge);
+    const index = LIMITS_CURSOR.findIndex((stop) => stop.target === BLOCKER_CURSOR.toPhone);
     const exit = LIMITS_CURSOR[index];
-    expect(LIMITS_CURSOR.filter((stop) => stop.target === BLOCKER_CURSOR.edge)).toHaveLength(1);
+    expect(LIMITS_CURSOR.filter((stop) => stop.target === BLOCKER_CURSOR.toPhone)).toHaveLength(1);
     expect(exit.depart).toBeGreaterThanOrEqual(B.yCloseTap);
     expect(limitsPan(exit.depart)).toBe(0);
     expect(limitsPan(exit.arrive)).toBe(0);

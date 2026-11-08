@@ -9,6 +9,7 @@
   import FocusAccessGuide from "./focus-access/FocusAccessGuide.svelte";
   import MobileOnboardingProgress from "./MobileOnboardingProgress.svelte";
   import {
+    FOCUS_ACCESS_STEP_ORDER,
     focusAccessGranted,
     focusAccessSensitive,
     focusAccessSteps,
@@ -263,7 +264,7 @@
   class="mobile-viewport-height flex w-screen flex-col overflow-hidden bg-background pb-(--safe-area-bottom) pt-(--safe-area-top) text-foreground"
   style="padding-left: var(--safe-area-left); padding-right: var(--safe-area-right);"
 >
-  <MobileOnboardingProgress stage="permissions" fraction={steps?.length ? (index + 1) / steps.length : 0} />
+  <MobileOnboardingProgress stage="permissions" screen={current ? FOCUS_ACCESS_STEP_ORDER.indexOf(current) : 0} />
   <section class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 min-[560px]:px-8">
     {#if steps === null || current === null}
       <div class="flex h-full items-center justify-center text-sm">

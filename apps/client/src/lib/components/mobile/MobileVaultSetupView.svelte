@@ -10,7 +10,6 @@
   import VaultWelcomeContent from "$lib/components/vault/VaultWelcomeContent.svelte";
   import MobileOnboardingProgress from "./MobileOnboardingProgress.svelte";
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
-  import { welcomeProgress } from "$lib/vault/welcome-steps";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     formatVaultError,
@@ -159,7 +158,7 @@
 >
   <MobileOnboardingProgress
     stage={welcomeComplete ? "vault" : "welcome"}
-    fraction={welcomeComplete ? 1 : welcomeProgress(welcomeStep)}
+    screen={welcomeComplete ? 0 : welcomeStep}
   >
     {#if !welcomeComplete}
       <VaultWelcomeContent bind:step={welcomeStep} showStepDots={false} onContinue={() => { welcomeComplete = true; }} />

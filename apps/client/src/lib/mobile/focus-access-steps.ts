@@ -13,7 +13,7 @@ export interface FocusAccessStatuses {
 }
 
 /** Steps in the order they are asked: delivery first, then background survival, then the sensitive app controls. */
-const STEP_ORDER: readonly FocusAccessStep[] = [
+export const FOCUS_ACCESS_STEP_ORDER: readonly FocusAccessStep[] = [
   "notifications",
   "exact-alarm",
   "autostart",
@@ -61,7 +61,7 @@ function focusAccessApplies(step: FocusAccessStep, statuses: FocusAccessStatuses
  * report as on. A status that could not be read keeps its step, so the person can still review it.
  */
 export function focusAccessSteps(statuses: FocusAccessStatuses): FocusAccessStep[] {
-  return STEP_ORDER.filter((step) => focusAccessApplies(step, statuses) && focusAccessGranted(step, statuses) !== true);
+  return FOCUS_ACCESS_STEP_ORDER.filter((step) => focusAccessApplies(step, statuses) && focusAccessGranted(step, statuses) !== true);
 }
 
 /** The steps that ask for sensitive access and therefore show what Ganbaru sees and never sees. */

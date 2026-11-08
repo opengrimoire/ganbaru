@@ -1,3 +1,6 @@
+import { WELCOME_STEPS } from "$lib/vault/welcome-steps";
+import { FOCUS_ACCESS_STEP_ORDER } from "./focus-access-steps";
+
 /** The stages of the Android first-run onboarding, in the order they appear. */
 export const MOBILE_ONBOARDING_STAGES = ["welcome", "vault", "permissions", "linking"] as const;
 
@@ -5,16 +8,32 @@ export const MOBILE_ONBOARDING_STAGES = ["welcome", "vault", "permissions", "lin
 export type MobileOnboardingStage = (typeof MOBILE_ONBOARDING_STAGES)[number];
 
 /**
- * How full each progress segment is, from 0 to 1. Earlier stages are full, later ones empty, and the current stage
- * shows `fraction`, so a stage with several screens, such as the permissions, fills one screen at a time.
+ * How many screens each stage can show. Permissions count every step any phone may ask for, so the bar has the same
+ * length on every device, and the steps a phone skips pass as done.
  */
-export function onboardingSegmentFills(stage: MobileOnboardingStage, fraction = 1): number[] {
-  const current = MOBILE_ONBOARDING_STAGES.indexOf(stage);
-  const clamped = Number.isFinite(fraction) ? Math.min(1, Math.max(0, fraction)) : 0;
-  return MOBILE_ONBOARDING_STAGES.map((_, index) => (index < current ? 1 : index === current ? clamped : 0));
+const STAGE_SCREENS: Readonly<Record<MobileOnboardingStage, number>> = {
+  welcome: WELCOME_STEPS.length,
+  vault: 1,
+  permissions: FOCUS_ACCESS_STEP_ORDER.length,
+  linking: 1,
+};
+
+/** Every screen of the onboarding, one progress segment each. */
+export const MOBILE_ONBOARDING_SCREEN_COUNT = MOBILE_ONBOARDING_STAGES.reduce((total, stage) => total + STAGE_SCREENS[stage], 0);
+
+/**
+ * The zero-based position across the whole onboarding of `stage`'s screen at `screen`, which is clamped to the stage's
+ * screens.
+ */
+export function onboardingScreenPosition(stage: MobileOnboardingStage, screen = 0): number {
+  const stageIndex = MOBILE_ONBOARDING_STAGES.indexOf(stage);
+  const offset = MOBILE_ONBOARDING_STAGES.slice(0, stageIndex).reduce((total, earlier) => total + STAGE_SCREENS[earlier], 0);
+  const within = Number.isFinite(screen) ? Math.min(STAGE_SCREENS[stage] - 1, Math.max(0, Math.trunc(screen))) : 0;
+  return offset + within;
 }
 
-/** The one-based position of a stage, for the screen reader progress text. */
-export function onboardingStageNumber(stage: MobileOnboardingStage): number {
-  return MOBILE_ONBOARDING_STAGES.indexOf(stage) + 1;
+/** Which progress segments are filled: every screen up to and including the current one. */
+export function onboardingSegmentFills(stage: MobileOnboardingStage, screen = 0): boolean[] {
+  const position = onboardingScreenPosition(stage, screen);
+  return Array.from({ length: MOBILE_ONBOARDING_SCREEN_COUNT }, (_, index) => index <= position);
 }

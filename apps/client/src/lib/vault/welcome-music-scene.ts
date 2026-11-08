@@ -175,7 +175,7 @@ const NOTICES: readonly { in: number; out: number }[] = [
   { in: B.focusNoticeIn, out: B.focusNoticeOut },
   { in: B.breakNoticeIn, out: B.breakNoticeOut },
 ];
-/** How far a track plays across the scene, as a fraction of its length per millisecond, slow enough to read as listening. */
+/** How far a track plays per millisecond of scene time, as a fraction of its length, slow enough to read as listening. */
 const TRACK_PROGRESS_PER_MS = 1 / 24000;
 
 /** The current time against scene time, in minutes of the day: it reaches the event, then crosses its first break. */

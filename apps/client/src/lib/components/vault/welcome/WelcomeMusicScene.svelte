@@ -1,9 +1,11 @@
 <script lang="ts" module>
-  import { calendarZoomHourHeightForPercent } from "$lib/calendar/zoom-levels";
+  import { calendarZoomGridMinutesForPercent, calendarZoomHourHeightForPercent } from "$lib/calendar/zoom-levels";
 
   /** The Calendar zoom the scene's day is drawn at, the Calendar's default level, as in the Calendar film. */
   const SCENE_ZOOM_PERCENT = 100;
   const HOUR_PX = calendarZoomHourHeightForPercent(SCENE_ZOOM_PERCENT);
+  /** How the event snaps while it is dragged out, in minutes, as the Calendar snaps at the scene's zoom. */
+  const CREATE_SNAP_MINUTES = calendarZoomGridMinutesForPercent(SCENE_ZOOM_PERCENT);
 
   /**
    * Canvas geometry in logical pixels: a width and a height the room chooses between these bounds. The smallest height
@@ -65,17 +67,20 @@
   import { isThemeCalendarDark } from "$lib/themes";
   import { cn } from "$lib/utils";
   import type { EventPanelAnchor } from "$lib/utils/responsive";
-  import { filmWorkday, type FilmSpan } from "$lib/vault/welcome-film";
+  import { filmSpan, filmWorkday, type FilmSpan } from "$lib/vault/welcome-film";
   import {
+    MUSIC_BEATS,
     MUSIC_EVENT,
     MUSIC_PLAYLISTS,
     musicBuilderShown,
     musicBuilderTouches,
     musicCalendarShown,
     musicClock,
+    musicEventCreating,
+    musicEventDrawn,
+    musicEventDrawnIn,
     musicEventPanelFrame,
     musicEventRail,
-    musicEventTouch,
     musicItemReviewed,
     musicNotification,
     musicNowPlaying,
@@ -92,6 +97,7 @@
     musicReviewProgress,
     musicReviewProgressOfTrack,
     musicTracks,
+    musicTypedTitle,
     type MusicScenePlaylist,
     type MusicSceneSource,
     type MusicSceneTrack,
@@ -100,10 +106,10 @@
   /**
    * One frame of the welcome scene on Music, drawn with the app's own surfaces. First the playlist builder's review,
    * with its folder tree beside it when the canvas is wide enough and its dock below, saves a local track to a work
-   * playlist and a YouTube video to a break playlist. Then the Calendar's day, as the Calendar film draws it, where the
-   * event panel gives an event the Thesis project and with it the project's playlist for each Focus phase. Once the
-   * event's Focus starts on its own, the app's notification says the work track autoplays, and when its break starts,
-   * the break video. Every style is a function of `elapsed`, with no CSS transitions.
+   * playlist and a YouTube video to a break playlist. Then the Calendar's day, as the Calendar film draws it, where an
+   * event is dragged out and its panel gives it the Thesis project, and with it the project's playlist for each Focus
+   * phase, and its title. Once the event's Focus starts on its own, the app's notification says the work track
+   * autoplays, and when its break starts, the break video. Every style is a function of `elapsed`, with no CSS transitions.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -148,6 +154,8 @@
   const EVENT_ICONS_MIN_PX = 17;
   /** The Calendar's pulse on a break that is running. */
   const BREAK_PULSE_MS = 1500;
+  /** How quickly the press that draws the event fades in and out. */
+  const PRESS_FADE_MS = 140;
   /** Where the visible part of the day starts, as if the grid were scrolled to the morning. */
   const VIEW_START = 8 * 60 + 20;
 
@@ -233,6 +241,20 @@
   const playingTrack = $derived(playing ? musicTracks(playing.source)[playing.row] : null);
   const breakPulse = $derived(0.7 - 0.2 * Math.cos((2 * Math.PI * elapsed) / BREAK_PULSE_MS));
   const eventTitle = $derived(t("vaultSetup.film.writeChapter"));
+  /** The event while it is dragged out, typed, and saved. */
+  const drawnIn = $derived(musicEventDrawnIn(elapsed));
+  const creating = $derived(musicEventCreating(elapsed));
+  const drawnMinutes = $derived(
+    Math.max(
+      CREATE_SNAP_MINUTES,
+      Math.round((musicEventDrawn(elapsed) * (MUSIC_EVENT.end - MUSIC_EVENT.start)) / CREATE_SNAP_MINUTES) * CREATE_SNAP_MINUTES,
+    ),
+  );
+  const typedTitle = $derived(musicTypedTitle(elapsed, eventTitle));
+  const pressOpacity = $derived(
+    filmSpan(elapsed, MUSIC_BEATS.createStart - PRESS_FADE_MS, MUSIC_BEATS.createStart)
+      * (1 - filmSpan(elapsed, MUSIC_BEATS.createEnd, MUSIC_BEATS.createEnd + PRESS_FADE_MS)),
+  );
 
   const viewMinutes = $derived(((canvasH - TOP_BAR_H - HEADER_H) / HOUR_PX) * 60);
   const hours = $derived(
@@ -685,7 +707,9 @@
                 {/each}
               </div>
 
-              {@render focusRail(rail.start, rail.end, recorded, rail.breaks, onBreak)}
+              {#if rail}
+                {@render focusRail(rail.start, rail.end, recorded, rail.breaks, onBreak)}
+              {/if}
 
               <div class="absolute inset-y-0 right-0" style:left={`${EVENT_LEFT}px`}>
                 {#each DAY_EVENTS as event (event.start)}
@@ -700,24 +724,44 @@
                     event.icons,
                   )}
                 {/each}
-                {@render eventBlock(
-                  MUSIC_EVENT.start,
-                  MUSIC_EVENT.end,
-                  picked ? THESIS : undefined,
-                  eventTitle,
-                  false,
-                  panelOpen,
-                  false,
-                  picked ? ["music"] : [],
-                )}
-                <div
-                  class="pointer-events-none absolute left-0"
-                  style:width={`${100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT}%`}
-                  style:top={`${y(MUSIC_EVENT.start)}px`}
-                  style:height={`${px(MUSIC_EVENT.end - MUSIC_EVENT.start)}px`}
-                >
-                  {@render touch(musicEventTouch(elapsed), "40%", "50%")}
-                </div>
+                {#if creating}
+                  {@render eventBlock(
+                    MUSIC_EVENT.start,
+                    MUSIC_EVENT.start + drawnMinutes,
+                    picked ? THESIS : undefined,
+                    typedTitle || t("calendar.event.noTitle"),
+                    false,
+                    true,
+                    false,
+                    picked ? ["music"] : [],
+                  )}
+                {:else if drawnIn}
+                  {@render eventBlock(MUSIC_EVENT.start, MUSIC_EVENT.end, THESIS, eventTitle, false, false, false, ["music"])}
+                {/if}
+
+                <!-- The drawn event's resize knobs, as a phone shows them from the start of the drawing until Save. -->
+                {#if mobileShell && creating}
+                  <div
+                    class="pointer-events-none absolute left-0"
+                    style:width={`${100 - CALENDAR_EVENT_RIGHT_GUTTER_PCT}%`}
+                    style:top={`${y(MUSIC_EVENT.start)}px`}
+                    style:height={`${px(drawnMinutes)}px`}
+                    style:z-index="11"
+                    style:--knob-color={getEventColor(picked ? THESIS : undefined, theme.current).bg}
+                  >
+                    <div class="resize-knob absolute left-0 top-0"></div>
+                    <div class="resize-knob absolute bottom-0 right-0"></div>
+                  </div>
+                {/if}
+
+                <!-- The press that draws the event, following its growing edge. -->
+                {#if pressOpacity > 0}
+                  <span
+                    class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
+                    style:top={`${y(MUSIC_EVENT.start + drawnMinutes)}px`}
+                    style:opacity={pressOpacity}
+                  ></span>
+                {/if}
               </div>
 
               <div class="pointer-events-none absolute inset-x-0" style:top={`${y(clock)}px`} style:z-index="46">
@@ -768,6 +812,26 @@
   /* Beside the tree, the scene's smaller type fits two cards across the review, as a full size review does. */
   .playlist-grid.two-columns {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* The phone's resize knobs on an event being created, as the Calendar draws them. */
+  .resize-knob {
+    width: 2.75rem;
+    height: 2.75rem;
+    margin: -1.375rem -0.5rem;
+  }
+
+  .resize-knob::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0.875rem;
+    height: 0.875rem;
+    border-radius: 9999px;
+    background-color: var(--cal-bg);
+    border: 2px solid var(--knob-color);
+    transform: translate(-50%, -50%);
   }
 
   .review-action {

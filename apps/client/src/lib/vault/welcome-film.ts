@@ -480,10 +480,15 @@ export function filmProjectPicked(elapsed: number): boolean {
   return elapsed >= FILM_BEATS.projectPick;
 }
 
+/** As much of `text` as has been typed at `elapsed`, a whole character at a time, typed from `start` to `end`. */
+export function filmTyped(elapsed: number, text: string, start: number, end: number): string {
+  const characters = Array.from(text);
+  return characters.slice(0, Math.floor(filmSpan(elapsed, start, end) * characters.length)).join("");
+}
+
 /** As much of `title` as has been typed at `elapsed`, a whole character at a time. */
 export function filmTypedTitle(elapsed: number, title: string): string {
-  const characters = Array.from(title);
-  return characters.slice(0, Math.floor(filmSpan(elapsed, FILM_BEATS.typeStart, FILM_BEATS.typeEnd) * characters.length)).join("");
+  return filmTyped(elapsed, title, FILM_BEATS.typeStart, FILM_BEATS.typeEnd);
 }
 
 /** How long a text caret stays on and off once typing stops. */

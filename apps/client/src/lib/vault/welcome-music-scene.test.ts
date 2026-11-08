@@ -12,6 +12,9 @@ import {
   musicBuilderTouches,
   musicCalendarShown,
   musicClock,
+  musicEventCreating,
+  musicEventDrawn,
+  musicEventDrawnIn,
   musicEventPanelFrame,
   musicEventRail,
   musicItemReviewed,
@@ -31,6 +34,7 @@ import {
   musicReviewProgressOfTrack,
   musicNotification,
   musicTracks,
+  musicTypedTitle,
   type MusicScenePlaylist,
 } from "./welcome-music-scene";
 
@@ -140,9 +144,34 @@ describe("welcome music scene", () => {
     expect(closed.scroll).toBe(0);
     expect(open.music?.expanded).toBe(1);
     expect(open.scroll).toBe(1);
-    expect(musicPanelOpen(B.eventTap - 1)).toBe(false);
-    expect(musicPanelOpen(B.eventTap)).toBe(true);
+    expect(musicPanelOpen(B.panelOpen - 1)).toBe(false);
+    expect(musicPanelOpen(B.panelOpen)).toBe(true);
     expect(musicPanelOpen(B.saveTap)).toBe(false);
+  });
+
+  it("draws the event out on the empty day before its panel opens on it", () => {
+    expect(musicEventDrawnIn(B.createStart - 1)).toBe(false);
+    expect(musicEventDrawn(B.createStart)).toBe(0);
+    expect(musicEventDrawn(B.createEnd)).toBe(1);
+    expect(musicEventRail(B.panelOpen - 1)).toBeNull();
+    expect(musicEventCreating(B.createStart)).toBe(true);
+    expect(musicEventCreating(B.saveTap)).toBe(false);
+    let previous = 0;
+    for (const elapsed of moments()) {
+      const drawn = musicEventDrawn(elapsed);
+      expect(drawn).toBeGreaterThanOrEqual(previous);
+      previous = drawn;
+      if (musicPanelOpen(elapsed)) expect(drawn).toBe(1);
+    }
+  });
+
+  it("types the title into the panel after the project is picked, a character at a time", () => {
+    expect(musicEventPanelFrame(B.typeStart - 1, "Title", lookup).typed).toBe("");
+    expect(musicEventPanelFrame(B.typeStart - 1, "Title", lookup).picked).toBe(true);
+    expect(musicTypedTitle((B.typeStart + B.typeEnd) / 2, "Title").length).toBeGreaterThan(0);
+    expect(musicTypedTitle((B.typeStart + B.typeEnd) / 2, "Title").length).toBeLessThan(5);
+    expect(musicEventPanelFrame(B.typeEnd, "Title", lookup).typed).toBe("Title");
+    expect(musicEventPanelFrame(B.musicTap, "Title", lookup).typing).toBe(false);
   });
 
   it("opens the Focus, then the short break picker, each on the project playlist and closed by its tap", () => {

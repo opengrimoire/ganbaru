@@ -1,10 +1,10 @@
 /**
  * Timing for the welcome scene on Music. In the playlist builder's review, a local track is added to the Work (focus)
- * playlist and saved, then a YouTube video to Break (calm). Then in the Calendar, a tap on an event opens its panel,
- * where picking the Thesis project gives the event the project's music for each Focus phase, shown as the Music
- * section opens and its Focus and short break pickers show their playlists. Once the event is saved, its Focus starts
- * on its own, and the app's notification says the work playlist's track autoplays, then the break playlist's video
- * once the break starts.
+ * playlist and saved, then a YouTube video to Break (calm). Then in the Calendar, an event is dragged out on the day
+ * and its panel opens, where picking the Thesis project gives the event the project's music for each Focus phase, its
+ * title is typed, and the Music section opens and its Focus and short break pickers show their playlists. Once the
+ * event is saved, its Focus starts on its own, and the app's notification says the work playlist's track autoplays,
+ * then the break playlist's video once the break starts.
  */
 
 import type {
@@ -17,8 +17,10 @@ import {
   FILM_DEFAULT_PRESET,
   FILM_SHEET_RISE_MS,
   filmDayRails,
+  filmCaretOn,
   filmSpan,
   filmTap,
+  filmTyped,
   monotoneCurve,
   type FilmKeyframe,
   type FilmRail,
@@ -106,32 +108,37 @@ export const MUSIC_BEATS = {
   /** The builder gives way to the Calendar. */
   builderOut: 5500,
   calendarIn: 5900,
-  /** A tap on the event opens its panel. */
-  eventTap: 6800,
+  /** A press drags the event out on the empty hour, and letting go opens the event panel on it. */
+  createStart: 6500,
+  createEnd: 7200,
+  panelOpen: 7350,
   /** The project trigger, then the University group, then Thesis, which gives the event the project's music. */
-  projectTap: 8000,
-  groupTap: 9100,
-  projectPick: 10200,
+  projectTap: 8350,
+  groupTap: 9450,
+  projectPick: 10550,
+  /** The title is typed. */
+  typeStart: 11150,
+  typeEnd: 12350,
   /** A tap on the Music section's header opens it on the event's playlists. */
-  musicTap: 11500,
+  musicTap: 13300,
   /** A tap on the Focus row's trigger opens its playlist picker, and a tap on its checked playlist closes it. */
-  focusPickerTap: 12900,
-  focusOptionTap: 14200,
+  focusPickerTap: 14700,
+  focusOptionTap: 16000,
   /** The same for the short break's row. */
-  breakPickerTap: 15200,
-  breakOptionTap: 16500,
-  /** Save closes the panel. */
-  saveTap: 17600,
+  breakPickerTap: 17000,
+  breakOptionTap: 18300,
+  /** Save saves the event and closes the panel. */
+  saveTap: 19400,
   /** The event's Focus starts on its own, and the app's notification says which work track autoplays. */
-  focusStart: 18400,
-  focusNoticeIn: 18600,
-  focusNoticeOut: 21600,
+  focusStart: 20200,
+  focusNoticeIn: 20400,
+  focusNoticeOut: 23400,
   /** The break starts, and the notification says which break video autoplays, then the next focus starts. */
-  breakStart: 22200,
-  breakNoticeIn: 22400,
-  breakNoticeOut: 25400,
-  breakEnd: 25800,
-  end: 26500,
+  breakStart: 24000,
+  breakNoticeIn: 24200,
+  breakNoticeOut: 27200,
+  breakEnd: 27600,
+  end: 28300,
 } as const;
 
 const B = MUSIC_BEATS;
@@ -252,14 +259,29 @@ export function musicBuilderTouches(elapsed: number): { localPick: number; local
   };
 }
 
-/** The touch on the event that opens its panel, from 0 to 1. */
-export function musicEventTouch(elapsed: number): number {
-  return filmTap(elapsed, B.eventTap);
+/** Whether the event is on the day: from the press that starts drawing it. */
+export function musicEventDrawnIn(elapsed: number): boolean {
+  return elapsed >= B.createStart;
 }
 
-/** Whether the event panel is open. */
+/** How far the event has been dragged out to its full length, from 0 to 1, easing as the press moves. */
+export function musicEventDrawn(elapsed: number): number {
+  return easeInOutCubic(filmSpan(elapsed, B.createStart, B.createEnd));
+}
+
+/** Whether the event is still being created: from the press that draws it until Save. */
+export function musicEventCreating(elapsed: number): boolean {
+  return elapsed >= B.createStart && elapsed < B.saveTap;
+}
+
+/** Whether the event panel is open: from letting go of the drawn event until Save is tapped. */
 export function musicPanelOpen(elapsed: number): boolean {
-  return elapsed >= B.eventTap && elapsed < B.saveTap;
+  return elapsed >= B.panelOpen && elapsed < B.saveTap;
+}
+
+/** As much of `title` as has been typed into the event panel at `elapsed`. */
+export function musicTypedTitle(elapsed: number, title: string): string {
+  return filmTyped(elapsed, title, B.typeStart, B.typeEnd);
 }
 
 /** Whether the event has the Thesis project, with its color, Focus rhythm, and music. */
@@ -288,13 +310,13 @@ export function musicEventPanelFrame(
   const picked = musicProjectPicked(elapsed);
   const opened = filmSpan(elapsed, B.musicTap + SCROLL_DELAY_MS, B.musicTap + SCROLL_DELAY_MS + SCROLL_MS);
   return {
-    sheetRise: 1 - (1 - filmSpan(elapsed, B.eventTap, B.eventTap + FILM_SHEET_RISE_MS)) ** 3,
+    sheetRise: 1 - (1 - filmSpan(elapsed, B.panelOpen, B.panelOpen + FILM_SHEET_RISE_MS)) ** 3,
     sheetExpand: easeInOutCubic(filmSpan(elapsed, B.musicTap, B.musicTap + SHEET_EXPAND_MS)),
     pane: projectPane(elapsed),
     picked,
-    typed: title,
-    typing: false,
-    caretOn: false,
+    typed: musicTypedTitle(elapsed, title),
+    typing: elapsed >= B.typeStart && elapsed < B.musicTap,
+    caretOn: filmCaretOn(elapsed, B.typeEnd),
     touches: {
       project: filmTap(elapsed, B.projectTap),
       group: filmTap(elapsed, B.groupTap),
@@ -344,8 +366,12 @@ function musicPlaylistPicker(
   };
 }
 
-/** The event's rail at this moment: its default rhythm until the project is picked, then the project's. */
-export function musicEventRail(elapsed: number): FilmRail {
+/**
+ * The event's rail at this moment: none while it is still being drawn, then its default rhythm once the panel opens on
+ * it, then the project's once the project is picked.
+ */
+export function musicEventRail(elapsed: number): FilmRail | null {
+  if (elapsed < B.panelOpen) return null;
   return musicProjectPicked(elapsed) ? MUSIC_RAIL : MUSIC_DEFAULT_RAIL;
 }
 

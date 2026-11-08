@@ -4,7 +4,6 @@
  * a scene started, so a frame is a pure function of time.
  */
 
-import { cursorClick, cursorRest, type WelcomeCursorSpan, type WelcomeCursorStop } from "./welcome-cursor";
 import { easeInOutCubic, filmSpan } from "./welcome-film";
 
 /** The parody apps the scenes draw, each with a website of the same name. */
@@ -40,10 +39,11 @@ export type BlockerBrowserPage =
 /** What a browser tab carries: the mail inbox, an empty new tab, a site, or the extension's block page. */
 export type BlockerTabContent = "mail" | "blank" | "blocked" | BlockerApp;
 
-/** A browser tab, and whether it is the active one. */
+/** A browser tab, whether it is the active one, and the tap on its close button, from 0 to 1. */
 export interface BlockerTab {
   content: BlockerTabContent;
   active: boolean;
+  closeTouch?: number;
 }
 
 /**
@@ -57,7 +57,7 @@ export type BlockerAddress =
 
 /**
  * One frame of the browser: its tabs, its address bar, the active tab's page and how far it has faded in, how far a
- * page has loaded, from 0 to 1 (0 when none loads). The mouse pointer's clicks on it are each scene's cursor script.
+ * page has loaded (0 when none loads), and the taps on the new tab button and the address bar, each from 0 to 1.
  */
 export interface BlockerBrowserFrame {
   tabs: readonly BlockerTab[];
@@ -65,6 +65,8 @@ export interface BlockerBrowserFrame {
   page: BlockerBrowserPage;
   pageIn: number;
   loading: number;
+  newTabTouch: number;
+  addressTouch: number;
 }
 
 /** What a tab showing `page` carries. */
@@ -95,51 +97,17 @@ export function blockerAddressOf(page: BlockerBrowserPage): BlockerAddress {
   }
 }
 
-/** A browser with a single tab showing `page`. */
+/** A browser with a single tab showing `page`, untouched. */
 export function blockerSingleTab(page: BlockerBrowserPage, pageIn: number): BlockerBrowserFrame {
-  return { tabs: [{ content: blockerTabOf(page), active: true }], address: blockerAddressOf(page), page, pageIn, loading: 0 };
-}
-
-/**
- * The `data-cursor` names of the browser's places the mouse pointer goes to: the active tab's page, the address bar,
- * the new tab button, and Egogram's icon on the phone beside the laptop, which the pointer heads toward as the phone
- * is about to be used. {@link blockerCursorClose} names each tab's close button.
- */
-export const BLOCKER_CURSOR = {
-  page: "browser-page",
-  address: "browser-address",
-  newTab: "browser-new-tab",
-  toPhone: "phone-egogram",
-} as const;
-
-/**
- * The pointer moving off the screen's right edge, heading straight for Egogram's icon on the phone and reaching it at
- * `arrive`, as a mouse pushed toward the phone when the phone is about to be used. The screen's edge hides it as it
- * crosses, and its next place brings it back in from the phone's direction.
- */
-export function blockerEdgeExit(arrive: number): WelcomeCursorStop {
-  return cursorRest(BLOCKER_CURSOR.toPhone, arrive);
-}
-
-/** The `data-cursor` name of the close button of the tab carrying `content`. */
-export function blockerCursorClose(content: BlockerTabContent): string {
-  return `browser-close-${content}`;
-}
-
-/** Where the pointer clicks the address bar: toward its start, where the text is, with the text beam. */
-const ADDRESS_ANCHOR = [0.3, 0.5] as const;
-
-/**
- * A click on the address bar landing at `tap`, after `after` when given, as the browser's text field takes it: the
- * pointer shows the text beam over the field, as a browser shows it.
- */
-export function blockerAddressClick(tap: number, after?: number): WelcomeCursorStop {
-  return cursorClick(BLOCKER_CURSOR.address, tap, { anchor: ADDRESS_ANCHOR, glyph: "text", after });
-}
-
-/** The pointer resting on the page at `arrive`, at `anchor` on it, scrolling it with the wheel through `scrolls`. */
-export function blockerPageRest(arrive: number, anchor: readonly [x: number, y: number], scrolls?: readonly WelcomeCursorSpan[]): WelcomeCursorStop {
-  return cursorRest(BLOCKER_CURSOR.page, arrive, { anchor, busy: scrolls });
+  return {
+    tabs: [{ content: blockerTabOf(page), active: true }],
+    address: blockerAddressOf(page),
+    page,
+    pageIn,
+    loading: 0,
+    newTabTouch: 0,
+    addressTouch: 0,
+  };
 }
 
 /** The prefix of `text` typed by `elapsed`, one character at a time from `start` to `end`. */

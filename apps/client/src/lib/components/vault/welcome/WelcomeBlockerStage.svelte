@@ -28,7 +28,7 @@
     headerHeight: number;
     pan: number;
     header: Snippet;
-    browser: Snippet<[width: number]>;
+    browser: Snippet;
     phone: Snippet<[width: number, height: number]>;
   } = $props();
 
@@ -50,7 +50,7 @@
   const cameraX = $derived(wide ? 0 : pan * (phoneX - (width - phoneW) / 2));
 </script>
 
-<div class="relative overflow-hidden" style:width={`${width}px`} style:height={`${height}px`} data-cursor-root>
+<div class="relative overflow-hidden" style:width={`${width}px`} style:height={`${height}px`}>
   <div class="absolute inset-x-0 top-0 flex items-center justify-center" style:height={`${headerHeight}px`}>
     {@render header()}
   </div>
@@ -61,7 +61,7 @@
     style:width={`${phoneX + phoneW}px`}
     style:transform={`translateX(${-cameraX}px)`}
   >
-    <div class="absolute top-0 left-0" style:width={`${browserW}px`} style:height={`${bodyH}px`}>{@render browser(browserW)}</div>
+    <div class="absolute top-0 left-0" style:width={`${browserW}px`} style:height={`${bodyH}px`}>{@render browser()}</div>
     <div class="absolute" style:left={`${phoneX}px`} style:top={`${(bodyH - phoneH) / 2}px`}>{@render phone(phoneW, phoneH)}</div>
   </div>
 </div>

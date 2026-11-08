@@ -9,16 +9,7 @@
   import appIconUrl from "../../../../../src-tauri/icons/64x64.png";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM } from "$lib/platform";
-  import {
-    BLOCKER_APP_HOSTS,
-    BLOCKER_APP_NAMES,
-    BLOCKER_CURSOR,
-    blockerCursorClose,
-    type BlockerApp,
-    type BlockerBrowserFrame,
-  } from "$lib/vault/welcome-blocker";
-  import { WELCOME_CURSOR_BROWSER_SIZE_PX, welcomeCursorHovered, type WelcomeCursorScript } from "$lib/vault/welcome-cursor";
-  import WelcomeCursor from "./WelcomeCursor.svelte";
+  import { BLOCKER_APP_HOSTS, BLOCKER_APP_NAMES, type BlockerApp, type BlockerBrowserFrame } from "$lib/vault/welcome-blocker";
   import WelcomeParodyFeed from "./WelcomeParodyFeed.svelte";
   import WelcomeParodyIcon, { MAIL_COLORS } from "./WelcomeParodyIcon.svelte";
 
@@ -26,22 +17,8 @@
    * A laptop's browser in the distraction blocker's welcome scenes, with its tabs, and the Ganbaru extension and the
    * browser's menu beside the address bar. A tab shows a parody mail inbox, a new tab, a parody app's website, or the
    * extension's real block page, which is in English only, so its text stays in English in every app language. It fills the room it is given.
-   * A laptop takes a mouse on every build, so a mouse pointer follows `cursor` through it, and the controls it rests on
-   * show their hover, as a browser's do.
    */
-  let {
-    frame,
-    cursor,
-    elapsed,
-    width,
-  }: {
-    frame: BlockerBrowserFrame;
-    /** The scene's pointer script, with its places named from {@link BLOCKER_CURSOR} and {@link blockerCursorClose}. */
-    cursor: WelcomeCursorScript;
-    elapsed: number;
-    /** The width the browser is given, in logical pixels. */
-    width: number;
-  } = $props();
+  let { frame }: { frame: BlockerBrowserFrame } = $props();
 
   const { t } = getLocalization();
 
@@ -81,12 +58,7 @@
   /** Apple's windows keep their controls on the left; other systems keep them on the right. */
   const CONTROLS_LEADING = BUILD_PLATFORM === "macos" || BUILD_PLATFORM === "ios";
 
-  /** The device's frame around the browser's window, in pixels. */
-  const BEZEL = 6;
-
   const page = $derived(frame.page);
-  /** The place the pointer rests on, whose control shows its hover. */
-  const hovered = $derived(welcomeCursorHovered(cursor, elapsed));
 </script>
 
 {#snippet controls()}
@@ -97,12 +69,20 @@
   </span>
 {/snippet}
 
-<div class="h-full rounded-3xl bg-foreground/6" style:padding={`${BEZEL}px`}>
+{#snippet touch(shown: number)}
+  {#if shown > 0}
+    <span
+      class="pointer-events-none absolute top-1/2 left-1/2 size-5 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
+      style:opacity={shown}
+    ></span>
+  {/if}
+{/snippet}
+
+<div class="h-full rounded-3xl bg-foreground/6 p-1.5">
   <div class="relative flex h-full flex-col overflow-hidden rounded-2xl bg-background text-foreground">
     <div class="flex h-8 shrink-0 items-end gap-1 bg-foreground/5 px-1.5">
       {#if CONTROLS_LEADING}{@render controls()}{/if}
       {#each frame.tabs as tab, index (index)}
-        {@const close = blockerCursorClose(tab.content)}
         <span
           class="flex h-6 max-w-32 min-w-0 flex-1 items-center gap-1.5 rounded-t-md px-2 text-[10px]"
           class:bg-background={tab.active}
@@ -122,16 +102,15 @@
               {tab.content === "y" ? t("vaultSetup.blocker.yTab", BLOCKER_APP_NAMES.y) : BLOCKER_APP_NAMES[tab.content]}
             </span>
           {/if}
-          <span class={["-m-0.5 flex shrink-0 rounded-full p-0.5", hovered === close && "bg-foreground/12"]} data-cursor={close}>
+          <span class="relative flex shrink-0">
             <X size={10} strokeWidth={1.8} class="opacity-60" aria-hidden="true" />
+            {@render touch(tab.closeTouch ?? 0)}
           </span>
         </span>
       {/each}
-      <span
-        class={["mb-1 grid size-5 shrink-0 place-items-center rounded-md text-muted-foreground", hovered === BLOCKER_CURSOR.newTab && "bg-foreground/10"]}
-        data-cursor={BLOCKER_CURSOR.newTab}
-      >
+      <span class="relative mb-1 grid size-5 shrink-0 place-items-center rounded-md text-muted-foreground">
         <Plus size={12} strokeWidth={1.8} aria-hidden="true" />
+        {@render touch(frame.newTabTouch)}
       </span>
       <span class="flex-1"></span>
       {#if !CONTROLS_LEADING}{@render controls()}{/if}
@@ -141,13 +120,7 @@
       <ArrowLeft size={12} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
       <ArrowRight size={12} strokeWidth={1.8} class="shrink-0 opacity-50" aria-hidden="true" />
       <RotateCw size={11} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
-      <span
-        class={[
-          "flex h-5 min-w-0 flex-1 items-center gap-1.5 rounded-full px-2.5 text-[10px] text-foreground",
-          hovered === BLOCKER_CURSOR.address ? "bg-foreground/10" : "bg-foreground/6",
-        ]}
-        data-cursor={BLOCKER_CURSOR.address}
-      >
+      <span class="relative flex h-5 min-w-0 flex-1 items-center gap-1.5 rounded-full bg-foreground/6 px-2.5 text-[10px] text-foreground">
         {#if frame.address.kind === "extension"}
           <span class="-ml-2 flex shrink-0 items-center gap-1 rounded-full bg-background px-1.5 py-px">
             <img src={appIconUrl} alt="" class="size-2.5 rounded-[22%]" draggable="false" />
@@ -162,6 +135,7 @@
         {:else}
           <span class="truncate">{frame.address.host}</span>
         {/if}
+        {@render touch(frame.addressTouch)}
       </span>
       <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-[22%]" draggable="false" />
       <Menu size={12} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
@@ -170,7 +144,7 @@
       {/if}
     </div>
 
-    <div class="relative min-h-0 flex-1 overflow-hidden" data-cursor={BLOCKER_CURSOR.page}>
+    <div class="relative min-h-0 flex-1 overflow-hidden">
       <div class="absolute inset-0" style:opacity={frame.pageIn}>
         {#if page.kind === "feed"}
           <WelcomeParodyFeed app={page.app} scroll={page.scroll} travel={FEED_TRAVEL[page.app]} />
@@ -236,6 +210,5 @@
         {/if}
       </div>
     </div>
-    <WelcomeCursor script={cursor} {elapsed} width={width - 2 * BEZEL} size={WELCOME_CURSOR_BROWSER_SIZE_PX} />
   </div>
 </div>

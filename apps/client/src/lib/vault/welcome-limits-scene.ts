@@ -9,16 +9,11 @@
 import {
   BLOCKER_APP_HOSTS,
   BLOCKER_APP_OPEN_MS,
-  BLOCKER_CURSOR,
   BLOCKER_MAIL,
-  blockerAddressClick,
   blockerAppOpen,
   blockerCaretOn,
-  blockerCursorClose,
-  blockerEdgeExit,
   blockerNoticeShown,
   blockerPageIn,
-  blockerPageRest,
   blockerPan,
   blockerTyped,
   type BlockerApp,
@@ -30,7 +25,6 @@ import {
   type BlockerTab,
   type BlockerTabContent,
 } from "./welcome-blocker";
-import { cursorClick, WELCOME_CURSOR_TRAVEL_MS, type WelcomeCursorScript } from "./welcome-cursor";
 import { easeInOutCubic, filmSpan, filmTap } from "./welcome-film";
 
 /** The daily limit's budget, and how much of it each device uses, in minutes. */
@@ -57,38 +51,27 @@ export const LIMITS_BEATS = {
   retryNotice: 10900,
   retryAgainTap: 11500,
   retryAgainHome: 12050,
-  /** The camera turns back to the browser on a narrow canvas. */
-  browserReturn: 12500,
-  /**
-   * A tap opens a new tab in the browser, once the pointer has come back in from the screen's edge as the camera turns,
-   * then Y's address is typed, and the page loads into the block page.
-   */
-  newTabTap: 13550,
-  yTypeStart: 13800,
-  yTypeEnd: 14250,
-  yLoadStart: 14400,
-  yBlocked: 14700,
+  /** A tap opens a new tab in the browser, Y's address is typed, and the page loads into the block page. */
+  newTabTap: 13300,
+  yTypeStart: 13550,
+  yTypeEnd: 14000,
+  yLoadStart: 14150,
+  yBlocked: 14450,
   /** A tap on the address bar, Bluedit's address is typed, and the page loads into its block page. */
-  addressTap: 15650,
-  blueditTypeStart: 15850,
-  blueditTypeEnd: 16500,
-  blueditLoadStart: 16650,
-  blueditBlocked: 16950,
-  end: 18850,
+  addressTap: 15400,
+  blueditTypeStart: 15600,
+  blueditTypeEnd: 16250,
+  blueditLoadStart: 16400,
+  blueditBlocked: 16700,
+  end: 18600,
 } as const;
 
 const B = LIMITS_BEATS;
 
-/** When the browser's pointer has gone off the screen's right edge toward the phone, once Y's tab is closed. */
-const POINTER_TO_PHONE = B.yCloseTap + WELCOME_CURSOR_TRAVEL_MS;
-
-/**
- * Where the camera points on a narrow canvas: the phone for Egogram, turning to it as the pointer leaves for it, then
- * the browser for the sites.
- */
+/** Where the camera points on a narrow canvas: the phone for Egogram, then the browser for the sites. */
 const PAN_MOVES: readonly BlockerPanMove[] = [
-  { start: POINTER_TO_PHONE, to: 1 },
-  { start: B.browserReturn, to: 0 },
+  { start: 4400, to: 1 },
+  { start: 12500, to: 0 },
 ];
 
 /** When the phone's use of the budget starts, once the app has opened. */
@@ -136,7 +119,7 @@ function beforeAttempt(index: number): { page: BlockerBrowserPage; tab: BlockerT
 }
 
 /** The browser while a site of the limit is typed into it, loads, and is blocked. */
-function attemptFrame(elapsed: number, index: number, attempt: SiteAttempt): Omit<BlockerBrowserFrame, "pageIn"> {
+function attemptFrame(elapsed: number, index: number, attempt: SiteAttempt): Omit<BlockerBrowserFrame, "pageIn" | "newTabTouch" | "addressTouch"> {
   const mail: BlockerTab = { content: "mail", active: false };
   const host = BLOCKER_APP_HOSTS[attempt.app];
   if (elapsed >= attempt.blocked) {
@@ -158,36 +141,22 @@ function attemptFrame(elapsed: number, index: number, attempt: SiteAttempt): Omi
  */
 export function limitsBrowser(elapsed: number): BlockerBrowserFrame {
   const pageIn = blockerPageIn(elapsed, [B.yCloseTap, B.newTabTap, ...SITE_ATTEMPTS.map((attempt) => attempt.blocked)]);
+  const touches = { pageIn, newTabTouch: filmTap(elapsed, B.newTabTap), addressTouch: filmTap(elapsed, B.addressTap) };
   if (elapsed < B.yCloseTap) {
     const scroll = easeInOutCubic(filmSpan(elapsed, B.browserUseStart, B.browserUseEnd));
     const tabs: BlockerTab[] = [
       { content: "mail", active: false },
-      { content: "y", active: true },
+      { content: "y", active: true, closeTouch: filmTap(elapsed, B.yCloseTap) },
     ];
-    return { tabs, address: { kind: "host", host: BLOCKER_APP_HOSTS.y }, page: { kind: "feed", app: "y", scroll }, loading: 0, pageIn };
+    return { tabs, address: { kind: "host", host: BLOCKER_APP_HOSTS.y }, page: { kind: "feed", app: "y", scroll }, loading: 0, ...touches };
   }
   const index = SITE_ATTEMPTS.findLastIndex((attempt) => elapsed >= attempt.tap);
   const attempt = SITE_ATTEMPTS[index];
   if (!attempt) {
-    return { tabs: [{ content: "mail", active: true }], address: { kind: "host", host: BLOCKER_MAIL.host }, page: { kind: "mail" }, loading: 0, pageIn };
+    return { tabs: [{ content: "mail", active: true }], address: { kind: "host", host: BLOCKER_MAIL.host }, page: { kind: "mail" }, loading: 0, ...touches };
   }
-  return { ...attemptFrame(elapsed, index, attempt), pageIn };
+  return { ...attemptFrame(elapsed, index, attempt), ...touches };
 }
-
-/**
- * The browser's mouse pointer: it rests on Y's feed as it scrolls, closes Y's tab once the scrolling stops, and leaves
- * past the screen's right edge toward the phone while the phone is in use. As the camera turns back to the laptop, it
- * comes back in from that edge to open a new tab, moves off the tab strip as the tabs shift, and clicks the address bar
- * for Bluedit's address.
- */
-export const LIMITS_CURSOR: WelcomeCursorScript = [
-  blockerPageRest(0, [0.6, 0.55], [{ start: B.browserUseStart, end: B.browserUseEnd }]),
-  cursorClick(blockerCursorClose("y"), B.yCloseTap, { after: B.browserUseEnd }),
-  blockerEdgeExit(POINTER_TO_PHONE),
-  cursorClick(BLOCKER_CURSOR.newTab, B.newTabTap, { after: B.browserReturn }),
-  blockerPageRest(B.newTabTap + WELCOME_CURSOR_TRAVEL_MS, [0.5, 0.35]),
-  blockerAddressClick(B.addressTap, B.yBlocked),
-];
 
 /** The app open on the phone at this moment, or null on the home screen. */
 export function limitsPhoneApp(elapsed: number): BlockerPhoneApp | null {

@@ -4,8 +4,7 @@
 
   /**
    * The desktop welcome scenes' mouse pointer. It covers the scene's drawing, finds each place of `script` by the
-   * `data-cursor` names inside the drawing, or inside the nearest enclosing `data-cursor-root` so it can head for a
-   * place past its own drawing's edge, which hides it as it crosses, and glides between them, so it lands on a control wherever the drawing lays
+   * `data-cursor` names inside the drawing, and glides between them, so it lands on a control wherever the drawing lays
    * it out. Once it lands it stays put while the drawing scrolls or changes under it, unless its place follows an element
    * it drags. Elements laid out but hidden are not places it can go. A held button shows as a ring under a slightly
    * smaller pointer, and the pointer fades away while it rests idle for a while. It keeps the system's black arrow with a
@@ -57,7 +56,7 @@
 
   $effect(() => {
     const { to, progress } = frame;
-    const root = layer?.closest("[data-cursor-root]") ?? layer?.parentElement;
+    const root = layer?.parentElement;
     if (!layer || !root) return;
     if (heading !== to) {
       heading = to;

@@ -5,7 +5,6 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import {
-    BLOCKING_CURSOR,
     BLOCKING_DAY_VIEW,
     BLOCKING_EVENT,
     BLOCKING_RAIL,
@@ -141,8 +140,8 @@
       </div>
     </div>
   {/snippet}
-  {#snippet browser(browserWidth)}
-    <WelcomeBlockerBrowser frame={blockingBrowser(elapsed)} cursor={BLOCKING_CURSOR} {elapsed} width={browserWidth} />
+  {#snippet browser()}
+    <WelcomeBlockerBrowser frame={blockingBrowser(elapsed)} />
   {/snippet}
   {#snippet phone(phoneWidth, phoneHeight)}
     <WelcomeBlockerPhone

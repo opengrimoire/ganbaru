@@ -1,7 +1,7 @@
 <script lang="ts">
   import appIconUrl from "../../../../../src-tauri/icons/64x64.png";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { BLOCKER_APP_NAMES, BLOCKER_CURSOR, type BlockerApp, type BlockerNotice, type BlockerPhoneApp } from "$lib/vault/welcome-blocker";
+  import { BLOCKER_APP_NAMES, type BlockerApp, type BlockerNotice, type BlockerPhoneApp } from "$lib/vault/welcome-blocker";
   import WelcomeAndroidNotification from "./WelcomeAndroidNotification.svelte";
   import WelcomeParodyFeed from "./WelcomeParodyFeed.svelte";
   import WelcomeParodyIcon from "./WelcomeParodyIcon.svelte";
@@ -96,7 +96,7 @@
         style:top={`${center.y - iconSize / 2}px`}
         style:width={`${cellW}px`}
       >
-        <span class="relative" data-cursor={homeApp === "egogram" ? BLOCKER_CURSOR.toPhone : undefined}>
+        <span class="relative">
           {#if homeApp === null}
             {@render placeholder()}
           {:else}

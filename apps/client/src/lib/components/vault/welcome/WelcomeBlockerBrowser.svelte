@@ -120,7 +120,7 @@
       <RotateCw size={11} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
       <span class="relative flex h-5 min-w-0 flex-1 items-center gap-1.5 rounded-full bg-foreground/6 px-2.5 text-[10px] text-foreground">
         {#if frame.address.kind === "extension"}
-          <span class="flex shrink-0 items-center gap-1 rounded-full bg-background px-1.5 py-px">
+          <span class="-ml-2 flex shrink-0 items-center gap-1 rounded-full bg-background px-1.5 py-px">
             <img src={appIconUrl} alt="" class="size-2.5 rounded-[22%]" draggable="false" />
             {t("common.appName")}
           </span>

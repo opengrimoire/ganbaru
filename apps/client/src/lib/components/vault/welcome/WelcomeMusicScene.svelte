@@ -1,8 +1,8 @@
 <script lang="ts" module>
   import { calendarZoomGridMinutesForPercent, calendarZoomHourHeightForPercent } from "$lib/calendar/zoom-levels";
 
-  /** The Calendar zoom the scene's day is drawn at, the Calendar's default level, as in the Calendar film. */
-  const SCENE_ZOOM_PERCENT = 100;
+  /** The Calendar zoom the scene's day is drawn at, zoomed in from the default so the hour long event reads tall. */
+  const SCENE_ZOOM_PERCENT = 200;
   const HOUR_PX = calendarZoomHourHeightForPercent(SCENE_ZOOM_PERCENT);
   /** How the event snaps while it is dragged out, in minutes, as the Calendar snaps at the scene's zoom. */
   const CREATE_SNAP_MINUTES = calendarZoomGridMinutesForPercent(SCENE_ZOOM_PERCENT);
@@ -156,8 +156,8 @@
   const BREAK_PULSE_MS = 1500;
   /** How quickly the press that draws the event fades in and out. */
   const PRESS_FADE_MS = 140;
-  /** Where the visible part of the day starts, as if the grid were scrolled to the morning. */
-  const VIEW_START = 8 * 60 + 20;
+  /** Where the visible part of the day starts, as if the grid were scrolled so the event sits near the top. */
+  const VIEW_START = 8 * 60 + 50;
 
   /** Palette slots, so the drawing follows the active theme's event colors, as the Calendar film picks them. */
   const BLUE = 18;
@@ -678,7 +678,7 @@
             </div>
           </div>
 
-          <div class="relative flex min-h-0 flex-1">
+          <div class="relative flex min-h-0 flex-1 overflow-hidden">
             {#if scrollThumb.height > 0}
               <div class="absolute inset-y-0 right-0 z-48" style:width={`${CALENDAR_SCROLLBAR_TRACK_PX}px`}>
                 <div

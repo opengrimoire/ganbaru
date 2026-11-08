@@ -4,7 +4,7 @@
  * and its panel opens, where picking the Thesis project gives the event the project's music for each Focus phase, its
  * title is typed, and the Music section opens and its Focus and short break pickers show their playlists. Once the
  * event is saved, its Focus starts on its own, and the app's notification says the work playlist's track autoplays,
- * then the break playlist's video once the break starts.
+ * then the break playlist's video once the break starts, and the scene ends as the break does.
  */
 
 import type {
@@ -22,6 +22,7 @@ import {
   filmTap,
   filmTyped,
   monotoneCurve,
+  type FilmBreak,
   type FilmKeyframe,
   type FilmRail,
   type FilmSpan,
@@ -95,7 +96,7 @@ export const MUSIC_DEFAULT_RAIL: FilmRail = filmDayRails([{ ...MUSIC_EVENT, pres
 export const MUSIC_RAIL: FilmRail = filmDayRails([{ ...MUSIC_EVENT, preset: MUSIC_PROJECT_PRESET }])[0];
 
 /** The event's first break, where the player switches playlists. */
-const FIRST_BREAK: FilmSpan = MUSIC_RAIL.breaks[0];
+const FIRST_BREAK: FilmBreak = MUSIC_RAIL.breaks[0];
 
 /** Moments of the scene, in milliseconds from its start. A tap's beat is the moment it lands. */
 export const MUSIC_BEATS = {
@@ -131,14 +132,13 @@ export const MUSIC_BEATS = {
   saveTap: 19400,
   /** The event's Focus starts on its own, and the app's notification says which work track autoplays. */
   focusStart: 20200,
-  focusNoticeIn: 20400,
-  focusNoticeOut: 23400,
-  /** The break starts, and the notification says which break video autoplays, then the next focus starts. */
-  breakStart: 24000,
-  breakNoticeIn: 24200,
-  breakNoticeOut: 27200,
-  breakEnd: 27600,
-  end: 28300,
+  focusNoticeIn: 20600,
+  focusNoticeOut: 25000,
+  /** The break starts, and the notification says which break video autoplays. The scene ends as the break does. */
+  breakStart: 25800,
+  breakNoticeIn: 26200,
+  breakNoticeOut: 30600,
+  end: 31400,
 } as const;
 
 const B = MUSIC_BEATS;
@@ -184,8 +184,7 @@ const CLOCK: readonly FilmKeyframe[] = [
   [B.saveTap, MUSIC_EVENT.start - 2],
   [B.focusStart, MUSIC_EVENT.start],
   [B.breakStart, FIRST_BREAK.start],
-  [B.breakEnd, FIRST_BREAK.end],
-  [B.end, FIRST_BREAK.end + 6],
+  [B.end, FIRST_BREAK.end],
 ];
 
 /** The tracks of `source`'s folder. */
@@ -380,24 +379,24 @@ export function musicClock(elapsed: number): number {
   return monotoneCurve(CLOCK, elapsed);
 }
 
-/** The Focus phase the current time is in, or null outside the event's Focus. */
+/**
+ * The Focus phase at `elapsed`, or null before the event's Focus starts: its first focus, then its first break, which
+ * lasts to the scene's end so the last frame shows the break running out.
+ */
 export function musicPhase(elapsed: number): WelcomeEventPanelMusicPhase | null {
   if (elapsed < B.focusStart) return null;
-  const now = musicClock(elapsed);
-  const pause = MUSIC_RAIL.breaks.find((span) => now >= span.start && now < span.end);
-  if (pause) return pause.long ? "long-break" : "short-break";
-  return now >= MUSIC_RAIL.start && now < MUSIC_RAIL.end ? "focus" : null;
+  if (elapsed < B.breakStart) return "focus";
+  return FIRST_BREAK.long ? "long-break" : "short-break";
 }
 
 /** The current phase's remaining and total seconds, as the Focus ring counts them; zeros outside the event's Focus. */
 export function musicPhaseSeconds(elapsed: number): { remaining: number; total: number } {
   const phase = musicPhase(elapsed);
   if (!phase) return { remaining: 0, total: 0 };
-  const now = musicClock(elapsed);
-  const spans = phase === "focus" ? MUSIC_RAIL.focus : MUSIC_RAIL.breaks;
-  const span = spans.find((entry) => now >= entry.start && now < entry.end);
+  const span = phase === "focus" ? MUSIC_RAIL.focus[0] : FIRST_BREAK;
   if (!span) return { remaining: 0, total: 0 };
-  return { remaining: Math.max(0, Math.round((span.end - now) * 60)), total: Math.round((span.end - span.start) * 60) };
+  const remaining = Math.max(0, Math.round((span.end - musicClock(elapsed)) * 60));
+  return { remaining, total: Math.round((span.end - span.start) * 60) };
 }
 
 /** The focus the rail has recorded up to the current time, in minutes of the day, once the event's Focus runs. */
@@ -432,11 +431,7 @@ export interface MusicNowPlaying extends MusicSceneItem {
 export function musicNowPlaying(elapsed: number): MusicNowPlaying | null {
   if (elapsed < B.focusStart) return null;
   const [since, source, row, playlist]: [number, MusicSceneSource, number, MusicScenePlaylist] =
-    elapsed >= B.breakEnd
-      ? [B.breakEnd, "local", 0, "workFocus"]
-      : elapsed >= B.breakStart
-        ? [B.breakStart, "youtube", 1, "breakCalm"]
-        : [B.focusStart, "local", 2, "workFocus"];
+    elapsed >= B.breakStart ? [B.breakStart, "youtube", 1, "breakCalm"] : [B.focusStart, "local", 2, "workFocus"];
   return { source, row, playlist, progress: Math.min(1, (elapsed - since) * TRACK_PROGRESS_PER_MS) };
 }
 

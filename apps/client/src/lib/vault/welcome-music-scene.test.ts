@@ -204,14 +204,16 @@ describe("welcome music scene", () => {
     expect(musicClock(B.focusStart)).toBe(MUSIC_EVENT.start);
   });
 
-  it("runs focus, then the first break, then focus again", () => {
+  it("runs focus, then the first break, and ends as the break runs out", () => {
     expect(musicPhase(B.focusStart - 1)).toBeNull();
     expect(musicPhase(B.focusStart)).toBe("focus");
     expect(musicPhase(B.breakStart)).toBe("short-break");
-    expect(musicPhase(B.breakEnd)).toBe("focus");
+    expect(musicPhase(B.end)).toBe("short-break");
     const seconds = musicPhaseSeconds(B.breakStart);
     expect(seconds.total).toBe(Math.round((MUSIC_RAIL.breaks[0].end - MUSIC_RAIL.breaks[0].start) * 60));
     expect(seconds.remaining).toBe(seconds.total);
+    expect(musicPhaseSeconds(B.end).remaining).toBe(0);
+    expect(musicClock(B.end)).toBe(MUSIC_RAIL.breaks[0].end);
   });
 
   it("plays each phase's project playlist", () => {
@@ -241,7 +243,7 @@ describe("welcome music scene", () => {
     expect(musicNotification(B.focusNoticeIn + 400)).toBe(1);
     expect(musicNotification(B.breakStart)).toBe(0);
     expect(musicNotification(B.breakNoticeIn + 400)).toBe(1);
-    expect(musicNotification(B.breakEnd)).toBe(0);
+    expect(musicNotification(B.end)).toBe(0);
     for (const elapsed of moments()) {
       const shown = musicNotification(elapsed);
       expect(shown).toBeGreaterThanOrEqual(0);

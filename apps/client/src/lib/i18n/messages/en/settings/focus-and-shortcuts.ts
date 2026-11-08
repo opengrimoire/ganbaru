@@ -49,7 +49,7 @@ export const focusAndShortcuts = {
       "The break screen will hide the extension shortcut. You will not be able to add extra break time.",
     experimentalHeading: "Experimental",
     adaptivePreset: "Adaptive Pomodoro",
-    adaptivePresetDescription: "Offer the Adaptive preset, which plans each focus and break from your past sessions",
+    adaptivePresetDescription: "Add Adaptive to the Pomodoro choices, a preset that adjusts focus and break lengths to how your sessions go",
   },
   shortcuts: {
     search: "Search shortcuts",

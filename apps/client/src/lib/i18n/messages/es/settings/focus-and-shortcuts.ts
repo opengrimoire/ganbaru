@@ -59,7 +59,7 @@ export const focusAndShortcuts = {
       "La pantalla de descanso ocultará el atajo de extensión. No podrás agregar tiempo extra de descanso.",
     experimentalHeading: "Experimental",
     adaptivePreset: "Pomodoro adaptativo",
-    adaptivePresetDescription: "Ofrece el preajuste Adaptativo, que planifica cada enfoque y descanso a partir de tus sesiones anteriores",
+    adaptivePresetDescription: "Agrega Adaptativo a las opciones de Pomodoro, un preajuste que ajusta la duración del enfoque y los descansos según cómo van tus sesiones",
   },
   shortcuts: {
     search: "Buscar atajos",

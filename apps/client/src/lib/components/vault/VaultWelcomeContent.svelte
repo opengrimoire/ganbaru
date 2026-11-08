@@ -13,6 +13,7 @@
   import WelcomeCalendarStep from "./welcome/WelcomeCalendarStep.svelte";
   import WelcomeLanguageStep from "./welcome/WelcomeLanguageStep.svelte";
   import WelcomeLimitsStep from "./welcome/WelcomeLimitsStep.svelte";
+  import WelcomeMusicStep from "./welcome/WelcomeMusicStep.svelte";
 
   /**
    * The welcome screens before vault setup: the language, one per feature, then the app itself. Every screen shares
@@ -65,6 +66,8 @@
           <WelcomeBlockingStep />
         {:else if current === "limits"}
           <WelcomeLimitsStep />
+        {:else if current === "music"}
+          <WelcomeMusicStep />
         {:else}
           <WelcomeAboutStep />
         {/if}

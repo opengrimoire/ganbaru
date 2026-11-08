@@ -48,6 +48,12 @@ export const vaultSetup = {
       "Una breve animación de un límite diario de una hora para redes sociales que incluye los sitios de Y y Egogram y la app de Egogram. El tiempo en Y en el navegador de una laptop llena parte de una barra; luego se cierra la pestaña de Y y Egogram en un teléfono llena el resto, cada uno con su color. Al agotarse la hora, Egogram vuelve a la pantalla de inicio con una notificación, y cada vez que se abre de nuevo vuelve ahí al instante. De vuelta en la laptop, Y escrito en una pestaña nueva abre la página de bloqueo de Ganbaru, y lo mismo pasa con el sitio de Egogram.",
     limitName: "Redes sociales",
   },
+  music: {
+    headline: "Música que sigue tu plan",
+    body: "Mezcla tus archivos y YouTube en playlists, y cada proyecto pone la adecuada para trabajar y para descansar.",
+    sceneDescription:
+      "Una breve animación del creador de playlists: una canción de Música local se agrega a la playlist Trabajo (concentración) y luego un video de YouTube a Descanso (tranquilo). En el Calendario, al elegir el proyecto Tesis para un evento, su música se llena con la playlist del proyecto para la concentración, los descansos cortos y los descansos largos. Al empezar el Pomodoro del evento, el reproductor pone una canción local de Trabajo (concentración), cambia al video de YouTube de Descanso (tranquilo) cuando empieza el descanso y vuelve a Trabajo (concentración) al terminar.",
+  },
   about: {
     headline: "Gratis y de código abierto",
     body: "Tus datos se quedan en tus dispositivos y se sincronizan directamente entre ellos, sin cuentas, anuncios ni telemetría. App y código son tuyos para siempre.",

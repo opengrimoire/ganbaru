@@ -1,0 +1,59 @@
+/**
+ * The state of the welcome scenes' drawn event panel at one moment. A scene computes it from its own beats, so the
+ * panel is a pure function of the scene's time, the same in the Calendar film and in the Music scene.
+ */
+
+import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
+
+/** The phases an event's music names a playlist for, in the event panel's order. */
+export type WelcomeEventPanelMusicPhase = "focus" | "short-break" | "long-break";
+
+/** One phase row of the panel's Music section: the playlist it takes and how far it has taken it. */
+export interface WelcomeEventPanelMusicRow {
+  phase: WelcomeEventPanelMusicPhase;
+  /** The playlist's icon name and its localized name. */
+  playlistIcon: string;
+  playlistName: string;
+  /** How far the row has gone from no playlist to this one, from 0 to 1. */
+  fill: number;
+}
+
+/** The panel's Music section, open below its header. */
+export interface WelcomeEventPanelMusic {
+  /** Whether the event plays music, so the section's header is on and sums up its phases. */
+  enabled: boolean;
+  /** How far the section's body has opened, from 0 to 1. */
+  expanded: number;
+  rows: readonly WelcomeEventPanelMusicRow[];
+}
+
+/** The touches on the panel's controls, each from 0 to 1 as it shows. */
+export interface WelcomeEventPanelTouches {
+  project: number;
+  group: number;
+  projectPick: number;
+  music: number;
+  save: number;
+}
+
+/** Everything the drawn event panel shows at one moment. */
+export interface WelcomeEventPanelFrame {
+  /** How far the phone's sheet has risen to its peek, from 0 to 1. */
+  sheetRise: number;
+  /** How far the phone's sheet has gone on from its peek to its full height, from 0 to 1. */
+  sheetExpand: number;
+  /** The project picker's open pane, or null while it is closed. */
+  pane: "groups" | "projects" | null;
+  /** Whether the event has its project's color and Focus rhythm. */
+  picked: boolean;
+  /** The typed title, and whether the title has focus and its caret shows. */
+  typed: string;
+  typing: boolean;
+  caretOn: boolean;
+  touches: WelcomeEventPanelTouches;
+  preset: PomodoroPresetKey;
+  /** The Music section's state; null keeps it collapsed and off, as on an event without a project's music. */
+  music: WelcomeEventPanelMusic | null;
+  /** How far the panel's body has scrolled to its end when it cannot show everything, from 0 to 1. */
+  scroll: number;
+}

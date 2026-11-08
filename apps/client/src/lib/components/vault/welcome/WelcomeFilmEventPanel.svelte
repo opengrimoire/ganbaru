@@ -50,29 +50,23 @@
     pickEventPanelLayout,
     type EventPanelAnchor,
   } from "$lib/utils/responsive";
-  import {
-    FILM_BEATS,
-    FILM_CHAIN,
-    FILM_DEFAULT_PRESET,
-    filmPanelOpen,
-    filmProjectPicked,
-    filmProjectPicker,
-    filmSheetRise,
-    filmTap,
-    filmTypedTitle,
-  } from "$lib/vault/welcome-film";
+  import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import VolumeX from "@lucide/svelte/icons/volume-x";
+  import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
+  import AudioLinesXIcon from "$lib/components/music/soundscape/AudioLinesXIcon.svelte";
+  import type { WelcomeEventPanelFrame, WelcomeEventPanelMusicPhase } from "$lib/vault/welcome-event-panel";
 
   /**
-   * The event panel of the welcome film, drawn with the event panel's own classes: it opens on the event just drawn,
-   * where a project is picked from the project picker, which gives the event the project's color and Focus rhythm, then
-   * the title is typed and the event saved. On desktop the panel floats over the Calendar as it would in a window the
-   * size of the canvas, with the picker's dropdown and its projects flyout, except that where the Calendar would
-   * center it, the film keeps it to the right so the event stays in view; on a phone it is the bottom sheet, risen to
-   * its peek over the grid with Save in its header, with the picker's full screen dialog. Every frame is a function of
-   * `elapsed`.
+   * The event panel of the welcome scenes, drawn with the event panel's own classes: it opens on an event, where a
+   * project is picked from the project picker, which gives the event the project's color, Focus rhythm, and music, a
+   * title may be typed and the Music section opened, and the event is saved. On desktop the panel floats over the
+   * Calendar as it would in a window the size of the canvas, with the picker's dropdown and its projects flyout, except
+   * that where the Calendar would center it, the scene keeps it to the right so the event stays in view; on a phone it
+   * is the bottom sheet, risen to its peek over the grid with Save in its header, with the picker's full screen dialog.
+   * Every frame is a function of `frame`, which the scene computes from its time.
    */
   let {
-    elapsed,
+    frame,
     canvasWidth,
     canvasHeight,
     titleBarHeight,
@@ -83,7 +77,7 @@
     projectColor,
     title,
   }: {
-    elapsed: number;
+    frame: WelcomeEventPanelFrame;
     canvasWidth: number;
     canvasHeight: number;
     /** The height of the bar the panel keeps clear, as the window's title bar. */
@@ -130,8 +124,11 @@
   const METADATA_ICON_SIZE = 11;
   const METADATA_ICON_CLASS = "shrink-0 translate-y-[0.5px]";
   const SECTION_ICON_SIZE = 14;
-  /** How long the caret stays on and off once typing stops. */
-  const CARET_BLINK_MS = 530;
+  /** The Music section's select triggers, as the event panel styles them. */
+  const MUSIC_TRIGGER_CLASS = "flex h-7 w-full min-w-0 items-center gap-2 rounded border-0 bg-black/5 px-2.5 text-left text-[0.8rem] font-normal text-event-panel-input-text dark:bg-black/15";
+  const MUSIC_ICON_SIZE = 14;
+  const MUSIC_ICON_STROKE_WIDTH = 1.5;
+  const showSounds = platformHasCapability(BUILD_PLATFORM_PROFILE, "music.soundscapes");
 
   type FilmLabel = "university" | "health" | "personal" | "thesis" | "assignments";
   interface FilmPickerRow {
@@ -159,21 +156,19 @@
     summary: string;
   }
 
-  const open = $derived(filmPanelOpen(elapsed));
-  const pane = $derived(filmProjectPicker(elapsed));
-  const picked = $derived(filmProjectPicked(elapsed));
-  const typed = $derived(filmTypedTitle(elapsed, title));
-  const typing = $derived(elapsed >= FILM_BEATS.typeStart);
-  const caretOn = $derived(
-    elapsed < FILM_BEATS.typeEnd || Math.floor((elapsed - FILM_BEATS.typeEnd) / CARET_BLINK_MS) % 2 === 0,
-  );
-  const projectTouch = $derived(filmTap(elapsed, FILM_BEATS.projectTap));
-  const groupTouch = $derived(filmTap(elapsed, FILM_BEATS.groupTap));
-  const pickTouch = $derived(filmTap(elapsed, FILM_BEATS.projectPick));
-  const saveTouch = $derived(filmTap(elapsed, FILM_BEATS.createSaved));
+  const pane = $derived(frame.pane);
+  const picked = $derived(frame.picked);
+  const typed = $derived(frame.typed);
+  const typing = $derived(frame.typing);
+  const caretOn = $derived(frame.caretOn);
+  const projectTouch = $derived(frame.touches.project);
+  const groupTouch = $derived(frame.touches.group);
+  const pickTouch = $derived(frame.touches.projectPick);
+  const saveTouch = $derived(frame.touches.save);
+  const music = $derived(frame.music);
 
   const color = $derived(picked ? projectColor : undefined);
-  const preset = $derived<PomodoroPresetKey>(picked ? FILM_CHAIN[0].preset : FILM_DEFAULT_PRESET);
+  const preset = $derived<PomodoroPresetKey>(frame.preset);
   const dateLabel = $derived(formatDateLabel(localization.locale, date, { weekday: "short", month: "short", day: "numeric" }));
   const startLabel = $derived(displayCanonicalTime(canonicalTime(start), preferences.calendarTimeFormat));
   const endLabel = $derived(displayCanonicalTime(canonicalTime(end), preferences.calendarTimeFormat));
@@ -184,8 +179,15 @@
       ? [{ key: "notifications", icon: Bell, label: t("calendar.notifications.title"), summary: formatNotificationOffset(0, t) }]
       : []),
     { key: "repeat", icon: Repeat, label: t("calendar.recurrence.repeat"), summary: "" },
-    ...(musicAssignmentsAvailable ? [{ key: "music", icon: Music, label: t("calendar.eventPanel.music"), summary: "" }] : []),
   ]);
+  /** The Music section's summary: the phases that play something once the event has its project's music. */
+  const musicSummary = $derived.by(() => {
+    if (!music?.enabled) return "";
+    const plays = (phase: WelcomeEventPanelMusicPhase) => music.rows.some((row) => row.phase === phase);
+    return t("calendar.eventPanel.musicPhases", plays("focus"), plays("short-break"), plays("long-break"));
+  });
+  /** The Music section's body, measured so it opens by its own height as the section slides open. */
+  let musicBodyHeight = $state(0);
 
   /** The panel's parts, measured, so it sizes and places itself as the event panel does. */
   let barHeight = $state(0);
@@ -221,11 +223,14 @@
     const summaryBottom = canvasRect(layer, peekEndElement).bottom - canvasRect(layer, sheetElement).top;
     peekHeight = Math.round(summaryBottom + EVENT_PANEL_SHEET_PEEK_PADDING_PX);
   });
-  const sheetVisible = $derived(peekHeight * filmSheetRise(elapsed));
+  const sheetVisible = $derived(peekHeight * frame.sheetRise);
+  /** The body's scroll: the panel's visible height, so the scene can scroll its body to the end. */
+  let viewportHeight = $state(0);
+  const scrollOffset = $derived(constrained ? frame.scroll * Math.max(0, contentHeight - viewportHeight) : 0);
 
   const panelStyle = $derived.by(() => {
     if (mobileLayout) {
-      return `left: 0; right: 0; bottom: 0; height: calc(100% - ${EVENT_PANEL_SHEET_TOP_GAP}); transform: translateY(calc(100% - ${sheetVisible}px));`;
+      return `left: 0; right: 0; bottom: 0; height: calc(100% - ${EVENT_PANEL_SHEET_TOP_GAP}); transform: translateY(calc((100% - ${sheetVisible}px) * ${1 - frame.sheetExpand}));`;
     }
     if (layout === "fullscreen") return `left: ${EDGE}px; right: ${EDGE}px; top: ${minTop}px; bottom: ${EDGE}px;`;
     const heightCss = constrained ? `height: ${Math.round(heightLimit)}px;` : "";
@@ -376,6 +381,11 @@
     }
   }
 
+  /** A phase's name, as the Music section labels its rows. */
+  function phaseLabel(phase: WelcomeEventPanelMusicPhase): string {
+    return t(`music.assignment.phase.${phase}`);
+  }
+
   function rowLabel(label: FilmLabel): string {
     switch (label) {
       case "university": return t("vaultSetup.film.universityGroup");
@@ -440,306 +450,364 @@
   </div>
 {/snippet}
 
-{#if open}
-  <div bind:this={layer} class="pointer-events-none absolute inset-0 z-49" style:visibility={placed ? undefined : "hidden"} aria-hidden="true">
-    <div
-      bind:this={sheetElement}
-      class={cn("panel-root absolute flex flex-col", mobileLayout && "rounded-t-floating")}
-      data-mobile={mobileLayout || undefined}
-      style="box-shadow: 0 0 2px 0px var(--panel-edge), 0 1px 2px var(--panel-shadow); background-color: var(--panel-bg); {panelStyle}"
-    >
-      {#if mobileLayout}
-        <!-- The sheet's header: the grabber, then close and Save. -->
-        <div bind:offsetHeight={barHeight} class="sticky top-0 z-10 shrink-0" style="background-color: var(--panel-bg);">
-          <div class="flex justify-center pt-2 pb-1.5">
-            <div class="h-1 w-9 rounded-full bg-muted-foreground/40"></div>
+<div bind:this={layer} class="pointer-events-none absolute inset-0 z-49" style:visibility={placed ? undefined : "hidden"} aria-hidden="true">
+  <div
+    bind:this={sheetElement}
+    class={cn("panel-root absolute flex flex-col", mobileLayout && "rounded-t-floating")}
+    data-mobile={mobileLayout || undefined}
+    style="box-shadow: 0 0 2px 0px var(--panel-edge), 0 1px 2px var(--panel-shadow); background-color: var(--panel-bg); {panelStyle}"
+  >
+    {#if mobileLayout}
+      <!-- The sheet's header: the grabber, then close and Save. -->
+      <div bind:offsetHeight={barHeight} class="sticky top-0 z-10 shrink-0" style="background-color: var(--panel-bg);">
+        <div class="flex justify-center pt-2 pb-1.5">
+          <div class="h-1 w-9 rounded-full bg-muted-foreground/40"></div>
+        </div>
+        <div class="flex items-center gap-1 px-1">
+          <div class="panel-chrome flex h-12 w-12 shrink-0 items-center justify-center rounded-floating-item text-muted-foreground">
+            <X size={22} />
           </div>
-          <div class="flex items-center gap-1 px-1">
-            <div class="panel-chrome flex h-12 w-12 shrink-0 items-center justify-center rounded-floating-item text-muted-foreground">
-              <X size={22} />
-            </div>
-            <div class="flex-1"></div>
-            <div class="flex h-12 shrink-0 items-center pl-1 pr-3">
-              <span class="relative rounded-full bg-foreground px-6 py-2 text-[0.866667rem] font-medium text-background">
-                {t("common.save")}
-                {@render touch(saveTouch, "left-1/2 top-1/2")}
-              </span>
-            </div>
+          <div class="flex-1"></div>
+          <div class="flex h-12 shrink-0 items-center pl-1 pr-3">
+            <span class="relative rounded-full bg-foreground px-6 py-2 text-[0.866667rem] font-medium text-background">
+              {t("common.save")}
+              {@render touch(saveTouch, "left-1/2 top-1/2")}
+            </span>
           </div>
         </div>
-      {:else}
-        <!-- The drag bar. -->
-        <div bind:offsetHeight={barHeight} class="sticky top-0 z-10 flex items-center pl-4 pr-2" style="background-color: var(--sidebar);">
-          <div class="flex flex-1 items-center justify-center py-2.5">
-            <div class="h-[1.5px] w-9 bg-muted-foreground/50"></div>
-          </div>
+      </div>
+    {:else}
+      <!-- The drag bar. -->
+      <div bind:offsetHeight={barHeight} class="sticky top-0 z-10 flex items-center pl-4 pr-2" style="background-color: var(--sidebar);">
+        <div class="flex flex-1 items-center justify-center py-2.5">
+          <div class="h-[1.5px] w-9 bg-muted-foreground/50"></div>
         </div>
-      {/if}
+      </div>
+    {/if}
 
-      <div class={cn("relative min-h-0", constrained ? "flex-1 overflow-hidden" : "shrink-0")}>
-        <div
-          bind:this={scrollElement}
-          class={cn("event-panel-scroll hide-scrollbar overscroll-contain", constrained ? "h-full overflow-hidden" : "overflow-visible")}
-        >
-          <div bind:offsetHeight={contentHeight}>
-            <!-- The title, the project and color triggers, and the date and time. -->
-            <div class={cn("shrink-0 px-4", !mobileLayout && "pt-2.5")}>
-              <div class="relative top-0.5 flex items-center gap-2.5 px-1">
-                <div class="title-wrapper relative min-w-0 flex-1" data-focused={typing || undefined}>
-                  <div
-                    class={cn(
-                      "w-full overflow-hidden whitespace-pre bg-transparent py-0.5 text-[1rem] font-semibold",
-                      typed ? "text-foreground" : "text-event-panel-placeholder",
-                    )}
-                  >{#if typed}{typed}{:else if !typing}{t("calendar.eventPanel.titlePlaceholder")}{/if}{#if typing && caretOn}<span class="film-caret"></span>{/if}{#if typing && !typed && !caretOn}&#8203;{/if}</div>
-                </div>
-                <div class={cn("event-identity-controls flex items-center", mobileLayout ? "gap-1" : "gap-2.5")}>
-                  <div
-                    data-control
-                    class={cn(
-                      "event-identity-trigger relative flex shrink-0 items-center justify-center text-event-panel-muted-text",
-                      mobileLayout ? "min-h-12 min-w-12 rounded-xl" : "size-4.5 rounded-sm",
-                    )}
-                  >
-                    {#if picked}
-                      <ProjectIcon
-                        name={PICKED_PROJECT.icon}
-                        size={TRIGGER_ICON_SIZE}
-                        strokeWidth={TRIGGER_ICON_STROKE_WIDTH}
-                        emojiScale={TRIGGER_EMOJI_SCALE}
-                      />
-                    {:else}
-                      <SquareDashedPlus size={TRIGGER_ICON_SIZE} strokeWidth={TRIGGER_EMPTY_STROKE_WIDTH} />
-                    {/if}
-                    {@render touch(projectTouch, "left-1/2 top-1/2")}
-                  </div>
-                  <div
-                    bind:this={colorTrigger}
-                    data-control
-                    class={cn(
-                      "event-identity-trigger",
-                      mobileLayout ? "flex size-12 shrink-0 items-center justify-center rounded-xl" : "size-4.5 shrink-0 rounded-sm",
-                    )}
-                    style:background-color={mobileLayout ? undefined : getEventColor(color, theme.current).bg}
-                  >
-                    {#if mobileLayout}
-                      <span class="size-5 rounded-md border border-border" style:background-color={getEventColor(color, theme.current).bg}></span>
-                    {/if}
-                  </div>
-                </div>
-              </div>
-              <hr class="border-event-panel-divider mx-1 mt-0.5" />
-
-              <div class="mt-1.5 flex flex-col gap-px px-1">
+    <div class={cn("relative min-h-0", constrained ? "flex-1 overflow-hidden" : "shrink-0")}>
+      <div
+        bind:this={scrollElement}
+        bind:clientHeight={viewportHeight}
+        class={cn("event-panel-scroll hide-scrollbar overscroll-contain", constrained ? "h-full overflow-hidden" : "overflow-visible")}
+      >
+        <div bind:offsetHeight={contentHeight} style:transform={scrollOffset > 0 ? `translateY(${-scrollOffset}px)` : undefined}>
+          <!-- The title, the project and color triggers, and the date and time. -->
+          <div class={cn("shrink-0 px-4", !mobileLayout && "pt-2.5")}>
+            <div class="relative top-0.5 flex items-center gap-2.5 px-1">
+              <div class="title-wrapper relative min-w-0 flex-1" data-focused={typing || undefined}>
                 <div
-                  bind:this={peekEndElement}
-                  class="date-time-grid relative text-[0.866667rem] leading-none"
-                  data-stacked={panelWidth < 300 || undefined}
+                  class={cn(
+                    "w-full overflow-hidden whitespace-pre bg-transparent py-0.5 text-[1rem] font-semibold",
+                    typed ? "text-foreground" : "text-event-panel-placeholder",
+                  )}
+                >{#if typed}{typed}{:else if !typing}{t("calendar.eventPanel.titlePlaceholder")}{/if}{#if typing && caretOn}<span class="film-caret"></span>{/if}{#if typing && !typed && !caretOn}&#8203;{/if}</div>
+              </div>
+              <div class={cn("event-identity-controls flex items-center", mobileLayout ? "gap-1" : "gap-2.5")}>
+                <div
+                  data-control
+                  class={cn(
+                    "event-identity-trigger relative flex shrink-0 items-center justify-center text-event-panel-muted-text",
+                    mobileLayout ? "min-h-12 min-w-12 rounded-xl" : "size-4.5 rounded-sm",
+                  )}
                 >
-                  <div class="relative z-1 min-w-0 justify-self-start">
-                    <div data-control class="date-chip max-w-full rounded py-0.5 text-event-panel-input-text">{dateLabel}</div>
-                  </div>
-                  <div class="time-group relative z-2 flex items-center justify-center gap-1.5 py-0.5">
-                    <span
-                      class={cn(
-                        "time-input-shell relative z-30 rounded text-center text-event-panel-input-text",
-                        preferences.calendarTimeFormat === "12h" ? "text-[0.8rem]" : "text-[0.866667rem]",
-                      )}
-                      data-value={startLabel}
-                    ><span class="time-input flex items-center justify-center bg-transparent px-0 py-0.5">{startLabel}</span></span>
-                    <span class="text-muted-foreground/60">-</span>
-                    <span
-                      class={cn(
-                        "time-input-shell relative z-30 rounded text-center text-event-panel-input-text",
-                        preferences.calendarTimeFormat === "12h" ? "text-[0.8rem]" : "text-[0.866667rem]",
-                      )}
-                      data-value={endLabel}
-                    ><span class="time-input flex items-center justify-center bg-transparent px-0 py-0.5">{endLabel}</span></span>
-                  </div>
-                  <div class="relative z-1 min-w-0 justify-self-end text-right">
-                    <div data-control class="date-chip max-w-full rounded py-0.5 text-event-panel-input-text">{dateLabel}</div>
-                  </div>
+                  {#if picked}
+                    <ProjectIcon
+                      name={PICKED_PROJECT.icon}
+                      size={TRIGGER_ICON_SIZE}
+                      strokeWidth={TRIGGER_ICON_STROKE_WIDTH}
+                      emojiScale={TRIGGER_EMOJI_SCALE}
+                    />
+                  {:else}
+                    <SquareDashedPlus size={TRIGGER_ICON_SIZE} strokeWidth={TRIGGER_EMPTY_STROKE_WIDTH} />
+                  {/if}
+                  {@render touch(projectTouch, "left-1/2 top-1/2")}
+                </div>
+                <div
+                  bind:this={colorTrigger}
+                  data-control
+                  class={cn(
+                    "event-identity-trigger",
+                    mobileLayout ? "flex size-12 shrink-0 items-center justify-center rounded-xl" : "size-4.5 shrink-0 rounded-sm",
+                  )}
+                  style:background-color={mobileLayout ? undefined : getEventColor(color, theme.current).bg}
+                >
+                  {#if mobileLayout}
+                    <span class="size-5 rounded-md border border-border" style:background-color={getEventColor(color, theme.current).bg}></span>
+                  {/if}
                 </div>
               </div>
             </div>
+            <hr class="border-event-panel-divider mx-1 mt-0.5" />
 
-            <!-- Timed, busy, and private. -->
-            <div class="flex flex-col gap-3 px-4 pb-0 pt-1.5">
-              <div class="flex w-full items-center justify-evenly overflow-hidden rounded-none bg-event-panel-contrast text-[0.733333rem]">
-                <div data-control class="flex min-w-0 max-w-full items-center justify-center gap-1.5 rounded-none px-0 py-1.5 text-foreground">
-                  <Clock4 size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
-                  <span class="translate-y-[1.13px] truncate">{t("calendar.eventPanel.timed")}</span>
+            <div class="mt-1.5 flex flex-col gap-px px-1">
+              <div
+                bind:this={peekEndElement}
+                class="date-time-grid relative text-[0.866667rem] leading-none"
+                data-stacked={panelWidth < 300 || undefined}
+              >
+                <div class="relative z-1 min-w-0 justify-self-start">
+                  <div data-control class="date-chip max-w-full rounded py-0.5 text-event-panel-input-text">{dateLabel}</div>
                 </div>
-                <div data-control class="flex min-w-0 max-w-full items-center justify-center gap-1.5 rounded-none px-0 py-1.5 text-foreground">
-                  <Ban size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
-                  <span class="translate-y-[1.13px] truncate">{t("calendar.eventPanel.busy")}</span>
+                <div class="time-group relative z-2 flex items-center justify-center gap-1.5 py-0.5">
+                  <span
+                    class={cn(
+                      "time-input-shell relative z-30 rounded text-center text-event-panel-input-text",
+                      preferences.calendarTimeFormat === "12h" ? "text-[0.8rem]" : "text-[0.866667rem]",
+                    )}
+                    data-value={startLabel}
+                  ><span class="time-input flex items-center justify-center bg-transparent px-0 py-0.5">{startLabel}</span></span>
+                  <span class="text-muted-foreground/60">-</span>
+                  <span
+                    class={cn(
+                      "time-input-shell relative z-30 rounded text-center text-event-panel-input-text",
+                      preferences.calendarTimeFormat === "12h" ? "text-[0.8rem]" : "text-[0.866667rem]",
+                    )}
+                    data-value={endLabel}
+                  ><span class="time-input flex items-center justify-center bg-transparent px-0 py-0.5">{endLabel}</span></span>
                 </div>
-                <div data-control class="flex min-w-0 max-w-full items-center justify-center gap-1.5 rounded-none px-0 py-1.5 capitalize text-foreground">
-                  <Lock size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
-                  <span class="translate-y-[1.13px] truncate">{t("calendar.eventPanel.visibilityPrivate")}</span>
+                <div class="relative z-1 min-w-0 justify-self-end text-right">
+                  <div data-control class="date-chip max-w-full rounded py-0.5 text-event-panel-input-text">{dateLabel}</div>
                 </div>
               </div>
             </div>
+          </div>
 
-            <!-- The sections, with Pomodoro and notifications on as on a new event. -->
-            <div class="flex shrink-0 flex-col gap-1.5 px-4 py-1.5">
-              {#each sections as section (section.key)}
-                {@const enabled = section.summary !== ""}
-                <div class="flex flex-col overflow-hidden rounded-none" style="background-color: var(--panel-contrast);">
-                  <div class="section-header flex items-stretch">
+          <!-- Timed, busy, and private. -->
+          <div class="flex flex-col gap-3 px-4 pb-0 pt-1.5">
+            <div class="flex w-full items-center justify-evenly overflow-hidden rounded-none bg-event-panel-contrast text-[0.733333rem]">
+              <div data-control class="flex min-w-0 max-w-full items-center justify-center gap-1.5 rounded-none px-0 py-1.5 text-foreground">
+                <Clock4 size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
+                <span class="translate-y-[1.13px] truncate">{t("calendar.eventPanel.timed")}</span>
+              </div>
+              <div data-control class="flex min-w-0 max-w-full items-center justify-center gap-1.5 rounded-none px-0 py-1.5 text-foreground">
+                <Ban size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
+                <span class="translate-y-[1.13px] truncate">{t("calendar.eventPanel.busy")}</span>
+              </div>
+              <div data-control class="flex min-w-0 max-w-full items-center justify-center gap-1.5 rounded-none px-0 py-1.5 capitalize text-foreground">
+                <Lock size={METADATA_ICON_SIZE} class={METADATA_ICON_CLASS} />
+                <span class="translate-y-[1.13px] truncate">{t("calendar.eventPanel.visibilityPrivate")}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- The sections, with Pomodoro and notifications on as on a new event. -->
+          <div class="flex shrink-0 flex-col gap-1.5 px-4 py-1.5">
+            {#each sections as section (section.key)}
+              {@const enabled = section.summary !== ""}
+              <div class="flex flex-col overflow-hidden rounded-none" style="background-color: var(--panel-contrast);">
+                <div class="section-header flex items-stretch">
+                  <div
+                    data-control
+                    class={cn(
+                      "flex w-10 shrink-0 items-center justify-center",
+                      enabled ? "bg-black/3 text-foreground dark:bg-black/30" : "text-muted-foreground/50",
+                    )}
+                  >
+                    <section.icon size={SECTION_ICON_SIZE} />
+                  </div>
+                  <div data-control class="flex flex-1 items-center gap-2.5 px-3 py-2 text-left">
+                    <span class={cn("translate-y-[1.13px] text-[0.8rem]", enabled ? "text-foreground" : "text-muted-foreground")}>{section.label}</span>
+                    <span class="ml-auto translate-y-[1.13px] truncate text-[0.733333rem] text-muted-foreground">{section.summary}</span>
+                  </div>
+                </div>
+              </div>
+            {/each}
+            {#if musicAssignmentsAvailable}
+              {@const musicOn = music?.enabled ?? false}
+              {@const expanded = music?.expanded ?? 0}
+              <!-- The Music section, which takes the project's playlist for each phase and opens on its rows. -->
+              <div class="flex flex-col overflow-hidden rounded-none" style="background-color: var(--panel-contrast);">
+                <div class="section-header flex items-stretch">
+                  <div
+                    data-control
+                    class={cn(
+                      "flex w-10 shrink-0 items-center justify-center",
+                      musicOn ? "bg-black/3 text-foreground dark:bg-black/30" : "text-muted-foreground/50",
+                    )}
+                  >
+                    <Music size={SECTION_ICON_SIZE} />
+                  </div>
+                  <div data-control class="relative flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left">
+                    <span class={cn("translate-y-[1.13px] text-[0.8rem]", musicOn ? "text-foreground" : "text-muted-foreground")}>{t("calendar.eventPanel.music")}</span>
+                    <span class="ml-auto min-w-0 translate-y-[1.13px] truncate text-[0.733333rem] text-muted-foreground">{musicSummary}</span>
+                    {@render touch(frame.touches.music, "left-1/4 top-1/2")}
+                  </div>
+                </div>
+                {#if music && expanded > 0}
+                  <div class="overflow-hidden" style:height={expanded < 1 ? `${musicBodyHeight * expanded}px` : undefined}>
+                    <div bind:offsetHeight={musicBodyHeight} class="music-body py-2.5 pl-1" style="background-color: var(--panel-bg);">
+                      <div class={cn("music-grid", showSounds && "phase-columns")}>
+                        {#each music.rows as row (row.phase)}
+                          {@const none = Math.max(0, 1 - 2 * row.fill)}
+                          {@const chosen = Math.max(0, 2 * row.fill - 1)}
+                          <span class="music-label truncate text-[0.8rem] text-foreground">{phaseLabel(row.phase)}</span>
+                          <div class={MUSIC_TRIGGER_CLASS}>
+                            {#if row.fill < 0.5}
+                              <span class="flex min-w-0 flex-1 items-center gap-2" style:opacity={none}>
+                                <VolumeX size={MUSIC_ICON_SIZE} strokeWidth={MUSIC_ICON_STROKE_WIDTH} class="shrink-0 text-muted-foreground" />
+                                <span class="min-w-0 flex-1 truncate">{t("common.none")}</span>
+                              </span>
+                            {:else}
+                              <span class="flex min-w-0 flex-1 items-center gap-2" style:opacity={chosen}>
+                                <span class="grid size-3.5 shrink-0 place-items-center text-muted-foreground">
+                                  <MusicPlaylistIcon icon={row.playlistIcon} size={MUSIC_ICON_SIZE} strokeWidth={MUSIC_ICON_STROKE_WIDTH} />
+                                </span>
+                                <span class="min-w-0 flex-1 truncate">{row.playlistName}</span>
+                              </span>
+                            {/if}
+                            <ChevronDown size={13} strokeWidth={2} class="shrink-0 text-muted-foreground" />
+                          </div>
+                          {#if showSounds}
+                            <div class={MUSIC_TRIGGER_CLASS}>
+                              <AudioLinesXIcon size={MUSIC_ICON_SIZE} strokeWidth={MUSIC_ICON_STROKE_WIDTH} class="shrink-0 text-muted-foreground" />
+                              <span class="min-w-0 flex-1 truncate">{t("common.none")}</span>
+                              <ChevronDown size={13} strokeWidth={2} class="shrink-0 text-muted-foreground" />
+                            </div>
+                          {/if}
+                        {/each}
+                      </div>
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {#if !mobileLayout}
+      <!-- Save, outside the scrolling body. -->
+      <div
+        bind:offsetHeight={footerHeight}
+        class={cn("shrink-0 px-4", layout === "fullscreen" ? "pb-2 pt-1" : "pb-3.5 pt-1.5")}
+        style="background-color: var(--panel-bg);"
+      >
+        <div class="panel-footer-actions flex">
+          <div
+            data-control
+            class="relative flex flex-1 items-center justify-center gap-2 bg-action-confirm py-1.5 text-[0.866667rem] text-action-confirm-foreground"
+          >
+            <span>{t("calendar.eventPanel.saveShortcut", formatShortcut("Mod + Enter"))}</span>
+            {@render touch(saveTouch, "left-1/2 top-1/2")}
+          </div>
+        </div>
+      </div>
+    {/if}
+  </div>
+
+  {#if pickerOpen && mobileLayout}
+    <!-- The picker's full screen dialog: the groups, then the tapped group's projects. -->
+    <div class="absolute inset-0 z-80 box-border flex items-stretch justify-center p-2">
+      <div class="surface-backdrop absolute inset-0"></div>
+      <div class="relative z-10 h-full min-h-0 w-full max-w-xl">
+        <div class="project-picker-panel surface-floating flex h-full min-h-0 w-full flex-col overflow-hidden rounded-2xl">
+          <div class="border-b border-border/70 p-2">
+            <div class="flex min-h-14 items-center gap-1">
+              {#if pane === "projects"}
+                <div class="flex min-h-12 min-w-12 items-center justify-center rounded-xl">
+                  <ChevronLeft size={22} strokeWidth={PICKER_ICON_STROKE_WIDTH} />
+                </div>
+              {/if}
+              <h2 class="min-w-0 flex-1 truncate px-2 text-base font-semibold">
+                {pane === "projects" ? rowLabel(PICKED_GROUP.label) : t("projects.navigator.pickerLabel")}
+              </h2>
+              <div class="flex min-h-12 min-w-12 items-center justify-center rounded-xl">
+                <X size={22} strokeWidth={PICKER_ICON_STROKE_WIDTH} />
+              </div>
+            </div>
+            {@render searchField()}
+          </div>
+          <div class="relative min-h-0 flex-1">
+            <div class="hide-scrollbar h-full min-h-0 overflow-hidden overscroll-contain px-1 py-2">
+              <div class="grid px-1">
+                {#if pane === "projects"}
+                  {#each PROJECTS as project (project.id)}
+                    <div class="px-1">{@render projectRow(project, true)}</div>
+                  {/each}
+                {:else}
+                  {#each GROUPS as group (group.id)}
+                    <div class="px-1">
+                      <div
+                        class="menu-item relative grid min-h-12 grid-cols-[1.125rem_minmax(0,1fr)_1.5rem] gap-2 px-3"
+                        data-highlighted={group.id === PICKED_GROUP.id && groupHighlighted ? "" : undefined}
+                      >
+                        <ProjectIcon name={group.icon} size={PICKER_ICON_SIZE} strokeWidth={PICKER_ICON_STROKE_WIDTH} emojiScale={PICKER_EMOJI_SCALE} class="shrink-0" />
+                        <span class="truncate text-sm">{rowLabel(group.label)}</span>
+                        <ChevronRight size={18} strokeWidth={PICKER_ICON_STROKE_WIDTH} class="justify-self-end text-popover-foreground/60" />
+                        {#if group.id === PICKED_GROUP.id}
+                          {@render touch(groupTouch, "left-2/5 top-1/2")}
+                        {/if}
+                      </div>
+                    </div>
+                  {/each}
+                {/if}
+              </div>
+            </div>
+          </div>
+          {@render pickerFooter(pane === "projects" ? t("calendar.eventPanel.createProject") : t("calendar.eventPanel.createGroup"), true)}
+        </div>
+      </div>
+    </div>
+  {:else if pickerOpen}
+    <!-- The picker's dropdown under the color trigger, with the tapped group's projects in a flyout beside it. -->
+    <div class="absolute z-61" style={pickerStyle}>
+      <div
+        bind:this={pickerElement}
+        bind:offsetHeight={pickerHeight}
+        class="project-picker-panel surface-floating flex min-h-0 w-full flex-col overflow-hidden"
+      >
+        <div class="px-1.5 pb-0.5 pt-1.5">{@render searchField()}</div>
+        <div class="relative min-h-0 flex-1">
+          <div class="hide-scrollbar h-full min-h-0 overflow-hidden pb-1 pt-0.5">
+            <div class="grid pl-1">
+              {#each GROUPS as group (group.id)}
+                <div class="pl-1 pr-1">
+                  {#if group.id === PICKED_GROUP.id}
                     <div
-                      data-control
-                      class={cn(
-                        "flex w-10 shrink-0 items-center justify-center",
-                        enabled ? "bg-black/3 text-foreground dark:bg-black/30" : "text-muted-foreground/50",
-                      )}
+                      bind:this={groupRow}
+                      class="menu-item relative grid grid-cols-[1rem_minmax(0,1fr)_1rem] gap-2"
+                      data-highlighted={groupHighlighted ? "" : undefined}
                     >
-                      <section.icon size={SECTION_ICON_SIZE} />
+                      <ProjectIcon name={group.icon} size={PICKER_ICON_SIZE} strokeWidth={PICKER_ICON_STROKE_WIDTH} emojiScale={PICKER_EMOJI_SCALE} class="shrink-0" />
+                      <span class="truncate">{rowLabel(group.label)}</span>
+                      <ChevronRight size={13} strokeWidth={PICKER_ICON_STROKE_WIDTH} class="justify-self-end text-popover-foreground/60" />
+                      {@render touch(groupTouch, "left-2/5 top-1/2")}
                     </div>
-                    <div data-control class="flex flex-1 items-center gap-2.5 px-3 py-2 text-left">
-                      <span class={cn("translate-y-[1.13px] text-[0.8rem]", enabled ? "text-foreground" : "text-muted-foreground")}>{section.label}</span>
-                      <span class="ml-auto translate-y-[1.13px] truncate text-[0.733333rem] text-muted-foreground">{section.summary}</span>
+                  {:else}
+                    <div class="menu-item grid grid-cols-[1rem_minmax(0,1fr)_1rem] gap-2">
+                      <ProjectIcon name={group.icon} size={PICKER_ICON_SIZE} strokeWidth={PICKER_ICON_STROKE_WIDTH} emojiScale={PICKER_EMOJI_SCALE} class="shrink-0" />
+                      <span class="truncate">{rowLabel(group.label)}</span>
+                      <ChevronRight size={13} strokeWidth={PICKER_ICON_STROKE_WIDTH} class="justify-self-end text-popover-foreground/60" />
                     </div>
-                  </div>
+                  {/if}
                 </div>
               {/each}
             </div>
           </div>
         </div>
+        {@render pickerFooter(t("calendar.eventPanel.createGroup"), false)}
       </div>
-
-      {#if !mobileLayout}
-        <!-- Save, outside the scrolling body. -->
-        <div
-          bind:offsetHeight={footerHeight}
-          class={cn("shrink-0 px-4", layout === "fullscreen" ? "pb-2 pt-1" : "pb-3.5 pt-1.5")}
-          style="background-color: var(--panel-bg);"
-        >
-          <div class="panel-footer-actions flex">
-            <div
-              data-control
-              class="relative flex flex-1 items-center justify-center gap-2 bg-action-confirm py-1.5 text-[0.866667rem] text-action-confirm-foreground"
-            >
-              <span>{t("calendar.eventPanel.saveShortcut", formatShortcut("Mod + Enter"))}</span>
-              {@render touch(saveTouch, "left-1/2 top-1/2")}
-            </div>
-          </div>
-        </div>
-      {/if}
     </div>
-
-    {#if pickerOpen && mobileLayout}
-      <!-- The picker's full screen dialog: the groups, then the tapped group's projects. -->
-      <div class="absolute inset-0 z-80 box-border flex items-stretch justify-center p-2">
-        <div class="surface-backdrop absolute inset-0"></div>
-        <div class="relative z-10 h-full min-h-0 w-full max-w-xl">
-          <div class="project-picker-panel surface-floating flex h-full min-h-0 w-full flex-col overflow-hidden rounded-2xl">
-            <div class="border-b border-border/70 p-2">
-              <div class="flex min-h-14 items-center gap-1">
-                {#if pane === "projects"}
-                  <div class="flex min-h-12 min-w-12 items-center justify-center rounded-xl">
-                    <ChevronLeft size={22} strokeWidth={PICKER_ICON_STROKE_WIDTH} />
-                  </div>
-                {/if}
-                <h2 class="min-w-0 flex-1 truncate px-2 text-base font-semibold">
-                  {pane === "projects" ? rowLabel(PICKED_GROUP.label) : t("projects.navigator.pickerLabel")}
-                </h2>
-                <div class="flex min-h-12 min-w-12 items-center justify-center rounded-xl">
-                  <X size={22} strokeWidth={PICKER_ICON_STROKE_WIDTH} />
-                </div>
-              </div>
-              {@render searchField()}
+    {#if pane === "projects"}
+      <div class="project-picker-panel surface-floating absolute z-61 flex min-h-0 flex-col overflow-hidden" style={flyoutStyle}>
+        <div class="relative min-h-0 flex-1">
+          <div class="hide-scrollbar h-full min-h-0 overflow-hidden px-1 py-1">
+            <div class="grid">
+              {#each PROJECTS as project (project.id)}
+                {@render projectRow(project, false)}
+              {/each}
             </div>
-            <div class="relative min-h-0 flex-1">
-              <div class="hide-scrollbar h-full min-h-0 overflow-hidden overscroll-contain px-1 py-2">
-                <div class="grid px-1">
-                  {#if pane === "projects"}
-                    {#each PROJECTS as project (project.id)}
-                      <div class="px-1">{@render projectRow(project, true)}</div>
-                    {/each}
-                  {:else}
-                    {#each GROUPS as group (group.id)}
-                      <div class="px-1">
-                        <div
-                          class="menu-item relative grid min-h-12 grid-cols-[1.125rem_minmax(0,1fr)_1.5rem] gap-2 px-3"
-                          data-highlighted={group.id === PICKED_GROUP.id && groupHighlighted ? "" : undefined}
-                        >
-                          <ProjectIcon name={group.icon} size={PICKER_ICON_SIZE} strokeWidth={PICKER_ICON_STROKE_WIDTH} emojiScale={PICKER_EMOJI_SCALE} class="shrink-0" />
-                          <span class="truncate text-sm">{rowLabel(group.label)}</span>
-                          <ChevronRight size={18} strokeWidth={PICKER_ICON_STROKE_WIDTH} class="justify-self-end text-popover-foreground/60" />
-                          {#if group.id === PICKED_GROUP.id}
-                            {@render touch(groupTouch, "left-2/5 top-1/2")}
-                          {/if}
-                        </div>
-                      </div>
-                    {/each}
-                  {/if}
-                </div>
-              </div>
-            </div>
-            {@render pickerFooter(pane === "projects" ? t("calendar.eventPanel.createProject") : t("calendar.eventPanel.createGroup"), true)}
           </div>
+        </div>
+        <div bind:offsetHeight={flyoutFooterHeight}>
+          {@render pickerFooter(t("calendar.eventPanel.createProject"), false)}
         </div>
       </div>
-    {:else if pickerOpen}
-      <!-- The picker's dropdown under the color trigger, with the tapped group's projects in a flyout beside it. -->
-      <div class="absolute z-61" style={pickerStyle}>
-        <div
-          bind:this={pickerElement}
-          bind:offsetHeight={pickerHeight}
-          class="project-picker-panel surface-floating flex min-h-0 w-full flex-col overflow-hidden"
-        >
-          <div class="px-1.5 pb-0.5 pt-1.5">{@render searchField()}</div>
-          <div class="relative min-h-0 flex-1">
-            <div class="hide-scrollbar h-full min-h-0 overflow-hidden pb-1 pt-0.5">
-              <div class="grid pl-1">
-                {#each GROUPS as group (group.id)}
-                  <div class="pl-1 pr-1">
-                    {#if group.id === PICKED_GROUP.id}
-                      <div
-                        bind:this={groupRow}
-                        class="menu-item relative grid grid-cols-[1rem_minmax(0,1fr)_1rem] gap-2"
-                        data-highlighted={groupHighlighted ? "" : undefined}
-                      >
-                        <ProjectIcon name={group.icon} size={PICKER_ICON_SIZE} strokeWidth={PICKER_ICON_STROKE_WIDTH} emojiScale={PICKER_EMOJI_SCALE} class="shrink-0" />
-                        <span class="truncate">{rowLabel(group.label)}</span>
-                        <ChevronRight size={13} strokeWidth={PICKER_ICON_STROKE_WIDTH} class="justify-self-end text-popover-foreground/60" />
-                        {@render touch(groupTouch, "left-2/5 top-1/2")}
-                      </div>
-                    {:else}
-                      <div class="menu-item grid grid-cols-[1rem_minmax(0,1fr)_1rem] gap-2">
-                        <ProjectIcon name={group.icon} size={PICKER_ICON_SIZE} strokeWidth={PICKER_ICON_STROKE_WIDTH} emojiScale={PICKER_EMOJI_SCALE} class="shrink-0" />
-                        <span class="truncate">{rowLabel(group.label)}</span>
-                        <ChevronRight size={13} strokeWidth={PICKER_ICON_STROKE_WIDTH} class="justify-self-end text-popover-foreground/60" />
-                      </div>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-            </div>
-          </div>
-          {@render pickerFooter(t("calendar.eventPanel.createGroup"), false)}
-        </div>
-      </div>
-      {#if pane === "projects"}
-        <div class="project-picker-panel surface-floating absolute z-61 flex min-h-0 flex-col overflow-hidden" style={flyoutStyle}>
-          <div class="relative min-h-0 flex-1">
-            <div class="hide-scrollbar h-full min-h-0 overflow-hidden px-1 py-1">
-              <div class="grid">
-                {#each PROJECTS as project (project.id)}
-                  {@render projectRow(project, false)}
-                {/each}
-              </div>
-            </div>
-          </div>
-          <div bind:offsetHeight={flyoutFooterHeight}>
-            {@render pickerFooter(t("calendar.eventPanel.createProject"), false)}
-          </div>
-        </div>
-      {/if}
     {/if}
-  </div>
-{/if}
+  {/if}
+</div>
 
 <style>
   /* The event panel's own styles, for the parts the film draws. */
@@ -834,6 +902,28 @@
 
   .title-wrapper[data-focused]::after {
     opacity: 0;
+  }
+
+  /* The Music section's rows, as the event panel lays them out. */
+  .music-body {
+    container-type: inline-size;
+  }
+
+  .music-grid {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.375rem 1.25rem;
+  }
+
+  .music-grid.phase-columns {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 0.5rem;
+  }
+
+  @container (width < 24rem) {
+    .music-grid.phase-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .phase-columns .music-label { grid-column: 1 / -1; margin-top: 0.25rem; }
   }
 
   /* The title's caret, as a focused text input draws it. */

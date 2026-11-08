@@ -113,6 +113,7 @@
     filmRingMenuOpen,
     filmSessionMinute,
     filmSessionMoment,
+    filmEventPanelFrame,
     filmPanelOpen,
     filmProjectPicked,
     filmSpan,
@@ -810,7 +811,7 @@
     <!-- The event panel on the drawn event, where its project is picked and its title typed before it is saved. -->
     {#if filmPanelOpen(elapsed)}
       <WelcomeFilmEventPanel
-        {elapsed}
+        frame={filmEventPanelFrame(elapsed, title("writeChapter"))}
         canvasWidth={canvasW}
         canvasHeight={canvasH}
         titleBarHeight={TOP_BAR_H}

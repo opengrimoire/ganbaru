@@ -8,6 +8,7 @@
 
 import { createPresetPomodoroConfig, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
 import { computeDayTimelineBands } from "$lib/pomodoro/segments";
+import type { WelcomeEventPanelFrame } from "./welcome-event-panel";
 
 /** One point of a curve: `[x, y]`, with x strictly increasing across a curve. */
 export type FilmKeyframe = readonly [x: number, y: number];
@@ -483,6 +484,38 @@ export function filmProjectPicked(elapsed: number): boolean {
 export function filmTypedTitle(elapsed: number, title: string): string {
   const characters = Array.from(title);
   return characters.slice(0, Math.floor(filmSpan(elapsed, FILM_BEATS.typeStart, FILM_BEATS.typeEnd) * characters.length)).join("");
+}
+
+/** How long a text caret stays on and off once typing stops. */
+export const FILM_CARET_BLINK_MS = 530;
+
+/** Whether a caret shows at `elapsed`: steady while typing until `typeEnd`, then blinking. */
+export function filmCaretOn(elapsed: number, typeEnd: number): boolean {
+  return elapsed < typeEnd || Math.floor((elapsed - typeEnd) / FILM_CARET_BLINK_MS) % 2 === 0;
+}
+
+/** The film's event panel at `elapsed`, with `title` typed into it. */
+export function filmEventPanelFrame(elapsed: number, title: string): WelcomeEventPanelFrame {
+  const picked = filmProjectPicked(elapsed);
+  return {
+    sheetRise: filmSheetRise(elapsed),
+    sheetExpand: 0,
+    pane: filmProjectPicker(elapsed),
+    picked,
+    typed: filmTypedTitle(elapsed, title),
+    typing: elapsed >= FILM_BEATS.typeStart,
+    caretOn: filmCaretOn(elapsed, FILM_BEATS.typeEnd),
+    touches: {
+      project: filmTap(elapsed, FILM_BEATS.projectTap),
+      group: filmTap(elapsed, FILM_BEATS.groupTap),
+      projectPick: filmTap(elapsed, FILM_BEATS.projectPick),
+      music: 0,
+      save: filmTap(elapsed, FILM_BEATS.createSaved),
+    },
+    preset: picked ? FILM_CHAIN[0].preset : FILM_DEFAULT_PRESET,
+    music: null,
+    scroll: 0,
+  };
 }
 
 /** `Date.getDay()` for Sunday, Monday, and Friday. */

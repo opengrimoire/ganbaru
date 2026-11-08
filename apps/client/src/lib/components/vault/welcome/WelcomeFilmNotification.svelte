@@ -1,6 +1,12 @@
 <script lang="ts" module>
-  /** Which operating system's notification the film draws. */
+  /** Which operating system's notification the welcome scenes draw. */
   export type FilmNotificationKind = "android" | "windows" | "gnome";
+
+  /** One of a notification's actions, with the press on it from 0 to 1. */
+  export interface FilmNotificationAction {
+    label: string;
+    touch: number;
+  }
 </script>
 
 <script lang="ts">
@@ -10,43 +16,45 @@
   import WelcomeAndroidNotification from "./WelcomeAndroidNotification.svelte";
 
   /**
-   * The paused Focus notification as the operating system draws it, outside the app: a GNOME banner, a Windows toast,
-   * or Android's ongoing Focus notification. It follows the system's light or dark style rather than the app theme,
-   * because the system paints it. Every style is a function of its props, with no CSS transitions.
+   * A Ganbaru notification as the operating system draws it, outside the app: a GNOME banner, a Windows toast, or an
+   * Android notification. It follows the system's light or dark style rather than the app theme, because the system
+   * paints it. Every style is a function of its props, with no CSS transitions.
    */
   let {
     kind,
     shown,
-    resumeTouch,
-    eventTitle,
-    progress,
+    title,
+    body,
+    actions = [],
+    progress = null,
   }: {
     kind: FilmNotificationKind;
     /** How far it has slid in, from 0 (past its edge of the canvas) to 1 (at rest). */
     shown: number;
-    /** The press on its Resume action, from 0 to 1. */
-    resumeTouch: number;
-    /** The paused event's title, which Android's ongoing notification shows as its title. */
-    eventTitle: string;
-    /** The paused phase's progress, from 0 to 1, as Android's ongoing notification draws it. */
-    progress: number;
+    title: string;
+    body: string;
+    /** Its actions, in order. */
+    actions?: readonly FilmNotificationAction[];
+    /** A phase's progress, from 0 to 1, as Android's ongoing notification draws it; null draws no progress bar. */
+    progress?: number | null;
   } = $props();
 
   const { t } = getLocalization();
   /** The gap between the notification and the canvas edges, in pixels. */
   const MARGIN_PX = 8;
-  /** Android's body text size on the film's canvas, in pixels. */
+  /** Android's body text size on the scene's canvas, in pixels. */
   const ANDROID_FONT_PX = 13;
 
   const hidden = $derived(`calc(${1 - shown} * (100% + ${MARGIN_PX}px))`);
   const transform = $derived(kind === "windows" ? `translateX(${hidden})` : `translate(-50%, calc(-1 * ${hidden}))`);
+  const hasExtras = $derived(progress !== null || actions.length > 0);
 </script>
 
-{#snippet touch()}
-  {#if resumeTouch > 0}
+{#snippet touch(amount: number)}
+  {#if amount > 0}
     <span
       class="os-touch pointer-events-none absolute top-1/2 left-1/2 z-20 size-6 -translate-1/2 rounded-full"
-      style:opacity={resumeTouch}
+      style:opacity={amount}
     ></span>
   {/if}
 {/snippet}
@@ -57,23 +65,32 @@
   </svg>
 {/snippet}
 
+{#snippet androidExtras()}
+  {#if progress !== null}
+    <div class="os-progress"><div class="os-progress-value" style:width={`${progress * 100}%`}></div></div>
+  {/if}
+  {#if actions.length > 0}
+    <div class="flex">
+      {#each actions as action (action.label)}
+        <span class={cn("os-action relative", action.touch > 0 && "os-action-pressed")}>
+          {action.label}
+          {@render touch(action.touch)}
+        </span>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
+
 {#if kind === "android"}
   <WelcomeAndroidNotification
     {shown}
     margin={MARGIN_PX}
     fontSize={ANDROID_FONT_PX}
-    title={eventTitle}
-    body={t("pomodoroNotification.pausedText")}
+    {title}
+    {body}
     class="z-50"
-  >
-    <div class="os-progress"><div class="os-progress-value" style:width={`${progress * 100}%`}></div></div>
-    <div class="flex">
-      <span class={cn("os-action relative", resumeTouch > 0 && "os-action-pressed")}>
-        {t("pomodoroNotification.resumeFocusLabel")}
-        {@render touch()}
-      </span>
-    </div>
-  </WelcomeAndroidNotification>
+    children={hasExtras ? androidExtras : undefined}
+  />
 {:else}
 <div
   class={cn("os-notification pointer-events-none absolute z-50", `os-${kind}`)}
@@ -81,27 +98,12 @@
   style:--os-margin={`${MARGIN_PX}px`}
   aria-hidden="true"
 >
-  {#if kind === "gnome"}
-    <div class="os-header">
-      <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-[22%]" draggable="false" />
-      <span class="truncate">{t("common.appName")}</span>
+  <div class="os-header">
+    <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-[22%]" draggable="false" />
+    <span class="truncate">{t("common.appName")}</span>
+    {#if kind === "gnome"}
       <span class="os-close ml-auto">{@render close()}</span>
-    </div>
-    <div class="os-content">
-      <p class="os-title">{t("pomodoroNotification.pausedReminderTitle")}</p>
-      <p class="os-body">{t("pomodoroNotification.pausedReminderBody")}</p>
-    </div>
-    <div class="os-actions">
-      <span class={cn("os-button relative", resumeTouch > 0 && "os-button-pressed")}>
-        <span class="block truncate">{t("pomodoroNotification.resumeFocusLabel")}</span>
-        {@render touch()}
-      </span>
-      <span class="os-button"><span class="block truncate">{t("pomodoroNotification.dismissPromptsLabel")}</span></span>
-    </div>
-  {:else}
-    <div class="os-header">
-      <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-[22%]" draggable="false" />
-      <span class="truncate">{t("common.appName")}</span>
+    {:else}
       <span class="ml-auto flex items-center gap-3">
         <svg class="size-2.5" viewBox="0 0 10 10" aria-hidden="true">
           <circle cx="1.5" cy="5" r="0.9" fill="currentColor" />
@@ -110,17 +112,20 @@
         </svg>
         {@render close()}
       </span>
-    </div>
-    <div class="os-content">
-      <p class="os-title">{t("pomodoroNotification.pausedReminderTitle")}</p>
-      <p class="os-body">{t("pomodoroNotification.pausedReminderBody")}</p>
-    </div>
+    {/if}
+  </div>
+  <div class="os-content">
+    <p class="os-title">{title}</p>
+    <p class="os-body">{body}</p>
+  </div>
+  {#if actions.length > 0}
     <div class="os-actions">
-      <span class={cn("os-button relative", resumeTouch > 0 && "os-button-pressed")}>
-        <span class="block truncate">{t("pomodoroNotification.resumeFocusLabel")}</span>
-        {@render touch()}
-      </span>
-      <span class="os-button"><span class="block truncate">{t("pomodoroNotification.dismissPromptsLabel")}</span></span>
+      {#each actions as action (action.label)}
+        <span class={cn("os-button relative", action.touch > 0 && "os-button-pressed")}>
+          <span class="block truncate">{action.label}</span>
+          {@render touch(action.touch)}
+        </span>
+      {/each}
     </div>
   {/if}
 </div>
@@ -161,7 +166,8 @@
 
   .os-actions {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-auto-columns: 1fr;
+    grid-auto-flow: column;
     text-align: center;
   }
 

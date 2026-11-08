@@ -44,7 +44,8 @@ export const vaultSetup = {
     headline: "Music that follows your plan",
     body: "Mix your own files and YouTube in playlists, and each project plays the right one for work and for breaks.",
     sceneDescription:
-      "A short animation of the playlist builder: a track from Local music is added to the Work (focus) playlist, then a video from YouTube to Break (calm). In the Calendar, picking the Thesis project for an event fills its music with the project's playlist for focus, short breaks, and long breaks. As the event's Pomodoro starts, the player plays a local track from Work (focus), switches to the YouTube video from Break (calm) when the break starts, and returns to Work (focus) after it.",
+      "A short animation of the playlist builder: a track from Local music is added to the Work (focus) playlist, then a video from YouTube to Break (calm). In the Calendar, picking the Thesis project for an event fills its music with the project's playlist for focus, short breaks, and long breaks. When the event's Pomodoro starts on its own, a notification shows a local track from Work (focus) playing automatically, and when the break starts, another shows the YouTube video from Break (calm).",
+    playingNotice: (track: string, playlist: string) => `Playing ${track} from ${playlist}`,
   },
   about: {
     headline: "Free and open source",

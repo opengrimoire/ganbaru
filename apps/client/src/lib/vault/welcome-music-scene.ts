@@ -2,8 +2,8 @@
  * Timing for the welcome scene on Music. In the playlist builder's review, a local track is added to the Work (focus)
  * playlist and saved, then a YouTube video to Break (calm). Then in the Calendar, a tap on an event opens its panel,
  * where picking the Thesis project gives the event the project's music for each Focus phase, shown as the Music
- * section opens. Once the event is saved, its Focus starts, and the Focus ring's menu shows the work playlist's track,
- * then the break playlist's video while the break runs, then a work track again.
+ * section opens. Once the event is saved, its Focus starts on its own, and the app's notification says the work
+ * playlist's track autoplays, then the break playlist's video once the break starts.
  */
 
 import type { WelcomeEventPanelFrame, WelcomeEventPanelMusicPhase } from "./welcome-event-panel";
@@ -111,19 +111,22 @@ export const MUSIC_BEATS = {
   musicTap: 10100,
   /** Save closes the panel. */
   saveTap: 11900,
-  /** The event's Focus starts, and a tap on the Focus ring opens its menu with the track that plays. */
+  /** The event's Focus starts on its own, and the app's notification says which work track autoplays. */
   focusStart: 12700,
-  ringTap: 13300,
-  /** The break starts and the break playlist plays, then the next focus brings back the work playlist. */
+  focusNoticeIn: 12900,
+  focusNoticeOut: 14600,
+  /** The break starts, and the notification says which break video autoplays, then the next focus starts. */
   breakStart: 15100,
+  breakNoticeIn: 15300,
+  breakNoticeOut: 16800,
   breakEnd: 17100,
-  end: 18700,
+  end: 17800,
 } as const;
 
 const B = MUSIC_BEATS;
 
-/** The frame shown as a still with reduced motion: the ring's menu open on the break's video. */
-export const MUSIC_STILL = B.breakStart + 900;
+/** The frame shown as a still with reduced motion: the notification on the break's video. */
+export const MUSIC_STILL = B.breakNoticeIn + 900;
 
 /** The review's two saves, in the order they happen, with the playlist each track joins. */
 const REVIEW_STEPS: readonly (MusicSceneItem & { playlist: MusicScenePlaylist; pickTap: number; saveTap: number })[] = [
@@ -141,6 +144,14 @@ const SECTION_OPEN_MS = 300;
 const SHEET_EXPAND_MS = 320;
 const SCROLL_DELAY_MS = 120;
 const SCROLL_MS = 420;
+/** How long the music notification takes to slide in, and to slide away, as the Calendar film's notification does. */
+const NOTICE_IN_MS = 280;
+const NOTICE_OUT_MS = 220;
+/** The music notification's visits, one per phase that starts with music. */
+const NOTICES: readonly { in: number; out: number }[] = [
+  { in: B.focusNoticeIn, out: B.focusNoticeOut },
+  { in: B.breakNoticeIn, out: B.breakNoticeOut },
+];
 /** How far a track plays across the scene, as a fraction of its length per millisecond of scene time. */
 const TRACK_PROGRESS_PER_MS = 1 / 9000;
 
@@ -325,14 +336,18 @@ export function musicRailRecorded(elapsed: number): FilmSpan[] {
   return MUSIC_RAIL.focus.filter((span) => span.start < now).map((span) => ({ start: span.start, end: Math.min(span.end, now) }));
 }
 
-/** Whether the Focus ring's menu is open. */
-export function musicRingMenuOpen(elapsed: number): boolean {
-  return elapsed >= B.ringTap;
-}
-
-/** The touch on the Focus ring, from 0 to 1. */
-export function musicRingTouch(elapsed: number): number {
-  return filmTap(elapsed, B.ringTap);
+/**
+ * How far the app's notification that a phase's music autoplays has come in, from 0 hidden to 1 shown. It slides in
+ * after the event's Focus starts and again after its break starts, and slides away before the next phase.
+ */
+export function musicNotification(elapsed: number): number {
+  for (const notice of NOTICES) {
+    if (elapsed < notice.in || elapsed >= notice.out + NOTICE_OUT_MS) continue;
+    const shown = filmSpan(elapsed, notice.in, notice.in + NOTICE_IN_MS);
+    const gone = filmSpan(elapsed, notice.out, notice.out + NOTICE_OUT_MS);
+    return easeInOutCubic(shown) * (1 - easeInOutCubic(gone));
+  }
+  return 0;
 }
 
 /** What plays at this moment: the track, the playlist it comes from, and how far it has played. */

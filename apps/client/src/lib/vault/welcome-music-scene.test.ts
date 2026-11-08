@@ -27,7 +27,7 @@ import {
   musicReviewItemIn,
   musicReviewProgress,
   musicReviewProgressOfTrack,
-  musicRingMenuOpen,
+  musicNotification,
   musicTracks,
   type MusicScenePlaylist,
 } from "./welcome-music-scene";
@@ -185,8 +185,22 @@ describe("welcome music scene", () => {
     }
   });
 
-  it("stills on the ring's menu with the break's video", () => {
-    expect(musicRingMenuOpen(MUSIC_STILL)).toBe(true);
+  it("shows the autoplay notification once per phase, each gone before the next phase", () => {
+    expect(musicNotification(B.focusStart)).toBe(0);
+    expect(musicNotification(B.focusNoticeIn + 400)).toBe(1);
+    expect(musicNotification(B.breakStart)).toBe(0);
+    expect(musicNotification(B.breakNoticeIn + 400)).toBe(1);
+    expect(musicNotification(B.breakEnd)).toBe(0);
+    for (const elapsed of moments()) {
+      const shown = musicNotification(elapsed);
+      expect(shown).toBeGreaterThanOrEqual(0);
+      expect(shown).toBeLessThanOrEqual(1);
+      if (shown > 0) expect(musicNowPlaying(elapsed)?.playlist).toBe(elapsed < B.breakStart ? "workFocus" : "breakCalm");
+    }
+  });
+
+  it("stills on the notification with the break's video", () => {
+    expect(musicNotification(MUSIC_STILL)).toBe(1);
     expect(musicPhase(MUSIC_STILL)).toBe("short-break");
     expect(musicNowPlaying(MUSIC_STILL)).toMatchObject({ source: "youtube", playlist: "breakCalm" });
   });

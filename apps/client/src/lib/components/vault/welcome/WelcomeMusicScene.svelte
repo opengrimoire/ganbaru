@@ -27,10 +27,7 @@
   import Check from "@lucide/svelte/icons/check";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
-  import ClockPlus from "@lucide/svelte/icons/clock-plus";
-  import Coffee from "@lucide/svelte/icons/coffee";
   import Music from "@lucide/svelte/icons/eighth-notes";
-  import ExternalLink from "@lucide/svelte/icons/external-link";
   import ListChecks from "@lucide/svelte/icons/list-checks";
   import ListMusic from "@lucide/svelte/icons/list-music";
   import ListPlus from "@lucide/svelte/icons/list-plus";
@@ -41,15 +38,12 @@
   import RadioTower from "@lucide/svelte/icons/radio-tower";
   import Repeat from "@lucide/svelte/icons/repeat";
   import Search from "@lucide/svelte/icons/search";
-  import SkipBack from "@lucide/svelte/icons/skip-back";
-  import SkipForward from "@lucide/svelte/icons/skip-forward";
-  import StickyNote from "@lucide/svelte/icons/sticky-note";
   import Users from "@lucide/svelte/icons/users";
   import X from "@lucide/svelte/icons/x";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
-  import PomodoroMenuVolume from "$lib/components/pomodoro/PomodoroMenuVolume.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
+  import WelcomeFilmNotification, { type FilmNotificationKind } from "$lib/components/vault/welcome/WelcomeFilmNotification.svelte";
   import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
   import { GUTTER_WIDTH_PER_TIMEZONE } from "$lib/calendar/timezone-utils";
   import type { EventColor } from "$lib/calendar/types";
@@ -65,8 +59,7 @@
     getTimezoneInfo,
   } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { DEFAULT_PLAYBACK_SNAPSHOT, MAX_VOLUME } from "$lib/music/playback";
-  import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
+  import { BUILD_PLATFORM, BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import { isThemeCalendarDark } from "$lib/themes";
@@ -84,6 +77,7 @@
     musicEventRail,
     musicEventTouch,
     musicItemReviewed,
+    musicNotification,
     musicNowPlaying,
     musicPanelOpen,
     musicPhase,
@@ -97,8 +91,6 @@
     musicReviewItemIn,
     musicReviewProgress,
     musicReviewProgressOfTrack,
-    musicRingMenuOpen,
-    musicRingTouch,
     musicTracks,
     type MusicScenePlaylist,
     type MusicSceneSource,
@@ -110,8 +102,8 @@
    * with its folder tree beside it when the canvas is wide enough and its dock below, saves a local track to a work
    * playlist and a YouTube video to a break playlist. Then the Calendar's day, as the Calendar film draws it, where the
    * event panel gives an event the Thesis project and with it the project's playlist for each Focus phase. Once the
-   * event's Focus runs, the Focus ring's menu shows the work track, then the break video, then a work track again. Every
-   * style is a function of `elapsed`, with no CSS transitions.
+   * event's Focus starts on its own, the app's notification says the work track autoplays, and when its break starts,
+   * the break video. Every style is a function of `elapsed`, with no CSS transitions.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -125,22 +117,17 @@
   const TOP_BAR_H = 36;
   const HEADER_H = 40;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
-  /** The title bar's icons and buttons, and the gap between its buttons, as the title bar draws them. */
+  /** The title bar's icons and its end padding, as the title bar draws them. */
   const TITLE_ICON_SIZE = 14;
   const TITLE_ICON_STROKE_WIDTH = 1.5;
-  const TITLE_BUTTON_PX = 28;
-  const TITLE_BUTTON_GAP_PX = 2;
   const TITLE_BAR_END_PX = 6;
   const TITLE_ICON_COLOR_CLASS = "text-foreground/68 dark:text-white/76";
-  /**
-   * Where the Focus menu opens under its ring: below the title bar on desktop, its right edge on the ring's, which has
-   * Quick notes and Music after it; on a phone a little lower, under the ring at the bar's end.
-   */
-  const MENU_TOP_PX = mobileShell ? TOP_BAR_H + 4 : TOP_BAR_H;
-  const MENU_RIGHT_PX = mobileShell ? 8 : TITLE_BAR_END_PX + 2 * (TITLE_BUTTON_PX + TITLE_BUTTON_GAP_PX);
-  const MENU_ICON_SIZE = 14;
-  const MENU_ICON_STROKE_WIDTH = 1.8;
-  const FOCUS_EXTENSION_MINUTES = 3;
+  /** The app's notification that a phase's music autoplays, drawn as this platform's system shows it. */
+  const notificationKind: FilmNotificationKind = mobileShell
+    ? "android"
+    : BUILD_PLATFORM === "windows"
+      ? "windows"
+      : "gnome";
 
   /** From this canvas width the builder keeps its folder tree beside the review, as the builder's two columns fit. */
   const TREE_MIN_W = 576;
@@ -238,7 +225,7 @@
   const recorded = $derived(musicRailRecorded(elapsed));
   const picked = $derived(musicProjectPicked(elapsed));
   const panelOpen = $derived(musicPanelOpen(elapsed));
-  const ringMenuOpen = $derived(musicRingMenuOpen(elapsed));
+  const notification = $derived(musicNotification(elapsed));
   const playing = $derived(musicNowPlaying(elapsed));
   const playingTrack = $derived(playing ? musicTracks(playing.source)[playing.row] : null);
   const breakPulse = $derived(0.7 - 0.2 * Math.cos((2 * Math.PI * elapsed) / BREAK_PULSE_MS));
@@ -322,10 +309,6 @@
     const hour = Math.floor(minuteOfDay / 60);
     const minute = Math.round(minuteOfDay % 60);
     return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-  }
-
-  function timerLabel(seconds: number): string {
-    return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
   }
 
   function timeRange(start: number, end: number): string {
@@ -505,24 +488,19 @@
   >
     {#if mobileShell}
       <div class="flex shrink-0 items-center justify-end bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
-        <span class={cn("relative grid size-8 place-items-center rounded-full text-muted-foreground", (focusing || ringMenuOpen) && "bg-accent/70 text-foreground")}>
+        <span class={cn("relative grid size-8 place-items-center rounded-full text-muted-foreground", focusing && "bg-accent/70 text-foreground")}>
           {@render ring(20, "stroke-muted-foreground/35", "text-foreground/76 stroke-foreground/76")}
-          {@render touch(musicRingTouch(elapsed), "50%", "50%")}
         </span>
       </div>
     {:else}
-      <!-- The title bar's Focus ring, Quick notes, and Music, with Music open while the builder shows. -->
+      <!-- The title bar's Focus ring and Music, with Music open while the builder shows. -->
       <div class="flex shrink-0 items-center justify-end gap-0.5 bg-sidebar" style:height={`${TOP_BAR_H}px`} style:padding-right={`${TITLE_BAR_END_PX}px`}>
-        <span class={cn("relative grid size-7 place-items-center rounded-lg", ringMenuOpen && "bg-sidebar-accent")}>
+        <span class="relative grid size-7 place-items-center rounded-lg">
           {@render ring(
             TITLE_ICON_SIZE + 0.5,
             "stroke-foreground/20 dark:stroke-white/20",
             "text-foreground/68 dark:text-white/76 stroke-foreground/68 dark:stroke-white/76",
           )}
-          {@render touch(musicRingTouch(elapsed), "50%", "50%")}
-        </span>
-        <span class={cn("grid size-7 place-items-center rounded-lg", TITLE_ICON_COLOR_CLASS)}>
-          <StickyNote size={TITLE_ICON_SIZE} strokeWidth={TITLE_ICON_STROKE_WIDTH} />
         </span>
         <span class={cn("grid size-7 place-items-center rounded-lg", builderShown > 0.5 ? "bg-sidebar-accent text-foreground" : TITLE_ICON_COLOR_CLASS)}>
           <Music size={TITLE_ICON_SIZE} strokeWidth={TITLE_ICON_STROKE_WIDTH} />
@@ -749,56 +727,14 @@
       {/if}
     </div>
 
-    <!-- The Focus ring's menu, with the track the event's playlist for the phase plays. -->
-    {#if ringMenuOpen}
-      <div
-        class="surface-floating surface-floating-body pointer-events-none absolute z-50 w-floating-sm"
-        style:top={`${MENU_TOP_PX}px`}
-        style:right={`${MENU_RIGHT_PX}px`}
-      >
-        <div class="menu-label tabular-nums">{t("titleBar.pomodoro.left", timerLabel(phaseSeconds.remaining))}</div>
-        <div class="menu-item justify-between gap-4 whitespace-nowrap">
-          <span>{t("titleBar.pomodoro.pauseFocus")}</span>
-          <PauseIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-        </div>
-        <div class="menu-item justify-between gap-4 whitespace-nowrap" aria-disabled={onBreak ? "true" : undefined}>
-          <span>{t("titleBar.pomodoro.extendFocusMinutes", FOCUS_EXTENSION_MINUTES)}</span>
-          <ClockPlus class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-        </div>
-        <div class="menu-item justify-between gap-4 whitespace-nowrap">
-          {#if onBreak}
-            <span>{t("titleBar.pomodoro.startFocusNow")}</span>
-            <PlayIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-          {:else}
-            <span>{t("titleBar.pomodoro.goToBreakNow")}</span>
-            <Coffee class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-          {/if}
-        </div>
-        <div role="separator" class="menu-separator"></div>
-        <div class="menu-label"><span class="block truncate">{playingTrack ? playingTrack.title : t("titleBar.music.noMusicLoaded")}</span></div>
-        <div class="menu-item justify-between gap-4 whitespace-nowrap">
-          {#if playingTrack}
-            <span>{t("titleBar.music.pause")}</span>
-            <PauseIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-          {:else}
-            <span>{t("titleBar.music.play")}</span>
-            <PlayIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-          {/if}
-        </div>
-        <div class="menu-item justify-between gap-4 whitespace-nowrap">
-          <span>{t("titleBar.music.previous")}</span>
-          <SkipBack class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-        </div>
-        <div class="menu-item justify-between gap-4 whitespace-nowrap">
-          <span>{t("titleBar.music.next")}</span>
-          <SkipForward class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-        </div>
-        <PomodoroMenuVolume value={DEFAULT_PLAYBACK_SNAPSHOT.volume} max={MAX_VOLUME} />
-        <div class="menu-item justify-between gap-4 whitespace-nowrap">
-          <span>{t("titleBar.music.open")}</span>
-          <ExternalLink class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-        </div>
-      </div>
+    <!-- The app's notification as the system shows it, saying which track the phase's playlist autoplays. -->
+    {#if notification > 0 && playing && playingTrack}
+      <WelcomeFilmNotification
+        kind={notificationKind}
+        shown={notification}
+        title={eventTitle}
+        body={t("vaultSetup.music.playingNotice", playingTrack.title, playlistName(playing.playlist))}
+      />
     {/if}
 
     <!-- The event panel, where the Thesis project gives the event its music for each phase. -->

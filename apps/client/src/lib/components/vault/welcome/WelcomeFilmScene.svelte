@@ -829,9 +829,15 @@
       <WelcomeFilmNotification
         kind={notificationKind}
         shown={notification}
-        {resumeTouch}
-        eventTitle={title("writeChapter")}
-        progress={notificationProgress}
+        title={notificationKind === "android" ? title("writeChapter") : t("pomodoroNotification.pausedReminderTitle")}
+        body={notificationKind === "android" ? t("pomodoroNotification.pausedText") : t("pomodoroNotification.pausedReminderBody")}
+        actions={notificationKind === "android"
+          ? [{ label: t("pomodoroNotification.resumeFocusLabel"), touch: resumeTouch }]
+          : [
+              { label: t("pomodoroNotification.resumeFocusLabel"), touch: resumeTouch },
+              { label: t("pomodoroNotification.dismissPromptsLabel"), touch: 0 },
+            ]}
+        progress={notificationKind === "android" ? notificationProgress : null}
       />
     {/if}
 

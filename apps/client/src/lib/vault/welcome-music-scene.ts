@@ -138,14 +138,19 @@ export const MUSIC_BEATS = {
   focusStart: 21400,
   focusNoticeIn: 21800,
   focusNoticeOut: 26200,
-  /** The break starts, and the notification says which break video autoplays. The scene ends as the break does. */
+  /**
+   * The break starts, and the notification says which break video autoplays. The scene ends as the break does, with
+   * the notification still shown, so it starts over instead of resting on an empty Calendar.
+   */
   breakStart: 27000,
   breakNoticeIn: 27400,
-  breakNoticeOut: 31800,
-  end: 32600,
+  end: 31800,
 } as const;
 
 const B = MUSIC_BEATS;
+
+/** How long the last frame rests before the scene starts over: just long enough to read the break running out. */
+export const MUSIC_END_HOLD_MS = 500;
 
 /** The frame shown as a still with reduced motion: the notification on the break's video. */
 export const MUSIC_STILL = B.breakNoticeIn + 900;
@@ -175,10 +180,10 @@ const PICKER_STEPS: readonly { phase: WelcomeEventPanelMusicPhase; openTap: numb
 /** How long the music notification takes to slide in, and to slide away, as the Calendar film's notification does. */
 const NOTICE_IN_MS = 280;
 const NOTICE_OUT_MS = 220;
-/** The music notification's visits, one per phase that starts with music. */
-const NOTICES: readonly { in: number; out: number }[] = [
+/** The music notification's visits, one per phase that starts with music; the last stays until the scene ends. */
+const NOTICES: readonly { in: number; out: number | null }[] = [
   { in: B.focusNoticeIn, out: B.focusNoticeOut },
-  { in: B.breakNoticeIn, out: B.breakNoticeOut },
+  { in: B.breakNoticeIn, out: null },
 ];
 /** How far a track plays per millisecond of scene time, as a fraction of its length, slow enough to read as listening. */
 const TRACK_PROGRESS_PER_MS = 1 / 24000;
@@ -414,13 +419,14 @@ export function musicRailRecorded(elapsed: number): FilmSpan[] {
 
 /**
  * How far the app's notification that a phase's music autoplays has come in, from 0 hidden to 1 shown. It slides in
- * after the event's Focus starts and again after its break starts, and slides away before the next phase.
+ * after the event's Focus starts and slides away before the break, then slides in again after the break starts and
+ * stays until the scene ends.
  */
 export function musicNotification(elapsed: number): number {
   for (const notice of NOTICES) {
-    if (elapsed < notice.in || elapsed >= notice.out + NOTICE_OUT_MS) continue;
+    if (elapsed < notice.in || (notice.out !== null && elapsed >= notice.out + NOTICE_OUT_MS)) continue;
     const shown = filmSpan(elapsed, notice.in, notice.in + NOTICE_IN_MS);
-    const gone = filmSpan(elapsed, notice.out, notice.out + NOTICE_OUT_MS);
+    const gone = notice.out === null ? 0 : filmSpan(elapsed, notice.out, notice.out + NOTICE_OUT_MS);
     return easeInOutCubic(shown) * (1 - easeInOutCubic(gone));
   }
   return 0;

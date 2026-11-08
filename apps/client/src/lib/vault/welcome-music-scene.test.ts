@@ -254,12 +254,12 @@ describe("welcome music scene", () => {
     }
   });
 
-  it("shows the autoplay notification once per phase, each gone before the next phase", () => {
+  it("shows the autoplay notification once per phase, gone before the break and kept until the scene ends", () => {
     expect(musicNotification(B.focusStart)).toBe(0);
     expect(musicNotification(B.focusNoticeIn + 400)).toBe(1);
     expect(musicNotification(B.breakStart)).toBe(0);
     expect(musicNotification(B.breakNoticeIn + 400)).toBe(1);
-    expect(musicNotification(B.end)).toBe(0);
+    expect(musicNotification(B.end)).toBe(1);
     for (const elapsed of moments()) {
       const shown = musicNotification(elapsed);
       expect(shown).toBeGreaterThanOrEqual(0);

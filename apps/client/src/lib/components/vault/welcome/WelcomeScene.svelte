@@ -3,6 +3,9 @@
   import { cn } from "$lib/utils";
   import { SCENE_RESTART_FADE_MS, SCENE_RESTART_PAUSE_MS } from "$lib/utils/scene-loop";
 
+  /** How long the last frame stays before the scene starts over, unless the scene sets its own hold. */
+  const END_HOLD_MS = 2200;
+
   /**
    * Plays a welcome scene, zoomed to the room it is given: it runs to its end, rests on its last frame, then fades out
    * and starts over on its own, as the Android access guides do, unless it is told to play once and stay on its last
@@ -19,6 +22,7 @@
     maxHeight = minHeight,
     duration,
     loop = true,
+    hold = END_HOLD_MS,
     still,
     description,
     frame,
@@ -33,6 +37,8 @@
     duration: number;
     /** Whether the scene starts over once it ends, or stays on its last frame. */
     loop?: boolean;
+    /** How long the last frame rests before the scene starts over, in milliseconds. */
+    hold?: number;
     /** The moment shown as a still with reduced motion, in milliseconds from the start; the last frame by default. */
     still?: number;
     /** What the scene shows, for screen readers. */
@@ -48,8 +54,6 @@
   const MIN_ZOOM = 0.55;
   const MAX_ZOOM = 1.45;
   const START_DELAY_MS = 350;
-  /** How long the last frame stays before the scene starts over. */
-  const END_HOLD_MS = 2200;
   /** A longer gap between frames means the page was hidden, so the scene resumes instead of skipping ahead. */
   const MAX_FRAME_MS = 64;
 
@@ -83,7 +87,7 @@
     if (elapsed < duration) frameRequest = requestAnimationFrame(tick);
     else {
       frameRequest = 0;
-      if (loop) timer = window.setTimeout(restart, END_HOLD_MS);
+      if (loop) timer = window.setTimeout(restart, hold);
     }
   }
 

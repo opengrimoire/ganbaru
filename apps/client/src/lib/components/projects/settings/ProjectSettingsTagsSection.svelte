@@ -81,6 +81,7 @@
           <GripVertical size={13} strokeWidth={1.75} />
         </button>
         <EventColorPicker
+          closeOnPick
           color={tagColorDraftValue(tag)}
           {theme}
           ariaLabel={t("projects.settings.selectTagColor", tag.name)}
@@ -113,6 +114,7 @@
     >
       <ProjectSettingsNewRowDragHandle showIcon={tags.length === 0} />
       <EventColorPicker
+        closeOnPick
         color={newTagColor}
         {theme}
         ariaLabel={t("projects.settings.selectNewTagColor")}

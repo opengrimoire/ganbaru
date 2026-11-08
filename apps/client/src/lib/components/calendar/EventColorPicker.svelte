@@ -27,6 +27,7 @@
     ariaLabel,
     displayLabel = false,
     mobileLayout = false,
+    closeOnPick = false,
     class: className = "",
     buttonClass = "",
   }: {
@@ -36,6 +37,8 @@
     ariaLabel?: string;
     displayLabel?: boolean;
     mobileLayout?: boolean;
+    /** Closes the palette as a swatch is picked by pointer, which keyboard picks and the touch layout always do. */
+    closeOnPick?: boolean;
     class?: string;
     buttonClass?: string;
   } = $props();
@@ -143,7 +146,7 @@
 
   function selectColor(nextColor: EventColor, source: "keyboard" | "pointer"): void {
     if (color !== nextColor) onSelect(nextColor);
-    if (source === "keyboard" || mobileLayout) closePalette(source);
+    if (source === "keyboard" || mobileLayout || closeOnPick) closePalette(source);
   }
 
   function handleButtonKeydown(e: KeyboardEvent) {

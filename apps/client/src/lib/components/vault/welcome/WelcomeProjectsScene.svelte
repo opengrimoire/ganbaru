@@ -176,8 +176,6 @@
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
   const showSoundscapes = platformHasCapability(BUILD_PLATFORM_PROFILE, "music.soundscapes");
   const idleDetectionAvailable = platformHasCapability(BUILD_PLATFORM_PROFILE, "pomodoro.native-idle-detection");
-  /** Project settings open the color palette without its touch layout, so it waits for a tap beside it on every shell. */
-  const COLOR_CLOSES_ON_PICK = false;
 
   /** The title bar on desktop, or the phone's top bar, tall enough for its context switcher. */
   const TOP_BAR_H = mobileShell ? 48 : 36;
@@ -338,7 +336,7 @@
   /** The top of the list, below the title bar and the project header. */
   const listTop = TOP_BAR_H + HEADER_H;
 
-  const touches = $derived(projectsTouches(elapsed, COLOR_CLOSES_ON_PICK));
+  const touches = $derived(projectsTouches(elapsed));
   const addActive = $derived(projectsAddActive(elapsed));
   const taskAdded = $derived(projectsTaskAdded(elapsed));
   const newStatus = $derived(projectsNewStatus(elapsed));
@@ -348,7 +346,7 @@
   const settingsShown = $derived(projectsSettingsShown(elapsed));
   const settingsOpen = $derived(projectsSettingsOpen(elapsed));
   const settingsScroll = $derived(projectsSettingsScroll(elapsed));
-  const picker = $derived(projectsSettingsPicker(elapsed, COLOR_CLOSES_ON_PICK));
+  const picker = $derived(projectsSettingsPicker(elapsed));
   const defaultColor = $derived(projectsDefaultColor(elapsed));
   const defaultMinutes = $derived(projectsDefaultMinutes(elapsed));
   const defaultPreset = $derived(projectsDefaultPreset(elapsed));
@@ -857,11 +855,10 @@
 {/snippet}
 
 <!-- A labeled settings row, as the settings' fields and selects lay themselves out. -->
-{#snippet settingsRow(label: string, control: import("svelte").Snippet, labelTouch: number = 0)}
+{#snippet settingsRow(label: string, control: import("svelte").Snippet)}
   <div class={cn("flex justify-between px-1 py-1", stackedRows ? "flex-col items-stretch gap-2" : "items-center gap-4")}>
-    <span class="relative min-w-0 flex-1 text-[0.866667rem] text-foreground">
+    <span class="min-w-0 flex-1 text-[0.866667rem] text-foreground">
       {label}
-      {@render touch(labelTouch, "2rem", "50%")}
     </span>
     {@render control()}
   </div>
@@ -1455,7 +1452,7 @@
               </div>
               <div class="flex flex-col gap-1.5">
                 {@render settingsRow(t("projects.settings.defaultEventName"), eventNameControl)}
-                {@render settingsRow(t("projects.settings.color"), colorControl, touches.colorDismiss)}
+                {@render settingsRow(t("projects.settings.color"), colorControl)}
                 {@render settingsRow(t("projects.settings.defaultDuration"), durationControl)}
                 {@render settingsRow(t("projects.settings.defaultPomodoro"), pomodoroControl)}
                 {#if idleDetectionAvailable}

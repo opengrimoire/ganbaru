@@ -86,6 +86,7 @@
           <GripVertical size={13} strokeWidth={1.75} />
         </button>
         <EventColorPicker
+          closeOnPick
           color={priorityColorDraftValue(priority)}
           {theme}
           ariaLabel={t("projects.settings.selectPriorityColor", priority.name)}
@@ -119,6 +120,7 @@
     >
       <ProjectSettingsNewRowDragHandle showIcon={priorities.length === 0} />
       <EventColorPicker
+        closeOnPick
         color={newPriorityColor}
         {theme}
         ariaLabel={t("projects.settings.selectNewPriorityColor")}

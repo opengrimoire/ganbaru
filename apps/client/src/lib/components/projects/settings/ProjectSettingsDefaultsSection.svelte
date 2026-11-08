@@ -477,6 +477,7 @@
     <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
       <div class="min-w-0 flex-1 text-[0.866667rem] text-foreground">{t("projects.settings.color")}</div>
       <EventColorPicker
+        closeOnPick
         color={projectColorDraft}
         {theme}
         ariaLabel={t("projects.settings.selectColor")}

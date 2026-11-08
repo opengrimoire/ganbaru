@@ -150,13 +150,12 @@ export const PROJECTS_BEATS = {
   nameTypeEnd: 10800,
   /**
    * The settings scroll the color into view with room for its palette, a tap opens the palette, a tap picks a swatch,
-   * and on desktop a tap beside the palette closes it.
+   * which closes the palette.
    */
   colorScrollStart: 11000,
   colorScrollEnd: 11400,
   colorTap: 11800,
   colorPick: 13100,
-  colorDismiss: 13600,
   /** Each of the other pickers is scrolled into view, opens with a tap, and a tap picks an option. */
   durationScrollStart: 13800,
   durationScrollEnd: 14200,
@@ -356,14 +355,13 @@ export function projectsSettingsScroll(elapsed: number): {
 }
 
 /**
- * The Event defaults picker that is open, or null while all are closed. The color palette closes as its swatch is
- * picked when `colorClosesOnPick`, as on a phone, and otherwise with the tap beside it.
+ * The Event defaults picker that is open, or null while all are closed. Each picker, the color palette included,
+ * closes as its option is picked.
  */
-export function projectsSettingsPicker(elapsed: number, colorClosesOnPick: boolean): ProjectsScenePicker | null {
+export function projectsSettingsPicker(elapsed: number): ProjectsScenePicker | null {
   for (const picker of Object.keys(PICKER_TAPS) as ProjectsScenePicker[]) {
     const { tap, pick } = PICKER_TAPS[picker];
-    const close = picker === "color" && !colorClosesOnPick ? B.colorDismiss : pick;
-    if (elapsed >= tap && elapsed < close) return picker;
+    if (elapsed >= tap && elapsed < pick) return picker;
   }
   return null;
 }
@@ -521,7 +519,6 @@ export interface ProjectsSceneTouches {
   name: number;
   color: number;
   colorOption: number;
-  colorDismiss: number;
   duration: number;
   durationOption: number;
   pomodoro: number;
@@ -532,8 +529,8 @@ export interface ProjectsSceneTouches {
   close: number;
 }
 
-/** The scene's touches at `elapsed`; the tap beside the color palette only shows when the palette waits for it. */
-export function projectsTouches(elapsed: number, colorClosesOnPick: boolean): ProjectsSceneTouches {
+/** The scene's touches at `elapsed`. */
+export function projectsTouches(elapsed: number): ProjectsSceneTouches {
   const byPhase = (beat: "tap" | "pick") =>
     Object.fromEntries(PROJECTS_PHASES.map((phase) => [phase, filmTap(elapsed, PICKER_TAPS[phase][beat])])) as Record<ProjectsScenePhase, number>;
   return {
@@ -546,7 +543,6 @@ export function projectsTouches(elapsed: number, colorClosesOnPick: boolean): Pr
     name: filmTap(elapsed, B.nameTap),
     color: filmTap(elapsed, B.colorTap),
     colorOption: filmTap(elapsed, B.colorPick),
-    colorDismiss: colorClosesOnPick ? 0 : filmTap(elapsed, B.colorDismiss),
     duration: filmTap(elapsed, B.durationTap),
     durationOption: filmTap(elapsed, B.durationPick),
     pomodoro: filmTap(elapsed, B.pomodoroTap),

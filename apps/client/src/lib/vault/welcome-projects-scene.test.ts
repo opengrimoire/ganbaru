@@ -68,8 +68,8 @@ function moments(step = 10): number[] {
 }
 
 /** Every touch of a frame as one flat list. */
-function touchValues(elapsed: number, colorClosesOnPick: boolean): number[] {
-  const { playlist, playlistOption, ...rest } = projectsTouches(elapsed, colorClosesOnPick);
+function touchValues(elapsed: number): number[] {
+  const { playlist, playlistOption, ...rest } = projectsTouches(elapsed);
   return [...Object.values(rest), ...Object.values(playlist), ...Object.values(playlistOption)];
 }
 
@@ -88,8 +88,7 @@ describe("welcome projects scene", () => {
         list.priority,
         settings.progress,
         projectsSettingsShown(elapsed),
-        ...touchValues(elapsed, false),
-        ...touchValues(elapsed, true),
+        ...touchValues(elapsed),
       ];
       for (const value of values) {
         expect(value).toBeGreaterThanOrEqual(0);
@@ -144,7 +143,7 @@ describe("welcome projects scene", () => {
     expect(projectsCellHighlighted(B.statusTap, "priority")).toBe(false);
     expect(projectsCellMenu(B.priorityTap)).toBe("priority");
     expect(projectsCellMenu(B.priorityPick)).toBeNull();
-    expect(projectsTouches(B.statusTap - FILM_TAP_MS / 2, false).status).toBeGreaterThan(0);
+    expect(projectsTouches(B.statusTap - FILM_TAP_MS / 2).status).toBeGreaterThan(0);
   });
 
   it("scrolls the list to each cell before its tap", () => {
@@ -198,25 +197,19 @@ describe("welcome projects scene", () => {
     expect(projectsEventName(B.end, NAME)).toBe(NAME);
   });
 
-  it("closes the color palette on the pick on a phone, and with the tap beside it on desktop", () => {
-    expect(projectsSettingsPicker(B.colorTap, true)).toBe("color");
-    expect(projectsSettingsPicker(B.colorPick, true)).toBeNull();
-    expect(projectsSettingsPicker(B.colorPick, false)).toBe("color");
-    expect(projectsSettingsPicker(B.colorDismiss, false)).toBeNull();
-    expect(projectsTouches(B.colorDismiss - FILM_TAP_MS / 2, false).colorDismiss).toBeGreaterThan(0);
-    expect(projectsTouches(B.colorDismiss - FILM_TAP_MS / 2, true).colorDismiss).toBe(0);
+  it("closes the color palette as its swatch is picked", () => {
+    expect(projectsSettingsPicker(B.colorTap)).toBe("color");
+    expect(projectsSettingsPicker(B.colorPick)).toBeNull();
     expect(projectsDefaultColor(B.colorPick - 1)).toBeNull();
     expect(projectsDefaultColor(B.colorPick)).toBe(PROJECTS_COLOR);
   });
 
   it("opens one picker at a time and sets each value as its option is picked", () => {
-    for (const closesOnPick of [true, false]) {
-      expect(projectsSettingsPicker(B.durationTap - 1, closesOnPick)).toBeNull();
-      expect(projectsSettingsPicker(B.durationTap, closesOnPick)).toBe("duration");
-      expect(projectsSettingsPicker(B.durationPick, closesOnPick)).toBeNull();
-      expect(projectsSettingsPicker(B.pomodoroTap, closesOnPick)).toBe("pomodoro");
-      expect(projectsSettingsPicker(B.pomodoroPick, closesOnPick)).toBeNull();
-    }
+    expect(projectsSettingsPicker(B.durationTap - 1)).toBeNull();
+    expect(projectsSettingsPicker(B.durationTap)).toBe("duration");
+    expect(projectsSettingsPicker(B.durationPick)).toBeNull();
+    expect(projectsSettingsPicker(B.pomodoroTap)).toBe("pomodoro");
+    expect(projectsSettingsPicker(B.pomodoroPick)).toBeNull();
     expect(projectsDefaultMinutes(B.durationPick - 1)).toBeNull();
     expect(projectsDefaultMinutes(B.durationPick)).toBe(PROJECTS_DEFAULT_MINUTES);
     expect(projectsDefaultPreset(B.pomodoroPick - 1)).toBeNull();
@@ -227,10 +220,10 @@ describe("welcome projects scene", () => {
     for (const phase of PROJECTS_PHASES) {
       const { tap, pick } = PHASE_TAPS[phase];
       expect(projectsPlaylist(tap, phase)).toBeNull();
-      expect(projectsSettingsPicker(tap, false)).toBe(phase);
+      expect(projectsSettingsPicker(tap)).toBe(phase);
       expect(projectsOptionHovered(pick - 1, phase)).toBe(true);
-      expect(projectsTouches(pick - FILM_TAP_MS / 2, false).playlistOption[phase]).toBeGreaterThan(0);
-      expect(projectsSettingsPicker(pick, false)).toBeNull();
+      expect(projectsTouches(pick - FILM_TAP_MS / 2).playlistOption[phase]).toBeGreaterThan(0);
+      expect(projectsSettingsPicker(pick)).toBeNull();
       expect(projectsPlaylist(pick, phase)).toBe(PROJECTS_PLAYLISTS[phase]);
     }
   });

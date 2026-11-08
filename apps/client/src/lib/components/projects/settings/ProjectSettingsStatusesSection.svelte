@@ -98,6 +98,7 @@
           <GripVertical size={13} strokeWidth={1.75} />
         </button>
         <EventColorPicker
+          closeOnPick
           color={statusColorDraftValue(status)}
           {theme}
           ariaLabel={t("projects.settings.selectStatusColor", status.name)}
@@ -139,6 +140,7 @@
   >
     <ProjectSettingsNewRowDragHandle showIcon={statuses.length === 0} />
     <EventColorPicker
+      closeOnPick
       color={newStatusColor}
       {theme}
       ariaLabel={t("projects.settings.selectNewStatusColor")}

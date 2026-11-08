@@ -25,7 +25,7 @@ import {
   type BlockerPanMove,
   type BlockerPhoneApp,
 } from "./welcome-blocker";
-import type { WelcomeCursorScript } from "./welcome-cursor";
+import type { WelcomeCursorScript, WelcomeCursorSpan } from "./welcome-cursor";
 import {
   easeInOutCubic,
   filmDayRails,
@@ -75,6 +75,10 @@ export const BLOCKING_BEATS = {
 } as const;
 
 const B = BLOCKING_BEATS;
+
+/** When Bluedit's feed scrolls before the event, and Y's feed after it. */
+const BLUEDIT_SCROLL: WelcomeCursorSpan = { start: 200, end: B.focusStart - 150 };
+const Y_SCROLL: WelcomeCursorSpan = { start: B.yScrollStart, end: B.end - 300 };
 
 /** The frame shown as a still with reduced motion: both devices blocked during the event. */
 export const BLOCKING_STILL = B.egogramNotice + 600;
@@ -156,8 +160,8 @@ function focusBlock(elapsed: number, app: BlockerApp): BlockerBrowserPage {
  * starts, Y's block page once its address loads, and Y's feed scrolling after the event.
  */
 export function blockingBrowserPage(elapsed: number): BlockerBrowserPage {
-  if (elapsed < B.focusStart) return { kind: "feed", app: "bluedit", scroll: easeInOutCubic(filmSpan(elapsed, 200, B.focusStart - 150)) };
-  if (elapsed >= B.focusEnd) return { kind: "feed", app: "y", scroll: 0.45 * easeInOutCubic(filmSpan(elapsed, B.yScrollStart, B.end - 300)) };
+  if (elapsed < B.focusStart) return { kind: "feed", app: "bluedit", scroll: easeInOutCubic(filmSpan(elapsed, BLUEDIT_SCROLL.start, BLUEDIT_SCROLL.end)) };
+  if (elapsed >= B.focusEnd) return { kind: "feed", app: "y", scroll: 0.45 * easeInOutCubic(filmSpan(elapsed, Y_SCROLL.start, Y_SCROLL.end)) };
   return focusBlock(elapsed, elapsed >= B.yBlocked ? "y" : "bluedit");
 }
 
@@ -178,9 +182,9 @@ export function blockingBrowser(elapsed: number): BlockerBrowserFrame {
  * shows, and goes back to the page as Y's feed returns after the event.
  */
 export const BLOCKING_CURSOR: WelcomeCursorScript = [
-  blockerPageRest(0, [0.6, 0.55]),
+  blockerPageRest(0, [0.6, 0.55], [BLUEDIT_SCROLL]),
   blockerAddressClick(B.addressTap, B.focusStart),
-  blockerPageRest(B.yScrollStart, [0.55, 0.6]),
+  blockerPageRest(B.yScrollStart, [0.55, 0.6], [Y_SCROLL]),
 ];
 
 /** The app open on the phone at this moment, or null on the home screen. */

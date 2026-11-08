@@ -40,7 +40,7 @@
     aboutSparks,
     aboutStarred,
   } from "$lib/vault/welcome-about-scene";
-  import { welcomeCursorOn } from "$lib/vault/welcome-cursor";
+  import { WELCOME_CURSOR_BROWSER_SIZE_PX, welcomeCursorOn } from "$lib/vault/welcome-cursor";
   import WelcomeCursor from "./WelcomeCursor.svelte";
 
   /**
@@ -320,6 +320,6 @@
         {/if}
       </div>
     {/if}
-    <WelcomeCursor script={ABOUT_CURSOR} {elapsed} width={canvasW} />
+    <WelcomeCursor script={ABOUT_CURSOR} {elapsed} width={canvasW} size={WELCOME_CURSOR_BROWSER_SIZE_PX} />
   </div>
 </div>

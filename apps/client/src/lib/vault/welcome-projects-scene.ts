@@ -124,62 +124,62 @@ export const PROJECTS_PLAYLISTS: Readonly<Record<ProjectsScenePhase, MusicSceneP
 export const PROJECTS_BEATS = {
   /** A tap on the header's settings button opens Project settings, which scroll to Event defaults. */
   settingsTap: 800,
-  nameScrollStart: 1200,
-  nameScrollEnd: 1900,
+  nameScrollStart: 1600,
+  nameScrollEnd: 2300,
   /** A tap on the event name field focuses it, and the name is typed. */
-  nameTap: 2400,
-  nameTypeStart: 2600,
-  nameTypeEnd: 3500,
+  nameTap: 2800,
+  nameTypeStart: 3000,
+  nameTypeEnd: 3900,
   /**
    * The settings scroll the color into view with room for its palette, a tap opens the palette, a tap picks a swatch,
    * which closes the palette.
    */
-  colorScrollStart: 3700,
-  colorScrollEnd: 4100,
-  colorTap: 4500,
-  colorPick: 5800,
+  colorScrollStart: 4100,
+  colorScrollEnd: 4500,
+  colorTap: 4900,
+  colorPick: 6200,
   /** Each of the other pickers is scrolled into view, opens with a tap, and a tap picks an option. */
-  durationScrollStart: 6500,
-  durationScrollEnd: 6900,
-  durationTap: 7200,
-  durationPick: 8500,
-  pomodoroScrollStart: 8700,
-  pomodoroScrollEnd: 9100,
-  pomodoroTap: 9400,
-  pomodoroPick: 10700,
-  focusScrollStart: 11000,
-  focusScrollEnd: 11500,
-  focusTap: 11900,
-  focusPick: 13200,
-  shortBreakScrollStart: 13400,
-  shortBreakScrollEnd: 13800,
-  shortBreakTap: 14100,
-  shortBreakPick: 15400,
-  longBreakScrollStart: 15600,
-  longBreakScrollEnd: 16000,
-  longBreakTap: 16300,
-  longBreakPick: 17600,
+  durationScrollStart: 6900,
+  durationScrollEnd: 7300,
+  durationTap: 7600,
+  durationPick: 8900,
+  pomodoroScrollStart: 9100,
+  pomodoroScrollEnd: 9500,
+  pomodoroTap: 9800,
+  pomodoroPick: 11100,
+  focusScrollStart: 11400,
+  focusScrollEnd: 11900,
+  focusTap: 12300,
+  focusPick: 13600,
+  shortBreakScrollStart: 13800,
+  shortBreakScrollEnd: 14200,
+  shortBreakTap: 14500,
+  shortBreakPick: 15800,
+  longBreakScrollStart: 16000,
+  longBreakScrollEnd: 16400,
+  longBreakTap: 16700,
+  longBreakPick: 18000,
   /** Save settings saves the defaults and turns back to its idle color, and the close button then closes the panel. */
-  settingsSaveTap: 18400,
-  settingsCloseTap: 19800,
+  settingsSaveTap: 18800,
+  settingsCloseTap: 20200,
   /** The list gives way to the Calendar. */
-  calendarIn: 20500,
+  calendarIn: 20900,
   /** A press drags an event out over the empty hour, and letting go opens the event panel on it. */
-  createStart: 21100,
-  createEnd: 21800,
-  panelOpen: 21950,
+  createStart: 21500,
+  createEnd: 22200,
+  panelOpen: 22350,
   /** The project trigger, then the Personal group, then Novel, which gives the event the project's defaults. */
-  projectTap: 22950,
-  groupTap: 24050,
-  projectPick: 25150,
+  projectTap: 23350,
+  groupTap: 24450,
+  projectPick: 25550,
   /** On the phone, a drag on the sheet's grabber takes it from its peek to its full height. */
-  sheetDragStart: 26100,
-  sheetDragEnd: 26650,
+  sheetDragStart: 26500,
+  sheetDragEnd: 27050,
   /** A tap on the Music section's header opens it on the project's playlists. */
-  musicTap: 27400,
+  musicTap: 27800,
   /** Save saves the event and closes the panel. */
-  eventSaveTap: 29100,
-  end: 30500,
+  eventSaveTap: 29500,
+  end: 30900,
 } as const;
 
 const B = PROJECTS_BEATS;
@@ -480,13 +480,19 @@ function pickerClicks(picker: ProjectsScenePicker): WelcomeCursorStop[] {
 }
 
 /**
- * The desktop pointer's path through the scene: it opens the settings, clicks into the event name, opens each picker
- * and picks its option, saves and closes the settings, drags the event out in the Calendar, picks Novel in its panel,
- * opens its Music section, and saves it.
+ * The desktop pointer's path through the scene: it opens the settings and moves into them before they scroll, clicks
+ * into the event name, opens each picker and picks its option, saves and closes the settings, drags the event out in
+ * the Calendar, picks Novel in its panel, hovering Personal to show its projects as the desktop picker does, opens its
+ * Music section, and saves it.
  */
 export const PROJECTS_CURSOR: WelcomeCursorScript = [
   cursorRest("projects-list", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
   cursorClick("projects-settings", B.settingsTap, { after: 0 }),
+  // A wheel scrolls what is under the pointer, so it moves into the settings before they scroll.
+  cursorRest("projects-settings-scroll", B.nameScrollStart - WELCOME_CURSOR_REST_MS, {
+    anchor: [0.6, 0.5],
+    busy: [{ start: B.nameScrollStart, end: B.nameScrollEnd }],
+  }),
   cursorClick("projects-name", B.nameTap, { glyph: "text", after: B.nameScrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
   ...(["color", "duration", "pomodoro", ...PROJECTS_PHASES] as const).flatMap(pickerClicks),
   cursorClick("projects-save", B.settingsSaveTap, { after: B.longBreakPick }),
@@ -506,7 +512,7 @@ export const PROJECTS_CURSOR: WelcomeCursorScript = [
     follow: true,
   },
   cursorClick("panel-project", B.projectTap, { after: B.panelOpen }),
-  cursorClick("panel-group", B.groupTap),
+  cursorRest("panel-group", B.groupTap),
   cursorClick("panel-project-pick", B.projectPick),
   cursorClick("panel-music", B.musicTap, { anchor: [0.25, 0.5] }),
   cursorClick("panel-save", B.eventSaveTap),

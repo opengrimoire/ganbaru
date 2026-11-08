@@ -17,7 +17,7 @@
     type BlockerApp,
     type BlockerBrowserFrame,
   } from "$lib/vault/welcome-blocker";
-  import { welcomeCursorHovered, type WelcomeCursorScript } from "$lib/vault/welcome-cursor";
+  import { WELCOME_CURSOR_BROWSER_SIZE_PX, welcomeCursorHovered, type WelcomeCursorScript } from "$lib/vault/welcome-cursor";
   import WelcomeCursor from "./WelcomeCursor.svelte";
   import WelcomeParodyFeed from "./WelcomeParodyFeed.svelte";
   import WelcomeParodyIcon, { MAIL_COLORS } from "./WelcomeParodyIcon.svelte";
@@ -236,6 +236,6 @@
         {/if}
       </div>
     </div>
-    <WelcomeCursor script={cursor} {elapsed} width={width - 2 * BEZEL} />
+    <WelcomeCursor script={cursor} {elapsed} width={width - 2 * BEZEL} size={WELCOME_CURSOR_BROWSER_SIZE_PX} />
   </div>
 </div>

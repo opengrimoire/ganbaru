@@ -35,7 +35,14 @@ import {
   monotoneCurve,
 } from "./welcome-film";
 import { COUNT_PRESET_RHYTHMS } from "$lib/pomodoro/rhythm";
-import { welcomeCursorFrame, welcomeCursorOn, welcomeCursorScriptOrdered } from "./welcome-cursor";
+import {
+  WELCOME_CURSOR_FADE_MS,
+  WELCOME_CURSOR_IDLE_MS,
+  welcomeCursorFrame,
+  welcomeCursorHovered,
+  welcomeCursorOn,
+  welcomeCursorScriptOrdered,
+} from "./welcome-cursor";
 
 describe("monotoneCurve", () => {
   const points = [[0, 0], [100, 10], [200, 12], [300, 40]] as const;
@@ -432,7 +439,6 @@ describe("the film's desktop pointer", () => {
   /** Each control the pointer clicks, the beat its tap lands on, and the beat that draws the control. */
   const clicks = [
     { target: "panel-project", tap: FILM_BEATS.projectTap, shown: FILM_BEATS.panelOpen },
-    { target: "panel-group", tap: FILM_BEATS.groupTap, shown: FILM_BEATS.projectTap },
     { target: "panel-project-pick", tap: FILM_BEATS.projectPick, shown: FILM_BEATS.groupTap },
     { target: "panel-save", tap: FILM_BEATS.createSaved, shown: FILM_BEATS.panelOpen },
     { target: "film-ring", tap: FILM_BEATS.pauseTap + FILM_TAP_MS, shown: FILM_BEATS.breakEnd },
@@ -478,9 +484,24 @@ describe("the film's desktop pointer", () => {
     expect(filmRingMenuOpen(stop("film-ring-pause").arrive)).toBe(true);
   });
 
+  it("hovers the group to show its projects, as the desktop picker does, without clicking it", () => {
+    const group = stop("panel-group");
+    expect(group.press).toBeUndefined();
+    expect(group.arrive).toBe(FILM_BEATS.groupTap);
+    expect(group.depart).toBeGreaterThanOrEqual(FILM_BEATS.projectTap);
+    expect(welcomeCursorOn(script, FILM_BEATS.groupTap, "panel-group")).toBe(true);
+  });
+
   it("presses nothing outside the drag and the clicks", () => {
     expect(welcomeCursorFrame(script, FILM_BEATS.focusStart).pressed).toBe(0);
     expect(welcomeCursorFrame(script, FILM_BEATS.end).pressed).toBe(0);
-    expect(welcomeCursorFrame(script, FILM_BEATS.end).to.target).toBe("film-grid");
+  });
+
+  it("hides while it waits for Focus to start and for the paused notification, and after its last click", () => {
+    for (const elapsed of [FILM_BEATS.createSaved + WELCOME_CURSOR_IDLE_MS + WELCOME_CURSOR_FADE_MS, FILM_BEATS.breakStart, FILM_BEATS.notificationIn - 300, FILM_BEATS.sessionEnd, FILM_BEATS.end]) {
+      expect(welcomeCursorFrame(script, elapsed)).toMatchObject({ shown: 0, away: true });
+      expect(welcomeCursorHovered(script, elapsed)).toBeNull();
+    }
+    for (const { tap } of clicks) expect(welcomeCursorFrame(script, tap - FILM_TAP_MS).shown).toBe(1);
   });
 });

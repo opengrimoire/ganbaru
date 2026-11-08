@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
+import { welcomeCursorFrame, welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
 import { FILM_TAP_MS } from "./welcome-film";
 import { PROJECTS_PRIORITY_ORDER, PROJECTS_STATUS_ORDER } from "./welcome-projects-scene";
 import {
@@ -125,7 +125,7 @@ describe("welcome tasks scene", () => {
     }
   });
 
-  it("types into the add row under a text beam and reaches each cell only once the list has scrolled to it", () => {
+  it("types into the add row under a text beam, hiding while the title is typed, and reaches each cell only once the list has scrolled to it", () => {
     expect(TASKS_CURSOR.find((stop) => stop.target === "tasks-add")?.glyph).toBe("text");
     const status = TASKS_CURSOR.find((stop) => stop.target === "tasks-status");
     const priority = TASKS_CURSOR.find((stop) => stop.target === "tasks-priority");
@@ -133,6 +133,7 @@ describe("welcome tasks scene", () => {
     expect(priority?.glyph).toBe("pointer");
     expect(status?.depart).toBeGreaterThan(B.statusScrollStart);
     expect(priority?.depart).toBeGreaterThan(B.priorityScrollStart);
-    expect(welcomeCursorHovered(TASKS_CURSOR, B.taskSubmit)).toBe("tasks-add");
+    expect(welcomeCursorFrame(TASKS_CURSOR, B.taskSubmit).away).toBe(true);
+    expect(welcomeCursorHovered(TASKS_CURSOR, B.statusScrollStart)).toBe("tasks-add");
   });
 });

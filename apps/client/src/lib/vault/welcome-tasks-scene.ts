@@ -143,9 +143,9 @@ export function tasksTouches(elapsed: number): TasksSceneTouches {
  */
 export const TASKS_CURSOR: WelcomeCursorScript = [
   cursorRest("projects-list", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
-  cursorClick("tasks-add", B.addTap, { glyph: "text", after: 0 }),
+  cursorClick("tasks-add", B.addTap, { glyph: "text", after: 0, busy: [{ start: B.statusScrollStart, end: B.statusScrollEnd }] }),
   cursorClick("tasks-status", B.statusTap, { glyph: "pointer", after: B.statusScrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
-  cursorClick("tasks-status-option", B.statusPick),
+  cursorClick("tasks-status-option", B.statusPick, { busy: [{ start: B.priorityScrollStart, end: B.priorityScrollEnd }] }),
   cursorClick("tasks-priority", B.priorityTap, { glyph: "pointer", after: B.priorityScrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
   cursorClick("tasks-priority-option", B.priorityPick),
 ];

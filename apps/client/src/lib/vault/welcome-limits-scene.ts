@@ -170,7 +170,7 @@ export function limitsBrowser(elapsed: number): BlockerBrowserFrame {
  * shift, and clicks the address bar for Bluedit's address.
  */
 export const LIMITS_CURSOR: WelcomeCursorScript = [
-  blockerPageRest(0, [0.6, 0.55]),
+  blockerPageRest(0, [0.6, 0.55], [{ start: B.browserUseStart, end: B.browserUseEnd }]),
   cursorClick(blockerCursorClose("y"), B.yCloseTap, { after: B.browserUseEnd }),
   blockerPageRest(B.yCloseTap + WELCOME_CURSOR_TRAVEL_MS, [0.55, 0.45]),
   cursorClick(BLOCKER_CURSOR.newTab, B.newTabTap, { after: B.browserReturn }),

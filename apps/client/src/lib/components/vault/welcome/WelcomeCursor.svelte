@@ -1,23 +1,27 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { welcomeCursorFrame, type WelcomeCursorScript, type WelcomeCursorStop } from "$lib/vault/welcome-cursor";
+  import { WELCOME_CURSOR_SIZE_PX, welcomeCursorFrame, type WelcomeCursorScript, type WelcomeCursorStop } from "$lib/vault/welcome-cursor";
 
   /**
    * The desktop welcome scenes' mouse pointer. It covers the scene's drawing, finds each place of `script` by the
    * `data-cursor` names inside the drawing, and glides between them, so it lands on a control wherever the drawing lays
    * it out. Once it lands it stays put while the drawing scrolls or changes under it, unless its place follows an element
-   * it drags. Elements laid out but hidden are not places it can go. A held button shows as a ring under a slightly smaller pointer. The pointer keeps the system's black arrow
-   * with a white edge in every theme, as the real one does.
+   * it drags. Elements laid out but hidden are not places it can go. A held button shows as a ring under a slightly
+   * smaller pointer, and the pointer fades away while it rests idle for a while. It keeps the system's black arrow with a
+   * white edge in every theme, as the real one does.
    */
   let {
     script,
     elapsed,
     width,
+    size = WELCOME_CURSOR_SIZE_PX,
   }: {
     script: WelcomeCursorScript;
     elapsed: number;
     /** The drawing's width in logical pixels, which maps measured positions back into the zoomed drawing. */
     width: number;
+    /** The pointer's drawn size in logical pixels. */
+    size?: number;
   } = $props();
 
   interface Point {
@@ -25,8 +29,7 @@
     y: number;
   }
 
-  /** The drawn size of each shape, and the point of it that clicks, in its 24 unit view box. */
-  const GLYPH_PX = 20;
+  /** The point of each shape that clicks, in its 24 unit view box. */
   const HOTSPOTS = { arrow: [5, 2], pointer: [9.5, 1.5], text: [12, 12] } as const;
 
   let layer: HTMLDivElement | undefined = $state();
@@ -76,22 +79,25 @@
 </script>
 
 <div bind:this={layer} class="pointer-events-none absolute inset-0 z-100 overflow-hidden" aria-hidden="true">
-  {#if point}
+  {#if point && frame.shown > 0}
     {#if frame.pressed > 0}
       <span
-        class="absolute size-5 -translate-1/2 rounded-full bg-foreground/15 ring-1 ring-foreground/30"
+        class="absolute -translate-1/2 rounded-full bg-foreground/15 ring-1 ring-foreground/30"
         style:left={`${point.x}px`}
         style:top={`${point.y}px`}
-        style:opacity={frame.pressed}
+        style:width={`${size}px`}
+        style:height={`${size}px`}
+        style:opacity={frame.pressed * frame.shown}
       ></span>
     {/if}
     <svg
       class="absolute overflow-visible"
-      width={GLYPH_PX}
-      height={GLYPH_PX}
+      width={size}
+      height={size}
       viewBox="0 0 24 24"
-      style:left={`${point.x - (hotspot[0] * GLYPH_PX) / 24}px`}
-      style:top={`${point.y - (hotspot[1] * GLYPH_PX) / 24}px`}
+      style:left={`${point.x - (hotspot[0] * size) / 24}px`}
+      style:top={`${point.y - (hotspot[1] * size) / 24}px`}
+      style:opacity={frame.shown < 1 ? frame.shown : undefined}
       style:transform={`scale(${scale})`}
       style:transform-origin={`${(hotspot[0] * 100) / 24}% ${(hotspot[1] * 100) / 24}%`}
     >

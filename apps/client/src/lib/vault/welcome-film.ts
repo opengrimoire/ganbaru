@@ -549,14 +549,12 @@ export function filmWorkday(now: Date): Date {
 /** How long the desktop pointer rests on the empty slot before it presses to draw the session. */
 const FILM_CURSOR_AIM_MS = 150;
 
-/** How long after a control goes away the desktop pointer has moved aside onto the Calendar, out of the way. */
-const FILM_CURSOR_ASIDE_MS = 700;
-
 /**
  * The desktop pointer's path through the film, on the beats of the taps it replaces: it presses on the empty morning
- * and drags the session out by its bottom edge, picks the project in the event panel, rests in the title while it is
- * typed, saves, then opens the Focus ring's menu, pauses Focus, and resumes it from the paused notification. Between
- * clicks it moves aside onto the Calendar. It is built on call rather than at load, since the pointer's timing module
+ * and drags the session out by its bottom edge, picks the project in the event panel, hovering its group to show its
+ * projects as the desktop picker does, rests in the title while it is typed, saves, then opens the Focus ring's menu,
+ * pauses Focus, and resumes it from the paused notification. While nothing needs it for a while it hides where it rests.
+ * It is built on call rather than at load, since the pointer's timing module
  * reads this one's tap length.
  */
 export function filmCursorScript(): WelcomeCursorScript {
@@ -574,15 +572,12 @@ export function filmCursorScript(): WelcomeCursorScript {
       press: { start: createStart, end: createEnd },
     },
     cursorClick("panel-project", FILM_BEATS.projectTap, { after: FILM_BEATS.panelOpen }),
-    cursorClick("panel-group", FILM_BEATS.groupTap, { after: FILM_BEATS.projectTap, anchor: [0.4, 0.5] }),
+    cursorRest("panel-group", FILM_BEATS.groupTap, { anchor: [0.4, 0.5] }),
     cursorClick("panel-project-pick", FILM_BEATS.projectPick, { after: FILM_BEATS.groupTap, anchor: [0.4, 0.5] }),
     cursorRest("panel-title", FILM_BEATS.typeStart, { anchor: [0.9, 0.5], glyph: "text" }),
     cursorClick("panel-save", FILM_BEATS.createSaved, { after: FILM_BEATS.typeEnd }),
-    cursorRest("film-grid", FILM_BEATS.createSaved + FILM_CURSOR_ASIDE_MS, { anchor: [0.8, 0.72] }),
     cursorClick("film-ring", ringTap, { after: FILM_BEATS.breakEnd }),
     cursorClick("film-ring-pause", FILM_BEATS.pauseStart, { after: ringTap, anchor: [0.4, 0.5] }),
-    cursorRest("film-grid", FILM_BEATS.pauseStart + FILM_CURSOR_ASIDE_MS, { anchor: [0.75, 0.45] }),
     cursorClick("notification-action-0", FILM_BEATS.resumeAt, { after: FILM_BEATS.notificationIn }),
-    cursorRest("film-grid", FILM_BEATS.resumeAt + FILM_CURSOR_ASIDE_MS, { anchor: [0.8, 0.72] }),
   ];
 }

@@ -1427,7 +1427,7 @@
             </span>
           </div>
 
-          <div bind:this={settingsViewport} class="relative min-h-0 flex-1 overflow-hidden">
+          <div bind:this={settingsViewport} data-cursor="projects-settings-scroll" class="relative min-h-0 flex-1 overflow-hidden">
             <div
               bind:this={settingsContent}
               class="relative flex flex-col gap-3 px-3 pt-1 pb-3"

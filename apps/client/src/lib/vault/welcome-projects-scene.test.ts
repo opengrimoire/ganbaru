@@ -248,7 +248,6 @@ describe("welcome projects scene", () => {
       ["projects-save", B.settingsSaveTap],
       ["projects-close", B.settingsCloseTap],
       ["panel-project", B.projectTap],
-      ["panel-group", B.groupTap],
       ["panel-project-pick", B.projectPick],
       ["panel-music", B.musicTap],
       ["panel-save", B.eventSaveTap],
@@ -268,6 +267,18 @@ describe("welcome projects scene", () => {
     expect(drag?.depart).toBe(B.createStart);
     expect(drag?.arrive).toBe(B.createEnd);
     expect(welcomeCursorHovered(PROJECTS_CURSOR, B.createStart - PROJECTS_CREATE_PRESS_MS)).toBe("projects-drag");
+  });
+
+  it("hovers Personal to show its projects, as the desktop picker does, without clicking it", () => {
+    const group = PROJECTS_CURSOR.find((stop) => stop.target === "panel-group");
+    expect(group?.press).toBeUndefined();
+    expect(group?.arrive).toBe(B.groupTap);
+    expect(welcomeCursorHovered(PROJECTS_CURSOR, B.groupTap)).toBe("panel-group");
+  });
+
+  it("moves into the settings before they scroll, since a wheel scrolls what is under the pointer", () => {
+    expect(welcomeCursorHovered(PROJECTS_CURSOR, B.nameScrollStart)).toBe("projects-settings-scroll");
+    expect(PROJECTS_CURSOR.find((stop) => stop.target === "projects-settings-scroll")?.depart).toBeGreaterThanOrEqual(B.settingsTap);
   });
 
   it("reaches the event name under a text beam, and each picker only once the settings have scrolled to it", () => {

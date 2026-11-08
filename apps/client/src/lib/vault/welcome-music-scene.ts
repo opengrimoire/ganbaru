@@ -491,7 +491,7 @@ export const MUSIC_CURSOR_SCRIPT: WelcomeCursorScript = [
     press: { start: B.createStart - MUSIC_CREATE_PRESS_MS, end: B.createEnd },
   },
   cursorClick("panel-project", B.projectTap, { after: B.createEnd }),
-  cursorClick("panel-group", B.groupTap, { after: B.projectTap }),
+  cursorRest("panel-group", B.groupTap),
   cursorClick("panel-project-pick", B.projectPick, { after: B.groupTap }),
   cursorClick("panel-music", B.musicTap, { anchor: [0.25, 0.5], after: B.projectPick }),
   ...PICKER_STEPS.flatMap((step, index) => [

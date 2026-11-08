@@ -285,7 +285,6 @@ describe("welcome music scene", () => {
       [musicCursorCard("breakCalm"), B.youtubePickTap],
       ["music-save", B.youtubeSaveTap],
       ["panel-project", B.projectTap],
-      ["panel-group", B.groupTap],
       ["panel-project-pick", B.projectPick],
       ["panel-music", B.musicTap],
       ["panel-playlist-focus", B.focusPickerTap],
@@ -311,6 +310,14 @@ describe("welcome music scene", () => {
           expect(welcomeCursorHovered(MUSIC_CURSOR_SCRIPT, elapsed), `${target} at ${elapsed}`).toBe(target);
         }
       }
+    });
+
+    it("hovers the group to show its projects, as the desktop picker does, without clicking it", () => {
+      const group = MUSIC_CURSOR_SCRIPT.find((stop) => stop.target === "panel-group");
+      expect(group?.press).toBeUndefined();
+      expect(group?.arrive).toBe(B.groupTap);
+      expect(group?.depart).toBeGreaterThanOrEqual(B.projectTap);
+      expect(welcomeCursorHovered(MUSIC_CURSOR_SCRIPT, B.groupTap)).toBe("panel-group");
     });
 
     it("never leaves a control while its button is held", () => {

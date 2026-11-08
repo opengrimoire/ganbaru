@@ -109,10 +109,10 @@ describe("welcome about scene", () => {
     }
   });
 
-  it("keeps the pointer on the address bar until every row is shown, and hides it once the repository is starred", () => {
+  it("keeps the pointer on the address bar until every row is shown, and on the star until the scene ends", () => {
     expect(welcomeCursorHovered(ABOUT_CURSOR, 0)).toBe(ABOUT_CURSOR_TARGETS.address);
     expect(welcomeCursorHovered(ABOUT_CURSOR, ABOUT_BEATS.rowsEnd)).toBe(ABOUT_CURSOR_TARGETS.address);
     expect(ABOUT_CURSOR[1]?.depart).toBeGreaterThanOrEqual(ABOUT_BEATS.rowsEnd);
-    expect(welcomeCursorFrame(ABOUT_CURSOR, ABOUT_BEATS.end)).toMatchObject({ shown: 0, away: true });
+    expect(welcomeCursorFrame(ABOUT_CURSOR, ABOUT_BEATS.end)).toMatchObject({ shown: 1, away: false });
   });
 });

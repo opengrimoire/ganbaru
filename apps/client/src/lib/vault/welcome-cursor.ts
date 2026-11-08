@@ -53,7 +53,7 @@ export interface WelcomeCursorFrame {
   glyph: WelcomeCursorGlyph;
   /** How far the button shows as held, from 0 to 1. */
   pressed: number;
-  /** How far the pointer shows, from 0 to 1: it fades in as the scene starts, and out while it rests idle. */
+  /** How far the pointer shows, from 0 to 1: it fades out while it rests idle between uses. */
   shown: number;
   /** Whether the pointer has hidden while resting idle, so it hovers nothing. */
   away: boolean;
@@ -139,20 +139,24 @@ export function welcomeCursorFrame(script: WelcomeCursorScript, elapsed: number)
   if (progress >= GLYPH_EDGE) glyph = to.glyph ?? "arrow";
   else if (from !== null && progress <= 1 - GLYPH_EDGE) glyph = from.glyph ?? "arrow";
   const pressed = Math.max(0, ...script.map((stop) => (stop.press ? filmPress(elapsed, stop.press.start, stop.press.end) : 0)));
-  const present = welcomeCursorPresent(to, script[index + 1]?.depart ?? Infinity, elapsed);
-  return { from, to, progress, glyph, pressed, shown: Math.min(present, filmSpan(elapsed, 0, WELCOME_CURSOR_FADE_MS)), away: present === 0 };
+  const shown = welcomeCursorPresent(to, script[index + 1]?.depart ?? Infinity, elapsed);
+  return { from, to, progress, glyph, pressed, shown, away: shown === 0 };
 }
 
 /**
  * How far the pointer shows while it is at `stop` until it leaves at `leave`, from 0 to 1. When a wait between its
  * moves, clicks, and other uses is long enough, it fades out once it has rested idle and fades back in just before it
- * is next used.
+ * is next used. After its last use it stays, so it fades out with the rest of the scene as the scene starts over.
  */
 function welcomeCursorPresent(stop: WelcomeCursorStop, leave: number, elapsed: number): number {
   const uses: WelcomeCursorSpan[] = [{ start: stop.depart, end: stop.arrive }, ...(stop.press ? [stop.press] : []), ...(stop.busy ?? [])];
   const idleFrom = Math.max(...uses.filter((use) => use.start <= elapsed).map((use) => use.end));
   const nextUse = Math.min(leave, ...uses.filter((use) => use.start > elapsed).map((use) => use.start));
-  if (elapsed < idleFrom || nextUse - idleFrom < WELCOME_CURSOR_IDLE_MS + 2 * WELCOME_CURSOR_FADE_MS + WELCOME_CURSOR_AWAY_MIN_MS) {
+  if (
+    elapsed < idleFrom ||
+    nextUse === Infinity ||
+    nextUse - idleFrom < WELCOME_CURSOR_IDLE_MS + 2 * WELCOME_CURSOR_FADE_MS + WELCOME_CURSOR_AWAY_MIN_MS
+  ) {
     return 1;
   }
   const returns = nextUse - WELCOME_CURSOR_FADE_MS;

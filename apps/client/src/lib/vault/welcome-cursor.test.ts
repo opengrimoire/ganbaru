@@ -83,14 +83,12 @@ describe("welcome cursor idling", () => {
   const IDLE_SCRIPT: WelcomeCursorScript = [cursorRest("start", 0), cursorClick("save", 6000)];
   const saveDepart = IDLE_SCRIPT[1].depart;
 
-  it("fades in as the scene starts", () => {
-    expect(welcomeCursorFrame(SCRIPT, 0).shown).toBe(0);
-    expect(welcomeCursorFrame(SCRIPT, WELCOME_CURSOR_FADE_MS / 2).shown).toBeCloseTo(0.5);
-    expect(welcomeCursorFrame(SCRIPT, WELCOME_CURSOR_FADE_MS).shown).toBe(1);
+  it("shows from the scene's first frame, so it fades in with the rest of the scene", () => {
+    expect(welcomeCursorFrame(SCRIPT, 0)).toMatchObject({ shown: 1, away: false });
   });
 
   it("stays shown through short waits between its moves and clicks", () => {
-    for (let elapsed = WELCOME_CURSOR_FADE_MS; elapsed <= 4000 + WELCOME_CURSOR_IDLE_MS; elapsed += 10) {
+    for (let elapsed = 0; elapsed <= 4000 + WELCOME_CURSOR_IDLE_MS; elapsed += 10) {
       expect(welcomeCursorFrame(SCRIPT, elapsed)).toMatchObject({ shown: 1, away: false });
     }
   });
@@ -105,8 +103,10 @@ describe("welcome cursor idling", () => {
     expect(welcomeCursorFrame(IDLE_SCRIPT, saveDepart)).toMatchObject({ shown: 1, away: false });
   });
 
-  it("hides after its last click", () => {
-    expect(welcomeCursorFrame(IDLE_SCRIPT, 6000 + WELCOME_CURSOR_IDLE_MS + WELCOME_CURSOR_FADE_MS)).toMatchObject({ shown: 0, away: true });
+  it("stays after its last click, so it fades out with the rest of the scene", () => {
+    for (const elapsed of [6000, 6000 + WELCOME_CURSOR_IDLE_MS + WELCOME_CURSOR_FADE_MS, 60_000]) {
+      expect(welcomeCursorFrame(IDLE_SCRIPT, elapsed)).toMatchObject({ shown: 1, away: false });
+    }
   });
 
   it("stays shown while it is in use where it rests, such as while it scrolls, and idles only around that", () => {

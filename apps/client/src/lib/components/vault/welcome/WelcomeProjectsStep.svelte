@@ -10,7 +10,7 @@
   import WelcomeScene from "./WelcomeScene.svelte";
   import WelcomeSceneStep from "./WelcomeSceneStep.svelte";
 
-  /** The welcome screen on Projects: event defaults set once in a project, which every task scheduled from its List view takes, on a loop. */
+  /** The welcome screen on Projects: adding and editing a task in the List view, then setting each of the project's event defaults, on a loop. */
   const { t } = getLocalization();
 </script>
 

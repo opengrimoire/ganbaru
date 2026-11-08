@@ -44,7 +44,7 @@
   const LABEL_OVERHANG = 10;
   /** The block notification's gap from the screen's edges and its body text size, in pixels. */
   const NOTICE_MARGIN = 6;
-  const NOTICE_FONT_PX = 9.5;
+  const NOTICE_FONT_PX = 8;
   /** The dock's four apps, unnamed but for Ganbaru in the last one. */
   const DOCK_SLOTS: readonly ("ganbaru" | null)[] = [null, null, null, "ganbaru"];
   const DOCK_BOTTOM = 18;

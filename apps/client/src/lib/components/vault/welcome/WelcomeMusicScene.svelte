@@ -737,6 +737,7 @@
         shown={notification}
         title={eventTitle}
         body={t("vaultSetup.music.playingNotice", playingTrack.title, playlistName(playing.playlist))}
+        androidIcon="music"
       />
     {/if}
 

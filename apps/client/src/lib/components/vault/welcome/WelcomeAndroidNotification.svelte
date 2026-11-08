@@ -1,13 +1,24 @@
+<script lang="ts" module>
+  /** The small icons Ganbaru's Android notifications set, named after their drawables. */
+  export type AndroidNotificationIcon = "focus" | "music";
+
+  /** Each small icon's path, copied from its `ic_notification_*` vector drawable on a 24 by 24 viewport. */
+  const SMALL_ICON_PATHS: Record<AndroidNotificationIcon, string> = {
+    focus: "M12,2A10,10 0,1 0,22 12A10,10 0,0 0,12 2M12,5A7,7 0,1 1,5 12A7,7 0,0 1,12 5M11,7H13V12.4L16.4,14.4L15.4,16.1L11,13.5Z",
+    music: "M12,3V13.55C11.41,13.21 10.73,13 10,13A4,4 0,0 0,6 17A4,4 0,0 0,10 21A4,4 0,0 0,14 17V7H18V3H12Z",
+  };
+</script>
+
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
 
   /**
-   * A Ganbaru notification as Android draws it in the welcome scenes, dropped from the top: Focus's clock as the small
-   * icon tinted into its circle, the app's name, a title, and a body, with room below for a progress bar or actions. It
-   * follows the system's light or dark Material palette rather than the app theme, because the system paints it. Its
-   * sizes scale with `fontSize`, so the same notification fits a full canvas or a small phone.
+   * A Ganbaru notification as Android draws it in the welcome scenes, dropped from the top: the small icon of the
+   * feature that posts it tinted into its circle, the app's name, a title, and a body, with room below for a progress
+   * bar or actions. It follows the system's light or dark Material palette rather than the app theme, because the
+   * system paints it. Its sizes scale with `fontSize`, so the same notification fits a full canvas or a small phone.
    */
   let {
     shown,
@@ -15,6 +26,7 @@
     fontSize,
     title,
     body,
+    icon = "focus",
     class: className,
     children,
   }: {
@@ -26,6 +38,8 @@
     fontSize: number;
     title: string;
     body: string;
+    /** The small icon: Focus's clock for Focus and the blocker, the music note for Music's media notification. */
+    icon?: AndroidNotificationIcon;
     class?: string;
     /** What follows the body, such as a progress bar or actions. */
     children?: Snippet;
@@ -47,10 +61,7 @@
   <div class="flex gap-[0.77em]">
     <span class="small-icon">
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path
-          fill="currentColor"
-          d="M12,2A10,10 0,1 0,22 12A10,10 0,0 0,12 2M12,5A7,7 0,1 1,5 12A7,7 0,0 1,12 5M11,7H13V12.4L16.4,14.4L15.4,16.1L11,13.5Z"
-        />
+        <path fill="currentColor" d={SMALL_ICON_PATHS[icon]} />
       </svg>
     </span>
     <div class="min-w-0 flex-1">

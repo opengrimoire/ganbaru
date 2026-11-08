@@ -13,7 +13,7 @@
   import appIconUrl from "../../../../../src-tauri/icons/64x64.png";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
-  import WelcomeAndroidNotification from "./WelcomeAndroidNotification.svelte";
+  import WelcomeAndroidNotification, { type AndroidNotificationIcon } from "./WelcomeAndroidNotification.svelte";
 
   /**
    * A Ganbaru notification as the operating system draws it, outside the app: a GNOME banner, a Windows toast, or an
@@ -27,6 +27,7 @@
     body,
     actions = [],
     progress = null,
+    androidIcon = "focus",
   }: {
     kind: FilmNotificationKind;
     /** How far it has slid in, from 0 (past its edge of the canvas) to 1 (at rest). */
@@ -37,6 +38,8 @@
     actions?: readonly FilmNotificationAction[];
     /** A phase's progress, from 0 to 1, as Android's ongoing notification draws it; null draws no progress bar. */
     progress?: number | null;
+    /** The small icon Android draws, after the feature that posts the notification. */
+    androidIcon?: AndroidNotificationIcon;
   } = $props();
 
   const { t } = getLocalization();
@@ -88,6 +91,7 @@
     fontSize={ANDROID_FONT_PX}
     {title}
     {body}
+    icon={androidIcon}
     class="z-50"
     children={hasExtras ? androidExtras : undefined}
   />

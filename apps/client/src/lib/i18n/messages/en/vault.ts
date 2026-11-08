@@ -42,7 +42,7 @@ export const vaultSetup = {
   },
   music: {
     headline: "Your playlists start automatically",
-    body: "Make playlists that mix YouTube and local music, and give each project its own for work and breaks.",
+    body: "Make playlists that mix YouTube and local music, then choose which ones each project plays for work and breaks.",
     sceneDescription:
       "A short animation of the playlist builder: a track from Local music is added to the Work (focus) playlist, then a video from YouTube to Break (calm). In the Calendar, picking the Thesis project for an event fills its music with the project's playlist for focus, short breaks, and long breaks. When the event's Pomodoro starts on its own, a notification shows a local track from Work (focus) playing automatically, and when the break starts, another shows the YouTube video from Break (calm).",
     playingNotice: (track: string, playlist: string) => `Playing ${track} from ${playlist}`,

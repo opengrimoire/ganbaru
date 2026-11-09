@@ -149,12 +149,9 @@
           : t("titleBar.control.pomodoro")}
         aria-haspopup="menu"
         aria-expanded={pomodoroOpen}
-        class={cn(utilityButtonClass, (pomodoroOpen || pomodoroActive) && "text-foreground")}
+        class={cn(utilityButtonClass, pomodoroOpen && "text-foreground")}
       >
-        <span class={cn(
-          utilityIconClass,
-          (pomodoroOpen || pomodoroActive) && "bg-accent/70",
-        )}>
+        <span class={cn(utilityIconClass, pomodoroOpen && "bg-accent/70")}>
           <PomodoroProgressRing
             active={pomodoroActive}
             remainingSeconds={pomodoroRemainingSeconds}

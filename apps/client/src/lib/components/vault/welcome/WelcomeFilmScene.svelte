@@ -87,7 +87,6 @@
     pomodoroBlockedScreenCopy,
     pomodoroBlockedScreenPalette,
     type PomodoroBlockedScreenPalette,
-    type PomodoroCompletionScreenState,
   } from "$lib/pomodoro/blocked-screen";
   import {
     DEFAULT_FOCUS_BREAK_END_ESC_PRESSES,
@@ -141,8 +140,6 @@
   const theme = getTheme();
   const preferences = getPreferences();
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
-  /** `Date.getDay()` for Friday, the day that completes the workweek. */
-  const FRIDAY = 5;
   /** The desktop title bar's icon size, which its Focus ring follows. */
   const TITLE_ICON_SIZE = 14;
   /** The Focus menu's icons and how much its extend item adds, as the menu draws them. */
@@ -265,8 +262,8 @@
   ];
 
   /**
-   * The film's own day: the session drawn on it, the planned event right after it, lunch, then an afternoon with
-   * no more Focus, so the planned event completes the day's Focus.
+   * The film's own day: the session drawn on it, the planned event right after it that is still ahead when the film
+   * ends, lunch, then an afternoon with no more Focus.
    */
   const FILM_DAY: readonly FilmEvent[] = [
     { start: DRAWN_END, end: SESSION_END, color: BLUE, title: "readSources", icons: MUSIC_ICONS },
@@ -308,16 +305,10 @@
   });
 
   const breakCopy = $derived(pomodoroBlockedScreenCopy("break_countdown", t));
-  /**
-   * The drawn event ends with a later Focus event still ahead today, so it is an event finished. The planned event ends
-   * the day's Focus, so it completes the day, or the workweek on a Friday, as the Focus runtime classifies it.
-   */
-  const dayDoneState: PomodoroCompletionScreenState = filmDate.getDay() === FRIDAY ? "workweek_complete" : "day_complete";
+  /** The drawn event ends with a later Focus event still ahead today, so it is an event finished. */
   const eventFinishedCopy = $derived(pomodoroBlockedScreenCopy("event_finished", t));
-  const dayDoneCopy = $derived(pomodoroBlockedScreenCopy(dayDoneState, t));
   const breakPalette = pomodoroBlockedScreenPalette("break_countdown");
   const eventFinishedPalette = pomodoroBlockedScreenPalette("event_finished");
-  const dayDonePalette = pomodoroBlockedScreenPalette(dayDoneState);
   const extensionHint = formatBreakExtensionHint(0, DEFAULT_FOCUS_BREAK_EXTENSION_LIMIT, undefined, t) !== null
     ? formatBreakExtensionShortcut()
     : null;
@@ -398,7 +389,6 @@
     Math.max(screenAlpha(FILM_BEATS.breakStart, FILM_BEATS.breakEnd + SCREEN_FADE_MS), filmBreakTint(elapsed)),
   );
   const eventFinishedScreen = $derived(screenAlpha(FILM_BEATS.eventEnd, FILM_BEATS.eventOut));
-  const dayDoneScreen = $derived(screenAlpha(FILM_BEATS.sessionEnd, FILM_BEATS.finishedOut));
   /** The break's countdown, held at zero while its screen lifts. */
   const breakSeconds = $derived(moment.kind === "break" ? moment.remainingSeconds : 0);
   const breakPulse = $derived(0.7 - 0.2 * Math.cos((2 * Math.PI * elapsed) / BREAK_PULSE_MS));
@@ -880,21 +870,16 @@
       />
     {/if}
 
-    <!-- The completion screens: the drawn event finished, then the day's Focus completed. -->
-    {#each [
-      { alpha: eventFinishedScreen, palette: eventFinishedPalette, copy: eventFinishedCopy },
-      { alpha: dayDoneScreen, palette: dayDonePalette, copy: dayDoneCopy },
-    ] as completion, index (index)}
-      {#if completion.alpha > 0}
-        <div class="film-screen absolute inset-0 z-50 flex flex-col items-center justify-center gap-8 px-4 text-center" style={screenStyle(completion.palette, completion.alpha)}>
-          <p class="film-screen-title film-screen-main">{completion.copy.title}</p>
-          <!-- A phone has no keys: its screens continue with a tap. -->
-          <p class="film-screen-small film-screen-muted">
-            {mobileShell ? t("pomodoroOverlay.tapToContinue") : completion.copy.subtitle}
-          </p>
-        </div>
-      {/if}
-    {/each}
+    <!-- The drawn event's finished screen. -->
+    {#if eventFinishedScreen > 0}
+      <div class="film-screen absolute inset-0 z-50 flex flex-col items-center justify-center gap-8 px-4 text-center" style={screenStyle(eventFinishedPalette, eventFinishedScreen)}>
+        <p class="film-screen-title film-screen-main">{eventFinishedCopy.title}</p>
+        <!-- A phone has no keys: its screen continues with a tap. -->
+        <p class="film-screen-small film-screen-muted">
+          {mobileShell ? t("pomodoroOverlay.tapToContinue") : eventFinishedCopy.subtitle}
+        </p>
+      </div>
+    {/if}
 
     {#if !mobileShell}
       <WelcomeCursor script={cursorScript} {elapsed} width={canvasW} />

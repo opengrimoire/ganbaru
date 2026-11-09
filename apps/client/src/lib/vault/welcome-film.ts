@@ -1,9 +1,9 @@
 /**
  * Timing for the welcome film: one continuous take of a day in the app. A Focus session is drawn in the Calendar ahead
  * of another, given a project and a title in the event panel, runs through its first break, is paused for a while from
- * the Focus ring, is resumed from the app's paused notification, runs to its end, carries on through the next event to
- * the end of the day's Focus, then is seen among the week's other sessions as the view pulls back. Every moment is derived from the milliseconds elapsed since the film started, so a frame is a pure
- * function of time and the reduced-motion still is simply the last frame.
+ * the Focus ring, is resumed from the app's paused notification, and runs to its end, then is seen among the week's
+ * other sessions as the view pulls back. Every moment is derived from the milliseconds elapsed since the film started,
+ * so a frame is a pure function of time and the reduced-motion still is simply the last frame.
  */
 
 import { createPresetPomodoroConfig, DEFAULT_POMODORO_PRESET_KEY, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
@@ -55,12 +55,8 @@ const FILM_OPENING_BEATS = {
   resumeAt: 14610,
 } as const;
 
-/** How long the drawn event's finished screen shows, and the day's completed screen. */
+/** How long the drawn event's finished screen shows. */
 const FILM_EVENT_FINISHED_MS = 750;
-const FILM_DAY_DONE_MS = 850;
-
-/** How long the app shows again after the day's completed screen lifts before the camera pulls back to the week. */
-const FILM_PULL_BACK_DELAY_MS = 250;
 
 /** How long the film holds on the week once the pull back starts, before it ends. */
 const FILM_WEEK_HOLD_MS = 2300;
@@ -190,35 +186,22 @@ const DRAWN_FAST_FORWARD = fastForwardClock(
 );
 const DRAWN_EVENT_END = DRAWN_FAST_FORWARD[DRAWN_FAST_FORWARD.length - 1][0];
 
-/** The fast-forward through the planned event once the drawn event's finished screen lifts. */
-const PLANNED_FAST_FORWARD = fastForwardClock(
-  DRAWN_EVENT_END + FILM_EVENT_FINISHED_MS,
-  FILM_DRAWN_MINUTES,
-  FILM_SESSION_MINUTES,
-  RESUMED_BREAKS,
-);
-const PLANNED_EVENT_END = PLANNED_FAST_FORWARD[PLANNED_FAST_FORWARD.length - 1][0];
-
 /** Moments of the film, in milliseconds from its start. A tap's beat is the moment it lands. */
 export const FILM_BEATS = {
   ...FILM_OPENING_BEATS,
-  /** The drawn event ends, its finished screen shows, and the planned event carries on once it lifts. */
+  /** The drawn event ends and its finished screen shows. */
   eventEnd: DRAWN_EVENT_END,
   eventOut: DRAWN_EVENT_END + FILM_EVENT_FINISHED_MS,
-  /** The planned event ends the day's Focus, the day's completed screen shows, and the app returns. */
-  sessionEnd: PLANNED_EVENT_END,
-  finishedOut: PLANNED_EVENT_END + FILM_DAY_DONE_MS,
-  /** The camera pulls back from the day to the week. */
-  pullBack: PLANNED_EVENT_END + FILM_DAY_DONE_MS + FILM_PULL_BACK_DELAY_MS,
-  end: PLANNED_EVENT_END + FILM_DAY_DONE_MS + FILM_PULL_BACK_DELAY_MS + FILM_WEEK_HOLD_MS,
+  /** The camera pulls back from the day to the week as the finished screen lifts, and the film ends there. */
+  pullBack: DRAWN_EVENT_END + FILM_EVENT_FINISHED_MS,
+  end: DRAWN_EVENT_END + FILM_EVENT_FINISHED_MS + FILM_WEEK_HOLD_MS,
 } as const;
 
 /**
  * The session's minutes against film time, as the current time reads them. Work hurries along, the break slows down
  * so its screen can be read and reaches its end exactly as the break screen lifts, then the time holds while the Focus
  * ring's menu is open, walks through the pause, holds while the paused notification is read, fast-forwards to the
- * drawn event's end, holds while its finished screen is up, and fast-forwards on through the planned event to the
- * session's end.
+ * drawn event's end, and holds there from its finished screen to the film's end.
  */
 const FILM_BREAK: FilmSpan = FILM_BREAKS[0] ?? { start: FILM_SESSION_MINUTES, end: FILM_SESSION_MINUTES };
 const SESSION_CLOCK: readonly FilmKeyframe[] = [
@@ -230,7 +213,6 @@ const SESSION_CLOCK: readonly FilmKeyframe[] = [
   [FILM_BEATS.pauseStart, FILM_PAUSE.start],
   [FILM_BEATS.notificationIn, FILM_PAUSE.end],
   ...DRAWN_FAST_FORWARD,
-  ...PLANNED_FAST_FORWARD,
 ];
 
 /** How many minutes before the session the current time starts, so it can be seen walking up to it. */

@@ -9,6 +9,7 @@ import {
   FILM_LEAD_IN_MINUTES,
   FILM_PAUSE,
   FILM_PLANNED_RAIL,
+  FILM_PULL_BACK_MS,
   FILM_REPLAN_MS,
   FILM_SESSION,
   FILM_SESSION_MINUTES,
@@ -104,9 +105,9 @@ describe("filmSpan and easing", () => {
 });
 
 describe("the film's session", () => {
-  it("is still before Focus starts and complete when the session ends", () => {
+  it("is still before Focus starts and at the drawn event's end when it ends", () => {
     expect(filmSessionMinute(FILM_BEATS.focusStart)).toBe(0);
-    expect(filmSessionMinute(FILM_BEATS.sessionEnd)).toBe(FILM_SESSION_MINUTES);
+    expect(filmSessionMinute(FILM_BEATS.eventEnd)).toBe(FILM_DRAWN_MINUTES);
   });
 
   it("holds the current time still while the event is drawn, set up, and saved", () => {
@@ -125,7 +126,7 @@ describe("the film's session", () => {
       previous = minute;
     }
     expect(filmClockMinute(FILM_BEATS.breakEnd)).toBe(filmSessionMinute(FILM_BEATS.breakEnd));
-    expect(filmClockMinute(FILM_BEATS.end)).toBe(FILM_SESSION_MINUTES);
+    expect(filmClockMinute(FILM_BEATS.end)).toBe(FILM_DRAWN_MINUTES);
   });
 
   it("spans the break exactly while the break screen is up", () => {
@@ -133,16 +134,17 @@ describe("the film's session", () => {
     expect(filmSessionMinute(FILM_BEATS.breakEnd)).toBeCloseTo(FILM_BREAKS[0].end, 9);
   });
 
-  it("holds at the drawn event's end while its finished screen is up", () => {
-    expect(filmSessionMinute(FILM_BEATS.eventEnd)).toBeCloseTo(FILM_DRAWN_MINUTES, 9);
-    expect(filmSessionMinute((FILM_BEATS.eventEnd + FILM_BEATS.eventOut) / 2)).toBeCloseTo(FILM_DRAWN_MINUTES, 9);
-    expect(filmSessionMinute(FILM_BEATS.eventOut)).toBeCloseTo(FILM_DRAWN_MINUTES, 9);
-    expect(filmSessionMinute(FILM_BEATS.eventOut + 400)).toBeGreaterThan(FILM_DRAWN_MINUTES);
+  it("holds at the drawn event's end from its finished screen to the film's end", () => {
+    for (let elapsed = FILM_BEATS.eventEnd; elapsed <= FILM_BEATS.end; elapsed += 50) {
+      expect(filmSessionMinute(elapsed)).toBeCloseTo(FILM_DRAWN_MINUTES, 9);
+    }
   });
 
-  it("finishes the drawn event after its first break and before the session ends", () => {
+  it("finishes the drawn event after its first break, then pulls back to the week as its finished screen lifts", () => {
     expect(FILM_BEATS.eventEnd).toBeGreaterThan(FILM_BEATS.breakEnd);
-    expect(FILM_BEATS.eventOut).toBeLessThan(FILM_BEATS.sessionEnd);
+    expect(FILM_BEATS.eventOut).toBeGreaterThan(FILM_BEATS.eventEnd);
+    expect(FILM_BEATS.pullBack).toBe(FILM_BEATS.eventOut);
+    expect(FILM_BEATS.end).toBeGreaterThan(FILM_BEATS.pullBack + FILM_PULL_BACK_MS);
   });
 
   it("slows down during the break so its countdown can be read", () => {
@@ -363,13 +365,12 @@ describe("the film's pause", () => {
     expect(filmFocusSpans(100)).toEqual([...before, { start: FILM_PAUSE.end, end: 60 }, { start: 65, end: 90 }, { start: 95, end: 100 }]);
   });
 
-  it("tints the app faintly only during the breaks it fast-forwards through, swelling in and out", () => {
+  it("glimpses the break screen faintly only during the breaks it fast-forwards through, swelling in and out", () => {
     const paused = FILM_PAUSE.end - FILM_PAUSE.start;
-    const passed = FILM_BREAKS.slice(1).map((pause) => (
-      pause.start < FILM_DRAWN_MINUTES
-        ? { start: pause.start + paused, end: Math.min(FILM_DRAWN_MINUTES, pause.end + paused) }
-        : pause
-    ));
+    const passed = FILM_BREAKS.slice(1)
+      .filter((pause) => pause.start < FILM_DRAWN_MINUTES)
+      .map((pause) => ({ start: pause.start + paused, end: Math.min(FILM_DRAWN_MINUTES, pause.end + paused) }));
+    expect(passed.length).toBeGreaterThan(0);
     const inBreak = (minute: number) => passed.some((pause) => minute > pause.start && minute < pause.end);
     const peaks = new Map<number, number>();
     let previous = 0;
@@ -390,10 +391,10 @@ describe("the film's pause", () => {
 
   it("gives each break it fast-forwards through long enough on screen to read as a swell rather than a flash", () => {
     const paused = FILM_PAUSE.end - FILM_PAUSE.start;
-    for (const pause of FILM_BREAKS.slice(1)) {
-      const start = pause.start < FILM_DRAWN_MINUTES ? pause.start + paused : pause.start;
+    for (const pause of FILM_BREAKS.slice(1).filter((pause) => pause.start < FILM_DRAWN_MINUTES)) {
+      const start = pause.start + paused;
       let shown = 0;
-      for (let elapsed = FILM_BEATS.resumeAt; elapsed <= FILM_BEATS.sessionEnd; elapsed += 5) {
+      for (let elapsed = FILM_BEATS.resumeAt; elapsed <= FILM_BEATS.eventEnd; elapsed += 5) {
         const minute = filmSessionMinute(elapsed);
         if (minute > start && minute < start + 1) shown += 5;
       }

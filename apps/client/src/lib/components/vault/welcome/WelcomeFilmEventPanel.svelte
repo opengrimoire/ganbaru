@@ -539,6 +539,7 @@
                     typed ? "text-foreground" : "text-event-panel-placeholder",
                   )}
                 >{#if typed}{typed}{:else if !typing}{t("calendar.eventPanel.titlePlaceholder")}{/if}{#if typing && caretOn}<span class="film-caret"></span>{/if}{#if typing && !typed && !caretOn}&#8203;{/if}</div>
+                {@render touch(frame.touches.title, "left-1/4 top-1/2")}
               </div>
               <div class={cn("event-identity-controls flex items-center", mobileLayout ? "gap-1" : "gap-2.5")}>
                 <div

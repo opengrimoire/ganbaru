@@ -292,6 +292,7 @@ describe("welcome music scene", () => {
       ["music-save", B.youtubeSaveTap],
       ["panel-project", B.projectTap],
       ["panel-project-pick", B.projectPick],
+      ["panel-title", B.typeStart],
       ["panel-music", B.musicTap],
       ["panel-playlist-focus", B.focusPickerTap],
       ["panel-playlist-option", B.focusOptionTap],

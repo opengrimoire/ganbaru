@@ -483,6 +483,7 @@ describe("the film's desktop pointer", () => {
   const clicks = [
     { target: "panel-project", tap: FILM_BEATS.projectTap, shown: FILM_BEATS.panelOpen },
     { target: "panel-project-pick", tap: FILM_BEATS.projectPick, shown: FILM_BEATS.groupTap },
+    { target: "panel-title", tap: FILM_BEATS.typeStart, shown: FILM_BEATS.panelOpen },
     { target: "panel-save", tap: FILM_BEATS.createSaved, shown: FILM_BEATS.panelOpen },
     { target: "film-ring", tap: FILM_BEATS.pauseTap + FILM_TAP_MS, shown: FILM_BEATS.breakEnd },
     { target: "film-ring-pause", tap: FILM_BEATS.pauseStart, shown: FILM_BEATS.pauseTap + FILM_TAP_MS },

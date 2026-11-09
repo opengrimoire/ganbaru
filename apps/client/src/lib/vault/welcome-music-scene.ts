@@ -335,6 +335,7 @@ export function musicEventPanelFrame(
       project: filmTap(elapsed, B.projectTap),
       group: filmTap(elapsed, B.groupTap),
       projectPick: filmTap(elapsed, B.projectPick),
+      title: filmTap(elapsed, B.typeStart),
       sheetDrag: filmPress(elapsed, B.sheetDragStart - DRAG_LAND_MS, B.sheetDragEnd),
       music: filmTap(elapsed, B.musicTap),
       save: filmTap(elapsed, B.saveTap),
@@ -493,7 +494,8 @@ export const MUSIC_CURSOR_SCRIPT: WelcomeCursorScript = [
   cursorClick("panel-project", B.projectTap, { after: B.createEnd }),
   cursorRest("panel-group", B.groupTap),
   cursorClick("panel-project-pick", B.projectPick, { after: B.groupTap }),
-  cursorClick("panel-music", B.musicTap, { anchor: [0.25, 0.5], after: B.projectPick }),
+  cursorClick("panel-title", B.typeStart, { after: B.projectPick, anchor: [0.9, 0.5], glyph: "text" }),
+  cursorClick("panel-music", B.musicTap, { anchor: [0.25, 0.5], after: B.typeEnd }),
   ...PICKER_STEPS.flatMap((step, index) => [
     cursorClick(`panel-playlist-${step.phase}`, step.openTap, {
       after: index > 0 ? PICKER_STEPS[index - 1].closeTap : PANEL_SCROLL_END,

@@ -586,6 +586,7 @@ export function filmEventPanelFrame(elapsed: number, title: string): WelcomeEven
       project: filmTap(elapsed, FILM_BEATS.projectTap),
       group: filmTap(elapsed, FILM_BEATS.groupTap),
       projectPick: filmTap(elapsed, FILM_BEATS.projectPick),
+      title: filmTap(elapsed, FILM_BEATS.typeStart),
       sheetDrag: 0,
       music: 0,
       save: filmTap(elapsed, FILM_BEATS.createSaved),
@@ -619,7 +620,7 @@ const FILM_CURSOR_AIM_MS = 150;
 /**
  * The desktop pointer's path through the film, on the beats of the taps it replaces: it presses on the empty morning
  * and drags the session out by its bottom edge, picks the project in the event panel, hovering its group to show its
- * projects as the desktop picker does, rests in the title while it is typed, saves, then opens the Focus ring's menu,
+ * projects as the desktop picker does, clicks in the title and rests there while it is typed, saves, then opens the Focus ring's menu,
  * pauses Focus, and resumes it from the paused notification. While nothing needs it for a while it hides where it rests,
  * as it does once Focus has resumed and the session plays on without it.
  * It is built on call rather than at load, since the pointer's timing module
@@ -642,7 +643,7 @@ export function filmCursorScript(): WelcomeCursorScript {
     cursorClick("panel-project", FILM_BEATS.projectTap, { after: FILM_BEATS.panelOpen }),
     cursorRest("panel-group", FILM_BEATS.groupTap, { anchor: [0.4, 0.5] }),
     cursorClick("panel-project-pick", FILM_BEATS.projectPick, { after: FILM_BEATS.groupTap, anchor: [0.4, 0.5] }),
-    cursorRest("panel-title", FILM_BEATS.typeStart, { anchor: [0.9, 0.5], glyph: "text" }),
+    cursorClick("panel-title", FILM_BEATS.typeStart, { after: FILM_BEATS.projectPick, anchor: [0.9, 0.5], glyph: "text" }),
     cursorClick("panel-save", FILM_BEATS.createSaved, { after: FILM_BEATS.typeEnd }),
     cursorClick("film-ring", ringTap, { after: FILM_BEATS.breakEnd }),
     cursorClick("film-ring-pause", FILM_BEATS.pauseStart, { after: ringTap, anchor: [0.4, 0.5] }),

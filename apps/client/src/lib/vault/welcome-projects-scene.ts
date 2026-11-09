@@ -412,6 +412,7 @@ export function projectsEventPanelFrame(
       project: filmTap(elapsed, B.projectTap),
       group: filmTap(elapsed, B.groupTap),
       projectPick: filmTap(elapsed, B.projectPick),
+      title: 0,
       sheetDrag: filmPress(elapsed, B.sheetDragStart - DRAG_LAND_MS, B.sheetDragEnd),
       music: filmTap(elapsed, B.musicTap),
       save: filmTap(elapsed, B.eventSaveTap),

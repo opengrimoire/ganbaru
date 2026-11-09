@@ -54,6 +54,8 @@ export interface WelcomeEventPanelTouches {
   project: number;
   group: number;
   projectPick: number;
+  /** The tap in the title that starts typing it. */
+  title: number;
   /** The finger on the phone sheet's grabber as it drags the sheet to its full height. */
   sheetDrag: number;
   music: number;

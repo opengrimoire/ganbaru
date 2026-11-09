@@ -249,6 +249,84 @@ fn migration_gives_seeded_projects_the_default_views_in_order_key_order() {
 }
 
 #[test]
+fn migration_plans_the_seeded_learning_project_with_the_balanced_preset() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let row: (String, Option<String>) = sqlx::query_as(
+            "SELECT default_pomodoro_mode, default_pomodoro_preset_key FROM projects
+             WHERE id = 'project-routine-learning'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row, ("preset".to_string(), Some("balanced".to_string())));
+        let captures: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_capture")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            captures, 0,
+            "an unseeded vault publishes the row when projects are seeded"
+        );
+    });
+}
+
+#[test]
+fn learning_balanced_migration_captures_the_change_once_projects_are_seeded() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO sync_seeded_tables (table_id) VALUES (97);
+             UPDATE sync_apply_state SET applying = 1;
+             UPDATE projects SET default_pomodoro_preset_key = 'adaptive' WHERE id = 'project-routine-learning';
+             UPDATE projects SET default_pomodoro_mode = 'preset', default_pomodoro_preset_key = 'deep' WHERE id = 'project-routine-reading';
+             UPDATE sync_apply_state SET applying = 0;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20261109003032_learning_balanced_preset.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let presets: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT id, default_pomodoro_preset_key FROM projects
+             WHERE id IN ('project-routine-learning', 'project-routine-reading') ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            presets,
+            [
+                (
+                    "project-routine-learning".to_string(),
+                    Some("balanced".to_string())
+                ),
+                (
+                    "project-routine-reading".to_string(),
+                    Some("deep".to_string())
+                ),
+            ],
+        );
+        let captures: Vec<(i64, String, i64)> =
+            sqlx::query_as("SELECT table_id, row_key, created FROM sync_capture")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(captures, [(97, "project-routine-learning".to_string(), 0)]);
+        let applying: i64 = sqlx::query_scalar("SELECT applying FROM sync_apply_state")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(applying, 0);
+    });
+}
+
+#[test]
 fn task_revision_changes_only_when_a_command_writes_it() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;

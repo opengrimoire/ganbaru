@@ -1,8 +1,8 @@
 /**
- * Timing for the welcome scene on Quick notes, where some notes already carry the Trip tag. With a pointer, a note's tag
- * picker tags it Trip, which gives it the tag's color, another note's picker tags it Trip too, and the Trip chip then
- * filters the notes down to the ones tagged Trip. A phone's cards leave their actions to the editor, so its scene starts
- * with both notes tagged and shows the filter alone.
+ * Timing for the welcome scene on Quick notes, where the notes already carry several tags, Trip among them. With a
+ * pointer, a note's tag picker tags it Trip, which gives it the tag's color, another note's picker tags it Trip too, and
+ * the Trip chip then filters the notes down to the ones tagged Trip. A phone's cards leave their actions to the editor,
+ * so its scene starts with both notes tagged and shows the filter alone.
  */
 
 import type { EventColor } from "$lib/calendar/types";
@@ -10,11 +10,11 @@ import { cursorClick, cursorRest, type WelcomeCursorScript } from "./welcome-cur
 import { easeInOutCubic, filmSpan, filmTap } from "./welcome-film";
 import { PROJECTS_CURSOR_REST_ANCHOR } from "./welcome-projects-scene";
 
-/** The scene's tags, both of which exist from the start. */
-export type QuickNotesSceneTag = "ideas" | "trip";
+/** The scene's tags, all of which exist from the start. */
+export type QuickNotesSceneTag = "trip" | "ideas" | "home" | "health";
 
-/** The tags in the order the tag bar and the tag pickers list them. */
-export const QUICK_NOTES_TAG_ORDER: readonly QuickNotesSceneTag[] = ["ideas", "trip"];
+/** The tags in the order the tag bar and the tag pickers list them, Trip first so it stays in view when the rest collapse. */
+export const QUICK_NOTES_TAG_ORDER: readonly QuickNotesSceneTag[] = ["trip", "ideas", "home", "health"];
 
 /** The colors a scene note can have besides the default one new notes start with. */
 export type QuickNotesSceneTone = QuickNotesSceneTag | "accent";
@@ -45,11 +45,11 @@ export const QUICK_NOTES_CAST: readonly QuickNotesSceneCard[] = [
   { key: "passport", tag: null, tone: null },
   { key: "pitch", tag: "ideas", tone: "ideas" },
   { key: "packing", tag: "trip", tone: "trip" },
-  { key: "dentist", tag: null, tone: null },
+  { key: "dentist", tag: "health", tone: "health" },
   { key: "hotel", tag: null, tone: null },
   { key: "plants", tag: "ideas", tone: "ideas" },
   { key: "sintra", tag: "trip", tone: "trip" },
-  { key: "groceries", tag: null, tone: null },
+  { key: "groceries", tag: "home", tone: "home" },
   { key: "recipe", tag: null, tone: "accent" },
 ];
 
@@ -65,6 +65,8 @@ export const QUICK_NOTES_FILTERED_NOTES: readonly QuickNotesSceneNote[] = QUICK_
 const TONE_PREFERENCES: Readonly<Record<QuickNotesSceneTone, readonly EventColor[]>> = {
   ideas: [8, 7, 9],
   trip: [18, 19, 16],
+  home: [12, 11, 13],
+  health: [4, 1, 5],
   accent: [23, 24, 22],
 };
 
@@ -80,9 +82,11 @@ export function quickNotesSceneColors(defaultColor: EventColor): Readonly<Record
     taken.add(color);
     return color;
   };
-  const ideas = pick("ideas");
   const trip = pick("trip");
-  return { ideas, trip, accent: pick("accent") };
+  const ideas = pick("ideas");
+  const home = pick("home");
+  const health = pick("health");
+  return { trip, ideas, home, health, accent: pick("accent") };
 }
 
 /** Moments of the desktop scene, in milliseconds from its start. A tap's beat is the moment it lands. */

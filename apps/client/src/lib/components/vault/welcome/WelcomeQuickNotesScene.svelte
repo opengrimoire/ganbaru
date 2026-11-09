@@ -35,8 +35,10 @@
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
   import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
+  import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
+  import { quickNoteTagVisibleCount } from "$lib/quick-notes/tags";
   import {
     QUICK_NOTE_DESKTOP_MASONRY_DENSITY,
     QUICK_NOTE_MASONRY_GAP,
@@ -66,9 +68,10 @@
   } from "$lib/vault/welcome-quick-notes-scene";
 
   /**
-   * One frame of the welcome scene on Quick notes, drawn with the panel's own surfaces: two notes are tagged with the existing
-   * Trip tag from their pickers, which gives them the tag's color, and the Trip chip filters the notes down to the ones
-   * tagged Trip, which glide together. Every style is a function of `elapsed`, with no CSS transitions.
+   * One frame of the welcome scene on Quick notes, drawn with the panel's own surfaces: among notes that already carry
+   * several tags, two are tagged with the existing Trip tag from their pickers, which gives them the tag's color, and the
+   * Trip chip filters the notes down to the ones tagged Trip, which glide together. Tags that do not fit the tag bar
+   * collapse into a count, as the tag bar does. Every style is a function of `elapsed`, with no CSS transitions.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -123,6 +126,12 @@
   let measurer = $state<HTMLDivElement>();
   let badgeSample = $state<HTMLSpanElement>();
   let picker = $state<HTMLDivElement>();
+  let tagRow = $state<HTMLDivElement>();
+  let allChip = $state<HTMLSpanElement>();
+  let addTag = $state<HTMLSpanElement>();
+  let tagMeasurer = $state<HTMLDivElement>();
+  /** How many tags fit in the tag bar beside All and Add tag; the rest collapse into a count, as the tag bar does. */
+  let visibleTagCount = $state(QUICK_NOTES_TAG_ORDER.length);
 
   /** A box in the logical pixels of the element it is measured against. */
   interface Box {
@@ -168,6 +177,30 @@
     const heights = Array.from(measurer.children, (element) => (element instanceof HTMLElement ? element.offsetHeight : 0));
     cardMeasure = { heights, badgeRow: badgeSample.offsetHeight };
   });
+
+  /**
+   * Fit the leading tags beside All and Add tag, leaving room for the count of the rest when some do not fit, as the tag
+   * bar does. Trip leads the tags and always stays, since the scene selects it.
+   */
+  $effect(() => {
+    void layoutTick;
+    void canvasW;
+    void localization.locale;
+    if (!tagRow || !tagMeasurer) return;
+    const gap = Number.parseFloat(getComputedStyle(tagRow).columnGap) || 0;
+    const widths = Array.from(tagMeasurer.querySelectorAll<HTMLElement>("[data-measure-tag]"), (element) => element.offsetWidth);
+    const moreWidth = tagMeasurer.querySelector<HTMLElement>("[data-measure-more]")?.offsetWidth ?? 0;
+    const fixed = (allChip?.offsetWidth ?? 0) + gap + (addTag?.offsetWidth ?? 0) + gap;
+    visibleTagCount = Math.max(1, quickNoteTagVisibleCount(widths, tagRow.clientWidth - fixed, gap, moreWidth));
+  });
+
+  const visibleTags = $derived(QUICK_NOTES_TAG_ORDER.slice(0, visibleTagCount));
+  const hiddenTagCount = $derived(QUICK_NOTES_TAG_ORDER.length - visibleTags.length);
+
+  /** The count of collapsed tags, signed as the tag bar shows it. */
+  function moreLabel(count: number): string {
+    return formatNumber(localization.locale, count, { signDisplay: "always" });
+  }
 
   /** How far each note has taken the Trip tag. */
   function tripProgress(key: QuickNotesSceneNote): number {
@@ -285,6 +318,11 @@
     const amount = rest + (100 - rest) * selected;
     const background = amount >= 100 ? colors.bg : `color-mix(in srgb, ${colors.bg} ${amount}%, transparent)`;
     return `background-color: ${background}; color: ${selected >= 0.5 ? colors.text : "var(--foreground)"};`;
+  }
+
+  /** The collapsed tags' count chip, tinted with the muted foreground as the tag bar draws it while no hidden tag is selected. */
+  function moreChipStyle(chipHovered: boolean): string {
+    return `background-color: color-mix(in srgb, var(--muted-foreground) ${chipHovered ? 50 : 30}%, transparent); color: var(--foreground);`;
   }
 
   /** A tag bar chip, sized as the tag bar draws it on each shell. */
@@ -440,11 +478,19 @@
       <div class={mobileShell ? "shrink-0 px-2 pt-2 pb-2" : "shrink-0 px-3 pt-3 pb-1.5"} style:padding-inline={!mobileShell && canvasW >= 640 ? "1rem" : undefined}>
         <div class={mobileShell ? "flex min-w-0 flex-col gap-1" : "flex min-w-0 items-center gap-1"}>
           <!-- The tag bar: All, the tags, and Add tag. -->
-          <div class={mobileShell ? "relative flex min-h-12 w-full min-w-0 items-center gap-1" : "relative flex min-w-0 flex-1 items-center gap-1"}>
-            <span class={CHIP_CLASS} style={chipStyle(preferences.quickNotesDefaultColor, 1 - tripSelected, hovered("chip:all"))} data-scene-hover="chip:all">
+          <div
+            bind:this={tagRow}
+            class={mobileShell ? "relative flex min-h-12 w-full min-w-0 items-center gap-1" : "relative flex min-w-0 flex-1 items-center gap-1"}
+          >
+            <span
+              bind:this={allChip}
+              class={CHIP_CLASS}
+              style={chipStyle(preferences.quickNotesDefaultColor, 1 - tripSelected, hovered("chip:all"))}
+              data-scene-hover="chip:all"
+            >
               <span class="truncate">{t("quickNotes.collection.active")}</span>
             </span>
-            {#each QUICK_NOTES_TAG_ORDER as tag (tag)}
+            {#each visibleTags as tag (tag)}
               {@const selected = tag === "trip" ? tripSelected : 0}
               <span
                 class={CHIP_CLASS}
@@ -456,7 +502,14 @@
                 {#if mobileShell && tag === "trip"}<WelcomeTouch opacity={touches.filter} />{/if}
               </span>
             {/each}
+            {#if hiddenTagCount > 0}
+              <span class={cn(CHIP_CLASS, "gap-1")} style={moreChipStyle(hovered("chip:more"))} data-scene-hover="chip:more">
+                <span class="tabular-nums">{moreLabel(hiddenTagCount)}</span>
+                <ChevronDown class="size-3.5 shrink-0" strokeWidth={1.5} />
+              </span>
+            {/if}
             <span
+              bind:this={addTag}
               class={cn(
                 mobileShell ? "flex min-h-12 shrink-0 items-center gap-1 rounded-xl px-4 text-sm" : "flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs",
                 hovered("add-tag") ? "bg-accent text-foreground" : "text-muted-foreground",
@@ -466,6 +519,18 @@
               <Plus class="size-3.5" strokeWidth={1.5} />
               {#if !mobileShell || canvasW >= MOBILE_ADD_TAG_LABEL_MIN_W}<span>{t("quickNotes.tag.add")}</span>{/if}
             </span>
+            <!-- Chips measured at their natural width decide how many fit; the clip keeps the copies out of the layout. -->
+            <div class="pointer-events-none invisible absolute inset-0 overflow-hidden" aria-hidden="true">
+              <div bind:this={tagMeasurer} class="flex w-max gap-1">
+                {#each QUICK_NOTES_TAG_ORDER as tag (tag)}
+                  <span class={CHIP_CLASS} data-measure-tag><span class="truncate">{tagName(tag)}</span></span>
+                {/each}
+                <span class={cn(CHIP_CLASS, "gap-1")} data-measure-more>
+                  <span class="tabular-nums">{moreLabel(QUICK_NOTES_TAG_ORDER.length)}</span>
+                  <ChevronDown class="size-3.5 shrink-0" strokeWidth={1.5} />
+                </span>
+              </div>
+            </div>
           </div>
           <div class={mobileShell ? "flex min-h-12 w-full min-w-0 items-center gap-1" : "ml-auto flex shrink-0 items-center gap-1"}>
             {#if mobileShell}<span class="min-w-0 flex-1 truncate px-2 text-base font-semibold">{t("quickNotes.title")}</span>{/if}

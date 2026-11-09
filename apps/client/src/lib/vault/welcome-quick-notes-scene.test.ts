@@ -12,6 +12,7 @@ import {
   QUICK_NOTES_MOBILE_END,
   QUICK_NOTES_MOBILE_FILTER_TAP,
   QUICK_NOTES_RECOLOR_MS,
+  QUICK_NOTES_TAG_ORDER,
   QUICK_NOTES_TAGGED_NOTES,
   quickNotesFilter,
   quickNotesFiltered,
@@ -59,6 +60,18 @@ describe("welcome quick notes scene", () => {
     const [first, second] = QUICK_NOTES_TAGGED_NOTES.map((key) => keys.indexOf(key));
     expect(keys.indexOf("gift")).toBeLessThan(first);
     expect(second - first).toBeGreaterThan(1);
+  });
+
+  it("leads its tags with Trip and shows every tag on some note from the start", () => {
+    expect(QUICK_NOTES_TAG_ORDER[0]).toBe("trip");
+    expect(new Set(QUICK_NOTES_TAG_ORDER).size).toBe(QUICK_NOTES_TAG_ORDER.length);
+    expect(QUICK_NOTES_TAG_ORDER.length).toBeGreaterThan(2);
+    for (const tag of QUICK_NOTES_TAG_ORDER) {
+      expect(QUICK_NOTES_CAST.some((card) => card.tag === tag)).toBe(true);
+    }
+    for (const card of QUICK_NOTES_CAST) {
+      if (card.tag !== null) expect(card.tone).toBe(card.tag);
+    }
   });
 
   it("filters down to the notes tagged Trip from the start and the ones it tags, in their order", () => {

@@ -116,12 +116,11 @@ export const vaultSetup = {
   chat: {
     headline: "Bring in AI only when you want it",
     body: "Chat with AI agents like Claude, Codex, or Cursor that work right inside your project's folder.",
-    sceneDescription: (model: string) =>
-      `A short animation of Chat in the Novel project. A prompt asking what Mateo knows about Clara is typed, the model picker raises ${model}'s effort from High to Max, and once the prompt is sent, Claude reads chapter 2, searches for Mateo, and replies.`,
-    sceneDescriptionTouch: (model: string) =>
-      `A short animation of Chat in the Novel project, where a prompt asking what Mateo knows about Clara is sent to ${model}, which reads chapter 2, searches for Mateo, and replies.`,
+    sceneDescription:
+      "A short animation of Chat in the Novel project, where Claude is mentioned in a question about what Mateo knows about Clara and answers in the message's thread after reading chapter 2 and searching for Mateo.",
     channel: "general",
-    prompt: "Read chapter 2 and tell me what Mateo knows about Clara.",
+    roles: { claude: "Story feedback", codex: "Ebook builds" },
+    prompt: "read chapter 2 and tell me what Mateo knows about Clara.",
     chapterPath: "chapters/02.md",
     reply:
       "In chapter 2, Mateo sees Clara leave the station with the letter, but he never tells Tomás. That silence could set up their argument in chapter 3.",

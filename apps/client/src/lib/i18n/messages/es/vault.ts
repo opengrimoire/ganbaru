@@ -165,8 +165,6 @@ export const vaultSetup = {
   sourceOpenError: "No se pudo abrir el código fuente. Visita github.com/opengrimoire/ganbaru en tu navegador.",
   continue: "Continuar",
   title: "Elige dónde guardar tus datos",
-  intro:
-    "Todo lo que creas se guarda en una carpeta de esta computadora que puedes respaldar o mover, y puedes importar la carpeta de una instalación anterior.",
   developmentBuildWarning: (folderName: string) =>
     `Compilación de desarrollo: usa la carpeta ${folderName} predeterminada, o elige una copia de tu carpeta de producción. No apuntes dev a tus datos reales de producción.`,
   defaultLocation: "Carpeta predeterminada",

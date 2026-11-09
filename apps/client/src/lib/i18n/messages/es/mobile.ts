@@ -12,7 +12,6 @@ export const mobile = {
   contextSwitcher: (current: string) => `${current}, cambiar`,
   vaultSetup: {
     title: "Configura tus datos",
-    intro: "Todo lo que creas se guarda en el almacenamiento privado de la app en este teléfono, y también puedes restaurar una copia o importar una carpeta.",
     dataLocation: "Ubicación de datos",
     startFromZero: "Empezar de cero",
     restoreBackupFile: "Restaurar archivo de copia",

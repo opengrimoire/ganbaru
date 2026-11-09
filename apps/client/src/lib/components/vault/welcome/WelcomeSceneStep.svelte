@@ -13,7 +13,7 @@
     body,
     details,
     children,
-  }: { headline: string; body: string; details?: Snippet; children: Snippet } = $props();
+  }: { headline: string; body?: string; details?: Snippet; children: Snippet } = $props();
 </script>
 
 <section class="flex h-full flex-col overflow-x-hidden overflow-y-auto">

@@ -109,7 +109,6 @@
 {#snippet dataStep()}
   <WelcomeDataStep
     headline={t("mobile.vaultSetup.title")}
-    body={t("mobile.vaultSetup.intro")}
     location={defaultLocation?.path ?? fallbackDefaultPath}
     locationLabel={t("mobile.vaultSetup.dataLocation")}
     developmentWarning={defaultLocation?.developmentBuild

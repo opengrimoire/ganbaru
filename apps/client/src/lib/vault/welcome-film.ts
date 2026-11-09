@@ -20,8 +20,11 @@ export interface FilmSpan {
   end: number;
 }
 
-/** Moments of the film, in milliseconds from its start. A tap's beat is the moment it lands. */
-export const FILM_BEATS = {
+/**
+ * Moments of the film up to Focus resuming, in milliseconds from its start. A tap's beat is the moment it lands. The
+ * later beats follow from how long the session takes to fast-forward; see `FILM_BEATS`.
+ */
+const FILM_OPENING_BEATS = {
   /** A press drags the session out on the empty day, and letting go opens the event panel on it. */
   createStart: 500,
   createEnd: 1300,
@@ -50,16 +53,31 @@ export const FILM_BEATS = {
   pauseStart: 11730,
   notificationIn: 13230,
   resumeAt: 14610,
-  /** The drawn event ends, its finished screen shows, and the planned event carries on once it lifts. */
-  eventEnd: 16110,
-  eventOut: 16860,
-  /** The planned event ends the day's Focus, the day's completed screen shows, and the app returns. */
-  sessionEnd: 18710,
-  finishedOut: 19560,
-  /** The camera pulls back from the day to the week. */
-  pullBack: 19810,
-  end: 22110,
 } as const;
+
+/** How long the drawn event's finished screen shows, and the day's completed screen. */
+const FILM_EVENT_FINISHED_MS = 750;
+const FILM_DAY_DONE_MS = 850;
+
+/** How long the app shows again after the day's completed screen lifts before the camera pulls back to the week. */
+const FILM_PULL_BACK_DELAY_MS = 250;
+
+/** How long the film holds on the week once the pull back starts, before it ends. */
+const FILM_WEEK_HOLD_MS = 2300;
+
+/**
+ * How fast the session fast-forwards after Focus resumes, in film milliseconds per session minute. Focus hurries, and
+ * breaks slow down enough for their tint to come and go gently rather than flash.
+ */
+const FILM_FAST_FOCUS_MS_PER_MINUTE = 16;
+const FILM_FAST_BREAK_MS_PER_MINUTE = 40;
+
+/** How long the current time takes to settle onto an event's end, and how many minutes it covers as it does. */
+const FILM_SETTLE_MS = 250;
+const FILM_SETTLE_MINUTES = 2;
+
+/** How strongly the break screen's color tints the app at the middle of a break the session fast-forwards through. */
+export const FILM_BREAK_TINT_MAX = 0.25;
 
 /** How long a tap on the Focus ring or its menu takes, and how quickly the touch fades in and out. */
 export const FILM_TAP_MS = 260;
@@ -140,10 +158,67 @@ export const FILM_PAUSE: FilmSpan = {
 };
 
 /**
+ * The current time's keyframes as it fast-forwards from `from` minutes at `startMs` and settles onto `to` minutes,
+ * slowing through each break that falls between them.
+ */
+function fastForwardClock(startMs: number, from: number, to: number, breaks: readonly FilmSpan[]): FilmKeyframe[] {
+  const points: FilmKeyframe[] = [[startMs, from]];
+  const settleFrom = to - FILM_SETTLE_MINUTES;
+  const step = (minute: number, msPerMinute: number) => {
+    const [lastMs, lastMinute] = points[points.length - 1];
+    points.push([lastMs + (minute - lastMinute) * msPerMinute, minute]);
+  };
+  for (const pause of breaks) {
+    if (pause.start < from || pause.end > settleFrom) continue;
+    step(pause.start, FILM_FAST_FOCUS_MS_PER_MINUTE);
+    step(pause.end, FILM_FAST_BREAK_MS_PER_MINUTE);
+  }
+  step(settleFrom, FILM_FAST_FOCUS_MS_PER_MINUTE);
+  points.push([points[points.length - 1][0] + FILM_SETTLE_MS, to]);
+  return points;
+}
+
+/** The breaks Focus runs through once the pause is over. */
+const RESUMED_BREAKS: readonly FilmSpan[] = runBreaks(FILM_PAUSE.end);
+
+/** The fast-forward from Focus resuming to the drawn event's end. */
+const DRAWN_FAST_FORWARD = fastForwardClock(
+  FILM_OPENING_BEATS.resumeAt,
+  FILM_PAUSE.end,
+  FILM_DRAWN_MINUTES,
+  RESUMED_BREAKS,
+);
+const DRAWN_EVENT_END = DRAWN_FAST_FORWARD[DRAWN_FAST_FORWARD.length - 1][0];
+
+/** The fast-forward through the planned event once the drawn event's finished screen lifts. */
+const PLANNED_FAST_FORWARD = fastForwardClock(
+  DRAWN_EVENT_END + FILM_EVENT_FINISHED_MS,
+  FILM_DRAWN_MINUTES,
+  FILM_SESSION_MINUTES,
+  RESUMED_BREAKS,
+);
+const PLANNED_EVENT_END = PLANNED_FAST_FORWARD[PLANNED_FAST_FORWARD.length - 1][0];
+
+/** Moments of the film, in milliseconds from its start. A tap's beat is the moment it lands. */
+export const FILM_BEATS = {
+  ...FILM_OPENING_BEATS,
+  /** The drawn event ends, its finished screen shows, and the planned event carries on once it lifts. */
+  eventEnd: DRAWN_EVENT_END,
+  eventOut: DRAWN_EVENT_END + FILM_EVENT_FINISHED_MS,
+  /** The planned event ends the day's Focus, the day's completed screen shows, and the app returns. */
+  sessionEnd: PLANNED_EVENT_END,
+  finishedOut: PLANNED_EVENT_END + FILM_DAY_DONE_MS,
+  /** The camera pulls back from the day to the week. */
+  pullBack: PLANNED_EVENT_END + FILM_DAY_DONE_MS + FILM_PULL_BACK_DELAY_MS,
+  end: PLANNED_EVENT_END + FILM_DAY_DONE_MS + FILM_PULL_BACK_DELAY_MS + FILM_WEEK_HOLD_MS,
+} as const;
+
+/**
  * The session's minutes against film time, as the current time reads them. Work hurries along, the break slows down
  * so its screen can be read and reaches its end exactly as the break screen lifts, then the time holds while the Focus
- * ring's menu is open, walks through the pause, holds while the paused notification is read, hurries to the drawn
- * event's end, holds while its finished screen is up, and hurries on through the planned event to the session's end.
+ * ring's menu is open, walks through the pause, holds while the paused notification is read, fast-forwards to the
+ * drawn event's end, holds while its finished screen is up, and fast-forwards on through the planned event to the
+ * session's end.
  */
 const FILM_BREAK: FilmSpan = FILM_BREAKS[0] ?? { start: FILM_SESSION_MINUTES, end: FILM_SESSION_MINUTES };
 const SESSION_CLOCK: readonly FilmKeyframe[] = [
@@ -154,12 +229,8 @@ const SESSION_CLOCK: readonly FilmKeyframe[] = [
   [FILM_BEATS.pauseTap, FILM_PAUSE.start],
   [FILM_BEATS.pauseStart, FILM_PAUSE.start],
   [FILM_BEATS.notificationIn, FILM_PAUSE.end],
-  [FILM_BEATS.resumeAt, FILM_PAUSE.end],
-  [FILM_BEATS.eventEnd - 250, FILM_DRAWN_MINUTES - 2],
-  [FILM_BEATS.eventEnd, FILM_DRAWN_MINUTES],
-  [FILM_BEATS.eventOut, FILM_DRAWN_MINUTES],
-  [FILM_BEATS.sessionEnd - 250, FILM_SESSION_MINUTES - 2],
-  [FILM_BEATS.sessionEnd, FILM_SESSION_MINUTES],
+  ...DRAWN_FAST_FORWARD,
+  ...PLANNED_FAST_FORWARD,
 ];
 
 /** How many minutes before the session the current time starts, so it can be seen walking up to it. */
@@ -360,6 +431,19 @@ export function filmSessionMoment(minute: number): FilmSessionMoment {
     }
   }
   return { kind: "done" };
+}
+
+/**
+ * How strongly the break screen's color tints the app at `elapsed`, from 0 to `FILM_BREAK_TINT_MAX`. The session
+ * fast-forwards too quickly after Focus resumes to show each break screen, so each break it passes through swells a
+ * faint tint of the screen's color in and out instead, rising and falling smoothly with no hard edge.
+ */
+export function filmBreakTint(elapsed: number): number {
+  if (elapsed < FILM_BEATS.resumeAt) return 0;
+  const minute = filmSessionMinute(elapsed);
+  const pause = RESUMED_BREAKS.find((span) => minute > span.start && minute < span.end);
+  if (!pause) return 0;
+  return FILM_BREAK_TINT_MAX * Math.sin((Math.PI * (minute - pause.start)) / (pause.end - pause.start));
 }
 
 /** Whether Focus is paused at `elapsed`: from the tap that pauses it to the tap on the notification that resumes it. */

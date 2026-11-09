@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FILM_BEATS,
+  FILM_BREAK_TINT_MAX,
   FILM_BREAKS,
   FILM_CHAIN,
   FILM_DEFAULT_RAIL,
@@ -14,6 +15,7 @@ import {
   FILM_SHEET_RISE_MS,
   FILM_TAP_MS,
   easeInOutCubic,
+  filmBreakTint,
   filmClockMinute,
   filmCursorScript,
   filmDayRails,
@@ -359,6 +361,44 @@ describe("the film's pause", () => {
     expect(filmFocusSpans(FILM_PAUSE.end)).toEqual(before);
     expect(filmFocusSpans(FILM_PAUSE.end + 5)).toEqual([...before, { start: FILM_PAUSE.end, end: FILM_PAUSE.end + 5 }]);
     expect(filmFocusSpans(100)).toEqual([...before, { start: FILM_PAUSE.end, end: 60 }, { start: 65, end: 90 }, { start: 95, end: 100 }]);
+  });
+
+  it("tints the app faintly only during the breaks it fast-forwards through, swelling in and out", () => {
+    const paused = FILM_PAUSE.end - FILM_PAUSE.start;
+    const passed = FILM_BREAKS.slice(1).map((pause) => (
+      pause.start < FILM_DRAWN_MINUTES
+        ? { start: pause.start + paused, end: Math.min(FILM_DRAWN_MINUTES, pause.end + paused) }
+        : pause
+    ));
+    const inBreak = (minute: number) => passed.some((pause) => minute > pause.start && minute < pause.end);
+    const peaks = new Map<number, number>();
+    let previous = 0;
+    for (let elapsed = 0; elapsed <= FILM_BEATS.end; elapsed += 5) {
+      const tint = filmBreakTint(elapsed);
+      const minute = filmSessionMinute(elapsed);
+      expect(tint).toBeGreaterThanOrEqual(0);
+      expect(tint).toBeLessThanOrEqual(FILM_BREAK_TINT_MAX);
+      if (elapsed < FILM_BEATS.resumeAt || !inBreak(minute)) expect(tint).toBe(0);
+      expect(Math.abs(tint - previous)).toBeLessThan(FILM_BREAK_TINT_MAX / 4);
+      const index = passed.findIndex((pause) => minute > pause.start && minute < pause.end);
+      if (index >= 0) peaks.set(index, Math.max(peaks.get(index) ?? 0, tint));
+      previous = tint;
+    }
+    expect(peaks.size).toBe(passed.length);
+    for (const peak of peaks.values()) expect(peak).toBeGreaterThan(FILM_BREAK_TINT_MAX * 0.9);
+  });
+
+  it("gives each break it fast-forwards through long enough on screen to read as a swell rather than a flash", () => {
+    const paused = FILM_PAUSE.end - FILM_PAUSE.start;
+    for (const pause of FILM_BREAKS.slice(1)) {
+      const start = pause.start < FILM_DRAWN_MINUTES ? pause.start + paused : pause.start;
+      let shown = 0;
+      for (let elapsed = FILM_BEATS.resumeAt; elapsed <= FILM_BEATS.sessionEnd; elapsed += 5) {
+        const minute = filmSessionMinute(elapsed);
+        if (minute > start && minute < start + 1) shown += 5;
+      }
+      expect(shown).toBeGreaterThanOrEqual(30);
+    }
   });
 
   it("moves the drawn event's next break later while paused and leaves the planned event's breaks in place", () => {

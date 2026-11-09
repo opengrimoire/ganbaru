@@ -1,8 +1,9 @@
 /**
  * Timing for the welcome scene on Chat. In the Novel project's #general channel, an at sign typed into the composer
- * opens the reference picker, a short query narrows it to Claude, and picking Claude turns the query into a mention and
- * shows the assignment it will create. The question is typed after the mention and sent, which opens its reply thread,
- * where Claude thinks, reads the chapter, searches the manuscript, folds that work into one line, and streams its reply.
+ * opens the reference picker, a short query narrows it to Claude, and Enter accepts Claude, which turns the query into a
+ * mention and shows the assignment it will create. The question is typed after the mention and sent, which opens its
+ * reply thread, where Claude thinks, reads the chapter, searches the manuscript, folds that work into one line, and
+ * streams its reply.
  */
 
 import { cursorClick, cursorRest, WELCOME_CURSOR_TRAVEL_MS, type WelcomeCursorScript } from "./welcome-cursor";
@@ -36,24 +37,27 @@ export const CHAT_BEATS = {
   /** The composer is clicked, and an at sign opens the reference picker. */
   editorTap: 900,
   mentionTyped: 1400,
-  /** A query narrows the picker to Claude, and Claude is picked, which turns the query into a mention. */
+  /**
+   * A query narrows the picker to Claude, and Claude is accepted, which turns the query into a mention: with Enter, as
+   * the picker completes its highlighted row from the keyboard, or with a tap on a phone.
+   */
   queryTypeStart: 2100,
   queryTypeEnd: 2400,
-  pickTap: 3100,
+  pick: 2900,
   /** The question is typed after the mention and sent, which posts it to the channel. */
-  typeStart: 3400,
-  typeEnd: 4800,
-  sendTap: 5500,
+  typeStart: 3200,
+  typeEnd: 4600,
+  sendTap: 5300,
   /** The message's reply thread opens beside the channel, or over it where there is no room for both. */
-  threadOpen: 5800,
+  threadOpen: 5600,
   /** Claude's reply starts with a thought, reads the chapter, then searches the manuscript. */
-  replyStart: 6300,
-  readStart: 6900,
-  searchStart: 7700,
+  replyStart: 6100,
+  readStart: 6700,
+  searchStart: 7500,
   /** The work folds into one line, the reply streams in, and the turn ends. */
-  fold: 8500,
-  streamEnd: 10300,
-  end: 11300,
+  fold: 8300,
+  streamEnd: 10100,
+  end: 11100,
 } as const;
 
 const B = CHAT_BEATS;
@@ -100,7 +104,7 @@ export function chatComposerCaretOn(elapsed: number): boolean {
 
 /** Whether Claude has been picked, which turns the at sign and its query into a mention. */
 export function chatMentioned(elapsed: number): boolean {
-  return elapsed >= B.pickTap;
+  return elapsed >= B.pick;
 }
 
 /** Whether the message has been sent. */
@@ -128,13 +132,13 @@ export function chatComposerDraft(elapsed: number, question: string): ChatSceneD
 
 /** Whether the reference picker is open: from the at sign until Claude is picked. */
 export function chatPickerOpen(elapsed: number): boolean {
-  return elapsed >= B.mentionTyped && elapsed < B.pickTap;
+  return elapsed >= B.mentionTyped && elapsed < B.pick;
 }
 
 /** How far the reference picker shows, from 0 to 1: it rises in from the at sign and fades out as Claude is picked. */
 export function chatPickerShown(elapsed: number): number {
   const enter = easeInOutCubic(filmSpan(elapsed, B.mentionTyped, B.mentionTyped + CHAT_PICKER_ENTER_MS));
-  const exit = filmSpan(elapsed, B.pickTap, B.pickTap + CHAT_PICKER_EXIT_MS);
+  const exit = filmSpan(elapsed, B.pick, B.pick + CHAT_PICKER_EXIT_MS);
   return enter * (1 - exit);
 }
 
@@ -146,7 +150,7 @@ export function chatPickerNarrowed(elapsed: number): boolean {
 /** How far the assignment preview shows above the composer, from 0 to 1: from the mention until the message is sent. */
 export function chatPreviewShown(elapsed: number): number {
   if (chatSent(elapsed)) return 0;
-  return easeInOutCubic(filmSpan(elapsed, B.pickTap, B.pickTap + CHAT_PREVIEW_ENTER_MS));
+  return easeInOutCubic(filmSpan(elapsed, B.pick, B.pick + CHAT_PREVIEW_ENTER_MS));
 }
 
 /** How far the sent message has risen into the channel, from 0 to 1. */
@@ -234,7 +238,7 @@ export interface ChatSceneTouches {
 export function chatTouches(elapsed: number): ChatSceneTouches {
   return {
     editor: filmTap(elapsed, B.editorTap),
-    pick: filmTap(elapsed, B.pickTap),
+    pick: filmTap(elapsed, B.pick),
     send: filmTap(elapsed, B.sendTap),
   };
 }
@@ -244,13 +248,12 @@ const CHAT_CURSOR_THREAD_REST = B.threadOpen + CHAT_THREAD_OPEN_MS + WELCOME_CUR
 
 /**
  * The desktop pointer's path through the scene: it clicks into the composer and waits while the picker opens and
- * narrows, clicks Claude once the query leaves it alone, waits while the question is typed, then clicks Send and rests
+ * narrows, stays there while Enter accepts Claude and the question is typed, then clicks Send and rests
  * over the thread as Claude replies.
  */
 export const CHAT_CURSOR: WelcomeCursorScript = [
   cursorRest("chat-panel", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
   cursorClick("chat-editor", B.editorTap, { glyph: "text", after: 0 }),
-  cursorClick("chat-pick", B.pickTap, { after: B.queryTypeEnd }),
   cursorClick("chat-send", B.sendTap, { after: B.typeEnd }),
   cursorRest("chat-thread", CHAT_CURSOR_THREAD_REST, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
 ];

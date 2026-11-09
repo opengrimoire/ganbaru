@@ -161,7 +161,8 @@
   const shimmer = $derived(chatShimmerPosition(elapsed, chatActiveSince(elapsed)));
   const touches = $derived(chatTouches(elapsed));
   const sendPress = $derived(filmTap(elapsed, CHAT_BEATS.sendTap));
-  const pickPress = $derived(filmTap(elapsed, CHAT_BEATS.pickTap));
+  /** A phone taps Claude in the picker; the desktop accepts it with Enter, so nothing presses there. */
+  const pickPress = $derived(mobileShell ? filmTap(elapsed, CHAT_BEATS.pick) : 0);
 
   /** Where the reply thread opens, as the workspace decides for a canvas this size: beside the channel or over it. */
   const threadPresentation = $derived(
@@ -452,7 +453,6 @@
                           <span
                             class="menu-item"
                             data-highlighted={highlightedAgent === agent.key ? "" : undefined}
-                            data-cursor={agent.key === CHAT_SCENE_MENTIONED.key ? "chat-pick" : undefined}
                             data-scene-hover={`pick:${agent.key}`}
                             style={agent.key === CHAT_SCENE_MENTIONED.key && pickPress > 0 ? `transform: ${filmPressTransform(pickPress)};` : undefined}
                           >

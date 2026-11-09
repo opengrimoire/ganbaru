@@ -82,15 +82,15 @@ describe("welcome chat scene", () => {
     expect(chatPickerNarrowed(B.queryTypeStart - 1)).toBe(false);
     expect(chatComposerDraft(B.queryTypeEnd, QUESTION).query).toBe(`@${CHAT_SCENE_QUERY}`);
     expect(chatPickerNarrowed(B.queryTypeEnd)).toBe(true);
-    expect(chatPickerShown(B.pickTap - 1)).toBe(1);
+    expect(chatPickerShown(B.pick - 1)).toBe(1);
   });
 
-  it("turns the query into a mention as the agent is picked, closing the picker and showing the assignment", () => {
-    expect(chatMentioned(B.pickTap - 1)).toBe(false);
-    expect(chatPreviewShown(B.pickTap - 1)).toBe(0);
-    expect(chatMentioned(B.pickTap)).toBe(true);
-    expect(chatPickerOpen(B.pickTap)).toBe(false);
-    expect(chatComposerDraft(B.pickTap, QUESTION)).toEqual({ query: "", mention: true, text: "" });
+  it("turns the query into a mention as the agent is accepted, closing the picker and showing the assignment", () => {
+    expect(chatMentioned(B.pick - 1)).toBe(false);
+    expect(chatPreviewShown(B.pick - 1)).toBe(0);
+    expect(chatMentioned(B.pick)).toBe(true);
+    expect(chatPickerOpen(B.pick)).toBe(false);
+    expect(chatComposerDraft(B.pick, QUESTION)).toEqual({ query: "", mention: true, text: "" });
     expect(chatPickerShown(B.typeStart)).toBe(0);
     expect(chatPreviewShown(B.typeStart)).toBe(1);
   });
@@ -173,7 +173,6 @@ describe("welcome chat scene", () => {
     const clicks = CHAT_CURSOR.filter((stop) => stop.press);
     expect(clicks.map((stop) => [stop.target, stop.press?.end])).toEqual([
       ["chat-editor", B.editorTap],
-      ["chat-pick", B.pickTap],
       ["chat-send", B.sendTap],
     ]);
     for (const stop of clicks) {
@@ -184,8 +183,8 @@ describe("welcome chat scene", () => {
     }
   });
 
-  it("waits for the query before reaching for the agent, for the question before Send, and for the thread before resting on it", () => {
-    expect(CHAT_CURSOR.find((stop) => stop.target === "chat-pick")?.depart).toBeGreaterThanOrEqual(B.queryTypeEnd);
+  it("leaves Claude to the keyboard, waits for the question before Send, and for the thread before resting on it", () => {
+    expect(CHAT_CURSOR.some((stop) => stop.target === "chat-pick")).toBe(false);
     expect(CHAT_CURSOR.find((stop) => stop.target === "chat-send")?.depart).toBeGreaterThanOrEqual(B.typeEnd);
     expect(CHAT_CURSOR.find((stop) => stop.target === "chat-thread")?.depart).toBeGreaterThanOrEqual(B.threadOpen + CHAT_THREAD_OPEN_MS);
   });

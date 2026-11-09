@@ -73,7 +73,6 @@
   import WelcomePhoneNavigation, { type WelcomePhoneTab } from "$lib/components/vault/welcome/WelcomePhoneNavigation.svelte";
   import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
   import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
-  import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { welcomeCursorFrame, welcomeCursorHovered, type WelcomeCursorPoint } from "$lib/vault/welcome-cursor";
   import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
@@ -1310,10 +1309,8 @@
       <!-- The phone's top bar, labelled with the Novel project's context switcher and then with the Calendar. -->
       <WelcomePhoneTopBar height={TOP_BAR_H} identity={topBarIdentity} identityOpacity={topBarIdentityOpacity} />
     {:else}
-      <!-- The title bar's tabs and its Music. -->
-      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={titleTabs}>
-        <WelcomeTitleIcon icon={Music} />
-      </WelcomeTitleBar>
+      <!-- The title bar's tabs and its utilities. -->
+      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={titleTabs} />
     {/if}
 
     <!-- The Novel project's List view. -->

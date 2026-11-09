@@ -23,7 +23,6 @@
   import ClipboardPaste from "@lucide/svelte/icons/clipboard-paste";
   import Columns3 from "@lucide/svelte/icons/columns-3";
   import Copy from "@lucide/svelte/icons/copy";
-  import Music from "@lucide/svelte/icons/eighth-notes";
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
   import Eye from "@lucide/svelte/icons/eye";
   import Feather from "@lucide/svelte/icons/feather";
@@ -68,7 +67,6 @@
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
   import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
   import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
-  import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -763,10 +761,8 @@
         {#snippet identityTouch()}<WelcomeTouch opacity={touches.navigator} />{/snippet}
       </WelcomePhoneTopBar>
     {:else}
-      <!-- The title bar's tabs, with the project's Notes showing, and its Music. -->
-      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS}>
-        <WelcomeTitleIcon icon={Music} />
-      </WelcomeTitleBar>
+      <!-- The title bar's tabs, with the project's Notes showing, and its utilities. -->
+      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS} />
     {/if}
 
     <div bind:this={notesArea} class="relative flex min-h-0 flex-1 flex-col bg-(--cal-bg)">

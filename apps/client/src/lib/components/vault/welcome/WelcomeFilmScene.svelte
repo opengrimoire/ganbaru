@@ -52,7 +52,13 @@
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
-  import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
+  import WelcomeTitleBar, {
+    WELCOME_TITLE_AFTER_RING_PX,
+    WELCOME_TITLE_RING_PROGRESS_CLASS,
+    WELCOME_TITLE_RING_SIZE,
+    WELCOME_TITLE_RING_TRACK_CLASS,
+    type WelcomeTitleTab,
+  } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
   import WelcomeFilmNotification, { type FilmNotificationKind } from "$lib/components/vault/welcome/WelcomeFilmNotification.svelte";
   import type { EventPanelAnchor } from "$lib/utils/responsive";
@@ -145,8 +151,7 @@
   const theme = getTheme();
   const preferences = getPreferences();
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
-  /** The desktop title bar's icon size, which its Focus ring follows, and its end padding. */
-  const TITLE_ICON_SIZE = 14;
+  /** The desktop title bar's end padding, as the title bar draws it. */
   const TITLE_BAR_END_PX = 6;
   /** The title bar's tabs: the Calendar alone, as a new vault opens. */
   const TITLE_TABS: readonly WelcomeTitleTab[] = [{ kind: "calendar", active: true }];
@@ -154,9 +159,9 @@
   const MENU_ICON_SIZE = 14;
   const MENU_ICON_STROKE_WIDTH = 1.8;
   const FOCUS_EXTENSION_MINUTES = 3;
-  /** Where the Focus menu opens under its ring: below the title bar on desktop, a little lower on a phone. */
-  const MENU_TOP_PX = mobileShell ? TOP_BAR_H + 4 : TOP_BAR_H;
-  const MENU_RIGHT_PX = mobileShell ? 8 : 6;
+  /** Where the Focus menu opens: a little under the bar, its end on the ring's end on desktop and by the screen's edge on a phone. */
+  const MENU_TOP_PX = TOP_BAR_H + 4;
+  const MENU_RIGHT_PX = mobileShell ? 8 : TITLE_BAR_END_PX + WELCOME_TITLE_AFTER_RING_PX;
 
   /** The Calendar's Focus rail, and the event area it keeps beside it on every event. */
   const RAIL_LEFT = 2;
@@ -574,8 +579,8 @@
     style:height={`${canvasH}px`}
   >
     {#if mobileShell}
-      <!-- The phone's top bar, labelled with the Calendar, with its Focus ring lit while Focus runs or its menu is open. -->
-      <WelcomePhoneTopBar height={TOP_BAR_H} identity="calendar" ringLit={focusing || ringMenuOpen}>
+      <!-- The phone's top bar, labelled with the Calendar, with its Focus ring lit while its menu is open. -->
+      <WelcomePhoneTopBar height={TOP_BAR_H} identity="calendar" ringOpen={ringMenuOpen}>
         {#snippet ring()}
           <PomodoroProgressRing
             active={focusing}
@@ -591,24 +596,27 @@
         {/snippet}
       </WelcomePhoneTopBar>
     {:else}
-      <!-- The title bar's Calendar tab and its Focus ring. -->
-      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS}>
-        <span
-          data-cursor="film-ring"
-          class={cn("relative grid size-7 place-items-center rounded-lg", (ringMenuOpen || hovered === "film-ring") && "bg-sidebar-accent")}
-        >
+      <!-- The title bar's Calendar tab and utilities, with its Focus ring running with Focus. -->
+      <WelcomeTitleBar
+        height={TOP_BAR_H}
+        endPadding={TITLE_BAR_END_PX}
+        tabs={TITLE_TABS}
+        ringOpen={ringMenuOpen}
+        ringHovered={hovered === "film-ring"}
+        ringCursor="film-ring"
+      >
+        {#snippet ring()}
           <PomodoroProgressRing
             active={focusing}
             remainingSeconds={ringRemaining}
             totalSeconds={ringTotal}
             {paused}
             pausedPulseAmount={paused ? focusPausedPulseAmount(elapsed) : null}
-            size={TITLE_ICON_SIZE + 0.5}
-            trackClass="stroke-foreground/20 dark:stroke-white/20"
-            progressClass="text-foreground/68 dark:text-white/76 stroke-foreground/68 dark:stroke-white/76"
+            size={WELCOME_TITLE_RING_SIZE}
+            trackClass={WELCOME_TITLE_RING_TRACK_CLASS}
+            progressClass={WELCOME_TITLE_RING_PROGRESS_CLASS}
           />
-          {@render touch(ringTouch)}
-        </span>
+        {/snippet}
       </WelcomeTitleBar>
     {/if}
 

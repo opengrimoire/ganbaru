@@ -22,7 +22,6 @@
   import Bot from "@lucide/svelte/icons/bot";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Clock3 from "@lucide/svelte/icons/clock-3";
-  import Music from "@lucide/svelte/icons/eighth-notes";
   import Feather from "@lucide/svelte/icons/feather";
   import FileText from "@lucide/svelte/icons/file-text";
   import Folder from "@lucide/svelte/icons/folder";
@@ -45,7 +44,6 @@
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
   import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
   import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
-  import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { formatDateTime, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -356,10 +354,8 @@
       <!-- The phone's top bar, with the Novel project's context switcher. -->
       <WelcomePhoneTopBar height={TOP_BAR_H} identity="project" />
     {:else}
-      <!-- The title bar's tabs, with the project's Chat showing, and its Music. -->
-      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS}>
-        <WelcomeTitleIcon icon={Music} />
-      </WelcomeTitleBar>
+      <!-- The title bar's tabs, with the project's Chat showing, and its utilities. -->
+      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS} />
     {/if}
 
     <div class="relative flex min-h-0 flex-1">

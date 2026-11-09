@@ -25,7 +25,7 @@
     identityOpacity = 1,
     identityTouch,
     ring,
-    ringLit = false,
+    ringOpen = false,
     quickNotesOpen = false,
     musicOpen = false,
     musicTouch,
@@ -42,8 +42,8 @@
     identityTouch?: Snippet;
     /** The Focus ring with any touch on it, when the scene runs Focus; an idle ring otherwise. */
     ring?: Snippet;
-    /** Whether the Focus ring is lit, as it is while Focus runs or its menu is open. */
-    ringLit?: boolean;
+    /** Whether the Focus ring's menu is open. */
+    ringOpen?: boolean;
     quickNotesOpen?: boolean;
     musicOpen?: boolean;
     /** A touch on the Music button. */
@@ -90,8 +90,8 @@
     </span>
   </span>
   <span class="flex h-full shrink-0 items-center">
-    <span class={cn(UTILITY_BUTTON_CLASS, ringLit && "text-foreground")}>
-      <span class={cn(UTILITY_ICON_CLASS, ringLit && "bg-accent/70")}>
+    <span class={cn(UTILITY_BUTTON_CLASS, ringOpen && "text-foreground")}>
+      <span class={cn(UTILITY_ICON_CLASS, ringOpen && "bg-accent/70")}>
         {#if ring}
           {@render ring()}
         {:else}

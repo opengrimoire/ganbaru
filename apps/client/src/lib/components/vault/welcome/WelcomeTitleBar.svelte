@@ -11,41 +11,81 @@
     /** The name the scene's pointer finds the tab by. */
     cursor?: string;
   }
+
+  /** The tab strip's icon size and stroke, as the title bar draws them. */
+  const ICON_SIZE = 14;
+  const ICON_STROKE_WIDTH = 1.5;
+  /** A utility button's width and the gap between two, in pixels, as the title bar draws them. */
+  const UTILITY_BUTTON_PX = 28;
+  const UTILITY_GAP_PX = 2;
+  /** The utilities after the Focus ring: Quick notes, Music, the theme switch, and Settings. */
+  const UTILITIES_AFTER_RING = 4;
+
+  /** The Focus ring's size and strokes in the title bar, for a scene that draws a running ring. */
+  export const WELCOME_TITLE_RING_SIZE = ICON_SIZE + 0.5;
+  export const WELCOME_TITLE_RING_TRACK_CLASS = "stroke-foreground/20 dark:stroke-white/20";
+  export const WELCOME_TITLE_RING_PROGRESS_CLASS = "text-foreground/68 dark:text-white/76 stroke-foreground/68 dark:stroke-white/76";
+  /** The room between the Focus ring's end and the last utility's end, in pixels, which a menu under the ring keeps. */
+  export const WELCOME_TITLE_AFTER_RING_PX = UTILITIES_AFTER_RING * (UTILITY_BUTTON_PX + UTILITY_GAP_PX);
 </script>
 
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import Music from "@lucide/svelte/icons/eighth-notes";
+  import Moon from "@lucide/svelte/icons/moon";
   import Plus from "@lucide/svelte/icons/plus";
+  import Settings from "@lucide/svelte/icons/settings";
+  import StickyNote from "@lucide/svelte/icons/sticky-note";
+  import Sun from "@lucide/svelte/icons/sun";
   import X from "@lucide/svelte/icons/x";
+  import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
+  import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { getTheme } from "$lib/stores/theme.svelte";
   import { cn } from "$lib/utils";
   import { workspaceTabKindIcon, workspaceTabKindLabel } from "$lib/workspace-tabs/presentation";
 
   /**
    * A desktop welcome scene's title bar, drawn as the title bar draws it: the open tabs and the new tab button, then
-   * the utilities the scene shows. The Calendar's tab carries its name, and a tab in the Novel project carries the
-   * project's name beside its kind's icon.
+   * the utilities a new vault shows, which are the Focus ring, Quick notes, Music, the theme switch, and Settings. The
+   * Calendar's tab carries its name, and a tab in the Novel project carries the project's name beside its kind's icon.
    */
   let {
     height,
     endPadding,
     tabs,
-    children,
+    ring,
+    ringOpen = false,
+    ringHovered = false,
+    ringCursor,
+    quickNotesOpen = false,
+    musicOpen = false,
+    musicHovered = false,
+    musicCursor,
   }: {
     /** The bar's height in pixels. */
     height: number;
     /** The room after the last utility, in pixels. */
     endPadding: number;
     tabs: readonly WelcomeTitleTab[];
-    /** The title bar's utilities. */
-    children?: Snippet;
+    /** The Focus ring, when the scene runs Focus; an idle ring otherwise. */
+    ring?: Snippet;
+    /** Whether the Focus ring's menu is open. */
+    ringOpen?: boolean;
+    /** Whether the pointer is on the Focus ring. */
+    ringHovered?: boolean;
+    /** The name the scene's pointer finds the Focus ring by. */
+    ringCursor?: string;
+    quickNotesOpen?: boolean;
+    musicOpen?: boolean;
+    /** Whether the pointer is on the Music button. */
+    musicHovered?: boolean;
+    /** The name the scene's pointer finds the Music button by. */
+    musicCursor?: string;
   } = $props();
 
   const { t } = getLocalization();
-
-  /** The tab strip's icon size and stroke, as the title bar draws them. */
-  const ICON_SIZE = 14;
-  const ICON_STROKE_WIDTH = 1.5;
+  const theme = getTheme();
 </script>
 
 <div class="flex shrink-0 items-center gap-2 bg-sidebar" style:height={`${height}px`} style:padding-right={`${endPadding}px`}>
@@ -81,7 +121,26 @@
       <Plus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} />
     </span>
   </div>
-  <div class="flex shrink-0 items-center gap-0.5">{@render children?.()}</div>
+  <div class="flex shrink-0 items-center gap-0.5">
+    <span data-cursor={ringCursor} class={cn("grid size-7 place-items-center rounded-lg", (ringOpen || ringHovered) && "bg-sidebar-accent")}>
+      {#if ring}
+        {@render ring()}
+      {:else}
+        <PomodoroProgressRing
+          active={false}
+          remainingSeconds={0}
+          totalSeconds={0}
+          size={WELCOME_TITLE_RING_SIZE}
+          trackClass={WELCOME_TITLE_RING_TRACK_CLASS}
+          progressClass={WELCOME_TITLE_RING_PROGRESS_CLASS}
+        />
+      {/if}
+    </span>
+    <WelcomeTitleIcon icon={StickyNote} open={quickNotesOpen} />
+    <WelcomeTitleIcon icon={Music} open={musicOpen} hovered={musicHovered} cursor={musicCursor} />
+    <WelcomeTitleIcon icon={theme.isDark ? Sun : Moon} />
+    <WelcomeTitleIcon icon={Settings} />
+  </div>
 </div>
 
 <style>

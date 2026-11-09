@@ -52,10 +52,14 @@
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
-  import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
-  import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
+  import WelcomeTitleBar, {
+    WELCOME_TITLE_RING_PROGRESS_CLASS,
+    WELCOME_TITLE_RING_SIZE,
+    WELCOME_TITLE_RING_TRACK_CLASS,
+    type WelcomeTitleTab,
+  } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
   import WelcomeFilmNotification, { type FilmNotificationKind } from "$lib/components/vault/welcome/WelcomeFilmNotification.svelte";
   import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
@@ -146,8 +150,7 @@
   const TOP_BAR_H = mobileShell ? 48 : 36;
   const HEADER_H = 40;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
-  /** The title bar's Focus ring size and its end padding, as the title bar draws them. */
-  const TITLE_ICON_SIZE = 14;
+  /** The title bar's end padding, as the title bar draws it. */
   const TITLE_BAR_END_PX = 6;
   /** The title bar's tabs: the Calendar alone, as a new vault opens. */
   const TITLE_TABS: readonly WelcomeTitleTab[] = [{ kind: "calendar", active: true }];
@@ -645,6 +648,10 @@
   />
 {/snippet}
 
+{#snippet titleRing()}
+  {@render ring(WELCOME_TITLE_RING_SIZE, WELCOME_TITLE_RING_TRACK_CLASS, WELCOME_TITLE_RING_PROGRESS_CLASS)}
+{/snippet}
+
 {#snippet musicCloseTouch()}
   <WelcomeTouch opacity={builderTouches.close} left="50%" top="50%" />
 {/snippet}
@@ -660,32 +667,25 @@
     style:height={`${canvasH}px`}
   >
     {#if mobileShell}
-      <!-- The phone's top bar, labelled with the Calendar, with its Focus ring lit while Focus runs and Music open while its panel is. -->
+      <!-- The phone's top bar, labelled with the Calendar, with its Focus ring running with Focus and Music open while its panel is. -->
       <WelcomePhoneTopBar
         height={TOP_BAR_H}
         identity="calendar"
         ring={phoneRing}
-        ringLit={focusing}
         musicOpen={panelPage !== null}
         musicTouch={musicCloseTouch}
       />
     {:else}
-      <!-- The title bar's Calendar tab, Focus ring, and Music, with Music open while its panel is. -->
-      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS}>
-        <span class="relative grid size-7 place-items-center rounded-lg">
-          {@render ring(
-            TITLE_ICON_SIZE + 0.5,
-            "stroke-foreground/20 dark:stroke-white/20",
-            "text-foreground/68 dark:text-white/76 stroke-foreground/68 dark:stroke-white/76",
-          )}
-        </span>
-        <WelcomeTitleIcon
-          icon={Music}
-          open={panelPage !== null}
-          hovered={hovered === MUSIC_TITLE_BUTTON_TARGET}
-          cursor={MUSIC_TITLE_BUTTON_TARGET}
-        />
-      </WelcomeTitleBar>
+      <!-- The title bar's Calendar tab and utilities, with its Focus ring running with Focus and Music open while its panel is. -->
+      <WelcomeTitleBar
+        height={TOP_BAR_H}
+        endPadding={TITLE_BAR_END_PX}
+        tabs={TITLE_TABS}
+        ring={titleRing}
+        musicOpen={panelPage !== null}
+        musicHovered={hovered === MUSIC_TITLE_BUTTON_TARGET}
+        musicCursor={MUSIC_TITLE_BUTTON_TARGET}
+      />
     {/if}
 
     <!-- The Music panel over the Calendar: floating under the bar, or the whole screen for a phone's builder. -->

@@ -20,12 +20,10 @@
   import Archive from "@lucide/svelte/icons/archive";
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
-  import Music from "@lucide/svelte/icons/eighth-notes";
   import Palette from "@lucide/svelte/icons/palette";
   import Pin from "@lucide/svelte/icons/pin";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
-  import StickyNote from "@lucide/svelte/icons/sticky-note";
   import Tag from "@lucide/svelte/icons/tag";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import X from "@lucide/svelte/icons/x";
@@ -33,7 +31,6 @@
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
   import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
   import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
-  import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -441,11 +438,8 @@
       <!-- The phone's top bar, with the Novel project's context switcher and Quick notes open. -->
       <WelcomePhoneTopBar height={TOP_BAR_H} identity="project" quickNotesOpen />
     {:else}
-      <!-- The title bar's tabs, with the Novel project showing, and its Quick notes, open, and Music. -->
-      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS}>
-        <WelcomeTitleIcon icon={StickyNote} open />
-        <WelcomeTitleIcon icon={Music} />
-      </WelcomeTitleBar>
+      <!-- The title bar's tabs, with the Novel project showing, and its utilities, with Quick notes open. -->
+      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS} quickNotesOpen />
     {/if}
 
     <!-- The Quick notes panel, open over the app. -->

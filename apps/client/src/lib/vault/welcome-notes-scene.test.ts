@@ -3,6 +3,7 @@ import { notesSlashMenuCatalog, notesSlashMenuGroups } from "$lib/components/not
 import { translateFromPartialCatalog, type Translate } from "$lib/i18n/translator.svelte";
 import { en } from "$lib/i18n/messages/en";
 import { es } from "$lib/i18n/messages/es";
+import { blockTypeForTextShortcut } from "$lib/notes/blocks/shortcuts";
 import { sectionNotesSlashCommandItems } from "$lib/notes/editor/slash-commands";
 import { welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
 import { FILM_TAP_MS } from "./welcome-film";
@@ -10,6 +11,8 @@ import {
   NOTES_BEATS,
   NOTES_CAST,
   NOTES_CURSOR,
+  NOTES_HEADING_SHORTCUT,
+  NOTES_HEADING_TYPE,
   NOTES_NEW_CHARACTER,
   NOTES_NEW_ROLE,
   NOTES_ROLE_COLORS,
@@ -18,6 +21,10 @@ import {
   NOTES_VIEW_FADE_MS,
   notesBoardActive,
   notesBoardShown,
+  notesHeadingAdded,
+  notesHeadingCaretOn,
+  notesHeadingFocused,
+  notesHeadingText,
   notesLineCaretOn,
   notesLineFocused,
   notesLineText,
@@ -28,6 +35,7 @@ import {
   notesOptionHovered,
   notesParagraphCaretOn,
   notesParagraphFocused,
+  notesParagraphShown,
   notesParagraphText,
   notesPageScroll,
   notesRoleHighlighted,
@@ -44,6 +52,7 @@ const B = NOTES_BEATS;
 const NAME = "Mateo";
 const QUERY = "call";
 const CALLOUT = "Decide what Mateo saw at the station.";
+const HEADING = "Mateo's secret";
 const PARAGRAPH = "Clara and Tomás grew up on the same street, and only Mateo knows why they stopped talking.";
 
 /** Every step of the scene, for properties that must hold throughout. */
@@ -79,9 +88,33 @@ describe("welcome notes scene", () => {
     expect(NOTES_CAST.map((row) => row.key)).not.toContain(NOTES_NEW_CHARACTER);
   });
 
-  it("types the paragraph into the clicked line, then starts the slash line with Enter", () => {
-    expect(notesParagraphFocused(B.lineTap - 1)).toBe(false);
-    expect(notesParagraphFocused(B.lineTap)).toBe(true);
+  it("types the editor's own Markdown shortcut for the heading it turns the line into", () => {
+    expect(blockTypeForTextShortcut(NOTES_HEADING_SHORTCUT)).toBe(NOTES_HEADING_TYPE);
+  });
+
+  it("types the shortcut into the clicked line, turns it into a heading with the space, types the heading, and starts the paragraph with Enter", () => {
+    expect(notesHeadingFocused(B.lineTap - 1)).toBe(false);
+    expect(notesHeadingFocused(B.lineTap)).toBe(true);
+    expect(notesHeadingCaretOn(B.lineTap)).toBe(true);
+    expect(notesHeadingText(B.shortcutTypeStart, HEADING)).toBe("");
+    expect(notesHeadingText(B.shortcutTypeEnd, HEADING)).toBe(NOTES_HEADING_SHORTCUT);
+    expect(notesHeadingAdded(B.shortcutSpace - 1)).toBe(false);
+    expect(notesHeadingText(B.shortcutSpace - 1, HEADING)).toBe(NOTES_HEADING_SHORTCUT);
+    expect(notesHeadingAdded(B.shortcutSpace)).toBe(true);
+    expect(notesHeadingText(B.shortcutSpace, HEADING)).toBe("");
+    expect(notesHeadingText((B.headingTypeStart + B.headingTypeEnd) / 2, HEADING).length).toBeGreaterThan(0);
+    expect(notesHeadingCaretOn((B.headingTypeStart + B.headingTypeEnd) / 2)).toBe(true);
+    expect(notesHeadingText(B.headingTypeEnd, HEADING)).toBe(HEADING);
+    expect(notesParagraphShown(B.headingSubmit - 1)).toBe(false);
+    expect(notesParagraphFocused(B.headingSubmit - 1)).toBe(false);
+    expect(notesHeadingFocused(B.headingSubmit)).toBe(false);
+    expect(notesHeadingCaretOn(B.headingSubmit)).toBe(false);
+    expect(notesParagraphShown(B.headingSubmit)).toBe(true);
+    expect(notesParagraphFocused(B.headingSubmit)).toBe(true);
+    expect(notesHeadingText(B.end, HEADING)).toBe(HEADING);
+  });
+
+  it("types the paragraph below the heading, then starts the slash line with Enter", () => {
     expect(notesParagraphText(B.paragraphTypeStart, PARAGRAPH)).toBe("");
     expect(notesParagraphText((B.paragraphTypeStart + B.paragraphTypeEnd) / 2, PARAGRAPH).length).toBeGreaterThan(0);
     expect(notesParagraphCaretOn((B.paragraphTypeStart + B.paragraphTypeEnd) / 2)).toBe(true);
@@ -163,6 +196,7 @@ describe("welcome notes scene", () => {
     for (const elapsed of moments()) {
       expect(notesLineFocused(elapsed) && notesNameFocused(elapsed)).toBe(false);
       expect(notesParagraphFocused(elapsed) && (notesLineFocused(elapsed) || notesNameFocused(elapsed))).toBe(false);
+      expect(notesHeadingFocused(elapsed) && (notesParagraphFocused(elapsed) || notesLineFocused(elapsed) || notesNameFocused(elapsed))).toBe(false);
       expect(notesNameFocused(elapsed) && notesRoleMenuOpen(elapsed)).toBe(false);
       expect(notesSlashMenuOpen(elapsed) && notesRoleMenuOpen(elapsed)).toBe(false);
     }
@@ -176,8 +210,10 @@ describe("welcome notes scene", () => {
     expect(notesBoardShown(B.boardTap + NOTES_VIEW_FADE_MS)).toBe(1);
   });
 
-  it("shows the board with the new row's card in its role, the paragraph and the callout written, and every menu closed in its still frame", () => {
+  it("shows the board with the new row's card in its role, the heading, the paragraph, and the callout written, and every menu closed in its still frame", () => {
     expect(notesBoardShown(NOTES_STILL)).toBe(1);
+    expect(notesHeadingAdded(NOTES_STILL)).toBe(true);
+    expect(notesHeadingText(NOTES_STILL, HEADING)).toBe(HEADING);
     expect(notesNewRole(NOTES_STILL)).toBe(NOTES_NEW_ROLE);
     expect(notesLineText(NOTES_STILL, QUERY, CALLOUT)).toBe(CALLOUT);
     expect(notesParagraphText(NOTES_STILL, PARAGRAPH)).toBe(PARAGRAPH);
@@ -205,10 +241,10 @@ describe("welcome notes scene", () => {
     }
   });
 
-  it("leaves Callout to the keyboard, moves off the line as the paragraph is typed, and waits for the scroll before the new row", () => {
+  it("leaves Callout to the keyboard, moves off the line as the shortcut is typed, and waits for the scroll before the new row", () => {
     expect(NOTES_CURSOR.some((stop) => stop.target === "notes-slash-pick")).toBe(false);
     expect(NOTES_CURSOR[2]?.target).toBe("notes-page");
-    expect(NOTES_CURSOR[2]?.depart).toBeGreaterThanOrEqual(B.paragraphTypeStart);
+    expect(NOTES_CURSOR[2]?.depart).toBeGreaterThanOrEqual(B.shortcutTypeStart);
     expect(NOTES_CURSOR.find((stop) => stop.target === "notes-new-row")?.depart).toBeGreaterThan(B.scrollStart);
     expect(NOTES_CURSOR.find((stop) => stop.target === "notes-role")?.depart).toBeGreaterThanOrEqual(B.nameSubmit);
   });

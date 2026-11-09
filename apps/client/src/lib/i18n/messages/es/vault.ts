@@ -90,8 +90,12 @@ export const vaultSetup = {
     headline: "Guarda tus notas dentro de cada proyecto",
     body: "Escribe páginas con cualquier bloque del menú de barra y agrega bases de datos que puedes ver como tabla o como tablero.",
     sceneDescription:
-      "Una breve animación de la página Personajes en las notas del proyecto Novela. Se escribe un párrafo debajo del título, luego una barra en la línea siguiente abre el menú de barra, una búsqueda corta lo reduce a Aviso, y se elige Aviso para agregar el aviso Decidir qué vio Mateo en la estación. Más abajo, una fila llamada Mateo se agrega a la base de datos Reparto de la página y recibe el rol Aliado, luego la base de datos cambia a su vista de tablero, que muestra una columna por cada rol.",
+      "Una breve animación de la página Personajes en las notas del proyecto Novela, que empieza con una cita, el encabezado Hilos abiertos y una viñeta. Escribir tres almohadillas y un espacio en la línea siguiente la convierte en el encabezado El secreto de Mateo, y debajo se escribe un párrafo. Luego una barra en la línea siguiente abre el menú de barra, una búsqueda corta lo reduce a Aviso, y se elige Aviso para agregar el aviso Decidir qué vio Mateo en la estación. Más abajo, una fila llamada Mateo se agrega a la base de datos Reparto de la página y recibe el rol Aliado, luego la base de datos cambia a su vista de tablero, que muestra una columna por cada rol.",
     page: "Personajes",
+    quote: "En este libro, todos esconden algo.",
+    threads: "Hilos abiertos",
+    bullet: "La carta de Clara desaparece",
+    heading: "El secreto de Mateo",
     paragraph: "Clara y Tomás crecieron en la misma calle, y solo Mateo sabe por qué dejaron de hablarse.",
     slashQuery: "avi",
     callout: "Decidir qué vio Mateo en la estación.",

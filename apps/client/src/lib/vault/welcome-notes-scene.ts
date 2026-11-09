@@ -1,12 +1,13 @@
 /**
- * Timing for the welcome scene on Notes. On the Novel project's Characters page, a click on the empty line below the
- * title puts the caret there and a paragraph is typed, and Enter starts a new line. A slash and a short query narrow the
- * slash menu to Callout, which Enter accepts, and the callout is filled in. The page then scrolls to its Cast database,
- * where a row is added to the table, named, and given a role from its cell, and the database switches to its Board view,
- * with a column for each role.
+ * Timing for the welcome scene on Notes. On the Novel project's Characters page, a click on the empty line below its
+ * first blocks puts the caret there, and the Markdown shortcut for a level 3 heading turns the line into one as its
+ * space is typed. The heading is typed, Enter starts a paragraph, and Enter after it starts a new line, where a slash
+ * and a short query narrow the slash menu to Callout, which Enter accepts, and the callout is filled in. The page then
+ * scrolls to its Cast database, where a row is added to the table, named, and given a role from its cell, and the
+ * database switches to its Board view, with a column for each role.
  */
 
-import type { NotesColor } from "$lib/notes/types";
+import type { NotesBlockType, NotesColor } from "$lib/notes/types";
 import {
   cursorClick,
   cursorRest,
@@ -43,38 +44,50 @@ export const NOTES_CAST: readonly NotesSceneRow[] = [
 export const NOTES_NEW_CHARACTER: NotesSceneCharacter = "mateo";
 export const NOTES_NEW_ROLE: NotesSceneRole = "ally";
 
+/** The Markdown shortcut typed into the empty line, and the heading it turns the line into once its space is typed. */
+export const NOTES_HEADING_SHORTCUT = "###";
+export const NOTES_HEADING_TYPE: NotesBlockType = "heading_3";
+
 /** Moments of the scene, in milliseconds from its start. A tap's beat is the moment it lands. */
 export const NOTES_BEATS = {
-  /** A click on the empty line below the title puts the caret there, a paragraph is typed, and Enter starts a new line. */
+  /** A click on the empty line puts the caret there, and the heading shortcut is typed. */
   lineTap: 900,
-  paragraphTypeStart: 1200,
-  paragraphTypeEnd: 3400,
-  paragraphSubmit: 3700,
+  shortcutTypeStart: 1200,
+  shortcutTypeEnd: 1500,
+  /** The space after the shortcut turns the line into a heading, whose text is typed, and Enter starts a paragraph. */
+  shortcutSpace: 1750,
+  headingTypeStart: 1950,
+  headingTypeEnd: 2600,
+  headingSubmit: 2900,
+  /** The paragraph is typed, and Enter starts a new line. */
+  paragraphTypeStart: 3200,
+  paragraphTypeEnd: 5400,
+  paragraphSubmit: 5700,
   /** A slash opens the slash menu on the new line, and a query narrows it to Callout. */
-  slashTyped: 4100,
-  queryTypeStart: 4500,
-  queryTypeEnd: 4800,
+  slashTyped: 6100,
+  queryTypeStart: 6500,
+  queryTypeEnd: 6800,
   /**
    * Callout is accepted, which turns the line into a callout: with Enter, as the menu completes its highlighted item from
    * the keyboard, or with a tap on a phone. The callout's text is then typed.
    */
-  pick: 5300,
-  calloutTypeStart: 5500,
-  calloutTypeEnd: 6600,
+  pick: 7300,
+  calloutTypeStart: 7500,
+  calloutTypeEnd: 8600,
   /** The page scrolls down to the database, keeping room below its table for the row the scene adds. */
-  scrollStart: 7100,
-  scrollEnd: 7800,
+  scrollStart: 9100,
+  scrollEnd: 9800,
   /** A tap on the table's New page row adds an empty row with its title focused, a name is typed, and Enter keeps it. */
-  newRowTap: 8300,
-  nameTypeStart: 8500,
-  nameTypeEnd: 9000,
-  nameSubmit: 9300,
+  newRowTap: 10300,
+  nameTypeStart: 10500,
+  nameTypeEnd: 11000,
+  nameSubmit: 11300,
   /** A tap on the new row's Role cell opens its options, and Ally is picked. */
-  roleTap: 10000,
-  rolePick: 10900,
+  roleTap: 12000,
+  rolePick: 12900,
   /** A tap on the Board tab shows the database as a board with a column for each role. */
-  boardTap: 11600,
-  end: 12800,
+  boardTap: 13600,
+  end: 14800,
 } as const;
 
 const B = NOTES_BEATS;
@@ -88,20 +101,48 @@ export const NOTES_VIEW_FADE_MS = 220;
 /** The frame shown as a still with reduced motion: the board with the new card in its role's column. */
 export const NOTES_STILL = B.end;
 
-/** Whether the paragraph line holds the caret: from the click on it until Enter moves the caret to a new line. */
-export function notesParagraphFocused(elapsed: number): boolean {
-  return elapsed >= B.lineTap && elapsed < B.paragraphSubmit;
+/** Whether the clicked line holds the caret: from the click on it until Enter starts the paragraph below it. */
+export function notesHeadingFocused(elapsed: number): boolean {
+  return elapsed >= B.lineTap && elapsed < B.headingSubmit;
 }
 
-/** As much of `paragraph` as the clicked line holds, typed a character at a time. */
+/** Whether the clicked line has turned into a heading: from the space typed after the shortcut. */
+export function notesHeadingAdded(elapsed: number): boolean {
+  return elapsed >= B.shortcutSpace;
+}
+
+/** The clicked line's text: the shortcut as it is typed, then, once the line is a heading, as much of `heading` as it holds. */
+export function notesHeadingText(elapsed: number, heading: string): string {
+  if (notesHeadingAdded(elapsed)) return filmTyped(elapsed, heading, B.headingTypeStart, B.headingTypeEnd);
+  return filmTyped(elapsed, NOTES_HEADING_SHORTCUT, B.shortcutTypeStart, B.shortcutTypeEnd);
+}
+
+/** Whether the clicked line's caret shows: steady while something is typed into it, and blinking in between. */
+export function notesHeadingCaretOn(elapsed: number): boolean {
+  if (!notesHeadingFocused(elapsed)) return false;
+  if (elapsed >= B.headingTypeStart) return filmCaretOn(elapsed, B.headingTypeEnd);
+  return filmCaretOn(elapsed, elapsed >= B.shortcutTypeStart ? B.shortcutSpace : B.lineTap);
+}
+
+/** Whether the paragraph below the heading exists: from the Enter that starts it. */
+export function notesParagraphShown(elapsed: number): boolean {
+  return elapsed >= B.headingSubmit;
+}
+
+/** Whether the paragraph holds the caret: from the Enter that starts it until Enter moves the caret to a new line. */
+export function notesParagraphFocused(elapsed: number): boolean {
+  return elapsed >= B.headingSubmit && elapsed < B.paragraphSubmit;
+}
+
+/** As much of `paragraph` as the paragraph holds, typed a character at a time. */
 export function notesParagraphText(elapsed: number, paragraph: string): string {
   return filmTyped(elapsed, paragraph, B.paragraphTypeStart, B.paragraphTypeEnd);
 }
 
-/** Whether the paragraph line's caret shows: blinking once clicked, steady while typing, then blinking until Enter. */
+/** Whether the paragraph's caret shows: blinking once it starts, steady while typing, then blinking until Enter. */
 export function notesParagraphCaretOn(elapsed: number): boolean {
   if (!notesParagraphFocused(elapsed)) return false;
-  return filmCaretOn(elapsed, elapsed >= B.paragraphTypeStart ? B.paragraphTypeEnd : B.lineTap);
+  return filmCaretOn(elapsed, elapsed >= B.paragraphTypeStart ? B.paragraphTypeEnd : B.headingSubmit);
 }
 
 /** Whether the new line below the paragraph exists: from the Enter that starts it. */
@@ -225,14 +266,14 @@ export function notesTouches(elapsed: number): NotesSceneTouches {
 
 /**
  * The desktop pointer's path through the scene: it clicks the empty line, then moves back over the page while the
- * paragraph is typed, the slash menu narrows and Enter accepts Callout, the callout is typed, and the page scrolls. It
- * clicks New page once the table is in view, opens the new row's Role and picks Ally, then switches the database to its
- * board.
+ * heading and the paragraph are typed, the slash menu narrows and Enter accepts Callout, the callout is typed, and the
+ * page scrolls. It clicks New page once the table is in view, opens the new row's Role and picks Ally, then switches the
+ * database to its board.
  */
 export const NOTES_CURSOR: WelcomeCursorScript = [
   cursorRest("notes-page", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
   cursorClick("notes-line", B.lineTap, { glyph: "text", after: 0 }),
-  cursorRest("notes-page", B.paragraphTypeStart + WELCOME_CURSOR_TRAVEL_MS, {
+  cursorRest("notes-page", B.shortcutTypeStart + WELCOME_CURSOR_TRAVEL_MS, {
     anchor: PROJECTS_CURSOR_REST_ANCHOR,
     busy: [{ start: B.scrollStart, end: B.scrollEnd }],
   }),

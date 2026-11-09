@@ -54,9 +54,10 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { NotesCalloutLayer } from "$lib/notes/block-types/callout-layout";
   import { notesBlockColorStyle, notesBlockColorSwatchStyle } from "$lib/notes/blocks/color";
-  import { notesRichTextPreviewClass } from "$lib/notes/blocks/editor-ui";
+  import { notesBlockMarker, notesRichTextPreviewClass } from "$lib/notes/blocks/editor-ui";
   import { createCalloutPayload, DEFAULT_COLOR } from "$lib/notes/blocks/payloads";
   import { sectionNotesSlashCommandItems } from "$lib/notes/editor/slash-commands";
+  import type { NotesBlockType } from "$lib/notes/types";
   import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { cn } from "$lib/utils";
@@ -68,6 +69,7 @@
   import {
     NOTES_CAST,
     NOTES_CURSOR,
+    NOTES_HEADING_TYPE,
     NOTES_NEW_CHARACTER,
     NOTES_NEW_ROLE,
     NOTES_ROLE_COLORS,
@@ -75,6 +77,9 @@
     notesBoardActive,
     notesBoardShown,
     notesCalloutAdded,
+    notesHeadingAdded,
+    notesHeadingCaretOn,
+    notesHeadingText,
     notesLineCaretOn,
     notesLineText,
     notesNameCaretOn,
@@ -84,6 +89,7 @@
     notesOptionHovered,
     notesPageScroll,
     notesParagraphCaretOn,
+    notesParagraphShown,
     notesParagraphText,
     notesRoleHighlighted,
     notesRoleMenuOpen,
@@ -99,8 +105,8 @@
 
   /**
    * One frame of the welcome scene on Notes, drawn with the app's own surfaces: on the Novel project's Characters page,
-   * a paragraph is typed below the title, a slash on the next line opens the slash menu, which narrows to Callout as a
-   * query is typed, and the accepted callout is filled in. The page then scrolls to its Cast database, where a row is
+   * the Markdown shortcut for a heading turns an empty line into one, a paragraph is typed below it, a slash on the next
+   * line opens the slash menu, which narrows to Callout as a query is typed, and the accepted callout is filled in. The page then scrolls to its Cast database, where a row is
    * added to the table, named, and given a role from its cell, and the database switches to its Board view. Every style
    * is a function of `elapsed`, with no CSS transitions.
    */
@@ -146,12 +152,29 @@
   const CALLOUT = createCalloutPayload("");
   const CALLOUT_LAYERS: readonly NotesCalloutLayer[] = [{ id: "callout", color: CALLOUT.color ?? DEFAULT_COLOR, first: true, last: true }];
 
+  /** A block the page starts with: its type and the key of its text. */
+  interface NotesSceneBlock {
+    type: NotesBlockType;
+    text: "quote" | "threads" | "bullet";
+  }
+
+  /** The blocks the page starts with, above the empty line the scene writes into. */
+  const PAGE_BLOCKS: readonly NotesSceneBlock[] = [
+    { type: "quote", text: "quote" },
+    { type: "heading_2", text: "threads" },
+    { type: "bulleted_list_item", text: "bullet" },
+  ];
+
   const canvasW = $derived(width - 2 * BEZEL);
   const canvasH = $derived(height - 2 * BEZEL);
   const editorPad = $derived(canvasW >= EDITOR_WIDE_W ? EDITOR_PAD_WIDE : EDITOR_PAD_NARROW);
   const tableHang = $derived(Math.min(editorPad, TABLE_HANG_MAX_PX));
 
   const slashQuery = $derived(t("vaultSetup.notes.slashQuery"));
+  const headingAdded = $derived(notesHeadingAdded(elapsed));
+  const headingText = $derived(notesHeadingText(elapsed, t("vaultSetup.notes.heading")));
+  const headingCaretOn = $derived(notesHeadingCaretOn(elapsed));
+  const paragraphShown = $derived(notesParagraphShown(elapsed));
   const paragraphText = $derived(notesParagraphText(elapsed, t("vaultSetup.notes.paragraph")));
   const paragraphCaretOn = $derived(notesParagraphCaretOn(elapsed));
   const slashLineShown = $derived(notesSlashLineShown(elapsed));
@@ -306,25 +329,27 @@
     return hover.includes(name);
   }
 
-  /** Whether a table row is hovered: the new row stays so while its role menu is open, as the menu belongs to it. */
+  /** Whether the table holds its hover feedback back, as it does while a cell menu is open or a cell's text field is focused. */
+  const tableHoverHeld = $derived(menuOpen || nameFocused);
+
+  /** Whether a table row is under the desktop pointer. */
   function rowHovered(key: NotesSceneCharacter): boolean {
-    if (menuOpen) return key === NOTES_NEW_CHARACTER && !mobileShell;
     return hovered(`row:${key}`);
   }
 
-  /** The row highlight while the row is hovered. */
+  /** The row highlight while the row is hovered and the table does not hold hover feedback back. */
   function rowStyle(key: NotesSceneCharacter): string | undefined {
-    return rowHovered(key) ? "--collection-row-hover: var(--collection-row-highlight);" : undefined;
+    return !tableHoverHeld && rowHovered(key) ? "--collection-row-hover: var(--collection-row-highlight);" : undefined;
   }
 
   /**
-   * The background of a table cell: highlighted under the pointer, unless a cell menu is open and the table suppresses
-   * cell hover, and for the new row's role cell while its menu is open or from its touch on a phone.
+   * The background of a table cell: highlighted under the pointer while the table does not hold hover feedback back, and
+   * for the new row's title while it is focused and its role cell while its menu is open or from its touch on a phone.
    */
-  function cellBackground(name: string, roleCellOfNewRow: boolean): string {
-    const highlighted = mobileShell
-      ? roleCellOfNewRow && notesRoleHighlighted(elapsed)
-      : (roleCellOfNewRow && menuOpen) || (!menuOpen && hovered(name));
+  function cellBackground(name: string, cell: "name" | "role" | null): string {
+    const highlighted =
+      (cell === "name" && nameFocused) ||
+      (mobileShell ? cell === "role" && notesRoleHighlighted(elapsed) : (cell === "role" && menuOpen) || (!tableHoverHeld && hovered(name)));
     return `background-image: ${highlighted ? "linear-gradient(var(--collection-highlight), var(--collection-highlight))" : "none"}`;
   }
 
@@ -471,13 +496,35 @@
               <h1 class="notes-editor-page-title block w-full min-w-0 font-bold leading-[1.2] break-words text-foreground">{t("vaultSetup.notes.page")}</h1>
             </div>
 
-            <!-- The empty line below the title, where the paragraph is typed. -->
-            <div data-scene-hover="block:paragraph" class={cn("flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2", hovered("block:paragraph") && "bg-accent/50")}>
+            <!-- The blocks the page starts with, as the editor draws them while none is being edited. -->
+            {#each PAGE_BLOCKS as block (block.text)}
+              {@const marker = notesBlockMarker(block.type)}
+              <div class="flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2">
+                {#if marker}
+                  <div class="notes-editor-body-text min-w-5 shrink-0 select-none whitespace-nowrap py-1 text-right leading-normal text-muted-foreground">{marker}</div>
+                {/if}
+                <div class="relative min-w-0 flex-1">
+                  <div class={notesRichTextPreviewClass(block.type)}>{t(`vaultSetup.notes.${block.text}`)}</div>
+                </div>
+              </div>
+            {/each}
+
+            <!-- The empty line below them, where the heading shortcut is typed, which turns into a heading once its space is. -->
+            <div class="flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2">
               <div class="relative min-w-0 flex-1" data-cursor="notes-line">
-                <div class={notesRichTextPreviewClass("paragraph")}>{ZERO_WIDTH_SPACE}{paragraphText}{#if paragraphCaretOn}<WelcomeCaret />{/if}</div>
+                <div class={notesRichTextPreviewClass(headingAdded ? NOTES_HEADING_TYPE : "paragraph")}>{ZERO_WIDTH_SPACE}{headingText}{#if headingCaretOn}<WelcomeCaret />{/if}</div>
                 {#if mobileShell}<WelcomeTouch opacity={touches.line} />{/if}
               </div>
             </div>
+
+            <!-- The paragraph Enter starts below the heading. -->
+            {#if paragraphShown}
+              <div class="flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2">
+                <div class="relative min-w-0 flex-1">
+                  <div class={notesRichTextPreviewClass("paragraph")}>{ZERO_WIDTH_SPACE}{paragraphText}{#if paragraphCaretOn}<WelcomeCaret />{/if}</div>
+                </div>
+              </div>
+            {/if}
 
             <!-- The line Enter starts below the paragraph, where the slash is typed, which turns into a callout once Callout is accepted. -->
             {#if slashLineShown && calloutAdded}
@@ -494,7 +541,7 @@
                 {/snippet}
               </NotesCalloutEmbeddedRow>
             {:else if slashLineShown}
-              <div data-scene-hover="block:line" class={cn("flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2", hovered("block:line") && "bg-accent/50")}>
+              <div class="flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2">
                 <div class="relative min-w-0 flex-1">
                   <div class={notesRichTextPreviewClass("paragraph")}><span bind:this={slashAnchor}>{ZERO_WIDTH_SPACE}</span>{lineText}{#if lineCaretOn}<WelcomeCaret />{/if}</div>
                 </div>
@@ -570,8 +617,8 @@
                         {#if mobileShell || rowHovered(row.key)}<span class="grid size-4 shrink-0 place-items-center rounded-sm border border-foreground/25"></span>{/if}
                       </div>
                       <div></div>
-                      <CollectionCell data-scene-hover={`cell:${row.key}:name`} style={cellBackground(`cell:${row.key}:name`, false)}>
-                        <span class={cn("flex h-8 w-full min-w-0 items-center rounded-sm border border-transparent px-1.5", editing && "bg-background")}>
+                      <CollectionCell data-scene-hover={`cell:${row.key}:name`} style={cellBackground(`cell:${row.key}:name`, added ? "name" : null)}>
+                        <span class="flex h-8 w-full min-w-0 items-center rounded-sm border border-transparent px-1">
                           {#if editing}
                             <span class="min-w-0 truncate text-foreground">{nameDraft}{#if caretOn}<WelcomeCaret />{/if}</span>
                           {:else}
@@ -584,7 +631,7 @@
                           </span>
                         {/if}
                       </CollectionCell>
-                      <CollectionCell data-scene-hover={`cell:${row.key}:role`} style={cellBackground(`cell:${row.key}:role`, added)}>
+                      <CollectionCell data-scene-hover={`cell:${row.key}:role`} style={cellBackground(`cell:${row.key}:role`, added ? "role" : null)}>
                         {#if added}<div bind:this={roleCell} data-cursor="notes-role" class="absolute inset-0"></div>{/if}
                         <span class="relative flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5">
                           <span class="flex min-w-0 flex-1 items-center gap-1.5">
@@ -600,8 +647,8 @@
                   {/each}
 
                   <!-- The table's New page row, as its quick add draws it closed. -->
-                  <CollectionRow template={TABLE_TEMPLATE} gutter={TABLE_GUTTER} data-scene-hover="row:new" style={!menuOpen && hovered("row:new") ? "--collection-row-hover: var(--collection-row-highlight);" : undefined}>
-                    <span class={cn("col-span-full grid min-h-(--collection-table-row-height) grid-cols-subgrid items-center text-left text-collection", !menuOpen && hovered("row:new") ? "text-foreground" : "text-muted-foreground")}>
+                  <CollectionRow template={TABLE_TEMPLATE} gutter={TABLE_GUTTER} data-scene-hover="row:new" style={!tableHoverHeld && hovered("row:new") ? "--collection-row-hover: var(--collection-row-highlight);" : undefined}>
+                    <span class={cn("col-span-full grid min-h-(--collection-table-row-height) grid-cols-subgrid items-center text-left text-collection", !tableHoverHeld && hovered("row:new") ? "text-foreground" : "text-muted-foreground")}>
                       <span class="flex min-w-0 items-center gap-2 px-2" style:grid-column="3 / -1">
                         <Plus class="size-4 shrink-0" />
                         <span class="relative min-w-0" data-cursor="notes-new-row">

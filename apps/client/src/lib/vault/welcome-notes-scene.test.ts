@@ -321,10 +321,13 @@ describe("welcome notes scene", () => {
     }
   });
 
-  it("leaves Callout to the keyboard, moves off the line as the shortcut is typed, and waits for the scroll before the new row", () => {
+  it("leaves Callout to the keyboard, hides on the line while the page is written, shows in place for the scroll, and waits for the scroll before the new row", () => {
     expect(NOTES_CURSOR.some((stop) => stop.target === "notes-slash-pick")).toBe(false);
-    expect(NOTES_CURSOR[2]?.target).toBe("notes-page");
-    expect(NOTES_CURSOR[2]?.depart).toBeGreaterThanOrEqual(B.shortcutTypeStart);
+    expect(NOTES_CURSOR[2]?.target).toBe("notes-new-row");
+    expect(welcomeCursorFrame(NOTES_CURSOR, B.headingTypeStart).away).toBe(true);
+    expect(welcomeCursorFrame(NOTES_CURSOR, B.calloutTypeEnd).away).toBe(true);
+    for (let elapsed = B.lineTap; elapsed <= B.calloutTypeEnd; elapsed += 10) expect(welcomeCursorFrame(NOTES_CURSOR, elapsed).to.target).toBe("notes-line");
+    for (let elapsed = B.scrollStart; elapsed <= B.scrollEnd; elapsed += 10) expect(welcomeCursorFrame(NOTES_CURSOR, elapsed).shown).toBe(1);
     expect(NOTES_CURSOR.find((stop) => stop.target === "notes-new-row")?.depart).toBeGreaterThan(B.scrollStart);
     expect(NOTES_CURSOR.find((stop) => stop.target === "notes-role")?.depart).toBeGreaterThanOrEqual(B.nameSubmit);
   });

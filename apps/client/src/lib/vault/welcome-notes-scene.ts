@@ -18,7 +18,6 @@ import {
   cursorRest,
   WELCOME_CURSOR_REST_MS,
   WELCOME_CURSOR_SCROLL_OVERLAP_MS,
-  WELCOME_CURSOR_TRAVEL_MS,
   type WelcomeCursorScript,
 } from "./welcome-cursor";
 import { easeInOutCubic, filmCaretOn, filmPress, filmSpan, filmTap, filmTyped } from "./welcome-film";
@@ -434,9 +433,9 @@ export function notesTouches(elapsed: number): NotesSceneTouches {
 export const NOTES_BOARD_CURSOR_ANCHOR = [0.5, 0.4] as const;
 
 /**
- * The desktop pointer's path through the scene: it clicks the empty line, then moves back over the page while the
- * heading and the paragraph are typed, the slash menu narrows and Enter accepts Callout, the callout is typed, and the
- * page scrolls. It clicks New page once the table is in view, opens the new row's Role and picks Ally, switches the
+ * The desktop pointer's path through the scene: it clicks the empty line and hides there while the heading and the
+ * paragraph are typed, the slash menu narrows and Enter accepts Callout, and the callout is typed, showing again in
+ * place as the page scrolls. It clicks New page once the table is in view, opens the new row's Role and picks Ally, switches the
  * database to its board, then moves onto the board, which scrolls sideways under it as a mouse wheel scrolls it. Once
  * the page scrolls back up under it, it right clicks the line at the top, rests on Paragraph until its submenu opens,
  * and clicks Quote. Last, it rests on the page's place in the header until the navigator opens, and moves onto the
@@ -444,11 +443,7 @@ export const NOTES_BOARD_CURSOR_ANCHOR = [0.5, 0.4] as const;
  */
 export const NOTES_CURSOR: WelcomeCursorScript = [
   cursorRest("notes-page", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
-  cursorClick("notes-line", B.lineTap, { glyph: "text", after: 0 }),
-  cursorRest("notes-page", B.shortcutTypeStart + WELCOME_CURSOR_TRAVEL_MS, {
-    anchor: PROJECTS_CURSOR_REST_ANCHOR,
-    busy: [{ start: B.scrollStart, end: B.scrollEnd }],
-  }),
+  cursorClick("notes-line", B.lineTap, { glyph: "text", after: 0, busy: [{ start: B.scrollStart, end: B.scrollEnd }] }),
   cursorClick("notes-new-row", B.newRowTap, { after: B.scrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
   cursorClick("notes-role", B.roleTap, { glyph: "pointer", after: B.nameSubmit }),
   cursorClick("notes-role-option", B.rolePick, { after: B.roleTap }),

@@ -79,8 +79,8 @@ export const vaultSetup = {
       "A short animation of the Novel project's List view. The task Write chapter 2 is typed into the bottom of the list and added, then expanded to add the subtasks Outline the scenes and Write the first draft. The task's status and its first subtask's are then set to In progress and the task's priority to High from their cells in the table.",
   },
   notes: {
-    headline: "Keep your notes inside each project",
-    body: "Write pages with any block from the slash menu, and add databases you can see as a table or a board.",
+    headline: "Notes for each project",
+    body: "Format your pages with Markdown or slash commands, and add databases to them.",
     sceneDescription:
       "A short animation of the Characters page in the Novel project's Notes, which starts with a quote, the heading Open threads, and a bullet. Typing three number signs and a space on the next line turns it into the heading Mateo's secret, and a paragraph is typed below it. A slash on the next line then opens the slash menu, a short query narrows it to Callout, and Callout is chosen to add the callout Decide what Mateo saw at the station. Further down, a row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, which shows a column for each role.",
     page: "Characters",

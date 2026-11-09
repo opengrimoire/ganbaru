@@ -87,8 +87,8 @@ export const vaultSetup = {
       "Una breve animación de la vista de lista del proyecto Novela. La tarea Escribir el capítulo 2 se escribe al final de la lista y se agrega, luego se expande para agregarle las subtareas Esbozar las escenas y Escribir el primer borrador. Después, su estado y el de su primera subtarea se cambian a En progreso y su prioridad a Alta desde sus celdas en la tabla.",
   },
   notes: {
-    headline: "Guarda tus notas dentro de cada proyecto",
-    body: "Escribe páginas con cualquier bloque del menú de barra y agrega bases de datos que puedes ver como tabla o como tablero.",
+    headline: "Notas para cada proyecto",
+    body: "Da formato a tus páginas con Markdown o con comandos (/), y agrégales bases de datos.",
     sceneDescription:
       "Una breve animación de la página Personajes en las notas del proyecto Novela, que empieza con una cita, el encabezado Hilos abiertos y una viñeta. Escribir tres almohadillas y un espacio en la línea siguiente la convierte en el encabezado El secreto de Mateo, y debajo se escribe un párrafo. Luego una barra en la línea siguiente abre el menú de barra, una búsqueda corta lo reduce a Aviso, y se elige Aviso para agregar el aviso Decidir qué vio Mateo en la estación. Más abajo, una fila llamada Mateo se agrega a la base de datos Reparto de la página y recibe el rol Aliado, luego la base de datos cambia a su vista de tablero, que muestra una columna por cada rol.",
     page: "Personajes",

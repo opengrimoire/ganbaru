@@ -1,11 +1,12 @@
 <script lang="ts">
   import Check from "@lucide/svelte/icons/check";
-  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { onMount } from "svelte";
-  import { fly } from "svelte/transition";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import OnboardingNav, { type OnboardingNavPrimary } from "$lib/components/vault/OnboardingNav.svelte";
+  import WelcomeSceneStep from "$lib/components/vault/welcome/WelcomeSceneStep.svelte";
+  import { ONBOARDING_SECONDARY_BUTTON_CLASS } from "$lib/vault/welcome-layout";
   import FocusAccessGuide from "./focus-access/FocusAccessGuide.svelte";
   import MobileOnboardingProgress from "./MobileOnboardingProgress.svelte";
   import {
@@ -16,8 +17,6 @@
     type FocusAccessStatuses,
     type FocusAccessStep,
   } from "$lib/mobile/focus-access-steps";
-  import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
-  import { prefersReducedMotion } from "$lib/utils/smooth-swap";
   import {
     mobileDistractionsAccessStatus,
     openMobileDistractionsAccessibilitySettings,
@@ -39,17 +38,19 @@
   /**
    * Android Focus access onboarding: one screen per access Android does not already report as on, each with why it
    * matters, a drawing of the system screens it opens, and, for sensitive access, what Ganbaru sees and never sees.
-   * The screen for sensitive access is its disclosure, shown immediately before the system settings open.
+   * The screen for sensitive access is its disclosure, shown immediately before the system settings open. The screens
+   * share the welcome screens' navigation, with Back between them, and a screen whose access is already on, reached by
+   * going back or forward, says so and only continues. `onComplete` reports how many screens there were, so a shell can
+   * offer Back from the screen after them only when there is a screen to return to.
    */
-  let { onComplete }: { onComplete: () => void } = $props();
+  let { onComplete }: { onComplete: (stepCount: number) => void } = $props();
 
-  /** How long a step shows that its access is on before the next step arrives. */
+  /** How long a step shows that its access just turned on before the next step arrives. */
   const GRANTED_HOLD_MS = 700;
   const { t } = getLocalization();
   const storage = safeStorage();
-  const enterMs = prefersReducedMotion() ? 0 : 260;
 
-  /** Where the current step stands after the person acted on it. */
+  /** Where the current step stands: untouched, back from settings with the access still off, or with the access on. */
   type StepOutcome = "idle" | "returned" | "granted";
 
   let statuses = $state<FocusAccessStatuses>({ background: null, notifications: null, distractions: null });
@@ -116,7 +117,17 @@
         console.warn("Android Focus onboarding completion could not be saved", error);
       }
     }
-    onComplete();
+    onComplete(steps?.length ?? 0);
+  }
+
+  /** Shows the step at `next`, already marked as on when Android reports its access on. */
+  function arrive(next: number): void {
+    window.clearTimeout(grantedTimer);
+    const step = steps?.[next];
+    if (!step) return;
+    index = next;
+    outcome = focusAccessGranted(step, statuses) === true ? "granted" : "idle";
+    openFailed = false;
   }
 
   function advance(): void {
@@ -125,9 +136,11 @@
       complete();
       return;
     }
-    index += 1;
-    outcome = "idle";
-    openFailed = false;
+    arrive(index + 1);
+  }
+
+  function back(): void {
+    if (index > 0) arrive(index - 1);
   }
 
   /** Records what the person did on the current step, and moves on by itself once Android reports the access on. */
@@ -222,13 +235,23 @@
       : { sees: t("mobile.focusOnboarding.appBlockingSees"), neverSees: t("mobile.focusOnboarding.appBlockingNeverSees") };
   }
 
-  function primaryLabel(step: FocusAccessStep): string {
-    if (outcome === "granted") return t("mobile.focusOnboarding.done");
-    if (continueAfterReturn) return t("mobile.focusOnboarding.continue");
+  /**
+   * The step's primary action: continue once its access is on, or once the person came back from settings Android
+   * cannot check; otherwise open its settings, or ask for notifications in place while Android still can.
+   */
+  function primaryAction(step: FocusAccessStep): OnboardingNavPrimary {
+    if (outcome === "granted" || continueAfterReturn) {
+      return { label: t("mobile.focusOnboarding.continue"), onClick: advance };
+    }
     const action = step === "notifications" && statuses.notifications?.permission === "prompt"
       ? t("mobile.focusOnboarding.notificationsAction")
       : t("mobile.focusOnboarding.openSettings");
-    return outcome === "returned" && detectable ? t("mobile.focusOnboarding.stillOffAction", action) : action;
+    return {
+      label: outcome === "returned" && detectable ? t("mobile.focusOnboarding.stillOffAction", action) : action,
+      onClick: () => void openStep(step),
+      busy: opening,
+      arrow: false,
+    };
   }
 
   onMount(() => {
@@ -264,76 +287,71 @@
   class="mobile-viewport-height flex w-screen flex-col overflow-hidden bg-background pb-(--safe-area-bottom) pt-(--safe-area-top) text-foreground"
   style="padding-left: var(--safe-area-left); padding-right: var(--safe-area-right);"
 >
-  <MobileOnboardingProgress stage="permissions" screen={current ? FOCUS_ACCESS_STEP_ORDER.indexOf(current) : 0} />
-  <section class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 min-[560px]:px-8">
+  <MobileOnboardingProgress stage="permissions" screen={current ? FOCUS_ACCESS_STEP_ORDER.indexOf(current) : 0}>
     {#if steps === null || current === null}
       <div class="flex h-full items-center justify-center text-sm">
         <Loading layout="inline" showLabel label={t("mobile.focusOnboarding.checkingAccess")} />
       </div>
     {:else}
-      {@const boundary = stepBoundary(current)}
-      <div class="mx-auto flex min-h-full w-full max-w-md flex-col pb-5">
+      {@const step = current}
+      {@const boundary = stepBoundary(step)}
+      <div class="@container flex h-full flex-col">
         {#if steps.length > 1}
           <p class="sr-only">{t("mobile.focusOnboarding.permissionProgress", index + 1, steps.length)}</p>
         {/if}
-
-        {#key current}
-          <div class="flex flex-1 flex-col pt-8" in:fly={{ x: 24, duration: enterMs }}>
-            <div class="space-y-2">
-              <h1 class="text-2xl font-semibold leading-tight text-foreground">{stepTitle(current)}</h1>
-              <p class="text-sm leading-6 text-muted-foreground">{stepBody(current)}</p>
-              {#if boundary}
-                <!-- The data line comes last so the two lines about what the app does follow its description. -->
-                <p class="text-sm leading-6 text-muted-foreground">{boundary.sees}</p>
-                <p class="text-sm leading-6 text-muted-foreground">{boundary.neverSees}</p>
-                <p class="text-sm leading-6 text-muted-foreground">{t("mobile.focusOnboarding.privacyPoint")}</p>
-              {/if}
-              {#if current === "battery" && statuses.background?.backgroundRestricted}
-                <p class="text-sm leading-6 text-foreground">{t("mobile.focusOnboarding.backgroundRestricted")}</p>
-              {/if}
-            </div>
-
-            <!-- The body text's line spacing adds about 4px above, so the top padding is one step smaller to center the guide. -->
-            <div class="flex flex-1 flex-col pb-8 pt-7">
-              <FocusAccessGuide step={current} {appLabel} />
-            </div>
+        <div class="relative min-h-0 flex-1 overflow-hidden">
+          <div class="absolute inset-0">
+            {#key step}
+              <WelcomeSceneStep headline={stepTitle(step)} body={stepBody(step)}>
+                {#snippet details()}
+                  {#if boundary}
+                    <!-- The data line comes last so the two lines about what the app does follow its description. -->
+                    <p class="text-sm leading-6 text-muted-foreground @min-[560px]:text-base @min-[560px]:leading-7">{boundary.sees}</p>
+                    <p class="text-sm leading-6 text-muted-foreground @min-[560px]:text-base @min-[560px]:leading-7">{boundary.neverSees}</p>
+                    <p class="text-sm leading-6 text-muted-foreground @min-[560px]:text-base @min-[560px]:leading-7">{t("mobile.focusOnboarding.privacyPoint")}</p>
+                  {/if}
+                  {#if step === "battery" && statuses.background?.backgroundRestricted}
+                    <p class="text-sm leading-6 text-foreground @min-[560px]:text-base @min-[560px]:leading-7">{t("mobile.focusOnboarding.backgroundRestricted")}</p>
+                  {/if}
+                {/snippet}
+                <FocusAccessGuide {step} {appLabel} />
+              </WelcomeSceneStep>
+            {/key}
           </div>
-        {/key}
-
-        <div class="flex flex-col gap-1">
-          {#if outcome === "returned" && detectable}
-            <p class="sr-only" role="status">{t("mobile.focusOnboarding.stillOff")}</p>
-          {/if}
-          <button
-            use:onboardingPrimaryAction
-            type="button"
-            class="flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors active:bg-primary/90 disabled:cursor-wait"
-            disabled={opening || outcome === "granted"}
-            aria-busy={opening || undefined}
-            onclick={() => (continueAfterReturn ? advance() : void openStep(current))}
-          >
-            {#if opening}
-              <LoaderCircle class="size-4 animate-spin" aria-hidden="true" />
-            {:else if outcome === "granted"}
-              <Check class="size-4" aria-hidden="true" />
-            {/if}
-            {primaryLabel(current)}
-          </button>
-          <button
-            type="button"
-            class="flex min-h-11 w-full items-center justify-center rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors active:text-foreground disabled:opacity-50"
-            disabled={opening || outcome === "granted"}
-            onclick={() => (continueAfterReturn ? void openStep(current) : advance())}
-          >
-            {continueAfterReturn ? t("mobile.focusOnboarding.openAgain") : t("mobile.focusOnboarding.notNow")}
-          </button>
-          {#if openFailed}
-            <p class="pt-1 text-center text-sm text-destructive" role="alert">{t("mobile.focusOnboarding.openError")}</p>
-          {:else if unavailable}
-            <Notice class="pt-1 text-sm" message={t("mobile.focusOnboarding.statusError")} copy={false} onRetry={retryStatus} />
-          {/if}
         </div>
+
+        <OnboardingNav
+          primary={primaryAction(step)}
+          onBack={index > 0 ? back : undefined}
+          backDisabled={opening}
+        >
+          {#snippet secondary()}
+            {#if outcome === "granted"}
+              <p class="flex min-h-11 items-center justify-center gap-2 text-sm font-medium text-foreground" role="status">
+                <Check size={16} strokeWidth={2} class="shrink-0 text-primary" aria-hidden="true" />
+                {t("mobile.focusOnboarding.turnedOn")}
+              </p>
+            {:else}
+              {#if outcome === "returned" && detectable}
+                <p class="sr-only" role="status">{t("mobile.focusOnboarding.stillOff")}</p>
+              {/if}
+              {#if openFailed}
+                <p class="text-center text-sm text-destructive" role="alert">{t("mobile.focusOnboarding.openError")}</p>
+              {:else if unavailable}
+                <Notice class="text-sm" message={t("mobile.focusOnboarding.statusError")} copy={false} onRetry={retryStatus} />
+              {/if}
+              <button
+                type="button"
+                class={ONBOARDING_SECONDARY_BUTTON_CLASS}
+                disabled={opening}
+                onclick={() => (continueAfterReturn ? void openStep(step) : advance())}
+              >
+                {continueAfterReturn ? t("mobile.focusOnboarding.openAgain") : t("mobile.focusOnboarding.notNow")}
+              </button>
+            {/if}
+          {/snippet}
+        </OnboardingNav>
       </div>
     {/if}
-  </section>
+  </MobileOnboardingProgress>
 </main>

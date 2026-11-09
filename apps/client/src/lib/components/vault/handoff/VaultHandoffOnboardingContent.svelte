@@ -9,15 +9,21 @@
   import { cn } from "$lib/utils";
   import { completeVaultHandoffOnboarding } from "$lib/vault/handoff-onboarding";
   import { getActiveVaultInfo } from "$lib/vault/state";
+  import OnboardingNav, { type OnboardingNavPrimary } from "../OnboardingNav.svelte";
   import VaultHandoffPanel from "./VaultHandoffPanel.svelte";
-  import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
 
+  /**
+   * The linking screen of first use, with the shared onboarding navigation at its bottom: its primary action continues
+   * without linking until a device links, and Back, when the shell passes `onBack`, returns to the screen before it
+   * until a device links.
+   */
   let {
     platform,
     vaultId,
     initialInvitation = null,
     initialStatus = null,
     bootstrapReplicaOnLink = false,
+    onBack,
     onComplete,
   }: {
     platform: "desktop" | "android";
@@ -25,17 +31,28 @@
     initialInvitation?: PairingInvitation | null;
     initialStatus?: PairingStatus | null;
     bootstrapReplicaOnLink?: boolean;
+    onBack?: () => void;
     onComplete: () => void | Promise<void>;
   } = $props();
 
   const { t } = getLocalization();
   let status = $state<PairingStatus | null>(untrack(() => initialStatus));
   let completing = $state(false);
+  const linked = $derived(status?.linked === true);
   const readyToContinue = $derived(
     status?.linked === true
       && (platform === "desktop"
         || status.replicaReady
         || !bootstrapReplicaOnLink),
+  );
+  /**
+   * Continues without linking until a device links; once linked, continues as soon as this device holds its copy of the
+   * vault, waiting while the copy arrives.
+   */
+  const primary = $derived<OnboardingNavPrimary>(
+    !linked
+      ? { label: t("vaultHandoff.continueWithoutLinking"), onClick: () => void leave(false) }
+      : { label: t("vaultHandoff.continue"), onClick: () => void leave(true), busy: !readyToContinue },
   );
 
   function safeStorage(): Storage | undefined {
@@ -102,50 +119,30 @@
     </svg>
   </section>
 {:else}
-<!-- The content hangs from the top, so the source choices in the title stay put while the panel below changes height. Android starts
-     it higher so the tallest panel fits a phone screen without scrolling. -->
-<section
-  class={cn(
-    "mx-auto grid min-h-full w-full max-w-5xl content-start px-4 pb-8 min-[560px]:px-8",
-    platform === "android" ? "pt-[max(2rem,7vh)]" : "pt-[max(2rem,12vh)]",
-  )}
-  data-vault-handoff-onboarding={platform}
->
-  <div class={platform === "desktop"
-    ? "mx-auto flex w-full max-w-4xl flex-col gap-3"
-    : "mx-auto flex w-full max-w-md flex-col gap-3"}>
-    <VaultHandoffPanel
-      {platform}
-      {initialInvitation}
-      {initialStatus}
-      {bootstrapReplicaOnLink}
-      presentation="onboarding"
-      onStatusChange={(next) => { status = next; }}
-      onActivated={() => void leave(true)}
-    />
-
-    <div class="flex flex-col gap-2">
-      {#if readyToContinue}
-        <button
-          use:onboardingPrimaryAction
-          type="button"
-          class="min-h-11 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          onclick={() => void leave(true)}
-        >
-          {t("vaultHandoff.continue")}
-        </button>
-      {/if}
-      {#if status?.linked !== true}
-        <button
-          use:onboardingPrimaryAction
-          type="button"
-          class="min-h-9 self-center rounded-md px-4 py-1.5 text-sm pointer-coarse:min-h-11 font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
-          onclick={() => void leave(false)}
-        >
-          {t("vaultHandoff.notNow")}
-        </button>
-      {/if}
+<div class="@container flex h-full flex-col" data-vault-handoff-onboarding={platform}>
+  <!-- The content hangs from the top, so the source choices in the title stay put while the panel below changes height. Android starts
+       it higher so the tallest panel fits a phone screen without scrolling. -->
+  <section
+    class={cn(
+      "min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pb-6 min-[560px]:px-8",
+      platform === "android" ? "pt-[max(2rem,7vh)]" : "pt-[max(2rem,12vh)]",
+    )}
+  >
+    <div class={platform === "desktop"
+      ? "mx-auto flex w-full max-w-4xl flex-col gap-3"
+      : "mx-auto flex w-full max-w-md flex-col gap-3"}>
+      <VaultHandoffPanel
+        {platform}
+        {initialInvitation}
+        {initialStatus}
+        {bootstrapReplicaOnLink}
+        presentation="onboarding"
+        onStatusChange={(next) => { status = next; }}
+        onActivated={() => void leave(true)}
+      />
     </div>
-  </div>
-</section>
+  </section>
+
+  <OnboardingNav {primary} onBack={linked ? undefined : onBack} />
+</div>
 {/if}

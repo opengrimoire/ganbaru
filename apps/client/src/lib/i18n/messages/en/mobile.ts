@@ -24,7 +24,7 @@ export const mobile = {
     openAgain: "Open settings again",
     continue: "Continue",
     notNow: "Not now",
-    done: "Done",
+    turnedOn: "This permission is on",
     stillOff: "Still off",
     stillOffAction: (action: string) => `${action} (still off)`,
     openError: "Android settings could not be opened.",

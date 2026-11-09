@@ -306,7 +306,7 @@ export const vaultHandoff = {
     pairingCode: "the pairing code",
     serverCode: "the code it shows",
   },
-  notNow: "Not now",
+  continueWithoutLinking: "Continue without linking",
   continue: "Continue",
   connectTabs: {
     phone: "your phone",

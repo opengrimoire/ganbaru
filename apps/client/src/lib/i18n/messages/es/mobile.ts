@@ -27,7 +27,7 @@ export const mobile = {
     openAgain: "Abrir ajustes de nuevo",
     continue: "Continuar",
     notNow: "Ahora no",
-    done: "Listo",
+    turnedOn: "Este permiso está activado",
     stillOff: "Sigue desactivado",
     stillOffAction: (action: string) => `${action} (sigue desactivado)`,
     openError: "No se pudieron abrir los ajustes de Android.",

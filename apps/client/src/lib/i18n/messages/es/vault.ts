@@ -314,7 +314,7 @@ export const vaultHandoff = {
     pairingCode: "el código de vinculación",
     serverCode: "el código que muestra",
   },
-  notNow: "Ahora no",
+  continueWithoutLinking: "Continuar sin vincular",
   continue: "Continuar",
   connectTabs: {
     phone: "tu teléfono",

@@ -74,24 +74,19 @@ async function mountMobileVaultSetup(initialError: string | null) {
   });
 }
 
-async function mountMobileFocusOnboarding() {
-  const { default: MobileFocusOnboarding } = await import(
-    "$lib/components/mobile/MobileFocusOnboarding.svelte"
-  );
-  return mount(MobileFocusOnboarding, {
-    target: document.getElementById("app")!,
-    props: {
-      onComplete: () => window.location.reload(),
-    },
-  });
-}
-
-async function mountMobileVaultHandoffOnboarding(vaultId: string) {
+/**
+ * Mounts the onboarding that follows vault setup, the access review and then the linking screen, whichever of them
+ * is still pending, and opens the app in place once it finishes.
+ */
+async function mountMobileSetupOnboarding(
+  vaultId: string,
+  pending: { accessPending: boolean; linkingPending: boolean },
+) {
   const target = document.getElementById("app")!;
   const mobileAppModulePromise = import("./MobileApp.svelte");
   void mobileAppModulePromise.catch(() => undefined);
-  const { default: MobileVaultHandoffOnboarding } = await import(
-    "$lib/components/mobile/MobileVaultHandoffOnboarding.svelte"
+  const { default: MobileSetupOnboarding } = await import(
+    "$lib/components/mobile/MobileSetupOnboarding.svelte"
   );
   let onboardingView: MountedRoot;
   let transitionPromise: Promise<void> | null = null;
@@ -108,11 +103,11 @@ async function mountMobileVaultHandoffOnboarding(vaultId: string) {
       });
     return transitionPromise;
   };
-  onboardingView = mount(MobileVaultHandoffOnboarding, {
+  onboardingView = mount(MobileSetupOnboarding, {
     target,
     props: {
       vaultId,
-      bootstrapReplicaOnLink: true,
+      ...pending,
       onComplete: openApp,
     },
   });
@@ -139,14 +134,13 @@ const appPromise = (async () => {
     const { mobileFocusOnboardingCompleted } = await import(
       "$lib/scheduling/mobile-background-execution"
     );
-    if (!mobileFocusOnboardingCompleted(safeStorage())) {
-      return mountMobileFocusOnboarding();
-    }
     const { vaultHandoffOnboardingCompleted } = await import(
       "$lib/vault/handoff-onboarding"
     );
-    if (!vaultHandoffOnboardingCompleted(safeStorage(), activeVault.vaultId)) {
-      return mountMobileVaultHandoffOnboarding(activeVault.vaultId);
+    const accessPending = !mobileFocusOnboardingCompleted(safeStorage());
+    const linkingPending = !vaultHandoffOnboardingCompleted(safeStorage(), activeVault.vaultId);
+    if (accessPending || linkingPending) {
+      return mountMobileSetupOnboarding(activeVault.vaultId, { accessPending, linkingPending });
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

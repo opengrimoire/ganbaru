@@ -157,8 +157,6 @@ export const vaultSetup = {
   sourceOpenError: "Could not open the source code. Visit github.com/opengrimoire/ganbaru in your browser.",
   continue: "Continue",
   title: "Choose where to store your data",
-  developmentBuildWarning: (folderName: string) =>
-    `Development build: use the default ${folderName} folder, or choose a copy of your production folder. Do not point dev at your real production data.`,
   defaultLocation: "Default folder",
   useDefaultFolder: "Continue with the default folder",
   changeFolder: "Choose another folder",

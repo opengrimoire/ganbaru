@@ -111,9 +111,7 @@
     headline={t("mobile.vaultSetup.title")}
     location={defaultLocation?.path ?? fallbackDefaultPath}
     locationLabel={t("mobile.vaultSetup.dataLocation")}
-    developmentWarning={defaultLocation?.developmentBuild
-      ? t("vaultSetup.developmentBuildWarning", defaultLocation.folderName)
-      : null}
+    showIcons={!(defaultLocation?.developmentBuild ?? false)}
     {error}
     choices={dataChoices}
   />

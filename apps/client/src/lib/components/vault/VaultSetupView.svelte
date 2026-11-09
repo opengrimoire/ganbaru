@@ -7,7 +7,6 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import WindowResizeHandles from "$lib/components/WindowResizeHandles.svelte";
-  import TooltipHost from "$lib/components/ui/TooltipHost.svelte";
   import { isCloseWindowShortcut } from "$lib/windows/title-bar-shortcuts";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -159,9 +158,6 @@
     headline={t("vaultSetup.title")}
     location={defaultLocation?.path ?? fallbackDefaultPath}
     locationLabel={t("vaultSetup.defaultLocation")}
-    developmentWarning={defaultLocation?.developmentBuild
-      ? t("vaultSetup.developmentBuildWarning", defaultLocation.folderName)
-      : null}
     {error}
     choices={dataChoices}
   />
@@ -230,6 +226,5 @@
     </div>
   </div>
 
-  <TooltipHost />
   <WindowResizeHandles disabled={isMaximized} />
 </main>

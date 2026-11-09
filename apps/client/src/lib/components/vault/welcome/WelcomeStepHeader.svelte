@@ -18,7 +18,7 @@
   const text = $derived(phoneShell ? body : body.replaceAll("\n", " "));
 </script>
 
-<div class="space-y-2 @min-[860px]:space-y-3">
+<div class="space-y-2 @min-[860px]:space-y-3" data-welcome-enter="header">
   <h1
     id={headingId}
     class="text-2xl font-semibold leading-tight tracking-tight text-balance text-foreground @min-[560px]:text-3xl @min-[860px]:text-4xl"

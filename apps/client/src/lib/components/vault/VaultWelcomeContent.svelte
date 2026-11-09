@@ -2,7 +2,8 @@
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
   import { untrack } from "svelte";
-  import { fly } from "svelte/transition";
+  import { cubicIn } from "svelte/easing";
+  import type { TransitionConfig } from "svelte/transition";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
   import { prefersReducedMotion } from "$lib/utils/smooth-swap";
@@ -21,7 +22,9 @@
    * The welcome screens before vault setup: the language, one per feature, then the app itself. Every screen shares
    * one navigation bar that stays in place at the bottom while the screens slide in above it, so moving between them
    * never shifts the buttons. Continue on the last screen hands over to vault setup. `step` is bindable so a shell
-   * can show the progress in its own chrome; with `showStepDots`, the navigation shows it instead.
+   * can show the progress in its own chrome; with `showStepDots`, the navigation shows it instead. Moving between
+   * screens, the leaving one drifts away and fades quickly, then the arriving one's title and its content glide in from
+   * the side it is on, one just after the other, and settle softly.
    */
   let {
     step = $bindable(0),
@@ -29,9 +32,9 @@
     onContinue,
   }: { step?: number; showStepDots?: boolean; onContinue: () => void } = $props();
 
-  /** How far a screen slides in from, matching the Android access screens. */
-  const ENTER_OFFSET_PX = 24;
-  const enterMs = prefersReducedMotion() ? 0 : 260;
+  /** How long the leaving screen takes to drift away and fade, and how far it drifts. */
+  const EXIT_MS = prefersReducedMotion() ? 0 : 160;
+  const EXIT_OFFSET_PX = 12;
   const { t } = getLocalization();
   const current = $derived(welcomeStepAt(step));
   const index = $derived(WELCOME_STEPS.indexOf(current));
@@ -39,12 +42,30 @@
   /** The screen arrives from the side it is on: the right when moving forward, the left when going back. */
   let shownIndex = untrack(() => index);
   let enterFrom = $state(1);
+  /** Whether a screen has been moved to, so the first screen shows at once and later ones glide in. */
+  let moved = $state(false);
   $effect.pre(() => {
     const next = index;
     if (next === shownIndex) return;
     enterFrom = next > shownIndex ? 1 : -1;
     shownIndex = next;
+    moved = true;
   });
+
+  /**
+   * The leaving screen drifts away from the side the next one comes from and fades, without taking clicks meant for
+   * the arriving screen.
+   * @param _node The leaving screen.
+   * @param params How far it drifts, signed by direction.
+   * @returns The outro's timing and styles.
+   */
+  function exit(_node: HTMLElement, params: { x: number }): TransitionConfig {
+    return {
+      duration: EXIT_MS,
+      easing: cubicIn,
+      css: (progress, remaining) => `pointer-events: none; opacity: ${progress}; transform: translateX(${remaining * params.x}px);`,
+    };
+  }
 
   function next(): void {
     if (index < WELCOME_STEPS.length - 1) step = index + 1;
@@ -59,7 +80,11 @@
 <div class="@container flex h-full flex-col">
   <div class="relative min-h-0 flex-1 overflow-hidden">
     {#key current}
-      <div class="absolute inset-0" in:fly={{ x: ENTER_OFFSET_PX * enterFrom, duration: enterMs }}>
+      <div
+        class={cn("absolute inset-0", moved && "welcome-entering")}
+        style:--welcome-enter-from={enterFrom}
+        out:exit={{ x: -EXIT_OFFSET_PX * enterFrom }}
+      >
         {#if current === "language"}
           <WelcomeLanguageStep />
         {:else if current === "calendar"}
@@ -113,3 +138,27 @@
     </div>
   </div>
 </div>
+
+<style>
+  /* The arriving screen's title, then its content, glide in from its side and settle softly once the leaving one has mostly faded. */
+  .welcome-entering :global([data-welcome-enter]) {
+    animation: welcome-enter 560ms cubic-bezier(0.16, 1, 0.3, 1) 110ms both;
+  }
+
+  .welcome-entering :global([data-welcome-enter="content"]) {
+    animation-delay: 200ms;
+  }
+
+  @keyframes welcome-enter {
+    from {
+      opacity: 0;
+      transform: translateX(calc(var(--welcome-enter-from) * 28px));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .welcome-entering :global([data-welcome-enter]) {
+      animation: none;
+    }
+  }
+</style>

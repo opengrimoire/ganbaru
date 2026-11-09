@@ -18,7 +18,7 @@
   <div class="mx-auto w-full max-w-180 shrink-0 px-4 pt-12 @min-[560px]:px-8 @min-[760px]:px-10 @min-[560px]:pt-18 @min-[860px]:pt-26">
     <WelcomeStepHeader {headline} {body}>{@render details?.()}</WelcomeStepHeader>
   </div>
-  <div class="mx-auto flex min-h-0 w-full max-w-180 flex-1 flex-col px-4 py-6 @min-[560px]:px-8 @min-[760px]:px-10">
+  <div class="mx-auto flex min-h-0 w-full max-w-180 flex-1 flex-col px-4 py-6 @min-[560px]:px-8 @min-[760px]:px-10" data-welcome-enter="content">
     {@render children()}
   </div>
 </section>

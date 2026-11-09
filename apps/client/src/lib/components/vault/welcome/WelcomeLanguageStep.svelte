@@ -77,7 +77,7 @@
         body={t("vaultSetup.language.body")}
       />
 
-      <div class="grid gap-1.5">
+      <div class="grid gap-1.5" data-welcome-enter="content">
         <div role="radiogroup" aria-labelledby="{headingId}-heading" class="grid gap-1.5">
           {#each choices as choice (choice.value)}
             {@const selected = choice.value === preference}

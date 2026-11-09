@@ -1,23 +1,36 @@
 /**
- * Timing for the welcome scene on Quick notes. With a pointer, a note's tag picker creates the Trip tag, which tags the
- * note and gives it the tag's color, another note's picker tags it Trip too, and the Trip chip then filters the notes
- * down to the two. A phone's cards leave their actions to the editor, so its scene starts with both notes tagged and
- * shows the filter alone.
+ * Timing for the welcome scene on Quick notes, where some notes already carry the Trip tag. With a pointer, a note's tag
+ * picker tags it Trip, which gives it the tag's color, another note's picker tags it Trip too, and the Trip chip then
+ * filters the notes down to the ones tagged Trip. A phone's cards leave their actions to the editor, so its scene starts
+ * with both notes tagged and shows the filter alone.
  */
 
 import type { EventColor } from "$lib/calendar/types";
 import { cursorClick, cursorRest, type WelcomeCursorScript } from "./welcome-cursor";
-import { easeInOutCubic, filmCaretOn, filmSpan, filmTap, filmTyped } from "./welcome-film";
+import { easeInOutCubic, filmSpan, filmTap } from "./welcome-film";
 import { PROJECTS_CURSOR_REST_ANCHOR } from "./welcome-projects-scene";
 
-/** The scene's tags: one the notes start with, and the one the scene creates. */
+/** The scene's tags, both of which exist from the start. */
 export type QuickNotesSceneTag = "ideas" | "trip";
+
+/** The tags in the order the tag bar and the tag pickers list them. */
+export const QUICK_NOTES_TAG_ORDER: readonly QuickNotesSceneTag[] = ["ideas", "trip"];
 
 /** The colors a scene note can have besides the default one new notes start with. */
 export type QuickNotesSceneTone = QuickNotesSceneTag | "accent";
 
 /** The scene's notes, by the keys of their text. */
-export type QuickNotesSceneNote = "gift" | "passport" | "hotel" | "pitch" | "plants" | "groceries";
+export type QuickNotesSceneNote =
+  | "gift"
+  | "passport"
+  | "pitch"
+  | "packing"
+  | "dentist"
+  | "hotel"
+  | "plants"
+  | "sintra"
+  | "groceries"
+  | "recipe";
 
 /** A note as the scene starts: its tag, and its own color while it has none, the default color when null. */
 export interface QuickNotesSceneCard {
@@ -26,18 +39,27 @@ export interface QuickNotesSceneCard {
   tone: QuickNotesSceneTone | null;
 }
 
-/** The notes in their order, which places the two the scene tags apart, so the filter brings them together. */
+/** The notes in their order, which places the Trip notes apart, so the filter brings them together. */
 export const QUICK_NOTES_CAST: readonly QuickNotesSceneCard[] = [
   { key: "gift", tag: null, tone: "accent" },
   { key: "passport", tag: null, tone: null },
   { key: "pitch", tag: "ideas", tone: "ideas" },
+  { key: "packing", tag: "trip", tone: "trip" },
+  { key: "dentist", tag: null, tone: null },
   { key: "hotel", tag: null, tone: null },
   { key: "plants", tag: "ideas", tone: "ideas" },
+  { key: "sintra", tag: "trip", tone: "trip" },
   { key: "groceries", tag: null, tone: null },
+  { key: "recipe", tag: null, tone: "accent" },
 ];
 
 /** The notes the scene tags Trip, in the order it tags them. */
-export const QUICK_NOTES_TRIP_NOTES: readonly QuickNotesSceneNote[] = ["passport", "hotel"];
+export const QUICK_NOTES_TAGGED_NOTES: readonly QuickNotesSceneNote[] = ["passport", "hotel"];
+
+/** The notes the Trip filter keeps, in their order: those tagged Trip from the start and those the scene tags. */
+export const QUICK_NOTES_FILTERED_NOTES: readonly QuickNotesSceneNote[] = QUICK_NOTES_CAST.filter(
+  (card) => card.tag === "trip" || QUICK_NOTES_TAGGED_NOTES.includes(card.key),
+).map((card) => card.key);
 
 /** The palette slots the scene prefers for each color, in order, so one taken by the default color has a fallback. */
 const TONE_PREFERENCES: Readonly<Record<QuickNotesSceneTone, readonly EventColor[]>> = {
@@ -65,18 +87,15 @@ export function quickNotesSceneColors(defaultColor: EventColor): Readonly<Record
 
 /** Moments of the desktop scene, in milliseconds from its start. A tap's beat is the moment it lands. */
 export const QUICK_NOTES_BEATS = {
-  /** The passport note's tag picker opens, New tag is clicked, Trip is typed, and Enter creates it and tags the note. */
+  /** The passport note's tag picker opens, and Trip is picked. */
   passportPickerTap: 1100,
-  newTagTap: 1900,
-  tagTypeStart: 2100,
-  tagTypeEnd: 2500,
-  tagSubmit: 2900,
+  passportPick: 2000,
   /** The hotel note's tag picker opens, and Trip is picked. */
-  hotelPickerTap: 3900,
-  hotelPick: 4800,
-  /** The Trip chip filters the notes down to the two it tags. */
-  filterTap: 5800,
-  end: 7700,
+  hotelPickerTap: 3000,
+  hotelPick: 3900,
+  /** The Trip chip filters the notes down to the ones tagged Trip. */
+  filterTap: 4900,
+  end: 6800,
 } as const;
 
 const B = QUICK_NOTES_BEATS;
@@ -91,9 +110,6 @@ export const QUICK_NOTES_END_HOLD_MS = 900;
 /** How long a tagged note takes to change to its tag's color and make room for its badge. */
 export const QUICK_NOTES_RECOLOR_MS = 260;
 
-/** How long a new tag's chip takes to fade into the tag bar. */
-export const QUICK_NOTES_CHIP_FADE_MS = 200;
-
 /** How long the notes the filter hides take to fade out, and how long the rest then take to glide into place. */
 export const QUICK_NOTES_FILTER_FADE_MS = 200;
 export const QUICK_NOTES_GLIDE_MS = 420;
@@ -103,49 +119,25 @@ export function quickNotesSceneEnd(mobile: boolean): number {
   return mobile ? QUICK_NOTES_MOBILE_END : B.end;
 }
 
-/** The frame shown as a still with reduced motion: the notes filtered down to the two tagged Trip. */
+/** The frame shown as a still with reduced motion: the notes filtered down to the ones tagged Trip. */
 export function quickNotesSceneStill(mobile: boolean): number {
   return quickNotesSceneEnd(mobile);
 }
 
-/** The note whose tag picker is open, or null while none is. */
-export function quickNotesPickerOpen(elapsed: number): QuickNotesSceneNote | null {
-  if (elapsed >= B.passportPickerTap && elapsed < B.tagSubmit) return "passport";
+/** The note whose tag picker is open, or null while none is, as on a phone, whose cards leave their actions to the editor. */
+export function quickNotesPickerOpen(elapsed: number, mobile: boolean): QuickNotesSceneNote | null {
+  if (mobile) return null;
+  if (elapsed >= B.passportPickerTap && elapsed < B.passportPick) return "passport";
   if (elapsed >= B.hotelPickerTap && elapsed < B.hotelPick) return "hotel";
   return null;
 }
 
-/** Whether the open tag picker shows its new tag form. */
-export function quickNotesCreatingTag(elapsed: number): boolean {
-  return elapsed >= B.newTagTap && elapsed < B.tagSubmit;
-}
-
-/** As much of `name` as the new tag's name field holds, typed a character at a time. */
-export function quickNotesTagDraft(elapsed: number, name: string): string {
-  return filmTyped(elapsed, name, B.tagTypeStart, B.tagTypeEnd);
-}
-
-/** Whether the new tag's caret shows: steady while typing, then blinking until Enter. */
-export function quickNotesTagCaretOn(elapsed: number): boolean {
-  return quickNotesCreatingTag(elapsed) && filmCaretOn(elapsed, B.tagTypeEnd);
-}
-
-/** Whether the Trip tag exists: from the start on a phone, and once Enter creates it with a pointer. */
-export function quickNotesTripCreated(elapsed: number, mobile: boolean): boolean {
-  return mobile || elapsed >= B.tagSubmit;
-}
-
-/** How far the Trip chip has faded into the tag bar, from 0 to 1. */
-export function quickNotesTripChipShown(elapsed: number, mobile: boolean): number {
-  return mobile ? 1 : filmSpan(elapsed, B.tagSubmit, B.tagSubmit + QUICK_NOTES_CHIP_FADE_MS);
-}
-
 /** When each note the scene tags gets the Trip tag with a pointer. */
-const TRIP_TAGGED_AT: Readonly<Partial<Record<QuickNotesSceneNote, number>>> = { passport: B.tagSubmit, hotel: B.hotelPick };
+const TRIP_TAGGED_AT: Readonly<Partial<Record<QuickNotesSceneNote, number>>> = { passport: B.passportPick, hotel: B.hotelPick };
 
 /**
- * How far a note has taken the Trip tag, from 0 to 1: it fades to the tag's color and makes room for its badge. A
- * phone's tagged notes have it from the start, and the other notes never take it.
+ * How far a note the scene tags has taken the Trip tag, from 0 to 1: it fades to the tag's color and makes room for its
+ * badge. A phone's tagged notes have it from the start, and the other notes never take it.
  */
 export function quickNotesTripProgress(key: QuickNotesSceneNote, elapsed: number, mobile: boolean): number {
   const taggedAt = TRIP_TAGGED_AT[key];
@@ -191,14 +183,13 @@ export function quickNotesTouches(elapsed: number): QuickNotesSceneTouches {
 
 /**
  * The desktop pointer's path through the scene: it moves onto the passport note, whose actions show under it, opens
- * its tag picker and clicks New tag, stays while Trip is typed, opens the hotel note's picker and picks Trip, then
- * clicks the Trip chip.
+ * its tag picker and picks Trip, does the same for the hotel note, then clicks the Trip chip.
  */
 export const QUICK_NOTES_CURSOR: WelcomeCursorScript = [
   cursorRest("quick-notes-panel", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
   cursorClick("quick-notes-tag-passport", B.passportPickerTap),
-  cursorClick("quick-notes-new-tag", B.newTagTap, { after: B.passportPickerTap }),
-  cursorClick("quick-notes-tag-hotel", B.hotelPickerTap, { after: B.tagSubmit }),
+  cursorClick("quick-notes-option-trip", B.passportPick, { after: B.passportPickerTap }),
+  cursorClick("quick-notes-tag-hotel", B.hotelPickerTap, { after: B.passportPick }),
   cursorClick("quick-notes-option-trip", B.hotelPick, { after: B.hotelPickerTap }),
   cursorClick("quick-notes-chip-trip", B.filterTap, { after: B.hotelPick }),
 ];

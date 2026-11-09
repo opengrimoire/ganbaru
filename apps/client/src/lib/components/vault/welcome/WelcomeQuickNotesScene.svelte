@@ -32,9 +32,6 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import X from "@lucide/svelte/icons/x";
   import type { EventColor } from "$lib/calendar/types";
-  import { EVENT_COLOR_OPTIONS, getEventColor } from "$lib/calendar/utils";
-  import { contrastRatio } from "$lib/color/math";
-  import WelcomeCaret from "$lib/components/vault/welcome/WelcomeCaret.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
   import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
@@ -49,34 +46,29 @@
   } from "$lib/quick-notes/masonry";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
-  import { resolveCalendarTokens } from "$lib/themes";
   import { cn } from "$lib/utils";
   import { welcomeCursorFrame, type WelcomeCursorPoint } from "$lib/vault/welcome-cursor";
   import { WELCOME_NO_HOVER, welcomeHoverAt, welcomeHoverSame } from "$lib/vault/welcome-hover";
   import {
     QUICK_NOTES_CAST,
     QUICK_NOTES_CURSOR,
-    QUICK_NOTES_TRIP_NOTES,
-    quickNotesCreatingTag,
+    QUICK_NOTES_FILTERED_NOTES,
+    QUICK_NOTES_TAG_ORDER,
     quickNotesFilter,
     quickNotesPickerOpen,
     quickNotesSceneColors,
-    quickNotesTagCaretOn,
-    quickNotesTagDraft,
     quickNotesTouches,
-    quickNotesTripChipShown,
-    quickNotesTripCreated,
     quickNotesTripProgress,
     type QuickNotesSceneCard,
     type QuickNotesSceneNote,
+    type QuickNotesSceneTag,
     type QuickNotesSceneTone,
   } from "$lib/vault/welcome-quick-notes-scene";
 
   /**
-   * One frame of the welcome scene on Quick notes, drawn with the panel's own surfaces: a note's tag picker creates the
-   * Trip tag, which tags the note and gives it the tag's color, another note is tagged Trip from its picker, and the Trip
-   * chip filters the notes down to the two, which glide together. Every style is a function of `elapsed`, with no CSS
-   * transitions.
+   * One frame of the welcome scene on Quick notes, drawn with the panel's own surfaces: two notes are tagged with the existing
+   * Trip tag from their pickers, which gives them the tag's color, and the Trip chip filters the notes down to the ones
+   * tagged Trip, which glide together. Every style is a function of `elapsed`, with no CSS transitions.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -117,12 +109,7 @@
 
   const sceneColors = $derived(quickNotesSceneColors(preferences.quickNotesDefaultColor));
   const tripName = $derived(t("vaultSetup.quickNotes.tags.trip"));
-  const pickerOpen = $derived(mobileShell ? null : quickNotesPickerOpen(elapsed));
-  const creatingTag = $derived(!mobileShell && quickNotesCreatingTag(elapsed));
-  const tagDraft = $derived(quickNotesTagDraft(elapsed, tripName));
-  const caretOn = $derived(quickNotesTagCaretOn(elapsed));
-  const tripCreated = $derived(quickNotesTripCreated(elapsed, mobileShell));
-  const tripChipShown = $derived(quickNotesTripChipShown(elapsed, mobileShell));
+  const pickerOpen = $derived(quickNotesPickerOpen(elapsed, mobileShell));
   const filter = $derived(quickNotesFilter(elapsed, mobileShell));
   const touches = $derived(quickNotesTouches(elapsed));
 
@@ -136,7 +123,6 @@
   let measurer = $state<HTMLDivElement>();
   let badgeSample = $state<HTMLSpanElement>();
   let picker = $state<HTMLDivElement>();
-  let tallPicker = $state<HTMLDivElement>();
 
   /** A box in the logical pixels of the element it is measured against. */
   interface Box {
@@ -148,10 +134,10 @@
 
   /** Bumped whenever the canvas resizes or fonts finish loading, so the layout is measured again. */
   let layoutTick = $state(0);
-  /** Each note's height with no Trip badge, at the masonry's card width, and the height a badge row adds. */
+  /** Each note's height as the scene starts, at the masonry's card width, and the height a badge row adds. */
   let cardMeasure = $state<{ heights: readonly number[]; badgeRow: number } | null>(null);
-  /** The open picker's button on the canvas, and its size now and with its new tag form open. */
-  let pickerLayout = $state<{ anchor: Box; width: number; height: number; tallHeight: number } | null>(null);
+  /** The open picker's button on the canvas, and the picker's size. */
+  let pickerLayout = $state<{ anchor: Box; width: number; height: number } | null>(null);
 
   $effect(() => {
     const bump = () => {
@@ -188,23 +174,23 @@
     return quickNotesTripProgress(key, elapsed, mobileShell);
   }
 
-  /** The masonry of every note, and of the Trip notes alone once the filter shows only them. */
+  /** The masonry of every note, and of the notes the filter keeps once it shows only them. */
   const layouts = $derived.by(() => {
     if (!cardMeasure || masonryWidth <= 0) return null;
     const { heights, badgeRow } = cardMeasure;
     const sized = QUICK_NOTES_CAST.map((card, index) => (heights[index] ?? 0) + badgeRow * tripProgress(card.key));
     const lay = (list: readonly number[]) =>
       quickNoteMasonryLayout(masonryWidth, list, density.minimumCardWidth, QUICK_NOTE_MASONRY_GAP, density.maximumColumns);
-    const tripIndexes = QUICK_NOTES_TRIP_NOTES.map((key) => QUICK_NOTES_CAST.findIndex((card) => card.key === key));
-    return { all: lay(sized), filtered: lay(tripIndexes.map((index) => sized[index] ?? 0)) };
+    const keptIndexes = QUICK_NOTES_FILTERED_NOTES.map((key) => QUICK_NOTES_CAST.findIndex((card) => card.key === key));
+    return { all: lay(sized), filtered: lay(keptIndexes.map((index) => sized[index] ?? 0)) };
   });
 
   /** Where each note is drawn: in its place among all the notes, carried to its filtered place as the filter glides. */
   function cardPlace(key: QuickNotesSceneNote, index: number): MasonryPosition | null {
     const from = layouts?.all.positions[index];
     if (!from) return null;
-    const tripIndex = QUICK_NOTES_TRIP_NOTES.indexOf(key);
-    const to = tripIndex < 0 ? undefined : layouts?.filtered.positions[tripIndex];
+    const keptIndex = QUICK_NOTES_FILTERED_NOTES.indexOf(key);
+    const to = keptIndex < 0 ? undefined : layouts?.filtered.positions[keptIndex];
     if (!to || filter.glide <= 0) return from;
     const mix = (a: number, b: number) => a + (b - a) * filter.glide;
     return { left: mix(from.left, to.left), top: mix(from.top, to.top), width: mix(from.width, to.width) };
@@ -220,8 +206,6 @@
     void canvasW;
     void canvasH;
     void localization.locale;
-    void creatingTag;
-    void tripCreated;
     void layouts;
     const anchor = pickerOpen ? canvas?.querySelector<HTMLElement>(`[data-cursor="quick-notes-tag-${pickerOpen}"]`) : null;
     if (!canvas || !picker || !anchor) {
@@ -232,22 +216,20 @@
       anchor: relBox(anchor, canvas),
       width: picker.offsetWidth,
       height: picker.offsetHeight,
-      tallHeight: pickerOpen === "passport" && tallPicker ? tallPicker.offsetHeight : picker.offsetHeight,
     };
   });
 
   /**
    * The open picker's place: below its button when it fits there, above it otherwise, and on the roomier side with its
-   * options clipped when neither fits. The side follows the picker's height with its new tag form open, so a picker
-   * that grows into the form stays against its button rather than jumping across it.
+   * options clipped when neither fits.
    */
   const pickerPlace = $derived.by(() => {
     if (!pickerLayout || !pickerOpen) return null;
-    const { anchor, width: pickerW, height: pickerH, tallHeight } = pickerLayout;
+    const { anchor, width: pickerW, height: pickerH } = pickerLayout;
     const belowTop = anchor.top + anchor.height + PICKER_GAP_PX;
     const belowRoom = canvasH - PICKER_INSET_PX - belowTop;
     const aboveRoom = anchor.top - PICKER_GAP_PX - PICKER_INSET_PX;
-    const below = tallHeight <= belowRoom || (tallHeight > aboveRoom && belowRoom >= aboveRoom);
+    const below = pickerH <= belowRoom || (pickerH > aboveRoom && belowRoom >= aboveRoom);
     const maxHeight = Math.max(0, below ? belowRoom : aboveRoom);
     const drawnH = Math.min(pickerH, maxHeight);
     const left = Math.min(Math.max(PICKER_INSET_PX, anchor.left), Math.max(PICKER_INSET_PX, canvasW - pickerW - PICKER_INSET_PX));
@@ -316,11 +298,9 @@
     return { bg: blend(from.bg, to.bg, tripSelected), text: tripSelected >= 0.5 ? to.text : from.text };
   });
 
-  /** The new tag's swatches mark its color with a border that contrasts with the Quick notes surface, as the swatches do. */
-  const swatchBorder = $derived.by(() => {
-    const surface = resolveCalendarTokens(theme.current)["--cal-bg"] ?? "#ffffff";
-    return contrastRatio(surface, "#000000") >= contrastRatio(surface, "#ffffff") ? "#000000" : "#ffffff";
-  });
+  function tagName(tag: QuickNotesSceneTag): string {
+    return t(`vaultSetup.quickNotes.tags.${tag}`);
+  }
 
   function noteText(key: QuickNotesSceneNote, part: "title" | "body"): string {
     return t(`vaultSetup.quickNotes.notes.${key}.${part}`);
@@ -355,8 +335,8 @@
   {@const shown = live && !mobileShell && actionsShown(card.key)}
   <div class="relative overflow-hidden rounded-xl" style:background-color={colors.bg} style:color={colors.text} data-scene-hover={live ? `card:${card.key}` : undefined}>
     <span class={cn("block px-3.5 pt-3", mobileShell ? "pb-3" : "pb-2")}>
-      {#if card.tag === "ideas"}
-        <span class="flex max-w-full flex-wrap items-center gap-1 pb-1.5">{@render badge(t("vaultSetup.quickNotes.tags.ideas"))}</span>
+      {#if card.tag}
+        <span class="flex max-w-full flex-wrap items-center gap-1 pb-1.5">{@render badge(tagName(card.tag))}</span>
       {:else if trip > 0}
         <!-- The Trip badge opens its row as the note takes the tag, by the height the masonry makes room for. -->
         <span
@@ -389,57 +369,29 @@
 {/snippet}
 
 <!-- A tag picker's options and footer, as the picker draws them; `live` marks the drawn one rather than its measured copy. -->
-{#snippet pickerContent(live: boolean, creating: boolean)}
-  {@const tripColor = getQuickNoteColor(sceneColors.trip, theme.current)}
+{#snippet pickerContent()}
   <div class="surface-floating-body min-h-0 overflow-hidden">
-    <span class={cn("menu-item", live && hovered("option:none") && "bg-accent")} data-scene-hover={live ? "option:none" : undefined}>
+    <span class={cn("menu-item", hovered("option:none") && "bg-accent")} data-scene-hover="option:none">
       <span class="size-3 shrink-0 rounded-full border border-dashed border-muted-foreground"></span>
       <span class="min-w-0 flex-1 truncate">{t("quickNotes.tag.none")}</span>
       <Check class="size-3.5 shrink-0" strokeWidth={1.5} />
     </span>
-    <span class={cn("menu-item", live && hovered("option:ideas") && "bg-accent")} data-scene-hover={live ? "option:ideas" : undefined}>
-      <span class="size-3 shrink-0 rounded-full border border-border" style:background-color={getQuickNoteColor(sceneColors.ideas, theme.current).bg}></span>
-      <span class="min-w-0 flex-1 truncate">{t("vaultSetup.quickNotes.tags.ideas")}</span>
-    </span>
-    {#if live && tripCreated}
-      <span class={cn("menu-item", hovered("option:trip") && "bg-accent")} data-cursor="quick-notes-option-trip" data-scene-hover="option:trip">
-        <span class="size-3 shrink-0 rounded-full border border-border" style:background-color={tripColor.bg}></span>
-        <span class="min-w-0 flex-1 truncate">{tripName}</span>
+    {#each QUICK_NOTES_TAG_ORDER as tag (tag)}
+      <span
+        class={cn("menu-item", hovered(`option:${tag}`) && "bg-accent")}
+        data-cursor={tag === "trip" ? "quick-notes-option-trip" : undefined}
+        data-scene-hover={`option:${tag}`}
+      >
+        <span class="size-3 shrink-0 rounded-full border border-border" style:background-color={getQuickNoteColor(sceneColors[tag], theme.current).bg}></span>
+        <span class="min-w-0 flex-1 truncate">{tagName(tag)}</span>
       </span>
-    {/if}
+    {/each}
   </div>
   <div class="surface-floating-body flex shrink-0 flex-col border-t border-border">
-    {#if creating}
-      <span class="flex flex-col gap-1.5">
-        <span class="flex items-center gap-1">
-          <span class="field flex min-w-0 flex-1 items-center gap-1.5">
-            <span class="size-3 shrink-0 rounded-full border border-border" style:background-color={tripColor.bg}></span>
-            <span class="min-w-0 flex-1 truncate">
-              {#if live && tagDraft.length > 0}{tagDraft}{:else if !live}{tripName}{:else}<span class="text-muted-foreground">{t("quickNotes.tag.namePlaceholder")}</span>{/if}{#if live && caretOn}<WelcomeCaret />{/if}
-            </span>
-          </span>
-          <span class={cn("flex size-7 shrink-0 items-center justify-center rounded-(--floating-item-radius)", live && tagDraft.length === 0 && "opacity-50")}>
-            <Check class="size-4" strokeWidth={1.5} />
-          </span>
-        </span>
-        <span class="grid grid-cols-8 gap-1" style:--selection-border={swatchBorder}>
-          {#each EVENT_COLOR_OPTIONS as entry (entry)}
-            <span class="relative aspect-square w-full overflow-hidden rounded-[3px]" style:background-color={getEventColor(entry, theme.current).bg}>
-              {#if entry === sceneColors.trip}<span class="absolute inset-0 rounded-[inherit] border-2 border-(--selection-border)"></span>{/if}
-            </span>
-          {/each}
-        </span>
-      </span>
-    {:else}
-      <span
-        class={cn("menu-item", live && hovered("new-tag") && "bg-accent")}
-        data-cursor={live ? "quick-notes-new-tag" : undefined}
-        data-scene-hover={live ? "new-tag" : undefined}
-      >
-        <span class="flex size-3 shrink-0 items-center justify-center"><Plus class="size-3.5" strokeWidth={1.5} /></span>
-        <span class="min-w-0 flex-1 truncate">{t("quickNotes.tag.new")}</span>
-      </span>
-    {/if}
+    <span class={cn("menu-item", hovered("new-tag") && "bg-accent")} data-scene-hover="new-tag">
+      <span class="flex size-3 shrink-0 items-center justify-center"><Plus class="size-3.5" strokeWidth={1.5} /></span>
+      <span class="min-w-0 flex-1 truncate">{t("quickNotes.tag.new")}</span>
+    </span>
   </div>
 {/snippet}
 
@@ -492,21 +444,18 @@
             <span class={CHIP_CLASS} style={chipStyle(preferences.quickNotesDefaultColor, 1 - tripSelected, hovered("chip:all"))} data-scene-hover="chip:all">
               <span class="truncate">{t("quickNotes.collection.active")}</span>
             </span>
-            <span class={CHIP_CLASS} style={chipStyle(sceneColors.ideas, 0, hovered("chip:ideas"))} data-scene-hover="chip:ideas">
-              <span class="truncate">{t("vaultSetup.quickNotes.tags.ideas")}</span>
-            </span>
-            {#if tripCreated}
+            {#each QUICK_NOTES_TAG_ORDER as tag (tag)}
+              {@const selected = tag === "trip" ? tripSelected : 0}
               <span
                 class={CHIP_CLASS}
-                style={chipStyle(sceneColors.trip, tripSelected, tripSelected <= 0 && hovered("chip:trip"))}
-                style:opacity={tripChipShown < 1 ? tripChipShown : undefined}
-                data-cursor="quick-notes-chip-trip"
-                data-scene-hover="chip:trip"
+                style={chipStyle(sceneColors[tag], selected, selected <= 0 && hovered(`chip:${tag}`))}
+                data-cursor={tag === "trip" ? "quick-notes-chip-trip" : undefined}
+                data-scene-hover={`chip:${tag}`}
               >
-                <span class="truncate">{tripName}</span>
-                {#if mobileShell}<WelcomeTouch opacity={touches.filter} />{/if}
+                <span class="truncate">{tagName(tag)}</span>
+                {#if mobileShell && tag === "trip"}<WelcomeTouch opacity={touches.filter} />{/if}
               </span>
-            {/if}
+            {/each}
             <span
               class={cn(
                 mobileShell ? "flex min-h-12 shrink-0 items-center gap-1 rounded-xl px-4 text-sm" : "flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs",
@@ -545,7 +494,7 @@
         <div class="relative w-full" bind:clientWidth={masonryWidth} style:height={`${masonryHeight}px`}>
           {#each QUICK_NOTES_CAST as card, index (card.key)}
             {@const place = cardPlace(card.key, index)}
-            {@const kept = QUICK_NOTES_TRIP_NOTES.includes(card.key)}
+            {@const kept = QUICK_NOTES_FILTERED_NOTES.includes(card.key)}
             {#if place && (kept || filter.fade < 1)}
               <div
                 class="absolute top-0 left-0"
@@ -559,7 +508,7 @@
           {/each}
         </div>
 
-        <!-- The notes laid out at their card width with no Trip badge, and a badge row, measured for the masonry. -->
+        <!-- The notes laid out at their card width as the scene starts, and a badge row, measured for the masonry. -->
         <div class="pointer-events-none invisible absolute top-0 left-0 overflow-hidden" style:width={`${cardWidth}px`}>
           <div bind:this={measurer} class="flex flex-col">
             {#each QUICK_NOTES_CAST as card (card.key)}
@@ -582,11 +531,7 @@
         style:max-height={pickerPlace ? `${pickerPlace.maxHeight}px` : undefined}
         style:visibility={pickerPlace ? undefined : "hidden"}
       >
-        {@render pickerContent(true, creatingTag)}
-      </div>
-      <!-- The picker with its new tag form open, measured so the side it opens on fits the form it grows into. -->
-      <div bind:this={tallPicker} class="surface-floating pointer-events-none invisible absolute top-0 left-0 flex w-floating-sm flex-col overflow-hidden">
-        {@render pickerContent(false, true)}
+        {@render pickerContent()}
       </div>
 
       <WelcomeCursor script={QUICK_NOTES_CURSOR} {elapsed} width={canvasW} bind:position={cursorPoint} />

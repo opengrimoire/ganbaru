@@ -105,17 +105,21 @@ export const vaultSetup = {
     headline: "Anótalo antes de que se te escape",
     body: "Toma notas rápidas en segundos y ordénalas con etiquetas para filtrarlas.",
     sceneDescription:
-      "Una breve animación de las notas rápidas. Desde el selector de etiquetas de la nota Pasaporte y vuelos se crea una etiqueta llamada Viaje, que etiqueta la nota y le da su color, luego la nota Hotel en Lisboa también recibe la etiqueta Viaje, y al seleccionar el chip Viaje las notas se filtran a esas dos.",
+      "Una breve animación de las notas rápidas. Las notas Pasaporte y vuelos y Hotel en Lisboa reciben la etiqueta Viaje, que ya existe, desde sus selectores de etiquetas, lo que les da su color, y al seleccionar el chip Viaje las notas se filtran a las que tienen la etiqueta Viaje.",
     sceneDescriptionTouch:
-      "Una breve animación de las notas rápidas, donde las notas Pasaporte y vuelos y Hotel en Lisboa comparten la etiqueta Viaje, y al tocar el chip Viaje las notas se filtran a esas dos.",
+      "Una breve animación de las notas rápidas, donde varias notas comparten la etiqueta Viaje, y al tocar el chip Viaje las notas se filtran a ellas.",
     tags: { ideas: "Ideas", trip: "Viaje" },
     notes: {
       gift: { title: "Regalo para Ana", body: "Mencionó una clase de cerámica." },
       passport: { title: "Pasaporte y vuelos", body: "Renovar el pasaporte antes de mayo." },
       pitch: { title: "Idea de pódcast", body: "Entrevistas cortas a personas que cambiaron de carrera." },
+      packing: { title: "Qué llevar", body: "Adaptador, protector solar y zapatos cómodos." },
+      dentist: { title: "Llamar al dentista", body: "Preguntar por un jueves en la mañana." },
       hotel: { title: "Hotel en Lisboa", body: "Cerca del río, con desayuno incluido." },
       plants: { title: "Idea de app", body: "Un recordatorio de riego que revisa el clima." },
+      sintra: { title: "Excursión a Sintra", body: "Tomar el primer tren desde Rossio." },
       groceries: { title: "Despensa", body: "Leche de avena, limones, arroz y café." },
+      recipe: { title: "Sopa de lentejas", body: "Comino, limón y un poco de pimentón ahumado." },
     },
   },
   chat: {

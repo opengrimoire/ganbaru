@@ -97,17 +97,21 @@ export const vaultSetup = {
     headline: "Write it down before it slips away",
     body: "Jot down quick notes in seconds and sort them with tags you can filter by.",
     sceneDescription:
-      "A short animation of Quick notes. From the tag picker of the note Passport and flights, a new tag named Trip is created, which tags the note and gives it the tag's color, then the note Hotel in Lisbon is tagged Trip too, and selecting the Trip chip filters the notes down to those two.",
+      "A short animation of Quick notes. The notes Passport and flights and Hotel in Lisbon are each given the existing Trip tag from their tag pickers, which gives them the tag's color, and selecting the Trip chip filters the notes down to the ones tagged Trip.",
     sceneDescriptionTouch:
-      "A short animation of Quick notes, where the notes Passport and flights and Hotel in Lisbon share the Trip tag, and tapping the Trip chip filters the notes down to those two.",
+      "A short animation of Quick notes, where several notes share the Trip tag, and tapping the Trip chip filters the notes down to them.",
     tags: { ideas: "Ideas", trip: "Trip" },
     notes: {
       gift: { title: "Gift for Ana", body: "She mentioned a ceramics class." },
       passport: { title: "Passport and flights", body: "Renew the passport before May." },
       pitch: { title: "Podcast idea", body: "Short interviews with people who changed careers." },
+      packing: { title: "Packing list", body: "Adapter, sunscreen, and comfortable shoes." },
+      dentist: { title: "Call the dentist", body: "Ask about a Thursday morning." },
       hotel: { title: "Hotel in Lisbon", body: "Near the river, breakfast included." },
       plants: { title: "App idea", body: "A watering reminder that checks the weather." },
+      sintra: { title: "Day trip to Sintra", body: "Take the early train from Rossio." },
       groceries: { title: "Groceries", body: "Oat milk, lemons, rice, and coffee." },
+      recipe: { title: "Lentil soup", body: "Cumin, lemon, and a little smoked paprika." },
     },
   },
   chat: {

@@ -7,28 +7,23 @@ import {
   QUICK_NOTES_CAST,
   QUICK_NOTES_CURSOR,
   QUICK_NOTES_FILTER_FADE_MS,
+  QUICK_NOTES_FILTERED_NOTES,
   QUICK_NOTES_GLIDE_MS,
   QUICK_NOTES_MOBILE_END,
   QUICK_NOTES_MOBILE_FILTER_TAP,
   QUICK_NOTES_RECOLOR_MS,
-  QUICK_NOTES_TRIP_NOTES,
-  quickNotesCreatingTag,
+  QUICK_NOTES_TAGGED_NOTES,
   quickNotesFilter,
   quickNotesFiltered,
   quickNotesPickerOpen,
   quickNotesSceneColors,
   quickNotesSceneEnd,
   quickNotesSceneStill,
-  quickNotesTagCaretOn,
-  quickNotesTagDraft,
   quickNotesTouches,
-  quickNotesTripChipShown,
-  quickNotesTripCreated,
   quickNotesTripProgress,
 } from "./welcome-quick-notes-scene";
 
 const B = QUICK_NOTES_BEATS;
-const NAME = "Trip";
 
 /** Every step of a scene, for properties that must hold throughout. */
 function moments(end: number, step = 10): number[] {
@@ -45,8 +40,8 @@ describe("welcome quick notes scene", () => {
     for (const mobile of [false, true]) {
       for (const elapsed of moments(quickNotesSceneEnd(mobile))) {
         const filter = quickNotesFilter(elapsed, mobile);
-        const values = [filter.fade, filter.glide, quickNotesTripChipShown(elapsed, mobile), quickNotesTouches(elapsed).filter];
-        for (const key of QUICK_NOTES_TRIP_NOTES) values.push(quickNotesTripProgress(key, elapsed, mobile));
+        const values = [filter.fade, filter.glide, quickNotesTouches(elapsed).filter];
+        for (const key of QUICK_NOTES_TAGGED_NOTES) values.push(quickNotesTripProgress(key, elapsed, mobile));
         for (const value of values) {
           expect(value).toBeGreaterThanOrEqual(0);
           expect(value).toBeLessThanOrEqual(1);
@@ -55,15 +50,22 @@ describe("welcome quick notes scene", () => {
     }
   });
 
-  it("starts the notes it tags untagged and apart, with other notes between them", () => {
+  it("starts with notes already tagged Trip, and the notes it tags untagged and apart", () => {
     const keys = QUICK_NOTES_CAST.map((card) => card.key);
-    for (const key of QUICK_NOTES_TRIP_NOTES) {
+    expect(QUICK_NOTES_CAST.some((card) => card.tag === "trip")).toBe(true);
+    for (const key of QUICK_NOTES_TAGGED_NOTES) {
       expect(QUICK_NOTES_CAST.find((card) => card.key === key)?.tag).toBeNull();
     }
-    const [first, second] = QUICK_NOTES_TRIP_NOTES.map((key) => keys.indexOf(key));
+    const [first, second] = QUICK_NOTES_TAGGED_NOTES.map((key) => keys.indexOf(key));
     expect(keys.indexOf("gift")).toBeLessThan(first);
     expect(second - first).toBeGreaterThan(1);
-    expect(QUICK_NOTES_CAST.every((card) => card.tag !== "trip")).toBe(true);
+  });
+
+  it("filters down to the notes tagged Trip from the start and the ones it tags, in their order", () => {
+    const expected = QUICK_NOTES_CAST.filter((card) => card.tag === "trip" || QUICK_NOTES_TAGGED_NOTES.includes(card.key)).map((card) => card.key);
+    expect(QUICK_NOTES_FILTERED_NOTES).toEqual(expected);
+    for (const key of QUICK_NOTES_TAGGED_NOTES) expect(QUICK_NOTES_FILTERED_NOTES).toContain(key);
+    expect(QUICK_NOTES_FILTERED_NOTES.length).toBeLessThan(QUICK_NOTES_CAST.length);
   });
 
   it("gives each tone its own palette slot, never the default note color", () => {
@@ -78,31 +80,22 @@ describe("welcome quick notes scene", () => {
     }
   });
 
-  it("creates the tag from the passport note's picker, typing its name and keeping it with Enter", () => {
-    expect(quickNotesPickerOpen(B.passportPickerTap - 1)).toBeNull();
-    expect(quickNotesPickerOpen(B.passportPickerTap)).toBe("passport");
-    expect(quickNotesCreatingTag(B.newTagTap - 1)).toBe(false);
-    expect(quickNotesCreatingTag(B.newTagTap)).toBe(true);
-    expect(quickNotesTagDraft(B.tagTypeStart, NAME)).toBe("");
-    expect(quickNotesTagDraft(B.tagTypeEnd, NAME)).toBe(NAME);
-    expect(quickNotesTagCaretOn((B.tagTypeStart + B.tagTypeEnd) / 2)).toBe(true);
-    expect(quickNotesTripCreated(B.tagSubmit - 1, false)).toBe(false);
-    expect(quickNotesTripCreated(B.tagSubmit, false)).toBe(true);
-    expect(quickNotesPickerOpen(B.tagSubmit)).toBeNull();
-    expect(quickNotesCreatingTag(B.tagSubmit)).toBe(false);
-    expect(quickNotesTagCaretOn(B.tagSubmit)).toBe(false);
-    expect(quickNotesTripChipShown(B.tagSubmit, false)).toBe(0);
-    expect(quickNotesTripChipShown(B.end, false)).toBe(1);
-  });
-
-  it("tags each note as its picker closes, the passport on creating the tag and the hotel on picking it", () => {
-    expect(quickNotesTripProgress("passport", B.tagSubmit, false)).toBe(0);
-    expect(quickNotesTripProgress("passport", B.tagSubmit + QUICK_NOTES_RECOLOR_MS, false)).toBe(1);
-    expect(quickNotesTripProgress("hotel", B.hotelPick - 1, false)).toBe(0);
-    expect(quickNotesPickerOpen(B.hotelPick - 1)).toBe("hotel");
-    expect(quickNotesPickerOpen(B.hotelPick)).toBeNull();
-    expect(quickNotesTripProgress("hotel", B.hotelPick + QUICK_NOTES_RECOLOR_MS, false)).toBe(1);
+  it("tags each note as Trip is picked from its picker, which then closes", () => {
+    const picks = [
+      { key: "passport", open: B.passportPickerTap, pick: B.passportPick },
+      { key: "hotel", open: B.hotelPickerTap, pick: B.hotelPick },
+    ] as const;
+    for (const { key, open, pick } of picks) {
+      expect(quickNotesPickerOpen(open - 1, false)).toBeNull();
+      expect(quickNotesPickerOpen(open, false)).toBe(key);
+      expect(quickNotesPickerOpen(pick - 1, false)).toBe(key);
+      expect(quickNotesPickerOpen(pick, false)).toBeNull();
+      expect(quickNotesTripProgress(key, pick, false)).toBe(0);
+      expect(quickNotesTripProgress(key, pick + QUICK_NOTES_RECOLOR_MS, false)).toBe(1);
+    }
     expect(quickNotesTripProgress("gift", B.end, false)).toBe(0);
+    expect(quickNotesTripProgress("packing", B.end, false)).toBe(0);
+    expect(B.passportPick + QUICK_NOTES_RECOLOR_MS).toBeLessThanOrEqual(B.hotelPickerTap);
     expect(B.hotelPick + QUICK_NOTES_RECOLOR_MS).toBeLessThanOrEqual(B.filterTap);
   });
 
@@ -119,9 +112,8 @@ describe("welcome quick notes scene", () => {
     }
   });
 
-  it("starts a phone's scene with the tag and both notes tagged, and taps only its chip", () => {
-    expect(quickNotesTripCreated(0, true)).toBe(true);
-    for (const key of QUICK_NOTES_TRIP_NOTES) expect(quickNotesTripProgress(key, 0, true)).toBe(1);
+  it("starts a phone's scene with both notes tagged, and taps only its chip", () => {
+    for (const key of QUICK_NOTES_TAGGED_NOTES) expect(quickNotesTripProgress(key, 0, true)).toBe(1);
     expect(quickNotesTouches(QUICK_NOTES_MOBILE_FILTER_TAP - FILM_TAP_MS / 2).filter).toBeGreaterThan(0);
     expect(quickNotesSceneEnd(true)).toBe(QUICK_NOTES_MOBILE_END);
   });
@@ -130,8 +122,8 @@ describe("welcome quick notes scene", () => {
     for (const mobile of [false, true]) {
       const still = quickNotesSceneStill(mobile);
       expect(quickNotesFilter(still, mobile)).toEqual({ fade: 1, glide: 1 });
-      expect(quickNotesPickerOpen(still)).toBeNull();
-      for (const key of QUICK_NOTES_TRIP_NOTES) expect(quickNotesTripProgress(key, still, mobile)).toBe(1);
+      expect(quickNotesPickerOpen(still, mobile)).toBeNull();
+      for (const key of QUICK_NOTES_TAGGED_NOTES) expect(quickNotesTripProgress(key, still, mobile)).toBe(1);
       expect(quickNotesTouches(still).filter).toBe(0);
     }
   });
@@ -141,7 +133,7 @@ describe("welcome quick notes scene", () => {
     const clicks = QUICK_NOTES_CURSOR.filter((stop) => stop.press);
     expect(clicks.map((stop) => [stop.target, stop.press?.end])).toEqual([
       ["quick-notes-tag-passport", B.passportPickerTap],
-      ["quick-notes-new-tag", B.newTagTap],
+      ["quick-notes-option-trip", B.passportPick],
       ["quick-notes-tag-hotel", B.hotelPickerTap],
       ["quick-notes-option-trip", B.hotelPick],
       ["quick-notes-chip-trip", B.filterTap],
@@ -152,6 +144,6 @@ describe("welcome quick notes scene", () => {
       expect(press.start).toBe(press.end - FILM_TAP_MS);
       for (let elapsed = press.start; elapsed <= press.end; elapsed += 10) expect(welcomeCursorHovered(QUICK_NOTES_CURSOR, elapsed)).toBe(stop.target);
     }
-    expect(QUICK_NOTES_CURSOR.find((stop) => stop.target === "quick-notes-tag-hotel")?.depart).toBeGreaterThanOrEqual(B.tagSubmit);
+    expect(QUICK_NOTES_CURSOR.find((stop) => stop.target === "quick-notes-tag-hotel")?.depart).toBeGreaterThanOrEqual(B.passportPick);
   });
 });

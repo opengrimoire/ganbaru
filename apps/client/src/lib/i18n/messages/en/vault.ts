@@ -93,6 +93,23 @@ export const vaultSetup = {
     roles: { lead: "Lead", rival: "Rival", ally: "Ally" },
     characters: { clara: "Clara", tomas: "Tomás", mateo: "Mateo" },
   },
+  quickNotes: {
+    headline: "Write it down before it slips away",
+    body: "Jot down quick notes in seconds and sort them with tags you can filter by.",
+    sceneDescription:
+      "A short animation of Quick notes. From the tag picker of the note Passport and flights, a new tag named Trip is created, which tags the note and gives it the tag's color, then the note Hotel in Lisbon is tagged Trip too, and selecting the Trip chip filters the notes down to those two.",
+    sceneDescriptionTouch:
+      "A short animation of Quick notes, where the notes Passport and flights and Hotel in Lisbon share the Trip tag, and tapping the Trip chip filters the notes down to those two.",
+    tags: { ideas: "Ideas", trip: "Trip" },
+    notes: {
+      gift: { title: "Gift for Ana", body: "She mentioned a ceramics class." },
+      passport: { title: "Passport and flights", body: "Renew the passport before May." },
+      pitch: { title: "Podcast idea", body: "Short interviews with people who changed careers." },
+      hotel: { title: "Hotel in Lisbon", body: "Near the river, breakfast included." },
+      plants: { title: "App idea", body: "A watering reminder that checks the weather." },
+      groceries: { title: "Groceries", body: "Oat milk, lemons, rice, and coffee." },
+    },
+  },
   about: {
     headline: "Free and open source",
     body: "Your data stays on your devices and syncs directly between them, with no account, ads, or telemetry.\nApp and code are yours forever.",

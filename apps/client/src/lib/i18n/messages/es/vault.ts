@@ -101,6 +101,23 @@ export const vaultSetup = {
     roles: { lead: "Principal", rival: "Rival", ally: "Aliado" },
     characters: { clara: "Clara", tomas: "Tomás", mateo: "Mateo" },
   },
+  quickNotes: {
+    headline: "Anótalo antes de que se te escape",
+    body: "Toma notas rápidas en segundos y ordénalas con etiquetas para filtrarlas.",
+    sceneDescription:
+      "Una breve animación de las notas rápidas. Desde el selector de etiquetas de la nota Pasaporte y vuelos se crea una etiqueta llamada Viaje, que etiqueta la nota y le da su color, luego la nota Hotel en Lisboa también recibe la etiqueta Viaje, y al seleccionar el chip Viaje las notas se filtran a esas dos.",
+    sceneDescriptionTouch:
+      "Una breve animación de las notas rápidas, donde las notas Pasaporte y vuelos y Hotel en Lisboa comparten la etiqueta Viaje, y al tocar el chip Viaje las notas se filtran a esas dos.",
+    tags: { ideas: "Ideas", trip: "Viaje" },
+    notes: {
+      gift: { title: "Regalo para Ana", body: "Mencionó una clase de cerámica." },
+      passport: { title: "Pasaporte y vuelos", body: "Renovar el pasaporte antes de mayo." },
+      pitch: { title: "Idea de pódcast", body: "Entrevistas cortas a personas que cambiaron de carrera." },
+      hotel: { title: "Hotel en Lisboa", body: "Cerca del río, con desayuno incluido." },
+      plants: { title: "Idea de app", body: "Un recordatorio de riego que revisa el clima." },
+      groceries: { title: "Despensa", body: "Leche de avena, limones, arroz y café." },
+    },
+  },
   about: {
     headline: "Gratis y de código abierto",
     body: "Tus datos se quedan en tus dispositivos y se sincronizan directamente entre ellos, sin cuentas, anuncios ni telemetría. App y código son tuyos para siempre.",

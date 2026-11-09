@@ -13,6 +13,7 @@
   import WelcomeMusicStep from "./welcome/WelcomeMusicStep.svelte";
   import WelcomeNotesStep from "./welcome/WelcomeNotesStep.svelte";
   import WelcomeProjectsStep from "./welcome/WelcomeProjectsStep.svelte";
+  import WelcomeQuickNotesStep from "./welcome/WelcomeQuickNotesStep.svelte";
   import WelcomeTasksStep from "./welcome/WelcomeTasksStep.svelte";
 
   /**
@@ -60,6 +61,8 @@
         <WelcomeTasksStep />
       {:else if current === "notes"}
         <WelcomeNotesStep />
+      {:else if current === "quickNotes"}
+        <WelcomeQuickNotesStep />
       {:else}
         <WelcomeAboutStep />
       {/if}

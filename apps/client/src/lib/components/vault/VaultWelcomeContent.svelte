@@ -23,8 +23,8 @@
    * one navigation bar that stays in place at the bottom while the screens slide in above it, so moving between them
    * never shifts the buttons. Continue on the last screen hands over to vault setup. `step` is bindable so a shell
    * can show the progress in its own chrome; with `showStepDots`, the navigation shows it instead. Moving between
-   * screens, the leaving one drifts away and fades quickly, then the arriving one's title and its content glide in from
-   * the side it is on, one just after the other, and settle softly.
+   * screens, the leaving one drifts away and fades quickly while the arriving one glides in whole from the side it is
+   * on and settles softly.
    */
   let {
     step = $bindable(0),
@@ -140,13 +140,9 @@
 </div>
 
 <style>
-  /* The arriving screen's title, then its content, glide in from its side and settle softly once the leaving one has mostly faded. */
-  .welcome-entering :global([data-welcome-enter]) {
-    animation: welcome-enter 560ms cubic-bezier(0.16, 1, 0.3, 1) 110ms both;
-  }
-
-  .welcome-entering :global([data-welcome-enter="content"]) {
-    animation-delay: 200ms;
+  /* The arriving screen glides in from its side as the leaving one fades, and settles softly. */
+  .welcome-entering {
+    animation: welcome-enter 560ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   @keyframes welcome-enter {
@@ -157,7 +153,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .welcome-entering :global([data-welcome-enter]) {
+    .welcome-entering {
       animation: none;
     }
   }

@@ -1,7 +1,16 @@
 // @vitest-environment jsdom
 import { mount, tick, unmount } from "svelte";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import CollectionQuickAdd from "./CollectionQuickAdd.svelte";
+
+/** jsdom lays nothing out and has no `scrollIntoView`, which the field calls as it takes focus. */
+const nativeScrollIntoView = Element.prototype.scrollIntoView;
+beforeAll(() => {
+  Element.prototype.scrollIntoView = () => undefined;
+});
+afterAll(() => {
+  Element.prototype.scrollIntoView = nativeScrollIntoView;
+});
 
 let component: ReturnType<typeof mount> | undefined;
 afterEach(async () => {

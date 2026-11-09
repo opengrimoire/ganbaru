@@ -35,15 +35,15 @@
   import CollectionCell from "$lib/components/collections/CollectionCell.svelte";
   import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
   import CollectionRow from "$lib/components/collections/CollectionRow.svelte";
+  import NotesCalloutEmbeddedRow from "$lib/components/notes/blocks/NotesCalloutEmbeddedRow.svelte";
   import {
-    notesSlashBlockGroup,
     notesSlashCommandHint,
     notesSlashCommandIcon,
     notesSlashCommandLabel,
     notesSlashMenuCatalog,
     notesSlashMenuGroups,
-    type NotesSlashMenuGroup,
   } from "$lib/components/notes/blocks/slash-menu-presentation";
+  import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import WelcomeCaret from "$lib/components/vault/welcome/WelcomeCaret.svelte";
@@ -52,10 +52,11 @@
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import type { NotesCalloutLayer } from "$lib/notes/block-types/callout-layout";
   import { notesBlockColorStyle, notesBlockColorSwatchStyle } from "$lib/notes/blocks/color";
   import { notesRichTextPreviewClass } from "$lib/notes/blocks/editor-ui";
+  import { createCalloutPayload, DEFAULT_COLOR } from "$lib/notes/blocks/payloads";
   import { sectionNotesSlashCommandItems } from "$lib/notes/editor/slash-commands";
-  import type { NotesBlockType } from "$lib/notes/types";
   import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { cn } from "$lib/utils";
@@ -73,6 +74,7 @@
     NOTES_ROLE_ORDER,
     notesBoardActive,
     notesBoardShown,
+    notesCalloutAdded,
     notesLineCaretOn,
     notesLineText,
     notesNameCaretOn,
@@ -81,13 +83,14 @@
     notesNewRole,
     notesOptionHovered,
     notesPageScroll,
+    notesParagraphCaretOn,
+    notesParagraphText,
     notesRoleHighlighted,
     notesRoleMenuOpen,
     notesRowAdded,
+    notesSlashLineShown,
     notesSlashMenuOpen,
-    notesSlashMenuScroll,
     notesSlashQuery,
-    notesTodoAdded,
     notesTouches,
     type NotesSceneCharacter,
     type NotesSceneRole,
@@ -96,10 +99,10 @@
 
   /**
    * One frame of the welcome scene on Notes, drawn with the app's own surfaces: on the Novel project's Characters page,
-   * a slash on an empty line opens the slash menu, which scrolls through its blocks and narrows to To-do list as a query
-   * is typed, and the picked to-do is filled in. The page then scrolls to its Cast database, where a row is added to the
-   * table, named, and given a role from its cell, and the database switches to its Board view. Every style is a function
-   * of `elapsed`, with no CSS transitions.
+   * a paragraph is typed below the title, a slash on the next line opens the slash menu, which narrows to Callout as a
+   * query is typed, and the accepted callout is filled in. The page then scrolls to its Cast database, where a row is
+   * added to the table, named, and given a role from its cell, and the database switches to its Board view. Every style
+   * is a function of `elapsed`, with no CSS transitions.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -139,23 +142,9 @@
   const SLASH_MAX_HEIGHT_REM = 22;
   /** A zero-width character that gives the slash line's anchor the height of a line of text. */
   const ZERO_WIDTH_SPACE = "​";
-  /** The bulleted list item's marker, as the editor draws it at the top level. */
-  const BULLET_MARKER = "•";
-
-  /** A block of the page above its database: its type and the key of its text. */
-  interface NotesSceneBlock {
-    id: string;
-    type: NotesBlockType;
-    text: "paragraph" | "quote" | "threads" | "bullet";
-  }
-
-  /** The blocks the page starts with, above the empty line the slash is typed into. */
-  const PAGE_BLOCKS: readonly NotesSceneBlock[] = [
-    { id: "paragraph", type: "paragraph", text: "paragraph" },
-    { id: "quote", type: "quote", text: "quote" },
-    { id: "threads", type: "heading_2", text: "threads" },
-    { id: "bullet", type: "bulleted_list_item", text: "bullet" },
-  ];
+  /** The callout the slash line turns into, with the color and icon a new callout starts with. */
+  const CALLOUT = createCalloutPayload("");
+  const CALLOUT_LAYERS: readonly NotesCalloutLayer[] = [{ id: "callout", color: CALLOUT.color ?? DEFAULT_COLOR, first: true, last: true }];
 
   const canvasW = $derived(width - 2 * BEZEL);
   const canvasH = $derived(height - 2 * BEZEL);
@@ -163,12 +152,14 @@
   const tableHang = $derived(Math.min(editorPad, TABLE_HANG_MAX_PX));
 
   const slashQuery = $derived(t("vaultSetup.notes.slashQuery"));
-  const lineText = $derived(notesLineText(elapsed, slashQuery, t("vaultSetup.notes.todo")));
+  const paragraphText = $derived(notesParagraphText(elapsed, t("vaultSetup.notes.paragraph")));
+  const paragraphCaretOn = $derived(notesParagraphCaretOn(elapsed));
+  const slashLineShown = $derived(notesSlashLineShown(elapsed));
+  const lineText = $derived(notesLineText(elapsed, slashQuery, t("vaultSetup.notes.callout")));
   const lineCaretOn = $derived(notesLineCaretOn(elapsed));
-  const todoAdded = $derived(notesTodoAdded(elapsed));
+  const calloutAdded = $derived(notesCalloutAdded(elapsed));
   const slashOpen = $derived(notesSlashMenuOpen(elapsed));
   const typedQuery = $derived(notesSlashQuery(elapsed, slashQuery));
-  const slashMenuScroll = $derived(notesSlashMenuScroll(elapsed));
   /** The slash menu's groups for the query typed so far, as a fresh vault lists them with no recent blocks yet. */
   const slashGroups = $derived(
     notesSlashMenuGroups(sectionNotesSlashCommandItems(notesSlashMenuCatalog(true, t), typedQuery, []), t).filter((group) => group.items.length > 0),
@@ -207,7 +198,6 @@
   let slashAnchor = $state<HTMLSpanElement>();
   let slashMenu = $state<HTMLDivElement>();
   let slashScroll = $state<HTMLDivElement>();
-  let slashList = $state<HTMLDivElement>();
 
   /** A box in the logical pixels of the element it is measured against. */
   interface Box {
@@ -224,10 +214,10 @@
   /** The role cell on the canvas and the role menu's size, measured as the menu opens. */
   let menuLayout = $state<{ cell: Box; width: number; height: number } | null>(null);
   /**
-   * The slash line's start on the canvas, the slash menu's chrome and list heights, the root font size its height cap is
-   * in, and how far down its list the advanced blocks' group starts, measured as its contents change.
+   * The slash line's start on the canvas, the slash menu's chrome and list heights, and the root font size its height cap
+   * is in, measured as its contents change.
    */
-  let slashLayout = $state<{ trigger: Box; chrome: number; list: number; rem: number; advanced: number } | null>(null);
+  let slashLayout = $state<{ trigger: Box; chrome: number; list: number; rem: number } | null>(null);
 
   $effect(() => {
     const bump = () => {
@@ -259,14 +249,12 @@
     if (canvas && roleCell && roleMenu) {
       menuLayout = { cell: relBox(roleCell, canvas), width: roleMenu.offsetWidth, height: roleMenu.offsetHeight };
     }
-    if (canvas && slashAnchor && slashMenu && slashScroll && slashList) {
-      const advanced = slashList.querySelector<HTMLElement>("[data-slash-advanced]");
+    if (canvas && slashAnchor && slashMenu && slashScroll) {
       slashLayout = {
         trigger: relBox(slashAnchor, canvas),
         chrome: slashMenu.offsetHeight - slashScroll.clientHeight,
         list: slashScroll.scrollHeight,
         rem: Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16,
-        advanced: advanced ? relBox(advanced, slashList).top : 0,
       };
     }
   });
@@ -283,12 +271,6 @@
       preferredMaxHeight: Math.min(SLASH_MAX_HEIGHT_REM * rem, list + chrome),
     });
     return slashOpen ? style : `${style}; visibility: hidden`;
-  });
-
-  /** Scroll the slash menu's list toward its advanced blocks, as far as the list lets it. */
-  $effect(() => {
-    const target = (slashLayout?.advanced ?? 0) * slashMenuScroll;
-    if (slashScroll && slashScroll.scrollTop !== target) slashScroll.scrollTop = target;
   });
 
   /** How far the page has scrolled: enough to keep the database in view below, but never past its top. */
@@ -349,12 +331,6 @@
   /** A role's name, or the empty cell's label. */
   function roleName(role: NotesSceneRole | null): string {
     return role === null ? t("notes.databaseTableEmptyCell") : t(`vaultSetup.notes.roles.${role}`);
-  }
-
-  /** Whether a slash menu group lists the advanced blocks, which the menu scrolls down to. */
-  function advancedGroup(group: NotesSlashMenuGroup): boolean {
-    const command = group.items[0]?.command;
-    return (command?.kind === "block" || command?.kind === "toggle_heading") && notesSlashBlockGroup(command) === "advanced";
   }
 
   function characterName(key: NotesSceneCharacter): string {
@@ -495,26 +471,35 @@
               <h1 class="notes-editor-page-title block w-full min-w-0 font-bold leading-[1.2] break-words text-foreground">{t("vaultSetup.notes.page")}</h1>
             </div>
 
-            <!-- The page's blocks, as the editor draws them while none is being edited. -->
-            {#each PAGE_BLOCKS as block (block.id)}
-              <div data-scene-hover={`block:${block.id}`} class={cn("flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2", hovered(`block:${block.id}`) && "bg-accent/50")}>
-                {#if block.type === "bulleted_list_item"}
-                  <div class="notes-editor-body-text min-w-5 shrink-0 select-none whitespace-nowrap py-1 text-right leading-normal text-muted-foreground">{BULLET_MARKER}</div>
-                {/if}
-                <div class="relative min-w-0 flex-1">
-                  <div class={notesRichTextPreviewClass(block.type)}>{t(`vaultSetup.notes.${block.text}`)}</div>
-                </div>
-              </div>
-            {/each}
-
-            <!-- The empty line the slash is typed into, which turns into a to-do once To-do list is picked. -->
-            <div data-scene-hover="block:line" class={cn("flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2", hovered("block:line") && "bg-accent/50")}>
-              {#if todoAdded}<input type="checkbox" class="mt-2 size-4 shrink-0 accent-primary" tabindex="-1" />{/if}
-              <div class="relative min-w-0 flex-1" data-cursor="notes-slash-line">
-                <div class={notesRichTextPreviewClass(todoAdded ? "to_do" : "paragraph")}><span bind:this={slashAnchor}>{ZERO_WIDTH_SPACE}</span>{lineText}{#if lineCaretOn}<WelcomeCaret />{/if}</div>
+            <!-- The empty line below the title, where the paragraph is typed. -->
+            <div data-scene-hover="block:paragraph" class={cn("flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2", hovered("block:paragraph") && "bg-accent/50")}>
+              <div class="relative min-w-0 flex-1" data-cursor="notes-line">
+                <div class={notesRichTextPreviewClass("paragraph")}>{ZERO_WIDTH_SPACE}{paragraphText}{#if paragraphCaretOn}<WelcomeCaret />{/if}</div>
                 {#if mobileShell}<WelcomeTouch opacity={touches.line} />{/if}
               </div>
             </div>
+
+            <!-- The line Enter starts below the paragraph, where the slash is typed, which turns into a callout once Callout is accepted. -->
+            {#if slashLineShown && calloutAdded}
+              <NotesCalloutEmbeddedRow layers={CALLOUT_LAYERS}>
+                {#snippet body()}
+                  <div class="notes-callout-surface flex min-w-0 items-start rounded-md pr-2">
+                    <span class="notes-callout-icon flex size-6 shrink-0 items-center justify-center rounded">
+                      <NotesPageIcon icon={CALLOUT.icon} size={16} class="notes-callout-icon-glyph" />
+                    </span>
+                    <div class="relative min-w-0 flex-1">
+                      <div class={notesRichTextPreviewClass("callout")}>{ZERO_WIDTH_SPACE}{lineText}{#if lineCaretOn}<WelcomeCaret />{/if}</div>
+                    </div>
+                  </div>
+                {/snippet}
+              </NotesCalloutEmbeddedRow>
+            {:else if slashLineShown}
+              <div data-scene-hover="block:line" class={cn("flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2", hovered("block:line") && "bg-accent/50")}>
+                <div class="relative min-w-0 flex-1">
+                  <div class={notesRichTextPreviewClass("paragraph")}><span bind:this={slashAnchor}>{ZERO_WIDTH_SPACE}</span>{lineText}{#if lineCaretOn}<WelcomeCaret />{/if}</div>
+                </div>
+              </div>
+            {/if}
 
             <div bind:this={database} class="my-5 space-y-1">
               <div class="flex items-center gap-2 px-1">
@@ -708,14 +693,14 @@
         <span class="truncate">{typedQuery || t("notes.slashSearch")}</span>
       </div>
       <div bind:this={slashScroll} class="min-h-0 overflow-y-auto overscroll-contain" use:scrollEdgeFadeAction>
-        <div bind:this={slashList} class="surface-floating-body">
+        <div class="surface-floating-body">
           {#each slashGroups as group (group.label)}
-            <div class="menu-label" data-slash-advanced={advancedGroup(group) ? "" : undefined}>{group.label}</div>
+            <div class="menu-label">{group.label}</div>
             {#each group.items as item (item.key)}
               {@const Icon = notesSlashCommandIcon(item.command)}
               {@const hint = notesSlashCommandHint(item.command)}
-              {@const picked = item.command.kind === "block" && item.command.blockType === "to_do"}
-              <span class="menu-item relative" data-cursor={picked ? "notes-slash-pick" : undefined} data-highlighted={item.key === slashActiveKey ? "" : undefined}>
+              {@const picked = item.command.kind === "block" && item.command.blockType === "callout"}
+              <span class="menu-item relative" data-highlighted={item.key === slashActiveKey ? "" : undefined}>
                 {#if item.command.kind === "color"}
                   <span class="notes-color-swatch" style={notesBlockColorSwatchStyle(item.command.color)}>A</span>
                 {:else if Icon}
@@ -738,6 +723,21 @@
 </div>
 
 <style>
+  /* The callout's row inside its background, as the editor draws a callout block. */
+  .notes-callout-surface {
+    min-height: 2.25rem;
+    padding-block: 0.2rem;
+    gap: var(--notes-callout-inset, 0.75rem);
+  }
+
+  .notes-callout-surface :global(.notes-callout-icon) {
+    margin-top: calc(0.75rem * var(--font-scale) - 0.5rem);
+  }
+
+  .notes-callout-surface :global(.notes-callout-icon-glyph) {
+    transform: scale(var(--font-scale));
+  }
+
   /* The slash menu's color swatch, as the editor's slash menu draws it. */
   .notes-color-swatch {
     display: inline-flex;

@@ -26,21 +26,25 @@ import {
   notesNameFocused,
   notesNewRole,
   notesOptionHovered,
+  notesParagraphCaretOn,
+  notesParagraphFocused,
+  notesParagraphText,
   notesPageScroll,
   notesRoleHighlighted,
   notesRoleMenuOpen,
   notesRowAdded,
   notesSlashMenuOpen,
-  notesSlashMenuScroll,
+  notesSlashLineShown,
   notesSlashQuery,
-  notesTodoAdded,
+  notesCalloutAdded,
   notesTouches,
 } from "./welcome-notes-scene";
 
 const B = NOTES_BEATS;
 const NAME = "Mateo";
-const QUERY = "todo";
-const TODO = "Decide what Mateo saw";
+const QUERY = "call";
+const CALLOUT = "Decide what Mateo saw at the station.";
+const PARAGRAPH = "Clara and Tomás grew up on the same street, and only Mateo knows why they stopped talking.";
 
 /** Every step of the scene, for properties that must hold throughout. */
 function moments(step = 10): number[] {
@@ -60,7 +64,7 @@ describe("welcome notes scene", () => {
 
   it("keeps every fraction between 0 and 1", () => {
     for (const elapsed of moments()) {
-      const values = [notesSlashMenuScroll(elapsed), notesPageScroll(elapsed), notesBoardShown(elapsed), ...Object.values(notesTouches(elapsed))];
+      const values = [notesPageScroll(elapsed), notesBoardShown(elapsed), ...Object.values(notesTouches(elapsed))];
       for (const value of values) {
         expect(value).toBeGreaterThanOrEqual(0);
         expect(value).toBeLessThanOrEqual(1);
@@ -75,44 +79,51 @@ describe("welcome notes scene", () => {
     expect(NOTES_CAST.map((row) => row.key)).not.toContain(NOTES_NEW_CHARACTER);
   });
 
-  it("opens the slash menu with the slash typed into the clicked line, and closes it as a block is picked", () => {
-    expect(notesLineFocused(B.lineTap - 1)).toBe(false);
-    expect(notesLineFocused(B.lineTap)).toBe(true);
-    expect(notesLineText(B.slashTyped - 1, QUERY, TODO)).toBe("");
+  it("types the paragraph into the clicked line, then starts the slash line with Enter", () => {
+    expect(notesParagraphFocused(B.lineTap - 1)).toBe(false);
+    expect(notesParagraphFocused(B.lineTap)).toBe(true);
+    expect(notesParagraphText(B.paragraphTypeStart, PARAGRAPH)).toBe("");
+    expect(notesParagraphText((B.paragraphTypeStart + B.paragraphTypeEnd) / 2, PARAGRAPH).length).toBeGreaterThan(0);
+    expect(notesParagraphCaretOn((B.paragraphTypeStart + B.paragraphTypeEnd) / 2)).toBe(true);
+    expect(notesParagraphText(B.paragraphTypeEnd, PARAGRAPH)).toBe(PARAGRAPH);
+    expect(notesSlashLineShown(B.paragraphSubmit - 1)).toBe(false);
+    expect(notesLineFocused(B.paragraphSubmit - 1)).toBe(false);
+    expect(notesSlashLineShown(B.paragraphSubmit)).toBe(true);
+    expect(notesParagraphFocused(B.paragraphSubmit)).toBe(false);
+    expect(notesParagraphCaretOn(B.paragraphSubmit)).toBe(false);
+    expect(notesLineFocused(B.paragraphSubmit)).toBe(true);
+    expect(notesParagraphText(B.end, PARAGRAPH)).toBe(PARAGRAPH);
+  });
+
+  it("opens the slash menu with the slash, narrows it with the query typed straight after, and closes it as Enter accepts", () => {
+    expect(notesLineText(B.slashTyped - 1, QUERY, CALLOUT)).toBe("");
     expect(notesSlashMenuOpen(B.slashTyped - 1)).toBe(false);
-    expect(notesLineText(B.slashTyped, QUERY, TODO)).toBe("/");
+    expect(notesLineText(B.slashTyped, QUERY, CALLOUT)).toBe("/");
     expect(notesSlashMenuOpen(B.slashTyped)).toBe(true);
-    expect(notesLineText(B.queryTypeEnd, QUERY, TODO)).toBe(`/${QUERY}`);
-    expect(notesSlashMenuOpen(B.pickTap - 1)).toBe(true);
-    expect(notesSlashMenuOpen(B.pickTap)).toBe(false);
+    expect(notesSlashQuery(B.queryTypeStart, QUERY)).toBe("");
+    expect(notesLineText(B.queryTypeEnd, QUERY, CALLOUT)).toBe(`/${QUERY}`);
+    expect(notesSlashMenuOpen(B.pick - 1)).toBe(true);
+    expect(notesSlashMenuOpen(B.pick)).toBe(false);
   });
 
-  it("scrolls the menu down through its groups, then back to the top once the query narrows it", () => {
-    expect(notesSlashMenuScroll(B.menuScrollStart)).toBe(0);
-    expect(notesSlashMenuScroll(B.menuScrollEnd)).toBe(1);
-    expect(notesSlashMenuScroll(B.queryTypeStart - 1)).toBe(1);
-    expect(notesSlashQuery(B.queryTypeStart - 1, QUERY)).toBe("");
-    expect(notesSlashMenuScroll(B.queryTypeStart)).toBe(0);
-  });
-
-  it("turns the line into a to-do as the pick lands, clears the slash, and types the to-do", () => {
-    expect(notesTodoAdded(B.pickTap - 1)).toBe(false);
-    expect(notesTodoAdded(B.pickTap)).toBe(true);
-    expect(notesLineText(B.pickTap, QUERY, TODO)).toBe("");
-    expect(notesLineText((B.todoTypeStart + B.todoTypeEnd) / 2, QUERY, TODO).length).toBeGreaterThan(0);
-    expect(notesLineText(B.todoTypeEnd, QUERY, TODO)).toBe(TODO);
-    expect(notesLineText(B.end, QUERY, TODO)).toBe(TODO);
-    expect(notesLineCaretOn((B.todoTypeStart + B.todoTypeEnd) / 2)).toBe(true);
+  it("turns the line into a callout as Enter accepts it, clears the slash, and types the callout", () => {
+    expect(notesCalloutAdded(B.pick - 1)).toBe(false);
+    expect(notesCalloutAdded(B.pick)).toBe(true);
+    expect(notesLineText(B.pick, QUERY, CALLOUT)).toBe("");
+    expect(notesLineText((B.calloutTypeStart + B.calloutTypeEnd) / 2, QUERY, CALLOUT).length).toBeGreaterThan(0);
+    expect(notesLineText(B.calloutTypeEnd, QUERY, CALLOUT)).toBe(CALLOUT);
+    expect(notesLineText(B.end, QUERY, CALLOUT)).toBe(CALLOUT);
+    expect(notesLineCaretOn((B.calloutTypeStart + B.calloutTypeEnd) / 2)).toBe(true);
     expect(notesLineCaretOn(B.scrollStart)).toBe(false);
   });
 
-  it("narrows the slash menu to To-do list first with each language's query", () => {
+  it("narrows the slash menu to Callout first with each language's query", () => {
     for (const catalog of [en, es]) {
       const t = translatorFor(catalog);
       const query = t("vaultSetup.notes.slashQuery");
       const sections = sectionNotesSlashCommandItems(notesSlashMenuCatalog(true, t), query, []);
       const first = notesSlashMenuGroups(sections, t).flatMap((group) => group.items)[0];
-      expect(first?.command).toEqual({ kind: "block", blockType: "to_do" });
+      expect(first?.command).toEqual({ kind: "block", blockType: "callout" });
     }
   });
 
@@ -151,6 +162,7 @@ describe("welcome notes scene", () => {
   it("never has two carets, or a caret and an open menu that does not belong to it, at once", () => {
     for (const elapsed of moments()) {
       expect(notesLineFocused(elapsed) && notesNameFocused(elapsed)).toBe(false);
+      expect(notesParagraphFocused(elapsed) && (notesLineFocused(elapsed) || notesNameFocused(elapsed))).toBe(false);
       expect(notesNameFocused(elapsed) && notesRoleMenuOpen(elapsed)).toBe(false);
       expect(notesSlashMenuOpen(elapsed) && notesRoleMenuOpen(elapsed)).toBe(false);
     }
@@ -164,10 +176,11 @@ describe("welcome notes scene", () => {
     expect(notesBoardShown(B.boardTap + NOTES_VIEW_FADE_MS)).toBe(1);
   });
 
-  it("shows the board with the new row's card in its role, the to-do written, and every menu closed in its still frame", () => {
+  it("shows the board with the new row's card in its role, the paragraph and the callout written, and every menu closed in its still frame", () => {
     expect(notesBoardShown(NOTES_STILL)).toBe(1);
     expect(notesNewRole(NOTES_STILL)).toBe(NOTES_NEW_ROLE);
-    expect(notesLineText(NOTES_STILL, QUERY, TODO)).toBe(TODO);
+    expect(notesLineText(NOTES_STILL, QUERY, CALLOUT)).toBe(CALLOUT);
+    expect(notesParagraphText(NOTES_STILL, PARAGRAPH)).toBe(PARAGRAPH);
     expect(notesSlashMenuOpen(NOTES_STILL)).toBe(false);
     expect(notesRoleMenuOpen(NOTES_STILL)).toBe(false);
     expect(notesNameFocused(NOTES_STILL)).toBe(false);
@@ -178,8 +191,7 @@ describe("welcome notes scene", () => {
     expect(welcomeCursorScriptOrdered(NOTES_CURSOR)).toBe(true);
     const clicks = NOTES_CURSOR.filter((stop) => stop.press);
     expect(clicks.map((stop) => [stop.target, stop.press?.end])).toEqual([
-      ["notes-slash-line", B.lineTap],
-      ["notes-slash-pick", B.pickTap],
+      ["notes-line", B.lineTap],
       ["notes-new-row", B.newRowTap],
       ["notes-role", B.roleTap],
       ["notes-role-option", B.rolePick],
@@ -193,8 +205,10 @@ describe("welcome notes scene", () => {
     }
   });
 
-  it("waits for the query before reaching for To-do list, and for the scroll before reaching for the new row", () => {
-    expect(NOTES_CURSOR.find((stop) => stop.target === "notes-slash-pick")?.depart).toBeGreaterThanOrEqual(B.queryTypeEnd);
+  it("leaves Callout to the keyboard, moves off the line as the paragraph is typed, and waits for the scroll before the new row", () => {
+    expect(NOTES_CURSOR.some((stop) => stop.target === "notes-slash-pick")).toBe(false);
+    expect(NOTES_CURSOR[2]?.target).toBe("notes-page");
+    expect(NOTES_CURSOR[2]?.depart).toBeGreaterThanOrEqual(B.paragraphTypeStart);
     expect(NOTES_CURSOR.find((stop) => stop.target === "notes-new-row")?.depart).toBeGreaterThan(B.scrollStart);
     expect(NOTES_CURSOR.find((stop) => stop.target === "notes-role")?.depart).toBeGreaterThanOrEqual(B.nameSubmit);
   });

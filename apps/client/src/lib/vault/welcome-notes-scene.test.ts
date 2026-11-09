@@ -5,7 +5,7 @@ import { en } from "$lib/i18n/messages/en";
 import { es } from "$lib/i18n/messages/es";
 import { blockTypeForTextShortcut } from "$lib/notes/blocks/shortcuts";
 import { sectionNotesSlashCommandItems } from "$lib/notes/editor/slash-commands";
-import { welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
+import { welcomeCursorFrame, welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
 import { FILM_TAP_MS } from "./welcome-film";
 import {
   NOTES_BEATS,
@@ -256,5 +256,16 @@ describe("welcome notes scene", () => {
     expect(NOTES_CURSOR[2]?.depart).toBeGreaterThanOrEqual(B.shortcutTypeStart);
     expect(NOTES_CURSOR.find((stop) => stop.target === "notes-new-row")?.depart).toBeGreaterThan(B.scrollStart);
     expect(NOTES_CURSOR.find((stop) => stop.target === "notes-role")?.depart).toBeGreaterThanOrEqual(B.nameSubmit);
+  });
+
+  it("moves the pointer from the Board tab onto the board before the board scrolls sideways under it", () => {
+    const board = NOTES_CURSOR.find((stop) => stop.target === "notes-board");
+    expect(board?.depart).toBeGreaterThanOrEqual(B.boardTap);
+    expect(board?.arrive).toBeLessThanOrEqual(B.boardScrollStart);
+    expect(board?.busy).toEqual([{ start: B.boardScrollStart, end: B.boardScrollEnd }]);
+    for (let elapsed = B.boardScrollStart; elapsed <= B.boardScrollEnd; elapsed += 10) {
+      expect(welcomeCursorHovered(NOTES_CURSOR, elapsed)).toBe("notes-board");
+      expect(welcomeCursorFrame(NOTES_CURSOR, elapsed).away).toBe(false);
+    }
   });
 });

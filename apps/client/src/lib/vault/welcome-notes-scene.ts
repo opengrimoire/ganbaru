@@ -11,6 +11,7 @@ import type { NotesBlockType, NotesColor } from "$lib/notes/types";
 import {
   cursorClick,
   cursorRest,
+  WELCOME_CURSOR_REST_MS,
   WELCOME_CURSOR_SCROLL_OVERLAP_MS,
   WELCOME_CURSOR_TRAVEL_MS,
   type WelcomeCursorScript,
@@ -66,33 +67,33 @@ export const NOTES_BEATS = {
   /** A slash opens the slash menu on the new line, and a query narrows it to Callout. */
   slashTyped: 6400,
   queryTypeStart: 6800,
-  queryTypeEnd: 7100,
+  queryTypeEnd: 7400,
   /**
    * Callout is accepted, which turns the line into a callout: with Enter, as the menu completes its highlighted item from
    * the keyboard, or with a tap on a phone. The callout's text is then typed.
    */
-  pick: 7600,
-  calloutTypeStart: 7800,
-  calloutTypeEnd: 8900,
+  pick: 7900,
+  calloutTypeStart: 8100,
+  calloutTypeEnd: 9200,
   /** The page scrolls down to the database, keeping room below its table for the row the scene adds. */
-  scrollStart: 9400,
-  scrollEnd: 10100,
+  scrollStart: 9700,
+  scrollEnd: 10400,
   /** A tap on the table's New page row adds an empty row with its title focused, a name is typed, and Enter keeps it. */
-  newRowTap: 10600,
-  nameTypeStart: 10800,
-  nameTypeEnd: 11300,
-  nameSubmit: 11600,
+  newRowTap: 10900,
+  nameTypeStart: 11100,
+  nameTypeEnd: 11600,
+  nameSubmit: 11900,
   /** A tap on the new row's Role cell opens its options, and Ally is picked. */
-  roleTap: 12300,
-  rolePick: 13200,
+  roleTap: 12600,
+  rolePick: 13500,
   /**
    * A tap on the Board tab shows the database as a board with a column for each role, which scrolls sideways to the
    * column of the new row's role, as the board's columns keep their width rather than shrinking to fit.
    */
-  boardTap: 13900,
-  boardScrollStart: 14600,
-  boardScrollEnd: 15300,
-  end: 16500,
+  boardTap: 14200,
+  boardScrollStart: 15200,
+  boardScrollEnd: 15900,
+  end: 17100,
 } as const;
 
 const B = NOTES_BEATS;
@@ -274,11 +275,14 @@ export function notesTouches(elapsed: number): NotesSceneTouches {
   };
 }
 
+/** Where on the board the pointer rests while the board scrolls sideways under it: across its middle, among the cards. */
+export const NOTES_BOARD_CURSOR_ANCHOR = [0.5, 0.4] as const;
+
 /**
  * The desktop pointer's path through the scene: it clicks the empty line, then moves back over the page while the
  * heading and the paragraph are typed, the slash menu narrows and Enter accepts Callout, the callout is typed, and the
- * page scrolls. It clicks New page once the table is in view, opens the new row's Role and picks Ally, then switches the
- * database to its board.
+ * page scrolls. It clicks New page once the table is in view, opens the new row's Role and picks Ally, switches the
+ * database to its board, then moves onto the board, which scrolls sideways under it as a mouse wheel scrolls it.
  */
 export const NOTES_CURSOR: WelcomeCursorScript = [
   cursorRest("notes-page", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
@@ -291,4 +295,8 @@ export const NOTES_CURSOR: WelcomeCursorScript = [
   cursorClick("notes-role", B.roleTap, { glyph: "pointer", after: B.nameSubmit }),
   cursorClick("notes-role-option", B.rolePick, { after: B.roleTap }),
   cursorClick("notes-board-tab", B.boardTap, { after: B.rolePick }),
+  cursorRest("notes-board", B.boardScrollStart - WELCOME_CURSOR_REST_MS, {
+    anchor: NOTES_BOARD_CURSOR_ANCHOR,
+    busy: [{ start: B.boardScrollStart, end: B.boardScrollEnd }],
+  }),
 ];

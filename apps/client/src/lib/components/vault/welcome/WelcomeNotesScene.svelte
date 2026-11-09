@@ -693,6 +693,7 @@
                 <!-- The Board view, with a column for each role, scrolled sideways as the board scrolls past the columns that do not fit. -->
                 <div
                   bind:this={boardViewport}
+                  data-cursor="notes-board"
                   class="min-w-0 overflow-hidden @container [grid-area:1/1]"
                   style:visibility={boardShown <= 0 ? "hidden" : undefined}
                   style:opacity={boardShown > 0 && boardShown < 1 ? boardShown : undefined}

@@ -214,7 +214,7 @@
   const MUSIC_ICONS: readonly FilmIcon[] = ["music"];
   const MEETING_ICONS: readonly FilmIcon[] = ["repeat", "meeting"];
 
-  /** Lunch, at the same hour every day of the week, a little after the film's session ends. */
+  /** Lunch, at the same hour every day of the week, right as the film's session ends. */
   const LUNCH: FilmEvent = { start: 13 * 60, end: 14 * 60, color: EATING, title: "lunch", icons: REPEAT_ICONS };
   /** The team meeting on Monday, Wednesday, and Friday afternoons, and the gym on Tuesday and Thursday evenings. */
   const MEETING: FilmEvent = { start: 14 * 60, end: 15 * 60, color: LAVENDER, title: "teamMeeting", icons: MEETING_ICONS };
@@ -248,7 +248,7 @@
       { start: 900, end: 990, color: CYAN, title: "draftOutline", preset: "balanced" },
     ],
     [
-      { start: 480, end: 630, color: THESIS, title: "writeChapter", preset: "extended" },
+      { start: 480, end: 630, color: THESIS, title: "writeChapter", preset: "creative" },
       { start: 630, end: 720, color: PURPLE, title: "reviewNotes", preset: "balanced" },
       LUNCH,
       { start: 870, end: 960, color: BLUE, title: "readSources", preset: "balanced", icons: MUSIC_ICONS },

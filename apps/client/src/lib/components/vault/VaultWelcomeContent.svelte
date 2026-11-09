@@ -4,6 +4,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
+  import { WELCOME_COLUMN_CLASS } from "$lib/vault/welcome-layout";
   import { WELCOME_STEPS, welcomeStepAt } from "$lib/vault/welcome-steps";
   import WelcomeAboutStep from "./welcome/WelcomeAboutStep.svelte";
   import WelcomeBlockingStep from "./welcome/WelcomeBlockingStep.svelte";
@@ -72,7 +73,7 @@
     </div>
   </div>
 
-  <div class="mx-auto w-full max-w-180 shrink-0 px-4 pb-6 @min-[560px]:px-8 @min-[760px]:px-10 @min-[860px]:pb-10">
+  <div class={cn(WELCOME_COLUMN_CLASS, "shrink-0 pb-6 @min-[860px]:pb-10")}>
     <div class="flex items-center gap-2 border-t border-border pt-4">
       {#if index > 0}
         <button

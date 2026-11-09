@@ -11,6 +11,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { WELCOME_COLUMN_CLASS, WELCOME_TOP_PADDING_CLASS } from "$lib/vault/welcome-layout";
   import WelcomeStepHeader from "./WelcomeStepHeader.svelte";
 
   /**
@@ -70,7 +71,7 @@
 
 <section class="relative flex h-full flex-col">
   <div use:scrollEdgeFadeAction={{ edges: "bottom" }} class="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-    <div class="mx-auto flex w-full max-w-180 flex-col gap-8 px-4 pb-6 pt-12 @min-[560px]:px-8 @min-[760px]:px-10 @min-[560px]:pt-18 @min-[860px]:gap-10 @min-[860px]:pt-26">
+    <div class={cn(WELCOME_COLUMN_CLASS, WELCOME_TOP_PADDING_CLASS, "flex flex-col gap-8 pb-6 @min-[860px]:gap-10")}>
       <WelcomeStepHeader
         headingId="{headingId}-heading"
         headline={t("vaultSetup.language.headline")}

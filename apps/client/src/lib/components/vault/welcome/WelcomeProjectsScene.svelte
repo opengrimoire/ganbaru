@@ -387,7 +387,7 @@
   const eventPicked = $derived(projectsEventPicked(defaultsElapsed));
   const eventPanelOpen = $derived(projectsPanelOpen(defaultsElapsed));
   const rail = $derived(projectsEventRail(defaultsElapsed));
-  /** The event's length: snapped as the Calendar snaps while it is dragged out, then growing to the project's default. */
+  /** The event's length: snapped as the Calendar snaps while it is dragged out, then the project's default. */
   /** Where the press that drags the event out is, in minutes past its start: on the start line, then smoothly down as the event snaps. */
   const pressMinutes = $derived(projectsEventDrawn(defaultsElapsed) * (PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start));
   const eventMinutes = $derived(

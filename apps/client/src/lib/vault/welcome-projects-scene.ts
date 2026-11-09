@@ -209,8 +209,6 @@ const PANEL_FADE_MS = 140;
 const SCREEN_FADE_MS = 300;
 /** How long a list cell or a picked option shows as hovered before its tap lands, as the pointer rests on it. */
 export const PROJECTS_HOVER_LEAD_MS = 420;
-/** How long the event takes to grow to the project's default length once the project is picked. */
-const GROW_MS = 420;
 /**
  * How long the Music section takes to open, as the event sheet slides a section open. The panel's body scrolls it into
  * view over the same time and curve, so the two read as one motion.
@@ -366,13 +364,12 @@ export function projectsEventPicked(elapsed: number): boolean {
 }
 
 /**
- * The event's length in minutes: it grows with the press up to its drawn length, then to the project's default
- * duration once the project is picked.
+ * The event's length in minutes: it grows with the press up to its drawn length, then takes the project's default
+ * duration at once when the project is picked, as the Calendar applies it.
  */
 export function projectsEventMinutes(elapsed: number): number {
-  const drawn = PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start;
-  const grown = easeInOutCubic(filmSpan(elapsed, B.projectPick, B.projectPick + GROW_MS));
-  return drawn * projectsEventDrawn(elapsed) + (PROJECTS_DEFAULT_MINUTES - drawn) * grown;
+  if (projectsEventPicked(elapsed)) return PROJECTS_DEFAULT_MINUTES;
+  return (PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start) * projectsEventDrawn(elapsed);
 }
 
 /**

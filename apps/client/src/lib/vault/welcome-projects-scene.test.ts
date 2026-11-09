@@ -175,12 +175,13 @@ describe("welcome projects scene", () => {
     expect(projectsListShown(B.calendarIn)).toBe(0);
   });
 
-  it("drags the event out to its drawn length, then grows it to the project's default duration once Novel is picked", () => {
+  it("drags the event out to its drawn length, then gives it the project's default duration the moment Novel is picked", () => {
     const drawn = PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start;
     expect(projectsEventDrawnIn(B.createStart - 1)).toBe(false);
     expect(projectsEventMinutes(B.createStart)).toBe(0);
     expect(projectsEventMinutes(B.createEnd)).toBe(drawn);
     expect(projectsEventMinutes(B.projectPick - 1)).toBe(drawn);
+    expect(projectsEventMinutes(B.projectPick)).toBe(PROJECTS_DEFAULT_MINUTES);
     expect(projectsEventMinutes(B.end)).toBe(PROJECTS_DEFAULT_MINUTES);
     expect(projectsEventCreating(B.eventSaveTap - 1)).toBe(true);
     expect(projectsEventCreating(B.eventSaveTap)).toBe(false);

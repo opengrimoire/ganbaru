@@ -36,6 +36,7 @@
   import { contrastRatio } from "$lib/color/math";
   import WelcomeCaret from "$lib/components/vault/welcome/WelcomeCaret.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
+  import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
@@ -87,11 +88,10 @@
 
   /** The title bar on desktop, or the phone's top bar. */
   const TOP_BAR_H = mobileShell ? 48 : 36;
-  /** The title bar's icons and its end padding, as the title bar draws them. */
+  /** The phone top bar's identity icon and the title bar's end padding, as the bars draw them. */
   const TITLE_ICON_SIZE = 14;
   const TITLE_ICON_STROKE_WIDTH = 1.5;
   const TITLE_BAR_END_PX = 6;
-  const TITLE_ICON_COLOR_CLASS = "text-foreground/68 dark:text-white/76";
   /** The phone top bar's utility icons, as the top bar draws them. */
   const MOBILE_UTILITY_ICON_SIZE = 19;
   const MOBILE_UTILITY_STROKE_WIDTH = 1.8;
@@ -470,12 +470,8 @@
     {:else}
       <!-- The title bar's Quick notes, open, and Music. -->
       <div class="flex shrink-0 items-center justify-end gap-0.5 bg-sidebar" style:height={`${TOP_BAR_H}px`} style:padding-right={`${TITLE_BAR_END_PX}px`}>
-        <span class="grid size-7 place-items-center rounded-lg bg-sidebar-accent text-foreground">
-          <StickyNote size={TITLE_ICON_SIZE} strokeWidth={TITLE_ICON_STROKE_WIDTH} />
-        </span>
-        <span class={cn("grid size-7 place-items-center rounded-lg", TITLE_ICON_COLOR_CLASS)}>
-          <Music size={TITLE_ICON_SIZE} strokeWidth={TITLE_ICON_STROKE_WIDTH} />
-        </span>
+        <WelcomeTitleIcon icon={StickyNote} open />
+        <WelcomeTitleIcon icon={Music} />
       </div>
     {/if}
 

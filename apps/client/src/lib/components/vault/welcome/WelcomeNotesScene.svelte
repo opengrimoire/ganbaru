@@ -37,6 +37,7 @@
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import WelcomeCaret from "$lib/components/vault/welcome/WelcomeCaret.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
+  import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -90,11 +91,8 @@
   const TOP_BAR_H = mobileShell ? 48 : 36;
   /** The page header, as `--toolbar-h` sizes it on each shell. */
   const HEADER_H = mobileShell ? 56 : 40;
-  /** The title bar's icons and its end padding, as the title bar draws them. */
-  const TITLE_ICON_SIZE = 14;
-  const TITLE_ICON_STROKE_WIDTH = 1.5;
+  /** The title bar's end padding, as the title bar draws it. */
   const TITLE_BAR_END_PX = 6;
-  const TITLE_ICON_COLOR_CLASS = "text-foreground/68 dark:text-white/76";
   /** The header's icons, as the breadcrumb and the page actions draw them. */
   const IDENTITY_ICON_SIZE = 14;
   const IDENTITY_ICON_STROKE_WIDTH = 1.5;
@@ -370,9 +368,7 @@
     {:else}
       <!-- The title bar's Music. -->
       <div class="flex shrink-0 items-center justify-end gap-0.5 bg-sidebar" style:height={`${TOP_BAR_H}px`} style:padding-right={`${TITLE_BAR_END_PX}px`}>
-        <span class={cn("grid size-7 place-items-center rounded-lg", TITLE_ICON_COLOR_CLASS)}>
-          <Music size={TITLE_ICON_SIZE} strokeWidth={TITLE_ICON_STROKE_WIDTH} />
-        </span>
+        <WelcomeTitleIcon icon={Music} />
       </div>
     {/if}
 

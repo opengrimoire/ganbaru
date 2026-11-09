@@ -45,6 +45,7 @@
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
+  import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
   import WelcomeFilmNotification, { type FilmNotificationKind } from "$lib/components/vault/welcome/WelcomeFilmNotification.svelte";
@@ -130,11 +131,9 @@
   const TOP_BAR_H = 36;
   const HEADER_H = 40;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
-  /** The title bar's icons and its end padding, as the title bar draws them. */
+  /** The title bar's Focus ring size and its end padding, as the title bar draws them. */
   const TITLE_ICON_SIZE = 14;
-  const TITLE_ICON_STROKE_WIDTH = 1.5;
   const TITLE_BAR_END_PX = 6;
-  const TITLE_ICON_COLOR_CLASS = "text-foreground/68 dark:text-white/76";
   /** The app's notification that a phase's music autoplays, drawn as this platform's system shows it. */
   const notificationKind: FilmNotificationKind = mobileShell
     ? "android"
@@ -527,9 +526,7 @@
             "text-foreground/68 dark:text-white/76 stroke-foreground/68 dark:stroke-white/76",
           )}
         </span>
-        <span class={cn("grid size-7 place-items-center rounded-lg", builderShown > 0.5 ? "bg-sidebar-accent text-foreground" : TITLE_ICON_COLOR_CLASS)}>
-          <Music size={TITLE_ICON_SIZE} strokeWidth={TITLE_ICON_STROKE_WIDTH} />
-        </span>
+        <WelcomeTitleIcon icon={Music} open={builderShown > 0.5} />
       </div>
     {/if}
 

@@ -15,6 +15,7 @@ import {
   NOTES_HEADING_TYPE,
   NOTES_NEW_CHARACTER,
   NOTES_NEW_ROLE,
+  NOTES_PARAGRAPH_HOVER,
   NOTES_ROLE_COLORS,
   NOTES_ROLE_ORDER,
   NOTES_STILL,
@@ -46,6 +47,14 @@ import {
   notesSlashLineShown,
   notesSlashQuery,
   notesCalloutAdded,
+  notesContextMenuOpen,
+  notesContextParagraphHighlighted,
+  notesContextQuoteHighlighted,
+  notesContextSubmenuOpen,
+  notesQuoteAdded,
+  notesQuoteLineType,
+  notesQuoteParts,
+  notesQuoteWordSelected,
   notesTouches,
 } from "./welcome-notes-scene";
 
@@ -161,11 +170,58 @@ describe("welcome notes scene", () => {
     }
   });
 
-  it("scrolls the page to the database before the new row is added", () => {
+  it("scrolls the page to the database before the new row is added, and back to its top after the board scrolls", () => {
     expect(notesPageScroll(B.scrollStart)).toBe(0);
     expect(notesPageScroll(B.scrollEnd)).toBe(1);
     expect(notesPageScroll(B.newRowTap)).toBe(1);
-    expect(notesPageScroll(B.end)).toBe(1);
+    expect(notesPageScroll(B.boardScrollEnd)).toBe(1);
+    expect(B.scrollBackStart).toBeGreaterThanOrEqual(B.boardScrollEnd);
+    expect(notesPageScroll(B.scrollBackStart)).toBe(1);
+    expect(notesPageScroll((B.scrollBackStart + B.scrollBackEnd) / 2)).toBeGreaterThan(0);
+    expect(notesPageScroll(B.scrollBackEnd)).toBe(0);
+    expect(notesPageScroll(B.end)).toBe(0);
+  });
+
+  it("opens the first line's context menu once the page is back at its top, opens Paragraph, and turns the line into a quote with Quote", () => {
+    expect(B.quotePress).toBeGreaterThanOrEqual(B.scrollBackEnd);
+    expect(notesQuoteLineType(B.quotePick - 1)).toBe("paragraph");
+    expect(notesContextMenuOpen(B.quoteMenuOpen - 1)).toBe(false);
+    expect(notesContextMenuOpen(B.quoteMenuOpen)).toBe(true);
+    expect(notesQuoteWordSelected(B.quoteMenuOpen)).toBe(true);
+    expect(notesContextSubmenuOpen(B.submenuOpen - 1)).toBe(false);
+    expect(notesContextParagraphHighlighted(B.submenuOpen - 1)).toBe(true);
+    expect(notesContextSubmenuOpen(B.submenuOpen)).toBe(true);
+    expect(notesContextQuoteHighlighted(B.submenuOpen)).toBe(false);
+    expect(notesContextQuoteHighlighted(B.quotePick - 1)).toBe(true);
+    expect(notesContextMenuOpen(B.quotePick)).toBe(false);
+    expect(notesContextSubmenuOpen(B.quotePick)).toBe(false);
+    expect(notesQuoteWordSelected(B.quotePick)).toBe(false);
+    expect(notesQuoteAdded(B.quotePick)).toBe(true);
+    expect(notesQuoteLineType(B.quotePick)).toBe("quote");
+  });
+
+  it("opens the submenu only inside the context menu, and never with another menu", () => {
+    for (const elapsed of moments()) {
+      if (notesContextSubmenuOpen(elapsed)) expect(notesContextMenuOpen(elapsed)).toBe(true);
+      const open = [notesContextMenuOpen(elapsed), notesSlashMenuOpen(elapsed), notesRoleMenuOpen(elapsed)].filter(Boolean);
+      expect(open.length).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("finds each language's selected word in its first line", () => {
+    for (const catalog of [en, es]) {
+      const t = translatorFor(catalog);
+      const line = t("vaultSetup.notes.quote");
+      const word = t("vaultSetup.notes.quoteWord");
+      const parts = notesQuoteParts(line, word);
+      expect(parts.word).toBe(word);
+      expect(parts.before + parts.word + parts.after).toBe(line);
+    }
+  });
+
+  it("splits a line without the word into the whole line as its word", () => {
+    expect(notesQuoteParts("A quiet line", "missing")).toEqual({ before: "", word: "A quiet line", after: "" });
+    expect(notesQuoteParts("one two one", "one")).toEqual({ before: "", word: "one", after: " two one" });
   });
 
   it("adds an empty row with its title focused, types its name, and keeps it with Enter", () => {
@@ -219,7 +275,11 @@ describe("welcome notes scene", () => {
     expect(notesBoardScroll(NOTES_STILL)).toBe(1);
   });
 
-  it("shows the board with the new row's card in its role, the heading, the paragraph, and the callout written, and every menu closed in its still frame", () => {
+  it("shows the page's top with its first line as a quote, the board with the new row's card in its role, every block written, and every menu closed in its still frame", () => {
+    expect(notesPageScroll(NOTES_STILL)).toBe(0);
+    expect(notesQuoteLineType(NOTES_STILL)).toBe("quote");
+    expect(notesContextMenuOpen(NOTES_STILL)).toBe(false);
+    expect(notesContextSubmenuOpen(NOTES_STILL)).toBe(false);
     expect(notesBoardShown(NOTES_STILL)).toBe(1);
     expect(notesHeadingAdded(NOTES_STILL)).toBe(true);
     expect(notesHeadingText(NOTES_STILL, HEADING)).toBe(HEADING);
@@ -241,6 +301,8 @@ describe("welcome notes scene", () => {
       ["notes-role", B.roleTap],
       ["notes-role-option", B.rolePick],
       ["notes-board-tab", B.boardTap],
+      ["notes-quote-word", B.quoteMenuOpen],
+      ["notes-context-quote", B.quotePick],
     ]);
     for (const stop of clicks) {
       const press = stop.press;
@@ -262,10 +324,20 @@ describe("welcome notes scene", () => {
     const board = NOTES_CURSOR.find((stop) => stop.target === "notes-board");
     expect(board?.depart).toBeGreaterThanOrEqual(B.boardTap);
     expect(board?.arrive).toBeLessThanOrEqual(B.boardScrollStart);
-    expect(board?.busy).toEqual([{ start: B.boardScrollStart, end: B.boardScrollEnd }]);
+    expect(board?.busy).toEqual([
+      { start: B.boardScrollStart, end: B.boardScrollEnd },
+      { start: B.scrollBackStart, end: B.scrollBackEnd },
+    ]);
     for (let elapsed = B.boardScrollStart; elapsed <= B.boardScrollEnd; elapsed += 10) {
       expect(welcomeCursorHovered(NOTES_CURSOR, elapsed)).toBe("notes-board");
       expect(welcomeCursorFrame(NOTES_CURSOR, elapsed).away).toBe(false);
     }
+  });
+
+  it("rests the pointer on Paragraph until its submenu opens, then moves onto Quote", () => {
+    for (let elapsed = NOTES_PARAGRAPH_HOVER; elapsed < B.submenuOpen; elapsed += 10) {
+      expect(welcomeCursorHovered(NOTES_CURSOR, elapsed)).toBe("notes-context-paragraph");
+    }
+    expect(NOTES_CURSOR.find((stop) => stop.target === "notes-context-quote")?.depart).toBeGreaterThanOrEqual(B.submenuOpen);
   });
 });

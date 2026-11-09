@@ -25,28 +25,19 @@
   import ClipboardPaste from "@lucide/svelte/icons/clipboard-paste";
   import Code from "@lucide/svelte/icons/code";
   import Copy from "@lucide/svelte/icons/copy";
-  import Heading1 from "@lucide/svelte/icons/heading-1";
-  import Heading2 from "@lucide/svelte/icons/heading-2";
-  import Heading3 from "@lucide/svelte/icons/heading-3";
-  import Heading4 from "@lucide/svelte/icons/heading-4";
-  import Heading5 from "@lucide/svelte/icons/heading-5";
-  import Heading6 from "@lucide/svelte/icons/heading-6";
   import Italic from "@lucide/svelte/icons/italic";
   import LinkIcon from "@lucide/svelte/icons/link";
   import List from "@lucide/svelte/icons/list";
-  import ListOrdered from "@lucide/svelte/icons/list-ordered";
   import MessageSquare from "@lucide/svelte/icons/message-square";
-  import Minus from "@lucide/svelte/icons/minus";
   import Palette from "@lucide/svelte/icons/palette";
   import PencilLine from "@lucide/svelte/icons/pencil-line";
   import Pilcrow from "@lucide/svelte/icons/pilcrow";
-  import Quote from "@lucide/svelte/icons/quote";
   import Scissors from "@lucide/svelte/icons/scissors";
   import Sigma from "@lucide/svelte/icons/sigma";
-  import SquareCheck from "@lucide/svelte/icons/square-check";
   import UnderlineIcon from "$lib/components/ui/UnderlineIcon.svelte";
   import { onDestroy, tick } from "svelte";
   import NotesTextColorPalette from "./NotesTextColorPalette.svelte";
+  import { NOTES_TEXT_CONTEXT_INSERT_ITEMS, NOTES_TEXT_CONTEXT_PARAGRAPH_ITEMS } from "./text-context-menu-items";
 
   type Submenu = "format" | "paragraph" | "insert";
 
@@ -102,28 +93,8 @@
 
   const { t } = getLocalization();
   const itemClass = "menu-item";
-  const paragraphItems = [
-    { type: "paragraph", labelKey: "notes.blockType.paragraph", icon: Pilcrow },
-    { type: "heading_1", labelKey: "notes.blockType.heading1", icon: Heading1 },
-    { type: "heading_2", labelKey: "notes.blockType.heading2", icon: Heading2 },
-    { type: "heading_3", labelKey: "notes.blockType.heading3", icon: Heading3 },
-    { type: "heading_4", labelKey: "notes.blockType.heading4", icon: Heading4 },
-    { type: "heading_5", labelKey: "notes.blockType.heading5", icon: Heading5 },
-    { type: "heading_6", labelKey: "notes.blockType.heading6", icon: Heading6 },
-    { type: "bulleted_list_item", labelKey: "notes.blockType.bullet", icon: List },
-    { type: "numbered_list_item", labelKey: "notes.blockType.numbered", icon: ListOrdered },
-    { type: "to_do", labelKey: "notes.blockType.todo", icon: SquareCheck },
-    { type: "quote", labelKey: "notes.blockType.quote", icon: Quote },
-    { type: "code", labelKey: "notes.blockType.code", icon: Code },
-  ] as const;
-  const insertItems = [
-    { type: "paragraph", labelKey: "notes.blockType.paragraph", icon: Pilcrow },
-    { type: "bulleted_list_item", labelKey: "notes.blockType.bullet", icon: List },
-    { type: "numbered_list_item", labelKey: "notes.blockType.numbered", icon: ListOrdered },
-    { type: "to_do", labelKey: "notes.blockType.todo", icon: SquareCheck },
-    { type: "code", labelKey: "notes.blockType.code", icon: Code },
-    { type: "divider", labelKey: "notes.blockType.divider", icon: Minus },
-  ] as const;
+  const paragraphItems = NOTES_TEXT_CONTEXT_PARAGRAPH_ITEMS;
+  const insertItems = NOTES_TEXT_CONTEXT_INSERT_ITEMS;
 
   let viewport = $state({
     width: typeof window === "undefined" ? 0 : window.innerWidth,

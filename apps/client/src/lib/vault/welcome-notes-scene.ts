@@ -5,9 +5,12 @@
  * and a short query narrow the slash menu to Callout, which Enter accepts, and the callout is filled in. The page then
  * scrolls to its Cast database, where a row is added to the table, named, and given a role from its cell, and the
  * database switches to its Board view, with a column for each role, which scrolls sideways to the new row's column.
+ * The page then scrolls back up to the plain line at its top, whose text context menu opens, with a right click on
+ * desktop or a long press that selects one of its words on a phone, and Quote under Paragraph turns it into a quote.
  */
 
 import type { NotesBlockType, NotesColor } from "$lib/notes/types";
+import { SUBMENU_OPEN_DELAY_MS } from "$lib/utils/menu-aim";
 import {
   cursorClick,
   cursorRest,
@@ -16,7 +19,7 @@ import {
   WELCOME_CURSOR_TRAVEL_MS,
   type WelcomeCursorScript,
 } from "./welcome-cursor";
-import { easeInOutCubic, filmCaretOn, filmSpan, filmTap, filmTyped } from "./welcome-film";
+import { easeInOutCubic, filmCaretOn, filmPress, filmSpan, filmTap, filmTyped } from "./welcome-film";
 import { PROJECTS_CURSOR_REST_ANCHOR, PROJECTS_HOVER_LEAD_MS } from "./welcome-projects-scene";
 
 /** The roles of the Cast database's Role property, in the order its options list them. */
@@ -93,7 +96,23 @@ export const NOTES_BEATS = {
   boardTap: 14200,
   boardScrollStart: 15200,
   boardScrollEnd: 15900,
-  end: 17100,
+  /** The page scrolls back up to the plain line at its top. */
+  scrollBackStart: 16500,
+  scrollBackEnd: 17200,
+  /**
+   * The line's text context menu opens: from a right click on desktop, or on a phone from a long press, held from
+   * `quotePress` until it lifts at `quoteLift`, that selects the word under it.
+   */
+  quotePress: 17400,
+  quoteMenuOpen: 17900,
+  quoteLift: 18100,
+  /**
+   * Paragraph opens its submenu, once the pointer has rested on it on desktop or as a tap lands on it on a phone, and
+   * Quote is picked from it, which turns the line into a quote and closes the menu.
+   */
+  submenuOpen: 18700,
+  quotePick: 19700,
+  end: 21000,
 } as const;
 
 const B = NOTES_BEATS;
@@ -104,8 +123,22 @@ export const NOTES_END_HOLD_MS = 900;
 /** How long the board takes to fade in over the table once its tab is tapped. */
 export const NOTES_VIEW_FADE_MS = 220;
 
-/** The frame shown as a still with reduced motion: the board with the new card in its role's column. */
+/** The frame shown as a still with reduced motion: the top of the page, with its first line turned into a quote and every block written. */
 export const NOTES_STILL = B.end;
+
+/** The plain line at the page's top, split around the word a long press selects on a phone. */
+export interface NotesQuoteParts {
+  before: string;
+  word: string;
+  after: string;
+}
+
+/** `line` split around the first `word` in it, or the whole line as the word when it does not hold `word`. */
+export function notesQuoteParts(line: string, word: string): NotesQuoteParts {
+  const index = word ? line.indexOf(word) : -1;
+  if (index < 0) return { before: "", word: line, after: "" };
+  return { before: line.slice(0, index), word, after: line.slice(index + word.length) };
+}
 
 /** Whether the clicked line holds the caret: from the click on it until Enter starts the paragraph below it. */
 export function notesHeadingFocused(elapsed: number): boolean {
@@ -193,8 +226,9 @@ export function notesLineCaretOn(elapsed: number): boolean {
   return filmCaretOn(elapsed, elapsed >= B.slashTyped ? B.slashTyped : B.paragraphSubmit);
 }
 
-/** How far the page has scrolled down to the database, from 0 to 1. */
+/** How far the page has scrolled down to the database, from 0 to 1, until it scrolls back up to its top. */
 export function notesPageScroll(elapsed: number): number {
+  if (elapsed >= B.scrollBackStart) return 1 - easeInOutCubic(filmSpan(elapsed, B.scrollBackStart, B.scrollBackEnd));
   return easeInOutCubic(filmSpan(elapsed, B.scrollStart, B.scrollEnd));
 }
 
@@ -253,6 +287,44 @@ export function notesBoardScroll(elapsed: number): number {
   return easeInOutCubic(filmSpan(elapsed, B.boardScrollStart, B.boardScrollEnd));
 }
 
+/** Whether the text context menu is open on the line at the page's top: from the click or press that opens it until Quote is picked. */
+export function notesContextMenuOpen(elapsed: number): boolean {
+  return elapsed >= B.quoteMenuOpen && elapsed < B.quotePick;
+}
+
+/** Whether the context menu's Paragraph submenu is open: from the moment it opens until Quote is picked. */
+export function notesContextSubmenuOpen(elapsed: number): boolean {
+  return elapsed >= B.submenuOpen && elapsed < B.quotePick;
+}
+
+/** When the desktop pointer reaches Paragraph, so the submenu opens after it has rested there as the menu waits to. */
+export const NOTES_PARAGRAPH_HOVER = B.submenuOpen - SUBMENU_OPEN_DELAY_MS;
+
+/** Whether the word the long press selects shows as selected on a phone: while the menu it opens is open. */
+export function notesQuoteWordSelected(elapsed: number): boolean {
+  return notesContextMenuOpen(elapsed);
+}
+
+/** Whether the menu's Paragraph row shows as highlighted on a phone: just before its tap lands and while its submenu is open. */
+export function notesContextParagraphHighlighted(elapsed: number): boolean {
+  return elapsed >= B.submenuOpen - PROJECTS_HOVER_LEAD_MS && elapsed < B.quotePick;
+}
+
+/** Whether the submenu's Quote row shows as highlighted on a phone, just before its tap lands. */
+export function notesContextQuoteHighlighted(elapsed: number): boolean {
+  return elapsed >= B.quotePick - PROJECTS_HOVER_LEAD_MS && elapsed < B.quotePick;
+}
+
+/** Whether the line at the page's top has turned into a quote: from the moment Quote is picked. */
+export function notesQuoteAdded(elapsed: number): boolean {
+  return elapsed >= B.quotePick;
+}
+
+/** The type of the line at the page's top: a paragraph until Quote turns it into a quote. */
+export function notesQuoteLineType(elapsed: number): NotesBlockType {
+  return notesQuoteAdded(elapsed) ? "quote" : "paragraph";
+}
+
 /** The scene's touches, each from 0 to 1 as it shows. */
 export interface NotesSceneTouches {
   line: number;
@@ -261,6 +333,9 @@ export interface NotesSceneTouches {
   role: number;
   roleOption: number;
   board: number;
+  quoteWord: number;
+  paragraph: number;
+  quote: number;
 }
 
 /** The scene's touches at `elapsed`. */
@@ -272,6 +347,9 @@ export function notesTouches(elapsed: number): NotesSceneTouches {
     role: filmTap(elapsed, B.roleTap),
     roleOption: filmTap(elapsed, B.rolePick),
     board: filmTap(elapsed, B.boardTap),
+    quoteWord: filmPress(elapsed, B.quotePress, B.quoteLift),
+    paragraph: filmTap(elapsed, B.submenuOpen),
+    quote: filmTap(elapsed, B.quotePick),
   };
 }
 
@@ -282,7 +360,9 @@ export const NOTES_BOARD_CURSOR_ANCHOR = [0.5, 0.4] as const;
  * The desktop pointer's path through the scene: it clicks the empty line, then moves back over the page while the
  * heading and the paragraph are typed, the slash menu narrows and Enter accepts Callout, the callout is typed, and the
  * page scrolls. It clicks New page once the table is in view, opens the new row's Role and picks Ally, switches the
- * database to its board, then moves onto the board, which scrolls sideways under it as a mouse wheel scrolls it.
+ * database to its board, then moves onto the board, which scrolls sideways under it as a mouse wheel scrolls it. Once
+ * the page scrolls back up under it, it right clicks the line at the top, rests on Paragraph until its submenu opens,
+ * and clicks Quote.
  */
 export const NOTES_CURSOR: WelcomeCursorScript = [
   cursorRest("notes-page", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
@@ -297,6 +377,12 @@ export const NOTES_CURSOR: WelcomeCursorScript = [
   cursorClick("notes-board-tab", B.boardTap, { after: B.rolePick }),
   cursorRest("notes-board", B.boardScrollStart - WELCOME_CURSOR_REST_MS, {
     anchor: NOTES_BOARD_CURSOR_ANCHOR,
-    busy: [{ start: B.boardScrollStart, end: B.boardScrollEnd }],
+    busy: [
+      { start: B.boardScrollStart, end: B.boardScrollEnd },
+      { start: B.scrollBackStart, end: B.scrollBackEnd },
+    ],
   }),
+  cursorClick("notes-quote-word", B.quoteMenuOpen, { glyph: "text", after: B.scrollBackEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
+  cursorRest("notes-context-paragraph", NOTES_PARAGRAPH_HOVER),
+  cursorClick("notes-context-quote", B.quotePick, { after: B.submenuOpen }),
 ];

@@ -17,16 +17,26 @@
   import { untrack } from "svelte";
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import ClipboardPaste from "@lucide/svelte/icons/clipboard-paste";
   import Columns3 from "@lucide/svelte/icons/columns-3";
+  import Copy from "@lucide/svelte/icons/copy";
   import Music from "@lucide/svelte/icons/eighth-notes";
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
   import Feather from "@lucide/svelte/icons/feather";
   import FileText from "@lucide/svelte/icons/file-text";
   import GripVertical from "@lucide/svelte/icons/grip-vertical";
   import Heart from "@lucide/svelte/icons/heart";
+  import LinkIcon from "@lucide/svelte/icons/link";
+  import List from "@lucide/svelte/icons/list";
+  import MessageSquare from "@lucide/svelte/icons/message-square";
+  import Palette from "@lucide/svelte/icons/palette";
   import PanelLeft from "@lucide/svelte/icons/panel-left";
   import PanelRight from "@lucide/svelte/icons/panel-right";
+  import PencilLine from "@lucide/svelte/icons/pencil-line";
+  import Pilcrow from "@lucide/svelte/icons/pilcrow";
   import Plus from "@lucide/svelte/icons/plus";
+  import Scissors from "@lucide/svelte/icons/scissors";
   import Search from "@lucide/svelte/icons/search";
   import Share2 from "@lucide/svelte/icons/share-2";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
@@ -44,6 +54,7 @@
     notesSlashMenuGroups,
   } from "$lib/components/notes/blocks/slash-menu-presentation";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
+  import { NOTES_TEXT_CONTEXT_PARAGRAPH_ITEMS } from "$lib/components/notes/rich-text/text-context-menu-items";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import WelcomeCaret from "$lib/components/vault/welcome/WelcomeCaret.svelte";
@@ -57,6 +68,11 @@
   import { notesBlockMarker, notesRichTextPreviewClass } from "$lib/notes/blocks/editor-ui";
   import { createCalloutPayload, DEFAULT_COLOR } from "$lib/notes/blocks/payloads";
   import { sectionNotesSlashCommandItems } from "$lib/notes/editor/slash-commands";
+  import {
+    NOTES_TEXT_CONTEXT_SUBMENU_WIDTH,
+    notesTextContextMenuPosition,
+    notesTextContextSubmenuPosition,
+  } from "$lib/notes/editor/text-context-menu";
   import type { NotesBlockType } from "$lib/notes/types";
   import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -78,6 +94,10 @@
     notesBoardScroll,
     notesBoardShown,
     notesCalloutAdded,
+    notesContextMenuOpen,
+    notesContextParagraphHighlighted,
+    notesContextQuoteHighlighted,
+    notesContextSubmenuOpen,
     notesHeadingAdded,
     notesHeadingCaretOn,
     notesHeadingText,
@@ -92,6 +112,9 @@
     notesParagraphCaretOn,
     notesParagraphShown,
     notesParagraphText,
+    notesQuoteLineType,
+    notesQuoteParts,
+    notesQuoteWordSelected,
     notesRoleHighlighted,
     notesRoleMenuOpen,
     notesRowAdded,
@@ -109,8 +132,9 @@
    * the Markdown shortcut for a heading turns an empty line into one, a paragraph is typed below it, a slash on the next
    * line opens the slash menu, which narrows to Callout as a query is typed, and the accepted callout is filled in. The
    * page then scrolls to its Cast database, where a row is added to the table, named, and given a role from its cell, and
-   * the database switches to its Board view, which scrolls sideways to the new row's column. Every style is a function of
-   * `elapsed`, with no CSS transitions.
+   * the database switches to its Board view, which scrolls sideways to the new row's column. Back at the page's top, the
+   * text context menu opens on its first line, and Quote under Paragraph turns the line into a quote. Every style is a
+   * function of `elapsed`, with no CSS transitions.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -154,15 +178,14 @@
   const CALLOUT = createCalloutPayload("");
   const CALLOUT_LAYERS: readonly NotesCalloutLayer[] = [{ id: "callout", color: CALLOUT.color ?? DEFAULT_COLOR, first: true, last: true }];
 
-  /** A block the page starts with: its type and the key of its text. */
+  /** A block the page starts with below its first line: its type and the key of its text. */
   interface NotesSceneBlock {
     type: NotesBlockType;
-    text: "quote" | "threads" | "bullet";
+    text: "threads" | "bullet";
   }
 
-  /** The blocks the page starts with, above the empty line the scene writes into. */
+  /** The blocks the page starts with between its first line and the empty line the scene writes into. */
   const PAGE_BLOCKS: readonly NotesSceneBlock[] = [
-    { type: "quote", text: "quote" },
     { type: "heading_2", text: "threads" },
     { type: "bulleted_list_item", text: "bullet" },
   ];
@@ -204,6 +227,13 @@
   const boardShown = $derived(notesBoardShown(elapsed));
   const boardScroll = $derived(notesBoardScroll(elapsed));
   const touches = $derived(notesTouches(elapsed));
+  const quoteParts = $derived(notesQuoteParts(t("vaultSetup.notes.quote"), t("vaultSetup.notes.quoteWord")));
+  const quoteLineType = $derived(notesQuoteLineType(elapsed));
+  const contextOpen = $derived(notesContextMenuOpen(elapsed));
+  const submenuOpen = $derived(notesContextSubmenuOpen(elapsed));
+  /** A long press selects the word it lands on, so a phone's menu offers what applies to a selection. */
+  const contextHasSelection = mobileShell;
+  const quoteWordSelected = $derived(mobileShell && notesQuoteWordSelected(elapsed));
 
   /** The database's rows: the cast it starts with, then the added row with the role it has so far. */
   const rows = $derived<readonly NotesSceneRow[]>(rowAdded ? [...NOTES_CAST, { key: NOTES_NEW_CHARACTER, role: newRole }] : NOTES_CAST);
@@ -227,6 +257,10 @@
   let boardViewport = $state<HTMLDivElement>();
   let boardTrack = $state<HTMLDivElement>();
   let boardColumns = $state<Partial<Record<NotesSceneRole, HTMLDivElement>>>({});
+  let quoteWord = $state<HTMLSpanElement>();
+  let contextMenu = $state<HTMLDivElement>();
+  let contextParagraph = $state<HTMLSpanElement>();
+  let contextSubmenu = $state<HTMLDivElement>();
 
   /** A box in the logical pixels of the element it is measured against. */
   interface Box {
@@ -249,6 +283,11 @@
   let slashLayout = $state<{ trigger: Box; chrome: number; list: number; rem: number } | null>(null);
   /** The board's visible width, the width of all its columns, and the new row's column within them, measured unscrolled. */
   let boardLayout = $state<{ viewport: number; content: number; left: number; right: number } | null>(null);
+  /**
+   * The word the context menu opens on, on the canvas with the page at its top, the menu's height, its Paragraph row
+   * within it, and the submenu's size, measured as the menu opens.
+   */
+  let contextLayout = $state<{ word: Box; height: number; paragraph: Box; submenu: { width: number; height: number } } | null>(null);
 
   $effect(() => {
     const bump = () => {
@@ -273,6 +312,7 @@
     void localization.locale;
     void menuOpen;
     void typedQuery;
+    void contextOpen;
     if (pageViewport && pageContent && database) {
       const box = relBox(database, pageContent);
       pageLayout = { viewport: pageViewport.clientHeight, top: box.top, bottom: box.top + box.height };
@@ -297,6 +337,32 @@
         rem: Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16,
       };
     }
+    if (canvas && quoteWord && contextMenu && contextParagraph && contextSubmenu && untrack(() => scrollPx) === 0) {
+      contextLayout = {
+        word: relBox(quoteWord, canvas),
+        height: contextMenu.offsetHeight,
+        paragraph: relBox(contextParagraph, contextMenu),
+        submenu: { width: contextSubmenu.offsetWidth, height: contextSubmenu.offsetHeight },
+      };
+    }
+  });
+
+  /**
+   * The context menu's place at the middle of the word it opens on, as the editor places it at a right click or a long
+   * press, and its submenu's place beside the Paragraph row, both kept in the canvas as the editor keeps them in the window.
+   */
+  const contextPlace = $derived.by(() => {
+    if (!contextLayout) return null;
+    const { word, height, paragraph, submenu } = contextLayout;
+    const viewport = { width: canvasW, height: canvasH };
+    const root = notesTextContextMenuPosition({ x: word.left + word.width / 2, y: word.top + word.height / 2 }, viewport, height);
+    const anchor = {
+      left: root.left + paragraph.left,
+      right: root.left + paragraph.left + paragraph.width,
+      top: root.top + paragraph.top,
+      bottom: root.top + paragraph.top + paragraph.height,
+    };
+    return { root, submenu: notesTextContextSubmenuPosition(anchor, submenu, viewport) };
   });
 
   /** The slash menu's place beside the slash, as the editor places it, kept laid out while closed so its size is known. */
@@ -429,6 +495,15 @@
   </span>
 {/snippet}
 
+<!-- A context menu row the scene does not pick, dimmed while it does not apply and highlighted under the pointer while it does. -->
+{#snippet contextRow(key: string, Icon: typeof Pilcrow, label: string, enabled: boolean, submenu = false)}
+  <span data-scene-hover={`context:${key}`} class={cn("menu-item", !enabled && "text-muted-foreground/60")} data-highlighted={enabled && hovered(`context:${key}`) ? "" : undefined}>
+    <Icon class="size-4 shrink-0" />
+    <span class="flex-1">{label}</span>
+    {#if submenu}<ChevronRight class="size-4 shrink-0" />{/if}
+  </span>
+{/snippet}
+
 <!-- A board card, as the board draws it. -->
 {#snippet card(row: NotesSceneRow)}
   {@const cardHovered = hovered(`card:${row.key}`)}
@@ -524,7 +599,14 @@
               <h1 class="notes-editor-page-title block w-full min-w-0 font-bold leading-[1.2] break-words text-foreground">{t("vaultSetup.notes.page")}</h1>
             </div>
 
-            <!-- The blocks the page starts with, as the editor draws them while none is being edited. -->
+            <!-- The page's first line, a paragraph until Quote in its context menu turns it into a quote. -->
+            <div class="flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2">
+              <div class="relative min-w-0 flex-1">
+                <div class={notesRichTextPreviewClass(quoteLineType)}>{quoteParts.before}<span bind:this={quoteWord} data-cursor="notes-quote-word" class={cn("relative", quoteWordSelected && "bg-(--selection-background)")}>{quoteParts.word}{#if mobileShell}<WelcomeTouch opacity={touches.quoteWord} />{/if}</span>{quoteParts.after}</div>
+              </div>
+            </div>
+
+            <!-- The blocks below it, as the editor draws them while none is being edited. -->
             {#each PAGE_BLOCKS as block (block.text)}
               {@const marker = notesBlockMarker(block.type)}
               <div class="flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2">
@@ -795,6 +877,77 @@
             {/each}
           {/each}
         </div>
+      </div>
+    </div>
+
+    <!--
+      The first line's context menu, as the editor lists it at a right click or a long press, and its Paragraph submenu,
+      both placed on the canvas as the slash menu is and kept laid out while closed so their sizes are known.
+    -->
+    <div
+      bind:this={contextMenu}
+      data-scene-cover
+      class="surface-floating fixed top-0 left-0 z-50 flex w-floating-sm flex-col overflow-hidden"
+      style:left={contextPlace ? `${contextPlace.root.left}px` : undefined}
+      style:top={contextPlace ? `${contextPlace.root.top}px` : undefined}
+      style:width={contextPlace ? `${contextPlace.root.width}px` : undefined}
+      style:max-height={contextPlace ? `${contextPlace.root.maxHeight}px` : undefined}
+      style:visibility={contextOpen && contextPlace ? undefined : "hidden"}
+    >
+      <div class="surface-floating-body min-h-0 flex-1 overflow-y-auto">
+        {@render contextRow("open-link", LinkIcon, t("notes.openLinkEditor"), false)}
+        {@render contextRow("copy-link", LinkIcon, t("notes.copyBlockLink"), true)}
+        <div class="menu-separator"></div>
+        {@render contextRow("format", Palette, t("notes.contextMenuFormat"), contextHasSelection, true)}
+        <span
+          bind:this={contextParagraph}
+          data-cursor="notes-context-paragraph"
+          data-scene-hover="context:paragraph"
+          class="menu-item relative"
+          data-highlighted={(mobileShell ? notesContextParagraphHighlighted(elapsed) : submenuOpen || hovered("context:paragraph")) ? "" : undefined}
+        >
+          <Pilcrow class="size-4 shrink-0" />
+          <span class="flex-1">{t("notes.contextMenuParagraph")}</span>
+          <ChevronRight class="size-4 shrink-0" />
+          {#if mobileShell}<WelcomeTouch opacity={touches.paragraph} left="2rem" />{/if}
+        </span>
+        {@render contextRow("insert", List, t("notes.contextMenuInsert"), true, true)}
+        {@render contextRow("comment", MessageSquare, t("notes.inlineComment"), contextHasSelection)}
+        {@render contextRow("suggestion", PencilLine, t("notes.inlineSuggestion"), contextHasSelection)}
+        <div class="menu-separator"></div>
+        {@render contextRow("cut", Scissors, t("notes.cutSelection"), contextHasSelection)}
+        {@render contextRow("copy", Copy, t("notes.copySelection"), contextHasSelection)}
+        {@render contextRow("paste", ClipboardPaste, t("notes.pasteSelection"), true)}
+        {@render contextRow("paste-plain", ClipboardPaste, t("notes.contextMenuPastePlainText"), true)}
+      </div>
+    </div>
+
+    <div
+      bind:this={contextSubmenu}
+      data-scene-cover
+      class="surface-floating fixed top-0 left-0 z-60 flex flex-col overflow-hidden"
+      style:left={contextPlace ? `${contextPlace.submenu.x}px` : undefined}
+      style:top={contextPlace ? `${contextPlace.submenu.y}px` : undefined}
+      style:width={`${NOTES_TEXT_CONTEXT_SUBMENU_WIDTH}px`}
+      style:max-height={`min(26rem, ${Math.max(0, canvasH - 16)}px)`}
+      style:visibility={submenuOpen && contextPlace ? undefined : "hidden"}
+    >
+      <div class="surface-floating-body min-h-0 flex-1 overflow-y-auto">
+        {#each NOTES_TEXT_CONTEXT_PARAGRAPH_ITEMS as item (item.type)}
+          {@const Icon = item.icon}
+          {@const picked = item.type === "quote"}
+          <span
+            data-cursor={picked ? "notes-context-quote" : undefined}
+            data-scene-hover={`context-sub:${item.type}`}
+            class="menu-item relative"
+            data-highlighted={(mobileShell ? picked && notesContextQuoteHighlighted(elapsed) : hovered(`context-sub:${item.type}`)) ? "" : undefined}
+          >
+            <Icon class="size-4 shrink-0" />
+            <span class="min-w-0 flex-1 truncate">{t(item.labelKey)}</span>
+            {#if item.type === "paragraph"}<Check class="size-3.5 shrink-0" />{/if}
+            {#if picked && mobileShell}<WelcomeTouch opacity={touches.quote} left="2rem" />{/if}
+          </span>
+        {/each}
       </div>
     </div>
 

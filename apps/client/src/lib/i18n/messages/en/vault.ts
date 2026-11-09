@@ -82,9 +82,12 @@ export const vaultSetup = {
     headline: "Notes for each project",
     body: "Format your pages with Markdown or slash commands.",
     sceneDescription:
-      "A short animation of the Characters page in the Novel project's Notes, which starts with a quote, the heading Open threads, and a bullet. Typing three number signs and a space on the next line turns it into the heading Mateo's secret, and a paragraph is typed below it. A slash on the next line then opens the slash menu, a short query narrows it to Callout, and Callout is chosen to add the callout Decide what Mateo saw at the station. Further down, a row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, which shows a column for each role and scrolls sideways to the Ally column.",
+      "A short animation of the Characters page in the Novel project's Notes, which starts with a line of text, the heading Open threads, and a bullet. Typing three number signs and a space on the next line turns it into the heading Mateo's secret, and a paragraph is typed below it. A slash on the next line then opens the slash menu, a short query narrows it to Callout, and Callout is chosen to add the callout Decide what Mateo saw at the station. Further down, a row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, which shows a column for each role and scrolls sideways to the Ally column. Back at the top of the page, a right click on the first line opens its menu, where Quote under Paragraph turns the line into a quote.",
+    sceneDescriptionTouch:
+      "A short animation of the Characters page in the Novel project's Notes, which starts with a line of text, the heading Open threads, and a bullet. Typing three number signs and a space on the next line turns it into the heading Mateo's secret, and a paragraph is typed below it. A slash on the next line then opens the slash menu, a short query narrows it to Callout, and Callout is chosen to add the callout Decide what Mateo saw at the station. Further down, a row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, which shows a column for each role and scrolls sideways to the Ally column. Back at the top of the page, a long press on a word of the first line selects it and opens its menu, where Quote under Paragraph turns the line into a quote.",
     page: "Characters",
     quote: "Everyone in this book is hiding something.",
+    quoteWord: "hiding",
     threads: "Open threads",
     bullet: "Clara's letter goes missing",
     heading: "Mateo's secret",

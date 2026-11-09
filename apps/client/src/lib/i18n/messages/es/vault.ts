@@ -88,13 +88,16 @@ export const vaultSetup = {
   },
   notes: {
     headline: "Guarda tus notas dentro de cada proyecto",
-    body: "Escribe páginas, agrégales bases de datos y mira las mismas filas como tabla o como tablero.",
+    body: "Escribe páginas con cualquier bloque del menú de barra y agrega bases de datos que puedes ver como tabla o como tablero.",
     sceneDescription:
-      "Una breve animación de la página Personajes en las notas del proyecto Novela. Una fila llamada Mateo se agrega a la base de datos Reparto de la página y recibe el rol Aliado, luego la base de datos cambia a su vista de tablero, donde la tarjeta de Mateo se arrastra de la columna Aliado a la columna Rival.",
-    sceneDescriptionTouch:
-      "Una breve animación de la página Personajes en las notas del proyecto Novela. Una fila llamada Mateo se agrega a la base de datos Reparto de la página y recibe el rol Aliado, luego la base de datos cambia a su vista de tablero, que muestra una columna por cada rol.",
+      "Una breve animación de la página Personajes en las notas del proyecto Novela. Una barra escrita en una línea vacía abre el menú de barra, que recorre los bloques que ofrece, y de él se elige Tarea para agregar la tarea Decidir qué vio Mateo. Más abajo, una fila llamada Mateo se agrega a la base de datos Reparto de la página y recibe el rol Aliado, luego la base de datos cambia a su vista de tablero, que muestra una columna por cada rol.",
     page: "Personajes",
     paragraph: "Quién es quién en la historia.",
+    quote: "En este libro, todos esconden algo.",
+    threads: "Hilos abiertos",
+    bullet: "La carta de Clara desaparece",
+    slashQuery: "tarea",
+    todo: "Decidir qué vio Mateo",
     database: "Reparto",
     name: "Nombre",
     role: "Rol",

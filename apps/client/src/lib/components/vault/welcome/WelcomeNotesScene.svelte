@@ -27,6 +27,7 @@
   import PanelLeft from "@lucide/svelte/icons/panel-left";
   import PanelRight from "@lucide/svelte/icons/panel-right";
   import Plus from "@lucide/svelte/icons/plus";
+  import Search from "@lucide/svelte/icons/search";
   import Share2 from "@lucide/svelte/icons/share-2";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
   import Star from "@lucide/svelte/icons/star";
@@ -34,6 +35,16 @@
   import CollectionCell from "$lib/components/collections/CollectionCell.svelte";
   import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
   import CollectionRow from "$lib/components/collections/CollectionRow.svelte";
+  import {
+    notesSlashBlockGroup,
+    notesSlashCommandHint,
+    notesSlashCommandIcon,
+    notesSlashCommandLabel,
+    notesSlashMenuCatalog,
+    notesSlashMenuGroups,
+    type NotesSlashMenuGroup,
+  } from "$lib/components/notes/blocks/slash-menu-presentation";
+  import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import WelcomeCaret from "$lib/components/vault/welcome/WelcomeCaret.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
@@ -41,24 +52,29 @@
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { notesBlockColorStyle } from "$lib/notes/blocks/color";
+  import { notesBlockColorStyle, notesBlockColorSwatchStyle } from "$lib/notes/blocks/color";
+  import { notesRichTextPreviewClass } from "$lib/notes/blocks/editor-ui";
+  import { sectionNotesSlashCommandItems } from "$lib/notes/editor/slash-commands";
+  import type { NotesBlockType } from "$lib/notes/types";
   import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { cn } from "$lib/utils";
+  import { anchoredPanelStyle } from "$lib/utils/anchored-panel";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { pickSelectPopoverGeometry } from "$lib/utils/select-popover-position";
   import { welcomeCursorFrame, type WelcomeCursorPoint } from "$lib/vault/welcome-cursor";
   import { WELCOME_NO_HOVER, welcomeHoverAt, welcomeHoverSame } from "$lib/vault/welcome-hover";
   import {
     NOTES_CAST,
     NOTES_CURSOR,
-    NOTES_DROP_ROLE,
     NOTES_NEW_CHARACTER,
     NOTES_NEW_ROLE,
     NOTES_ROLE_COLORS,
     NOTES_ROLE_ORDER,
     notesBoardActive,
     notesBoardShown,
-    notesDrag,
+    notesLineCaretOn,
+    notesLineText,
     notesNameCaretOn,
     notesNameDraft,
     notesNameFocused,
@@ -68,6 +84,10 @@
     notesRoleHighlighted,
     notesRoleMenuOpen,
     notesRowAdded,
+    notesSlashMenuOpen,
+    notesSlashMenuScroll,
+    notesSlashQuery,
+    notesTodoAdded,
     notesTouches,
     type NotesSceneCharacter,
     type NotesSceneRole,
@@ -75,10 +95,11 @@
   } from "$lib/vault/welcome-notes-scene";
 
   /**
-   * One frame of the welcome scene on Notes, drawn with the app's own surfaces: the Novel project's Characters page
-   * scrolls to its Cast database, a row is added to the table, named, and given a role from its cell, and the database
-   * switches to its Board view, where the new card is dragged from its role's column to another. Every style is a
-   * function of `elapsed`, with no CSS transitions.
+   * One frame of the welcome scene on Notes, drawn with the app's own surfaces: on the Novel project's Characters page,
+   * a slash on an empty line opens the slash menu, which scrolls through its blocks and narrows to To-do list as a query
+   * is typed, and the picked to-do is filled in. The page then scrolls to its Cast database, where a row is added to the
+   * table, named, and given a role from its cell, and the database switches to its Board view. Every style is a function
+   * of `elapsed`, with no CSS transitions.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -114,17 +135,46 @@
   const TABLE_HANG_MAX_PX = 56;
   /** Room kept below the database once the page scrolls to it, and above its title at most. */
   const SCROLL_PAD_PX = 16;
-  /** The gap between a column's cards (`gap-2`), where the dragged card lands below the card before it. */
-  const CARD_GAP_PX = 8;
-  /** How much a held card grows as it lifts off the board. */
-  const DRAG_LIFT_SCALE = 0.02;
-  /** The card the held one is dropped after: the last one already in the role it is dragged to. */
-  const DROP_AFTER = NOTES_CAST.findLast((row) => row.role === NOTES_DROP_ROLE)?.key;
+  /** The slash menu's preferred height, in rem, as the editor caps it. */
+  const SLASH_MAX_HEIGHT_REM = 22;
+  /** A zero-width character that gives the slash line's anchor the height of a line of text. */
+  const ZERO_WIDTH_SPACE = "​";
+  /** The bulleted list item's marker, as the editor draws it at the top level. */
+  const BULLET_MARKER = "•";
+
+  /** A block of the page above its database: its type and the key of its text. */
+  interface NotesSceneBlock {
+    id: string;
+    type: NotesBlockType;
+    text: "paragraph" | "quote" | "threads" | "bullet";
+  }
+
+  /** The blocks the page starts with, above the empty line the slash is typed into. */
+  const PAGE_BLOCKS: readonly NotesSceneBlock[] = [
+    { id: "paragraph", type: "paragraph", text: "paragraph" },
+    { id: "quote", type: "quote", text: "quote" },
+    { id: "threads", type: "heading_2", text: "threads" },
+    { id: "bullet", type: "bulleted_list_item", text: "bullet" },
+  ];
 
   const canvasW = $derived(width - 2 * BEZEL);
   const canvasH = $derived(height - 2 * BEZEL);
   const editorPad = $derived(canvasW >= EDITOR_WIDE_W ? EDITOR_PAD_WIDE : EDITOR_PAD_NARROW);
   const tableHang = $derived(Math.min(editorPad, TABLE_HANG_MAX_PX));
+
+  const slashQuery = $derived(t("vaultSetup.notes.slashQuery"));
+  const lineText = $derived(notesLineText(elapsed, slashQuery, t("vaultSetup.notes.todo")));
+  const lineCaretOn = $derived(notesLineCaretOn(elapsed));
+  const todoAdded = $derived(notesTodoAdded(elapsed));
+  const slashOpen = $derived(notesSlashMenuOpen(elapsed));
+  const typedQuery = $derived(notesSlashQuery(elapsed, slashQuery));
+  const slashMenuScroll = $derived(notesSlashMenuScroll(elapsed));
+  /** The slash menu's groups for the query typed so far, as a fresh vault lists them with no recent blocks yet. */
+  const slashGroups = $derived(
+    notesSlashMenuGroups(sectionNotesSlashCommandItems(notesSlashMenuCatalog(true, t), typedQuery, []), t).filter((group) => group.items.length > 0),
+  );
+  /** The menu highlights its first item, as it does while nothing else is under the pointer. */
+  const slashActiveKey = $derived(slashGroups[0]?.items[0]?.key);
 
   const scroll = $derived(notesPageScroll(elapsed));
   const rowAdded = $derived(notesRowAdded(elapsed));
@@ -136,8 +186,6 @@
   const newRole = $derived(notesNewRole(elapsed));
   const boardActive = $derived(notesBoardActive(elapsed));
   const boardShown = $derived(notesBoardShown(elapsed));
-  const drag = $derived(mobileShell ? null : notesDrag(elapsed));
-  const dragging = $derived(drag !== null);
   const touches = $derived(notesTouches(elapsed));
 
   /** The database's rows: the cast it starts with, then the added row with the role it has so far. */
@@ -156,8 +204,10 @@
   let database = $state<HTMLDivElement>();
   let roleCell = $state<HTMLDivElement>();
   let roleMenu = $state<HTMLDivElement>();
-  let board = $state<HTMLDivElement>();
-  let cardElements = $state<Partial<Record<NotesSceneCharacter, HTMLDivElement>>>({});
+  let slashAnchor = $state<HTMLSpanElement>();
+  let slashMenu = $state<HTMLDivElement>();
+  let slashScroll = $state<HTMLDivElement>();
+  let slashList = $state<HTMLDivElement>();
 
   /** A box in the logical pixels of the element it is measured against. */
   interface Box {
@@ -173,8 +223,11 @@
   let pageLayout = $state<{ viewport: number; top: number; bottom: number } | null>(null);
   /** The role cell on the canvas and the role menu's size, measured as the menu opens. */
   let menuLayout = $state<{ cell: Box; width: number; height: number } | null>(null);
-  /** The new card's place on the board as its drag starts, and its place below the card it is dropped after. */
-  let dragLayout = $state<{ from: Box; to: Box } | null>(null);
+  /**
+   * The slash line's start on the canvas, the slash menu's chrome and list heights, the root font size its height cap is
+   * in, and how far down its list the advanced blocks' group starts, measured as its contents change.
+   */
+  let slashLayout = $state<{ trigger: Box; chrome: number; list: number; rem: number; advanced: number } | null>(null);
 
   $effect(() => {
     const bump = () => {
@@ -191,14 +244,14 @@
     };
   });
 
-  /** Measure the page, the role menu, and the drag once they lay themselves out for the canvas and the language. */
+  /** Measure the page and its menus once they lay themselves out for the canvas, the language, and the typed query. */
   $effect(() => {
     void layoutTick;
     void canvasW;
     void canvasH;
     void localization.locale;
     void menuOpen;
-    void dragging;
+    void typedQuery;
     if (pageViewport && pageContent && database) {
       const box = relBox(database, pageContent);
       pageLayout = { viewport: pageViewport.clientHeight, top: box.top, bottom: box.top + box.height };
@@ -206,13 +259,36 @@
     if (canvas && roleCell && roleMenu) {
       menuLayout = { cell: relBox(roleCell, canvas), width: roleMenu.offsetWidth, height: roleMenu.offsetHeight };
     }
-    const source = cardElements[NOTES_NEW_CHARACTER];
-    const anchor = DROP_AFTER ? cardElements[DROP_AFTER] : undefined;
-    if (board && source && anchor && dragging) {
-      const from = relBox(source, board);
-      const after = relBox(anchor, board);
-      dragLayout = { from, to: { top: after.top + after.height + CARD_GAP_PX, left: after.left, width: after.width, height: from.height } };
+    if (canvas && slashAnchor && slashMenu && slashScroll && slashList) {
+      const advanced = slashList.querySelector<HTMLElement>("[data-slash-advanced]");
+      slashLayout = {
+        trigger: relBox(slashAnchor, canvas),
+        chrome: slashMenu.offsetHeight - slashScroll.clientHeight,
+        list: slashScroll.scrollHeight,
+        rem: Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16,
+        advanced: advanced ? relBox(advanced, slashList).top : 0,
+      };
     }
+  });
+
+  /** The slash menu's place beside the slash, as the editor places it, kept laid out while closed so its size is known. */
+  const slashMenuStyle = $derived.by(() => {
+    if (!slashLayout) return "visibility: hidden";
+    const { trigger, chrome, list, rem } = slashLayout;
+    const style = anchoredPanelStyle({
+      triggerRect: { top: trigger.top, left: trigger.left, right: trigger.left + trigger.width, bottom: trigger.top + trigger.height },
+      viewportWidth: canvasW,
+      viewportHeight: canvasH,
+      preferredWidth: FLOATING_WIDTH.lg,
+      preferredMaxHeight: Math.min(SLASH_MAX_HEIGHT_REM * rem, list + chrome),
+    });
+    return slashOpen ? style : `${style}; visibility: hidden`;
+  });
+
+  /** Scroll the slash menu's list toward its advanced blocks, as far as the list lets it. */
+  $effect(() => {
+    const target = (slashLayout?.advanced ?? 0) * slashMenuScroll;
+    if (slashScroll && slashScroll.scrollTop !== target) slashScroll.scrollTop = target;
   });
 
   /** How far the page has scrolled: enough to keep the database in view below, but never past its top. */
@@ -234,20 +310,12 @@
     });
   });
 
-  /** The held card's place on the board, carried from its column to where it lands. */
-  const ghost = $derived.by(() => {
-    if (!drag || !dragLayout) return null;
-    const { from, to } = dragLayout;
-    const mix = (a: number, b: number) => a + (b - a) * drag.progress;
-    return { top: mix(from.top, to.top), left: mix(from.left, to.left), width: mix(from.width, to.width), lift: drag.lift };
-  });
-
   /** Follow the desktop pointer across the page as it moves and as the page scrolls or changes under it. */
   $effect(() => {
     void elapsed;
     void scrollPx;
     void layoutTick;
-    const next = mobileShell || cursorAway || dragging || !canvas ? WELCOME_NO_HOVER : welcomeHoverAt(canvas, canvasW, cursorPoint);
+    const next = mobileShell || cursorAway || !canvas ? WELCOME_NO_HOVER : welcomeHoverAt(canvas, canvasW, cursorPoint);
     if (!welcomeHoverSame(next, untrack(() => hover))) hover = next;
   });
 
@@ -281,6 +349,12 @@
   /** A role's name, or the empty cell's label. */
   function roleName(role: NotesSceneRole | null): string {
     return role === null ? t("notes.databaseTableEmptyCell") : t(`vaultSetup.notes.roles.${role}`);
+  }
+
+  /** Whether a slash menu group lists the advanced blocks, which the menu scrolls down to. */
+  function advancedGroup(group: NotesSlashMenuGroup): boolean {
+    const command = group.items[0]?.command;
+    return (command?.kind === "block" || command?.kind === "toggle_heading") && notesSlashBlockGroup(command) === "advanced";
   }
 
   function characterName(key: NotesSceneCharacter): string {
@@ -326,17 +400,16 @@
   </span>
 {/snippet}
 
-<!-- A board card, as the board draws it; `grip` names its handle for the pointer, and `held` marks the one being dragged. -->
-{#snippet card(row: NotesSceneRow, grip: string | undefined, held: boolean)}
-  {@const cardHovered = !held && hovered(`card:${row.key}`)}
-  <div class={cn("collection-card relative min-w-0 rounded-lg border bg-card text-card-foreground", held ? "border-foreground/25 shadow-lg" : cn("shadow-sm", cardHovered ? "border-foreground/25" : "border-border"))} data-scene-hover={held ? undefined : `card:${row.key}`}>
+<!-- A board card, as the board draws it. -->
+{#snippet card(row: NotesSceneRow)}
+  {@const cardHovered = hovered(`card:${row.key}`)}
+  <div class={cn("collection-card relative min-w-0 rounded-lg border bg-card text-card-foreground shadow-sm", cardHovered ? "border-foreground/25" : "border-border")} data-scene-hover={`card:${row.key}`}>
     <div class="p-3">
       <div class="flex min-w-0 items-start gap-1.5">
         {#if !mobileShell}
           <span
-            data-cursor={grip}
-            data-scene-hover={held ? undefined : `grip:${row.key}`}
-            class={cn("mt-1 flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground", (held || hovered(`grip:${row.key}`)) && "bg-accent")}
+            data-scene-hover={`grip:${row.key}`}
+            class={cn("mt-1 flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground", hovered(`grip:${row.key}`) && "bg-accent")}
           >
             <GripVertical class="size-3.5" />
           </span>
@@ -353,6 +426,7 @@
   <div
     bind:this={canvas}
     class="relative flex flex-col overflow-hidden rounded-2xl bg-(--cal-bg) text-foreground"
+    style:contain="layout"
     style:width={`${canvasW}px`}
     style:height={`${canvasH}px`}
   >
@@ -418,9 +492,29 @@
         <div bind:this={pageContent} style:transform={scrollPx > 0 ? `translateY(${-scrollPx}px)` : undefined}>
           <div class="mx-auto flex w-full max-w-208 flex-col pt-3 pb-12" style:padding-inline={`${editorPad}px`}>
             <div class="min-w-0 pb-5">
-              <h1 class="font-bold leading-[1.2] break-words" style:font-size="calc(2.5rem * var(--font-scale, 1))">{t("vaultSetup.notes.page")}</h1>
+              <h1 class="notes-editor-page-title block w-full min-w-0 font-bold leading-[1.2] break-words text-foreground">{t("vaultSetup.notes.page")}</h1>
             </div>
-            <p class="min-h-7 px-0.5 py-0.5 leading-[1.6]">{t("vaultSetup.notes.paragraph")}</p>
+
+            <!-- The page's blocks, as the editor draws them while none is being edited. -->
+            {#each PAGE_BLOCKS as block (block.id)}
+              <div data-scene-hover={`block:${block.id}`} class={cn("flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2", hovered(`block:${block.id}`) && "bg-accent/50")}>
+                {#if block.type === "bulleted_list_item"}
+                  <div class="notes-editor-body-text min-w-5 shrink-0 select-none whitespace-nowrap py-1 text-right leading-normal text-muted-foreground">{BULLET_MARKER}</div>
+                {/if}
+                <div class="relative min-w-0 flex-1">
+                  <div class={notesRichTextPreviewClass(block.type)}>{t(`vaultSetup.notes.${block.text}`)}</div>
+                </div>
+              </div>
+            {/each}
+
+            <!-- The empty line the slash is typed into, which turns into a to-do once To-do list is picked. -->
+            <div data-scene-hover="block:line" class={cn("flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2", hovered("block:line") && "bg-accent/50")}>
+              {#if todoAdded}<input type="checkbox" class="mt-2 size-4 shrink-0 accent-primary" tabindex="-1" />{/if}
+              <div class="relative min-w-0 flex-1" data-cursor="notes-slash-line">
+                <div class={notesRichTextPreviewClass(todoAdded ? "to_do" : "paragraph")}><span bind:this={slashAnchor}>{ZERO_WIDTH_SPACE}</span>{lineText}{#if lineCaretOn}<WelcomeCaret />{/if}</div>
+                {#if mobileShell}<WelcomeTouch opacity={touches.line} />{/if}
+              </div>
+            </div>
 
             <div bind:this={database} class="my-5 space-y-1">
               <div class="flex items-center gap-2 px-1">
@@ -538,14 +632,12 @@
 
                 <!-- The Board view, with a column for each role. -->
                 <div
-                  bind:this={board}
                   class="relative flex min-w-0 gap-3 py-2 [grid-area:1/1]"
                   style:visibility={boardShown <= 0 ? "hidden" : undefined}
                   style:opacity={boardShown > 0 && boardShown < 1 ? boardShown : undefined}
                 >
                   {#each columns as column (column.role)}
-                    {@const target = drag?.over === true && column.role === NOTES_DROP_ROLE}
-                    <div class={cn("flex min-h-56 min-w-0 max-w-72 flex-1 flex-col rounded-lg border p-1", target ? "border-primary/40 bg-primary/5" : "border-transparent bg-muted/20")}>
+                    <div class="flex min-h-56 min-w-0 max-w-72 flex-1 flex-col rounded-lg border border-transparent bg-muted/20 p-1">
                       <div class="flex min-h-10 min-w-0 items-center gap-2 px-2">
                         <span class="min-w-0 flex-1">{@render badge(column.role)}</span>
                         <span class="text-[0.8rem] text-muted-foreground tabular-nums">{formatNumber(localization.locale, column.cards.length)}</span>
@@ -553,14 +645,7 @@
                       </div>
                       <div class="flex min-h-0 flex-1 flex-col gap-2 px-1 pb-1">
                         {#each column.cards as entry (entry.key)}
-                          {@const isNew = entry.key === NOTES_NEW_CHARACTER}
-                          <div bind:this={cardElements[entry.key]} class={cn("relative", isNew && drag && "opacity-50")}>
-                            {@render card(entry, isNew ? "notes-card-grip" : undefined, false)}
-                            <!-- Where the held card lands, drawn in the gap below the card it goes after without moving the column. -->
-                            {#if target && entry.key === DROP_AFTER}
-                              <div class="absolute inset-x-0 h-0.5 rounded-full bg-primary" style:top={`calc(100% + ${(CARD_GAP_PX - 2) / 2}px)`}></div>
-                            {/if}
-                          </div>
+                          {@render card(entry)}
                         {:else}
                           <p class="rounded-md border border-dashed border-border px-3 py-5 text-[0.8rem] text-muted-foreground">{t("notes.databaseRowsEmpty")}</p>
                         {/each}
@@ -578,22 +663,6 @@
                       </div>
                     </div>
                   {/each}
-
-                  <!-- The held card, carried from its column to the place it is dropped. -->
-                  {#if ghost}
-                    {@const held = rows.find((row) => row.key === NOTES_NEW_CHARACTER)}
-                    {#if held}
-                      <div
-                        class="absolute z-30"
-                        style:top={`${ghost.top}px`}
-                        style:left={`${ghost.left}px`}
-                        style:width={`${ghost.width}px`}
-                        style:transform={`scale(${1 + DRAG_LIFT_SCALE * ghost.lift})`}
-                      >
-                        {@render card(held, "notes-drag-grip", true)}
-                      </div>
-                    {/if}
-                  {/if}
                 </div>
               </div>
             </div>
@@ -629,8 +698,60 @@
       </div>
     </div>
 
+    <!--
+      The slash menu, as the editor lists its commands for the query after the slash. The canvas contains its layout, so
+      the fixed place the editor gives the menu lands on the canvas rather than the window.
+    -->
+    <div bind:this={slashMenu} data-scene-cover class="surface-floating fixed top-0 left-0 z-50 flex w-floating-lg flex-col overflow-hidden" style={slashMenuStyle}>
+      <div class="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2 text-muted-foreground">
+        <Search class="size-4 shrink-0" />
+        <span class="truncate">{typedQuery || t("notes.slashSearch")}</span>
+      </div>
+      <div bind:this={slashScroll} class="min-h-0 overflow-y-auto overscroll-contain" use:scrollEdgeFadeAction>
+        <div bind:this={slashList} class="surface-floating-body">
+          {#each slashGroups as group (group.label)}
+            <div class="menu-label" data-slash-advanced={advancedGroup(group) ? "" : undefined}>{group.label}</div>
+            {#each group.items as item (item.key)}
+              {@const Icon = notesSlashCommandIcon(item.command)}
+              {@const hint = notesSlashCommandHint(item.command)}
+              {@const picked = item.command.kind === "block" && item.command.blockType === "to_do"}
+              <span class="menu-item relative" data-cursor={picked ? "notes-slash-pick" : undefined} data-highlighted={item.key === slashActiveKey ? "" : undefined}>
+                {#if item.command.kind === "color"}
+                  <span class="notes-color-swatch" style={notesBlockColorSwatchStyle(item.command.color)}>A</span>
+                {:else if Icon}
+                  <Icon class="size-4 shrink-0" />
+                {/if}
+                <span class="min-w-0 flex-1 truncate">{notesSlashCommandLabel(item.command, t)}</span>
+                {#if hint}<span class="text-panel-detail text-muted-foreground">{hint}</span>{/if}
+                {#if picked && mobileShell}<WelcomeTouch opacity={touches.pick} left="2rem" />{/if}
+              </span>
+            {/each}
+          {/each}
+        </div>
+      </div>
+    </div>
+
     {#if !mobileShell}
       <WelcomeCursor script={NOTES_CURSOR} {elapsed} width={canvasW} bind:position={cursorPoint} />
     {/if}
   </div>
 </div>
+
+<style>
+  /* The slash menu's color swatch, as the editor's slash menu draws it. */
+  .notes-color-swatch {
+    display: inline-flex;
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--notes-color-swatch-border);
+    border-radius: 0.25rem;
+    background: var(--notes-color-swatch-bg);
+    color: var(--notes-color-swatch-fg);
+    font-size: calc(0.65rem * var(--type-scale));
+    font-weight: 600;
+    line-height: 1;
+  }
+</style>

@@ -1,12 +1,12 @@
 /**
- * Timing for the welcome scene on Notes. On the Novel project's Characters page, the page scrolls to the Cast
- * database, a row is added to its table and named, its role is picked from its cell, and the database switches to its
- * Board view, where the new card is dragged from one role's column to another's. A phone has no card drag, so its scene
- * ends once the board shows.
+ * Timing for the welcome scene on Notes. On the Novel project's Characters page, a click on an empty line and a typed
+ * slash open the slash menu, which scrolls through the blocks it offers; a query narrows it to To-do list, which is
+ * picked and filled in. The page then scrolls to its Cast database, where a row is added to the table, named, and given
+ * a role from its cell, and the database switches to its Board view, with a column for each role.
  */
 
 import type { NotesColor } from "$lib/notes/types";
-import { cursorClick, cursorRest, WELCOME_CURSOR_REST_MS, WELCOME_CURSOR_SCROLL_OVERLAP_MS, type WelcomeCursorScript } from "./welcome-cursor";
+import { cursorClick, cursorRest, WELCOME_CURSOR_SCROLL_OVERLAP_MS, type WelcomeCursorScript } from "./welcome-cursor";
 import { easeInOutCubic, filmCaretOn, filmSpan, filmTap, filmTyped } from "./welcome-film";
 import { PROJECTS_CURSOR_REST_ANCHOR, PROJECTS_HOVER_LEAD_MS } from "./welcome-projects-scene";
 
@@ -32,32 +32,38 @@ export const NOTES_CAST: readonly NotesSceneRow[] = [
   { key: "tomas", role: "rival" },
 ];
 
-/** The character the scene adds, the role its cell is given, and the role whose column its card is dragged to. */
+/** The character the scene adds and the role its cell is given. */
 export const NOTES_NEW_CHARACTER: NotesSceneCharacter = "mateo";
 export const NOTES_NEW_ROLE: NotesSceneRole = "ally";
-export const NOTES_DROP_ROLE: NotesSceneRole = "rival";
 
 /** Moments of the scene, in milliseconds from its start. A tap's beat is the moment it lands. */
 export const NOTES_BEATS = {
+  /** A click on the empty line below Open threads puts the caret there, and a slash opens the slash menu. */
+  lineTap: 900,
+  slashTyped: 1400,
+  /** The menu scrolls down through its groups of blocks, then back to the top as a query narrows it. */
+  menuScrollStart: 1900,
+  menuScrollEnd: 3100,
+  queryTypeStart: 3500,
+  queryTypeEnd: 3900,
+  /** To-do list is picked, which turns the line into a to-do, and the to-do is typed. */
+  pickTap: 4600,
+  todoTypeStart: 4900,
+  todoTypeEnd: 6000,
   /** The page scrolls down to the database, keeping room below its table for the row the scene adds. */
-  scrollStart: 400,
-  scrollEnd: 1000,
+  scrollStart: 6500,
+  scrollEnd: 7200,
   /** A tap on the table's New page row adds an empty row with its title focused, a name is typed, and Enter keeps it. */
-  newRowTap: 1500,
-  nameTypeStart: 1700,
-  nameTypeEnd: 2300,
-  nameSubmit: 2700,
+  newRowTap: 7700,
+  nameTypeStart: 7900,
+  nameTypeEnd: 8400,
+  nameSubmit: 8700,
   /** A tap on the new row's Role cell opens its options, and Ally is picked. */
-  roleTap: 3500,
-  rolePick: 4700,
+  roleTap: 9400,
+  rolePick: 10300,
   /** A tap on the Board tab shows the database as a board with a column for each role. */
-  boardTap: 5600,
-  /** The new card is held by its handle, dragged to the Rival column, and dropped below the card there. */
-  dragPress: 6700,
-  dragMoveStart: 6900,
-  dragMoveEnd: 7900,
-  drop: 8100,
-  end: 9300,
+  boardTap: 11000,
+  end: 12200,
 } as const;
 
 const B = NOTES_BEATS;
@@ -68,23 +74,52 @@ export const NOTES_END_HOLD_MS = 900;
 /** How long the board takes to fade in over the table once its tab is tapped. */
 export const NOTES_VIEW_FADE_MS = 220;
 
-/** How long a held card takes to lift off the board before it moves. */
-export const NOTES_DRAG_LIFT_MS = 160;
+/** The frame shown as a still with reduced motion: the board with the new card in its role's column. */
+export const NOTES_STILL = B.end;
 
-/** Where a phone's scene ends: once the board has shown for a while, before the card drag a phone does not show. */
-export const NOTES_MOBILE_END = B.boardTap + 1000;
+/** Whether the slash line holds the caret: from the click on it until the page scrolls away to the database. */
+export function notesLineFocused(elapsed: number): boolean {
+  return elapsed >= B.lineTap && elapsed < B.scrollStart;
+}
 
-/** How long a run of the scene lasts on a phone or with a pointer. */
-export function notesSceneEnd(mobile: boolean): number {
-  return mobile ? NOTES_MOBILE_END : B.end;
+/** Whether the slash menu is open: from the typed slash until a block is picked. */
+export function notesSlashMenuOpen(elapsed: number): boolean {
+  return elapsed >= B.slashTyped && elapsed < B.pickTap;
+}
+
+/** As much of `query` as follows the slash, typed a character at a time. */
+export function notesSlashQuery(elapsed: number, query: string): string {
+  return filmTyped(elapsed, query, B.queryTypeStart, B.queryTypeEnd);
 }
 
 /**
- * The frame shown as a still with reduced motion: the board with the new card in its role's column, after the drag on
- * desktop and as the role cell left it on a phone.
+ * How far the slash menu has scrolled toward the groups below its basic blocks, from 0 to 1. A query narrows the list
+ * and brings its first match to the top, so the menu is back at the top once one is typed.
  */
-export function notesSceneStill(mobile: boolean): number {
-  return notesSceneEnd(mobile);
+export function notesSlashMenuScroll(elapsed: number): number {
+  if (elapsed >= B.queryTypeStart) return 0;
+  return easeInOutCubic(filmSpan(elapsed, B.menuScrollStart, B.menuScrollEnd));
+}
+
+/** Whether the slash line has turned into a to-do. */
+export function notesTodoAdded(elapsed: number): boolean {
+  return elapsed >= B.pickTap;
+}
+
+/**
+ * The slash line's text: empty until the slash, then the slash and its query until a block is picked, then as much
+ * of `todo` as the new to-do holds.
+ */
+export function notesLineText(elapsed: number, query: string, todo: string): string {
+  if (notesTodoAdded(elapsed)) return filmTyped(elapsed, todo, B.todoTypeStart, B.todoTypeEnd);
+  return elapsed >= B.slashTyped ? `/${notesSlashQuery(elapsed, query)}` : "";
+}
+
+/** Whether the slash line's caret shows: steady while something is typed into it, and blinking in between. */
+export function notesLineCaretOn(elapsed: number): boolean {
+  if (!notesLineFocused(elapsed)) return false;
+  if (elapsed >= B.pickTap) return filmCaretOn(elapsed, B.todoTypeEnd);
+  return filmCaretOn(elapsed, elapsed >= B.queryTypeStart ? B.queryTypeEnd : B.slashTyped);
 }
 
 /** How far the page has scrolled down to the database, from 0 to 1. */
@@ -127,9 +162,8 @@ export function notesOptionHovered(elapsed: number): boolean {
   return elapsed >= B.rolePick - PROJECTS_HOVER_LEAD_MS && elapsed < B.rolePick;
 }
 
-/** The new row's role: empty as the row is added, then the picked role, then the column its card is dropped in. */
+/** The new row's role: empty as the row is added, then the picked role. */
 export function notesNewRole(elapsed: number): NotesSceneRole | null {
-  if (elapsed >= B.drop) return NOTES_DROP_ROLE;
   return elapsed >= B.rolePick ? NOTES_NEW_ROLE : null;
 }
 
@@ -143,25 +177,10 @@ export function notesBoardShown(elapsed: number): number {
   return filmSpan(elapsed, B.boardTap, B.boardTap + NOTES_VIEW_FADE_MS);
 }
 
-/** The new card's drag at one moment. */
-export interface NotesSceneDrag {
-  /** How far the card has lifted off the board, from 0 to 1. */
-  lift: number;
-  /** How far the card has travelled from its column to its drop place, eased, from 0 to 1. */
-  progress: number;
-  /** Whether the card is over the column it is dropped in, which shows where it lands. */
-  over: boolean;
-}
-
-/** The new card's drag at `elapsed`, or null while it is not held. */
-export function notesDrag(elapsed: number): NotesSceneDrag | null {
-  if (elapsed < B.dragPress || elapsed >= B.drop) return null;
-  const progress = easeInOutCubic(filmSpan(elapsed, B.dragMoveStart, B.dragMoveEnd));
-  return { lift: filmSpan(elapsed, B.dragPress, B.dragPress + NOTES_DRAG_LIFT_MS), progress, over: progress >= 0.5 };
-}
-
 /** The scene's touches, each from 0 to 1 as it shows. */
 export interface NotesSceneTouches {
+  line: number;
+  pick: number;
   newRow: number;
   role: number;
   roleOption: number;
@@ -171,6 +190,8 @@ export interface NotesSceneTouches {
 /** The scene's touches at `elapsed`. */
 export function notesTouches(elapsed: number): NotesSceneTouches {
   return {
+    line: filmTap(elapsed, B.lineTap),
+    pick: filmTap(elapsed, B.pickTap),
     newRow: filmTap(elapsed, B.newRowTap),
     role: filmTap(elapsed, B.roleTap),
     roleOption: filmTap(elapsed, B.rolePick),
@@ -179,22 +200,18 @@ export function notesTouches(elapsed: number): NotesSceneTouches {
 }
 
 /**
- * The desktop pointer's path through the scene: it rests on the page while it scrolls, clicks New page once the table
- * is in view and stays while the name is typed, opens the new row's Role and picks Ally, switches to the board, then
- * takes the new card by its handle and drags it to the Rival column, following the card it carries.
+ * The desktop pointer's path through the scene: it clicks the empty line and waits while the slash menu scrolls and
+ * narrows, clicks To-do list once the query leaves it on top, then moves back over the page while the to-do is typed
+ * and the page scrolls. It clicks New page once the table is in view, opens the new row's Role and picks Ally, then
+ * switches the database to its board.
  */
 export const NOTES_CURSOR: WelcomeCursorScript = [
-  cursorRest("notes-page", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR, busy: [{ start: B.scrollStart, end: B.scrollEnd }] }),
+  cursorRest("notes-page", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
+  cursorClick("notes-slash-line", B.lineTap, { glyph: "text", after: 0 }),
+  cursorClick("notes-slash-pick", B.pickTap, { after: B.queryTypeEnd }),
+  cursorRest("notes-page", B.todoTypeEnd, { anchor: PROJECTS_CURSOR_REST_ANCHOR, busy: [{ start: B.scrollStart, end: B.scrollEnd }] }),
   cursorClick("notes-new-row", B.newRowTap, { after: B.scrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
   cursorClick("notes-role", B.roleTap, { glyph: "pointer", after: B.nameSubmit }),
-  cursorClick("notes-role-option", B.rolePick),
+  cursorClick("notes-role-option", B.rolePick, { after: B.roleTap }),
   cursorClick("notes-board-tab", B.boardTap, { after: B.rolePick }),
-  cursorRest("notes-card-grip", B.dragPress - WELCOME_CURSOR_REST_MS),
-  {
-    target: "notes-drag-grip",
-    depart: B.dragMoveStart,
-    arrive: B.dragMoveEnd,
-    press: { start: B.dragPress, end: B.drop },
-    follow: true,
-  },
 ];

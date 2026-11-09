@@ -80,13 +80,16 @@ export const vaultSetup = {
   },
   notes: {
     headline: "Keep your notes inside each project",
-    body: "Write pages, add databases to them, and see the same rows as a table or a board.",
+    body: "Write pages with any block from the slash menu, and add databases you can see as a table or a board.",
     sceneDescription:
-      "A short animation of the Characters page in the Novel project's Notes. A row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, where Mateo's card is dragged from the Ally column to the Rival column.",
-    sceneDescriptionTouch:
-      "A short animation of the Characters page in the Novel project's Notes. A row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, which shows a column for each role.",
+      "A short animation of the Characters page in the Novel project's Notes. A slash typed on an empty line opens the slash menu, which scrolls through the blocks it offers, and To-do list is picked from it to add the to-do Decide what Mateo saw. Further down, a row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, which shows a column for each role.",
     page: "Characters",
     paragraph: "Who's who in the story.",
+    quote: "Everyone in this book is hiding something.",
+    threads: "Open threads",
+    bullet: "Clara's letter goes missing",
+    slashQuery: "todo",
+    todo: "Decide what Mateo saw",
     database: "Cast",
     name: "Name",
     role: "Role",

@@ -68,7 +68,9 @@
   import { projectListColumnKind } from "$lib/components/projects/list/property-kinds";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
+  import WelcomeCaret from "$lib/components/vault/welcome/WelcomeCaret.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
+  import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { welcomeCursorFrame, welcomeCursorHovered, type WelcomeCursorPoint } from "$lib/vault/welcome-cursor";
   import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
   import { GUTTER_WIDTH_PER_TIMEZONE } from "$lib/calendar/timezone-utils";
@@ -987,14 +989,7 @@
 </script>
 
 {#snippet touch(opacity: number, left: string, top: string)}
-  {#if mobileShell && opacity > 0}
-    <span
-      class="pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-      style:left
-      style:top
-      style:opacity
-    ></span>
-  {/if}
+  {#if mobileShell}<WelcomeTouch {opacity} {left} {top} />{/if}
 {/snippet}
 
 {#snippet checkbox()}
@@ -1007,7 +1002,7 @@
 
 <!-- A focused text field's caret, as a text input draws it. -->
 {#snippet caret()}
-  <span class="film-caret"></span>
+  <WelcomeCaret />
 {/snippet}
 
 <!--
@@ -1545,12 +1540,8 @@
                 {/if}
 
                 <!-- The press that draws the event, following its growing edge. -->
-                {#if mobileShell && pressOpacity > 0}
-                  <span
-                    class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-                    style:top={`${y(PROJECTS_EVENT.start + pressMinutes)}px`}
-                    style:opacity={pressOpacity}
-                  ></span>
+                {#if mobileShell}
+                  <WelcomeTouch opacity={pressOpacity} left="60%" top={`${y(PROJECTS_EVENT.start + pressMinutes)}px`} />
                 {/if}
               </div>
 
@@ -1978,16 +1969,6 @@
     border-bottom: 1px solid var(--cal-gridline);
     content: "";
     pointer-events: none;
-  }
-
-  /* A focused text field's caret, as a text input draws it. */
-  .film-caret {
-    display: inline-block;
-    width: 1px;
-    height: 1.1em;
-    margin-left: 1px;
-    vertical-align: text-bottom;
-    background-color: currentColor;
   }
 
   /* The picked swatch's outline, as the color picker draws it. */

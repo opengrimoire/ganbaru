@@ -48,6 +48,7 @@
   import PomodoroMenuVolume from "$lib/components/pomodoro/PomodoroMenuVolume.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
+  import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
   import WelcomeFilmNotification, { type FilmNotificationKind } from "$lib/components/vault/welcome/WelcomeFilmNotification.svelte";
   import type { EventPanelAnchor } from "$lib/utils/responsive";
@@ -507,13 +508,8 @@
   </div>
 {/snippet}
 
-{#snippet touch(opacity: number, position: string)}
-  {#if mobileShell && opacity > 0}
-    <span
-      class={cn("pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35", position)}
-      style:opacity
-    ></span>
-  {/if}
+{#snippet touch(opacity: number, left?: string)}
+  {#if mobileShell}<WelcomeTouch {opacity} {left} />{/if}
 {/snippet}
 
 {#snippet eventBlock(
@@ -589,7 +585,7 @@
             trackClass="stroke-muted-foreground/35"
             progressClass="text-foreground/76 stroke-foreground/76"
           />
-          {@render touch(ringTouch, "left-1/2 top-1/2")}
+          {@render touch(ringTouch)}
         </span>
       </div>
     {:else}
@@ -609,7 +605,7 @@
             trackClass="stroke-foreground/20 dark:stroke-white/20"
             progressClass="text-foreground/68 dark:text-white/76 stroke-foreground/68 dark:stroke-white/76"
           />
-          {@render touch(ringTouch, "left-1/2 top-1/2")}
+          {@render touch(ringTouch)}
         </span>
       </div>
     {/if}
@@ -629,7 +625,7 @@
         >
           <span>{t("titleBar.pomodoro.pauseFocus")}</span>
           <PauseIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-          {@render touch(menuItemTouch, "left-2/5 top-1/2")}
+          {@render touch(menuItemTouch, "40%")}
         </div>
         <div class="menu-item justify-between gap-4 whitespace-nowrap">
           <span>{t("titleBar.pomodoro.extendFocusMinutes", FOCUS_EXTENSION_MINUTES)}</span>
@@ -789,12 +785,8 @@
                 {/if}
 
                 <!-- The press that draws the session on a phone, following its growing edge. -->
-                {#if mobileShell && pressOpacity > 0}
-                  <span
-                    class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-                    style:top={`${y(SESSION_START + pressMinutes)}px`}
-                    style:opacity={pressOpacity}
-                  ></span>
+                {#if mobileShell}
+                  <WelcomeTouch opacity={pressOpacity} left="60%" top={`${y(SESSION_START + pressMinutes)}px`} />
                 {/if}
               {/if}
             </div>

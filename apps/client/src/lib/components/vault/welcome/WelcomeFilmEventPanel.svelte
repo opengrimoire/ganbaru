@@ -57,6 +57,8 @@
   import VolumeX from "@lucide/svelte/icons/volume-x";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import AudioLinesXIcon from "$lib/components/music/soundscape/AudioLinesXIcon.svelte";
+  import WelcomeCaret from "$lib/components/vault/welcome/WelcomeCaret.svelte";
+  import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import type {
     WelcomeEventPanelFrame,
     WelcomeEventPanelMusicPhase,
@@ -446,13 +448,8 @@
   const projectHighlighted = $derived(pickTouch > 0 || hovered === "panel-project-pick");
 </script>
 
-{#snippet touch(opacity: number, position: string)}
-  {#if mobileLayout && opacity > 0}
-    <span
-      class={cn("pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35", position)}
-      style:opacity
-    ></span>
-  {/if}
+{#snippet touch(opacity: number, left?: string)}
+  {#if mobileLayout}<WelcomeTouch {opacity} {left} />{/if}
 {/snippet}
 
 {#snippet searchField()}
@@ -488,7 +485,7 @@
     </StarredIconBadge>
     <span class="min-w-0 flex-1 truncate">{project.label}</span>
     {#if project.id === pickedProject.id}
-      {@render touch(pickTouch, "left-2/5 top-1/2")}
+      {@render touch(pickTouch, "40%")}
     {/if}
   </div>
 {/snippet}
@@ -505,7 +502,7 @@
       <div bind:offsetHeight={barHeight} class="sticky top-0 z-10 shrink-0" style="background-color: var(--panel-bg);">
         <div class="flex justify-center pt-2 pb-1.5">
           <div class="relative h-1 w-9 rounded-full bg-muted-foreground/40">
-            {@render touch(frame.touches.sheetDrag, "left-1/2 top-1/2")}
+            {@render touch(frame.touches.sheetDrag)}
           </div>
         </div>
         <div class="flex items-center gap-1 px-1">
@@ -519,7 +516,7 @@
               style:transform={filmPressTransform(saveTouch)}
             >
               {t("common.save")}
-              {@render touch(saveTouch, "left-1/2 top-1/2")}
+              {@render touch(saveTouch)}
             </span>
           </div>
         </div>
@@ -549,8 +546,8 @@
                     "w-full overflow-hidden whitespace-pre bg-transparent py-0.5 text-[1rem] font-semibold",
                     typed ? "text-foreground" : "text-event-panel-placeholder",
                   )}
-                >{#if typed}{typed}{:else if !typing}{t("calendar.eventPanel.titlePlaceholder")}{/if}{#if typing && caretOn}<span class="film-caret"></span>{/if}{#if typing && !typed && !caretOn}&#8203;{/if}</div>
-                {@render touch(frame.touches.title, "left-1/4 top-1/2")}
+                >{#if typed}{typed}{:else if !typing}{t("calendar.eventPanel.titlePlaceholder")}{/if}{#if typing && caretOn}<WelcomeCaret />{/if}{#if typing && !typed && !caretOn}&#8203;{/if}</div>
+                {@render touch(frame.touches.title, "25%")}
               </div>
               <div class={cn("event-identity-controls flex items-center", mobileLayout ? "gap-1" : "gap-2.5")}>
                 <div
@@ -571,7 +568,7 @@
                   {:else}
                     <SquareDashedPlus size={TRIGGER_ICON_SIZE} strokeWidth={TRIGGER_EMPTY_STROKE_WIDTH} />
                   {/if}
-                  {@render touch(projectTouch, "left-1/2 top-1/2")}
+                  {@render touch(projectTouch)}
                 </div>
                 <div
                   bind:this={colorTrigger}
@@ -680,7 +677,7 @@
                   <div data-control data-cursor="panel-music" class="relative flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left">
                     <span class={cn("translate-y-[1.13px] text-[0.8rem]", musicOn ? "text-foreground" : "text-muted-foreground")}>{t("calendar.eventPanel.music")}</span>
                     <span class="ml-auto min-w-0 translate-y-[1.13px] truncate text-[0.733333rem] text-muted-foreground">{musicSummary}</span>
-                    {@render touch(frame.touches.music, "left-1/4 top-1/2")}
+                    {@render touch(frame.touches.music, "25%")}
                   </div>
                 </div>
                 <div bind:offsetHeight={musicShownHeight} class="overflow-hidden" style:height={`${musicOpenHeight}px`} inert={musicOpenHeight === 0 || undefined}>
@@ -710,7 +707,7 @@
                               strokeWidth={2}
                               class={cn("shrink-0 text-muted-foreground", playlistPicker?.phase === row.phase && "rotate-180")}
                             />
-                            {@render touch(row.touch, "left-1/2 top-1/2")}
+                            {@render touch(row.touch)}
                           </div>
                           {#if showSounds}
                             <div class={MUSIC_TRIGGER_CLASS}>
@@ -745,7 +742,7 @@
             class="relative flex flex-1 items-center justify-center gap-2 bg-action-confirm py-1.5 text-[0.866667rem] text-action-confirm-foreground"
           >
             <span>{t("calendar.eventPanel.saveShortcut", formatShortcut("Mod + Enter"))}</span>
-            {@render touch(saveTouch, "left-1/2 top-1/2")}
+            {@render touch(saveTouch)}
           </div>
         </div>
       </div>
@@ -793,7 +790,7 @@
                         <span class="truncate text-sm">{group.label}</span>
                         <ChevronRight size={18} strokeWidth={PICKER_ICON_STROKE_WIDTH} class="justify-self-end text-popover-foreground/60" />
                         {#if group.id === pickedGroup.id}
-                          {@render touch(groupTouch, "left-2/5 top-1/2")}
+                          {@render touch(groupTouch, "40%")}
                         {/if}
                       </div>
                     </div>
@@ -830,7 +827,7 @@
                       <ProjectIcon name={group.icon} size={PICKER_ICON_SIZE} strokeWidth={PICKER_ICON_STROKE_WIDTH} emojiScale={PICKER_EMOJI_SCALE} class="shrink-0" />
                       <span class="truncate">{group.label}</span>
                       <ChevronRight size={13} strokeWidth={PICKER_ICON_STROKE_WIDTH} class="justify-self-end text-popover-foreground/60" />
-                      {@render touch(groupTouch, "left-2/5 top-1/2")}
+                      {@render touch(groupTouch, "40%")}
                     </div>
                   {:else}
                     <div class="menu-item grid grid-cols-[1rem_minmax(0,1fr)_1rem] gap-2">
@@ -889,7 +886,7 @@
               <span class="min-w-0 flex-1 truncate font-medium">{option.name}</span>
               {#if chosen}<Check size={14} />{/if}
               <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{formatNumber(localization.locale, option.count)}</span>
-              {#if targeted}{@render touch(playlistPicker.touch, "left-2/5 top-1/2")}{/if}
+              {#if targeted}{@render touch(playlistPicker.touch, "40%")}{/if}
             </div>
           {/each}
         </div>
@@ -1013,15 +1010,5 @@
   @container (width < 24rem) {
     .music-grid.phase-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .phase-columns .music-label { grid-column: 1 / -1; margin-top: 0.25rem; }
-  }
-
-  /* The title's caret, as a focused text input draws it. */
-  .film-caret {
-    display: inline-block;
-    width: 1px;
-    height: 1.1em;
-    margin-left: 1px;
-    vertical-align: text-bottom;
-    background-color: currentColor;
   }
 </style>

@@ -5,6 +5,7 @@
   import WelcomeAndroidNotification from "./WelcomeAndroidNotification.svelte";
   import WelcomeParodyFeed from "./WelcomeParodyFeed.svelte";
   import WelcomeParodyIcon from "./WelcomeParodyIcon.svelte";
+  import WelcomeTouch from "./WelcomeTouch.svelte";
 
   /**
    * A phone in the distraction blocker's welcome scenes, on its home screen with the parody apps in a line below
@@ -102,12 +103,7 @@
           {:else}
             <WelcomeParodyIcon app={homeApp} size={iconSize} />
           {/if}
-          {#if touch > 0}
-            <span
-              class="pointer-events-none absolute top-1/2 left-1/2 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-              style:opacity={touch}
-            ></span>
-          {/if}
+          <WelcomeTouch opacity={touch} />
         </span>
         {#if homeApp === null}
           <span class="h-1 w-5 rounded-full bg-foreground/12"></span>

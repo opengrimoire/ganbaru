@@ -12,6 +12,7 @@
   import { BLOCKER_APP_HOSTS, BLOCKER_APP_NAMES, type BlockerApp, type BlockerBrowserFrame } from "$lib/vault/welcome-blocker";
   import WelcomeParodyFeed from "./WelcomeParodyFeed.svelte";
   import WelcomeParodyIcon, { MAIL_COLORS } from "./WelcomeParodyIcon.svelte";
+  import WelcomeTouch from "./WelcomeTouch.svelte";
 
   /**
    * A laptop's browser in the distraction blocker's welcome scenes, with its tabs, and the Ganbaru extension and the
@@ -69,15 +70,6 @@
   </span>
 {/snippet}
 
-{#snippet touch(shown: number)}
-  {#if shown > 0}
-    <span
-      class="pointer-events-none absolute top-1/2 left-1/2 size-5 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-      style:opacity={shown}
-    ></span>
-  {/if}
-{/snippet}
-
 <div class="h-full rounded-3xl bg-foreground/6 p-1.5">
   <div class="relative flex h-full flex-col overflow-hidden rounded-2xl bg-background text-foreground">
     <div class="flex h-8 shrink-0 items-end gap-1 bg-foreground/5 px-1.5">
@@ -104,13 +96,13 @@
           {/if}
           <span class="relative flex shrink-0">
             <X size={10} strokeWidth={1.8} class="opacity-60" aria-hidden="true" />
-            {@render touch(tab.closeTouch ?? 0)}
+            <WelcomeTouch opacity={tab.closeTouch ?? 0} class="size-5" />
           </span>
         </span>
       {/each}
       <span class="relative mb-1 grid size-5 shrink-0 place-items-center rounded-md text-muted-foreground">
         <Plus size={12} strokeWidth={1.8} aria-hidden="true" />
-        {@render touch(frame.newTabTouch)}
+        <WelcomeTouch opacity={frame.newTabTouch} class="size-5" />
       </span>
       <span class="flex-1"></span>
       {#if !CONTROLS_LEADING}{@render controls()}{/if}
@@ -135,7 +127,7 @@
         {:else}
           <span class="truncate">{frame.address.host}</span>
         {/if}
-        {@render touch(frame.addressTouch)}
+        <WelcomeTouch opacity={frame.addressTouch} class="size-5" />
       </span>
       <img src={appIconUrl} alt="" class="size-3.5 shrink-0 rounded-[22%]" draggable="false" />
       <Menu size={12} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />

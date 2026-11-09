@@ -45,6 +45,7 @@
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
+  import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
   import WelcomeFilmNotification, { type FilmNotificationKind } from "$lib/components/vault/welcome/WelcomeFilmNotification.svelte";
   import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
@@ -358,14 +359,7 @@
 </script>
 
 {#snippet touch(opacity: number, left: string, top: string)}
-  {#if mobileShell && opacity > 0}
-    <span
-      class="pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-      style:left
-      style:top
-      style:opacity
-    ></span>
-  {/if}
+  {#if mobileShell}<WelcomeTouch {opacity} {left} {top} />{/if}
 {/snippet}
 
 {#snippet checkbox(checked: boolean)}
@@ -768,12 +762,8 @@
                     class="pointer-events-none absolute left-3/5 size-px"
                     style:top={`${y(MUSIC_EVENT.start + pressMinutes)}px`}
                   ></span>
-                {:else if pressOpacity > 0}
-                  <span
-                    class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
-                    style:top={`${y(MUSIC_EVENT.start + pressMinutes)}px`}
-                    style:opacity={pressOpacity}
-                  ></span>
+                {:else}
+                  <WelcomeTouch opacity={pressOpacity} left="60%" top={`${y(MUSIC_EVENT.start + pressMinutes)}px`} />
                 {/if}
               </div>
 

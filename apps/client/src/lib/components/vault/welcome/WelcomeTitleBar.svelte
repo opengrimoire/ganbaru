@@ -20,8 +20,8 @@
   const UTILITY_GAP_PX = 2;
   /** The device linking button's width in pixels, which the title bar draws wider than its other utilities. */
   const LINKING_BUTTON_PX = 32;
-  /** The utilities after the device linking button: Quick notes, Music, the theme switch, and Settings. */
-  const UTILITIES_AFTER_LINKING = 4;
+  /** The utilities after the device linking button: Quick notes, Music, and Settings. */
+  const UTILITIES_AFTER_LINKING = 3;
 
   /** The Focus ring's size and strokes in the title bar, for a scene that draws a running ring. */
   export const WELCOME_TITLE_RING_SIZE = ICON_SIZE + 0.5;
@@ -35,25 +35,22 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import Music from "@lucide/svelte/icons/eighth-notes";
-  import Moon from "@lucide/svelte/icons/moon";
   import Plus from "@lucide/svelte/icons/plus";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Settings from "@lucide/svelte/icons/settings";
   import StickyNote from "@lucide/svelte/icons/sticky-note";
-  import Sun from "@lucide/svelte/icons/sun";
   import X from "@lucide/svelte/icons/x";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getTheme } from "$lib/stores/theme.svelte";
   import { cn } from "$lib/utils";
   import { workspaceTabKindIcon, workspaceTabKindLabel } from "$lib/workspace-tabs/presentation";
 
   /**
    * A desktop welcome scene's title bar, drawn as the title bar draws it: the open tabs and the new tab button, then
-   * the utilities a new vault shows, which are the Focus ring, device linking, Quick notes, Music, the theme switch,
-   * and Settings. The Calendar's tab carries its name, and a tab in the Novel project carries the project's name beside
-   * its kind's icon.
+   * the Focus ring, device linking, Quick notes, Music, and Settings. The theme switch is left out, since the welcome
+   * screens do not introduce it. The Calendar's tab carries its name, and a tab in the Novel project carries the
+   * project's name beside its kind's icon.
    */
   let {
     height,
@@ -90,7 +87,6 @@
   } = $props();
 
   const { t } = getLocalization();
-  const theme = getTheme();
 </script>
 
 <div class="flex shrink-0 items-center gap-2 bg-sidebar" style:height={`${height}px`} style:padding-right={`${endPadding}px`}>
@@ -146,7 +142,6 @@
     </span>
     <WelcomeTitleIcon icon={StickyNote} open={quickNotesOpen} />
     <WelcomeTitleIcon icon={Music} open={musicOpen} hovered={musicHovered} cursor={musicCursor} />
-    <WelcomeTitleIcon icon={theme.isDark ? Sun : Moon} />
     <WelcomeTitleIcon icon={Settings} />
   </div>
 </div>

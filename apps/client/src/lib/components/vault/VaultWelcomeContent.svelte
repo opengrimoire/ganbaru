@@ -11,6 +11,7 @@
   import WelcomeLanguageStep from "./welcome/WelcomeLanguageStep.svelte";
   import WelcomeLimitsStep from "./welcome/WelcomeLimitsStep.svelte";
   import WelcomeMusicStep from "./welcome/WelcomeMusicStep.svelte";
+  import WelcomeNotesStep from "./welcome/WelcomeNotesStep.svelte";
   import WelcomeProjectsStep from "./welcome/WelcomeProjectsStep.svelte";
   import WelcomeTasksStep from "./welcome/WelcomeTasksStep.svelte";
 
@@ -57,6 +58,8 @@
         <WelcomeProjectsStep />
       {:else if current === "tasks"}
         <WelcomeTasksStep />
+      {:else if current === "notes"}
+        <WelcomeNotesStep />
       {:else}
         <WelcomeAboutStep />
       {/if}

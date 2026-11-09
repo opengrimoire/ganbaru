@@ -86,6 +86,21 @@ export const vaultSetup = {
     sceneDescription:
       "Una breve animación de la vista de lista del proyecto Novela. La tarea Escribir el capítulo 2 se escribe al final de la lista y se agrega, luego se expande para agregarle las subtareas Esbozar las escenas y Escribir el primer borrador. Después, su estado y el de su primera subtarea se cambian a En progreso y su prioridad a Alta desde sus celdas en la tabla.",
   },
+  notes: {
+    headline: "Guarda tus notas dentro de cada proyecto",
+    body: "Escribe páginas, agrégales bases de datos y mira las mismas filas como tabla o como tablero.",
+    sceneDescription:
+      "Una breve animación de la página Personajes en las notas del proyecto Novela. Una fila llamada Mateo se agrega a la base de datos Reparto de la página y recibe el rol Aliado, luego la base de datos cambia a su vista de tablero, donde la tarjeta de Mateo se arrastra de la columna Aliado a la columna Rival.",
+    sceneDescriptionTouch:
+      "Una breve animación de la página Personajes en las notas del proyecto Novela. Una fila llamada Mateo se agrega a la base de datos Reparto de la página y recibe el rol Aliado, luego la base de datos cambia a su vista de tablero, que muestra una columna por cada rol.",
+    page: "Personajes",
+    paragraph: "Quién es quién en la historia.",
+    database: "Reparto",
+    name: "Nombre",
+    role: "Rol",
+    roles: { lead: "Principal", rival: "Rival", ally: "Aliado" },
+    characters: { clara: "Clara", tomas: "Tomás", mateo: "Mateo" },
+  },
   about: {
     headline: "Gratis y de código abierto",
     body: "Tus datos se quedan en tus dispositivos y se sincronizan directamente entre ellos, sin cuentas, anuncios ni telemetría. App y código son tuyos para siempre.",

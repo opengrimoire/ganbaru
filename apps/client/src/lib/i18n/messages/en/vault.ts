@@ -78,6 +78,21 @@ export const vaultSetup = {
     sceneDescription:
       "A short animation of the Novel project's List view. The task Write chapter 2 is typed into the bottom of the list and added, then expanded to add the subtasks Outline the scenes and Write the first draft. The task's status and its first subtask's are then set to In progress and the task's priority to High from their cells in the table.",
   },
+  notes: {
+    headline: "Keep your notes inside each project",
+    body: "Write pages, add databases to them, and see the same rows as a table or a board.",
+    sceneDescription:
+      "A short animation of the Characters page in the Novel project's Notes. A row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, where Mateo's card is dragged from the Ally column to the Rival column.",
+    sceneDescriptionTouch:
+      "A short animation of the Characters page in the Novel project's Notes. A row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, which shows a column for each role.",
+    page: "Characters",
+    paragraph: "Who's who in the story.",
+    database: "Cast",
+    name: "Name",
+    role: "Role",
+    roles: { lead: "Lead", rival: "Rival", ally: "Ally" },
+    characters: { clara: "Clara", tomas: "Tomás", mateo: "Mateo" },
+  },
   about: {
     headline: "Free and open source",
     body: "Your data stays on your devices and syncs directly between them, with no account, ads, or telemetry.\nApp and code are yours forever.",

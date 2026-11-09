@@ -27,12 +27,14 @@
 <script lang="ts">
   import AudioLines from "@lucide/svelte/icons/audio-lines";
   import Check from "@lucide/svelte/icons/check";
+  import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Music from "@lucide/svelte/icons/eighth-notes";
   import ListChecks from "@lucide/svelte/icons/list-checks";
   import ListMusic from "@lucide/svelte/icons/list-music";
   import ListPlus from "@lucide/svelte/icons/list-plus";
+  import ListTodo from "@lucide/svelte/icons/list-todo";
   import PanelLeft from "@lucide/svelte/icons/panel-left";
   import PauseIcon from "@lucide/svelte/icons/pause";
   import Pencil from "@lucide/svelte/icons/pencil";
@@ -40,7 +42,12 @@
   import RadioTower from "@lucide/svelte/icons/radio-tower";
   import Repeat from "@lucide/svelte/icons/repeat";
   import Search from "@lucide/svelte/icons/search";
+  import Shuffle from "@lucide/svelte/icons/shuffle";
+  import SkipBack from "@lucide/svelte/icons/skip-back";
+  import SkipForward from "@lucide/svelte/icons/skip-forward";
+  import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
   import Users from "@lucide/svelte/icons/users";
+  import Volume2 from "@lucide/svelte/icons/volume-2";
   import X from "@lucide/svelte/icons/x";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
@@ -66,6 +73,8 @@
     getTimezoneInfo,
   } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { MOBILE_MUSIC_PANEL_MAX_WIDTH, mobileMusicPlayerPanelHeight, mobileTopBarPanelGeometry } from "$lib/mobile/layout";
+  import { DEFAULT_PLAYBACK_SNAPSHOT, formatPlaybackTime, formatVolumePercent } from "$lib/music/playback";
   import { BUILD_PLATFORM, BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
@@ -75,14 +84,15 @@
   import { welcomeCursorHovered } from "$lib/vault/welcome-cursor";
   import { filmSpan, filmWorkday, type FilmSpan } from "$lib/vault/welcome-film";
   import {
+    MUSIC_BACK_TARGET,
     MUSIC_BEATS,
     MUSIC_CREATE_PRESS_MS,
     MUSIC_CURSOR_SCRIPT,
     MUSIC_EVENT,
     MUSIC_PLAYLISTS,
-    musicBuilderShown,
+    MUSIC_TITLE_BUTTON_TARGET,
     musicBuilderTouches,
-    musicCalendarShown,
+    musicPlayerPanelPage,
     musicClock,
     musicCursorCard,
     musicEventCreating,
@@ -113,10 +123,12 @@
   } from "$lib/vault/welcome-music-scene";
 
   /**
-   * One frame of the welcome scene on Music, drawn with the app's own surfaces. First the playlist builder's review,
-   * with its folder tree beside it when the canvas is wide enough and its dock below, saves a local track to a work
-   * playlist and a YouTube video to a break playlist. Then the Calendar's day, as the Calendar film draws it, where an
-   * event is dragged out and its panel gives it the Thesis project, and with it the project's playlist for each Focus
+   * One frame of the welcome scene on Music, drawn with the app's own surfaces. The Music panel is open over the
+   * Calendar's day on its playlist builder, which a desktop keeps in the panel under the title bar and a phone shows
+   * full screen. The builder's review, with its folder tree beside it when the panel is wide enough and its dock below,
+   * saves a local track to a work playlist and a YouTube video to a break playlist. Its way back turns the panel to the
+   * player, with nothing loaded, and the bar's Music button closes it. Then on the Calendar's day, as the Calendar film
+   * draws it, an event is dragged out and its panel gives it the Thesis project, and with it the project's playlist for each Focus
    * phase, and its title. Once the event's Focus starts on its own, the app's notification says the work track
    * autoplays, and when its break starts, the break video. A phone shows its taps as touches, and a desktop as a mouse
    * pointer that clicks and drags. Every style is a function of `elapsed`, with no CSS transitions.
@@ -146,7 +158,24 @@
       ? "windows"
       : "gnome";
 
-  /** From this canvas width the builder keeps its folder tree beside the review, as the builder's two columns fit. */
+  /**
+   * The desktop Music panel's place, as the app anchors it: under the title bar at the window's end, as wide and tall
+   * as the window leaves it up to its largest size.
+   */
+  const PANEL_INSET = 8;
+  const PANEL_TOP_GAP = 4;
+  const PANEL_BOTTOM_GAP = 8;
+  const PANEL_MAX_W = 1000;
+  const PANEL_MAX_H = 680;
+  /** Up to this window width the player centers its controls and folds its volume into a button, as the player does. */
+  const PLAYER_COMPACT_MAX_W = 440;
+  /** From this window width the player's playlist launcher shows its label, as the launcher does. */
+  const LAUNCHER_LABEL_MIN_W = 620;
+  /** The player's icon size and stroke, as the player draws its controls. */
+  const PLAYER_ICON_SIZE = 14;
+  const PLAYER_ICON_STROKE_WIDTH = 1.4;
+
+  /** From this panel width the builder keeps its folder tree beside the review, as the builder's two columns fit. */
   const TREE_MIN_W = 576;
   /** Below this width the review draws its media and play button smaller, as the review does. */
   const TIGHT_REVIEW_W = 380;
@@ -210,12 +239,45 @@
 
   const canvasW = $derived(width - 2 * BEZEL);
   const canvasH = $derived(height - 2 * BEZEL);
-  const withTree = $derived(canvasW >= TREE_MIN_W);
-  const tightReview = $derived(!withTree && canvasW < TIGHT_REVIEW_W);
   const calendarDark = $derived(isThemeCalendarDark(theme.current));
 
-  const builderShown = $derived(musicBuilderShown(elapsed));
-  const calendarShown = $derived(musicCalendarShown(elapsed));
+  const panelPage = $derived(musicPlayerPanelPage(elapsed));
+  /**
+   * Where the Music panel floats over the canvas, or null while it fills it. A desktop keeps both pages in the panel
+   * under the title bar. A phone shows the builder full screen, over its top bar, and the player in a panel under the
+   * bar that is as tall as the player's media needs.
+   */
+  const panelFrame = $derived.by<{ left: number; top: number; width: number; height: number } | null>(() => {
+    if (!mobileShell) {
+      const panelWidth = Math.min(PANEL_MAX_W, canvasW - 2 * PANEL_INSET);
+      return {
+        left: canvasW - PANEL_INSET - panelWidth,
+        top: TOP_BAR_H + PANEL_TOP_GAP,
+        width: panelWidth,
+        height: Math.min(PANEL_MAX_H, canvasH - TOP_BAR_H - PANEL_TOP_GAP - PANEL_BOTTOM_GAP),
+      };
+    }
+    if (panelPage !== "player") return null;
+    // The panel takes the bar's whole width, so where its trigger sits along the bar does not move it.
+    const geometry = mobileTopBarPanelGeometry({
+      anchorLeft: canvasW,
+      anchorWidth: 0,
+      anchorBottom: TOP_BAR_H,
+      desiredWidth: MOBILE_MUSIC_PANEL_MAX_WIDTH,
+      desiredHeight: canvasH,
+      viewportLeft: 0,
+      viewportWidth: canvasW,
+      viewportTop: 0,
+      viewportHeight: canvasH,
+    });
+    return { ...geometry, height: Math.min(geometry.height, mobileMusicPlayerPanelHeight(geometry.width)) };
+  });
+  const panelW = $derived(panelFrame?.width ?? canvasW);
+  const withTree = $derived(panelW >= TREE_MIN_W);
+  const tightReview = $derived(!withTree && panelW < TIGHT_REVIEW_W);
+  const compactPlayer = $derived(canvasW <= PLAYER_COMPACT_MAX_W);
+  /** The control the desktop pointer is on. */
+  const hovered = $derived(mobileShell ? null : welcomeCursorHovered(MUSIC_CURSOR_SCRIPT, elapsed));
   const builderTouches = $derived(musicBuilderTouches(elapsed));
   const reviewItem = $derived(musicReviewItem(elapsed));
   const reviewTrack = $derived(musicTracks(reviewItem.source)[reviewItem.row]);
@@ -366,6 +428,80 @@
   {#if mobileShell}<WelcomeTouch {opacity} {left} {top} />{/if}
 {/snippet}
 
+{#snippet slider(fraction: number)}
+  <div class="relative h-3.5">
+    <div class="absolute inset-x-1.75 top-1/2 h-1 -translate-y-1/2 rounded-full" style:background="color-mix(in srgb, var(--foreground) 22%, transparent)">
+      <div class="h-full rounded-full bg-primary" style:width={`${fraction * 100}%`}></div>
+    </div>
+    <span
+      class="absolute top-0 size-3.5 rounded-full bg-card"
+      style:left={`calc((100% - 0.875rem) * ${fraction})`}
+      style:border="1px solid color-mix(in srgb, var(--foreground) 18%, transparent)"
+    ></span>
+  </div>
+{/snippet}
+
+{#snippet playerButton(Icon: typeof Music, size: number, strokeWidth: number, dimmed: string | false)}
+  <span class={cn("inline-flex size-9 shrink-0 items-center justify-center rounded-md bg-secondary text-secondary-foreground", dimmed)}>
+    <Icon {size} {strokeWidth} />
+  </span>
+{/snippet}
+
+{#snippet playerMode()}
+  {@render playerButton(Shuffle, PLAYER_ICON_SIZE, PLAYER_ICON_STROKE_WIDTH, "opacity-50")}
+{/snippet}
+
+<!-- The Music panel's player with nothing loaded, as the player draws its launcher, empty media, and idle controls. -->
+{#snippet playerPage()}
+  {@const volume = DEFAULT_PLAYBACK_SNAPSHOT.volume}
+  <div class="flex h-full min-h-0 flex-col">
+    <div class={cn("flex shrink-0 items-center px-2", mobileShell ? "py-2" : "h-(--toolbar-h)")}>
+      <span
+        class={cn(
+          "inline-flex items-center rounded-md bg-secondary text-[0.8rem] font-medium text-secondary-foreground",
+          mobileShell ? "size-9 justify-center" : "h-7 gap-1.5 px-2.5",
+        )}
+      >
+        <ListMusic size={PLAYER_ICON_SIZE} strokeWidth={1.5} />
+        {#if !mobileShell && canvasW >= LAUNCHER_LABEL_MIN_W}
+          <span class="truncate">{t("music.launcher.playlists")}</span><ChevronDown size={12} />
+        {/if}
+      </span>
+    </div>
+    <div class="min-h-0 flex-1"></div>
+    <div class="shrink-0 p-2">
+      <div class="flex items-center gap-2 text-[0.733333rem] tabular-nums text-muted-foreground">
+        <span>{formatPlaybackTime(DEFAULT_PLAYBACK_SNAPSHOT.positionMs)}</span>
+        <div class="min-w-0 flex-1 opacity-50">{@render slider(0)}</div>
+        <span>{formatPlaybackTime(DEFAULT_PLAYBACK_SNAPSHOT.durationMs)}</span>
+      </div>
+      <div class={cn("mt-2 flex flex-wrap items-center", compactPlayer ? "justify-center gap-2" : "justify-between gap-3")}>
+        <div class={compactPlayer ? "contents" : "flex items-center gap-2"}>
+          {@render playerButton(SkipBack, PLAYER_ICON_SIZE, PLAYER_ICON_STROKE_WIDTH, "opacity-50")}
+          {@render playerButton(PlayIcon, PLAYER_ICON_SIZE, PLAYER_ICON_STROKE_WIDTH, "opacity-50")}
+          {@render playerButton(SkipForward, PLAYER_ICON_SIZE, PLAYER_ICON_STROKE_WIDTH, "opacity-50")}
+          {#if !compactPlayer}{@render playerMode()}{/if}
+        </div>
+        <div class={compactPlayer ? "contents" : "flex items-center gap-2"}>
+          {#if compactPlayer}
+            {@render playerMode()}
+            {@render playerButton(Volume2, PLAYER_ICON_SIZE, PLAYER_ICON_STROKE_WIDTH, false)}
+          {:else}
+            <span class="flex items-center gap-2 text-[0.8rem] text-muted-foreground">
+              <span class="w-28">{@render slider(volume)}</span>
+              <span class="inline-flex h-8 w-10 items-center justify-center tabular-nums">{formatVolumePercent(volume)}</span>
+            </span>
+          {/if}
+          {@render playerButton(AudioLines, 15, 1.5, false)}
+          {@render playerButton(SlidersHorizontal, PLAYER_ICON_SIZE, 1.6, "opacity-45")}
+          {@render playerButton(ListTodo, 15, 2, false)}
+          {@render playerButton(ListMusic, PLAYER_ICON_SIZE, PLAYER_ICON_STROKE_WIDTH, false)}
+        </div>
+      </div>
+    </div>
+  </div>
+{/snippet}
+
 {#snippet checkbox(checked: boolean)}
   <span class="relative inline-grid size-4 shrink-0 place-items-center" aria-hidden="true">
     <span
@@ -509,6 +645,10 @@
   />
 {/snippet}
 
+{#snippet musicCloseTouch()}
+  <WelcomeTouch opacity={builderTouches.close} left="50%" top="50%" />
+{/snippet}
+
 {#snippet phoneRing()}
   {@render ring(20, "stroke-muted-foreground/35", "text-foreground/76 stroke-foreground/76")}
 {/snippet}
@@ -520,10 +660,17 @@
     style:height={`${canvasH}px`}
   >
     {#if mobileShell}
-      <!-- The phone's top bar, labelled with the Calendar, with its Focus ring lit while Focus runs and Music open while the builder shows. -->
-      <WelcomePhoneTopBar height={TOP_BAR_H} identity="calendar" ring={phoneRing} ringLit={focusing} musicOpen={builderShown > 0.5} />
+      <!-- The phone's top bar, labelled with the Calendar, with its Focus ring lit while Focus runs and Music open while its panel is. -->
+      <WelcomePhoneTopBar
+        height={TOP_BAR_H}
+        identity="calendar"
+        ring={phoneRing}
+        ringLit={focusing}
+        musicOpen={panelPage !== null}
+        musicTouch={musicCloseTouch}
+      />
     {:else}
-      <!-- The title bar's Calendar tab, Focus ring, and Music, with Music open while the builder shows. -->
+      <!-- The title bar's Calendar tab, Focus ring, and Music, with Music open while its panel is. -->
       <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS}>
         <span class="relative grid size-7 place-items-center rounded-lg">
           {@render ring(
@@ -532,17 +679,34 @@
             "text-foreground/68 dark:text-white/76 stroke-foreground/68 dark:stroke-white/76",
           )}
         </span>
-        <WelcomeTitleIcon icon={Music} open={builderShown > 0.5} />
+        <WelcomeTitleIcon
+          icon={Music}
+          open={panelPage !== null}
+          hovered={hovered === MUSIC_TITLE_BUTTON_TARGET}
+          cursor={MUSIC_TITLE_BUTTON_TARGET}
+        />
       </WelcomeTitleBar>
     {/if}
 
-    <div class="relative min-h-0 flex-1">
-      <!-- The playlist builder's review. -->
-      {#if builderShown > 0}
+    <!-- The Music panel over the Calendar: floating under the bar, or the whole screen for a phone's builder. -->
+    {#if panelPage !== null}
+      <div
+        class={cn(
+          "absolute z-50 overflow-hidden",
+          panelFrame ? "rounded-floating border border-border bg-(--cal-bg) shadow-floating" : "inset-0 bg-background",
+        )}
+        style:left={panelFrame ? `${panelFrame.left}px` : undefined}
+        style:top={panelFrame ? `${panelFrame.top}px` : undefined}
+        style:width={panelFrame ? `${panelFrame.width}px` : undefined}
+        style:height={panelFrame ? `${panelFrame.height}px` : undefined}
+      >
+      {#if panelPage === "player"}
+        {@render playerPage()}
+      {:else}
+        <!-- The playlist builder's review. -->
         <div
-          class={cn("absolute inset-0 min-h-0 bg-(--cal-bg)", withTree ? "grid" : "flex flex-col")}
+          class={cn("h-full min-h-0", withTree ? "grid" : "flex flex-col")}
           style:grid-template-columns={withTree ? "minmax(14rem, 0.72fr) minmax(22rem, 2fr)" : undefined}
-          style:opacity={builderShown < 1 ? builderShown : undefined}
         >
           {#if withTree}
             <aside
@@ -593,8 +757,12 @@
                       {#if !withTree}
                         <span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-foreground"><PanelLeft size={14} /></span>
                       {/if}
-                      <span class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-secondary px-2.5 text-[0.7rem]">
+                      <span
+                        data-cursor={MUSIC_BACK_TARGET}
+                        class="relative inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-secondary px-2.5 text-[0.7rem]"
+                      >
                         <ChevronLeft size={14} />{withTree ? t("music.backToPlayer") : t("music.returnToPlayerShort")}
+                        {@render touch(builderTouches.back, "50%", "50%")}
                       </span>
                       <span class="min-w-0 flex-1 truncate text-center text-[0.68rem] font-medium text-muted-foreground">
                         {t("music.builder.reviewProgress", reviewProgress.reviewed, reviewProgress.total)}
@@ -618,16 +786,7 @@
                         <p class="mt-0.5 truncate text-xs text-muted-foreground">{reviewTrack.artist}</p>
                         <div class="mt-4 flex items-center gap-3">
                           <div class="min-w-0 flex-1 text-[0.68rem] tabular-nums text-muted-foreground">
-                            <div class="relative h-3.5">
-                              <div class="absolute inset-x-1.75 top-1/2 h-1 -translate-y-1/2 rounded-full" style:background="color-mix(in srgb, var(--foreground) 22%, transparent)">
-                                <div class="h-full rounded-full bg-primary" style:width={`${reviewPlayed * 100}%`}></div>
-                              </div>
-                              <span
-                                class="absolute top-0 size-3.5 rounded-full bg-card"
-                                style:left={`calc((100% - 0.875rem) * ${reviewPlayed})`}
-                                style:border="1px solid color-mix(in srgb, var(--foreground) 18%, transparent)"
-                              ></span>
-                            </div>
+                            {@render slider(reviewPlayed)}
                             <div class="mt-1 flex justify-between">
                               <span>{duration(reviewPlayed * reviewTrack.seconds)}</span>
                               <span>{duration(reviewTrack.seconds)}</span>
@@ -665,14 +824,16 @@
                 {@render touch(saveTouch, "50%", "50%")}
               </span>
             </div>
-            {#if !withTree}{@render dock(canvasW >= DOCK_LABEL_MIN_W)}{/if}
+            {#if !withTree}{@render dock(panelW >= DOCK_LABEL_MIN_W)}{/if}
           </div>
         </div>
       {/if}
+      </div>
+    {/if}
 
-      <!-- The Calendar's day, as the Calendar film draws it, with the event the panel gives its project's music. -->
-      {#if calendarShown > 0}
-        <div class="absolute inset-0 flex flex-col bg-(--cal-bg)" style:opacity={calendarShown < 1 ? calendarShown : undefined}>
+    <!-- The Calendar's day, as the Calendar film draws it, with the event the panel gives its project's music. -->
+    <div class="relative min-h-0 flex-1">
+        <div class="absolute inset-0 flex flex-col bg-(--cal-bg)">
           <div class="flex shrink-0 border-b border-sidebar" style:height={`${HEADER_H}px`}>
             <span class="flex shrink-0 items-center justify-center text-[0.866667rem]" style:width={`${GUTTER_W}px`}>{timezoneLabel}</span>
             <div class="flex min-w-0 flex-1 items-center justify-center overflow-hidden whitespace-nowrap">
@@ -777,7 +938,6 @@
             </div>
           </div>
         </div>
-      {/if}
     </div>
 
     <!-- The app's notification as the system shows it, saying which track the phase's playlist autoplays. -->
@@ -804,7 +964,7 @@
         end={MUSIC_EVENT.end}
         projectColor={THESIS}
         title={eventTitle}
-        hovered={mobileShell ? null : welcomeCursorHovered(MUSIC_CURSOR_SCRIPT, elapsed)}
+        {hovered}
       />
     {/if}
 

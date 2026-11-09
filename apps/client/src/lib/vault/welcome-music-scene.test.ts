@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  MUSIC_BACK_TARGET,
   MUSIC_BEATS,
+  MUSIC_CREATE_PRESS_MS,
   MUSIC_CURSOR_SCRIPT,
   MUSIC_DEFAULT_RAIL,
   MUSIC_EVENT,
@@ -9,9 +11,9 @@ import {
   MUSIC_PROJECT_PRESET,
   MUSIC_RAIL,
   MUSIC_STILL,
-  musicBuilderShown,
+  MUSIC_TITLE_BUTTON_TARGET,
   musicBuilderTouches,
-  musicCalendarShown,
+  musicPlayerPanelPage,
   musicClock,
   musicCursorCard,
   musicEventCreating,
@@ -69,14 +71,14 @@ describe("welcome music scene", () => {
     for (const elapsed of moments()) {
       const touches = musicBuilderTouches(elapsed);
       const values = [
-        musicBuilderShown(elapsed),
-        musicCalendarShown(elapsed),
         musicReviewItemIn(elapsed),
         musicReviewProgressOfTrack(elapsed),
         touches.localPick,
         touches.localSave,
         touches.youtubePick,
         touches.youtubeSave,
+        touches.back,
+        touches.close,
         ...MUSIC_PLAYLISTS.map((entry) => musicPlaylistBump(elapsed, entry.key)),
         musicNowPlaying(elapsed)?.progress ?? 0,
       ];
@@ -87,14 +89,22 @@ describe("welcome music scene", () => {
     }
   });
 
-  it("hands the builder over to the Calendar without a gap", () => {
-    expect(musicBuilderShown(0)).toBe(1);
-    expect(musicCalendarShown(0)).toBe(0);
-    expect(musicBuilderShown(B.calendarIn)).toBe(0);
-    expect(musicCalendarShown(B.calendarIn)).toBe(1);
-    for (const elapsed of moments()) {
-      expect(musicBuilderShown(elapsed) + musicCalendarShown(elapsed)).toBeGreaterThan(0);
-    }
+  it("leaves the builder for the empty player, then closes the Music panel before the event is drawn", () => {
+    expect(musicPlayerPanelPage(0)).toBe("builder");
+    expect(musicPlayerPanelPage(B.youtubeSaveTap)).toBe("builder");
+    expect(musicPlayerPanelPage(B.backTap - 1)).toBe("builder");
+    expect(musicPlayerPanelPage(B.backTap)).toBe("player");
+    expect(musicPlayerPanelPage(B.closeTap - 1)).toBe("player");
+    expect(musicPlayerPanelPage(B.closeTap)).toBeNull();
+    expect(musicPlayerPanelPage(B.end)).toBeNull();
+    expect(B.closeTap).toBeLessThan(B.createStart - MUSIC_CREATE_PRESS_MS);
+  });
+
+  it("taps the way back and the bar's Music button on their beats", () => {
+    expect(musicBuilderTouches(B.backTap - FILM_TAP_MS / 2).back).toBeGreaterThan(0);
+    expect(musicBuilderTouches(B.backTap - FILM_TAP_MS / 2).close).toBe(0);
+    expect(musicBuilderTouches(B.closeTap - FILM_TAP_MS / 2).close).toBeGreaterThan(0);
+    expect(musicBuilderTouches(B.closeTap - FILM_TAP_MS / 2).back).toBe(0);
   });
 
   it("reviews the local track, then the YouTube video, then opens the next video", () => {
@@ -312,6 +322,8 @@ describe("welcome music scene", () => {
       ["music-save", B.localSaveTap],
       [musicCursorCard("breakCalm"), B.youtubePickTap],
       ["music-save", B.youtubeSaveTap],
+      [MUSIC_BACK_TARGET, B.backTap],
+      [MUSIC_TITLE_BUTTON_TARGET, B.closeTap],
       ["panel-project", B.projectTap],
       ["panel-project-pick", B.projectPick],
       ["panel-title", B.typeStart],

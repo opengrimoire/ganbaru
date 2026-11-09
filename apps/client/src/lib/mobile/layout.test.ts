@@ -2,9 +2,27 @@ import { describe, expect, it } from "vitest";
 import {
   MOBILE_NAVIGATION_RAIL_MIN_WIDTH,
   mobileCenteredPanelGeometry,
+  mobileMusicPlayerPanelHeight,
   mobileNavigationPresentation,
   mobileTopBarPanelGeometry,
 } from "./layout";
+
+describe("mobileMusicPlayerPanelHeight", () => {
+  it("keeps the player's chrome around a 16:9 media area", () => {
+    expect(mobileMusicPlayerPanelHeight(320)).toBe(132 + 180);
+    expect(mobileMusicPlayerPanelHeight(0)).toBe(132);
+  });
+
+  it("grows with the panel's width", () => {
+    expect(mobileMusicPlayerPanelHeight(640) - mobileMusicPlayerPanelHeight(320)).toBe(180);
+  });
+
+  it("leaves the media its share of the height when the playlist is stacked under it", () => {
+    const withPlaylist = mobileMusicPlayerPanelHeight(320, true);
+    expect(withPlaylist).toBeGreaterThan(mobileMusicPlayerPanelHeight(320));
+    expect(180 / (withPlaylist - 132)).toBeCloseTo(0.65);
+  });
+});
 
 describe("mobileNavigationPresentation", () => {
   it("keeps compact Android navigation in the bottom tab bar", () => {

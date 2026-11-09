@@ -1,5 +1,23 @@
 export const MOBILE_NAVIGATION_RAIL_MIN_WIDTH = 600;
 
+/** The widest the phone's Music panel grows. */
+export const MOBILE_MUSIC_PANEL_MAX_WIDTH = 1000;
+/** The height of the Music player's header and controls around its media, in pixels. */
+const MOBILE_MUSIC_PLAYER_CHROME_HEIGHT = 132;
+/** The Music player's media area, as a height for its width. */
+const MOBILE_MUSIC_MEDIA_HEIGHT_RATIO = 9 / 16;
+/** The share of the stacked layout's media and playlist that the media keeps. */
+const MOBILE_MUSIC_STACKED_MEDIA_SHARE = 0.65;
+
+/**
+ * The height the phone's Music player panel asks for at `panelWidth`: its header and controls around a 16:9 media
+ * area, with room for the playlist stacked under the media when `playlistVisible`.
+ */
+export function mobileMusicPlayerPanelHeight(panelWidth: number, playlistVisible = false): number {
+  const mediaHeight = panelWidth * MOBILE_MUSIC_MEDIA_HEIGHT_RATIO;
+  return MOBILE_MUSIC_PLAYER_CHROME_HEIGHT + (playlistVisible ? mediaHeight / MOBILE_MUSIC_STACKED_MEDIA_SHARE : mediaHeight);
+}
+
 export type MobileNavigationPresentation = "bottom" | "rail";
 
 export interface MobileCenteredPanelGeometryInput {

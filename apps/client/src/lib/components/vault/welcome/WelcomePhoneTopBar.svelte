@@ -28,6 +28,7 @@
     ringLit = false,
     quickNotesOpen = false,
     musicOpen = false,
+    musicTouch,
   }: {
     /** The bar's height in pixels. */
     height: number;
@@ -45,6 +46,8 @@
     ringLit?: boolean;
     quickNotesOpen?: boolean;
     musicOpen?: boolean;
+    /** A touch on the Music button. */
+    musicTouch?: Snippet;
   } = $props();
 
   const { t } = getLocalization();
@@ -58,10 +61,10 @@
   const UTILITY_ICON_CLASS = "relative grid size-(--mobile-chrome-highlight) place-items-center rounded-full";
 </script>
 
-{#snippet utility(icon: typeof Settings, open: boolean)}
+{#snippet utility(icon: typeof Settings, open: boolean, touch?: Snippet)}
   {@const Icon = icon}
   <span class={cn(UTILITY_BUTTON_CLASS, open && "text-foreground")}>
-    <span class={cn(UTILITY_ICON_CLASS, open && "bg-accent/70")}><Icon size={UTILITY_ICON_SIZE} strokeWidth={UTILITY_STROKE_WIDTH} /></span>
+    <span class={cn(UTILITY_ICON_CLASS, open && "bg-accent/70")}><Icon size={UTILITY_ICON_SIZE} strokeWidth={UTILITY_STROKE_WIDTH} />{@render touch?.()}</span>
   </span>
 {/snippet}
 
@@ -105,7 +108,7 @@
     </span>
     {@render utility(RefreshCw, false)}
     {@render utility(StickyNote, quickNotesOpen)}
-    {@render utility(Music, musicOpen)}
+    {@render utility(Music, musicOpen, musicTouch)}
     {@render utility(Settings, false)}
   </span>
 </div>

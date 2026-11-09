@@ -15,6 +15,8 @@
     resolveMobileBackAction,
   } from "$lib/mobile/back";
   import {
+    MOBILE_MUSIC_PANEL_MAX_WIDTH,
+    mobileMusicPlayerPanelHeight,
     mobileNavigationPresentation,
     type MobileNavigationPresentation,
     mobileTopBarPanelGeometry,
@@ -89,9 +91,6 @@
     "system.android-back",
   );
   const musicAvailable = platformHasCapability(BUILD_PLATFORM_PROFILE, "view.music");
-  const mobileMusicPlayerChromeHeight = 132;
-  const mobileMusicMediaHeightRatio = 9 / 16;
-  const mobileMusicStackedMediaShare = 0.65;
 
   let showPomodoro = $state(false);
   let identitySlotElement = $state<HTMLElement | null>(null);
@@ -309,15 +308,13 @@
     );
     musicPanelStyle = utilityPanelStyle(
       "[data-mobile-music-trigger]",
-      1000,
-      (panelWidth) => mobileMusicPlayerChromeHeight
-        + panelWidth * mobileMusicMediaHeightRatio,
+      MOBILE_MUSIC_PANEL_MAX_WIDTH,
+      (panelWidth) => mobileMusicPlayerPanelHeight(panelWidth),
     );
     musicPlaylistPanelStyle = utilityPanelStyle(
       "[data-mobile-music-trigger]",
-      1000,
-      (panelWidth) => mobileMusicPlayerChromeHeight
-        + (panelWidth * mobileMusicMediaHeightRatio) / mobileMusicStackedMediaShare,
+      MOBILE_MUSIC_PANEL_MAX_WIDTH,
+      (panelWidth) => mobileMusicPlayerPanelHeight(panelWidth, true),
     );
   }
 

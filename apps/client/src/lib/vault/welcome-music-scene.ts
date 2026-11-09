@@ -1,6 +1,7 @@
 /**
  * Timing for the welcome scene on Music. In the playlist builder's review, a local track is added to the Work (focus)
- * playlist and saved, then a YouTube video to Break (calm). Then in the Calendar, an event is dragged out on the day
+ * playlist and saved, then a YouTube video to Break (calm). The builder's way back turns the Music panel to its player,
+ * with nothing loaded, and the bar's Music button closes it. Then in the Calendar, an event is dragged out on the day
  * and its panel opens, where the Thesis project is picked, which has no music of its own, its title is typed, and the
  * Music section opens, where the Focus picker sets Work (focus) and the short break picker sets Break (calm). Once the
  * event is saved, its Focus starts on its own, and the app's notification says the work playlist's track autoplays,
@@ -110,44 +111,45 @@ export const MUSIC_BEATS = {
   /** On the YouTube video, a tap checks Break (calm), and Save and continue saves it. */
   youtubePickTap: 3900,
   youtubeSaveTap: 4800,
-  /** The builder gives way to the Calendar. */
-  builderOut: 5500,
-  calendarIn: 5900,
+  /** A tap on the builder's way back turns the Music panel to its player, which has nothing loaded yet. */
+  backTap: 5600,
+  /** A tap on Music in the bar closes the panel, leaving the Calendar. */
+  closeTap: 6900,
   /** A press drags the event out on the empty hour, and letting go opens the event panel on it. */
-  createStart: 6500,
-  createEnd: 7200,
-  panelOpen: 7350,
+  createStart: 8000,
+  createEnd: 8700,
+  panelOpen: 8850,
   /** The project trigger, then the University group, then Thesis, which gives the event its color and Focus rhythm. */
-  projectTap: 8350,
-  groupTap: 9450,
-  projectPick: 10550,
+  projectTap: 9850,
+  groupTap: 10950,
+  projectPick: 12050,
   /** The title is typed. */
-  typeStart: 11300,
-  typeEnd: 12350,
+  typeStart: 12800,
+  typeEnd: 13850,
   /** On the phone, a drag on the sheet's grabber takes it from its peek to its full height, every section closed. */
-  sheetDragStart: 13100,
-  sheetDragEnd: 13650,
+  sheetDragStart: 14600,
+  sheetDragEnd: 15150,
   /** A tap on the Music section's header opens it on its rows, none of which plays anything yet. */
-  musicTap: 14500,
+  musicTap: 16000,
   /** A tap on the Focus row's trigger opens its playlist picker, and a tap on Work (focus) sets it and closes the picker. */
-  focusPickerTap: 15900,
-  focusOptionTap: 17200,
+  focusPickerTap: 17400,
+  focusOptionTap: 18700,
   /** The same for the short break's row, with Break (calm). */
-  breakPickerTap: 18200,
-  breakOptionTap: 19500,
+  breakPickerTap: 19700,
+  breakOptionTap: 21000,
   /** Save saves the event and closes the panel. */
-  saveTap: 20600,
+  saveTap: 22100,
   /** The event's Focus starts on its own, and the app's notification says which work track autoplays. */
-  focusStart: 21400,
-  focusNoticeIn: 21800,
-  focusNoticeOut: 26200,
+  focusStart: 22900,
+  focusNoticeIn: 23300,
+  focusNoticeOut: 27700,
   /**
    * The break starts, and the notification says which break video autoplays. The scene ends as the break does, with
    * the notification still shown, so it starts over instead of resting on an empty Calendar.
    */
-  breakStart: 27000,
-  breakNoticeIn: 27400,
-  end: 31800,
+  breakStart: 28500,
+  breakNoticeIn: 28900,
+  end: 33300,
 } as const;
 
 const B = MUSIC_BEATS;
@@ -167,7 +169,6 @@ const REVIEW_STEPS: readonly (MusicSceneItem & { playlist: MusicScenePlaylist; p
 /** The track the review opens on after the scene's two saves. */
 const LAST_ITEM: MusicSceneItem = { source: "youtube", row: 2 };
 
-const SCREEN_FADE_MS = 300;
 const BUMP_MS = 520;
 const ITEM_SWAP_MS = 260;
 /**
@@ -215,7 +216,7 @@ const TRACK_PROGRESS_PER_MS = 1 / 24000;
 
 /** The current time against scene time, in minutes of the day: it reaches the event, then crosses its first break. */
 const CLOCK: readonly FilmKeyframe[] = [
-  [B.calendarIn, MUSIC_EVENT.start - 9],
+  [B.closeTap, MUSIC_EVENT.start - 9],
   [B.saveTap, MUSIC_EVENT.start - 2],
   [B.focusStart, MUSIC_EVENT.start],
   [B.breakStart, FIRST_BREAK.start],
@@ -227,14 +228,16 @@ export function musicTracks(source: MusicSceneSource): readonly MusicSceneTrack[
   return source === "local" ? MUSIC_LOCAL_TRACKS : MUSIC_YOUTUBE_VIDEOS;
 }
 
-/** How far the playlist builder shows, from 0 to 1. */
-export function musicBuilderShown(elapsed: number): number {
-  return 1 - easeInOutCubic(filmSpan(elapsed, B.builderOut, B.builderOut + SCREEN_FADE_MS));
-}
+/** A page of the Music panel: the playlist builder, or the player it returns to. */
+export type MusicScenePanelPage = "builder" | "player";
 
-/** How far the Calendar shows, from 0 to 1. */
-export function musicCalendarShown(elapsed: number): number {
-  return easeInOutCubic(filmSpan(elapsed, B.calendarIn - SCREEN_FADE_MS, B.calendarIn));
+/**
+ * The Music panel's page over the Calendar, or null once the panel is closed. The app turns the page and closes the
+ * panel at once, so neither fades.
+ */
+export function musicPlayerPanelPage(elapsed: number): MusicScenePanelPage | null {
+  if (elapsed < B.backTap) return "builder";
+  return elapsed < B.closeTap ? "player" : null;
 }
 
 /** The track the review is on. */
@@ -283,13 +286,22 @@ export function musicPlaylistBump(elapsed: number, playlist: MusicScenePlaylist)
   return 0;
 }
 
-/** The builder's touches, each from 0 to 1 as it shows. */
-export function musicBuilderTouches(elapsed: number): { localPick: number; localSave: number; youtubePick: number; youtubeSave: number } {
+/** The Music panel's touches, each from 0 to 1 as it shows: the builder's picks and saves, its way back, and the bar's Music button. */
+export function musicBuilderTouches(elapsed: number): {
+  localPick: number;
+  localSave: number;
+  youtubePick: number;
+  youtubeSave: number;
+  back: number;
+  close: number;
+} {
   return {
     localPick: filmTap(elapsed, B.localPickTap),
     localSave: filmTap(elapsed, B.localSaveTap),
     youtubePick: filmTap(elapsed, B.youtubePickTap),
     youtubeSave: filmTap(elapsed, B.youtubeSaveTap),
+    back: filmTap(elapsed, B.backTap),
+    close: filmTap(elapsed, B.closeTap),
   };
 }
 
@@ -490,9 +502,16 @@ export function musicCursorCard(playlist: MusicScenePlaylist): string {
   return `music-card-${playlist}`;
 }
 
+/** The desktop pointer's target on the builder's way back to the player. */
+export const MUSIC_BACK_TARGET = "music-back";
+
+/** The desktop pointer's target on the title bar's Music button. */
+export const MUSIC_TITLE_BUTTON_TARGET = "music-title-button";
+
 /**
  * The desktop pointer's path through the scene, landing each click on the beat its touch lands on a phone. It checks
- * each track's playlist card and clicks Save and continue, drags the event out by its growing bottom edge, then in the
+ * each track's playlist card and clicks Save and continue, goes back to the player and closes the Music panel from the
+ * title bar, drags the event out by its growing bottom edge, then in the
  * event panel picks the project, opens Music and each picker after the panel scrolls it into view, and clicks Save.
  * The panel focuses its title on its own, so the title is typed without a click. Playlist cards are labels, so the
  * pointer shows its hand over them; every other control keeps the arrow.
@@ -506,6 +525,8 @@ export const MUSIC_CURSOR_SCRIPT: WelcomeCursorScript = [
     }),
     cursorClick("music-save", step.saveTap, { after: step.pickTap }),
   ]),
+  cursorClick(MUSIC_BACK_TARGET, B.backTap, { after: B.youtubeSaveTap }),
+  cursorClick(MUSIC_TITLE_BUTTON_TARGET, B.closeTap, { after: B.backTap }),
   cursorRest("music-create-edge", B.createStart - MUSIC_CREATE_PRESS_MS - WELCOME_CURSOR_REST_MS),
   {
     target: "music-create-edge",

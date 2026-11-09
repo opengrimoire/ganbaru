@@ -96,7 +96,7 @@
       <button
         use:onboardingPrimaryAction
         type="button"
-        class="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 @min-[560px]:px-9 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 @min-[560px]:flex-none"
+        class="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
         onclick={next}
       >
         {t("vaultSetup.continue")}

@@ -1,6 +1,7 @@
 /**
  * Timing for the welcome scene on tasks. In the Novel project's List view, a task is typed into the add row at the
- * bottom of the list and added, and its status and priority are changed from their cells in the table.
+ * bottom of the list and added, its row is expanded and two subtasks are typed into its add-subtask row, and then the
+ * task's status and priority are changed from their cells in the table.
  */
 
 import { cursorClick, cursorRest, WELCOME_CURSOR_SCROLL_OVERLAP_MS, type WelcomeCursorScript } from "./welcome-cursor";
@@ -19,6 +20,12 @@ export type TasksSceneCell = "status" | "priority";
 /** The task the scene adds, as a new task starts: the default status and priority, with no dates. */
 export const TASKS_NEW_TASK: ProjectsSceneTaskEntry = { key: "draftChapter", status: "todo", priority: "normal", start: null, due: null };
 
+/** The subtasks the scene adds under the new task, in the order they are typed, each as a new subtask starts. */
+export const TASKS_SUBTASKS: readonly ProjectsSceneTaskEntry[] = [
+  { key: "outlineScenes", status: "todo", priority: "normal", start: null, due: null },
+  { key: "firstDraft", status: "todo", priority: "normal", start: null, due: null },
+];
+
 /** The status and priority the added task is given from its cells. */
 export const TASKS_NEW_STATUS: ProjectsSceneStatus = "inProgress";
 export const TASKS_NEW_PRIORITY: ProjectsScenePriority = "high";
@@ -28,19 +35,29 @@ export const TASKS_BEATS = {
   /** A tap on the add row opens its field, a title is typed, and Enter adds the task, keeping the field open. */
   addTap: 800,
   taskTypeStart: 1000,
-  taskTypeEnd: 1900,
-  taskSubmit: 2300,
-  /** The list scrolls the new task's status into view, a tap opens its menu and closes the add field, and In progress is picked. */
-  statusScrollStart: 2600,
-  statusScrollEnd: 3100,
-  statusTap: 3500,
-  statusPick: 4800,
+  taskTypeEnd: 1800,
+  taskSubmit: 2200,
+  /** A tap on the new task's chevron closes the add field and expands the task, showing its add-subtask row. */
+  expandTap: 3100,
+  /** A tap on the add-subtask row opens its field, and two subtasks are typed and added with Enter, one after the other. */
+  subtaskAddTap: 3900,
+  firstSubtaskTypeStart: 4100,
+  firstSubtaskTypeEnd: 4900,
+  firstSubtaskSubmit: 5300,
+  secondSubtaskTypeStart: 5500,
+  secondSubtaskTypeEnd: 6300,
+  secondSubtaskSubmit: 6700,
+  /** The list scrolls the new task's status into view, a tap opens its menu and closes the subtask field, and In progress is picked. */
+  statusScrollStart: 7000,
+  statusScrollEnd: 7500,
+  statusTap: 7900,
+  statusPick: 9200,
   /** The list scrolls on to its priority, a tap opens its menu, and High is picked. */
-  priorityScrollStart: 5100,
-  priorityScrollEnd: 5600,
-  priorityTap: 6000,
-  priorityPick: 7300,
-  end: 8600,
+  priorityScrollStart: 9500,
+  priorityScrollEnd: 10000,
+  priorityTap: 10400,
+  priorityPick: 11700,
+  end: 13000,
 } as const;
 
 const B = TASKS_BEATS;
@@ -48,7 +65,7 @@ const B = TASKS_BEATS;
 /** How long the last frame rests before the scene starts over. */
 export const TASKS_END_HOLD_MS = 900;
 
-/** The frame shown as a still with reduced motion: the added task with its new status and priority. */
+/** The frame shown as a still with reduced motion: the added task and its subtasks, with its new status and priority. */
 export const TASKS_STILL = B.end;
 
 /** The tap that opens each cell menu and the tap that picks its option. */
@@ -57,9 +74,15 @@ const CELL_TAPS: Readonly<Record<TasksSceneCell, { tap: number; pick: number }>>
   priority: { tap: B.priorityTap, pick: B.priorityPick },
 };
 
-/** Whether the add row's field is open: from its tap until a tap elsewhere in the list closes it. */
+/** When each subtask is typed and added, in the order of {@link TASKS_SUBTASKS}. */
+const SUBTASK_TYPING = [
+  { start: B.firstSubtaskTypeStart, end: B.firstSubtaskTypeEnd, submit: B.firstSubtaskSubmit },
+  { start: B.secondSubtaskTypeStart, end: B.secondSubtaskTypeEnd, submit: B.secondSubtaskSubmit },
+] as const;
+
+/** Whether the add row's field is open: from its tap until the tap on the new task's chevron closes it. */
 export function tasksAddActive(elapsed: number): boolean {
-  return elapsed >= B.addTap && elapsed < B.statusTap;
+  return elapsed >= B.addTap && elapsed < B.expandTap;
 }
 
 /** As much of `title` as the add row's field holds: typed a character at a time, and cleared once the task is added. */
@@ -75,6 +98,38 @@ export function tasksCaretOn(elapsed: number): boolean {
 /** Whether the typed task has been added to the list. */
 export function tasksAdded(elapsed: number): boolean {
   return elapsed >= B.taskSubmit;
+}
+
+/** Whether the new task is expanded, showing its subtasks and its add-subtask row. */
+export function tasksExpanded(elapsed: number): boolean {
+  return elapsed >= B.expandTap;
+}
+
+/** Whether the add-subtask row's field is open: from its tap until the tap on the new task's status closes it. */
+export function tasksSubtaskAddActive(elapsed: number): boolean {
+  return elapsed >= B.subtaskAddTap && elapsed < B.statusTap;
+}
+
+/** How many of {@link TASKS_SUBTASKS} have been added under the new task. */
+export function tasksSubtaskCount(elapsed: number): number {
+  return SUBTASK_TYPING.filter((typing) => elapsed >= typing.submit).length;
+}
+
+/**
+ * As much of the subtask being typed as the add-subtask row's field holds, where `titles` are the subtasks' titles in
+ * order: each typed a character at a time, and cleared once it is added.
+ */
+export function tasksSubtaskDraft(elapsed: number, titles: readonly string[]): string {
+  const index = tasksSubtaskCount(elapsed);
+  const typing = SUBTASK_TYPING[index];
+  const title = titles[index];
+  return typing && title !== undefined ? filmTyped(elapsed, title, typing.start, typing.end) : "";
+}
+
+/** Whether the add-subtask row's caret shows: steady while each subtask is typed, then blinking while its field stays open. */
+export function tasksSubtaskCaretOn(elapsed: number): boolean {
+  const typing = elapsed < B.secondSubtaskTypeStart ? SUBTASK_TYPING[0] : SUBTASK_TYPING[1];
+  return tasksSubtaskAddActive(elapsed) && filmCaretOn(elapsed, typing.end);
 }
 
 /** The added task's status. */
@@ -120,6 +175,8 @@ export function tasksOptionHovered(elapsed: number, cell: TasksSceneCell): boole
 /** The scene's touches, each from 0 to 1 as it shows. */
 export interface TasksSceneTouches {
   add: number;
+  expand: number;
+  subtaskAdd: number;
   status: number;
   statusOption: number;
   priority: number;
@@ -130,6 +187,8 @@ export interface TasksSceneTouches {
 export function tasksTouches(elapsed: number): TasksSceneTouches {
   return {
     add: filmTap(elapsed, B.addTap),
+    expand: filmTap(elapsed, B.expandTap),
+    subtaskAdd: filmTap(elapsed, B.subtaskAddTap),
     status: filmTap(elapsed, B.statusTap),
     statusOption: filmTap(elapsed, B.statusPick),
     priority: filmTap(elapsed, B.priorityTap),
@@ -138,12 +197,19 @@ export function tasksTouches(elapsed: number): TasksSceneTouches {
 }
 
 /**
- * The desktop pointer's path through the scene: it clicks into the add row, stays there while the task is typed, then
- * opens each cell's menu once the list has scrolled to it and picks its option.
+ * The desktop pointer's path through the scene: it clicks into the add row and stays there while the task is typed,
+ * expands the new task once it is added and clicks into its add-subtask row while the subtasks are typed, then opens
+ * each cell's menu once the list has scrolled to it and picks its option.
  */
 export const TASKS_CURSOR: WelcomeCursorScript = [
   cursorRest("projects-list", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
-  cursorClick("tasks-add", B.addTap, { glyph: "text", after: 0, busy: [{ start: B.statusScrollStart, end: B.statusScrollEnd }] }),
+  cursorClick("tasks-add", B.addTap, { glyph: "text", after: 0 }),
+  cursorClick("tasks-expand", B.expandTap, { glyph: "pointer", after: B.taskSubmit }),
+  cursorClick("tasks-subtask-add", B.subtaskAddTap, {
+    glyph: "text",
+    after: B.expandTap,
+    busy: [{ start: B.statusScrollStart, end: B.statusScrollEnd }],
+  }),
   cursorClick("tasks-status", B.statusTap, { glyph: "pointer", after: B.statusScrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
   cursorClick("tasks-status-option", B.statusPick, { busy: [{ start: B.priorityScrollStart, end: B.priorityScrollEnd }] }),
   cursorClick("tasks-priority", B.priorityTap, { glyph: "pointer", after: B.priorityScrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),

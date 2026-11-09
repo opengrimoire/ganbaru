@@ -67,7 +67,9 @@ export const vaultSetup = {
       writeOpening: "Escribir la escena inicial",
       buildCharacters: "Crear los perfiles de personajes",
       researchSetting: "Investigar la ambientación",
-      draftChapter: "Redactar el capítulo 2",
+      draftChapter: "Escribir el capítulo 2",
+      outlineScenes: "Esbozar las escenas",
+      firstDraft: "Escribir el primer borrador",
     },
     status: {
       backlog: "Pendiente",
@@ -82,7 +84,7 @@ export const vaultSetup = {
     headline: "Organiza tu trabajo en proyectos",
     body: "Divide una meta grande en tareas pequeñas y sigue cada una de principio a fin.",
     sceneDescription:
-      "Una breve animación de la vista de lista del proyecto Novela. La tarea Redactar el capítulo 2 se escribe al final de la lista y se agrega, y luego su estado se cambia a En progreso y su prioridad a Alta desde sus celdas en la tabla.",
+      "Una breve animación de la vista de lista del proyecto Novela. La tarea Escribir el capítulo 2 se escribe al final de la lista y se agrega, luego se expande para agregarle las subtareas Esbozar las escenas y Escribir el primer borrador, y después su estado se cambia a En progreso y su prioridad a Alta desde sus celdas en la tabla.",
   },
   about: {
     headline: "Gratis y de código abierto",

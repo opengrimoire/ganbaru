@@ -38,7 +38,14 @@ export type ProjectsSceneStatus = "backlog" | "todo" | "inProgress" | "inReview"
 export type ProjectsScenePriority = "urgent" | "high" | "normal" | "low";
 
 /** The scene's tasks, by their localized title's key. */
-export type ProjectsSceneTask = "outlinePlot" | "writeOpening" | "buildCharacters" | "researchSetting" | "draftChapter";
+export type ProjectsSceneTask =
+  | "outlinePlot"
+  | "writeOpening"
+  | "buildCharacters"
+  | "researchSetting"
+  | "draftChapter"
+  | "outlineScenes"
+  | "firstDraft";
 
 /** The Pomodoro phases a project picks a playlist for, in the order the settings list them. */
 export type ProjectsScenePhase = "focus" | "short-break" | "long-break";

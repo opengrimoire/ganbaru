@@ -28,6 +28,7 @@
   import ArrowUpDown from "@lucide/svelte/icons/arrow-up-down";
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Columns3 from "@lucide/svelte/icons/columns-3";
   import Music from "@lucide/svelte/icons/eighth-notes";
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
@@ -57,7 +58,7 @@
   import CollectionCell from "$lib/components/collections/CollectionCell.svelte";
   import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
   import CollectionRow from "$lib/components/collections/CollectionRow.svelte";
-  import { collectionRowContentStart } from "$lib/components/collections/row-expansion";
+  import { collectionRowContentStart, collectionRowIndent } from "$lib/components/collections/row-expansion";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import AudioLinesXIcon from "$lib/components/music/soundscape/AudioLinesXIcon.svelte";
   import ProfileAvatar from "$lib/components/profile/ProfileAvatar.svelte";
@@ -160,16 +161,22 @@
     TASKS_NEW_PRIORITY,
     TASKS_NEW_STATUS,
     TASKS_NEW_TASK,
+    TASKS_SUBTASKS,
     tasksAddActive,
     tasksAdded,
     tasksCaretOn,
     tasksCellHighlighted,
     tasksCellMenu,
     tasksDraft,
+    tasksExpanded,
     tasksListScroll,
     tasksNewPriority,
     tasksNewStatus,
     tasksOptionHovered,
+    tasksSubtaskAddActive,
+    tasksSubtaskCaretOn,
+    tasksSubtaskCount,
+    tasksSubtaskDraft,
     tasksTouches,
     type TasksSceneCell,
   } from "$lib/vault/welcome-tasks-scene";
@@ -180,8 +187,8 @@
    * duration, and a Pomodoro are picked, a playlist is picked for each phase, and the settings are saved and closed, each
    * control scrolled into view before its tap. In the Calendar, an event is then dragged out, and picking Novel in its
    * panel gives it every default just saved. With `part` on `tasks`, a task is typed into the list's add row and added,
-   * and its status and priority are changed from their cells' menus. Every style is a function of `elapsed`, with no CSS
-   * transitions.
+   * expanded, and given two subtasks from its add-subtask row, then its status and priority are changed from their cells'
+   * menus. Every style is a function of `elapsed`, with no CSS transitions.
    */
   let { part, elapsed, width, height }: { part: WelcomeProjectsScenePart; elapsed: number; width: number; height: number } = $props();
 
@@ -362,11 +369,21 @@
   const newPriority = $derived(tasksNewPriority(tasksElapsed));
   const listScroll = $derived(tasksListScroll(tasksElapsed));
   const cellMenu = $derived(tasksCellMenu(tasksElapsed));
+  const taskExpanded = $derived(tasksExpanded(tasksElapsed));
+  const subtasks = $derived(TASKS_SUBTASKS.slice(0, tasksSubtaskCount(tasksElapsed)));
+  const subtaskAddActive = $derived(tasksSubtaskAddActive(tasksElapsed));
   /** The part's desktop pointer, and the place it rests on, as a hover sees it. A phone has touches and no hover. */
   const cursorScript = $derived(part === "tasks" ? TASKS_CURSOR : PROJECTS_CURSOR);
   const cursorHovered = $derived(mobileShell ? null : welcomeCursorHovered(cursorScript, elapsed));
   /** Whether the pointer is on the added task's row, which shows its Open button on desktop. */
-  const addedRowHovered = $derived(cursorHovered === "tasks-status" || cursorHovered === "tasks-priority");
+  const addedRowHovered = $derived(cursorHovered === "tasks-expand" || cursorHovered === "tasks-status" || cursorHovered === "tasks-priority");
+  /**
+   * Whether a task row shows its chevron: always on touch, as rows without hover do, and with a pointer only on the
+   * added row while it is hovered or once it is expanded.
+   */
+  function chevronShown(added: boolean): boolean {
+    return mobileShell || (added && (addedRowHovered || taskExpanded));
+  }
   const settingsShown = $derived(projectsSettingsShown(defaultsElapsed));
   const settingsOpen = $derived(projectsSettingsOpen(defaultsElapsed));
   const settingsScroll = $derived(projectsSettingsScroll(defaultsElapsed));
@@ -481,6 +498,8 @@
   let pomodoroMenu = $state<HTMLDivElement>();
   let playlistMenu = $state<HTMLDivElement>();
   let listLayout = $state<ListLayout | null>(null);
+  /** The list viewport's height and its content's, which grows as the scene on tasks adds rows. */
+  let listHeights = $state<{ viewport: number; content: number } | null>(null);
   let settingsLayout = $state<SettingsLayout | null>(null);
   /** Bumped whenever the canvas or the measured content resizes, or fonts finish loading, so the layout is measured again. */
   let layoutTick = $state(0);
@@ -507,6 +526,7 @@
     void canvasH;
     void stackedRows;
     void localization.locale;
+    if (listViewport && listContent) listHeights = { viewport: listViewport.clientHeight, content: listContent.offsetHeight };
     if (listViewport && listContent && statusCell && priorityCell && statusMenu && priorityMenu) {
       listLayout = {
         viewportWidth: listViewport.clientWidth,
@@ -560,6 +580,17 @@
     return statusTarget * listScroll.status + (priorityTarget - statusTarget) * listScroll.priority;
   });
 
+  /**
+   * How far the list has scrolled down on the scene on tasks: just enough to keep its last rows in view as rows are
+   * added, as the list keeps a focused add field in view.
+   */
+  const listScrollYPx = $derived(part === "tasks" && listHeights ? Math.max(0, listHeights.content - listHeights.viewport) : 0);
+
+  /** The list content's scroll, sideways and down, as a transform. */
+  const listTransform = $derived(
+    listScrollPx > 0 || listScrollYPx > 0 ? `translate(${-listScrollPx}px, ${-listScrollYPx}px)` : undefined,
+  );
+
   /** The open cell menu's place, below its cell when it fits there and above it otherwise, as the list's cell menus place themselves. */
   const cellMenuPlace = $derived.by(() => {
     if (!listLayout || !cellMenu) return null;
@@ -567,9 +598,10 @@
     const menuWidth = listLayout.menuWidth;
     const menuHeight = cellMenu === "status" ? listLayout.statusMenuHeight : listLayout.priorityMenuHeight;
     const cellLeft = cell.left - listScrollPx;
+    const cellTop = cell.top - listScrollYPx;
     const left = Math.max(CELL_MENU_MARGIN, Math.min(cellLeft, canvasW - menuWidth - CELL_MENU_MARGIN));
-    const belowTop = cell.top + cell.height + CELL_MENU_GAP;
-    const aboveBottom = cell.top - CELL_MENU_GAP;
+    const belowTop = cellTop + cell.height + CELL_MENU_GAP;
+    const aboveBottom = cellTop - CELL_MENU_GAP;
     const belowSpace = Math.max(0, canvasH - CELL_MENU_MARGIN - belowTop);
     const aboveSpace = Math.max(0, aboveBottom - CELL_MENU_MARGIN);
     const below = belowSpace >= menuHeight || belowSpace >= aboveSpace;
@@ -887,6 +919,118 @@
   <span class="film-caret"></span>
 {/snippet}
 
+<!--
+  A task row of the list, with `depth` 1 for a subtask. A top-level row has the chevron that expands it; `added` marks
+  the task the scene on tasks adds, whose chevron and cells the scene taps.
+-->
+{#snippet taskRow(task: ProjectsSceneTaskEntry, added: boolean, depth: number)}
+  <div class="list-divider">
+    <CollectionRow template={gridTemplate} minWidth={gridMinWidth} {gutter} divider={false}>
+      <div class="flex h-full items-center justify-center">{#if mobileShell}{@render checkbox()}{/if}</div>
+      <div class="flex h-full items-center justify-center">
+        <!-- The added row keeps its toggle in place while hidden, so the pointer can find it before the row is hovered. -->
+        {#if depth === 0 && (added || mobileShell)}
+          <span
+            data-cursor={added ? "tasks-expand" : undefined}
+            class={cn(
+              "relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground",
+              added && cursorHovered === "tasks-expand" && "bg-accent text-foreground",
+            )}
+          >
+            <ChevronRight
+              class={cn("size-3.5", added && taskExpanded && "rotate-90", !chevronShown(added) && "invisible")}
+              strokeWidth={1.75}
+              aria-hidden="true"
+            />
+            {#if added}{@render touch(taskTouches.expand, "50%", "50%")}{/if}
+          </span>
+        {/if}
+      </div>
+      <CollectionCell>
+        <span class="flex h-7 min-w-0 items-center" style:padding-left={depth > 0 ? collectionRowIndent(depth) : undefined}>
+          <span class="truncate text-foreground">{t(`vaultSetup.projects.task.${task.key}`)}</span>
+        </span>
+        <!-- The name cell's Open button, as the row draws it: always on touch, and on the hovered row with a pointer. -->
+        {#if mobileShell || (added && addedRowHovered)}
+          <span class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground">
+            <PanelRight class="size-3.5" aria-hidden="true" /><span>{t("collections.property.open")}</span>
+          </span>
+        {/if}
+      </CollectionCell>
+      {#each taskColumns as column (column)}
+        {#if column === "status"}
+          <CollectionCell style={added ? `background-image: ${cellHighlight("status") ?? "none"}` : undefined}>
+            {#if added}<span bind:this={statusCell} data-cursor="tasks-status" class="absolute inset-0"></span>{/if}
+            <div class="pointer-events-none relative z-10 min-w-0 max-w-full">
+              <ProjectStatusBadge status={sceneStatus(task.status)} theme={theme.current} label={statusName(task.status)} class="text-[0.733333rem]" />
+            </div>
+            {#if added}{@render touch(taskTouches.status, "2rem", "50%")}{/if}
+          </CollectionCell>
+        {:else if column === "priority"}
+          <CollectionCell style={added ? `background-image: ${cellHighlight("priority") ?? "none"}` : undefined}>
+            {#if added}<span bind:this={priorityCell} data-cursor="tasks-priority" class="absolute inset-0"></span>{/if}
+            <div class="pointer-events-none relative z-10 min-w-0 max-w-full">
+              <span class="flex min-w-0 items-center gap-1.5 text-foreground">
+                <PriorityFlagIcon color={PROJECTS_PRIORITY_COLORS[task.priority]} theme={theme.current} size={13} class="shrink-0" />
+                <span class="min-w-0 truncate">{priorityName(task.priority)}</span>
+              </span>
+            </div>
+            {#if added}{@render touch(taskTouches.priority, "2rem", "50%")}{/if}
+          </CollectionCell>
+        {:else}
+          <CollectionCell>
+            {#if column === "assignee" || column === "reviewer"}
+              <ProfileAvatar displayName={personName} imagePath={preferences.profileAvatarImagePath} crop={preferences.profileImageCrop} color={preferences.profileColor} size={24} />
+            {:else if column === "start" || column === "due"}
+              {@const offset = column === "start" ? task.start : task.due}
+              <span class={cn("block min-w-0 truncate", offset === null ? "text-muted-foreground" : "text-foreground")}>
+                {offset === null
+                  ? (column === "start" ? t("projects.detail.noDate") : t("projects.filters.noDueDate"))
+                  : projectListDateLabel(isoDay(offset), "locale", localization.locale, today)}
+              </span>
+            {/if}
+          </CollectionCell>
+        {/if}
+      {/each}
+      <div></div>
+    </CollectionRow>
+  </div>
+{/snippet}
+
+<!--
+  An add row, as the list's quick add draws it closed and open: the section's, or a task's add-subtask row inset by
+  `indent` like the subtasks it adds. Its label carries the `target` the pointer clicks.
+-->
+{#snippet addRow(row: { label: string; active: boolean; draft: string; caretOn: boolean; indent: string | undefined; target: string; touchOpacity: number })}
+  <div class="list-divider">
+    <CollectionRow template={gridTemplate} minWidth={gridMinWidth} {gutter} divider={false}>
+      <div class="col-span-full grid min-w-0 grid-cols-subgrid self-stretch">
+        {#if row.active}
+          <span class="flex min-h-(--collection-table-row-height) min-w-0 items-center gap-1 rounded-md px-2" style:grid-column="3 / -1" style:margin-left={row.indent}>
+            <span class="flex min-h-8 w-full min-w-0 items-center text-collection text-foreground">
+              <span class="min-w-0 truncate">
+                {#if row.draft}{row.draft}{#if row.caretOn}{@render caret()}{/if}{:else}{#if row.caretOn}{@render caret()}{/if}<span class="text-muted-foreground">{row.label}</span>{/if}
+              </span>
+            </span>
+            <span class="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground"><Plus class="size-4" /></span>
+            <span class="rounded-md px-2 py-1 text-[0.8rem] text-muted-foreground">{t("common.cancel")}</span>
+          </span>
+        {:else}
+          <span class="col-span-full grid min-h-(--collection-table-row-height) grid-cols-subgrid items-center text-left text-collection text-muted-foreground">
+            <span class="flex min-w-0 items-center gap-2 px-2" style:grid-column="3 / -1" style:margin-left={row.indent}>
+              <Plus class="size-4 shrink-0" />
+              <span class="relative min-w-0" data-cursor={row.target}>
+                <span class="block truncate">{row.label}</span>
+                {@render touch(row.touchOpacity, "50%", "50%")}
+              </span>
+            </span>
+          </span>
+        {/if}
+      </div>
+    </CollectionRow>
+  </div>
+{/snippet}
+
 <!-- A labeled settings row, as the settings' fields and selects lay themselves out. -->
 {#snippet settingsRow(label: string, control: import("svelte").Snippet)}
   <div class={cn("flex justify-between px-1 py-1", stackedRows ? "flex-col items-stretch gap-2" : "items-center gap-4")}>
@@ -1110,7 +1254,7 @@
         <div
           bind:this={listContent}
           class="flex w-max min-w-full flex-col p-3"
-          style:transform={listScrollPx > 0 ? `translateX(${-listScrollPx}px)` : undefined}
+          style:transform={listTransform}
         >
           <!-- The section header, whose leading part stays in place as the list scrolls sideways. -->
           <div class="list-divider grid min-h-(--collection-table-row-height) items-center px-1" style:grid-template-columns={gridTemplate} style:min-width={gridMinWidth}>
@@ -1154,89 +1298,32 @@
 
           {#each tasks as task (task.key)}
             {@const added = task.key === TASKS_NEW_TASK.key}
-            <div class="list-divider">
-              <CollectionRow template={gridTemplate} minWidth={gridMinWidth} {gutter} divider={false}>
-                <div class="flex h-full items-center justify-center">{#if mobileShell}{@render checkbox()}{/if}</div>
-                <div></div>
-                <CollectionCell>
-                  <span class="flex h-7 min-w-0 items-center"><span class="truncate text-foreground">{t(`vaultSetup.projects.task.${task.key}`)}</span></span>
-                  <!-- The name cell's Open button, as the row draws it: always on touch, and on the hovered row with a pointer. -->
-                  {#if mobileShell || (added && addedRowHovered)}
-                    <span class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground">
-                      <PanelRight class="size-3.5" aria-hidden="true" /><span>{t("collections.property.open")}</span>
-                    </span>
-                  {/if}
-                </CollectionCell>
-                {#each taskColumns as column (column)}
-                  {#if column === "status"}
-                    <CollectionCell style={added ? `background-image: ${cellHighlight("status") ?? "none"}` : undefined}>
-                      {#if added}<span bind:this={statusCell} data-cursor="tasks-status" class="absolute inset-0"></span>{/if}
-                      <div class="pointer-events-none relative z-10 min-w-0 max-w-full">
-                        <ProjectStatusBadge status={sceneStatus(task.status)} theme={theme.current} label={statusName(task.status)} class="text-[0.733333rem]" />
-                      </div>
-                      {#if added}{@render touch(taskTouches.status, "2rem", "50%")}{/if}
-                    </CollectionCell>
-                  {:else if column === "priority"}
-                    <CollectionCell style={added ? `background-image: ${cellHighlight("priority") ?? "none"}` : undefined}>
-                      {#if added}<span bind:this={priorityCell} data-cursor="tasks-priority" class="absolute inset-0"></span>{/if}
-                      <div class="pointer-events-none relative z-10 min-w-0 max-w-full">
-                        <span class="flex min-w-0 items-center gap-1.5 text-foreground">
-                          <PriorityFlagIcon color={PROJECTS_PRIORITY_COLORS[task.priority]} theme={theme.current} size={13} class="shrink-0" />
-                          <span class="min-w-0 truncate">{priorityName(task.priority)}</span>
-                        </span>
-                      </div>
-                      {#if added}{@render touch(taskTouches.priority, "2rem", "50%")}{/if}
-                    </CollectionCell>
-                  {:else}
-                    <CollectionCell>
-                      {#if column === "assignee" || column === "reviewer"}
-                        <ProfileAvatar displayName={personName} imagePath={preferences.profileAvatarImagePath} crop={preferences.profileImageCrop} color={preferences.profileColor} size={24} />
-                      {:else if column === "start" || column === "due"}
-                        {@const offset = column === "start" ? task.start : task.due}
-                        <span class={cn("block min-w-0 truncate", offset === null ? "text-muted-foreground" : "text-foreground")}>
-                          {offset === null
-                            ? (column === "start" ? t("projects.detail.noDate") : t("projects.filters.noDueDate"))
-                            : projectListDateLabel(isoDay(offset), "locale", localization.locale, today)}
-                        </span>
-                      {/if}
-                    </CollectionCell>
-                  {/if}
-                {/each}
-                <div></div>
-              </CollectionRow>
-            </div>
+            {@render taskRow(task, added, 0)}
+            {#if added && taskExpanded}
+              {#each subtasks as subtask (subtask.key)}
+                {@render taskRow(subtask, false, 1)}
+              {/each}
+              {@render addRow({
+                label: t("projects.detail.addSubtask"),
+                active: subtaskAddActive,
+                draft: tasksSubtaskDraft(tasksElapsed, TASKS_SUBTASKS.map((entry) => t(`vaultSetup.projects.task.${entry.key}`))),
+                caretOn: tasksSubtaskCaretOn(tasksElapsed),
+                indent: collectionRowIndent(1),
+                target: "tasks-subtask-add",
+                touchOpacity: taskTouches.subtaskAdd,
+              })}
+            {/if}
           {/each}
 
-          <!-- The section's add row, as the list's quick add draws it closed and open. -->
-          <div class="list-divider">
-            <CollectionRow template={gridTemplate} minWidth={gridMinWidth} {gutter} divider={false}>
-              <div class="col-span-full grid min-w-0 grid-cols-subgrid self-stretch">
-                {#if addActive}
-                  {@const draft = tasksDraft(tasksElapsed, t("vaultSetup.projects.task.draftChapter"))}
-                  {@const caretOn = tasksCaretOn(tasksElapsed)}
-                  <span class="flex min-h-(--collection-table-row-height) min-w-0 items-center gap-1 rounded-md px-2" style:grid-column="3 / -1">
-                    <span class="flex min-h-8 w-full min-w-0 items-center text-collection text-foreground">
-                      <span class="min-w-0 truncate">
-                        {#if draft}{draft}{#if caretOn}{@render caret()}{/if}{:else}{#if caretOn}{@render caret()}{/if}<span class="text-muted-foreground">{t("projects.list.addTaskInSection", t("projects.list.general"))}</span>{/if}
-                      </span>
-                    </span>
-                    <span class="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground"><Plus class="size-4" /></span>
-                    <span class="rounded-md px-2 py-1 text-[0.8rem] text-muted-foreground">{t("common.cancel")}</span>
-                  </span>
-                {:else}
-                  <span class="col-span-full grid min-h-(--collection-table-row-height) grid-cols-subgrid items-center text-left text-collection text-muted-foreground">
-                    <span class="flex min-w-0 items-center gap-2 px-2" style:grid-column="3 / -1">
-                      <Plus class="size-4 shrink-0" />
-                      <span class="relative min-w-0" data-cursor="tasks-add">
-                        <span class="block truncate">{t("projects.list.addTaskInSection", t("projects.list.general"))}</span>
-                        {@render touch(taskTouches.add, "50%", "50%")}
-                      </span>
-                    </span>
-                  </span>
-                {/if}
-              </div>
-            </CollectionRow>
-          </div>
+          {@render addRow({
+            label: t("projects.list.addTaskInSection", t("projects.list.general")),
+            active: addActive,
+            draft: tasksDraft(tasksElapsed, t("vaultSetup.projects.task.draftChapter")),
+            caretOn: tasksCaretOn(tasksElapsed),
+            indent: undefined,
+            target: "tasks-add",
+            touchOpacity: taskTouches.add,
+          })}
         </div>
       </div>
 

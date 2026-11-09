@@ -25,6 +25,7 @@ import {
   tasksSubtaskCaretOn,
   tasksSubtaskCount,
   tasksSubtaskDraft,
+  tasksSubtaskStatus,
   tasksTouches,
 } from "./welcome-tasks-scene";
 
@@ -115,6 +116,14 @@ describe("welcome tasks scene", () => {
     expect(tasksNewPriority(B.priorityPick)).toBe(TASKS_NEW_PRIORITY);
   });
 
+  it("sets the first subtask in progress from its status menu, after the task's own status", () => {
+    expect(TASKS_SUBTASKS[0]?.status).not.toBe(TASKS_NEW_STATUS);
+    expect(tasksSubtaskStatus(B.subtaskStatusPick - 1, 0)).toBe(TASKS_SUBTASKS[0]?.status);
+    expect(tasksSubtaskStatus(B.subtaskStatusPick, 0)).toBe(TASKS_NEW_STATUS);
+    expect(B.subtaskStatusTap).toBeGreaterThan(B.statusPick);
+    expect(B.subtaskStatusTap).toBeGreaterThan(B.secondSubtaskSubmit);
+  });
+
   it("opens one cell menu at a time, highlighting its cell from the hover before the tap", () => {
     expect(tasksCellMenu(B.statusTap - 1)).toBeNull();
     expect(tasksCellHighlighted(B.statusTap - 1, "status")).toBe(true);
@@ -123,6 +132,10 @@ describe("welcome tasks scene", () => {
     expect(tasksCellMenu(B.statusPick)).toBeNull();
     expect(tasksCellHighlighted(B.statusPick, "status")).toBe(false);
     expect(tasksCellHighlighted(B.statusTap, "priority")).toBe(false);
+    expect(tasksCellHighlighted(B.statusTap, "subtaskStatus")).toBe(false);
+    expect(tasksCellMenu(B.subtaskStatusTap)).toBe("subtaskStatus");
+    expect(tasksOptionHovered(B.subtaskStatusPick - 1, "subtaskStatus")).toBe(true);
+    expect(tasksCellMenu(B.subtaskStatusPick)).toBeNull();
     expect(tasksCellMenu(B.priorityTap)).toBe("priority");
     expect(tasksCellMenu(B.priorityPick)).toBeNull();
     expect(tasksTouches(B.statusTap - FILM_TAP_MS / 2).status).toBeGreaterThan(0);
@@ -138,6 +151,8 @@ describe("welcome tasks scene", () => {
     expect(tasksAdded(TASKS_STILL)).toBe(true);
     expect(tasksNewStatus(TASKS_STILL)).toBe(TASKS_NEW_STATUS);
     expect(tasksNewPriority(TASKS_STILL)).toBe(TASKS_NEW_PRIORITY);
+    expect(tasksSubtaskStatus(TASKS_STILL, 0)).toBe(TASKS_NEW_STATUS);
+    expect(tasksSubtaskStatus(TASKS_STILL, 1)).toBe(TASKS_SUBTASKS[1]?.status);
     expect(tasksCellMenu(TASKS_STILL)).toBeNull();
     expect(Object.values(tasksTouches(TASKS_STILL)).every((touch) => touch === 0)).toBe(true);
   });
@@ -151,6 +166,8 @@ describe("welcome tasks scene", () => {
       ["tasks-subtask-add", B.subtaskAddTap],
       ["tasks-status", B.statusTap],
       ["tasks-status-option", B.statusPick],
+      ["tasks-subtask-status", B.subtaskStatusTap],
+      ["tasks-status-option", B.subtaskStatusPick],
       ["tasks-priority", B.priorityTap],
       ["tasks-priority-option", B.priorityPick],
     ]);

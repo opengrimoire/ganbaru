@@ -157,6 +157,7 @@
     type ProjectsSettingsTarget,
   } from "$lib/vault/welcome-projects-scene";
   import {
+    TASKS_CELL_TARGETS,
     TASKS_CURSOR,
     TASKS_NEW_PRIORITY,
     TASKS_NEW_STATUS,
@@ -177,6 +178,7 @@
     tasksSubtaskCaretOn,
     tasksSubtaskCount,
     tasksSubtaskDraft,
+    tasksSubtaskStatus,
     tasksTouches,
     type TasksSceneCell,
   } from "$lib/vault/welcome-tasks-scene";
@@ -317,6 +319,8 @@
     viewportWidth: number;
     contentWidth: number;
     status: Box;
+    /** The first subtask's status cell, once that subtask is in the list. */
+    subtaskStatus: Box | null;
     priority: Box;
     menuWidth: number;
     statusMenuHeight: number;
@@ -370,13 +374,25 @@
   const listScroll = $derived(tasksListScroll(tasksElapsed));
   const cellMenu = $derived(tasksCellMenu(tasksElapsed));
   const taskExpanded = $derived(tasksExpanded(tasksElapsed));
-  const subtasks = $derived(TASKS_SUBTASKS.slice(0, tasksSubtaskCount(tasksElapsed)));
+  /** The subtasks added so far, with the statuses they have so far. */
+  const subtasks = $derived(
+    TASKS_SUBTASKS.slice(0, tasksSubtaskCount(tasksElapsed)).map((subtask, index) => ({
+      ...subtask,
+      status: tasksSubtaskStatus(tasksElapsed, index),
+    })),
+  );
   const subtaskAddActive = $derived(tasksSubtaskAddActive(tasksElapsed));
   /** The part's desktop pointer, and the place it rests on, as a hover sees it. A phone has touches and no hover. */
   const cursorScript = $derived(part === "tasks" ? TASKS_CURSOR : PROJECTS_CURSOR);
   const cursorHovered = $derived(mobileShell ? null : welcomeCursorHovered(cursorScript, elapsed));
   /** Whether the pointer is on the added task's row, which shows its Open button on desktop. */
-  const addedRowHovered = $derived(cursorHovered === "tasks-expand" || cursorHovered === "tasks-status" || cursorHovered === "tasks-priority");
+  const addedRowHovered = $derived(
+    cursorHovered === "tasks-expand" || cursorHovered === TASKS_CELL_TARGETS.status || cursorHovered === TASKS_CELL_TARGETS.priority,
+  );
+  /** Whether the pointer is on the first subtask's row, which shows its Open button on desktop. */
+  const subtaskRowHovered = $derived(cursorHovered === TASKS_CELL_TARGETS.subtaskStatus);
+  /** Whether the status menu is open, for the added task or for its first subtask. */
+  const statusMenuOpen = $derived(cellMenu === "status" || cellMenu === "subtaskStatus");
   /**
    * Whether a task row shows its chevron: always on touch, as rows without hover do, and with a pointer only on the
    * added row while it is hovered or once it is expanded.
@@ -477,6 +493,7 @@
   let listViewport = $state<HTMLDivElement>();
   let listContent = $state<HTMLDivElement>();
   let statusCell = $state<HTMLSpanElement>();
+  let subtaskStatusCell = $state<HTMLSpanElement>();
   let priorityCell = $state<HTMLSpanElement>();
   let statusMenu = $state<HTMLDivElement>();
   let priorityMenu = $state<HTMLDivElement>();
@@ -532,6 +549,7 @@
         viewportWidth: listViewport.clientWidth,
         contentWidth: listContent.offsetWidth,
         status: listCellBox(statusCell, listViewport, listContent),
+        subtaskStatus: subtaskStatusCell ? listCellBox(subtaskStatusCell, listViewport, listContent) : null,
         priority: listCellBox(priorityCell, listViewport, listContent),
         menuWidth: statusMenu.offsetWidth,
         statusMenuHeight: statusMenu.offsetHeight,
@@ -594,9 +612,10 @@
   /** The open cell menu's place, below its cell when it fits there and above it otherwise, as the list's cell menus place themselves. */
   const cellMenuPlace = $derived.by(() => {
     if (!listLayout || !cellMenu) return null;
-    const cell = cellMenu === "status" ? listLayout.status : listLayout.priority;
+    const cell = { status: listLayout.status, subtaskStatus: listLayout.subtaskStatus, priority: listLayout.priority }[cellMenu];
+    if (!cell) return null;
     const menuWidth = listLayout.menuWidth;
-    const menuHeight = cellMenu === "status" ? listLayout.statusMenuHeight : listLayout.priorityMenuHeight;
+    const menuHeight = statusMenuOpen ? listLayout.statusMenuHeight : listLayout.priorityMenuHeight;
     const cellLeft = cell.left - listScrollPx;
     const cellTop = cell.top - listScrollYPx;
     const left = Math.max(CELL_MENU_MARGIN, Math.min(cellLeft, canvasW - menuWidth - CELL_MENU_MARGIN));
@@ -882,7 +901,7 @@
 
   /** The highlight a cell takes as the pointer rests on it and while its menu is open, or from its touch on a phone. */
   function cellHighlight(cell: TasksSceneCell): string | undefined {
-    const highlighted = mobileShell ? tasksCellHighlighted(tasksElapsed, cell) : cursorHovered === `tasks-${cell}` || cellMenu === cell;
+    const highlighted = mobileShell ? tasksCellHighlighted(tasksElapsed, cell) : cursorHovered === TASKS_CELL_TARGETS[cell] || cellMenu === cell;
     return highlighted ? "linear-gradient(var(--collection-highlight), var(--collection-highlight))" : undefined;
   }
 
@@ -921,9 +940,10 @@
 
 <!--
   A task row of the list, with `depth` 1 for a subtask. A top-level row has the chevron that expands it; `added` marks
-  the task the scene on tasks adds, whose chevron and cells the scene taps.
+  the task the scene on tasks adds, whose chevron and cells the scene taps, and `firstSubtask` its first subtask, whose
+  status the scene taps.
 -->
-{#snippet taskRow(task: ProjectsSceneTaskEntry, added: boolean, depth: number)}
+{#snippet taskRow(task: ProjectsSceneTaskEntry, added: boolean, depth: number, firstSubtask: boolean)}
   <div class="list-divider">
     <CollectionRow template={gridTemplate} minWidth={gridMinWidth} {gutter} divider={false}>
       <div class="flex h-full items-center justify-center">{#if mobileShell}{@render checkbox()}{/if}</div>
@@ -951,7 +971,7 @@
           <span class="truncate text-foreground">{t(`vaultSetup.projects.task.${task.key}`)}</span>
         </span>
         <!-- The name cell's Open button, as the row draws it: always on touch, and on the hovered row with a pointer. -->
-        {#if mobileShell || (added && addedRowHovered)}
+        {#if mobileShell || (added && addedRowHovered) || (firstSubtask && subtaskRowHovered)}
           <span class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground">
             <PanelRight class="size-3.5" aria-hidden="true" /><span>{t("collections.property.open")}</span>
           </span>
@@ -959,12 +979,17 @@
       </CollectionCell>
       {#each taskColumns as column (column)}
         {#if column === "status"}
-          <CollectionCell style={added ? `background-image: ${cellHighlight("status") ?? "none"}` : undefined}>
-            {#if added}<span bind:this={statusCell} data-cursor="tasks-status" class="absolute inset-0"></span>{/if}
+          {@const cell = added ? "status" : firstSubtask ? "subtaskStatus" : null}
+          <CollectionCell style={cell ? `background-image: ${cellHighlight(cell) ?? "none"}` : undefined}>
+            {#if added}
+              <span bind:this={statusCell} data-cursor={TASKS_CELL_TARGETS.status} class="absolute inset-0"></span>
+            {:else if firstSubtask}
+              <span bind:this={subtaskStatusCell} data-cursor={TASKS_CELL_TARGETS.subtaskStatus} class="absolute inset-0"></span>
+            {/if}
             <div class="pointer-events-none relative z-10 min-w-0 max-w-full">
               <ProjectStatusBadge status={sceneStatus(task.status)} theme={theme.current} label={statusName(task.status)} class="text-[0.733333rem]" />
             </div>
-            {#if added}{@render touch(taskTouches.status, "2rem", "50%")}{/if}
+            {#if cell}{@render touch(taskTouches[cell], "2rem", "50%")}{/if}
           </CollectionCell>
         {:else if column === "priority"}
           <CollectionCell style={added ? `background-image: ${cellHighlight("priority") ?? "none"}` : undefined}>
@@ -1298,10 +1323,10 @@
 
           {#each tasks as task (task.key)}
             {@const added = task.key === TASKS_NEW_TASK.key}
-            {@render taskRow(task, added, 0)}
+            {@render taskRow(task, added, 0, false)}
             {#if added && taskExpanded}
-              {#each subtasks as subtask (subtask.key)}
-                {@render taskRow(subtask, false, 1)}
+              {#each subtasks as subtask, index (subtask.key)}
+                {@render taskRow(subtask, false, 1, index === 0)}
               {/each}
               {@render addRow({
                 label: t("projects.detail.addSubtask"),
@@ -1459,20 +1484,25 @@
     </div>
 
     {#if part === "tasks"}
-      <!-- The added task's status and priority menus. Both stay laid out while hidden so their size is known before they open. -->
+      <!--
+        The status menu, which opens for the added task and then for its first subtask, and the priority menu. Both stay
+        laid out while hidden so their size is known before they open.
+      -->
+      {@const menuStatus = cellMenu === "subtaskStatus" ? (subtasks[0]?.status ?? newStatus) : newStatus}
       <div
         bind:this={statusMenu}
         class="surface-floating surface-floating-body absolute z-40 w-44"
-        style:left={`${cellMenu === "status" && cellMenuPlace ? cellMenuPlace.left : 0}px`}
-        style:top={`${cellMenu === "status" && cellMenuPlace ? cellMenuPlace.top : 0}px`}
-        style:visibility={cellMenu === "status" && cellMenuPlace ? undefined : "hidden"}
+        style:left={`${statusMenuOpen && cellMenuPlace ? cellMenuPlace.left : 0}px`}
+        style:top={`${statusMenuOpen && cellMenuPlace ? cellMenuPlace.top : 0}px`}
+        style:visibility={statusMenuOpen && cellMenuPlace ? undefined : "hidden"}
       >
         {#each PROJECTS_STATUS_ORDER as status (status)}
           {@const picked = status === TASKS_NEW_STATUS}
-          <span data-cursor={picked ? "tasks-status-option" : undefined} class={cn("menu-item relative justify-between", picked && optionHovered("tasks-status-option", tasksOptionHovered(tasksElapsed, "status")) && "bg-accent")}>
+          {@const pickHovered = tasksOptionHovered(tasksElapsed, "status") || tasksOptionHovered(tasksElapsed, "subtaskStatus")}
+          <span data-cursor={picked ? "tasks-status-option" : undefined} class={cn("menu-item relative justify-between", picked && optionHovered("tasks-status-option", pickHovered) && "bg-accent")}>
             <ProjectStatusBadge status={sceneStatus(status)} theme={theme.current} label={statusName(status)} class="text-[0.733333rem]" />
-            {#if status === newStatus}<Check size={13} strokeWidth={2} class="shrink-0 text-muted-foreground" />{/if}
-            {#if picked}{@render touch(taskTouches.statusOption, "2.5rem", "50%")}{/if}
+            {#if status === menuStatus}<Check size={13} strokeWidth={2} class="shrink-0 text-muted-foreground" />{/if}
+            {#if picked}{@render touch(Math.max(taskTouches.statusOption, taskTouches.subtaskStatusOption), "2.5rem", "50%")}{/if}
           </span>
         {/each}
       </div>

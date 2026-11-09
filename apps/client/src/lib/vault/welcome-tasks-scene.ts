@@ -1,7 +1,7 @@
 /**
  * Timing for the welcome scene on tasks. In the Novel project's List view, a task is typed into the add row at the
  * bottom of the list and added, its row is expanded and two subtasks are typed into its add-subtask row, and then the
- * task's status and priority are changed from their cells in the table.
+ * task's status, its first subtask's status, and the task's priority are changed from their cells in the table.
  */
 
 import { cursorClick, cursorRest, WELCOME_CURSOR_SCROLL_OVERLAP_MS, type WelcomeCursorScript } from "./welcome-cursor";
@@ -14,8 +14,15 @@ import {
   type ProjectsSceneTaskEntry,
 } from "./welcome-projects-scene";
 
-/** The cell menus the scene opens in the list. */
-export type TasksSceneCell = "status" | "priority";
+/** The cell menus the scene opens in the list: the added task's status and priority, and its first subtask's status. */
+export type TasksSceneCell = "status" | "subtaskStatus" | "priority";
+
+/** The `data-cursor` name of each cell the scene opens. */
+export const TASKS_CELL_TARGETS: Readonly<Record<TasksSceneCell, string>> = {
+  status: "tasks-status",
+  subtaskStatus: "tasks-subtask-status",
+  priority: "tasks-priority",
+};
 
 /** The task the scene adds, as a new task starts: the default status and priority, with no dates. */
 export const TASKS_NEW_TASK: ProjectsSceneTaskEntry = { key: "draftChapter", status: "todo", priority: "normal", start: null, due: null };
@@ -26,7 +33,7 @@ export const TASKS_SUBTASKS: readonly ProjectsSceneTaskEntry[] = [
   { key: "firstDraft", status: "todo", priority: "normal", start: null, due: null },
 ];
 
-/** The status and priority the added task is given from its cells. */
+/** The status and priority the added task is given from its cells; its first subtask is given the same status. */
 export const TASKS_NEW_STATUS: ProjectsSceneStatus = "inProgress";
 export const TASKS_NEW_PRIORITY: ProjectsScenePriority = "high";
 
@@ -52,12 +59,15 @@ export const TASKS_BEATS = {
   statusScrollEnd: 7500,
   statusTap: 7900,
   statusPick: 9200,
-  /** The list scrolls on to its priority, a tap opens its menu, and High is picked. */
-  priorityScrollStart: 9500,
-  priorityScrollEnd: 10000,
-  priorityTap: 10400,
-  priorityPick: 11700,
-  end: 13000,
+  /** A tap on the first subtask's status, in the same column, opens its menu, and In progress is picked. */
+  subtaskStatusTap: 10100,
+  subtaskStatusPick: 11400,
+  /** The list scrolls on to the task's priority, a tap opens its menu, and High is picked. */
+  priorityScrollStart: 11700,
+  priorityScrollEnd: 12200,
+  priorityTap: 12600,
+  priorityPick: 13900,
+  end: 15200,
 } as const;
 
 const B = TASKS_BEATS;
@@ -65,14 +75,17 @@ const B = TASKS_BEATS;
 /** How long the last frame rests before the scene starts over. */
 export const TASKS_END_HOLD_MS = 900;
 
-/** The frame shown as a still with reduced motion: the added task and its subtasks, with its new status and priority. */
+/** The frame shown as a still with reduced motion: the added task and its subtasks, with their new statuses and the task's new priority. */
 export const TASKS_STILL = B.end;
 
 /** The tap that opens each cell menu and the tap that picks its option. */
 const CELL_TAPS: Readonly<Record<TasksSceneCell, { tap: number; pick: number }>> = {
   status: { tap: B.statusTap, pick: B.statusPick },
+  subtaskStatus: { tap: B.subtaskStatusTap, pick: B.subtaskStatusPick },
   priority: { tap: B.priorityTap, pick: B.priorityPick },
 };
+
+const CELLS = ["status", "subtaskStatus", "priority"] as const satisfies readonly TasksSceneCell[];
 
 /** When each subtask is typed and added, in the order of {@link TASKS_SUBTASKS}. */
 const SUBTASK_TYPING = [
@@ -137,6 +150,12 @@ export function tasksNewStatus(elapsed: number): ProjectsSceneStatus {
   return elapsed >= B.statusPick ? TASKS_NEW_STATUS : TASKS_NEW_TASK.status;
 }
 
+/** The status of the subtask at `index` in {@link TASKS_SUBTASKS}: the first one's changes from its cell. */
+export function tasksSubtaskStatus(elapsed: number, index: number): ProjectsSceneStatus {
+  const start = TASKS_SUBTASKS[index]?.status ?? TASKS_NEW_TASK.status;
+  return index === 0 && elapsed >= B.subtaskStatusPick ? TASKS_NEW_STATUS : start;
+}
+
 /** The added task's priority. */
 export function tasksNewPriority(elapsed: number): ProjectsScenePriority {
   return elapsed >= B.priorityPick ? TASKS_NEW_PRIORITY : TASKS_NEW_TASK.priority;
@@ -153,15 +172,15 @@ export function tasksListScroll(elapsed: number): { status: number; priority: nu
   };
 }
 
-/** The added task's cell menu that is open, or null while both are closed. */
+/** The cell menu that is open, or null while every one is closed. */
 export function tasksCellMenu(elapsed: number): TasksSceneCell | null {
-  for (const cell of ["status", "priority"] as const) {
+  for (const cell of CELLS) {
     if (elapsed >= CELL_TAPS[cell].tap && elapsed < CELL_TAPS[cell].pick) return cell;
   }
   return null;
 }
 
-/** Whether the added task's `cell` is highlighted: as the pointer rests on it before its tap, and while its menu is open. */
+/** Whether `cell` is highlighted: as the pointer rests on it before its tap, and while its menu is open. */
 export function tasksCellHighlighted(elapsed: number, cell: TasksSceneCell): boolean {
   return elapsed >= CELL_TAPS[cell].tap - PROJECTS_HOVER_LEAD_MS && elapsed < CELL_TAPS[cell].pick;
 }
@@ -179,6 +198,8 @@ export interface TasksSceneTouches {
   subtaskAdd: number;
   status: number;
   statusOption: number;
+  subtaskStatus: number;
+  subtaskStatusOption: number;
   priority: number;
   priorityOption: number;
 }
@@ -191,6 +212,8 @@ export function tasksTouches(elapsed: number): TasksSceneTouches {
     subtaskAdd: filmTap(elapsed, B.subtaskAddTap),
     status: filmTap(elapsed, B.statusTap),
     statusOption: filmTap(elapsed, B.statusPick),
+    subtaskStatus: filmTap(elapsed, B.subtaskStatusTap),
+    subtaskStatusOption: filmTap(elapsed, B.subtaskStatusPick),
     priority: filmTap(elapsed, B.priorityTap),
     priorityOption: filmTap(elapsed, B.priorityPick),
   };
@@ -199,7 +222,8 @@ export function tasksTouches(elapsed: number): TasksSceneTouches {
 /**
  * The desktop pointer's path through the scene: it clicks into the add row and stays there while the task is typed,
  * expands the new task once it is added and clicks into its add-subtask row while the subtasks are typed, then opens
- * each cell's menu once the list has scrolled to it and picks its option.
+ * each cell's menu once the list has scrolled to it and picks its option. Both status menus are the same menu, so their
+ * option is one place.
  */
 export const TASKS_CURSOR: WelcomeCursorScript = [
   cursorRest("projects-list", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
@@ -210,8 +234,10 @@ export const TASKS_CURSOR: WelcomeCursorScript = [
     after: B.expandTap,
     busy: [{ start: B.statusScrollStart, end: B.statusScrollEnd }],
   }),
-  cursorClick("tasks-status", B.statusTap, { glyph: "pointer", after: B.statusScrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
-  cursorClick("tasks-status-option", B.statusPick, { busy: [{ start: B.priorityScrollStart, end: B.priorityScrollEnd }] }),
-  cursorClick("tasks-priority", B.priorityTap, { glyph: "pointer", after: B.priorityScrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
+  cursorClick(TASKS_CELL_TARGETS.status, B.statusTap, { glyph: "pointer", after: B.statusScrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
+  cursorClick("tasks-status-option", B.statusPick),
+  cursorClick(TASKS_CELL_TARGETS.subtaskStatus, B.subtaskStatusTap, { glyph: "pointer", after: B.statusPick }),
+  cursorClick("tasks-status-option", B.subtaskStatusPick, { busy: [{ start: B.priorityScrollStart, end: B.priorityScrollEnd }] }),
+  cursorClick(TASKS_CELL_TARGETS.priority, B.priorityTap, { glyph: "pointer", after: B.priorityScrollEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
   cursorClick("tasks-priority-option", B.priorityPick),
 ];

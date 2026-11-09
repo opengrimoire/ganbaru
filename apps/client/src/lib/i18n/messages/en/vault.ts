@@ -76,7 +76,7 @@ export const vaultSetup = {
     headline: "Organize your work in projects",
     body: "Split a big goal into small tasks and follow each one from start to finish.",
     sceneDescription:
-      "A short animation of the Novel project's List view. The task Write chapter 2 is typed into the bottom of the list and added, then expanded to add the subtasks Outline the scenes and Write the first draft, and then its status is set to In progress and its priority to High from their cells in the table.",
+      "A short animation of the Novel project's List view. The task Write chapter 2 is typed into the bottom of the list and added, then expanded to add the subtasks Outline the scenes and Write the first draft. The task's status and its first subtask's are then set to In progress and the task's priority to High from their cells in the table.",
   },
   about: {
     headline: "Free and open source",

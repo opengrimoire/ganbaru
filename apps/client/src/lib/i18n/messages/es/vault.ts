@@ -84,7 +84,7 @@ export const vaultSetup = {
     headline: "Organiza tu trabajo en proyectos",
     body: "Divide una meta grande en tareas pequeñas y sigue cada una de principio a fin.",
     sceneDescription:
-      "Una breve animación de la vista de lista del proyecto Novela. La tarea Escribir el capítulo 2 se escribe al final de la lista y se agrega, luego se expande para agregarle las subtareas Esbozar las escenas y Escribir el primer borrador, y después su estado se cambia a En progreso y su prioridad a Alta desde sus celdas en la tabla.",
+      "Una breve animación de la vista de lista del proyecto Novela. La tarea Escribir el capítulo 2 se escribe al final de la lista y se agrega, luego se expande para agregarle las subtareas Esbozar las escenas y Escribir el primer borrador. Después, su estado y el de su primera subtarea se cambian a En progreso y su prioridad a Alta desde sus celdas en la tabla.",
   },
   about: {
     headline: "Gratis y de código abierto",

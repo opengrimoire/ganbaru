@@ -56,7 +56,7 @@ export const vaultSetup = {
     playingNotice: (track: string, playlist: string) => `Reproduciendo ${track} de ${playlist}`,
   },
   projects: {
-    headline: "Configura un proyecto una vez y úsalo todos los días",
+    headline: "Configúralo una vez, úsalo a diario",
     body: "Define el Pomodoro y las playlists predeterminados de un proyecto, y sus eventos los usarán automáticamente.",
     sceneDescription:
       "Una breve animación de la configuración del proyecto Novela, abierta desde su vista de lista en los valores predeterminados de eventos, donde el nombre del evento se fija en Sesión de escritura, el color en uno nuevo, la duración en 2 horas y el Pomodoro en Creativo, se elige una playlist para el enfoque, los descansos cortos y los descansos largos, y la configuración se guarda y se cierra. En el Calendario, se arrastra un evento nuevo, y al elegir Novela para él recibe el nombre Sesión de escritura, el color nuevo, 2 horas, el Pomodoro Creativo y las tres playlists.",

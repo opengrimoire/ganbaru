@@ -82,9 +82,9 @@ export const vaultSetup = {
     headline: "Notes for each project",
     body: "Format your pages with Markdown or slash commands.",
     sceneDescription:
-      "A short animation of the Characters page in the Novel project's Notes, which starts with a line of text, the heading Open threads, and a bullet. Typing three number signs and a space on the next line turns it into the heading Mateo's secret, and a paragraph is typed below it. A slash on the next line then opens the slash menu, a short query narrows it to Callout, and Callout is chosen to add the callout Decide what Mateo saw at the station. Further down, a row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, which shows a column for each role and scrolls sideways to the Ally column. Back at the top of the page, a right click on the first line opens its menu, where Quote under Paragraph turns the line into a quote.",
+      "A short animation of the Characters page in the Novel project's Notes, which starts with a line of text, the heading Open threads, and a bullet. Typing three number signs and a space on the next line turns it into the heading Mateo's secret, and a paragraph is typed below it. A slash on the next line then opens the slash menu, a short query narrows it to Callout, and Callout is chosen to add the callout Decide what Mateo saw at the station. Further down, a row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, which shows a column for each role and scrolls sideways to the Ally column. Back at the top of the page, a right click on the first line opens its menu, where Quote under Paragraph turns the line into a quote. The pointer then rests on Characters in the top bar to list the project's notes and folders, and on the Worldbuilding folder to show the folder and notes inside it.",
     sceneDescriptionTouch:
-      "A short animation of the Characters page in the Novel project's Notes, which starts with a line of text, the heading Open threads, and a bullet. Typing three number signs and a space on the next line turns it into the heading Mateo's secret, and a paragraph is typed below it. A slash on the next line then opens the slash menu, a short query narrows it to Callout, and Callout is chosen to add the callout Decide what Mateo saw at the station. Further down, a row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, which shows a column for each role and scrolls sideways to the Ally column. Back at the top of the page, a long press on a word of the first line selects it and opens its menu, where Quote under Paragraph turns the line into a quote.",
+      "A short animation of the Characters page in the Novel project's Notes, which starts with a line of text, the heading Open threads, and a bullet. Typing three number signs and a space on the next line turns it into the heading Mateo's secret, and a paragraph is typed below it. A slash on the next line then opens the slash menu, a short query narrows it to Callout, and Callout is chosen to add the callout Decide what Mateo saw at the station. Further down, a row named Mateo is added to the page's Cast database and given the role Ally, then the database switches to its Board view, which shows a column for each role and scrolls sideways to the Ally column. Back at the top of the page, a long press on a word of the first line selects it and opens its menu, where Quote under Paragraph turns the line into a quote. Tapping Characters in the top bar then lists the project's notes and folders, and tapping the Worldbuilding folder shows the folder and notes inside it.",
     page: "Characters",
     quote: "Everyone in this book is hiding something.",
     quoteWord: "hiding",
@@ -99,6 +99,18 @@ export const vaultSetup = {
     role: "Role",
     roles: { lead: "Lead", rival: "Rival", ally: "Ally" },
     characters: { clara: "Clara", tomas: "Tomás", mateo: "Mateo" },
+    navigation: {
+      chapters: "Chapters",
+      research: "Research",
+      worldbuilding: "Worldbuilding",
+      plot: "Plot outline",
+      style: "Style guide",
+      timeline: "Timeline",
+      maps: "Maps",
+      glossary: "Glossary",
+      oldTown: "Old town",
+      station: "The station",
+    },
   },
   quickNotes: {
     headline: "Write it down before it slips away",

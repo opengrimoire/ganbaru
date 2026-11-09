@@ -90,9 +90,9 @@ export const vaultSetup = {
     headline: "Notas para cada proyecto",
     body: "Dale formato a tus páginas con Markdown o comandos (/).",
     sceneDescription:
-      "Una breve animación de la página Personajes en las notas del proyecto Novela, que empieza con una línea de texto, el encabezado Hilos abiertos y una viñeta. Escribir tres almohadillas y un espacio en la línea siguiente la convierte en el encabezado El secreto de Mateo, y debajo se escribe un párrafo. Luego una barra en la línea siguiente abre el menú de barra, una búsqueda corta lo reduce a Aviso, y se elige Aviso para agregar el aviso Decidir qué vio Mateo en la estación. Más abajo, una fila llamada Mateo se agrega a la base de datos Reparto de la página y recibe el rol Aliado, luego la base de datos cambia a su vista de tablero, que muestra una columna por cada rol y se desplaza de lado hasta la columna Aliado. De vuelta arriba en la página, un clic derecho en la primera línea abre su menú, donde Cita, dentro de Párrafo, convierte la línea en una cita.",
+      "Una breve animación de la página Personajes en las notas del proyecto Novela, que empieza con una línea de texto, el encabezado Hilos abiertos y una viñeta. Escribir tres almohadillas y un espacio en la línea siguiente la convierte en el encabezado El secreto de Mateo, y debajo se escribe un párrafo. Luego una barra en la línea siguiente abre el menú de barra, una búsqueda corta lo reduce a Aviso, y se elige Aviso para agregar el aviso Decidir qué vio Mateo en la estación. Más abajo, una fila llamada Mateo se agrega a la base de datos Reparto de la página y recibe el rol Aliado, luego la base de datos cambia a su vista de tablero, que muestra una columna por cada rol y se desplaza de lado hasta la columna Aliado. De vuelta arriba en la página, un clic derecho en la primera línea abre su menú, donde Cita, dentro de Párrafo, convierte la línea en una cita. Luego el puntero se detiene en Personajes, en la barra superior, para listar las notas y carpetas del proyecto, y en la carpeta Ambientación para mostrar la carpeta y las notas que contiene.",
     sceneDescriptionTouch:
-      "Una breve animación de la página Personajes en las notas del proyecto Novela, que empieza con una línea de texto, el encabezado Hilos abiertos y una viñeta. Escribir tres almohadillas y un espacio en la línea siguiente la convierte en el encabezado El secreto de Mateo, y debajo se escribe un párrafo. Luego una barra en la línea siguiente abre el menú de barra, una búsqueda corta lo reduce a Aviso, y se elige Aviso para agregar el aviso Decidir qué vio Mateo en la estación. Más abajo, una fila llamada Mateo se agrega a la base de datos Reparto de la página y recibe el rol Aliado, luego la base de datos cambia a su vista de tablero, que muestra una columna por cada rol y se desplaza de lado hasta la columna Aliado. De vuelta arriba en la página, mantener presionada una palabra de la primera línea la selecciona y abre su menú, donde Cita, dentro de Párrafo, convierte la línea en una cita.",
+      "Una breve animación de la página Personajes en las notas del proyecto Novela, que empieza con una línea de texto, el encabezado Hilos abiertos y una viñeta. Escribir tres almohadillas y un espacio en la línea siguiente la convierte en el encabezado El secreto de Mateo, y debajo se escribe un párrafo. Luego una barra en la línea siguiente abre el menú de barra, una búsqueda corta lo reduce a Aviso, y se elige Aviso para agregar el aviso Decidir qué vio Mateo en la estación. Más abajo, una fila llamada Mateo se agrega a la base de datos Reparto de la página y recibe el rol Aliado, luego la base de datos cambia a su vista de tablero, que muestra una columna por cada rol y se desplaza de lado hasta la columna Aliado. De vuelta arriba en la página, mantener presionada una palabra de la primera línea la selecciona y abre su menú, donde Cita, dentro de Párrafo, convierte la línea en una cita. Luego, tocar Personajes en la barra superior lista las notas y carpetas del proyecto, y tocar la carpeta Ambientación muestra la carpeta y las notas que contiene.",
     page: "Personajes",
     quote: "En este libro, todos esconden algo.",
     quoteWord: "esconden",
@@ -107,6 +107,18 @@ export const vaultSetup = {
     role: "Rol",
     roles: { lead: "Principal", rival: "Rival", ally: "Aliado" },
     characters: { clara: "Clara", tomas: "Tomás", mateo: "Mateo" },
+    navigation: {
+      chapters: "Capítulos",
+      research: "Investigación",
+      worldbuilding: "Ambientación",
+      plot: "Esquema de la trama",
+      style: "Guía de estilo",
+      timeline: "Cronología",
+      maps: "Mapas",
+      glossary: "Glosario",
+      oldTown: "Casco antiguo",
+      station: "La estación",
+    },
   },
   quickNotes: {
     headline: "Anótalo antes de que se te escape",

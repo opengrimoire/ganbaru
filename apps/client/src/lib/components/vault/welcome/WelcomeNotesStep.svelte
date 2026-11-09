@@ -13,7 +13,8 @@
 
   /**
    * The welcome screen on Notes: a page written with the slash menu, its database gaining a row and shown as a board,
-   * and a line turned into a quote from its context menu, on a loop.
+   * a line turned into a quote from its context menu, and the project's notes and folders browsed from the header, on a
+   * loop.
    */
   const { t } = getLocalization();
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";

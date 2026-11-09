@@ -5,8 +5,10 @@ import { en } from "$lib/i18n/messages/en";
 import { es } from "$lib/i18n/messages/es";
 import { blockTypeForTextShortcut } from "$lib/notes/blocks/shortcuts";
 import { sectionNotesSlashCommandItems } from "$lib/notes/editor/slash-commands";
+import { SUBMENU_OPEN_DELAY_MS } from "$lib/utils/menu-aim";
 import { welcomeCursorFrame, welcomeCursorHovered, welcomeCursorScriptOrdered } from "./welcome-cursor";
 import { FILM_TAP_MS } from "./welcome-film";
+import { PROJECTS_HOVER_LEAD_MS } from "./welcome-projects-scene";
 import {
   NOTES_BEATS,
   NOTES_CAST,
@@ -15,6 +17,9 @@ import {
   NOTES_HEADING_TYPE,
   NOTES_NEW_CHARACTER,
   NOTES_NEW_ROLE,
+  NOTES_NAVIGATOR_FOLDER,
+  NOTES_NAVIGATOR_FOLDER_ITEMS,
+  NOTES_NAVIGATOR_ROOT,
   NOTES_PARAGRAPH_HOVER,
   NOTES_ROLE_COLORS,
   NOTES_ROLE_ORDER,
@@ -33,6 +38,9 @@ import {
   notesNameCaretOn,
   notesNameDraft,
   notesNameFocused,
+  notesNavigatorFolderHighlighted,
+  notesNavigatorFolderOpen,
+  notesNavigatorOpen,
   notesNewRole,
   notesOptionHovered,
   notesParagraphCaretOn,
@@ -200,10 +208,10 @@ describe("welcome notes scene", () => {
     expect(notesQuoteLineType(B.quotePick)).toBe("quote");
   });
 
-  it("opens the submenu only inside the context menu, and never with another menu", () => {
+  it("opens the submenu only inside the context menu, and never opens two menus or the navigator with a menu", () => {
     for (const elapsed of moments()) {
       if (notesContextSubmenuOpen(elapsed)) expect(notesContextMenuOpen(elapsed)).toBe(true);
-      const open = [notesContextMenuOpen(elapsed), notesSlashMenuOpen(elapsed), notesRoleMenuOpen(elapsed)].filter(Boolean);
+      const open = [notesContextMenuOpen(elapsed), notesSlashMenuOpen(elapsed), notesRoleMenuOpen(elapsed), notesNavigatorOpen(elapsed)].filter(Boolean);
       expect(open.length).toBeLessThanOrEqual(1);
     }
   });
@@ -280,6 +288,7 @@ describe("welcome notes scene", () => {
     expect(notesQuoteLineType(NOTES_STILL)).toBe("quote");
     expect(notesContextMenuOpen(NOTES_STILL)).toBe(false);
     expect(notesContextSubmenuOpen(NOTES_STILL)).toBe(false);
+    expect(notesNavigatorOpen(NOTES_STILL)).toBe(false);
     expect(notesBoardShown(NOTES_STILL)).toBe(1);
     expect(notesHeadingAdded(NOTES_STILL)).toBe(true);
     expect(notesHeadingText(NOTES_STILL, HEADING)).toBe(HEADING);
@@ -339,5 +348,48 @@ describe("welcome notes scene", () => {
       expect(welcomeCursorHovered(NOTES_CURSOR, elapsed)).toBe("notes-context-paragraph");
     }
     expect(NOTES_CURSOR.find((stop) => stop.target === "notes-context-quote")?.depart).toBeGreaterThanOrEqual(B.submenuOpen);
+  });
+
+  it("opens the navigator once the quote is picked, and the folder's level after it", () => {
+    expect(B.navStart).toBeGreaterThanOrEqual(B.quotePick);
+    expect(notesNavigatorOpen(B.navOpen - 1)).toBe(false);
+    expect(notesNavigatorOpen(B.navOpen)).toBe(true);
+    expect(notesNavigatorFolderOpen(B.folderOpen - 1)).toBe(false);
+    expect(notesNavigatorFolderOpen(B.folderOpen)).toBe(true);
+    expect(notesNavigatorOpen(B.end)).toBe(true);
+    expect(notesNavigatorFolderOpen(B.end)).toBe(true);
+    for (const elapsed of moments()) {
+      if (notesNavigatorFolderOpen(elapsed)) expect(notesNavigatorOpen(elapsed)).toBe(true);
+    }
+  });
+
+  it("highlights the folder on a phone just before its tap, and taps the page's place and the folder on their beats", () => {
+    expect(notesNavigatorFolderHighlighted(B.folderOpen - PROJECTS_HOVER_LEAD_MS - 1)).toBe(false);
+    expect(notesNavigatorFolderHighlighted(B.folderOpen - PROJECTS_HOVER_LEAD_MS)).toBe(true);
+    expect(notesNavigatorFolderHighlighted(B.folderOpen)).toBe(false);
+    expect(notesTouches(B.navOpen - FILM_TAP_MS / 2).navigator).toBeGreaterThan(0);
+    expect(notesTouches(B.folderOpen - FILM_TAP_MS / 2).folder).toBeGreaterThan(0);
+  });
+
+  it("lists folders that hold something at the project's root, and the opened folder with both folders and notes inside it", () => {
+    const folder = NOTES_NAVIGATOR_ROOT.find((item) => item.key === NOTES_NAVIGATOR_FOLDER);
+    expect(folder).toEqual({ key: NOTES_NAVIGATOR_FOLDER, kind: "folder", hasChildren: true });
+    expect(NOTES_NAVIGATOR_ROOT.some((item) => item.key === "page")).toBe(true);
+    expect(new Set(NOTES_NAVIGATOR_FOLDER_ITEMS.map((item) => item.kind))).toEqual(new Set(["folder", "page"]));
+    const keys = [...NOTES_NAVIGATOR_ROOT, ...NOTES_NAVIGATOR_FOLDER_ITEMS].map((item) => item.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("rests the pointer on the page's place in the header until the navigator opens, then moves onto the folder", () => {
+    const breadcrumb = NOTES_CURSOR.find((stop) => stop.target === "notes-breadcrumb");
+    const folder = NOTES_CURSOR.find((stop) => stop.target === "notes-nav-folder");
+    expect(breadcrumb?.arrive).toBe(B.navOpen - SUBMENU_OPEN_DELAY_MS);
+    expect(breadcrumb?.depart).toBeGreaterThanOrEqual(B.navStart);
+    for (let elapsed = B.navOpen - SUBMENU_OPEN_DELAY_MS; elapsed <= B.navOpen; elapsed += 10) {
+      expect(welcomeCursorHovered(NOTES_CURSOR, elapsed)).toBe("notes-breadcrumb");
+    }
+    expect(folder?.depart).toBeGreaterThanOrEqual(B.navOpen);
+    expect(folder?.arrive).toBeLessThanOrEqual(B.folderOpen);
+    expect(welcomeCursorHovered(NOTES_CURSOR, B.end)).toBe("notes-nav-folder");
   });
 });

@@ -7,6 +7,8 @@
  * database switches to its Board view, with a column for each role, which scrolls sideways to the new row's column.
  * The page then scrolls back up to the plain line at its top, whose text context menu opens, with a right click on
  * desktop or a long press that selects one of its words on a phone, and Quote under Paragraph turns it into a quote.
+ * Last, the page's place in the header opens the note navigator, which lists the project's notes and folders, and the
+ * Worldbuilding folder shows what it holds: in a panel beside it on desktop, or in place of the list on a phone.
  */
 
 import type { NotesBlockType, NotesColor } from "$lib/notes/types";
@@ -112,7 +114,19 @@ export const NOTES_BEATS = {
    */
   submenuOpen: 18700,
   quotePick: 19700,
-  end: 21000,
+  /** The quote has settled, and the desktop pointer leaves for the page's place in the header. */
+  navStart: 20000,
+  /**
+   * The note navigator opens on the project's notes and folders: once the pointer has rested on the page's place in the
+   * header on desktop, as the header waits to, or as a tap lands on it on a phone.
+   */
+  navOpen: 20700,
+  /**
+   * The Worldbuilding folder shows what it holds: in a panel beside it as soon as the pointer reaches its row on
+   * desktop, or in place of the list as a tap on its row lands on a phone.
+   */
+  folderOpen: 21900,
+  end: 23900,
 } as const;
 
 const B = NOTES_BEATS;
@@ -124,7 +138,48 @@ export const NOTES_END_HOLD_MS = 900;
 export const NOTES_VIEW_FADE_MS = 220;
 
 /** The frame shown as a still with reduced motion: the top of the page, with its first line turned into a quote and every block written. */
-export const NOTES_STILL = B.end;
+export const NOTES_STILL = B.navStart;
+
+/** A name the note navigator lists, by the key of its text. */
+export type NotesSceneNavigatorName =
+  | "chapters"
+  | "research"
+  | "worldbuilding"
+  | "plot"
+  | "style"
+  | "timeline"
+  | "maps"
+  | "glossary"
+  | "oldTown"
+  | "station";
+
+/** A row of the note navigator: a folder or a note, with whether it holds anything, by the key of its name. */
+export interface NotesSceneNavigatorItem {
+  /** The key of its name, or `page` for the Characters page the scene is on. */
+  key: NotesSceneNavigatorName | "page";
+  kind: "folder" | "page";
+  hasChildren: boolean;
+}
+
+/** The project's notes and folders, which the navigator lists in the sidebar's order. */
+export const NOTES_NAVIGATOR_ROOT: readonly NotesSceneNavigatorItem[] = [
+  { key: "chapters", kind: "folder", hasChildren: true },
+  { key: "research", kind: "folder", hasChildren: true },
+  { key: "worldbuilding", kind: "folder", hasChildren: true },
+  { key: "page", kind: "page", hasChildren: true },
+  { key: "plot", kind: "page", hasChildren: false },
+  { key: "style", kind: "page", hasChildren: false },
+  { key: "timeline", kind: "page", hasChildren: false },
+];
+
+/** The folder the scene opens, and what it holds. */
+export const NOTES_NAVIGATOR_FOLDER: NotesSceneNavigatorName = "worldbuilding";
+export const NOTES_NAVIGATOR_FOLDER_ITEMS: readonly NotesSceneNavigatorItem[] = [
+  { key: "maps", kind: "folder", hasChildren: true },
+  { key: "glossary", kind: "page", hasChildren: false },
+  { key: "oldTown", kind: "page", hasChildren: false },
+  { key: "station", kind: "page", hasChildren: false },
+];
 
 /** The plain line at the page's top, split around the word a long press selects on a phone. */
 export interface NotesQuoteParts {
@@ -325,6 +380,24 @@ export function notesQuoteLineType(elapsed: number): NotesBlockType {
   return notesQuoteAdded(elapsed) ? "quote" : "paragraph";
 }
 
+/** Whether the note navigator is open: from the moment it opens until the scene ends. */
+export function notesNavigatorOpen(elapsed: number): boolean {
+  return elapsed >= B.navOpen;
+}
+
+/** Whether the Worldbuilding folder shows what it holds: from the moment it opens until the scene ends. */
+export function notesNavigatorFolderOpen(elapsed: number): boolean {
+  return elapsed >= B.folderOpen;
+}
+
+/** When the desktop pointer reaches the page's place in the header, so the navigator opens after it has rested there as the header waits to. */
+export const NOTES_BREADCRUMB_HOVER = B.navOpen - SUBMENU_OPEN_DELAY_MS;
+
+/** Whether the Worldbuilding row shows as highlighted on a phone, just before its tap lands. */
+export function notesNavigatorFolderHighlighted(elapsed: number): boolean {
+  return elapsed >= B.folderOpen - PROJECTS_HOVER_LEAD_MS && elapsed < B.folderOpen;
+}
+
 /** The scene's touches, each from 0 to 1 as it shows. */
 export interface NotesSceneTouches {
   line: number;
@@ -336,6 +409,8 @@ export interface NotesSceneTouches {
   quoteWord: number;
   paragraph: number;
   quote: number;
+  navigator: number;
+  folder: number;
 }
 
 /** The scene's touches at `elapsed`. */
@@ -350,6 +425,8 @@ export function notesTouches(elapsed: number): NotesSceneTouches {
     quoteWord: filmPress(elapsed, B.quotePress, B.quoteLift),
     paragraph: filmTap(elapsed, B.submenuOpen),
     quote: filmTap(elapsed, B.quotePick),
+    navigator: filmTap(elapsed, B.navOpen),
+    folder: filmTap(elapsed, B.folderOpen),
   };
 }
 
@@ -362,7 +439,8 @@ export const NOTES_BOARD_CURSOR_ANCHOR = [0.5, 0.4] as const;
  * page scrolls. It clicks New page once the table is in view, opens the new row's Role and picks Ally, switches the
  * database to its board, then moves onto the board, which scrolls sideways under it as a mouse wheel scrolls it. Once
  * the page scrolls back up under it, it right clicks the line at the top, rests on Paragraph until its submenu opens,
- * and clicks Quote.
+ * and clicks Quote. Last, it rests on the page's place in the header until the navigator opens, and moves onto the
+ * Worldbuilding folder, which opens beside it.
  */
 export const NOTES_CURSOR: WelcomeCursorScript = [
   cursorRest("notes-page", 0, { anchor: PROJECTS_CURSOR_REST_ANCHOR }),
@@ -385,4 +463,6 @@ export const NOTES_CURSOR: WelcomeCursorScript = [
   cursorClick("notes-quote-word", B.quoteMenuOpen, { glyph: "text", after: B.scrollBackEnd - WELCOME_CURSOR_SCROLL_OVERLAP_MS }),
   cursorRest("notes-context-paragraph", NOTES_PARAGRAPH_HOVER),
   cursorClick("notes-context-quote", B.quotePick, { after: B.submenuOpen }),
+  cursorRest("notes-breadcrumb", NOTES_BREADCRUMB_HOVER),
+  cursorRest("notes-nav-folder", B.folderOpen),
 ];

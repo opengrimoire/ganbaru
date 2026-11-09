@@ -15,16 +15,21 @@
 
 <script lang="ts">
   import { untrack } from "svelte";
+  import ArrowUpDown from "@lucide/svelte/icons/arrow-up-down";
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import ClipboardPaste from "@lucide/svelte/icons/clipboard-paste";
   import Columns3 from "@lucide/svelte/icons/columns-3";
   import Copy from "@lucide/svelte/icons/copy";
   import Music from "@lucide/svelte/icons/eighth-notes";
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
+  import Eye from "@lucide/svelte/icons/eye";
   import Feather from "@lucide/svelte/icons/feather";
   import FileText from "@lucide/svelte/icons/file-text";
+  import Folder from "@lucide/svelte/icons/folder";
+  import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import GripVertical from "@lucide/svelte/icons/grip-vertical";
   import Heart from "@lucide/svelte/icons/heart";
   import LinkIcon from "@lucide/svelte/icons/link";
@@ -40,8 +45,10 @@
   import Search from "@lucide/svelte/icons/search";
   import Share2 from "@lucide/svelte/icons/share-2";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
+  import SquarePen from "@lucide/svelte/icons/square-pen";
   import Star from "@lucide/svelte/icons/star";
   import Table2 from "@lucide/svelte/icons/table-2";
+  import X from "@lucide/svelte/icons/x";
   import CollectionCell from "$lib/components/collections/CollectionCell.svelte";
   import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
   import CollectionRow from "$lib/components/collections/CollectionRow.svelte";
@@ -67,6 +74,11 @@
   import { notesBlockColorStyle, notesBlockColorSwatchStyle } from "$lib/notes/blocks/color";
   import { notesBlockMarker, notesRichTextPreviewClass } from "$lib/notes/blocks/editor-ui";
   import { createCalloutPayload, DEFAULT_COLOR } from "$lib/notes/blocks/payloads";
+  import {
+    NOTES_HIERARCHY_PANEL_LIST_PADDING,
+    NOTES_HIERARCHY_PANEL_ROW_HEIGHT,
+    notesHierarchyPanelChromeHeight,
+  } from "$lib/notes/navigation/hierarchy-menu";
   import { sectionNotesSlashCommandItems } from "$lib/notes/editor/slash-commands";
   import {
     NOTES_TEXT_CONTEXT_SUBMENU_WIDTH,
@@ -75,17 +87,23 @@
   } from "$lib/notes/editor/text-context-menu";
   import type { NotesBlockType } from "$lib/notes/types";
   import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
+  import { projectPickerPanelFrameStyle, projectPickerSubpanelGeometry } from "$lib/projects/picker-panels";
+  import { projectNavigatorPanelGeometry } from "$lib/projects/toolbar";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { cn } from "$lib/utils";
   import { anchoredPanelStyle } from "$lib/utils/anchored-panel";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { pickSelectPopoverGeometry } from "$lib/utils/select-popover-position";
+  import { compareSidebarNames } from "$lib/utils/sidebar-order";
   import { welcomeCursorFrame, type WelcomeCursorPoint } from "$lib/vault/welcome-cursor";
   import { WELCOME_NO_HOVER, welcomeHoverAt, welcomeHoverSame } from "$lib/vault/welcome-hover";
   import {
     NOTES_CAST,
     NOTES_CURSOR,
     NOTES_HEADING_TYPE,
+    NOTES_NAVIGATOR_FOLDER,
+    NOTES_NAVIGATOR_FOLDER_ITEMS,
+    NOTES_NAVIGATOR_ROOT,
     NOTES_NEW_CHARACTER,
     NOTES_NEW_ROLE,
     NOTES_ROLE_COLORS,
@@ -106,6 +124,9 @@
     notesNameCaretOn,
     notesNameDraft,
     notesNameFocused,
+    notesNavigatorFolderHighlighted,
+    notesNavigatorFolderOpen,
+    notesNavigatorOpen,
     notesNewRole,
     notesOptionHovered,
     notesPageScroll,
@@ -123,6 +144,7 @@
     notesSlashQuery,
     notesTouches,
     type NotesSceneCharacter,
+    type NotesSceneNavigatorItem,
     type NotesSceneRole,
     type NotesSceneRow,
   } from "$lib/vault/welcome-notes-scene";
@@ -133,8 +155,9 @@
    * line opens the slash menu, which narrows to Callout as a query is typed, and the accepted callout is filled in. The
    * page then scrolls to its Cast database, where a row is added to the table, named, and given a role from its cell, and
    * the database switches to its Board view, which scrolls sideways to the new row's column. Back at the page's top, the
-   * text context menu opens on its first line, and Quote under Paragraph turns the line into a quote. Every style is a
-   * function of `elapsed`, with no CSS transitions.
+   * text context menu opens on its first line, and Quote under Paragraph turns the line into a quote. Last, the page's
+   * place in the header opens the note navigator on the project's notes and folders, and the Worldbuilding folder shows
+   * what it holds. Every style is a function of `elapsed`, with no CSS transitions.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -177,6 +200,14 @@
   /** The callout the slash line turns into, with the color and icon a new callout starts with. */
   const CALLOUT = createCalloutPayload("");
   const CALLOUT_LAYERS: readonly NotesCalloutLayer[] = [{ id: "callout", color: CALLOUT.color ?? DEFAULT_COLOR, first: true, last: true }];
+  /** The note navigator's icons and its gap from the row a folder opens beside, as the hierarchy picker draws them. */
+  const NAV_ICON_SIZE = mobileShell ? 18 : 13;
+  const NAV_ICON_STROKE_WIDTH = 1.6;
+  const NAV_PANEL_GAP_PX = 4;
+  /** How far the folder's panel keeps from the window's edges, as the hierarchy picker keeps it. */
+  const NAV_EDGE_MARGIN_PX = 8;
+  /** The folder the navigator opens, as a cascading panel's chrome is estimated for it. */
+  const NAV_FOLDER_PARENT = { kind: "folder", id: NOTES_NAVIGATOR_FOLDER } as const;
 
   /** A block the page starts with below its first line: its type and the key of its text. */
   interface NotesSceneBlock {
@@ -234,6 +265,11 @@
   /** A long press selects the word it lands on, so a phone's menu offers what applies to a selection. */
   const contextHasSelection = mobileShell;
   const quoteWordSelected = $derived(mobileShell && notesQuoteWordSelected(elapsed));
+  const navigatorOpen = $derived(notesNavigatorOpen(elapsed));
+  const navigatorFolderOpen = $derived(notesNavigatorFolderOpen(elapsed));
+  /** The project's notes and folders and the opened folder's, as the navigator orders them: folders first, then by name. */
+  const navigatorRoot = $derived(navigatorOrder(NOTES_NAVIGATOR_ROOT));
+  const navigatorFolder = $derived(navigatorOrder(NOTES_NAVIGATOR_FOLDER_ITEMS));
 
   /** The database's rows: the cast it starts with, then the added row with the role it has so far. */
   const rows = $derived<readonly NotesSceneRow[]>(rowAdded ? [...NOTES_CAST, { key: NOTES_NEW_CHARACTER, role: newRole }] : NOTES_CAST);
@@ -261,6 +297,10 @@
   let contextMenu = $state<HTMLDivElement>();
   let contextParagraph = $state<HTMLSpanElement>();
   let contextSubmenu = $state<HTMLDivElement>();
+  let notesArea = $state<HTMLDivElement>();
+  let breadcrumb = $state<HTMLSpanElement>();
+  let navPanel = $state<HTMLDivElement>();
+  let navChild = $state<HTMLDivElement>();
 
   /** A box in the logical pixels of the element it is measured against. */
   interface Box {
@@ -288,6 +328,11 @@
    * within it, and the submenu's size, measured as the menu opens.
    */
   let contextLayout = $state<{ word: Box; height: number; paragraph: Box; submenu: { width: number; height: number } } | null>(null);
+  /**
+   * The page's place in the header and the Notes view on the canvas, the navigator's height and the folder's row within
+   * it, and the folder panel's height, measured as the navigator opens.
+   */
+  let navLayout = $state<{ trigger: Box; bounds: Box; height: number; row: Box; childHeight: number } | null>(null);
 
   $effect(() => {
     const bump = () => {
@@ -313,6 +358,7 @@
     void menuOpen;
     void typedQuery;
     void contextOpen;
+    void navigatorOpen;
     if (pageViewport && pageContent && database) {
       const box = relBox(database, pageContent);
       pageLayout = { viewport: pageViewport.clientHeight, top: box.top, bottom: box.top + box.height };
@@ -345,6 +391,16 @@
         submenu: { width: contextSubmenu.offsetWidth, height: contextSubmenu.offsetHeight },
       };
     }
+    const folderRow = navPanel?.querySelector<HTMLElement>('[data-cursor~="notes-nav-folder"]');
+    if (canvas && notesArea && breadcrumb && navPanel && navChild && folderRow) {
+      navLayout = {
+        trigger: relBox(breadcrumb, canvas),
+        bounds: relBox(notesArea, canvas),
+        height: navPanel.offsetHeight,
+        row: relBox(folderRow, navPanel),
+        childHeight: navChild.offsetHeight,
+      };
+    }
   });
 
   /**
@@ -363,6 +419,62 @@
       bottom: root.top + paragraph.top + paragraph.height,
     };
     return { root, submenu: notesTextContextSubmenuPosition(anchor, submenu, viewport) };
+  });
+
+  /**
+   * The navigator's place below the page's place in the header, kept in the Notes view as the header keeps it, and the
+   * folder panel's place beside the folder's row, kept in the Notes view and the canvas as the picker keeps it in the
+   * window.
+   */
+  const navPlace = $derived.by(() => {
+    if (!navLayout) return null;
+    const { trigger, bounds, height, row, childHeight } = navLayout;
+    const root = projectNavigatorPanelGeometry({
+      anchorLeft: trigger.left,
+      anchorBottom: trigger.top + trigger.height,
+      viewportWidth: canvasW,
+      viewportHeight: canvasH,
+      boundsLeft: bounds.left,
+      boundsRight: bounds.left + bounds.width,
+      boundsTop: bounds.top,
+      boundsBottom: bounds.top + bounds.height,
+    });
+    const rootHeight = Math.min(height, root.height);
+    const rowTop = root.top + row.top;
+    const rowLeft = root.left + row.left;
+    const child = projectPickerSubpanelGeometry({
+      anchorRect: { left: rowLeft, right: rowLeft + row.width, top: rowTop, bottom: rowTop + row.height, width: row.width, height: row.height },
+      panelRect: { left: root.left, right: root.left + root.width, top: root.top, bottom: root.top + rootHeight, width: root.width, height: rootHeight },
+      bounds: {
+        left: Math.max(bounds.left, NAV_EDGE_MARGIN_PX),
+        right: Math.min(bounds.left + bounds.width, canvasW - NAV_EDGE_MARGIN_PX),
+        top: Math.max(bounds.top, NAV_EDGE_MARGIN_PX),
+        bottom: Math.min(bounds.top + bounds.height, canvasH - NAV_EDGE_MARGIN_PX),
+      },
+      gap: NAV_PANEL_GAP_PX,
+      footerHeight: notesHierarchyPanelChromeHeight(NAV_FOLDER_PARENT, false),
+      panelHeight: childHeight || undefined,
+      projectCount: Math.max(1, NOTES_NAVIGATOR_FOLDER_ITEMS.length),
+      visibleRows: null,
+      listPadding: NOTES_HIERARCHY_PANEL_LIST_PADDING,
+      rowHeight: NOTES_HIERARCHY_PANEL_ROW_HEIGHT,
+    });
+    return { root, child: child.panel };
+  });
+
+  /** The navigator's style, sized by its rows up to the room below the header, and kept laid out while closed so its size is known. */
+  const navPanelStyle = $derived.by(() => {
+    if (!navPlace) return "visibility: hidden";
+    const { left, top, width, height } = navPlace.root;
+    const style = `left: ${Math.round(left)}px; top: ${Math.round(top)}px; width: ${Math.round(width)}px; max-height: ${height}px`;
+    return navigatorOpen ? style : `${style}; visibility: hidden`;
+  });
+
+  /** The folder panel's style, sized by its rows as the picker sizes a cascading panel, and kept laid out while closed. */
+  const navChildStyle = $derived.by(() => {
+    if (!navPlace) return "visibility: hidden";
+    const style = `${projectPickerPanelFrameStyle(navPlace.child)}; height: auto`;
+    return navigatorFolderOpen ? style : `${style}; visibility: hidden`;
   });
 
   /** The slash menu's place beside the slash, as the editor places it, kept laid out while closed so its size is known. */
@@ -456,6 +568,17 @@
     return t(`vaultSetup.notes.characters.${key}`);
   }
 
+  /** A navigator row's name: the Characters page the scene is on, or one of the project's other notes and folders. */
+  function navigatorName(item: NotesSceneNavigatorItem): string {
+    return item.key === "page" ? t("vaultSetup.notes.page") : t(`vaultSetup.notes.navigation.${item.key}`);
+  }
+
+  /** `items` in the navigator's order for a fresh project: folders before notes, then by name. */
+  function navigatorOrder(items: readonly NotesSceneNavigatorItem[]): NotesSceneNavigatorItem[] {
+    const rank = (item: NotesSceneNavigatorItem) => (item.kind === "folder" ? 0 : 1);
+    return [...items].sort((left, right) => rank(left) - rank(right) || compareSidebarNames(navigatorName(left), navigatorName(right)));
+  }
+
   /** Whether the Ally option shows as hovered: under the pointer on desktop, or just before its touch lands on a phone. */
   function optionHovered(role: NotesSceneRole | null): boolean {
     if (mobileShell) return role === NOTES_NEW_ROLE && notesOptionHovered(elapsed);
@@ -504,6 +627,102 @@
   </span>
 {/snippet}
 
+<!-- A navigator row's icon, as the hierarchy picker draws it. -->
+{#snippet navigatorIcon(item: NotesSceneNavigatorItem)}
+  {#if item.kind === "folder"}
+    <Folder size={NAV_ICON_SIZE} strokeWidth={NAV_ICON_STROKE_WIDTH} class="shrink-0" />
+  {:else}
+    <FileText size={NAV_ICON_SIZE} strokeWidth={NAV_ICON_STROKE_WIDTH} class="shrink-0" />
+  {/if}
+{/snippet}
+
+<!--
+  The note navigator's contents, as the hierarchy picker draws them on each shell: a phone's title bar and the search
+  field with its order and archived toggles, the rows, and the footer that adds a folder or a note.
+-->
+{#snippet navigatorBody(items: readonly NotesSceneNavigatorItem[], search: boolean, title: string)}
+  {#if mobileShell || search}
+    <div class={cn("shrink-0", mobileShell ? "border-b border-border/70 p-2" : "px-1.5 pt-1.5")}>
+      {#if mobileShell}
+        <div class="flex min-h-14 items-center gap-1">
+          <span class="flex min-h-12 min-w-12 items-center justify-center rounded-xl"><ChevronLeft size={22} strokeWidth={NAV_ICON_STROKE_WIDTH} /></span>
+          <span class="min-w-0 flex-1 truncate px-2 text-base font-semibold">{title}</span>
+          <span class="flex min-h-12 min-w-12 items-center justify-center rounded-xl"><X size={22} strokeWidth={NAV_ICON_STROKE_WIDTH} /></span>
+        </div>
+      {/if}
+      {#if search}
+        <div class={cn("field flex items-center gap-1.5", mobileShell ? "min-h-12 rounded-xl px-3 pr-0" : "py-0 pr-1")}>
+          <Search size={NAV_ICON_SIZE} strokeWidth={NAV_ICON_STROKE_WIDTH} class="shrink-0 text-popover-foreground/60" />
+          <span class={cn("field-bare truncate text-muted-foreground", mobileShell && "flex h-12 items-center text-base")}>{t("notes.searchPlaceholder")}</span>
+          <span class="flex shrink-0 items-center">
+            {#each [ArrowUpDown, Eye] as Icon, index (index)}
+              <span class={cn("flex shrink-0 items-center justify-center text-popover-foreground/60", mobileShell ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded")}>
+                <Icon size={NAV_ICON_SIZE} strokeWidth={NAV_ICON_STROKE_WIDTH} />
+              </span>
+            {/each}
+          </span>
+        </div>
+      {/if}
+    </div>
+  {/if}
+  <div class="relative flex min-h-0 flex-auto flex-col">
+    <div class={cn("hide-scrollbar min-h-0 flex-auto overflow-y-auto", mobileShell ? "overscroll-contain px-2 py-2" : "surface-floating-body")}>
+      <div class="grid">
+        {#each items as item (item.key)}
+          {@const opened = item.key === NOTES_NAVIGATOR_FOLDER}
+          {#if mobileShell}
+            <div class={cn("flex min-h-12 items-stretch rounded-floating-item", opened && notesNavigatorFolderHighlighted(elapsed) && "bg-accent text-accent-foreground")}>
+              <span class="relative flex min-w-0 flex-1 items-center gap-2 rounded-floating-item px-3 text-left text-sm text-popover-foreground">
+                {@render navigatorIcon(item)}
+                <span class="min-w-0 flex-1 truncate">{navigatorName(item)}</span>
+                {#if item.kind === "folder"}
+                  <ChevronRight size={NAV_ICON_SIZE} strokeWidth={NAV_ICON_STROKE_WIDTH} class="shrink-0 text-popover-foreground/45" />
+                {/if}
+                {#if opened}<WelcomeTouch opacity={touches.folder} left="2rem" />{/if}
+              </span>
+              {#if item.kind !== "folder" && item.hasChildren}
+                <span class="flex w-12 shrink-0 items-center justify-center rounded-floating-item text-popover-foreground/60">
+                  <ChevronRight size={NAV_ICON_SIZE} strokeWidth={NAV_ICON_STROKE_WIDTH} />
+                </span>
+              {/if}
+            </div>
+          {:else}
+            <span
+              data-cursor={opened ? "notes-nav-folder" : undefined}
+              data-scene-hover={`nav:${item.key}`}
+              class="menu-item text-popover-foreground"
+              data-highlighted={hovered(`nav:${item.key}`) ? "" : undefined}
+            >
+              {@render navigatorIcon(item)}
+              <span class="min-w-0 flex-1 truncate">{navigatorName(item)}</span>
+              {#if item.hasChildren}
+                <ChevronRight size={NAV_ICON_SIZE} strokeWidth={NAV_ICON_STROKE_WIDTH} class="shrink-0 text-popover-foreground/45" />
+              {/if}
+            </span>
+          {/if}
+        {/each}
+      </div>
+    </div>
+  </div>
+  <div class={cn("relative z-10 shrink-0 bg-popover", mobileShell ? "p-2" : "p-1.5")}>
+    <div class="pointer-events-none absolute top-0 right-1.5 left-1.5 border-t border-border/70"></div>
+    <div class={cn("flex items-center", mobileShell ? "min-h-12" : "min-h-8")}>
+      {#each [{ Icon: FolderPlus, label: t("notes.newFolder") }, { Icon: SquarePen, label: t("notes.newPage") }] as action, index (index)}
+        {#if index > 0}<div class="mx-1 h-5 border-l border-border/70"></div>{/if}
+        <span
+          class={cn(
+            "flex min-w-0 flex-1 items-center justify-center gap-1.5 px-1 text-popover-foreground",
+            mobileShell ? "min-h-12 rounded-xl text-sm" : "min-h-8 rounded-floating-item",
+          )}
+        >
+          <action.Icon size={NAV_ICON_SIZE} strokeWidth={NAV_ICON_STROKE_WIDTH} />
+          <span class="truncate">{action.label}</span>
+        </span>
+      {/each}
+    </div>
+  </div>
+{/snippet}
+
 <!-- A board card, as the board draws it. -->
 {#snippet card(row: NotesSceneRow)}
   {@const cardHovered = hovered(`card:${row.key}`)}
@@ -550,14 +769,15 @@
       </div>
     {/if}
 
-    <div class="relative flex min-h-0 flex-1 flex-col bg-(--cal-bg)">
+    <div bind:this={notesArea} class="relative flex min-h-0 flex-1 flex-col bg-(--cal-bg)">
       {#if mobileShell}
         <div class="flex shrink-0 items-center gap-0 px-(--mobile-chrome-inset)" style:height={`${HEADER_H}px`}>
           <div class="flex h-12 min-w-0 flex-1 items-center">
             <span class={MOBILE_CHROME_BUTTON_CLASS}><PanelLeft size={MOBILE_ICON_SIZE} strokeWidth={TOOL_ICON_STROKE_WIDTH} /></span>
-            <span class="mobile-chrome-button flex min-w-0 items-center justify-start gap-1.5 px-1.5 text-foreground">
+            <span class="mobile-chrome-button relative flex min-w-0 items-center justify-start gap-1.5 px-1.5 text-foreground">
               <FileText size={MOBILE_ICON_SIZE} strokeWidth={TOOL_ICON_STROKE_WIDTH} class="shrink-0" />
               <span class="min-w-0 truncate text-xs font-medium">{t("vaultSetup.notes.page")}</span>
+              <WelcomeTouch opacity={touches.navigator} />
             </span>
           </div>
           <span class={MOBILE_CHROME_BUTTON_CLASS}><Star size={MOBILE_ICON_SIZE} strokeWidth={TOOL_ICON_STROKE_WIDTH} /></span>
@@ -576,7 +796,12 @@
               <span class="truncate">{t("vaultSetup.projects.project")}</span>
             </span>
             <span class="shrink-0 px-0.5 font-semibold text-muted-foreground">/</span>
-            <span class="flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5">
+            <span
+              bind:this={breadcrumb}
+              data-cursor="notes-breadcrumb"
+              data-scene-hover="breadcrumb:page"
+              class={cn("flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5", (navigatorOpen || hovered("breadcrumb:page")) && "bg-accent")}
+            >
               <FileText size={IDENTITY_ICON_SIZE} strokeWidth={IDENTITY_ICON_STROKE_WIDTH} class="shrink-0" />
               <span class="truncate">{t("vaultSetup.notes.page")}</span>
               <WorkspaceBreadcrumbTerminalIcon kind="chevron" class="shrink-0 text-muted-foreground" />
@@ -950,6 +1175,33 @@
         {/each}
       </div>
     </div>
+
+    <!--
+      The note navigator, as the header opens it on the page's place: below it with the folder's panel beside its row on
+      desktop, both kept laid out while closed so their sizes are known, or over the whole screen on a phone, where the
+      folder takes the list's place.
+    -->
+    {#if !mobileShell}
+      <div bind:this={navPanel} data-scene-cover class="project-picker-panel surface-floating fixed top-0 left-0 z-80 flex min-h-0 flex-col overflow-hidden" style={navPanelStyle}>
+        {@render navigatorBody(navigatorRoot, true, t("vaultSetup.projects.project"))}
+      </div>
+      <div bind:this={navChild} data-scene-cover class="project-picker-panel surface-floating fixed top-0 left-0 z-80 flex min-h-0 flex-col overflow-hidden" style={navChildStyle}>
+        {@render navigatorBody(navigatorFolder, false, t(`vaultSetup.notes.navigation.${NOTES_NAVIGATOR_FOLDER}`))}
+      </div>
+    {:else if navigatorOpen}
+      <div class="absolute inset-0 z-80 box-border flex items-stretch justify-center p-2">
+        <span class="surface-backdrop absolute inset-0"></span>
+        <div class="relative z-10 h-full min-h-0 w-full max-w-xl">
+          <div class="project-picker-panel surface-floating flex h-full min-h-0 flex-col overflow-hidden rounded-2xl">
+            {#if navigatorFolderOpen}
+              {@render navigatorBody(navigatorFolder, true, t(`vaultSetup.notes.navigation.${NOTES_NAVIGATOR_FOLDER}`))}
+            {:else}
+              {@render navigatorBody(navigatorRoot, true, t("vaultSetup.projects.project"))}
+            {/if}
+          </div>
+        </div>
+      </div>
+    {/if}
 
     {#if !mobileShell}
       <WelcomeCursor script={NOTES_CURSOR} {elapsed} width={canvasW} bind:position={cursorPoint} />

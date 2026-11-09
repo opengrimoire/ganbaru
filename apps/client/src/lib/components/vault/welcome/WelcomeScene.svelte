@@ -53,6 +53,12 @@
   /** Below this scale the drawing stops reading as the app; above it, it starts to look like a poster. */
   const MIN_ZOOM = 0.55;
   const MAX_ZOOM = 1.2;
+  /**
+   * The height every scene is zoomed against, the smallest canvas of the scenes drawn as the app's window, bezel
+   * included. A scene whose own smallest canvas is shorter takes this zoom too and grows taller to fill the room, so
+   * every screen draws the app at the same scale.
+   */
+  const ZOOM_REFERENCE_HEIGHT = 482;
   const START_DELAY_MS = 350;
   /** A longer gap between frames means the page was hidden, so the scene resumes instead of skipping ahead. */
   const MAX_FRAME_MS = 64;
@@ -65,8 +71,11 @@
 
   /** The room left for the drawing once its vertical breathing room is set aside. */
   const roomY = $derived(Math.max(0, roomHeight - SCENE_MARGIN_Y));
-  /** The largest zoom at which the drawing's smallest size still fits, so the drawing grows before it zooms. */
-  const baseZoom = $derived(Math.min(MAX_ZOOM, roomWidth / minWidth, roomY / minHeight));
+  /**
+   * The largest zoom at which the drawing's smallest size, or the shared reference height when that is taller, still
+   * fits, so the drawing grows before it zooms.
+   */
+  const baseZoom = $derived(Math.min(MAX_ZOOM, roomWidth / minWidth, roomY / Math.max(minHeight, ZOOM_REFERENCE_HEIGHT)));
   const sceneWidth = $derived(baseZoom > 0 ? Math.floor(clamp(roomWidth / baseZoom, minWidth, maxWidth)) : minWidth);
   const sceneHeight = $derived(baseZoom > 0 ? Math.floor(clamp(roomY / baseZoom, minHeight, maxHeight)) : minHeight);
   const fit = $derived(Math.min(roomWidth / sceneWidth, roomY / sceneHeight));

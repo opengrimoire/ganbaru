@@ -511,7 +511,7 @@
     style:height={`${canvasH}px`}
   >
     {#if mobileShell}
-      <div class="flex shrink-0 items-center justify-end bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
+      <div class="flex shrink-0 items-center justify-end bg-(--cal-bg) px-1.5" style:height={`${TOP_BAR_H}px`}>
         <span class={cn("relative grid size-8 place-items-center rounded-full text-muted-foreground", focusing && "bg-accent/70 text-foreground")}>
           {@render ring(20, "stroke-muted-foreground/35", "text-foreground/76 stroke-foreground/76")}
         </span>

@@ -568,7 +568,7 @@
   >
     {#if mobileShell}
       <!-- The top bar's Focus ring, on its own. -->
-      <div class="flex shrink-0 items-center justify-end bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
+      <div class="flex shrink-0 items-center justify-end bg-(--cal-bg) px-1.5" style:height={`${TOP_BAR_H}px`}>
         <span
           class={cn(
             "relative grid size-8 place-items-center rounded-full text-muted-foreground",

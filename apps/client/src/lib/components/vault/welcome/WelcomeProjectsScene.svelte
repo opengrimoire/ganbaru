@@ -1283,7 +1283,7 @@
   >
     {#if mobileShell}
       <!-- The phone's top bar, with the Novel project's context switcher. -->
-      <div class="flex shrink-0 items-center gap-2 bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
+      <div class="flex shrink-0 items-center gap-2 bg-(--cal-bg) px-1.5" style:height={`${TOP_BAR_H}px`}>
         <span
           class="flex h-9 min-w-0 items-center gap-2 rounded-full bg-accent/55 pr-2.5 pl-2 text-identity font-medium"
           style:opacity={listShown < 1 ? listShown : undefined}

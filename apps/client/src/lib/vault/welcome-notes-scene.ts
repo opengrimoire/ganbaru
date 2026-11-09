@@ -119,7 +119,7 @@ export const NOTES_BEATS = {
   navStart: 20600,
   /**
    * The note navigator opens on the project's notes and folders: once the pointer has rested on the page's place in the
-   * header on desktop, as the header waits to, or as a tap lands on it on a phone.
+   * header on desktop, as the header waits to, or as a tap lands on the project in the top bar on a phone.
    */
   navOpen: 21300,
   /**

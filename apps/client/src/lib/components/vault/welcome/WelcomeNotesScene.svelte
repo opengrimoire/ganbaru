@@ -754,12 +754,13 @@
     style:height={`${canvasH}px`}
   >
     {#if mobileShell}
-      <!-- The phone's top bar, with the Novel project's context switcher. -->
-      <div class="flex shrink-0 items-center gap-2 bg-background px-1.5" style:height={`${TOP_BAR_H}px`}>
-        <span class="flex h-9 min-w-0 items-center gap-2 rounded-full bg-accent/55 pr-2.5 pl-2 text-identity font-medium">
+      <!-- The phone's top bar, with the Novel project's context switcher, which opens the note navigator. -->
+      <div class="flex shrink-0 items-center gap-2 bg-(--cal-bg) px-1.5" style:height={`${TOP_BAR_H}px`}>
+        <span class={cn("relative flex h-9 min-w-0 items-center gap-2 rounded-full pr-2.5 pl-2 text-identity font-medium", navigatorOpen ? "bg-accent" : "bg-accent/55")}>
           <span class="grid size-5 shrink-0 place-items-center"><Feather size={IDENTITY_ICON_SIZE} strokeWidth={IDENTITY_ICON_STROKE_WIDTH} /></span>
           <span class="truncate">{t("vaultSetup.projects.project")}</span>
           <ChevronDown size={16} class="shrink-0 text-muted-foreground" />
+          <WelcomeTouch opacity={touches.navigator} />
         </span>
       </div>
     {:else}
@@ -774,12 +775,8 @@
         <div class="flex shrink-0 items-center gap-0 px-(--mobile-chrome-inset)" style:height={`${HEADER_H}px`}>
           <div class="flex h-12 min-w-0 flex-1 items-center">
             <span class={MOBILE_CHROME_BUTTON_CLASS}><PanelLeft size={MOBILE_ICON_SIZE} strokeWidth={TOOL_ICON_STROKE_WIDTH} /></span>
-            <span class="mobile-chrome-button relative flex min-w-0 items-center justify-start gap-1.5 px-1.5 text-foreground">
-              <FileText size={MOBILE_ICON_SIZE} strokeWidth={TOOL_ICON_STROKE_WIDTH} class="shrink-0" />
-              <span class="min-w-0 truncate text-xs font-medium">{t("vaultSetup.notes.page")}</span>
-              <WelcomeTouch opacity={touches.navigator} />
-            </span>
           </div>
+          <span class={MOBILE_CHROME_BUTTON_CLASS}><Share2 size={MOBILE_ICON_SIZE} strokeWidth={TOOL_ICON_STROKE_WIDTH} /></span>
           <span class={MOBILE_CHROME_BUTTON_CLASS}><Star size={MOBILE_ICON_SIZE} strokeWidth={TOOL_ICON_STROKE_WIDTH} /></span>
           <span class={MOBILE_CHROME_BUTTON_CLASS}><Ellipsis size={MOBILE_ICON_SIZE} strokeWidth={TOOL_ICON_STROKE_WIDTH} /></span>
         </div>

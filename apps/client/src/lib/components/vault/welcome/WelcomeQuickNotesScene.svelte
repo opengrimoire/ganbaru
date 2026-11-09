@@ -442,7 +442,7 @@
   >
     {#if mobileShell}
       <!-- The phone's top bar, with the Novel project's context switcher and Quick notes open. -->
-      <div class="flex shrink-0 items-center justify-between gap-1 bg-background pr-(--mobile-chrome-inset) pl-2" style:height={`${TOP_BAR_H}px`}>
+      <div class="flex shrink-0 items-center justify-between gap-1 bg-(--cal-bg) pr-(--mobile-chrome-inset) pl-2" style:height={`${TOP_BAR_H}px`}>
         <span class="flex h-9 min-w-0 items-center gap-2 rounded-full bg-accent/55 pr-2.5 pl-2 text-identity font-medium">
           <span class="grid size-5 shrink-0 place-items-center"><Feather size={TITLE_ICON_SIZE} strokeWidth={TITLE_ICON_STROKE_WIDTH} /></span>
           <span class="truncate">{t("vaultSetup.projects.project")}</span>

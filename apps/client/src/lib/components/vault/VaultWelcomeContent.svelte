@@ -19,7 +19,7 @@
    * The welcome screens, then the choice of where data lives: the language, one per feature, the app itself, and the
    * data screen the shell draws in `data`. Every screen shares one navigation bar that stays in place at the bottom
    * while the screens change above it at once, so moving between them never shifts the buttons. On the data screen the
-   * primary action is `dataPrimary`, the default location, with the shell's other choices in `dataSecondary` above it.
+   * primary action is `dataPrimary`, the default location; the shell's other choices sit in the data screen itself.
    * `step` counts the welcome screens and then the data screen, and is bindable so a shell can start on the data screen
    * or show the progress in its own chrome; with `showStepDots`, the navigation shows it instead.
    */
@@ -28,14 +28,12 @@
     showStepDots = true,
     data,
     dataPrimary,
-    dataSecondary,
     dataBackDisabled = false,
   }: {
     step?: number;
     showStepDots?: boolean;
     data: Snippet;
     dataPrimary: OnboardingNavPrimary;
-    dataSecondary?: Snippet;
     /** Keeps Back off the data screen while a choice there is running. */
     dataBackDisabled?: boolean;
   } = $props();
@@ -92,7 +90,6 @@
     primary={onData ? dataPrimary : { label: t("vaultSetup.continue"), onClick: next }}
     onBack={index > 0 ? back : undefined}
     backDisabled={onData && dataBackDisabled}
-    secondary={onData ? dataSecondary : undefined}
     {progress}
   />
 </div>

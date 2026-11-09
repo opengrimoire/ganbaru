@@ -7,8 +7,9 @@ export const WELCOME_COLUMN_CLASS = "mx-auto w-full max-w-240 px-4 @min-[560px]:
 /** The room above a welcome screen's header, kept short on wide screens so the header starts near the top. */
 export const WELCOME_TOP_PADDING_CLASS = "pt-12 @min-[860px]:pt-14";
 
-/** An onboarding screen's other choices, laid out above its navigation: stacked when narrow, side by side when there is room. */
-export const ONBOARDING_SECONDARY_ROW_CLASS = "grid gap-2 @min-[480px]:auto-cols-fr @min-[480px]:grid-flow-col";
+/** A welcome screen's quiet text actions under its header, such as the license or another data folder. */
+export const WELCOME_LINK_CLASS =
+  "inline-flex min-h-10 items-center gap-1.5 text-sm font-medium text-foreground underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:no-underline";
 
 /** One of an onboarding screen's other choices, quieter than the primary action. */
 export const ONBOARDING_SECONDARY_BUTTON_CLASS =

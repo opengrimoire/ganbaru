@@ -3,6 +3,7 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { ABOUT_BEATS, ABOUT_REPOSITORY_URL } from "$lib/vault/welcome-about-scene";
+  import { WELCOME_LINK_CLASS } from "$lib/vault/welcome-layout";
   import AboutInformationDialog from "../AboutInformationDialog.svelte";
   import WelcomeAboutScene, { ABOUT_SCENE_MAX_HEIGHT, ABOUT_SCENE_MAX_WIDTH, ABOUT_SCENE_MIN_HEIGHT, ABOUT_SCENE_MIN_WIDTH } from "./WelcomeAboutScene.svelte";
   import WelcomeScene from "./WelcomeScene.svelte";
@@ -14,7 +15,6 @@
    * source code one tap away.
    */
   const { t } = getLocalization();
-  const linkClass = "inline-flex min-h-10 items-center gap-1.5 text-sm font-medium text-foreground underline-offset-4 hover:underline";
 
   let informationDialog = $state<"license" | "acknowledgments" | null>(null);
   let sourceError = $state(false);
@@ -34,13 +34,13 @@
   {#snippet details()}
     <div class="-mb-2">
       <div class="flex flex-wrap gap-x-5">
-        <button type="button" class={linkClass} onclick={() => { informationDialog = "license"; }}>
+        <button type="button" class={WELCOME_LINK_CLASS} onclick={() => { informationDialog = "license"; }}>
           {t("vaultSetup.licenseButton")}
         </button>
-        <button type="button" class={linkClass} onclick={() => { informationDialog = "acknowledgments"; }}>
+        <button type="button" class={WELCOME_LINK_CLASS} onclick={() => { informationDialog = "acknowledgments"; }}>
           {t("settings.about.acknowledgmentsHeading")}
         </button>
-        <button type="button" class={linkClass} onclick={() => void openSource()}>
+        <button type="button" class={WELCOME_LINK_CLASS} onclick={() => void openSource()}>
           {t("vaultSetup.sourceCode")}
           <ExternalLink size={14} strokeWidth={1.8} aria-hidden="true" />
         </button>

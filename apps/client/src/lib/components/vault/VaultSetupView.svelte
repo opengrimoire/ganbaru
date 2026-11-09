@@ -1,6 +1,4 @@
 <script lang="ts">
-  import FolderOpen from "@lucide/svelte/icons/folder-open";
-  import FolderInput from "@lucide/svelte/icons/folder-input";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Minus from "@lucide/svelte/icons/minus";
   import Square from "@lucide/svelte/icons/square";
@@ -26,8 +24,7 @@
     type VaultDefaultLocation,
     type VaultInfo,
   } from "$lib/vault/state";
-  import Notice from "$lib/components/ui/Notice.svelte";
-  import { ONBOARDING_SECONDARY_BUTTON_CLASS, ONBOARDING_SECONDARY_ROW_CLASS } from "$lib/vault/welcome-layout";
+  import { WELCOME_LINK_CLASS } from "$lib/vault/welcome-layout";
   import { WELCOME_STEPS } from "$lib/vault/welcome-steps";
   import VaultWelcomeContent from "./VaultWelcomeContent.svelte";
   import WelcomeDataStep from "./welcome/WelcomeDataStep.svelte";
@@ -165,41 +162,20 @@
     developmentWarning={defaultLocation?.developmentBuild
       ? t("vaultSetup.developmentBuildWarning", defaultLocation.folderName)
       : null}
+    {error}
+    choices={dataChoices}
   />
 {/snippet}
 
 {#snippet dataChoices()}
-  {#if error}
-    <Notice message={error} class="pb-1 text-sm" />
-  {/if}
-  <div class={ONBOARDING_SECONDARY_ROW_CLASS}>
-    <button
-      type="button"
-      onclick={() => void chooseVault("change")}
-      disabled={busy !== null}
-      class={ONBOARDING_SECONDARY_BUTTON_CLASS}
-    >
-      {#if busy === "change"}
-        <LoaderCircle size={16} strokeWidth={2} class="shrink-0 animate-spin" aria-hidden="true" />
-      {:else}
-        <FolderOpen size={16} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
-      {/if}
-      <span class="truncate">{t("vaultSetup.changeFolder")}</span>
-    </button>
-    <button
-      type="button"
-      onclick={() => void chooseVault("import")}
-      disabled={busy !== null}
-      class={ONBOARDING_SECONDARY_BUTTON_CLASS}
-    >
-      {#if busy === "import"}
-        <LoaderCircle size={16} strokeWidth={2} class="shrink-0 animate-spin" aria-hidden="true" />
-      {:else}
-        <FolderInput size={16} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
-      {/if}
-      <span class="truncate">{t("vaultSetup.importFolder")}</span>
-    </button>
-  </div>
+  <button type="button" onclick={() => void chooseVault("change")} disabled={busy !== null} class={WELCOME_LINK_CLASS}>
+    {t("vaultSetup.changeFolder")}
+    {#if busy === "change"}<LoaderCircle size={14} strokeWidth={2} class="animate-spin" aria-hidden="true" />{/if}
+  </button>
+  <button type="button" onclick={() => void chooseVault("import")} disabled={busy !== null} class={WELCOME_LINK_CLASS}>
+    {t("vaultSetup.importFolder")}
+    {#if busy === "import"}<LoaderCircle size={14} strokeWidth={2} class="animate-spin" aria-hidden="true" />{/if}
+  </button>
 {/snippet}
 
 <main
@@ -249,7 +225,6 @@
           busy: busy === "default",
           disabled: busy !== null,
         }}
-        dataSecondary={dataChoices}
         dataBackDisabled={busy !== null}
       />
     </div>

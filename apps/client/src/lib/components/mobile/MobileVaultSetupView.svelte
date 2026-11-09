@@ -1,16 +1,13 @@
 <script lang="ts">
-  import FolderInput from "@lucide/svelte/icons/folder-input";
-  import ArchiveRestore from "@lucide/svelte/icons/archive-restore";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { onMount, untrack } from "svelte";
   import BackupKitPrompt from "$lib/components/vault/BackupKitPrompt.svelte";
-  import Notice from "$lib/components/ui/Notice.svelte";
   import WelcomeDataStep from "$lib/components/vault/welcome/WelcomeDataStep.svelte";
   import { createBackupKitPrompt } from "$lib/vault/backup-kit-prompt.svelte";
   import { backupRefusalMessage } from "$lib/vault/backup-restore";
   import VaultWelcomeContent from "$lib/components/vault/VaultWelcomeContent.svelte";
   import MobileOnboardingProgress from "./MobileOnboardingProgress.svelte";
-  import { ONBOARDING_SECONDARY_BUTTON_CLASS, ONBOARDING_SECONDARY_ROW_CLASS } from "$lib/vault/welcome-layout";
+  import { WELCOME_LINK_CLASS } from "$lib/vault/welcome-layout";
   import { WELCOME_STEPS } from "$lib/vault/welcome-steps";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -118,41 +115,20 @@
     developmentWarning={defaultLocation?.developmentBuild
       ? t("vaultSetup.developmentBuildWarning", defaultLocation.folderName)
       : null}
+    {error}
+    choices={dataChoices}
   />
 {/snippet}
 
 {#snippet dataChoices()}
-  {#if error}
-    <Notice message={error} class="pb-1 text-sm" />
-  {/if}
-  <div class={ONBOARDING_SECONDARY_ROW_CLASS}>
-    <button
-      type="button"
-      onclick={() => void chooseVault("restore")}
-      disabled={busy !== null}
-      class={ONBOARDING_SECONDARY_BUTTON_CLASS}
-    >
-      {#if busy === "restore"}
-        <LoaderCircle size={16} strokeWidth={2} class="shrink-0 animate-spin" aria-hidden="true" />
-      {:else}
-        <ArchiveRestore size={16} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
-      {/if}
-      <span class="truncate">{t("mobile.vaultSetup.restoreBackupFile")}</span>
-    </button>
-    <button
-      type="button"
-      onclick={() => void chooseVault("import")}
-      disabled={busy !== null}
-      class={ONBOARDING_SECONDARY_BUTTON_CLASS}
-    >
-      {#if busy === "import"}
-        <LoaderCircle size={16} strokeWidth={2} class="shrink-0 animate-spin" aria-hidden="true" />
-      {:else}
-        <FolderInput size={16} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
-      {/if}
-      <span class="truncate">{t("mobile.vaultSetup.importExistingFolder")}</span>
-    </button>
-  </div>
+  <button type="button" onclick={() => void chooseVault("restore")} disabled={busy !== null} class={WELCOME_LINK_CLASS}>
+    {t("mobile.vaultSetup.restoreBackupFile")}
+    {#if busy === "restore"}<LoaderCircle size={14} strokeWidth={2} class="animate-spin" aria-hidden="true" />{/if}
+  </button>
+  <button type="button" onclick={() => void chooseVault("import")} disabled={busy !== null} class={WELCOME_LINK_CLASS}>
+    {t("mobile.vaultSetup.importExistingFolder")}
+    {#if busy === "import"}<LoaderCircle size={14} strokeWidth={2} class="animate-spin" aria-hidden="true" />{/if}
+  </button>
 {/snippet}
 
 <main
@@ -170,7 +146,6 @@
         busy: busy === "default",
         disabled: busy !== null,
       }}
-      dataSecondary={dataChoices}
       dataBackDisabled={busy !== null}
     />
   </MobileOnboardingProgress>

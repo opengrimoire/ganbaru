@@ -9,7 +9,7 @@
   /**
    * Plays a welcome scene, zoomed to the room it is given: it runs to its end, rests on its last frame, then fades out
    * and starts over on its own, as the Android access guides do, unless it is told to play once and stay on its last
-   * frame. With reduced motion it shows one frame as a still, the last unless it is given
+   * frame, or it is a still drawing with no duration. With reduced motion it shows one frame as a still, the last unless it is given
    * another. The drawing keeps its width and takes the height the room suggests within its bounds, so a tall
    * room such as a phone's gets a taller drawing instead of empty space. When the room is too small for the drawing to
    * stay legible, it steps aside and leaves the space to the text. The drawing is sized with CSS zoom rather than a
@@ -20,7 +20,7 @@
     maxWidth = minWidth,
     minHeight,
     maxHeight = minHeight,
-    duration,
+    duration = 0,
     loop = true,
     hold = END_HOLD_MS,
     still,
@@ -33,8 +33,8 @@
     maxWidth?: number;
     minHeight: number;
     maxHeight?: number;
-    /** How long one run of the scene lasts, in milliseconds. */
-    duration: number;
+    /** How long one run of the scene lasts, in milliseconds; omitted for a still drawing that never plays. */
+    duration?: number;
     /** Whether the scene starts over once it ends, or stays on its last frame. */
     loop?: boolean;
     /** How long the last frame rests before the scene starts over, in milliseconds. */
@@ -126,6 +126,7 @@
   }
 
   onMount(() => {
+    if (duration <= 0) return;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) elapsed = Math.min(duration, still ?? duration);
     else play(START_DELAY_MS);
     return stop;

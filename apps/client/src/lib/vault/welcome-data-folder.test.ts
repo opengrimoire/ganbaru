@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DATA_ENTRIES, splitVaultPath } from "./welcome-data-folder";
+import { DATA_ENTRIES, vaultPathTrail } from "./welcome-data-folder";
 
 describe("welcome data folder entries", () => {
   it("lists folders before files", () => {
@@ -12,32 +12,25 @@ describe("welcome data folder entries", () => {
   });
 });
 
-describe("split vault path", () => {
-  it("splits a Unix path into the folder and its parent", () => {
-    expect(splitVaultPath("/home/ana/Documents/Ganbaru")).toEqual({ name: "Ganbaru", parent: "/home/ana/Documents" });
+describe("vault path trail", () => {
+  it("keeps the last folders of a Unix path", () => {
+    expect(vaultPathTrail("/home/ana/Documents/Ganbaru")).toEqual(["Documents", "Ganbaru"]);
   });
 
   it("splits Windows paths on backslashes", () => {
-    expect(splitVaultPath("C:\\Users\\Ana\\Documents\\Ganbaru Dev")).toEqual({
-      name: "Ganbaru Dev",
-      parent: "C:\\Users\\Ana\\Documents",
-    });
+    expect(vaultPathTrail("C:\\Users\\Ana\\Documents\\Ganbaru Dev")).toEqual(["Documents", "Ganbaru Dev"]);
   });
 
   it("ignores trailing and repeated separators", () => {
-    expect(splitVaultPath("Documents//Ganbaru/")).toEqual({ name: "Ganbaru", parent: "Documents" });
+    expect(vaultPathTrail("Documents//Ganbaru/")).toEqual(["Documents", "Ganbaru"]);
   });
 
-  it("keeps the separator of a root or drive parent", () => {
-    expect(splitVaultPath("/Ganbaru")).toEqual({ name: "Ganbaru", parent: "/" });
-    expect(splitVaultPath("D:\\Ganbaru")).toEqual({ name: "Ganbaru", parent: "D:\\" });
+  it("returns what there is when the path is shorter than the depth", () => {
+    expect(vaultPathTrail("Ganbaru", 3)).toEqual(["Ganbaru"]);
+    expect(vaultPathTrail("")).toEqual([]);
   });
 
-  it("has no parent for a bare folder name", () => {
-    expect(splitVaultPath("Ganbaru")).toEqual({ name: "Ganbaru", parent: null });
-  });
-
-  it("keeps a lone root as the name", () => {
-    expect(splitVaultPath("/")).toEqual({ name: "/", parent: null });
+  it("keeps at least one folder", () => {
+    expect(vaultPathTrail("/a/b/c", 0)).toEqual(["c"]);
   });
 });

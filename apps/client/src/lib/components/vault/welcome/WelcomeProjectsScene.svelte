@@ -633,7 +633,7 @@
    * cell menu is open, as the list suppresses hover then, or while something drawn over the list covers the point.
    */
   function listHoverAt(point: WelcomeCursorPoint | null): ListHover {
-    if (!point || cursorAway || cellMenu !== null || !canvas || !listViewport || canvasW <= 0) return NO_LIST_HOVER;
+    if (!point || cursorAway || !canvas || !listViewport || canvasW <= 0) return NO_LIST_HOVER;
     const canvasRect = canvas.getBoundingClientRect();
     if (canvasRect.width === 0) return NO_LIST_HOVER;
     const scale = canvasRect.width / canvasW;
@@ -643,13 +643,20 @@
       const rect = element.getBoundingClientRect();
       return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
     };
+    // An open cell menu belongs to its row, so the row stays hovered while the pointer is on the menu.
+    const openMenu = statusMenuOpen ? statusMenu : cellMenu === "priority" ? priorityMenu : undefined;
+    if (cellMenu !== null && openMenu && under(openMenu)) {
+      const openCell = { status: statusCell, subtaskStatus: subtaskStatusCell, priority: priorityCell }[cellMenu];
+      return { row: openCell?.closest<HTMLElement>("[data-scene-row]")?.dataset.sceneRow ?? null, cell: null };
+    }
     if (!under(listViewport)) return NO_LIST_HOVER;
     for (const cover of canvas.querySelectorAll("[data-scene-cover]")) {
       if (under(cover) && getComputedStyle(cover).visibility !== "hidden") return NO_LIST_HOVER;
     }
     const row = Array.from(listViewport.querySelectorAll<HTMLElement>("[data-scene-row]")).find(under);
     if (!row) return NO_LIST_HOVER;
-    const cell = Array.from(row.querySelectorAll<HTMLElement>("[data-scene-cell]")).find(under);
+    // The list suppresses cell hover while a cell menu is open; what the row reveals on hover still shows.
+    const cell = cellMenu === null ? Array.from(row.querySelectorAll<HTMLElement>("[data-scene-cell]")).find(under) : undefined;
     return { row: row.dataset.sceneRow ?? null, cell: cell?.dataset.sceneCell ?? null };
   }
 
@@ -954,9 +961,12 @@
     return `background-image: ${highlighted ? "linear-gradient(var(--collection-highlight), var(--collection-highlight))" : "none"}`;
   }
 
-  /** The style of the list row named `name`, which takes the row highlight while the desktop pointer is on it. */
+  /**
+   * The style of the list row named `name`, which takes the row highlight while the desktop pointer is on it, unless a
+   * cell menu is open, as the list suppresses it then.
+   */
   function rowStyle(name: string): string | undefined {
-    return listHover.row === name ? "--collection-row-hover: var(--collection-row-highlight);" : undefined;
+    return listHover.row === name && cellMenu === null ? "--collection-row-hover: var(--collection-row-highlight);" : undefined;
   }
 
   /**
@@ -1001,7 +1011,8 @@
   {@const rowName = `task:${task.key}`}
   <div class="list-divider">
     <CollectionRow template={gridTemplate} minWidth={gridMinWidth} {gutter} divider={false} data-scene-row={rowName} style={rowStyle(rowName)}>
-      <div class="flex h-full items-center justify-center">{#if mobileShell}{@render checkbox()}{/if}</div>
+      <!-- The selection checkbox, as the row draws it: always on touch, and on the hovered row with a pointer. -->
+      <div class="flex h-full items-center justify-center">{#if mobileShell || listHover.row === rowName}{@render checkbox()}{/if}</div>
       <div class="flex h-full items-center justify-center">
         <!-- A top-level row keeps its toggle in place while hidden, so the pointer can find it before the row is hovered. -->
         {#if depth === 0}

@@ -21,18 +21,18 @@
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import Music from "@lucide/svelte/icons/eighth-notes";
-  import Feather from "@lucide/svelte/icons/feather";
   import Palette from "@lucide/svelte/icons/palette";
   import Pin from "@lucide/svelte/icons/pin";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
-  import Settings from "@lucide/svelte/icons/settings";
   import StickyNote from "@lucide/svelte/icons/sticky-note";
   import Tag from "@lucide/svelte/icons/tag";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import X from "@lucide/svelte/icons/x";
   import type { EventColor } from "$lib/calendar/types";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
+  import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
+  import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
   import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
@@ -83,13 +83,10 @@
 
   /** The title bar on desktop, or the phone's top bar. */
   const TOP_BAR_H = mobileShell ? 48 : 36;
-  /** The phone top bar's identity icon and the title bar's end padding, as the bars draw them. */
-  const TITLE_ICON_SIZE = 14;
-  const TITLE_ICON_STROKE_WIDTH = 1.5;
+  /** The title bar's end padding, as the title bar draws it. */
   const TITLE_BAR_END_PX = 6;
-  /** The phone top bar's utility icons, as the top bar draws them. */
-  const MOBILE_UTILITY_ICON_SIZE = 19;
-  const MOBILE_UTILITY_STROKE_WIDTH = 1.8;
+  /** The title bar's tabs: the Calendar, and the Novel project's, which is showing. */
+  const TITLE_TABS: readonly WelcomeTitleTab[] = [{ kind: "calendar", active: false }, { kind: "projects", active: true }];
   /** How far the panel keeps from the canvas edges, and from the bar above it, as the panel places itself. */
   const PANEL_INSET_PX = 8;
   const PANEL_TOP_GAP_PX = 4;
@@ -442,27 +439,13 @@
   >
     {#if mobileShell}
       <!-- The phone's top bar, with the Novel project's context switcher and Quick notes open. -->
-      <div class="flex shrink-0 items-center justify-between gap-1 bg-(--cal-bg) pr-(--mobile-chrome-inset) pl-2" style:height={`${TOP_BAR_H}px`}>
-        <span class="flex h-9 min-w-0 items-center gap-2 rounded-full bg-accent/55 pr-2.5 pl-2 text-identity font-medium">
-          <span class="grid size-5 shrink-0 place-items-center"><Feather size={TITLE_ICON_SIZE} strokeWidth={TITLE_ICON_STROKE_WIDTH} /></span>
-          <span class="truncate">{t("vaultSetup.projects.project")}</span>
-          <ChevronDown size={16} class="shrink-0 text-muted-foreground" />
-        </span>
-        <span class="flex h-full shrink-0 items-center">
-          <span class="flex h-full w-(--mobile-chrome-column) items-center justify-center text-foreground">
-            <span class="grid size-(--mobile-chrome-highlight) place-items-center rounded-full bg-accent/70"><StickyNote size={MOBILE_UTILITY_ICON_SIZE} strokeWidth={MOBILE_UTILITY_STROKE_WIDTH} /></span>
-          </span>
-          <span class="flex h-full w-(--mobile-chrome-column) items-center justify-center text-muted-foreground">
-            <span class="grid size-(--mobile-chrome-highlight) place-items-center rounded-full"><Settings size={MOBILE_UTILITY_ICON_SIZE} strokeWidth={MOBILE_UTILITY_STROKE_WIDTH} /></span>
-          </span>
-        </span>
-      </div>
+      <WelcomePhoneTopBar height={TOP_BAR_H} identity="project" quickNotesOpen />
     {:else}
-      <!-- The title bar's Quick notes, open, and Music. -->
-      <div class="flex shrink-0 items-center justify-end gap-0.5 bg-sidebar" style:height={`${TOP_BAR_H}px`} style:padding-right={`${TITLE_BAR_END_PX}px`}>
+      <!-- The title bar's tabs, with the Novel project showing, and its Quick notes, open, and Music. -->
+      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS}>
         <WelcomeTitleIcon icon={StickyNote} open />
         <WelcomeTitleIcon icon={Music} />
-      </div>
+      </WelcomeTitleBar>
     {/if}
 
     <!-- The Quick notes panel, open over the app. -->

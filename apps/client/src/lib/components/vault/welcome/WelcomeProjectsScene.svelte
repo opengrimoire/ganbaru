@@ -70,6 +70,9 @@
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
   import WelcomeCaret from "$lib/components/vault/welcome/WelcomeCaret.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
+  import WelcomePhoneNavigation, { type WelcomePhoneTab } from "$lib/components/vault/welcome/WelcomePhoneNavigation.svelte";
+  import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
+  import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
   import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { welcomeCursorFrame, welcomeCursorHovered, type WelcomeCursorPoint } from "$lib/vault/welcome-cursor";
@@ -115,6 +118,7 @@
   import { MUSIC_PLAYLISTS, type MusicScenePlaylist } from "$lib/vault/welcome-music-scene";
   import {
     PROJECTS_BEATS,
+    PROJECTS_CALENDAR_TAB_TARGET,
     PROJECTS_CLOCK,
     PROJECTS_COLOR,
     PROJECTS_CREATE_PRESS_MS,
@@ -131,6 +135,7 @@
     PROJECTS_STATUS_ORDER,
     PROJECTS_TASKS,
     projectsCalendarShown,
+    projectsCalendarTabActive,
     projectsDefaultColor,
     projectsDefaultMinutes,
     projectsDefaultPreset,
@@ -144,7 +149,6 @@
     projectsEventPanelFrame,
     projectsEventPicked,
     projectsEventRail,
-    projectsListShown,
     projectsPanelOpen,
     projectsOptionHovered,
     projectsPlaylist,
@@ -420,8 +424,29 @@
   const eventName = $derived(projectsEventName(defaultsElapsed, t("vaultSetup.projects.eventName")));
   const openPhase = $derived(picker === "focus" || picker === "short-break" || picker === "long-break" ? picker : null);
 
-  const listShown = $derived(projectsListShown(defaultsElapsed));
   const calendarShown = $derived(projectsCalendarShown(defaultsElapsed));
+  const calendarTabActive = $derived(projectsCalendarTabActive(defaultsElapsed));
+  /** The title bar's tabs: the Calendar's, which the pointer clicks in the scene on defaults, and the Novel project's. */
+  const titleTabs = $derived<readonly WelcomeTitleTab[]>([
+    {
+      kind: "calendar",
+      active: calendarTabActive,
+      hovered: cursorHovered === PROJECTS_CALENDAR_TAB_TARGET,
+      cursor: PROJECTS_CALENDAR_TAB_TARGET,
+    },
+    { kind: "projects", active: !calendarTabActive },
+  ]);
+  /** The phone's tab bar in the scene on defaults, where a tap on the Calendar's tab leaves the project for it. */
+  const phoneTabs = $derived<readonly WelcomePhoneTab[]>([
+    { kind: "calendar", active: calendarTabActive, touch: touches.calendarTab },
+    { kind: "projects", active: !calendarTabActive },
+  ]);
+  const phoneNavigationShown = $derived(mobileShell && part === "defaults");
+  /** The phone tab bar's measured height, which the Calendar's visible hours leave room for. */
+  let navigationH = $state(0);
+  /** The phone top bar's label, which turns from the project's to the Calendar's halfway through the change of tab. */
+  const topBarIdentity = $derived(calendarShown >= 0.5 ? "calendar" : "project");
+  const topBarIdentityOpacity = $derived(Math.abs(1 - 2 * calendarShown));
   const calendarDark = $derived(isThemeCalendarDark(theme.current));
   const fullEventName = $derived(t("vaultSetup.projects.eventName"));
   const drawnIn = $derived(projectsEventDrawnIn(defaultsElapsed));
@@ -441,13 +466,13 @@
     filmSpan(defaultsElapsed, PROJECTS_BEATS.createStart - PROJECTS_CREATE_PRESS_MS, PROJECTS_BEATS.createStart)
       * (1 - filmSpan(defaultsElapsed, PROJECTS_BEATS.createEnd, PROJECTS_BEATS.createEnd + PROJECTS_CREATE_PRESS_MS)),
   );
-  const viewMinutes = $derived(((canvasH - TOP_BAR_H - CAL_HEADER_H) / HOUR_PX) * 60);
+  const viewMinutes = $derived(((canvasH - TOP_BAR_H - CAL_HEADER_H - navigationH) / HOUR_PX) * 60);
   const hours = $derived(
     Array.from({ length: Math.ceil(viewMinutes / 60) + 1 }, (_, index) => Math.ceil(VIEW_START / 60) + index)
       .filter((hour) => hour * 60 > VIEW_START && hour * 60 < VIEW_START + viewMinutes),
   );
   const scrollThumb = $derived.by(() => {
-    const visibleHeight = canvasH - TOP_BAR_H - CAL_HEADER_H;
+    const visibleHeight = canvasH - TOP_BAR_H - CAL_HEADER_H - navigationH;
     return calendarScrollbarThumb(
       { scrollTop: (VIEW_START / 60) * HOUR_PX, scrollHeight: 24 * HOUR_PX, clientHeight: visibleHeight },
       visibleHeight,
@@ -1282,22 +1307,13 @@
     style:height={`${canvasH}px`}
   >
     {#if mobileShell}
-      <!-- The phone's top bar, with the Novel project's context switcher. -->
-      <div class="flex shrink-0 items-center gap-2 bg-(--cal-bg) px-1.5" style:height={`${TOP_BAR_H}px`}>
-        <span
-          class="flex h-9 min-w-0 items-center gap-2 rounded-full bg-accent/55 pr-2.5 pl-2 text-identity font-medium"
-          style:opacity={listShown < 1 ? listShown : undefined}
-        >
-          <span class="grid size-5 shrink-0 place-items-center"><Feather size={IDENTITY_ICON_SIZE} strokeWidth={IDENTITY_ICON_STROKE_WIDTH} /></span>
-          <span class="truncate">{t("vaultSetup.projects.project")}</span>
-          <ChevronDown size={16} class="shrink-0 text-muted-foreground" />
-        </span>
-      </div>
+      <!-- The phone's top bar, labelled with the Novel project's context switcher and then with the Calendar. -->
+      <WelcomePhoneTopBar height={TOP_BAR_H} identity={topBarIdentity} identityOpacity={topBarIdentityOpacity} />
     {:else}
-      <!-- The title bar's Music. -->
-      <div class="flex shrink-0 items-center justify-end gap-0.5 bg-sidebar" style:height={`${TOP_BAR_H}px`} style:padding-right={`${TITLE_BAR_END_PX}px`}>
+      <!-- The title bar's tabs and its Music. -->
+      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={titleTabs}>
         <WelcomeTitleIcon icon={Music} />
-      </div>
+      </WelcomeTitleBar>
     {/if}
 
     <!-- The Novel project's List view. -->
@@ -1550,6 +1566,11 @@
         </div>
       {/if}
     </div>
+
+    {#if phoneNavigationShown}
+      <!-- The phone's tab bar, where the Calendar's tab is tapped. -->
+      <div class="shrink-0" bind:offsetHeight={navigationH}><WelcomePhoneNavigation tabs={phoneTabs} /></div>
+    {/if}
 
     {#if part === "tasks"}
       <!--

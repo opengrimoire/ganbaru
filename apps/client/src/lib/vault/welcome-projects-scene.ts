@@ -169,24 +169,25 @@ export const PROJECTS_BEATS = {
   /** Save settings saves the defaults and turns back to its idle color, and the close button then closes the panel. */
   settingsSaveTap: 18800,
   settingsCloseTap: 20200,
-  /** The list gives way to the Calendar. */
-  calendarIn: 20900,
+  /** A click on the Calendar's tab, or a tap on it in the phone's tab bar, and the list gives way to the Calendar. */
+  calendarTap: 21300,
+  calendarIn: 21600,
   /** A press drags an event out over the empty hour, and letting go opens the event panel on it. */
-  createStart: 21500,
-  createEnd: 22200,
-  panelOpen: 22350,
+  createStart: 22500,
+  createEnd: 23200,
+  panelOpen: 23350,
   /** The project trigger, then the Personal group, then Novel, which gives the event the project's defaults. */
-  projectTap: 23350,
-  groupTap: 24450,
-  projectPick: 25550,
+  projectTap: 24350,
+  groupTap: 25450,
+  projectPick: 26550,
   /** On the phone, a drag on the sheet's grabber takes it from its peek to its full height. */
-  sheetDragStart: 26500,
-  sheetDragEnd: 27050,
+  sheetDragStart: 27500,
+  sheetDragEnd: 28050,
   /** A tap on the Music section's header opens it on the project's playlists. */
-  musicTap: 27800,
+  musicTap: 28800,
   /** Save saves the event and closes the panel. */
-  eventSaveTap: 29500,
-  end: 30900,
+  eventSaveTap: 30500,
+  end: 31900,
 } as const;
 
 const B = PROJECTS_BEATS;
@@ -212,8 +213,6 @@ export const PROJECTS_RAIL: FilmRail = filmDayRails([
 export const PROJECTS_CLOCK = PROJECTS_EVENT.start - 20;
 /** How long the settings panel takes to show, and to go once Save is tapped. */
 const PANEL_FADE_MS = 140;
-/** How long the Calendar takes to fade in over the list. */
-const SCREEN_FADE_MS = 300;
 /** How long a list cell or a picked option shows as hovered before its tap lands, as the pointer rests on it. */
 export const PROJECTS_HOVER_LEAD_MS = 420;
 /**
@@ -335,14 +334,19 @@ export function projectsSettingsDirty(elapsed: number): boolean {
   return elapsed >= B.nameTypeStart && elapsed < B.settingsSaveTap;
 }
 
-/** How far the list shows, from 0 to 1, as the Calendar fades in over it once the settings are closed. */
+/** How far the list shows, from 0 to 1, as the Calendar fades in over it once its tab is picked. */
 export function projectsListShown(elapsed: number): number {
   return 1 - projectsCalendarShown(elapsed);
 }
 
-/** How far the Calendar shows, from 0 to 1. */
+/** How far the Calendar shows, from 0 to 1, fading in from the tap on its tab. */
 export function projectsCalendarShown(elapsed: number): number {
-  return easeInOutCubic(filmSpan(elapsed, B.calendarIn - SCREEN_FADE_MS, B.calendarIn));
+  return easeInOutCubic(filmSpan(elapsed, B.calendarTap, B.calendarIn));
+}
+
+/** Whether the Calendar's tab is the one showing: from the tap on it. */
+export function projectsCalendarTabActive(elapsed: number): boolean {
+  return elapsed >= B.calendarTap;
 }
 
 /** Whether the event is on the day: from the press that starts drawing it. */
@@ -451,6 +455,7 @@ export interface ProjectsSceneTouches {
   playlistOption: Record<ProjectsScenePhase, number>;
   save: number;
   close: number;
+  calendarTab: number;
 }
 
 /** The scene's touches at `elapsed`. */
@@ -470,11 +475,15 @@ export function projectsTouches(elapsed: number): ProjectsSceneTouches {
     playlistOption: byPhase("pick"),
     save: filmTap(elapsed, B.settingsSaveTap),
     close: filmTap(elapsed, B.settingsCloseTap),
+    calendarTab: filmTap(elapsed, B.calendarTap),
   };
 }
 
 /** How long before the drag starts the press that draws the event comes down, for a finger or the mouse button. */
 export const PROJECTS_CREATE_PRESS_MS = 140;
+
+/** The name the desktop pointer finds the Calendar's tab by. */
+export const PROJECTS_CALENDAR_TAB_TARGET = "projects-calendar-tab";
 
 /** Where the desktop pointer rests on the list as the welcome scenes on Projects and on tasks start. */
 export const PROJECTS_CURSOR_REST_ANCHOR = [0.6, 0.3] as const;
@@ -488,8 +497,8 @@ function pickerClicks(picker: ProjectsScenePicker): WelcomeCursorStop[] {
 
 /**
  * The desktop pointer's path through the scene: it opens the settings and moves into them before they scroll, clicks
- * into the event name, opens each picker and picks its option, saves and closes the settings, drags the event out in
- * the Calendar, picks Novel in its panel, hovering Personal to show its projects as the desktop picker does, opens its
+ * into the event name, opens each picker and picks its option, saves and closes the settings, clicks the Calendar's tab, drags the event out
+ * in the Calendar, picks Novel in its panel, hovering Personal to show its projects as the desktop picker does, opens its
  * Music section, and saves it.
  */
 export const PROJECTS_CURSOR: WelcomeCursorScript = [
@@ -504,10 +513,11 @@ export const PROJECTS_CURSOR: WelcomeCursorScript = [
   ...(["color", "duration", "pomodoro", ...PROJECTS_PHASES] as const).flatMap(pickerClicks),
   cursorClick("projects-save", B.settingsSaveTap, { after: B.longBreakPick }),
   cursorClick("projects-close", B.settingsCloseTap),
+  cursorClick(PROJECTS_CALENDAR_TAB_TARGET, B.calendarTap),
   {
     target: "projects-drag",
     anchor: [0.6, 1],
-    depart: B.calendarIn - SCREEN_FADE_MS,
+    depart: B.calendarIn,
     arrive: B.createStart - PROJECTS_CREATE_PRESS_MS - WELCOME_CURSOR_REST_MS,
   },
   {

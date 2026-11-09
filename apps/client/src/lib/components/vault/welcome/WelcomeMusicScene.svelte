@@ -47,6 +47,8 @@
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
   import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
+  import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
+  import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
   import WelcomeFilmNotification, { type FilmNotificationKind } from "$lib/components/vault/welcome/WelcomeFilmNotification.svelte";
   import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
@@ -128,12 +130,15 @@
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
   const showSoundscapes = platformHasCapability(BUILD_PLATFORM_PROFILE, "music.soundscapes");
 
-  const TOP_BAR_H = 36;
+  /** The title bar on desktop, or the phone's top bar, tall enough for its label. */
+  const TOP_BAR_H = mobileShell ? 48 : 36;
   const HEADER_H = 40;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
   /** The title bar's Focus ring size and its end padding, as the title bar draws them. */
   const TITLE_ICON_SIZE = 14;
   const TITLE_BAR_END_PX = 6;
+  /** The title bar's tabs: the Calendar alone, as a new vault opens. */
+  const TITLE_TABS: readonly WelcomeTitleTab[] = [{ kind: "calendar", active: true }];
   /** The app's notification that a phase's music autoplays, drawn as this platform's system shows it. */
   const notificationKind: FilmNotificationKind = mobileShell
     ? "android"
@@ -504,6 +509,10 @@
   />
 {/snippet}
 
+{#snippet phoneRing()}
+  {@render ring(20, "stroke-muted-foreground/35", "text-foreground/76 stroke-foreground/76")}
+{/snippet}
+
 <div class="rounded-3xl bg-foreground/6 p-1.5">
   <div
     class="relative flex flex-col overflow-hidden rounded-2xl bg-(--cal-bg) text-foreground"
@@ -511,14 +520,11 @@
     style:height={`${canvasH}px`}
   >
     {#if mobileShell}
-      <div class="flex shrink-0 items-center justify-end bg-(--cal-bg) px-1.5" style:height={`${TOP_BAR_H}px`}>
-        <span class={cn("relative grid size-8 place-items-center rounded-full text-muted-foreground", focusing && "bg-accent/70 text-foreground")}>
-          {@render ring(20, "stroke-muted-foreground/35", "text-foreground/76 stroke-foreground/76")}
-        </span>
-      </div>
+      <!-- The phone's top bar, labelled with the Calendar, with its Focus ring lit while Focus runs and Music open while the builder shows. -->
+      <WelcomePhoneTopBar height={TOP_BAR_H} identity="calendar" ring={phoneRing} ringLit={focusing} musicOpen={builderShown > 0.5} />
     {:else}
-      <!-- The title bar's Focus ring and Music, with Music open while the builder shows. -->
-      <div class="flex shrink-0 items-center justify-end gap-0.5 bg-sidebar" style:height={`${TOP_BAR_H}px`} style:padding-right={`${TITLE_BAR_END_PX}px`}>
+      <!-- The title bar's Calendar tab, Focus ring, and Music, with Music open while the builder shows. -->
+      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS}>
         <span class="relative grid size-7 place-items-center rounded-lg">
           {@render ring(
             TITLE_ICON_SIZE + 0.5,
@@ -527,7 +533,7 @@
           )}
         </span>
         <WelcomeTitleIcon icon={Music} open={builderShown > 0.5} />
-      </div>
+      </WelcomeTitleBar>
     {/if}
 
     <div class="relative min-h-0 flex-1">

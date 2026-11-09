@@ -66,6 +66,8 @@
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import WelcomeCaret from "$lib/components/vault/welcome/WelcomeCaret.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
+  import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
+  import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
   import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
@@ -172,6 +174,8 @@
   const HEADER_H = mobileShell ? 56 : 40;
   /** The title bar's end padding, as the title bar draws it. */
   const TITLE_BAR_END_PX = 6;
+  /** The title bar's tabs: the Calendar, and the Novel project's, which is showing. */
+  const TITLE_TABS: readonly WelcomeTitleTab[] = [{ kind: "calendar", active: false }, { kind: "notes", active: true }];
   /** The header's icons, as the breadcrumb and the page actions draw them. */
   const IDENTITY_ICON_SIZE = 14;
   const IDENTITY_ICON_STROKE_WIDTH = 1.5;
@@ -755,19 +759,14 @@
   >
     {#if mobileShell}
       <!-- The phone's top bar, with the Novel project's context switcher, which opens the note navigator. -->
-      <div class="flex shrink-0 items-center gap-2 bg-(--cal-bg) px-1.5" style:height={`${TOP_BAR_H}px`}>
-        <span class={cn("relative flex h-9 min-w-0 items-center gap-2 rounded-full pr-2.5 pl-2 text-identity font-medium", navigatorOpen ? "bg-accent" : "bg-accent/55")}>
-          <span class="grid size-5 shrink-0 place-items-center"><Feather size={IDENTITY_ICON_SIZE} strokeWidth={IDENTITY_ICON_STROKE_WIDTH} /></span>
-          <span class="truncate">{t("vaultSetup.projects.project")}</span>
-          <ChevronDown size={16} class="shrink-0 text-muted-foreground" />
-          <WelcomeTouch opacity={touches.navigator} />
-        </span>
-      </div>
+      <WelcomePhoneTopBar height={TOP_BAR_H} identity="project" identityExpanded={navigatorOpen}>
+        {#snippet identityTouch()}<WelcomeTouch opacity={touches.navigator} />{/snippet}
+      </WelcomePhoneTopBar>
     {:else}
-      <!-- The title bar's Music. -->
-      <div class="flex shrink-0 items-center justify-end gap-0.5 bg-sidebar" style:height={`${TOP_BAR_H}px`} style:padding-right={`${TITLE_BAR_END_PX}px`}>
+      <!-- The title bar's tabs, with the project's Notes showing, and its Music. -->
+      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS}>
         <WelcomeTitleIcon icon={Music} />
-      </div>
+      </WelcomeTitleBar>
     {/if}
 
     <div bind:this={notesArea} class="relative flex min-h-0 flex-1 flex-col bg-(--cal-bg)">

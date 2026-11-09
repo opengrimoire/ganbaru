@@ -2,6 +2,7 @@
   import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
   import { GUTTER_WIDTH_PER_TIMEZONE } from "$lib/calendar/timezone-utils";
   import { calendarZoomGridMinutesForPercent, calendarZoomHourHeightForPercent } from "$lib/calendar/zoom-levels";
+  import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
 
   /**
    * The Calendar zoom the film is drawn at: the Calendar's default level, which fits the whole session in view while a
@@ -15,7 +16,8 @@
    */
   const MIN_CANVAS_W = 360;
   const MAX_CANVAS_W = 628;
-  const TOP_BAR_H = 36;
+  /** The title bar on desktop, or the phone's top bar, tall enough for its label. */
+  const TOP_BAR_H = BUILD_PLATFORM_PROFILE.shell === "mobile" ? 48 : 36;
   const HEADER_H = 40;
   const HOUR_PX = calendarZoomHourHeightForPercent(FILM_ZOOM_PERCENT);
   /** How the drawn event snaps while it is dragged out, in minutes, as the Calendar snaps at the film's zoom. */
@@ -49,6 +51,8 @@
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
+  import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
+  import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
   import WelcomeFilmNotification, { type FilmNotificationKind } from "$lib/components/vault/welcome/WelcomeFilmNotification.svelte";
   import type { EventPanelAnchor } from "$lib/utils/responsive";
@@ -77,7 +81,7 @@
     getTimezoneInfo,
   } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { BUILD_PLATFORM, BUILD_PLATFORM_PROFILE } from "$lib/platform";
+  import { BUILD_PLATFORM } from "$lib/platform";
   import { focusPausedPulseAmount } from "$lib/pomodoro/native-focus";
   import {
     formatBlockedScreenDateTime,
@@ -141,8 +145,11 @@
   const theme = getTheme();
   const preferences = getPreferences();
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
-  /** The desktop title bar's icon size, which its Focus ring follows. */
+  /** The desktop title bar's icon size, which its Focus ring follows, and its end padding. */
   const TITLE_ICON_SIZE = 14;
+  const TITLE_BAR_END_PX = 6;
+  /** The title bar's tabs: the Calendar alone, as a new vault opens. */
+  const TITLE_TABS: readonly WelcomeTitleTab[] = [{ kind: "calendar", active: true }];
   /** The Focus menu's icons and how much its extend item adds, as the menu draws them. */
   const MENU_ICON_SIZE = 14;
   const MENU_ICON_STROKE_WIDTH = 1.8;
@@ -567,14 +574,9 @@
     style:height={`${canvasH}px`}
   >
     {#if mobileShell}
-      <!-- The top bar's Focus ring, on its own. -->
-      <div class="flex shrink-0 items-center justify-end bg-(--cal-bg) px-1.5" style:height={`${TOP_BAR_H}px`}>
-        <span
-          class={cn(
-            "relative grid size-8 place-items-center rounded-full text-muted-foreground",
-            (focusing || ringMenuOpen) && "bg-accent/70 text-foreground",
-          )}
-        >
+      <!-- The phone's top bar, labelled with the Calendar, with its Focus ring lit while Focus runs or its menu is open. -->
+      <WelcomePhoneTopBar height={TOP_BAR_H} identity="calendar" ringLit={focusing || ringMenuOpen}>
+        {#snippet ring()}
           <PomodoroProgressRing
             active={focusing}
             remainingSeconds={ringRemaining}
@@ -586,11 +588,11 @@
             progressClass="text-foreground/76 stroke-foreground/76"
           />
           {@render touch(ringTouch)}
-        </span>
-      </div>
+        {/snippet}
+      </WelcomePhoneTopBar>
     {:else}
-      <!-- The title bar's Focus ring, on its own. -->
-      <div class="flex shrink-0 items-center justify-end bg-sidebar pr-1.5" style:height={`${TOP_BAR_H}px`}>
+      <!-- The title bar's Calendar tab and its Focus ring. -->
+      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS}>
         <span
           data-cursor="film-ring"
           class={cn("relative grid size-7 place-items-center rounded-lg", (ringMenuOpen || hovered === "film-ring") && "bg-sidebar-accent")}
@@ -607,7 +609,7 @@
           />
           {@render touch(ringTouch)}
         </span>
-      </div>
+      </WelcomeTitleBar>
     {/if}
 
     <!-- The Focus ring's menu, open while it is used to pause Focus. -->

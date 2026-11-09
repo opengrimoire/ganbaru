@@ -20,7 +20,6 @@
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import Bold from "@lucide/svelte/icons/bold";
   import Bot from "@lucide/svelte/icons/bot";
-  import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Clock3 from "@lucide/svelte/icons/clock-3";
   import Music from "@lucide/svelte/icons/eighth-notes";
@@ -44,6 +43,8 @@
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import WelcomeCaret from "$lib/components/vault/welcome/WelcomeCaret.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
+  import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
+  import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
   import WelcomeTitleIcon from "$lib/components/vault/welcome/WelcomeTitleIcon.svelte";
   import WelcomeTouch from "$lib/components/vault/welcome/WelcomeTouch.svelte";
   import { formatDateTime, formatNumber } from "$lib/i18n/formatters";
@@ -100,6 +101,8 @@
   const HEADER_H = mobileShell ? 56 : 40;
   /** The title bar's end padding, as the title bar draws it. */
   const TITLE_BAR_END_PX = 6;
+  /** The title bar's tabs: the Calendar, and the Novel project's, which is showing. */
+  const TITLE_TABS: readonly WelcomeTitleTab[] = [{ kind: "calendar", active: false }, { kind: "chat", active: true }];
   /** The header's identity icons, as the breadcrumb draws them, and the phone header's icons. */
   const IDENTITY_ICON_SIZE = 14;
   const IDENTITY_ICON_STROKE_WIDTH = 1.5;
@@ -351,18 +354,12 @@
   >
     {#if mobileShell}
       <!-- The phone's top bar, with the Novel project's context switcher. -->
-      <div class="flex shrink-0 items-center gap-2 bg-(--cal-bg) px-1.5" style:height={`${TOP_BAR_H}px`}>
-        <span class="flex h-9 min-w-0 items-center gap-2 rounded-full bg-accent/55 pr-2.5 pl-2 text-identity font-medium">
-          <span class="grid size-5 shrink-0 place-items-center"><Feather size={IDENTITY_ICON_SIZE} strokeWidth={IDENTITY_ICON_STROKE_WIDTH} /></span>
-          <span class="truncate">{projectName}</span>
-          <ChevronDown size={16} class="shrink-0 text-muted-foreground" />
-        </span>
-      </div>
+      <WelcomePhoneTopBar height={TOP_BAR_H} identity="project" />
     {:else}
-      <!-- The title bar's Music. -->
-      <div class="flex shrink-0 items-center justify-end gap-0.5 bg-sidebar" style:height={`${TOP_BAR_H}px`} style:padding-right={`${TITLE_BAR_END_PX}px`}>
+      <!-- The title bar's tabs, with the project's Chat showing, and its Music. -->
+      <WelcomeTitleBar height={TOP_BAR_H} endPadding={TITLE_BAR_END_PX} tabs={TITLE_TABS}>
         <WelcomeTitleIcon icon={Music} />
-      </div>
+      </WelcomeTitleBar>
     {/if}
 
     <div class="relative flex min-h-0 flex-1">

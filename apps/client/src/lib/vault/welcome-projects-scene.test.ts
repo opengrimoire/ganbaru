@@ -11,6 +11,7 @@ import {
   PROJECTS_EVENT,
   PROJECTS_PHASES,
   PROJECTS_PLAYLISTS,
+  PROJECTS_CALENDAR_TAB_TARGET,
   PROJECTS_PRESET,
   PROJECTS_PRIORITY_COLORS,
   PROJECTS_PRIORITY_ORDER,
@@ -19,6 +20,7 @@ import {
   PROJECTS_STATUS_ORDER,
   PROJECTS_STILL,
   projectsCalendarShown,
+  projectsCalendarTabActive,
   projectsDefaultColor,
   projectsDefaultMinutes,
   projectsDefaultPreset,
@@ -167,12 +169,17 @@ describe("welcome projects scene", () => {
     expect(projectsSettingsDirty(B.settingsSaveTap)).toBe(false);
   });
 
-  it("gives way to the Calendar once the settings are closed", () => {
-    expect(PROJECTS_BEATS.calendarIn).toBeGreaterThan(B.settingsCloseTap);
-    expect(projectsCalendarShown(B.settingsCloseTap)).toBe(0);
-    expect(projectsListShown(B.settingsCloseTap)).toBe(1);
+  it("gives way to the Calendar from the tap on its tab, once the settings are closed", () => {
+    expect(B.calendarTap).toBeGreaterThan(B.settingsCloseTap);
+    expect(projectsSettingsShown(B.calendarTap - FILM_TAP_MS)).toBe(0);
+    expect(projectsTouches(B.calendarTap - FILM_TAP_MS / 2).calendarTab).toBeGreaterThan(0);
+    expect(projectsCalendarTabActive(B.calendarTap - 1)).toBe(false);
+    expect(projectsCalendarShown(B.calendarTap)).toBe(0);
+    expect(projectsListShown(B.calendarTap)).toBe(1);
+    expect(projectsCalendarTabActive(B.calendarTap)).toBe(true);
     expect(projectsCalendarShown(B.calendarIn)).toBe(1);
     expect(projectsListShown(B.calendarIn)).toBe(0);
+    expect(B.createStart - PROJECTS_CREATE_PRESS_MS).toBeGreaterThan(B.calendarIn);
   });
 
   it("drags the event out to its drawn length, then gives it the project's default duration the moment Novel is picked", () => {
@@ -248,6 +255,7 @@ describe("welcome projects scene", () => {
       ]),
       ["projects-save", B.settingsSaveTap],
       ["projects-close", B.settingsCloseTap],
+      [PROJECTS_CALENDAR_TAB_TARGET, B.calendarTap],
       ["panel-project", B.projectTap],
       ["panel-project-pick", B.projectPick],
       ["panel-music", B.musicTap],

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { WELCOME_TOUCH_MARK_CLASS } from "./touch-mark";
   import Ban from "@lucide/svelte/icons/ban";
   import Check from "@lucide/svelte/icons/check";
   import Bell from "@lucide/svelte/icons/bell";
@@ -448,7 +449,7 @@
 {#snippet touch(opacity: number, position: string)}
   {#if mobileLayout && opacity > 0}
     <span
-      class={cn("pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35", position)}
+      class={cn("pointer-events-none absolute z-20 size-6 -translate-1/2", WELCOME_TOUCH_MARK_CLASS, position)}
       style:opacity
     ></span>
   {/if}

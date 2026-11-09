@@ -1,4 +1,5 @@
 <script lang="ts" module>
+  import { WELCOME_TOUCH_MARK_CLASS } from "./touch-mark";
   import { calendarZoomGridMinutesForPercent, calendarZoomHourHeightForPercent } from "$lib/calendar/zoom-levels";
 
   /** The Calendar zoom the scene's day is drawn at, zoomed in from the default so the short drawn event reads tall. */
@@ -866,7 +867,7 @@
 {#snippet touch(opacity: number, left: string, top: string)}
   {#if mobileShell && opacity > 0}
     <span
-      class="pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
+      class="pointer-events-none absolute z-20 size-6 -translate-1/2 {WELCOME_TOUCH_MARK_CLASS}"
       style:left
       style:top
       style:opacity
@@ -1351,7 +1352,7 @@
                 <!-- The press that draws the event, following its growing edge. -->
                 {#if mobileShell && pressOpacity > 0}
                   <span
-                    class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
+                    class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 {WELCOME_TOUCH_MARK_CLASS}"
                     style:top={`${y(PROJECTS_EVENT.start + pressMinutes)}px`}
                     style:opacity={pressOpacity}
                   ></span>

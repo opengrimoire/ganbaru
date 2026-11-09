@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { WELCOME_TOUCH_MARK_CLASS } from "./touch-mark";
   import appIconUrl from "../../../../../src-tauri/icons/64x64.png";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BLOCKER_APP_NAMES, type BlockerApp, type BlockerNotice, type BlockerPhoneApp } from "$lib/vault/welcome-blocker";
@@ -104,7 +105,7 @@
           {/if}
           {#if touch > 0}
             <span
-              class="pointer-events-none absolute top-1/2 left-1/2 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
+              class="pointer-events-none absolute top-1/2 left-1/2 size-6 -translate-1/2 {WELCOME_TOUCH_MARK_CLASS}"
               style:opacity={touch}
             ></span>
           {/if}

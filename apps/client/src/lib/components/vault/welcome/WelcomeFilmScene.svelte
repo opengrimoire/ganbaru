@@ -1,4 +1,5 @@
 <script lang="ts" module>
+  import { WELCOME_TOUCH_MARK_CLASS } from "./touch-mark";
   import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
   import { GUTTER_WIDTH_PER_TIMEZONE } from "$lib/calendar/timezone-utils";
   import { calendarZoomGridMinutesForPercent, calendarZoomHourHeightForPercent } from "$lib/calendar/zoom-levels";
@@ -510,7 +511,7 @@
 {#snippet touch(opacity: number, position: string)}
   {#if mobileShell && opacity > 0}
     <span
-      class={cn("pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35", position)}
+      class={cn("pointer-events-none absolute z-20 size-6 -translate-1/2", WELCOME_TOUCH_MARK_CLASS, position)}
       style:opacity
     ></span>
   {/if}
@@ -791,7 +792,7 @@
                 <!-- The press that draws the session on a phone, following its growing edge. -->
                 {#if mobileShell && pressOpacity > 0}
                   <span
-                    class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
+                    class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 {WELCOME_TOUCH_MARK_CLASS}"
                     style:top={`${y(SESSION_START + pressMinutes)}px`}
                     style:opacity={pressOpacity}
                   ></span>

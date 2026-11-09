@@ -56,7 +56,7 @@ const FILM_OPENING_BEATS = {
 } as const;
 
 /** How long the drawn event's finished screen shows. */
-const FILM_EVENT_FINISHED_MS = 750;
+const FILM_EVENT_FINISHED_MS = 1100;
 
 /** How long the film holds on the week once the pull back starts, before it ends. */
 const FILM_WEEK_HOLD_MS = 2300;

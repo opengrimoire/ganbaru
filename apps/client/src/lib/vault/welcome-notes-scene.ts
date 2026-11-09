@@ -101,31 +101,33 @@ export const NOTES_BEATS = {
   scrollBackStart: 16500,
   scrollBackEnd: 17200,
   /**
-   * The line's text context menu opens: from a right click on desktop, or on a phone from a long press, held from
-   * `quotePress` until it lifts at `quoteLift`, that selects the word under it.
+   * The line's text context menu opens: from a right click on desktop, or on a phone from a long press held from
+   * `quotePress`, which selects the word under it at `quoteSelect`, and opens the menu once it lifts at `quoteLift`,
+   * so the selection shows before the menu offers what applies to it.
    */
   quotePress: 17400,
-  quoteMenuOpen: 17900,
+  quoteSelect: 17900,
   quoteLift: 18100,
+  quoteMenuOpen: 18500,
   /**
    * Paragraph opens its submenu, once the pointer has rested on it on desktop or as a tap lands on it on a phone, and
    * Quote is picked from it, which turns the line into a quote and closes the menu.
    */
-  submenuOpen: 18700,
-  quotePick: 19700,
+  submenuOpen: 19300,
+  quotePick: 20300,
   /** The quote has settled, and the desktop pointer leaves for the page's place in the header. */
-  navStart: 20000,
+  navStart: 20600,
   /**
    * The note navigator opens on the project's notes and folders: once the pointer has rested on the page's place in the
    * header on desktop, as the header waits to, or as a tap lands on it on a phone.
    */
-  navOpen: 20700,
+  navOpen: 21300,
   /**
    * The Worldbuilding folder shows what it holds: in a panel beside it as soon as the pointer reaches its row on
    * desktop, or in place of the list as a tap on its row lands on a phone.
    */
-  folderOpen: 21900,
-  end: 23900,
+  folderOpen: 22500,
+  end: 24500,
 } as const;
 
 const B = NOTES_BEATS;
@@ -354,9 +356,12 @@ export function notesContextSubmenuOpen(elapsed: number): boolean {
 /** When the desktop pointer reaches Paragraph, so the submenu opens after it has rested there as the menu waits to. */
 export const NOTES_PARAGRAPH_HOVER = B.submenuOpen - SUBMENU_OPEN_DELAY_MS;
 
-/** Whether the word the long press selects shows as selected on a phone: while the menu it opens is open. */
+/**
+ * Whether the word the long press selects shows as selected on a phone: from the moment the held press selects it,
+ * through the menu it opens, until Quote is picked.
+ */
 export function notesQuoteWordSelected(elapsed: number): boolean {
-  return notesContextMenuOpen(elapsed);
+  return elapsed >= B.quoteSelect && elapsed < B.quotePick;
 }
 
 /** Whether the menu's Paragraph row shows as highlighted on a phone: just before its tap lands and while its submenu is open. */

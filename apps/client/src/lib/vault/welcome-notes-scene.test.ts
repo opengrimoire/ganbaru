@@ -190,12 +190,17 @@ describe("welcome notes scene", () => {
     expect(notesPageScroll(B.end)).toBe(0);
   });
 
-  it("opens the first line's context menu once the page is back at its top, opens Paragraph, and turns the line into a quote with Quote", () => {
+  it("selects the pressed word before the first line's context menu opens once the page is back at its top, opens Paragraph, and turns the line into a quote with Quote", () => {
     expect(B.quotePress).toBeGreaterThanOrEqual(B.scrollBackEnd);
     expect(notesQuoteLineType(B.quotePick - 1)).toBe("paragraph");
     expect(notesContextMenuOpen(B.quoteMenuOpen - 1)).toBe(false);
     expect(notesContextMenuOpen(B.quoteMenuOpen)).toBe(true);
     expect(notesQuoteWordSelected(B.quoteMenuOpen)).toBe(true);
+    expect(notesQuoteWordSelected(B.quoteSelect - 1)).toBe(false);
+    expect(notesQuoteWordSelected(B.quoteSelect)).toBe(true);
+    expect(B.quoteSelect).toBeGreaterThan(B.quotePress);
+    expect(B.quoteMenuOpen).toBeGreaterThan(B.quoteLift);
+    expect(notesContextMenuOpen(B.quoteLift)).toBe(false);
     expect(notesContextSubmenuOpen(B.submenuOpen - 1)).toBe(false);
     expect(notesContextParagraphHighlighted(B.submenuOpen - 1)).toBe(true);
     expect(notesContextSubmenuOpen(B.submenuOpen)).toBe(true);

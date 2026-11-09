@@ -33,10 +33,8 @@
     ABOUT_CURSOR_TARGETS,
     ABOUT_FILES,
     ABOUT_REPOSITORY,
-    aboutPage,
     aboutPop,
     aboutPress,
-    aboutRow,
     aboutSparks,
     aboutStarred,
   } from "$lib/vault/welcome-about-scene";
@@ -45,8 +43,8 @@
   import WelcomeCursor from "./WelcomeCursor.svelte";
 
   /**
-   * One frame of the welcome scene about the app itself: the app's public source repository opens in a browser, with its
-   * files, its community documents, and its license in view, and a mouse click stars it. The page is a
+   * One frame of the welcome scene about the app itself: the app's public source repository shows in a browser, with its
+   * files, its community documents, and its license in view, and a mouse click stars it; only the star moves. The page is a
    * plain sketch of a repository page in the theme's colors, with placeholder bars where the description, commit
    * messages, and dates change over time. A wide canvas lays the page out with a sidebar as a repository host does; a
    * narrow one keeps a single column. The page's text stays in English in every app language, as the repository host
@@ -77,9 +75,6 @@
   const SIDEBAR_MIN_W = 540;
   /** Apple's windows keep their controls on the left; other systems keep them on the right. */
   const CONTROLS_LEADING = BUILD_PLATFORM === "macos" || BUILD_PLATFORM === "ios";
-  /** How far the page rises as it appears, and how far each row rises as it comes in. */
-  const PAGE_RISE = 10;
-  const ROW_RISE = 4;
   /** How much the star grows at the peak of its pop. */
   const POP_GROWTH = 0.5;
   /** A star's gold, the same in every theme. */
@@ -137,7 +132,6 @@
       ? [README, LICENSE, CODE_OF_CONDUCT, CONTRIBUTING, SECURITY_POLICY]
       : [README, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY],
   );
-  const page = $derived(aboutPage(elapsed));
   /** Whether the pointer rests on Star, which shows its hover as the repository host does. */
   const starHovered = $derived(welcomeCursorOn(ABOUT_CURSOR, elapsed, ABOUT_CURSOR_TARGETS.star));
   const press = $derived(aboutPress(elapsed));
@@ -215,110 +209,98 @@
       {#if CONTROLS_LEADING}{@render controls()}{/if}
       <span
         class="min-w-0 flex-1 truncate rounded-full bg-foreground/6 px-2.5 py-0.5 text-center text-[10px] text-muted-foreground"
-        data-cursor={ABOUT_CURSOR_TARGETS.address}
       >
         {ABOUT_REPOSITORY.host}/{ABOUT_REPOSITORY.owner}/{ABOUT_REPOSITORY.name}
       </span>
       {#if !CONTROLS_LEADING}{@render controls()}{/if}
     </div>
 
-    {#if page > 0}
-      <div
-        class="flex min-h-0 flex-1 flex-col gap-2.5 px-3.5 py-3"
-        style:opacity={page}
-        style:transform={`translateY(${(1 - page) * PAGE_RISE}px)`}
-      >
-        <!-- The repository's name, with its actions beside it when there is room and below it when there is not. -->
-        <div class="flex min-w-0 items-center gap-2">
-          <span class="flex size-6 shrink-0 items-center justify-center rounded-md bg-white p-0.5">
-            <img src={LOGO_URL} alt="" class="size-full" />
-          </span>
-          <span class="min-w-0 truncate text-[13px]">
-            <span class="text-muted-foreground">{ABOUT_REPOSITORY.owner} /</span>
-            <span class="font-semibold">{ABOUT_REPOSITORY.name}</span>
-          </span>
-          <span class="shrink-0 rounded-full border border-border px-1.5 py-px text-[9.5px] text-muted-foreground">
-            {PAGE_TEXT.public}
-          </span>
-          {#if wide}
+    <div class="flex min-h-0 flex-1 flex-col gap-2.5 px-3.5 py-3">
+      <!-- The repository's name, with its actions beside it when there is room and below it when there is not. -->
+      <div class="flex min-w-0 items-center gap-2">
+        <span class="flex size-6 shrink-0 items-center justify-center rounded-md bg-white p-0.5">
+          <img src={LOGO_URL} alt="" class="size-full" />
+        </span>
+        <span class="min-w-0 truncate text-[13px]">
+          <span class="text-muted-foreground">{ABOUT_REPOSITORY.owner} /</span>
+          <span class="font-semibold">{ABOUT_REPOSITORY.name}</span>
+        </span>
+        <span class="shrink-0 rounded-full border border-border px-1.5 py-px text-[9.5px] text-muted-foreground">
+          {PAGE_TEXT.public}
+        </span>
+        {#if wide}
+          <span class="flex-1"></span>
+          {@render actions()}
+        {/if}
+      </div>
+      {#if !wide}{@render actions()}{/if}
+
+      <div class="flex min-h-0 flex-1 gap-4">
+        <!-- The file list, with placeholder bars for the latest commit and each entry's last change. -->
+        <div class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border">
+          <div class="flex h-7 shrink-0 items-center gap-2 border-b border-border bg-foreground/4 px-2.5">
+            <span class="size-3.5 shrink-0 rounded-full bg-foreground/15"></span>
+            {@render bar("w-2/5")}
             <span class="flex-1"></span>
-            {@render actions()}
-          {/if}
-        </div>
-        {#if !wide}{@render actions()}{/if}
-
-        <div class="flex min-h-0 flex-1 gap-4">
-          <!-- The file list, with placeholder bars for the latest commit and each entry's last change. -->
-          <div class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border">
-            <div class="flex h-7 shrink-0 items-center gap-2 border-b border-border bg-foreground/4 px-2.5">
-              <span class="size-3.5 shrink-0 rounded-full bg-foreground/15"></span>
-              {@render bar("w-2/5")}
-              <span class="flex-1"></span>
-              {@render bar("w-10")}
-            </div>
-            {#each ABOUT_FILES as file, index (file.name)}
-              {@const row = aboutRow(elapsed, index)}
-              <div
-                class="flex min-h-5.5 flex-1 basis-0 items-center gap-2 border-b border-border/60 px-2.5 last:border-b-0"
-                style:opacity={row}
-                style:transform={`translateY(${(1 - row) * ROW_RISE}px)`}
-              >
-                {#if file.folder}
-                  <Folder size={13} strokeWidth={1.8} class="shrink-0 text-primary" fill="currentColor" fill-opacity="0.3" aria-hidden="true" />
-                {:else}
-                  <File size={13} strokeWidth={1.8} class="shrink-0 text-muted-foreground" aria-hidden="true" />
-                {/if}
-                <span class="w-18 shrink-0 truncate text-[11px]">{file.name}</span>
-                <span class="min-w-0 flex-1">{@render bar("", MESSAGE_WIDTHS[index % MESSAGE_WIDTHS.length])}</span>
-                {@render bar("w-8 shrink-0")}
-              </div>
-            {/each}
+            {@render bar("w-10")}
           </div>
-
-          {#if wide}
-            <!-- The sidebar: placeholder bars for the description, the repository's documents, and its languages. -->
-            <div class="flex w-48 shrink-0 flex-col gap-2.5 overflow-hidden pt-1 text-[11px] text-muted-foreground">
-              <div class="flex flex-col gap-2">
-                {#each DESCRIPTION_WIDTHS as fraction, index (index)}{@render bar("", fraction)}{/each}
-              </div>
-              <div class="flex flex-col gap-2">
-                {#each links as item, index (index)}{@render link(item)}{/each}
-              </div>
-              <div class="flex flex-col gap-1.5 border-t border-border pt-3">
-                <span class="text-[12px] font-semibold text-foreground">{PAGE_TEXT.languages}</span>
-                <span class="flex h-1.5 gap-px overflow-hidden rounded-full" aria-hidden="true">
-                  {#each LANGUAGES as language (language.name)}
-                    <span class="min-w-px" style:flex-grow={language.share} style:background-color={language.color}></span>
-                  {/each}
-                </span>
-                <span class="flex flex-wrap gap-x-2.5 gap-y-1 text-[10px]">
-                  {#each LANGUAGES as language (language.name)}
-                    <span class="flex items-center gap-1 whitespace-nowrap">
-                      <span class="size-1.5 rounded-full" style:background-color={language.color}></span>
-                      <span class="font-semibold text-foreground">{language.name}</span>
-                      {formatNumber(PAGE_LOCALE, language.share, LANGUAGE_SHARE)}
-                    </span>
-                  {/each}
-                </span>
-              </div>
+          {#each ABOUT_FILES as file, index (file.name)}
+            <div class="flex min-h-5.5 flex-1 basis-0 items-center gap-2 border-b border-border/60 px-2.5 last:border-b-0">
+              {#if file.folder}
+                <Folder size={13} strokeWidth={1.8} class="shrink-0 text-primary" fill="currentColor" fill-opacity="0.3" aria-hidden="true" />
+              {:else}
+                <File size={13} strokeWidth={1.8} class="shrink-0 text-muted-foreground" aria-hidden="true" />
+              {/if}
+              <span class="w-18 shrink-0 truncate text-[11px]">{file.name}</span>
+              <span class="min-w-0 flex-1">{@render bar("", MESSAGE_WIDTHS[index % MESSAGE_WIDTHS.length])}</span>
+              {@render bar("w-8 shrink-0")}
             </div>
-          {/if}
+          {/each}
         </div>
 
-        {#if !wide}
-          <!-- The documents' tabs: the readme's is selected, and the tabs after the license wrap out of sight when there is no room for them. -->
-          <div class="flex h-6 shrink-0 flex-wrap gap-x-4 gap-y-2 overflow-hidden border-b border-border text-[11px] text-muted-foreground">
-            {#each links as item, index (index)}
-              <span
-                class={`flex h-6 shrink-0 items-center whitespace-nowrap ${item === README ? "border-b-2 border-primary font-semibold text-foreground" : ""}`}
-              >
-                {item.label}
+        {#if wide}
+          <!-- The sidebar: placeholder bars for the description, the repository's documents, and its languages. -->
+          <div class="flex w-48 shrink-0 flex-col gap-2.5 overflow-hidden pt-1 text-[11px] text-muted-foreground">
+            <div class="flex flex-col gap-2">
+              {#each DESCRIPTION_WIDTHS as fraction, index (index)}{@render bar("", fraction)}{/each}
+            </div>
+            <div class="flex flex-col gap-2">
+              {#each links as item, index (index)}{@render link(item)}{/each}
+            </div>
+            <div class="flex flex-col gap-1.5 border-t border-border pt-3">
+              <span class="text-[12px] font-semibold text-foreground">{PAGE_TEXT.languages}</span>
+              <span class="flex h-1.5 gap-px overflow-hidden rounded-full" aria-hidden="true">
+                {#each LANGUAGES as language (language.name)}
+                  <span class="min-w-px" style:flex-grow={language.share} style:background-color={language.color}></span>
+                {/each}
               </span>
-            {/each}
+              <span class="flex flex-wrap gap-x-2.5 gap-y-1 text-[10px]">
+                {#each LANGUAGES as language (language.name)}
+                  <span class="flex items-center gap-1 whitespace-nowrap">
+                    <span class="size-1.5 rounded-full" style:background-color={language.color}></span>
+                    <span class="font-semibold text-foreground">{language.name}</span>
+                    {formatNumber(PAGE_LOCALE, language.share, LANGUAGE_SHARE)}
+                  </span>
+                {/each}
+              </span>
+            </div>
           </div>
         {/if}
       </div>
-    {/if}
+
+      {#if !wide}
+        <!-- The documents' tabs: the readme's is selected, and the tabs after the license wrap out of sight when there is no room for them. -->
+        <div class="flex h-6 shrink-0 flex-wrap gap-x-4 gap-y-2 overflow-hidden border-b border-border text-[11px] text-muted-foreground">
+          {#each links as item, index (index)}
+            <span
+              class={`flex h-6 shrink-0 items-center whitespace-nowrap ${item === README ? "border-b-2 border-primary font-semibold text-foreground" : ""}`}
+            >
+              {item.label}
+            </span>
+          {/each}
+        </div>
+      {/if}
+    </div>
     <WelcomeCursor script={ABOUT_CURSOR} {elapsed} width={canvasW} size={WELCOME_CURSOR_BROWSER_SIZE_PX} />
   </div>
 </div>

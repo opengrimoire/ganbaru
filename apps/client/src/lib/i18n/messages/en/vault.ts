@@ -80,7 +80,7 @@ export const vaultSetup = {
     headline: "Free and open source",
     body: "Your data stays on your devices and syncs directly between them, with no account, ads, or telemetry.\nApp and code are yours forever.",
     sceneDescription:
-      "A short animation of Ganbaru's public source code repository opening in a browser, with its files and its AGPL 3.0 license in view. A tap on Star then stars the repository.",
+      "A short animation of Ganbaru's public source code repository in a browser, with its files and its AGPL 3.0 license in view. A click on Star stars the repository.",
   },
   stepProgress: (current: number, total: number) => `Step ${current} of ${total}`,
   licenseButton: "License (AGPL 3.0)",

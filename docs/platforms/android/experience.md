@@ -45,6 +45,8 @@ The app draws edge to edge and the WebView keeps its full size under the soft ke
 
 The keyboard opens only when the user asks to type: by selecting a field, or through an action whose purpose is typing, such as creating a page, event, or item, renaming, or Search. Switching destinations, opening a page, note, channel, or task, restoring a previous caret, and loading data never focus a text field on a phone.
 
+Selected text shows the app's own selection handles, the same on every phone rather than each device maker's, and the caret shows no insertion handle under it.
+
 ## Android Back
 
 A serialized frontend Back controller intercepts only when the UI has consumable state: dialogs, menus, pickers, full-screen builders, navigation levels, editor layers, task details, Notes contextual pages, and utility sheets. The topmost layer closes first. With no layer open, Back returns to the first workspace tab, and on that tab the listener yields, so Back follows native Android behavior. Two layers cannot consume the same press, and a stale closed layer cannot trap the app.

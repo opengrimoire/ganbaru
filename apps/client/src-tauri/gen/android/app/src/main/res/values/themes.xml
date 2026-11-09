@@ -2,7 +2,9 @@
     <!-- Base application theme. -->
     <style name="Theme.ganbaru" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="android:forceDarkAllowed">false</item>
-        <!-- The caret stays visible; only the insertion handle under it is hidden. Selection handles stay. -->
+        <!-- The caret stays visible; only the insertion handle under it is hidden. Selection handles use the app's own drops. -->
         <item name="android:textSelectHandle">@drawable/text_select_handle_hidden</item>
+        <item name="android:textSelectHandleLeft">@drawable/text_select_handle_left</item>
+        <item name="android:textSelectHandleRight">@drawable/text_select_handle_right</item>
     </style>
 </resources>

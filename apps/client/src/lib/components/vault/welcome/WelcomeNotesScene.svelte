@@ -826,8 +826,8 @@
 
             <!-- The page's first line, a paragraph until Quote in its context menu turns it into a quote. -->
             <div class="flex min-w-0 items-start gap-1 rounded-md py-0.5 pr-2">
-              <div class={cn("relative min-w-0 flex-1", quoteWordSelected && "z-10")}>
-                <div class={notesRichTextPreviewClass(quoteLineType)}>{quoteParts.before}<span bind:this={quoteWord} data-cursor="notes-quote-word" class={cn("relative", quoteWordSelected && "bg-(--selection-background)")}>{quoteParts.word}{#if quoteWordSelected}<span aria-hidden="true" class="pointer-events-none absolute top-full left-0 size-2.5 -translate-x-full rounded-full rounded-tr-none bg-primary"></span><span aria-hidden="true" class="pointer-events-none absolute top-full left-full size-2.5 rounded-full rounded-tl-none bg-primary"></span>{/if}{#if mobileShell}<WelcomeTouch opacity={touches.quoteWord} />{/if}</span>{quoteParts.after}</div>
+              <div class="relative min-w-0 flex-1">
+                <div class={cn(notesRichTextPreviewClass(quoteLineType), "overflow-visible")}>{quoteParts.before}<span bind:this={quoteWord} data-cursor="notes-quote-word" class={cn("relative", quoteWordSelected && "bg-(--selection-background)")}>{quoteParts.word}{#if quoteWordSelected}<span aria-hidden="true" class="pointer-events-none absolute top-full left-0 size-3 -translate-x-full rounded-full rounded-tr-none bg-(--selection-handle)"></span><span aria-hidden="true" class="pointer-events-none absolute top-full left-full size-3 rounded-full rounded-tl-none bg-(--selection-handle)"></span>{/if}{#if mobileShell}<WelcomeTouch opacity={touches.quoteWord} />{/if}</span>{quoteParts.after}</div>
               </div>
             </div>
 

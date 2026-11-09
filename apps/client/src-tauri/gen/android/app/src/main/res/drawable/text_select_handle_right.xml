@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Selection end handle: a drop whose sharp corner points up and left at the selection's end. The WebView expects a
+  quarter of a handle's width as transparent padding on its outer side, so the drop fills the right 22 of 29.33 units.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="29.33dp"
+    android:height="22dp"
+    android:viewportWidth="29.33"
+    android:viewportHeight="22">
+    <path
+        android:fillColor="@color/text_select_handle"
+        android:pathData="M7.33,0 H18.33 A11,11 0 1,1 7.33,11 Z" />
+</vector>

@@ -166,6 +166,8 @@
   --input: rgba(0, 0, 20, 0.08);
   --ring: #8C8C98;
   --selection-background: rgba(37, 99, 235, 0.28);
+  /* Matches the Android selection handle drawables in src-tauri/gen/android/app/src/main/res/values/colors.xml. */
+  --selection-handle: #3B82F6;
   --app-scrollbar-thumb: color-mix(in srgb, var(--foreground) 18%, transparent);
   --app-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 36%, transparent);
   --app-scrollbar-size: 8px;

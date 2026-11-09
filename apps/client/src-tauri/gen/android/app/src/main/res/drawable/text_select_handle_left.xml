@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Selection start handle: a drop whose sharp corner points up and right at the selection's start. The WebView expects a
+  quarter of a handle's width as transparent padding on its outer side, so the drop fills the left 22 of 29.33 units.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="29.33dp"
+    android:height="22dp"
+    android:viewportWidth="29.33"
+    android:viewportHeight="22">
+    <path
+        android:fillColor="@color/text_select_handle"
+        android:pathData="M11,0 H22 V11 A11,11 0 1,1 11,0 Z" />
+</vector>

@@ -8,6 +8,7 @@
   import WelcomeAboutStep from "./welcome/WelcomeAboutStep.svelte";
   import WelcomeBlockingStep from "./welcome/WelcomeBlockingStep.svelte";
   import WelcomeCalendarStep from "./welcome/WelcomeCalendarStep.svelte";
+  import WelcomeChatStep from "./welcome/WelcomeChatStep.svelte";
   import WelcomeLanguageStep from "./welcome/WelcomeLanguageStep.svelte";
   import WelcomeLimitsStep from "./welcome/WelcomeLimitsStep.svelte";
   import WelcomeMusicStep from "./welcome/WelcomeMusicStep.svelte";
@@ -63,6 +64,8 @@
         <WelcomeNotesStep />
       {:else if current === "quickNotes"}
         <WelcomeQuickNotesStep />
+      {:else if current === "chat"}
+        <WelcomeChatStep />
       {:else}
         <WelcomeAboutStep />
       {/if}

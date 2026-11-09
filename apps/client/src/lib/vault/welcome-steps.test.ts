@@ -3,7 +3,7 @@ import { WELCOME_STEPS, welcomeStepAt } from "./welcome-steps";
 
 describe("welcome steps", () => {
   it("opens on the language, then the Calendar, and ends on the app's credentials", () => {
-    expect(WELCOME_STEPS.slice(0, 9)).toEqual(["language", "calendar", "blocking", "limits", "music", "tasks", "projects", "notes", "quickNotes"]);
+    expect(WELCOME_STEPS.slice(0, 10)).toEqual(["language", "calendar", "blocking", "limits", "music", "tasks", "projects", "notes", "quickNotes", "chat"]);
     expect(WELCOME_STEPS.at(-1)).toBe("about");
   });
 

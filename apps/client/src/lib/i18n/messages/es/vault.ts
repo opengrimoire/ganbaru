@@ -118,6 +118,19 @@ export const vaultSetup = {
       groceries: { title: "Despensa", body: "Leche de avena, limones, arroz y café." },
     },
   },
+  chat: {
+    headline: "Suma la IA solo cuando la quieras",
+    body: "Conversa con agentes de IA como Claude, Codex o Cursor que trabajan dentro de la carpeta de tu proyecto.",
+    sceneDescription: (model: string) =>
+      `Una breve animación del chat en el proyecto Novela. Se escribe una pregunta sobre lo que Mateo sabe de Clara, el selector de modelo sube el esfuerzo de ${model} de High a Max y, al enviar la pregunta, Claude lee el capítulo 2, busca a Mateo y responde.`,
+    sceneDescriptionTouch: (model: string) =>
+      `Una breve animación del chat en el proyecto Novela, donde se envía a ${model} una pregunta sobre lo que Mateo sabe de Clara, y el modelo lee el capítulo 2, busca a Mateo y responde.`,
+    channel: "general",
+    prompt: "Lee el capítulo 2 y dime qué sabe Mateo de Clara.",
+    chapterPath: "capitulos/02.md",
+    reply:
+      "En el capítulo 2, Mateo ve a Clara salir de la estación con la carta, pero nunca se lo cuenta a Tomás. Ese silencio podría preparar su discusión en el capítulo 3.",
+  },
   about: {
     headline: "Gratis y de código abierto",
     body: "Tus datos se quedan en tus dispositivos y se sincronizan directamente entre ellos, sin cuentas, anuncios ni telemetría. App y código son tuyos para siempre.",

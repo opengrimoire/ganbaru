@@ -69,15 +69,15 @@ const FILM_WEEK_HOLD_MS = 2300;
  * How fast the session fast-forwards after Focus resumes, in film milliseconds per session minute. Focus hurries, and
  * breaks slow down enough for their tint to come and go gently rather than flash.
  */
-const FILM_FAST_FOCUS_MS_PER_MINUTE = 16;
-const FILM_FAST_BREAK_MS_PER_MINUTE = 40;
+const FILM_FAST_FOCUS_MS_PER_MINUTE = 22;
+const FILM_FAST_BREAK_MS_PER_MINUTE = 80;
 
 /** How long the current time takes to settle onto an event's end, and how many minutes it covers as it does. */
 const FILM_SETTLE_MS = 250;
 const FILM_SETTLE_MINUTES = 2;
 
-/** How strongly the break screen's color tints the app at the middle of a break the session fast-forwards through. */
-export const FILM_BREAK_TINT_MAX = 0.25;
+/** How strongly the break screen shows over the app at the middle of a break the session fast-forwards through. */
+export const FILM_BREAK_TINT_MAX = 0.5;
 
 /** How long a tap on the Focus ring or its menu takes, and how quickly the touch fades in and out. */
 export const FILM_TAP_MS = 260;
@@ -434,9 +434,10 @@ export function filmSessionMoment(minute: number): FilmSessionMoment {
 }
 
 /**
- * How strongly the break screen's color tints the app at `elapsed`, from 0 to `FILM_BREAK_TINT_MAX`. The session
- * fast-forwards too quickly after Focus resumes to show each break screen, so each break it passes through swells a
- * faint tint of the screen's color in and out instead, rising and falling smoothly with no hard edge.
+ * How strongly the break screen shows over the app at `elapsed`, from 0 to `FILM_BREAK_TINT_MAX`. The session
+ * fast-forwards too quickly after Focus resumes to show each break screen in full, so each break it passes through
+ * swells a faint glimpse of the screen, countdown included, in and out instead, rising and falling smoothly with no
+ * hard edge.
  */
 export function filmBreakTint(elapsed: number): number {
   if (elapsed < FILM_BEATS.resumeAt) return 0;

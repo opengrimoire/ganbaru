@@ -393,9 +393,10 @@
   const otherGrow = $derived(pullBack);
   const dayFormat = $derived(dayNameFormatForWidth((canvasW - GUTTER_W) / (1 + (days.length - 1) * otherGrow)));
 
-  const breakScreen = $derived(screenAlpha(FILM_BEATS.breakStart, FILM_BEATS.breakEnd + SCREEN_FADE_MS));
-  /** The faint break screen color over the app while the session fast-forwards through a break. */
-  const breakTint = $derived(filmBreakTint(elapsed));
+  /** The first break's screen, then a faint glimpse of it for each break the session fast-forwards through. */
+  const breakScreen = $derived(
+    Math.max(screenAlpha(FILM_BEATS.breakStart, FILM_BEATS.breakEnd + SCREEN_FADE_MS), filmBreakTint(elapsed)),
+  );
   const eventFinishedScreen = $derived(screenAlpha(FILM_BEATS.eventEnd, FILM_BEATS.eventOut));
   const dayDoneScreen = $derived(screenAlpha(FILM_BEATS.sessionEnd, FILM_BEATS.finishedOut));
   /** The break's countdown, held at zero while its screen lifts. */
@@ -824,11 +825,6 @@
         {/each}
       </div>
     </div>
-
-    <!-- The breaks the session fast-forwards through, as a faint wash of the break screen's color. -->
-    {#if breakTint > 0}
-      <div class="pointer-events-none absolute inset-0 z-50" style:background-color={fade(breakPalette.background, breakTint)}></div>
-    {/if}
 
     <!-- The break screen, with its date and time, countdown, and keys. -->
     {#if breakScreen > 0}

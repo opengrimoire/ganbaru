@@ -2,8 +2,6 @@
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
   import { untrack } from "svelte";
-  import { cubicInOut } from "svelte/easing";
-  import { Tween } from "svelte/motion";
   import { fly } from "svelte/transition";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
@@ -23,9 +21,7 @@
    * The welcome screens before vault setup: the language, one per feature, then the app itself. Every screen shares
    * one navigation bar that stays in place at the bottom while the screens slide in above it, so moving between them
    * never shifts the buttons. Continue on the last screen hands over to vault setup. `step` is bindable so a shell
-   * can show the progress in its own chrome; with `showStepDots`, the navigation shows it instead. On the first screen,
-   * Continue also covers the room Back takes later. Leaving it, Continue narrows from its left edge as Back slides in,
-   * so a second click lands on Continue rather than on Back.
+   * can show the progress in its own chrome; with `showStepDots`, the navigation shows it instead.
    */
   let {
     step = $bindable(0),
@@ -39,17 +35,6 @@
   const { t } = getLocalization();
   const current = $derived(welcomeStepAt(step));
   const index = $derived(WELCOME_STEPS.indexOf(current));
-
-  /** How long Back takes to slide in beside Continue, slow enough that the narrowing Continue is noticed. */
-  const BACK_REVEAL_MS = prefersReducedMotion() ? 0 : 420;
-  /** How far Back is shown, from 0 on the first screen to 1 on the others. */
-  const backReveal = new Tween(untrack(() => (index > 0 ? 1 : 0)), { duration: BACK_REVEAL_MS, easing: cubicInOut });
-  $effect(() => {
-    backReveal.target = index > 0 ? 1 : 0;
-  });
-  /** Back's width with the gap after it, measured so Continue can take exactly that room while Back is hidden. */
-  let backRoom = $state(0);
-  const backShownPx = $derived(backReveal.current * backRoom);
 
   /** The screen arrives from the side it is on: the right when moving forward, the left when going back. */
   let shownIndex = untrack(() => index);
@@ -98,31 +83,25 @@
 
   <div class="mx-auto w-full max-w-180 shrink-0 px-4 pb-6 @min-[560px]:px-8 @min-[760px]:px-10 @min-[860px]:pb-10">
     <div class="flex items-center gap-2 border-t border-border pt-4">
-      <div class="flex min-w-0 flex-1 items-center @min-[560px]:flex-none">
-        <!-- Back keeps its laid-out width while hidden, so its room is known before it slides in. -->
-        <div class="flex shrink-0 overflow-hidden" style:width={`${backShownPx}px`} style:opacity={backReveal.current} inert={index === 0}>
-          <span bind:offsetWidth={backRoom} class="flex shrink-0 pr-2">
-            <button
-              type="button"
-              class="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent"
-              onclick={back}
-            >
-              <ArrowLeft size={16} strokeWidth={1.8} aria-hidden="true" />
-              {t("common.back")}
-            </button>
-          </span>
-        </div>
+      {#if index > 0}
         <button
-          use:onboardingPrimaryAction
           type="button"
-          class="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-md bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 @min-[560px]:flex-none"
-          style:padding-inline={`calc(1.25rem + ${(backRoom - backShownPx) / 2}px)`}
-          onclick={next}
+          class="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+          onclick={back}
         >
-          {t("vaultSetup.continue")}
-          <ArrowRight size={16} strokeWidth={1.8} aria-hidden="true" />
+          <ArrowLeft size={16} strokeWidth={1.8} aria-hidden="true" />
+          {t("common.back")}
         </button>
-      </div>
+      {/if}
+      <button
+        use:onboardingPrimaryAction
+        type="button"
+        class="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 @min-[560px]:px-9 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 @min-[560px]:flex-none"
+        onclick={next}
+      >
+        {t("vaultSetup.continue")}
+        <ArrowRight size={16} strokeWidth={1.8} aria-hidden="true" />
+      </button>
       {#if showStepDots}
         <span class="ml-auto flex shrink-0 gap-1.5 pl-3" aria-hidden="true">
           {#each WELCOME_STEPS as dot, dotIndex (dot)}

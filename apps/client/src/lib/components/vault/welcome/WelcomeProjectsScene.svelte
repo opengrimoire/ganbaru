@@ -639,15 +639,23 @@
     const scale = canvasRect.width / canvasW;
     const x = canvasRect.left + point.x * scale;
     const y = canvasRect.top + point.y * scale;
-    const under = (element: Element) => {
-      const rect = element.getBoundingClientRect();
-      return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
-    };
-    // An open cell menu belongs to its row, so the row stays hovered while the pointer is on the menu.
+    const inside = (rect: { left: number; right: number; top: number; bottom: number }) =>
+      x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+    const under = (element: Element) => inside(element.getBoundingClientRect());
+    // An open cell menu belongs to its row, so the row stays hovered while the pointer is on the menu or crosses the
+    // small gap from the cell to it, which a hand crosses too quickly for the row it passes over to react.
     const openMenu = statusMenuOpen ? statusMenu : cellMenu === "priority" ? priorityMenu : undefined;
-    if (cellMenu !== null && openMenu && under(openMenu)) {
-      const openCell = { status: statusCell, subtaskStatus: subtaskStatusCell, priority: priorityCell }[cellMenu];
-      return { row: openCell?.closest<HTMLElement>("[data-scene-row]")?.dataset.sceneRow ?? null, cell: null };
+    const openCell = cellMenu === null ? undefined : { status: statusCell, subtaskStatus: subtaskStatusCell, priority: priorityCell }[cellMenu];
+    if (openMenu && openCell) {
+      const menuRect = openMenu.getBoundingClientRect();
+      const cellRect = openCell.getBoundingClientRect();
+      const reach = {
+        left: Math.min(menuRect.left, cellRect.left),
+        right: Math.max(menuRect.right, cellRect.right),
+        top: Math.min(menuRect.top, cellRect.top),
+        bottom: Math.max(menuRect.bottom, cellRect.bottom),
+      };
+      if (inside(reach)) return { row: openCell.closest<HTMLElement>("[data-scene-row]")?.dataset.sceneRow ?? null, cell: null };
     }
     if (!under(listViewport)) return NO_LIST_HOVER;
     for (const cover of canvas.querySelectorAll("[data-scene-cover]")) {

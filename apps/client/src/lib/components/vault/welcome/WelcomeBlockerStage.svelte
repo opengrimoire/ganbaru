@@ -1,9 +1,9 @@
 <script lang="ts" module>
   /** Canvas bounds of the distraction blocker's welcome scenes, in logical pixels. */
   export const BLOCKER_SCENE_MIN_WIDTH = 300;
-  export const BLOCKER_SCENE_MAX_WIDTH = 760;
+  export const BLOCKER_SCENE_MAX_WIDTH = 920;
   export const BLOCKER_SCENE_MIN_HEIGHT = 400;
-  export const BLOCKER_SCENE_MAX_HEIGHT = 500;
+  export const BLOCKER_SCENE_MAX_HEIGHT = 600;
 </script>
 
 <script lang="ts">

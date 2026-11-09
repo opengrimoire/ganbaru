@@ -3,9 +3,9 @@
 
   /** Canvas geometry in logical pixels: a width and a height the room chooses between these bounds. */
   const MIN_CANVAS_W = BUILD_PLATFORM_PROFILE.shell === "mobile" ? 360 : 480;
-  const MAX_CANVAS_W = 760;
+  const MAX_CANVAS_W = 920;
   const MIN_CANVAS_H = 470;
-  const MAX_CANVAS_H = 540;
+  const MAX_CANVAS_H = 650;
   /** The bezel around the canvas, matching the other welcome scenes (`p-1.5`). */
   const BEZEL = 6;
 

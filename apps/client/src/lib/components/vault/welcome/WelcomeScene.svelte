@@ -52,7 +52,7 @@
   const SCENE_MARGIN_Y = 16;
   /** Below this scale the drawing stops reading as the app; above it, it starts to look like a poster. */
   const MIN_ZOOM = 0.55;
-  const MAX_ZOOM = 1.45;
+  const MAX_ZOOM = 1.2;
   const START_DELAY_MS = 350;
   /** A longer gap between frames means the page was hidden, so the scene resumes instead of skipping ahead. */
   const MAX_FRAME_MS = 64;

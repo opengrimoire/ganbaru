@@ -12,9 +12,9 @@
    * keeps two playlist cards in view under the review's player on a phone's builder.
    */
   const MIN_CANVAS_W = 360;
-  const MAX_CANVAS_W = 760;
+  const MAX_CANVAS_W = 920;
   const MIN_CANVAS_H = 470;
-  const MAX_CANVAS_H = 540;
+  const MAX_CANVAS_H = 650;
   /** The bezel around the canvas, matching the other welcome scenes (`p-1.5`). */
   const BEZEL = 6;
 

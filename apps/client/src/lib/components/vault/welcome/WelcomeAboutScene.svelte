@@ -1,9 +1,9 @@
 <script lang="ts" module>
   /** Canvas geometry in logical pixels: a width and a height the room chooses between these bounds. */
   const MIN_CANVAS_W = 300;
-  const MAX_CANVAS_W = 760;
+  const MAX_CANVAS_W = 920;
   const MIN_CANVAS_H = 360;
-  const MAX_CANVAS_H = 440;
+  const MAX_CANVAS_H = 530;
 
   export const ABOUT_SCENE_MIN_WIDTH = MIN_CANVAS_W;
   export const ABOUT_SCENE_MAX_WIDTH = MAX_CANVAS_W;

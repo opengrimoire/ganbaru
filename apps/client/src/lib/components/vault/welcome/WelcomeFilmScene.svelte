@@ -15,7 +15,7 @@
    * the room between these bounds, so a wide window gets wider day columns.
    */
   const MIN_CANVAS_W = 360;
-  const MAX_CANVAS_W = 628;
+  const MAX_CANVAS_W = 760;
   /** The title bar on desktop, or the phone's top bar, tall enough for its label. */
   const TOP_BAR_H = BUILD_PLATFORM_PROFILE.shell === "mobile" ? 48 : 36;
   const HEADER_H = 40;
@@ -33,7 +33,7 @@
    * drawing's width is already at its smallest and only more hours can fill the height.
    */
   const MIN_VIEW_MINUTES = 14 * 60 - VIEW_START;
-  const MAX_VIEW_MINUTES = 570;
+  const MAX_VIEW_MINUTES = 690;
   const GUTTER_W = GUTTER_WIDTH_PER_TIMEZONE;
 
   /** The bezel around the canvas, matching the drawn phones of the Android access guides (`p-1.5`). */

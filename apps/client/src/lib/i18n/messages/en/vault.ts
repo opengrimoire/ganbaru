@@ -71,8 +71,8 @@ export const vaultSetup = {
     },
   },
   tasks: {
-    headline: "Plan your tasks in seconds",
-    body: "Add tasks to a project and set their status, priority, and dates right from the table.",
+    headline: "Organize your work in projects",
+    body: "Split a big goal into small tasks and follow each one from start to finish.",
     sceneDescription:
       "A short animation of the Novel project's List view. The task Draft chapter 2 is typed into the bottom of the list and added, then its status is set to In progress and its priority to High from their cells in the table.",
   },

@@ -132,10 +132,11 @@
   });
 </script>
 
-<figure class={cn("relative min-h-0", className)}>
+<figure class={cn("relative isolate min-h-0", className)}>
   <!--
     The drawing sits out of the flow so its zoom never changes the room it is measured against. It ignores the real
-    pointer, so only the scene's own pointer hovers what it draws.
+    pointer, so only the scene's own pointer hovers what it draws. The figure isolates its stacking, so the scene's own
+    layers, such as its pointer, stay under the screen's dialogs.
   -->
   <div class="pointer-events-none absolute inset-0" bind:clientWidth={roomWidth} bind:clientHeight={roomHeight} aria-hidden="true">
     {#if shown}

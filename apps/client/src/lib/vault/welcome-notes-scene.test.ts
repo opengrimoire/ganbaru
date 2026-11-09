@@ -20,6 +20,7 @@ import {
   NOTES_STILL,
   NOTES_VIEW_FADE_MS,
   notesBoardActive,
+  notesBoardScroll,
   notesBoardShown,
   notesHeadingAdded,
   notesHeadingCaretOn,
@@ -73,7 +74,7 @@ describe("welcome notes scene", () => {
 
   it("keeps every fraction between 0 and 1", () => {
     for (const elapsed of moments()) {
-      const values = [notesPageScroll(elapsed), notesBoardShown(elapsed), ...Object.values(notesTouches(elapsed))];
+      const values = [notesPageScroll(elapsed), notesBoardShown(elapsed), notesBoardScroll(elapsed), ...Object.values(notesTouches(elapsed))];
       for (const value of values) {
         expect(value).toBeGreaterThanOrEqual(0);
         expect(value).toBeLessThanOrEqual(1);
@@ -208,6 +209,14 @@ describe("welcome notes scene", () => {
     expect(notesBoardActive(B.boardTap)).toBe(true);
     expect(notesBoardShown(B.boardTap + NOTES_VIEW_FADE_MS / 2)).toBeGreaterThan(0);
     expect(notesBoardShown(B.boardTap + NOTES_VIEW_FADE_MS)).toBe(1);
+  });
+
+  it("scrolls the board sideways only after it has fully faded in, and rests on the new row's column", () => {
+    expect(B.boardScrollStart).toBeGreaterThanOrEqual(B.boardTap + NOTES_VIEW_FADE_MS);
+    expect(notesBoardScroll(B.boardScrollStart)).toBe(0);
+    expect(notesBoardScroll((B.boardScrollStart + B.boardScrollEnd) / 2)).toBeGreaterThan(0);
+    expect(notesBoardScroll(B.boardScrollEnd)).toBe(1);
+    expect(notesBoardScroll(NOTES_STILL)).toBe(1);
   });
 
   it("shows the board with the new row's card in its role, the heading, the paragraph, and the callout written, and every menu closed in its still frame", () => {

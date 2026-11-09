@@ -4,7 +4,7 @@
  * space is typed. The heading is typed, Enter starts a paragraph, and Enter after it starts a new line, where a slash
  * and a short query narrow the slash menu to Callout, which Enter accepts, and the callout is filled in. The page then
  * scrolls to its Cast database, where a row is added to the table, named, and given a role from its cell, and the
- * database switches to its Board view, with a column for each role.
+ * database switches to its Board view, with a column for each role, which scrolls sideways to the new row's column.
  */
 
 import type { NotesBlockType, NotesColor } from "$lib/notes/types";
@@ -85,9 +85,14 @@ export const NOTES_BEATS = {
   /** A tap on the new row's Role cell opens its options, and Ally is picked. */
   roleTap: 12000,
   rolePick: 12900,
-  /** A tap on the Board tab shows the database as a board with a column for each role. */
+  /**
+   * A tap on the Board tab shows the database as a board with a column for each role, which scrolls sideways to the
+   * column of the new row's role, as the board's columns keep their width rather than shrinking to fit.
+   */
   boardTap: 13600,
-  end: 14800,
+  boardScrollStart: 14300,
+  boardScrollEnd: 15000,
+  end: 16200,
 } as const;
 
 const B = NOTES_BEATS;
@@ -240,6 +245,11 @@ export function notesBoardActive(elapsed: number): boolean {
 /** How far the board has faded in over the table, from 0 to 1. */
 export function notesBoardShown(elapsed: number): number {
   return filmSpan(elapsed, B.boardTap, B.boardTap + NOTES_VIEW_FADE_MS);
+}
+
+/** How far the board has scrolled sideways to the new row's column, from 0 to 1. */
+export function notesBoardScroll(elapsed: number): number {
+  return easeInOutCubic(filmSpan(elapsed, B.boardScrollStart, B.boardScrollEnd));
 }
 
 /** The scene's touches, each from 0 to 1 as it shows. */

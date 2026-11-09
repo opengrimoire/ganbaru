@@ -75,6 +75,7 @@
     NOTES_ROLE_COLORS,
     NOTES_ROLE_ORDER,
     notesBoardActive,
+    notesBoardScroll,
     notesBoardShown,
     notesCalloutAdded,
     notesHeadingAdded,
@@ -106,9 +107,10 @@
   /**
    * One frame of the welcome scene on Notes, drawn with the app's own surfaces: on the Novel project's Characters page,
    * the Markdown shortcut for a heading turns an empty line into one, a paragraph is typed below it, a slash on the next
-   * line opens the slash menu, which narrows to Callout as a query is typed, and the accepted callout is filled in. The page then scrolls to its Cast database, where a row is
-   * added to the table, named, and given a role from its cell, and the database switches to its Board view. Every style
-   * is a function of `elapsed`, with no CSS transitions.
+   * line opens the slash menu, which narrows to Callout as a query is typed, and the accepted callout is filled in. The
+   * page then scrolls to its Cast database, where a row is added to the table, named, and given a role from its cell, and
+   * the database switches to its Board view, which scrolls sideways to the new row's column. Every style is a function of
+   * `elapsed`, with no CSS transitions.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -200,6 +202,7 @@
   const newRole = $derived(notesNewRole(elapsed));
   const boardActive = $derived(notesBoardActive(elapsed));
   const boardShown = $derived(notesBoardShown(elapsed));
+  const boardScroll = $derived(notesBoardScroll(elapsed));
   const touches = $derived(notesTouches(elapsed));
 
   /** The database's rows: the cast it starts with, then the added row with the role it has so far. */
@@ -221,6 +224,9 @@
   let slashAnchor = $state<HTMLSpanElement>();
   let slashMenu = $state<HTMLDivElement>();
   let slashScroll = $state<HTMLDivElement>();
+  let boardViewport = $state<HTMLDivElement>();
+  let boardTrack = $state<HTMLDivElement>();
+  let boardColumns = $state<Partial<Record<NotesSceneRole, HTMLDivElement>>>({});
 
   /** A box in the logical pixels of the element it is measured against. */
   interface Box {
@@ -241,6 +247,8 @@
    * is in, measured as its contents change.
    */
   let slashLayout = $state<{ trigger: Box; chrome: number; list: number; rem: number } | null>(null);
+  /** The board's visible width, the width of all its columns, and the new row's column within them, measured unscrolled. */
+  let boardLayout = $state<{ viewport: number; content: number; left: number; right: number } | null>(null);
 
   $effect(() => {
     const bump = () => {
@@ -272,6 +280,15 @@
     if (canvas && roleCell && roleMenu) {
       menuLayout = { cell: relBox(roleCell, canvas), width: roleMenu.offsetWidth, height: roleMenu.offsetHeight };
     }
+    const newColumn = boardColumns[NOTES_NEW_ROLE];
+    if (boardViewport && boardTrack && newColumn) {
+      boardLayout = {
+        viewport: boardViewport.clientWidth,
+        content: boardTrack.scrollWidth,
+        left: newColumn.offsetLeft,
+        right: newColumn.offsetLeft + newColumn.offsetWidth,
+      };
+    }
     if (canvas && slashAnchor && slashMenu && slashScroll) {
       slashLayout = {
         trigger: relBox(slashAnchor, canvas),
@@ -301,6 +318,17 @@
     if (!pageLayout) return 0;
     const target = Math.max(0, pageLayout.bottom + SCROLL_PAD_PX - pageLayout.viewport);
     return Math.min(target, Math.max(0, pageLayout.top - SCROLL_PAD_PX)) * scroll;
+  });
+
+  /**
+   * How far the board has scrolled sideways: enough to show the new row's column in full, or to its start on a phone,
+   * where a swipe settles on a column, but never past the last column.
+   */
+  const boardScrollPx = $derived.by(() => {
+    if (!boardLayout) return 0;
+    const { viewport, content, left, right } = boardLayout;
+    const target = mobileShell ? left : Math.max(0, right - viewport);
+    return Math.min(target, Math.max(0, content - viewport)) * boardScroll;
   });
 
   /** The open role menu's place, below its cell when it fits there and above it otherwise. */
@@ -662,14 +690,19 @@
                   {#if !rowAdded}<div class="min-h-(--collection-table-row-height)" aria-hidden="true"></div>{/if}
                 </div>
 
-                <!-- The Board view, with a column for each role. -->
+                <!-- The Board view, with a column for each role, scrolled sideways as the board scrolls past the columns that do not fit. -->
                 <div
-                  class="relative flex min-w-0 gap-3 py-2 [grid-area:1/1]"
+                  bind:this={boardViewport}
+                  class="min-w-0 overflow-hidden @container [grid-area:1/1]"
                   style:visibility={boardShown <= 0 ? "hidden" : undefined}
                   style:opacity={boardShown > 0 && boardShown < 1 ? boardShown : undefined}
                 >
+                  <div bind:this={boardTrack} class="relative flex min-w-0 gap-3 py-2" style:transform={boardScrollPx > 0 ? `translateX(${-boardScrollPx}px)` : undefined}>
                   {#each columns as column (column.role)}
-                    <div class="flex min-h-56 min-w-0 max-w-72 flex-1 flex-col rounded-lg border border-transparent bg-muted/20 p-1">
+                    <div
+                      bind:this={boardColumns[column.role]}
+                      class="scene-board-column flex min-h-56 shrink-0 flex-col rounded-lg border border-transparent bg-muted/20 p-1"
+                    >
                       <div class="flex min-h-10 min-w-0 items-center gap-2 px-2">
                         <span class="min-w-0 flex-1">{@render badge(column.role)}</span>
                         <span class="text-[0.8rem] text-muted-foreground tabular-nums">{formatNumber(localization.locale, column.cards.length)}</span>
@@ -695,6 +728,7 @@
                       </div>
                     </div>
                   {/each}
+                  </div>
                 </div>
               </div>
             </div>
@@ -770,6 +804,12 @@
 </div>
 
 <style>
+  /* A board column keeps its width, as the board sizes it, so columns that do not fit scroll rather than shrink. */
+  .scene-board-column {
+    width: min(18rem, calc(100cqw - 0.5rem));
+    max-height: 36rem;
+  }
+
   /* The callout's row inside its background, as the editor draws a callout block. */
   .notes-callout-surface {
     min-height: 2.25rem;

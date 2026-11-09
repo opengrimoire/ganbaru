@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { WELCOME_TOUCH_MARK_CLASS } from "./touch-mark";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
   import Menu from "@lucide/svelte/icons/menu";
@@ -73,7 +72,7 @@
 {#snippet touch(shown: number)}
   {#if shown > 0}
     <span
-      class="pointer-events-none absolute top-1/2 left-1/2 size-5 -translate-1/2 {WELCOME_TOUCH_MARK_CLASS}"
+      class="pointer-events-none absolute top-1/2 left-1/2 size-5 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
       style:opacity={shown}
     ></span>
   {/if}

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { WELCOME_TOUCH_MARK_CLASS } from "./touch-mark";
   import { untrack } from "svelte";
   import { WELCOME_CURSOR_SIZE_PX, welcomeCursorFrame, type WelcomeCursorScript, type WelcomeCursorStop } from "$lib/vault/welcome-cursor";
 
@@ -83,7 +82,7 @@
   {#if point && frame.shown > 0}
     {#if frame.pressed > 0}
       <span
-        class="absolute -translate-1/2 {WELCOME_TOUCH_MARK_CLASS}"
+        class="absolute -translate-1/2 rounded-full bg-foreground/15 ring-1 ring-foreground/30"
         style:left={`${point.x}px`}
         style:top={`${point.y}px`}
         style:width={`${size}px`}

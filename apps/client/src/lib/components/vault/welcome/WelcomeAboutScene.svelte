@@ -41,6 +41,7 @@
     aboutStarred,
   } from "$lib/vault/welcome-about-scene";
   import { WELCOME_CURSOR_BROWSER_SIZE_PX, welcomeCursorOn } from "$lib/vault/welcome-cursor";
+  import { filmPressTransform } from "$lib/vault/welcome-film";
   import WelcomeCursor from "./WelcomeCursor.svelte";
 
   /**
@@ -79,8 +80,6 @@
   /** How far the page rises as it appears, and how far each row rises as it comes in. */
   const PAGE_RISE = 10;
   const ROW_RISE = 4;
-  /** How far the Star button sinks as it is pressed. */
-  const PRESS_SCALE = 0.06;
   /** How much the star grows at the peak of its pop. */
   const POP_GROWTH = 0.5;
   /** A star's gold, the same in every theme. */
@@ -179,7 +178,7 @@
     </span>
     <span
       class={["flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5", starHovered ? "bg-foreground/8" : "bg-foreground/4"]}
-      style:transform={`scale(${1 - PRESS_SCALE * press})`}
+      style:transform={filmPressTransform(press)}
       data-cursor={ABOUT_CURSOR_TARGETS.star}
     >
       <span class="relative flex size-3.25 items-center justify-center">

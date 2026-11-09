@@ -1,5 +1,4 @@
 <script lang="ts" module>
-  import { WELCOME_TOUCH_MARK_CLASS } from "./touch-mark";
   import { calendarZoomGridMinutesForPercent, calendarZoomHourHeightForPercent } from "$lib/calendar/zoom-levels";
 
   /** The Calendar zoom the scene's day is drawn at, zoomed in from the default so the short drawn event reads tall. */
@@ -107,7 +106,7 @@
   import type { EventPanelAnchor } from "$lib/utils/responsive";
   import { pickSelectPopoverGeometry, type SelectPopoverRect } from "$lib/utils/select-popover-position";
   import type { WelcomeEventPanelPicker } from "$lib/vault/welcome-event-panel";
-  import { filmSpan, filmWorkday, type FilmSpan } from "$lib/vault/welcome-film";
+  import { filmPressTransform, filmSpan, filmWorkday, type FilmSpan } from "$lib/vault/welcome-film";
   import { MUSIC_PLAYLISTS, type MusicScenePlaylist } from "$lib/vault/welcome-music-scene";
   import {
     PROJECTS_BEATS,
@@ -867,7 +866,7 @@
 {#snippet touch(opacity: number, left: string, top: string)}
   {#if mobileShell && opacity > 0}
     <span
-      class="pointer-events-none absolute z-20 size-6 -translate-1/2 {WELCOME_TOUCH_MARK_CLASS}"
+      class="pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
       style:left
       style:top
       style:opacity
@@ -1004,7 +1003,10 @@
 
 {#snippet colorControl()}
   <div bind:this={colorTrigger} data-cursor="projects-color" class={cn("relative min-w-0", stackedRows ? "w-full" : "w-44")}>
-    <span class="flex h-7 w-full max-w-full items-center justify-between gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground dark:bg-transparent">
+    <span
+      class="flex h-7 w-full max-w-full items-center justify-between gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground dark:bg-transparent"
+      style:transform={filmPressTransform(touches.color)}
+    >
       <span class="flex min-w-0 items-center gap-2">
         <span class="h-3.5 w-3.5 shrink-0 rounded-[3px] border border-transparent" style:background-color={getEventColor(selectedColor, theme.current).bg}></span>
         <span class="truncate">{t("calendar.color.eventColorNumber", selectedColor + 1)}</span>
@@ -1352,7 +1354,7 @@
                 <!-- The press that draws the event, following its growing edge. -->
                 {#if mobileShell && pressOpacity > 0}
                   <span
-                    class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 {WELCOME_TOUCH_MARK_CLASS}"
+                    class="pointer-events-none absolute left-3/5 z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35"
                     style:top={`${y(PROJECTS_EVENT.start + pressMinutes)}px`}
                     style:opacity={pressOpacity}
                   ></span>
@@ -1589,6 +1591,7 @@
                 "relative flex min-h-8 items-center gap-1.5 rounded-md px-2 text-[0.8rem] font-medium",
                 dirty ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
               )}
+              style:transform={filmPressTransform(touches.save)}
             >
               <Save size={14} strokeWidth={1.75} />{t("projects.settings.save")}
               {@render touch(touches.save, "50%", "50%")}
@@ -1614,6 +1617,7 @@
             data-cursor={option === PROJECTS_COLOR ? "projects-color-option" : undefined}
             class={cn("calendar-color-swatch relative size-5.5 rounded-[3px]", selectedColor === option && "swatch-selected")}
             style:background-color={getEventColor(option, theme.current).bg}
+            style:transform={option === PROJECTS_COLOR ? filmPressTransform(touches.colorOption) : undefined}
           >
             {#if option === PROJECTS_COLOR}{@render touch(touches.colorOption, "50%", "50%")}{/if}
           </span>

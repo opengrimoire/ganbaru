@@ -79,6 +79,18 @@ export const FILM_BREAK_TINT_MAX = 0.5;
 export const FILM_TAP_MS = 260;
 const FILM_TAP_FADE_MS = 60;
 
+/** How far a tapped control sinks while the tap holds it, as a fraction of its size. */
+const FILM_PRESS_SCALE = 0.06;
+
+/**
+ * The transform that sinks a tapped control while a tap holds it, so the press shows even where its touch blends in.
+ * @param press How far the tap holds the control, from 0 to 1.
+ * @returns A CSS scale transform.
+ */
+export function filmPressTransform(press: number): string {
+  return `scale(${1 - FILM_PRESS_SCALE * press})`;
+}
+
 /** How long the paused notification takes to slide in, and to slide away once its Resume button is pressed. */
 const FILM_NOTIFICATION_IN_MS = 280;
 const FILM_NOTIFICATION_OUT_MS = 220;

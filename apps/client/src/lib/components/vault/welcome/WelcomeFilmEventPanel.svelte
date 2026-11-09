@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { WELCOME_TOUCH_MARK_CLASS } from "./touch-mark";
   import Ban from "@lucide/svelte/icons/ban";
   import Check from "@lucide/svelte/icons/check";
   import Bell from "@lucide/svelte/icons/bell";
@@ -64,6 +63,7 @@
     WelcomeEventPanelPicker,
     WelcomeEventPanelPickerRow,
   } from "$lib/vault/welcome-event-panel";
+  import { filmPressTransform } from "$lib/vault/welcome-film";
 
   /**
    * The event panel of the welcome scenes, drawn with the event panel's own classes: it opens on an event, where a
@@ -449,7 +449,7 @@
 {#snippet touch(opacity: number, position: string)}
   {#if mobileLayout && opacity > 0}
     <span
-      class={cn("pointer-events-none absolute z-20 size-6 -translate-1/2", WELCOME_TOUCH_MARK_CLASS, position)}
+      class={cn("pointer-events-none absolute z-20 size-6 -translate-1/2 rounded-full bg-foreground/20 ring-2 ring-foreground/35", position)}
       style:opacity
     ></span>
   {/if}
@@ -514,7 +514,10 @@
           </div>
           <div class="flex-1"></div>
           <div class="flex h-12 shrink-0 items-center pl-1 pr-3">
-            <span class="relative rounded-full bg-foreground px-6 py-2 text-[0.866667rem] font-medium text-background">
+            <span
+              class="relative rounded-full bg-foreground px-6 py-2 text-[0.866667rem] font-medium text-background"
+              style:transform={filmPressTransform(saveTouch)}
+            >
               {t("common.save")}
               {@render touch(saveTouch, "left-1/2 top-1/2")}
             </span>

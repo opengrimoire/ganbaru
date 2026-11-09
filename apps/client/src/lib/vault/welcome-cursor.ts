@@ -77,8 +77,11 @@ export const WELCOME_CURSOR_REST_MS = 260;
 /** The shortest travel a click allows when it has to wait for its control, so the pointer never jumps. */
 export const WELCOME_CURSOR_MIN_TRAVEL_MS = 200;
 
+/** The shortest rest a late click keeps on its control before the button goes down, so the press never lands mid-move. */
+export const WELCOME_CURSOR_MIN_REST_MS = 100;
+
 /** How long before a scroll ends the pointer may leave for the control it brings into view, chasing it as it settles. */
-export const WELCOME_CURSOR_SCROLL_OVERLAP_MS = 200;
+export const WELCOME_CURSOR_SCROLL_OVERLAP_MS = 350;
 
 /**
  * How long the pointer rests after its last move or click before it hides, when nothing needs it for a while, as a
@@ -118,10 +121,12 @@ export interface WelcomeCursorClickOptions {
 export function cursorClick(target: string, tap: number, options: WelcomeCursorClickOptions = {}): WelcomeCursorStop {
   const { anchor, glyph, rest = WELCOME_CURSOR_REST_MS, travel = WELCOME_CURSOR_TRAVEL_MS, after, busy, hides } = options;
   const pressStart = tap - FILM_TAP_MS;
-  const latestArrive = pressStart - rest;
-  // A late start eats into the rest before the travel, so the pointer still glides rather than jumps.
-  const depart = Math.min(Math.max(after ?? -Infinity, latestArrive - travel), pressStart - WELCOME_CURSOR_MIN_TRAVEL_MS);
-  const arrive = Math.min(pressStart, Math.max(latestArrive, depart + WELCOME_CURSOR_MIN_TRAVEL_MS));
+  // A late start shortens the rest before the travel, so the pointer still glides rather than darts.
+  const available = pressStart - (after ?? -Infinity);
+  const rested = Math.min(rest, Math.max(WELCOME_CURSOR_MIN_REST_MS, available - travel));
+  const travelled = Math.max(WELCOME_CURSOR_MIN_TRAVEL_MS, Math.min(travel, available - rested));
+  const arrive = Math.min(pressStart, Math.max(pressStart - rested, pressStart - available + travelled));
+  const depart = arrive - travelled;
   return { target, anchor, glyph, depart, arrive, press: { start: pressStart, end: tap }, busy, hides };
 }
 

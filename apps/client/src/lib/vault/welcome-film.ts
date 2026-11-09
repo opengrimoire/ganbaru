@@ -37,8 +37,8 @@ const FILM_OPENING_BEATS = {
   groupTap: 3350,
   projectPick: 4250,
   /** The title is typed, then a tap on Save saves the event and closes the panel. */
-  typeStart: 4850,
-  typeEnd: 6050,
+  typeStart: 5000,
+  typeEnd: 5950,
   createSaved: 6750,
   /** The current time reaches the session and Focus starts. */
   focusStart: 7550,

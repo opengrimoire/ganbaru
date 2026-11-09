@@ -4,6 +4,7 @@ import {
   cursorRest,
   WELCOME_CURSOR_FADE_MS,
   WELCOME_CURSOR_IDLE_MS,
+  WELCOME_CURSOR_MIN_REST_MS,
   WELCOME_CURSOR_MIN_TRAVEL_MS,
   WELCOME_CURSOR_REST_MS,
   WELCOME_CURSOR_TRAVEL_MS,
@@ -29,11 +30,18 @@ describe("welcome cursor", () => {
     expect(click.depart).toBe(click.arrive - WELCOME_CURSOR_TRAVEL_MS);
   });
 
-  it("waits for `after` before leaving, trading rest for a short glide before the button goes down", () => {
-    const late = cursorClick("save", 4000, { after: 3400 });
-    expect(late.depart).toBe(3400);
-    expect(late.arrive).toBe(late.depart + WELCOME_CURSOR_MIN_TRAVEL_MS);
-    expect(late.arrive).toBeLessThanOrEqual(late.press?.start ?? 0);
+  it("waits for `after` before leaving, shortening the rest before the glide when time is short", () => {
+    const pressStart = 4000 - FILM_TAP_MS;
+    const late = cursorClick("save", 4000, { after: 3200 });
+    expect(late.depart).toBe(3200);
+    expect(late.arrive).toBe(pressStart - WELCOME_CURSOR_MIN_REST_MS);
+    expect(late.arrive - late.depart).toBeGreaterThan(WELCOME_CURSOR_MIN_TRAVEL_MS);
+    const roomy = cursorClick("save", 4000, { after: pressStart - WELCOME_CURSOR_TRAVEL_MS - WELCOME_CURSOR_REST_MS / 2 });
+    expect(roomy.arrive - roomy.depart).toBe(WELCOME_CURSOR_TRAVEL_MS);
+    expect(pressStart - roomy.arrive).toBe(WELCOME_CURSOR_REST_MS / 2);
+    const cramped = cursorClick("save", 4000, { after: pressStart - WELCOME_CURSOR_MIN_TRAVEL_MS - 50 });
+    expect(cramped.depart).toBe(pressStart - WELCOME_CURSOR_MIN_TRAVEL_MS - 50);
+    expect(cramped.arrive - cramped.depart).toBe(WELCOME_CURSOR_MIN_TRAVEL_MS);
     const tooLate = cursorClick("save", 4000, { after: 3900 });
     expect(tooLate.arrive).toBe(4000 - FILM_TAP_MS);
     expect(tooLate.arrive - tooLate.depart).toBe(WELCOME_CURSOR_MIN_TRAVEL_MS);

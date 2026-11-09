@@ -120,7 +120,7 @@ export const MUSIC_BEATS = {
   groupTap: 9450,
   projectPick: 10550,
   /** The title is typed. */
-  typeStart: 11150,
+  typeStart: 11300,
   typeEnd: 12350,
   /** On the phone, a drag on the sheet's grabber takes it from its peek to its full height, every section closed. */
   sheetDragStart: 13100,

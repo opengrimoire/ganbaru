@@ -53,46 +53,46 @@ export const NOTES_BEATS = {
   /** A click on the empty line puts the caret there, and the heading shortcut is typed. */
   lineTap: 900,
   shortcutTypeStart: 1200,
-  shortcutTypeEnd: 1500,
+  shortcutTypeEnd: 1800,
   /** The space after the shortcut turns the line into a heading, whose text is typed, and Enter starts a paragraph. */
-  shortcutSpace: 1750,
-  headingTypeStart: 1950,
-  headingTypeEnd: 2600,
-  headingSubmit: 2900,
+  shortcutSpace: 2050,
+  headingTypeStart: 2250,
+  headingTypeEnd: 2900,
+  headingSubmit: 3200,
   /** The paragraph is typed, and Enter starts a new line. */
-  paragraphTypeStart: 3200,
-  paragraphTypeEnd: 5400,
-  paragraphSubmit: 5700,
+  paragraphTypeStart: 3500,
+  paragraphTypeEnd: 5700,
+  paragraphSubmit: 6000,
   /** A slash opens the slash menu on the new line, and a query narrows it to Callout. */
-  slashTyped: 6100,
-  queryTypeStart: 6500,
-  queryTypeEnd: 6800,
+  slashTyped: 6400,
+  queryTypeStart: 6800,
+  queryTypeEnd: 7100,
   /**
    * Callout is accepted, which turns the line into a callout: with Enter, as the menu completes its highlighted item from
    * the keyboard, or with a tap on a phone. The callout's text is then typed.
    */
-  pick: 7300,
-  calloutTypeStart: 7500,
-  calloutTypeEnd: 8600,
+  pick: 7600,
+  calloutTypeStart: 7800,
+  calloutTypeEnd: 8900,
   /** The page scrolls down to the database, keeping room below its table for the row the scene adds. */
-  scrollStart: 9100,
-  scrollEnd: 9800,
+  scrollStart: 9400,
+  scrollEnd: 10100,
   /** A tap on the table's New page row adds an empty row with its title focused, a name is typed, and Enter keeps it. */
-  newRowTap: 10300,
-  nameTypeStart: 10500,
-  nameTypeEnd: 11000,
-  nameSubmit: 11300,
+  newRowTap: 10600,
+  nameTypeStart: 10800,
+  nameTypeEnd: 11300,
+  nameSubmit: 11600,
   /** A tap on the new row's Role cell opens its options, and Ally is picked. */
-  roleTap: 12000,
-  rolePick: 12900,
+  roleTap: 12300,
+  rolePick: 13200,
   /**
    * A tap on the Board tab shows the database as a board with a column for each role, which scrolls sideways to the
    * column of the new row's role, as the board's columns keep their width rather than shrinking to fit.
    */
-  boardTap: 13600,
-  boardScrollStart: 14300,
-  boardScrollEnd: 15000,
-  end: 16200,
+  boardTap: 13900,
+  boardScrollStart: 14600,
+  boardScrollEnd: 15300,
+  end: 16500,
 } as const;
 
 const B = NOTES_BEATS;

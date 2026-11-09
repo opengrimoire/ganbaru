@@ -166,13 +166,23 @@ export const vaultSetup = {
   continue: "Continuar",
   title: "Elige dónde guardar tus datos",
   intro:
-    "Si vienes de una instalación anterior, importa tu carpeta de Ganbaru existente.",
+    "Todo lo que creas se guarda en una carpeta de esta computadora que puedes respaldar o mover, y puedes importar la carpeta de una instalación anterior.",
   developmentBuildWarning: (folderName: string) =>
     `Compilación de desarrollo: usa la carpeta ${folderName} predeterminada, o elige una copia de tu carpeta de producción. No apuntes dev a tus datos reales de producción.`,
   defaultLocation: "Carpeta predeterminada",
-  useDefaultFolder: "Usar la carpeta predeterminada",
-  changeFolder: "Cambiar carpeta",
-  importFolder: "Importar carpeta",
+  useDefaultFolder: "Continuar con la carpeta predeterminada",
+  changeFolder: "Elegir otra carpeta",
+  importFolder: "Importar una carpeta existente",
+  data: {
+    sceneDescription:
+      "Una breve animación de la carpeta de Ganbaru llenándose con carpetas para imágenes y archivos de proyectos, la base de datos que guarda tu calendario, tareas y notas, y el archivo que nombra la carpeta.",
+    entries: {
+      assets: "Imágenes y adjuntos",
+      projects: "Una carpeta de trabajo por proyecto",
+      database: "Calendario, tareas, notas y más",
+      marker: "Nombre y versión de la carpeta",
+    },
+  },
 } as const satisfies MessageShape<typeof enVaultSetup>;
 
 export const dataFolderError = {

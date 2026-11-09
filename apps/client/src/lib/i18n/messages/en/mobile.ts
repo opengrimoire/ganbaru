@@ -9,7 +9,7 @@ export const mobile = {
   contextSwitcher: (current: string) => `${current}, change`,
   vaultSetup: {
     title: "Set up your data",
-    intro: "Start with new data, restore a backup, or import a folder.",
+    intro: "Everything you create stays in this app's private storage on this phone, and you can also restore a backup or import a folder.",
     dataLocation: "Data location",
     startFromZero: "Start from zero",
     restoreBackupFile: "Restore backup file",

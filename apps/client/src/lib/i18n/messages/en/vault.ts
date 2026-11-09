@@ -158,13 +158,23 @@ export const vaultSetup = {
   continue: "Continue",
   title: "Choose where to store your data",
   intro:
-    "If you are coming from a previous installation, import your existing Ganbaru folder.",
+    "Everything you create stays in one folder on this computer that you can back up or move, and you can import the folder from a previous installation.",
   developmentBuildWarning: (folderName: string) =>
     `Development build: use the default ${folderName} folder, or choose a copy of your production folder. Do not point dev at your real production data.`,
   defaultLocation: "Default folder",
-  useDefaultFolder: "Use the default folder",
-  changeFolder: "Change folder",
-  importFolder: "Import folder",
+  useDefaultFolder: "Continue with the default folder",
+  changeFolder: "Choose another folder",
+  importFolder: "Import an existing folder",
+  data: {
+    sceneDescription:
+      "A short animation of the Ganbaru folder filling with folders for images and project files, the database that holds your calendar, tasks, and notes, and the file that names the folder.",
+    entries: {
+      assets: "Images and attachments",
+      projects: "A working folder per project",
+      database: "Calendar, tasks, notes, and more",
+      marker: "The folder's name and version",
+    },
+  },
 } as const;
 
 export const dataFolderError = {

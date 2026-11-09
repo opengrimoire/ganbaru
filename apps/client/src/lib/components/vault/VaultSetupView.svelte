@@ -1,12 +1,11 @@
 <script lang="ts">
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import FolderInput from "@lucide/svelte/icons/folder-input";
-  import Folder from "@lucide/svelte/icons/folder";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Minus from "@lucide/svelte/icons/minus";
   import Square from "@lucide/svelte/icons/square";
   import X from "@lucide/svelte/icons/x";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import WindowResizeHandles from "$lib/components/WindowResizeHandles.svelte";
@@ -27,9 +26,11 @@
     type VaultDefaultLocation,
     type VaultInfo,
   } from "$lib/vault/state";
-  import VaultSetupContent from "./VaultSetupContent.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import { ONBOARDING_SECONDARY_BUTTON_CLASS, ONBOARDING_SECONDARY_ROW_CLASS } from "$lib/vault/welcome-layout";
+  import { WELCOME_STEPS } from "$lib/vault/welcome-steps";
   import VaultWelcomeContent from "./VaultWelcomeContent.svelte";
-  import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
+  import WelcomeDataStep from "./welcome/WelcomeDataStep.svelte";
 
   let {
     initialError = null,
@@ -51,7 +52,8 @@
   let busy = $state<"default" | "change" | "import" | null>(null);
   let setupError = $state<SetupError | null>(null);
   let isMaximized = $state(true);
-  let welcomeComplete = $state(false);
+  /** A vault that failed to open at startup skips the welcome screens and lands on the data screen with the error. */
+  let step = $state(untrack(() => (initialError ? WELCOME_STEPS.length : 0)));
   const error = $derived(
     setupError ? formatVaultError(setupError.raw, setupError.action, t) : null,
   );
@@ -154,52 +156,49 @@
   }
 </script>
 
-{#snippet setupActions()}
-  <div class="grid gap-2">
+{#snippet dataStep()}
+  <WelcomeDataStep
+    headline={t("vaultSetup.title")}
+    body={t("vaultSetup.intro")}
+    location={defaultLocation?.path ?? fallbackDefaultPath}
+    locationLabel={t("vaultSetup.defaultLocation")}
+    developmentWarning={defaultLocation?.developmentBuild
+      ? t("vaultSetup.developmentBuildWarning", defaultLocation.folderName)
+      : null}
+  />
+{/snippet}
+
+{#snippet dataChoices()}
+  {#if error}
+    <Notice message={error} class="pb-1 text-sm" />
+  {/if}
+  <div class={ONBOARDING_SECONDARY_ROW_CLASS}>
     <button
-      use:onboardingPrimaryAction
       type="button"
-      onclick={() => void chooseVault("default")}
+      onclick={() => void chooseVault("change")}
       disabled={busy !== null}
-      class="flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+      class={ONBOARDING_SECONDARY_BUTTON_CLASS}
     >
-      {#if busy === "default"}
-        <LoaderCircle size={16} strokeWidth={2} class="animate-spin" />
+      {#if busy === "change"}
+        <LoaderCircle size={16} strokeWidth={2} class="shrink-0 animate-spin" aria-hidden="true" />
       {:else}
-        <Folder size={16} strokeWidth={1.8} />
+        <FolderOpen size={16} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
       {/if}
-      <span>{t("vaultSetup.useDefaultFolder")}</span>
+      <span class="truncate">{t("vaultSetup.changeFolder")}</span>
     </button>
-
-    <div class="grid gap-2 min-[560px]:grid-cols-2">
-      <button
-        type="button"
-        onclick={() => void chooseVault("change")}
-        disabled={busy !== null}
-        class="flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {#if busy === "change"}
-          <LoaderCircle size={16} strokeWidth={2} class="animate-spin" />
-        {:else}
-          <FolderOpen size={16} strokeWidth={1.8} />
-        {/if}
-        <span>{t("vaultSetup.changeFolder")}</span>
-      </button>
-
-      <button
-        type="button"
-        onclick={() => void chooseVault("import")}
-        disabled={busy !== null}
-        class="flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {#if busy === "import"}
-          <LoaderCircle size={16} strokeWidth={2} class="animate-spin" />
-        {:else}
-          <FolderInput size={16} strokeWidth={1.8} />
-        {/if}
-        <span>{t("vaultSetup.importFolder")}</span>
-      </button>
-    </div>
+    <button
+      type="button"
+      onclick={() => void chooseVault("import")}
+      disabled={busy !== null}
+      class={ONBOARDING_SECONDARY_BUTTON_CLASS}
+    >
+      {#if busy === "import"}
+        <LoaderCircle size={16} strokeWidth={2} class="shrink-0 animate-spin" aria-hidden="true" />
+      {:else}
+        <FolderInput size={16} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
+      {/if}
+      <span class="truncate">{t("vaultSetup.importFolder")}</span>
+    </button>
   </div>
 {/snippet}
 
@@ -241,19 +240,18 @@
     </header>
 
     <div class="min-h-0 flex-1 bg-background">
-      {#if !welcomeComplete}
-        <VaultWelcomeContent onContinue={() => { welcomeComplete = true; }} />
-      {:else}
-        <VaultSetupContent
-          intro={t("vaultSetup.intro")}
-          developmentWarning={defaultLocation?.developmentBuild
-            ? t("vaultSetup.developmentBuildWarning", defaultLocation.folderName)
-            : null}
-          location={defaultLocation?.path ?? fallbackDefaultPath}
-          actions={setupActions}
-          {error}
-        />
-      {/if}
+      <VaultWelcomeContent
+        bind:step
+        data={dataStep}
+        dataPrimary={{
+          label: t("vaultSetup.useDefaultFolder"),
+          onClick: () => void chooseVault("default"),
+          busy: busy === "default",
+          disabled: busy !== null,
+        }}
+        dataSecondary={dataChoices}
+        dataBackDisabled={busy !== null}
+      />
     </div>
   </div>
 

@@ -124,8 +124,11 @@
 </script>
 
 <figure class={cn("relative min-h-0", className)}>
-  <!-- The drawing sits out of the flow so its zoom never changes the room it is measured against. -->
-  <div class="absolute inset-0" bind:clientWidth={roomWidth} bind:clientHeight={roomHeight} aria-hidden="true">
+  <!--
+    The drawing sits out of the flow so its zoom never changes the room it is measured against. It ignores the real
+    pointer, so only the scene's own pointer hovers what it draws.
+  -->
+  <div class="pointer-events-none absolute inset-0" bind:clientWidth={roomWidth} bind:clientHeight={roomHeight} aria-hidden="true">
     {#if shown}
       <div class="flex h-full items-center justify-center">
         <div style:width={`${sceneWidth * zoom}px`} style:height={`${sceneHeight * zoom}px`}>

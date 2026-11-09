@@ -1,6 +1,12 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { WELCOME_CURSOR_SIZE_PX, welcomeCursorFrame, type WelcomeCursorScript, type WelcomeCursorStop } from "$lib/vault/welcome-cursor";
+  import {
+    WELCOME_CURSOR_SIZE_PX,
+    welcomeCursorFrame,
+    type WelcomeCursorPoint,
+    type WelcomeCursorScript,
+    type WelcomeCursorStop,
+  } from "$lib/vault/welcome-cursor";
 
   /**
    * The desktop welcome scenes' mouse pointer. It covers the scene's drawing, finds each place of `script` by the
@@ -15,6 +21,7 @@
     elapsed,
     width,
     size = WELCOME_CURSOR_SIZE_PX,
+    position = $bindable(null),
   }: {
     script: WelcomeCursorScript;
     elapsed: number;
@@ -22,18 +29,16 @@
     width: number;
     /** The pointer's drawn size in logical pixels. */
     size?: number;
+    /** Where the pointer is, or null before it first finds its place, so a scene can draw what it hovers. */
+    position?: Point | null;
   } = $props();
 
-  interface Point {
-    x: number;
-    y: number;
-  }
+  type Point = WelcomeCursorPoint;
 
   /** The point of each shape that clicks, in its 24 unit view box. */
   const HOTSPOTS = { arrow: [5, 2], pointer: [9.5, 1.5], text: [12, 12] } as const;
 
   let layer: HTMLDivElement | undefined = $state();
-  let point: Point | null = $state(null);
   const frame = $derived(welcomeCursorFrame(script, elapsed));
 
   /** Where the pointer left from, and the place it is heading to, so a path keeps its start once that element goes. */
@@ -60,7 +65,7 @@
     if (!layer || !root) return;
     if (heading !== to) {
       heading = to;
-      origin = untrack(() => point);
+      origin = untrack(() => position);
       landedWidth = null;
     }
     // A landed pointer stays put, as a mouse does while the drawing changes or scrolls under it.
@@ -70,7 +75,7 @@
     const target = locate(to, root, layerRect, width / layerRect.width);
     if (target === null) return;
     const moving = origin !== null && !to.follow && progress < 1;
-    point = moving && origin ? { x: origin.x + (target.x - origin.x) * progress, y: origin.y + (target.y - origin.y) * progress } : target;
+    position = moving && origin ? { x: origin.x + (target.x - origin.x) * progress, y: origin.y + (target.y - origin.y) * progress } : target;
     if (!moving) landedWidth = width;
   });
 
@@ -79,12 +84,12 @@
 </script>
 
 <div bind:this={layer} class="pointer-events-none absolute inset-0 z-100 overflow-hidden" aria-hidden="true">
-  {#if point && frame.shown > 0}
+  {#if position && frame.shown > 0}
     {#if frame.pressed > 0}
       <span
         class="absolute -translate-1/2 rounded-full bg-foreground/15 ring-1 ring-foreground/30"
-        style:left={`${point.x}px`}
-        style:top={`${point.y}px`}
+        style:left={`${position.x}px`}
+        style:top={`${position.y}px`}
         style:width={`${size}px`}
         style:height={`${size}px`}
         style:opacity={frame.pressed * frame.shown}
@@ -95,8 +100,8 @@
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      style:left={`${point.x - (hotspot[0] * size) / 24}px`}
-      style:top={`${point.y - (hotspot[1] * size) / 24}px`}
+      style:left={`${position.x - (hotspot[0] * size) / 24}px`}
+      style:top={`${position.y - (hotspot[1] * size) / 24}px`}
       style:opacity={frame.shown < 1 ? frame.shown : undefined}
       style:transform={`scale(${scale})`}
       style:transform-origin={`${(hotspot[0] * 100) / 24}% ${(hotspot[1] * 100) / 24}%`}

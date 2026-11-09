@@ -49,6 +49,12 @@ export interface WelcomeCursorStop {
 /** The places a scene's pointer goes, in order. The first is where it rests as the scene starts. */
 export type WelcomeCursorScript = readonly WelcomeCursorStop[];
 
+/** Where the pointer's hotspot is, in the drawing's logical pixels from its top left corner. */
+export interface WelcomeCursorPoint {
+  x: number;
+  y: number;
+}
+
 /** The pointer at one moment: travelling from `from` to `to` by `progress`, with its shape and how far it is held. */
 export interface WelcomeCursorFrame {
   from: WelcomeCursorStop | null;

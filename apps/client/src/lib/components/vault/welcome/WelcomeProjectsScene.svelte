@@ -25,6 +25,7 @@
 </script>
 
 <script lang="ts">
+  import { untrack } from "svelte";
   import ArrowUpDown from "@lucide/svelte/icons/arrow-up-down";
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
@@ -68,7 +69,7 @@
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import WelcomeFilmEventPanel from "$lib/components/vault/welcome/WelcomeFilmEventPanel.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
-  import { welcomeCursorHovered } from "$lib/vault/welcome-cursor";
+  import { welcomeCursorFrame, welcomeCursorHovered, type WelcomeCursorPoint } from "$lib/vault/welcome-cursor";
   import { CALENDAR_SCROLLBAR_TRACK_PX, calendarScrollbarThumb } from "$lib/calendar/timeline-scroll";
   import { GUTTER_WIDTH_PER_TIMEZONE } from "$lib/calendar/timezone-utils";
   import { FALLBACK_COLOR_INDEX, type EventColor } from "$lib/calendar/types";
@@ -385,20 +386,28 @@
   /** The part's desktop pointer, and the place it rests on, as a hover sees it. A phone has touches and no hover. */
   const cursorScript = $derived(part === "tasks" ? TASKS_CURSOR : PROJECTS_CURSOR);
   const cursorHovered = $derived(mobileShell ? null : welcomeCursorHovered(cursorScript, elapsed));
-  /** Whether the pointer is on the added task's row, which shows its Open button on desktop. */
-  const addedRowHovered = $derived(
-    cursorHovered === "tasks-expand" || cursorHovered === TASKS_CELL_TARGETS.status || cursorHovered === TASKS_CELL_TARGETS.priority,
-  );
-  /** Whether the pointer is on the first subtask's row, which shows its Open button on desktop. */
-  const subtaskRowHovered = $derived(cursorHovered === TASKS_CELL_TARGETS.subtaskStatus);
+  const cursorAway = $derived(welcomeCursorFrame(cursorScript, elapsed).away);
+  /** The list row and cell a pointer hovers, by their `data-scene-row` and `data-scene-cell` names. */
+  interface ListHover {
+    row: string | null;
+    cell: string | null;
+  }
+  const NO_LIST_HOVER: ListHover = { row: null, cell: null };
+  /** Where the desktop pointer is drawn, as it reports it. */
+  let cursorPoint = $state<WelcomeCursorPoint | null>(null);
+  /**
+   * The list row and cell under the desktop pointer, by their `data-scene-row` and `data-scene-cell` names, found from
+   * where the pointer is drawn so every row it rests on or crosses hovers as it would under a real one.
+   */
+  let listHover = $state<ListHover>(NO_LIST_HOVER);
   /** Whether the status menu is open, for the added task or for its first subtask. */
   const statusMenuOpen = $derived(cellMenu === "status" || cellMenu === "subtaskStatus");
   /**
-   * Whether a task row shows its chevron: always on touch, as rows without hover do, and with a pointer only on the
-   * added row while it is hovered or once it is expanded.
+   * Whether a top-level task row shows its chevron: always on touch, as rows without hover do, and with a pointer while
+   * the row is hovered or, for the added task, once it is expanded.
    */
-  function chevronShown(added: boolean): boolean {
-    return mobileShell || (added && (addedRowHovered || taskExpanded));
+  function chevronShown(rowKey: string, added: boolean): boolean {
+    return mobileShell || listHover.row === rowKey || (added && taskExpanded);
   }
   const settingsShown = $derived(projectsSettingsShown(defaultsElapsed));
   const settingsOpen = $derived(projectsSettingsOpen(defaultsElapsed));
@@ -608,6 +617,41 @@
   const listTransform = $derived(
     listScrollPx > 0 || listScrollYPx > 0 ? `translate(${-listScrollPx}px, ${-listScrollYPx}px)` : undefined,
   );
+
+  /** Follow the desktop pointer across the list as it moves and as the list scrolls or changes under it. */
+  $effect(() => {
+    void elapsed;
+    void listTransform;
+    void layoutTick;
+    const next = mobileShell ? NO_LIST_HOVER : listHoverAt(cursorPoint);
+    const current = untrack(() => listHover);
+    if (next.row !== current.row || next.cell !== current.cell) listHover = next;
+  });
+
+  /**
+   * The list row and cell under `point`, as a real pointer hovers them: nothing while the pointer has hidden, while a
+   * cell menu is open, as the list suppresses hover then, or while something drawn over the list covers the point.
+   */
+  function listHoverAt(point: WelcomeCursorPoint | null): ListHover {
+    if (!point || cursorAway || cellMenu !== null || !canvas || !listViewport || canvasW <= 0) return NO_LIST_HOVER;
+    const canvasRect = canvas.getBoundingClientRect();
+    if (canvasRect.width === 0) return NO_LIST_HOVER;
+    const scale = canvasRect.width / canvasW;
+    const x = canvasRect.left + point.x * scale;
+    const y = canvasRect.top + point.y * scale;
+    const under = (element: Element) => {
+      const rect = element.getBoundingClientRect();
+      return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+    };
+    if (!under(listViewport)) return NO_LIST_HOVER;
+    for (const cover of canvas.querySelectorAll("[data-scene-cover]")) {
+      if (under(cover) && getComputedStyle(cover).visibility !== "hidden") return NO_LIST_HOVER;
+    }
+    const row = Array.from(listViewport.querySelectorAll<HTMLElement>("[data-scene-row]")).find(under);
+    if (!row) return NO_LIST_HOVER;
+    const cell = Array.from(row.querySelectorAll<HTMLElement>("[data-scene-cell]")).find(under);
+    return { row: row.dataset.sceneRow ?? null, cell: cell?.dataset.sceneCell ?? null };
+  }
 
   /** The open cell menu's place, below its cell when it fits there and above it otherwise, as the list's cell menus place themselves. */
   const cellMenuPlace = $derived.by(() => {
@@ -899,10 +943,20 @@
     return phase === "short-break" ? t("projects.settings.shortBreakPlaylist") : t("projects.settings.longBreakPlaylist");
   }
 
-  /** The highlight a cell takes as the pointer rests on it and while its menu is open, or from its touch on a phone. */
-  function cellHighlight(cell: TasksSceneCell): string | undefined {
-    const highlighted = mobileShell ? tasksCellHighlighted(tasksElapsed, cell) : cursorHovered === TASKS_CELL_TARGETS[cell] || cellMenu === cell;
-    return highlighted ? "linear-gradient(var(--collection-highlight), var(--collection-highlight))" : undefined;
+  /**
+   * The background of the list cell named `name`: highlighted while the pointer is on it and while the menu of
+   * `sceneCell`, the cell the scene taps if it is one, is open, or from that cell's touch on a phone.
+   */
+  function cellBackground(name: string, sceneCell: TasksSceneCell | null): string {
+    const highlighted = mobileShell
+      ? sceneCell !== null && tasksCellHighlighted(tasksElapsed, sceneCell)
+      : listHover.cell === name || (sceneCell !== null && cellMenu === sceneCell);
+    return `background-image: ${highlighted ? "linear-gradient(var(--collection-highlight), var(--collection-highlight))" : "none"}`;
+  }
+
+  /** The style of the list row named `name`, which takes the row highlight while the desktop pointer is on it. */
+  function rowStyle(name: string): string | undefined {
+    return listHover.row === name ? "--collection-row-hover: var(--collection-row-highlight);" : undefined;
   }
 
   /**
@@ -944,21 +998,23 @@
   status the scene taps.
 -->
 {#snippet taskRow(task: ProjectsSceneTaskEntry, added: boolean, depth: number, firstSubtask: boolean)}
+  {@const rowName = `task:${task.key}`}
   <div class="list-divider">
-    <CollectionRow template={gridTemplate} minWidth={gridMinWidth} {gutter} divider={false}>
+    <CollectionRow template={gridTemplate} minWidth={gridMinWidth} {gutter} divider={false} data-scene-row={rowName} style={rowStyle(rowName)}>
       <div class="flex h-full items-center justify-center">{#if mobileShell}{@render checkbox()}{/if}</div>
       <div class="flex h-full items-center justify-center">
-        <!-- The added row keeps its toggle in place while hidden, so the pointer can find it before the row is hovered. -->
-        {#if depth === 0 && (added || mobileShell)}
+        <!-- A top-level row keeps its toggle in place while hidden, so the pointer can find it before the row is hovered. -->
+        {#if depth === 0}
           <span
             data-cursor={added ? "tasks-expand" : undefined}
+            data-scene-cell={`${rowName}:expand`}
             class={cn(
               "relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground",
-              added && cursorHovered === "tasks-expand" && "bg-accent text-foreground",
+              !mobileShell && listHover.cell === `${rowName}:expand` && "bg-accent text-foreground",
             )}
           >
             <ChevronRight
-              class={cn("size-3.5", added && taskExpanded && "rotate-90", !chevronShown(added) && "invisible")}
+              class={cn("size-3.5", added && taskExpanded && "rotate-90", !chevronShown(rowName, added) && "invisible")}
               strokeWidth={1.75}
               aria-hidden="true"
             />
@@ -966,12 +1022,12 @@
           </span>
         {/if}
       </div>
-      <CollectionCell>
+      <CollectionCell data-scene-cell={`${rowName}:name`} style={cellBackground(`${rowName}:name`, null)}>
         <span class="flex h-7 min-w-0 items-center" style:padding-left={depth > 0 ? collectionRowIndent(depth) : undefined}>
           <span class="truncate text-foreground">{t(`vaultSetup.projects.task.${task.key}`)}</span>
         </span>
         <!-- The name cell's Open button, as the row draws it: always on touch, and on the hovered row with a pointer. -->
-        {#if mobileShell || (added && addedRowHovered) || (firstSubtask && subtaskRowHovered)}
+        {#if mobileShell || listHover.row === rowName}
           <span class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground">
             <PanelRight class="size-3.5" aria-hidden="true" /><span>{t("collections.property.open")}</span>
           </span>
@@ -980,7 +1036,7 @@
       {#each taskColumns as column (column)}
         {#if column === "status"}
           {@const cell = added ? "status" : firstSubtask ? "subtaskStatus" : null}
-          <CollectionCell style={cell ? `background-image: ${cellHighlight(cell) ?? "none"}` : undefined}>
+          <CollectionCell data-scene-cell={`${rowName}:${column}`} style={cellBackground(`${rowName}:${column}`, cell)}>
             {#if added}
               <span bind:this={statusCell} data-cursor={TASKS_CELL_TARGETS.status} class="absolute inset-0"></span>
             {:else if firstSubtask}
@@ -992,7 +1048,7 @@
             {#if cell}{@render touch(taskTouches[cell], "2rem", "50%")}{/if}
           </CollectionCell>
         {:else if column === "priority"}
-          <CollectionCell style={added ? `background-image: ${cellHighlight("priority") ?? "none"}` : undefined}>
+          <CollectionCell data-scene-cell={`${rowName}:${column}`} style={cellBackground(`${rowName}:${column}`, added ? "priority" : null)}>
             {#if added}<span bind:this={priorityCell} data-cursor="tasks-priority" class="absolute inset-0"></span>{/if}
             <div class="pointer-events-none relative z-10 min-w-0 max-w-full">
               <span class="flex min-w-0 items-center gap-1.5 text-foreground">
@@ -1003,7 +1059,7 @@
             {#if added}{@render touch(taskTouches.priority, "2rem", "50%")}{/if}
           </CollectionCell>
         {:else}
-          <CollectionCell>
+          <CollectionCell data-scene-cell={`${rowName}:${column}`} style={cellBackground(`${rowName}:${column}`, null)}>
             {#if column === "assignee" || column === "reviewer"}
               <ProfileAvatar displayName={personName} imagePath={preferences.profileAvatarImagePath} crop={preferences.profileImageCrop} color={preferences.profileColor} size={24} />
             {:else if column === "start" || column === "due"}
@@ -1027,8 +1083,9 @@
   `indent` like the subtasks it adds. Its label carries the `target` the pointer clicks.
 -->
 {#snippet addRow(row: { label: string; active: boolean; draft: string; caretOn: boolean; indent: string | undefined; target: string; touchOpacity: number })}
+  {@const rowName = `add:${row.target}`}
   <div class="list-divider">
-    <CollectionRow template={gridTemplate} minWidth={gridMinWidth} {gutter} divider={false}>
+    <CollectionRow template={gridTemplate} minWidth={gridMinWidth} {gutter} divider={false} data-scene-row={rowName} style={rowStyle(rowName)}>
       <div class="col-span-full grid min-w-0 grid-cols-subgrid self-stretch">
         {#if row.active}
           <span class="flex min-h-(--collection-table-row-height) min-w-0 items-center gap-1 rounded-md px-2" style:grid-column="3 / -1" style:margin-left={row.indent}>
@@ -1041,7 +1098,12 @@
             <span class="rounded-md px-2 py-1 text-[0.8rem] text-muted-foreground">{t("common.cancel")}</span>
           </span>
         {:else}
-          <span class="col-span-full grid min-h-(--collection-table-row-height) grid-cols-subgrid items-center text-left text-collection text-muted-foreground">
+          <span
+            class={cn(
+              "col-span-full grid min-h-(--collection-table-row-height) grid-cols-subgrid items-center text-left text-collection",
+              listHover.row === rowName ? "text-foreground" : "text-muted-foreground",
+            )}
+          >
             <span class="flex min-w-0 items-center gap-2 px-2" style:grid-column="3 / -1" style:margin-left={row.indent}>
               <Plus class="size-4 shrink-0" />
               <span class="relative min-w-0" data-cursor={row.target}>
@@ -1354,7 +1416,7 @@
 
       <!-- The Calendar's day, as the Calendar film draws it, where the drawn event takes the Novel project's defaults. -->
       {#if calendarShown > 0}
-        <div class="absolute inset-0 z-45 flex flex-col bg-(--cal-bg)" style:opacity={calendarShown < 1 ? calendarShown : undefined}>
+        <div data-scene-cover class="absolute inset-0 z-45 flex flex-col bg-(--cal-bg)" style:opacity={calendarShown < 1 ? calendarShown : undefined}>
           <div class="flex shrink-0 border-b border-sidebar" style:height={`${CAL_HEADER_H}px`}>
             <span class="flex shrink-0 items-center justify-center text-[0.866667rem]" style:width={`${GUTTER_W}px`}>{timezoneLabel}</span>
             <div class="flex min-w-0 flex-1 items-center justify-center overflow-hidden whitespace-nowrap">
@@ -1491,6 +1553,7 @@
       {@const menuStatus = cellMenu === "subtaskStatus" ? (subtasks[0]?.status ?? newStatus) : newStatus}
       <div
         bind:this={statusMenu}
+        data-scene-cover
         class="surface-floating surface-floating-body absolute z-40 w-44"
         style:left={`${statusMenuOpen && cellMenuPlace ? cellMenuPlace.left : 0}px`}
         style:top={`${statusMenuOpen && cellMenuPlace ? cellMenuPlace.top : 0}px`}
@@ -1509,6 +1572,7 @@
 
       <div
         bind:this={priorityMenu}
+        data-scene-cover
         class="surface-floating surface-floating-body absolute z-40 w-44"
         style:left={`${cellMenu === "priority" && cellMenuPlace ? cellMenuPlace.left : 0}px`}
         style:top={`${cellMenu === "priority" && cellMenuPlace ? cellMenuPlace.top : 0}px`}
@@ -1532,6 +1596,7 @@
       <!-- Project settings, as the header's settings button opens them. They stay laid out while hidden so they can be measured. -->
       <div
         bind:this={settingsPanel}
+        data-scene-cover
         class="absolute z-50"
         style:left={`${panel.left}px`}
         style:top={`${panel.top}px`}
@@ -1720,6 +1785,7 @@
       <!-- The color palette, as the color picker draws it over the settings. It stays laid out while hidden so its size is known. -->
       <div
         bind:this={palette}
+        data-scene-cover
         class="surface-floating absolute z-60 grid gap-2 p-2.5"
         style:left={`${palettePlace?.left ?? 0}px`}
         style:top={`${palettePlace?.top ?? 0}px`}
@@ -1744,6 +1810,7 @@
       <!-- The Duration and Pomodoro options. Both stay laid out while hidden so their size is known before they open. -->
       <div
         bind:this={durationMenu}
+        data-scene-cover
         class="surface-floating absolute z-60 flex flex-col overflow-hidden"
         style:left={`${selectGeometry && picker === "duration" ? selectGeometry.left : 0}px`}
         style:top={`${selectGeometry && picker === "duration" ? selectGeometry.top : 0}px`}
@@ -1766,6 +1833,7 @@
 
       <div
         bind:this={pomodoroMenu}
+        data-scene-cover
         class="surface-floating absolute z-60 flex flex-col overflow-hidden"
         style:left={`${selectGeometry && picker === "pomodoro" ? selectGeometry.left : 0}px`}
         style:top={`${selectGeometry && picker === "pomodoro" ? selectGeometry.top : 0}px`}
@@ -1798,6 +1866,7 @@
       <!-- The open phase's playlists, as the playlist select lists them. It stays laid out while hidden so its height is known. -->
       <div
         bind:this={playlistMenu}
+        data-scene-cover
         class="surface-floating absolute z-60 flex min-h-0 flex-col overflow-hidden"
         style:left={`${playlistGeometry?.left ?? 0}px`}
         style:top={`${playlistGeometry?.top ?? 0}px`}
@@ -1850,7 +1919,7 @@
     {/if}
 
     {#if !mobileShell}
-      <WelcomeCursor script={cursorScript} {elapsed} width={canvasW} />
+      <WelcomeCursor script={cursorScript} {elapsed} width={canvasW} bind:position={cursorPoint} />
     {/if}
   </div>
 </div>

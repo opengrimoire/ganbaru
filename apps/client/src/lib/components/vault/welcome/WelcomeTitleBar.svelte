@@ -18,18 +18,15 @@
   /** A utility button's width and the gap between two, in pixels, as the title bar draws them. */
   const UTILITY_BUTTON_PX = 28;
   const UTILITY_GAP_PX = 2;
-  /** The device linking button's width in pixels, which the title bar draws wider than its other utilities. */
-  const LINKING_BUTTON_PX = 32;
-  /** The utilities after the device linking button: Quick notes, Music, and Settings. */
-  const UTILITIES_AFTER_LINKING = 3;
+  /** The utilities after the Focus ring: device linking, Quick notes, Music, and Settings. */
+  const UTILITIES_AFTER_RING = 4;
 
   /** The Focus ring's size and strokes in the title bar, for a scene that draws a running ring. */
   export const WELCOME_TITLE_RING_SIZE = ICON_SIZE + 0.5;
   export const WELCOME_TITLE_RING_TRACK_CLASS = "stroke-foreground/20 dark:stroke-white/20";
   export const WELCOME_TITLE_RING_PROGRESS_CLASS = "text-foreground/68 dark:text-white/76 stroke-foreground/68 dark:stroke-white/76";
   /** The room between the Focus ring's end and the last utility's end, in pixels, which a menu under the ring keeps. */
-  export const WELCOME_TITLE_AFTER_RING_PX =
-    LINKING_BUTTON_PX + UTILITY_GAP_PX + UTILITIES_AFTER_LINKING * (UTILITY_BUTTON_PX + UTILITY_GAP_PX);
+  export const WELCOME_TITLE_AFTER_RING_PX = UTILITIES_AFTER_RING * (UTILITY_BUTTON_PX + UTILITY_GAP_PX);
 </script>
 
 <script lang="ts">
@@ -137,9 +134,7 @@
         />
       {/if}
     </span>
-    <span class="grid shrink-0 place-items-center text-foreground/68 dark:text-white/76" style:width={`${LINKING_BUTTON_PX}px`} style:height={`${LINKING_BUTTON_PX}px`}>
-      <RefreshCw size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} />
-    </span>
+    <WelcomeTitleIcon icon={RefreshCw} />
     <WelcomeTitleIcon icon={StickyNote} open={quickNotesOpen} />
     <WelcomeTitleIcon icon={Music} open={musicOpen} hovered={musicHovered} cursor={musicCursor} />
     <WelcomeTitleIcon icon={Settings} />

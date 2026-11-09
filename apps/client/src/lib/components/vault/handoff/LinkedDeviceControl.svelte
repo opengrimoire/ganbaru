@@ -222,7 +222,7 @@
     class={cn(
       "group relative flex items-center justify-center text-muted-foreground transition-colors",
       presentation === "desktop"
-        ? "size-8 rounded-lg hover:bg-sidebar-accent"
+        ? "size-7 rounded-lg hover:bg-sidebar-accent"
         : "h-full w-full min-w-0",
       open && (presentation === "desktop" ? "bg-sidebar-accent text-foreground" : "text-foreground"),
     )}

@@ -211,9 +211,11 @@ const SCREEN_FADE_MS = 300;
 export const PROJECTS_HOVER_LEAD_MS = 420;
 /** How long the event takes to grow to the project's default length once the project is picked. */
 const GROW_MS = 420;
-const SECTION_OPEN_MS = 380;
-const SCROLL_DELAY_MS = 140;
-const SCROLL_MS = 520;
+/**
+ * How long the Music section takes to open, as the event sheet slides a section open. The panel's body scrolls it into
+ * view over the same time and curve, so the two read as one motion.
+ */
+const SECTION_OPEN_MS = 360;
 /** How long the finger rests on the grabber before the sheet follows it. */
 const DRAG_LAND_MS = 160;
 
@@ -399,7 +401,7 @@ export function projectsEventPanelFrame(
   playlist: (key: MusicScenePlaylist) => { icon: string; name: string },
 ): WelcomeEventPanelFrame {
   const picked = projectsEventPicked(elapsed);
-  const opened = filmSpan(elapsed, B.musicTap + SCROLL_DELAY_MS, B.musicTap + SCROLL_DELAY_MS + SCROLL_MS);
+  const opened = easeInOutCubic(filmSpan(elapsed, B.musicTap, B.musicTap + SECTION_OPEN_MS));
   return {
     sheetRise: 1 - (1 - filmSpan(elapsed, B.panelOpen, B.panelOpen + FILM_SHEET_RISE_MS)) ** 3,
     sheetExpand: easeInOutCubic(filmSpan(elapsed, B.sheetDragStart, B.sheetDragEnd)),
@@ -420,14 +422,14 @@ export function projectsEventPanelFrame(
     preset: picked ? PROJECTS_PRESET : FILM_DEFAULT_PRESET,
     music: {
       enabled: picked,
-      expanded: easeInOutCubic(filmSpan(elapsed, B.musicTap, B.musicTap + SECTION_OPEN_MS)),
+      expanded: opened,
       rows: PROJECTS_PHASES.map((phase) => {
         const { icon, name } = playlist(PROJECTS_PLAYLISTS[phase]);
         return { phase, playlistIcon: icon, playlistName: name, fill: picked ? 1 : 0, touch: 0 };
       }),
       picker: null,
     },
-    scroll: easeInOutCubic(opened),
+    scroll: opened,
   };
 }
 

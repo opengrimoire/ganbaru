@@ -32,15 +32,17 @@ export interface WelcomeEventPanelMusicOption {
 export interface WelcomeEventPanelMusicPicker {
   phase: WelcomeEventPanelMusicPhase;
   options: readonly WelcomeEventPanelMusicOption[];
-  /** The option the row takes, checked in the list, or null for none. */
+  /** The option the row has, checked in the list, or null for none. */
   selected: string | null;
-  /** The touch on the selected option, from 0 to 1 as it shows. */
+  /** The option the tap lands on, which the row takes as the picker closes. */
+  target: string;
+  /** The touch on the target option, from 0 to 1 as it shows. */
   touch: number;
 }
 
 /** The panel's Music section, open below its header. */
 export interface WelcomeEventPanelMusic {
-  /** Whether the event plays music, so the section's header is on and sums up its phases. */
+  /** Whether the event plays music, so the section's header is on and sums up the phases whose rows are filled. */
   enabled: boolean;
   /** How far the section's body has opened, from 0 to 1. */
   expanded: number;

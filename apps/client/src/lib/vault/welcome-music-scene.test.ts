@@ -5,7 +5,7 @@ import {
   MUSIC_DEFAULT_RAIL,
   MUSIC_EVENT,
   MUSIC_PLAYLISTS,
-  MUSIC_PROJECT_PLAYLISTS,
+  MUSIC_EVENT_PLAYLISTS,
   MUSIC_PROJECT_PRESET,
   MUSIC_RAIL,
   MUSIC_STILL,
@@ -132,19 +132,36 @@ describe("welcome music scene", () => {
     expect(musicReviewItemIn(B.localSaveTap)).toBe(0);
   });
 
-  it("gives the event the project's playlist for each phase once the project is picked", () => {
+  it("gives the event the project's Focus rhythm but no music once the project is picked", () => {
     const before = musicEventPanelFrame(B.projectPick - 1, "Title", lookup);
     const after = musicEventPanelFrame(B.projectPick, "Title", lookup);
     expect(before.picked).toBe(false);
-    expect(before.music?.enabled).toBe(false);
-    expect(before.music?.rows.every((row) => row.fill === 0)).toBe(true);
     expect(after.picked).toBe(true);
     expect(after.preset).toBe(MUSIC_PROJECT_PRESET);
-    expect(after.music?.rows.map((row) => [row.phase, row.playlistName, row.fill])).toEqual(
-      MUSIC_PROJECT_PLAYLISTS.map(({ phase, playlist }) => [phase, `name:${playlist}`, 1]),
-    );
+    for (const frame of [before, after, musicEventPanelFrame(B.focusOptionTap - 1, "Title", lookup)]) {
+      expect(frame.music?.enabled).toBe(false);
+      expect(frame.music?.rows.map((row) => [row.phase, row.fill])).toEqual([["focus", 0], ["short-break", 0], ["long-break", 0]]);
+    }
     expect(musicEventRail(B.projectPick - 1)).toBe(MUSIC_DEFAULT_RAIL);
     expect(musicEventRail(B.projectPick)).toBe(MUSIC_RAIL);
+  });
+
+  it("fills each row with the playlist its picker sets, and leaves the long break on none", () => {
+    const fills = (elapsed: number) => musicEventPanelFrame(elapsed, "Title", lookup).music?.rows.map((row) => row.fill);
+    const focusSet = musicEventPanelFrame(B.focusOptionTap, "Title", lookup);
+    expect(focusSet.music?.enabled).toBe(true);
+    expect(fills(B.breakPickerTap)).toEqual([1, 0, 0]);
+    expect(fills(B.saveTap - 1)).toEqual([1, 1, 0]);
+    const rows = musicEventPanelFrame(B.saveTap - 1, "Title", lookup).music?.rows ?? [];
+    expect(rows.filter((row) => row.fill > 0).map((row) => [row.phase, row.playlistName])).toEqual(
+      MUSIC_EVENT_PLAYLISTS.map(({ phase, playlist }) => [phase, `name:${playlist}`]),
+    );
+    let previous = [0, 0, 0];
+    for (const elapsed of moments()) {
+      const current = fills(elapsed) ?? [];
+      current.forEach((fill, index) => expect(fill).toBeGreaterThanOrEqual(previous[index] ?? 0));
+      previous = current;
+    }
   });
 
   it("drags the phone sheet to its full height with every section closed before Music is tapped", () => {
@@ -162,13 +179,17 @@ describe("welcome music scene", () => {
     expect(beforeTap.touches.music).toBe(0);
   });
 
-  it("opens the Music section and scrolls to it only after its header is tapped", () => {
+  it("opens the Music section once its header is tapped, scrolling it into view as it opens", () => {
     const closed = musicEventPanelFrame(B.musicTap - 1, "Title", lookup);
     const open = musicEventPanelFrame(B.saveTap - 1, "Title", lookup);
     expect(closed.music?.expanded).toBe(0);
     expect(closed.scroll).toBe(0);
     expect(open.music?.expanded).toBe(1);
     expect(open.scroll).toBe(1);
+    for (const elapsed of moments()) {
+      const frame = musicEventPanelFrame(elapsed, "Title", lookup);
+      expect(frame.scroll).toBe(frame.music?.expanded);
+    }
     expect(musicPanelOpen(B.panelOpen - 1)).toBe(false);
     expect(musicPanelOpen(B.panelOpen)).toBe(true);
     expect(musicPanelOpen(B.saveTap)).toBe(false);
@@ -199,18 +220,19 @@ describe("welcome music scene", () => {
     expect(musicEventPanelFrame(B.musicTap, "Title", lookup).typing).toBe(false);
   });
 
-  it("opens the Focus, then the short break picker, each on the project playlist and closed by its tap", () => {
+  it("opens the Focus, then the short break picker, each on none and closed by the tap on the playlist it sets", () => {
     expect(musicEventPanelFrame(B.focusPickerTap - 1, "Title", lookup).music?.picker).toBeNull();
     const focus = musicEventPanelFrame(B.focusPickerTap, "Title", lookup).music?.picker;
     expect(focus?.phase).toBe("focus");
-    expect(focus?.selected).toBe("workFocus");
+    expect(focus?.selected).toBeNull();
+    expect(focus?.target).toBe("workFocus");
     expect(focus?.options.map((option) => [option.key, option.count])).toEqual(
       MUSIC_PLAYLISTS.map((entry) => [entry.key, entry.tracks + (entry.key === "workFocus" || entry.key === "breakCalm" ? 1 : 0)]),
     );
     expect(musicPickerPhase(B.focusOptionTap - 1)).toBe("focus");
     expect(musicPickerPhase(B.focusOptionTap)).toBeNull();
     expect(musicPickerPhase(B.breakPickerTap)).toBe("short-break");
-    expect(musicEventPanelFrame(B.breakPickerTap, "Title", lookup).music?.picker?.selected).toBe("breakCalm");
+    expect(musicEventPanelFrame(B.breakPickerTap, "Title", lookup).music?.picker?.target).toBe("breakCalm");
     expect(musicPickerPhase(B.breakOptionTap)).toBeNull();
     for (const elapsed of moments()) {
       const phase = musicPickerPhase(elapsed);
@@ -241,12 +263,12 @@ describe("welcome music scene", () => {
     expect(musicClock(B.end)).toBe(MUSIC_RAIL.breaks[0].end);
   });
 
-  it("plays each phase's project playlist", () => {
+  it("plays the playlist the event set for each phase", () => {
     expect(musicNowPlaying(B.focusStart - 1)).toBeNull();
     for (const elapsed of moments(100).filter((value) => value >= B.focusStart)) {
       const phase = musicPhase(elapsed);
       const playing = musicNowPlaying(elapsed);
-      const expected = MUSIC_PROJECT_PLAYLISTS.find((entry) => entry.phase === phase)?.playlist;
+      const expected = MUSIC_EVENT_PLAYLISTS.find((entry) => entry.phase === phase)?.playlist;
       expect(playing?.playlist).toBe(expected);
       expect(playing && musicTracks(playing.source)[playing.row]).toBeDefined();
     }

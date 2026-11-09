@@ -44,7 +44,7 @@ export const vaultSetup = {
     headline: "Your playlists start automatically",
     body: "Mix YouTube and local music in your playlists, and they'll play as soon as a work session or break begins.",
     sceneDescription:
-      "A short animation of the playlist builder: a track from Local music is added to the Work (focus) playlist, then a video from YouTube to Break (calm). In the Calendar, picking the Thesis project for an event fills its music with the project's playlist for focus, short breaks, and long breaks. When the event's Pomodoro starts on its own, a notification shows a local track from Work (focus) playing automatically, and when the break starts, another shows the YouTube video from Break (calm).",
+      "A short animation of the playlist builder: a track from Local music is added to the Work (focus) playlist, then a video from YouTube to Break (calm). In the Calendar, an event gets the Thesis project, which has no music of its own, and its Music section sets Work (focus) for focus and Break (calm) for short breaks. When the event's Pomodoro starts on its own, a notification shows a local track from Work (focus) playing automatically, and when the break starts, another shows the YouTube video from Break (calm).",
     playingNotice: (track: string, playlist: string) => `Playing ${track} from ${playlist}`,
   },
   projects: {

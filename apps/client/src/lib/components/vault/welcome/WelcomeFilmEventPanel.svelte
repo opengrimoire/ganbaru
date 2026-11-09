@@ -199,18 +199,25 @@
       : []),
     { key: "repeat", icon: Repeat, label: t("calendar.recurrence.repeat"), summary: "" },
   ]);
-  /** The Music section's summary: the phases that play something once the event has its project's music. */
+  /** The Music section's summary: the phases whose rows play something. */
   const musicSummary = $derived.by(() => {
     if (!music?.enabled) return "";
-    const plays = (phase: WelcomeEventPanelMusicPhase) => music.rows.some((row) => row.phase === phase);
+    const plays = (phase: WelcomeEventPanelMusicPhase) => music.rows.some((row) => row.phase === phase && row.fill > 0);
     return t("calendar.eventPanel.musicPhases", plays("focus"), plays("short-break"), plays("long-break"));
   });
-  /** The Music section's body, measured so it opens by its own height as the section slides open. */
+  /**
+   * The Music section's body, drawn and measured while the section is closed, so it opens by its own height from the
+   * first frame. Its shown height comes from the frame, not from a measure a frame behind, and so does the content's,
+   * so the panel's size and scroll follow the opening section in the same frame.
+   */
   let musicBodyHeight = $state(0);
+  let musicShownHeight = $state(0);
+  const musicOpenHeight = $derived(music ? musicBodyHeight * music.expanded : 0);
 
   /** The panel's parts, measured, so it sizes and places itself as the event panel does. */
   let barHeight = $state(0);
-  let contentHeight = $state(0);
+  let measuredContentHeight = $state(0);
+  const contentHeight = $derived(measuredContentHeight - musicShownHeight + musicOpenHeight);
   let footerHeight = $state(0);
   const naturalHeight = $derived(barHeight + contentHeight + footerHeight);
 
@@ -528,7 +535,7 @@
         bind:clientHeight={viewportHeight}
         class={cn("event-panel-scroll hide-scrollbar overscroll-contain", constrained ? "h-full overflow-hidden" : "overflow-visible")}
       >
-        <div bind:offsetHeight={contentHeight} style:transform={scrollOffset > 0 ? `translateY(${-scrollOffset}px)` : undefined}>
+        <div bind:offsetHeight={measuredContentHeight} style:transform={scrollOffset > 0 ? `translateY(${-scrollOffset}px)` : undefined}>
           <!-- The title, the project and color triggers, and the date and time. -->
           <div class={cn("shrink-0 px-4", !mobileLayout && "pt-2.5")}>
             <div class="relative top-0.5 flex items-center gap-2.5 px-1">
@@ -654,8 +661,7 @@
             {/each}
             {#if musicAssignmentsAvailable}
               {@const musicOn = music?.enabled ?? false}
-              {@const expanded = music?.expanded ?? 0}
-              <!-- The Music section, which takes the project's playlist for each phase and opens on its rows. -->
+              <!-- The Music section, which opens on a playlist row for each phase. -->
               <div class="flex flex-col overflow-hidden rounded-none" style="background-color: var(--panel-contrast);">
                 <div class="section-header flex items-stretch">
                   <div
@@ -673,8 +679,8 @@
                     {@render touch(frame.touches.music, "left-1/4 top-1/2")}
                   </div>
                 </div>
-                {#if music && expanded > 0}
-                  <div class="overflow-hidden" style:height={expanded < 1 ? `${musicBodyHeight * expanded}px` : undefined}>
+                <div bind:offsetHeight={musicShownHeight} class="overflow-hidden" style:height={`${musicOpenHeight}px`} inert={musicOpenHeight === 0 || undefined}>
+                  {#if music}
                     <div bind:offsetHeight={musicBodyHeight} class="music-body py-2.5 pl-1" style="background-color: var(--panel-bg);">
                       <div class={cn("music-grid", showSounds && "phase-columns")}>
                         {#each music.rows as row (row.phase)}
@@ -712,8 +718,8 @@
                         {/each}
                       </div>
                     </div>
-                  </div>
-                {/if}
+                  {/if}
+                </div>
               </div>
             {/if}
           </div>
@@ -856,7 +862,7 @@
   {/if}
 
   {#if playlistPicker}
-    <!-- The phase's playlist picker: none, then every playlist with its count, the row's playlist checked. -->
+    <!-- The phase's playlist picker: none, then every playlist with its count, the row's playlist or none checked. -->
     <div class="surface-floating absolute z-80 flex min-h-0 flex-col overflow-hidden" style={playlistPickerStyle}>
       <div bind:offsetHeight={playlistPickerHeight} class="flex flex-col">
         <div class="shrink-0 px-1.5 pt-1.5">
@@ -873,12 +879,13 @@
           </div>
           {#each playlistPicker.options as option (option.key)}
             {@const chosen = option.key === playlistPicker.selected}
-            <div data-cursor={chosen ? "panel-playlist-option" : undefined} class="menu-item relative" data-highlighted={chosen && (playlistPicker.touch > 0 || hovered === "panel-playlist-option") ? "" : undefined}>
+            {@const targeted = option.key === playlistPicker.target}
+            <div data-cursor={targeted ? "panel-playlist-option" : undefined} class="menu-item relative" data-highlighted={targeted && (playlistPicker.touch > 0 || hovered === "panel-playlist-option") ? "" : undefined}>
               <span class="grid size-4 shrink-0 place-items-center"><MusicPlaylistIcon icon={option.icon} size={15} /></span>
               <span class="min-w-0 flex-1 truncate font-medium">{option.name}</span>
               {#if chosen}<Check size={14} />{/if}
               <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{formatNumber(localization.locale, option.count)}</span>
-              {#if chosen}{@render touch(playlistPicker.touch, "left-2/5 top-1/2")}{/if}
+              {#if targeted}{@render touch(playlistPicker.touch, "left-2/5 top-1/2")}{/if}
             </div>
           {/each}
         </div>

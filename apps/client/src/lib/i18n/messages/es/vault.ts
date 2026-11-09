@@ -52,7 +52,7 @@ export const vaultSetup = {
     headline: "Tus playlists empiezan automáticamente",
     body: "Mezcla música local y de YouTube en tus playlists, y se reproducirán en cuanto empieces una sesión de trabajo o de descanso.",
     sceneDescription:
-      "Una breve animación del creador de playlists: una canción de Música local se agrega a la playlist Trabajo (concentración) y luego un video de YouTube a Descanso (tranquilo). En el Calendario, al elegir el proyecto Tesis para un evento, su música se llena con la playlist del proyecto para la concentración, los descansos cortos y los descansos largos. Cuando el Pomodoro del evento empieza solo, una notificación muestra que suena automáticamente una canción local de Trabajo (concentración), y cuando empieza el descanso, otra muestra el video de YouTube de Descanso (tranquilo).",
+      "Una breve animación del creador de playlists: una canción de Música local se agrega a la playlist Trabajo (concentración) y luego un video de YouTube a Descanso (tranquilo). En el Calendario, un evento toma el proyecto Tesis, que no tiene música propia, y en su sección de Música se elige Trabajo (concentración) para la concentración y Descanso (tranquilo) para los descansos cortos. Cuando el Pomodoro del evento empieza solo, una notificación muestra que suena automáticamente una canción local de Trabajo (concentración), y cuando empieza el descanso, otra muestra el video de YouTube de Descanso (tranquilo).",
     playingNotice: (track: string, playlist: string) => `Reproduciendo ${track} de ${playlist}`,
   },
   projects: {

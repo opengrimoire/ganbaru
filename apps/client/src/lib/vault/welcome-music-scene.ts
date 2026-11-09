@@ -1,8 +1,8 @@
 /**
  * Timing for the welcome scene on Music. In the playlist builder's review, a local track is added to the Work (focus)
  * playlist and saved, then a YouTube video to Break (calm). Then in the Calendar, an event is dragged out on the day
- * and its panel opens, where picking the Thesis project gives the event the project's music for each Focus phase, its
- * title is typed, and the Music section opens and its Focus and short break pickers show their playlists. Once the
+ * and its panel opens, where the Thesis project is picked, which has no music of its own, its title is typed, and the
+ * Music section opens, where the Focus picker sets Work (focus) and the short break picker sets Break (calm). Once the
  * event is saved, its Focus starts on its own, and the app's notification says the work playlist's track autoplays,
  * then the break playlist's video once the break starts, and the scene ends as the break does.
  */
@@ -82,11 +82,13 @@ export interface MusicSceneItem {
   row: number;
 }
 
-/** The Thesis project's playlist for each phase, which the event takes once the project is picked. */
-export const MUSIC_PROJECT_PLAYLISTS: readonly { phase: WelcomeEventPanelMusicPhase; playlist: MusicScenePlaylist }[] = [
+/** The phases the event's Music section lists, in its order. */
+export const MUSIC_PHASES: readonly WelcomeEventPanelMusicPhase[] = ["focus", "short-break", "long-break"];
+
+/** The playlist the event's Music section sets for each phase it sets; the Thesis project has none, and the long break keeps none. */
+export const MUSIC_EVENT_PLAYLISTS: readonly { phase: WelcomeEventPanelMusicPhase; playlist: MusicScenePlaylist }[] = [
   { phase: "focus", playlist: "workFocus" },
   { phase: "short-break", playlist: "breakCalm" },
-  { phase: "long-break", playlist: "breakActive" },
 ];
 
 /** The Calendar event, in minutes of the day, and the Focus preset it has before and after its project is picked. */
@@ -115,7 +117,7 @@ export const MUSIC_BEATS = {
   createStart: 6500,
   createEnd: 7200,
   panelOpen: 7350,
-  /** The project trigger, then the University group, then Thesis, which gives the event the project's music. */
+  /** The project trigger, then the University group, then Thesis, which gives the event its color and Focus rhythm. */
   projectTap: 8350,
   groupTap: 9450,
   projectPick: 10550,
@@ -125,12 +127,12 @@ export const MUSIC_BEATS = {
   /** On the phone, a drag on the sheet's grabber takes it from its peek to its full height, every section closed. */
   sheetDragStart: 13100,
   sheetDragEnd: 13650,
-  /** A tap on the Music section's header opens it on the event's playlists. */
+  /** A tap on the Music section's header opens it on its rows, none of which plays anything yet. */
   musicTap: 14500,
-  /** A tap on the Focus row's trigger opens its playlist picker, and a tap on its checked playlist closes it. */
+  /** A tap on the Focus row's trigger opens its playlist picker, and a tap on Work (focus) sets it and closes the picker. */
   focusPickerTap: 15900,
   focusOptionTap: 17200,
-  /** The same for the short break's row. */
+  /** The same for the short break's row, with Break (calm). */
   breakPickerTap: 18200,
   breakOptionTap: 19500,
   /** Save saves the event and closes the panel. */
@@ -168,20 +170,38 @@ const LAST_ITEM: MusicSceneItem = { source: "youtube", row: 2 };
 const SCREEN_FADE_MS = 300;
 const BUMP_MS = 520;
 const ITEM_SWAP_MS = 260;
-const SECTION_OPEN_MS = 380;
-const SCROLL_DELAY_MS = 140;
-const SCROLL_MS = 520;
+/**
+ * How long the Music section takes to open, as the event sheet slides a section open. The panel's body scrolls it into
+ * view over the same time and curve, so the two read as one motion.
+ */
+const SECTION_OPEN_MS = 360;
 /** When the event panel's body has scrolled the opened Music section into view. */
-const PANEL_SCROLL_END = B.musicTap + SCROLL_DELAY_MS + SCROLL_MS;
+const PANEL_SCROLL_END = B.musicTap + SECTION_OPEN_MS;
+/** How long a row's trigger takes to cross from none to the playlist its picker sets. */
+const ROW_FILL_MS = 220;
 /** How long the press that draws the event is held before the event follows it. */
 export const MUSIC_CREATE_PRESS_MS = 140;
 /** How long the finger rests on the grabber before the sheet follows it. */
 const DRAG_LAND_MS = 160;
-/** The Music section's playlist pickers, each open from the tap on its row's trigger to the tap on its playlist. */
+/**
+ * The Music section's playlist pickers, each open from the tap on its row's trigger to the tap on the playlist it
+ * sets.
+ */
 const PICKER_STEPS: readonly { phase: WelcomeEventPanelMusicPhase; openTap: number; closeTap: number }[] = [
   { phase: "focus", openTap: B.focusPickerTap, closeTap: B.focusOptionTap },
   { phase: "short-break", openTap: B.breakPickerTap, closeTap: B.breakOptionTap },
 ];
+
+/** The playlist the event's Music section sets for `phase`, or null for a phase it leaves on none. */
+function eventPlaylist(phase: WelcomeEventPanelMusicPhase): MusicScenePlaylist | null {
+  return MUSIC_EVENT_PLAYLISTS.find((entry) => entry.phase === phase)?.playlist ?? null;
+}
+
+/** How far `phase`'s row has crossed from none to the playlist its picker sets, from 0 to 1. */
+function rowFill(elapsed: number, phase: WelcomeEventPanelMusicPhase): number {
+  const step = PICKER_STEPS.find((entry) => entry.phase === phase);
+  return step ? easeInOutCubic(filmSpan(elapsed, step.closeTap, step.closeTap + ROW_FILL_MS)) : 0;
+}
 /** How long the music notification takes to slide in, and to slide away, as the Calendar film's notification does. */
 const NOTICE_IN_MS = 280;
 const NOTICE_OUT_MS = 220;
@@ -298,7 +318,7 @@ export function musicTypedTitle(elapsed: number, title: string): string {
   return filmTyped(elapsed, title, B.typeStart, B.typeEnd);
 }
 
-/** Whether the event has the Thesis project, with its color, Focus rhythm, and music. */
+/** Whether the event has the Thesis project, with its color and Focus rhythm; the project has no music of its own. */
 export function musicProjectPicked(elapsed: number): boolean {
   return elapsed >= B.projectPick;
 }
@@ -322,7 +342,7 @@ export function musicEventPanelFrame(
   playlist: (key: MusicScenePlaylist) => { icon: string; name: string },
 ): WelcomeEventPanelFrame {
   const picked = musicProjectPicked(elapsed);
-  const opened = filmSpan(elapsed, B.musicTap + SCROLL_DELAY_MS, B.musicTap + SCROLL_DELAY_MS + SCROLL_MS);
+  const opened = musicSectionOpen(elapsed);
   return {
     sheetRise: 1 - (1 - filmSpan(elapsed, B.panelOpen, B.panelOpen + FILM_SHEET_RISE_MS)) ** 3,
     sheetExpand: easeInOutCubic(filmSpan(elapsed, B.sheetDragStart, B.sheetDragEnd)),
@@ -342,22 +362,23 @@ export function musicEventPanelFrame(
     },
     preset: picked ? MUSIC_PROJECT_PRESET : FILM_DEFAULT_PRESET,
     music: {
-      enabled: picked,
-      expanded: musicSectionOpen(elapsed),
-      rows: MUSIC_PROJECT_PLAYLISTS.map(({ phase, playlist: key }) => {
-        const { icon, name } = playlist(key);
+      enabled: PICKER_STEPS.some((step) => elapsed >= step.closeTap),
+      expanded: opened,
+      rows: MUSIC_PHASES.map((phase) => {
+        const key = eventPlaylist(phase);
+        const { icon, name } = key ? playlist(key) : { icon: "", name: "" };
         const step = PICKER_STEPS.find((entry) => entry.phase === phase);
         return {
           phase,
           playlistIcon: icon,
           playlistName: name,
-          fill: picked ? 1 : 0,
+          fill: rowFill(elapsed, phase),
           touch: step ? filmTap(elapsed, step.openTap) : 0,
         };
       }),
       picker: musicPlaylistPicker(elapsed, playlist),
     },
-    scroll: easeInOutCubic(opened),
+    scroll: opened,
   };
 }
 
@@ -366,18 +387,20 @@ export function musicPickerPhase(elapsed: number): WelcomeEventPanelMusicPhase |
   return PICKER_STEPS.find((step) => elapsed >= step.openTap && elapsed < step.closeTap)?.phase ?? null;
 }
 
-/** The open playlist picker, listing every playlist with its count, with the phase's project playlist checked. */
+/** The open playlist picker, listing every playlist with its count, with none checked and the tap on the one it sets. */
 function musicPlaylistPicker(
   elapsed: number,
   playlist: (key: MusicScenePlaylist) => { icon: string; name: string },
 ): WelcomeEventPanelMusicPicker | null {
   const phase = musicPickerPhase(elapsed);
   const step = PICKER_STEPS.find((entry) => entry.phase === phase);
-  if (!phase || !step) return null;
+  const target = phase ? eventPlaylist(phase) : null;
+  if (!phase || !step || !target) return null;
   return {
     phase,
     options: MUSIC_PLAYLISTS.map(({ key }) => ({ key, ...playlist(key), count: musicPlaylistCount(elapsed, key) })),
-    selected: MUSIC_PROJECT_PLAYLISTS.find((entry) => entry.phase === phase)?.playlist ?? null,
+    selected: null,
+    target,
     touch: filmTap(elapsed, step.closeTap),
   };
 }

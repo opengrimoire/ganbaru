@@ -22,7 +22,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM, BUILD_PLATFORM_PROFILE } from "$lib/platform";
   import type { VaultDefaultPlaces } from "$lib/vault/state";
-  import { DATA_ENTRIES, entryExtension, vaultPathTrail, type DataEntry } from "$lib/vault/welcome-data-folder";
+  import { DATA_ENTRIES, vaultPathTrail, type DataEntry } from "$lib/vault/welcome-data-folder";
 
   /**
    * The still illustration on the welcome screen about where data lives: the vault's folder, named by its real path, open
@@ -80,9 +80,9 @@
 </script>
 
 <!--
-  An entry drawn the way file managers draw it rather than as a line icon: a folder as a two-tone filled folder and the
-  database as a stack of disks, both in the theme's accent, and any other file as a page with a folded corner and its
-  extension on a badge.
+  An entry drawn the way file managers draw it rather than as a line icon, all in the theme's accent: a folder as a
+  two-tone filled folder, the database as a stack of disks, and the JSON marker as a page with a folded corner and a pair
+  of braces.
 -->
 {#snippet entryGlyph(entry: DataEntry, size: number)}
   {#if entry.kind === "folder"}
@@ -109,26 +109,21 @@
     </svg>
   {:else}
     <svg width={size} height={size} viewBox="0 0 64 64" class="shrink-0" aria-hidden="true">
-      <path
-        d="M16 5h23l13 13v38a3 3 0 0 1-3 3H16a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z"
-        class="fill-background stroke-muted-foreground"
-        stroke-opacity="0.45"
-        stroke-width="1.5"
+      <path d="M16 5h23l13 13v38a3 3 0 0 1-3 3H16a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z" class="fill-primary" />
+      <path d="M39 5v10a3 3 0 0 0 3 3h10z" class="fill-background" />
+      <path d="M39 5v10a3 3 0 0 0 3 3h10z" class="fill-primary" fill-opacity="0.6" />
+      <!-- A pair of braces cut out of the page, scaled from a 24 unit grid. -->
+      <g
+        transform="translate(17.5 23) scale(1.25)"
+        class="stroke-background"
+        fill="none"
+        stroke-width="2.4"
+        stroke-linecap="round"
         stroke-linejoin="round"
-      />
-      <path
-        d="M39 5v10a3 3 0 0 0 3 3h10"
-        class="fill-muted-foreground stroke-muted-foreground"
-        fill-opacity="0.15"
-        stroke-opacity="0.45"
-        stroke-width="1.5"
-        stroke-linejoin="round"
-      />
-      <path d="M20 26h20M20 32h26M20 38h22" class="stroke-muted-foreground" stroke-opacity="0.3" stroke-width="2" stroke-linecap="round" />
-      <rect x="8" y="43" width="42" height="13" rx="3" class="fill-muted-foreground" />
-      <text x="29" y="52.6" text-anchor="middle" font-size="8" font-weight="700" class="fill-background">
-        {entryExtension(entry.name)}
-      </text>
+      >
+        <path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1" />
+        <path d="M16 21h1a2 2 0 0 0 2-2v-5a2 2 0 0 1 2-2 2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1" />
+      </g>
     </svg>
   {/if}
 {/snippet}

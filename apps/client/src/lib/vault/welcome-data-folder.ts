@@ -3,16 +3,8 @@
  * and the entries a new vault holds.
  */
 
-/**
- * The extension a file icon's badge shows, in capitals; empty for a name without one, including a dotfile's name.
- */
-export function entryExtension(name: string): string {
-  const dot = name.lastIndexOf(".");
-  return dot > 0 && dot < name.length - 1 ? name.slice(dot + 1).toUpperCase() : "";
-}
-
 /** What kind of entry the illustration draws, which picks its icon. */
-export type DataEntryKind = "folder" | "database" | "file";
+export type DataEntryKind = "folder" | "database" | "json";
 
 /** One top-level entry of a new vault. */
 export interface DataEntry {
@@ -25,7 +17,7 @@ export const DATA_ENTRIES: readonly DataEntry[] = [
   { name: "assets", kind: "folder" },
   { name: "projects", kind: "folder" },
   { name: "ganbaru.sqlite", kind: "database" },
-  { name: "vault.json", kind: "file" },
+  { name: "vault.json", kind: "json" },
 ];
 
 /**

@@ -96,6 +96,7 @@
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { COUNT_PRESET_RHYTHMS, pomodoroPresetChoices, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
   import { projectPomodoroSummaryLabel } from "$lib/projects/default-pomodoro";
+  import { parseProjectIcon, projectIconDisplayLabel } from "$lib/projects/icons/values";
   import { DEFAULT_FOCUS_ADAPTIVE_PRESET_ENABLED } from "$lib/stores/preference-options";
   import { projectListDateLabel } from "$lib/projects/list/presentation";
   import {
@@ -489,6 +490,9 @@
       height: px(PROJECTS_EVENT.drawnEnd - PROJECTS_EVENT.start),
     };
   });
+  /** The Novel project's icon, which its settings name the way the icon picker does. */
+  const NOVEL_ICON = "lucide:feather";
+  const NOVEL_ICON_LABEL = projectIconDisplayLabel(parseProjectIcon(NOVEL_ICON));
   /** The event panel's project picker: the groups the Calendar film shows, with Novel in Personal. */
   const eventPicker = $derived<WelcomeEventPanelPicker>({
     groups: [
@@ -496,7 +500,7 @@
       { id: "health", icon: "lucide:apple", label: t("vaultSetup.film.healthGroup") },
       { id: "personal", icon: "lucide:heart", label: t("vaultSetup.film.personalGroup") },
     ],
-    projects: [{ id: "novel", icon: "lucide:feather", label: t("vaultSetup.projects.project") }],
+    projects: [{ id: "novel", icon: NOVEL_ICON, label: t("vaultSetup.projects.project") }],
     group: "personal",
     project: "novel",
   });
@@ -1186,7 +1190,7 @@
 {#snippet iconControl()}
   <span class={cn("flex h-7 min-w-0 items-center gap-2 rounded-md border border-border px-2.5 text-foreground", stackedRows ? "w-full" : "w-44")}>
     <Feather size={14} strokeWidth={IDENTITY_ICON_STROKE_WIDTH} class="shrink-0" />
-    <span class="min-w-0 flex-1"></span>
+    <span class="min-w-0 flex-1 truncate font-medium">{NOVEL_ICON_LABEL}</span>
     {@render chevron(false)}
   </span>
 {/snippet}

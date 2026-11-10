@@ -60,7 +60,7 @@ Planned: explicit date locks and per-proposal protection overrides. The task sch
 
 ## Working folders
 
-A project can own a managed working folder (created inside the vault) and device-local bindings to external folders where supported. Organizational Chat runs resolve their execution target through the authorized binding; see [Chat execution and workspace](../chat/execution-and-workspace.md).
+A project can own a managed working folder (created inside the vault) and device-local bindings to external folders where supported. The managed folder is `projects/<name>` in the vault, named after the project when it is created and kept when the project is renamed, because Git worktrees, provider sessions, and tool environments store its absolute path. Organizational Chat runs resolve their execution target through the authorized binding; see [Chat execution and workspace](../chat/execution-and-workspace.md).
 
 Each folder shows whether this device trusts its repository programs, hooks, and provider settings, and its menu grants or revokes that trust immediately. Binding a folder through the picker asks once; see [Chat security](../../data/security/chat.md#git-and-hosted-clis).
 

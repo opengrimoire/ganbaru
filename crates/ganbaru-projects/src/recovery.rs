@@ -12,7 +12,8 @@
 //!
 //! - A group is appended to the group list.
 //! - A project returns into its group when that group exists, and otherwise into the first group
-//!   in list order. It gets a new managed working folder as its primary folder.
+//!   in list order. It gets a new managed working folder as its primary folder, which takes back
+//!   the folder left under its name when no other project claimed it.
 //! - A section, status, or task needs its project; when the project is gone the restore is
 //!   refused, which leaves the offer to be discarded or restored through the project's own offer.
 //! - A task whose parent is gone, or is now itself a subtask, becomes top-level, and a task whose
@@ -42,11 +43,11 @@ use ring::rand::{SecureRandom, SystemRandom};
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
 use crate::keys;
+use crate::managed_folders::insert_managed_working_folder;
 use crate::mutations::{
     can_parent_subtasks, dependency_would_cycle, task_section_order, task_status_order,
 };
 use crate::order::{OrderGroup, OrderPlacement};
-use crate::project_commands::insert_managed_working_folder;
 
 /// SQL expression of the current time in the stored timestamp form.
 const NOW_SQL: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
@@ -421,7 +422,7 @@ async fn restore_row(
     }
     if table == PROJECTS_TABLE {
         let name = row.required_text("name")?;
-        insert_managed_working_folder(conn, &key, name.trim()).await?;
+        insert_managed_working_folder(conn, None, &key, name.trim()).await?;
     }
     ids.0.insert((table, row.old_key.clone()), key.clone());
     Ok(Some(key))

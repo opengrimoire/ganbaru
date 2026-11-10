@@ -1167,6 +1167,18 @@ export function isProjectTaskConflict(error: unknown): boolean {
   return message.startsWith(PROJECT_TASK_CONFLICT_PREFIX);
 }
 
+/** Message prefix Rust uses when another project in the target group already has the name. */
+const PROJECT_NAME_TAKEN_PREFIX = "Project name taken:";
+
+/**
+ * Whether a project create, rename, or move was refused because the name is used in the target group. Forms check the
+ * snapshot first; this covers a project that another window or device added before the snapshot caught up.
+ */
+export function isProjectNameTakenError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return message.startsWith(PROJECT_NAME_TAKEN_PREFIX);
+}
+
 export async function updateProjectTask(task: ProjectTaskUpdate): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();
   return invokeProjectMutation("projects_update_task", { dbUrl, task });

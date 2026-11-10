@@ -2,6 +2,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 use std::path::Path;
 
 use super::defaults::insert_default_project_graph;
+use super::managed_folders::insert_managed_working_folder;
 use super::models::{
     ProjectCreate, ProjectPriorityRow, ProjectSectionRow, ProjectStatusRow, ProjectUpdate,
     ProjectsMutationRows,
@@ -24,44 +25,47 @@ pub(super) fn project_order(group_id: &str) -> OrderGroup<'_> {
 const NOTES_PAGE_OPEN_MODES: &[&str] = &["center", "side", "full"];
 const NOTES_HISTORY_RETENTION_DAYS: &[i64] = &[0, 7, 30, 90, 180, 365];
 
-/// Inserts the managed working folder of a newly inserted project and stores it as the project's
-/// primary folder. The folder directory itself is created by the caller or when it is resolved.
-pub(crate) async fn insert_managed_working_folder(
+/// Message prefix of the error a project name another project of the same group already uses
+/// gets, so callers can tell it apart from other refusals.
+pub const PROJECT_NAME_TAKEN_PREFIX: &str = "Project name taken:";
+
+/// Refuses `name` when another project of `group_id` already uses it, ignoring case and the
+/// surrounding white space. Projects in different groups may share a name.
+async fn require_free_project_name(
     conn: &mut SqliteConnection,
+    group_id: &str,
     project_id: &str,
-    display_name: &str,
+    name: &str,
 ) -> Result<(), String> {
-    let managed_folder_id = ganbaru_working_folders::managed_folder_id(project_id)
-        .map_err(|e| format!("create managed project working folder: {e}"))?
-        .into_inner();
-    let managed_relative_path = ganbaru_working_folders::managed_project_relative_path(project_id)?;
-    sqlx::query(
-        "INSERT INTO project_working_folders
-            (id, project_id, display_name, kind, managed_relative_path, sort_order)
-         VALUES (?, ?, ?, 'managed', ?, 0)",
-    )
-    .bind(&managed_folder_id)
-    .bind(project_id)
-    .bind(display_name)
-    .bind(&managed_relative_path)
-    .execute(&mut *conn)
-    .await
-    .map_err(|e| format!("create managed project working folder: {e}"))?;
-    sqlx::query(
-        "INSERT INTO project_primary_working_folders
-            (project_id, working_folder_id, created_at, updated_at)
-         SELECT id, ?, created_at, created_at FROM projects WHERE id = ?",
-    )
-    .bind(&managed_folder_id)
-    .bind(project_id)
-    .execute(&mut *conn)
-    .await
-    .map_err(|e| format!("create primary project working folder: {e}"))?;
+    let key = project_name_key(name);
+    let names: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM projects WHERE group_id = ? AND id <> ?")
+            .bind(group_id)
+            .bind(project_id)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| format!("load project names: {e}"))?;
+    if names.iter().any(|other| project_name_key(other) == key) {
+        return Err(format!(
+            "{PROJECT_NAME_TAKEN_PREFIX} another project in this group is already named {:?}",
+            name.trim()
+        ));
+    }
     Ok(())
 }
 
+/// The key two project names collide under within a group.
+fn project_name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
 /// Creates a project with its default rows, its managed working folder under `vault_root`, and
-/// that folder as its stored primary folder.
+/// that folder as its stored primary folder. The managed folder is named after the project.
+///
+/// # Errors
+///
+/// Returns a message starting with [`PROJECT_NAME_TAKEN_PREFIX`] when another project of the
+/// group already uses the name, and other messages when the project cannot be stored.
 pub async fn create_project(
     pool: &SqlitePool,
     vault_root: &Path,
@@ -69,7 +73,11 @@ pub async fn create_project(
 ) -> Result<ProjectsMutationRows, String> {
     validate_project_create(&project)?;
     let icon_byte_size = required_icon_byte_size(vault_root, &project.icon)?;
-    let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("begin: {e}"))?;
+    require_free_project_name(&mut tx, &project.group_id, &project.id, &project.name).await?;
     let order_key = project_order(&project.group_id)
         .place(&mut tx, &project.id, &project.placement)
         .await?;
@@ -114,11 +122,13 @@ pub async fn create_project(
     .await
     .map_err(|e| format!("create project: {e}"))?;
 
-    insert_managed_working_folder(&mut tx, &project.id, project.name.trim()).await?;
+    let folder_name =
+        insert_managed_working_folder(&mut tx, Some(vault_root), &project.id, project.name.trim())
+            .await?;
 
     insert_default_project_graph(&mut tx, &project.id).await?;
 
-    ganbaru_working_folders::resolve_managed_project_folder(vault_root, &project.id)
+    ganbaru_working_folders::resolve_managed_project_folder(vault_root, &folder_name)
         .map_err(|e| format!("create managed project working folder: {e}"))?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
     let mut mutation = project_mutation(pool, &project.id).await?;
@@ -149,6 +159,13 @@ pub async fn create_project(
 
 /// Updates a project. Built-in Routine projects keep their group, name, and place. A project moved to another group
 /// goes to the end of that group unless a placement names a sibling there; icon files under `vault_root` are sized.
+/// The managed working folder keeps its name when the project is renamed.
+///
+/// # Errors
+///
+/// Returns a message starting with [`PROJECT_NAME_TAKEN_PREFIX`] when a rename or move would give
+/// the project the name of another project in its group. Names that already collide, such as two
+/// projects named alike on different devices before they synced, may still be edited otherwise.
 pub async fn update_project(
     pool: &SqlitePool,
     vault_root: &Path,
@@ -164,18 +181,21 @@ pub async fn update_project(
         .unwrap_or_else(|| project.name.trim());
     let icon_byte_size = required_icon_byte_size(vault_root, &project.icon)?;
     let mut transaction = pool
-        .begin()
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("begin project update: {e}"))?;
-    let current: Option<(String, String)> =
-        sqlx::query_as("SELECT group_id, order_key FROM projects WHERE id = ?")
+    let current: Option<(String, String, String)> =
+        sqlx::query_as("SELECT group_id, order_key, name FROM projects WHERE id = ?")
             .bind(&project.id)
             .fetch_optional(&mut *transaction)
             .await
             .map_err(|e| format!("load project order: {e}"))?;
-    let Some((current_group_id, current_order_key)) = current else {
+    let Some((current_group_id, current_order_key, current_name)) = current else {
         return Err("project not found".to_string());
     };
+    if current_group_id != group_id || project_name_key(&current_name) != project_name_key(name) {
+        require_free_project_name(&mut transaction, group_id, &project.id, name).await?;
+    }
     let placement = match (&project.placement, current_group_id == group_id) {
         _ if built_in.is_some() => None,
         (Some(placement), _) => Some(placement.clone()),

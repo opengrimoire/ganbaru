@@ -232,7 +232,7 @@ pub async fn projects_list_working_folders(
     let workspaces = repository::list_workspaces(&pool).await?;
     let mut reconciled = Vec::with_capacity(workspaces.len());
     for workspace in workspaces {
-        bind_managed_folders_for_listing(&app, [&workspace]);
+        bind_managed_folders_for_listing(&app, &pool, [&workspace]).await;
         reconciled.push(reconcile_working_folder_binding(&app, &pool, workspace).await?);
     }
     let scope = read_active_working_folder_scope(&app).map_err(device_state_error)?;
@@ -254,7 +254,7 @@ pub async fn projects_list_working_folders_cached(
         if workspace.kind == WorkingFolderKind::Managed
             && !scope.bindings.contains_key(&workspace.id)
         {
-            bind_managed_folders_for_listing(&app, [workspace]);
+            bind_managed_folders_for_listing(&app, &pool, [workspace]).await;
             scope = read_active_working_folder_scope(&app).map_err(device_state_error)?;
         }
     }
@@ -266,22 +266,13 @@ pub async fn projects_list_working_folders_cached(
 
 /// Binds managed folders while listing. A folder that cannot be bound stays unbound and is
 /// listed with that state, so one unusable row never hides the others.
-pub(crate) fn bind_managed_folders_for_listing<'folder, R: Runtime>(
+pub(crate) async fn bind_managed_folders_for_listing<'folder, R: Runtime>(
     app: &tauri::AppHandle<R>,
+    pool: &SqlitePool,
     folders: impl IntoIterator<Item = &'folder ProjectWorkingFolder>,
-) {
-    bind_active_folders(folders, |folder| {
-        ensure_managed_working_folder_binding(app, folder)
-    });
-}
-
-/// Applies `bind` to every folder, logging a failure and moving on to the next folder.
-pub(crate) fn bind_active_folders<'folder>(
-    folders: impl IntoIterator<Item = &'folder ProjectWorkingFolder>,
-    bind: impl Fn(&ProjectWorkingFolder) -> ChatResult<()>,
 ) {
     for folder in folders {
-        if let Err(error) = bind(folder) {
+        if let Err(error) = ensure_managed_working_folder_binding(app, pool, folder).await {
             eprintln!(
                 "Managed working folder {} was left unbound: {}",
                 folder.id, error.message
@@ -737,7 +728,7 @@ pub async fn projects_recreate_managed_working_folder(
         ));
     }
     remove_active_device_binding(&app, &working_folder_id)?;
-    ensure_managed_working_folder_binding(&app, &workspace)?;
+    ensure_managed_working_folder_binding(&app, &pool, &workspace).await?;
     read_workspace(&app, workspace)
 }
 

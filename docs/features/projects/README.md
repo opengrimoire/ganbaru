@@ -43,6 +43,10 @@ The built-in Routine group holds a fixed set of life-maintenance projects (such 
 
 Rationale: Calendar, Pomodoro, and Music need stable everyday categories that exist in every vault without setup.
 
+## Project names
+
+A project name is unique within its group, ignoring case and surrounding whitespace; the same name may appear in different groups. Creating, renaming, or moving a project into a group where the name is taken is refused, and the form says so. Two linked devices that create the same name concurrently keep both projects.
+
 ## Source of truth
 
 Projects, tasks, schemas, views, links, and history are SQLite-canonical. Working-folder files and Git repositories remain file-authoritative and can be linked to a project without becoming project rows. Project Notes are canonical Notes pages with project membership.

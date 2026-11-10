@@ -142,7 +142,7 @@ Ganbaru/
   vault.lock: device-local advisory lock that keeps a second Ganbaru process out of the vault; never archived
   ganbaru.sqlite: SQLite source of truth for structured data, portable preferences, Notes, and indexes
   .database-rollbacks/: device-local copies kept by Reset local data, rollback restores, and snapshot copy replacements, bounded and restorable from Settings > Data
-  projects/{project-id}/: managed working folder created for every project
+  projects/{project name}/: managed working folder created for every project, named when the project is created
   assets/: managed user assets (profile/, chat/attachments/, chat/browser-artifacts/, notes/page-icons/, notes/page-covers/, notes/files/, project-icons/, quick-notes/images/, music/artwork/)
 ```
 

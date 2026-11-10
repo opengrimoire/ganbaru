@@ -18,7 +18,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { COMPACT_IDENTITY_EMOJI_SCALE, COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
   import { shortcutModifierLabel } from "$lib/keyboard-shortcuts";
-  import { normalizeProjectName } from "$lib/projects/text";
+  import { isProjectNameTaken, normalizeProjectName } from "$lib/projects/text";
   import type { ProjectSidebarActions } from "$lib/projects/sidebar";
   import type { Project, ProjectGroup, ProjectLifecycleStatus, ProjectView, ProjectViewType } from "$lib/projects/types";
   import {
@@ -116,6 +116,10 @@
   let renameInput = $state<HTMLInputElement | null>(null);
 
   const displayName = $derived(pendingName ?? project.name);
+  const renameErrorId = $props.id();
+  const renameError = $derived(
+    editing && nameTakenIn(project.groupId, nameDraft) ? t("projects.navigator.projectNameTaken") : null,
+  );
   const lockedReason = $derived(actions.identityLocked ? t("projects.sidebar.identityLocked") : undefined);
   const moveUnavailableReason = $derived(lockedReason ?? (actions.canMoveToGroup ? undefined : t("projects.sidebar.noOtherGroup")));
   /** Every view of the project, including hosted views this window hides, so a hosted view already present stays unavailable. */
@@ -189,10 +193,17 @@
     });
   }
 
+  /** Whether another project of `groupId` already uses `name`, so the backend would refuse it there. */
+  function nameTakenIn(groupId: string, name: string): boolean {
+    return isProjectNameTaken(projects.projects, groupId, name, project.id);
+  }
+
+  /** Saves the draft name; a name taken in the group keeps the field open with its error instead. */
   function saveRename(): void {
     if (!editing) return;
-    editing = false;
     const name = normalizeProjectName(nameDraft);
+    if (name && name !== project.name && nameTakenIn(project.groupId, name)) return;
+    editing = false;
     if (!name || name === project.name) return;
     pendingName = name;
     void onRename(name)
@@ -208,7 +219,7 @@
     if (event.key === "Enter") {
       event.preventDefault();
       saveRename();
-      void tick().then(() => actionButton?.focus());
+      if (!editing) void tick().then(() => actionButton?.focus());
     } else if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -278,6 +289,8 @@
         data-app-shortcuts="ignore"
         aria-label={t("projects.sidebar.name")}
         placeholder={t("projects.sidebar.name")}
+        aria-invalid={renameError ? "true" : undefined}
+        aria-describedby={renameError ? renameErrorId : undefined}
         onkeydown={handleRenameKeydown}
         onblur={saveRename}
       />
@@ -332,6 +345,9 @@
       </button>
     {/if}
   </div>
+  {#if renameError}
+    <p id={renameErrorId} class="px-2 pb-1 text-xs text-destructive" role="alert">{renameError}</p>
+  {/if}
 
   {#if !collapsed}
     {#each views as view, index (view.id)}
@@ -460,11 +476,16 @@
       {#if moveOpen}
         <div class="flex max-h-48 flex-col overflow-y-auto border-y border-border bg-muted/25 py-1" role="group" aria-label={t("projects.sidebar.moveToGroup")}>
           {#each moveGroups as group (group.id)}
+            {@const nameTaken = nameTakenIn(group.id, project.name)}
             <button
               type="button"
               role="menuitem"
               class="menu-item"
-              onclick={() => runAction("move a project to another group", () => onMoveToGroup(group.id))}
+              aria-disabled={nameTaken ? "true" : undefined}
+              data-app-tooltip={nameTaken ? t("projects.navigator.projectNameTaken") : undefined}
+              onclick={() => {
+                if (!nameTaken) runAction("move a project to another group", () => onMoveToGroup(group.id));
+              }}
             >
               <ProjectIcon
                 name={group.icon}

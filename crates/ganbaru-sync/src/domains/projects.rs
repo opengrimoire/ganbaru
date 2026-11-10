@@ -9,9 +9,7 @@
 use std::fmt;
 
 use ganbaru_sync_contracts::{Field, GroupId, GroupValue, RowKey, TableId, Value};
-use ganbaru_working_folders::{
-    UtcTimestamp, managed_folder_project, managed_project_relative_path,
-};
+use ganbaru_working_folders::{UtcTimestamp, managed_folder_name, managed_folder_project};
 use sqlx::SqliteConnection;
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
@@ -427,10 +425,12 @@ fn validate_project(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     }
 }
 
-/// A managed folder stores the one path its project owns. Every device binds a managed folder only
-/// at that path, so admitting another would leave the row unusable on all of them.
-fn is_project_managed_path(project: &str, path: &str) -> bool {
-    managed_project_relative_path(project).is_ok_and(|expected| expected == path)
+/// A managed folder stores the folder name its creating device chose, as one portable folder name
+/// directly inside `projects/`. Each device keeps its own claim of where the folder lives, so the
+/// name is a preference; admitting a path of another shape would hand every device a name that
+/// cannot name a folder there.
+fn is_managed_folder_path(path: &str) -> bool {
+    managed_folder_name(path).is_some()
 }
 
 /// A working folder timestamp every reader of the row can parse. Reads parse these columns as
@@ -451,8 +451,8 @@ fn validate_folder(group: GroupId, value: &Value) -> Result<(), AdapterError> {
         one_of(kind, allowed::FOLDER_KINDS, "project folder kind")?;
         folder_timestamp(created_at, "project folder creation time")?;
         match (project, kind, path) {
-            (Field::Text(project), Field::Text(kind), Field::Text(path))
-                if kind == MANAGED_FOLDER_KIND && is_project_managed_path(project, path) =>
+            (Field::Text(_), Field::Text(kind), Field::Text(path))
+                if kind == MANAGED_FOLDER_KIND && is_managed_folder_path(path) =>
             {
                 Ok(())
             }
@@ -966,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_folder_path_must_match_its_project() {
+    fn managed_folder_path_must_name_one_portable_folder() {
         let adapter = ProjectsAdapter;
         let admits = |project: &str, kind: &str, path: Field| {
             let created = value(vec![
@@ -981,36 +981,46 @@ mod tests {
                 .is_ok()
         };
 
-        assert!(admits("project", "managed", text("projects/project")));
-        assert!(admits("a..b", "managed", text("projects/a..b")));
+        for named in [
+            "projects/project",
+            "projects/Thesis",
+            "projects/Año nuevo 2",
+            "projects/a..b",
+        ] {
+            assert!(admits("project", "managed", text(named)), "{named}");
+        }
         assert!(admits("project", "external", Field::Null));
-        for unbound in [
+        assert!(!admits("project", "managed", Field::Null));
+        assert!(!admits("project", "external", text("projects/project")));
+        for unusable in [
             "",
             "x",
             "..",
             "project",
-            "projects/other",
+            "projects",
+            "projects/",
             "projects/project/nested",
             "projects/project/",
             "./projects/project",
             "/projects/project",
             "projects/../project",
+            "projects/..",
             "projects\\project",
+            "projects/project:one",
+            "projects/CON",
+            "projects/trailing.",
+            "projects/ leading",
+            "projects/right\u{202E}left",
+            "assets/project",
         ] {
-            assert!(!admits("project", "managed", text(unbound)), "{unbound}");
+            assert!(!admits("project", "managed", text(unusable)), "{unusable}");
         }
-        assert!(!admits("a/b", "managed", text("projects/a/b")));
-        for hidden in [".opencode", ".grok"] {
+        for hidden in [".opencode", ".grok", ".git"] {
             assert!(
-                !admits(hidden, "managed", text(&format!("projects/{hidden}"))),
+                !admits("project", "managed", text(&format!("projects/{hidden}"))),
                 "{hidden}"
             );
         }
-        assert!(!admits(
-            "project:one",
-            "managed",
-            text("projects/project:one")
-        ));
     }
 
     #[test]

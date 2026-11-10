@@ -12,13 +12,18 @@ use crate::vault;
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
 };
+use sqlx::SqlitePool;
 use std::path::Path;
 use tauri::Runtime;
 
 pub use ganbaru_chat::workspace::*;
 
-pub fn ensure_managed_working_folder_binding<R: Runtime>(
+/// Binds a managed working folder on this device when it has no binding yet, at the folder this
+/// vault claims for it inside `projects/`, creating the folder when missing. An existing binding
+/// is kept; [`commands::projects_recreate_managed_working_folder`] drops it to bind again.
+pub async fn ensure_managed_working_folder_binding<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    pool: &SqlitePool,
     working_folder: &ProjectWorkingFolder,
 ) -> ChatResult<()> {
     if working_folder.kind != WorkingFolderKind::Managed {
@@ -31,22 +36,27 @@ pub fn ensure_managed_working_folder_binding<R: Runtime>(
     if existing {
         return Ok(());
     }
-    let relative_path = working_folder
-        .managed_relative_path
-        .as_deref()
-        .ok_or_else(path_validation_error)?;
-    let expected =
-        ganbaru_working_folders::managed_project_relative_path(working_folder.project_id.as_str())
-            .map_err(|_| path_validation_error())?;
-    if relative_path != expected {
-        return Err(path_validation_error());
-    }
     let vault_root = vault::active_writable_vault_path(app).map_err(device_state_error)?;
-    let folder_path = ganbaru_working_folders::resolve_managed_project_folder(
+    let folder_name = ganbaru_projects::managed_folders::claim_managed_folder(
+        pool,
         &vault_root,
-        working_folder.project_id.as_str(),
+        working_folder.id.as_str(),
     )
-    .map_err(|_| {
+    .await
+    .map_err(|message| {
+        eprintln!(
+            "Managed working folder {} could not be claimed: {message}",
+            working_folder.id
+        );
+        ChatError::new(
+            ChatErrorCode::Persistence,
+            "The managed project working folder could not be assigned inside the active Ganbaru folder",
+            true,
+        )
+    })?;
+    let folder_path =
+        ganbaru_working_folders::resolve_managed_project_folder(&vault_root, &folder_name)
+            .map_err(|_| {
         ChatError::new(
             ChatErrorCode::Permission,
             "The managed project working folder could not be created inside the active Ganbaru folder",
@@ -125,13 +135,6 @@ pub fn remove_active_device_binding<R: Runtime>(
 
 fn paths_overlap(left: &Path, right: &Path) -> bool {
     left == right || left.starts_with(right) || right.starts_with(left)
-}
-
-fn path_validation_error() -> ChatError {
-    ChatError::validation(
-        "relativePath",
-        "Workspace paths must be normalized relative paths",
-    )
 }
 
 fn device_state_error(_error: String) -> ChatError {

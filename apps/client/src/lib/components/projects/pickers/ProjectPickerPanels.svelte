@@ -56,6 +56,8 @@
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
+  import { isProjectNameTaken, projectNameKey } from "$lib/projects/text";
+  import { isProjectNameTakenError } from "$lib/api/projects";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import ProjectNameDraftForm from "./ProjectNameDraftForm.svelte";
 
@@ -174,6 +176,8 @@
   let createProjectGroupId = $state<string | null>(null);
   let projectDraftByGroup = $state<Record<string, string>>({});
   let projectIconDraftByGroup = $state<Record<string, string>>({});
+  /** Name key the backend refused per group, for a project the snapshot has not caught up with yet. */
+  let refusedProjectNameByGroup = $state<Record<string, string>>({});
   let activeGroupId = $state<string | null>(untrack(() => mobileLayout ? initialMobileGroupId : null));
   let activeGroupAnchorElement = $state<HTMLElement | null>(null);
   const groupSubpanelDelay = createHoverDelay();
@@ -676,10 +680,23 @@
     else createGroupOpen = false;
   }
 
+  function projectDraftError(groupId: string): string | null {
+    const draft = projectDraftByGroup[groupId] ?? "";
+    const taken = isProjectNameTaken(projects.projects, groupId, draft)
+      || (projectNameKey(draft) !== "" && refusedProjectNameByGroup[groupId] === projectNameKey(draft));
+    return taken ? t("projects.navigator.projectNameTaken") : null;
+  }
+
   async function submitProject(groupId: string): Promise<void> {
     const name = (projectDraftByGroup[groupId] ?? "").trim();
-    if (!name) return;
-    await projects.addProject(groupId, name, projectIconDraftByGroup[groupId] ?? DEFAULT_PROJECT_ICON);
+    if (!name || projectDraftError(groupId)) return;
+    try {
+      await projects.addProject(groupId, name, projectIconDraftByGroup[groupId] ?? DEFAULT_PROJECT_ICON);
+    } catch (error: unknown) {
+      if (!isProjectNameTakenError(error)) throw error;
+      refusedProjectNameByGroup = { ...refusedProjectNameByGroup, [groupId]: projectNameKey(name) };
+      return;
+    }
     projectDraftByGroup = { ...projectDraftByGroup, [groupId]: "" };
     projectIconDraftByGroup = { ...projectIconDraftByGroup, [groupId]: DEFAULT_PROJECT_ICON };
     if (mobileLayout) closeMobileProjectCreator();
@@ -1109,6 +1126,7 @@
             bind:name={() => projectDraftByGroup[mainProjectGroup.id] ?? "", (value) => { projectDraftByGroup = { ...projectDraftByGroup, [mainProjectGroup.id]: value }; }}
             bind:icon={() => projectIconDraftByGroup[mainProjectGroup.id] ?? DEFAULT_PROJECT_ICON, (value) => { projectIconDraftByGroup = { ...projectIconDraftByGroup, [mainProjectGroup.id]: value }; }}
             placeholder={t("projects.navigator.projectNamePlaceholder")}
+            error={projectDraftError(mainProjectGroup.id)}
             {mobileLayout}
             {iconStrokeWidth}
             onSubmit={() => void submitProject(mainProjectGroup.id)}
@@ -1224,6 +1242,7 @@
           bind:name={() => projectDraftByGroup[activeGroup.id] ?? "", (value) => { projectDraftByGroup = { ...projectDraftByGroup, [activeGroup.id]: value }; }}
           bind:icon={() => projectIconDraftByGroup[activeGroup.id] ?? DEFAULT_PROJECT_ICON, (value) => { projectIconDraftByGroup = { ...projectIconDraftByGroup, [activeGroup.id]: value }; }}
           placeholder={t("projects.navigator.projectNamePlaceholder")}
+          error={projectDraftError(activeGroup.id)}
           {iconStrokeWidth}
           onSubmit={() => void submitProject(activeGroup.id)}
         />

@@ -183,3 +183,63 @@ fn project_settings_and_soundtrack_defaults_commit_atomically() {
         assert_eq!(name_after_failure, "Renamed project");
     });
 }
+
+#[test]
+fn renames_and_moves_refuse_a_name_taken_in_the_target_group() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::query(
+            "INSERT INTO project_groups (id, name, icon, order_key) VALUES
+                ('group-a', 'Group A', 'lucide:folder', 'a1'),
+                ('group-b', 'Group B', 'lucide:folder', 'a2');
+             INSERT INTO projects (id, group_id, name, icon, order_key) VALUES
+                ('project-a', 'group-a', 'Draft', 'lucide:folder', 'a1'),
+                ('project-b', 'group-a', 'Thesis', 'lucide:folder', 'a2'),
+                ('project-c', 'group-b', 'draft', 'lucide:folder', 'a1'),
+                ('project-d', 'group-b', 'Draft', 'lucide:folder', 'a2');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let update = |id: &str, group_id: &str, name: &str| ProjectUpdate {
+            id: id.to_string(),
+            group_id: group_id.to_string(),
+            name: name.to_string(),
+            music_assignments: None,
+            music_assignments_updated_at: None,
+            ..valid_project_update()
+        };
+        let vault_root = std::env::temp_dir();
+        let update_project = |project: ProjectUpdate| {
+            super::super::project_commands::update_project(&pool, &vault_root, project)
+        };
+        let taken = |result: Result<ProjectsMutationRows, String>| {
+            result.is_err_and(|error| {
+                error.starts_with(super::super::project_commands::PROJECT_NAME_TAKEN_PREFIX)
+            })
+        };
+
+        assert!(taken(
+            update_project(update("project-a", "group-a", "THESIS")).await
+        ));
+        assert!(taken(
+            update_project(update("project-b", "group-b", "Draft")).await
+        ));
+        update_project(update("project-a", "group-a", "draft "))
+            .await
+            .unwrap();
+        update_project(update("project-c", "group-b", "draft"))
+            .await
+            .unwrap();
+        update_project(update("project-b", "group-a", "Thesis notes"))
+            .await
+            .unwrap();
+        let names: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM projects WHERE group_id IN ('group-a', 'group-b') ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(names, ["draft", "Thesis notes", "draft", "Draft"]);
+    });
+}

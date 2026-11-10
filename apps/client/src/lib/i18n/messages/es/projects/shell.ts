@@ -93,6 +93,7 @@ export const shell = {
     groupName: "Nombre del grupo",
     groupNamePlaceholder: "Nombre del grupo",
     projectNamePlaceholder: "Nombre del proyecto",
+    projectNameTaken: "Otro proyecto de este grupo ya tiene este nombre",
     groupColor: "Color del grupo",
     selectGroupColor: "Seleccionar color del grupo",
     selectGroupIcon: (icon: string) => `Seleccionar icono ${icon} del grupo`,

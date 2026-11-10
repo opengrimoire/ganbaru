@@ -90,6 +90,7 @@ export const shell = {
     groupName: "Group name",
     groupNamePlaceholder: "Group name",
     projectNamePlaceholder: "Project name",
+    projectNameTaken: "Another project in this group already has this name",
     groupColor: "Group color",
     selectGroupColor: "Select group color",
     selectGroupIcon: (icon: string) => `Select ${icon} group icon`,

@@ -11,6 +11,7 @@ import type { OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
 import ProjectSidebarSection from "./ProjectSidebarSection.svelte";
 
 const store = vi.hoisted(() => ({
+  projects: [] as Pick<Project, "id" | "groupId" | "name">[],
   views: [] as ProjectView[],
   hostableViewTypes: [] as ProjectHostedViewType[],
   addView: vi.fn(),
@@ -25,6 +26,7 @@ const store = vi.hoisted(() => ({
 
 vi.mock("$lib/stores/projects.svelte", () => {
   const getProjects = () => ({
+    get projects() { return store.projects; },
     get views() { return store.views; },
     get hostableViewTypes() { return store.hostableViewTypes; },
     viewsForProject: (projectId: string) => sidebarViews(projectId),
@@ -86,6 +88,7 @@ function render(overrides: {
   onSelectView?: (view: ProjectView) => void;
   onOpenViewInNewTab?: (view: ProjectView, intent: OpenInNewTabIntent) => void;
   onCollapsedChange?: (value: boolean) => void;
+  onRename?: (name: string) => Promise<void>;
 } = {}) {
   component = mount(ProjectSidebarSection, {
     target,
@@ -100,7 +103,7 @@ function render(overrides: {
       onCollapsedChange: overrides.onCollapsedChange ?? (() => undefined),
       onSelectView: overrides.onSelectView ?? (() => undefined),
       onOpenViewInNewTab: overrides.onOpenViewInNewTab,
-      onRename: () => Promise.resolve(),
+      onRename: overrides.onRename ?? (() => Promise.resolve()),
       onMoveToGroup: () => Promise.resolve(),
       onSetStatus: () => Promise.resolve(),
     },
@@ -154,6 +157,7 @@ beforeEach(() => {
   document.body.append(target);
   store.views = [view("overview", "dashboard", "1000"), view("list", "list", "2000", "Backlog"), view("notes", "notes", "3000")];
   store.hostableViewTypes = ["notes", "chat"];
+  store.projects = [project];
   store.addView.mockReset();
   store.renameView.mockReset().mockResolvedValue(undefined);
   store.reorderViews.mockReset().mockResolvedValue(undefined);
@@ -185,6 +189,35 @@ describe("ProjectSidebarSection", () => {
     expect(viewRowLabels()).toEqual([]);
     button("Expand Launch").click();
     expect(onCollapsedChange).toHaveBeenCalledWith(false);
+  });
+
+  it("keeps a rename open with an error while another project of the group has the name", async () => {
+    store.projects = [project, { id: "project-b", groupId: "group-a", name: "Roadmap" }, { id: "project-c", groupId: "group-b", name: "Archive" }];
+    const onRename = vi.fn((_name: string) => Promise.resolve());
+    render({ onRename });
+    button("Project actions: Launch").click();
+    flushSync();
+    button("Rename").click();
+    await tick();
+    const input = target.querySelector<HTMLInputElement>('input[aria-label="Project name"]');
+    if (!input) throw new Error("Rename input missing");
+
+    input.value = " roadmap ";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    flushSync();
+    expect(onRename).not.toHaveBeenCalled();
+    expect(input.isConnected).toBe(true);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(target.querySelector('[role="alert"]')?.textContent).toBe("Another project in this group already has this name");
+
+    input.value = "Archive";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    expect(target.querySelector('[role="alert"]')).toBeNull();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    flushSync();
+    expect(onRename).toHaveBeenCalledWith("Archive");
   });
 
   it("marks hosted views the project already has as unavailable and opens a newly added view", async () => {

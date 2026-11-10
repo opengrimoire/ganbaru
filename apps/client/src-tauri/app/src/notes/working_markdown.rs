@@ -78,12 +78,11 @@ pub async fn notes_list_working_markdown<R: Runtime>(
         .await
         .map_err(persistence_error)?;
     let folders = workspaces::list_workspaces(&pool).await?;
-    bind_managed_folders_for_listing(
-        &app,
-        folders
-            .iter()
-            .filter(|folder| folder.project_id == project_id && folder.archived_at.is_none()),
-    );
+    let active: Vec<&ProjectWorkingFolder> = folders
+        .iter()
+        .filter(|folder| folder.project_id == project_id && folder.archived_at.is_none())
+        .collect();
+    bind_managed_folders_for_listing(&app, &pool, active).await;
     let mut scans = Vec::new();
     for folder in folders
         .into_iter()
@@ -179,9 +178,14 @@ fn markdown_root(
             WorkingFolderKind::Managed => "managed".to_string(),
             WorkingFolderKind::External => "external".to_string(),
         },
-        display_path: folder
-            .managed_relative_path
-            .unwrap_or_else(|| canonical_path.to_string_lossy().into_owned()),
+        display_path: match (folder.kind, canonical_path.file_name()) {
+            (WorkingFolderKind::Managed, Some(name)) => format!(
+                "{}/{}",
+                ganbaru_working_folders::MANAGED_PROJECTS_DIRECTORY,
+                name.to_string_lossy()
+            ),
+            _ => canonical_path.to_string_lossy().into_owned(),
+        },
         nodes: scan.nodes.into_iter().map(markdown_node_dto).collect(),
         truncated: scan.truncated,
     }
@@ -300,7 +304,7 @@ async fn require_folder<R: Runtime>(
             "Archived project working folders cannot be edited",
         ));
     }
-    ensure_managed_working_folder_binding(app, &folder)?;
+    ensure_managed_working_folder_binding(app, &pool, &folder).await?;
     authorize_working_folder(app, &pool, working_folder_id, operation).await
 }
 
@@ -394,11 +398,9 @@ fn persistence_error<T>(_error: T) -> ChatError {
 
 #[cfg(test)]
 mod tests {
-    use crate::chat::workspace::commands::bind_active_folders;
     use crate::chat::workspace::{ProjectWorkingFolder, WorkingFolderKind};
-    use ganbaru_chat_contracts::models::{ChatError, ProjectWorkingFolderId, UtcTimestamp};
+    use ganbaru_chat_contracts::models::{ProjectWorkingFolderId, UtcTimestamp};
     use ganbaru_working_folders::RepositoryKind;
-    use std::cell::RefCell;
 
     fn managed_folder(id: &str, path: &str) -> ProjectWorkingFolder {
         let timestamp = UtcTimestamp::new("2027-01-02T00:00:00.000Z").unwrap();
@@ -416,29 +418,6 @@ mod tests {
             archived_at: None,
             revision: 1,
         }
-    }
-
-    #[test]
-    fn working_markdown_binding_failure_leaves_other_folders() {
-        let folders = [
-            managed_folder("working-folder:unbound", "x"),
-            managed_folder("working-folder:project", "projects/project"),
-            managed_folder("working-folder:extra", "projects/project"),
-        ];
-        let bound = RefCell::new(Vec::new());
-
-        bind_active_folders(&folders, |folder| {
-            if folder.managed_relative_path.as_deref() == Some("x") {
-                return Err(ChatError::validation("workingFolderPath", "unbound path"));
-            }
-            bound.borrow_mut().push(folder.id.as_str().to_string());
-            Ok(())
-        });
-
-        assert_eq!(
-            bound.into_inner(),
-            ["working-folder:project", "working-folder:extra"]
-        );
     }
 
     #[cfg(unix)]

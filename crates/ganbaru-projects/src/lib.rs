@@ -3,7 +3,8 @@
 //! dependency cascades, reordering, project views, workspace reads, and Calendar scheduling rows.
 //!
 //! Callers supply an authorized vault pool. Project creation also creates the managed working
-//! folder under the supplied vault root.
+//! folder under the supplied vault root, and [`managed_folders`] decides where this vault keeps
+//! each managed folder.
 
 pub mod conflicts;
 pub mod conversion;
@@ -16,6 +17,7 @@ pub mod emojis;
 mod history;
 pub mod icons;
 pub mod keys;
+pub mod managed_folders;
 mod models;
 mod mutations;
 mod number;

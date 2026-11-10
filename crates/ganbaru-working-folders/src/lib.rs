@@ -5,8 +5,9 @@ use std::{collections::BTreeMap, fmt};
 mod managed_folder;
 
 pub use managed_folder::{
-    MANAGED_PROJECTS_DIRECTORY, managed_folder_id, managed_folder_project,
-    managed_project_relative_path, resolve_managed_project_folder, validate_managed_folder_name,
+    MANAGED_PROJECTS_DIRECTORY, existing_folder_keys, managed_folder_id, managed_folder_key,
+    managed_folder_name, managed_folder_project, managed_relative_path, portable_folder_name,
+    resolve_managed_project_folder, unique_folder_name, validate_managed_folder_name,
 };
 
 /// Folder ids become sync row keys, so they stay short. Managed folder ids come from

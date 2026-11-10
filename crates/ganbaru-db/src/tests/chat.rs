@@ -88,8 +88,12 @@ fn built_in_projects_have_one_protected_managed_working_folder() {
         .unwrap();
         assert_eq!(managed, projects);
         let invalid_paths: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM project_working_folders
-             WHERE kind = 'managed' AND managed_relative_path != ('projects/' || project_id)",
+            "SELECT COUNT(*) FROM project_working_folders AS folders
+             LEFT JOIN project_managed_folder_locations AS locations
+                 ON locations.working_folder_id = folders.id
+             WHERE folders.kind = 'managed'
+               AND (locations.folder_name IS NULL
+                    OR folders.managed_relative_path != ('projects/' || locations.folder_name))",
         )
         .fetch_one(&pool)
         .await

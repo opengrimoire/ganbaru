@@ -17,10 +17,13 @@
     placeholder,
     mobileLayout = false,
     iconStrokeWidth,
+    error = null,
     onSubmit,
     onCancel,
   }: {
     name: string;
+    /** A message about the current name, shown under the field; submitting is left to the host to refuse. */
+    error?: string | null;
     /** A project icon value, such as `lucide:briefcase-business` or `emoji:...`. */
     icon: string;
     placeholder: string;
@@ -32,6 +35,7 @@
   } = $props();
 
   const { t } = getLocalization();
+  const errorId = $props.id();
   let Picker = $state<typeof IconPicker | null>(null);
   let loading = $state(false);
   let loadError = $state<string | null>(null);
@@ -74,7 +78,7 @@
   </button>
 {/snippet}
 
-<form class={cn("flex gap-1", mobileLayout && "gap-2")} onsubmit={(event) => { event.preventDefault(); onSubmit(); }}>
+<form class={cn("flex flex-wrap gap-1", mobileLayout && "gap-2")} onsubmit={(event) => { event.preventDefault(); onSubmit(); }}>
   {#if Picker}
     <Picker value={icon} onChange={(next) => { icon = next; }} ariaLabel={t("projects.settings.icon")} showRemove={false} showIconColor={false} nested panelAlign="start" initiallyOpen>
       {#snippet trigger({ open, toggle, panelId })}{@render iconButton(open, toggle, panelId)}{/snippet}
@@ -87,6 +91,8 @@
     {@attach focusOnMount}
     {placeholder}
     enterkeyhint="done"
+    aria-invalid={error ? "true" : undefined}
+    aria-describedby={error ? errorId : undefined}
     class={cn(
       "field min-w-0 flex-1 text-popover-foreground",
       mobileLayout && "min-h-12 rounded-xl px-3 text-base",
@@ -101,5 +107,8 @@
     >
       <X size={18} strokeWidth={iconStrokeWidth} aria-hidden="true" />
     </button>
+  {/if}
+  {#if error}
+    <p id={errorId} class={cn("basis-full px-1 text-xs text-destructive", mobileLayout && "text-sm")} role="alert">{error}</p>
   {/if}
 </form>

@@ -1204,11 +1204,11 @@ export class ChatStore {
     const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
     const channels = await chatApi.listChatNavigationChannels();
     if (!isCurrentVault()) return;
-    for (const channel of channels) this.channelNavigationController.upsert(channel);
+    this.channelNavigationController.refreshNavigation(channels);
     this.refreshWaitingAssignments();
     if (this.owner) await this.refreshTeammates();
     const channelId = this.selectedChannelId;
-    if (!isCurrentVault() || !channelId) return;
+    if (!isCurrentVault() || !channelId || !this.channelNavigationController.find(channelId)) return;
     this.organizationalController.scheduledMessagesVersion += 1;
     await this.loadChannelMessages(channelId, true);
     if (this.openReplyThreadId && isCurrentVault()) await this.loadReplyThread(this.openReplyThreadId, true);

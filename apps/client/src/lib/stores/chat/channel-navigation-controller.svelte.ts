@@ -207,6 +207,20 @@ export class ChatChannelNavigationController {
     this.archiveOpen = false;
   }
 
+  /**
+   * Replace the active channels with a fresh listing of every active channel, so channels deleted or archived outside
+   * this window leave navigation. Loaded archives stay, since the listing does not include archived channels.
+   */
+  refreshNavigation(channels: readonly ChatChannelRead[]): void {
+    this.navigationChannels = channels.filter((channel) => !channel.archivedAt);
+    const projectId = this.options.currentProjectId();
+    this.activeChannels = this.navigationChannels
+      .filter((channel) => channel.projectId === projectId)
+      .sort(compareChannels);
+    const activeIds = new Set(this.activeChannels.map((channel) => channel.id));
+    this.archivedChannels = this.archivedChannels.filter((channel) => !activeIds.has(channel.id));
+  }
+
   upsert(channel: ChatChannelRead): void {
     this.mergeNavigation([channel]);
     this.mergeArchivedNavigation(channel);

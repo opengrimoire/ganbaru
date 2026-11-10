@@ -48,6 +48,9 @@
   const BEZEL = 6;
   /** From this canvas width, the window has room for its sidebar of places. */
   const SIDEBAR_MIN_W = 540;
+  /** The JSON marker's braces on a 24 unit grid. */
+  const BRACES_PATH =
+    "M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1M16 21h1a2 2 0 0 0 2-2v-5a2 2 0 0 1 2-2 2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1";
   const desktopShell = BUILD_PLATFORM_PROFILE.shell === "desktop";
   /** Apple's windows keep their controls on the left; other systems keep them on the right. */
   const CONTROLS_LEADING = BUILD_PLATFORM === "macos" || BUILD_PLATFORM === "ios";
@@ -112,18 +115,18 @@
       <path d="M16 5h23l13 13v38a3 3 0 0 1-3 3H16a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z" class="fill-primary" />
       <path d="M39 5v10a3 3 0 0 0 3 3h10z" class="fill-background" />
       <path d="M39 5v10a3 3 0 0 0 3 3h10z" class="fill-primary" fill-opacity="0.6" />
-      <!-- A pair of braces cut out of the page, scaled from a 24 unit grid. -->
-      <g
-        transform="translate(17.5 23) scale(1.25)"
-        class="stroke-background"
-        fill="none"
-        stroke-width="2.4"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      >
-        <path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1" />
-        <path d="M16 21h1a2 2 0 0 0 2-2v-5a2 2 0 0 1 2-2 2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1" />
-      </g>
+      <!-- A pair of braces in the fold's lighter accent, scaled from a 24 unit grid. -->
+      {#each ["stroke-background", "stroke-primary/60"] as tone (tone)}
+        <path
+          d={BRACES_PATH}
+          transform="translate(17.5 23) scale(1.25)"
+          class={tone}
+          fill="none"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      {/each}
     </svg>
   {/if}
 {/snippet}

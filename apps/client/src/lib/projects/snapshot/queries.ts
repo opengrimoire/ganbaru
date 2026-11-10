@@ -144,13 +144,15 @@ export function subtasksForTaskIncludingArchived(
   return parentTaskId ? copy(projectLoadedDataIndex(source).tasksByParent.get(parentTaskId)) : [];
 }
 
-export function projectsForGroup(source: ProjectLoadedDataIndexSource, groupId: string): Project[] {
+/** Active projects of a group, or of no group when `groupId` is `null`, in sidebar order. */
+export function projectsForGroup(source: ProjectLoadedDataIndexSource, groupId: string | null): Project[] {
   return copy(projectLoadedDataIndex(source).activeProjectsByGroup.get(groupId));
 }
 
+/** Every project of a group, or of no group when `groupId` is `null`, including hidden and archived ones. */
 export function projectsForGroupIncludingInactive(
   source: ProjectLoadedDataIndexSource,
-  groupId: string,
+  groupId: string | null,
 ): Project[] {
   return copy(projectLoadedDataIndex(source).projectsByGroup.get(groupId));
 }

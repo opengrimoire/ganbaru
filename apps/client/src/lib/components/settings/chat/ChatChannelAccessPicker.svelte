@@ -20,7 +20,8 @@
     projectPickerSubpanelSide,
   } from "$lib/projects/picker-panels";
   import { PROJECT_NAVIGATOR_PANEL_WIDTH } from "$lib/projects/toolbar";
-  import type { Project, ProjectGroup } from "$lib/projects/types";
+  import type { Project } from "$lib/projects/types";
+  import type { ProjectListKey } from "$lib/projects/lists";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { portal } from "$lib/utils/portal";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
@@ -35,6 +36,13 @@
     channel: ChatChannelRead;
     groupName: string;
     projectName: string;
+  }
+
+  /** A group, or the projects outside every group, with its active projects that have channels. */
+  interface AccessPickerList {
+    key: ProjectListKey;
+    name: string;
+    projects: Project[];
   }
 
   let {
@@ -66,7 +74,7 @@
   let channelQuery = $state("");
   let compact = $state(false);
   let compactStage = $state<CompactStage>("groups");
-  let activeGroupId = $state<string | null>(null);
+  let activeListKey = $state<ProjectListKey | null>(null);
   let activeProjectId = $state<string | null>(null);
   let mainPanelElement = $state<HTMLDivElement>();
   let mainScrollElement = $state<HTMLElement>();
@@ -87,14 +95,17 @@
   let mainPanelStyle = $state("visibility:hidden");
 
   const activeChannels = $derived(channels.filter((channel) => channel.archivedAt === null));
-  const activeProjects = $derived(projects.projects.filter((project) => project.status === "active"));
-  const visibleGroups = $derived(projects.visibleGroups().filter((group) => channelsForGroup(group.id).length > 0));
-  const activeGroup = $derived(visibleGroups.find((group) => group.id === activeGroupId) ?? null);
-  const visibleProjects = $derived(activeGroup
-    ? activeProjects.filter((project) => (
-      project.groupId === activeGroup.id && channelsForProject(project.id).length > 0
-    ))
-    : []);
+  const visibleLists = $derived.by((): AccessPickerList[] =>
+    projects.projectLists()
+      .map((list) => ({
+        key: list.key,
+        name: list.group?.name ?? t("projects.navigator.noGroup"),
+        projects: list.projects.filter((project) => channelsForProject(project.id).length > 0),
+      }))
+      .filter((list) => list.projects.length > 0),
+  );
+  const activeList = $derived(visibleLists.find((list) => list.key === activeListKey) ?? null);
+  const visibleProjects = $derived(activeList?.projects ?? []);
   const activeProject = $derived(visibleProjects.find((project) => project.id === activeProjectId) ?? null);
   const visibleChannels = $derived(activeProject ? channelsForProject(activeProject.id) : []);
   const normalizedChannelQuery = $derived(channelQuery.trim().toLocaleLowerCase());
@@ -106,13 +117,14 @@
   const normalizedQuery = $derived(query.trim().toLocaleLowerCase());
   const searchResults = $derived.by((): SearchResult[] => {
     if (!normalizedQuery) return [];
+    const listed = new Map(visibleLists.flatMap((list) =>
+      list.projects.map((project) => [project.id, { project, listName: list.name }] as const)));
     return activeChannels.flatMap((channel) => {
-      const project = activeProjects.find((entry) => entry.id === channel.projectId);
-      const group = visibleGroups.find((entry) => entry.id === project?.groupId);
-      if (!project || !group) return [];
-      const searchable = `${group.name} ${project.name} ${channel.name}`.toLocaleLowerCase();
+      const entry = listed.get(channel.projectId);
+      if (!entry) return [];
+      const searchable = `${entry.listName} ${entry.project.name} ${channel.name}`.toLocaleLowerCase();
       return searchable.includes(normalizedQuery)
-        ? [{ channel, groupName: group.name, projectName: project.name }]
+        ? [{ channel, groupName: entry.listName, projectName: entry.project.name }]
         : [];
     });
   });
@@ -121,11 +133,8 @@
     return activeChannels.filter((channel) => channel.projectId === projectId);
   }
 
-  function channelsForGroup(groupId: string): ChatChannelRead[] {
-    const projectIds = new Set(activeProjects
-      .filter((project) => project.groupId === groupId)
-      .map((project) => project.id));
-    return activeChannels.filter((channel) => projectIds.has(channel.projectId));
+  function channelsForList(list: AccessPickerList): ChatChannelRead[] {
+    return list.projects.flatMap((project) => channelsForProject(project.id));
   }
 
   function selectionState(channelIds: readonly string[]): "none" | "some" | "all" {
@@ -215,7 +224,7 @@
   }
 
   function updateProjectPanelGeometry(): void {
-    if (compact || !groupAnchorElement || !mainPanelElement || !activeGroup) return;
+    if (compact || !groupAnchorElement || !mainPanelElement || !activeList) return;
     const geometry = projectPickerSubpanelGeometry({
       anchorRect: groupAnchorElement.getBoundingClientRect(),
       panelRect: mainPanelElement.getBoundingClientRect(),
@@ -249,11 +258,11 @@
   }
 
   function openGroup(
-    group: ProjectGroup,
+    list: AccessPickerList,
     target: EventTarget | null,
     moveFocus = false,
   ): void {
-    activeGroupId = group.id;
+    activeListKey = list.key;
     activeProjectId = null;
     groupAnchorElement = target instanceof HTMLElement ? target : null;
     projectAnchorElement = null;
@@ -286,14 +295,14 @@
     });
   }
 
-  function handleGroupPointer(group: ProjectGroup, event: PointerEvent): void {
-    if (compact || activeGroupId === group.id) return;
-    if (activeGroupId && pointerAimingAtPanel(
+  function handleGroupPointer(list: AccessPickerList, event: PointerEvent): void {
+    if (compact || activeListKey === list.key) return;
+    if (activeListKey && pointerAimingAtPanel(
       projectPickerPointerPoint(event),
       groupAnchorElement,
       projectPanelElement,
     )) return;
-    openGroup(group, event.currentTarget);
+    openGroup(list, event.currentTarget);
   }
 
   function handleProjectPointer(project: Project, event: PointerEvent): void {
@@ -321,7 +330,7 @@
       activeProjectId = null;
     } else {
       compactStage = "groups";
-      activeGroupId = null;
+      activeListKey = null;
     }
     void tick().then(() => mainPanelElement?.querySelector<HTMLButtonElement>(".access-picker-name")?.focus());
   }
@@ -345,7 +354,7 @@
 
   $effect(() => {
     const resultCount = searchResults.length;
-    const groupCount = visibleGroups.length;
+    const groupCount = visibleLists.length;
     const stage = compactStage;
     void resultCount;
     void groupCount;
@@ -363,7 +372,7 @@
 
   $effect(() => {
     if (!normalizedQuery) return;
-    activeGroupId = null;
+    activeListKey = null;
     activeProjectId = null;
     groupAnchorElement = null;
     projectAnchorElement = null;
@@ -415,7 +424,7 @@
         <span>
           {compactStage === "channels"
             ? activeProject?.name ?? t("settings.chat.teammates.channels")
-            : activeGroup?.name ?? t("settings.chat.teammates.projects")}
+            : activeList?.name ?? t("settings.chat.teammates.projects")}
         </span>
       </button>
     {/if}
@@ -457,20 +466,20 @@
               </div>
             {/each}
           {:else}
-            {#each visibleGroups as group (group.id)}
-              {@const groupChannelIds = channelsForGroup(group.id).map((channel) => channel.id)}
-              {@const state = selectionState(groupChannelIds)}
-              <div class="access-picker-row menu-item" data-highlighted={activeGroupId === group.id ? "" : undefined}>
-                <Checkbox checked={state === "all"} indeterminate={state === "some"} label={group.name} {disabled} onChange={() => toggleChannels(groupChannelIds)} />
+            {#each visibleLists as list (list.key)}
+              {@const listChannelIds = channelsForList(list).map((channel) => channel.id)}
+              {@const state = selectionState(listChannelIds)}
+              <div class="access-picker-row menu-item" data-highlighted={activeListKey === list.key ? "" : undefined}>
+                <Checkbox checked={state === "all"} indeterminate={state === "some"} label={list.name} {disabled} onChange={() => toggleChannels(listChannelIds)} />
                 <button
                   type="button"
                   class="access-picker-name"
                   {disabled}
-                  onpointerenter={(event) => handleGroupPointer(group, event)}
-                  onpointermove={(event) => handleGroupPointer(group, event)}
-                  onfocus={(event) => openGroup(group, event.currentTarget)}
-                  onclick={(event) => openGroup(group, event.currentTarget, true)}
-                ><span>{group.name}</span><ChevronRight size={13} /></button>
+                  onpointerenter={(event) => handleGroupPointer(list, event)}
+                  onpointermove={(event) => handleGroupPointer(list, event)}
+                  onfocus={(event) => openGroup(list, event.currentTarget)}
+                  onclick={(event) => openGroup(list, event.currentTarget, true)}
+                ><span>{list.name}</span><ChevronRight size={13} /></button>
               </div>
             {:else}
               <p class="access-picker-empty">{t("settings.chat.teammates.noChannels")}</p>
@@ -482,7 +491,7 @@
     </div>
   </div>
 
-  {#if !compact && !normalizedQuery && activeGroup && groupAnchorElement}
+  {#if !compact && !normalizedQuery && activeList && groupAnchorElement}
     <div aria-hidden="true" class="access-picker-bridge" style={projectBridgeStyle}></div>
     <div bind:this={projectPanelElement} class="access-picker-panel subpanel surface-floating" style={projectPanelStyle}>
       <div class="access-picker-scroll-frame">

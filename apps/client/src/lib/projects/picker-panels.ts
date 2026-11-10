@@ -1,4 +1,5 @@
 import type { MenuAimPoint, MenuAimRect, MenuAimSide } from "$lib/utils/menu-aim";
+import type { ProjectListKey } from "./lists";
 import type { ProjectNavigatorPanelMode } from "./toolbar";
 
 export type ProjectPickerMobilePane = "groups" | "projects" | "search";
@@ -14,7 +15,8 @@ export interface ProjectPickerMobileState {
   activeGroupId: string | null;
   searchActive: boolean;
   createGroupOpen: boolean;
-  createProjectGroupId: string | null;
+  /** The list whose project creator is open, or `null` when none is. */
+  createProjectListKey: ProjectListKey | null;
 }
 
 export interface ProjectPickerPanelBounds {
@@ -88,7 +90,7 @@ export function projectPickerMobilePane(
 export function projectPickerMobileBackAction(
   state: ProjectPickerMobileState,
 ): ProjectPickerMobileBackAction {
-  if (state.createProjectGroupId !== null) return "close-project-creator";
+  if (state.createProjectListKey !== null) return "close-project-creator";
   if (state.createGroupOpen) return "close-group-creator";
   if (state.searchActive) return "clear-search";
   if (state.mode === "groups" && state.activeGroupId !== null) return "show-groups";

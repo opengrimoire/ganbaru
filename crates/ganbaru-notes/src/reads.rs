@@ -267,7 +267,8 @@ pub async fn page_location(pool: &SqlitePool, page_id: &str) -> Result<Vec<Strin
 }
 
 /// Read the projects that share a project group with the project an active page belongs to: the page's own project
-/// and the active projects beside it. A page outside every project has none.
+/// and the active projects beside it. A project outside every group shares no group, so it lists only itself, and a
+/// page outside every project has none.
 pub async fn page_project_group_project_ids(
     pool: &SqlitePool,
     page_id: &str,
@@ -284,8 +285,9 @@ pub async fn page_project_group_project_ids(
     sqlx::query_scalar::<_, String>(
         "SELECT peer.id
          FROM projects AS owner
-         JOIN projects AS peer ON peer.group_id = owner.group_id
-         WHERE owner.id = ? AND (peer.status = 'active' OR peer.id = owner.id)
+         JOIN projects AS peer
+           ON peer.id = owner.id OR (peer.group_id = owner.group_id AND peer.status = 'active')
+         WHERE owner.id = ?
          ORDER BY peer.order_key, peer.name, peer.id",
     )
     .bind(project_id)
@@ -419,19 +421,22 @@ async fn folder_location(
     .map_err(|e| format!("load notes folder location: {e}"))
 }
 
-/// Read a project's group and name, or nothing when the project no longer exists.
+/// Read a project's group and name, only its name when it is outside every group, or nothing when the project no
+/// longer exists.
 async fn project_location(pool: &SqlitePool, project_id: &str) -> Result<Vec<String>, String> {
-    let names = sqlx::query_as::<_, (String, String)>(
+    let names = sqlx::query_as::<_, (Option<String>, String)>(
         "SELECT project_group.name, project.name
          FROM projects AS project
-         JOIN project_groups AS project_group ON project_group.id = project.group_id
+         LEFT JOIN project_groups AS project_group ON project_group.id = project.group_id
          WHERE project.id = ?",
     )
     .bind(project_id)
     .fetch_optional(pool)
     .await
     .map_err(|e| format!("load notes project location: {e}"))?;
-    Ok(names.map_or_else(Vec::new, |(group, project)| vec![group, project]))
+    Ok(names.map_or_else(Vec::new, |(group, project)| {
+        group.into_iter().chain([project]).collect()
+    }))
 }
 
 #[cfg(test)]

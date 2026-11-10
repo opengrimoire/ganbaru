@@ -91,6 +91,8 @@ export const shell = {
     groupNamePlaceholder: "Group name",
     projectNamePlaceholder: "Project name",
     projectNameTaken: "Another project in this group already has this name",
+    ungroupedProjectNameTaken: "Another project without a group already has this name",
+    noGroup: "No group",
     groupColor: "Group color",
     selectGroupColor: "Select group color",
     selectGroupIcon: (icon: string) => `Select ${icon} group icon`,
@@ -100,8 +102,8 @@ export const shell = {
     deleteGroup: (group: string) => `Delete group ${group}`,
     deleteGroupTitle: (group: string) => `Delete ${group}?`,
     deleteGroupMessage: (group: string, projectCount: number) =>
-      `This permanently deletes ${group}, ${projectCount} ${projectCount === 1 ? "project" : "projects"
-      }, and all task data under them. Linked calendar events stay in the calendar with no project.`,
+      `This deletes ${group} and keeps its ${projectCount} ${projectCount === 1 ? "project" : "projects"
+      } with all their tasks outside every group.`,
     deleteGroupConfirm: "Delete group",
     empty: "No projects",
   },

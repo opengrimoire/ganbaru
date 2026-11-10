@@ -1,5 +1,5 @@
 use super::*;
-use crate::structure_commands::delete_project_group;
+use crate::structure_commands::delete_group;
 use crate::workspace::{load_workspace, refresh_workspace};
 
 #[test]
@@ -8,8 +8,10 @@ fn built_in_routine_group_is_protected_and_loads_never_repair_routine_rows() {
         let pool = migrated_memory_pool().await;
 
         assert_eq!(
-            delete_project_group(&pool, ROUTINE_GROUP_ID).await,
-            Err("built-in Routine group cannot be deleted".to_string()),
+            delete_group(&pool, ROUTINE_GROUP_ID.to_string())
+                .await
+                .err(),
+            Some("built-in Routine group cannot be deleted".to_string()),
         );
         let seeded: Vec<String> =
             sqlx::query_scalar("SELECT id FROM projects WHERE group_id = ? ORDER BY order_key, id")

@@ -20,9 +20,10 @@ use super::order::{OrderGroup, OrderPlacement};
 use super::project_commands::project_order;
 use super::routine::ROUTINE_GROUP_ID;
 use super::validation::{
-    require_non_empty, validate_group_create, validate_group_update, validate_priority_create,
-    validate_priority_update, validate_section_create, validate_section_update,
-    validate_status_create, validate_status_update, validate_tag_create, validate_tag_update,
+    require_non_empty, validate_group_create, validate_group_update, validate_optional_group_id,
+    validate_priority_create, validate_priority_update, validate_section_create,
+    validate_section_update, validate_status_create, validate_status_update, validate_tag_create,
+    validate_tag_update,
 };
 
 fn group_order() -> OrderGroup<'static> {
@@ -143,54 +144,54 @@ pub async fn update_group(
     group_mutation(pool, &group.id).await
 }
 
-/// Returns the ids of the projects in a group, which deleting the group removes with it.
-pub async fn group_project_ids(pool: &SqlitePool, group_id: &str) -> Result<Vec<String>, String> {
-    sqlx::query_scalar::<_, String>("SELECT id FROM projects WHERE group_id = ?")
-        .bind(group_id.trim())
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("load group projects: {e}"))
-}
-
-/// Deletes a group and, through cascading foreign keys, its projects with their tasks,
-/// working folders, and Chat rows. Files those rows name are left to the caller.
+/// Deletes a group. Its projects stay, with everything they own, and move outside every group
+/// through the `ON DELETE SET NULL` foreign key; the mutation reports them as updated rows.
 pub async fn delete_group(
     pool: &SqlitePool,
     group_id: String,
 ) -> Result<ProjectsMutationRows, String> {
-    let normalized_group_id = group_id.trim();
-    let project_ids = group_project_ids(pool, normalized_group_id).await?;
-    delete_project_group(pool, normalized_group_id).await?;
-    let mut mutation = ProjectsMutationRows::default();
-    mutation.removals.push(ProjectMutationRemoval::Group {
-        id: normalized_group_id.to_string(),
-    });
-    mutation.removals.extend(
-        project_ids
-            .into_iter()
-            .map(|id| ProjectMutationRemoval::Project { id }),
-    );
-    Ok(mutation)
-}
-
-pub(super) async fn delete_project_group(
-    pool: &sqlx::SqlitePool,
-    group_id: &str,
-) -> Result<(), String> {
-    let normalized_group_id = group_id.trim();
-    require_non_empty(normalized_group_id, "group_id")?;
-    if normalized_group_id == ROUTINE_GROUP_ID {
+    let group_id = group_id.trim();
+    require_non_empty(group_id, "group_id")?;
+    if group_id == ROUTINE_GROUP_ID {
         return Err("built-in Routine group cannot be deleted".to_string());
     }
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("begin project group delete: {e}"))?;
+    let project_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM projects WHERE group_id = ?")
+        .bind(group_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("load group projects: {e}"))?;
     let result = sqlx::query("DELETE FROM project_groups WHERE id = ?")
-        .bind(normalized_group_id)
-        .execute(pool)
+        .bind(group_id)
+        .execute(&mut *tx)
         .await
         .map_err(|e| format!("delete project group: {e}"))?;
     if result.rows_affected() == 0 {
         return Err("project group not found".to_string());
     }
-    Ok(())
+    let mut projects = Vec::with_capacity(project_ids.len());
+    for id in &project_ids {
+        let project = sqlx::query_as::<_, ProjectRow>("SELECT * FROM projects WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| format!("load ungrouped project: {e}"))?;
+        projects.push(project);
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project group delete: {e}"))?;
+    let mut mutation = ProjectsMutationRows {
+        projects,
+        ..ProjectsMutationRows::default()
+    };
+    mutation.removals.push(ProjectMutationRemoval::Group {
+        id: group_id.to_string(),
+    });
+    Ok(mutation)
 }
 
 pub async fn set_group_collapsed(
@@ -247,28 +248,31 @@ pub async fn reorder_groups(
     })
 }
 
-/// Rewrites the custom sidebar order of the projects in one group, including hidden and archived ones, in one
-/// transaction. Modified times stay, since a sidebar order is not an edit of the project.
+/// Rewrites the custom sidebar order of the projects in one group, or of the projects outside every group, including
+/// hidden and archived ones, in one transaction. Modified times stay, since a sidebar order is not an edit of the
+/// project.
 pub async fn reorder_group_projects(
     pool: &SqlitePool,
     reorder: GroupProjectReorder,
 ) -> Result<ProjectsMutationRows, String> {
-    let group_id = reorder.group_id.trim();
-    require_non_empty(group_id, "group_id")?;
+    validate_optional_group_id(reorder.group_id.as_deref())?;
+    let group_id = reorder.group_id.as_deref().map(str::trim);
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| format!("begin project reorder: {e}"))?;
-    let group_exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM project_groups WHERE id = ?)")
-            .bind(group_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| format!("load project group to reorder: {e}"))?;
-    if !group_exists {
-        return Err("project group not found".to_string());
+    if let Some(group_id) = group_id {
+        let group_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM project_groups WHERE id = ?)")
+                .bind(group_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| format!("load project group to reorder: {e}"))?;
+        if !group_exists {
+            return Err("project group not found".to_string());
+        }
     }
-    let current: Vec<String> = sqlx::query_scalar("SELECT id FROM projects WHERE group_id = ?")
+    let current: Vec<String> = sqlx::query_scalar("SELECT id FROM projects WHERE group_id IS ?")
         .bind(group_id)
         .fetch_all(&mut *tx)
         .await
@@ -280,7 +284,7 @@ pub async fn reorder_group_projects(
         .await
         .map_err(|e| format!("commit project reorder: {e}"))?;
     let projects = sqlx::query_as::<_, ProjectRow>(
-        "SELECT * FROM projects WHERE group_id = ? ORDER BY order_key ASC, id ASC",
+        "SELECT * FROM projects WHERE group_id IS ? ORDER BY order_key ASC, id ASC",
     )
     .bind(group_id)
     .fetch_all(pool)

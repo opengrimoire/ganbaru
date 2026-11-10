@@ -101,11 +101,17 @@
   {#if onCancel}
     <button
       type="button"
-      class="flex min-h-12 min-w-12 items-center justify-center rounded-xl active:bg-accent"
+      class={cn(
+        "flex shrink-0 items-center justify-center text-popover-foreground",
+        mobileLayout
+          ? "min-h-12 min-w-12 rounded-xl active:bg-accent"
+          : "size-(--panel-row-height) rounded-floating-item hover:bg-accent",
+      )}
       aria-label={t("common.cancel")}
+      title={mobileLayout ? undefined : t("common.cancel")}
       onclick={onCancel}
     >
-      <X size={18} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+      <X size={mobileLayout ? 18 : 14} strokeWidth={iconStrokeWidth} aria-hidden="true" />
     </button>
   {/if}
   {#if error}

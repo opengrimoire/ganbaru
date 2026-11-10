@@ -23,9 +23,10 @@ import {
 } from "$lib/stores/preference-options";
 import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
 
+/** `group_unavailable` means the chosen group disappeared; no group at all is a valid choice. */
 export type ProjectDraftError =
   | "name_required"
-  | "group_required"
+  | "group_unavailable"
   | "invalid_duration";
 
 export type ProjectDraftResult<T> =
@@ -33,7 +34,8 @@ export type ProjectDraftResult<T> =
   | { ok: false; error: ProjectDraftError };
 
 export interface ProjectDraft {
-  groupId: string;
+  /** The chosen group, or `null` to keep the project outside every group. */
+  groupId: string | null;
   name: string;
   icon: string;
   status: ProjectLifecycleStatus;
@@ -62,7 +64,7 @@ export interface ProjectDraftUpdateInput {
 
 export function emptyProjectDraft(): ProjectDraft {
   return {
-    groupId: "",
+    groupId: null,
     name: "",
     icon: DEFAULT_PROJECT_ICON,
     status: "active",
@@ -135,7 +137,7 @@ export function projectUpdateFromDraft(
   const name = identityLocked ? input.project.name : input.draft.name.trim();
   const groupId = identityLocked ? input.project.groupId : input.draft.groupId;
   if (!name) return { ok: false, error: "name_required" };
-  if (!input.visibleGroupIds.has(groupId)) return { ok: false, error: "group_required" };
+  if (groupId !== null && !input.visibleGroupIds.has(groupId)) return { ok: false, error: "group_unavailable" };
   const duration = projectSettingsProjectDurationFromDraft(input.draft);
   if (!duration.ok) return duration;
   const defaultPomodoroCustom = projectSettingsProjectPomodoroCustomDraft(input.draft);

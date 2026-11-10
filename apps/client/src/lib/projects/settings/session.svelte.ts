@@ -254,7 +254,7 @@ export function createProjectSettingsSession(options: ProjectSettingsSessionOpti
 
   function projectDraftErrorMessage(error: ProjectDraftError): string {
     if (error === "name_required") return t("projects.settings.nameRequired");
-    if (error === "group_required") return t("projects.settings.groupRequired");
+    if (error === "group_unavailable") return t("projects.settings.groupUnavailable");
     return t("projects.settings.invalidDuration");
   }
 

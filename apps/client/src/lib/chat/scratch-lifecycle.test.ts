@@ -60,6 +60,12 @@ describe("private scratch lifecycle contracts", () => {
     expect(JSON.stringify(scope)).not.toContain("/home/");
   });
 
+  it("accepts a scope whose project is outside every group", () => {
+    const scope = parseChatScratchScope({ ...scratchScopeFixture(), groupId: null, groupName: null });
+
+    expect(scope).toMatchObject({ groupId: null, groupName: null });
+  });
+
   it("accepts a bounded page with revision-checked promotable files", () => {
     const page = parseChatScratchDirectoryPage({
       scratchGenerationId: "scratch-generation:test",

@@ -92,9 +92,7 @@
   );
   /** The main panel search finds channels across the listed projects, in sidebar order. */
   const channelSearchGroups = $derived(chatChannelSearchGroups(
-    projects.visibleGroups().flatMap((group) => showInactiveProjects
-      ? projects.projectsForGroupIncludingInactive(group.id)
-      : projects.projectsForGroup(group.id)),
+    projects.projectLists(showInactiveProjects).flatMap((list) => list.projects),
     (projectId) => chatSidebarOrder.sortChannels(projectId, chat.channelsForProject(projectId)),
     projectSearch,
   ));

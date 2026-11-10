@@ -110,6 +110,11 @@
   let actionError = $state<string | null>(null);
   const selectedProject = $derived(projects.selectedProject);
   const selectedGroup = $derived(projects.selectedGroup);
+  /**
+   * The project crumb lists its group's projects; a project outside every group has no group crumb, so its crumb lists
+   * the groups, which end with the projects outside every group.
+   */
+  const projectCrumbMode = $derived<ProjectNavigatorPanelMode>(selectedGroup ? "projects" : "groups");
   const selectedChannel = $derived(chat.selectedChannel);
   const selectedProjectChannels = $derived(
     selectedProject ? chatSidebarOrder.sortChannels(selectedProject.id, chat.channelsForProject(selectedProject.id)) : [],
@@ -121,7 +126,7 @@
     .slice(0, MEMBER_STACK_LIMIT - 1));
 
   function triggerForMode(mode: ChatNavigatorMode): HTMLButtonElement | null {
-    if (mode === "groups") return groupTriggerElement;
+    if (mode === "groups") return selectedGroup ? groupTriggerElement : projectTriggerElement;
     if (mode === "projects") return projectTriggerElement;
     return channelTriggerElement;
   }
@@ -281,10 +286,12 @@
       {/if}
     {:else}
     <div class="flex h-7 min-w-0 max-w-full items-center gap-0.5 overflow-hidden text-identity font-medium">
-      {#if selectedProject && selectedGroup}
-        <button bind:this={groupTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "groups" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "groups"} data-chat-group-trigger onpointerenter={(event) => { navigatorHover.enterTrigger(event, () => openNavigator("groups")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("groups")}><ProjectIcon name={selectedGroup.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} /><span class="truncate">{selectedGroup.name}</span></button>
-        <span class="chat-context-divider">/</span>
-        <button bind:this={projectTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "projects" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "projects"} data-chat-project-trigger onpointerenter={(event) => { navigatorHover.enterTrigger(event, () => openNavigator("projects")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("projects")}><ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} /><span class="truncate">{selectedProject.name}</span>{#if !selectedChannel}<WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" />{/if}</button>
+      {#if selectedProject}
+        {#if selectedGroup}
+          <button bind:this={groupTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "groups" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "groups"} data-chat-group-trigger onpointerenter={(event) => { navigatorHover.enterTrigger(event, () => openNavigator("groups")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("groups")}><ProjectIcon name={selectedGroup.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} /><span class="truncate">{selectedGroup.name}</span></button>
+          <span class="chat-context-divider">/</span>
+        {/if}
+        <button bind:this={projectTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === projectCrumbMode && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === projectCrumbMode} data-chat-project-trigger onpointerenter={(event) => { navigatorHover.enterTrigger(event, () => openNavigator(projectCrumbMode)); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator(projectCrumbMode)}><ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} /><span class="truncate">{selectedProject.name}</span>{#if !selectedChannel}<WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" />{/if}</button>
         {#if selectedChannel}
           <span class="chat-context-divider">/</span>
           {#if editingTitle && !selectedChannel.isDefault}

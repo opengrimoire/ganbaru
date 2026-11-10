@@ -69,7 +69,7 @@
     const query = search.trim().toLocaleLowerCase();
     if (!query) return scopes;
     return scopes.filter((scope) => (
-      `${scope.teammateName} ${scope.groupName} ${scope.projectName} ${scope.channelName}`
+      `${scope.teammateName} ${scope.groupName ?? ""} ${scope.projectName} ${scope.channelName}`
         .toLocaleLowerCase()
         .includes(query)
     ));
@@ -77,6 +77,13 @@
   const selectedScope = $derived(
     scopes.find((scope) => scope.id === selectedScopeId) ?? null,
   );
+
+  /** Where a scope's channel lives: its group when the project has one, the project, then the channel. */
+  function scopeLocation(scope: ChatScratchScopeRead): string {
+    return [scope.groupName, scope.projectName, `#${scope.channelName}`]
+      .filter((part): part is string => part !== null)
+      .join(" / ");
+  }
   const selectedGeneration = $derived(
     selectedScope?.generations.find((generation) => generation.id === selectedGenerationId) ?? null,
   );
@@ -383,7 +390,7 @@
           {:else if filteredScopes.length === 0}<p class="empty">{t("settings.chat.teammates.scratchManager.noMatch")}</p>
           {:else}{#each filteredScopes as scope (scope.id)}
             <button type="button" class:active={scope.id === selectedScopeId} aria-current={scope.id === selectedScopeId ? "page" : undefined} onclick={() => void selectScope(scope)}>
-              <HardDrive size={15} /><span><strong>{scope.teammateName}</strong><small>{scope.groupName} / {scope.projectName} / #{scope.channelName}</small></span><span class="count">{scope.generations.length}</span>
+              <HardDrive size={15} /><span><strong>{scope.teammateName}</strong><small>{scopeLocation(scope)}</small></span><span class="count">{scope.generations.length}</span>
             </button>
           {/each}{/if}
         </nav>
@@ -394,7 +401,7 @@
         {#if notice}<p class="notice" role="status">{notice}</p>{/if}
         {#if selectedScope}
           <section class="scope-heading">
-            <div><h4>{selectedScope.teammateName}</h4><p>{selectedScope.groupName} / {selectedScope.projectName} / #{selectedScope.channelName}</p></div>
+            <div><h4>{selectedScope.teammateName}</h4><p>{scopeLocation(selectedScope)}</p></div>
             {#if selectedScope.lifecycleState === "archived"}<span><Archive size={13} />{t("settings.chat.teammates.scratchManager.archived")}</span>{/if}
           </section>
           <section class="generation-grid">

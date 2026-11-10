@@ -1,20 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { projectSidebarActions, resolveProjectSidebarGroupId, searchProjectSidebar } from "./sidebar";
+import type { ProjectListKey } from "./lists";
+import { projectSidebarActions, resolveProjectSidebarListKey, searchProjectSidebar } from "./sidebar";
 
-describe("resolveProjectSidebarGroupId", () => {
-  const groups = ["health", "work", "home"];
+describe("resolveProjectSidebarListKey", () => {
+  const lists: ProjectListKey[] = ["group:health", "group:work", "ungrouped"];
 
   it("lists the selected project's group", () => {
-    expect(resolveProjectSidebarGroupId("work", groups)).toBe("work");
+    expect(resolveProjectSidebarListKey("group:work", lists)).toBe("group:work");
   });
 
-  it("uses the first visible group when the selected group is not visible", () => {
-    expect(resolveProjectSidebarGroupId("hidden", groups)).toBe("health");
-    expect(resolveProjectSidebarGroupId(null, groups)).toBe("health");
+  it("lists the projects outside every group when the selected project has no group", () => {
+    expect(resolveProjectSidebarListKey("ungrouped", lists)).toBe("ungrouped");
   });
 
-  it("returns null when there are no visible groups", () => {
-    expect(resolveProjectSidebarGroupId("work", [])).toBeNull();
+  it("uses the first available list when the selected one is not available", () => {
+    expect(resolveProjectSidebarListKey("group:hidden", lists)).toBe("group:health");
+    expect(resolveProjectSidebarListKey("ungrouped", ["group:work"])).toBe("group:work");
+    expect(resolveProjectSidebarListKey(null, lists)).toBe("group:health");
+  });
+
+  it("returns null when no list is available", () => {
+    expect(resolveProjectSidebarListKey("group:work", [])).toBeNull();
   });
 });
 
@@ -51,6 +57,12 @@ describe("searchProjectSidebar", () => {
   it("collapses repeated whitespace in the query", () => {
     expect(names("  reading   list ")).toEqual(["Reading list"]);
   });
+
+  it("matches projects outside every group only by their own name and reports no group", () => {
+    const withUngrouped = [...groups, { name: null, projects: [{ name: "Garden" }, { name: "Taxes" }] }];
+    expect(searchProjectSidebar("garden", withUngrouped)).toEqual([{ project: { name: "Garden" }, groupName: null }]);
+    expect(searchProjectSidebar("null", withUngrouped)).toEqual([]);
+  });
 });
 
 describe("projectSidebarActions", () => {
@@ -61,22 +73,38 @@ describe("projectSidebarActions", () => {
     expect(actions.identityLocked).toBe(false);
     expect(actions.canRename).toBe(true);
     expect(actions.moveGroupIds).toEqual(["group-routine", "home"]);
+    expect(actions.canMoveOutOfGroup).toBe(true);
     expect(actions.canMoveToGroup).toBe(true);
+  });
+
+  it("offers every visible group, but not leaving a group, for a project outside every group", () => {
+    const actions = projectSidebarActions({ id: "project-1", groupId: null, status: "active" }, groups);
+    expect(actions.moveGroupIds).toEqual(groups);
+    expect(actions.canMoveOutOfGroup).toBe(false);
+    expect(actions.canMoveToGroup).toBe(true);
+  });
+
+  it("cannot move a project outside every group when no group is visible", () => {
+    const actions = projectSidebarActions({ id: "project-1", groupId: null, status: "active" }, []);
+    expect(actions.canMoveToGroup).toBe(false);
   });
 
   it("keeps the name and group of built-in Routine projects while lifecycle actions stay available", () => {
     const actions = projectSidebarActions({ id: "project-routine-sleep", groupId: "group-routine", status: "active" }, groups);
     expect(actions.identityLocked).toBe(true);
     expect(actions.canRename).toBe(false);
+    expect(actions.moveGroupIds).toEqual([]);
+    expect(actions.canMoveOutOfGroup).toBe(false);
     expect(actions.canMoveToGroup).toBe(false);
     expect(actions.visibility).toEqual({ label: "hide", status: "hidden" });
     expect(actions.archive).toEqual({ label: "archive", status: "archived" });
   });
 
-  it("cannot move a project when its group is the only visible one", () => {
+  it("can still move a project out of its group when that group is the only visible one", () => {
     const actions = projectSidebarActions({ id: "project-1", groupId: "work", status: "active" }, ["work"]);
     expect(actions.moveGroupIds).toEqual([]);
-    expect(actions.canMoveToGroup).toBe(false);
+    expect(actions.canMoveOutOfGroup).toBe(true);
+    expect(actions.canMoveToGroup).toBe(true);
   });
 
   it("turns hide into show for a hidden project and archive into restore for an archived one", () => {

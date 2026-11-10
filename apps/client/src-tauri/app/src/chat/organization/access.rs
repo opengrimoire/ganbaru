@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 struct ResolvedChannelAccess {
     channel_id: ChatChannelId,
     project_id: String,
-    group_id: String,
+    group_id: Option<String>,
     conversation_id: ChatConversationId,
     channel_name: String,
     access_profile_id: ChatAccessProfileId,

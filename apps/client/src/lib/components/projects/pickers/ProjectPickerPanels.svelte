@@ -47,6 +47,14 @@
     type Project,
     type ProjectGroup,
   } from "$lib/projects/types";
+  import {
+    buildProjectLists,
+    projectListGroupId,
+    projectListKey,
+    UNGROUPED_PROJECT_LIST_KEY,
+    type ProjectList,
+    type ProjectListKey,
+  } from "$lib/projects/lists";
   import { useProjects } from "$lib/stores/projects.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
@@ -54,16 +62,17 @@
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
-  import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
+  import { createSidebarOrderDrag, type SidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import { isProjectNameTaken, projectNameKey } from "$lib/projects/text";
   import { isProjectNameTakenError } from "$lib/api/projects";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import ProjectNameDraftForm from "./ProjectNameDraftForm.svelte";
 
-  interface ProjectSearchResultGroup {
-    group: ProjectGroup;
-    projects: Project[];
+  /** A list the picker shows projects from: a group, or the projects outside every group when `group` is `null`. */
+  interface PickerProjectList {
+    key: ProjectListKey;
+    group: ProjectGroup | null;
   }
 
   let {
@@ -173,11 +182,11 @@
   let groupDraft = $state("");
   let groupIconDraft = $state(DEFAULT_PROJECT_GROUP_ICON);
   let createGroupOpen = $state(false);
-  let createProjectGroupId = $state<string | null>(null);
-  let projectDraftByGroup = $state<Record<string, string>>({});
-  let projectIconDraftByGroup = $state<Record<string, string>>({});
-  /** Name key the backend refused per group, for a project the snapshot has not caught up with yet. */
-  let refusedProjectNameByGroup = $state<Record<string, string>>({});
+  let createProjectListKey = $state<ProjectListKey | null>(null);
+  let projectDraftByList = $state<Partial<Record<ProjectListKey, string>>>({});
+  let projectIconDraftByList = $state<Partial<Record<ProjectListKey, string>>>({});
+  /** Name key the backend refused per list, for a project the snapshot has not caught up with yet. */
+  let refusedProjectNameByList = $state<Partial<Record<ProjectListKey, string>>>({});
   let activeGroupId = $state<string | null>(untrack(() => mobileLayout ? initialMobileGroupId : null));
   let activeGroupAnchorElement = $state<HTMLElement | null>(null);
   const groupSubpanelDelay = createHoverDelay();
@@ -206,39 +215,54 @@
   let mobileBackButtonElement = $state<HTMLButtonElement | null>(null);
 
   const selectedProject = $derived(projects.projectById(selectedProjectId));
-  const selectedGroup = $derived(projects.groupById(selectedProject?.groupId ?? selectedGroupId));
+  /** The list of the selected project, or of `selectedGroupId` when no project is selected. */
+  const selectedListKey = $derived.by((): ProjectListKey | null => {
+    if (selectedProject) return projectListKey(selectedProject.groupId);
+    return selectedGroupId ? projectListKey(selectedGroupId) : null;
+  });
   const normalizedSearch = $derived(projectSearch.trim().toLowerCase());
   const searchActive = $derived(normalizedSearch.length > 0);
   const groups = $derived.by(() => projects.visibleGroups());
   const visibleGroups = $derived.by(() => groups.filter(groupVisible));
-  const searchResultGroups = $derived.by((): ProjectSearchResultGroup[] =>
-    groups
-      .map((group) => ({ group, projects: projectsInGroup(group) }))
-      .filter((entry) => entry.projects.length > 0),
+  /** Projects outside every group, listed as rows of their own after the groups. */
+  const ungroupedProjects = $derived.by(() => projectsInGroup(null));
+  const searchResultLists = $derived.by((): ProjectList<Project>[] =>
+    buildProjectLists(groups, projectsInGroup).filter((list) => list.projects.length > 0),
   );
   const searchRowCount = $derived(searchResults
     ? searchResultCount
-    : searchResultGroups.reduce((count, entry) => count + entry.projects.length, 0));
+    : searchResultLists.reduce((count, list) => count + list.projects.length, 0));
   const activeGroup = $derived.by(() => groups.find((group) => group.id === activeGroupId));
-  const directProjectGroup = $derived.by(() => selectedGroup);
-  const directProjects = $derived.by(() => directProjectGroup ? projectsInGroup(directProjectGroup) : []);
+  const directProjectList = $derived.by((): PickerProjectList | undefined => {
+    if (selectedListKey === null) return undefined;
+    const groupId = projectListGroupId(selectedListKey);
+    if (groupId === null) return { key: selectedListKey, group: null };
+    const group = projects.groupById(groupId);
+    return group ? { key: selectedListKey, group } : undefined;
+  });
+  const directProjects = $derived.by(() => directProjectList ? projectsOfList(directProjectList) : []);
   const mobilePane = $derived(projectPickerMobilePane({
     mode,
     activeGroupId,
     searchActive,
   }));
-  const mainProjectGroup = $derived(
-    mobileLayout && mode === "groups" ? activeGroup : directProjectGroup,
+  const activeGroupList = $derived.by((): PickerProjectList | undefined =>
+    activeGroup ? { key: projectListKey(activeGroup.id), group: activeGroup } : undefined,
+  );
+  const mainProjectList = $derived(
+    mobileLayout && mode === "groups" ? activeGroupList : directProjectList,
   );
   const mainProjects = $derived.by(() => (
-    mainProjectGroup ? projectsInGroup(mainProjectGroup) : []
+    mainProjectList ? projectsOfList(mainProjectList) : []
   ));
+  /** Whether the main panel lists groups, followed by the projects outside every group. */
+  const groupsPaneShown = $derived(mode === "groups" && (!mobileLayout || mobilePane === "groups"));
   const mobileNestedBackAction = $derived(projectPickerMobileBackAction({
     mode,
     activeGroupId,
     searchActive,
     createGroupOpen,
-    createProjectGroupId,
+    createProjectListKey,
   }));
   const projectRowsHaveChildren = $derived(
     showProjectChildren || (mobileLayout && onProjectDrilldown !== undefined),
@@ -254,21 +278,30 @@
   });
   /** Projects drag by their row in the custom order, in the main panel or the open group subpanel. */
   const projectDrag = createSidebarOrderDrag({
-    getIds: () => projectDragGroup ? projectsInGroup(projectDragGroup).map((project) => project.id) : [],
-    enabled: () => customOrder && !searchActive && projectDragGroup !== undefined,
+    getIds: () => projectDragList ? projectsOfList(projectDragList).map((project) => project.id) : [],
+    enabled: () => customOrder && !searchActive && projectDragList !== undefined,
     isStarred: (projectId) => projects.isProjectStarred(projectId),
     save: async (orderedIds) => {
-      if (projectDragGroup) await projects.reorderProjectsInGroup(projectDragGroup.id, orderedIds);
+      if (projectDragList) await projects.reorderProjectsInGroup(projectDragList.group?.id ?? null, orderedIds);
     },
     description: "projects from the project picker",
   });
-  const projectDragGroup = $derived(mode === "groups" && !mobileLayout ? activeGroup : mainProjectGroup);
+  const projectDragList = $derived(mode === "groups" && !mobileLayout ? activeGroupList : mainProjectList);
+  /** Projects outside every group drag by their root row in the groups pane, after the groups. */
+  const rootProjectDrag = createSidebarOrderDrag({
+    getIds: () => ungroupedProjects.map((project) => project.id),
+    enabled: () => customOrder && !searchActive && groupsPaneShown,
+    isStarred: (projectId) => projects.isProjectStarred(projectId),
+    save: (orderedIds) => projects.reorderProjectsInGroup(null, orderedIds),
+    description: "projects without a group from the project picker",
+  });
   $effect(() => groupDrag.reset);
   $effect(() => projectDrag.reset);
+  $effect(() => rootProjectDrag.reset);
 
   /** A lifted group or project closes the panels it would otherwise open while passing over rows. */
   $effect(() => {
-    const groupLifted = groupDrag.draggedId !== null;
+    const groupLifted = groupDrag.draggedId !== null || rootProjectDrag.draggedId !== null;
     const projectLifted = projectDrag.draggedId !== null;
     if (!groupLifted && !projectLifted) return;
     untrack(() => {
@@ -279,22 +312,36 @@
   });
 
   function rowDragActive(): boolean {
-    return groupDrag.draggedId !== null || projectDrag.draggedId !== null;
+    return groupDrag.draggedId !== null
+      || projectDrag.draggedId !== null
+      || rootProjectDrag.draggedId !== null;
   }
 
-  function projectsInGroup(group: ProjectGroup): Project[] {
+  /** Projects of a group, or of no group when `groupId` is `null`, narrowed by the search. */
+  function projectsInGroup(groupId: string | null): Project[] {
     const groupProjects = showInactiveProjects
-      ? projects.projectsForGroupIncludingInactive(group.id)
-      : projects.projectsForGroup(group.id);
+      ? projects.projectsForGroupIncludingInactive(groupId)
+      : projects.projectsForGroup(groupId);
     if (!normalizedSearch) return groupProjects;
     return groupProjects.filter((project) =>
       project.name.toLowerCase().includes(normalizedSearch)
     );
   }
 
+  function projectsOfList(list: PickerProjectList): Project[] {
+    return projectsInGroup(list.group?.id ?? null);
+  }
+
   function groupVisible(group: ProjectGroup): boolean {
     if (!normalizedSearch) return true;
-    return projectsInGroup(group).length > 0;
+    return projectsInGroup(group.id).length > 0;
+  }
+
+  /** Accessible name of a project row, naming its group when it has one. */
+  function selectProjectLabel(project: Project, group: ProjectGroup | null): string {
+    return group
+      ? t("projects.actions.selectProject", project.name, group.name)
+      : t("projects.actions.selectUngroupedProject", project.name);
   }
 
   /** Height of one rendered row in a list, or undefined before any row renders. */
@@ -328,9 +375,9 @@
       ? searchRowCount
       : mobileLayout && mobilePane === "projects"
         ? mainProjects.length
-        : mode === "projects" && directProjectGroup
+        : mode === "projects" && directProjectList
           ? directProjects.length
-          : visibleGroups.length;
+          : visibleGroups.length + ungroupedProjects.length;
     return projectPickerPanelEstimatedListHeight({
       itemCount,
       visibleRows: mainVisibleRows,
@@ -416,7 +463,7 @@
     const bounds = currentPanelBounds();
     const footerHeight = (projectSubpanelFooterElement?.offsetHeight ?? SUBPANEL_FALLBACK_FOOTER_HEIGHT)
       + verticalBorderWidth(projectSubpanelElement);
-    const projectCount = activeGroup ? projectsInGroup(activeGroup).length : 0;
+    const projectCount = activeGroup ? projectsInGroup(activeGroup.id).length : 0;
     const measuredListHeight = projectScrollContentElement
       ? projectScrollContentElement.scrollHeight + scrollAreaVerticalPadding(
         projectScrollElement,
@@ -470,11 +517,12 @@
     projectScrollStateFrame = requestAnimationFrame(refreshProjectScrollState);
   }
 
+  /** Closes the open group subpanel and its project creator; the creator for projects outside every group stays open. */
   function closeProjectSubpanel(): void {
     groupSubpanelDelay.cancel();
     activeGroupId = null;
     activeGroupAnchorElement = null;
-    createProjectGroupId = null;
+    if (untrack(() => createProjectListKey) !== UNGROUPED_PROJECT_LIST_KEY) createProjectListKey = null;
     projectSubpanelFooterElement = undefined;
     projectSubpanelStyle = "";
     projectSubpanelBridgeStyle = "";
@@ -486,7 +534,7 @@
   ): void {
     groupSubpanelDelay.cancel();
     if (activeGroupId !== group.id) {
-      createProjectGroupId = null;
+      if (mobileLayout || createProjectListKey !== UNGROUPED_PROJECT_LIST_KEY) createProjectListKey = null;
       projectPreviewDelay.cancel();
       onProjectPreviewClose?.();
     }
@@ -583,6 +631,39 @@
     projectPreviewDelay.schedule(() => onProjectPreviewClose?.());
   }
 
+  /** Closes the open group subpanel and its preview, then previews a root project row in their place. */
+  function leaveGroupSubpanelFor(project: Project, target: EventTarget | null): void {
+    projectPreviewDelay.cancel();
+    onProjectPreviewClose?.();
+    closeProjectSubpanel();
+    previewProject(project, target);
+  }
+
+  /**
+   * Hovers a project outside every group in the groups pane. An open group subpanel closes now, or after the grace
+   * delay while the pointer is heading into it.
+   */
+  function handleRootProjectPointer(project: Project, event: PointerEvent): void {
+    if (mobileLayout || rowDragActive()) return;
+    if (activeGroupId === null) {
+      if (event.type === "pointerenter") handleProjectPointerEnter(project, event);
+      else handleProjectPointerMove(project, event);
+      return;
+    }
+    const target = event.currentTarget;
+    if (pointerAimingAtProjectSubpanel(projectPickerPointerPoint(event))) {
+      groupSubpanelDelay.schedule(() => leaveGroupSubpanelFor(project, target));
+      return;
+    }
+    leaveGroupSubpanelFor(project, target);
+  }
+
+  function handleRootProjectFocus(project: Project, target: EventTarget | null): void {
+    if (mobileLayout) return;
+    if (activeGroupId === null) previewProject(project, target);
+    else leaveGroupSubpanelFor(project, target);
+  }
+
   /** Route a row click to a new tab when the gesture asks for one, else select the project. */
   function handleProjectRowClick(event: MouseEvent, project: Project): void {
     const intent = onProjectOpenInNewTab ? openInNewTabIntent(event) : null;
@@ -613,7 +694,7 @@
     projectSearch = value;
     if (!mobileLayout || value.trim().length === 0) return;
     createGroupOpen = false;
-    createProjectGroupId = null;
+    createProjectListKey = null;
   }
 
   function showMobileGroups(): void {
@@ -642,12 +723,34 @@
   }
 
   function closeMobileProjectCreator(): void {
-    createProjectGroupId = null;
+    createProjectListKey = null;
     void tick().then(() => {
       panelRootElement?.querySelector<HTMLButtonElement>(
         "[data-mobile-create-project]",
       )?.focus();
     });
+  }
+
+  /** Opens the creator for a group or for projects outside every group, closing the group creator. */
+  function openProjectCreator(listKey: ProjectListKey): void {
+    createGroupOpen = false;
+    createProjectListKey = listKey;
+  }
+
+  function openGroupCreator(): void {
+    if (createProjectListKey === UNGROUPED_PROJECT_LIST_KEY) createProjectListKey = null;
+    createGroupOpen = true;
+  }
+
+  /** Closes the group creator or the ungrouped project creator in the groups footer. */
+  function closeGroupsFooterCreator(): void {
+    if (mobileLayout) {
+      if (createGroupOpen) closeMobileGroupCreator();
+      else closeMobileProjectCreator();
+      return;
+    }
+    createGroupOpen = false;
+    if (createProjectListKey === UNGROUPED_PROJECT_LIST_KEY) createProjectListKey = null;
   }
 
   function handleMobileNestedBack(): void {
@@ -680,27 +783,35 @@
     else createGroupOpen = false;
   }
 
-  function projectDraftError(groupId: string): string | null {
-    const draft = projectDraftByGroup[groupId] ?? "";
+  function projectDraftError(listKey: ProjectListKey): string | null {
+    const draft = projectDraftByList[listKey] ?? "";
+    const groupId = projectListGroupId(listKey);
     const taken = isProjectNameTaken(projects.projects, groupId, draft)
-      || (projectNameKey(draft) !== "" && refusedProjectNameByGroup[groupId] === projectNameKey(draft));
-    return taken ? t("projects.navigator.projectNameTaken") : null;
+      || (projectNameKey(draft) !== "" && refusedProjectNameByList[listKey] === projectNameKey(draft));
+    if (!taken) return null;
+    return groupId === null
+      ? t("projects.navigator.ungroupedProjectNameTaken")
+      : t("projects.navigator.projectNameTaken");
   }
 
-  async function submitProject(groupId: string): Promise<void> {
-    const name = (projectDraftByGroup[groupId] ?? "").trim();
-    if (!name || projectDraftError(groupId)) return;
+  async function submitProject(listKey: ProjectListKey): Promise<void> {
+    const name = (projectDraftByList[listKey] ?? "").trim();
+    if (!name || projectDraftError(listKey)) return;
     try {
-      await projects.addProject(groupId, name, projectIconDraftByGroup[groupId] ?? DEFAULT_PROJECT_ICON);
+      await projects.addProject(
+        projectListGroupId(listKey),
+        name,
+        projectIconDraftByList[listKey] ?? DEFAULT_PROJECT_ICON,
+      );
     } catch (error: unknown) {
       if (!isProjectNameTakenError(error)) throw error;
-      refusedProjectNameByGroup = { ...refusedProjectNameByGroup, [groupId]: projectNameKey(name) };
+      refusedProjectNameByList = { ...refusedProjectNameByList, [listKey]: projectNameKey(name) };
       return;
     }
-    projectDraftByGroup = { ...projectDraftByGroup, [groupId]: "" };
-    projectIconDraftByGroup = { ...projectIconDraftByGroup, [groupId]: DEFAULT_PROJECT_ICON };
+    projectDraftByList = { ...projectDraftByList, [listKey]: "" };
+    projectIconDraftByList = { ...projectIconDraftByList, [listKey]: DEFAULT_PROJECT_ICON };
     if (mobileLayout) closeMobileProjectCreator();
-    else createProjectGroupId = null;
+    else createProjectListKey = null;
     await onProjectCreated?.(projects.selectedProjectId);
     if (closeOnProjectCreate) {
       projectSearch = "";
@@ -738,15 +849,17 @@
     const activeSearch = searchActive;
     const panelMode = mode;
     const groupCount = visibleGroups.length;
+    const ungroupedCount = ungroupedProjects.length;
     const resultCount = searchRowCount;
-    const directProjectCount = directProjectGroup ? projectsInGroup(directProjectGroup).length : 0;
+    const directProjectCount = directProjects.length;
     const mainProjectCount = mainProjects.length;
     const creatingGroup = createGroupOpen;
-    const creatingProject = createProjectGroupId;
+    const creatingProject = createProjectListKey;
     void maxHeight;
     void activeSearch;
     void panelMode;
     void groupCount;
+    void ungroupedCount;
     void resultCount;
     void directProjectCount;
     void mainProjectCount;
@@ -803,6 +916,19 @@
   });
 </script>
 
+{#snippet projectCreator(listKey: ProjectListKey, onCancel: (() => void) | undefined)}
+  <ProjectNameDraftForm
+    bind:name={() => projectDraftByList[listKey] ?? "", (value) => { projectDraftByList = { ...projectDraftByList, [listKey]: value }; }}
+    bind:icon={() => projectIconDraftByList[listKey] ?? DEFAULT_PROJECT_ICON, (value) => { projectIconDraftByList = { ...projectIconDraftByList, [listKey]: value }; }}
+    placeholder={t("projects.navigator.projectNamePlaceholder")}
+    error={projectDraftError(listKey)}
+    {mobileLayout}
+    {iconStrokeWidth}
+    onSubmit={() => void submitProject(listKey)}
+    {onCancel}
+  />
+{/snippet}
+
 <svelte:window
   onkeydown={(event) => {
     if (!mobileLayout || event.key !== "Escape") return;
@@ -838,7 +964,9 @@
         <h2 class="min-w-0 flex-1 truncate px-2 text-base font-semibold">
           {searchActive
             ? searchPlaceholder ?? t("calendar.eventPanel.searchProjects")
-            : mainProjectGroup?.name ?? t("projects.navigator.pickerLabel")}
+            : mainProjectList
+              ? mainProjectList.group?.name ?? t("projects.navigator.noGroup")
+              : t("projects.navigator.pickerLabel")}
         </h2>
         {#if onClose}
           <button
@@ -949,19 +1077,19 @@
           <Notice class="px-3 py-2" message={t("projects.loadFailed", projects.loadError)} onRetry={() => projects.load()} />
         {:else if searchActive && searchResults}
           {@render searchResults()}
-        {:else if searchActive && searchResultGroups.length === 0}
+        {:else if searchActive && searchResultLists.length === 0}
           <div class="px-3 py-2 text-popover-foreground/60">
             {t("calendar.eventPanel.noProjectsFound")}
           </div>
         {:else if searchActive}
           <div class="grid px-1">
-            {#each searchResultGroups as resultGroup (resultGroup.group.id)}
+            {#each searchResultLists as resultList (resultList.key)}
               <div class="px-1 pb-1">
                 <div class="menu-label">
-                  {resultGroup.group.name}
+                  {resultList.group?.name ?? t("projects.navigator.noGroup")}
                 </div>
                 <div class="grid">
-                  {#each resultGroup.projects as project (project.id)}
+                  {#each resultList.projects as project (project.id)}
                     <button
                       type="button"
                       class={cn(
@@ -969,7 +1097,7 @@
                         mobileLayout && "min-h-12 px-3 text-sm",
                         project.status === "active" ? "text-popover-foreground" : "text-popover-foreground/60",
                       )}
-                      aria-label={t("projects.actions.selectProject", project.name, resultGroup.group.name)}
+                      aria-label={selectProjectLabel(project, resultList.group)}
                       onmousedown={preventMiddleClickAutoscroll}
                   onclick={(event) => handleProjectRowClick(event, project)}
                   onauxclick={(event) => handleProjectRowClick(event, project)}
@@ -988,8 +1116,8 @@
               </div>
             {/each}
           </div>
-        {:else if mode === "groups" && (!mobileLayout || mobilePane === "groups")}
-          {#if visibleGroups.length === 0}
+        {:else if groupsPaneShown}
+          {#if visibleGroups.length === 0 && ungroupedProjects.length === 0}
             <div class="px-3 py-2 text-popover-foreground/60">
               {t("calendar.eventPanel.noProjectsFound")}
             </div>
@@ -1022,9 +1150,47 @@
                   </button>
                 </div>
               {/each}
+              {#each ungroupedProjects as project (project.id)}
+                <div class={mobileLayout ? "px-1" : "pl-1 pr-1"} {@attach rootProjectDrag.item(project.id)}>
+                  <button
+                    type="button"
+                    onpointerdown={(event) => rootProjectDrag.pointerDown(event, project.id)}
+                    class={cn(
+                      "menu-item gap-2",
+                      mobileLayout && "min-h-12 px-3 text-sm",
+                      projectRowsHaveChildren
+                        ? mobileLayout
+                          ? "grid grid-cols-[1.125rem_minmax(0,1fr)_auto]"
+                          : "grid grid-cols-[1rem_minmax(0,1fr)_auto]"
+                        : "flex",
+                      project.status === "active" ? "text-popover-foreground" : "text-popover-foreground/60",
+                    )}
+                    data-highlighted={activeProjectId === project.id || undefined}
+                    aria-label={selectProjectLabel(project, null)}
+                    onpointerenter={(event) => handleRootProjectPointer(project, event)}
+                    onpointermove={(event) => handleRootProjectPointer(project, event)}
+                    onpointerleave={handleProjectPointerLeave}
+                    onfocus={(event) => handleRootProjectFocus(project, event.currentTarget)}
+                    onmousedown={preventMiddleClickAutoscroll}
+                    onclick={(event) => handleProjectRowClick(event, project)}
+                    onauxclick={(event) => handleProjectRowClick(event, project)}
+                  >
+                    <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} /></StarredIconBadge>
+                    <span class="min-w-0 flex-1 truncate">{project.name}</span>
+                    {#if projectRowsHaveChildren || (showLifecycleBadges && project.status !== "active")}
+                      <span class="flex min-w-0 items-center justify-end gap-1">
+                        {#if showLifecycleBadges && project.status !== "active"}
+                          <ProjectLifecycleIcon status={project.status} size={iconSize} strokeWidth={iconStrokeWidth} class="text-popover-foreground/60" />
+                        {/if}
+                        {#if projectRowsHaveChildren}<ChevronRight size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />{/if}
+                      </span>
+                    {/if}
+                  </button>
+                </div>
+              {/each}
             </div>
           {/if}
-        {:else if !mainProjectGroup}
+        {:else if !mainProjectList}
           <div class="px-3 py-2 text-popover-foreground/60">
             {t("projects.navigator.empty")}
           </div>
@@ -1050,7 +1216,7 @@
                     project.status === "active" ? "text-popover-foreground" : "text-popover-foreground/60",
                   )}
                   data-highlighted={activeProjectId === project.id || undefined}
-                  aria-label={t("projects.actions.selectProject", project.name, mainProjectGroup.name)}
+                  aria-label={selectProjectLabel(project, mainProjectList.group)}
                   onpointerenter={(event) => handleProjectPointerEnter(project, event)}
                   onpointermove={(event) => handleProjectPointerMove(project, event)}
                   onpointerleave={handleProjectPointerLeave}
@@ -1104,34 +1270,41 @@
             {mobileLayout}
             {iconStrokeWidth}
             onSubmit={() => void submitGroup()}
-            onCancel={mobileLayout ? closeMobileGroupCreator : undefined}
+            onCancel={closeGroupsFooterCreator}
           />
+        {:else if createProjectListKey === UNGROUPED_PROJECT_LIST_KEY}
+          {@render projectCreator(UNGROUPED_PROJECT_LIST_KEY, closeGroupsFooterCreator)}
         {:else}
-          <button
-            type="button"
-            data-mobile-create-project-group={mobileLayout ? "true" : undefined}
-            class={cn(
-              "menu-item justify-center",
-              mobileLayout && "min-h-12 rounded-xl text-sm",
-            )}
-            onclick={() => { createGroupOpen = true; }}
-          >
-            <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} />
-            <span>{t("calendar.eventPanel.createGroup")}</span>
-          </button>
+          <div class={mobileLayout ? "grid gap-1" : "grid grid-cols-2 gap-1"}>
+            <button
+              type="button"
+              data-mobile-create-project-group={mobileLayout ? "true" : undefined}
+              class={cn(
+                "menu-item min-w-0 justify-center",
+                mobileLayout && "min-h-12 rounded-xl text-sm",
+              )}
+              onclick={openGroupCreator}
+            >
+              <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0" />
+              <span class="truncate">{t("calendar.eventPanel.createGroup")}</span>
+            </button>
+            <button
+              type="button"
+              data-mobile-create-project={mobileLayout ? "true" : undefined}
+              class={cn(
+                "menu-item min-w-0 justify-center",
+                mobileLayout && "min-h-12 rounded-xl text-sm",
+              )}
+              onclick={() => openProjectCreator(UNGROUPED_PROJECT_LIST_KEY)}
+            >
+              <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0" />
+              <span class="truncate">{t("calendar.eventPanel.createProject")}</span>
+            </button>
+          </div>
         {/if}
-      {:else if mainProjectGroup}
-        {#if createProjectGroupId === mainProjectGroup.id}
-          <ProjectNameDraftForm
-            bind:name={() => projectDraftByGroup[mainProjectGroup.id] ?? "", (value) => { projectDraftByGroup = { ...projectDraftByGroup, [mainProjectGroup.id]: value }; }}
-            bind:icon={() => projectIconDraftByGroup[mainProjectGroup.id] ?? DEFAULT_PROJECT_ICON, (value) => { projectIconDraftByGroup = { ...projectIconDraftByGroup, [mainProjectGroup.id]: value }; }}
-            placeholder={t("projects.navigator.projectNamePlaceholder")}
-            error={projectDraftError(mainProjectGroup.id)}
-            {mobileLayout}
-            {iconStrokeWidth}
-            onSubmit={() => void submitProject(mainProjectGroup.id)}
-            onCancel={mobileLayout ? closeMobileProjectCreator : undefined}
-          />
+      {:else if mainProjectList}
+        {#if createProjectListKey === mainProjectList.key}
+          {@render projectCreator(mainProjectList.key, mobileLayout ? closeMobileProjectCreator : undefined)}
         {:else}
           <button
             type="button"
@@ -1140,9 +1313,7 @@
               "menu-item justify-center",
               mobileLayout && "min-h-12 rounded-xl text-sm",
             )}
-            onclick={() => {
-              createProjectGroupId = mainProjectGroup.id;
-            }}
+            onclick={() => openProjectCreator(mainProjectList.key)}
           >
             <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} />
             <span>{t("calendar.eventPanel.createProject")}</span>
@@ -1154,7 +1325,8 @@
 </div>
 
 {#if !mobileLayout && mode === "groups" && !searchActive && activeGroup && activeGroupAnchorElement}
-  {@const activeGroupProjects = projectsInGroup(activeGroup)}
+  {@const activeGroupProjects = projectsInGroup(activeGroup.id)}
+  {@const activeGroupListKey = projectListKey(activeGroup.id)}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={projectSubpanelBridgeElement}
@@ -1237,21 +1409,14 @@
 
     <div bind:this={projectSubpanelFooterElement} class="relative z-10 shrink-0 bg-popover p-1.5">
       <div class="pointer-events-none absolute left-1.5 right-1.5 top-0 border-t border-border/70"></div>
-      {#if createProjectGroupId === activeGroup.id}
-        <ProjectNameDraftForm
-          bind:name={() => projectDraftByGroup[activeGroup.id] ?? "", (value) => { projectDraftByGroup = { ...projectDraftByGroup, [activeGroup.id]: value }; }}
-          bind:icon={() => projectIconDraftByGroup[activeGroup.id] ?? DEFAULT_PROJECT_ICON, (value) => { projectIconDraftByGroup = { ...projectIconDraftByGroup, [activeGroup.id]: value }; }}
-          placeholder={t("projects.navigator.projectNamePlaceholder")}
-          error={projectDraftError(activeGroup.id)}
-          {iconStrokeWidth}
-          onSubmit={() => void submitProject(activeGroup.id)}
-        />
+      {#if createProjectListKey === activeGroupListKey}
+        {@render projectCreator(activeGroupListKey, undefined)}
       {:else}
         <button
           type="button"
           class="menu-item justify-center"
           onclick={() => {
-            createProjectGroupId = activeGroup.id;
+            openProjectCreator(activeGroupListKey);
             void tick().then(updateProjectSubpanelGeometry);
           }}
         >

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 fn project_create(id: &str) -> ProjectCreate {
     ProjectCreate {
         id: id.to_string(),
-        group_id: ROUTINE_GROUP_ID.to_string(),
+        group_id: Some(ROUTINE_GROUP_ID.to_string()),
         name: "Created test".to_string(),
         icon: "lucide:folder".to_string(),
         color: None,
@@ -124,7 +124,15 @@ async fn insert_groups(pool: &SqlitePool) {
 
 fn named_project(id: &str, group_id: &str, name: &str) -> ProjectCreate {
     ProjectCreate {
-        group_id: group_id.to_string(),
+        group_id: Some(group_id.to_string()),
+        name: name.to_string(),
+        ..project_create(id)
+    }
+}
+
+fn ungrouped_project(id: &str, name: &str) -> ProjectCreate {
+    ProjectCreate {
+        group_id: None,
         name: name.to_string(),
         ..project_create(id)
     }
@@ -331,6 +339,25 @@ fn project_names_are_unique_within_a_group_ignoring_case() {
             routine.starts_with(crate::project_commands::PROJECT_NAME_TAKEN_PREFIX),
             "{routine}"
         );
+
+        create_project(&pool, &vault_root, ungrouped_project("project-e", "Thesis"))
+            .await
+            .expect("projects outside every group form a name scope of their own");
+        let ungrouped =
+            create_project(&pool, &vault_root, ungrouped_project("project-f", "THESIS"))
+                .await
+                .err()
+                .expect("a name taken outside every group is refused there");
+        assert!(
+            ungrouped.starts_with(crate::project_commands::PROJECT_NAME_TAKEN_PREFIX),
+            "{ungrouped}"
+        );
+        let group_id: Option<String> =
+            sqlx::query_scalar("SELECT group_id FROM projects WHERE id = 'project-e'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(group_id, None);
         fs::remove_dir_all(vault_root).unwrap();
     });
 }

@@ -33,7 +33,8 @@ export interface NotesMentionProject {
   id: string;
   name: string;
   status: string;
-  groupId?: string;
+  /** The project's group, `null` for a project outside every group, or absent when unknown. */
+  groupId?: string | null;
 }
 
 export interface NotesMentionProjectGroup {
@@ -125,7 +126,13 @@ export function notesPageMentionLocationResolver(
     const projectId = chain.map(notesPageProjectId).find((id) => id !== null) ?? folders[0]?.project_id ?? null;
     const project = projectId ? projectsById.get(projectId) : undefined;
     const group = project?.groupId ? groupsById.get(project.groupId) : undefined;
-    const projectPath = project && group ? [group.name, project.name] : [];
+    const projectPath = !project
+      ? []
+      : group
+        ? [group.name, project.name]
+        : project.groupId === null
+          ? [project.name]
+          : [];
     return [...projectPath, ...folders.map((folder) => folder.name), ...titles];
   };
 }

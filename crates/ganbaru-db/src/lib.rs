@@ -280,11 +280,23 @@ pub async fn close_pool(pool: &SqlitePool) -> Result<(), String> {
 }
 
 /// Applies the embedded Ganbaru migration chain to a SQLite pool.
+///
+/// A migration that rebuilds a referenced table turns foreign keys off for its own connection
+/// and back on when it completes. The chain fails unless they are on afterwards, so a pool never
+/// continues without enforcement.
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), String> {
     MIGRATOR
         .run(pool)
         .await
-        .map_err(|error| format!("run database migrations: {error}"))
+        .map_err(|error| format!("run database migrations: {error}"))?;
+    let enforced: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+        .fetch_one(pool)
+        .await
+        .map_err(|error| format!("read foreign key enforcement: {error}"))?;
+    if enforced != 1 {
+        return Err("database migrations left foreign keys disabled".to_string());
+    }
+    Ok(())
 }
 
 /// Returns deterministic bytes identifying the complete embedded up-migration set.

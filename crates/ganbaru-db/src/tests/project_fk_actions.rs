@@ -201,11 +201,11 @@ fn deleting_a_working_folder_removes_only_its_chat_rows() {
 }
 
 #[test]
-fn deleting_a_group_removes_its_projects_with_their_chat_rows() {
+fn deleting_a_group_ungroups_its_projects_and_keeps_their_rows() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        let seeded = row_counts(&pool).await;
         load_project_chat_graph(&pool).await;
+        let loaded = row_counts(&pool).await;
 
         sqlx::query("DELETE FROM project_groups WHERE id = 'group-chat'")
             .execute(&pool)
@@ -214,12 +214,73 @@ fn deleting_a_group_removes_its_projects_with_their_chat_rows() {
 
         let remaining = row_counts(&pool).await;
         for table in PROJECT_ROW_TABLES.iter().chain(REBUILT_TABLES.iter()) {
-            assert_eq!(
-                remaining[*table], seeded[*table],
-                "{table} keeps only the seeded rows"
-            );
+            assert_eq!(remaining[*table], loaded[*table], "{table} keeps its rows");
         }
+        let group: Option<String> =
+            sqlx::query_scalar("SELECT group_id FROM projects WHERE id = 'project-chat'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(group, None, "the project stands outside every group");
         assert_eq!(foreign_key_violations(&pool).await, 0);
+    });
+}
+
+#[test]
+fn rebuilding_projects_for_optional_groups_keeps_every_dependent_row() {
+    super::block_on(async {
+        let versions = crate::up_migrations().collect::<Vec<_>>();
+        let rebuild = versions
+            .iter()
+            .position(|migration| migration.description == "projects optional group")
+            .expect("the projects rebuild migration is embedded");
+        let previous = versions[rebuild - 1].version;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .in_memory(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        crate::MIGRATOR.run_to(previous, &pool).await.unwrap();
+        load_project_chat_graph(&pool).await;
+        let loaded = row_counts(&pool).await;
+
+        crate::run_migrations(&pool).await.unwrap();
+
+        assert_eq!(
+            row_counts(&pool).await,
+            loaded,
+            "every row survives the rebuild"
+        );
+        assert_eq!(foreign_key_violations(&pool).await, 0);
+        let action: String = sqlx::query_scalar(
+            "SELECT on_delete FROM pragma_foreign_key_list('projects') WHERE \"from\" = 'group_id'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(action, "SET NULL");
+        sqlx::raw_sql(
+            "DELETE FROM sync_capture;
+             UPDATE projects SET group_id = NULL WHERE id = 'project-chat';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mask: i64 = sqlx::query_scalar(
+            "SELECT mask FROM sync_capture WHERE table_id = 97 AND row_key = 'project-chat'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            mask, 2,
+            "the rebuilt table captures the group change for sync"
+        );
+        pool.close().await;
     });
 }
 

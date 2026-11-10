@@ -1,9 +1,20 @@
+<script lang="ts" module>
+  import type { ProjectListKey } from "$lib/projects/lists";
+
+  /** A choice of group, or of no group, for the project. */
+  export interface ProjectListOption {
+    value: ProjectListKey;
+    label: string;
+  }
+</script>
+
 <script lang="ts">
   import ProjectFieldConflict from "$lib/components/projects/conflicts/ProjectFieldConflict.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { moveTextInputCaretToPointer } from "$lib/utils/text-input-caret";
   import type { ProjectLifecycleStatus } from "$lib/projects/types";
+  import { projectListGroupId, projectListKey } from "$lib/projects/lists";
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import ProjectSettingsSectionHeading from "./ProjectSettingsSectionHeading.svelte";
 
@@ -12,7 +23,7 @@
   let {
     projectId,
     projectNameDraft = $bindable<string>(),
-    projectGroupDraft = $bindable<string>(),
+    projectGroupDraft = $bindable<string | null>(),
     projectStatusDraft = $bindable<ProjectLifecycleStatus>(),
     projectIconDraft = $bindable<string>(),
     projectGroupOptions,
@@ -22,16 +33,22 @@
   }: {
     projectId: string;
     projectNameDraft: string;
-    projectGroupDraft: string;
+    /** The chosen group, or `null` for no group. */
+    projectGroupDraft: string | null;
     projectStatusDraft: ProjectLifecycleStatus;
     projectIconDraft: string;
-    projectGroupOptions: SelectOption[];
+    projectGroupOptions: ProjectListOption[];
     lifecycleOptions: SelectOption[];
     identityLocked?: boolean;
     setLifecycleStatus: (value: string) => void;
   } = $props();
 
   const { t } = getLocalization();
+
+  function chooseGroup(value: string): void {
+    const option = projectGroupOptions.find((candidate) => candidate.value === value);
+    if (option) projectGroupDraft = projectListGroupId(option.value);
+  }
 </script>
 
 <section class="flex flex-col gap-2">
@@ -60,12 +77,10 @@
 
       <Select
         label={t("projects.settings.group")}
-        value={projectGroupDraft}
+        value={projectListKey(projectGroupDraft)}
         options={projectGroupOptions}
         disabled={identityLocked}
-        onChange={(value) => {
-          projectGroupDraft = value;
-        }}
+        onChange={chooseGroup}
         class="w-44"
       />
 

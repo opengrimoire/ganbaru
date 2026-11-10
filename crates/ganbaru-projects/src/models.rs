@@ -83,7 +83,8 @@ impl_sqlite_from_row!(ProjectGroupRow {
 #[derive(Serialize)]
 pub struct ProjectRow {
     pub(crate) id: String,
-    pub(crate) group_id: String,
+    /// The group the project belongs to, or `None` for a project outside every group.
+    pub(crate) group_id: Option<String>,
     pub(crate) name: String,
     pub(crate) icon: String,
     pub(crate) color: Option<i64>,
@@ -845,7 +846,8 @@ pub struct ProjectGroupUpdate {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCreate {
     pub(crate) id: String,
-    pub(crate) group_id: String,
+    /// The group of the new project, or `None` to create it outside every group.
+    pub(crate) group_id: Option<String>,
     pub(crate) name: String,
     pub(crate) icon: String,
     pub(crate) color: Option<i64>,
@@ -869,7 +871,8 @@ pub struct ProjectCreate {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectUpdate {
     pub(crate) id: String,
-    pub(crate) group_id: String,
+    /// The group the project belongs to after the update, or `None` for no group.
+    pub(crate) group_id: Option<String>,
     pub(crate) name: String,
     pub(crate) icon: String,
     pub(crate) color: Option<i64>,
@@ -1176,11 +1179,12 @@ pub struct ProjectGroupReorder {
     pub(crate) group_ids: Vec<String>,
 }
 
-/// The complete new order of the projects in one group.
+/// The complete new order of the projects in one group, or of the projects outside every group
+/// when `group_id` is `None`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupProjectReorder {
-    pub(crate) group_id: String,
+    pub(crate) group_id: Option<String>,
     pub(crate) project_ids: Vec<String>,
 }
 

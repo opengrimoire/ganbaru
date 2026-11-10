@@ -8,6 +8,7 @@
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
   import FolderInput from "@lucide/svelte/icons/folder-input";
+  import FolderOutput from "@lucide/svelte/icons/folder-output";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
   import Settings2 from "@lucide/svelte/icons/settings-2";
@@ -18,7 +19,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { COMPACT_IDENTITY_EMOJI_SCALE, COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
   import { shortcutModifierLabel } from "$lib/keyboard-shortcuts";
-  import { isProjectNameTaken, normalizeProjectName } from "$lib/projects/text";
+  import { isProjectNameTaken, normalizeProjectName, projectNameKey } from "$lib/projects/text";
   import type { ProjectSidebarActions } from "$lib/projects/sidebar";
   import type { Project, ProjectGroup, ProjectLifecycleStatus, ProjectView, ProjectViewType } from "$lib/projects/types";
   import {
@@ -86,7 +87,8 @@
     /** Opens a view in a new workspace tab; rows leave out the gesture and menu entry without it. */
     onOpenViewInNewTab?: (view: ProjectView, intent: OpenInNewTabIntent) => void;
     onRename: (name: string) => Promise<void>;
-    onMoveToGroup: (groupId: string) => Promise<void>;
+    /** Moves the project to a group, or outside every group for `null`. */
+    onMoveToGroup: (groupId: string | null) => Promise<void>;
     onSetStatus: (status: ProjectLifecycleStatus) => Promise<void>;
     /** Opens the project's settings; the item is left out where no settings panel exists. */
     onOpenSettings?: () => void;
@@ -118,7 +120,7 @@
   const displayName = $derived(pendingName ?? project.name);
   const renameErrorId = $props.id();
   const renameError = $derived(
-    editing && nameTakenIn(project.groupId, nameDraft) ? t("projects.navigator.projectNameTaken") : null,
+    editing && renameTaken(nameDraft) ? nameTakenMessage(project.groupId) : null,
   );
   const lockedReason = $derived(actions.identityLocked ? t("projects.sidebar.identityLocked") : undefined);
   const moveUnavailableReason = $derived(lockedReason ?? (actions.canMoveToGroup ? undefined : t("projects.sidebar.noOtherGroup")));
@@ -193,16 +195,30 @@
     });
   }
 
-  /** Whether another project of `groupId` already uses `name`, so the backend would refuse it there. */
-  function nameTakenIn(groupId: string, name: string): boolean {
+  /** Whether another project of `groupId`, or outside every group for `null`, already uses `name`, so the backend would refuse it there. */
+  function nameTakenIn(groupId: string | null, name: string): boolean {
     return isProjectNameTaken(projects.projects, groupId, name, project.id);
+  }
+
+  /**
+   * Whether renaming to `name` would be refused. Keeping the current name, or changing only its case, is never refused,
+   * even when another project already shares it, as the backend allows.
+   */
+  function renameTaken(name: string): boolean {
+    return projectNameKey(name) !== projectNameKey(project.name) && nameTakenIn(project.groupId, name);
+  }
+
+  function nameTakenMessage(groupId: string | null): string {
+    return groupId === null
+      ? t("projects.navigator.ungroupedProjectNameTaken")
+      : t("projects.navigator.projectNameTaken");
   }
 
   /** Saves the draft name; a name taken in the group keeps the field open with its error instead. */
   function saveRename(): void {
     if (!editing) return;
     const name = normalizeProjectName(nameDraft);
-    if (name && name !== project.name && nameTakenIn(project.groupId, name)) return;
+    if (name && renameTaken(name)) return;
     editing = false;
     if (!name || name === project.name) return;
     pendingName = name;
@@ -482,7 +498,7 @@
               role="menuitem"
               class="menu-item"
               aria-disabled={nameTaken ? "true" : undefined}
-              data-app-tooltip={nameTaken ? t("projects.navigator.projectNameTaken") : undefined}
+              data-app-tooltip={nameTaken ? nameTakenMessage(group.id) : undefined}
               onclick={() => {
                 if (!nameTaken) runAction("move a project to another group", () => onMoveToGroup(group.id));
               }}
@@ -496,6 +512,22 @@
               <span class="min-w-0 flex-1 truncate">{group.name}</span>
             </button>
           {/each}
+          {#if actions.canMoveOutOfGroup}
+            {@const nameTaken = nameTakenIn(null, project.name)}
+            <button
+              type="button"
+              role="menuitem"
+              class="menu-item"
+              aria-disabled={nameTaken ? "true" : undefined}
+              data-app-tooltip={nameTaken ? nameTakenMessage(null) : undefined}
+              onclick={() => {
+                if (!nameTaken) runAction("move a project outside every group", () => onMoveToGroup(null));
+              }}
+            >
+              <FolderOutput />
+              <span class="min-w-0 flex-1 truncate">{t("projects.navigator.noGroup")}</span>
+            </button>
+          {/if}
         </div>
       {/if}
       {#if onMove}

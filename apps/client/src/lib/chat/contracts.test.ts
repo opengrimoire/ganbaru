@@ -950,5 +950,12 @@ describe("Chat read and error contracts", () => {
       ...access,
       channels: [{ ...channel, accessProfileRevisionId: undefined }],
     })).toThrow("accessProfileRevisionId");
+
+    const ungrouped = { ...access, channels: [{ ...channel, groupId: null }] };
+    expect(parseChatTeammateAccess(ungrouped)).toEqual(ungrouped);
+    expect(() => parseChatTeammateAccess({
+      ...access,
+      channels: [{ ...channel, groupId: "" }],
+    })).toThrow("groupId");
   });
 });

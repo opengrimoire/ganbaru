@@ -66,6 +66,7 @@ const actions: ProjectSidebarActions = {
   identityLocked: false,
   canRename: true,
   canMoveToGroup: false,
+  canMoveOutOfGroup: false,
   moveGroupIds: [],
   visibility: { label: "hide", status: "hidden" },
   archive: { label: "archive", status: "archived" },

@@ -21,7 +21,6 @@ static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
         .with(&themes::THEMES, restore_theme)
         .with(&music::PLAYLISTS, restore_music_playlist)
         .with(&music::ITEMS, refuse_music_item)
-        .with(&projects::GROUPS, restore_projects_row)
         .with(&projects::PROJECTS, restore_projects_row)
         .with(&projects::SECTIONS, restore_projects_row)
         .with(&projects::STATUSES, restore_projects_row)

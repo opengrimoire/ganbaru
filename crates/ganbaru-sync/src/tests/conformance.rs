@@ -2845,6 +2845,7 @@ const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (21, include_str!("fixtures/vault_manifest_v21.txt")),
     (22, include_str!("fixtures/vault_manifest_v22.txt")),
     (23, include_str!("fixtures/vault_manifest_v23.txt")),
+    (24, include_str!("fixtures/vault_manifest_v24.txt")),
 ];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {

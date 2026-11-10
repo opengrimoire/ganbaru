@@ -138,7 +138,7 @@ export const configuration = {
       `This removes ${priority} from this project's task priorities.`,
     deletePriorityConfirm: "Delete priority",
     nameRequired: "Project name is required.",
-    groupRequired: "Select a group.",
+    groupUnavailable: "That group no longer exists, so choose another one or no group.",
     invalidDuration: "Choose a default duration from 1 minute to 24 hours.",
     saveFailed: (message: string) => `Could not save project settings: ${message}`,
   },

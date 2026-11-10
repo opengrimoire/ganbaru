@@ -210,6 +210,7 @@ export const taskWorkflow = {
     moveGroupUp: (group: string) => `Move ${group} up`,
     moveGroupDown: (group: string) => `Move ${group} down`,
     selectProject: (project: string, group: string) => `Select ${project} in ${group}`,
+    selectUngroupedProject: (project: string) => `Select ${project}`,
     moveProjectUp: (project: string) => `Move ${project} up`,
     moveProjectDown: (project: string) => `Move ${project} down`,
     noPreviousProject: "No previous project",

@@ -74,13 +74,13 @@ function removeProject(snapshot: ProjectsSnapshot, projectId: string): ProjectsS
 
 function applyRemoval(snapshot: ProjectsSnapshot, removal: ProjectMutationRemoval): ProjectsSnapshot {
   switch (removal.kind) {
-    case "group": {
-      let result = { ...snapshot, groups: snapshot.groups.filter((group) => group.id !== removal.id) };
-      for (const project of snapshot.projects) {
-        if (project.groupId === removal.id) result = removeProject(result, project.id);
-      }
-      return result;
-    }
+    case "group":
+      return {
+        ...snapshot,
+        groups: snapshot.groups.filter((group) => group.id !== removal.id),
+        projects: snapshot.projects.map((project) =>
+          project.groupId === removal.id ? { ...project, groupId: null } : project),
+      };
     case "project":
       return removeProject(snapshot, removal.id);
     case "status":

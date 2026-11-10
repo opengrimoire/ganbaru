@@ -47,7 +47,8 @@
   const tree = $derived.by((): InvitationSpaceNode[] => {
     const groups = projects.visibleGroups();
     const groupIds = new Set(groups.map((group) => group.id));
-    const activeProjects = projects.projects.filter((project) => project.status === "active" && groupIds.has(project.groupId));
+    const activeProjects = projects.projects.filter((project) =>
+      project.status === "active" && (project.groupId === null || groupIds.has(project.groupId)));
     const projectIds = new Set(activeProjects.map((project) => project.id));
     return [
       ...groups.map((group): InvitationSpaceNode => ({ id: group.id, kind: "group", name: group.name, parentId: null })),

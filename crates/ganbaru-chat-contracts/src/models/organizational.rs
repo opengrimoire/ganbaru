@@ -173,7 +173,8 @@ pub struct ChatFolderGrantRead {
 pub struct ChatTeammateChannelAccessRead {
     pub channel_id: ChatChannelId,
     pub project_id: String,
-    pub group_id: String,
+    /// Group of the channel's project, absent when the project is outside every group.
+    pub group_id: Option<String>,
     pub conversation_id: ChatConversationId,
     pub channel_name: String,
     pub access_profile_id: ChatAccessProfileId,
@@ -381,8 +382,10 @@ pub struct ChatScratchScopeRead {
     pub channel_name: String,
     pub project_id: String,
     pub project_name: String,
-    pub group_id: String,
-    pub group_name: String,
+    /// Group of the channel's project, absent when the project is outside every group.
+    pub group_id: Option<String>,
+    /// Name of that group, absent with it.
+    pub group_name: Option<String>,
     pub lifecycle_state: ChatScratchScopeLifecycleState,
     pub revision: u64,
     pub generations: Vec<ChatScratchGenerationRead>,

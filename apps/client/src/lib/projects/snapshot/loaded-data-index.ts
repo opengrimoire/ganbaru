@@ -29,8 +29,10 @@ export interface ProjectLoadedDataIndex {
   readonly visibleGroups: readonly ProjectGroup[];
   readonly projectById: ReadonlyMap<string, Project>;
   readonly groupById: ReadonlyMap<string, ProjectGroup>;
-  readonly projectsByGroup: ReadonlyMap<string, readonly Project[]>;
-  readonly activeProjectsByGroup: ReadonlyMap<string, readonly Project[]>;
+  /** Projects by group id, with the projects outside every group under `null`. */
+  readonly projectsByGroup: ReadonlyMap<string | null, readonly Project[]>;
+  /** Active projects by group id, with the active projects outside every group under `null`. */
+  readonly activeProjectsByGroup: ReadonlyMap<string | null, readonly Project[]>;
   readonly sectionById: ReadonlyMap<string, ProjectSection>;
   readonly sectionsByProject: ReadonlyMap<string, readonly ProjectSection[]>;
   readonly activeSectionsByProject: ReadonlyMap<string, readonly ProjectSection[]>;
@@ -125,8 +127,8 @@ export function projectPairKey(first: string, second: string): string {
 export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLoadedDataIndex {
   const projectById = new Map(source.projects.map((project) => [project.id, project]));
   const groupById = new Map(source.groups.map((group) => [group.id, group]));
-  const projectsByGroup = new Map<string, Project[]>();
-  const activeProjectsByGroup = new Map<string, Project[]>();
+  const projectsByGroup = new Map<string | null, Project[]>();
+  const activeProjectsByGroup = new Map<string | null, Project[]>();
   for (const project of source.projects) {
     append(projectsByGroup, project.groupId, project);
     if (project.status === "active") append(activeProjectsByGroup, project.groupId, project);

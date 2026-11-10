@@ -155,7 +155,8 @@ export interface ProjectGroup {
 
 export interface Project {
   id: string;
-  groupId: string;
+  /** The group the project belongs to, or `null` when it is outside every group. */
+  groupId: string | null;
   name: string;
   icon: string;
   color?: EventColor;
@@ -702,7 +703,8 @@ export interface ProjectGroupUpdate {
 
 export interface ProjectCreate {
   id: string;
-  groupId: string;
+  /** The group to create the project in, or `null` to create it outside every group. */
+  groupId: string | null;
   name: string;
   icon: string;
   color: EventColor | null;
@@ -723,7 +725,8 @@ export interface ProjectCreate {
 
 export interface ProjectUpdate {
   id: string;
-  groupId: string;
+  /** The group the project moves to or stays in, or `null` for outside every group. */
+  groupId: string | null;
   name: string;
   icon: string;
   color: EventColor | null;

@@ -1,28 +1,30 @@
+import type { ProjectListKey } from "./lists";
 import { projectHasLockedSystemIdentity } from "./system-defaults";
 import type { Project, ProjectLifecycleStatus } from "./types";
 
 /**
- * Returns the group whose projects the Projects sidebar lists without a search: the selected project's group, otherwise
- * the first visible group.
+ * Returns the list whose projects the Projects sidebar shows without a search: the selected project's list (its group,
+ * or the projects outside every group), otherwise the first available list.
  */
-export function resolveProjectSidebarGroupId(
-  selectedGroupId: string | null,
-  visibleGroupIds: readonly string[],
-): string | null {
-  if (selectedGroupId && visibleGroupIds.includes(selectedGroupId)) return selectedGroupId;
-  return visibleGroupIds[0] ?? null;
+export function resolveProjectSidebarListKey(
+  selectedListKey: ProjectListKey | null,
+  availableListKeys: readonly ProjectListKey[],
+): ProjectListKey | null {
+  if (selectedListKey && availableListKeys.includes(selectedListKey)) return selectedListKey;
+  return availableListKeys[0] ?? null;
 }
 
-/** A visible group and the projects the sidebar may list from it. */
+/** A visible group, or the projects outside every group, and the projects the sidebar may list from it. */
 export interface ProjectSidebarSearchGroup<TProject extends { name: string }> {
-  name: string;
+  /** The group name, or `null` for the projects outside every group, which only match by their own name. */
+  name: string | null;
   projects: readonly TProject[];
 }
 
-/** A project that matches a sidebar search, with the name of its group. */
+/** A project that matches a sidebar search, with the name of its group, or `null` when it has none. */
 export interface ProjectSidebarSearchResult<TProject> {
   project: TProject;
-  groupName: string;
+  groupName: string | null;
 }
 
 /**
@@ -36,7 +38,7 @@ export function searchProjectSidebar<TProject extends { name: string }>(
   const normalizedQuery = normalizeSearchText(query);
   if (!normalizedQuery) return [];
   return groups.flatMap((group) => {
-    const groupMatches = normalizeSearchText(group.name).includes(normalizedQuery);
+    const groupMatches = group.name !== null && normalizeSearchText(group.name).includes(normalizedQuery);
     return group.projects
       .filter((project) => groupMatches || normalizeSearchText(project.name).includes(normalizedQuery))
       .map((project) => ({ project, groupName: group.name }));
@@ -54,6 +56,9 @@ export interface ProjectSidebarActions {
   canRename: boolean;
   /** Visible groups the project can move to, in sidebar order. */
   moveGroupIds: string[];
+  /** Whether the project can leave its group to stand outside every group. */
+  canMoveOutOfGroup: boolean;
+  /** Whether any move target exists: another group, or outside every group. */
   canMoveToGroup: boolean;
   /** Hide toggles between active and hidden; it reads Show when the project is hidden. */
   visibility: { label: "hide" | "show"; status: ProjectLifecycleStatus };
@@ -67,12 +72,14 @@ export function projectSidebarActions(
   visibleGroupIds: readonly string[],
 ): ProjectSidebarActions {
   const identityLocked = projectHasLockedSystemIdentity(project);
-  const moveGroupIds = visibleGroupIds.filter((groupId) => groupId !== project.groupId);
+  const moveGroupIds = identityLocked ? [] : visibleGroupIds.filter((groupId) => groupId !== project.groupId);
+  const canMoveOutOfGroup = !identityLocked && project.groupId !== null;
   return {
     identityLocked,
     canRename: !identityLocked,
     moveGroupIds,
-    canMoveToGroup: !identityLocked && moveGroupIds.length > 0,
+    canMoveOutOfGroup,
+    canMoveToGroup: moveGroupIds.length > 0 || canMoveOutOfGroup,
     visibility: project.status === "hidden"
       ? { label: "show", status: "active" }
       : { label: "hide", status: "hidden" },

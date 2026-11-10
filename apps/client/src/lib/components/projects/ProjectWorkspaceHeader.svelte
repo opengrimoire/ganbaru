@@ -59,7 +59,8 @@
     viewControlsTarget = $bindable(null),
   }: {
     selectedProject: Project;
-    selectedGroup: ProjectGroup;
+    /** The selected project's group, or undefined when the project is outside every group. */
+    selectedGroup: ProjectGroup | undefined;
     selectedProjectId: string | null;
     showInactiveProjects: boolean;
     projectToolbarPanel: ProjectToolbarPanel | null;
@@ -91,13 +92,18 @@
   let projectNavigatorOpen = $state(false);
   let mobileCustomizationMenuOpen = $state(false);
   let projectNavigatorMode = $state<ProjectNavigatorPanelMode>("groups");
+  /**
+   * The project crumb lists its group's projects; a project outside every group has no group crumb, so its crumb lists
+   * the groups, which end with the projects outside every group.
+   */
+  const projectCrumbMode = $derived<ProjectNavigatorPanelMode>(selectedGroup ? "projects" : "groups");
   let projectHeaderElement = $state<HTMLDivElement | null>(null);
   let headerSpacerElement = $state<HTMLDivElement | null>(null);
   let viewControlsSlot = $state<HTMLDivElement | null>(null);
   let viewControlsFit = $state(true);
   let viewControlsShown = $state(false);
   let viewControlsWidth = 0;
-  let projectNavigatorAnchorElement = $state<HTMLButtonElement | null>(null);
+  let projectNavigatorAnchorElement = $state<HTMLElement | null>(null);
   let projectGroupTriggerElement = $state<HTMLButtonElement | null>(null);
   let projectTriggerElement = $state<HTMLButtonElement | null>(null);
   let projectNavigatorPanelElement = $state<HTMLDivElement | null>(null);
@@ -226,25 +232,23 @@
     projectNavigatorPanelMaxHeight = geometry.height;
   }
 
-  function openProjectNavigator(mode: ProjectNavigatorPanelMode): void {
+  function openProjectNavigator(mode: ProjectNavigatorPanelMode, anchor: HTMLElement | null): void {
     closeMobileMenus();
     projectNavigatorMode = mode;
-    projectNavigatorAnchorElement = mode === "groups"
-      ? projectGroupTriggerElement
-      : projectTriggerElement;
+    projectNavigatorAnchorElement = anchor;
     projectNavigatorOpen = true;
     refreshProjectNavigatorPanelGeometry();
     requestAnimationFrame(refreshProjectNavigatorPanelGeometry);
   }
 
-  function toggleProjectNavigator(mode: ProjectNavigatorPanelMode): void {
+  function toggleProjectNavigator(mode: ProjectNavigatorPanelMode, anchor: HTMLElement | null): void {
     const triggerPanelOpen = projectNavigatorOpen && projectNavigatorMode === mode;
     if (projectNavigatorHover.claimClick(triggerPanelOpen)) return;
     if (triggerPanelOpen) {
       projectNavigatorOpen = false;
       return;
     }
-    openProjectNavigator(mode);
+    openProjectNavigator(mode, anchor);
   }
 
   function closeProjectNavigator(): void {
@@ -342,7 +346,7 @@
         bind:triggerElement={projectTriggerElement}
         title={selectedProject.name}
         expanded={projectNavigatorOpen}
-        onclick={() => toggleProjectNavigator("projects")}
+        onclick={() => toggleProjectNavigator(projectCrumbMode, projectTriggerElement)}
       >
         {#snippet icon()}
           <ProjectIcon
@@ -376,43 +380,49 @@
       </div>
     {:else}
     <div class="flex h-7 min-w-0 max-w-full items-center gap-0.5 text-identity font-medium">
-      <button
-        bind:this={projectGroupTriggerElement}
-        type="button"
-        class={cn(
-          "flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
-          projectNavigatorOpen && projectNavigatorMode === "groups" && "bg-accent",
-        )}
-        aria-label={t("projects.navigator.open")}
-        aria-haspopup="dialog"
-        aria-expanded={projectNavigatorOpen && projectNavigatorMode === "groups"}
-        onpointerenter={(event) => { projectNavigatorHover.enterTrigger(event, () => openProjectNavigator("groups")); }}
-        onpointerleave={projectNavigatorHover.leave}
-        onclick={() => toggleProjectNavigator("groups")}
-      >
-        <ProjectIcon
-          name={selectedGroup.icon}
-          size={projectIdentityIconSize}
-          strokeWidth={projectIdentityIconStrokeWidth}
-          emojiScale={projectIdentityEmojiScale}
-          class="shrink-0"
-        />
-        <span class="min-w-0 truncate text-foreground">{selectedGroup.name}</span>
-      </button>
-      <span class="shrink-0 px-0.5 font-semibold text-muted-foreground">/</span>
+      {#if selectedGroup}
+        <button
+          bind:this={projectGroupTriggerElement}
+          type="button"
+          class={cn(
+            "flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
+            projectNavigatorOpen && projectNavigatorMode === "groups" && "bg-accent",
+          )}
+          aria-label={t("projects.navigator.open")}
+          aria-haspopup="dialog"
+          aria-expanded={projectNavigatorOpen && projectNavigatorMode === "groups"}
+          onpointerenter={(event) => {
+            projectNavigatorHover.enterTrigger(event, () => openProjectNavigator("groups", projectGroupTriggerElement));
+          }}
+          onpointerleave={projectNavigatorHover.leave}
+          onclick={() => toggleProjectNavigator("groups", projectGroupTriggerElement)}
+        >
+          <ProjectIcon
+            name={selectedGroup.icon}
+            size={projectIdentityIconSize}
+            strokeWidth={projectIdentityIconStrokeWidth}
+            emojiScale={projectIdentityEmojiScale}
+            class="shrink-0"
+          />
+          <span class="min-w-0 truncate text-foreground">{selectedGroup.name}</span>
+        </button>
+        <span class="shrink-0 px-0.5 font-semibold text-muted-foreground">/</span>
+      {/if}
       <button
         bind:this={projectTriggerElement}
         type="button"
         class={cn(
           "flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
-          projectNavigatorOpen && projectNavigatorMode === "projects" && "bg-accent",
+          projectNavigatorOpen && projectNavigatorMode === projectCrumbMode && "bg-accent",
         )}
         aria-label={t("projects.navigator.open")}
         aria-haspopup="dialog"
-        aria-expanded={projectNavigatorOpen && projectNavigatorMode === "projects"}
-        onpointerenter={(event) => { projectNavigatorHover.enterTrigger(event, () => openProjectNavigator("projects")); }}
+        aria-expanded={projectNavigatorOpen && projectNavigatorMode === projectCrumbMode}
+        onpointerenter={(event) => {
+          projectNavigatorHover.enterTrigger(event, () => openProjectNavigator(projectCrumbMode, projectTriggerElement));
+        }}
         onpointerleave={projectNavigatorHover.leave}
-        onclick={() => toggleProjectNavigator("projects")}
+        onclick={() => toggleProjectNavigator(projectCrumbMode, projectTriggerElement)}
       >
         <ProjectIcon
           name={selectedProject.icon}
@@ -445,10 +455,9 @@
         >
           <ProjectNavigator
             {selectedProjectId}
-            selectedGroupId={selectedGroup.id}
             {showInactiveProjects}
             panelMode="groups"
-            initialMobileGroupId={projectNavigatorMode === "projects" ? selectedGroup.id : null}
+            initialMobileGroupId={projectNavigatorMode === "projects" ? selectedGroup?.id ?? null : null}
             onShowInactiveProjectsChange={onShowInactiveProjectsChange}
             onProjectSelected={() => {
               closeProjectNavigator();
@@ -473,7 +482,6 @@
         >
           <ProjectNavigator
             {selectedProjectId}
-            selectedGroupId={selectedGroup.id}
             {showInactiveProjects}
             panelMode={projectNavigatorMode}
             panelMaxHeight={projectNavigatorPanelMaxHeight}

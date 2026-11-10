@@ -386,10 +386,7 @@ fn validate_pomodoro_defaults(value: &Value) -> Result<(), AdapterError> {
 }
 
 fn validate_project(group: GroupId, value: &Value) -> Result<(), AdapterError> {
-    if group == project_group::GROUP {
-        let [group] = fields(value, "project group")?;
-        required(group, "project group")
-    } else if group == project_group::ICON {
+    if group == project_group::ICON {
         icon_asset(value, "project icon").map(|_| ())
     } else if group == project_group::STATUS {
         let [status] = fields(value, "project status")?;

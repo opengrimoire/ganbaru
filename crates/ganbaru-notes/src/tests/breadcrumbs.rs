@@ -388,6 +388,14 @@ fn page_location_follows_project_folder_and_page_ancestry_through_the_page_itsel
             reads::page_location(&pool, PAGE_A).await.unwrap(),
             ["Group", "Project", "Folder", "Root"]
         );
+        sqlx::query("UPDATE projects SET group_id = NULL WHERE id = 'project'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            reads::page_location(&pool, PAGE_A).await.unwrap(),
+            ["Project", "Folder", "Root"]
+        );
         sqlx::query("UPDATE notes_pages SET in_trash = 1 WHERE id = ?")
             .bind(PAGE_C)
             .execute(&pool)
@@ -411,10 +419,12 @@ fn page_project_group_lists_the_page_project_and_its_active_peers() {
                 .unwrap();
         }
         for (id, group, status, order_key) in [
-            ("own", "group", "hidden", "a2"),
-            ("peer", "group", "active", "a1"),
-            ("archived-peer", "group", "archived", "a0"),
-            ("elsewhere", "other-group", "active", "a0"),
+            ("own", Some("group"), "hidden", "a2"),
+            ("peer", Some("group"), "active", "a1"),
+            ("archived-peer", Some("group"), "archived", "a0"),
+            ("elsewhere", Some("other-group"), "active", "a0"),
+            ("loose", None, "active", "a1"),
+            ("loose-peer", None, "active", "a0"),
         ] {
             sqlx::query(
                 "INSERT INTO projects (id, group_id, name, status, order_key) VALUES (?, ?, ?, ?, ?)",
@@ -466,6 +476,17 @@ fn page_project_group_lists_the_page_project_and_its_active_peers() {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+        sqlx::query("UPDATE notes_pages SET project_id = 'loose' WHERE id = ?")
+            .bind(PAGE_C)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            reads::page_project_group_project_ids(&pool, PAGE_C)
+                .await
+                .unwrap(),
+            ["loose"]
         );
         assert!(
             reads::page_project_group_project_ids(&pool, "not-a-page")

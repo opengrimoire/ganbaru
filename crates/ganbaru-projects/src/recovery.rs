@@ -1,6 +1,6 @@
 //! Restoring Projects rows offered for sync recovery.
 //!
-//! A deleted group, project, section, status, or task comes back as a new row with a key of its
+//! A deleted project, section, status, or task comes back as a new row with a key of its
 //! own and its retained values, together with copies of its deleted descendants, all inserted as
 //! ordinary local writes so the restore seals like any edit. Every restored row gets a new id,
 //! since a deleted key cannot be inserted again, and derived keys are computed from the new ids.
@@ -8,11 +8,12 @@
 //! `updated_at` is the restore time. The root goes to the end of its ordered group; descendants
 //! keep their retained order unless they land among existing siblings.
 //!
+//! A deleted group is never offered, since its projects stay and move outside every group.
+//!
 //! Where the root goes:
 //!
-//! - A group is appended to the group list.
-//! - A project returns into its group when that group exists, and otherwise into the first group
-//!   in list order. It gets a new managed working folder as its primary folder, which takes back
+//! - A project returns into its group when that group exists, and otherwise outside every group.
+//!   It gets a new managed working folder as its primary folder, which takes back
 //!   the folder left under its name when no other project claimed it.
 //! - A section, status, or task needs its project; when the project is gone the restore is
 //!   refused, which leaves the offer to be discarded or restored through the project's own offer.
@@ -33,11 +34,10 @@ use ganbaru_sync::RecoveryDescendant;
 use ganbaru_sync::codec;
 use ganbaru_sync::manifest::vault::calendar::TASK_EVENT_LINKS;
 use ganbaru_sync::manifest::vault::projects::{
-    DEPENDENCIES_TABLE, DOMAIN, FOLDERS_TABLE, GROUPS_TABLE, PRIORITIES_TABLE, PROJECTS_TABLE,
-    SECTIONS_TABLE, STATUSES_TABLE, TAG_LINKS_TABLE, TASKS_TABLE, VALUES_TABLE,
-    VIEW_PREFERENCES_TABLE,
+    DEPENDENCIES_TABLE, DOMAIN, FOLDERS_TABLE, PRIORITIES_TABLE, PROJECTS_TABLE, SECTIONS_TABLE,
+    STATUSES_TABLE, TAG_LINKS_TABLE, TASKS_TABLE, VALUES_TABLE, VIEW_PREFERENCES_TABLE,
 };
-use ganbaru_sync::manifest::{OwnedOrder, OwnedTable, TableSpec};
+use ganbaru_sync::manifest::{OnDelete, OwnedOrder, OwnedTable, TableSpec};
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 use ring::rand::{SecureRandom, SystemRandom};
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
@@ -248,15 +248,7 @@ pub async fn restore_recovered_row(
     values: &[(GroupId, Value)],
     descendants: &[RecoveryDescendant],
 ) -> Result<String, String> {
-    if ![
-        GROUPS_TABLE,
-        PROJECTS_TABLE,
-        SECTIONS_TABLE,
-        STATUSES_TABLE,
-        TASKS_TABLE,
-    ]
-    .contains(&table)
-    {
+    if ![PROJECTS_TABLE, SECTIONS_TABLE, STATUSES_TABLE, TASKS_TABLE].contains(&table) {
         return Err(format!(
             "table {} cannot root a Projects recovery offer",
             table.0
@@ -380,7 +372,10 @@ async fn restore_row(
                 row.set_text(reference.column, &id);
             }
             Resolved::Null => {}
-            Resolved::Missing if Some(reference.column) == tree_parent => {
+            Resolved::Missing
+                if Some(reference.column) == tree_parent
+                    || reference.on_delete == OnDelete::SetNull =>
+            {
                 row.set(reference.column, Field::Null);
             }
             Resolved::Missing => {
@@ -428,22 +423,14 @@ async fn restore_row(
     Ok(Some(key))
 }
 
-/// The row a missing required reference moves to: a project's first group, or a task's first
-/// section or first status that is not deleted. Other references have no fallback.
+/// The row a missing required reference moves to: a task's first section or first status that is
+/// not deleted. Other references have no fallback.
 async fn fallback_reference(
     conn: &mut SqliteConnection,
     row: &RestoredRow,
     column: &str,
 ) -> Result<Option<String>, String> {
     let query = match (row.spec.id, column) {
-        (PROJECTS_TABLE, "group_id") => {
-            return sqlx::query_scalar(
-                "SELECT id FROM project_groups ORDER BY order_key, id LIMIT 1",
-            )
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(|error| format!("find a group for a restored project: {error}"));
-        }
         (TASKS_TABLE, "section_id") => {
             "SELECT id FROM project_sections WHERE project_id = ?
              ORDER BY archived_at IS NOT NULL, order_key, id LIMIT 1"
@@ -539,16 +526,14 @@ async fn place(
             }
         }
         _ if is_root => {
-            let scope = match row.spec.id {
-                GROUPS_TABLE => None,
-                PROJECTS_TABLE => Some(("group_id", row.required_text("group_id")?)),
-                _ => Some(("project_id", row.required_text("project_id")?)),
+            let (column, value) = match row.spec.id {
+                PROJECTS_TABLE => ("group_id", row.text("group_id").map(str::to_string)),
+                _ => ("project_id", Some(row.required_text("project_id")?)),
             };
-            let mut group = OrderGroup::new(row.spec.name, "order_key");
-            if let Some((column, value)) = &scope {
-                group = group.filter(column, Some(value.as_str()));
-            }
-            let order_key = group.place(conn, key, &end).await?;
+            let order_key = OrderGroup::new(row.spec.name, "order_key")
+                .filter(column, value.as_deref())
+                .place(conn, key, &end)
+                .await?;
             row.set_text("order_key", order_key.as_str());
         }
         _ => {}

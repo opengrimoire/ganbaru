@@ -75,7 +75,7 @@ pub(super) fn validate_group_update(group: &ProjectGroupUpdate) -> Result<(), St
 pub(super) fn validate_project_create(project: &ProjectCreate) -> Result<(), String> {
     require_non_empty(&project.id, "id")?;
     ganbaru_working_folders::validate_managed_folder_name(&project.id)?;
-    require_non_empty(&project.group_id, "group_id")?;
+    validate_optional_group_id(project.group_id.as_deref())?;
     require_non_empty(&project.name, "name")?;
     validate_project_icon(&project.icon)?;
     validate_color(project.color)?;
@@ -101,7 +101,7 @@ pub(super) fn validate_project_create(project: &ProjectCreate) -> Result<(), Str
 
 pub(super) fn validate_project_update(project: &ProjectUpdate) -> Result<(), String> {
     require_non_empty(&project.id, "id")?;
-    require_non_empty(&project.group_id, "group_id")?;
+    validate_optional_group_id(project.group_id.as_deref())?;
     require_non_empty(&project.name, "name")?;
     validate_project_icon(&project.icon)?;
     validate_color(project.color)?;
@@ -668,6 +668,12 @@ pub(super) fn validate_enum(value: &str, field: &str, allowed: &[&str]) -> Resul
     } else {
         Err(format!("{field} has unsupported value '{value}'"))
     }
+}
+
+/// Refuses a present but blank group id. A project outside every group carries `None`, never an
+/// empty string.
+pub(super) fn validate_optional_group_id(group_id: Option<&str>) -> Result<(), String> {
+    group_id.map_or(Ok(()), |id| require_non_empty(id, "group_id"))
 }
 
 pub(super) fn require_non_empty(value: &str, field: &str) -> Result<(), String> {

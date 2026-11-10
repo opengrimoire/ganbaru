@@ -4,7 +4,7 @@ use super::*;
 fn project_update_rejects_blank_automation_default_ids() {
     let project = ProjectUpdate {
         id: "project-a".to_string(),
-        group_id: "group-a".to_string(),
+        group_id: Some("group-a".to_string()),
         name: "Project A".to_string(),
         icon: "lucide:folder".to_string(),
         color: None,
@@ -40,7 +40,7 @@ fn project_update_rejects_blank_automation_default_ids() {
 fn project_update_rejects_blank_default_event_name() {
     let project = ProjectUpdate {
         id: "project-a".to_string(),
-        group_id: "group-a".to_string(),
+        group_id: Some("group-a".to_string()),
         name: "Project A".to_string(),
         icon: "lucide:folder".to_string(),
         color: None,
@@ -75,7 +75,7 @@ fn project_update_rejects_blank_default_event_name() {
 fn valid_project_update() -> ProjectUpdate {
     ProjectUpdate {
         id: "project-a".to_string(),
-        group_id: "group-a".to_string(),
+        group_id: Some("group-a".to_string()),
         name: "Renamed project".to_string(),
         icon: "lucide:folder".to_string(),
         color: None,
@@ -201,9 +201,9 @@ fn renames_and_moves_refuse_a_name_taken_in_the_target_group() {
         .execute(&pool)
         .await
         .unwrap();
-        let update = |id: &str, group_id: &str, name: &str| ProjectUpdate {
+        let update = |id: &str, group_id: Option<&str>, name: &str| ProjectUpdate {
             id: id.to_string(),
-            group_id: group_id.to_string(),
+            group_id: group_id.map(str::to_string),
             name: name.to_string(),
             music_assignments: None,
             music_assignments_updated_at: None,
@@ -220,18 +220,18 @@ fn renames_and_moves_refuse_a_name_taken_in_the_target_group() {
         };
 
         assert!(taken(
-            update_project(update("project-a", "group-a", "THESIS")).await
+            update_project(update("project-a", Some("group-a"), "THESIS")).await
         ));
         assert!(taken(
-            update_project(update("project-b", "group-b", "Draft")).await
+            update_project(update("project-b", Some("group-b"), "Draft")).await
         ));
-        update_project(update("project-a", "group-a", "draft "))
+        update_project(update("project-a", Some("group-a"), "draft "))
             .await
             .unwrap();
-        update_project(update("project-c", "group-b", "draft"))
+        update_project(update("project-c", Some("group-b"), "draft"))
             .await
             .unwrap();
-        update_project(update("project-b", "group-a", "Thesis notes"))
+        update_project(update("project-b", Some("group-a"), "Thesis notes"))
             .await
             .unwrap();
         let names: Vec<String> = sqlx::query_scalar(
@@ -241,5 +241,54 @@ fn renames_and_moves_refuse_a_name_taken_in_the_target_group() {
         .await
         .unwrap();
         assert_eq!(names, ["draft", "Thesis notes", "draft", "Draft"]);
+
+        update_project(update("project-a", None, "Draft"))
+            .await
+            .unwrap();
+        assert!(taken(
+            update_project(update("project-c", None, "DRAFT")).await
+        ));
+        update_project(update("project-c", None, "Draft copy"))
+            .await
+            .unwrap();
+        let ungrouped: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, name FROM projects WHERE group_id IS NULL ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            ungrouped,
+            [
+                ("project-a".to_string(), "Draft".to_string()),
+                ("project-c".to_string(), "Draft copy".to_string()),
+            ]
+        );
+    });
+}
+
+#[test]
+fn built_in_routine_projects_stay_in_the_routine_group() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        let project = ProjectUpdate {
+            id: "project-routine-learning".to_string(),
+            group_id: None,
+            name: "Learning".to_string(),
+            music_assignments: None,
+            music_assignments_updated_at: None,
+            ..valid_project_update()
+        };
+
+        super::super::project_commands::update_project(&pool, &std::env::temp_dir(), project)
+            .await
+            .unwrap();
+
+        let group_id: Option<String> = sqlx::query_scalar(
+            "SELECT group_id FROM projects WHERE id = 'project-routine-learning'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(group_id.as_deref(), Some(ROUTINE_GROUP_ID));
     });
 }

@@ -257,8 +257,14 @@
     navigatorPanelMaxHeight = geometry.height;
   }
 
+  /**
+   * The project crumb lists its group's projects; a project outside every group has no group crumb, so its crumb lists
+   * the groups, which end with the projects outside every group.
+   */
+  const projectCrumbMode = $derived<ProjectNavigatorPanelMode>(selectedGroup ? "projects" : "groups");
+
   function triggerForMode(mode: NotesNavigatorMode): HTMLButtonElement | null {
-    if (mode === "groups") return groupTriggerElement;
+    if (mode === "groups") return selectedGroup ? groupTriggerElement : projectTriggerElement;
     if (mode === "projects") return projectTriggerElement;
     return noteTriggerElement ?? projectTriggerElement;
   }
@@ -384,7 +390,7 @@
     if (currentNode) {
       openHierarchyNavigator(currentNode, contextSwitcherElement);
     } else if (selectedProject) {
-      openNavigator("projects", contextSwitcherElement);
+      openNavigator(projectCrumbMode, contextSwitcherElement);
     } else {
       notesNavigatorParent = { kind: "root" };
       notesNavigatorTitle = t("notes.noteNavigatorLabel");
@@ -405,7 +411,7 @@
       onShowHome();
       return;
     }
-    toggleNavigator("projects");
+    toggleNavigator(projectCrumbMode);
   }
 
   function handleWindowPointerDown(event: PointerEvent): void {
@@ -661,34 +667,36 @@
       "flex h-7 min-w-0 max-w-full items-center gap-0.5 text-identity font-medium",
       databaseSelected ? "overflow-x-auto" : "overflow-hidden",
     )}>
-      {#if selectedProject && selectedGroup}
-        <button
-          bind:this={groupTriggerElement}
-          type="button"
-          class={cn(
-            "flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
-            databaseSelected && "shrink-0",
-            "h-7",
-            navigatorOpen && navigatorMode === "groups" && "bg-accent",
-          )}
-          aria-label={t("projects.navigator.open")}
-          aria-expanded={navigatorOpen && navigatorMode === "groups"}
-          onpointerenter={(event) => {
-            navigatorHover.enterTrigger(event, () => openNavigator("groups"));
-          }}
-          onpointerleave={navigatorHover.leave}
-          onclick={() => toggleNavigator("groups")}
-        >
-          <ProjectIcon
-            name={selectedGroup.icon}
-            size={identityIconSize}
-            strokeWidth={identityIconStrokeWidth}
-            emojiScale={projectIdentityEmojiScale}
-            class="shrink-0"
-          />
-          <span class="min-w-0 truncate text-foreground">{selectedGroup.name}</span>
-        </button>
-        <span class="shrink-0 px-0.5 font-semibold text-muted-foreground">/</span>
+      {#if selectedProject}
+        {#if selectedGroup}
+          <button
+            bind:this={groupTriggerElement}
+            type="button"
+            class={cn(
+              "flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
+              databaseSelected && "shrink-0",
+              "h-7",
+              navigatorOpen && navigatorMode === "groups" && "bg-accent",
+            )}
+            aria-label={t("projects.navigator.open")}
+            aria-expanded={navigatorOpen && navigatorMode === "groups"}
+            onpointerenter={(event) => {
+              navigatorHover.enterTrigger(event, () => openNavigator("groups"));
+            }}
+            onpointerleave={navigatorHover.leave}
+            onclick={() => toggleNavigator("groups")}
+          >
+            <ProjectIcon
+              name={selectedGroup.icon}
+              size={identityIconSize}
+              strokeWidth={identityIconStrokeWidth}
+              emojiScale={projectIdentityEmojiScale}
+              class="shrink-0"
+            />
+            <span class="min-w-0 truncate text-foreground">{selectedGroup.name}</span>
+          </button>
+          <span class="shrink-0 px-0.5 font-semibold text-muted-foreground">/</span>
+        {/if}
         <button
           bind:this={projectTriggerElement}
           type="button"
@@ -696,12 +704,12 @@
             "flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
             databaseSelected && "shrink-0",
             "h-7",
-            navigatorOpen && navigatorMode === "projects" && "bg-accent",
+            navigatorOpen && navigatorMode === projectCrumbMode && "bg-accent",
           )}
           aria-label={selectedPageTitle ? t("notes.showProjectHome") : t("projects.navigator.open")}
-          aria-expanded={navigatorOpen && navigatorMode === "projects"}
+          aria-expanded={navigatorOpen && navigatorMode === projectCrumbMode}
           onpointerenter={(event) => {
-            navigatorHover.enterTrigger(event, () => openNavigator("projects"));
+            navigatorHover.enterTrigger(event, () => openNavigator(projectCrumbMode));
           }}
           onpointerleave={navigatorHover.leave}
           onclick={handleProjectTriggerClick}

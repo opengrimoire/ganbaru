@@ -18,8 +18,9 @@ use super::views::load_project_views;
 use crate::icons::required_icon_byte_size;
 use crate::order::{OrderGroup, OrderPlacement};
 
-pub(super) fn project_order(group_id: &str) -> OrderGroup<'_> {
-    OrderGroup::new("projects", "order_key").filter("group_id", Some(group_id))
+/// The sibling order of the projects in `group_id`, or of the projects outside every group.
+pub(super) fn project_order(group_id: Option<&str>) -> OrderGroup<'_> {
+    OrderGroup::new("projects", "order_key").filter("group_id", group_id)
 }
 
 const NOTES_PAGE_OPEN_MODES: &[&str] = &["center", "side", "full"];
@@ -30,16 +31,17 @@ const NOTES_HISTORY_RETENTION_DAYS: &[i64] = &[0, 7, 30, 90, 180, 365];
 pub const PROJECT_NAME_TAKEN_PREFIX: &str = "Project name taken:";
 
 /// Refuses `name` when another project of `group_id` already uses it, ignoring case and the
-/// surrounding white space. Projects in different groups may share a name.
+/// surrounding white space. Projects in different groups may share a name, and the projects
+/// outside every group form one more scope of their own.
 async fn require_free_project_name(
     conn: &mut SqliteConnection,
-    group_id: &str,
+    group_id: Option<&str>,
     project_id: &str,
     name: &str,
 ) -> Result<(), String> {
     let key = project_name_key(name);
     let names: Vec<String> =
-        sqlx::query_scalar("SELECT name FROM projects WHERE group_id = ? AND id <> ?")
+        sqlx::query_scalar("SELECT name FROM projects WHERE group_id IS ? AND id <> ?")
             .bind(group_id)
             .bind(project_id)
             .fetch_all(&mut *conn)
@@ -77,8 +79,9 @@ pub async fn create_project(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("begin: {e}"))?;
-    require_free_project_name(&mut tx, &project.group_id, &project.id, &project.name).await?;
-    let order_key = project_order(&project.group_id)
+    let group_id = project.group_id.as_deref();
+    require_free_project_name(&mut tx, group_id, &project.id, &project.name).await?;
+    let order_key = project_order(group_id)
         .place(&mut tx, &project.id, &project.placement)
         .await?;
     sqlx::query(
@@ -94,7 +97,7 @@ pub async fn create_project(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&project.id)
-    .bind(&project.group_id)
+    .bind(group_id)
     .bind(project.name.trim())
     .bind(project.icon.trim())
     .bind(icon_byte_size)
@@ -173,9 +176,10 @@ pub async fn update_project(
 ) -> Result<ProjectsMutationRows, String> {
     validate_project_update(&project)?;
     let built_in = built_in_routine_project(&project.id);
-    let group_id = built_in
-        .map(|_| ROUTINE_GROUP_ID)
-        .unwrap_or(project.group_id.as_str());
+    let group_id = match built_in {
+        Some(_) => Some(ROUTINE_GROUP_ID),
+        None => project.group_id.as_deref(),
+    };
     let name = built_in
         .map(|default| default.name)
         .unwrap_or_else(|| project.name.trim());
@@ -184,7 +188,7 @@ pub async fn update_project(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("begin project update: {e}"))?;
-    let current: Option<(String, String, String)> =
+    let current: Option<(Option<String>, String, String)> =
         sqlx::query_as("SELECT group_id, order_key, name FROM projects WHERE id = ?")
             .bind(&project.id)
             .fetch_optional(&mut *transaction)
@@ -193,10 +197,11 @@ pub async fn update_project(
     let Some((current_group_id, current_order_key, current_name)) = current else {
         return Err("project not found".to_string());
     };
-    if current_group_id != group_id || project_name_key(&current_name) != project_name_key(name) {
+    let same_group = current_group_id.as_deref() == group_id;
+    if !same_group || project_name_key(&current_name) != project_name_key(name) {
         require_free_project_name(&mut transaction, group_id, &project.id, name).await?;
     }
-    let placement = match (&project.placement, current_group_id == group_id) {
+    let placement = match (&project.placement, same_group) {
         _ if built_in.is_some() => None,
         (Some(placement), _) => Some(placement.clone()),
         (None, true) => None,

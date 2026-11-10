@@ -31,13 +31,19 @@ vi.mock("$lib/stores/projects.svelte", () => ({
     loadError: null,
     customEmojis: [],
     ensureLoaded: () => Promise.resolve(),
-    visibleGroups: () => groups,
-    projectsForGroupIncludingInactive: (groupId: string) => store.projects.filter((entry) => entry.groupId === groupId),
+    projectLists: (includeInactive: boolean) => {
+      const listed = (groupId: string | null) => store.projects.filter((entry) =>
+        entry.groupId === groupId && (includeInactive || entry.status === "active"));
+      return [
+        ...groups.map((entry) => ({ key: `group:${entry.id}`, group: entry, projects: listed(entry.id) })),
+        { key: "ungrouped", group: null, projects: listed(null) },
+      ];
+    },
     setProjectStatus: store.setProjectStatus,
   }),
 }));
 
-function project(id: string, groupId: string, status: ProjectLifecycleStatus): Project {
+function project(id: string, groupId: string | null, status: ProjectLifecycleStatus): Project {
   return {
     id,
     groupId,
@@ -95,6 +101,19 @@ describe("Settings list of hidden and archived projects", () => {
     expect(rowLabels()).toEqual(["Show Draft", "Restore Errands"]);
     expect(target.querySelector("li")?.textContent).toContain("Work · Hidden");
     expect([...target.querySelectorAll("li button")].map((button) => button.textContent?.trim())).toEqual(["Show", "Restore"]);
+  });
+
+  it("lists inactive projects outside every group after the groups, with the status alone", () => {
+    store.projects = [
+      project("Loose", null, "archived"),
+      project("Draft", "group-b", "hidden"),
+    ];
+    render();
+
+    expect(rowLabels()).toEqual(["Show Draft", "Restore Loose"]);
+    const rows = [...target.querySelectorAll("li")];
+    expect(rows[1]?.textContent).toContain("Archived");
+    expect(rows[1]?.textContent).not.toContain("·");
   });
 
   it("makes a project active again from its row", async () => {

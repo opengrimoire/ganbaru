@@ -5,7 +5,8 @@
   import MobileSidebarPanel from "$lib/components/mobile/MobileSidebarPanel.svelte";
   import SearchField from "$lib/components/ui/SearchField.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { projectSidebarActions, resolveProjectSidebarGroupId, searchProjectSidebar } from "$lib/projects/sidebar";
+  import { projectListKey } from "$lib/projects/lists";
+  import { projectSidebarActions, resolveProjectSidebarListKey, searchProjectSidebar } from "$lib/projects/sidebar";
   import type { Project, ProjectView } from "$lib/projects/types";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
@@ -19,8 +20,9 @@
 
   /**
    * The docked Projects explorer, laid out like the Chat channel rail: a project search, then one collapsible section
-   * per project of the selected project's group, each listing that project's views the way Chat sections list
-   * channels. A search lists matching projects from every visible group. Opening a view of another project selects that
+   * per project of the selected project's group, or of the projects outside every group when it has none, each listing
+   * that project's views the way Chat sections list channels. A search lists matching projects from every visible group
+   * and from outside every group. Opening a view of another project selects that
    * project. Collapsing the sidebar keeps a narrow rail with the selected project's views. Hosted Notes and Chat render
    * it in place of their own explorer. The phone shell opens it as a floating panel that closes instead of collapsing.
    */
@@ -58,41 +60,38 @@
 
   const groups = $derived(projects.visibleGroups());
   const groupIds = $derived(groups.map((group) => group.id));
-  const listedGroupId = $derived(resolveProjectSidebarGroupId(
-    projects.selectedGroup?.id ?? null,
-    groupIds,
+  const projectLists = $derived(projects.projectLists(projects.showInactiveProjects));
+  const selectedProject = $derived(projects.projectById(projects.selectedProjectId));
+  const listedKey = $derived(resolveProjectSidebarListKey(
+    selectedProject ? projectListKey(selectedProject.groupId) : null,
+    projectLists.map((list) => list.key),
   ));
+  const listed = $derived(projectLists.find((list) => list.key === listedKey));
   const searching = $derived(query.trim().length > 0);
   const searchResults = $derived(searching
-    ? searchProjectSidebar(query, groups.map((group) => ({ name: group.name, projects: groupProjects(group.id) })))
+    ? searchProjectSidebar(query, projectLists.map((list) => ({ name: list.group?.name ?? null, projects: list.projects })))
     : []);
   const listedProjects = $derived(searching
     ? searchResults.map((result) => result.project)
-    : listedGroupId ? groupProjects(listedGroupId) : []);
-  /** Search results name their group only when more than one group could have matched. */
-  const resultGroupNames = $derived(searching && groups.length > 1
-    ? new Map(searchResults.map((result) => [result.project.id, result.groupName]))
+    : listed?.projects ?? []);
+  /** Search results name their group only when more than one list could have matched. */
+  const resultGroupNames = $derived(searching && projectLists.length > 1
+    ? new Map(searchResults.map((result) => [result.project.id, result.groupName ?? t("projects.navigator.noGroup")]))
     : null);
   const selectedProjectViews = $derived(projects.viewsForProject(projects.selectedProjectId));
 
   /** Sections drag from their heading in the custom order, except in search results, which span groups. */
   const sectionDrag = createSidebarOrderDrag({
     getIds: () => listedProjects.map((project) => project.id),
-    enabled: () => preferences.projectsSidebarOrder === "custom" && !searching && listedGroupId !== null,
+    enabled: () => preferences.projectsSidebarOrder === "custom" && !searching && listed !== undefined,
     isStarred: (projectId) => projects.isProjectStarred(projectId),
     save: async (orderedIds) => {
-      if (listedGroupId) await projects.reorderProjectsInGroup(listedGroupId, orderedIds);
+      if (listed) await projects.reorderProjectsInGroup(listed.group?.id ?? null, orderedIds);
     },
     description: "projects from the Projects sidebar",
   });
 
   $effect(() => sectionDrag.reset);
-
-  function groupProjects(groupId: string): Project[] {
-    return projects.showInactiveProjects
-      ? projects.projectsForGroupIncludingInactive(groupId)
-      : projects.projectsForGroup(groupId);
-  }
 
   let expandButton = $state<HTMLButtonElement | null>(null);
   let collapseButton = $state<HTMLButtonElement | null>(null);
@@ -149,7 +148,7 @@
           onSelectView={(view) => void openView(view)}
           onOpenViewInNewTab={tabs.canOpenTabs && !panel ? openViewInNewTab : undefined}
           onRename={(name) => projects.renameProject(project, name)}
-          onMoveToGroup={(groupId) => projects.moveProjectToGroup(project, groupId)}
+          onMoveToGroup={(groupId: string | null) => projects.moveProjectToGroup(project, groupId)}
           onSetStatus={(status) => projects.setProjectStatus(project, status)}
           onOpenSettings={onOpenProjectSettings ? () => onOpenProjectSettings?.(project) : undefined}
           onHeadingPointerDown={(event) => sectionDrag.pointerDown(event, project.id)}

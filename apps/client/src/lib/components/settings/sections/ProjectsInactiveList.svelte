@@ -13,14 +13,20 @@
 
   interface InactiveProjectRow {
     project: Project;
-    group: ProjectGroup;
+    /** The project's group, or `null` for a project outside every group. */
+    group: ProjectGroup | null;
   }
 
   const rows = $derived<InactiveProjectRow[]>(
-    projects.visibleGroups().flatMap((group) => projects.projectsForGroupIncludingInactive(group.id)
+    projects.projectLists(true).flatMap(({ group, projects: listProjects }) => listProjects
       .filter((project) => project.status !== "active")
       .map((project) => ({ project, group }))),
   );
+
+  function rowDetail({ project, group }: InactiveProjectRow): string {
+    const status = projectLifecycleLabel(project.status, t);
+    return group ? t("settings.projectsInactive.detail", group.name, status) : status;
+  }
   let pendingProjectId = $state<string | null>(null);
   let actionError = $state<string | null>(null);
 
@@ -54,12 +60,13 @@
     <p class="px-1 text-[0.8rem] text-muted-foreground">{t("settings.projectsInactive.empty")}</p>
   {:else}
     <ul class="flex flex-col gap-3">
-      {#each rows as { project, group } (project.id)}
+      {#each rows as row (row.project.id)}
+        {@const project = row.project}
         <li class="flex items-center justify-between gap-4 px-1 py-1">
           <div class="min-w-0 flex-1">
             <div class="truncate text-[0.866667rem] text-foreground">{project.name}</div>
             <div class="mt-0.5 truncate text-[0.8rem] text-muted-foreground">
-              {t("settings.projectsInactive.detail", group.name, projectLifecycleLabel(project.status, t))}
+              {rowDetail(row)}
             </div>
           </div>
           <button

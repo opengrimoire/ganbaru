@@ -49,35 +49,35 @@ describe("project picker panel helpers", () => {
       activeGroupId: "group-1",
       searchActive: false,
       createGroupOpen: false,
-      createProjectGroupId: "group-1",
+      createProjectListKey: "group:group-1",
     })).toBe("close-project-creator");
     expect(projectPickerMobileBackAction({
       mode: "groups",
       activeGroupId: null,
       searchActive: false,
       createGroupOpen: true,
-      createProjectGroupId: null,
+      createProjectListKey: null,
     })).toBe("close-group-creator");
     expect(projectPickerMobileBackAction({
       mode: "groups",
       activeGroupId: "group-1",
       searchActive: true,
       createGroupOpen: false,
-      createProjectGroupId: null,
+      createProjectListKey: null,
     })).toBe("clear-search");
     expect(projectPickerMobileBackAction({
       mode: "groups",
       activeGroupId: "group-1",
       searchActive: false,
       createGroupOpen: false,
-      createProjectGroupId: null,
+      createProjectListKey: null,
     })).toBe("show-groups");
     expect(projectPickerMobileBackAction({
       mode: "groups",
       activeGroupId: null,
       searchActive: false,
       createGroupOpen: false,
-      createProjectGroupId: null,
+      createProjectListKey: null,
     })).toBe("close-picker");
   });
 

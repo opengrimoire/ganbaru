@@ -159,7 +159,8 @@ export interface ChatTeammateChannelAccess {
   channelId: ChatChannelId;
   conversationId: ChatConversationId;
   projectId: string;
-  groupId: string;
+  /** Group of the channel's project, `null` when the project is outside every group. */
+  groupId: string | null;
   channelName: string;
   accessProfileId: ChatAccessProfileId;
   accessProfileRevisionId: ChatAccessProfileRevisionId;
@@ -345,8 +346,10 @@ export interface ChatScratchScopeRead {
   channelName: string;
   projectId: string;
   projectName: string;
-  groupId: string;
-  groupName: string;
+  /** Group of the channel's project, `null` when the project is outside every group. */
+  groupId: string | null;
+  /** Name of that group, `null` with it. */
+  groupName: string | null;
   lifecycleState: ChatScratchScopeLifecycleState;
   revision: number;
   generations: ChatScratchGenerationRead[];

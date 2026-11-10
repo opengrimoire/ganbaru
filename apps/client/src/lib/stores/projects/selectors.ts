@@ -81,10 +81,10 @@ export function createProjectStoreSelectors(
     subtasksForTaskIncludingArchived(parentTaskId: string | null | undefined): ProjectTask[] {
       return projectSnapshot.subtasksForTaskIncludingArchived(readSnapshot(), parentTaskId);
     },
-    projectsForGroup(groupId: string): Project[] {
+    projectsForGroup(groupId: string | null): Project[] {
       return projectSnapshot.projectsForGroup(readSnapshot(), groupId);
     },
-    projectsForGroupIncludingInactive(groupId: string): Project[] {
+    projectsForGroupIncludingInactive(groupId: string | null): Project[] {
       return projectSnapshot.projectsForGroupIncludingInactive(readSnapshot(), groupId);
     },
     visibleGroups(): ProjectGroup[] {

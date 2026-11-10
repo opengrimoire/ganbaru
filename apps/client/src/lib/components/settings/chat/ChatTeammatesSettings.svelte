@@ -52,6 +52,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatChannelAccessPicker from "./ChatChannelAccessPicker.svelte";
+  import { UNGROUPED_PROJECT_LIST_KEY } from "$lib/projects/lists";
   import ChatChannelScopeControls from "./ChatChannelScopeControls.svelte";
   type ChatAccessProfilesManagerComponent = typeof import("./ChatAccessProfilesManager.svelte").default;
 
@@ -166,14 +167,20 @@
       const channel = editor.navigationChannels.find((entry) => entry.id === access.channelId);
       if (!channel) continue;
       const project = projectById.get(channel.projectId);
+      const ungrouped = project !== undefined && project.groupId === null;
       const group = groupById.get(project?.groupId ?? "");
-      const groupId = group?.id ?? `unknown-group:${project?.groupId ?? channel.projectId}`;
+      const groupId = ungrouped
+        ? UNGROUPED_PROJECT_LIST_KEY
+        : group?.id ?? `unknown-group:${project?.groupId ?? channel.projectId}`;
       let summaryGroup = grouped.get(groupId);
       if (!summaryGroup) {
         summaryGroup = {
           id: groupId,
-          name: group?.name ?? t("settings.chat.teammates.unknownGroup"),
-          sortOrder: groupRanks.get(group?.id ?? "") ?? Number.MAX_SAFE_INTEGER,
+          name: ungrouped
+            ? t("projects.navigator.noGroup")
+            : group?.name ?? t("settings.chat.teammates.unknownGroup"),
+          // Projects outside every group follow the groups; unknown groups come last.
+          sortOrder: ungrouped ? groupRanks.size : groupRanks.get(group?.id ?? "") ?? Number.MAX_SAFE_INTEGER,
           projects: [],
         };
         grouped.set(groupId, summaryGroup);

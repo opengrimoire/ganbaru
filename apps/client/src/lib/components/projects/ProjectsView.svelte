@@ -70,10 +70,10 @@
   const selectedProject = $derived(projects.selectedProject);
   const selectedGroup = $derived(projects.selectedGroup);
   const selectedProjectId = $derived(selectedProject?.id ?? null);
-  const sidebarDocked = $derived(!mobileLayout && Boolean(selectedProject && selectedGroup));
+  const sidebarDocked = $derived(!mobileLayout && Boolean(selectedProject));
   /** The mobile shell shows the sidebar as a full surface that replaces the project while open. */
   let mobileSidebarRequested = $state(false);
-  const mobileSidebarOpen = $derived(mobileLayout && mobileSidebarRequested && Boolean(selectedProject && selectedGroup));
+  const mobileSidebarOpen = $derived(mobileLayout && mobileSidebarRequested && Boolean(selectedProject));
   const sidebarViews = $derived(projects.viewsForProject(selectedProjectId));
   /** Chat opens from the sidebar when the project has a Chat view, so the header keeps its shortcut only otherwise. */
   const chatIsPlace = $derived(sidebarDocked && sidebarViews.some((view) => view.viewType === "chat"));
@@ -198,7 +198,7 @@
 
   $effect(() => {
     const view = projects.activeTaskView;
-    if (!selectedProject || !selectedGroup || !view) return;
+    if (!selectedProject || !view) return;
     requestViewData(selectedProject.id, view);
   });
 
@@ -403,7 +403,7 @@
     class:surface-content={sidebarDocked}
     style="background-color: var(--cal-bg);"
   >
-    {#if selectedProject && selectedGroup}
+    {#if selectedProject}
       <header class="flex shrink-0 flex-col" style="background-color: var(--cal-bg);">
         <ProjectWorkspaceHeader
           {selectedProject}
@@ -507,7 +507,7 @@
       class="relative min-h-0 flex-1"
       style="background-color: var(--cal-bg);"
     >
-      {#if selectedProject && selectedGroup}
+      {#if selectedProject}
         {#if routeUi.selectedTaskIds.length > 0}
           <!-- The selection toolbar floats over the bottom of the header so selecting tasks never shifts them. -->
           <div class="pointer-events-none absolute right-3 bottom-full left-3 z-30 mb-1.5 flex flex-col items-start gap-1 *:pointer-events-auto">

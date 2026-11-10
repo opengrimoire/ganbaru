@@ -61,6 +61,8 @@
   import ProjectSettingsMembersSection from "./ProjectSettingsMembersSection.svelte";
   import ProjectSettingsWorkingFoldersSection from "$lib/components/projects/settings/ProjectSettingsWorkingFoldersSection.svelte";
   import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
+  import { projectListKey, UNGROUPED_PROJECT_LIST_KEY } from "$lib/projects/lists";
+  import type { ProjectListOption } from "./ProjectSettingsIdentitySection.svelte";
   import ProjectSettingsPanelShell from "./ProjectSettingsPanelShell.svelte";
   import ProjectSettingsPrioritiesSection from "./ProjectSettingsPrioritiesSection.svelte";
   import ProjectSettingsStatusesSection from "./ProjectSettingsStatusesSection.svelte";
@@ -142,9 +144,11 @@
   const priorities = $derived(structure.priorities);
   const projectTags = $derived(structure.tags);
   const projectCustomFields = $derived(structure.customFields);
-  const projectGroupOptions = $derived<SelectOption[]>(
-    visibleProjectGroups.map((group) => ({ value: group.id, label: group.name })),
-  );
+  /** Every visible group, then the choice to keep the project outside every group. */
+  const projectGroupOptions = $derived<ProjectListOption[]>([
+    ...visibleProjectGroups.map((group) => ({ value: projectListKey(group.id), label: group.name })),
+    { value: UNGROUPED_PROJECT_LIST_KEY, label: t("projects.navigator.noGroup") },
+  ]);
   const lifecycleOptions = $derived<SelectOption[]>(
     PROJECT_LIFECYCLE_STATUSES.map((status) => ({
       value: status,

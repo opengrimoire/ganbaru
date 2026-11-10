@@ -15,6 +15,7 @@ import {
 } from "$lib/projects/snapshot/optional-data";
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
 import { projectOrderRanks } from "$lib/projects/order";
+import { buildProjectLists, type ProjectList } from "$lib/projects/lists";
 import { PROJECTS_SYNC_CHANGE_KEY, listenForProjectChanges, projectsStillLoaded, publishProjectChanges } from "$lib/projects/window-sync";
 import { onProjectsSyncChanged } from "$lib/projects/sync-events";
 import { projectConflicts } from "./project-conflicts.svelte";
@@ -195,14 +196,6 @@ function setSelectedProjectId(pane: ProjectsPane, projectId: string | null): voi
   if (pane.owner) saveActiveProjectId(projectId);
 }
 
-function deselectProjectsOfGroup(groupId: string): void {
-  for (const pane of allPanes()) {
-    if (pane.selectedProjectId && selectors.projectById(pane.selectedProjectId)?.groupId === groupId) {
-      setSelectedProjectId(pane, null);
-    }
-  }
-}
-
 function isProjectDataLoaded(projectId: string | null | undefined): boolean {
   return Boolean(projectId && loadedProjectIds.includes(projectId));
 }
@@ -240,18 +233,31 @@ function sidebarGroups(): ProjectGroup[] {
   return sortedForSidebar(selectors.visibleGroups());
 }
 
-function sidebarProjectsForGroup(groupId: string): Project[] {
+/** Active projects of a group, or of no group when `groupId` is `null`, in sidebar order. */
+function sidebarProjectsForGroup(groupId: string | null): Project[] {
   return sortedForSidebar(selectors.projectsForGroup(groupId), isProjectStarred);
 }
 
-function sidebarProjectsForGroupIncludingInactive(groupId: string): Project[] {
+/** Every project of a group, or of no group when `groupId` is `null`, in sidebar order. */
+function sidebarProjectsForGroupIncludingInactive(groupId: string | null): Project[] {
   return sortedForSidebar(selectors.projectsForGroupIncludingInactive(groupId), isProjectStarred);
 }
 
-/** The first active project in sidebar order, used when no remembered project exists. */
+/**
+ * Every visible group with its projects in sidebar order, followed by the projects outside every group when there are
+ * any. Navigators list projects through this so none of them leaves out the ungrouped ones.
+ */
+function sidebarProjectLists(includeInactive = false): ProjectList<Project>[] {
+  return buildProjectLists(
+    sidebarGroups(),
+    includeInactive ? sidebarProjectsForGroupIncludingInactive : sidebarProjectsForGroup,
+  );
+}
+
+/** The first active project in sidebar order, where groups come before the projects outside every group, used when no remembered project exists. */
 function firstSidebarProjectId(): string | null {
-  for (const group of sidebarGroups()) {
-    const project = sidebarProjectsForGroup(group.id)[0];
+  for (const list of sidebarProjectLists()) {
+    const project = list.projects[0];
     if (project) return project.id;
   }
   return selectors.firstProjectId();
@@ -763,7 +769,6 @@ const actions = createProjectStoreActions({
       console.error("Failed to apply committed calendar event project assignments", error);
     }
   },
-  deselectProjectsOfGroup,
   reload,
   ensureProjectData,
   ensureTaskDetailData,
@@ -1041,6 +1046,7 @@ function createProjectsStore(pane: ProjectsPane) {
     projectsForGroup: sidebarProjectsForGroup,
     projectsForGroupIncludingInactive: sidebarProjectsForGroupIncludingInactive,
     visibleGroups: sidebarGroups,
+    projectLists: sidebarProjectLists,
     sectionsForProject,
     sectionsForProjectIncludingInactive,
     statusesForProject,

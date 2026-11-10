@@ -1307,11 +1307,10 @@ impl MaterializeHook for RemovedConversations {
     }
 }
 
-/// A project group deleted on one replica cascades into the conversations of its projects on
-/// the other, and the receiver's Chat hook is handed those conversation keys, so it can report
-/// them removed.
+/// A project deleted on one replica cascades into its conversations on the other, and the
+/// receiver's Chat hook is handed those conversation keys, so it can report them removed.
 #[test]
-fn chat_hook_sees_conversations_an_applied_group_delete_cascades_away() {
+fn chat_hook_sees_conversations_an_applied_project_delete_cascades_away() {
     block_on(async {
         let mut replicas = replicas(2).await;
         replicas[0]
@@ -1330,17 +1329,10 @@ fn chat_hook_sees_conversations_an_applied_group_delete_cascades_away() {
                 .with(CONVERSATIONS_TABLE, Box::new(removed)),
         )
         .unwrap();
-        let group = replicas[0]
-            .scalar_text(&format!(
-                "SELECT group_id FROM projects WHERE id = {}",
-                quoted(PROJECT)
-            ))
-            .await
-            .expect("the project has a group");
         replicas[0]
             .exec(&format!(
-                "DELETE FROM project_groups WHERE id = {}",
-                quoted(&group)
+                "DELETE FROM projects WHERE id = {}",
+                quoted(PROJECT)
             ))
             .await;
         converge(&mut replicas).await;

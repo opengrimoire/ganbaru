@@ -4,7 +4,6 @@ pub mod attachments;
 pub mod drafts;
 pub mod events;
 pub mod lifecycle;
-pub mod project_files;
 pub mod provider_lifecycle;
 pub mod reads;
 pub mod rebuild;

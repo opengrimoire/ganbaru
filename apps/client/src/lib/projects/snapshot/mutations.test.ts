@@ -83,9 +83,16 @@ describe("applyProjectMutation", () => {
       checklistItems: [{ id: "item-1", taskId: "task-1", title: "Item", orderKey: "1000", createdAt: "c", updatedAt: "u" }],
     }).changed;
 
-    const result = applyProjectMutation(initial, mutation({}, [{ kind: "group", id: "group-1" }]));
+    const ungrouped = applyProjectMutation(initial, mutation({}, [{ kind: "group", id: "group-1" }]));
 
-    expect(result.groups).toEqual([]);
+    expect(ungrouped.groups).toEqual([]);
+    expect(ungrouped.projects.map((project) => [project.id, project.groupId])).toEqual([["project-1", null]]);
+    expect(ungrouped.tasks).toHaveLength(1);
+    expect(ungrouped.tags).toHaveLength(1);
+    expect(ungrouped.checklistItems).toHaveLength(1);
+
+    const result = applyProjectMutation(ungrouped, mutation({}, [{ kind: "project", id: "project-1" }]));
+
     expect(result.projects).toEqual([]);
     expect(result.tasks).toEqual([]);
     expect(result.tags).toEqual([]);

@@ -2813,6 +2813,51 @@ fn removing_a_teammate_from_a_channel_keeps_the_rows_and_hides_them_from_readers
     });
 }
 
+/// A channel of a project outside every group reads with no group instead of failing to decode.
+#[test]
+fn teammate_access_reads_a_channel_of_a_project_outside_every_group() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let teammate_id = ChatParticipantId::new("participant:loose-agent").unwrap();
+        seed_unused_teammate(&pool, teammate_id.as_str(), "policy:loose-agent").await;
+        sqlx::raw_sql(
+            "INSERT INTO projects (id, group_id, name, icon, order_key)
+             VALUES ('project-loose', NULL, 'Loose', 'lucide:folder', 'a0');
+             INSERT INTO chat_conversations
+                 (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation-loose', 'project-loose', 'channel',
+                     '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z',
+                     '2026-08-14T17:30:00.000Z');
+             INSERT INTO chat_channels
+                 (id, project_id, conversation_id, name, is_default, created_at, updated_at)
+             VALUES ('channel-loose', 'project-loose', 'conversation-loose', 'loose', 0,
+                     '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');
+             INSERT INTO chat_conversation_memberships
+                 (conversation_id, participant_id, sync_key, membership_role, created_at,
+                  updated_at)
+             VALUES ('conversation-loose', 'participant:loose-agent', 'membership:loose',
+                     'member', '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');
+             INSERT INTO chat_teammate_channel_memberships
+                 (conversation_id, teammate_id, sync_key, access_profile_id, created_at,
+                  updated_at)
+             VALUES ('conversation-loose', 'participant:loose-agent',
+                     'channel-membership:loose', 'access-profile:edit-files',
+                     '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let access = access::read_teammate_access(&pool, &teammate_id)
+            .await
+            .unwrap();
+
+        assert_eq!(access.channels.len(), 1);
+        assert_eq!(access.channels[0].project_id, "project-loose");
+        assert_eq!(access.channels[0].group_id, None);
+    });
+}
+
 /// Runs the save-time profile revision check for one channel draft made against `revision_id`.
 async fn check_draft_profile_revision(
     pool: &SqlitePool,

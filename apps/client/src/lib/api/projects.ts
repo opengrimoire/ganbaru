@@ -100,7 +100,7 @@ interface ProjectGroupRow {
 
 interface ProjectRow {
   id: string;
-  group_id: string;
+  group_id: string | null;
   name: string;
   icon: string;
   color: number | null;
@@ -1008,8 +1008,8 @@ export async function reorderProjectGroups(groupIds: readonly string[]): Promise
   return invokeProjectMutation("projects_reorder_groups", { dbUrl, reorder: { groupIds } });
 }
 
-/** Replace the custom sidebar order of a group's projects; `projectIds` must list each project of the group, including hidden and archived ones, exactly once. */
-export async function reorderGroupProjects(groupId: string, projectIds: readonly string[]): Promise<ProjectMutation> {
+/** Replace the custom sidebar order of a group's projects, or of the ungrouped projects when `groupId` is `null`; `projectIds` must list each of those projects, including hidden and archived ones, exactly once. */
+export async function reorderGroupProjects(groupId: string | null, projectIds: readonly string[]): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();
   return invokeProjectMutation("projects_reorder_group_projects", { dbUrl, reorder: { groupId, projectIds } });
 }

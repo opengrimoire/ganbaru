@@ -94,6 +94,8 @@ export const shell = {
     groupNamePlaceholder: "Nombre del grupo",
     projectNamePlaceholder: "Nombre del proyecto",
     projectNameTaken: "Otro proyecto de este grupo ya tiene este nombre",
+    ungroupedProjectNameTaken: "Otro proyecto sin grupo ya tiene este nombre",
+    noGroup: "Sin grupo",
     groupColor: "Color del grupo",
     selectGroupColor: "Seleccionar color del grupo",
     selectGroupIcon: (icon: string) => `Seleccionar icono ${icon} del grupo`,
@@ -103,8 +105,8 @@ export const shell = {
     deleteGroup: (group: string) => `Eliminar grupo ${group}`,
     deleteGroupTitle: (group: string) => `¿Eliminar ${group}?`,
     deleteGroupMessage: (group: string, projectCount: number) =>
-      `Esto elimina permanentemente ${group}, ${projectCount} ${projectCount === 1 ? "proyecto" : "proyectos"
-      }, y todos los datos de tareas dentro. Los eventos vinculados permanecen en el calendario sin proyecto.`,
+      `Esto elimina ${group} y conserva sus ${projectCount} ${projectCount === 1 ? "proyecto" : "proyectos"
+      } con todas sus tareas fuera de cualquier grupo.`,
     deleteGroupConfirm: "Eliminar grupo",
     empty: "Sin proyectos",
   },

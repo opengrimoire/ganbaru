@@ -1,9 +1,9 @@
 use super::*;
 use crate::mutations::{delete_tag_with_history, delete_unused_priority, delete_unused_status};
-use crate::structure_commands::{delete_project_group, reorder_group_projects, reorder_groups};
+use crate::structure_commands::{delete_group, reorder_group_projects, reorder_groups};
 
 #[test]
-fn delete_group_cascades_projects_and_keeps_calendar_events() {
+fn delete_group_ungroups_its_projects_and_keeps_everything_they_own() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
@@ -22,8 +22,22 @@ fn delete_group_cascades_projects_and_keeps_calendar_events() {
         .await
         .unwrap();
 
-        delete_project_group(&pool, " group-a ").await.unwrap();
+        let mutation = delete_group(&pool, " group-a ".to_string()).await.unwrap();
 
+        assert!(matches!(
+            mutation.removals.as_slice(),
+            [ProjectMutationRemoval::Group { id }] if id == "group-a"
+        ));
+        let returned: Vec<(&str, Option<&str>)> = mutation
+            .projects
+            .iter()
+            .map(|project| (project.id.as_str(), project.group_id.as_deref()))
+            .collect();
+        assert_eq!(returned, [("project-a", None)]);
+        assert_eq!(
+            delete_group(&pool, "group-a".to_string()).await.err(),
+            Some("project group not found".to_string())
+        );
         let group_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM project_groups WHERE id = 'group-a'")
                 .fetch_one(&pool)
@@ -52,10 +66,10 @@ fn delete_group_cascades_projects_and_keeps_calendar_events() {
                 .unwrap();
 
         assert_eq!(group_count, 0);
-        assert_eq!(project_count, 0);
-        assert_eq!(task_count, 0);
-        assert_eq!(link_count, 0);
-        assert_eq!(event_project_id, None);
+        assert_eq!(project_count, 1);
+        assert_eq!(task_count, 3);
+        assert_eq!(link_count, 1);
+        assert_eq!(event_project_id.as_deref(), Some("project-a"));
     });
 }
 
@@ -355,30 +369,35 @@ fn reordering_group_projects_covers_inactive_projects_of_that_group_only() {
             .await
             .unwrap();
         }
-        let reorder = |group_id: &str, ids: &[&str]| GroupProjectReorder {
-            group_id: group_id.to_string(),
+        let reorder = |group_id: Option<&str>, ids: &[&str]| GroupProjectReorder {
+            group_id: group_id.map(str::to_string),
             project_ids: ids.iter().map(|id| id.to_string()).collect(),
         };
 
         assert!(
-            reorder_group_projects(&pool, reorder("group-a", &["project-c", "project-a"]))
+            reorder_group_projects(&pool, reorder(Some("group-a"), &["project-c", "project-a"]))
                 .await
                 .is_err()
         );
         assert!(
-            reorder_group_projects(&pool, reorder("missing", &[]))
+            reorder_group_projects(&pool, reorder(Some("missing"), &[]))
                 .await
                 .is_err()
         );
         assert!(
-            reorder_group_projects(&pool, reorder(" ", &[]))
+            reorder_group_projects(&pool, reorder(Some(" "), &[]))
+                .await
+                .is_err()
+        );
+        assert!(
+            reorder_group_projects(&pool, reorder(None, &["project-a"]))
                 .await
                 .is_err()
         );
 
         let mutation = reorder_group_projects(
             &pool,
-            reorder("group-a", &["project-c", "project-a", "project-b"]),
+            reorder(Some("group-a"), &["project-c", "project-a", "project-b"]),
         )
         .await
         .unwrap();
@@ -400,5 +419,53 @@ fn reordering_group_projects_covers_inactive_projects_of_that_group_only() {
                 .await
                 .unwrap();
         assert_eq!(updated_at, "2026-01-01T00:00:00.000Z");
+    });
+}
+
+#[test]
+fn reordering_ungrouped_projects_leaves_grouped_ones_alone() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        for (id, order_key) in [("loose-a", "a1"), ("loose-b", "a2")] {
+            sqlx::query(
+                "INSERT INTO projects (id, group_id, name, icon, order_key)
+                 VALUES (?, NULL, ?, 'lucide:folder', ?)",
+            )
+            .bind(id)
+            .bind(id)
+            .bind(order_key)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let grouped_key: String =
+            sqlx::query_scalar("SELECT order_key FROM projects WHERE id = 'project-a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        let mutation = reorder_group_projects(
+            &pool,
+            GroupProjectReorder {
+                group_id: None,
+                project_ids: vec!["loose-b".to_string(), "loose-a".to_string()],
+            },
+        )
+        .await
+        .unwrap();
+
+        let returned: Vec<(&str, Option<&str>)> = mutation
+            .projects
+            .iter()
+            .map(|project| (project.id.as_str(), project.group_id.as_deref()))
+            .collect();
+        assert_eq!(returned, [("loose-b", None), ("loose-a", None)]);
+        let grouped_key_after: String =
+            sqlx::query_scalar("SELECT order_key FROM projects WHERE id = 'project-a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(grouped_key_after, grouped_key);
     });
 }

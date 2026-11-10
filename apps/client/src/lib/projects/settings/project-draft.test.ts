@@ -217,11 +217,34 @@ describe("projectUpdateFromDraft", () => {
       project: currentProject,
       draft: updateDraft(cleanDraft, { groupId: "missing-group" }),
       visibleGroupIds: new Set(["group-1"]),
-    })).toEqual({ ok: false, error: "group_required" });
+    })).toEqual({ ok: false, error: "group_unavailable" });
     expect(projectUpdateFromDraft({
       project: currentProject,
       draft: updateDraft(cleanDraft, { defaultEventDurationMinutes: "0" }),
       visibleGroupIds: new Set(["group-1"]),
     })).toEqual({ ok: false, error: "invalid_duration" });
+  });
+
+  it("moves a project out of every group and back into a visible one", () => {
+    const grouped = project();
+    const ungroupedResult = projectUpdateFromDraft({
+      project: grouped,
+      draft: updateDraft(projectDraftFromProject(grouped), { groupId: null }),
+      visibleGroupIds: new Set(["group-1"]),
+    });
+    expect(ungroupedResult).toMatchObject({ ok: true, value: { groupId: null, placement: { kind: "end" } } });
+
+    const ungrouped = project({ groupId: null });
+    expect(projectDraftDirty(ungrouped, projectDraftFromProject(ungrouped))).toBe(false);
+    expect(projectUpdateFromDraft({
+      project: ungrouped,
+      draft: projectDraftFromProject(ungrouped),
+      visibleGroupIds: new Set(),
+    })).toMatchObject({ ok: true, value: { groupId: null, placement: undefined } });
+    expect(projectUpdateFromDraft({
+      project: ungrouped,
+      draft: updateDraft(projectDraftFromProject(ungrouped), { groupId: "group-1" }),
+      visibleGroupIds: new Set(["group-1"]),
+    })).toMatchObject({ ok: true, value: { groupId: "group-1", placement: { kind: "end" } } });
   });
 });

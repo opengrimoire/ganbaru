@@ -282,7 +282,7 @@ export function parseChatTeammateChannelAccess(
     channelId: readIdentifier(record.channelId, `${label}.channelId`),
     conversationId: readIdentifier(record.conversationId, `${label}.conversationId`),
     projectId: readIdentifier(record.projectId, `${label}.projectId`),
-    groupId: readIdentifier(record.groupId, `${label}.groupId`),
+    groupId: readNullable(record.groupId, `${label}.groupId`, readIdentifier),
     channelName: readString(record.channelName, `${label}.channelName`),
     accessProfileId: readIdentifier(record.accessProfileId, `${label}.accessProfileId`),
     accessProfileRevisionId: readIdentifier(
@@ -678,8 +678,8 @@ export function parseChatScratchScope(
     channelName: readString(record.channelName, `${label}.channelName`),
     projectId: readIdentifier(record.projectId, `${label}.projectId`),
     projectName: readString(record.projectName, `${label}.projectName`),
-    groupId: readIdentifier(record.groupId, `${label}.groupId`),
-    groupName: readString(record.groupName, `${label}.groupName`),
+    groupId: readNullable(record.groupId, `${label}.groupId`, readIdentifier),
+    groupName: readNullable(record.groupName, `${label}.groupName`, readString),
     lifecycleState: readEnum(
       record.lifecycleState,
       CHAT_SCRATCH_SCOPE_LIFECYCLE_STATES,

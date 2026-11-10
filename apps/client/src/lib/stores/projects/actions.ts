@@ -133,8 +133,6 @@ export interface ProjectStoreActionContext {
   applyCalendarEventProjectAssignments: (
     assignments: readonly { eventId: string; projectId: string }[],
   ) => Promise<void>;
-  /** Clear the project selection of every pane that shows a project of a removed group. */
-  deselectProjectsOfGroup: (groupId: string) => void;
   readLoadGeneration: () => number;
   reload: (projectId?: string | null) => Promise<void>;
   ensureProjectData: (projectId: string | null | undefined) => Promise<void>;
@@ -170,7 +168,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     ensureProjectData,
     ensureTaskDetailData,
     applyCalendarEventProjectAssignments,
-    deselectProjectsOfGroup,
     onCommitted,
     readLoadGeneration,
     readSnapshot,
@@ -223,7 +220,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       && readLoadGeneration() === originatingLoadGeneration
     ) {
       updateSnapshot((current) => {
-        rememberPendingRemovals(current, mutation.removals);
+        rememberPendingRemovals(mutation.removals);
         return applyProjectMutation(current, pending ? filterRemovedReceiptRows(mutation, pending) : mutation);
       });
       await applyCalendarEventProjectAssignments(mutation.calendarEventProjectAssignments);
@@ -232,15 +229,10 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   }
 
   /** Retain deletion evidence only while an intent may still return an old receipt. */
-  function rememberPendingRemovals(current: ProjectsSnapshot, removals: ProjectMutationRemoval[]): void {
+  function rememberPendingRemovals(removals: ProjectMutationRemoval[]): void {
     for (const pending of pendingBulkOperations.values()) {
       for (const removal of removals) {
         if (removal.kind === "project") pending.removedProjects.add(removal.id);
-        if (removal.kind === "group") {
-          for (const project of current.projects) {
-            if (project.groupId === removal.id) pending.removedProjects.add(project.id);
-          }
-        }
         if (removal.kind === "custom_field") pending.removedFields.add(removal.id);
         if (removal.kind === "custom_field_option") pending.removedOptions.add(removal.id);
       }
@@ -337,10 +329,11 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   }
 
   /**
-   * Apply a custom sidebar order to the projects of a group optimistically, restoring the previous order when the
-   * backend refuses it. `orderedIds` may list only some of them, such as the active ones; the rest keep their slots.
+   * Apply a custom sidebar order to the projects of a group, or of no group when `groupId` is `null`, optimistically,
+   * restoring the previous order when the backend refuses it. `orderedIds` may list only some of them, such as the
+   * active ones; the rest keep their slots.
    */
-  async function reorderProjectsInGroup(groupId: string, orderedIds: readonly string[]): Promise<void> {
+  async function reorderProjectsInGroup(groupId: string | null, orderedIds: readonly string[]): Promise<void> {
     const previous = readSnapshot().projects.filter((project) => project.groupId === groupId);
     const projectIds = mergeReorderedSubset(customOrderIds(previous), orderedIds);
     const orders = provisionalOrderKeys(projectIds);
@@ -349,7 +342,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       projects: current.projects.map((project) => withOrderKey(project, orders.get(project.id))),
     }));
     try {
-      await commitMutation(`project-order:${groupId}`, () => reorderGroupProjects(groupId, projectIds));
+      await commitMutation(`project-order:${groupId ?? ""}`, () => reorderGroupProjects(groupId, projectIds));
     } catch (error: unknown) {
       const restored = new Map(previous.map((project) => [project.id, project.orderKey]));
       updateSnapshot((current) => ({
@@ -371,14 +364,17 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     invalidateReplacedProjectIcon(group.icon, update.icon);
   }
 
+  /** Delete a group; its projects stay and move outside every group. */
   async function removeGroup(group: ProjectGroup): Promise<void> {
     await commitMutation(`group:${group.id}`, () => deleteProjectGroup(group.id));
     invalidateAssetUrlKind("project-icon");
-    deselectProjectsOfGroup(group.id);
   }
 
-  /** Create a project and return its id, which the calling pane selects; an empty name creates nothing. */
-  async function addProject(groupId: string, name: string, icon: string = DEFAULT_PROJECT_ICON): Promise<string | undefined> {
+  /**
+   * Create a project in a group, or outside every group when `groupId` is `null`, and return its id, which the calling
+   * pane selects; an empty name creates nothing.
+   */
+  async function addProject(groupId: string | null, name: string, icon: string = DEFAULT_PROJECT_ICON): Promise<string | undefined> {
     const displayName = normalizeProjectName(name);
     if (!displayName) return;
     const project: ProjectCreate = {
@@ -416,11 +412,14 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     await updateProject(projectUpdatePayload(project, { name: normalized }));
   }
 
-  /** Moves a project to the end of another visible group. Built-in projects keep their group. */
-  async function moveProjectToGroup(project: Project, groupId: string): Promise<void> {
+  /**
+   * Moves a project to the end of another visible group, or outside every group when `groupId` is `null`. Built-in
+   * projects keep their group.
+   */
+  async function moveProjectToGroup(project: Project, groupId: string | null): Promise<void> {
     assertProjectIdentityEditable(project);
     if (groupId === project.groupId) return;
-    if (!selectors.visibleGroups().some((group) => group.id === groupId)) {
+    if (groupId !== null && !selectors.visibleGroups().some((group) => group.id === groupId)) {
       throw new Error(`Project group ${groupId} is not available`);
     }
     await updateProject(projectUpdatePayload(project, { groupId, placement: { kind: "end" } }));

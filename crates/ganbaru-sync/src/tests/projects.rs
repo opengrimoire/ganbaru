@@ -15,13 +15,13 @@ use super::block_on;
 use super::chat::{CHANNEL, folder_grant_sql};
 use super::engine::with_group;
 use super::replica::{
-    Replica, converge, device_id, forge_change, forge_changes, pair, quoted, rank, sealed_change,
+    Replica, converge, forge_change, forge_changes, pair, quoted, rank, sealed_change,
 };
 use crate::manifest::TableSpec;
 use crate::manifest::vault::chat::CHANNELS_TABLE;
 use crate::manifest::vault::projects::{
-    DEPENDENCIES, DEPENDENCIES_TABLE, FOLDERS, FOLDERS_TABLE, GROUPS_TABLE, PRIMARY_FOLDERS_TABLE,
-    PROJECTS, PROJECTS_TABLE, TASKS, VALUES, dependency_group, folder_group, value_group,
+    DEPENDENCIES, DEPENDENCIES_TABLE, FOLDERS, FOLDERS_TABLE, PRIMARY_FOLDERS_TABLE, PROJECTS,
+    PROJECTS_TABLE, TASKS, VALUES, dependency_group, folder_group, value_group,
 };
 use crate::{ChangeNotice, ConflictRow, HoldReason, StoreOutcome, merge};
 
@@ -538,7 +538,7 @@ fn projects_a_task_moved_into_a_concurrently_deleted_status_stays_there() {
 }
 
 #[test]
-fn projects_a_group_deleted_while_a_task_inside_it_is_edited_is_offered_for_recovery() {
+fn projects_a_deleted_group_leaves_its_projects_and_a_concurrent_task_edit_in_place() {
     block_on(async {
         let mut replicas = shared(2, &task_sql("task-a", "Draft", 1)).await;
         replicas[0]
@@ -556,46 +556,60 @@ fn projects_a_group_deleted_while_a_task_inside_it_is_edited_is_offered_for_reco
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
-            for table in ["project_groups", "projects", "project_tasks"] {
-                assert_eq!(
-                    replica
-                        .count(&format!(
-                            "SELECT count(*) FROM {table} WHERE id IN ('group-shared',
-                                 'project-shared', 'task-a')"
-                        ))
-                        .await,
-                    0,
-                    "{table} should hold no deleted row"
-                );
-            }
-            let entries = replica
-                .engine
-                .recovery_entries(&mut replica.conn, &replica.ctx)
-                .await
-                .unwrap();
-            assert_eq!(entries.len(), 1, "{entries:?}");
-            let entry = &entries[0];
-            assert_eq!((entry.table, entry.row_key.as_str()), (GROUPS_TABLE, GROUP));
-            assert_eq!(entry.device_id, device_id(1));
-            assert!(entry.descendants >= 4, "{entry:?}");
+            assert_eq!(
+                replica
+                    .count(&format!(
+                        "SELECT count(*) FROM project_groups WHERE id = {}",
+                        quoted(GROUP)
+                    ))
+                    .await,
+                0
+            );
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT coalesce(p.group_id, 'none') || ':' || t.title FROM projects p
+                     JOIN project_tasks t ON t.project_id = p.id WHERE t.id = 'task-a'"
+                )
+                .await,
+                ["none:Final"]
+            );
+            assert_eq!(surfaced(replica).await, (0, 0));
         }
-        // Discarding the offer closes it everywhere.
-        let replica = &mut replicas[0];
-        replica
-            .engine
-            .close_recovery(
-                &mut replica.conn,
-                &replica.ctx,
-                GROUPS_TABLE,
-                GROUP,
-                &mut replica.identity.local(),
-                replica.now_ms,
-            )
-            .await
-            .unwrap();
+    });
+}
+
+#[test]
+fn projects_a_project_created_in_a_concurrently_deleted_group_ends_outside_every_group() {
+    block_on(async {
+        let mut replicas = shared(2, "").await;
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM project_groups WHERE id = {}",
+                quoted(GROUP)
+            ))
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "INSERT INTO projects (id, group_id, name, created_at, updated_at, order_key)
+                 VALUES ('project-late', {}, 'Late', {created}, {created}, {});",
+                quoted(GROUP),
+                quoted(&rank(2)),
+                created = quoted(EDITED),
+            ))
+            .await;
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT id || ':' || coalesce(group_id, 'none') FROM projects
+                     WHERE id IN ('project-late', 'project-shared') ORDER BY id"
+                )
+                .await,
+                ["project-late:none", "project-shared:none"]
+            );
             assert_eq!(surfaced(replica).await, (0, 0));
         }
     });

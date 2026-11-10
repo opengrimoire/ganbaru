@@ -41,7 +41,7 @@ pub async fn chat_list_scratch_scopes(
          JOIN chat_reply_threads thread ON thread.id = scope.reply_thread_id
          JOIN chat_channels channel ON channel.conversation_id = thread.conversation_id
          JOIN projects project ON project.id = channel.project_id
-         JOIN project_groups project_group ON project_group.id = project.group_id
+         LEFT JOIN project_groups project_group ON project_group.id = project.group_id
          WHERE scope.removed_at IS NULL
            AND (? IS NULL OR scope.teammate_id = ?)
            AND (? IS NULL OR scope.reply_thread_id = ?)

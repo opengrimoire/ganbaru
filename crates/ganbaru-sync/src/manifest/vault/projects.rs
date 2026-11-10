@@ -742,9 +742,9 @@ pub const PROJECTS: TableSpec = TableSpec {
         reference(
             project_group::GROUP,
             "group",
-            &[row_key("group_id")],
+            &[optional_row_key("group_id")],
             GROUPS_TABLE,
-            OnDelete::Cascade,
+            OnDelete::SetNull,
         ),
         surfaced(register(
             project_group::NAME,

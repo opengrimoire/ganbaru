@@ -10,12 +10,13 @@ export function projectNameKey(value: string): string {
 }
 
 /**
- * Whether another project in the group already uses the name, in any lifecycle status. The backend refuses such a
- * create, rename, or move; this check lets a form say so before submitting.
+ * Whether another project in the group, or outside every group when `groupId` is `null`, already uses the name, in
+ * any lifecycle status. The backend refuses such a create, rename, or move; this check lets a form say so before
+ * submitting.
  */
 export function isProjectNameTaken(
   projects: readonly Pick<Project, "id" | "groupId" | "name">[],
-  groupId: string,
+  groupId: string | null,
   name: string,
   exceptProjectId: string | null = null,
 ): boolean {

@@ -10,7 +10,7 @@ use crate::recovery::{
 use ganbaru_sync::Engine;
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::calendar;
-use ganbaru_sync::manifest::vault::projects::{GROUPS, PROJECTS, SECTIONS, STATUSES, TASKS};
+use ganbaru_sync::manifest::vault::projects::{PROJECTS, SECTIONS, STATUSES, TASKS};
 use ganbaru_sync_contracts::OrderKey;
 use sqlx::SqliteConnection;
 use tokio::sync::watch;
@@ -77,7 +77,7 @@ fn seed_sql() -> String {
 
 /// Removes the groups a migrated test vault starts with, outside capture. A real vault seeds
 /// them as captures once, but these tests never seed, so each replica would keep its own copies
-/// that the engine does not know and that a restore could pick as a fallback group.
+/// that the engine does not know and the two replicas would read differently.
 async fn remove_unpublished_groups(replica: &Replica) {
     sqlx::raw_sql(
         "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
@@ -155,7 +155,6 @@ impl Pair {
         action: RecoveryAction,
     ) -> Result<Option<String>, String> {
         let restorers = RecoveryRestorers::new()
-            .with(&GROUPS, restore_projects_row)
             .with(&PROJECTS, restore_projects_row)
             .with(&SECTIONS, restore_projects_row)
             .with(&STATUSES, restore_projects_row)
@@ -225,44 +224,26 @@ fn add_task_on_phone() -> String {
     )
 }
 
+/// Deleting a group moves its projects outside every group, so a concurrent task edit inside
+/// them raises no offer and survives.
 #[test]
-fn a_restored_project_group_brings_back_its_projects_and_tasks() {
+fn a_deleted_project_group_leaves_its_projects_and_their_edits() {
     block_on(async {
-        let mut pair = Pair::new("projects-recovery-group").await;
+        let mut pair = Pair::new("projects-recovery-group-edit").await;
         pair.hub_edit("DELETE FROM project_groups WHERE id = 'group-a'")
             .await;
         pair.phone_edit(RENAME_TASK_ON_PHONE).await;
         pair.converge().await;
-        assert_eq!(pair.offers().await, ["group-a"]);
-
-        let group = pair.restore(&GROUPS, "group-a").await;
+        assert!(pair.offers().await.is_empty());
         assert_eq!(
-            pair.texts("SELECT id FROM project_groups ORDER BY order_key, id".to_string())
-                .await,
-            ["group-b".to_string(), group.clone()]
-        );
-        assert_eq!(
-            pair.texts(format!(
-                "SELECT task.title || '|' || section.name || '|' || status.name
+            pair.texts(
+                "SELECT coalesce(project.group_id, 'none') || '|' || task.title
                  FROM project_tasks AS task
-                 JOIN projects AS project ON project.id = task.project_id
-                 JOIN project_sections AS section ON section.id = task.section_id
-                 JOIN project_statuses AS status ON status.id = task.status_id
-                 WHERE project.group_id = '{group}' AND project.name = 'Alpha'"
-            ))
+                 JOIN projects AS project ON project.id = task.project_id"
+                    .to_string()
+            )
             .await,
-            ["Write more|General|To do"]
-        );
-        assert_eq!(
-            pair.texts(format!(
-                "SELECT folder.kind FROM project_working_folders AS folder
-                 JOIN project_primary_working_folders AS primary_folder
-                   ON primary_folder.working_folder_id = folder.id
-                 JOIN projects AS project ON project.id = folder.project_id
-                 WHERE project.group_id = '{group}'"
-            ))
-            .await,
-            ["managed"]
+            ["none|Write more"]
         );
         pair.finish().await;
     });
@@ -345,7 +326,7 @@ fn a_restored_project_leaves_its_deleted_chat_channel_behind() {
 }
 
 #[test]
-fn a_restored_project_whose_group_is_gone_moves_to_the_first_group() {
+fn a_restored_project_whose_group_is_gone_returns_outside_every_group() {
     block_on(async {
         let mut pair = Pair::new("projects-recovery-project-orphan").await;
         pair.hub_edit("DELETE FROM projects WHERE id = 'project-1'")
@@ -360,10 +341,10 @@ fn a_restored_project_whose_group_is_gone_moves_to_the_first_group() {
         let project = pair.restore(&PROJECTS, "project-1").await;
         assert_eq!(
             pair.texts(format!(
-                "SELECT group_id FROM projects WHERE id = '{project}'"
+                "SELECT coalesce(group_id, 'none') FROM projects WHERE id = '{project}'"
             ))
             .await,
-            ["group-b"]
+            ["none"]
         );
         assert_eq!(
             pair.texts(format!(

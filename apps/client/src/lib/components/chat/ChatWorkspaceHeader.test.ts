@@ -42,7 +42,7 @@ const projectState = vi.hoisted(() => {
   const store = {
     selectedProjectId: project.id as string | null,
     selectedProject: project,
-    selectedGroup: group,
+    selectedGroup: group as typeof group | null,
     projects: [project, secondProject],
     groups: [group],
     customEmojis: [],
@@ -56,13 +56,14 @@ const projectState = vi.hoisted(() => {
     visibleGroups: () => [group],
     projectsForGroup: (groupId: string) => groupId === group.id ? [project, secondProject] : [],
     projectsForGroupIncludingInactive: (groupId: string) => groupId === group.id ? [project, secondProject] : [],
+    projectLists: () => [{ key: `group:${group.id}`, group, projects: [project, secondProject] }],
     selectProject: vi.fn(async (_id: string) => undefined),
     addGroup: vi.fn(async () => group),
     addProject: vi.fn(async () => project),
     ensureLoaded: vi.fn(async () => undefined),
     isProjectStarred: () => false,
   };
-  return { store };
+  return { store, group };
 });
 
 vi.mock("$lib/stores/projects.svelte", () => ({
@@ -216,6 +217,23 @@ describe("ChatWorkspaceHeader", () => {
     await tick();
     expect(document.querySelector(".project-picker-panel")).not.toBeNull();
     expect(document.querySelector(".project-picker-panel")?.textContent).toContain("Ganbaru");
+  });
+
+  it("drops the group crumb for a project outside every group and opens the groups panel from the project crumb", async () => {
+    projectState.store.selectedGroup = null;
+    try {
+      const target = setup(true);
+      expect(target.querySelector("[data-chat-group-trigger]")).toBeNull();
+      const projectTrigger = target.querySelector<HTMLButtonElement>("[data-chat-project-trigger]");
+      expect(projectTrigger?.textContent).toContain("Ganbaru");
+
+      projectTrigger?.click();
+      await tick();
+      expect(projectTrigger?.getAttribute("aria-expanded")).toBe("true");
+      expect(document.querySelector(".project-picker-panel")?.textContent).toContain("Work");
+    } finally {
+      projectState.store.selectedGroup = projectState.group;
+    }
   });
 
   it("leaves Chat synchronization to the workspace project observer", async () => {

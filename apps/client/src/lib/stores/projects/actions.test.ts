@@ -89,7 +89,6 @@ describe("createProjectStoreActions", () => {
       readLoadGeneration: () => loadGeneration,
       updateSnapshot: (updater) => { snapshot = updater(snapshot); },
       applyCalendarEventProjectAssignments,
-      deselectProjectsOfGroup: vi.fn(),
       reload,
       ensureProjectData: vi.fn(async () => undefined),
       ensureTaskDetailData: vi.fn(async (_projectId: string, taskId: string) => {
@@ -417,7 +416,6 @@ describe("project identity and lifecycle actions", () => {
       readLoadGeneration: () => 0,
       updateSnapshot: (updater) => { snapshot = updater(snapshot); },
       applyCalendarEventProjectAssignments: vi.fn(async () => undefined),
-      deselectProjectsOfGroup: vi.fn(),
       reload: vi.fn(async () => undefined),
       ensureProjectData: vi.fn(async () => undefined),
       ensureTaskDetailData: vi.fn(async () => undefined),

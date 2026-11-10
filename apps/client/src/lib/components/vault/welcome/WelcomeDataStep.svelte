@@ -3,6 +3,7 @@
   import Folder from "@lucide/svelte/icons/folder";
   import type { Snippet } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import type { VaultDefaultPlaces } from "$lib/vault/state";
   import WelcomeDataScene, {
     DATA_SCENE_MAX_HEIGHT,
     DATA_SCENE_MAX_WIDTH,
@@ -23,12 +24,15 @@
     location,
     locationLabel,
     showIcons = true,
+    places = null,
     error = null,
     choices,
   }: {
     headline: string;
     /** The default location's full path. */
     location: string;
+    /** The system's names for the places the illustration's sidebar lists beside the location's parent. */
+    places?: VaultDefaultPlaces | null;
     locationLabel: string;
     /** Whether the location and error lines lead with their icons. */
     showIcons?: boolean;
@@ -74,6 +78,6 @@
     ownZoom
     description={t("vaultSetup.data.illustrationDescription")}
   >
-    {#snippet frame(_elapsed, width, height)}<WelcomeDataScene {width} {height} path={location} />{/snippet}
+    {#snippet frame(_elapsed, width, height)}<WelcomeDataScene {width} {height} path={location} {places} />{/snippet}
   </WelcomeScene>
 </WelcomeSceneStep>

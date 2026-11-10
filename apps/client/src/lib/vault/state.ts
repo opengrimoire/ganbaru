@@ -16,6 +16,18 @@ export interface VaultDefaultLocation {
   parentPath: string;
   folderName: string;
   developmentBuild: boolean;
+  places: VaultDefaultPlaces;
+}
+
+/**
+ * The folder names the operating system gives its usual places, as they are on disk rather than in the app's language;
+ * `null` where the platform has no such place.
+ */
+export interface VaultDefaultPlaces {
+  home: string | null;
+  desktop: string | null;
+  downloads: string | null;
+  pictures: string | null;
 }
 
 /**
@@ -90,10 +102,16 @@ function parseVaultDefaultLocation(value: unknown): VaultDefaultLocation {
   const parentPath = readString(value.parentPath);
   const folderName = readString(value.folderName);
   const developmentBuild = readBoolean(value.developmentBuild);
-  if (!path || !parentPath || !folderName || developmentBuild === null) {
+  if (!path || !parentPath || !folderName || developmentBuild === null || !isRecord(value.places)) {
     throw new Error("default folder response is incomplete");
   }
-  return { path, parentPath, folderName, developmentBuild };
+  const places: VaultDefaultPlaces = {
+    home: readString(value.places.home),
+    desktop: readString(value.places.desktop),
+    downloads: readString(value.places.downloads),
+    pictures: readString(value.places.pictures),
+  };
+  return { path, parentPath, folderName, developmentBuild, places };
 }
 
 function parseOptionalVaultInfo(value: unknown): VaultInfo | null {

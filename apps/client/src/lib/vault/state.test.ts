@@ -139,7 +139,41 @@ describe("vault state api", () => {
     await expect(getActiveVaultInfo()).rejects.toThrow("vault info response is incomplete");
   });
 
-  it("reads the default vault location", async () => {
+  it("reads the default vault location with the system's place names", async () => {
+    invokeMock.mockResolvedValue({
+      path: "/home/user/Documentos/Ganbaru",
+      parentPath: "/home/user/Documentos",
+      folderName: "Ganbaru",
+      developmentBuild: false,
+      places: { home: "user", desktop: "Escritorio", downloads: "Descargas", pictures: null },
+    });
+    const { getDefaultVaultLocation } = await loadModule();
+
+    await expect(getDefaultVaultLocation()).resolves.toEqual({
+      path: "/home/user/Documentos/Ganbaru",
+      parentPath: "/home/user/Documentos",
+      folderName: "Ganbaru",
+      developmentBuild: false,
+      places: { home: "user", desktop: "Escritorio", downloads: "Descargas", pictures: null },
+    });
+  });
+
+  it("treats blank or malformed place names as missing places", async () => {
+    invokeMock.mockResolvedValue({
+      path: "C:\\Users\\user\\Documents\\Ganbaru",
+      parentPath: "C:\\Users\\user\\Documents",
+      folderName: "Ganbaru",
+      developmentBuild: true,
+      places: { home: "user", desktop: " ", downloads: 7 },
+    });
+    const { getDefaultVaultLocation } = await loadModule();
+
+    await expect(getDefaultVaultLocation()).resolves.toMatchObject({
+      places: { home: "user", desktop: null, downloads: null, pictures: null },
+    });
+  });
+
+  it("rejects a default vault location without places", async () => {
     invokeMock.mockResolvedValue({
       path: "/home/user/Documents/Ganbaru",
       parentPath: "/home/user/Documents",
@@ -148,12 +182,7 @@ describe("vault state api", () => {
     });
     const { getDefaultVaultLocation } = await loadModule();
 
-    await expect(getDefaultVaultLocation()).resolves.toEqual({
-      path: "/home/user/Documents/Ganbaru",
-      parentPath: "/home/user/Documents",
-      folderName: "Ganbaru",
-      developmentBuild: false,
-    });
+    await expect(getDefaultVaultLocation()).rejects.toThrow("default folder response is incomplete");
   });
 });
 

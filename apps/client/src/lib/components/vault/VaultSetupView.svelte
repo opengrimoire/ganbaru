@@ -158,6 +158,7 @@
     headline={t("vaultSetup.title")}
     location={defaultLocation?.path ?? fallbackDefaultPath}
     locationLabel={t("vaultSetup.defaultLocation")}
+    places={defaultLocation?.places}
     {error}
     choices={dataChoices}
   />

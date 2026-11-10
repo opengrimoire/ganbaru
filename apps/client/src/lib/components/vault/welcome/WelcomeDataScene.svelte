@@ -24,6 +24,7 @@
   import Monitor from "@lucide/svelte/icons/monitor";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM, BUILD_PLATFORM_PROFILE } from "$lib/platform";
+  import type { VaultDefaultPlaces } from "$lib/vault/state";
   import { DATA_ENTRIES, vaultPathTrail, type DataEntry } from "$lib/vault/welcome-data-folder";
 
   /**
@@ -32,7 +33,18 @@
    * the window's controls and history arrows, and, on a wide canvas, a sidebar of places with the folder's parent
    * selected.
    */
-  let { width, height, path }: { width: number; height: number; path: string } = $props();
+  let {
+    width,
+    height,
+    path,
+    places = null,
+  }: {
+    width: number;
+    height: number;
+    path: string;
+    /** The system's names for the sidebar's other places; a place without one is left out. */
+    places?: VaultDefaultPlaces | null;
+  } = $props();
 
   const { t } = getLocalization();
   /** The window's frame, matching the other welcome scenes. */
@@ -50,16 +62,16 @@
   /** Every Lucide icon shares one component type. */
   type PlaceIcon = typeof Folder;
 
-  /** A sidebar place other than the folder's parent, named by its localized label. */
-  type Place = { icon: PlaceIcon; label: "home" | "desktop" | "downloads" | "pictures" };
+  /** A sidebar place other than the folder's parent, named by the system's own folder name for it. */
+  type Place = { icon: PlaceIcon; place: keyof VaultDefaultPlaces };
 
   /** The sidebar's places, with the folder's parent, named by its real path, in the middle. */
   const PLACES: readonly (Place | { icon: PlaceIcon; parent: true })[] = [
-    { icon: House, label: "home" },
-    { icon: Monitor, label: "desktop" },
+    { icon: House, place: "home" },
+    { icon: Monitor, place: "desktop" },
     { icon: FileText, parent: true },
-    { icon: Download, label: "downloads" },
-    { icon: Image, label: "pictures" },
+    { icon: Download, place: "downloads" },
+    { icon: Image, place: "pictures" },
   ];
 
   const canvasW = $derived(width - 2 * BEZEL);
@@ -137,7 +149,7 @@
         <div class="flex w-40 shrink-0 flex-col gap-0.5 border-r border-border bg-foreground/2 px-2 py-2.5 text-xs">
           {#each PLACES as place, index (index)}
             {@const selected = "parent" in place && parent !== null}
-            {@const label = "label" in place ? t(`vaultSetup.data.places.${place.label}`) : parent}
+            {@const label = "place" in place ? (places?.[place.place] ?? null) : parent}
             {#if label}
               <span
                 class={[

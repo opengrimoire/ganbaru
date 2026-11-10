@@ -174,6 +174,20 @@ pub struct VaultDefaultLocation {
     pub parent_path: String,
     pub folder_name: String,
     pub development_build: bool,
+    pub places: VaultDefaultPlaces,
+}
+
+/// The folder names the operating system gives its usual places, for the setup illustration's sidebar.
+///
+/// Each is the place's own folder name on disk, so it matches the system rather than the app's language, and is
+/// absent where the platform has no such place.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultDefaultPlaces {
+    pub home: Option<String>,
+    pub desktop: Option<String>,
+    pub downloads: Option<String>,
+    pub pictures: Option<String>,
 }
 
 fn app_config_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
@@ -704,7 +718,10 @@ fn default_vault_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(default_data_parent(app)?.join(default_vault_name()))
 }
 
-fn default_location_from_path(path: PathBuf) -> Result<VaultDefaultLocation, String> {
+fn default_location_from_path(
+    path: PathBuf,
+    places: VaultDefaultPlaces,
+) -> Result<VaultDefaultLocation, String> {
     let parent = path
         .parent()
         .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
@@ -713,7 +730,31 @@ fn default_location_from_path(path: PathBuf) -> Result<VaultDefaultLocation, Str
         parent_path: path_to_string(parent, "Ganbaru folder parent")?,
         folder_name: default_vault_name().to_string(),
         development_build: is_development_build(),
+        places,
     })
+}
+
+#[cfg(desktop)]
+fn default_places(app: &tauri::AppHandle) -> VaultDefaultPlaces {
+    let paths = app.path();
+    VaultDefaultPlaces {
+        home: place_name(paths.home_dir()),
+        desktop: place_name(paths.desktop_dir()),
+        downloads: place_name(paths.download_dir()),
+        pictures: place_name(paths.picture_dir()),
+    }
+}
+
+/// A phone's private storage has no browsable places beside it.
+#[cfg(mobile)]
+fn default_places(_app: &tauri::AppHandle) -> VaultDefaultPlaces {
+    VaultDefaultPlaces::default()
+}
+
+/// The last component of a resolved place, when the system has the place and its name is valid Unicode.
+#[cfg(desktop)]
+fn place_name(dir: tauri::Result<PathBuf>) -> Option<String> {
+    dir.ok()?.file_name()?.to_str().map(str::to_owned)
 }
 
 async fn create_and_select_vault(
@@ -736,7 +777,7 @@ async fn create_and_select_vault(
 
 #[tauri::command]
 pub fn vault_default_location(app: tauri::AppHandle) -> Result<VaultDefaultLocation, String> {
-    default_location_from_path(default_vault_path(&app)?)
+    default_location_from_path(default_vault_path(&app)?, default_places(&app))
 }
 
 #[tauri::command]

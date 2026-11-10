@@ -29,9 +29,9 @@
 
   /**
    * The still illustration on the welcome screen about where data lives: the vault's folder, named by its real path, open
-   * in a plain sketch of a file manager in the theme's colors. The desktop shell adds a line on what each entry holds,
-   * the window's controls and history arrows, and, on a wide canvas, a sidebar of places with the folder's parent
-   * selected.
+   * in a plain sketch of a file manager in the theme's colors. The desktop shell shows the entries as a grid of icons
+   * with a line on what each holds, adds the window's controls and history arrows, and, on a wide canvas, a sidebar of
+   * places with the folder's parent selected; a phone lists the entries by name.
    */
   let {
     width,
@@ -51,8 +51,6 @@
   const BEZEL = 6;
   /** From this canvas width, the window has room for its sidebar of places. */
   const SIDEBAR_MIN_W = 540;
-  /** From this canvas width, each entry's description sits beside its name instead of under it. */
-  const INLINE_DETAIL_MIN_W = 440;
   const desktopShell = BUILD_PLATFORM_PROFILE.shell === "desktop";
   /** Apple's windows keep their controls on the left; other systems keep them on the right. */
   const CONTROLS_LEADING = BUILD_PLATFORM === "macos" || BUILD_PLATFORM === "ios";
@@ -80,32 +78,14 @@
   const canvasW = $derived(width - 2 * BEZEL);
   const canvasH = $derived(height - 2 * BEZEL);
   const wide = $derived(canvasW >= SIDEBAR_MIN_W);
-  const inlineDetail = $derived(canvasW >= INLINE_DETAIL_MIN_W);
   const trail = $derived(vaultPathTrail(path, TRAIL_DEPTH));
   const parent = $derived(trail.length > 1 ? trail[0] : null);
-  /**
-   * The entry columns: the icon, the name, its description when it sits beside the name, and the size when wide. A
-   * phone shows names only, since its private storage is never browsed.
-   */
-  const entryColumns = $derived(
-    !desktopShell
-      ? "grid-cols-[auto_minmax(0,1fr)]"
-      : wide
-        ? "grid-cols-[auto_auto_minmax(0,1fr)_auto]"
-        : inlineDetail
-          ? "grid-cols-[auto_auto_minmax(0,1fr)]"
-          : "grid-cols-[auto_minmax(0,1fr)]",
-  );
 
   function entryIcon(entry: DataEntry): PlaceIcon {
     if (entry.folder) return Folder;
     return entry.detail === "database" ? Database : FileBraces;
   }
 </script>
-
-{#snippet bar(fraction: number, extraClass = "")}
-  <span class={`block h-1.5 rounded-full bg-foreground/12 ${extraClass}`} style:width={`${fraction * 100}%`}></span>
-{/snippet}
 
 {#snippet controls()}
   <span class="flex shrink-0 gap-1" aria-hidden="true">
@@ -148,7 +128,7 @@
 
     <div class="flex min-h-0 flex-1">
       {#if wide}
-        <!-- The places, with the folder's parent selected and the rest as placeholder bars. -->
+        <!-- The places, with the folder's parent selected. -->
         <div class="flex w-40 shrink-0 flex-col gap-0.5 border-r border-border bg-foreground/2 px-2 py-2.5 text-xs">
           {#each PLACES as place, index (index)}
             {@const selected = "parent" in place && parent !== null}
@@ -175,43 +155,44 @@
         </div>
       {/if}
 
-      <!--
-        The folder's entries, as a grid whose rows share its columns, so the name column fits the longest name and every
-        description starts at the same edge.
-      -->
-      <div class={["grid min-w-0 flex-1 content-start gap-x-3 text-xs", entryColumns]}>
-        <div class="col-span-full flex h-7 items-center gap-3 border-b border-border px-3.5">
-          <span class="w-16">{@render bar(1)}</span>
-          <span class="flex-1"></span>
-          {#if desktopShell && wide}<span class="w-8">{@render bar(1)}</span>{/if}
+      {#if desktopShell}
+        <!-- The folder's entries as a grid of icons, each named with a line on what it holds under it. -->
+        <div class="grid min-w-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,8rem)] content-start gap-2 p-4 text-xs">
+          {#each DATA_ENTRIES as entry (entry.name)}
+            {@const EntryIcon = entryIcon(entry)}
+            <div class="flex min-w-0 flex-col items-center gap-1 rounded-lg px-1.5 py-2 text-center">
+              <EntryIcon
+                size={40}
+                strokeWidth={1.3}
+                class={["mb-1 shrink-0", entry.folder ? "text-primary" : "text-muted-foreground"]}
+                fill={entry.folder ? "currentColor" : "none"}
+                fill-opacity={entry.folder ? 0.3 : undefined}
+                aria-hidden="true"
+              />
+              <span class="max-w-full truncate font-medium">{entry.name}</span>
+              <span class="line-clamp-2 text-muted-foreground">{t(`vaultSetup.data.entries.${entry.detail}`)}</span>
+            </div>
+          {/each}
         </div>
-        {#each DATA_ENTRIES as entry (entry.name)}
-          {@const EntryIcon = entryIcon(entry)}
-          {@const detail = t(`vaultSetup.data.entries.${entry.detail}`)}
-          <div class="col-span-full grid min-h-11 grid-cols-subgrid items-center border-b border-border/60 px-3.5">
-            <EntryIcon
-              size={16}
-              strokeWidth={1.7}
-              class={["shrink-0", entry.folder ? "text-primary" : "text-muted-foreground"]}
-              fill={entry.folder ? "currentColor" : "none"}
-              fill-opacity={entry.folder ? 0.3 : undefined}
-              aria-hidden="true"
-            />
-            {#if !desktopShell}
+      {:else}
+        <!-- A phone lists the entries by name only, since its private storage is never browsed. -->
+        <div class="flex min-w-0 flex-1 flex-col text-xs">
+          {#each DATA_ENTRIES as entry (entry.name)}
+            {@const EntryIcon = entryIcon(entry)}
+            <div class="flex min-h-11 items-center gap-3 border-b border-border/60 px-3.5">
+              <EntryIcon
+                size={16}
+                strokeWidth={1.7}
+                class={["shrink-0", entry.folder ? "text-primary" : "text-muted-foreground"]}
+                fill={entry.folder ? "currentColor" : "none"}
+                fill-opacity={entry.folder ? 0.3 : undefined}
+                aria-hidden="true"
+              />
               <span class="truncate font-medium">{entry.name}</span>
-            {:else if inlineDetail}
-              <span class="pr-8 font-medium whitespace-nowrap">{entry.name}</span>
-              <span class="min-w-0 truncate text-muted-foreground">{detail}</span>
-            {:else}
-              <span class="flex min-w-0 flex-col gap-0.5 py-1.5">
-                <span class="truncate font-medium">{entry.name}</span>
-                <span class="truncate text-muted-foreground">{detail}</span>
-              </span>
-            {/if}
-            {#if desktopShell && wide}<span class="w-8">{@render bar(1)}</span>{/if}
-          </div>
-        {/each}
-      </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
     </div>
   </div>
 </div>

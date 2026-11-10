@@ -124,9 +124,9 @@ export const vaultSetup = {
     headline: "Anótalo antes de que se te escape",
     body: "Toma notas rápidas en segundos y ordénalas con etiquetas para filtrarlas.",
     sceneDescription:
-      "Una breve animación de las notas rápidas, donde las notas tienen etiquetas como Ideas, Hogar y Salud. Las notas Pasaporte y vuelos y Hotel en Lisboa reciben la etiqueta Viaje, que ya existe, desde sus selectores de etiquetas, lo que les da su color, y al seleccionar el chip Viaje las notas se filtran a las que tienen la etiqueta Viaje.",
+      "Una breve animación de las notas rápidas, donde las notas tienen etiquetas como Ideas, Hogar y Salud. Las notas Pasaporte y vuelos y Hotel en Lisboa reciben la etiqueta Viaje, que ya existe, desde sus selectores de etiquetas, lo que les da su color, y al seleccionar el chip Viaje las notas se filtran a las que tienen la etiqueta Viaje. Luego se escribe una nota nueva, Entradas del museo, en el editor, y recibe la etiqueta Viaje.",
     sceneDescriptionTouch:
-      "Una breve animación de las notas rápidas, donde las notas tienen etiquetas como Ideas, Hogar y Salud y varias comparten la etiqueta Viaje, y al tocar el chip Viaje las notas se filtran a ellas.",
+      "Una breve animación de las notas rápidas, donde las notas tienen etiquetas como Ideas, Hogar y Salud y varias comparten la etiqueta Viaje, y al tocar el chip Viaje las notas se filtran a ellas. Luego se escribe una nota nueva, Entradas del museo, en el editor, y recibe la etiqueta Viaje.",
     tags: { trip: "Viaje", ideas: "Ideas", home: "Hogar", health: "Salud" },
     notes: {
       gift: { title: "Regalo para Ana", body: "Mencionó una clase de cerámica." },
@@ -139,6 +139,7 @@ export const vaultSetup = {
       sintra: { title: "Excursión a Sintra", body: "Tomar el primer tren desde Rossio." },
       groceries: { title: "Despensa", body: "Leche de avena, limones, arroz y café." },
       recipe: { title: "Sopa de lentejas", body: "Comino, limón y un poco de pimentón ahumado." },
+      museum: { title: "Entradas del museo", body: "Reservar el museo del azulejo para el sábado." },
     },
   },
   chat: {

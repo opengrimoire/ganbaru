@@ -18,16 +18,24 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import Archive from "@lucide/svelte/icons/archive";
+  import Bold from "@lucide/svelte/icons/bold";
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import ImagePlus from "@lucide/svelte/icons/image-plus";
+  import Italic from "@lucide/svelte/icons/italic";
   import Palette from "@lucide/svelte/icons/palette";
   import Pin from "@lucide/svelte/icons/pin";
   import Plus from "@lucide/svelte/icons/plus";
+  import Redo2 from "@lucide/svelte/icons/redo-2";
   import Search from "@lucide/svelte/icons/search";
   import Tag from "@lucide/svelte/icons/tag";
+  import TrashIcon from "@lucide/svelte/icons/trash";
   import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Undo2 from "@lucide/svelte/icons/undo-2";
   import X from "@lucide/svelte/icons/x";
   import type { EventColor } from "$lib/calendar/types";
+  import UnderlineIcon from "$lib/components/ui/UnderlineIcon.svelte";
+  import WelcomeCaret from "$lib/components/vault/welcome/WelcomeCaret.svelte";
   import WelcomeCursor from "$lib/components/vault/welcome/WelcomeCursor.svelte";
   import WelcomePhoneTopBar from "$lib/components/vault/welcome/WelcomePhoneTopBar.svelte";
   import WelcomeTitleBar, { type WelcomeTitleTab } from "$lib/components/vault/welcome/WelcomeTitleBar.svelte";
@@ -52,8 +60,11 @@
     QUICK_NOTES_CAST,
     QUICK_NOTES_CURSOR,
     QUICK_NOTES_FILTERED_NOTES,
+    QUICK_NOTES_NEW_NOTE,
     QUICK_NOTES_TAG_ORDER,
+    quickNotesEditor,
     quickNotesFilter,
+    quickNotesInserted,
     quickNotesPickerOpen,
     quickNotesSceneColors,
     quickNotesTouches,
@@ -67,8 +78,10 @@
   /**
    * One frame of the welcome scene on Quick notes, drawn with the panel's own surfaces: among notes that already carry
    * several tags, two are tagged with the existing Trip tag from their pickers, which gives them the tag's color, and the
-   * Trip chip filters the notes down to the ones tagged Trip, which glide together. Tags that do not fit the tag bar
-   * collapse into a count, as the tag bar does. Every style is a function of `elapsed`, with no CSS transitions.
+   * Trip chip filters the notes down to the ones tagged Trip, which glide together. "Take a note" then opens the editor,
+   * where a new note is typed, and once it closes the note takes the first place, tagged Trip as it was written while
+   * Trip was selected. Tags that do not fit the tag bar collapse into a count, as the tag bar does. Every style is a
+   * function of `elapsed`, with no CSS transitions.
    */
   let { elapsed, width, height }: { elapsed: number; width: number; height: number } = $props();
 
@@ -100,6 +113,16 @@
   /** A card's action button, as the card draws them. */
   const ACTION_CLASS = "flex size-7 items-center justify-center rounded-md";
   const ACTION_ACTIVE_CLASS = "bg-black/10 dark:bg-white/10";
+  /** An editor toolbar button, as the editor draws them on each shell. */
+  const EDITOR_BUTTON_CLASS = mobileShell
+    ? "flex size-12 shrink-0 items-center justify-center rounded-xl"
+    : "flex size-8 items-center justify-center rounded-md";
+  /** How far the desktop editor keeps from the canvas edges, and its largest size, as the editor sizes itself. */
+  const EDITOR_INSET_PX = 8;
+  const EDITOR_MAX_W = 540;
+  const EDITOR_MAX_H = 560;
+  /** The notes the masonry measures: the scene's own, then the new note. */
+  const MEASURED_CARDS: readonly QuickNotesSceneCard[] = [...QUICK_NOTES_CAST, QUICK_NOTES_NEW_NOTE];
 
   const canvasW = $derived(width - 2 * BEZEL);
   const canvasH = $derived(height - 2 * BEZEL);
@@ -109,6 +132,10 @@
   const pickerOpen = $derived(quickNotesPickerOpen(elapsed, mobileShell));
   const filter = $derived(quickNotesFilter(elapsed, mobileShell));
   const touches = $derived(quickNotesTouches(elapsed));
+  const editor = $derived(quickNotesEditor(elapsed, mobileShell, noteText(QUICK_NOTES_NEW_NOTE.key, "title"), noteText(QUICK_NOTES_NEW_NOTE.key, "body")));
+  const inserted = $derived(quickNotesInserted(elapsed, mobileShell));
+  /** The editor's colors: the Trip tag's, which the new note takes. */
+  const editorColors = $derived(getQuickNoteColor(sceneColors.trip, theme.current));
 
   /** Whether the desktop pointer has left the canvas, where it hovers the named parts under it. A phone has touches and no hover. */
   const cursorAway = $derived(welcomeCursorFrame(QUICK_NOTES_CURSOR, elapsed).away);
@@ -201,7 +228,10 @@
     return quickNotesTripProgress(key, elapsed, mobileShell);
   }
 
-  /** The masonry of every note, and of the notes the filter keeps once it shows only them. */
+  /**
+   * The masonry of every note, of the notes the filter keeps once it shows only them, and of those notes with the new
+   * note first, measured after the scene's own notes.
+   */
   const layouts = $derived.by(() => {
     if (!cardMeasure || masonryWidth <= 0) return null;
     const { heights, badgeRow } = cardMeasure;
@@ -209,23 +239,40 @@
     const lay = (list: readonly number[]) =>
       quickNoteMasonryLayout(masonryWidth, list, density.minimumCardWidth, QUICK_NOTE_MASONRY_GAP, density.maximumColumns);
     const keptIndexes = QUICK_NOTES_FILTERED_NOTES.map((key) => QUICK_NOTES_CAST.findIndex((card) => card.key === key));
-    return { all: lay(sized), filtered: lay(keptIndexes.map((index) => sized[index] ?? 0)) };
+    const kept = keptIndexes.map((index) => sized[index] ?? 0);
+    const created = heights[QUICK_NOTES_CAST.length] ?? 0;
+    return { all: lay(sized), filtered: lay(kept), created: lay([created, ...kept]) };
   });
 
-  /** Where each note is drawn: in its place among all the notes, carried to its filtered place as the filter glides. */
+  /** A place `amount` of the way from `from` to `to`. */
+  function mixPlace(from: MasonryPosition, to: MasonryPosition, amount: number): MasonryPosition {
+    const mix = (a: number, b: number) => a + (b - a) * amount;
+    return { left: mix(from.left, to.left), top: mix(from.top, to.top), width: mix(from.width, to.width) };
+  }
+
+  /**
+   * Where each note is drawn: in its place among all the notes, carried to its filtered place as the filter glides, and
+   * then along by one place as the new note takes the first.
+   */
   function cardPlace(key: QuickNotesSceneNote, index: number): MasonryPosition | null {
     const from = layouts?.all.positions[index];
     if (!from) return null;
     const keptIndex = QUICK_NOTES_FILTERED_NOTES.indexOf(key);
-    const to = keptIndex < 0 ? undefined : layouts?.filtered.positions[keptIndex];
-    if (!to || filter.glide <= 0) return from;
-    const mix = (a: number, b: number) => a + (b - a) * filter.glide;
-    return { left: mix(from.left, to.left), top: mix(from.top, to.top), width: mix(from.width, to.width) };
+    const filtered = keptIndex < 0 ? undefined : layouts?.filtered.positions[keptIndex];
+    if (!filtered || filter.glide <= 0) return from;
+    const place = mixPlace(from, filtered, filter.glide);
+    const created = layouts?.created.positions[keptIndex + 1];
+    return created && inserted > 0 ? mixPlace(place, created, inserted) : place;
   }
 
-  const masonryHeight = $derived(
-    layouts ? layouts.all.height + (layouts.filtered.height - layouts.all.height) * filter.glide : 0,
-  );
+  const masonryHeight = $derived.by(() => {
+    if (!layouts) return 0;
+    const filtered = layouts.all.height + (layouts.filtered.height - layouts.all.height) * filter.glide;
+    return filtered + (layouts.created.height - filtered) * inserted;
+  });
+
+  /** The new note's place once it shows: the first, where it fades in. */
+  const newNotePlace = $derived(inserted > 0 ? (layouts?.created.positions[0] ?? null) : null);
 
   /** Measure the open picker against its button once it lays itself out. */
   $effect(() => {
@@ -358,6 +405,12 @@
 <!-- A card's tag badge, as the card draws it. -->
 {#snippet badge(name: string)}
   <span class="inline-flex max-w-full truncate rounded-md bg-black/8 px-1.5 py-0.5 text-[0.65rem] font-medium dark:bg-white/10">{name}</span>
+{/snippet}
+
+<!-- An editor field's text as typed so far, or its dimmed placeholder while empty, with the caret when it shows. -->
+{#snippet typedField(text: string, placeholder: string, placeholderClass: string, caret: boolean)}
+  <!-- While empty, the caret sits over the placeholder's start, as a field draws it, so the placeholder holds still as it blinks. -->
+  {#if text}{text}{#if caret}<WelcomeCaret />{/if}{:else}<span class="relative">{#if caret}<span class="absolute top-0 left-0"><WelcomeCaret /></span>{/if}<span class={placeholderClass}>{placeholder}</span></span>{/if}
 {/snippet}
 
 <!-- A note card, as the card draws it; `live` marks the drawn one rather than its measured copy. -->
@@ -525,11 +578,13 @@
 
       <div class={mobileShell ? "relative min-h-0 flex-1 overflow-hidden px-3 pt-2 pb-4" : "relative min-h-0 flex-1 overflow-hidden px-3 pt-1.5 pb-3"} style:padding-inline={!mobileShell && canvasW >= 640 ? "1rem" : undefined}>
         <span
-          class={cn("mx-auto mb-4 flex min-h-12 items-center rounded-xl px-4 text-left text-sm", mobileShell ? "w-full" : "w-2/3")}
+          data-cursor="quick-notes-composer"
+          class={cn("relative mx-auto mb-4 flex min-h-12 items-center rounded-xl px-4 text-left text-sm", mobileShell ? "w-full" : "w-2/3")}
           style:background-color={composerColors.bg}
           style:color={composerColors.text}
         >
           {t("quickNotes.takeNote")}
+          {#if mobileShell}<WelcomeTouch opacity={touches.composer} left="30%" />{/if}
         </span>
 
         <!-- The notes in their masonry, each carried to its filtered place as the filter glides. -->
@@ -548,12 +603,23 @@
               </div>
             {/if}
           {/each}
+          {#if newNotePlace}
+            <!-- The new note, fading into the first place as the Trip notes after it move along. -->
+            <div
+              class="absolute top-0 left-0"
+              style:width={`${newNotePlace.width}px`}
+              style:transform={`translate(${newNotePlace.left}px, ${newNotePlace.top}px)`}
+              style:opacity={inserted < 1 ? inserted : undefined}
+            >
+              {@render noteCard(QUICK_NOTES_NEW_NOTE, true)}
+            </div>
+          {/if}
         </div>
 
-        <!-- The notes laid out at their card width as the scene starts, and a badge row, measured for the masonry. -->
+        <!-- The notes laid out at their card width as the scene starts, then the new note, and a badge row, measured for the masonry. -->
         <div class="pointer-events-none invisible absolute top-0 left-0 overflow-hidden" style:width={`${cardWidth}px`}>
           <div bind:this={measurer} class="flex flex-col">
-            {#each QUICK_NOTES_CAST as card (card.key)}
+            {#each MEASURED_CARDS as card (card.key)}
               <div>{@render noteCard(card, false)}</div>
             {/each}
           </div>
@@ -561,6 +627,67 @@
         </div>
       </div>
     </div>
+
+    {#if editor}
+      <!-- The editor writing the new note, centered over a backdrop with a pointer and filling a phone's screen. -->
+      <div
+        data-scene-cover
+        class={mobileShell ? "absolute inset-0 z-30 flex" : "surface-backdrop absolute inset-0 z-30 flex items-center justify-center"}
+        style:opacity={editor.opacity < 1 ? editor.opacity : undefined}
+      >
+        <div
+          class={mobileShell ? "flex size-full flex-col overflow-hidden" : "surface-dialog flex flex-col overflow-hidden"}
+          style:width={mobileShell ? undefined : `${Math.min(EDITOR_MAX_W, canvasW - 2 * EDITOR_INSET_PX)}px`}
+          style:height={mobileShell ? undefined : `${Math.min(EDITOR_MAX_H, canvasH - 2 * EDITOR_INSET_PX)}px`}
+          style:background-color={editorColors.bg}
+          style:color={editorColors.text}
+        >
+          <div class={cn("flex min-h-0 flex-1 flex-col overflow-hidden", mobileShell ? "px-4 pt-3" : canvasW >= 640 ? "px-5 pt-5" : "px-4 pt-4")}>
+            <div class="flex items-start gap-2">
+              <span class={cn("min-w-0 flex-1 truncate text-[1.05rem] font-semibold", mobileShell ? "flex min-h-12 items-center" : "block py-0.5")}>
+                {@render typedField(editor.title, t("quickNotes.editor.titlePlaceholder"), "opacity-55", editor.field === "title" && editor.caretOn)}
+              </span>
+              <span class={EDITOR_BUTTON_CLASS}><Pin class="size-4" strokeWidth={1.5} /></span>
+            </div>
+            <span class="my-3 block min-h-0 flex-1 overflow-hidden rounded-md py-1 text-[0.92rem] leading-relaxed">
+              {@render typedField(editor.body, t("quickNotes.editor.bodyPlaceholder"), "opacity-50", editor.field === "body" && editor.caretOn)}
+            </span>
+          </div>
+          <div
+            class={mobileShell ? "flex shrink-0 flex-col border-t border-current/10 px-2 pb-2" : "flex min-h-12 shrink-0 flex-wrap items-center gap-0.5 border-t border-current/10 px-2.5 py-2"}
+            style:padding-inline={!mobileShell && canvasW >= 640 ? "1rem" : undefined}
+          >
+            <div class={mobileShell ? "flex min-h-12 w-full min-w-0 items-center gap-0.5 overflow-hidden" : "contents"}>
+              <span class={EDITOR_BUTTON_CLASS}><Bold class="size-4" strokeWidth={1.5} /></span>
+              <span class={EDITOR_BUTTON_CLASS}><Italic class="size-4" strokeWidth={1.5} /></span>
+              <span class={EDITOR_BUTTON_CLASS}><UnderlineIcon class="size-4" /></span>
+              <span class={EDITOR_BUTTON_CLASS}><Palette class="size-4" strokeWidth={1.5} /></span>
+              <span class={EDITOR_BUTTON_CLASS}><Tag class="size-4" strokeWidth={1.5} /></span>
+              <span class={EDITOR_BUTTON_CLASS}><ImagePlus class="size-4" strokeWidth={1.5} /></span>
+              <!-- Undo turns on once something is typed; nothing is undone, so Redo stays off. -->
+              <span class={cn(EDITOR_BUTTON_CLASS, !editor.title && "opacity-35")}><Undo2 class="size-4" strokeWidth={1.5} /></span>
+              <span class={cn(EDITOR_BUTTON_CLASS, "opacity-35")}><Redo2 class="size-4" strokeWidth={1.5} /></span>
+              <span class="mx-1 h-5 w-px shrink-0 bg-current/15"></span>
+              <span class={EDITOR_BUTTON_CLASS}><Archive class="size-4" strokeWidth={1.5} /></span>
+              <span class={EDITOR_BUTTON_CLASS}><TrashIcon class="size-4" strokeWidth={1.5} /></span>
+            </div>
+            <div class={mobileShell ? "flex min-h-12 w-full items-center" : "contents"}>
+              <span
+                data-cursor="quick-notes-editor-close"
+                data-scene-hover="editor-close"
+                class={cn(
+                  mobileShell ? "relative ml-auto flex min-h-12 items-center rounded-xl px-4 text-sm font-medium" : "ml-auto rounded-md px-3 py-1.5 text-sm font-medium",
+                  hovered("editor-close") && "bg-black/10 dark:bg-white/10",
+                )}
+              >
+                {t("quickNotes.editor.close")}
+                {#if mobileShell}<WelcomeTouch opacity={touches.close} />{/if}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    {/if}
 
     {#if !mobileShell}
       <!-- The open note's tag picker. It stays laid out while hidden so its size is known. -->

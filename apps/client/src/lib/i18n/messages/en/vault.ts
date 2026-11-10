@@ -116,9 +116,9 @@ export const vaultSetup = {
     headline: "Write it down before it slips away",
     body: "Jot down quick notes in seconds and sort them with tags you can filter by.",
     sceneDescription:
-      "A short animation of Quick notes, where the notes carry tags such as Ideas, Home, and Health. The notes Passport and flights and Hotel in Lisbon are each given the existing Trip tag from their tag pickers, which gives them the tag's color, and selecting the Trip chip filters the notes down to the ones tagged Trip.",
+      "A short animation of Quick notes, where the notes carry tags such as Ideas, Home, and Health. The notes Passport and flights and Hotel in Lisbon are each given the existing Trip tag from their tag pickers, which gives them the tag's color, and selecting the Trip chip filters the notes down to the ones tagged Trip. A new note, Museum tickets, is then written in the editor and takes the Trip tag.",
     sceneDescriptionTouch:
-      "A short animation of Quick notes, where the notes carry tags such as Ideas, Home, and Health and several share the Trip tag, and tapping the Trip chip filters the notes down to them.",
+      "A short animation of Quick notes, where the notes carry tags such as Ideas, Home, and Health and several share the Trip tag, and tapping the Trip chip filters the notes down to them. A new note, Museum tickets, is then written in the editor and takes the Trip tag.",
     tags: { trip: "Trip", ideas: "Ideas", home: "Home", health: "Health" },
     notes: {
       gift: { title: "Gift for Ana", body: "She mentioned a ceramics class." },
@@ -131,6 +131,7 @@ export const vaultSetup = {
       sintra: { title: "Day trip to Sintra", body: "Take the early train from Rossio." },
       groceries: { title: "Groceries", body: "Oat milk, lemons, rice, and coffee." },
       recipe: { title: "Lentil soup", body: "Cumin, lemon, and a little smoked paprika." },
+      museum: { title: "Museum tickets", body: "Book the tile museum for Saturday." },
     },
   },
   chat: {

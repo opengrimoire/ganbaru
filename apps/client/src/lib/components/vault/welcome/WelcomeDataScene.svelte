@@ -97,11 +97,12 @@
   {:else if entry.kind === "database"}
     <svg width={size} height={size} viewBox="0 0 64 64" class="shrink-0" aria-hidden="true">
       <path d="M12 13v38a20 7 0 0 0 40 0V13z" class="fill-primary" />
+      <path d="M12 26a20 7 0 0 0 40 0M12 39a20 7 0 0 0 40 0" class="fill-none stroke-background" stroke-width="2.5" />
       <path
         d="M12 26a20 7 0 0 0 40 0M12 39a20 7 0 0 0 40 0"
-        class="fill-none stroke-background"
+        class="fill-none stroke-primary"
+        stroke-opacity="0.6"
         stroke-width="2.5"
-        stroke-linecap="round"
       />
       <ellipse cx="32" cy="13" rx="20" ry="7" class="fill-background" />
       <ellipse cx="32" cy="13" rx="20" ry="7" class="fill-primary" fill-opacity="0.6" />

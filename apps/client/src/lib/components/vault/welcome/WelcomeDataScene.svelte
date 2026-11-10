@@ -14,9 +14,7 @@
 <script lang="ts">
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
-  import Database from "@lucide/svelte/icons/database";
   import Download from "@lucide/svelte/icons/download";
-  import FileBraces from "@lucide/svelte/icons/file-braces";
   import FileText from "@lucide/svelte/icons/file-text";
   import Folder from "@lucide/svelte/icons/folder";
   import House from "@lucide/svelte/icons/house";
@@ -25,7 +23,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM, BUILD_PLATFORM_PROFILE } from "$lib/platform";
   import type { VaultDefaultPlaces } from "$lib/vault/state";
-  import { DATA_ENTRIES, vaultPathTrail, type DataEntry } from "$lib/vault/welcome-data-folder";
+  import { DATA_ENTRIES, entryExtension, vaultPathTrail, type DataEntry } from "$lib/vault/welcome-data-folder";
 
   /**
    * The still illustration on the welcome screen about where data lives: the vault's folder, named by its real path, open
@@ -80,12 +78,54 @@
   const wide = $derived(canvasW >= SIDEBAR_MIN_W);
   const trail = $derived(vaultPathTrail(path, TRAIL_DEPTH));
   const parent = $derived(trail.length > 1 ? trail[0] : null);
-
-  function entryIcon(entry: DataEntry): PlaceIcon {
-    if (entry.kind === "folder") return Folder;
-    return entry.kind === "database" ? Database : FileBraces;
-  }
 </script>
+
+<!--
+  An entry drawn the way file managers draw it rather than as a line icon: a folder as a two-tone filled folder in the
+  theme's accent, and a file as a page with a folded corner and its extension on a badge, accented for the database.
+-->
+{#snippet entryGlyph(entry: DataEntry, size: number)}
+  {#if entry.kind === "folder"}
+    <svg width={size} height={size} viewBox="0 0 64 64" class="shrink-0" aria-hidden="true">
+      <path
+        d="M6 15a4 4 0 0 1 4-4h14.3a4 4 0 0 1 2.9 1.2L32 17h22a4 4 0 0 1 4 4v29a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z"
+        class="fill-primary"
+        fill-opacity="0.6"
+      />
+      <path d="M6 25a4 4 0 0 1 4-4h44a4 4 0 0 1 4 4v25a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" class="fill-primary" />
+    </svg>
+  {:else}
+    <svg width={size} height={size} viewBox="0 0 64 64" class="shrink-0" aria-hidden="true">
+      <path
+        d="M16 5h23l13 13v38a3 3 0 0 1-3 3H16a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z"
+        class="fill-background stroke-muted-foreground"
+        stroke-opacity="0.45"
+        stroke-width="1.5"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M39 5v10a3 3 0 0 0 3 3h10"
+        class="fill-muted-foreground stroke-muted-foreground"
+        fill-opacity="0.15"
+        stroke-opacity="0.45"
+        stroke-width="1.5"
+        stroke-linejoin="round"
+      />
+      <path d="M20 26h20M20 32h26M20 38h22" class="stroke-muted-foreground" stroke-opacity="0.3" stroke-width="2" stroke-linecap="round" />
+      <rect x="8" y="43" width="42" height="13" rx="3" class={entry.kind === "database" ? "fill-primary" : "fill-muted-foreground"} />
+      <text
+        x="29"
+        y="52.6"
+        text-anchor="middle"
+        font-size="8"
+        font-weight="700"
+        class={entry.kind === "database" ? "fill-primary-foreground" : "fill-background"}
+      >
+        {entryExtension(entry.name)}
+      </text>
+    </svg>
+  {/if}
+{/snippet}
 
 {#snippet controls()}
   <span class="flex shrink-0 gap-1" aria-hidden="true">
@@ -159,16 +199,8 @@
         <!-- The folder's entries as a grid of icons, each named under it. -->
         <div class="grid min-w-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,8rem)] content-start gap-2 p-4 text-xs">
           {#each DATA_ENTRIES as entry (entry.name)}
-            {@const EntryIcon = entryIcon(entry)}
-            <div class="flex min-w-0 flex-col items-center gap-1 rounded-lg px-1.5 py-2 text-center">
-              <EntryIcon
-                size={40}
-                strokeWidth={1.3}
-                class={["mb-1 shrink-0", entry.kind === "folder" ?"text-primary" : "text-muted-foreground"]}
-                fill={entry.kind === "folder" ?"currentColor" : "none"}
-                fill-opacity={entry.kind === "folder" ?0.3 : undefined}
-                aria-hidden="true"
-              />
+            <div class="flex min-w-0 flex-col items-center gap-1.5 rounded-lg px-1.5 py-2 text-center">
+              {@render entryGlyph(entry, 56)}
               <span class="max-w-full truncate font-medium">{entry.name}</span>
             </div>
           {/each}
@@ -177,16 +209,8 @@
         <!-- A phone lists the entries by name. -->
         <div class="flex min-w-0 flex-1 flex-col text-xs">
           {#each DATA_ENTRIES as entry (entry.name)}
-            {@const EntryIcon = entryIcon(entry)}
             <div class="flex min-h-11 items-center gap-3 border-b border-border/60 px-3.5">
-              <EntryIcon
-                size={16}
-                strokeWidth={1.7}
-                class={["shrink-0", entry.kind === "folder" ?"text-primary" : "text-muted-foreground"]}
-                fill={entry.kind === "folder" ?"currentColor" : "none"}
-                fill-opacity={entry.kind === "folder" ?0.3 : undefined}
-                aria-hidden="true"
-              />
+              {@render entryGlyph(entry, 24)}
               <span class="truncate font-medium">{entry.name}</span>
             </div>
           {/each}

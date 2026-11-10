@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { DATA_ENTRIES, vaultPathTrail } from "./welcome-data-folder";
+import { DATA_ENTRIES, entryExtension, vaultPathTrail } from "./welcome-data-folder";
+
+describe("entryExtension", () => {
+  it("reads the last extension in capitals", () => {
+    expect(entryExtension("ganbaru.sqlite")).toBe("SQLITE");
+    expect(entryExtension("archive.tar.gz")).toBe("GZ");
+  });
+
+  it("finds no extension in a bare name, a dotfile, or a trailing dot", () => {
+    expect(entryExtension("assets")).toBe("");
+    expect(entryExtension(".gitignore")).toBe("");
+    expect(entryExtension("notes.")).toBe("");
+  });
+});
 
 describe("welcome data folder entries", () => {
   it("lists folders before files", () => {

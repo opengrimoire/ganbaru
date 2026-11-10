@@ -208,7 +208,7 @@
     <div class="flex h-8 shrink-0 items-center gap-2 border-b border-border px-3">
       {#if CONTROLS_LEADING}{@render controls()}{/if}
       <span
-        class="min-w-0 flex-1 truncate rounded-full bg-foreground/6 px-2.5 py-0.5 text-center text-[10px] text-muted-foreground"
+        class="min-w-0 flex-1 truncate rounded-full bg-foreground/6 px-2.5 py-0.5 text-center text-[11px] text-muted-foreground"
       >
         {ABOUT_REPOSITORY.host}/{ABOUT_REPOSITORY.owner}/{ABOUT_REPOSITORY.name}
       </span>

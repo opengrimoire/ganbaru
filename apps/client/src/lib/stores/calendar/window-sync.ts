@@ -1,5 +1,5 @@
 import { listenSyncApplied } from "$lib/api/sync";
-import { touchesCalendar } from "$lib/calendar/sync-events";
+import { listenForCalendarSyncChanges, touchesCalendar } from "$lib/calendar/sync-events";
 import {
   createWindowSyncEnvelope,
   isForeignWindowSyncEnvelope,
@@ -49,4 +49,6 @@ export function initCalendarWindowSync(reloadCurrentWindow: () => Promise<void>)
   listenSyncApplied((tables) => {
     if (touchesCalendar(tables)) reload();
   }).catch((err) => console.warn("calendar sync notice listener failed", err));
+  listenForCalendarSyncChanges(reload)
+    .catch((err) => console.warn("calendar listener for changes made outside it failed", err));
 }

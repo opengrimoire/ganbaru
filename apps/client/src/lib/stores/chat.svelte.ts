@@ -44,7 +44,7 @@ import type {
 import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
 import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
 import { listenForChatChanges, publishChatChanges, type ChatWindowChanges } from "$lib/chat/window-sync";
-import { onChatSyncChanged } from "$lib/chat/sync-events";
+import { listenForChatSyncChanges, onChatSyncChanged } from "$lib/chat/sync-events";
 import { CHAT_SYNC_TABLES } from "$lib/chat/sync-presentation";
 import { listenSyncApplied } from "$lib/api/sync";
 import { ChatPaneStores, chatWindowChanges, type ChatChangeIds } from "$lib/stores/chat/pane-stores";
@@ -1184,6 +1184,9 @@ export class ChatStore {
       });
     };
     onChatSyncChanged(refresh);
+    void listenForChatSyncChanges(refresh).catch((error: unknown) => {
+      console.error("Chat could not listen for changes other windows made outside Chat", error);
+    });
     void listenSyncApplied((tables) => {
       if (tables.some((table) => CHAT_SYNC_TABLES.includes(table))) refresh();
     }).catch((error: unknown) => {

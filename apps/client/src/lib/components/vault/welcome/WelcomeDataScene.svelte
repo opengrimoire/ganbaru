@@ -80,8 +80,9 @@
 </script>
 
 <!--
-  An entry drawn the way file managers draw it rather than as a line icon: a folder as a two-tone filled folder in the
-  theme's accent, and a file as a page with a folded corner and its extension on a badge, accented for the database.
+  An entry drawn the way file managers draw it rather than as a line icon: a folder as a two-tone filled folder and the
+  database as a stack of disks, both in the theme's accent, and any other file as a page with a folded corner and its
+  extension on a badge.
 -->
 {#snippet entryGlyph(entry: DataEntry, size: number)}
   {#if entry.kind === "folder"}
@@ -92,6 +93,18 @@
         fill-opacity="0.6"
       />
       <path d="M6 25a4 4 0 0 1 4-4h44a4 4 0 0 1 4 4v25a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" class="fill-primary" />
+    </svg>
+  {:else if entry.kind === "database"}
+    <svg width={size} height={size} viewBox="0 0 64 64" class="shrink-0" aria-hidden="true">
+      <path d="M12 13v38a20 7 0 0 0 40 0V13z" class="fill-primary" />
+      <path
+        d="M12 26a20 7 0 0 0 40 0M12 39a20 7 0 0 0 40 0"
+        class="fill-none stroke-background"
+        stroke-width="2.5"
+        stroke-linecap="round"
+      />
+      <ellipse cx="32" cy="13" rx="20" ry="7" class="fill-background" />
+      <ellipse cx="32" cy="13" rx="20" ry="7" class="fill-primary" fill-opacity="0.6" />
     </svg>
   {:else}
     <svg width={size} height={size} viewBox="0 0 64 64" class="shrink-0" aria-hidden="true">
@@ -111,15 +124,8 @@
         stroke-linejoin="round"
       />
       <path d="M20 26h20M20 32h26M20 38h22" class="stroke-muted-foreground" stroke-opacity="0.3" stroke-width="2" stroke-linecap="round" />
-      <rect x="8" y="43" width="42" height="13" rx="3" class={entry.kind === "database" ? "fill-primary" : "fill-muted-foreground"} />
-      <text
-        x="29"
-        y="52.6"
-        text-anchor="middle"
-        font-size="8"
-        font-weight="700"
-        class={entry.kind === "database" ? "fill-primary-foreground" : "fill-background"}
-      >
+      <rect x="8" y="43" width="42" height="13" rx="3" class="fill-muted-foreground" />
+      <text x="29" y="52.6" text-anchor="middle" font-size="8" font-weight="700" class="fill-background">
         {entryExtension(entry.name)}
       </text>
     </svg>

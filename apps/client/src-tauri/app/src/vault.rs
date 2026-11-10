@@ -180,11 +180,10 @@ pub struct VaultDefaultLocation {
 /// The folder names the operating system gives its usual places, for the setup illustration's sidebar.
 ///
 /// Each is the place's own folder name on disk, so it matches the system rather than the app's language, and is
-/// absent where the platform has no such place.
+/// absent where the platform has no such place. The home folder is left out because its name is the user's account.
 #[derive(Clone, Debug, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultDefaultPlaces {
-    pub home: Option<String>,
     pub desktop: Option<String>,
     pub downloads: Option<String>,
     pub pictures: Option<String>,
@@ -738,7 +737,6 @@ fn default_location_from_path(
 fn default_places(app: &tauri::AppHandle) -> VaultDefaultPlaces {
     let paths = app.path();
     VaultDefaultPlaces {
-        home: place_name(paths.home_dir()),
         desktop: place_name(paths.desktop_dir()),
         downloads: place_name(paths.download_dir()),
         pictures: place_name(paths.picture_dir()),

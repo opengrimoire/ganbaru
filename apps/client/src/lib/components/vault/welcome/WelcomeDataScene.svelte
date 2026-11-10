@@ -62,12 +62,15 @@
   /** Every Lucide icon shares one component type. */
   type PlaceIcon = typeof Folder;
 
-  /** A sidebar place other than the folder's parent, named by the system's own folder name for it. */
+  /** A sidebar place named by the system's own folder name for it. */
   type Place = { icon: PlaceIcon; place: keyof VaultDefaultPlaces };
 
-  /** The sidebar's places, with the folder's parent, named by its real path, in the middle. */
-  const PLACES: readonly (Place | { icon: PlaceIcon; parent: true })[] = [
-    { icon: House, place: "home" },
+  /**
+   * The sidebar's places: Home under its common label rather than the account's name, then the folder's parent, named by
+   * its real path, among the places named as the system names them.
+   */
+  const PLACES: readonly (Place | { icon: PlaceIcon; parent: true } | { icon: PlaceIcon; home: true })[] = [
+    { icon: House, home: true },
     { icon: Monitor, place: "desktop" },
     { icon: FileText, parent: true },
     { icon: Download, place: "downloads" },
@@ -149,7 +152,14 @@
         <div class="flex w-40 shrink-0 flex-col gap-0.5 border-r border-border bg-foreground/2 px-2 py-2.5 text-xs">
           {#each PLACES as place, index (index)}
             {@const selected = "parent" in place && parent !== null}
-            {@const label = "place" in place ? (places?.[place.place] ?? null) : parent}
+            {@const label =
+              "place" in place
+                ? (places?.[place.place] ?? null)
+                : "home" in place
+                  ? desktopShell
+                    ? t("vaultSetup.data.home")
+                    : null
+                  : parent}
             {#if label}
               <span
                 class={[

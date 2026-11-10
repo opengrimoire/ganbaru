@@ -145,7 +145,7 @@ describe("vault state api", () => {
       parentPath: "/home/user/Documentos",
       folderName: "Ganbaru",
       developmentBuild: false,
-      places: { home: "user", desktop: "Escritorio", downloads: "Descargas", pictures: null },
+      places: { desktop: "Escritorio", downloads: "Descargas", pictures: null },
     });
     const { getDefaultVaultLocation } = await loadModule();
 
@@ -154,7 +154,7 @@ describe("vault state api", () => {
       parentPath: "/home/user/Documentos",
       folderName: "Ganbaru",
       developmentBuild: false,
-      places: { home: "user", desktop: "Escritorio", downloads: "Descargas", pictures: null },
+      places: { desktop: "Escritorio", downloads: "Descargas", pictures: null },
     });
   });
 
@@ -164,12 +164,12 @@ describe("vault state api", () => {
       parentPath: "C:\\Users\\user\\Documents",
       folderName: "Ganbaru",
       developmentBuild: true,
-      places: { home: "user", desktop: " ", downloads: 7 },
+      places: { desktop: " ", downloads: 7, pictures: "Pictures" },
     });
     const { getDefaultVaultLocation } = await loadModule();
 
     await expect(getDefaultVaultLocation()).resolves.toMatchObject({
-      places: { home: "user", desktop: null, downloads: null, pictures: null },
+      places: { desktop: null, downloads: null, pictures: "Pictures" },
     });
   });
 

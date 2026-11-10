@@ -21,10 +21,9 @@ export interface VaultDefaultLocation {
 
 /**
  * The folder names the operating system gives its usual places, as they are on disk rather than in the app's language;
- * `null` where the platform has no such place.
+ * `null` where the platform has no such place. The home folder is left out because its name is the user's account.
  */
 export interface VaultDefaultPlaces {
-  home: string | null;
   desktop: string | null;
   downloads: string | null;
   pictures: string | null;
@@ -106,7 +105,6 @@ function parseVaultDefaultLocation(value: unknown): VaultDefaultLocation {
     throw new Error("default folder response is incomplete");
   }
   const places: VaultDefaultPlaces = {
-    home: readString(value.places.home),
     desktop: readString(value.places.desktop),
     downloads: readString(value.places.downloads),
     pictures: readString(value.places.pictures),

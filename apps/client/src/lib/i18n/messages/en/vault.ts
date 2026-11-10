@@ -170,6 +170,7 @@ export const vaultSetup = {
       database: "Calendar, tasks, notes, and more",
       marker: "The folder's name and version",
     },
+    home: "Home",
   },
 } as const;
 

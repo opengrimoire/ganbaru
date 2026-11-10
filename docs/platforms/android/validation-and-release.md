@@ -4,7 +4,7 @@ Android is release-ready only when a signed, minified release artifact passes th
 
 ## Build baseline
 
-- Tauri `~2.11.1`.
+- Tauri `~2.12.5`.
 - Minimum API level 29 (Android 10), compile and target API level 36.
 - Gradle wrapper 8.14.3 and NDK 30.0.15729638.
 - ARM64, ARMv7, x86, and x86_64 release libraries.

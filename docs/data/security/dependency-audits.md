@@ -2,7 +2,7 @@
 
 This file records reviewed Rust and npm advisory exceptions and allowed warnings. Lockfiles and current command output are authoritative; an old date or prior clean result is not evidence for the current lockfile.
 
-As of 2026-11-10, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the one reviewed ignore below, and `pnpm -w run audit:rust` exits successfully with the one reviewed ignore and the ten allowed warnings listed below.
+As of 2026-11-10, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the one reviewed ignore below, and `pnpm -w run audit:rust` exits successfully with the one reviewed ignore and the five allowed warnings listed below.
 
 A successful Rust audit exit does not mean warning-free. The cargo-audit output policy allows warnings, so maintainers must review new unsound, unmaintained, and yanked findings separately.
 
@@ -39,10 +39,6 @@ deepmerge 4.3.1 lets a merged source object poison the prototype of the returned
 - RUSTSEC-2024-0370: unmaintained proc-macro-error.
 
 Both come through the Linux Tauri and Wry WebKit stack and native Linux integrations. Ganbaru does not use the affected glib `VariantStrIter` API. Remove them when the upstream stack can move to maintained bindings without replacing them with a broader or less trustworthy runtime.
-
-### UNIC crates
-
-RUSTSEC-2025-0075, RUSTSEC-2025-0080, RUSTSEC-2025-0081, RUSTSEC-2025-0098, and RUSTSEC-2025-0100 report unmaintained unic crates reached through urlpattern 0.3 in tauri-utils 2.9. tauri-utils 2.10 moves to urlpattern 0.6, which drops them, so they clear with the Tauri 2.12 upgrade.
 
 ### D-Bus split crates
 

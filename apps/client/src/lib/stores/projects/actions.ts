@@ -22,6 +22,7 @@ import {
   deleteProjectCustomEmoji,
   deleteProjectCustomField,
   deleteProjectCustomFieldOption,
+  deleteProject as deleteProjectBackend,
   deleteProjectGroup,
   deleteProjectPriority,
   deleteProjectStatus,
@@ -72,6 +73,9 @@ import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
 import { PROJECT_LIST_PRESENTATION_KEY, type ProjectListPresentation } from "$lib/projects/list/presentation";
 import { PROJECT_VIEW_QUERY_PREFERENCE_KEY, serializeProjectViewQuery, type ProjectViewQuery } from "$lib/projects/view-query";
 import { applyProjectMutation } from "$lib/projects/snapshot/mutations";
+import { notifyCalendarSyncChanged } from "$lib/calendar/sync-events";
+import { notifyChatSyncChanged } from "$lib/chat/sync-events";
+import { notifyNotesSyncChanged } from "$lib/notes/sync-events";
 import { parseProjectIcon } from "$lib/projects/icons/values";
 import {
   checklistItemUpdatePayload,
@@ -386,6 +390,18 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     };
     await commitMutation(`project:${project.id}`, () => createProjectBackend(project));
     return project.id;
+  }
+
+  /**
+   * Delete a project. The deletion also removes its Chat history and unassigns its Notes pages and Calendar events, so
+   * those views reload.
+   */
+  async function removeProject(projectId: string): Promise<void> {
+    await commitMutation(`project:${projectId}`, () => deleteProjectBackend(projectId));
+    invalidateAssetUrlKind("project-icon");
+    notifyNotesSyncChanged();
+    notifyChatSyncChanged();
+    notifyCalendarSyncChanged();
   }
 
   async function updateProject(project: ProjectUpdate): Promise<void> {
@@ -1130,6 +1146,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     updateGroup,
     removeGroup,
     addProject,
+    removeProject,
     updateProject,
     setNotesSettings,
     renameProject,

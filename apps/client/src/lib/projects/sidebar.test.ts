@@ -75,6 +75,7 @@ describe("projectSidebarActions", () => {
     expect(actions.moveGroupIds).toEqual(["group-routine", "home"]);
     expect(actions.canMoveOutOfGroup).toBe(true);
     expect(actions.canMoveToGroup).toBe(true);
+    expect(actions.canDelete).toBe(true);
   });
 
   it("offers every visible group, but not leaving a group, for a project outside every group", () => {
@@ -93,6 +94,7 @@ describe("projectSidebarActions", () => {
     const actions = projectSidebarActions({ id: "project-routine-sleep", groupId: "group-routine", status: "active" }, groups);
     expect(actions.identityLocked).toBe(true);
     expect(actions.canRename).toBe(false);
+    expect(actions.canDelete).toBe(false);
     expect(actions.moveGroupIds).toEqual([]);
     expect(actions.canMoveOutOfGroup).toBe(false);
     expect(actions.canMoveToGroup).toBe(false);

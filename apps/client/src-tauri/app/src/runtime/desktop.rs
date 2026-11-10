@@ -719,6 +719,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             projects::project_commands::projects_create_project,
             projects::project_commands::projects_update_project,
             projects::project_commands::projects_update_notes_settings,
+            projects::project_commands::projects_delete_project,
             projects::structure_commands::projects_create_section,
             projects::structure_commands::projects_update_section,
             projects::structure_commands::projects_create_status,

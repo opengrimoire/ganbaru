@@ -4,8 +4,8 @@ use std::path::Path;
 use super::defaults::insert_default_project_graph;
 use super::managed_folders::insert_managed_working_folder;
 use super::models::{
-    ProjectCreate, ProjectPriorityRow, ProjectSectionRow, ProjectStatusRow, ProjectUpdate,
-    ProjectsMutationRows,
+    ProjectCreate, ProjectMutationRemoval, ProjectPriorityRow, ProjectSectionRow, ProjectStatusRow,
+    ProjectUpdate, ProjectsMutationRows,
 };
 use super::mutations::{
     normalized_optional_identifier, normalized_optional_text, project_mutation,
@@ -349,4 +349,35 @@ pub async fn update_notes_settings(
         .await
         .map_err(|e| format!("commit project Notes settings update: {e}"))?;
     project_mutation(pool, project_id).await
+}
+
+/// Deletes a project. Cascading foreign keys remove its tasks, structure, working folders, and
+/// Chat rows, while its Notes pages and Calendar events stay without a project. Files those
+/// rows name, including the managed working folder, are left to the caller.
+///
+/// # Errors
+///
+/// Refuses the built-in Routine projects and reports a project that does not exist.
+pub async fn delete_project(
+    pool: &SqlitePool,
+    project_id: String,
+) -> Result<ProjectsMutationRows, String> {
+    let project_id = project_id.trim();
+    require_non_empty(project_id, "project_id")?;
+    if built_in_routine_project(project_id).is_some() {
+        return Err("built-in Routine projects cannot be deleted".to_string());
+    }
+    let result = sqlx::query("DELETE FROM projects WHERE id = ?")
+        .bind(project_id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("delete project: {e}"))?;
+    if result.rows_affected() == 0 {
+        return Err("project not found".to_string());
+    }
+    let mut mutation = ProjectsMutationRows::default();
+    mutation.removals.push(ProjectMutationRemoval::Project {
+        id: project_id.to_string(),
+    });
+    Ok(mutation)
 }

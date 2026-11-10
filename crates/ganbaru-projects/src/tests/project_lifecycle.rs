@@ -292,3 +292,90 @@ fn built_in_routine_projects_stay_in_the_routine_group() {
         assert_eq!(group_id.as_deref(), Some(ROUTINE_GROUP_ID));
     });
 }
+
+#[test]
+fn delete_project_removes_what_it_owns_and_unassigns_its_notes_and_events() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        sqlx::query(
+            "INSERT INTO calendar_events (id, title, start_time, end_time, project_id)
+             VALUES ('event-a', 'Event A', '2026-06-24T10:00:00Z', '2026-06-24T11:00:00Z', 'project-a');
+             INSERT INTO notes_pages (id, parent_type, title, project_id)
+             VALUES ('page-a', 'workspace', 'Page A', 'project-a')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mutation = crate::project_commands::delete_project(&pool, " project-a ".to_string())
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            mutation.removals.as_slice(),
+            [ProjectMutationRemoval::Project { id }] if id == "project-a"
+        ));
+        let count = |sql: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(sql)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(
+            count("SELECT COUNT(*) FROM projects WHERE id = 'project-a'").await,
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM project_tasks WHERE project_id = 'project-a'").await,
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM project_groups WHERE id = 'group-a'").await,
+            1
+        );
+        assert_eq!(
+            count(
+                "SELECT COUNT(*) FROM calendar_events WHERE id = 'event-a' AND project_id IS NULL"
+            )
+            .await,
+            1
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM notes_pages WHERE id = 'page-a' AND project_id IS NULL")
+                .await,
+            1
+        );
+        assert_eq!(
+            crate::project_commands::delete_project(&pool, "project-a".to_string())
+                .await
+                .err(),
+            Some("project not found".to_string())
+        );
+    });
+}
+
+#[test]
+fn delete_project_refuses_built_in_routine_projects() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+
+        let refused =
+            crate::project_commands::delete_project(&pool, "project-routine-sleep".to_string())
+                .await;
+
+        assert_eq!(
+            refused.err(),
+            Some("built-in Routine projects cannot be deleted".to_string())
+        );
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM projects WHERE id = 'project-routine-sleep'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, 1);
+    });
+}

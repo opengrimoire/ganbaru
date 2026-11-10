@@ -989,6 +989,15 @@ export async function updateProjectGroup(group: ProjectGroupUpdate): Promise<Pro
   return invokeProjectMutation("projects_update_group", { dbUrl, group });
 }
 
+/**
+ * Delete a project with its tasks, structure, working folders, and Chat history; its Notes pages and Calendar events
+ * stay without a project. Built-in Routine projects are refused.
+ */
+export async function deleteProject(projectId: string): Promise<ProjectMutation> {
+  const dbUrl = await ensureDbUrl();
+  return invokeProjectMutation("projects_delete_project", { dbUrl, projectId });
+}
+
 export async function deleteProjectGroup(groupId: string): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();
   return invokeProjectMutation("projects_delete_group", { dbUrl, groupId });

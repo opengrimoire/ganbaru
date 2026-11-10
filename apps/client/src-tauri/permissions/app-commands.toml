@@ -553,6 +553,7 @@ commands.allow = [
   "projects_delete_custom_field_option",
   "projects_delete_group",
   "projects_delete_priority",
+  "projects_delete_project",
   "projects_delete_status",
   "projects_delete_tag",
   "projects_delete_task_dependency",

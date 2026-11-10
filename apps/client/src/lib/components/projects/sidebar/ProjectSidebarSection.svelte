@@ -13,6 +13,7 @@
   import Plus from "@lucide/svelte/icons/plus";
   import Settings2 from "@lucide/svelte/icons/settings-2";
   import Star from "@lucide/svelte/icons/star";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import MoveStepMenuItems from "$lib/components/ui/MoveStepMenuItems.svelte";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
@@ -46,7 +47,8 @@
   /**
    * One project in the Projects sidebar, shown like a Chat section: its heading collapses the section, adds views from
    * the plus menu, and opens the project menu to rename it, move it to another group, hide or archive it, and open its
-   * settings. Its views follow as rows. Built-in projects show rename and move as unavailable.
+   * settings, or delete it after a confirmation. Its views follow as rows. Built-in projects show rename and move as
+   * unavailable and leave out delete.
    */
   let {
     project,
@@ -111,6 +113,7 @@
   let nameDraft = $state("");
   let pendingName = $state<string | null>(null);
   let removeCandidate = $state<ProjectView | null>(null);
+  let confirmingDelete = $state(false);
   let actionButton = $state<HTMLButtonElement | null>(null);
   let addButton = $state<HTMLButtonElement | null>(null);
   let menuElement = $state<HTMLDivElement | null>(null);
@@ -273,6 +276,14 @@
     if (!view) return;
     void projects.removeView(view.id).catch((error: unknown) => {
       console.error("Failed to remove a project view from the Projects sidebar", error);
+    });
+  }
+
+  function confirmDelete(): void {
+    confirmingDelete = false;
+    if (!actions.canDelete) return;
+    void projects.removeProject(project.id).catch((error: unknown) => {
+      console.error("Failed to delete a project from the Projects sidebar", error);
     });
   }
 
@@ -578,6 +589,20 @@
         {#if actions.archive.label === "restore"}<ArchiveRestore />{:else}<Archive />{/if}
         <span>{actions.archive.label === "restore" ? t("projects.sidebar.restore") : t("projects.sidebar.archive")}</span>
       </button>
+      {#if actions.canDelete}
+        <button
+          type="button"
+          role="menuitem"
+          class="menu-item menu-item-destructive"
+          onclick={() => {
+            closeMenu();
+            confirmingDelete = true;
+          }}
+        >
+          <Trash2 />
+          <span>{t("projects.sidebar.deleteProject")}</span>
+        </button>
+      {/if}
     </div>
   </div>
 {/if}
@@ -593,6 +618,19 @@
     onConfirm={confirmRemove}
     onCancel={() => {
       removeCandidate = null;
+    }}
+  />
+{/if}
+
+{#if confirmingDelete}
+  <ConfirmDialog
+    title={t("projects.sidebar.deleteProjectTitle", displayName)}
+    message={t("projects.sidebar.deleteProjectMessage")}
+    confirmLabel={t("projects.sidebar.deleteProjectConfirm")}
+    cancelLabel={t("common.cancel")}
+    onConfirm={confirmDelete}
+    onCancel={() => {
+      confirmingDelete = false;
     }}
   />
 {/if}

@@ -835,6 +835,7 @@ pub(crate) mod tests {
         missing_authorizations, retry_delay_seconds, revocation_error,
         revoke_active_run_authorizations, stop_orphaned_run_scopes, stop_orphaned_runs_logged,
     };
+    use crate::chat::sync::RevocationWake;
     use ganbaru_chat_contracts::models::{
         ChatAgentRunId, ChatAuthorizationRevisionId, ChatConversationId, ChatError, ChatErrorCode,
         ChatResult, ChatRuntimeApprovalPolicy, ChatThreadId, ChatTurnId, ChatWorkAssignmentId,
@@ -843,7 +844,7 @@ pub(crate) mod tests {
     use sqlx::SqlitePool;
     use std::collections::BTreeSet;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     const NOW: &str = "2026-10-20T12:00:00.000Z";
     const TEAMMATE: &str = "participant:folder-agent";
@@ -1185,6 +1186,43 @@ pub(crate) mod tests {
         fn clear_folder_terminal_access(&self, _folder: &ProjectWorkingFolderId) -> ChatResult<()> {
             Ok(())
         }
+    }
+
+    /// Records whether the local delete path woke the revocation drain.
+    #[derive(Default)]
+    struct RecordingWake(AtomicBool);
+
+    impl RevocationWake for RecordingWake {
+        fn wake_revocation_drain(&self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Deleting a project cascades away the conversation, its authorizations, and its runs, so
+    /// no row names the run any more: the command wakes the drain, whose sweep finds the run
+    /// through the active scope's remembered authorization and stops it.
+    #[tokio::test]
+    async fn a_local_project_delete_wakes_the_drain_and_the_sweep_stops_the_orphaned_run() {
+        let pool = pool_with_folder_runs().await;
+        let host = FakeRunHost::with_working_run();
+        assert_eq!(stop_orphaned_run_scopes(&host, &pool).await.unwrap(), 0);
+        assert_eq!(host.scope_count(), 1);
+        assert!(host.shutdowns().is_empty());
+
+        let wake = RecordingWake::default();
+        crate::projects::project_commands::delete_project_and_wake(
+            &pool,
+            "project-chat".to_string(),
+            &wake,
+        )
+        .await
+        .unwrap();
+
+        assert!(wake.0.load(Ordering::SeqCst));
+        assert!(authorization_states(&pool).await.is_empty());
+        assert_eq!(stop_orphaned_run_scopes(&host, &pool).await.unwrap(), 0);
+        assert_eq!(host.scope_count(), 0);
+        assert_eq!(host.shutdowns(), vec!["thread-1".to_string()]);
     }
 
     /// A failed shutdown keeps the scope, so the next drain finds the orphaned run again and

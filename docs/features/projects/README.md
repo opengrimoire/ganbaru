@@ -15,7 +15,7 @@ Group
         Checklist item
 ```
 
-Groups organize projects, and a project may also stand outside every group. Deleting a group keeps its projects with everything they own and moves them outside every group. Projects own settings, statuses, priorities, tags, custom fields, views, history, and optional working folders. Sections organize tasks without becoming task parents. Tasks can nest and can link to scheduled Calendar events.
+Groups organize projects, and a project may also stand outside every group. Deleting a group keeps its projects with everything they own and moves them outside every group. Deleting a project from its sidebar menu, after a confirmation, removes its tasks, structure, views, and Chat history, while its Notes pages and Calendar events stay without a project and its managed folder stays on disk. Projects own settings, statuses, priorities, tags, custom fields, views, history, and optional working folders. Sections organize tasks without becoming task parents. Tasks can nest and can link to scheduled Calendar events.
 
 ## Current scope
 
@@ -39,7 +39,7 @@ Groups organize projects, and a project may also stand outside every group. Dele
 
 ## Routine group
 
-The built-in Routine group holds a fixed set of life-maintenance projects (such as Learning, Reading, Exercise, Chores, and Sleep). The group cannot be deleted or renamed, built-in Routine projects keep their names, group, and order. A fresh vault receives them once; a missing built-in project is not recreated when the workspace loads, so a deletion made on another device stays deleted. Otherwise they are ordinary projects for tasks, views, scheduling, Notes, and Music defaults; their protected identity grants no broader access or special task semantics.
+The built-in Routine group holds a fixed set of life-maintenance projects (such as Learning, Reading, Exercise, Chores, and Sleep). The group cannot be deleted or renamed, and built-in Routine projects cannot be deleted and keep their names, group, and order. A fresh vault receives them once; a missing built-in project is not recreated when the workspace loads, so a deletion made on another device stays deleted. Otherwise they are ordinary projects for tasks, views, scheduling, Notes, and Music defaults; their protected identity grants no broader access or special task semantics.
 
 Rationale: Calendar, Pomodoro, and Music need stable everyday categories that exist in every vault without setup.
 

@@ -60,6 +60,8 @@ export interface ProjectSidebarActions {
   canMoveOutOfGroup: boolean;
   /** Whether any move target exists: another group, or outside every group. */
   canMoveToGroup: boolean;
+  /** Built-in projects cannot be deleted. */
+  canDelete: boolean;
   /** Hide toggles between active and hidden; it reads Show when the project is hidden. */
   visibility: { label: "hide" | "show"; status: ProjectLifecycleStatus };
   /** Archive toggles between active and archived; it reads Restore when the project is archived. */
@@ -80,6 +82,7 @@ export function projectSidebarActions(
     moveGroupIds,
     canMoveOutOfGroup,
     canMoveToGroup: moveGroupIds.length > 0 || canMoveOutOfGroup,
+    canDelete: !identityLocked,
     visibility: project.status === "hidden"
       ? { label: "show", status: "active" }
       : { label: "hide", status: "hidden" },

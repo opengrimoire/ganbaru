@@ -18,6 +18,7 @@ const store = vi.hoisted(() => ({
   renameView: vi.fn(),
   reorderViews: vi.fn(),
   removeView: vi.fn(),
+  removeProject: vi.fn(),
   starredProjectIds: [] as string[],
   starredViewIds: [] as string[],
   setProjectStarred: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock("$lib/stores/projects.svelte", () => {
     renameView: store.renameView,
     reorderViews: store.reorderViews,
     removeView: store.removeView,
+    removeProject: store.removeProject,
     isProjectStarred: (projectId: string) => store.starredProjectIds.includes(projectId),
     isViewStarred: (viewId: string) => store.starredViewIds.includes(viewId),
     setProjectStarred: store.setProjectStarred,
@@ -68,6 +70,7 @@ const actions: ProjectSidebarActions = {
   canMoveToGroup: false,
   canMoveOutOfGroup: false,
   moveGroupIds: [],
+  canDelete: true,
   visibility: { label: "hide", status: "hidden" },
   archive: { label: "archive", status: "archived" },
 };
@@ -90,13 +93,14 @@ function render(overrides: {
   onOpenViewInNewTab?: (view: ProjectView, intent: OpenInNewTabIntent) => void;
   onCollapsedChange?: (value: boolean) => void;
   onRename?: (name: string) => Promise<void>;
+  actions?: ProjectSidebarActions;
 } = {}) {
   component = mount(ProjectSidebarSection, {
     target,
     props: {
       project,
       selected: true,
-      actions,
+      actions: overrides.actions ?? actions,
       moveGroups: [],
       views: sidebarViews(project.id),
       activeViewId: "overview",
@@ -163,6 +167,7 @@ beforeEach(() => {
   store.renameView.mockReset().mockResolvedValue(undefined);
   store.reorderViews.mockReset().mockResolvedValue(undefined);
   store.removeView.mockReset().mockResolvedValue(undefined);
+  store.removeProject.mockReset().mockResolvedValue(undefined);
   store.starredProjectIds = [];
   store.starredViewIds = [];
   store.setProjectStarred.mockReset();
@@ -255,6 +260,39 @@ describe("ProjectSidebarSection", () => {
     confirm?.click();
     await tick();
     expect(store.removeView).toHaveBeenCalledWith("list");
+  });
+
+  it("deletes the project only after the confirmation, and keeps it when the confirmation is cancelled", async () => {
+    render();
+    button("Project actions: Launch").click();
+    flushSync();
+    button("Delete project").click();
+    flushSync();
+    expect(store.removeProject).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Delete Launch?");
+    [...document.body.querySelectorAll<HTMLButtonElement>("button")]
+      .find((candidate) => candidate.textContent?.trim().startsWith("Cancel"))
+      ?.click();
+    flushSync();
+    expect(document.body.textContent).not.toContain("Delete Launch?");
+    expect(store.removeProject).not.toHaveBeenCalled();
+
+    button("Project actions: Launch").click();
+    flushSync();
+    button("Delete project").click();
+    flushSync();
+    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>("button")]
+      .find((candidate) => candidate.textContent?.includes("Delete project (Enter)"));
+    confirm?.click();
+    await tick();
+    expect(store.removeProject).toHaveBeenCalledExactlyOnceWith("project-a");
+  });
+
+  it("leaves delete out of the menu for a project that cannot be deleted", () => {
+    render({ actions: { ...actions, identityLocked: true, canRename: false, canDelete: false } });
+    button("Project actions: Launch").click();
+    flushSync();
+    expect(() => button("Delete project")).toThrow();
   });
 
   it("moves a view down with every view of the project in the new order", () => {

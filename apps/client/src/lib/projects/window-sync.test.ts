@@ -83,6 +83,15 @@ describe("projectMutationChangeKeys", () => {
     expect(projectMutationChangeKeys(mutation({ tasks, views }), ["selected"]).sort()).toEqual(["a", "b", "c"]);
   });
 
+  it("names a deleted project so other windows drop its loaded rows", () => {
+    const deleted: ProjectMutation = {
+      ...mutation({}),
+      removals: [{ kind: "project", id: "gone" }, { kind: "status", id: "status-a" }],
+    };
+
+    expect(projectMutationChangeKeys(deleted, ["selected"])).toEqual(["gone"]);
+  });
+
   it("falls back to the projects the window shows for row-less commits such as removals", () => {
     expect(projectMutationChangeKeys(mutation({}), ["left", null, "right", "left"]).sort()).toEqual(["left", "right"]);
   });

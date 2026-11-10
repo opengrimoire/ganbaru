@@ -14,7 +14,10 @@ export const PROJECTS_SYNC_CHANGE_KEY = "sync";
 
 const projectChanges = createVaultChangeChannel("projects-changed");
 
-/** Ids of the projects a committed mutation touched, else the projects the window shows, else the workspace key. */
+/**
+ * Ids of the projects a committed mutation touched or deleted, else the projects the window shows, else the workspace
+ * key.
+ */
 export function projectMutationChangeKeys(mutation: ProjectMutation, shownProjectIds: readonly (string | null)[]): string[] {
   const { changed } = mutation;
   const keys = new Set<string>([
@@ -23,6 +26,7 @@ export function projectMutationChangeKeys(mutation: ProjectMutation, shownProjec
       ...changed.tasks, ...changed.sections, ...changed.statuses, ...changed.priorities,
       ...changed.tags, ...changed.customFields, ...changed.views,
     ].map((row) => row.projectId),
+    ...mutation.removals.flatMap((removal) => (removal.kind === "project" ? [removal.id] : [])),
   ]);
   if (keys.size > 0) return [...keys];
   const shown = new Set(shownProjectIds.filter((projectId): projectId is string => Boolean(projectId)));

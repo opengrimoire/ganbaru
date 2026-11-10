@@ -6,7 +6,7 @@
 
 | Table | Holds |
 | --- | --- |
-| `sync_spaces` | The vault's replication spaces. One personal space per vault, whose id derives from the vault id. `charter` holds the person-signed space charter, revision 0 of the authorization log; a space without one stores no remote writers. |
+| `sync_spaces` | The vault's replication spaces. One personal space per vault, whose id derives from the vault id. Sync refuses to start on a database that holds another vault's space, such as one copied in from another vault folder, until Reset sync state clears it. `charter` holds the person-signed space charter, revision 0 of the authorization log; a space without one stores no remote writers. |
 | `sync_apply_state` | A singleton `applying` flag that suppresses capture while the engine materializes remote changes. |
 | `sync_capture` | Local changes not yet sealed: one row per changed domain row with its changed group mask, groups forced by a conflict resolution, created and deleted flags, and `held_until_ms`, the end of a [deletion hold](../../algorithms/sync/README.md#deletion-holds) that keeps a delete, and the deletes it cascaded to, unsealed. |
 | `sync_seeded_tables` | Replicated tables whose existing rows capture seeding has captured. The baseline records the tables that replicated from the start. |

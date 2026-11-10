@@ -2666,6 +2666,47 @@ fn derived_key_pending_placeholders_are_refused_at_startup_and_rekeyed_once() {
     });
 }
 
+#[test]
+fn a_database_holding_another_vaults_space_is_refused_until_sync_state_resets() {
+    block_on(async {
+        let mut replicas = replicas(1).await;
+        let replica = &mut replicas[0];
+        replica
+            .engine
+            .init_space(&mut replica.conn, VAULT_ID, START_MS)
+            .await
+            .unwrap();
+
+        let refused = replica
+            .engine
+            .init_space(&mut replica.conn, "moved-in-vault", START_MS)
+            .await;
+        assert!(matches!(refused, Err(SyncError::Corrupt(_))), "{refused:?}");
+        assert_eq!(
+            texts(replica, "SELECT vault_id FROM sync_spaces").await,
+            [VAULT_ID]
+        );
+        replica
+            .engine
+            .init_space(&mut replica.conn, VAULT_ID, START_MS)
+            .await
+            .unwrap();
+
+        crate::local::reset_sync_state(&mut replica.conn)
+            .await
+            .unwrap();
+        replica
+            .engine
+            .init_space(&mut replica.conn, "moved-in-vault", START_MS)
+            .await
+            .unwrap();
+        assert_eq!(
+            texts(replica, "SELECT vault_id FROM sync_spaces").await,
+            ["moved-in-vault"]
+        );
+    });
+}
+
 fn image_row(note: &str, position: u32, digest: char, content_type: &str, size: u32) -> String {
     format!(
         "INSERT INTO quick_note_images

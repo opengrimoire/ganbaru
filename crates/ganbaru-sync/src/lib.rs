@@ -310,7 +310,10 @@ impl Engine {
     /// Creates the personal space of a vault if it does not exist and returns its id.
     ///
     /// Refuses with [`SyncError::PendingKey`] while a replicated row still holds a `pending:`
-    /// placeholder key.
+    /// placeholder key, and with [`SyncError::Corrupt`] when the database already holds another
+    /// vault's space: a vault database holds only its own vault's space, so such a database was
+    /// moved in from another vault and its sync state must not be mixed with this one's. Reset
+    /// sync state clears the space and lets the next start found this vault's.
     pub async fn init_space(
         &self,
         conn: &mut SqliteConnection,
@@ -318,6 +321,16 @@ impl Engine {
         now_ms: u64,
     ) -> SyncResult<SpaceId> {
         self.refuse_pending_keys(conn).await?;
+        let foreign: Option<String> =
+            sqlx::query_scalar("SELECT vault_id FROM sync_spaces WHERE vault_id <> ? LIMIT 1")
+                .bind(vault_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        if foreign.is_some() {
+            return Err(error::corrupt(
+                "the database belongs to another vault than this folder",
+            ));
+        }
         let space = SpaceId::personal(vault_id);
         sqlx::query(
             "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms) VALUES (?, ?, ?)

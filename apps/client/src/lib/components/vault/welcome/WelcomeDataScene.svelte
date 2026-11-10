@@ -16,7 +16,6 @@
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Download from "@lucide/svelte/icons/download";
   import FileText from "@lucide/svelte/icons/file-text";
-  import Folder from "@lucide/svelte/icons/folder";
   import House from "@lucide/svelte/icons/house";
   import Image from "@lucide/svelte/icons/image";
   import Monitor from "@lucide/svelte/icons/monitor";
@@ -56,7 +55,7 @@
   const TRAIL_DEPTH = desktopShell ? 2 : 1;
 
   /** Every Lucide icon shares one component type. */
-  type PlaceIcon = typeof Folder;
+  type PlaceIcon = typeof House;
 
   /** A sidebar place named by the system's own folder name for it. */
   type Place = { icon: PlaceIcon; place: keyof VaultDefaultPlaces };
@@ -156,10 +155,7 @@
             <span class="min-w-0 shrink truncate text-muted-foreground">{segment}</span>
             <ChevronRight size={12} strokeWidth={1.8} class="shrink-0 text-muted-foreground/60" aria-hidden="true" />
           {:else}
-            <span class="flex min-w-0 items-center gap-1.5 font-medium">
-              <Folder size={14} strokeWidth={1.8} class="shrink-0 text-primary" fill="currentColor" fill-opacity="0.3" aria-hidden="true" />
-              <span class="truncate">{segment}</span>
-            </span>
+            <span class="min-w-0 truncate font-medium">{segment}</span>
           {/if}
         {/each}
       </span>

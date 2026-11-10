@@ -142,6 +142,7 @@
     notesSlashLineShown,
     notesSlashMenuOpen,
     notesSlashQuery,
+    notesSubmenuScroll,
     notesTouches,
     type NotesSceneCharacter,
     type NotesSceneNavigatorItem,
@@ -195,6 +196,8 @@
   const TABLE_HANG_MAX_PX = 56;
   /** Room kept below the database once the page scrolls to it, and above its title at most. */
   const SCROLL_PAD_PX = 16;
+  /** Room kept below Quote once the Paragraph submenu scrolls to it. */
+  const SUBMENU_SCROLL_PAD_PX = 8;
   /** The slash menu's preferred height, in rem, as the editor caps it. */
   const SLASH_MAX_HEIGHT_REM = 22;
   /** A zero-width character that gives the slash line's anchor the height of a line of text. */
@@ -264,6 +267,7 @@
   const quoteLineType = $derived(notesQuoteLineType(elapsed));
   const contextOpen = $derived(notesContextMenuOpen(elapsed));
   const submenuOpen = $derived(notesContextSubmenuOpen(elapsed));
+  const submenuScroll = $derived(notesSubmenuScroll(elapsed));
   /** A long press selects the word it lands on, so a phone's menu offers what applies to a selection. */
   const contextHasSelection = mobileShell;
   const quoteWordSelected = $derived(mobileShell && notesQuoteWordSelected(elapsed));
@@ -299,6 +303,7 @@
   let contextMenu = $state<HTMLDivElement>();
   let contextParagraph = $state<HTMLSpanElement>();
   let contextSubmenu = $state<HTMLDivElement>();
+  let contextSubmenuBody = $state<HTMLDivElement>();
   let notesArea = $state<HTMLDivElement>();
   let breadcrumb = $state<HTMLSpanElement>();
   let navPanel = $state<HTMLDivElement>();
@@ -330,6 +335,8 @@
    * within it, and the submenu's size, measured as the menu opens.
    */
   let contextLayout = $state<{ word: Box; height: number; paragraph: Box; submenu: { width: number; height: number } } | null>(null);
+  /** The submenu's visible height, the height of its whole list, and the Quote row's bottom within it, measured unscrolled. */
+  let submenuLayout = $state<{ viewport: number; content: number; quoteBottom: number } | null>(null);
   /**
    * The page's place in the header and the Notes view on the canvas, the navigator's height and the folder's row within
    * it, and the folder panel's height, measured as the navigator opens.
@@ -391,6 +398,15 @@
         height: contextMenu.offsetHeight,
         paragraph: relBox(contextParagraph, contextMenu),
         submenu: { width: contextSubmenu.offsetWidth, height: contextSubmenu.offsetHeight },
+      };
+    }
+    const contextQuote = contextSubmenuBody?.querySelector<HTMLElement>('[data-cursor="notes-context-quote"]');
+    if (contextSubmenuBody && contextQuote && untrack(() => submenuScrollPx) === 0) {
+      const quote = relBox(contextQuote, contextSubmenuBody);
+      submenuLayout = {
+        viewport: contextSubmenuBody.clientHeight,
+        content: contextSubmenuBody.scrollHeight,
+        quoteBottom: quote.top + quote.height,
       };
     }
     const folderRow = navPanel?.querySelector<HTMLElement>('[data-cursor~="notes-nav-folder"]');
@@ -509,6 +525,14 @@
     const { viewport, content, left, right } = boardLayout;
     const target = mobileShell ? left : Math.max(0, right - viewport);
     return Math.min(target, Math.max(0, content - viewport)) * boardScroll;
+  });
+
+  /** How far the Paragraph submenu has scrolled: enough to show Quote in full with the list's padding below it, and none when it already shows. */
+  const submenuScrollPx = $derived.by(() => {
+    if (!submenuLayout) return 0;
+    const { viewport, content, quoteBottom } = submenuLayout;
+    const target = Math.max(0, quoteBottom + SUBMENU_SCROLL_PAD_PX - viewport);
+    return Math.min(target, Math.max(0, content - viewport)) * submenuScroll;
   });
 
   /** The open role menu's place, below its cell when it fits there and above it otherwise. */
@@ -1149,22 +1173,24 @@
       style:max-height={`min(26rem, ${Math.max(0, canvasH - 16)}px)`}
       style:visibility={submenuOpen && contextPlace ? undefined : "hidden"}
     >
-      <div class="surface-floating-body min-h-0 flex-1 overflow-y-auto">
-        {#each NOTES_TEXT_CONTEXT_PARAGRAPH_ITEMS as item (item.type)}
-          {@const Icon = item.icon}
-          {@const picked = item.type === "quote"}
-          <span
-            data-cursor={picked ? "notes-context-quote" : undefined}
-            data-scene-hover={`context-sub:${item.type}`}
-            class="menu-item relative"
-            data-highlighted={(mobileShell ? picked && notesContextQuoteHighlighted(elapsed) : hovered(`context-sub:${item.type}`)) ? "" : undefined}
-          >
-            <Icon class="size-4 shrink-0" />
-            <span class="min-w-0 flex-1 truncate">{t(item.labelKey)}</span>
-            {#if item.type === "paragraph"}<Check class="size-3.5 shrink-0" />{/if}
-            {#if picked && mobileShell}<WelcomeTouch opacity={touches.quote} left="2rem" />{/if}
-          </span>
-        {/each}
+      <div bind:this={contextSubmenuBody} class="surface-floating-body min-h-0 flex-1 overflow-y-auto">
+        <div style:transform={submenuScrollPx > 0 ? `translateY(${-submenuScrollPx}px)` : undefined}>
+          {#each NOTES_TEXT_CONTEXT_PARAGRAPH_ITEMS as item (item.type)}
+            {@const Icon = item.icon}
+            {@const picked = item.type === "quote"}
+            <span
+              data-cursor={picked ? "notes-context-quote" : undefined}
+              data-scene-hover={`context-sub:${item.type}`}
+              class="menu-item relative"
+              data-highlighted={(mobileShell ? picked && notesContextQuoteHighlighted(elapsed) : hovered(`context-sub:${item.type}`)) ? "" : undefined}
+            >
+              <Icon class="size-4 shrink-0" />
+              <span class="min-w-0 flex-1 truncate">{t(item.labelKey)}</span>
+              {#if item.type === "paragraph"}<Check class="size-3.5 shrink-0" />{/if}
+              {#if picked && mobileShell}<WelcomeTouch opacity={touches.quote} left="2rem" />{/if}
+            </span>
+          {/each}
+        </div>
       </div>
     </div>
 

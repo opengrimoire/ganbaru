@@ -63,6 +63,7 @@ import {
   notesQuoteLineType,
   notesQuoteParts,
   notesQuoteWordSelected,
+  notesSubmenuScroll,
   notesTouches,
 } from "./welcome-notes-scene";
 
@@ -206,6 +207,9 @@ describe("welcome notes scene", () => {
     expect(notesContextSubmenuOpen(B.submenuOpen)).toBe(true);
     expect(notesContextQuoteHighlighted(B.submenuOpen)).toBe(false);
     expect(notesContextQuoteHighlighted(B.quotePick - 1)).toBe(true);
+    expect(notesSubmenuScroll(B.submenuOpen)).toBe(0);
+    expect(notesSubmenuScroll(B.quoteScrollEnd)).toBe(1);
+    expect(B.quoteScrollEnd).toBeLessThanOrEqual(B.quotePick - PROJECTS_HOVER_LEAD_MS);
     expect(notesContextMenuOpen(B.quotePick)).toBe(false);
     expect(notesContextSubmenuOpen(B.quotePick)).toBe(false);
     expect(notesQuoteWordSelected(B.quotePick)).toBe(false);

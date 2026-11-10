@@ -114,6 +114,9 @@ export const NOTES_BEATS = {
    * Quote is picked from it, which turns the line into a quote and closes the menu.
    */
   submenuOpen: 19300,
+  /** The submenu scrolls Quote into view where its list is taller than the room, as a phone's taller rows make it. */
+  quoteScrollStart: 19450,
+  quoteScrollEnd: 19850,
   quotePick: 20300,
   /** The quote has settled, and the desktop pointer leaves for the page's place in the header. */
   navStart: 20600,
@@ -372,6 +375,11 @@ export function notesContextParagraphHighlighted(elapsed: number): boolean {
 /** Whether the submenu's Quote row shows as highlighted on a phone, just before its tap lands. */
 export function notesContextQuoteHighlighted(elapsed: number): boolean {
   return elapsed >= B.quotePick - PROJECTS_HOVER_LEAD_MS && elapsed < B.quotePick;
+}
+
+/** How far the Paragraph submenu has scrolled down to Quote, from 0 to 1. */
+export function notesSubmenuScroll(elapsed: number): number {
+  return easeInOutCubic(filmSpan(elapsed, B.quoteScrollStart, B.quoteScrollEnd));
 }
 
 /** Whether the line at the page's top has turned into a quote: from the moment Quote is picked. */

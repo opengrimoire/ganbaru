@@ -13,7 +13,7 @@ use ganbaru_chat_contracts::models::{
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListResourcesResult,
     ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerInfo, Tool,
+    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerConfig, Tool,
     ToolAnnotations,
 };
 use rmcp::service::{NotificationContext, RequestContext, RoleServer};
@@ -493,8 +493,8 @@ struct ThreadMcpHandler {
 }
 
 impl ServerHandler for ThreadMcpHandler {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_resources()
                 .enable_tools()

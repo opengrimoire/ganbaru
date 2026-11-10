@@ -57,6 +57,7 @@
     maxHeight={ABOUT_SCENE_MAX_HEIGHT}
     duration={ABOUT_BEATS.end}
     loop={false}
+    ownZoom
     description={t("vaultSetup.about.sceneDescription")}
   >
     {#snippet frame(elapsed, width, height)}<WelcomeAboutScene {elapsed} {width} {height} />{/snippet}

@@ -71,6 +71,7 @@
     maxWidth={DATA_SCENE_MAX_WIDTH}
     minHeight={DATA_SCENE_MIN_HEIGHT}
     maxHeight={DATA_SCENE_MAX_HEIGHT}
+    ownZoom
     description={t("vaultSetup.data.illustrationDescription")}
   >
     {#snippet frame(_elapsed, width, height)}<WelcomeDataScene {width} {height} path={location} />{/snippet}

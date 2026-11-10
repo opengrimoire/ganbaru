@@ -24,6 +24,7 @@
     loop = true,
     hold = END_HOLD_MS,
     still,
+    ownZoom = false,
     description,
     frame,
     class: className = "",
@@ -41,6 +42,11 @@
     hold?: number;
     /** The moment shown as a still with reduced motion, in milliseconds from the start; the last frame by default. */
     still?: number;
+    /**
+     * Whether the drawing zooms against its own smallest size up to a larger cap, instead of the shared scale of the
+     * scenes drawn as the app's window; for drawings that are not the app, such as a repository page or a folder.
+     */
+    ownZoom?: boolean;
     /** What the scene shows, for screen readers. */
     description: string;
     /** Draws the scene at a moment, given in milliseconds from its start, at a size within its bounds. */
@@ -53,6 +59,8 @@
   /** Below this scale the drawing stops reading as the app; above it, it starts to look like a poster. */
   const MIN_ZOOM = 0.55;
   const MAX_ZOOM = 1.2;
+  /** The cap for a drawing with its own zoom, which has no app scale to match. */
+  const OWN_MAX_ZOOM = 1.45;
   /**
    * The height every scene is zoomed against, the smallest canvas of the scenes drawn as the app's window, bezel
    * included. A scene whose own smallest canvas is shorter takes this zoom too and grows taller to fill the room, so
@@ -71,16 +79,18 @@
 
   /** The room left for the drawing once its vertical breathing room is set aside. */
   const roomY = $derived(Math.max(0, roomHeight - SCENE_MARGIN_Y));
+  const maxZoom = $derived(ownZoom ? OWN_MAX_ZOOM : MAX_ZOOM);
+  const zoomHeight = $derived(ownZoom ? minHeight : Math.max(minHeight, ZOOM_REFERENCE_HEIGHT));
   /**
    * The largest zoom at which the drawing's smallest size, or the shared reference height when that is taller, still
    * fits, so the drawing grows before it zooms.
    */
-  const baseZoom = $derived(Math.min(MAX_ZOOM, roomWidth / minWidth, roomY / Math.max(minHeight, ZOOM_REFERENCE_HEIGHT)));
+  const baseZoom = $derived(Math.min(maxZoom, roomWidth / minWidth, roomY / zoomHeight));
   const sceneWidth = $derived(baseZoom > 0 ? Math.floor(clamp(roomWidth / baseZoom, minWidth, maxWidth)) : minWidth);
   const sceneHeight = $derived(baseZoom > 0 ? Math.floor(clamp(roomY / baseZoom, minHeight, maxHeight)) : minHeight);
   const fit = $derived(Math.min(roomWidth / sceneWidth, roomY / sceneHeight));
   const shown = $derived(fit >= MIN_ZOOM);
-  const zoom = $derived(Math.min(MAX_ZOOM, fit));
+  const zoom = $derived(Math.min(maxZoom, fit));
 
   function clamp(value: number, low: number, high: number): number {
     return Math.min(high, Math.max(low, value));

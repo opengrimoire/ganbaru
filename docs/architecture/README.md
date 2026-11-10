@@ -33,7 +33,7 @@ Android uses narrow native plugins for capabilities that cannot be implemented r
 
 ### Canonical and derived data
 
-SQLite owns structured application records and the Notes graph. Files own document formats that are naturally external or user-authored, such as project working files and future diary documents. Search indexes, exported Markdown, projections, caches, benchmark databases, and device-local runtime state are derived or scoped data, not competing canonical stores.
+SQLite owns structured application records and the Notes graph. Files own document formats that are naturally external or user-authored, such as project working files. Search indexes, exported Markdown, projections, caches, benchmark databases, and device-local runtime state are derived or scoped data, not competing canonical stores.
 
 The full storage contract is in [Data architecture](../data/architecture.md).
 

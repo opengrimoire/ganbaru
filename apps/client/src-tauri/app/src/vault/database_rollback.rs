@@ -1088,15 +1088,15 @@ mod tests {
     async fn another_vault_replacement_keeps_and_restores_the_whole_replaced_vault() {
         let vault = test_vault("other-vault");
         write_manifest(&vault, "vault-a");
-        fs::create_dir_all(vault.join("notes")).unwrap();
-        fs::write(vault.join("notes").join("a.md"), b"a").unwrap();
+        fs::create_dir_all(vault.join("assets")).unwrap();
+        fs::write(vault.join("assets").join("a.png"), b"a").unwrap();
         create_database(&vault, BEFORE_RESET).await;
         let reset_a = move_database_to_rollback(&vault, at(1)).unwrap().unwrap();
         create_database(&vault, BEFORE_RESET).await;
 
         let kept_a = retain_other_vault(&vault, at(2)).unwrap();
         assert!(!vault.join(VAULT_MANIFEST_FILE).exists());
-        assert!(!vault.join("notes").exists());
+        assert!(!vault.join("assets").exists());
         write_manifest(&vault, "vault-b");
         create_database(&vault, AFTER_RESET).await;
 
@@ -1111,7 +1111,7 @@ mod tests {
 
         assert!(restore_rollback(&vault, &kept_a, at(4)).await.unwrap());
         assert_eq!(vault_id_at(&vault).unwrap(), "vault-a");
-        assert_eq!(fs::read(vault.join("notes").join("a.md")).unwrap(), b"a");
+        assert_eq!(fs::read(vault.join("assets").join("a.png")).unwrap(), b"a");
         assert_eq!(marker(&vault).await, 1);
         let shown = visible_rollbacks(&vault).unwrap();
         assert_eq!(shown.len(), 2);

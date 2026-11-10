@@ -6,7 +6,7 @@ Ganbaru uses three storage classes with deliberately different authority: user d
 
 ### User documents
 
-Diary entries, project working documents, generated reports, and attachments are files inside the active Ganbaru folder. When a document format is canonical, the file is the source of truth. SQLite may index its path, metadata, extracted text, tags, or links, but that index must be rebuildable.
+Project working documents and managed attachments are the only files Ganbaru keeps inside the active Ganbaru folder besides its marker and database: working documents under `projects/`, and attachment, icon, cover, and artwork bytes under `assets/`. When a document format is canonical, the file is the source of truth. SQLite may index its path, metadata, extracted text, tags, or links, but that index must be rebuildable. Everything else Ganbaru produces lives in SQLite, and exports go wherever the user picks in a file dialog rather than into the vault.
 
 Project working-folder Markdown remains ordinary user-owned Markdown. Managed project folders live below the vault. External working folders stay at user-selected paths and are represented in the vault by durable logical identities, never by portable absolute paths.
 
@@ -14,7 +14,7 @@ Keeping canonical documents as files means the user can inspect, edit, back up, 
 
 ### Structured data and document graphs
 
-Calendar events, Pomodoro state, projects and tasks, Notes pages and blocks, Quick notes, themes, playlist definitions, and organizational Chat state are structured data. SQLite is authoritative because these domains require transactions, foreign keys, stable identities, ordering, and relational queries. Every authoritative connection, including recycled pool connections, uses WAL, `synchronous=FULL`, foreign keys, and a bounded busy timeout.
+Calendar events, Pomodoro state, projects and tasks, Notes pages and blocks, Quick notes, planned diary entries and project reports, themes, playlist definitions, and organizational Chat state are structured data. SQLite is authoritative because these domains require transactions, foreign keys, stable identities, ordering, and relational queries. Every authoritative connection, including recycled pool connections, uses WAL, `synchronous=FULL`, foreign keys, and a bounded busy timeout.
 
 Notes is intentionally included here. A Notes page is a graph of blocks, properties, links, comments, history, collaboration operations, database rows, and assets. Markdown cannot preserve that graph without lossy conventions, so Notes Markdown is import, export, or bridge output, never the canonical page.
 
@@ -28,7 +28,7 @@ Portable rows may refer to a logical working-folder ID. Resolving it to an exter
 
 ## The active Ganbaru folder
 
-The active folder contains the vault marker, portable configuration, SQLite database, managed project folders, reserved document directories, and managed assets. The canonical tree is maintained in [AGENTS.md](../../AGENTS.md).
+The active folder contains the vault marker, portable configuration, SQLite database, managed project folders, and managed assets. The canonical tree is maintained in [AGENTS.md](../../AGENTS.md).
 
 Production and development builds use separate default folders and separate platform config directories. Folder validation rejects an unrelated non-empty folder, a symlinked fixed entry, an invalid marker, and an unsupported schema version before writing into the folder. A permission failure is reported when the missing skeleton is created, and a database that cannot be opened is reported after selection, when it first opens. The application never deletes or silently recreates a configured vault to recover from one of these errors.
 

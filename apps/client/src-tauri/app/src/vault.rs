@@ -495,16 +495,7 @@ fn reject_symlinked_vault_entries(path: &Path) -> Result<(), String> {
 }
 
 /// Directories every vault holds, relative to its root.
-const VAULT_SKELETON_DIRECTORIES: &[&str] = &[
-    "notes/daily",
-    "notes/projects",
-    "diary/morning",
-    "diary/evening",
-    "projects",
-    "reports",
-    "assets",
-    "templates",
-];
+const VAULT_SKELETON_DIRECTORIES: &[&str] = &["projects", "assets"];
 
 fn ensure_vault_skeleton(path: &Path) -> Result<(), String> {
     for relative in VAULT_SKELETON_DIRECTORIES {
@@ -1287,8 +1278,9 @@ mod tests {
         assert!(path.join(VAULT_MANIFEST_FILE).exists());
         assert!(!path.join("config.json").exists());
         assert!(path.join(APP_SQLITE_FILE).exists());
-        assert!(path.join("notes").join("daily").is_dir());
-        assert!(path.join("diary").join("morning").is_dir());
+        assert!(path.join("projects").is_dir());
+        assert!(path.join("assets").is_dir());
+        assert!(!path.join("notes").exists());
         assert!(!path.join(".yjs").exists());
         #[cfg(unix)]
         {

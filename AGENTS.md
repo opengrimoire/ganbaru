@@ -134,7 +134,7 @@ Planned work without source directories yet includes the Firefox extension, the 
 
 ## Ganbaru folder structure
 
-> Everything the app produces belongs to one active vault. On desktop, production defaults to `Documents/Ganbaru` and development to `Documents/Ganbaru Dev`, unless the user selects another location. Android keeps the active vault in application-private storage. Asset subdirectories are created on demand. Planned paths are labeled.
+> Everything the app produces belongs to one active vault. On desktop, production defaults to `Documents/Ganbaru` and development to `Documents/Ganbaru Dev`, unless the user selects another location. Android keeps the active vault in application-private storage. Asset subdirectories are created on demand.
 
 ```
 Ganbaru/
@@ -142,14 +142,11 @@ Ganbaru/
   vault.lock: device-local advisory lock that keeps a second Ganbaru process out of the vault; never archived
   ganbaru.sqlite: SQLite source of truth for structured data, portable preferences, Notes, and indexes
   .database-rollbacks/: device-local copies kept by Reset local data, rollback restores, and snapshot copy replacements, bounded and restorable from Settings > Data
-  notes/daily/, notes/projects/: reserved note document directories
-  notes/exports/: derivative Markdown exports (planned, not authoritative)
-  diary/morning/, diary/evening/: dated diary entries (planned feature)
   projects/{project-id}/: managed working folder created for every project
-  reports/: generated project status reports (planned feature)
   assets/: managed user assets (profile/, chat/attachments/, chat/browser-artifacts/, notes/page-icons/, notes/page-covers/, notes/files/, project-icons/, quick-notes/images/, music/artwork/)
-  templates/: reserved file-based project and methodology templates
 ```
+
+Nothing else belongs in the vault: Notes, the planned diary and reports, and every other domain live in SQLite, and exports go to a location the user picks.
 
 Music files stay wherever the user keeps them; the vault stores library metadata, source identities, playlists, assignments, and playback state, not media bytes. Backups are encrypted and open with the recovery kit. Desktop backups go to a user-selected path outside the vault. Android backups are exported to shared Downloads and restored through the system document picker.
 
@@ -159,7 +156,7 @@ Tauri's platform app config directory stores device-local bootstrap and runtime 
 
 - **Tooling:** pnpm workspaces with Turborepo, Vite, plain Svelte 5 with runes (not SvelteKit), and Tauri v2. Rust uses edition 2024, resolver 3, and rustfmt style 2024.
 - **State management:** Svelte 5 runes (`$state`, `$derived`, `$effect`), no external state manager. Durable runtime authority (Calendar recurrence and mutations, Focus execution, Music sessions) lives in Rust; the frontend renders native projections.
-- **Data architecture:** documents (diary entries, project docs, reports, attachments) are files on disk and the file is the source of truth where its format is canonical; SQLite may index them. Structured data and document graphs (Notes pages and blocks, Calendar events, project tasks, Focus configs and runs) live in SQLite as the source of truth. Markdown for Notes is derivative import, export, or bridge output only.
+- **Data architecture:** project working documents and managed attachments are files on disk and the file is the source of truth where its format is canonical; SQLite may index them. Structured data and document graphs (Notes pages and blocks, the planned diary, Calendar events, project tasks, Focus configs and runs) live in SQLite as the source of truth. Markdown for Notes is derivative import, export, or bridge output only.
 - **AI integration:** three opt-in paths. (1) Implemented: local coding-agent Chat in project channels over Rust-owned native provider sessions (Codex, Claude, Cursor, Grok, OpenCode), with durable SQLite history, project working folders, and a scoped ephemeral loopback MCP endpoint for application-owned host tools. That endpoint is infrastructure, not a participant identity. (2) Planned: a BYOK assistant for hosted and local user-configured providers. (3) Planned: a separately authorized MCP service for external AI clients. See `docs/features/ai/` and `docs/features/chat/`.
 - **Chat storage boundary:** organizational Chat state (channels, sessions, events, drafts, checkpoints, access profiles, authorization revisions, scratch scopes) lives in the vault SQLite database. Managed attachment bytes live under `assets/chat/attachments/`. Provider configuration, absolute folder paths, scratch paths, executables, provider homes, diagnostics, provider-native trust, and process state are device-local; Chat behavior is a portable preference, apart from the device-scoped multiline terminal paste confirmation. Provider-native trust never widens organizational authority. Provider secrets live only behind operating-system credential references. See `docs/data/schema/chat.md` and `docs/data/security/chat.md`.
 - **Localization:** user-facing UI text must use the typed i18n catalog. Language selectors show languages as autonyms (`English`, `Español`), while non-language options like system preference are localized. Dates, times, numbers, plurals, relative minutes, and lists use the locale helpers.

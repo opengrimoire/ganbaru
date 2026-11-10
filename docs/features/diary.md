@@ -28,9 +28,7 @@ A wind-down summary uses neutral planning language. It does not grade the day, s
 
 ## Storage
 
-Diary entries are planned as dated Markdown files under the active vault, making the document file authoritative. Structured mood, energy, and sleep fields can be indexed in SQLite for local queries and rebuilt from the files.
-
-The final file format requires versioning, parsing, conflict, migration, and privacy rules before implementation. See [data architecture](../data/architecture.md).
+Diary entries are planned as SQLite rows in the vault database, like Notes, so they get the same transactions, device sync, conflict handling, history, and encrypted backups as every other personal domain. Export writes Markdown to a location the user picks; it is never the canonical entry. See [data architecture](../data/architecture.md).
 
 ## Privacy and personal baselines
 

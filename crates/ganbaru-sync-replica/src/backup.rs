@@ -48,14 +48,7 @@ pub const BACKUP_MAX_DEPTH: usize = 64;
 pub const COPY_BUFFER_BYTES: usize = 64 * 1024;
 /// Top-level directories a vault bundle carries with everything below them.
 /// Every vault skeleton directory lives below one of these.
-pub const BUNDLE_DIRECTORIES: &[&str] = &[
-    "notes",
-    "diary",
-    "projects",
-    "reports",
-    "assets",
-    "templates",
-];
+pub const BUNDLE_DIRECTORIES: &[&str] = &["projects", "assets"];
 /// Directory whose direct children are project working folders.
 const BUNDLE_PROJECTS_DIRECTORY: &str = "projects";
 

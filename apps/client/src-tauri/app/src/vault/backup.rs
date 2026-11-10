@@ -1412,7 +1412,7 @@ mod tests {
             &[
                 ("vault.json", manifest.as_slice()),
                 (APP_SQLITE_FILE, b"database"),
-                ("notes/payload.bin", payload.as_slice()),
+                ("assets/payload.bin", payload.as_slice()),
             ],
         );
         let destination = unique_test_path("identity-destination");
@@ -1429,7 +1429,7 @@ mod tests {
         assert!(!destination.exists());
         extract_backup_archive(&archive_path, &destination, Some("vault-a")).unwrap();
         assert_eq!(
-            fs::metadata(destination.join("notes/payload.bin"))
+            fs::metadata(destination.join("assets/payload.bin"))
                 .unwrap()
                 .len(),
             payload.len() as u64
@@ -1501,7 +1501,7 @@ mod tests {
         for (path, directory) in [
             ("vault.json", false),
             (APP_SQLITE_FILE, false),
-            ("notes/daily/2026-10-18.md", false),
+            ("assets/notes/page-covers/cover.jpg", false),
             ("assets/chat/attachments/context.txt", false),
             ("projects/project-a", true),
             ("projects/project-a/.git/config", false),
@@ -1517,7 +1517,9 @@ mod tests {
             (".vscode/settings.json", false),
             ("README.md", false),
             ("config.json", false),
-            ("notes", false),
+            ("assets", false),
+            ("notes/daily/2026-10-18.md", false),
+            ("diary", true),
             ("vault.json", true),
             (super::super::vault_lock::VAULT_LOCK_FILE, false),
             ("projects/stray-file", false),
@@ -2194,7 +2196,7 @@ mod retention_tests {
     async fn an_upload_that_removes_most_data_is_flagged_and_restorable_whole() {
         let parent = unique_parent("flag-shrink");
         let (target, staging) = same_vault_pair(&parent).await;
-        let note = Path::new("notes").join("daily").join("kept.bin");
+        let note = Path::new("assets").join("kept.bin");
         let database = database_used_bytes(&database_path(&target)).await.unwrap();
         let note_size = (database + MIN_FLAGGED_SHRINK_BYTES) * DRASTIC_SHRINK_DIVISOR;
         let note_bytes = vec![7_u8; usize::try_from(note_size).unwrap()];

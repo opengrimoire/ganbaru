@@ -58,13 +58,15 @@ async fn note_ids(path: &Path) -> Vec<String> {
     ids
 }
 
-/// Writes a vault layout around the database at `root`: the marker, a note document, a
-/// database sidecar, the vault lock, and a folder outside the bundle layout.
+/// Writes a vault layout around the database at `root`: the marker, a project working
+/// document, the vault lock, and folders outside the bundle layout.
 fn write_layout(root: &Path) {
-    std::fs::create_dir_all(root.join("notes")).expect("create notes");
+    std::fs::create_dir_all(root.join("projects/alpha")).expect("create project");
+    std::fs::create_dir_all(root.join("notes")).expect("create foreign notes folder");
     std::fs::create_dir_all(root.join(".git")).expect("create foreign folder");
     std::fs::write(root.join(VAULT_MANIFEST_FILE), b"{}").expect("write marker");
-    std::fs::write(root.join("notes/page.md"), b"note").expect("write note");
+    std::fs::write(root.join("projects/alpha/plan.md"), b"plan").expect("write document");
+    std::fs::write(root.join("notes/page.md"), b"note").expect("write foreign note");
     std::fs::write(root.join(".git/HEAD"), b"ref").expect("write foreign file");
     std::fs::write(root.join(VAULT_LOCK_FILE), b"").expect("write lock");
 }
@@ -171,10 +173,15 @@ fn backup_archive_carries_the_snapshot_database_and_the_bundle_layout_only() {
         .expect("create backup archive");
 
         let names = archive_names(&archive);
-        for expected in [DATABASE_FILE, VAULT_MANIFEST_FILE, "notes/page.md"] {
+        for expected in [DATABASE_FILE, VAULT_MANIFEST_FILE, "projects/alpha/plan.md"] {
             assert!(names.iter().any(|name| name == expected), "{expected}");
         }
-        for excluded in [VAULT_LOCK_FILE, ".git/HEAD", "ganbaru.sqlite-wal"] {
+        for excluded in [
+            VAULT_LOCK_FILE,
+            ".git/HEAD",
+            "notes/page.md",
+            "ganbaru.sqlite-wal",
+        ] {
             assert!(!names.iter().any(|name| name == excluded), "{excluded}");
         }
         let extracted = directory.path().join("extracted.sqlite");
@@ -623,7 +630,7 @@ fn encrypted_backup_carries_the_snapshot_archive_of_the_vault() {
         let names = archive_names(&archive);
         for expected in [
             DATABASE_FILE,
-            "notes/page.md",
+            "projects/alpha/plan.md",
             "assets/notes/files/large.bin",
         ] {
             assert!(names.iter().any(|name| name == expected), "{expected}");

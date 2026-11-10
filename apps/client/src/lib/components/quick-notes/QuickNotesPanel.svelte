@@ -1,7 +1,12 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
+  import { fly } from "svelte/transition";
   import Archive from "@lucide/svelte/icons/archive";
+  import ArchiveRestore from "@lucide/svelte/icons/archive-restore";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
+  import Pin from "@lucide/svelte/icons/pin";
+  import PinOff from "@lucide/svelte/icons/pin-off";
+  import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Search from "@lucide/svelte/icons/search";
   import Trash2 from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
@@ -44,10 +49,14 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import QuickNoteColorPicker from "./QuickNoteColorPicker.svelte";
   import QuickNoteEditorModal from "./QuickNoteEditorModal.svelte";
   import QuickNoteTagBar from "./QuickNoteTagBar.svelte";
+  import QuickNoteTagPicker from "./QuickNoteTagPicker.svelte";
   import QuickNotesMasonry from "./QuickNotesMasonry.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { prefersReducedMotion } from "$lib/utils/smooth-swap";
+  import { TOUCH_LONG_PRESS_MS } from "$lib/utils/touch-hold";
   import { movedToIndex } from "$lib/utils/sidebar-order";
   import { activateIsolatingKeyboardLayer, captureFocusReturn } from "$lib/modal-focus";
   import { appNavigationShortcut } from "$lib/keyboard-shortcuts";
@@ -92,6 +101,8 @@
   let undoMessage = $state("");
   let reorderAnnouncement = $state("");
   let undoAction = $state<(() => Promise<void>) | null>(null);
+  /** The note a touch hold selected on a phone, whose card actions show in a bar at the bottom of the panel. */
+  let selectedNoteId = $state<string | null>(null);
   let undoTimer: ReturnType<typeof setTimeout> | null = null;
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let loadGeneration = 0;
@@ -122,6 +133,10 @@
       : collection === "trash"
         ? t("quickNotes.empty.trash")
         : null);
+  const selectedNote = $derived(selectedNoteId === null ? null : notes.find((note) => note.id === selectedNoteId) ?? null);
+  const selectionShown = $derived(selectedNote !== null);
+  const selectionBarButton = "flex size-12 shrink-0 items-center justify-center rounded-xl text-foreground transition-colors active:bg-accent aria-expanded:bg-accent";
+  const selectionBarMotion = { y: 12, duration: prefersReducedMotion() ? 0 : 160 };
   const childOverlayOpen = $derived(editorNote !== undefined || deleteTarget !== null || deleteTagTarget !== null || confirmEmptyTrash);
   const panelClass = $derived(mobileLayout
     ? "surface-dialog fixed z-50 flex flex-col overflow-hidden text-foreground outline-none"
@@ -455,6 +470,49 @@
     });
   }
 
+  function clearSelection(): void {
+    selectedNoteId = null;
+  }
+
+  /** Runs a selection bar action on the selected note; actions that move it out of the view also end the selection. */
+  function actOnSelection(action: (note: QuickNote) => void, endsSelection: boolean): void {
+    const note = selectedNote;
+    if (!note) return;
+    if (endsSelection) clearSelection();
+    action(note);
+  }
+
+  /**
+   * Ends a touch selection the way a phone's selection mode ends: Android Back, or a tap anywhere in the panel outside
+   * the action bar. A tap on a note only ends the selection rather than also opening the note, while scrolling, holds,
+   * and the bar's own pickers keep it.
+   */
+  function activateSelectionDismissal(): () => void {
+    let pressedAt = Number.NEGATIVE_INFINITY;
+    const recordPress = (event: PointerEvent): void => {
+      pressedAt = event.timeStamp;
+    };
+    const dismissOnTap = (event: MouseEvent): void => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target || !panel?.contains(target) || target.closest("[data-quick-note-selection-bar]")) return;
+      // A hold sends its own click on release, and the hold already chose what is selected.
+      if (event.timeStamp - pressedAt >= TOUCH_LONG_PRESS_MS) return;
+      if (target.closest("[data-quick-note-id]")) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      clearSelection();
+    };
+    const releaseBack = mobileBackStack.activate({ handle: clearSelection });
+    window.addEventListener("pointerdown", recordPress, { capture: true });
+    window.addEventListener("click", dismissOnTap, { capture: true });
+    return () => {
+      releaseBack();
+      window.removeEventListener("pointerdown", recordPress, { capture: true });
+      window.removeEventListener("click", dismissOnTap, { capture: true });
+    };
+  }
+
   async function openNote(note: QuickNote): Promise<void> {
     loadError = "";
     try {
@@ -507,7 +565,8 @@
       if (document.documentElement.dataset.quickNoteDragging === "true") return false;
       if (target?.closest("[data-quick-note-tag-creator]") !== null || insideOverlay) return false;
       event.preventDefault();
-      if (searchOpen) closeSearch();
+      if (selectionShown) clearSelection();
+      else if (searchOpen) closeSearch();
       else onClose();
       return true;
     }
@@ -562,6 +621,12 @@
   $effect(() => {
     if (!mobileLayout || !searchOpen) return;
     return mobileBackStack.activate({ handle: closeSearch });
+  });
+
+  $effect(() => {
+    if (selectionShown) return activateSelectionDismissal();
+    // A selection whose note left the view ends, so the note coming back later does not bring the bar back.
+    if (untrack(() => selectedNoteId) !== null) clearSelection();
   });
 
   onMount(() => {
@@ -696,7 +761,7 @@
     </div>
   </header>
 
-  <div data-quick-notes-scroll use:scrollEdgeFadeAction class={mobileLayout ? "min-h-0 flex-1 overscroll-contain overflow-y-auto px-3 pb-4 pt-2" : "min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-1.5 sm:px-4"} aria-busy={loading}>
+  <div data-quick-notes-scroll use:scrollEdgeFadeAction class={mobileLayout ? "min-h-0 flex-1 overscroll-contain overflow-y-auto px-3 pb-20 pt-2" : "min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-1.5 sm:px-4"} aria-busy={loading}>
     {#if renderedCollection === "active"}
       <button
         type="button"
@@ -720,11 +785,11 @@
     {:else}
       {#if pinnedNotes.length > 0}
         <h3 class="mb-2 px-1 text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{t("quickNotes.pinned")}</h3>
-        <QuickNotesMasonry notes={pinnedNotes} collection={renderedCollection} {animateLayout} {reorderable} theme={theme.current} {tags} untaggedColor={preferences.quickNotesDefaultColor} {mobileLayout} onOpen={(note) => void openNote(note)} onReorder={(ids, id, position) => reorderNoteGroup(ids, id, position, true)} onPin={pinNote} onColor={colorNote} onTag={tagNote} onCreateTag={createTag} onArchive={archiveNote} onUnarchive={unarchiveNote} onTrash={trashNote} onRestore={restoreNote} onDelete={(note) => { deleteTarget = note; }} />
+        <QuickNotesMasonry notes={pinnedNotes} collection={renderedCollection} {animateLayout} {reorderable} theme={theme.current} {tags} untaggedColor={preferences.quickNotesDefaultColor} {mobileLayout} onOpen={(note) => void openNote(note)} onReorder={(ids, id, position) => reorderNoteGroup(ids, id, position, true)} onPin={pinNote} onColor={colorNote} onTag={tagNote} onCreateTag={createTag} onArchive={archiveNote} onUnarchive={unarchiveNote} onTrash={trashNote} onRestore={restoreNote} onDelete={(note) => { deleteTarget = note; }} selectedId={selectedNoteId} onSelect={mobileLayout ? (noteId) => { selectedNoteId = noteId; } : undefined} />
       {/if}
       {#if otherNotes.length > 0}
         {#if pinnedNotes.length > 0}<h3 class="mb-2 mt-5 px-1 text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{t("quickNotes.others")}</h3>{/if}
-        <QuickNotesMasonry notes={otherNotes} collection={renderedCollection} {animateLayout} {reorderable} theme={theme.current} {tags} untaggedColor={preferences.quickNotesDefaultColor} {mobileLayout} onOpen={(note) => void openNote(note)} onReorder={(ids, id, position) => reorderNoteGroup(ids, id, position, false)} onPin={pinNote} onColor={colorNote} onTag={tagNote} onCreateTag={createTag} onArchive={archiveNote} onUnarchive={unarchiveNote} onTrash={trashNote} onRestore={restoreNote} onDelete={(note) => { deleteTarget = note; }} />
+        <QuickNotesMasonry notes={otherNotes} collection={renderedCollection} {animateLayout} {reorderable} theme={theme.current} {tags} untaggedColor={preferences.quickNotesDefaultColor} {mobileLayout} onOpen={(note) => void openNote(note)} onReorder={(ids, id, position) => reorderNoteGroup(ids, id, position, false)} onPin={pinNote} onColor={colorNote} onTag={tagNote} onCreateTag={createTag} onArchive={archiveNote} onUnarchive={unarchiveNote} onTrash={trashNote} onRestore={restoreNote} onDelete={(note) => { deleteTarget = note; }} selectedId={selectedNoteId} onSelect={mobileLayout ? (noteId) => { selectedNoteId = noteId; } : undefined} />
       {/if}
       {#if nextCursor}
         <button use:observeMore type="button" class={cn("mt-4 flex w-full items-center justify-center gap-1.5 text-xs text-muted-foreground", mobileLayout ? "min-h-12 rounded-xl px-3 active:bg-accent" : "rounded-md py-2 hover:bg-accent")} disabled={loadingMore} aria-busy={loadingMore || undefined} onclick={() => { animateLayout = true; void load(false); }}>{#if loadingMore}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}{t("quickNotes.action.loadMore")}</button>
@@ -734,12 +799,43 @@
     <p class="sr-only" aria-live="polite">{reorderAnnouncement}</p>
   </div>
 
-  {#if undoAction}
-    <div class={`surface-floating absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-3 px-3 py-2 ${mobileLayout ? "max-w-[calc(100%-1.5rem)]" : ""}`}>
-      <span>{undoMessage}</span>
-      <button type="button" class={mobileLayout ? "min-h-12 shrink-0 px-2 font-semibold underline" : "font-semibold underline"} onclick={() => { const action = undoAction; undoAction = null; undoMessage = ""; if (action) void action(); }}>{t("quickNotes.action.undo")}</button>
-    </div>
-  {/if}
+  <!-- The undo toast stacks above the selection bar, which stays within thumb reach at the bottom. -->
+  <div class="pointer-events-none absolute inset-x-3 bottom-3 z-10 flex flex-col items-center gap-2">
+    {#if undoAction}
+      <div class="surface-floating pointer-events-auto flex max-w-full items-center gap-3 px-3 py-2">
+        <span>{undoMessage}</span>
+        <button type="button" class={mobileLayout ? "min-h-12 shrink-0 px-2 font-semibold underline" : "font-semibold underline"} onclick={() => { const action = undoAction; undoAction = null; undoMessage = ""; if (action) void action(); }}>{t("quickNotes.action.undo")}</button>
+      </div>
+    {/if}
+    {#if selectedNote}
+      <div
+        class="surface-floating pointer-events-auto flex max-w-full items-center gap-0.5 overflow-x-auto p-1"
+        role="toolbar"
+        aria-label={t("quickNotes.selectionActions")}
+        data-quick-note-selection-bar
+        transition:fly={selectionBarMotion}
+      >
+        {#if renderedCollection === "active"}
+          <button class={selectionBarButton} type="button" aria-label={selectedNote.pinned ? t("quickNotes.action.unpin") : t("quickNotes.action.pin")} title={selectedNote.pinned ? t("quickNotes.action.unpin") : t("quickNotes.action.pin")} onclick={() => actOnSelection((note) => pinNote(note, !note.pinned), false)}>
+            {#if selectedNote.pinned}<PinOff class="size-4" strokeWidth={1.5} />{:else}<Pin class="size-4" strokeWidth={1.5} />{/if}
+          </button>
+        {/if}
+        {#if renderedCollection !== "trash"}
+          <QuickNoteColorPicker color={selectedNote.color} theme={theme.current} onSelect={(color) => actOnSelection((note) => colorNote(note, color), false)} buttonClass={selectionBarButton} {mobileLayout} />
+          <QuickNoteTagPicker tagId={selectedNote.tagId} {tags} theme={theme.current} defaultColor={preferences.quickNotesDefaultColor} onSelect={(tagId) => actOnSelection((note) => tagNote(note, tagId), false)} onCreate={createTag} buttonClass={selectionBarButton} {mobileLayout} />
+          {#if renderedCollection === "archive"}
+            <button class={selectionBarButton} type="button" aria-label={t("quickNotes.action.unarchive")} title={t("quickNotes.action.unarchive")} onclick={() => actOnSelection(unarchiveNote, true)}><ArchiveRestore class="size-4" strokeWidth={1.5} /></button>
+          {:else}
+            <button class={selectionBarButton} type="button" aria-label={t("quickNotes.action.archive")} title={t("quickNotes.action.archive")} onclick={() => actOnSelection(archiveNote, true)}><Archive class="size-4" strokeWidth={1.5} /></button>
+          {/if}
+          <button class={selectionBarButton} type="button" aria-label={t("quickNotes.action.trash")} title={t("quickNotes.action.trash")} onclick={() => actOnSelection(trashNote, true)}><Trash2 class="size-4" strokeWidth={1.5} /></button>
+        {:else}
+          <button class={selectionBarButton} type="button" aria-label={t("quickNotes.action.restore")} title={t("quickNotes.action.restore")} onclick={() => actOnSelection(restoreNote, true)}><RotateCcw class="size-4" strokeWidth={1.5} /></button>
+          <button class={selectionBarButton} type="button" aria-label={t("quickNotes.action.deletePermanently")} title={t("quickNotes.action.deletePermanently")} onclick={() => actOnSelection((note) => { deleteTarget = note; }, true)}><Trash2 class="size-4" strokeWidth={1.5} /></button>
+        {/if}
+      </div>
+    {/if}
+  </div>
 </div>
 
 {#if editorNote !== undefined}

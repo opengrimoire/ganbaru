@@ -159,4 +159,5 @@ export const quickNotes = {
   reorderFailed: "No se pudo guardar el orden de la nota",
   loadFailed: "No se pudieron cargar las notas rápidas",
   retry: "Reintentar",
+  selectionActions: "Acciones de la nota seleccionada",
 } as const satisfies MessageShape<typeof enQuickNotes>;

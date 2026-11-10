@@ -13,7 +13,7 @@
     type QuickNoteMasonryDensity,
   } from "$lib/quick-notes/masonry";
   import type { Theme } from "$lib/themes";
-  import { TouchHoldArbiter } from "$lib/utils/touch-hold";
+  import { TouchHoldArbiter, touchMovedBeyondSlop } from "$lib/utils/touch-hold";
   import QuickNoteCard from "./QuickNoteCard.svelte";
 
   let {
@@ -36,6 +36,8 @@
     onDelete,
     onReorder,
     mobileLayout = false,
+    selectedId = null,
+    onSelect,
   }: {
     notes: readonly QuickNote[];
     collection: QuickNotesCollection;
@@ -57,6 +59,13 @@
     onDelete: (note: QuickNote) => void;
     onReorder: (orderedIds: readonly string[], movedId: string, position: number) => void;
     mobileLayout?: boolean;
+    /** The note a touch hold selected for the panel's action bar. */
+    selectedId?: string | null;
+    /**
+     * Selects a note when a touch holds it still, even where notes cannot be reordered, and clears the selection
+     * once the held note moves or lands in a new position. Without it, touch holds only reorder.
+     */
+    onSelect?: (noteId: string | null) => void;
   } = $props();
 
   interface PendingPointer {
@@ -158,7 +167,8 @@
   }
 
   function pointerCanStart(event: PointerEvent): boolean {
-    if (!reorderable || event.button !== 0 || !event.isPrimary) return false;
+    if (event.button !== 0 || !event.isPrimary) return false;
+    if (!reorderable && !(onSelect && event.pointerType === "touch")) return false;
     const target = event.target instanceof Element ? event.target : null;
     return target?.closest("[data-quick-note-no-drag]") === null;
   }
@@ -187,9 +197,25 @@
           touchHold.finish();
           return;
         }
-        activateDrag(pending, pending.startX, pending.startY);
+        onSelect?.(pending.noteId);
+        if (reorderable) activateDrag(pending, pending.startX, pending.startY);
+        else holdWithoutDrag(pending);
       });
     }
+  }
+
+  /**
+   * Keeps a hold that only selects in charge of its pointer until release, so the release arrives even off the
+   * card, and swallows the click the release may send.
+   */
+  function holdWithoutDrag(pending: PendingPointer): void {
+    pending.node.setPointerCapture(pending.pointerId);
+    suppressClickFor = pending.noteId;
+  }
+
+  /** Lets clicks reach the note again once the click its release sends, if any, has been swallowed. */
+  function releaseClickSuppression(noteId: string): void {
+    setTimeout(() => { if (suppressClickFor === noteId) suppressClickFor = null; }, 0);
   }
 
   /**
@@ -228,6 +254,10 @@
       activateDrag(pending, event.clientX, event.clientY);
     } else {
       drag = { ...drag, clientX: event.clientX, clientY: event.clientY };
+      // A hold that starts moving is a reorder, so the note's actions step aside.
+      if (selectedId === drag.noteId && touchMovedBeyondSlop(drag.clientX - drag.startX, drag.clientY - drag.startY)) {
+        onSelect?.(null);
+      }
     }
     event.preventDefault();
     scheduleDragFrame();
@@ -310,7 +340,10 @@
     pendingPointer = null;
     touchHold.finish();
     if (pending.node.hasPointerCapture(event.pointerId)) pending.node.releasePointerCapture(event.pointerId);
-    if (!active) return;
+    if (!active) {
+      if (suppressClickFor === pending.noteId) releaseClickSuppression(pending.noteId);
+      return;
+    }
     event.preventDefault();
     if (dragFrame !== null) cancelAnimationFrame(dragFrame);
     dragFrame = null;
@@ -322,10 +355,13 @@
       suppressLayoutTransition(active.noteId);
     } else {
       const position = visualOrder.indexOf(active.noteId);
-      if (position !== active.originalIndex) onReorder(visualOrder, active.noteId, position);
+      if (position !== active.originalIndex) {
+        onReorder(visualOrder, active.noteId, position);
+        if (selectedId === active.noteId) onSelect?.(null);
+      }
       void settleDrop(active);
     }
-    setTimeout(() => { if (suppressClickFor === active.noteId) suppressClickFor = null; }, 0);
+    releaseClickSuppression(active.noteId);
   }
 
   async function settleDrop(active: ActiveDrag): Promise<void> {
@@ -391,7 +427,7 @@
     visualOrder = notes.map((note) => note.id);
     applyLayout();
     suppressLayoutTransition(active.noteId);
-    setTimeout(() => { if (suppressClickFor === active.noteId) suppressClickFor = null; }, 0);
+    releaseClickSuppression(active.noteId);
   }
 
   function suppressDraggedClick(event: MouseEvent, noteId: string): void {
@@ -477,7 +513,8 @@
     {@const position = positions[note.id]}
     <div
       use:measure={note.id}
-      class={`absolute left-0 top-0 will-change-transform ${drag?.noteId === note.id ? "cursor-grabbing opacity-95 shadow-2xl" : settling?.noteId === note.id ? "quick-note-drop-settling opacity-95 shadow-2xl" : reorderable ? "cursor-grab" : ""} ${(animateLayout || drag) && drag?.noteId !== note.id && settling?.noteId !== note.id && handoffId !== note.id ? "motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out" : ""}`}
+      class={`absolute left-0 top-0 will-change-transform ${drag?.noteId === note.id ? "cursor-grabbing opacity-95 shadow-2xl" : settling?.noteId === note.id ? "quick-note-drop-settling opacity-95 shadow-2xl" : reorderable ? "cursor-grab" : ""} ${(animateLayout || drag) && drag?.noteId !== note.id && settling?.noteId !== note.id && handoffId !== note.id ? "motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out" : ""} ${selectedId === note.id ? "rounded-xl outline-2 outline-offset-2 outline-primary" : ""}`}
+      data-quick-note-id={note.id}
       style={wrapperStyle(note.id, position)}
       role="listitem"
       onpointerdown={(event) => startPointer(event, note.id, event.currentTarget)}

@@ -156,4 +156,5 @@ export const quickNotes = {
   reorderFailed: "The note order could not be saved",
   loadFailed: "Quick notes could not be loaded",
   retry: "Retry",
+  selectionActions: "Selected note actions",
 } as const;

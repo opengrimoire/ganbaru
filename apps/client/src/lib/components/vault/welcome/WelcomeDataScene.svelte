@@ -97,12 +97,12 @@
   {:else if entry.kind === "database"}
     <svg width={size} height={size} viewBox="0 0 64 64" class="shrink-0" aria-hidden="true">
       <path d="M12 13v38a20 7 0 0 0 40 0V13z" class="fill-primary" />
-      <path d="M12 26a20 7 0 0 0 40 0M12 39a20 7 0 0 0 40 0" class="fill-none stroke-background" stroke-width="2.5" />
+      <!-- The seams between disks as filled bands that end exactly at the cylinder's sides. -->
+      <path d="M12 25v3a20 7 0 0 0 40 0v-3a20 7 0 0 1-40 0zM12 38v3a20 7 0 0 0 40 0v-3a20 7 0 0 1-40 0z" class="fill-background" />
       <path
-        d="M12 26a20 7 0 0 0 40 0M12 39a20 7 0 0 0 40 0"
-        class="fill-none stroke-primary"
-        stroke-opacity="0.6"
-        stroke-width="2.5"
+        d="M12 25v3a20 7 0 0 0 40 0v-3a20 7 0 0 1-40 0zM12 38v3a20 7 0 0 0 40 0v-3a20 7 0 0 1-40 0z"
+        class="fill-primary"
+        fill-opacity="0.6"
       />
       <ellipse cx="32" cy="13" rx="20" ry="7" class="fill-background" />
       <ellipse cx="32" cy="13" rx="20" ry="7" class="fill-primary" fill-opacity="0.6" />
@@ -204,7 +204,7 @@
           {#each DATA_ENTRIES as entry (entry.name)}
             <div class="flex min-w-0 flex-col items-center gap-1.5 rounded-lg px-1.5 py-2 text-center">
               {@render entryGlyph(entry, 56)}
-              <span class="max-w-full truncate font-medium">{entry.name}</span>
+              <span class="max-w-full truncate py-0.5 leading-normal font-medium">{entry.name}</span>
             </div>
           {/each}
         </div>
@@ -214,7 +214,7 @@
           {#each DATA_ENTRIES as entry (entry.name)}
             <div class="flex min-h-11 items-center gap-3 border-b border-border/60 px-3.5">
               {@render entryGlyph(entry, 24)}
-              <span class="truncate font-medium">{entry.name}</span>
+              <span class="truncate py-0.5 leading-normal font-medium">{entry.name}</span>
             </div>
           {/each}
         </div>

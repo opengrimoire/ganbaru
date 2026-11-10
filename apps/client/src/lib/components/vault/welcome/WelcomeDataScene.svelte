@@ -50,13 +50,16 @@
   /** Every Lucide icon shares one component type. */
   type PlaceIcon = typeof Folder;
 
-  /** The sidebar's places, with the folder's parent selected; the others are placeholder bars of these widths. */
-  const PLACES: readonly { icon: PlaceIcon; width: number; selected?: boolean }[] = [
-    { icon: House, width: 0.5 },
-    { icon: Monitor, width: 0.62 },
-    { icon: FileText, width: 0, selected: true },
-    { icon: Download, width: 0.7 },
-    { icon: Image, width: 0.56 },
+  /** A sidebar place other than the folder's parent, named by its localized label. */
+  type Place = { icon: PlaceIcon; label: "home" | "desktop" | "downloads" | "pictures" };
+
+  /** The sidebar's places, with the folder's parent, named by its real path, in the middle. */
+  const PLACES: readonly (Place | { icon: PlaceIcon; parent: true })[] = [
+    { icon: House, label: "home" },
+    { icon: Monitor, label: "desktop" },
+    { icon: FileText, parent: true },
+    { icon: Download, label: "downloads" },
+    { icon: Image, label: "pictures" },
   ];
 
   const canvasW = $derived(width - 2 * BEZEL);
@@ -133,19 +136,19 @@
         <!-- The places, with the folder's parent selected and the rest as placeholder bars. -->
         <div class="flex w-40 shrink-0 flex-col gap-0.5 border-r border-border bg-foreground/2 px-2 py-2.5 text-xs">
           {#each PLACES as place, index (index)}
-            <span
-              class={[
-                "flex h-7 items-center gap-2 rounded-md px-2",
-                place.selected && parent ? "bg-foreground/8 font-medium text-foreground" : "text-muted-foreground",
-              ]}
-            >
-              <place.icon size={13} strokeWidth={1.8} aria-hidden="true" />
-              {#if place.selected && parent}
-                <span class="truncate">{parent}</span>
-              {:else}
-                <span class="min-w-0 flex-1">{@render bar(place.selected ? 0.66 : place.width)}</span>
-              {/if}
-            </span>
+            {@const selected = "parent" in place && parent !== null}
+            {@const label = "label" in place ? t(`vaultSetup.data.places.${place.label}`) : parent}
+            {#if label}
+              <span
+                class={[
+                  "flex h-7 items-center gap-2 rounded-md px-2",
+                  selected ? "bg-foreground/8 font-medium text-foreground" : "text-muted-foreground",
+                ]}
+              >
+                <place.icon size={13} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
+                <span class="truncate">{label}</span>
+              </span>
+            {/if}
           {/each}
         </div>
       {/if}
@@ -175,7 +178,7 @@
             {#if !desktopShell}
               <span class="truncate font-medium">{entry.name}</span>
             {:else if inlineDetail}
-              <span class="font-medium whitespace-nowrap">{entry.name}</span>
+              <span class="pr-8 font-medium whitespace-nowrap">{entry.name}</span>
               <span class="min-w-0 truncate text-muted-foreground">{detail}</span>
             {:else}
               <span class="flex min-w-0 flex-col gap-0.5 py-1.5">

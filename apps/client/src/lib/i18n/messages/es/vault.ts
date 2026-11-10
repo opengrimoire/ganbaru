@@ -178,6 +178,12 @@ export const vaultSetup = {
       database: "Calendario, tareas, notas y más",
       marker: "Nombre y versión de la carpeta",
     },
+    places: {
+      home: "Inicio",
+      desktop: "Escritorio",
+      downloads: "Descargas",
+      pictures: "Imágenes",
+    },
   },
 } as const satisfies MessageShape<typeof enVaultSetup>;
 

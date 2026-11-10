@@ -81,6 +81,13 @@ export const general = {
     sidebarOrder: "Group and project order",
     sidebarOrderDescription: "Favorites always come first",
   },
+  projectsGroups: {
+    heading: "Groups",
+    empty: "No groups",
+    builtIn: "Built-in group",
+    projectCount: (count: number) => `${count} ${count === 1 ? "project" : "projects"}`,
+    renameGroup: (name: string) => `Rename ${name}`,
+  },
   projectsInactive: {
     heading: "Hidden and archived",
     detail: (group: string, status: string) => `${group} · ${status}`,

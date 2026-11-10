@@ -9,6 +9,7 @@
   } from "$lib/utils/sidebar-order";
   import Select from "$lib/components/ui/Select.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
+  import ProjectsGroupList from "./ProjectsGroupList.svelte";
   import ProjectsInactiveList from "./ProjectsInactiveList.svelte";
 
   const preferences = getPreferences();
@@ -45,6 +46,10 @@
       />
     </div>
   </section>
+
+  <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+
+  <ProjectsGroupList />
 
   <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
 

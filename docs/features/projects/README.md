@@ -15,7 +15,7 @@ Group
         Checklist item
 ```
 
-Groups organize projects, and a project may also stand outside every group. Deleting a group keeps its projects with everything they own and moves them outside every group. Deleting a project from its sidebar menu, after a confirmation, removes its tasks, structure, views, and Chat history, while its Notes pages and Calendar events stay without a project and its managed folder stays on disk. Projects own settings, statuses, priorities, tags, custom fields, views, history, and optional working folders. Sections organize tasks without becoming task parents. Tasks can nest and can link to scheduled Calendar events.
+Groups organize projects, and a project may also stand outside every group. Settings > Projects lists the groups with their project counts and renames or deletes them. Deleting a group keeps its projects with everything they own and moves them outside every group. Deleting a project from its sidebar menu, after a confirmation, removes its tasks, structure, views, and Chat history, while its Notes pages and Calendar events stay without a project and its managed folder stays on disk. Projects own settings, statuses, priorities, tags, custom fields, views, history, and optional working folders. Sections organize tasks without becoming task parents. Tasks can nest and can link to scheduled Calendar events.
 
 ## Current scope
 
@@ -51,7 +51,7 @@ A project name is unique within its group, or among the projects outside every g
 
 Projects, tasks, schemas, views, links, and history are SQLite-canonical. Working-folder files and Git repositories remain file-authoritative and can be linked to a project without becoming project rows. Project Notes are canonical Notes pages with project membership.
 
-Every linked device edits Projects offline, including Android, links or unlinks tasks and Calendar events, deletes groups, and removes external working folders; see [Device linking and synchronization](../../data/sync.md).
+Every linked device edits Projects offline, including Android, links or unlinks tasks and Calendar events, deletes projects and groups, and removes external working folders; see [Device linking and synchronization](../../data/sync.md).
 
 When linked devices edit the same project name, task title or description, or checklist item title, the Projects view that shows it offers the concurrent versions to choose from. A dependency that two devices added and that together closed a cycle is hidden and offered the same way, labelled as removed to break a cycle: keeping it removed is always available, and adding it back is available only while it would not recreate the cycle. Deleted projects, sections, statuses, and tasks with edits the deletion missed appear in the sync settings recovery list with a preview and can be restored or discarded.
 

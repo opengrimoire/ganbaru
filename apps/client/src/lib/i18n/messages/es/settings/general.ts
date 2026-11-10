@@ -84,6 +84,13 @@ export const general = {
     sidebarOrder: "Orden de grupos y proyectos",
     sidebarOrderDescription: "Los favoritos siempre van primero",
   },
+  projectsGroups: {
+    heading: "Grupos",
+    empty: "No hay grupos",
+    builtIn: "Grupo integrado",
+    projectCount: (count: number) => `${count} ${count === 1 ? "proyecto" : "proyectos"}`,
+    renameGroup: (name: string) => `Renombrar ${name}`,
+  },
   projectsInactive: {
     heading: "Ocultos y archivados",
     detail: (group: string, status: string) => `${group} · ${status}`,

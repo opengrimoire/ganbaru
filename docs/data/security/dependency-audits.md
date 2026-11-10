@@ -2,7 +2,7 @@
 
 This file records reviewed Rust and npm advisory exceptions and allowed warnings. Lockfiles and current command output are authoritative; an old date or prior clean result is not evidence for the current lockfile.
 
-As of 2026-11-04, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the one reviewed ignore below, and `pnpm -w run audit:rust` exits successfully with no configured ignores and the ten allowed warnings listed below.
+As of 2026-11-10, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the one reviewed ignore below, and `pnpm -w run audit:rust` exits successfully with the one reviewed ignore and the ten allowed warnings listed below.
 
 A successful Rust audit exit does not mean warning-free. The cargo-audit output policy allows warnings, so maintainers must review new unsound, unmaintained, and yanked findings separately.
 
@@ -17,7 +17,11 @@ Run `validate:full` for dependency, lockfile, release, audit, and other security
 
 ## Configured vulnerability ignores
 
-`.cargo/audit.toml` ignores no Rust advisories. An ignore is added only after path review recorded here, and is removed when its assumptions stop holding.
+`.cargo/audit.toml` ignores only the Rust advisories below. An ignore is added only after path review recorded here, and is removed when its assumptions stop holding.
+
+### RUSTSEC-2026-0459, SQLite uninitialized page-cache read
+
+SQLite before 3.54.0 (CVE-2026-119375) can return uninitialized page-cache memory through ordinary queries when it opens a database beside a `-wal` file whose page size differs. The fix needs `libsqlite3-sys` 0.39, and sqlx-sqlite 0.9.0, the latest release, requires `libsqlite3-sys` below 0.38. Ganbaru only opens a foreign `-wal` when the user opens a vault folder someone else prepared, and the leaked bytes then land only in that vault's own query results. Bundles never carry one: archives and backups are written with `VACUUM INTO`, extraction admits only the vault marker, `ganbaru.sqlite`, `assets/`, and `projects/`, and replacing a vault removes the target's database sidecars. The relay never opens peer databases. Remove the ignore when a sqlx release accepts `libsqlite3-sys` 0.39 or later, and upgrade then.
 
 ## Configured npm ignores
 
@@ -38,18 +42,18 @@ Both come through the Linux Tauri and Wry WebKit stack and native Linux integrat
 
 ### UNIC crates
 
-RUSTSEC-2025-0075, RUSTSEC-2025-0080, RUSTSEC-2025-0081, RUSTSEC-2025-0098, and RUSTSEC-2025-0100 report unmaintained unic crates reached through Tauri's URL pattern dependency. Remove them when the upstream graph no longer requires those crates.
+RUSTSEC-2025-0075, RUSTSEC-2025-0080, RUSTSEC-2025-0081, RUSTSEC-2025-0098, and RUSTSEC-2025-0100 report unmaintained unic crates reached through urlpattern 0.3 in tauri-utils 2.9. tauri-utils 2.10 moves to urlpattern 0.6, which drops them, so they clear with the Tauri 2.12 upgrade.
 
 ### D-Bus split crates
 
-RUSTSEC-2026-0370, RUSTSEC-2026-0371, and RUSTSEC-2026-0372 report zvariant, zbus_names, and zvariant_derive as unmaintained because zbus 6 absorbed them. They are reached through zbus 5 in notify-rust (Linux notifications) and secret-service (the Linux keyring store). Remove them when those dependencies move to zbus 6.
+RUSTSEC-2026-0370, RUSTSEC-2026-0371, and RUSTSEC-2026-0372 report zvariant, zbus_names, and zvariant_derive as unmaintained because zbus 6 absorbed them. They are reached through zbus 5 in notify-rust (Linux notifications), secret-service (the Linux keyring store), and the Tauri opener and single-instance plugins. notify-rust 4.19 already uses zbus 6, but moving it alone would ship both zbus stacks. Remove them when the others move to zbus 6.
 
 ## Bundled SQLite
 
 SQLite CVEs are not RustSec advisories, so neither audit reports them; track the bundled version by hand. sqlx builds SQLite from the source vendored in `libsqlite3-sys`; confirm the version from that crate's `sqlite3/sqlite3.h`, not from its release notes.
 
 - Current: SQLite 3.51.3 through `libsqlite3-sys` 0.37.0 and sqlx 0.9.0. It fixes CVE-2025-7709 (FTS5 corrupt index, reachable from database content), CVE-2025-6965, CVE-2025-29087, and CVE-2025-3277. `ganbaru-db` tests assert this minimum.
-- Open: CVE-2026-11822 and CVE-2026-11824 are fixed in SQLite 3.53.2, which needs `libsqlite3-sys` 0.38, and sqlx 0.9.0 does not allow it. Both need arbitrary SQL with defensive mode off, so the defensive build below mitigates them. Upgrade when a sqlx release accepts `libsqlite3-sys` 0.38.
+- Open: CVE-2026-11822 and CVE-2026-11824 are fixed in SQLite 3.53.2, which needs `libsqlite3-sys` 0.38, and sqlx 0.9.0 does not allow it. Both need arbitrary SQL with defensive mode off, so the defensive build below mitigates them. CVE-2026-119375 is the reviewed ignore above. Upgrade when a sqlx release accepts `libsqlite3-sys` 0.39.
 - Build: `.cargo/config.toml` compiles SQLite with `SQLITE_DEFAULT_DEFENSIVE` and `SQLITE_TRUSTED_SCHEMA=0` through `LIBSQLITE3_FLAGS`. `ganbaru-db` pools also set `trusted_schema=OFF` and `cell_size_check=ON`, and validate untrusted schema catalogs as described in [Application boundaries](application-boundaries.md#vault-and-configuration).
 
 ## Updater archive extraction

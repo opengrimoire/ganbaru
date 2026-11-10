@@ -1,6 +1,9 @@
 [advisories]
 # Every ignore needs a path review recorded in docs/data/security/dependency-audits.md.
-ignore = []
+ignore = [
+  # libsqlite3-sys below 0.39 bundles SQLite before 3.54.0; sqlx 0.9.0 caps it below 0.38.
+  "RUSTSEC-2026-0459",
+]
 
 [output]
 deny = []

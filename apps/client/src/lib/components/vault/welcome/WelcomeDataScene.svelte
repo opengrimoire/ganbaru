@@ -29,9 +29,9 @@
 
   /**
    * The still illustration on the welcome screen about where data lives: the vault's folder, named by its real path, open
-   * in a plain sketch of a file manager in the theme's colors. The desktop shell shows the entries as a grid of icons
-   * with a line on what each holds, adds the window's controls and history arrows, and, on a wide canvas, a sidebar of
-   * places with the folder's parent selected; a phone lists the entries by name.
+   * in a plain sketch of a file manager in the theme's colors. The desktop shell shows the entries as a grid of icons,
+   * adds the window's controls and history arrows, and, on a wide canvas, a sidebar of places with the folder's parent
+   * selected; a phone lists the entries.
    */
   let {
     width,
@@ -82,8 +82,8 @@
   const parent = $derived(trail.length > 1 ? trail[0] : null);
 
   function entryIcon(entry: DataEntry): PlaceIcon {
-    if (entry.folder) return Folder;
-    return entry.detail === "database" ? Database : FileBraces;
+    if (entry.kind === "folder") return Folder;
+    return entry.kind === "database" ? Database : FileBraces;
   }
 </script>
 
@@ -156,7 +156,7 @@
       {/if}
 
       {#if desktopShell}
-        <!-- The folder's entries as a grid of icons, each named with a line on what it holds under it. -->
+        <!-- The folder's entries as a grid of icons, each named under it. -->
         <div class="grid min-w-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,8rem)] content-start gap-2 p-4 text-xs">
           {#each DATA_ENTRIES as entry (entry.name)}
             {@const EntryIcon = entryIcon(entry)}
@@ -164,18 +164,17 @@
               <EntryIcon
                 size={40}
                 strokeWidth={1.3}
-                class={["mb-1 shrink-0", entry.folder ? "text-primary" : "text-muted-foreground"]}
-                fill={entry.folder ? "currentColor" : "none"}
-                fill-opacity={entry.folder ? 0.3 : undefined}
+                class={["mb-1 shrink-0", entry.kind === "folder" ?"text-primary" : "text-muted-foreground"]}
+                fill={entry.kind === "folder" ?"currentColor" : "none"}
+                fill-opacity={entry.kind === "folder" ?0.3 : undefined}
                 aria-hidden="true"
               />
               <span class="max-w-full truncate font-medium">{entry.name}</span>
-              <span class="line-clamp-2 text-muted-foreground">{t(`vaultSetup.data.entries.${entry.detail}`)}</span>
             </div>
           {/each}
         </div>
       {:else}
-        <!-- A phone lists the entries by name only, since its private storage is never browsed. -->
+        <!-- A phone lists the entries by name. -->
         <div class="flex min-w-0 flex-1 flex-col text-xs">
           {#each DATA_ENTRIES as entry (entry.name)}
             {@const EntryIcon = entryIcon(entry)}
@@ -183,9 +182,9 @@
               <EntryIcon
                 size={16}
                 strokeWidth={1.7}
-                class={["shrink-0", entry.folder ? "text-primary" : "text-muted-foreground"]}
-                fill={entry.folder ? "currentColor" : "none"}
-                fill-opacity={entry.folder ? 0.3 : undefined}
+                class={["shrink-0", entry.kind === "folder" ?"text-primary" : "text-muted-foreground"]}
+                fill={entry.kind === "folder" ?"currentColor" : "none"}
+                fill-opacity={entry.kind === "folder" ?0.3 : undefined}
                 aria-hidden="true"
               />
               <span class="truncate font-medium">{entry.name}</span>

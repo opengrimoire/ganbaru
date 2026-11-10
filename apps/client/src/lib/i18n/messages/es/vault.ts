@@ -172,12 +172,6 @@ export const vaultSetup = {
   data: {
     illustrationDescription:
       "Una ilustración de la carpeta de Ganbaru en un explorador de archivos, con carpetas para imágenes y archivos de proyectos, la base de datos que guarda tu calendario, tareas y notas, y el archivo que nombra la carpeta.",
-    entries: {
-      assets: "Imágenes y adjuntos",
-      projects: "Una carpeta de trabajo por proyecto",
-      database: "Calendario, tareas, notas y más",
-      marker: "Nombre y versión de la carpeta",
-    },
     home: "Inicio",
   },
 } as const satisfies MessageShape<typeof enVaultSetup>;

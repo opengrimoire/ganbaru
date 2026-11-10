@@ -164,12 +164,6 @@ export const vaultSetup = {
   data: {
     illustrationDescription:
       "An illustration of the Ganbaru folder in a file manager, with folders for images and project files, the database that holds your calendar, tasks, and notes, and the file that names the folder.",
-    entries: {
-      assets: "Images and attachments",
-      projects: "A working folder per project",
-      database: "Calendar, tasks, notes, and more",
-      marker: "The folder's name and version",
-    },
     home: "Home",
   },
 } as const;

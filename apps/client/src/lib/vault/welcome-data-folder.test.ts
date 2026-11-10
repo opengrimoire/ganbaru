@@ -3,8 +3,8 @@ import { DATA_ENTRIES, vaultPathTrail } from "./welcome-data-folder";
 
 describe("welcome data folder entries", () => {
   it("lists folders before files", () => {
-    const firstFile = DATA_ENTRIES.findIndex((entry) => !entry.folder);
-    expect(DATA_ENTRIES.slice(firstFile).every((entry) => !entry.folder)).toBe(true);
+    const firstFile = DATA_ENTRIES.findIndex((entry) => entry.kind !== "folder");
+    expect(DATA_ENTRIES.slice(firstFile).every((entry) => entry.kind !== "folder")).toBe(true);
   });
 
   it("names every entry once", () => {

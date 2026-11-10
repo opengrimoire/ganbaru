@@ -3,22 +3,21 @@
  * and the entries a new vault holds.
  */
 
-/** What an entry of the vault holds, which the illustration describes beside its name. */
-export type DataEntryDetail = "assets" | "projects" | "database" | "marker";
+/** What kind of entry the illustration draws, which picks its icon. */
+export type DataEntryKind = "folder" | "database" | "file";
 
 /** One top-level entry of a new vault. */
 export interface DataEntry {
   name: string;
-  folder: boolean;
-  detail: DataEntryDetail;
+  kind: DataEntryKind;
 }
 
 /** The entries a new vault shows, folders first as file managers sort them. */
 export const DATA_ENTRIES: readonly DataEntry[] = [
-  { name: "assets", folder: true, detail: "assets" },
-  { name: "projects", folder: true, detail: "projects" },
-  { name: "ganbaru.sqlite", folder: false, detail: "database" },
-  { name: "vault.json", folder: false, detail: "marker" },
+  { name: "assets", kind: "folder" },
+  { name: "projects", kind: "folder" },
+  { name: "ganbaru.sqlite", kind: "database" },
+  { name: "vault.json", kind: "file" },
 ];
 
 /**

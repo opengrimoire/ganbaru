@@ -28,9 +28,9 @@
 
   /**
    * The still illustration on the welcome screen about where data lives: the vault's folder, named by its real path, open
-   * in a plain sketch of a file manager in the theme's colors, with each entry beside a line on what it holds. A wide
-   * canvas adds a sidebar of places with the folder's parent selected, and the desktop shell adds the window's controls
-   * and history arrows.
+   * in a plain sketch of a file manager in the theme's colors. The desktop shell adds a line on what each entry holds,
+   * the window's controls and history arrows, and, on a wide canvas, a sidebar of places with the folder's parent
+   * selected.
    */
   let { width, height, path }: { width: number; height: number; path: string } = $props();
 
@@ -65,6 +65,19 @@
   const inlineDetail = $derived(canvasW >= INLINE_DETAIL_MIN_W);
   const trail = $derived(vaultPathTrail(path, TRAIL_DEPTH));
   const parent = $derived(trail.length > 1 ? trail[0] : null);
+  /**
+   * The entry columns: the icon, the name, its description when it sits beside the name, and the size when wide. A
+   * phone shows names only, since its private storage is never browsed.
+   */
+  const entryColumns = $derived(
+    !desktopShell
+      ? "grid-cols-[auto_minmax(0,1fr)]"
+      : wide
+        ? "grid-cols-[auto_auto_minmax(0,1fr)_auto]"
+        : inlineDetail
+          ? "grid-cols-[auto_auto_minmax(0,1fr)]"
+          : "grid-cols-[auto_minmax(0,1fr)]",
+  );
 
   function entryIcon(entry: DataEntry): PlaceIcon {
     if (entry.folder) return Folder;
@@ -91,22 +104,22 @@
     style:height={`${canvasH}px`}
   >
     <!-- The window's bar: its history arrows and controls on the desktop, and the folder's path. -->
-    <div class="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
+    <div class="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
       {#if desktopShell && CONTROLS_LEADING}{@render controls()}{/if}
       {#if desktopShell}
         <span class="flex shrink-0 items-center gap-0.5 text-muted-foreground/60">
-          <ChevronLeft size={14} strokeWidth={1.8} aria-hidden="true" />
-          <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
+          <ChevronLeft size={15} strokeWidth={1.8} aria-hidden="true" />
+          <ChevronRight size={15} strokeWidth={1.8} aria-hidden="true" />
         </span>
       {/if}
-      <span class="flex h-6.5 min-w-0 flex-1 items-center gap-1 rounded-md bg-foreground/6 px-2 text-[11.5px]">
+      <span class="flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md bg-foreground/6 px-2.5 text-xs">
         {#each trail as segment, index (index)}
           {#if index < trail.length - 1}
             <span class="min-w-0 shrink truncate text-muted-foreground">{segment}</span>
-            <ChevronRight size={11} strokeWidth={1.8} class="shrink-0 text-muted-foreground/60" aria-hidden="true" />
+            <ChevronRight size={12} strokeWidth={1.8} class="shrink-0 text-muted-foreground/60" aria-hidden="true" />
           {:else}
-            <span class="flex min-w-0 items-center gap-1 font-medium">
-              <Folder size={12} strokeWidth={1.8} class="shrink-0 text-primary" fill="currentColor" fill-opacity="0.3" aria-hidden="true" />
+            <span class="flex min-w-0 items-center gap-1.5 font-medium">
+              <Folder size={14} strokeWidth={1.8} class="shrink-0 text-primary" fill="currentColor" fill-opacity="0.3" aria-hidden="true" />
               <span class="truncate">{segment}</span>
             </span>
           {/if}
@@ -118,7 +131,7 @@
     <div class="flex min-h-0 flex-1">
       {#if wide}
         <!-- The places, with the folder's parent selected and the rest as placeholder bars. -->
-        <div class="flex w-40 shrink-0 flex-col gap-0.5 border-r border-border bg-foreground/2 px-2 py-2.5 text-[11px]">
+        <div class="flex w-40 shrink-0 flex-col gap-0.5 border-r border-border bg-foreground/2 px-2 py-2.5 text-xs">
           {#each PLACES as place, index (index)}
             <span
               class={[
@@ -137,16 +150,20 @@
         </div>
       {/if}
 
-      <!-- The folder's entries. -->
-      <div class="flex min-w-0 flex-1 flex-col">
-        <div class="flex h-7 shrink-0 items-center gap-3 border-b border-border px-3.5">
+      <!--
+        The folder's entries, as a grid whose rows share its columns, so the name column fits the longest name and every
+        description starts at the same edge.
+      -->
+      <div class={["grid min-w-0 flex-1 content-start gap-x-3 text-xs", entryColumns]}>
+        <div class="col-span-full flex h-7 items-center gap-3 border-b border-border px-3.5">
           <span class="w-16">{@render bar(1)}</span>
           <span class="flex-1"></span>
-          {#if wide}<span class="w-8">{@render bar(1)}</span>{/if}
+          {#if desktopShell && wide}<span class="w-8">{@render bar(1)}</span>{/if}
         </div>
         {#each DATA_ENTRIES as entry (entry.name)}
           {@const EntryIcon = entryIcon(entry)}
-          <div class="flex min-h-11 shrink-0 items-center gap-2.5 border-b border-border/60 px-3.5">
+          {@const detail = t(`vaultSetup.data.entries.${entry.detail}`)}
+          <div class="col-span-full grid min-h-11 grid-cols-subgrid items-center border-b border-border/60 px-3.5">
             <EntryIcon
               size={16}
               strokeWidth={1.7}
@@ -155,11 +172,18 @@
               fill-opacity={entry.folder ? 0.3 : undefined}
               aria-hidden="true"
             />
-            <span class={["flex min-w-0 flex-1", inlineDetail ? "items-center gap-3" : "flex-col gap-0.5 py-1.5"]}>
-              <span class={["truncate text-[12px] font-medium", inlineDetail && "w-28 shrink-0"]}>{entry.name}</span>
-              <span class="min-w-0 truncate text-[11px] text-muted-foreground">{t(`vaultSetup.data.entries.${entry.detail}`)}</span>
-            </span>
-            {#if wide}<span class="w-8 shrink-0">{@render bar(1)}</span>{/if}
+            {#if !desktopShell}
+              <span class="truncate font-medium">{entry.name}</span>
+            {:else if inlineDetail}
+              <span class="font-medium whitespace-nowrap">{entry.name}</span>
+              <span class="min-w-0 truncate text-muted-foreground">{detail}</span>
+            {:else}
+              <span class="flex min-w-0 flex-col gap-0.5 py-1.5">
+                <span class="truncate font-medium">{entry.name}</span>
+                <span class="truncate text-muted-foreground">{detail}</span>
+              </span>
+            {/if}
+            {#if desktopShell && wide}<span class="w-8">{@render bar(1)}</span>{/if}
           </div>
         {/each}
       </div>

@@ -144,6 +144,7 @@ val forwardedChromeClientCallbacks = setOf(
     "onShowFileChooser",
     "onConsoleMessage",
     "onReceivedTitle",
+    "getDefaultVideoPoster",
 )
 
 fun registerChromeClientCallbackTask(profile: String) =

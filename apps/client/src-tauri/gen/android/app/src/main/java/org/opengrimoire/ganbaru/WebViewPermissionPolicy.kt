@@ -1,5 +1,6 @@
 package org.opengrimoire.ganbaru
 
+import android.graphics.Bitmap
 import android.net.Uri
 import android.view.View
 import android.webkit.ConsoleMessage
@@ -118,4 +119,6 @@ internal class AppOriginChromeClient(
   override fun onReceivedTitle(view: WebView?, title: String?) {
     delegate.onReceivedTitle(view, title)
   }
+
+  override fun getDefaultVideoPoster(): Bitmap? = delegate.defaultVideoPoster
 }

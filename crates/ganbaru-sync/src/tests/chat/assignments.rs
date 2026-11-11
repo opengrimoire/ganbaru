@@ -1,13 +1,15 @@
 //! Chat coordination across replicas: work assignments, their inputs and semantic updates, and
 //! scheduled messages with their owned references arrive whole, a crash while sealing or
 //! applying them leaves nothing partial, rerouting an input updates its row in place, a no-op
-//! write captures nothing, concurrent creates of one derived assignment merge, and a settle on
-//! any device outranks progress the executing device reports concurrently.
+//! write captures nothing, concurrent creates of one derived assignment merge, a settle on any
+//! device outranks progress the executing device reports concurrently, and a review travels
+//! whole with the completion it judges while a concurrent cancel outranks it.
 
 use super::*;
 use crate::manifest::vault::chat::{
     ASSIGNMENT_INPUT_KEY_PREFIX, INPUTS_TABLE, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
 };
+use crate::tests::replica::pair;
 
 const ASSIGNMENT: &str = "assignment:review";
 const FOLLOW_UP: &str = "assignment:follow-up";
@@ -477,6 +479,152 @@ fn chat_simulated_cancel_against_active_progress_keeps_the_cancel() {
                     "seed {seed} replica {}",
                     replica.index
                 );
+            }
+        }
+    });
+}
+
+/// Reviewer of the Accept in the review scenarios.
+const ACCEPTING_REVIEWER: &str = "participant:accepting";
+
+/// Reviewer of the follow-up completion in the review scenarios.
+const REQUESTING_REVIEWER: &str = "participant:requesting";
+
+/// Most pairwise pulls between the concurrent reviews and the final convergence.
+const REVIEW_PULLS: usize = 6;
+
+/// SQL completing [`ASSIGNMENT`] with the review `outcome` by `reviewer` at `at`.
+fn review_sql(outcome: &str, reviewer: &str, at: &str) -> String {
+    format!(
+        "UPDATE chat_work_assignments
+         SET state = 'completed', settled_at = {at}, review_outcome = {outcome},
+             reviewed_at = {at}, reviewed_by_participant_id = {reviewer},
+             revision = revision + 1, updated_at = {at}
+         WHERE id = {assignment};",
+        at = quoted(at),
+        outcome = quoted(outcome),
+        reviewer = quoted(reviewer),
+        assignment = quoted(ASSIGNMENT),
+    )
+}
+
+/// [`ASSIGNMENT`]'s state, review outcome, and reviewer, `-` for no review, and whether the
+/// review has a time.
+async fn assignment_review(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT state || ' ' || coalesce(review_outcome, '-') || ' '
+                || coalesce(reviewed_by_participant_id, '-') || ' ' || (reviewed_at IS NOT NULL)
+             FROM chat_work_assignments WHERE id = 'assignment:review'",
+        )
+        .await
+        .expect("the assignment arrived")
+}
+
+/// Brings the replicas to one ready-for-review [`ASSIGNMENT`].
+async fn reviewed_replicas() -> Vec<Replica> {
+    let mut replicas = conversation_replicas(3).await;
+    replicas[0].exec(&coordination_sql()).await;
+    replicas[0]
+        .exec(&state_sql("ready_for_review", &at(1, 0)))
+        .await;
+    converge(&mut replicas).await;
+    replicas
+}
+
+/// Pulls between random pairs of replicas, each source sealing first, so the concurrent writes
+/// arrive in a seed-dependent order before the final convergence.
+async fn pull_at_random(replicas: &mut [Replica], rng: &mut Rng) {
+    for _ in 0..rng.below(REVIEW_PULLS + 1) {
+        let target = rng.below(replicas.len());
+        let source = (target + 1 + rng.below(replicas.len() - 1)) % replicas.len();
+        replicas[source].seal_rotating().await.unwrap();
+        let (to, from) = pair(replicas, target, source);
+        to.pull(from).await;
+    }
+}
+
+/// One device accepts reviewed work while another cancels it; whatever the exchange order,
+/// every device ends cancelled with no review, since a cancel is the more restrictive ending.
+#[test]
+fn chat_simulated_accept_against_cancel_keeps_the_cancel() {
+    block_on(async {
+        for seed in 0..PROGRESS_SEEDS {
+            let mut rng = Rng(seed ^ 0xacce);
+            let mut replicas = reviewed_replicas().await;
+            replicas[1]
+                .exec(&review_sql(
+                    "accepted",
+                    ACCEPTING_REVIEWER,
+                    &at(2, rng.below(60)),
+                ))
+                .await;
+            replicas[2]
+                .exec(&state_sql("cancelled", &at(2, rng.below(60))))
+                .await;
+            pull_at_random(&mut replicas, &mut rng).await;
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            for replica in &mut replicas {
+                assert_eq!(
+                    assignment_review(replica).await,
+                    "cancelled - - 0",
+                    "seed {seed} replica {}",
+                    replica.index
+                );
+            }
+        }
+    });
+}
+
+/// One device accepts reviewed work while another completes it by requesting changes and
+/// creating the follow-up; every device ends completed with one whole review, its outcome
+/// beside its own reviewer, and the follow-up exists either way.
+#[test]
+fn chat_simulated_accept_against_follow_up_completion_converges_completed() {
+    block_on(async {
+        for seed in 0..PROGRESS_SEEDS {
+            let mut rng = Rng(seed ^ 0xf011);
+            let mut replicas = reviewed_replicas().await;
+            replicas[1]
+                .exec(&review_sql(
+                    "accepted",
+                    ACCEPTING_REVIEWER,
+                    &at(2, rng.below(60)),
+                ))
+                .await;
+            replicas[2]
+                .exec(&format!(
+                    "{}{}",
+                    review_sql(
+                        "changes_requested",
+                        REQUESTING_REVIEWER,
+                        &at(2, rng.below(60))
+                    ),
+                    assignment_sql(FOLLOW_UP, Some(ASSIGNMENT)),
+                ))
+                .await;
+            pull_at_random(&mut replicas, &mut rng).await;
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            let winner = assignment_review(&mut replicas[0]).await;
+            assert!(
+                [
+                    format!("completed accepted {ACCEPTING_REVIEWER} 1"),
+                    format!("completed changes_requested {REQUESTING_REVIEWER} 1"),
+                ]
+                .contains(&winner),
+                "seed {seed}: {winner}"
+            );
+            for replica in &mut replicas {
+                assert_eq!(assignment_review(replica).await, winner, "seed {seed}");
+                let follow_up = replica
+                    .scalar_text(
+                        "SELECT previous_assignment_id FROM chat_work_assignments
+                         WHERE id = 'assignment:follow-up'",
+                    )
+                    .await;
+                assert_eq!(follow_up.as_deref(), Some(ASSIGNMENT), "seed {seed}");
             }
         }
     });

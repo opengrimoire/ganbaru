@@ -359,7 +359,8 @@ pub mod assignment_group {
     pub const CREATED: GroupId = group_id(0);
     /// `previous_assignment_id`.
     pub const PREVIOUS: GroupId = group_id(1);
-    /// `state`, `state_reason`, and `settled_at`.
+    /// `state`, `state_reason`, `settled_at`, `review_outcome`, `reviewed_at`, and
+    /// `reviewed_by_participant_id`, so a review always travels with the completion it judges.
     pub const STATE: GroupId = group_id(2);
     /// `updated_at`.
     pub const UPDATED: GroupId = group_id(3);
@@ -1564,8 +1565,9 @@ pub const SCHEDULED: TableSpec = TableSpec {
 };
 
 /// `chat_work_assignments`. Only the executing device dispatches an assignment and writes its
-/// active states; any device may settle it. A settled state wins over a concurrent active one,
-/// and a review request over the other active states.
+/// active states; any device may settle it. Concurrent states resolve to the most restrictive
+/// ending: cancelled, then failed, then completed, then a review request, then the other active
+/// states.
 pub const ASSIGNMENTS: TableSpec = TableSpec {
     id: ASSIGNMENTS_TABLE,
     name: "chat_work_assignments",
@@ -1600,6 +1602,9 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
                 text("state", MAX_ENUM_CHARS),
                 optional_text("state_reason", MAX_REASON_CHARS),
                 optional_timestamp("settled_at"),
+                optional_text("review_outcome", MAX_ENUM_CHARS),
+                optional_timestamp("reviewed_at"),
+                optional_text("reviewed_by_participant_id", MAX_ID_CHARS),
             ],
         )),
         updated(assignment_group::UPDATED),

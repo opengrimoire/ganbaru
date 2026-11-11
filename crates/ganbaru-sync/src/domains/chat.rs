@@ -179,8 +179,10 @@ pub const ASSIGNMENT_STATES: [&str; 8] = [
     "failed",
     "cancelled",
 ];
-/// Settled work assignment states.
-pub const SETTLED_ASSIGNMENT_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
+/// The only assignment state a review outcome may accompany.
+pub const REVIEWED_ASSIGNMENT_STATE: &str = "completed";
+/// Outcomes of a review of ready-for-review work.
+pub const ASSIGNMENT_REVIEW_OUTCOMES: [&str; 2] = ["accepted", "changes_requested"];
 /// How a message reached an assignment.
 pub const ROUTING_KINDS: [&str; 4] = ["trigger", "steer", "queued_continuation", "follow_up"];
 /// Delivery states of an assignment input.
@@ -1058,13 +1060,42 @@ fn validate_assignment(group: GroupId, fields: &[Field]) -> Result<(), AdapterEr
             timestamp(created_at)
         }
         (assignment_group::PREVIOUS, [_previous]) => Ok(()),
-        (assignment_group::STATE, [state, reason, settled_at]) => {
+        (assignment_group::STATE, [state, reason, settled_at, outcome, reviewed_at, reviewer]) => {
             one_of(state, &ASSIGNMENT_STATES, "chat assignment state")?;
             optional_bounded(reason, MAX_REASON_CHARS, "chat assignment state reason")?;
-            optional_timestamp(settled_at)
+            optional_timestamp(settled_at)?;
+            assignment_review(state, outcome, reviewed_at, reviewer)
         }
         (assignment_group::UPDATED, [at]) => timestamp(at),
         _ => Err(AdapterError("chat assignment value")),
+    }
+}
+
+/// A review is all three fields or none, and only on completed work: the review judges a
+/// completion, so a review beside any other state would describe work that did not finish.
+fn assignment_review(
+    state: &Field,
+    outcome: &Field,
+    reviewed_at: &Field,
+    reviewer: &Field,
+) -> Result<(), AdapterError> {
+    match (outcome, reviewed_at, reviewer) {
+        (Field::Null, Field::Null, Field::Null) => Ok(()),
+        (Field::Null, _, _) | (_, Field::Null, _) | (_, _, Field::Null) => {
+            Err(AdapterError("chat assignment review is incomplete"))
+        }
+        _ if text(state)? != REVIEWED_ASSIGNMENT_STATE => {
+            Err(AdapterError("chat assignment review needs completed work"))
+        }
+        _ => {
+            one_of(
+                outcome,
+                &ASSIGNMENT_REVIEW_OUTCOMES,
+                "chat assignment review outcome",
+            )?;
+            timestamp(reviewed_at)?;
+            bounded(reviewer, 1, MAX_ID_CHARS, "chat assignment reviewer")
+        }
     }
 }
 
@@ -1102,15 +1133,28 @@ fn validate_semantic_update(group: GroupId, fields: &[Field]) -> Result<(), Adap
     }
 }
 
-/// A settled assignment outranks a concurrent active one, so a cancel, failure, or completion is
-/// never undone by progress a device reported before seeing it; a review request outranks the
-/// other active states.
+/// Assignment states by merge priority, the most restrictive ending first.
+const ASSIGNMENT_STATE_PRIORITIES: [(&str, u8); 4] = [
+    ("cancelled", 5),
+    ("failed", 4),
+    ("completed", 3),
+    ("ready_for_review", 2),
+];
+/// Priority of the active states other than a review request.
+const ACTIVE_ASSIGNMENT_PRIORITY: u8 = 1;
+
+/// The most restrictive ending wins: a cancel outranks a failure, which outranks a completion, so
+/// a concurrent cancel beats an accept and carries no review, and a failure is never hidden by a
+/// completion recorded elsewhere. Every ending outranks progress a device reported before seeing
+/// it, and a review request outranks the other active states.
 fn assignment_priority(fields: &[Field]) -> u8 {
-    match fields.first() {
-        Some(Field::Text(state)) if SETTLED_ASSIGNMENT_STATES.contains(&state.as_str()) => 3,
-        Some(Field::Text(state)) if state == "ready_for_review" => 2,
-        _ => 1,
-    }
+    let Some(Field::Text(state)) = fields.first() else {
+        return ACTIVE_ASSIGNMENT_PRIORITY;
+    };
+    ASSIGNMENT_STATE_PRIORITIES
+        .iter()
+        .find(|(candidate, _)| candidate == state)
+        .map_or(ACTIVE_ASSIGNMENT_PRIORITY, |(_, priority)| *priority)
 }
 
 /// Priority of an ended row: a removal or revocation outranks every live value.
@@ -1928,6 +1972,104 @@ mod tests {
                 &value(vec![t("general"), t("")])
             ),
             0
+        );
+    }
+
+    /// An assignment STATE value: `state` with its settle time when final, and `review` as
+    /// outcome and reviewer.
+    fn assignment_state(state: &str, review: Option<(&str, &str)>) -> Value {
+        let settled = matches!(state, "completed" | "failed" | "cancelled");
+        value(vec![
+            t(state),
+            Field::Null,
+            optional(settled.then_some(AT)),
+            optional(review.map(|(outcome, _)| outcome)),
+            optional(review.map(|_| AT)),
+            optional(review.map(|(_, reviewer)| reviewer)),
+        ])
+    }
+
+    #[test]
+    fn chat_assignment_priorities_prefer_the_most_restrictive_ending() {
+        let adapter = ChatAdapter;
+        let priority =
+            |state: &Value| adapter.priority(ASSIGNMENTS_TABLE, assignment_group::STATE, state);
+        let accepted = assignment_state("completed", Some(("accepted", "participant:local")));
+        let ladder = [
+            priority(&assignment_state("cancelled", None)),
+            priority(&assignment_state("failed", None)),
+            priority(&accepted),
+            priority(&assignment_state("ready_for_review", None)),
+            priority(&assignment_state("working", None)),
+        ];
+        assert!(
+            ladder.windows(2).all(|pair| pair[0] > pair[1]),
+            "{ladder:?}"
+        );
+        assert_eq!(
+            priority(&assignment_state("completed", None)),
+            priority(&accepted),
+            "a review never changes the rank of its completion"
+        );
+        for active in [
+            "queued",
+            "working",
+            "waiting_for_answer",
+            "waiting_for_approval",
+        ] {
+            assert_eq!(
+                priority(&assignment_state(active, None)),
+                ladder[4],
+                "{active}"
+            );
+        }
+        assert!(ladder[0] < ENDED);
+    }
+
+    #[test]
+    fn chat_assignment_reviews_need_all_fields_on_completed_work() {
+        let adapter = ChatAdapter;
+        let check =
+            |fields| adapter.validate(ASSIGNMENTS_TABLE, assignment_group::STATE, &value(fields));
+        let reviewer = "participant:local";
+
+        for outcome in ASSIGNMENT_REVIEW_OUTCOMES {
+            let reviewed = assignment_state("completed", Some((outcome, reviewer)));
+            assert!(check(reviewed.fields().to_vec()).is_ok(), "{outcome}");
+        }
+        for state in ASSIGNMENT_STATES {
+            assert!(
+                check(assignment_state(state, None).fields().to_vec()).is_ok(),
+                "{state}"
+            );
+            if state != REVIEWED_ASSIGNMENT_STATE {
+                let reviewed = assignment_state(state, Some(("accepted", reviewer)));
+                assert!(
+                    check(reviewed.fields().to_vec()).is_err(),
+                    "review on {state}"
+                );
+            }
+        }
+        let complete = assignment_state("completed", Some(("accepted", reviewer)));
+        for missing in 3..6 {
+            let mut partial = complete.fields().to_vec();
+            partial[missing] = Field::Null;
+            assert!(check(partial).is_err(), "review without field {missing}");
+        }
+        let mut unknown = complete.fields().to_vec();
+        unknown[3] = t("approved");
+        assert!(check(unknown).is_err());
+        let mut late = complete.fields().to_vec();
+        late[4] = t("2026-10-24 10:51:41");
+        assert!(check(late).is_err());
+        let mut anonymous = complete.fields().to_vec();
+        anonymous[5] = t("");
+        assert!(check(anonymous).is_err());
+        let mut short = complete.fields().to_vec();
+        short.truncate(3);
+        assert!(
+            check(short).is_err(),
+            "the state group carries its review fields"
         );
     }
 

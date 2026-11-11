@@ -1,4 +1,4 @@
-use super::helpers::{insert_default_channel, migrated_memory_pool};
+use super::helpers::{insert_default_channel, load_project_chat_graph, migrated_memory_pool};
 use sqlx::{AssertSqlSafe, Row};
 
 const NOW: &str = "2026-07-20T12:00:00Z";
@@ -1329,6 +1329,60 @@ fn chat_permission_columns_accept_only_current_modes() {
                 "{table} should reject legacy modes"
             );
         }
+    });
+}
+
+#[test]
+fn assignment_review_columns_accept_only_known_outcomes_and_full_timestamps() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let review = |outcome: &str, reviewed_at: &str, reviewer: &str| {
+            sqlx::query(
+                "UPDATE chat_work_assignments
+                 SET state = 'completed', settled_at = ?, review_outcome = ?, reviewed_at = ?,
+                     reviewed_by_participant_id = ?
+                 WHERE id = 'assignment-1'",
+            )
+            .bind(NOW)
+            .bind(outcome.to_owned())
+            .bind(reviewed_at.to_owned())
+            .bind(reviewer.to_owned())
+            .execute(&pool)
+        };
+
+        assert!(
+            review("approved", NOW, "participant:local-owner")
+                .await
+                .is_err()
+        );
+        assert!(
+            review("accepted", "2026-07-20", "participant:local-owner")
+                .await
+                .is_err()
+        );
+        assert!(review("accepted", NOW, "").await.is_err());
+        assert!(review("accepted", NOW, &"p".repeat(1025)).await.is_err());
+        for outcome in ["accepted", "changes_requested"] {
+            review(outcome, NOW, "participant:local-owner")
+                .await
+                .unwrap();
+        }
+        let stored: (String, String, String) = sqlx::query_as(
+            "SELECT review_outcome, reviewed_at, reviewed_by_participant_id
+             FROM chat_work_assignments WHERE id = 'assignment-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stored,
+            (
+                "changes_requested".to_owned(),
+                NOW.to_owned(),
+                "participant:local-owner".to_owned()
+            )
+        );
     });
 }
 

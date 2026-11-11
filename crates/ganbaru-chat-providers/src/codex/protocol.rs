@@ -43,6 +43,8 @@ pub(super) const CODEX_CLIENT_REQUEST_METHODS: &[&str] = &[
     "thread/start",
     "thread/resume",
     "thread/read",
+    "thread/turns/list",
+    "thread/revert",
     "thread/fork",
     "thread/name/set",
     "thread/archive",

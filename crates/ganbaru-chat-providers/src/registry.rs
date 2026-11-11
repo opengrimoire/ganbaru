@@ -13,6 +13,7 @@ const DESKTOP_PLATFORMS: &[&str] = &["linux", "windows", "macos"];
 
 const CODEX_CAPABILITIES: &[ProviderCapability] = &[
     ProviderCapability::NativeResume,
+    ProviderCapability::NativeRollback,
     ProviderCapability::NativePlan,
     ProviderCapability::Steering,
     ProviderCapability::DynamicModelChange,

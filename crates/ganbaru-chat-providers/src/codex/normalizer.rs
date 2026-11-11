@@ -349,6 +349,7 @@ impl CodexEventNormalizer {
         event: CanonicalEvent,
     ) -> ChatResult<CanonicalRuntimeEvent> {
         let sequence = self.next_event_id.fetch_add(1, Ordering::Relaxed);
+        let provider_reference = self.provider_reference(method, provider_turn_id.as_ref());
         Ok(CanonicalRuntimeEvent {
             schema_version: CANONICAL_EVENT_SCHEMA_VERSION,
             event_id: ChatEventId::new(format!("{}:{sequence}", self.session_id.as_str()))
@@ -364,11 +365,26 @@ impl CodexEventNormalizer {
             provider_task_id: None,
             provider_reference: Some(VersionedJson {
                 schema_version: 1,
-                value: json!({ "method": bounded_text(method, 256) }),
+                value: provider_reference,
             }),
             event,
             redacted_diagnostic: None,
         })
+    }
+
+    /// The notification method and, for a turn id Codex assigned, the `turnId` a checkpoint
+    /// restore later rewinds the native thread to. A fallback turn id is never a rewind point.
+    fn provider_reference(&self, method: &str, provider_turn_id: Option<&ProviderTurnId>) -> Value {
+        let method = bounded_text(method, 256);
+        match provider_turn_id.filter(|turn| !self.is_fallback_id(turn.as_str())) {
+            Some(turn) => json!({ "method": method, "turnId": turn.as_str() }),
+            None => json!({ "method": method }),
+        }
+    }
+
+    fn is_fallback_id(&self, id: &str) -> bool {
+        id.strip_prefix(self.session_id.as_str())
+            .is_some_and(|rest| rest.starts_with(':'))
     }
 
     fn fallback_provider_thread_id(&self) -> ProviderThreadId {

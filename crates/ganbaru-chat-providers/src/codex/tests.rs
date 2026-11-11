@@ -39,6 +39,7 @@ mod interactions;
 mod models;
 mod normalizer;
 mod protocol_coverage;
+mod rollback;
 mod transport;
 mod turn_errors;
 mod usage;
@@ -154,6 +155,7 @@ enum FixtureScenario {
     CapacityRetryInFlight,
     UsageLimit,
     Elicitation,
+    RepeatedTurnCursor,
 }
 
 #[derive(Default)]
@@ -705,12 +707,60 @@ async fn run_app_server_fixture<R, W>(
                 )
                 .await;
             }
+            "thread/turns/list" => {
+                let page = fixture_turn_page(scenario, message["params"]["cursor"].as_str());
+                write_fixture_message(&mut writer, json!({ "id": id, "result": page })).await;
+            }
+            "thread/revert" => {
+                write_fixture_message(
+                    &mut writer,
+                    json!({
+                        "id": id,
+                        "result": {
+                            "thread": { "id": message["params"]["threadId"], "turns": [] },
+                            "turnsBackwardsCursor": null
+                        }
+                    }),
+                )
+                .await;
+            }
             _ => {
                 write_fixture_message(&mut writer, json!({ "id": id, "result": {} })).await;
             }
         }
     }
     state.closed.store(true, Ordering::Release);
+}
+
+/// Native thread turns, newest first, that `thread/turns/list` pages two at a time.
+const FIXTURE_THREAD_TURNS: [&str; 5] = [
+    "codex-turn-5",
+    "codex-turn-4",
+    "codex-turn-3",
+    "codex-turn-2",
+    "codex-turn-1",
+];
+
+/// One descending `thread/turns/list` page. `RepeatedTurnCursor` always points at page 2.
+fn fixture_turn_page(scenario: FixtureScenario, cursor: Option<&str>) -> Value {
+    const PAGE_SIZE: usize = 2;
+    let page = cursor
+        .and_then(|cursor| cursor.strip_prefix("page-"))
+        .and_then(|page| page.parse::<usize>().ok())
+        .unwrap_or(1);
+    let start = (page - 1) * PAGE_SIZE;
+    let data = FIXTURE_THREAD_TURNS
+        .iter()
+        .skip(start)
+        .take(PAGE_SIZE)
+        .map(|turn_id| json!({ "id": turn_id, "items": [], "status": "completed" }))
+        .collect::<Vec<_>>();
+    let next_cursor = if scenario == FixtureScenario::RepeatedTurnCursor {
+        Some("page-2".to_string())
+    } else {
+        (start + PAGE_SIZE < FIXTURE_THREAD_TURNS.len()).then(|| format!("page-{}", page + 1))
+    };
+    json!({ "data": data, "nextCursor": next_cursor })
 }
 
 fn start_request(workspace: &Path) -> StartSessionRequest {

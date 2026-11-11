@@ -29,6 +29,7 @@ use tokio::task::JoinHandle;
 mod commands;
 mod discovery;
 mod mcp_reload;
+mod rollback;
 mod session_open;
 mod support;
 
@@ -849,13 +850,33 @@ impl ProviderDriver for CodexProviderDriver {
 
     fn rollback<'a>(
         &'a mut self,
-        _request: RollbackRequest,
-        _context: &'a DriverOperationContext,
+        request: RollbackRequest,
+        context: &'a DriverOperationContext,
     ) -> DriverFuture<'a, DriverOperationReceipt> {
-        Box::pin(async {
-            Err(ChatError::unsupported(
-                "Codex native rollback is not supported",
-            ))
+        Box::pin(async move {
+            let kept_turn_id = rollback::rollback_turn_id(request.provider_cursor.as_ref())?;
+            let live = self.live_mut(&request.session_id)?;
+            let provider_thread_id = {
+                let route = live.route.lock().map_err(|_| driver_state_error())?;
+                if route.active_chat_turn_id.is_some() || route.active_provider_turn_id.is_some() {
+                    return Err(ChatError::new(
+                        ChatErrorCode::Busy,
+                        "Codex cannot rewind the thread while a turn is running",
+                        true,
+                    ));
+                }
+                route
+                    .provider_thread_id
+                    .clone()
+                    .ok_or_else(|| protocol_identifier_error("provider thread"))?
+            };
+            let client = live.connection.client();
+            let plan =
+                rollback::plan_codex_rewind(&client, &provider_thread_id, &kept_turn_id, context)
+                    .await?;
+            let detail =
+                rollback::apply_codex_rewind(&client, &provider_thread_id, &plan, context).await?;
+            Ok(operation_receipt(context, detail))
         })
     }
 
@@ -954,6 +975,7 @@ impl ProviderDriver for CodexProviderDriver {
 fn codex_capability_kinds() -> Vec<ProviderCapability> {
     vec![
         ProviderCapability::NativeResume,
+        ProviderCapability::NativeRollback,
         ProviderCapability::NativePlan,
         ProviderCapability::Steering,
         ProviderCapability::DynamicModelChange,

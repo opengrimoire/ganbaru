@@ -267,3 +267,46 @@ fn separate_sessions_never_share_event_item_or_request_ids() {
     assert_eq!(item_ids.len(), 2);
     assert_eq!(request_ids.len(), 2);
 }
+
+#[test]
+fn turn_events_carry_the_codex_turn_id_a_restore_rewinds_to() {
+    let normalizer = CodexEventNormalizer::new(
+        identifier("codex-instance-1", ProviderInstanceId::new),
+        identifier("chat-thread-1", ChatThreadId::new),
+        identifier("session-1", ProviderSessionId::new),
+    );
+    let state = CodexRouteState::new(
+        modes(SafetyMode::AskForApproval, InteractionMode::Build),
+        None,
+    );
+    let reference = |provider_turn_id: Option<&str>| {
+        normalizer
+            .event(
+                &state,
+                "turn/completed",
+                Some(identifier("chat-turn-1", ChatTurnId::new)),
+                provider_turn_id.map(|turn| identifier(turn, ProviderTurnId::new)),
+                None,
+                CanonicalEvent::Unknown(crate::events::UnknownEvent {
+                    source_type: "fixture".to_string(),
+                    summary: "fixture".to_string(),
+                    safe_payload: None,
+                }),
+            )
+            .unwrap()
+            .provider_reference
+            .unwrap()
+            .value
+    };
+
+    assert_eq!(
+        reference(Some("provider-turn-1")),
+        json!({ "method": "turn/completed", "turnId": "provider-turn-1" })
+    );
+    assert_eq!(
+        reference(Some("session-1:turn:7")),
+        json!({ "method": "turn/completed" }),
+        "a fallback turn id is never a rewind point"
+    );
+    assert_eq!(reference(None), json!({ "method": "turn/completed" }));
+}

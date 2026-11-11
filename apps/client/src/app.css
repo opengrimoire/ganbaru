@@ -540,22 +540,20 @@ html[data-shell="mobile"] [data-keyboard-surface="shift"] {
 
 /*
  * The mobile shell shows no native scrollbars and reserves no space for them; the scroll edge fade signals vertical
- * overflow instead (see installMobileScrollFades). Subtrees marked to keep scrollbars, such as the Calendar, are left as
- * they are. The rules win over component stylesheets that style their own bars.
+ * overflow instead (see installMobileScrollFades), at twice the desktop size so it reads on a phone. The rules win over
+ * component stylesheets that style their own bars.
  */
 html[data-shell="mobile"] {
   --app-scrollbar-size: 0px;
-}
-html[data-shell="mobile"] [data-mobile-scrollbars="keep"] {
-  --app-scrollbar-size: var(--app-scrollbar-native-size);
+  --scroll-fade-size: 3rem;
 }
 html[data-shell="mobile"] .explorer-list {
   --explorer-list-scrollbar-gap: 0px;
 }
-html[data-shell="mobile"] :not([data-mobile-scrollbars="keep"], [data-mobile-scrollbars="keep"] *) {
+html[data-shell="mobile"] * {
   scrollbar-width: none !important;
 }
-html[data-shell="mobile"] :not([data-mobile-scrollbars="keep"], [data-mobile-scrollbars="keep"] *)::-webkit-scrollbar {
+html[data-shell="mobile"] *::-webkit-scrollbar {
   display: none !important;
   width: 0 !important;
   height: 0 !important;

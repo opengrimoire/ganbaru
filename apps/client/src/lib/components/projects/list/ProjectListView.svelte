@@ -897,6 +897,12 @@
     overflow-wrap: anywhere;
   }
 
+  /* The custom tracks are hidden on the mobile shell, so it reserves no gutter for them. */
+  :global(html[data-shell="mobile"]) .project-list-scroll {
+    padding-right: 0;
+    padding-bottom: 0;
+  }
+
   .project-list-scroll[data-mobile-layout="true"] {
     overflow-x: auto;
     touch-action: pan-x pan-y pinch-zoom;

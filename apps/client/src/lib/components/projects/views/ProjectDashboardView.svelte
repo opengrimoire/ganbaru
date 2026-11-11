@@ -335,6 +335,12 @@
     scrollbar-width: none;
   }
 
+  /* The custom tracks are hidden on the mobile shell, so it reserves no gutter for them. */
+  :global(html[data-shell="mobile"]) .project-dashboard-scroll {
+    padding-right: 0;
+    padding-bottom: 0;
+  }
+
   .project-dashboard-scroll::-webkit-scrollbar {
     display: none;
   }

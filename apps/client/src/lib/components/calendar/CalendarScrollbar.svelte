@@ -8,7 +8,6 @@
     type CalendarForwardedWheelDetail,
   } from "$lib/calendar/timeline-scroll";
   import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
-  import { keepsMobileScrollbars } from "$lib/utils/mobile-scroll-fade";
 
   let {
     scrollContainer,
@@ -27,11 +26,8 @@
   } = $props();
 
   const calendarZoom = useCalendarZoom();
-  /** The mobile shell signals overflow with edge fades, so the bar shows there only in subtrees that keep scrollbars. */
-  const visible = $derived(
-    BUILD_PLATFORM_PROFILE.shell !== "mobile" ||
-      (scrollContainer !== undefined && keepsMobileScrollbars(scrollContainer)),
-  );
+  /** The mobile shell shows no scrollbars. */
+  const visible = BUILD_PLATFORM_PROFILE.shell !== "mobile";
 
   let trackEl: HTMLDivElement | undefined = $state();
   let thumbTop = $state(0);

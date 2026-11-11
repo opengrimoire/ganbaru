@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
 
   const { t } = getLocalization();
 
@@ -14,6 +15,8 @@
     onScrollPositionChange?: (scrollLeft: number) => number;
   } = $props();
 
+  /** The mobile shell shows no scrollbars. */
+  const visible = BUILD_PLATFORM_PROFILE.shell !== "mobile";
   const SCROLLBAR_VISIBILITY_THRESHOLD_PX = 2;
   const MIN_THUMB_SIZE_PX = 24;
   const TRACK_EDGE_INSET_PX = 8;
@@ -261,66 +264,68 @@
   }
 </script>
 
-<div
-  bind:this={verticalTrackEl}
-  class="pointer-events-auto absolute right-0 z-40"
-  role="presentation"
-  aria-hidden="true"
-  style="
-    top: {TRACK_EDGE_INSET_PX}px;
-    bottom: {TRACK_GUTTER_PX}px;
-    width: {TRACK_GUTTER_PX}px;
-  "
-  onpointerdown={handleVerticalTrackPointerDown}
-  onpointermove={handlePointerMove}
-  onpointerup={handlePointerUp}
-  onpointercancel={handlePointerUp}
-  onpointerenter={() => (hoveredAxis = "vertical")}
-  onpointerleave={() => { if (!dragging) hoveredAxis = null; }}
->
-  {#if verticalThumbHeight > 0}
-    <div
-      class="absolute left-0.5 right-0.5 rounded-full transition-colors duration-150"
-      style="
-        top: {verticalThumbTop}px;
-        height: {verticalThumbHeight}px;
-        background-color: {thumbColor("vertical")};
-      "
-    ></div>
-  {/if}
-</div>
+{#if visible}
+  <div
+    bind:this={verticalTrackEl}
+    class="pointer-events-auto absolute right-0 z-40"
+    role="presentation"
+    aria-hidden="true"
+    style="
+      top: {TRACK_EDGE_INSET_PX}px;
+      bottom: {TRACK_GUTTER_PX}px;
+      width: {TRACK_GUTTER_PX}px;
+    "
+    onpointerdown={handleVerticalTrackPointerDown}
+    onpointermove={handlePointerMove}
+    onpointerup={handlePointerUp}
+    onpointercancel={handlePointerUp}
+    onpointerenter={() => (hoveredAxis = "vertical")}
+    onpointerleave={() => { if (!dragging) hoveredAxis = null; }}
+  >
+    {#if verticalThumbHeight > 0}
+      <div
+        class="absolute left-0.5 right-0.5 rounded-full transition-colors duration-150"
+        style="
+          top: {verticalThumbTop}px;
+          height: {verticalThumbHeight}px;
+          background-color: {thumbColor("vertical")};
+        "
+      ></div>
+    {/if}
+  </div>
 
-<div
-  bind:this={horizontalTrackEl}
-  class="pointer-events-auto absolute bottom-0 z-40"
-  data-app-tooltip={t("common.horizontalScrollTooltip")}
-  role="presentation"
-  aria-hidden="true"
-  style="
-    left: {TRACK_EDGE_INSET_PX}px;
-    right: {TRACK_GUTTER_PX}px;
-    height: {TRACK_GUTTER_PX}px;
-  "
-  onpointerdown={handleHorizontalTrackPointerDown}
-  onpointermove={handlePointerMove}
-  onpointerup={handlePointerUp}
-  onpointercancel={handlePointerUp}
-  onpointerenter={() => (hoveredAxis = "horizontal")}
-  onpointerleave={() => { if (!dragging) hoveredAxis = null; }}
->
-  {#if horizontalThumbWidth > 0}
-    <div
-      class="absolute bottom-px top-px rounded-full transition-colors duration-150"
-      style="
-        left: {horizontalThumbLeft}px;
-        width: {horizontalThumbWidth}px;
-        background-color: {thumbColor("horizontal")};
-      "
-    ></div>
-  {/if}
-</div>
+  <div
+    bind:this={horizontalTrackEl}
+    class="pointer-events-auto absolute bottom-0 z-40"
+    data-app-tooltip={t("common.horizontalScrollTooltip")}
+    role="presentation"
+    aria-hidden="true"
+    style="
+      left: {TRACK_EDGE_INSET_PX}px;
+      right: {TRACK_GUTTER_PX}px;
+      height: {TRACK_GUTTER_PX}px;
+    "
+    onpointerdown={handleHorizontalTrackPointerDown}
+    onpointermove={handlePointerMove}
+    onpointerup={handlePointerUp}
+    onpointercancel={handlePointerUp}
+    onpointerenter={() => (hoveredAxis = "horizontal")}
+    onpointerleave={() => { if (!dragging) hoveredAxis = null; }}
+  >
+    {#if horizontalThumbWidth > 0}
+      <div
+        class="absolute bottom-px top-px rounded-full transition-colors duration-150"
+        style="
+          left: {horizontalThumbLeft}px;
+          width: {horizontalThumbWidth}px;
+          background-color: {thumbColor("horizontal")};
+        "
+      ></div>
+    {/if}
+  </div>
 
-<div
-  class="pointer-events-none absolute bottom-0 right-0 z-40 h-2 w-2"
-  style="background-color: var(--cal-bg);"
-></div>
+  <div
+    class="pointer-events-none absolute bottom-0 right-0 z-40 h-2 w-2"
+    style="background-color: var(--cal-bg);"
+  ></div>
+{/if}

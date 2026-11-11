@@ -1336,8 +1336,8 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<!-- The Calendar keeps its scrollbars on the mobile shell because they double as time navigation. -->
-<div bind:this={containerEl} use:outsideClose data-mobile-scrollbars="keep" class="relative flex h-full flex-col select-none overflow-hidden">
+<!-- The mobile edge fade would mask the time grid under its sticky headers, so the Calendar opts out of it. -->
+<div bind:this={containerEl} use:outsideClose data-mobile-scroll-fade-off class="relative flex h-full flex-col select-none overflow-hidden">
   {#snippet header(embedded: boolean)}
     <CalendarHeader
       {anchorDate}

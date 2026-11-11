@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installMobileScrollFades, MOBILE_SCROLL_FADE_ATTRIBUTE } from "./mobile-scroll-fade";
+import { installMobileScrollFades, MOBILE_SCROLL_FADE_ATTRIBUTE, MOBILE_SCROLL_FADE_OFF_ATTRIBUTE } from "./mobile-scroll-fade";
 import { scrollEdgeFadeAction } from "./scroll-edge-fade";
 
 class StubResizeObserver {
@@ -84,7 +84,7 @@ describe("mobile scroll fades", () => {
 
   it("leaves the Calendar, text entry, floating surfaces, and containers with their own fade alone", () => {
     const calendar = document.createElement("div");
-    calendar.setAttribute("data-mobile-scrollbars", "keep");
+    calendar.setAttribute(MOBILE_SCROLL_FADE_OFF_ATTRIBUTE, "");
     const calendarScroller = scroller("overflow-y-auto", OVERFLOWING);
     calendar.append(calendarScroller);
     const textarea = document.createElement("textarea");

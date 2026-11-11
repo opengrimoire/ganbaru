@@ -1,15 +1,15 @@
 import { scrollEdgeFadeAction, SCROLL_FADE_OWNER_ATTRIBUTE } from "./scroll-edge-fade";
 
 /**
- * Subtrees marked with this attribute keep their scrollbars on the mobile shell instead of edge fades. The Calendar uses
- * it because its scrollbar doubles as time navigation.
+ * Subtrees marked with this attribute get no edge fade on the mobile shell, though their scrollbars stay hidden like
+ * everywhere else. The Calendar uses it so the fade does not mask its time grid.
  */
-export const MOBILE_SCROLLBARS_KEEP_ATTRIBUTE = "data-mobile-scrollbars";
+export const MOBILE_SCROLL_FADE_OFF_ATTRIBUTE = "data-mobile-scroll-fade-off";
 
 /** Marks a vertical scroll container styled in a component stylesheet, which the class selector cannot see. */
 export const MOBILE_SCROLL_FADE_ATTRIBUTE = "data-mobile-scroll-fade";
 
-const KEEP_SCROLLBARS_SELECTOR = `[${MOBILE_SCROLLBARS_KEEP_ATTRIBUTE}="keep"]`;
+const FADE_OFF_SELECTOR = `[${MOBILE_SCROLL_FADE_OFF_ATTRIBUTE}]`;
 
 /** Vertical scroll containers the mobile shell fades, recognized by their scroll utilities or the explicit marker. */
 export const MOBILE_SCROLL_CONTAINER_SELECTOR = [
@@ -31,24 +31,24 @@ const EXCLUDED_SELECTOR = [
   ".surface-dialog",
 ].join(", ");
 
-/** Whether `element` sits in a subtree that keeps scrollbars on the mobile shell. */
-export function keepsMobileScrollbars(element: Element): boolean {
-  return element.closest(KEEP_SCROLLBARS_SELECTOR) !== null;
+/** Whether `element` sits in a subtree that opts out of the mobile edge fade. */
+export function optsOutOfMobileScrollFade(element: Element): boolean {
+  return element.closest(FADE_OFF_SELECTOR) !== null;
 }
 
-/** Whether the mobile manager may fade `element`: a recognized scroll container outside kept and text entry and floating surfaces. */
+/** Whether the mobile manager may fade `element`: a recognized scroll container outside opted-out subtrees, text entry, and floating surfaces. */
 export function isMobileScrollFadeCandidate(element: Element): element is HTMLElement {
   return (
     element instanceof HTMLElement &&
     element.matches(MOBILE_SCROLL_CONTAINER_SELECTOR) &&
     !element.matches(EXCLUDED_SELECTOR) &&
-    !keepsMobileScrollbars(element)
+    !optsOutOfMobileScrollFade(element)
   );
 }
 
 /** Whether a scrolled element styled elsewhere scrolls vertically, so it can join the manager on first scroll. */
 function scrollsVertically(element: HTMLElement): boolean {
-  if (element.matches(EXCLUDED_SELECTOR) || keepsMobileScrollbars(element)) return false;
+  if (element.matches(EXCLUDED_SELECTOR) || optsOutOfMobileScrollFade(element)) return false;
   const overflowY = getComputedStyle(element).overflowY;
   return overflowY === "auto" || overflowY === "scroll";
 }

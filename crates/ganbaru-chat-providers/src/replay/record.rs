@@ -573,4 +573,66 @@ mod tests {
                 .contains("no header")
         );
     }
+
+    #[test]
+    fn a_redacted_recording_with_an_inbound_session_replays() {
+        let session = "3903fbae-3879-40ce-8bb8-316737ca8bb4";
+        let stream = |event: Value| {
+            json!({"type": "emit_inbound", "frame": {
+                "type": "stream_event", "parent_tool_use_id": null, "event": event
+            }})
+        };
+        let raw = recording(&[
+            header(&["-p", "--session-id", session]),
+            json!({"type": "expect_outbound", "frame": {
+                "type": "control_request", "request_id": "req_1_a",
+                "request": {"subtype": "initialize", "supportedDialogKinds": []}
+            }}),
+            json!({"type": "emit_inbound", "frame": {"type": "control_response", "response": {
+                "subtype": "success", "request_id": "req_1_a",
+                "response": {"commands": [], "models": [], "account": null}
+            }}}),
+            json!({"type": "expect_outbound", "frame": {
+                "type": "control_request", "request_id": "req_2_b",
+                "request": {"subtype": "set_permission_mode", "mode": "acceptEdits"}
+            }}),
+            json!({"type": "emit_inbound", "frame": {"type": "control_response", "response": {
+                "subtype": "success", "request_id": "req_2_b", "response": {}
+            }}}),
+            json!({"type": "expect_outbound", "frame": {
+                "type": "user", "parent_tool_use_id": null, "session_id": "",
+                "message": {"role": "user", "content": [{"type": "text", "text": "Say hello"}]}
+            }}),
+            json!({"type": "emit_inbound", "frame": {
+                "type": "system", "subtype": "init", "session_id": session,
+                "cwd": context().workspace, "model": "claude-sonnet-4-5", "tools": []
+            }}),
+            stream(json!({"type": "message_start", "message": {
+                "id": "msg_hello", "model": "claude-sonnet-4-5",
+                "usage": {"input_tokens": 12, "output_tokens": 1}
+            }})),
+            stream(json!({"type": "content_block_start", "index": 0,
+                "content_block": {"type": "text", "text": ""}})),
+            stream(json!({"type": "content_block_delta", "index": 0,
+                "delta": {"type": "text_delta", "text": "Hello"}})),
+            stream(json!({"type": "content_block_stop", "index": 0})),
+            json!({"type": "emit_inbound", "frame": {
+                "type": "result", "subtype": "success", "is_error": false, "session_id": session,
+                "duration_ms": 120, "duration_api_ms": 100, "num_turns": 1, "result": "Hello",
+                "stop_reason": "end_turn", "usage": {"input_tokens": 12, "output_tokens": 3}
+            }}),
+        ]);
+        let transcript = redact_recording(&raw, &context(), "abc1234").unwrap();
+        assert!(
+            transcript.contains("\"session_id\":\"<session>\""),
+            "{transcript}"
+        );
+        let script = crate::replay::scripts::script(ReplayProvider::Claude, "simple").unwrap();
+        let report = crate::replay::runner::replay(
+            ReplayProvider::Claude,
+            load_transcript(&transcript).unwrap(),
+            &script,
+        );
+        assert!(report.is_ok(), "{}", report.unwrap_err());
+    }
 }

@@ -15,6 +15,9 @@ pub const MAX_TRANSCRIPT_ENTRIES: usize = 2_000;
 
 const WORKSPACE_PLACEHOLDER: &str = "workspace";
 const SESSION_PLACEHOLDER: &str = "session";
+/// The session `<session>` stands for when no launch argument or outbound frame bound one
+/// before it is first used, so a provider can announce the session inbound.
+pub const REPLAY_SESSION: &str = "00000000-0000-4000-8000-000000000001";
 const REDACTED_PLACEHOLDER: &str = "redacted";
 const REFERENCE_PLACEHOLDER: &str = "ref";
 
@@ -381,10 +384,10 @@ impl ReplayBindings {
             },
             None => match token {
                 WORKSPACE_PLACEHOLDER => Ok(self.workspace.clone()),
-                SESSION_PLACEHOLDER => self
+                SESSION_PLACEHOLDER => Ok(self
                     .session
                     .clone()
-                    .ok_or_else(|| "<session> is used before any frame carried it".to_string()),
+                    .unwrap_or_else(|| REPLAY_SESSION.to_string())),
                 _ => Ok(format!("<{token}>")),
             },
         }

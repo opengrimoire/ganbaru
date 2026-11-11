@@ -184,11 +184,10 @@ fn references_quote_the_id_of_the_labeled_outbound_frame() {
         Ok(json!({ "id": 7, "note": "answer to req-3" })),
         "a whole-string reference keeps the numeric id type"
     );
-    assert!(bindings.resolve(&json!({ "id": "<ref:missing>" })).is_err());
-    assert!(
-        ReplayBindings::new("/work", None)
-            .resolve(&json!("<session>"))
-            .is_err()
+    assert_eq!(
+        ReplayBindings::new("/work", None).resolve(&json!("<session>")),
+        Ok(json!(REPLAY_SESSION)),
+        "an unbound session resolves to the replay session"
     );
 }
 

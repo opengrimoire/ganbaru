@@ -499,7 +499,7 @@ async fn dispatch_claimed_assignment(
     .fetch_one(pool)
     .await
     .map_err(persistence_error)?;
-    let developer_instructions = claim.instructions.clone();
+    let developer_instructions = assignment_developer_instructions(&claim.instructions);
     let project_id: String = row.try_get("project_id").map_err(persistence_error)?;
     let request = super::super::send_commands::SendChatTurnCommand {
         command: ChatCommandContext {
@@ -874,7 +874,8 @@ pub(super) async fn deliver_assignment_input(
     }
     let row = sqlx::query(
         "SELECT run.provider_thread_id, run.scratch_generation_id,
-                run.authorization_revision_id, revision.normalized_markdown
+                run.authorization_revision_id, revision.revision,
+                revision.normalized_markdown
          FROM chat_agent_runs run
          JOIN chat_assignment_authorization_revisions authorization
            ON authorization.id = run.authorization_revision_id
@@ -896,7 +897,7 @@ pub(super) async fn deliver_assignment_input(
            ON profile_revision.access_profile_id = profile.id
          JOIN chat_work_assignment_inputs input ON input.assignment_id = run.assignment_id
          JOIN chat_communication_messages message ON message.item_id = input.message_item_id
-         JOIN chat_communication_message_revisions revision
+         JOIN chat_communication_message_revisions_numbered revision
            ON revision.id = message.current_revision_id
          WHERE run.assignment_id = ? AND input.message_item_id = ?
            AND run.state = 'working' AND input.delivery_state = 'pending'
@@ -934,6 +935,12 @@ pub(super) async fn deliver_assignment_input(
         )
         .await?;
     }
+    let prompt = super::context::follow_up_context_line(
+        message_item_id.as_str(),
+        u64_value(row.try_get("revision").map_err(persistence_error)?)?,
+        row.try_get("normalized_markdown")
+            .map_err(persistence_error)?,
+    )?;
     super::super::turns::steer_turn(
         app,
         db_url,
@@ -950,9 +957,7 @@ pub(super) async fn deliver_assignment_input(
             thread_id,
             message_id: ChatMessageId::new(new_id("provider-steer-message")?)
                 .map_err(identifier_error)?,
-            prompt: row
-                .try_get("normalized_markdown")
-                .map_err(persistence_error)?,
+            prompt,
         },
     )
     .await?;
@@ -967,6 +972,17 @@ pub(super) async fn deliver_assignment_input(
     .await
     .map_err(persistence_error)?;
     Ok(())
+}
+
+/// Builds the developer instructions of an assignment turn: the context package format first,
+/// then the teammate's own instructions when it has any.
+fn assignment_developer_instructions(teammate_instructions: &str) -> String {
+    let format = super::context::CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS;
+    if teammate_instructions.trim().is_empty() {
+        format.to_string()
+    } else {
+        format!("{format}\n\n{teammate_instructions}")
+    }
 }
 
 /// Chooses the turn modes for an organizational assignment. Native targets run
@@ -996,7 +1012,7 @@ fn assignment_turn_modes(
 mod tests {
     use super::{
         ChatApprovalPolicy, ChatRuntimeApprovalPolicy, InteractionMode, SafetyMode,
-        assignment_turn_modes,
+        assignment_developer_instructions, assignment_turn_modes,
     };
 
     #[test]
@@ -1062,5 +1078,16 @@ mod tests {
             );
             assert_eq!(modes.interaction_mode, InteractionMode::Build);
         }
+    }
+
+    #[test]
+    fn assignment_instructions_describe_the_package_before_the_teammate_instructions() {
+        let format = super::super::context::CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS;
+        assert!(format.contains("`follow_up`"));
+        assert_eq!(assignment_developer_instructions("  \n"), format);
+        assert_eq!(
+            assignment_developer_instructions("Review carefully."),
+            format!("{format}\n\nReview carefully.")
+        );
     }
 }

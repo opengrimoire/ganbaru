@@ -72,7 +72,7 @@
   <div
     bind:this={element}
     id="chat-composer-menu"
-    class="composer-menu surface-floating-body"
+    data-mobile-scroll-fade class="composer-menu surface-floating-body"
     role="listbox"
     aria-label={kind === "mention"
       ? t("chat.composer.mentionFiles")

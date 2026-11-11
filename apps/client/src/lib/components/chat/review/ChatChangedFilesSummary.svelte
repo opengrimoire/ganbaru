@@ -90,7 +90,7 @@
     {#if deletions > 0}<span class="deletions">−{formatNumber(localization.locale, deletions)}</span>{/if}
     <span class="view-diff">{t("chat.timeline.viewDiff")}<ChevronRight size={13} /></span>
   </button>
-  <div class="changed-files-list">
+  <div data-mobile-scroll-fade class="changed-files-list">
     {#each files as file (file.relativePath)}
       <button type="button" onpointerenter={() => prefetchChanges(file.relativePath)} onpointerleave={cancelPrefetch} onfocus={() => prefetchChanges(file.relativePath)} onblur={cancelPrefetch} onclick={() => openChanges(file.relativePath)}>
         <ChatFileIcon path={file.relativePath} size={13} />

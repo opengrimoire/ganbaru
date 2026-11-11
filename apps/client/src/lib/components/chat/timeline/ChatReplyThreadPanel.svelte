@@ -340,7 +340,7 @@
 
   <div
     bind:this={scroller}
-    class="thread-scroll"
+    data-mobile-scroll-fade class="thread-scroll"
     aria-busy={!executionPresentationReady || chat.replyThreadLoading || undefined}
     onscroll={rememberScrollPosition}
   >

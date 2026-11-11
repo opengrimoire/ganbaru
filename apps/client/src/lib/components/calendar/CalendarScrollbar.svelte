@@ -7,6 +7,8 @@
     getSmoothScrollDelta,
     type CalendarForwardedWheelDetail,
   } from "$lib/calendar/timeline-scroll";
+  import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
+  import { keepsMobileScrollbars } from "$lib/utils/mobile-scroll-fade";
 
   let {
     scrollContainer,
@@ -25,6 +27,11 @@
   } = $props();
 
   const calendarZoom = useCalendarZoom();
+  /** The mobile shell signals overflow with edge fades, so the bar shows there only in subtrees that keep scrollbars. */
+  const visible = $derived(
+    BUILD_PLATFORM_PROFILE.shell !== "mobile" ||
+      (scrollContainer !== undefined && keepsMobileScrollbars(scrollContainer)),
+  );
 
   let trackEl: HTMLDivElement | undefined = $state();
   let thumbTop = $state(0);
@@ -161,29 +168,31 @@
   });
 </script>
 
-<!-- Absolute overlay: positioned outside scroll container so it never scrolls -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  bind:this={trackEl}
-  class="{wheelPassthrough ? 'pointer-events-none' : 'pointer-events-auto'} absolute right-0 z-48"
-  style="top: {stickyTop}px; bottom: {stickyBottom}px; width: {CALENDAR_SCROLLBAR_TRACK_PX}px;"
-  onpointerdown={handleTrackPointerDown}
-  onpointermove={handlePointerMove}
-  onpointerup={handlePointerUp}
-  onpointerenter={() => (hovering = true)}
-  onpointerleave={() => { if (!dragging) hovering = false; }}
-  onwheel={handleWheel}
->
-  {#if thumbHeight > 0}
-    <div
-      class="absolute left-0.5 right-0.5 rounded-full transition-opacity duration-150"
-      style="
-        top: {thumbTop}px;
-        height: {thumbHeight}px;
-        background-color: {activeThumb || dragging || hovering
-          ? 'var(--cal-scrollbar-thumb-hover, var(--muted-foreground))'
-          : 'var(--cal-scrollbar-thumb, var(--muted))'};
-      "
-    ></div>
-  {/if}
-</div>
+{#if visible}
+  <!-- Absolute overlay: positioned outside scroll container so it never scrolls -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    bind:this={trackEl}
+    class="{wheelPassthrough ? 'pointer-events-none' : 'pointer-events-auto'} absolute right-0 z-48"
+    style="top: {stickyTop}px; bottom: {stickyBottom}px; width: {CALENDAR_SCROLLBAR_TRACK_PX}px;"
+    onpointerdown={handleTrackPointerDown}
+    onpointermove={handlePointerMove}
+    onpointerup={handlePointerUp}
+    onpointerenter={() => (hovering = true)}
+    onpointerleave={() => { if (!dragging) hovering = false; }}
+    onwheel={handleWheel}
+  >
+    {#if thumbHeight > 0}
+      <div
+        class="absolute left-0.5 right-0.5 rounded-full transition-opacity duration-150"
+        style="
+          top: {thumbTop}px;
+          height: {thumbHeight}px;
+          background-color: {activeThumb || dragging || hovering
+            ? 'var(--cal-scrollbar-thumb-hover, var(--muted-foreground))'
+            : 'var(--cal-scrollbar-thumb, var(--muted))'};
+        "
+      ></div>
+    {/if}
+  </div>
+{/if}

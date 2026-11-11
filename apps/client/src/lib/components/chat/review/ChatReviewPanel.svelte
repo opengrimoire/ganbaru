@@ -745,7 +745,7 @@
 
   <div class="review-workspace" class:comments-open={commentsVisible}>
     <div class="review-main">
-      <aside class="review-file-list" aria-label={t("chat.review.changedFiles")}>
+      <aside data-mobile-scroll-fade class="review-file-list" aria-label={t("chat.review.changedFiles")}>
         {#if loadingInitial && !snapshot}
           <Loading layout="rows" rows={3} />
         {:else if changedFiles.length > 0}

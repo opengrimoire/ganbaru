@@ -584,7 +584,7 @@
     {:else if hostedProviderKind && hostedRequests.length === 0}
       <p class="empty compact">{t("chat.sourceControl.noChangeRequests")}</p>
     {:else}
-      <div class="change-request-list">
+      <div data-mobile-scroll-fade class="change-request-list">
         {#each hostedRequests as request (`${request.providerKind}:${request.number}`)}
           <article>
             <GitPullRequest size={13} />
@@ -619,7 +619,7 @@
   {#if loading && !status}
     <Loading layout="fill" />
   {:else if status}
-    <div class="changes">
+    <div data-mobile-scroll-fade class="changes">
       <section>
         <h3><span>{t("chat.sourceControl.staged")}</span><small>{staged.length}</small></h3>
         {#each staged as file (file.relativePath)}

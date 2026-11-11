@@ -138,7 +138,7 @@
   {#if actionError}<Notice class="feed-action-error" message={actionError} onDismiss={() => { actionError = null; }} />{/if}
   <div
     bind:this={feed}
-    class="channel-feed"
+    data-mobile-scroll-fade class="channel-feed"
     role="feed"
     aria-busy={chat.channelMessagesLoading}
     onpointerdown={() => void chat.markSelectedChannelRead()}

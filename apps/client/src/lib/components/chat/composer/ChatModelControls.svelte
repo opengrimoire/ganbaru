@@ -898,7 +898,7 @@
                   <div class="model-list-frame">
                   <div
                     bind:this={modelListElement}
-                    class="selection-list model-list hide-scrollbar"
+                    data-mobile-scroll-fade class="selection-list model-list hide-scrollbar"
                     use:scrollEdgeFadeAction
                   >
                     <div class="model-list-content">

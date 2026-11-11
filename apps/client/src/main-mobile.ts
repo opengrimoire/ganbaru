@@ -15,11 +15,13 @@ import {
 } from "$lib/i18n/pre-vault-language";
 import { applyPlatformProfileToDocument } from "$lib/platform";
 import { installModalKeyboardRouter } from "$lib/modal-focus";
+import { installMobileScrollFades } from "$lib/utils/mobile-scroll-fade";
 import { hydrateUserThemes } from "$lib/stores/theme.svelte";
 
 (globalThis as unknown as { Temporal: typeof Temporal }).Temporal = Temporal;
 applyPlatformProfileToDocument();
 installModalKeyboardRouter();
+installMobileScrollFades();
 /** Starts system bar inset tracking before any screen mounts; the store loads in the chunk the app shell shares. */
 const viewportTracking = import("$lib/stores/viewport.svelte").then((viewport) => viewport.initializeViewportTracking());
 

@@ -170,7 +170,8 @@
   --selection-handle: #3B82F6;
   --app-scrollbar-thumb: color-mix(in srgb, var(--foreground) 18%, transparent);
   --app-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 36%, transparent);
-  --app-scrollbar-size: 8px;
+  --app-scrollbar-native-size: 8px;
+  --app-scrollbar-size: var(--app-scrollbar-native-size);
 
   /* Frame / contour (titlebar) */
   --sidebar: #EEEEF1;
@@ -535,6 +536,29 @@ html[data-shell="mobile"] [data-keyboard-surface="lift"] {
 }
 html[data-shell="mobile"] [data-keyboard-surface="shift"] {
   translate: 0 calc(-1 * var(--keyboard-shift, 0px));
+}
+
+/*
+ * The mobile shell shows no native scrollbars and reserves no space for them; the scroll edge fade signals vertical
+ * overflow instead (see installMobileScrollFades). Subtrees marked to keep scrollbars, such as the Calendar, are left as
+ * they are. The rules win over component stylesheets that style their own bars.
+ */
+html[data-shell="mobile"] {
+  --app-scrollbar-size: 0px;
+}
+html[data-shell="mobile"] [data-mobile-scrollbars="keep"] {
+  --app-scrollbar-size: var(--app-scrollbar-native-size);
+}
+html[data-shell="mobile"] .explorer-list {
+  --explorer-list-scrollbar-gap: 0px;
+}
+html[data-shell="mobile"] :not([data-mobile-scrollbars="keep"], [data-mobile-scrollbars="keep"] *) {
+  scrollbar-width: none !important;
+}
+html[data-shell="mobile"] :not([data-mobile-scrollbars="keep"], [data-mobile-scrollbars="keep"] *)::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
 @layer utilities {

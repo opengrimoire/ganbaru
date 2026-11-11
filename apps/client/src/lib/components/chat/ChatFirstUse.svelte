@@ -48,7 +48,7 @@
 
 </script>
 
-<div class="first-use-shell" class:new-thread={firstUse.kind === "no_thread"} class:pending-send={firstUse.kind === "no_thread" && chat.pendingUserMessage !== null}>
+<div data-mobile-scroll-fade class="first-use-shell" class:new-thread={firstUse.kind === "no_thread"} class:pending-send={firstUse.kind === "no_thread" && chat.pendingUserMessage !== null}>
   <section class="first-use-content" class:new-thread={firstUse.kind === "no_thread"} class:pending-send={firstUse.kind === "no_thread" && chat.pendingUserMessage !== null}>
     {#if operationError}<Notice class="mb-3 text-sm" message={operationError} />{/if}
     {#if firstUse.kind !== "no_thread" && firstUse.kind !== "provider_unavailable"}<div class="mb-4 flex size-12 items-center justify-center rounded-2xl border border-border bg-card"><MessageSquare size={22} /></div>{/if}

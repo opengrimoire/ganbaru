@@ -422,7 +422,7 @@
     <div class="directory-layout">
       <aside class="directory-panel">
         <div class="scroll-frame">
-          <div bind:this={directoryScrollElement} class="directory-scroll hide-scrollbar">
+          <div bind:this={directoryScrollElement} data-mobile-scroll-fade class="directory-scroll hide-scrollbar">
             <nav class="provider-directory" aria-label={t("settings.chat.providers.familyTabs")}>
               {#each families as family (family.familyId)}
                 {@const instances = providersForFamily(family.familyId)}
@@ -471,7 +471,7 @@
       <div class="detail-panel">
         {#if selectedFamily}
           <div class="detail-scroll-frame">
-            <div bind:this={detailScrollElement} class="detail-scroll hide-scrollbar">
+            <div bind:this={detailScrollElement} data-mobile-scroll-fade class="detail-scroll hide-scrollbar">
               <div class="editor-heading">
                 <ChatModelAvatar
                   familyId={selectedFamily.familyId}

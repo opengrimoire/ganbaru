@@ -709,7 +709,7 @@
     <aside class="directory-panel">
       {#if editor.allDirectoryTeammates.length > 8}<label class="directory-search"><Search size={13} /><input bind:value={directoryQuery} aria-label={t("settings.chat.teammates.searchDirectory")} placeholder={t("settings.chat.teammates.searchDirectory")} /></label>{/if}
       <div class="scroll-frame">
-        <div bind:this={directoryScrollElement} class="directory-scroll hide-scrollbar">
+        <div bind:this={directoryScrollElement} data-mobile-scroll-fade class="directory-scroll hide-scrollbar">
           <nav aria-label={t("settings.chat.teammates.directoryLabel")} class="directory-list teammate-directory">
             {#if editor.creating}
               <button type="button" class="directory-row active" aria-current="page"><span class="draft-avatar">{#if draftCompany}<ChatModelAvatar familyId={draftCompany.iconFamilyId} label={draftCompany.name} size={30} />{:else}<Plus size={15} />{/if}</span><span><strong>{editor.displayName.trim() || t("settings.chat.teammates.name")}</strong><small>{editor.role.trim() || t("settings.chat.teammates.role")}</small></span></button>
@@ -731,7 +731,7 @@
       {#if editor.creating || editor.selected}
         <form class="editor teammate-editor" aria-busy={editor.saving || editor.conflictLoading} onsubmit={(event) => { event.preventDefault(); void editor.save(); }}>
           <div class="editor-scroll-frame">
-            <div bind:this={detailScrollElement} class="editor-scroll hide-scrollbar">
+            <div bind:this={detailScrollElement} data-mobile-scroll-fade class="editor-scroll hide-scrollbar">
               <div class="editor-heading">
                 {#if editor.creating}
                   {#if draftCompany}<ChatModelAvatar familyId={draftCompany.iconFamilyId} label={draftCompany.name} size={38} />{:else}<span class="draft-avatar large"><Plus size={16} /></span>{/if}

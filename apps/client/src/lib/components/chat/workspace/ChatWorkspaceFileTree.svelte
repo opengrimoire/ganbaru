@@ -59,7 +59,7 @@
   }
 </script>
 
-<div bind:this={scroller} class="file-tree-scroll" role="tree" aria-busy={refreshing || undefined} onscroll={handleScroll}>
+<div bind:this={scroller} data-mobile-scroll-fade class="file-tree-scroll" role="tree" aria-busy={refreshing || undefined} onscroll={handleScroll}>
   <div class="file-tree-canvas" style={`height:${range.totalSize}px;`}>
     <div class="file-tree-window" style={`transform:translateY(${range.offset}px);`}>
       {#each visibleRows as row (row.entry.relativePath)}

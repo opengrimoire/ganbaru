@@ -1336,7 +1336,8 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div bind:this={containerEl} use:outsideClose class="relative flex h-full flex-col select-none overflow-hidden">
+<!-- The Calendar keeps its scrollbars on the mobile shell because they double as time navigation. -->
+<div bind:this={containerEl} use:outsideClose data-mobile-scrollbars="keep" class="relative flex h-full flex-col select-none overflow-hidden">
   {#snippet header(embedded: boolean)}
     <CalendarHeader
       {anchorDate}

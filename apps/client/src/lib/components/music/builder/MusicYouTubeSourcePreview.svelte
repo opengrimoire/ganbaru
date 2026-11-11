@@ -46,7 +46,7 @@
   </div>
 
   {#if preview.kind === "youtube-playlist"}
-    <div class="youtube-track-list" data-music-scrollable="true">
+    <div data-mobile-scroll-fade class="youtube-track-list" data-music-scrollable="true">
       {#each preview.videos as video, index (video.videoId)}
         <button
           type="button"

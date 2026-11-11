@@ -64,11 +64,11 @@
 >
   <header class="sticky top-0 z-10 flex shrink-0 items-center gap-2 px-3 pb-1 pt-2">
     <div class="min-w-0 flex-1">
-      <div class="truncate text-[0.8125rem] font-medium">{title}</div>
+      <div class="truncate text-[0.866667rem] font-semibold">{title}</div>
     </div>
     <button
       type="button"
-      class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+      class="flex size-8 min-h-(--control-height) min-w-(--control-height) shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
       aria-label={discardLabel}
       title={discardLabel}
       disabled={!draftReady || !dirty || saving}
@@ -76,17 +76,17 @@
         if (dirty) discardConfirmOpen = true;
       }}
     >
-      <RotateCcw size={14} strokeWidth={1.75} />
+      <RotateCcw size={16} strokeWidth={1.75} />
     </button>
     <button
       type="button"
-      class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+      class="flex size-8 min-h-(--control-height) min-w-(--control-height) shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
       aria-label={closeLabel}
       title={closeLabel}
       disabled={saving}
       onclick={onClose}
     >
-      <X size={15} strokeWidth={1.75} />
+      <X size={16} strokeWidth={1.75} />
     </button>
   </header>
 

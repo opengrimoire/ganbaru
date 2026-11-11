@@ -15,7 +15,7 @@
 </script>
 
 <div class="flex min-h-(--control-height) items-center {inlineCount ? 'gap-2' : 'justify-between gap-3 px-1'}">
-  <h2 class="truncate text-[0.8rem] font-medium text-foreground">{label}</h2>
+  <h2 class="truncate text-[0.866667rem] font-semibold text-foreground">{label}</h2>
   {#if count}
     <span class="shrink-0 text-[0.733333rem] text-muted-foreground {inlineCount ? 'tabular-nums' : 'font-medium'}">{typeof count === "number" ? formatNumber(localization.locale, count) : count}</span>
   {/if}

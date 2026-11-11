@@ -6,14 +6,11 @@
 //! `initialize`, because the CLI replaces launch-argument append text with it.
 
 use super::protocol::{ClaudeSystemPromptArgument, MAX_INLINE_SYSTEM_PROMPT_BYTES};
-use crate::models::{ChatError, ChatErrorCode, ChatResult};
+use crate::models::{ChatError, ChatErrorCode, ChatResult, MAX_DEVELOPER_INSTRUCTIONS_BYTES};
 use crate::probe_directory::ProbeDirectory;
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::PathBuf;
-
-/// Largest instructions a Claude session accepts, matching the teammate instructions bound.
-pub const MAX_DEVELOPER_INSTRUCTIONS_BYTES: usize = 64 * 1024;
 
 /// Name of the owner-only file that carries instructions above the inline bound.
 const SYSTEM_PROMPT_FILE_NAME: &str = "instructions.md";

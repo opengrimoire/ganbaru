@@ -4,8 +4,12 @@
     resolveCalendarTokens,
     type Theme,
   } from "$lib/themes";
+  import { cn } from "$lib/utils";
 
-  let { theme }: { theme: Theme } = $props();
+  /** `default` fits compact desktop rows; `touch` matches the touch control height beside it. */
+  type ThemeMiniPreviewSize = "default" | "touch";
+
+  let { theme, size = "default" }: { theme: Theme; size?: ThemeMiniPreviewSize } = $props();
 
   const PREVIEW_INDICES: readonly number[] = [2, 5, 8, 11, 14, 17, 20, 23, 27, 31];
 
@@ -16,30 +20,35 @@
       (i) => theme.eventPalette[i],
     ).join(", ")})`,
   );
+  const touch = $derived(size === "touch");
 </script>
 
 <div
-  class="flex shrink-0 flex-col gap-0.5 rounded-md p-1 outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
-  style="background: {appTokens['--background']}; width: 96px;"
+  class={cn(
+    "flex shrink-0 flex-col rounded-md outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10",
+    touch ? "w-35 gap-1 p-1.5" : "w-24 gap-0.5 p-1",
+  )}
+  style:background={appTokens["--background"]}
   aria-hidden="true"
 >
   <div
-    class="flex h-3 items-center gap-1 rounded-sm px-1"
-    style="background: {appTokens['--card']};"
+    class={cn("flex items-center gap-1 rounded-sm", touch ? "h-4.5 px-1.5" : "h-3 px-1")}
+    style:background={appTokens["--card"]}
   >
     <span
-      class="flex-1 truncate text-[0.533333rem] font-bold leading-none"
-      style="color: {appTokens['--foreground']};"
+      class={cn("flex-1 truncate font-bold leading-none", touch ? "text-[0.666667rem]" : "text-[0.533333rem]")}
+      style:color={appTokens["--foreground"]}
     >
       Aa
     </span>
     <span
-      class="h-1.5 w-1.5 shrink-0 rounded-full"
-      style="background: {appTokens['--primary']};"
+      class={cn("shrink-0 rounded-full", touch ? "size-2" : "size-1.5")}
+      style:background={appTokens["--primary"]}
     ></span>
   </div>
   <div
-    class="h-2 w-full rounded-sm"
-    style="background-color: {calendarTokens['--cal-bg']}; background-image: {previewGradient};"
+    class={cn("w-full rounded-sm", touch ? "h-2.5" : "h-2")}
+    style:background-color={calendarTokens["--cal-bg"]}
+    style:background-image={previewGradient}
   ></div>
 </div>

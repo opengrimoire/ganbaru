@@ -109,7 +109,7 @@
         {/if}
       </div>
     </div>
-    <ThemeMiniPreview {theme} />
+    <ThemeMiniPreview {theme} size={mobileLayout ? "touch" : "default"} />
   </div>
 
   <div class="relative z-20 flex shrink-0 items-center justify-end gap-1">

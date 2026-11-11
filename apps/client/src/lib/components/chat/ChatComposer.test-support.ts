@@ -150,8 +150,15 @@ export function interactionState(): ChatInteractionStateRead {
       providerData: {
         schemaVersion: 1,
         value: {
-          limitId: "codex",
-          primary: { usedPercent: 18, windowDurationMins: 10_080, resetsAt: 1_785_200_400 },
+          rateLimitsByLimitId: {
+            codex: {
+              limitId: "codex",
+              limitName: null,
+              primary: { usedPercent: 18, windowDurationMins: 10_080, resetsAt: 1_785_200_400 },
+              secondary: null,
+              rateLimitReachedType: null,
+            },
+          },
         },
       },
     },

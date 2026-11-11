@@ -837,10 +837,8 @@
   }
 
   :global(.project-list-scroll .project-list-sticky-row) {
-    --project-list-sticky-row-inset: 0.25rem;
     position: relative;
     z-index: 1;
-    padding-inline: var(--project-list-sticky-row-inset);
     background-color: var(--cal-bg);
   }
 
@@ -913,10 +911,8 @@
   .project-list-scroll[data-mobile-layout="true"] :global(.project-list-leading-row) {
     z-index: 2;
     width: min(22rem, calc(100vw - 2rem));
-    /* The fill covers the gutter in full, like a frozen task gutter, but leaves the bottom pixel past it clear so the header's divider stays visible under the label. */
-    background:
-      linear-gradient(var(--cal-bg) 0 0) left top / calc(var(--project-list-divider-left) - var(--project-list-sticky-row-inset)) 100% no-repeat,
-      linear-gradient(var(--cal-bg) 0 0) left top / 100% calc(100% - 1px) no-repeat;
+    /* The fill leaves the bottom pixel clear so the header's divider stays visible under the pinned label and controls, as task row dividers do once their gutter scrolls away. */
+    background: linear-gradient(var(--cal-bg) 0 0) left top / 100% calc(100% - 1px) no-repeat;
   }
 
   .project-list-scroll::-webkit-scrollbar {

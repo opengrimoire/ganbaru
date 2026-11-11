@@ -26,7 +26,7 @@
 </script>
 
 <div
-  class="project-list-divider project-list-sticky-row group/list-group-header grid min-h-(--collection-table-row-height) items-center"
+  class="project-list-divider project-list-sticky-row group/list-group-header grid min-h-(--collection-table-row-height) items-center px-1"
   style={`grid-template-columns: ${gridTemplate}; min-width: ${gridMinWidth};`}
 >
   <div

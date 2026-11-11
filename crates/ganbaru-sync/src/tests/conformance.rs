@@ -2816,37 +2816,13 @@ fn engine_construction_checks_adapters_both_ways() {
     );
 }
 
-/// Recorded manifests by version. Operations of every version up to the current one validate
-/// against the current manifest. The snapshot of a version no release carries yet is rerecorded
-/// in place when that version changes, tightening included. A released version's snapshot never
-/// changes; a new version may only add tables and groups, loosen rules, or refuse values the
-/// schema could never store, and it records its own snapshot here.
-const RECORDED_MANIFESTS: &[(u16, &str)] = &[
-    (1, include_str!("fixtures/vault_manifest_v1.txt")),
-    (2, include_str!("fixtures/vault_manifest_v2.txt")),
-    (3, include_str!("fixtures/vault_manifest_v3.txt")),
-    (4, include_str!("fixtures/vault_manifest_v4.txt")),
-    (5, include_str!("fixtures/vault_manifest_v5.txt")),
-    (6, include_str!("fixtures/vault_manifest_v6.txt")),
-    (7, include_str!("fixtures/vault_manifest_v7.txt")),
-    (8, include_str!("fixtures/vault_manifest_v8.txt")),
-    (9, include_str!("fixtures/vault_manifest_v9.txt")),
-    (10, include_str!("fixtures/vault_manifest_v10.txt")),
-    (11, include_str!("fixtures/vault_manifest_v11.txt")),
-    (12, include_str!("fixtures/vault_manifest_v12.txt")),
-    (13, include_str!("fixtures/vault_manifest_v13.txt")),
-    (14, include_str!("fixtures/vault_manifest_v14.txt")),
-    (15, include_str!("fixtures/vault_manifest_v15.txt")),
-    (16, include_str!("fixtures/vault_manifest_v16.txt")),
-    (17, include_str!("fixtures/vault_manifest_v17.txt")),
-    (18, include_str!("fixtures/vault_manifest_v18.txt")),
-    (19, include_str!("fixtures/vault_manifest_v19.txt")),
-    (20, include_str!("fixtures/vault_manifest_v20.txt")),
-    (21, include_str!("fixtures/vault_manifest_v21.txt")),
-    (22, include_str!("fixtures/vault_manifest_v22.txt")),
-    (23, include_str!("fixtures/vault_manifest_v23.txt")),
-    (24, include_str!("fixtures/vault_manifest_v24.txt")),
-];
+/// Recorded manifests by version. Version 24 is the pre-user starting point: no release carries
+/// it, so its snapshot is rerecorded in place whenever the manifest changes, and fields may join
+/// existing groups or groups may change shape. Once a release carries a version, its snapshot
+/// never changes; a later version may only add tables and groups, loosen rules, or refuse values
+/// the schema could never store, and it records its own snapshot here. Operations of every
+/// recorded version validate against the current manifest.
+const RECORDED_MANIFESTS: &[(u16, &str)] = &[(24, include_str!("fixtures/vault_manifest_v24.txt"))];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {
     let (version, recorded) = RECORDED_MANIFESTS

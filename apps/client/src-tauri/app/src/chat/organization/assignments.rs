@@ -1,19 +1,23 @@
-//! Work assignment cancellation, retry, and dispatch recovery.
+//! Work assignment review, cancellation, retry, and dispatch recovery.
 
 use super::common::{
-    chat_writers, new_id, parse_folder_capability, parse_runtime_approval_policy, this_device_id,
-    wire_work_state,
+    MAX_MESSAGE_BYTES, chat_writers, new_id, parse_folder_capability,
+    parse_runtime_approval_policy, this_device_id, wire_work_state,
 };
 use super::context::{GrantedAccess, freeze_context_package, read_granted_access};
 use super::dispatch::{deliver_pending_assignment_inputs, dispatch_assignment_job};
 use super::reads::{read_active_or_latest_assignment, read_assignment};
 use super::workflow::{
-    NewAssignment, PostingDevice, create_assignment, drop_input_requested_targets,
-    end_assignment_dispatch_jobs, move_pending_inputs, pending_thread_inputs,
-    read_assignment_executing_device, read_input_requested_target, require_participating_teammate,
+    NewAssignment, PostingDevice, complete_reviewed_assignment, create_assignment,
+    drop_input_requested_targets, end_assignment_dispatch_jobs, move_pending_inputs,
+    pending_thread_inputs, read_assignment_executing_device, read_input_requested_target,
+    require_no_pending_replies, require_participating_teammate, require_reviewable_assignment,
     set_assignment_state, take_requested_target,
 };
-use super::{chat_pool, i64_value, identifier_error, now_timestamp, persistence_error, timestamp};
+use super::{
+    LOCAL_PARTICIPANT_ID, PostOutcome, ReviewedWork, chat_pool, i64_value, identifier_error,
+    now_timestamp, persistence_error, timestamp,
+};
 use crate::chat::device_state::{
     ChatDeviceScope, assignment_is_accepted, read_active_device_scope,
     record_assignment_acceptance, update_active_device_scope,
@@ -21,9 +25,13 @@ use crate::chat::device_state::{
 use crate::chat::settings::device_state_error;
 use crate::chat::sync::SyncedAssignmentWork;
 use ganbaru_chat::coordination::acceptance::{AcceptanceSubject, acceptance_digest};
+use ganbaru_chat::coordination::contracts::PostChatMessageCommand;
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeSet;
+
+/// Schema version of the composer rich-text document a review note posts.
+const COMPOSER_DOCUMENT_SCHEMA_VERSION: u32 = 1;
 
 pub(super) async fn recover_assignment_dispatch_jobs(
     app: tauri::AppHandle,
@@ -383,6 +391,7 @@ async fn reroute_assignment(
             latest_assignment: Some(&previous),
             executing_device_id: device.id,
             execution_target: None,
+            poster_participant_id: LOCAL_PARTICIPANT_ID,
         },
         device,
         now,
@@ -525,6 +534,7 @@ async fn recover_follow_up(
             latest_assignment: Some(&previous),
             executing_device_id: device.id,
             execution_target: requested_target.as_ref(),
+            poster_participant_id: LOCAL_PARTICIPANT_ID,
         },
         device,
         now,
@@ -545,6 +555,150 @@ async fn recover_follow_up(
             }
             Err(error)
         }
+    }
+}
+
+/// Reviews the ready-for-review work `assignment_id` at `expected_revision`. Accept completes
+/// it; Request changes posts the note as a reply, which continues the work in a follow-up
+/// assignment and completes the reviewed one with changes requested. Accept is refused while
+/// replies wait on the work, and Request changes when no device can run the teammate, so a
+/// review never leaves a reply with no run to reach.
+pub(super) async fn review_assignment(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+    expected_revision: u64,
+    review: ChatAssignmentReviewRequest,
+) -> ChatResult<ChatWorkAssignmentRead> {
+    let pool = chat_pool(app.clone(), db_url.clone()).await?;
+    let note = match review {
+        ChatAssignmentReviewRequest::Accept => {
+            return accept_reviewed_assignment(&pool, &assignment_id, expected_revision).await;
+        }
+        ChatAssignmentReviewRequest::RequestChanges { note } => note,
+    };
+    let request = review_note_request(&pool, &assignment_id, expected_revision, &note).await?;
+    let reviewed = ReviewedWork {
+        assignment_id: &assignment_id,
+        expected_revision,
+    };
+    match super::post_message(app, db_url, &request, None, Some(reviewed)).await? {
+        PostOutcome::Posted(_) => read_assignment(&pool, &assignment_id).await,
+        PostOutcome::Refused(refusal) => Err(refusal),
+    }
+}
+
+/// Completes the ready-for-review work `assignment_id` at `expected_revision` as accepted by
+/// the local participant, and ends whatever dispatch it still holds here. Pending replies of
+/// the work refuse it, since completed work delivers nothing.
+pub(super) async fn accept_reviewed_assignment(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    expected_revision: u64,
+) -> ChatResult<ChatWorkAssignmentRead> {
+    let now = now_timestamp()?;
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    require_reviewable_assignment(&mut transaction, assignment_id, expected_revision).await?;
+    require_no_pending_replies(&mut transaction, assignment_id).await?;
+    let accepted = complete_reviewed_assignment(
+        &mut transaction,
+        assignment_id,
+        Some(expected_revision),
+        ChatAssignmentReviewOutcome::Accepted,
+        LOCAL_PARTICIPANT_ID,
+        &now,
+    )
+    .await?;
+    if !accepted {
+        return Err(ChatError::new(
+            ChatErrorCode::StaleRevision,
+            "The assignment changed before the review",
+            true,
+        ));
+    }
+    end_assignment_dispatch_jobs(
+        &mut transaction,
+        assignment_id,
+        ChatWorkAssignmentState::Completed,
+        &now,
+    )
+    .await?;
+    transaction.commit().await.map_err(persistence_error)?;
+    read_assignment(pool, assignment_id).await
+}
+
+/// The reply that carries the review note `note` on `assignment_id`: plain text in the
+/// assignment's reply thread, with no mention, since the thread's latest work already names
+/// the teammate. Its command id derives from the reviewed revision, so a repeated request
+/// posts the note once.
+pub(super) async fn review_note_request(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    expected_revision: u64,
+    note: &str,
+) -> ChatResult<PostChatMessageCommand> {
+    let note = note.trim().replace("\r\n", "\n").replace('\r', "\n");
+    if note.is_empty() {
+        return Err(ChatError::validation("note", "A review note is required"));
+    }
+    if note.len() > MAX_MESSAGE_BYTES {
+        return Err(ChatError::validation(
+            "note",
+            "The review note exceeds the message limit",
+        ));
+    }
+    let assignment = read_assignment(pool, assignment_id).await?;
+    let channel_id = sqlx::query_scalar::<_, String>(
+        "SELECT channel.id FROM chat_reply_threads thread
+         JOIN chat_channels channel ON channel.conversation_id = thread.conversation_id
+         WHERE thread.id = ?",
+    )
+    .bind(assignment.reply_thread_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?
+    .ok_or_else(|| {
+        ChatError::new(
+            ChatErrorCode::NotFound,
+            "The reviewed work has no channel",
+            false,
+        )
+    })?;
+    let client_command_id = ChatCommandId::new(format!(
+        "assignment-review:{}:{expected_revision}",
+        assignment_id.as_str()
+    ))
+    .map_err(identifier_error)?;
+    Ok(PostChatMessageCommand {
+        client_command_id,
+        channel_id: ChatChannelId::new(channel_id).map_err(identifier_error)?,
+        reply_thread_id: Some(assignment.reply_thread_id),
+        normalized_markdown: note.clone(),
+        rich_content: plain_composer_document(&note),
+        attachment_ids: Vec::new(),
+        references: Vec::new(),
+        execution_target: None,
+        also_send_to_channel: false,
+    })
+}
+
+/// The composer document of the unformatted text `text`, one line object per text line. A
+/// reader whose Markdown rendering of it differs falls back to the same plain text.
+fn plain_composer_document(text: &str) -> VersionedJson {
+    let lines = text
+        .split('\n')
+        .map(|line| {
+            let runs = if line.is_empty() {
+                Vec::new()
+            } else {
+                vec![serde_json::json!({ "text": line, "marks": [] })]
+            };
+            serde_json::json!({ "runs": runs })
+        })
+        .collect::<Vec<_>>();
+    VersionedJson {
+        schema_version: COMPOSER_DOCUMENT_SCHEMA_VERSION,
+        value: serde_json::json!({ "lines": lines }),
     }
 }
 
@@ -1783,6 +1937,7 @@ pub(super) async fn persist_started_assignment(
             latest_assignment: latest.as_ref(),
             executing_device_id: device.id,
             execution_target: None,
+            poster_participant_id: LOCAL_PARTICIPANT_ID,
         },
         device,
         now,

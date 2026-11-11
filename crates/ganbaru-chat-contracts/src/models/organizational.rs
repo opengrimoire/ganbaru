@@ -41,6 +41,34 @@ pub enum ChatWorkAssignmentState {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ChatAssignmentReviewOutcome {
+    /// The reviewer accepted the work as finished.
+    Accepted,
+    /// The reviewer asked for more work, which continues in a follow-up assignment.
+    ChangesRequested,
+}
+
+/// How a person ended ready-for-review work: recorded only on completed assignments.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentReviewRead {
+    pub outcome: ChatAssignmentReviewOutcome,
+    pub reviewed_at: UtcTimestamp,
+    pub reviewed_by_participant_id: ChatParticipantId,
+}
+
+/// A review of ready-for-review work.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ChatAssignmentReviewRequest {
+    /// Completes the work as accepted.
+    Accept,
+    /// Posts `note` as a reply that continues the work in a follow-up assignment.
+    RequestChanges { note: String },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ChatApprovalPolicy {
     AskForApproval,
     ApproveForMe,
@@ -513,10 +541,70 @@ impl ChatWorkAssignmentState {
 #[cfg(test)]
 mod tests {
     use super::{
+        ChatAssignmentReviewOutcome, ChatAssignmentReviewRead, ChatAssignmentReviewRequest,
         ChatAttachmentId, ChatChannelId, ChatExecutionTarget, ChatHistoryBoundary,
-        ChatMessageReference, ChatScratchPromotionDestinationRead, ChatWorkAssignmentState,
+        ChatMessageReference, ChatParticipantId, ChatScratchPromotionDestinationRead,
+        ChatWorkAssignmentState, UtcTimestamp,
     };
     use serde_json::json;
+
+    #[test]
+    fn assignment_review_requests_round_trip_with_a_kind_tag() {
+        let accept = ChatAssignmentReviewRequest::Accept;
+        let request_changes = ChatAssignmentReviewRequest::RequestChanges {
+            note: "Cover the empty case".to_owned(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&accept).unwrap(),
+            json!({ "kind": "accept" })
+        );
+        assert_eq!(
+            serde_json::to_value(&request_changes).unwrap(),
+            json!({ "kind": "requestChanges", "note": "Cover the empty case" })
+        );
+        for request in [accept, request_changes] {
+            let wire = serde_json::to_value(&request).unwrap();
+            assert_eq!(
+                serde_json::from_value::<ChatAssignmentReviewRequest>(wire).unwrap(),
+                request
+            );
+        }
+        assert!(
+            serde_json::from_value::<ChatAssignmentReviewRequest>(
+                json!({ "kind": "requestChanges" })
+            )
+            .is_err(),
+            "a change request carries its note"
+        );
+        assert!(
+            serde_json::from_value::<ChatAssignmentReviewRequest>(json!({ "kind": "approve" }))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn assignment_review_reads_use_wire_names() {
+        let review = ChatAssignmentReviewRead {
+            outcome: ChatAssignmentReviewOutcome::ChangesRequested,
+            reviewed_at: UtcTimestamp::new("2026-11-11T10:00:00.000Z").unwrap(),
+            reviewed_by_participant_id: ChatParticipantId::new("participant:local-owner").unwrap(),
+        };
+
+        let wire = serde_json::to_value(&review).unwrap();
+        assert_eq!(
+            wire,
+            json!({
+                "outcome": "changes_requested",
+                "reviewedAt": "2026-11-11T10:00:00.000Z",
+                "reviewedByParticipantId": "participant:local-owner",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ChatAssignmentReviewRead>(wire).unwrap(),
+            review
+        );
+    }
 
     #[test]
     fn review_work_is_active_but_requires_a_new_follow_up_assignment() {
@@ -850,6 +938,8 @@ pub struct ChatWorkAssignmentRead {
     pub settled_at: Option<UtcTimestamp>,
     pub created_at: UtcTimestamp,
     pub updated_at: UtcTimestamp,
+    /// How a person ended the work, present only when it is completed after review.
+    pub review: Option<ChatAssignmentReviewRead>,
     /// What the reading device would accept by starting this work, present when it waits for a
     /// local action there. Computed on read and never persisted.
     pub local_acceptance: Option<ChatAssignmentAcceptanceOfferRead>,

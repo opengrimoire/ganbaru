@@ -33,6 +33,14 @@ export function chatErrorCode(error: unknown): ChatErrorCode | null {
   return code && isChatErrorCode(code) ? code : null;
 }
 
+/** Extracts the `details.reason` a structured Chat failure names, from direct and nested failures. */
+export function chatErrorReason(error: unknown): string | null {
+  const record = objectRecord(error);
+  if (!record) return null;
+  return stringValue(objectRecord(record.details)?.reason)
+    ?? stringValue(objectRecord(objectRecord(record.error)?.details)?.reason);
+}
+
 function objectRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>

@@ -752,6 +752,23 @@ pub(super) fn parse_work_state(value: &str) -> ChatResult<ChatWorkAssignmentStat
     }
 }
 
+/// The stored review outcome `value`.
+pub(super) fn parse_review_outcome(value: &str) -> ChatResult<ChatAssignmentReviewOutcome> {
+    match value {
+        "accepted" => Ok(ChatAssignmentReviewOutcome::Accepted),
+        "changes_requested" => Ok(ChatAssignmentReviewOutcome::ChangesRequested),
+        _ => Err(stored_value_error("assignment review outcome")),
+    }
+}
+
+/// The stored form of the review outcome `value`.
+pub(super) fn wire_review_outcome(value: ChatAssignmentReviewOutcome) -> &'static str {
+    match value {
+        ChatAssignmentReviewOutcome::Accepted => "accepted",
+        ChatAssignmentReviewOutcome::ChangesRequested => "changes_requested",
+    }
+}
+
 pub(super) fn wire_participant_kind(value: ChatParticipantKind) -> &'static str {
     match value {
         ChatParticipantKind::LocalUser => "local_user",
@@ -865,7 +882,7 @@ pub(super) fn truncate_utf8(value: &str, maximum: usize) -> &str {
     &value[..boundary]
 }
 
-fn stored_value_error(label: &str) -> ChatError {
+pub(super) fn stored_value_error(label: &str) -> ChatError {
     ChatError::new(
         ChatErrorCode::Persistence,
         format!("Stored Chat {label} is invalid"),

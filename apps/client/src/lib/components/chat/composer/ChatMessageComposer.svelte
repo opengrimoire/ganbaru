@@ -17,6 +17,7 @@
   import * as chatApi from "$lib/api/chat";
   import type {
     ChatAiTeammateRead,
+    ChatAssignmentReviewRequest,
     ChatAssignmentTargetRead,
     ChatChannelRead,
     ChatChannelRosterRead,
@@ -26,6 +27,7 @@
     ChatParticipantRead,
     ChatScheduledMessageRead,
     ChatTeammateAccessRead,
+    ChatWorkAssignmentId,
     ChatWorkAssignmentState,
     ProjectWorkingFolderPathRead,
   } from "$lib/chat/contracts";
@@ -36,6 +38,7 @@
     chatComposerDocumentVersioned,
     chatComposerMarkdown,
     chatComposerPlainText,
+    replaceChatComposerText,
     parseChatComposerDocument,
     type ChatComposerDocument,
     type ChatComposerMark,
@@ -49,6 +52,7 @@
     type ChatReferenceClipboardSlice,
     type ChatReferenceTrigger,
   } from "$lib/chat/composer/message-references";
+  import { chatErrorMessage, chatErrorReason } from "$lib/chat/error-presentation";
   import { parseChatMessageReference } from "$lib/chat/validation";
   import { formatList } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -61,6 +65,7 @@
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import ChatAssignmentReviewCard from "./ChatAssignmentReviewCard.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { isAppFloatingSurfaceTarget } from "$lib/utils";
   import { cloneData } from "$lib/utils/clone";
@@ -199,6 +204,11 @@
   let sending = $state(false);
   let stopping = $state(false);
   let retryingAssignment = $state(false);
+  let reviewNote = $state("");
+  let reviewNoteOpen = $state(false);
+  let reviewing = $state(false);
+  /** The reviewed work the open review card belongs to, so a note typed for it never reaches other work. */
+  let reviewNoteAssignmentId: ChatWorkAssignmentId | null = null;
   let error = $state<string | null>(null);
   let disclosureBlocker = $state<DisclosureBlocker | null>(null);
   let blockerElement = $state<HTMLDivElement | null>(null);
@@ -239,6 +249,10 @@
   const assignmentAwaitingStart = $derived.by(() => {
     const assignment = threadComposer ? chat.replyThread?.assignment : null;
     return assignment?.localAcceptance ? assignment : null;
+  });
+  const assignmentAwaitingReview = $derived.by(() => {
+    const assignment = threadComposer && localExecutionAvailable ? chat.replyThread?.assignment : null;
+    return assignment?.state === "ready_for_review" && !assignment.localAcceptance ? assignment : null;
   });
   const workAwaitsStartMessage = $derived.by(() => {
     const offer = assignmentAwaitingStart?.localAcceptance;
@@ -318,8 +332,20 @@
     return () => {
       document.removeEventListener("selectionchange", selectionChanged);
       paneEvents.removeEventListener("ganbaru:chat-stop-requested", stop);
+      releaseReviewNote();
       editorController = null;
     };
+  });
+
+  $effect(() => {
+    const reviewedId = assignmentAwaitingReview?.id ?? null;
+    if (reviewing) return;
+    untrack(() => {
+      if (reviewedId === reviewNoteAssignmentId) return;
+      // Without earlier reviewed work no card held a note, and one opened before this first run belongs to it.
+      if (reviewNoteAssignmentId !== null) releaseReviewNote();
+      reviewNoteAssignmentId = reviewedId;
+    });
   });
 
   $effect(() => {
@@ -1018,6 +1044,71 @@
     }
   }
 
+  async function reviewWork(review: ChatAssignmentReviewRequest): Promise<boolean> {
+    const assignment = assignmentAwaitingReview;
+    if (!assignment || reviewing) return false;
+    error = null;
+    reviewing = true;
+    try {
+      const reviewed = await chat.reviewAssignment(assignment.id, review);
+      if (reviewed) {
+        reviewNote = "";
+        reviewNoteOpen = false;
+      } else {
+        error = t("chat.organization.reviewChanged");
+      }
+      return reviewed;
+    } catch (cause: unknown) {
+      error = reviewRefusalMessage(cause);
+      return false;
+    } finally {
+      reviewing = false;
+    }
+  }
+
+  /** The localized reason a review was refused, or the failure message when the refusal names no known reason. */
+  function reviewRefusalMessage(cause: unknown): string {
+    switch (chatErrorReason(cause)) {
+      case "pending_replies": return t("chat.organization.reviewPendingReplies");
+      case "no_executing_device": return t("chat.organization.reviewNoDevice");
+      default: return chatErrorMessage(cause);
+    }
+  }
+
+  /**
+   * Moves a Request changes note the card no longer shows into the reply draft, where it posts as a plain reply,
+   * which also asks for more work. The note follows any text already in the draft.
+   */
+  function releaseReviewNote(): void {
+    const note = reviewNote.trim();
+    reviewNote = "";
+    reviewNoteOpen = false;
+    if (!note) return;
+    const existing = chatComposerPlainText(editorDocument);
+    const end = existing.length;
+    const separator = existing.trim() ? "\n\n" : "";
+    const next = replaceChatComposerText(editorDocument, { start: end, end }, `${separator}${note}`);
+    editorDocument = next.document;
+    normalizedMarkdown = chatComposerMarkdown(next.document);
+    selectionStart = next.selection.start;
+    selectionEnd = next.selection.end;
+    editorController?.setDocument(editorDocument, editorReferences);
+    persist();
+    error = t("chat.organization.reviewNoteMoved");
+  }
+
+  async function acceptReviewedWork(): Promise<boolean> {
+    const reviewed = await reviewWork({ kind: "accept" });
+    if (reviewed) announcement = t("chat.organization.reviewAccepted");
+    return reviewed;
+  }
+
+  async function requestChangesOnReviewedWork(note: string): Promise<boolean> {
+    const reviewed = await reviewWork({ kind: "requestChanges", note });
+    if (reviewed) onRequestScrollToBottom();
+    return reviewed;
+  }
+
   function performPrimaryAction(): void {
     if (activeAssignment) void stopAssignment();
     else void post();
@@ -1317,6 +1408,9 @@
   <span class="sr-only" aria-live="polite">{announcement}</span>
   {#if failedAssignment}
     <Notice class="assignment-notice" role="status" message={t("chat.organization.workStopped")} retryLabel={t("chat.organization.retry")} onRetry={retryFailedAssignment} copy={false} />
+  {/if}
+  {#if assignmentAwaitingReview}
+    <ChatAssignmentReviewCard bind:note={reviewNote} bind:composingNote={reviewNoteOpen} onAccept={acceptReviewedWork} onRequestChanges={requestChangesOnReviewedWork} />
   {/if}
   {#if assignmentAwaitingStart}
     <Notice class="assignment-notice" role="status" message={workAwaitsStartMessage} retryLabel={t("chat.organization.startHere")} onRetry={startAssignmentHere} copy={false} />

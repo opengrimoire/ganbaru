@@ -7,6 +7,7 @@ import type {
   ChatReplyThreadPageRead,
   PostChatMessageResult,
 } from "$lib/chat/contracts";
+import * as chatApi from "$lib/api/chat";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatMessageComposer from "./ChatMessageComposer.svelte";
 
@@ -60,6 +61,7 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       settledAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
+      review: null,
       localAcceptance: null,
     },
     agentRuns: [],
@@ -218,5 +220,216 @@ describe("ChatMessageComposer", () => {
     startHere.click();
 
     await vi.waitFor(() => expect(target?.textContent).toContain("This work changed before it started"));
+  });
+
+  /** The reply draft of the composer `mountReviewedWork` mounts, unique per test so drafts never carry over. */
+  let reviewedDestination = "";
+
+  function mountReviewedWork(): HTMLElement {
+    const page = workingReplyThread();
+    if (!page.assignment) throw new Error("The fixture holds an assignment");
+    chat.replyThread = { ...page, assignment: { ...page.assignment, state: "ready_for_review" } };
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    target = document.createElement("div");
+    document.body.append(target);
+    reviewedDestination = `reply-thread:${crypto.randomUUID()}`;
+    component = mount(ChatMessageComposer, {
+      target,
+      props: {
+        destination: reviewedDestination,
+        placeholder: "Reply",
+        threadComposer: true,
+      },
+    });
+    const card = target.querySelector<HTMLElement>(".review-card");
+    if (!card) throw new Error("The review card did not render");
+    return card;
+  }
+
+  function buttonLabeled(container: HTMLElement, label: string): HTMLButtonElement {
+    const button = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((entry) => entry.textContent?.trim() === label);
+    if (!button) throw new Error(`No button labeled ${label}`);
+    return button;
+  }
+
+  async function typeNote(card: HTMLElement, text: string): Promise<HTMLTextAreaElement> {
+    buttonLabeled(card, "Request changes").click();
+    await tick();
+    const note = card.querySelector<HTMLTextAreaElement>("textarea");
+    if (!note) throw new Error("The review note did not open");
+    note.value = text;
+    note.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    return note;
+  }
+
+  it("offers review only while work is ready for review", () => {
+    const page = workingReplyThread();
+    chat.replyThread = page;
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatMessageComposer, {
+      target,
+      props: { destination: `reply-thread:${page.thread.id}`, placeholder: "Reply", threadComposer: true },
+    });
+
+    expect(target.querySelector(".review-card")).toBeNull();
+  });
+
+  it("accepts reviewed work and disables both actions while the review runs", async () => {
+    let finish: (reviewed: boolean) => void = () => {};
+    const review = vi.spyOn(chat, "reviewAssignment").mockImplementation(() => new Promise((resolve) => {
+      finish = resolve;
+    }));
+    const card = mountReviewedWork();
+
+    buttonLabeled(card, "Accept").click();
+    await tick();
+
+    expect(review).toHaveBeenCalledWith("assignment:working", { kind: "accept" });
+    expect(buttonLabeled(card, "Accept").disabled).toBe(true);
+    expect(buttonLabeled(card, "Request changes").disabled).toBe(true);
+    finish(true);
+    await vi.waitFor(() => expect(buttonLabeled(card, "Accept").disabled).toBe(false));
+  });
+
+  it("sends the trimmed note only once it has text", async () => {
+    const review = vi.spyOn(chat, "reviewAssignment").mockResolvedValue(true);
+    const card = mountReviewedWork();
+
+    const note = await typeNote(card, "   ");
+    expect(buttonLabeled(card, "Send").disabled).toBe(true);
+    note.value = "  Cover the empty case  ";
+    note.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    expect(buttonLabeled(card, "Send").disabled).toBe(false);
+    buttonLabeled(card, "Send").click();
+
+    await vi.waitFor(() => expect(review).toHaveBeenCalledWith(
+      "assignment:working",
+      { kind: "requestChanges", note: "Cover the empty case" },
+    ));
+    await vi.waitFor(() => expect(card.querySelector("textarea")).toBeNull());
+  });
+
+  it("keeps the note and explains a review refused because the work changed", async () => {
+    vi.spyOn(chat, "reviewAssignment").mockResolvedValue(false);
+    const card = mountReviewedWork();
+
+    await typeNote(card, "Cover the empty case");
+    buttonLabeled(card, "Send").click();
+
+    await vi.waitFor(() => expect(target?.textContent).toContain("This work changed before your review"));
+    expect(card.querySelector("textarea")?.value).toBe("Cover the empty case");
+  });
+
+  it("cancels the note without reviewing", async () => {
+    const review = vi.spyOn(chat, "reviewAssignment").mockResolvedValue(true);
+    const card = mountReviewedWork();
+
+    await typeNote(card, "Cover the empty case");
+    buttonLabeled(card, "Cancel").click();
+    await tick();
+
+    expect(card.querySelector("textarea")).toBeNull();
+    expect(review).not.toHaveBeenCalled();
+  });
+
+  it("explains an Accept refused because replies still wait on the work", async () => {
+    vi.spyOn(chatApi, "reviewChatAssignment").mockRejectedValue({
+      code: "conflict",
+      message: "Replies still wait on this work, so it cannot be accepted yet",
+      recoverable: true,
+      details: { reason: "pending_replies" },
+    });
+    const card = mountReviewedWork();
+
+    buttonLabeled(card, "Accept").click();
+
+    await vi.waitFor(() => expect(target?.textContent).toContain("Replies still wait for this agent"));
+    expect(target?.querySelector(".review-card")).not.toBeNull();
+  });
+
+  it("keeps the note and explains a Request changes refused because no device can run the agent", async () => {
+    vi.spyOn(chatApi, "reviewChatAssignment").mockRejectedValue({
+      code: "conflict",
+      message: "No device can run this teammate, so the changes cannot be requested yet",
+      recoverable: true,
+      details: { reason: "no_executing_device" },
+    });
+    const card = mountReviewedWork();
+
+    await typeNote(card, "Cover the empty case");
+    buttonLabeled(card, "Send").click();
+
+    await vi.waitFor(() => expect(target?.textContent).toContain("No device can run this agent right now"));
+    expect(card.querySelector("textarea")?.value).toBe("Cover the empty case");
+  });
+
+  /** Settles the reviewed work elsewhere, as another device's review or a sync would. */
+  function settleReviewedWork(): void {
+    const page = chat.replyThread;
+    if (!page?.assignment) throw new Error("The reviewed work is not loaded");
+    chat.replyThread = {
+      ...page,
+      assignment: { ...page.assignment, state: "completed", revision: page.assignment.revision + 1 },
+    };
+  }
+
+  it("moves the note into the reply draft when the work changes during Request changes", async () => {
+    vi.spyOn(chatApi, "reviewChatAssignment").mockImplementation(() => {
+      settleReviewedWork();
+      return Promise.reject({
+        code: "stale_revision",
+        message: "The assignment changed before the review",
+        recoverable: true,
+      });
+    });
+    const card = mountReviewedWork();
+
+    await typeNote(card, "  Cover the empty case  ");
+    buttonLabeled(card, "Send").click();
+
+    await vi.waitFor(() => expect(target?.querySelector(".review-card")).toBeNull());
+    expect(chat.organizationalDraft(reviewedDestination).normalizedMarkdown).toBe("Cover the empty case");
+    expect(target?.textContent).toContain("your note moved to the reply box");
+  });
+
+  it("moves the note into the reply draft when the work changes while it is typed", async () => {
+    const review = vi.spyOn(chatApi, "reviewChatAssignment");
+    const card = mountReviewedWork();
+
+    await typeNote(card, "Cover the empty case");
+    settleReviewedWork();
+    await tick();
+
+    expect(target?.querySelector(".review-card")).toBeNull();
+    expect(chat.organizationalDraft(reviewedDestination).normalizedMarkdown).toBe("Cover the empty case");
+    expect(review).not.toHaveBeenCalled();
+  });
+
+  it("keeps the note in the reply draft when the composer closes before it is sent", async () => {
+    const card = mountReviewedWork();
+
+    await typeNote(card, "Cover the empty case");
+    if (component) await unmount(component);
+    component = undefined;
+
+    expect(chat.organizationalDraft(reviewedDestination).normalizedMarkdown).toBe("Cover the empty case");
+  });
+
+  it("clears the note once the changes are requested", async () => {
+    vi.spyOn(chat, "reviewAssignment").mockResolvedValue(true);
+    const card = mountReviewedWork();
+
+    await typeNote(card, "Cover the empty case");
+    buttonLabeled(card, "Send").click();
+    await vi.waitFor(() => expect(card.querySelector("textarea")).toBeNull());
+    settleReviewedWork();
+    await tick();
+
+    expect(chat.organizationalDraft(reviewedDestination).normalizedMarkdown).toBe("");
   });
 });

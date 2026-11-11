@@ -16,6 +16,7 @@ import type {
   ChatScheduledMessageRead,
   ChatAiTeammateRead,
   ChatWorkAssignmentId,
+  ChatAssignmentReviewRequest,
   ChatAttachmentRead,
   ChatDraftMention,
   ChatInteractionStateRead,
@@ -842,6 +843,28 @@ export class ChatStore {
     this.publishChannelChange(this.selectedChannelId);
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
     if (this.selectedChannelId) await this.loadChannelMessages(this.selectedChannelId, true);
+  }
+
+  /**
+   * Accepts reviewed work or requests changes with a note, then rereads the thread. Resolves false when the work
+   * changed since it was loaded, which records nothing and refreshes the thread instead.
+   */
+  async reviewAssignment(assignmentId: ChatWorkAssignmentId, review: ChatAssignmentReviewRequest): Promise<boolean> {
+    const expectedRevision = this.replyThread?.assignment?.id === assignmentId
+      ? this.replyThread.assignment.revision
+      : null;
+    if (expectedRevision === null) throw new Error("Work assignment was not loaded");
+    let reviewed = true;
+    try {
+      await chatApi.reviewChatAssignment(assignmentId, expectedRevision, review);
+    } catch (error: unknown) {
+      if (chatErrorCode(error) !== "stale_revision") throw error;
+      reviewed = false;
+    }
+    this.publishChannelChange(this.selectedChannelId);
+    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
+    if (this.selectedChannelId) await this.loadChannelMessages(this.selectedChannelId, true);
+    return reviewed;
   }
 
   async retryAssignment(assignmentId: ChatWorkAssignmentId): Promise<void> {

@@ -163,6 +163,10 @@ pub struct StartSessionRequest {
     pub modes: TurnModeSnapshot,
     pub model_id: Option<ModelId>,
     pub model_options: Vec<ModelOptionSelection>,
+    /// Instructions of the session, which providers place at system level when the session
+    /// opens. Direct threads carry none.
+    #[serde(default)]
+    pub developer_instructions: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -175,6 +179,9 @@ pub struct ResumeSessionRequest {
     pub continuation_group_id: ContinuationGroupId,
     pub resume_cursor: VersionedJson,
     pub modes: TurnModeSnapshot,
+    /// Instructions of the resumed session, placed at system level like on start.
+    #[serde(default)]
+    pub developer_instructions: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -293,4 +300,82 @@ pub struct ContinuationGroupRequest {
     pub account_identity: Option<String>,
     pub server_identity: Option<String>,
     pub provider_fields: BTreeMap<String, String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ResumeSessionRequest, StartSessionRequest};
+    use serde_json::{Value, json};
+
+    fn start_json() -> Value {
+        json!({
+            "threadId": "thread-1",
+            "workspace": {
+                "workingFolderId": "folder-1",
+                "canonicalPath": "/workspace",
+                "repositoryKind": "git",
+                "repositoryIdentity": null,
+                "projectConfiguration": "restricted"
+            },
+            "providerInstanceId": "claude-personal",
+            "modes": { "safetyMode": "ask_for_approval", "interactionMode": "build" },
+            "modelId": null,
+            "modelOptions": []
+        })
+    }
+
+    fn resume_json() -> Value {
+        json!({
+            "threadId": "thread-1",
+            "workspace": {
+                "workingFolderId": "folder-1",
+                "canonicalPath": "/workspace",
+                "repositoryKind": "git",
+                "repositoryIdentity": null,
+                "projectConfiguration": "restricted"
+            },
+            "providerInstanceId": "claude-personal",
+            "providerThreadId": "provider-thread-1",
+            "continuationGroupId": "group-1",
+            "resumeCursor": { "schemaVersion": 1, "value": {} },
+            "modes": { "safetyMode": "ask_for_approval", "interactionMode": "build" }
+        })
+    }
+
+    #[test]
+    fn session_requests_round_trip_developer_instructions() {
+        let mut start = start_json();
+        start["developerInstructions"] = json!("Review the plan first.");
+        let parsed: StartSessionRequest = serde_json::from_value(start.clone()).unwrap();
+        assert_eq!(
+            parsed.developer_instructions.as_deref(),
+            Some("Review the plan first.")
+        );
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), start);
+
+        let mut resume = resume_json();
+        resume["developerInstructions"] = json!("Review the plan first.");
+        let parsed: ResumeSessionRequest = serde_json::from_value(resume.clone()).unwrap();
+        assert_eq!(
+            parsed.developer_instructions.as_deref(),
+            Some("Review the plan first.")
+        );
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), resume);
+    }
+
+    #[test]
+    fn session_requests_without_instructions_read_as_none_and_write_null() {
+        let start: StartSessionRequest = serde_json::from_value(start_json()).unwrap();
+        assert_eq!(start.developer_instructions, None);
+        assert_eq!(
+            serde_json::to_value(&start).unwrap()["developerInstructions"],
+            Value::Null
+        );
+        let resume: ResumeSessionRequest = serde_json::from_value(resume_json()).unwrap();
+        assert_eq!(resume.developer_instructions, None);
+        assert_eq!(
+            serde_json::to_value(&resume).unwrap()["developerInstructions"],
+            Value::Null
+        );
+    }
 }

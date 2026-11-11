@@ -231,6 +231,7 @@ impl GateHarness {
                     modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
                     model_id: None,
                     model_options: Vec::new(),
+                    developer_instructions: None,
                 },
                 self.sink.clone(),
                 &context("start"),

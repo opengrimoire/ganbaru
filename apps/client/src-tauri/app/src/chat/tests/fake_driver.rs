@@ -19,6 +19,7 @@ pub struct FakeDriverControl {
     send_delay_millis: AtomicUsize,
     sends_in_flight: AtomicUsize,
     maximum_sends_in_flight: AtomicUsize,
+    opened_instructions: Mutex<Vec<Option<String>>>,
 }
 
 impl FakeDriverControl {
@@ -41,6 +42,11 @@ impl FakeDriverControl {
 
     pub fn events(&self) -> Vec<CanonicalRuntimeEvent> {
         self.events.lock().unwrap().clone()
+    }
+
+    /// The instructions of every start or resume request, in order.
+    pub fn opened_instructions(&self) -> Vec<Option<String>> {
+        self.opened_instructions.lock().unwrap().clone()
     }
 
     pub async fn emit_late(&self) -> ChatResult<()> {
@@ -128,6 +134,14 @@ struct FakeProviderDriver {
 }
 
 impl FakeProviderDriver {
+    fn record_opened(&self, instructions: Option<String>) {
+        self.control
+            .opened_instructions
+            .lock()
+            .unwrap()
+            .push(instructions);
+    }
+
     fn unavailable<'a, T>(&self) -> DriverFuture<'a, T> {
         Box::pin(async { Err(ChatError::unsupported("Fake operation is not implemented")) })
     }
@@ -202,10 +216,11 @@ impl ProviderDriver for FakeProviderDriver {
 
     fn start_session<'a>(
         &'a mut self,
-        _request: StartSessionRequest,
+        request: StartSessionRequest,
         event_sink: Arc<dyn ProviderEventSink>,
         _context: &'a DriverOperationContext,
     ) -> DriverFuture<'a, ProviderSessionSnapshot> {
+        self.record_opened(request.developer_instructions);
         Box::pin(async move {
             *self.control.sink.lock().unwrap() = Some(event_sink);
             self.emit(event(
@@ -231,11 +246,18 @@ impl ProviderDriver for FakeProviderDriver {
 
     fn resume_session<'a>(
         &'a mut self,
-        _request: ResumeSessionRequest,
+        request: ResumeSessionRequest,
         event_sink: Arc<dyn ProviderEventSink>,
         context: &'a DriverOperationContext,
     ) -> DriverFuture<'a, ProviderSessionSnapshot> {
-        self.start_session(start_request(), event_sink, context)
+        self.start_session(
+            StartSessionRequest {
+                developer_instructions: request.developer_instructions,
+                ..start_request()
+            },
+            event_sink,
+            context,
+        )
     }
 
     fn send_turn<'a>(

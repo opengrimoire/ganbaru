@@ -23,6 +23,7 @@ mod approvals;
 mod init_gate;
 mod instructions;
 mod limits;
+mod live_options;
 mod organizational;
 mod streams;
 mod transport;

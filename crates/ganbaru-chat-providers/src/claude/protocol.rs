@@ -331,7 +331,7 @@ pub fn launch_arguments(
         arguments.push(model.as_str().to_string());
     }
     if let Some(effort) = options.effort {
-        if !matches!(effort, "low" | "medium" | "high" | "xhigh" | "max") {
+        if !is_claude_effort(effort) {
             return Err(ChatError::validation(
                 "modelOptions",
                 "Claude effort value is unsupported",
@@ -729,11 +729,7 @@ pub fn provider_models(
             context_limit: None,
             availability: ModelAvailability::Unknown,
             capabilities: claude_model_capabilities(),
-            options: claude_model_options(
-                true,
-                &["low", "medium", "high", "xhigh", "max"].map(str::to_string),
-                false,
-            ),
+            options: claude_model_options(true, &CLAUDE_EFFORT_LEVELS.map(str::to_string), false),
             custom: true,
         });
     }
@@ -838,7 +834,7 @@ fn claude_model_options(
         let mut seen = BTreeSet::new();
         let levels = supported_effort_levels
             .iter()
-            .filter(|level| matches!(level.as_str(), "low" | "medium" | "high" | "xhigh" | "max"))
+            .filter(|level| is_claude_effort(level))
             .filter(|level| seen.insert(level.as_str()))
             .map(|level| ModelChoiceOption {
                 value: level.clone(),
@@ -903,6 +899,33 @@ pub fn selected_fast_mode(options: &[ModelOptionSelection]) -> ChatResult<Option
     Ok(None)
 }
 
+/// Effort levels Ganbaru passes to Claude, at launch and in a running session.
+pub const CLAUDE_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Whether `value` is one of [`CLAUDE_EFFORT_LEVELS`].
+pub fn is_claude_effort(value: &str) -> bool {
+    CLAUDE_EFFORT_LEVELS.contains(&value)
+}
+
+/// Builds the `apply_flag_settings` payload that changes effort and Fast mode in a running
+/// session. The CLI acknowledges an unknown effort level, so the level is checked here.
+///
+/// # Errors
+///
+/// Returns a `modelOptions` validation error for an unsupported effort level.
+pub fn apply_flag_settings_payload(
+    effort: Option<&str>,
+    fast_mode: Option<bool>,
+) -> ChatResult<Value> {
+    if effort.is_some_and(|effort| !is_claude_effort(effort)) {
+        return Err(ChatError::validation(
+            "modelOptions",
+            "Claude effort value is unsupported",
+        ));
+    }
+    Ok(json!({ "settings": { "effortLevel": effort, "fastMode": fast_mode } }))
+}
+
 fn validate_model_options(options: &[ModelOptionSelection]) -> ChatResult<()> {
     if options.len() > MAX_MODEL_OPTIONS {
         return Err(ChatError::validation(
@@ -926,7 +949,7 @@ fn validate_model_options(options: &[ModelOptionSelection]) -> ChatResult<()> {
                         "Claude effort must use a single choice",
                     ));
                 };
-                if !matches!(value.as_str(), "low" | "medium" | "high" | "xhigh" | "max") {
+                if !is_claude_effort(value) {
                     return Err(ChatError::validation(
                         "modelOptions",
                         "Claude effort value is unsupported",

@@ -210,16 +210,10 @@ impl ProviderDriver for ClaudeProviderDriver {
                     .map(ClaudeSessionInstructions::digest),
                 request.developer_instructions.as_deref(),
             )?;
-            if requested_effort.is_some() && requested_effort != live.effective_effort {
-                return Err(ChatError::unsupported(
-                    "Claude effort can only be changed when starting a session",
-                ));
-            }
-            if requested_fast_mode.is_some() && requested_fast_mode != live.effective_fast_mode {
-                return Err(ChatError::unsupported(
-                    "Claude Fast mode can only be changed when starting a session",
-                ));
-            }
+            let flags_changed = (requested_effort.is_some()
+                && requested_effort != live.effective_effort)
+                || (requested_fast_mode.is_some()
+                    && requested_fast_mode != live.effective_fast_mode);
             let permission_mode = if live.organizational {
                 Some(organizational_permission_mode(request.modes)?)
             } else {
@@ -240,6 +234,22 @@ impl ProviderDriver for ClaudeProviderDriver {
                         .map_err(|error| error.to_chat_error("model change"))?;
                     live.effective_model = Some(model.clone());
                 }
+            }
+            if flags_changed {
+                // An option the turn leaves unset keeps its live value, so changing one never
+                // resets the other.
+                let effort = requested_effort.or_else(|| live.effective_effort.clone());
+                let fast_mode = requested_fast_mode.or(live.effective_fast_mode);
+                client
+                    .request(
+                        "apply_flag_settings",
+                        apply_flag_settings_payload(effort.as_deref(), fast_mode)?,
+                        context,
+                    )
+                    .await
+                    .map_err(|error| error.to_chat_error("effort change"))?;
+                live.effective_effort = effort;
+                live.effective_fast_mode = fast_mode;
             }
             let effective_model = live.effective_model.clone();
             let provider_turn_id =

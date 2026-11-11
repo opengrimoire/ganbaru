@@ -9,37 +9,51 @@ function browserFrameScheduler(callback: () => void): () => void {
   return () => globalThis.clearTimeout(timer);
 }
 
+interface PendingKey<Value> {
+  value: Value;
+  waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
+}
+
 /**
- * Keeps only the newest value submitted within a paint frame and serializes
- * async consumers so a slow refresh cannot overlap the next refresh.
+ * Collects keys submitted within a paint frame and runs the async consumer once per distinct key, in the order the
+ * keys first arrived. Values pushed for a key that is already pending are combined with `merge`. Consumers run one at
+ * a time, so a slow refresh cannot overlap the next one; keys pushed while a frame runs wait for the next frame.
  */
-export class AsyncFrameCoalescer<T> {
-  readonly #consume: (value: T) => Promise<void>;
+export class AsyncFrameKeyedCoalescer<Key, Value> {
+  readonly #consume: (key: Key, value: Value) => Promise<void>;
+  readonly #merge: (current: Value, next: Value) => Value;
   readonly #schedule: FrameScheduler;
-  #pending: T | undefined;
-  #waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }> = [];
+  #pending = new Map<Key, PendingKey<Value>>();
   #cancelFrame: (() => void) | null = null;
   #running = false;
 
   constructor(
-    consume: (value: T) => Promise<void>,
+    consume: (key: Key, value: Value) => Promise<void>,
+    merge: (current: Value, next: Value) => Value,
     schedule: FrameScheduler = browserFrameScheduler,
   ) {
     this.#consume = consume;
+    this.#merge = merge;
     this.#schedule = schedule;
   }
 
-  push(value: T): Promise<void> {
-    this.#pending = value;
+  /** Queues `key` for the next frame; resolves after its consumer ran, or rejects with the consumer's error. */
+  push(key: Key, value: Value): Promise<void> {
+    const pending = this.#pending.get(key);
     const completion = new Promise<void>((resolve, reject) => {
-      this.#waiters.push({ resolve, reject });
+      if (pending) {
+        pending.value = this.#merge(pending.value, value);
+        pending.waiters.push({ resolve, reject });
+      } else {
+        this.#pending.set(key, { value, waiters: [{ resolve, reject }] });
+      }
     });
     this.#ensureScheduled();
     return completion;
   }
 
   #ensureScheduled(): void {
-    if (this.#running || this.#cancelFrame || this.#pending === undefined) return;
+    if (this.#running || this.#cancelFrame || this.#pending.size === 0) return;
     this.#cancelFrame = this.#schedule(() => {
       this.#cancelFrame = null;
       void this.#flush();
@@ -47,17 +61,19 @@ export class AsyncFrameCoalescer<T> {
   }
 
   async #flush(): Promise<void> {
-    const value = this.#pending;
-    if (value === undefined) return;
-    const waiters = this.#waiters;
-    this.#pending = undefined;
-    this.#waiters = [];
+    const batch = this.#pending;
+    if (batch.size === 0) return;
+    this.#pending = new Map();
     this.#running = true;
     try {
-      await this.#consume(value);
-      for (const waiter of waiters) waiter.resolve();
-    } catch (error: unknown) {
-      for (const waiter of waiters) waiter.reject(error);
+      for (const [key, { value, waiters }] of batch) {
+        try {
+          await this.#consume(key, value);
+          for (const waiter of waiters) waiter.resolve();
+        } catch (error: unknown) {
+          for (const waiter of waiters) waiter.reject(error);
+        }
+      }
     } finally {
       this.#running = false;
       this.#ensureScheduled();

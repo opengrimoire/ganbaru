@@ -52,7 +52,7 @@ import { ChatPaneStores, chatWindowChanges, type ChatChangeIds } from "$lib/stor
 import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
 import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
 import { registerWindowCloseFlusher } from "$lib/windows/close-flush";
-import { AsyncFrameCoalescer } from "$lib/chat/timeline/frame-coalescer";
+import { AsyncFrameKeyedCoalescer } from "$lib/chat/timeline/frame-coalescer";
 import {
   toggleChatMessageReactionParticipant,
   type ChatMessageReaction,
@@ -144,8 +144,9 @@ export class ChatStore {
   private channelReadPromise: { channelId: ChatChannelId; promise: Promise<void> } | null = null;
   private sessionMessageReactions = $state<Record<string, ChatMessageReaction[]>>({});
   private loadPromise: Promise<void> | null = null;
-  private readonly nativeChanges = new AsyncFrameCoalescer<string>(
+  private readonly nativeChanges = new AsyncFrameKeyedCoalescer<string, null>(
     (threadId) => this.refreshNativeChange(threadId),
+    () => null,
   );
   private vaultGeneration = 0;
   private otherWindowListening = false;
@@ -1146,7 +1147,7 @@ export class ChatStore {
   removeComposerAttachment(attachmentId: string): void { this.composerRuntimeController.removeAttachment(attachmentId); }
 
   async handleNativeChange(threadId: string): Promise<void> {
-    await this.nativeChanges.push(threadId);
+    await this.nativeChanges.push(threadId, null);
   }
 
   private async refreshNativeChange(threadId: string): Promise<void> {

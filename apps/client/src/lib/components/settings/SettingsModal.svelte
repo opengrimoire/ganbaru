@@ -499,18 +499,21 @@
         {/if}
       </section>
     {:else}
-      <header class="flex min-h-14 shrink-0 items-center gap-2 border-b border-border px-2">
-        <h2 class="min-w-0 flex-1 truncate px-2 text-lg font-semibold">
-          {t("settings.title")}
-        </h2>
-        <button
-          type="button"
-          onclick={requestSettingsClose}
-          aria-label={t("settings.close")}
-          class="flex min-h-12 min-w-12 items-center justify-center rounded-xl active:bg-accent"
-        >
-          <X size={22} aria-hidden="true" />
-        </button>
+      <!-- The header shares the category list's gutter and width: the title starts at the row icons and the close button centers on the row chevrons. -->
+      <header class="flex min-h-14 shrink-0 items-center border-b border-border px-3">
+        <div class="mx-auto flex w-full max-w-xl items-center gap-2">
+          <h2 class="min-w-0 flex-1 truncate pl-5.5 text-lg font-semibold">
+            {t("settings.title")}
+          </h2>
+          <button
+            type="button"
+            onclick={requestSettingsClose}
+            aria-label={t("settings.close")}
+            class="flex size-11 shrink-0 items-center justify-center rounded-xl active:bg-accent"
+          >
+            <X size={22} aria-hidden="true" />
+          </button>
+        </div>
       </header>
 
       <nav

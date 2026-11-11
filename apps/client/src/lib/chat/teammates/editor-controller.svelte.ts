@@ -26,7 +26,7 @@ import {
   type ChatTeammateAccessConfirmationImpact,
 } from "./access";
 import { conversationAccessProfile, defaultChannelAccessInput } from "./channel-membership";
-import { teammateExecutionSummary, teammateProfileDraftSnapshot } from "./draft";
+import { teammateExecutionSummary, teammateInstructionsTooLong, teammateProfileDraftSnapshot } from "./draft";
 import {
   cloneChatTeammateStudioDraft,
   compareChatTeammateStudioDrafts,
@@ -118,6 +118,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   const selectedModel = $derived(availableModels.find((model) => model.id === modelId) ?? null);
   const modelSelectionValid = $derived(providerManagedModel !== Boolean(modelId));
   const normalizedDisplayName = $derived(displayName.trim().toLocaleLowerCase());
+  const instructionsTooLong = $derived(teammateInstructionsTooLong(instructions));
   const nameTaken = $derived(Boolean(normalizedDisplayName && allTeammates.some((teammate) => (
     teammate.participant.id !== selectedId
       && teammate.participant.displayName.trim().toLocaleLowerCase() === normalizedDisplayName
@@ -162,6 +163,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
       && providerId
       && modelSelectionValid
       && !nameTaken
+      && !instructionsTooLong
       && accessErrors.length === 0
       && providerResourceBlockers.length === 0
       && dirty
@@ -815,6 +817,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     get modelSelectionValid() { return modelSelectionValid; },
     get selectedModel() { return selectedModel; },
     get nameTaken() { return nameTaken; },
+    get instructionsTooLong() { return instructionsTooLong; },
     get profileCeilings() { return profileCeilings; },
     get accessErrors() { return accessErrors; },
     get providerResourceBlockers() { return providerResourceBlockers; },

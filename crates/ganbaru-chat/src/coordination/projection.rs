@@ -1,5 +1,6 @@
 //! Projection of provider runtime events into organizational conversations.
 
+use super::super::agent_runs::{SETTLED_RUN_STATES, unsettled_run_state_sql};
 use super::super::events::{CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary};
 use super::super::models::{
     ChatError, ChatErrorCode, ChatParticipantId, ChatReplyThreadId, ChatResult, ChatTurnId,
@@ -24,9 +25,6 @@ fn identifier_error(_error: String) -> ChatError {
         false,
     )
 }
-
-/// Run states after which provider events no longer project into organizational Chat.
-const SETTLED_RUN_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
 
 /// Projects a provider event into the organizational state of the agent run it belongs to.
 ///
@@ -428,6 +426,7 @@ async fn insert_projected_teammate_message(
 /// keeps its state; its run then records only a settled state, since the provider turn really
 /// ended, and never waits or works again. Callers project no message for an assignment that
 /// did not change, so a settled assignment shows no late approval, question, or review.
+/// A run that already settled keeps its state and settle time.
 async fn update_assignment_and_run_state(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment_id: &ChatWorkAssignmentId,
@@ -460,19 +459,21 @@ async fn update_assignment_and_run_state(
     if !applied && !run_terminal {
         return Ok(false);
     }
-    sqlx::query(
+    let run_update = format!(
         "UPDATE chat_agent_runs
          SET state = ?, settled_at = CASE WHEN ? THEN ? ELSE NULL END, updated_at = ?
-         WHERE id = ?",
-    )
-    .bind(run_state)
-    .bind(run_terminal)
-    .bind(occurred_at)
-    .bind(occurred_at)
-    .bind(run_id)
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+         WHERE id = ? AND {}",
+        unsettled_run_state_sql("state")
+    );
+    sqlx::query(sqlx::AssertSqlSafe(run_update.as_str()))
+        .bind(run_state)
+        .bind(run_terminal)
+        .bind(occurred_at)
+        .bind(occurred_at)
+        .bind(run_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(persistence_error)?;
     Ok(applied)
 }
 

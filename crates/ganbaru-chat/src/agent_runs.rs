@@ -6,7 +6,22 @@ use super::models::{
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite, SqliteConnection, Transaction};
+
+/// Run states that end a run. A settled run never changes state again, so every run write
+/// excludes them.
+pub const SETTLED_RUN_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
+
+/// SQL condition that holds while the run state in `column` is not settled, built from
+/// `SETTLED_RUN_STATES` so run writes and the projection check share one list.
+pub fn unsettled_run_state_sql(column: &str) -> String {
+    let settled = SETTLED_RUN_STATES
+        .iter()
+        .map(|state| format!("'{state}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{column} NOT IN ({settled})")
+}
 
 #[derive(Clone, Debug)]
 pub struct AgentRunBinding {
@@ -66,6 +81,16 @@ pub enum LaunchSettlement {
     /// The assignment settled while the provider turn launched, so the run was cancelled and
     /// the caller must stop the provider session it started.
     Superseded,
+    /// The run had already settled, for example through a revocation, so nothing was written
+    /// and the caller must stop the provider session it started.
+    RunSettled,
+}
+
+impl LaunchSettlement {
+    /// Whether the caller must stop the provider session the launch started.
+    pub fn stops_session(self) -> bool {
+        matches!(self, Self::Superseded | Self::RunSettled)
+    }
 }
 
 /// Records the starting run of `run`, refusing when its assignment already settled so the
@@ -122,6 +147,11 @@ pub async fn insert_starting_run(
 /// An assignment that settled meanwhile, for example through a cancel applied from another
 /// device, keeps its settled state: the run is cancelled, the dispatch job ends, and the result
 /// reports the launch as superseded so the caller stops the provider session.
+///
+/// A run that already settled, for example through a revocation, or that was deleted with its
+/// assignment, thread, or turn, is never rewritten: the transaction rolls back, leaving the
+/// assignment, dispatch job, and messages as they were, and the result reports the run as
+/// settled so the caller stops the provider session.
 pub async fn settle_launch(
     pool: &sqlx::SqlitePool,
     binding: &AgentRunBinding,
@@ -159,24 +189,32 @@ pub async fn settle_launch(
         (true, Some(_)) => ("failed", "failed", LaunchSettlement::Recorded),
         (true, None) => ("working", "completed", LaunchSettlement::Recorded),
     };
-    sqlx::query(
+    let run_update = format!(
         "UPDATE chat_agent_runs
          SET state = ?,
              started_at = CASE WHEN ? = 'working' THEN ? ELSE started_at END,
              settled_at = CASE WHEN ? = 'working' THEN settled_at ELSE ? END,
              updated_at = ?
-         WHERE id = ?",
-    )
-    .bind(run_state)
-    .bind(run_state)
-    .bind(now.as_str())
-    .bind(run_state)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(binding.run_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
+         WHERE id = ? AND {}",
+        unsettled_run_state_sql("state")
+    );
+    let run_updated = sqlx::query(sqlx::AssertSqlSafe(run_update.as_str()))
+        .bind(run_state)
+        .bind(run_state)
+        .bind(now.as_str())
+        .bind(run_state)
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .bind(binding.run_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?
+        .rows_affected()
+        > 0;
+    if !run_updated {
+        transaction.rollback().await.map_err(persistence_error)?;
+        return Ok(LaunchSettlement::RunSettled);
+    }
     sqlx::query(
         "UPDATE chat_assignment_dispatch_jobs
          SET state = ?, last_error = ?, updated_at = ? WHERE assignment_id = ?",
@@ -189,10 +227,10 @@ pub async fn settle_launch(
     .await
     .map_err(persistence_error)?;
     if let (true, Some(error)) = (assignment_updated, launch_error) {
-        insert_dispatch_failure_message(
+        insert_assignment_failure_message(
             &mut transaction,
             &binding.assignment_id,
-            binding.run_id.as_str(),
+            LaunchAttempt::Run(&binding.run_id),
             &error.message,
             now,
         )
@@ -202,13 +240,37 @@ pub async fn settle_launch(
     Ok(settlement)
 }
 
-async fn insert_dispatch_failure_message(
-    transaction: &mut Transaction<'_, Sqlite>,
+/// The launch attempt a failure message reports, which keys the message so each attempt posts
+/// at most one.
+#[derive(Clone, Copy, Debug)]
+pub enum LaunchAttempt<'a> {
+    /// A dispatch that failed before it recorded a run, identified by its claim token.
+    Claim(&'a str),
+    /// A recorded run whose launch failed.
+    Run(&'a ChatAgentRunId),
+}
+
+impl LaunchAttempt<'_> {
+    fn key(self) -> String {
+        match self {
+            Self::Claim(token) => format!("claim:{token}"),
+            Self::Run(run_id) => format!("run:{}", run_id.as_str()),
+        }
+    }
+}
+
+/// Posts the failure message of `attempt` in the reply thread of `assignment_id`.
+///
+/// The message id derives from the assignment and the attempt, so a repeated settlement of the
+/// same attempt writes nothing and leaves the thread and conversation revisions as they were.
+/// Returns whether a message was written.
+pub async fn insert_assignment_failure_message(
+    connection: &mut SqliteConnection,
     assignment_id: &ChatWorkAssignmentId,
-    claim_token: &str,
-    message: &str,
+    attempt: LaunchAttempt<'_>,
+    reason: &str,
     now: &UtcTimestamp,
-) -> ChatResult<()> {
+) -> ChatResult<bool> {
     let row = sqlx::query(
         "SELECT assignment.reply_thread_id, assignment.teammate_id, thread.conversation_id,
                 participant.display_name AS author_label_snapshot
@@ -218,7 +280,7 @@ async fn insert_dispatch_failure_message(
          WHERE assignment.id = ?",
     )
     .bind(assignment_id.as_str())
-    .fetch_one(&mut **transaction)
+    .fetch_one(&mut *connection)
     .await
     .map_err(persistence_error)?;
     let reply_thread_id: String = row.try_get("reply_thread_id").map_err(persistence_error)?;
@@ -227,25 +289,31 @@ async fn insert_dispatch_failure_message(
     let author_label_snapshot: String = row
         .try_get("author_label_snapshot")
         .map_err(persistence_error)?;
-    let hash = sha256_hex(format!("{}:{claim_token}", assignment_id.as_str()).as_bytes());
+    let hash = sha256_hex(format!("{}:{}", assignment_id.as_str(), attempt.key()).as_bytes());
     let item_id = format!("organizational-item:{hash}");
     let revision_id = format!("organizational-revision:{hash}");
     let order_key =
-        crate::timeline::next_order_key(transaction, &conversation_id, Some(&reply_thread_id))
+        crate::timeline::next_order_key(connection, &conversation_id, Some(&reply_thread_id))
             .await?;
-    sqlx::query(
+    let inserted = sqlx::query(
         "INSERT INTO chat_conversation_items
             (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
-         VALUES (?, ?, ?, 'message', ?, ?)",
+         VALUES (?, ?, ?, 'message', ?, ?)
+         ON CONFLICT (id) DO NOTHING",
     )
     .bind(&item_id)
     .bind(&conversation_id)
     .bind(&reply_thread_id)
     .bind(&order_key)
     .bind(now.as_str())
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
-    .map_err(persistence_error)?;
+    .map_err(persistence_error)?
+    .rows_affected()
+        > 0;
+    if !inserted {
+        return Ok(false);
+    }
     sqlx::query(
         "INSERT INTO chat_communication_messages
             (item_id, author_participant_id, author_label_snapshot, created_at)
@@ -255,7 +323,7 @@ async fn insert_dispatch_failure_message(
     .bind(&teammate_id)
     .bind(&author_label_snapshot)
     .bind(now.as_str())
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
     let rich_content = json!({
@@ -266,7 +334,7 @@ async fn insert_dispatch_failure_message(
         "payload": { "launchFailure": true },
     });
     let rich_content_data = serde_json::to_string(&rich_content).map_err(serialization_error)?;
-    let bounded = crate::timeline::bounded_projected_revision(message, rich_content)?;
+    let bounded = crate::timeline::bounded_projected_revision(reason, rich_content)?;
     sqlx::query(
         "INSERT INTO chat_communication_message_revisions
             (id, message_item_id, normalized_markdown,
@@ -278,13 +346,13 @@ async fn insert_dispatch_failure_message(
     .bind(&bounded.normalized_markdown)
     .bind(&bounded.rich_content_data)
     .bind(now.as_str())
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
     sqlx::query("UPDATE chat_communication_messages SET current_revision_id = ? WHERE item_id = ?")
         .bind(&revision_id)
         .bind(&item_id)
-        .execute(&mut **transaction)
+        .execute(&mut *connection)
         .await
         .map_err(persistence_error)?;
     sqlx::query(
@@ -296,7 +364,7 @@ async fn insert_dispatch_failure_message(
     .bind(assignment_id.as_str())
     .bind(&rich_content_data)
     .bind(now.as_str())
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
     sqlx::query(
@@ -305,7 +373,7 @@ async fn insert_dispatch_failure_message(
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(&reply_thread_id)
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
     sqlx::query(
@@ -315,10 +383,10 @@ async fn insert_dispatch_failure_message(
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(&conversation_id)
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
-    Ok(())
+    Ok(true)
 }
 
 fn i64_value(value: u64) -> ChatResult<i64> {
@@ -343,4 +411,42 @@ fn serialization_error<T>(_error: T) -> ChatError {
         "Chat agent-run content could not be encoded",
         false,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LaunchSettlement, SETTLED_RUN_STATES, unsettled_run_state_sql};
+
+    #[tokio::test]
+    async fn the_unsettled_condition_admits_only_active_run_states() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let condition = format!("SELECT {}", unsettled_run_state_sql("?"));
+        for state in [
+            "queued",
+            "starting",
+            "working",
+            "waiting",
+            "completed",
+            "failed",
+            "cancelled",
+        ] {
+            let unsettled: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(condition.as_str()))
+                .bind(state)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(unsettled, !SETTLED_RUN_STATES.contains(&state), "{state}");
+        }
+    }
+
+    #[test]
+    fn launches_that_lost_their_run_stop_the_provider_session() {
+        assert!(!LaunchSettlement::Recorded.stops_session());
+        assert!(LaunchSettlement::Superseded.stops_session());
+        assert!(LaunchSettlement::RunSettled.stops_session());
+    }
 }

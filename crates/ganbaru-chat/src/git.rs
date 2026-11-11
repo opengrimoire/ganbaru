@@ -189,10 +189,20 @@ pub async fn unstage(folder: GitFolder<'_>, paths: &[String]) -> ChatResult<()> 
     run(folder, &arguments, GitCall::User).await.map(|_| ())
 }
 
+/// Commits the staged changes of `folder` with `message`, which may span several lines.
+///
+/// The message reaches Git on standard input, so Git never parses any of it as an argument,
+/// even a first line that starts with `-`.
 pub async fn commit(folder: GitFolder<'_>, message: &str) -> ChatResult<()> {
-    run(folder, &["commit", "-m", message], GitCall::User)
-        .await
-        .map(|_| ())
+    run_bounded(
+        folder,
+        &["commit", "-F", "-"],
+        GitCall::User,
+        Some(message.as_bytes()),
+        MAX_GIT_OUTPUT_BYTES,
+    )
+    .await
+    .map(|_| ())
 }
 
 pub async fn fetch(folder: GitFolder<'_>, remote: Option<&str>) -> ChatResult<()> {
@@ -949,8 +959,8 @@ fn git_protocol_error(message: &str) -> ChatError {
 #[cfg(test)]
 mod tests {
     use super::{
-        GitCall, GitFolder, discard_paths, fetch, initialize, parse_status, pathspec_below_prefix,
-        pull, push, run, stage, status, unstage, validate_branch_name,
+        GitCall, GitFolder, commit, discard_paths, fetch, initialize, parse_status,
+        pathspec_below_prefix, pull, push, run, stage, status, unstage, validate_branch_name,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1077,6 +1087,44 @@ mod tests {
             "base\n"
         );
         assert!(!root.join("untracked.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn commit_keeps_every_line_of_a_message_that_starts_with_a_dash() {
+        let directory = TestDirectory::new();
+        let root = directory.path();
+        let folder = GitFolder::untrusted(root);
+        initialize(folder, Some("main"))
+            .await
+            .expect("repository should initialize");
+        for (key, value) in [
+            ("user.name", "Ganbaru test"),
+            ("user.email", "test@example.invalid"),
+            ("commit.gpgsign", "false"),
+        ] {
+            run(folder, &["config", key, value], GitCall::User)
+                .await
+                .expect("test identity should configure");
+        }
+        fs::write(root.join("tracked.txt"), "base\n").expect("tracked file should write");
+        stage(folder, &["tracked.txt".to_string()])
+            .await
+            .expect("tracked file should stage");
+        let message = "--amend is not an option here\n\nThe body keeps\tits tab.";
+
+        commit(folder, message)
+            .await
+            .expect("message should commit");
+
+        let logged = run(folder, &["log", "-1", "--format=%B"], GitCall::User)
+            .await
+            .expect("log should read");
+        assert_eq!(
+            String::from_utf8(logged.stdout)
+                .expect("log should be UTF-8")
+                .trim_end(),
+            message
+        );
     }
 
     #[test]

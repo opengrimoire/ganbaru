@@ -213,24 +213,26 @@ pub(crate) async fn send_turn(
     })
     .await;
     persistence?;
-    if authority_support.internal_host_tools {
-        if let Some(binding) = origin.run() {
-            let scope = load_internal_mcp_scope(&pool, &thread_id, binding).await?;
-            mcp_registry.activate_run_scope(&thread_id, scope).await?;
-        }
-    }
-    if request.working_folder_id.is_some() {
-        ensure_pre_turn_checkpoint(
-            &pool,
-            &authorized,
-            &thread_id,
-            &request.turn_id,
-            &persistence_now,
-        )
-        .await;
-    }
 
+    // Every step after persistence runs here, so any failure reaches the turn failure mark and
+    // the launch settlement below and a persisted run never stays starting.
     let operation = async {
+        if authority_support.internal_host_tools {
+            if let Some(binding) = origin.run() {
+                let scope = load_internal_mcp_scope(&pool, &thread_id, binding).await?;
+                mcp_registry.activate_run_scope(&thread_id, scope).await?;
+            }
+        }
+        if request.working_folder_id.is_some() {
+            ensure_pre_turn_checkpoint(
+                &pool,
+                &authorized,
+                &thread_id,
+                &request.turn_id,
+                &persistence_now,
+            )
+            .await;
+        }
         let session = ensure_session_with_executable_recovery(EnsureSessionContext {
             app: &app,
             pool: &pool,
@@ -291,18 +293,17 @@ pub(crate) async fn send_turn(
                 .await;
         }
     }
-    let (dispatch, launch_error) = match operation {
-        Ok(dispatch) => (Some(dispatch), None),
+    let (dispatch, launch_error, turn_failure_marked) = match operation {
+        Ok(dispatch) => (Some(dispatch), None, Ok(())),
         Err(error) => {
-            mark_turn_dispatch_failed(
-                &pool,
-                &thread_id,
-                &request.turn_id,
-                &error,
-                &now_timestamp()?,
-            )
-            .await?;
-            (None, Some(error))
+            let marked = match now_timestamp() {
+                Ok(now) => {
+                    mark_turn_dispatch_failed(&pool, &thread_id, &request.turn_id, &error, &now)
+                        .await
+                }
+                Err(timestamp_error) => Err(timestamp_error),
+            };
+            (None, Some(error), marked)
         }
     };
     if let Some(binding) = origin.run() {
@@ -313,7 +314,7 @@ pub(crate) async fn send_turn(
             &now_timestamp()?,
         )
         .await?;
-        if settlement == ganbaru_chat::agent_runs::LaunchSettlement::Superseded {
+        if settlement.stops_session() {
             mcp_registry.revoke_run_scope(&thread_id).await;
             if let Err(error) = owner
                 .stop_session(
@@ -329,6 +330,7 @@ pub(crate) async fn send_turn(
             }
         }
     }
+    turn_failure_marked?;
     let result = SendChatTurnResult {
         thread: reads::read_thread_shell(&pool, &thread_id).await?,
         dispatch,

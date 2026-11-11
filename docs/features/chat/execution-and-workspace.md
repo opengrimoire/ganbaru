@@ -26,7 +26,7 @@ The Files surface is a bounded view of the authorized execution target. Reads, s
 
 ## Review and source control
 
-Review presents file changes, diffs, checkpoints, and source-control status. The filesystem and Git remain canonical for workspace content; the vault stores runs, checkpoint metadata, and review links. Runs can checkpoint before and after risky work, and restore is an explicit authorized action that reports uncommitted or conflicting state before mutating anything.
+Review presents file changes, diffs, checkpoints, and source-control status, and commits staged changes with a message that may span several lines. The filesystem and Git remain canonical for workspace content; the vault stores runs, checkpoint metadata, and review links. Runs can checkpoint before and after risky work, and restore is an explicit authorized action that reports uncommitted or conflicting state before mutating anything.
 
 When a checkpoint pair is unavailable, review falls back to the provider-reported turn and then to the working tree. Only a typed not-found reason selects a fallback; permission and storage errors stay errors.
 

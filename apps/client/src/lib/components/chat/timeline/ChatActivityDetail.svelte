@@ -42,8 +42,10 @@
     expanded?: boolean;
   } = $props();
   const versionKey = $derived(`${activity.id}\u0000${activity.updatedAt ?? ""}`);
-  let wholeDetail = $state<{ key: string; detail: string | null } | null>(null);
-  const loaded = $derived(activity.detailTruncated && wholeDetail?.key === versionKey ? wholeDetail : null);
+  let wholeDetail = $state<{ activityId: string; key: string; detail: string | null } | null>(null);
+  // The last whole detail of the same activity stays shown while a newer version loads, so an
+  // open disclosure on running output does not fall back to the preview on every change.
+  const loaded = $derived(activity.detailTruncated && wholeDetail?.activityId === activity.id ? wholeDetail : null);
   const shown = $derived<TimelineActivityRow>(loaded
     ? { ...activity, detailPreview: loaded.detail, detailTruncated: false }
     : activity);
@@ -61,11 +63,12 @@
   $effect(() => {
     if (!expanded || !activity.detailTruncated || !threadId) return;
     const key = versionKey;
+    const activityId = activity.id;
     if (untrack(() => wholeDetail?.key === key)) return;
     let current = true;
     wholeDetails.load(threadId, activity).then(
-      (whole) => { if (current) wholeDetail = { key, detail: whole }; },
-      // A failed read keeps the preview and its shortened notice, which stay accurate.
+      (whole) => { if (current) wholeDetail = { activityId, key, detail: whole }; },
+      // A failed read keeps what is shown: the preview with its notice, or the last whole detail.
       () => undefined,
     );
     return () => { current = false; };

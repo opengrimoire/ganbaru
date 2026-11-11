@@ -1,7 +1,7 @@
 //! Claude inbound message routing, permission callbacks, structured questions, and pending request state.
 
 use super::approvals::{approval_subject, session_grants, session_permission_updates};
-use super::normalizer::{ClaudeEventNormalizer, ClaudeRouteState};
+use super::normalizer::{ClaudeEventNormalizer, ClaudePlanSource, ClaudeRouteState};
 use super::protocol::{control_error, control_success, protocol_error};
 use super::transport::{ClaudeInboundMessage, ClaudeJsonlClient};
 use crate::events::*;
@@ -134,7 +134,7 @@ async fn route_provider_request(
     }
     let event = {
         let mut state = resources.route.lock().map_err(|_| state_error())?;
-        if !claims_routed_plan(&mut state, &routed.event) {
+        if !claims_routed_plan(&mut state, &routed.event, control_request_id) {
             return Ok(());
         }
         if provider_request_id.is_some() {
@@ -237,10 +237,23 @@ async fn emit_events(
 }
 
 /// Whether a routed control request event should be emitted: a plan already projected from the
-/// assistant message is not projected again. The deny response is sent either way.
-pub(super) fn claims_routed_plan(state: &mut ClaudeRouteState, event: &CanonicalEvent) -> bool {
+/// assistant message is not projected again. A plan whose id is `control_request_id` came
+/// from a request without a tool use id and is matched by its text instead. The deny response
+/// is sent either way.
+pub(super) fn claims_routed_plan(
+    state: &mut ClaudeRouteState,
+    event: &CanonicalEvent,
+    control_request_id: &str,
+) -> bool {
     match event {
-        CanonicalEvent::ProposedPlanCompleted(plan) => state.claim_plan(&plan.plan_id),
+        CanonicalEvent::ProposedPlanCompleted(plan) => {
+            let source = if plan.plan_id == control_request_id {
+                ClaudePlanSource::AnonymousRequest
+            } else {
+                ClaudePlanSource::IdentifiedRequest(&plan.plan_id)
+            };
+            state.claim_plan(source, &plan.markdown)
+        }
         _ => true,
     }
 }

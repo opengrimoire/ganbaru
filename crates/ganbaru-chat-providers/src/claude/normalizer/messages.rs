@@ -252,6 +252,7 @@ impl ClaudeEventNormalizer {
             subtype == "success" && object.get("is_error").and_then(Value::as_bool) != Some(true);
         let mut events = self.close_open_blocks(state)?;
         state.turn_text.clear();
+        state.plans.end_turn();
         state.resume_cursor.turn_count = state.resume_cursor.turn_count.saturating_add(1);
         state.session_state = ProviderSessionState::Ready;
         let turn_id = state.active_chat_turn_id.take();

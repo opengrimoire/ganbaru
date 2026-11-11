@@ -23,6 +23,7 @@ use ganbaru_chat::repository::reads::{
 use ganbaru_chat::repository::rebuild::rebuild_thread_projections;
 use ganbaru_chat::repository::receipts::{
     CommandReceiptClaim, CommandReceiptState, claim_command_receipt, complete_command_receipt,
+    prune_command_receipts,
 };
 use ganbaru_chat::repository::recovery::recover_orphaned_turns;
 use ganbaru_chat::repository::resources::{

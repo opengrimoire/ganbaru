@@ -1,12 +1,13 @@
 //! Background runner for due Chat cleanup jobs: checkpoint refs and managed
-//! attachment and browser artifact files queued by permanent deletion, and
-//! expired timeline removal records.
+//! attachment and browser artifact files queued by permanent deletion, expired
+//! timeline removal records, and settled command receipts past their retention.
 
 use super::checkpoints::run_checkpoint_cleanup;
 use crate::{db, vault};
 use chrono::{SecondsFormat, Utc};
 use ganbaru_chat::repository::attachments::run_due_attachment_cleanup;
 use ganbaru_chat::repository::reads::prune_timeline_removals;
+use ganbaru_chat::repository::receipts::{COMMAND_RECEIPT_RETENTION, prune_command_receipts};
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult, UtcTimestamp};
 use sqlx::SqlitePool;
 use std::time::Duration;
@@ -28,6 +29,12 @@ pub(crate) async fn run_due_chat_cleanup(
         Err(_) => 0,
     };
     prune_timeline_removals(pool, &now).await?;
+    let receipt_cutoff = timestamp_at(
+        std::time::SystemTime::now()
+            .checked_sub(COMMAND_RECEIPT_RETENTION)
+            .unwrap_or(std::time::UNIX_EPOCH),
+    )?;
+    prune_command_receipts(pool, &receipt_cutoff).await?;
     Ok(checkpoint_refs + attachment_files)
 }
 
@@ -59,7 +66,11 @@ pub(crate) fn start(app: &tauri::AppHandle) {
 }
 
 fn now_timestamp() -> ChatResult<UtcTimestamp> {
-    let now: chrono::DateTime<Utc> = std::time::SystemTime::now().into();
-    UtcTimestamp::new(now.to_rfc3339_opts(SecondsFormat::Millis, true))
+    timestamp_at(std::time::SystemTime::now())
+}
+
+fn timestamp_at(time: std::time::SystemTime) -> ChatResult<UtcTimestamp> {
+    let time: chrono::DateTime<Utc> = time.into();
+    UtcTimestamp::new(time.to_rfc3339_opts(SecondsFormat::Millis, true))
         .map_err(|_| ChatError::new(ChatErrorCode::Internal, "create Chat timestamp", false))
 }

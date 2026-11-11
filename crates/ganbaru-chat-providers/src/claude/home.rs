@@ -15,6 +15,8 @@ const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_MODEL_LABEL_BYTES: usize = 160;
 #[cfg(windows)]
 const MAX_SHIM_BYTES: u64 = 64 * 1024;
+/// Appended to the continuation group digest of organizational sessions only.
+const ORGANIZATIONAL_CONTINUATION_MARKER: &[u8] = b"\0organizational";
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
@@ -85,14 +87,18 @@ impl ClaudeHome {
 
     /// The continuation group of a session in this config directory. Organizational sessions
     /// launch with a different surface, so they never continue a direct session or the reverse.
+    /// Only organizational groups carry the authority marker, because the direct launch
+    /// identity is unchanged by it.
     pub fn continuation_group_with_authority(
         &self,
         organizational_authority: bool,
     ) -> ChatResult<ContinuationGroupId> {
         let mut digest = Sha256::new();
-        digest.update(b"ganbaru-chat-claude-config-v2\0");
+        digest.update(b"ganbaru-chat-claude-config-v1\0");
         digest.update(path_identity_bytes(&self.config_directory));
-        digest.update([u8::from(organizational_authority)]);
+        if organizational_authority {
+            digest.update(ORGANIZATIONAL_CONTINUATION_MARKER);
+        }
         ContinuationGroupId::new(format!("claude-config-{:x}", digest.finalize()))
             .map_err(|_| internal_identity_error())
     }

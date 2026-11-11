@@ -590,6 +590,26 @@ fn continuation_group_changes_with_claude_config_directory() {
     assert_ne!(first_group, second_group);
 }
 
+#[cfg(unix)]
+#[test]
+fn direct_continuation_group_keeps_its_v1_digest() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::ffi::OsStrExt;
+
+    let home = TestDirectory::new("home-v1");
+    let home = resolve_claude_home(&configuration(home.path())).unwrap();
+    let mut digest = Sha256::new();
+    digest.update(b"ganbaru-chat-claude-config-v1\0");
+    digest.update(home.config_directory.as_os_str().as_bytes());
+    assert_eq!(
+        home.continuation_group_with_authority(false)
+            .unwrap()
+            .as_str(),
+        format!("claude-config-{:x}", digest.finalize()),
+        "direct threads keep resuming across the organizational lockdown"
+    );
+}
+
 #[test]
 fn fixture_normalizes_partial_text_cursor_plan_usage_cost_and_completion() {
     let normalizer = ClaudeEventNormalizer::new(

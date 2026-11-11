@@ -160,7 +160,7 @@
   {#if channel && !channel.archivedAt}
     <div class="channel-composer-dock">
       {#key destination}
-        <ChatMessageComposer {destination} placeholder={t("chat.organization.messageChannel", channel.name)} onRequestScrollToBottom={scrollToBottomForUserAction} />
+        <ChatMessageComposer {destination} placeholder={t("chat.organization.messageChannel")} onRequestScrollToBottom={scrollToBottomForUserAction} />
       {/key}
     </div>
   {/if}

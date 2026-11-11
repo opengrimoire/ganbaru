@@ -255,7 +255,7 @@ export const chat = {
     messages: "Messages",
     messageSearchResults: "Message search results",
     noMessageSearchResults: "No messages match your search.",
-    messageChannel: (name: string) => `Message #${name}, or type '@' to mention and '#' for channels`,
+    messageChannel: "Type @ to mention and # for channels",
     thread: "Thread",
     backToChannel: (name: string) => `Back to #${name}`,
     closeThread: "Close thread",

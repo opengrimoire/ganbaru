@@ -427,7 +427,7 @@
 
                 <div class="organizational-composer">
                   <div class="editor-frame" data-cursor="chat-editor">
-                    <div class={cn("organizational-editor", draftEmpty && "empty")} data-placeholder={t("chat.organization.messageChannel", channelName)}>
+                    <div class={cn("organizational-editor", draftEmpty && "empty")} data-placeholder={t("chat.organization.messageChannel")}>
                       {#if draft.mention}<span class="reference-atom">{mention}</span>{" "}{draft.text}{:else}{draft.query}{/if}{#if caretOn}<WelcomeCaret />{/if}
                     </div>
                     {#if mobileShell}<WelcomeTouch opacity={touches.editor} />{/if}

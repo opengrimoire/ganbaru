@@ -105,8 +105,7 @@ impl ProviderDriver for ClaudeProviderDriver {
                         capabilities: claude_capabilities(),
                         authority_support: self.authority_support(),
                         checked_at,
-                        detail: (!authenticated)
-                            .then_some("Claude authentication is required".to_string()),
+                        detail: (!authenticated).then(|| snapshot.home.authentication_hint()),
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),

@@ -956,3 +956,17 @@ fn version_cache_reuses_probe_until_metadata_changes() {
     assert_eq!(probe(), ClaudeVersion::new(2, 1, 3230));
     assert_eq!(probes(), 2, "a changed executable is probed again");
 }
+
+#[test]
+fn sign_in_hint_names_only_a_custom_config_directory() {
+    let default_home = Path::new("/home/person/.claude");
+    assert_eq!(
+        authentication_hint(default_home, default_home),
+        "Claude authentication is required"
+    );
+    let custom = Path::new("/srv/claude-work");
+    assert_eq!(
+        authentication_hint(custom, default_home),
+        "Claude authentication is required; sign in with CLAUDE_CONFIG_DIR=/srv/claude-work"
+    );
+}

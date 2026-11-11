@@ -77,6 +77,8 @@ impl Drop for ClaudeLiveSession {
 
 pub(super) struct ClaudeProbeSnapshot {
     pub(super) version: ClaudeVersion,
+    /// The config directory the probed CLI ran with.
+    pub(super) home: ClaudeHome,
     pub(super) initialize: ClaudeInitializeResponse,
     pub(super) models: Vec<ProviderModel>,
 }
@@ -133,7 +135,7 @@ impl ClaudeProviderDriver {
     ) -> ChatResult<ClaudeProbeSnapshot> {
         let workspace = crate::probe_directory::ProbeDirectory::create()?;
         let session_uuid = new_uuid(&self.configuration.instance_id);
-        let (mut connection, _, version) = self
+        let (mut connection, home, version) = self
             .open_connection(
                 &workspace,
                 ClaudeLaunchOptions {
@@ -168,6 +170,7 @@ impl ClaudeProviderDriver {
             )?;
             Ok(ClaudeProbeSnapshot {
                 version,
+                home,
                 initialize,
                 models,
             })

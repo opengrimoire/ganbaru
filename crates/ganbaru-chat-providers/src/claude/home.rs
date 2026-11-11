@@ -102,6 +102,15 @@ impl ClaudeHome {
         ContinuationGroupId::new(format!("claude-config-{:x}", digest.finalize()))
             .map_err(|_| internal_identity_error())
     }
+
+    /// The probe detail of a config directory with no signed-in account. A directory other than
+    /// the default `~/.claude` is named, because the CLI then reads its sign-in from
+    /// `CLAUDE_CONFIG_DIR` and a plain `claude` sign-in would land in the default directory.
+    pub fn authentication_hint(&self) -> String {
+        let default_home = PathBuf::from(default_claude_home());
+        let default_home = fs::canonicalize(&default_home).unwrap_or(default_home);
+        authentication_hint(&self.config_directory, &default_home)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -426,5 +435,17 @@ fn internal_identity_error() -> ChatError {
         ChatErrorCode::Internal,
         "Claude continuation identity could not be created",
         false,
+    )
+}
+
+/// The probe detail of `config_directory` when it has no signed-in account, naming it when it
+/// is not `default_home`.
+pub(super) fn authentication_hint(config_directory: &Path, default_home: &Path) -> String {
+    if config_directory == default_home {
+        return "Claude authentication is required".to_string();
+    }
+    format!(
+        "Claude authentication is required; sign in with CLAUDE_CONFIG_DIR={}",
+        config_directory.display()
     )
 }

@@ -1,7 +1,7 @@
 use super::driver::{
     CodexNativeCommand, CodexProviderDriver, append_project_configuration_arguments,
-    codex_native_command, confirmed_resume_not_found, goal_request, parse_mcp_status_page,
-    validated_app_server_arguments,
+    codex_native_command, confirmed_resume_not_found, ensure_supported_user_agent, goal_request,
+    parse_mcp_status_page, validated_app_server_arguments,
 };
 use super::home::*;
 use super::normalizer::{CodexEventNormalizer, CodexRouteState};
@@ -681,4 +681,45 @@ async fn wait_for_fixture_message(
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     panic!("fixture message was not received");
+}
+
+#[test]
+fn codex_user_agents_admit_against_the_tested_range() {
+    use crate::registry::refused_version;
+    for (user_agent, admission) in [
+        ("codex-cli/0.146.9", ProviderVersionAdmission::BelowMinimum),
+        (
+            "codex-cli/1.0.0",
+            ProviderVersionAdmission::AtOrAboveCeiling,
+        ),
+    ] {
+        let error = ensure_supported_user_agent(user_agent).unwrap_err();
+        assert_eq!(
+            error.code,
+            ChatErrorCode::UnsupportedVersion,
+            "{user_agent}"
+        );
+        assert!(error.recoverable, "{user_agent}");
+        let (refused, version) = refused_version(&error).unwrap();
+        assert_eq!(refused, admission, "{user_agent}");
+        assert_eq!(
+            Some(version),
+            user_agent.split_once('/').map(|(_, v)| v.to_string())
+        );
+    }
+    for (user_agent, admission) in [
+        ("codex-cli/0.147.0", ProviderVersionAdmission::Supported),
+        (
+            "codex-cli/0.148.0-alpha.2 (Linux; x86_64)",
+            ProviderVersionAdmission::UntestedNewer,
+        ),
+        ("codex-cli", ProviderVersionAdmission::Unreadable),
+        ("codex-cli/nightly", ProviderVersionAdmission::Unreadable),
+    ] {
+        assert_eq!(
+            ensure_supported_user_agent(user_agent).unwrap(),
+            admission,
+            "{user_agent}"
+        );
+    }
 }

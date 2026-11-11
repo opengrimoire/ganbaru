@@ -330,7 +330,7 @@ pub(super) fn parse_user_agent_version(user_agent: &str) -> Option<String> {
 /// Where the Codex version in `user_agent` falls in `CODEX_COMPATIBILITY`, refusing one below the
 /// minimum or at or above the ceiling. A user agent without a readable version is `Unreadable`
 /// and still starts.
-pub(super) fn ensure_supported_user_agent(
+pub(in crate::codex) fn ensure_supported_user_agent(
     user_agent: &str,
 ) -> ChatResult<ProviderVersionAdmission> {
     let Some(version) = parse_user_agent_version(user_agent) else {

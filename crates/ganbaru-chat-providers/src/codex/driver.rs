@@ -39,7 +39,7 @@ use support::*;
 #[cfg(test)]
 pub(super) use support::{
     append_project_configuration_arguments, confirmed_resume_not_found,
-    validated_app_server_arguments,
+    ensure_supported_user_agent, validated_app_server_arguments,
 };
 
 const CODEX_STDERR_LIMIT_BYTES: usize = 256 * 1024;

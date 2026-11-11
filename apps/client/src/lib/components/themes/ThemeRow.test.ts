@@ -50,6 +50,9 @@ describe("ThemeRow mobile actions", () => {
     expect(exportButton).not.toBeNull();
     expect(open?.classList.contains("size-(--control-height)")).toBe(true);
     expect(open?.querySelector(".theme-action-visual")).toBeNull();
+    expect(duplicate?.classList.contains("size-(--control-height)")).toBe(true);
+    expect(duplicate?.textContent?.trim()).toBe("");
+    expect(target.querySelector(".w-24")).toBeNull();
 
     duplicate?.click();
     open?.click();

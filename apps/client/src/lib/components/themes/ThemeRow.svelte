@@ -75,8 +75,8 @@
   onpointerleave={handlePointerLeave}
   onpointerdown={handlePointerDown}
   class={cn(
-    "relative flex items-center justify-between gap-1 rounded-md px-1 py-1 transition-colors max-[520px]:flex-col max-[520px]:items-stretch",
-    mobileLayout && "min-h-14 gap-2 rounded-xl py-2",
+    "relative flex items-center justify-between gap-1 rounded-md px-1 py-1 transition-colors",
+    mobileLayout ? "min-h-14 gap-2 rounded-xl py-2" : "max-[520px]:flex-col max-[520px]:items-stretch",
     !isActive && "hover:text-foreground",
     hovering && !suppressHover && "bg-accent/25",
   )}
@@ -109,7 +109,10 @@
         {/if}
       </div>
     </div>
-    <ThemeMiniPreview {theme} size={mobileLayout ? "touch" : "default"} />
+    <!-- Mobile rows keep the name and icon actions on one line, so they leave the preview out. -->
+    {#if !mobileLayout}
+      <ThemeMiniPreview {theme} />
+    {/if}
   </div>
 
   <div class="relative z-20 flex shrink-0 items-center justify-end gap-1">
@@ -120,14 +123,16 @@
         aria-label={t("settings.theme.duplicateAndEditTheme")}
         data-app-tooltip-disabled="true"
         class={cn(
-          "flex items-center gap-1.5 text-[0.8rem] text-foreground transition-colors",
+          "flex items-center text-foreground transition-colors",
           mobileLayout
-            ? "h-(--control-height) rounded-lg border border-border bg-card px-2.5 active:bg-accent dark:bg-transparent"
-            : "h-(--control-height) rounded-md border border-border bg-card px-2.5 hover:bg-accent dark:bg-transparent",
+            ? "size-(--control-height) justify-center rounded-lg border border-border bg-card active:bg-accent dark:bg-transparent"
+            : "h-(--control-height) gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] hover:bg-accent dark:bg-transparent",
         )}
       >
         <Copy size={13} strokeWidth={2} />
-        <span class="max-[380px]:hidden">{t("settings.theme.duplicateAndEdit")}</span>
+        {#if !mobileLayout}
+          <span class="max-[380px]:hidden">{t("settings.theme.duplicateAndEdit")}</span>
+        {/if}
       </button>
       <button
         type="button"

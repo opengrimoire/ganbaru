@@ -51,14 +51,24 @@
     updateThumb();
     el.addEventListener("scroll", updateThumb, { passive: true });
     el.addEventListener("zoomcommit", updateThumb);
-    const observer = new ResizeObserver(updateThumb);
-    observer.observe(el);
-    const content = el.firstElementChild;
-    if (content) observer.observe(content as Element);
+    const resizeObserver = new ResizeObserver(updateThumb);
+    const observeContent = () => {
+      resizeObserver.disconnect();
+      resizeObserver.observe(el);
+      for (const child of el.children) resizeObserver.observe(child);
+    };
+    observeContent();
+    // Content swapped in place (a different settings section, a lazily loaded view) changes the scroll height without resizing the container, so the observed children follow the container's current children.
+    const childListObserver = new MutationObserver(() => {
+      observeContent();
+      updateThumb();
+    });
+    childListObserver.observe(el, { childList: true });
     return () => {
       el.removeEventListener("scroll", updateThumb);
       el.removeEventListener("zoomcommit", updateThumb);
-      observer.disconnect();
+      childListObserver.disconnect();
+      resizeObserver.disconnect();
     };
   });
 

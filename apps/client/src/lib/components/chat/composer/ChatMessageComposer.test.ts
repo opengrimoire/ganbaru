@@ -60,6 +60,7 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       settledAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
+      review: null,
       localAcceptance: null,
     },
     agentRuns: [],
@@ -218,5 +219,116 @@ describe("ChatMessageComposer", () => {
     startHere.click();
 
     await vi.waitFor(() => expect(target?.textContent).toContain("This work changed before it started"));
+  });
+
+  function mountReviewedWork(): HTMLElement {
+    const page = workingReplyThread();
+    if (!page.assignment) throw new Error("The fixture holds an assignment");
+    chat.replyThread = { ...page, assignment: { ...page.assignment, state: "ready_for_review" } };
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatMessageComposer, {
+      target,
+      props: {
+        destination: `reply-thread:${page.thread.id}`,
+        placeholder: "Reply",
+        threadComposer: true,
+      },
+    });
+    const card = target.querySelector<HTMLElement>(".review-card");
+    if (!card) throw new Error("The review card did not render");
+    return card;
+  }
+
+  function buttonLabeled(container: HTMLElement, label: string): HTMLButtonElement {
+    const button = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((entry) => entry.textContent?.trim() === label);
+    if (!button) throw new Error(`No button labeled ${label}`);
+    return button;
+  }
+
+  async function typeNote(card: HTMLElement, text: string): Promise<HTMLTextAreaElement> {
+    buttonLabeled(card, "Request changes").click();
+    await tick();
+    const note = card.querySelector<HTMLTextAreaElement>("textarea");
+    if (!note) throw new Error("The review note did not open");
+    note.value = text;
+    note.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    return note;
+  }
+
+  it("offers review only while work is ready for review", () => {
+    const page = workingReplyThread();
+    chat.replyThread = page;
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatMessageComposer, {
+      target,
+      props: { destination: `reply-thread:${page.thread.id}`, placeholder: "Reply", threadComposer: true },
+    });
+
+    expect(target.querySelector(".review-card")).toBeNull();
+  });
+
+  it("accepts reviewed work and disables both actions while the review runs", async () => {
+    let finish: (reviewed: boolean) => void = () => {};
+    const review = vi.spyOn(chat, "reviewAssignment").mockImplementation(() => new Promise((resolve) => {
+      finish = resolve;
+    }));
+    const card = mountReviewedWork();
+
+    buttonLabeled(card, "Accept").click();
+    await tick();
+
+    expect(review).toHaveBeenCalledWith("assignment:working", { kind: "accept" });
+    expect(buttonLabeled(card, "Accept").disabled).toBe(true);
+    expect(buttonLabeled(card, "Request changes").disabled).toBe(true);
+    finish(true);
+    await vi.waitFor(() => expect(buttonLabeled(card, "Accept").disabled).toBe(false));
+  });
+
+  it("sends the trimmed note only once it has text", async () => {
+    const review = vi.spyOn(chat, "reviewAssignment").mockResolvedValue(true);
+    const card = mountReviewedWork();
+
+    const note = await typeNote(card, "   ");
+    expect(buttonLabeled(card, "Send").disabled).toBe(true);
+    note.value = "  Cover the empty case  ";
+    note.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    expect(buttonLabeled(card, "Send").disabled).toBe(false);
+    buttonLabeled(card, "Send").click();
+
+    await vi.waitFor(() => expect(review).toHaveBeenCalledWith(
+      "assignment:working",
+      { kind: "requestChanges", note: "Cover the empty case" },
+    ));
+    await vi.waitFor(() => expect(card.querySelector("textarea")).toBeNull());
+  });
+
+  it("keeps the note and explains a review refused because the work changed", async () => {
+    vi.spyOn(chat, "reviewAssignment").mockResolvedValue(false);
+    const card = mountReviewedWork();
+
+    await typeNote(card, "Cover the empty case");
+    buttonLabeled(card, "Send").click();
+
+    await vi.waitFor(() => expect(target?.textContent).toContain("This work changed before your review"));
+    expect(card.querySelector("textarea")?.value).toBe("Cover the empty case");
+  });
+
+  it("cancels the note without reviewing", async () => {
+    const review = vi.spyOn(chat, "reviewAssignment").mockResolvedValue(true);
+    const card = mountReviewedWork();
+
+    await typeNote(card, "Cover the empty case");
+    buttonLabeled(card, "Cancel").click();
+    await tick();
+
+    expect(card.querySelector("textarea")).toBeNull();
+    expect(review).not.toHaveBeenCalled();
   });
 });

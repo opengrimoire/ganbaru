@@ -17,6 +17,7 @@
   import * as chatApi from "$lib/api/chat";
   import type {
     ChatAiTeammateRead,
+    ChatAssignmentReviewRequest,
     ChatAssignmentTargetRead,
     ChatChannelRead,
     ChatChannelRosterRead,
@@ -61,6 +62,7 @@
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import ChatAssignmentReviewCard from "./ChatAssignmentReviewCard.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { isAppFloatingSurfaceTarget } from "$lib/utils";
   import { cloneData } from "$lib/utils/clone";
@@ -239,6 +241,10 @@
   const assignmentAwaitingStart = $derived.by(() => {
     const assignment = threadComposer ? chat.replyThread?.assignment : null;
     return assignment?.localAcceptance ? assignment : null;
+  });
+  const assignmentAwaitingReview = $derived.by(() => {
+    const assignment = threadComposer && localExecutionAvailable ? chat.replyThread?.assignment : null;
+    return assignment?.state === "ready_for_review" && !assignment.localAcceptance ? assignment : null;
   });
   const workAwaitsStartMessage = $derived.by(() => {
     const offer = assignmentAwaitingStart?.localAcceptance;
@@ -1018,6 +1024,32 @@
     }
   }
 
+  async function reviewWork(review: ChatAssignmentReviewRequest): Promise<boolean> {
+    const assignment = assignmentAwaitingReview;
+    if (!assignment) return false;
+    error = null;
+    try {
+      const reviewed = await chat.reviewAssignment(assignment.id, review);
+      if (!reviewed) error = t("chat.organization.reviewChanged");
+      return reviewed;
+    } catch (cause: unknown) {
+      error = cause instanceof Error ? cause.message : String(cause);
+      return false;
+    }
+  }
+
+  async function acceptReviewedWork(): Promise<boolean> {
+    const reviewed = await reviewWork({ kind: "accept" });
+    if (reviewed) announcement = t("chat.organization.reviewAccepted");
+    return reviewed;
+  }
+
+  async function requestChangesOnReviewedWork(note: string): Promise<boolean> {
+    const reviewed = await reviewWork({ kind: "requestChanges", note });
+    if (reviewed) onRequestScrollToBottom();
+    return reviewed;
+  }
+
   function performPrimaryAction(): void {
     if (activeAssignment) void stopAssignment();
     else void post();
@@ -1317,6 +1349,9 @@
   <span class="sr-only" aria-live="polite">{announcement}</span>
   {#if failedAssignment}
     <Notice class="assignment-notice" role="status" message={t("chat.organization.workStopped")} retryLabel={t("chat.organization.retry")} onRetry={retryFailedAssignment} copy={false} />
+  {/if}
+  {#if assignmentAwaitingReview}
+    <ChatAssignmentReviewCard onAccept={acceptReviewedWork} onRequestChanges={requestChangesOnReviewedWork} />
   {/if}
   {#if assignmentAwaitingStart}
     <Notice class="assignment-notice" role="status" message={workAwaitsStartMessage} retryLabel={t("chat.organization.startHere")} onRetry={startAssignmentHere} copy={false} />

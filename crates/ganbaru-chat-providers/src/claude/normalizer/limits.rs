@@ -5,7 +5,7 @@ use super::{ClaudeEventNormalizer, ClaudeRouteState, bounded_text, text};
 use crate::events::*;
 use crate::models::*;
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Warning code of a Claude API request the CLI is retrying.
 const API_RETRY_WARNING_CODE: &str = "claude_api_retry";
@@ -23,32 +23,127 @@ const MAX_RETRY_DELAY_MS: u64 = 3_600_000;
 const MILLISECONDS_PER_SECOND: u64 = 1_000;
 const HTTP_STATUS_RANGE: std::ops::RangeInclusive<u64> = 100..=599;
 
-/// The last rate limit state reported per limit type.
+/// The merged state of one Claude limit type.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ClaudeRateLimitEntry {
+    status: String,
+    resets_at: Option<i64>,
+    overage_status: Option<String>,
+    is_using_overage: Option<bool>,
+    overage_in_use: Option<bool>,
+    utilization: Option<f64>,
+}
+
+impl ClaudeRateLimitEntry {
+    /// Applies one report. The status and reset instant always come from it; overage and
+    /// utilization fields it omits, as the blocked assistant notice does, keep their values.
+    fn merge(&mut self, info: &Map<String, Value>) {
+        self.status = bounded_text(
+            text(info, "status").unwrap_or("unknown"),
+            MAX_LIMIT_FIELD_BYTES,
+        );
+        self.resets_at = info.get("resetsAt").and_then(reset_epoch_seconds);
+        if let Some(overage) = text(info, "overageStatus") {
+            self.overage_status = Some(bounded_text(overage, MAX_LIMIT_FIELD_BYTES));
+        }
+        if let Some(flag) = info.get("isUsingOverage").and_then(Value::as_bool) {
+            self.is_using_overage = Some(flag);
+        }
+        if let Some(flag) = info.get("overageInUse").and_then(Value::as_bool) {
+            self.overage_in_use = Some(flag);
+        }
+        if let Some(utilization) = info
+            .get("utilization")
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+        {
+            self.utilization = Some(utilization);
+        }
+    }
+
+    /// Whether this type blocks requests: rejected, with no overage billing letting them run.
+    fn limited(&self) -> bool {
+        let overage_allowed = matches!(
+            self.overage_status.as_deref(),
+            Some("allowed" | "allowed_warning")
+        ) || self.is_using_overage == Some(true)
+            || self.overage_in_use == Some(true);
+        self.status == "rejected" && !overage_allowed
+    }
+
+    fn projection(&self, limit_type: &str) -> Value {
+        let mut data = Map::new();
+        data.insert("rateLimitType".to_string(), json!(limit_type));
+        data.insert("status".to_string(), json!(self.status));
+        data.insert("resetsAt".to_string(), json!(self.resets_at));
+        if let Some(overage) = &self.overage_status {
+            data.insert("overageStatus".to_string(), json!(overage));
+        }
+        if let Some(flag) = self.is_using_overage {
+            data.insert("isUsingOverage".to_string(), json!(flag));
+        }
+        if let Some(flag) = self.overage_in_use {
+            data.insert("overageInUse".to_string(), json!(flag));
+        }
+        if let Some(utilization) = self.utilization {
+            data.insert("utilization".to_string(), json!(utilization));
+        }
+        Value::Object(data)
+    }
+}
+
+/// The merged state of every Claude limit type seen in a session.
 ///
-/// The CLI repeats unchanged `rate_limit_event` frames and the blocked notice on every rejected
-/// response, so only a change of status or reset instant is reported.
+/// Claude reports each limit type separately, so one type's report never hides another's
+/// rejection. The CLI repeats unchanged `rate_limit_event` frames and the blocked notice on
+/// every rejected response, so only a change of a type's status or reset instant is reported;
+/// other fields still merge silently and appear in the next report.
 #[derive(Clone, Debug, Default)]
 pub(in crate::claude) struct ClaudeRateLimitMemory {
-    last: HashMap<String, (String, Option<i64>)>,
+    entries: BTreeMap<String, ClaudeRateLimitEntry>,
 }
 
 impl ClaudeRateLimitMemory {
-    /// Records the state of `limit_type` and reports whether it differs from the last one.
-    fn changed(&mut self, limit_type: &str, status: &str, resets_at: Option<i64>) -> bool {
-        let current = (status.to_string(), resets_at);
-        match self.last.get_mut(limit_type) {
-            Some(previous) if *previous == current => false,
-            Some(previous) => {
-                *previous = current;
-                true
-            }
-            None => {
-                if self.last.len() < MAX_TRACKED_RATE_LIMIT_TYPES {
-                    self.last.insert(limit_type.to_string(), current);
-                }
-                true
-            }
+    /// Merges one report for `limit_type` and reports whether its status or reset changed.
+    ///
+    /// A type beyond the tracked bound is ignored so known types keep their state.
+    fn merge(&mut self, limit_type: &str, info: &Map<String, Value>) -> bool {
+        if !self.entries.contains_key(limit_type)
+            && self.entries.len() >= MAX_TRACKED_RATE_LIMIT_TYPES
+        {
+            return false;
         }
+        let entry = self.entries.entry(limit_type.to_string()).or_default();
+        let previous = (entry.status.clone(), entry.resets_at);
+        let known = !entry.status.is_empty();
+        entry.merge(info);
+        !known || previous != (entry.status.clone(), entry.resets_at)
+    }
+
+    /// Whether any type blocks requests.
+    fn limited(&self) -> bool {
+        self.entries.values().any(ClaudeRateLimitEntry::limited)
+    }
+
+    /// The latest reset among blocking types, since each must reset before a request can run;
+    /// None when nothing blocks or a blocking type has no reset instant.
+    fn resets_at(&self) -> Option<i64> {
+        self.entries
+            .values()
+            .filter(|entry| entry.limited())
+            .map(|entry| entry.resets_at)
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .max()
+    }
+
+    fn projection(&self) -> Value {
+        let types = self
+            .entries
+            .iter()
+            .map(|(limit_type, entry)| (limit_type.clone(), entry.projection(limit_type)))
+            .collect::<Map<String, Value>>();
+        json!({ "rateLimitsByType": types })
     }
 }
 
@@ -116,37 +211,12 @@ impl ClaudeEventNormalizer {
             text(info, "rateLimitType").unwrap_or("unknown"),
             MAX_LIMIT_FIELD_BYTES,
         );
-        let status = bounded_text(
-            text(info, "status").unwrap_or("unknown"),
-            MAX_LIMIT_FIELD_BYTES,
-        );
-        let resets_at = info.get("resetsAt").and_then(reset_epoch_seconds);
-        if !state.rate_limits.changed(&limit_type, &status, resets_at) {
+        if !state.rate_limits.merge(&limit_type, info) {
             return Ok(Vec::new());
         }
-        let limited = status == "rejected" && !overage_allowed(info);
-        let mut data = Map::new();
-        data.insert("rateLimitType".to_string(), json!(limit_type));
-        data.insert("status".to_string(), json!(status));
-        data.insert("resetsAt".to_string(), json!(resets_at));
-        if let Some(overage) = text(info, "overageStatus") {
-            data.insert(
-                "overageStatus".to_string(),
-                json!(bounded_text(overage, MAX_LIMIT_FIELD_BYTES)),
-            );
-        }
-        for key in ["isUsingOverage", "overageInUse"] {
-            if let Some(flag) = info.get(key).and_then(Value::as_bool) {
-                data.insert(key.to_string(), json!(flag));
-            }
-        }
-        if let Some(utilization) = info
-            .get("utilization")
-            .and_then(Value::as_f64)
-            .filter(|value| value.is_finite())
-        {
-            data.insert("utilization".to_string(), json!(utilization));
-        }
+        let limited = state.rate_limits.limited();
+        let resets_at = state.rate_limits.resets_at();
+        let data = state.rate_limits.projection();
         Ok(vec![self.event(
             state,
             source,
@@ -159,20 +229,11 @@ impl ClaudeEventNormalizer {
                 detail: None,
                 provider_data: Some(VersionedJson {
                     schema_version: 1,
-                    value: Value::Object(data),
+                    value: data,
                 }),
             }),
         )?])
     }
-}
-
-/// Whether overage billing lets requests continue past a rejected limit.
-fn overage_allowed(info: &Map<String, Value>) -> bool {
-    matches!(
-        text(info, "overageStatus"),
-        Some("allowed" | "allowed_warning")
-    ) || info.get("isUsingOverage").and_then(Value::as_bool) == Some(true)
-        || info.get("overageInUse").and_then(Value::as_bool) == Some(true)
 }
 
 /// Reads `resetsAt`, which Claude reports in epoch seconds, within the range RFC 3339 can write.

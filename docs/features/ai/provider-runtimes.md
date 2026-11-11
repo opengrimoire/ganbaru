@@ -28,7 +28,7 @@ Codex uses its native app-server protocol. Ganbaru owns the process, thread asso
 
 ## Claude
 
-Claude uses its native bidirectional stream-JSON protocol. Ganbaru owns the process and translates streamed messages, tool activity, permission requests, questions, and completion into canonical events. Session identity stays provider-local, and resuming a session must keep its authorized project and execution target; it can never silently resume in a different folder. Subagent frames stay out of the root stream and never move the resume cursor. Rate limits and API retries become typed notices; the timeline does not render them yet.
+Claude uses its native bidirectional stream-JSON protocol. Ganbaru owns the process and translates streamed messages, tool activity, permission requests, questions, and completion into canonical events. Session identity stays provider-local, and resuming a session must keep its authorized project and execution target; it can never silently resume in a different folder. Subagent frames stay out of the root stream and never move the resume cursor. Claude reports each rate limit type separately, so Ganbaru merges them per type and a request stays limited until every rejected type resets. Rate limits and root API retries become typed notices; the timeline does not render them yet.
 
 ## Cursor and Grok
 

@@ -99,6 +99,24 @@ describe("scroll edge fade action", () => {
     action.destroy();
   });
 
+  it("reads the fade sizes only once an edge fades", () => {
+    const computedStyle = vi.spyOn(window, "getComputedStyle");
+    const metrics = { scrollHeight: 100, clientHeight: 100 };
+    const node = scroller(metrics);
+    node.style.setProperty("--scroll-fade-bottom-size", "48px");
+    const action = scrollEdgeFadeAction(node);
+    expect(computedStyle).not.toHaveBeenCalled();
+
+    metrics.scrollHeight = 300;
+    node.dispatchEvent(new Event("scroll"));
+    expect(computedStyle).toHaveBeenCalledTimes(1);
+    expect(node.style.getPropertyValue("--scroll-fade-bottom-distance")).toBe("48px");
+    node.dispatchEvent(new Event("scroll"));
+    expect(computedStyle).toHaveBeenCalledTimes(1);
+    action.destroy();
+    computedStyle.mockRestore();
+  });
+
   it("fades only the bottom edge of a bottom-only container while scrolled", () => {
     const node = scroller({ scrollHeight: 400, clientHeight: 200 });
     node.scrollTop = 100;

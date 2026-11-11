@@ -205,6 +205,9 @@ impl ClaudeProviderDriver {
             cached_probe_version(&executable, working_directory, environment.clone()).await?;
         ensure_supported_version(version)?;
         let server = self.configuration.internal_mcp.as_ref();
+        if server.is_some_and(|server| server.organizational_authority) {
+            ensure_organizational_version(version)?;
+        }
         if let Some(server) = server {
             environment.insert(
                 INTERNAL_MCP_TOKEN_ENVIRONMENT.to_string(),

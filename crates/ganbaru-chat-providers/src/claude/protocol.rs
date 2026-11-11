@@ -175,6 +175,10 @@ pub const CLAUDE_COMPATIBILITY: ProviderCompatibilityRange = ProviderCompatibili
     ceiling_exclusive: Some("3.0.0"),
 };
 
+/// Teammate launches need `--restricted` (2.1.248), its messaging socket fix (2.1.290), and
+/// the late-registered tool fix (2.1.295).
+pub const MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 305);
+
 impl VersionOrder for ClaudeVersion {
     fn parse_version(value: &str) -> ChatResult<Self> {
         parse_version(value)
@@ -206,6 +210,22 @@ pub fn ensure_supported_version(value: ClaudeVersion) -> ChatResult<ProviderVers
         )),
         _ => Ok(admission),
     }
+}
+
+/// Refuses a teammate launch on a Claude Code version below
+/// `MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION`; direct threads keep the family minimum.
+pub fn ensure_organizational_version(value: ClaudeVersion) -> ChatResult<()> {
+    if value < MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION {
+        return Err(version_refusal(
+            ProviderVersionAdmission::BelowMinimum,
+            &value.to_string(),
+            format!(
+                "Claude Code {value} cannot run teammates; version {MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION} or newer is required"
+            ),
+            true,
+        ));
+    }
+    Ok(())
 }
 
 fn parse_version_part(value: Option<&str>) -> ChatResult<u64> {
@@ -373,6 +393,7 @@ pub fn launch_arguments(
         // Configured arguments never reach an organizational launch, so nothing follows the
         // variadic deny list.
         arguments.extend([
+            "--restricted".to_string(),
             "--setting-sources".to_string(),
             ORGANIZATIONAL_SETTING_SOURCES.to_string(),
             "--strict-mcp-config".to_string(),

@@ -38,16 +38,7 @@ pub(super) async fn recover_assignment_dispatch_jobs(
         Ok(scope) => recover_accepted_work(&pool, device, &scope, &now).await,
         Err(error) => eprintln!("Chat work recovery could not read this device's scope: {error}"),
     }
-    sqlx::query(
-        "UPDATE chat_assignment_dispatch_jobs
-         SET state = 'queued', claimed_at = NULL, claim_token = NULL, updated_at = ?
-         WHERE state = 'claimed'
-           AND claimed_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-5 minutes')",
-    )
-    .bind(now.as_str())
-    .execute(&pool)
-    .await
-    .map_err(persistence_error)?;
+    reclaim_stale_dispatch_claims(&pool, &now).await?;
     let working_assignment_ids = sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT assignment.id
          FROM chat_work_assignments assignment
@@ -95,6 +86,77 @@ pub(super) async fn recover_assignment_dispatch_jobs(
         });
     }
     Ok(count)
+}
+
+/// How long a dispatch claim, and the run its launch started, may go without progress before
+/// recovery treats the launch as interrupted, as an SQLite date modifier.
+const STALE_DISPATCH_CLAIM_AGE: &str = "-5 minutes";
+
+/// Dispatch job error recorded when recovery requeues a claim whose launch was interrupted.
+const LAUNCH_INTERRUPTED: &str = "launch_interrupted";
+
+/// SQL condition, over `?1` (now) and `?2` (`STALE_DISPATCH_CLAIM_AGE`), that holds for a run
+/// in `run` that is still starting long after it was created.
+const STALE_STARTING_RUN: &str = "run.state = 'starting'
+    AND run.created_at < strftime('%Y-%m-%dT%H:%M:%fZ', ?1, ?2)";
+
+/// SQL condition, over `?1` and `?2` as above, that holds for a dispatch job in `job` whose
+/// claim went stale.
+const STALE_CLAIMED_JOB: &str = "job.state = 'claimed'
+    AND job.claimed_at < strftime('%Y-%m-%dT%H:%M:%fZ', ?1, ?2)";
+
+/// Requeues the dispatch claims older than `STALE_DISPATCH_CLAIM_AGE` at `now`, and fails the
+/// `starting` runs of those assignments that are as old, recording `LAUNCH_INTERRUPTED` on
+/// their jobs. The next dispatch then starts a new run beside a settled one instead of an
+/// abandoned one, and a launch that still finishes later finds its run settled and changes
+/// nothing.
+pub(super) async fn reclaim_stale_dispatch_claims(
+    pool: &SqlitePool,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let interrupted_jobs = format!(
+        "UPDATE chat_assignment_dispatch_jobs AS job SET last_error = ?3
+         WHERE {STALE_CLAIMED_JOB}
+           AND EXISTS (
+             SELECT 1 FROM chat_agent_runs run
+             WHERE run.assignment_id = job.assignment_id AND {STALE_STARTING_RUN}
+           )"
+    );
+    sqlx::query(sqlx::AssertSqlSafe(interrupted_jobs.as_str()))
+        .bind(now.as_str())
+        .bind(STALE_DISPATCH_CLAIM_AGE)
+        .bind(LAUNCH_INTERRUPTED)
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
+    let interrupted_runs = format!(
+        "UPDATE chat_agent_runs AS run
+         SET state = 'failed', settled_at = ?1, updated_at = ?1
+         WHERE {STALE_STARTING_RUN}
+           AND EXISTS (
+             SELECT 1 FROM chat_assignment_dispatch_jobs job
+             WHERE job.assignment_id = run.assignment_id AND {STALE_CLAIMED_JOB}
+           )"
+    );
+    sqlx::query(sqlx::AssertSqlSafe(interrupted_runs.as_str()))
+        .bind(now.as_str())
+        .bind(STALE_DISPATCH_CLAIM_AGE)
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
+    let requeue = format!(
+        "UPDATE chat_assignment_dispatch_jobs AS job
+         SET state = 'queued', claimed_at = NULL, claim_token = NULL, updated_at = ?1
+         WHERE {STALE_CLAIMED_JOB}"
+    );
+    sqlx::query(sqlx::AssertSqlSafe(requeue.as_str()))
+        .bind(now.as_str())
+        .bind(STALE_DISPATCH_CLAIM_AGE)
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
+    transaction.commit().await.map_err(persistence_error)
 }
 
 /// Runs the recovery passes gated on what `scope` accepted: stranded takeover, follow-up

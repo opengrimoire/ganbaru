@@ -6,7 +6,7 @@ use super::models::{
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite, SqliteConnection, Transaction};
 
 /// Run states that end a run. A settled run never changes state again, so every run write
 /// excludes them.
@@ -227,10 +227,10 @@ pub async fn settle_launch(
     .await
     .map_err(persistence_error)?;
     if let (true, Some(error)) = (assignment_updated, launch_error) {
-        insert_dispatch_failure_message(
+        insert_assignment_failure_message(
             &mut transaction,
             &binding.assignment_id,
-            binding.run_id.as_str(),
+            LaunchAttempt::Run(&binding.run_id),
             &error.message,
             now,
         )
@@ -240,13 +240,37 @@ pub async fn settle_launch(
     Ok(settlement)
 }
 
-async fn insert_dispatch_failure_message(
-    transaction: &mut Transaction<'_, Sqlite>,
+/// The launch attempt a failure message reports, which keys the message so each attempt posts
+/// at most one.
+#[derive(Clone, Copy, Debug)]
+pub enum LaunchAttempt<'a> {
+    /// A dispatch that failed before it recorded a run, identified by its claim token.
+    Claim(&'a str),
+    /// A recorded run whose launch failed.
+    Run(&'a ChatAgentRunId),
+}
+
+impl LaunchAttempt<'_> {
+    fn key(self) -> String {
+        match self {
+            Self::Claim(token) => format!("claim:{token}"),
+            Self::Run(run_id) => format!("run:{}", run_id.as_str()),
+        }
+    }
+}
+
+/// Posts the failure message of `attempt` in the reply thread of `assignment_id`.
+///
+/// The message id derives from the assignment and the attempt, so a repeated settlement of the
+/// same attempt writes nothing and leaves the thread and conversation revisions as they were.
+/// Returns whether a message was written.
+pub async fn insert_assignment_failure_message(
+    connection: &mut SqliteConnection,
     assignment_id: &ChatWorkAssignmentId,
-    claim_token: &str,
-    message: &str,
+    attempt: LaunchAttempt<'_>,
+    reason: &str,
     now: &UtcTimestamp,
-) -> ChatResult<()> {
+) -> ChatResult<bool> {
     let row = sqlx::query(
         "SELECT assignment.reply_thread_id, assignment.teammate_id, thread.conversation_id,
                 participant.display_name AS author_label_snapshot
@@ -256,7 +280,7 @@ async fn insert_dispatch_failure_message(
          WHERE assignment.id = ?",
     )
     .bind(assignment_id.as_str())
-    .fetch_one(&mut **transaction)
+    .fetch_one(&mut *connection)
     .await
     .map_err(persistence_error)?;
     let reply_thread_id: String = row.try_get("reply_thread_id").map_err(persistence_error)?;
@@ -265,25 +289,31 @@ async fn insert_dispatch_failure_message(
     let author_label_snapshot: String = row
         .try_get("author_label_snapshot")
         .map_err(persistence_error)?;
-    let hash = sha256_hex(format!("{}:{claim_token}", assignment_id.as_str()).as_bytes());
+    let hash = sha256_hex(format!("{}:{}", assignment_id.as_str(), attempt.key()).as_bytes());
     let item_id = format!("organizational-item:{hash}");
     let revision_id = format!("organizational-revision:{hash}");
     let order_key =
-        crate::timeline::next_order_key(transaction, &conversation_id, Some(&reply_thread_id))
+        crate::timeline::next_order_key(connection, &conversation_id, Some(&reply_thread_id))
             .await?;
-    sqlx::query(
+    let inserted = sqlx::query(
         "INSERT INTO chat_conversation_items
             (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
-         VALUES (?, ?, ?, 'message', ?, ?)",
+         VALUES (?, ?, ?, 'message', ?, ?)
+         ON CONFLICT (id) DO NOTHING",
     )
     .bind(&item_id)
     .bind(&conversation_id)
     .bind(&reply_thread_id)
     .bind(&order_key)
     .bind(now.as_str())
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
-    .map_err(persistence_error)?;
+    .map_err(persistence_error)?
+    .rows_affected()
+        > 0;
+    if !inserted {
+        return Ok(false);
+    }
     sqlx::query(
         "INSERT INTO chat_communication_messages
             (item_id, author_participant_id, author_label_snapshot, created_at)
@@ -293,7 +323,7 @@ async fn insert_dispatch_failure_message(
     .bind(&teammate_id)
     .bind(&author_label_snapshot)
     .bind(now.as_str())
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
     let rich_content = json!({
@@ -304,7 +334,7 @@ async fn insert_dispatch_failure_message(
         "payload": { "launchFailure": true },
     });
     let rich_content_data = serde_json::to_string(&rich_content).map_err(serialization_error)?;
-    let bounded = crate::timeline::bounded_projected_revision(message, rich_content)?;
+    let bounded = crate::timeline::bounded_projected_revision(reason, rich_content)?;
     sqlx::query(
         "INSERT INTO chat_communication_message_revisions
             (id, message_item_id, normalized_markdown,
@@ -316,13 +346,13 @@ async fn insert_dispatch_failure_message(
     .bind(&bounded.normalized_markdown)
     .bind(&bounded.rich_content_data)
     .bind(now.as_str())
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
     sqlx::query("UPDATE chat_communication_messages SET current_revision_id = ? WHERE item_id = ?")
         .bind(&revision_id)
         .bind(&item_id)
-        .execute(&mut **transaction)
+        .execute(&mut *connection)
         .await
         .map_err(persistence_error)?;
     sqlx::query(
@@ -334,7 +364,7 @@ async fn insert_dispatch_failure_message(
     .bind(assignment_id.as_str())
     .bind(&rich_content_data)
     .bind(now.as_str())
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
     sqlx::query(
@@ -343,7 +373,7 @@ async fn insert_dispatch_failure_message(
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(&reply_thread_id)
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
     sqlx::query(
@@ -353,10 +383,10 @@ async fn insert_dispatch_failure_message(
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(&conversation_id)
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
-    Ok(())
+    Ok(true)
 }
 
 fn i64_value(value: u64) -> ChatResult<i64> {

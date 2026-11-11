@@ -5,7 +5,8 @@ use super::executable::*;
 use super::interactions::*;
 use super::normalizer::{CursorEventNormalizer, CursorRouteState};
 use super::protocol::*;
-use super::session::initialize_session;
+use super::session::{AcpInboundQueue, initialize_session};
+use super::transport::AcpInboundMessage;
 use crate::events::{CanonicalEvent, CanonicalRuntimeEvent};
 use crate::models::*;
 use serde::Deserialize;
@@ -579,8 +580,10 @@ fn session_start_auth_resume_and_configuration_rollback_are_bounded() {
     crate::test_block_on(async {
         let healthy_state = Arc::new(AcpFixtureState::default());
         let mut healthy = fixture_connection(FixtureScenario::Healthy, Arc::clone(&healthy_state));
+        let mut healthy_inbound = AcpInboundQueue::new(healthy.take_inbound().unwrap());
         let started = initialize_session(
             &healthy,
+            &mut healthy_inbound,
             "/fixture/workspace",
             None,
             modes(SafetyMode::AskForApproval, InteractionMode::Plan),
@@ -610,8 +613,10 @@ fn session_start_auth_resume_and_configuration_rollback_are_bounded() {
             FixtureScenario::AuthenticationRequired,
             Arc::clone(&auth_state),
         );
+        let mut auth_inbound = AcpInboundQueue::new(auth.take_inbound().unwrap());
         let auth_error = initialize_session(
             &auth,
+            &mut auth_inbound,
             "/fixture/workspace",
             None,
             modes(SafetyMode::AskForApproval, InteractionMode::Build),
@@ -629,8 +634,10 @@ fn session_start_auth_resume_and_configuration_rollback_are_bounded() {
         let resume_state = Arc::new(AcpFixtureState::default());
         let mut resume =
             fixture_connection(FixtureScenario::ResumeMissing, Arc::clone(&resume_state));
+        let mut resume_inbound = AcpInboundQueue::new(resume.take_inbound().unwrap());
         let resume_error = initialize_session(
             &resume,
+            &mut resume_inbound,
             "/fixture/workspace",
             Some("missing-session"),
             modes(SafetyMode::AskForApproval, InteractionMode::Build),
@@ -649,8 +656,10 @@ fn session_start_auth_resume_and_configuration_rollback_are_bounded() {
         let rollback_state = Arc::new(AcpFixtureState::default());
         let mut rollback =
             fixture_connection(FixtureScenario::RejectFastMode, Arc::clone(&rollback_state));
+        let mut rollback_inbound = AcpInboundQueue::new(rollback.take_inbound().unwrap());
         let rollback_error = initialize_session(
             &rollback,
+            &mut rollback_inbound,
             "/fixture/workspace",
             None,
             modes(SafetyMode::AskForApproval, InteractionMode::Build),
@@ -680,6 +689,86 @@ fn session_start_auth_resume_and_configuration_rollback_are_bounded() {
             .await
             .unwrap();
     });
+}
+
+#[test]
+fn session_load_drains_replayed_history_and_keeps_live_updates() {
+    crate::test_block_on(async {
+        let state = Arc::new(AcpFixtureState::default());
+        let mut connection = fixture_connection(FixtureScenario::ReplayOnLoad, Arc::clone(&state));
+        let mut inbound = AcpInboundQueue::new(connection.take_inbound().unwrap())
+            .with_replay_idle(Duration::from_millis(200));
+        let started = initialize_session(
+            &connection,
+            &mut inbound,
+            "/fixture/workspace",
+            Some("cursor-session-fixture"),
+            modes(SafetyMode::AskForApproval, InteractionMode::Build),
+            None,
+            &[],
+            &context("replay-load"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(started.session_id, "cursor-session-fixture");
+        let received = state.received();
+        let permission_reply = received
+            .iter()
+            .find(|message| message["id"] == REPLAYED_PERMISSION_ID)
+            .expect("the replayed permission request is answered");
+        assert_eq!(
+            permission_reply["result"]["outcome"]["outcome"],
+            "cancelled"
+        );
+
+        let client = connection.client();
+        let prompt = tokio::spawn(async move {
+            client
+                .request(
+                    "session/prompt",
+                    json!({ "sessionId": "cursor-session-fixture", "prompt": [] }),
+                    &context("live-prompt"),
+                )
+                .await
+        });
+        let mut routed = Vec::new();
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(1), inbound.recv())
+                .await
+                .expect("the live update reaches the router")
+                .expect("the transport stays open");
+            let live = update_text(&message) == Some("Fixture response");
+            routed.push(message);
+            if live {
+                break;
+            }
+        }
+        assert!(
+            routed
+                .iter()
+                .all(|message| update_text(message) != Some(REPLAYED_HISTORY_TEXT)),
+            "replayed history never reaches the router: {routed:?}"
+        );
+        assert!(matches!(
+            &routed[0],
+            AcpInboundMessage::Notification { params, .. }
+                if params["update"]["sessionUpdate"] == "available_commands_update"
+        ));
+        prompt.abort();
+        connection
+            .stop(Duration::ZERO, Duration::from_millis(20))
+            .await
+            .unwrap();
+    });
+}
+
+fn update_text(message: &AcpInboundMessage) -> Option<&str> {
+    match message {
+        AcpInboundMessage::Notification { params, .. } => {
+            params["update"]["content"]["text"].as_str()
+        }
+        _ => None,
+    }
 }
 
 fn event_kind_present(events: &[CanonicalRuntimeEvent], expected: &str) -> bool {

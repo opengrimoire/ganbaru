@@ -11,6 +11,8 @@ pub struct AcpSessionInitialization<'a> {
     pub flavor: AcpProviderFlavor,
     pub grok_uses_api_key: bool,
     pub connection: &'a AcpRpcConnection,
+    /// Inbound messages of `connection`, which drain the replay of a loaded session.
+    pub inbound: &'a mut AcpInboundQueue,
     pub workspace: &'a str,
     pub resume_session_id: Option<&'a str>,
     pub requested: AcpRequestedConfiguration<'a>,
@@ -19,8 +21,10 @@ pub struct AcpSessionInitialization<'a> {
 }
 
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub async fn initialize_session(
     connection: &AcpRpcConnection,
+    inbound: &mut AcpInboundQueue,
     workspace: &str,
     resume_session_id: Option<&str>,
     modes: TurnModeSnapshot,
@@ -32,6 +36,7 @@ pub async fn initialize_session(
         flavor: AcpProviderFlavor::Cursor,
         grok_uses_api_key: false,
         connection,
+        inbound,
         workspace,
         resume_session_id,
         requested: AcpRequestedConfiguration {
@@ -52,6 +57,7 @@ pub async fn initialize_provider_session(
         flavor,
         grok_uses_api_key,
         connection,
+        inbound,
         workspace,
         resume_session_id,
         requested,
@@ -130,9 +136,10 @@ pub async fn initialize_provider_session(
                 "{provider_name} did not advertise ACP session loading"
             )));
         }
-        let result = client
-            .request(
-                "session/load",
+        let result = inbound
+            .load_session(
+                &client,
+                session_id,
                 json!({ "sessionId": session_id, "cwd": workspace, "mcpServers": mcp_servers }),
                 context,
             )

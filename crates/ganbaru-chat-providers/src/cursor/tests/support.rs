@@ -214,7 +214,20 @@ pub enum FixtureScenario {
     AuthenticationRequired,
     ResumeMissing,
     RejectFastMode,
+    /// `session/load` replays history, a command list, and a permission request before and
+    /// after its response.
+    ReplayOnLoad,
 }
+
+/// Replayed updates the `ReplayOnLoad` fixture sends, more than the inbound channel holds.
+pub const LOAD_REPLAY_UPDATES: usize = 300;
+/// Text of every replayed history update.
+pub const REPLAYED_HISTORY_TEXT: &str = "Replayed history";
+/// Request id of the permission request replayed during `session/load`.
+pub const REPLAYED_PERMISSION_ID: &str = "replayed-permission";
+/// Delay between the `session/load` response and the last replayed update, shorter than the
+/// quiet period tests use.
+pub const LATE_REPLAY_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Default)]
 pub struct AcpFixtureState {
@@ -306,6 +319,36 @@ async fn run_fixture<R, W>(
                     session_setup(Some("cursor-session-fixture"), options.clone()),
                 )
                 .await;
+            }
+            "session/load" if scenario == FixtureScenario::ReplayOnLoad => {
+                for _ in 0..LOAD_REPLAY_UPDATES {
+                    write_message(&mut writer, replayed_text_update()).await;
+                }
+                write_message(
+                    &mut writer,
+                    session_update(json!({
+                        "sessionUpdate": "available_commands_update",
+                        "availableCommands": [{ "name": "review", "description": "Review changes" }]
+                    })),
+                )
+                .await;
+                write_message(
+                    &mut writer,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": REPLAYED_PERMISSION_ID,
+                        "method": "session/request_permission",
+                        "params": {
+                            "sessionId": "cursor-session-fixture",
+                            "toolCall": { "toolCallId": "replayed-tool", "title": "Replayed edit" },
+                            "options": [{ "optionId": "allow", "name": "Allow", "kind": "allow_once" }]
+                        }
+                    }),
+                )
+                .await;
+                write_result(&mut writer, id, session_setup(None, options.clone())).await;
+                tokio::time::sleep(LATE_REPLAY_DELAY).await;
+                write_message(&mut writer, replayed_text_update()).await;
             }
             "session/load" => {
                 write_result(&mut writer, id, session_setup(None, options.clone())).await;
@@ -412,4 +455,19 @@ where
         )
         .await;
     }
+}
+
+fn session_update(update: Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": { "sessionId": "cursor-session-fixture", "update": update }
+    })
+}
+
+fn replayed_text_update() -> Value {
+    session_update(json!({
+        "sessionUpdate": "agent_message_chunk",
+        "content": { "type": "text", "text": REPLAYED_HISTORY_TEXT }
+    }))
 }

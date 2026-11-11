@@ -195,7 +195,7 @@ fn exit_plan_mode_projects_one_plan_when_the_message_arrives_first() {
         routed.immediate_response.is_some(),
         "the deny is always sent"
     );
-    assert!(!claims_routed_plan(&mut state, &routed.event));
+    assert!(!claims_routed_plan(&mut state, &routed.event, "control-1"));
 }
 
 #[test]
@@ -210,7 +210,7 @@ fn exit_plan_mode_projects_one_plan_when_the_request_arrives_first() {
         panic!("expected a proposed plan");
     };
     assert_eq!(plan.plan_id, "toolu_plan");
-    assert!(claims_routed_plan(&mut state, &routed.event));
+    assert!(claims_routed_plan(&mut state, &routed.event, "control-1"));
 
     let events = normalize(&mut state, vec![plan_message("toolu_plan")]);
     assert!(plan_ids(&events).is_empty());
@@ -227,7 +227,52 @@ fn exit_plan_mode_request_without_a_tool_use_id_keeps_its_request_id() {
         panic!("expected a proposed plan");
     };
     assert_eq!(plan.plan_id, "control-7");
-    assert!(claims_routed_plan(&mut state, &routed.event));
+    assert!(claims_routed_plan(&mut state, &routed.event, "control-7"));
+}
+
+#[test]
+fn exit_plan_mode_without_a_tool_use_id_projects_one_plan_in_either_order() {
+    let mut message_first = active_state();
+    let events = normalize(&mut message_first, vec![plan_message("toolu_plan")]);
+    assert_eq!(plan_ids(&events), ["toolu_plan"]);
+    let routed =
+        route_control_request("control-7", plan_request(None).as_object().unwrap()).unwrap();
+    assert!(
+        routed.immediate_response.is_some(),
+        "the deny is always sent"
+    );
+    assert!(!claims_routed_plan(
+        &mut message_first,
+        &routed.event,
+        "control-7"
+    ));
+
+    let mut request_first = active_state();
+    let routed =
+        route_control_request("control-8", plan_request(None).as_object().unwrap()).unwrap();
+    assert!(claims_routed_plan(
+        &mut request_first,
+        &routed.event,
+        "control-8"
+    ));
+    let events = normalize(&mut request_first, vec![plan_message("toolu_plan")]);
+    assert!(plan_ids(&events).is_empty());
+    let next = normalize(&mut request_first, vec![plan_message("toolu_next_plan")]);
+    assert_eq!(
+        plan_ids(&next),
+        ["toolu_next_plan"],
+        "one request pairs with one message"
+    );
+}
+
+#[test]
+fn exit_plan_mode_without_a_tool_use_id_keeps_a_different_plan() {
+    let mut state = active_state();
+    normalize(&mut state, vec![plan_message("toolu_plan")]);
+    let mut request = plan_request(None);
+    request["input"]["plan"] = json!("## Revised plan");
+    let routed = route_control_request("control-9", request.as_object().unwrap()).unwrap();
+    assert!(claims_routed_plan(&mut state, &routed.event, "control-9"));
 }
 
 #[test]

@@ -12,8 +12,11 @@ use crate::models::*;
 use crate::process::{ProviderProcessConfig, spawn_provider_process};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::SystemTime;
 use tokio::io::AsyncReadExt;
 
 pub(super) enum SessionOpenInput {
@@ -68,6 +71,14 @@ impl SessionOpenInput {
         matches!(self, Self::Resume(_))
     }
 
+    /// The instructions the session places in its system prompt, as the request carries them.
+    pub(super) fn developer_instructions(&self) -> Option<&str> {
+        match self {
+            Self::Fresh(request) => request.developer_instructions.as_deref(),
+            Self::Resume(request) => request.developer_instructions.as_deref(),
+        }
+    }
+
     pub(super) fn resume_cursor(
         &self,
         instance_id: &ProviderInstanceId,
@@ -116,6 +127,110 @@ pub(super) async fn initialize(
         .await
         .map_err(|error| error.to_chat_error("initialize"))?;
     decode_initialize(response)
+}
+
+/// Probed versions remembered per process; a device runs a handful of Claude executables.
+const MAX_VERSION_CACHE_ENTRIES: usize = 16;
+
+static VERSION_CACHE: OnceLock<Mutex<VersionCache>> = OnceLock::new();
+
+/// Size and modification time of one file a Claude launch executes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FileStamp {
+    path: PathBuf,
+    length: u64,
+    modified: SystemTime,
+}
+
+impl FileStamp {
+    fn read(path: &Path) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(Self {
+            path: path.to_path_buf(),
+            length: metadata.len(),
+            modified: metadata.modified().ok()?,
+        })
+    }
+}
+
+/// Identity of a probed launch: the executable, its prefix arguments, and the stamps of the
+/// executable and of every prefix argument naming an existing file, such as the script a
+/// `node` launcher runs, so replacing either file probes again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VersionCacheKey {
+    executable: PathBuf,
+    prefix_arguments: Vec<String>,
+    stamps: Vec<FileStamp>,
+}
+
+impl VersionCacheKey {
+    /// Builds the key, or none when a file's metadata cannot be read, which bypasses the cache.
+    fn read(executable: &ResolvedClaudeExecutable) -> Option<Self> {
+        let mut stamps = vec![FileStamp::read(&executable.executable)?];
+        for argument in &executable.prefix_arguments {
+            let path = Path::new(argument);
+            if path.is_absolute() && path.is_file() {
+                stamps.push(FileStamp::read(path)?);
+            }
+        }
+        Some(Self {
+            executable: executable.executable.clone(),
+            prefix_arguments: executable.prefix_arguments.clone(),
+            stamps,
+        })
+    }
+}
+
+/// Successful probes, oldest first; failures are never stored.
+#[derive(Debug, Default)]
+struct VersionCache {
+    entries: VecDeque<(VersionCacheKey, ClaudeVersion)>,
+}
+
+impl VersionCache {
+    fn get(&self, key: &VersionCacheKey) -> Option<ClaudeVersion> {
+        self.entries
+            .iter()
+            .find(|(entry, _)| entry == key)
+            .map(|(_, version)| *version)
+    }
+
+    fn insert(&mut self, key: VersionCacheKey, version: ClaudeVersion) {
+        self.entries.retain(|(entry, _)| {
+            entry.executable != key.executable || entry.prefix_arguments != key.prefix_arguments
+        });
+        if self.entries.len() >= MAX_VERSION_CACHE_ENTRIES {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((key, version));
+    }
+}
+
+fn version_cache() -> std::sync::MutexGuard<'static, VersionCache> {
+    VERSION_CACHE
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Probes the Claude version once per unchanged executable.
+///
+/// The result is reused until the size or modification time of the executable or of a
+/// launched script changes. A metadata failure probes without caching.
+pub(super) async fn cached_probe_version(
+    executable: &ResolvedClaudeExecutable,
+    working_directory: &Path,
+    environment: std::collections::BTreeMap<String, String>,
+) -> ChatResult<ClaudeVersion> {
+    let key = VersionCacheKey::read(executable);
+    if let Some(version) = key.as_ref().and_then(|key| version_cache().get(key)) {
+        return Ok(version);
+    }
+    let version = probe_version(executable, working_directory, environment).await?;
+    if let Some(key) = key {
+        version_cache().insert(key, version);
+    }
+    Ok(version)
 }
 
 pub(super) async fn probe_version(

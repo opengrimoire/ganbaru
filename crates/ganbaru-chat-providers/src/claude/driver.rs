@@ -1,7 +1,11 @@
 //! Claude Code provider driver over the native SDK JSONL protocol.
 
 use super::home::*;
+use super::instructions::{ClaudeSessionInstructions, session_instructions};
 use super::normalizer::{ClaudeEventNormalizer, ClaudeRouteState};
+use super::organizational::{
+    ClaudeOrganizationalDeadline, organizational_route, verify_mcp_status,
+};
 use super::protocol::*;
 use super::session::*;
 use super::support::*;
@@ -10,7 +14,6 @@ use crate::events::*;
 use crate::models::*;
 use crate::process::{ProviderProcessConfig, spawn_provider_process};
 use crate::{DriverOperationContext, ProviderEventSink};
-use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{
@@ -55,6 +58,14 @@ pub(super) struct ClaudeLiveSession {
     pub(super) effective_model: Option<ModelId>,
     pub(super) effective_effort: Option<String>,
     pub(super) effective_fast_mode: Option<bool>,
+    /// Whether the session runs under the organizational launch surface, which also fixes the
+    /// per-turn permission mode mapping.
+    pub(super) organizational: bool,
+    /// The gate 2 deadline an organizational session arms with each user message.
+    pub(super) organizational_deadline: Option<ClaudeOrganizationalDeadline>,
+    /// The instructions in the session system prompt, with the file that carries them when
+    /// they are too large to pass inline. Turns compare their instructions to its digest.
+    pub(super) instructions: Option<ClaudeSessionInstructions>,
 }
 
 impl Drop for ClaudeLiveSession {
@@ -137,6 +148,10 @@ impl ClaudeProviderDriver {
                         interaction_mode: InteractionMode::Build,
                     },
                     project_configuration: ProjectConfigurationAccess::Restricted,
+                    internal_mcp: None,
+                    organizational: None,
+                    system_prompt: None,
+                    cli_version: None,
                 },
             )
             .await?;
@@ -182,32 +197,33 @@ impl ClaudeProviderDriver {
         let home = resolve_claude_home(&self.configuration)?;
         let mut environment = claude_process_environment(&self.configuration, &home)?;
         let executable = resolve_claude_executable(&self.configuration.executable, &environment)?;
-        let version = probe_version(&executable, working_directory, environment.clone()).await?;
+        let version =
+            cached_probe_version(&executable, working_directory, environment.clone()).await?;
         ensure_supported_version(version)?;
-        let mut arguments = launch_arguments(
-            executable.prefix_arguments.clone(),
-            &self.configuration.launch_arguments,
-            options,
-        )?;
-        if let Some(server) = &self.configuration.internal_mcp {
-            const TOKEN_ENVIRONMENT: &str = "GANBARU_CHAT_MCP_TOKEN";
-            environment.insert(TOKEN_ENVIRONMENT.to_string(), server.bearer_token.clone());
-            arguments.push("--mcp-config".to_string());
-            arguments.push(
-                json!({
-                    "mcpServers": {
-                        server.name.clone(): {
-                            "type": "http",
-                            "url": server.url,
-                            "headers": {
-                                "Authorization": format!("Bearer ${{{TOKEN_ENVIRONMENT}}}")
-                            }
-                        }
-                    }
-                })
-                .to_string(),
+        let server = self.configuration.internal_mcp.as_ref();
+        if let Some(server) = server {
+            environment.insert(
+                INTERNAL_MCP_TOKEN_ENVIRONMENT.to_string(),
+                server.bearer_token.clone(),
             );
         }
+        let arguments = launch_arguments(
+            executable.prefix_arguments.clone(),
+            &self.configuration.launch_arguments,
+            ClaudeLaunchOptions {
+                internal_mcp: server.map(|server| ClaudeInternalMcpLaunch {
+                    name: &server.name,
+                    url: &server.url,
+                }),
+                organizational: server.filter(|server| server.organizational_authority).map(
+                    |server| ClaudeOrganizationalLaunch {
+                        internal_server_name: &server.name,
+                    },
+                ),
+                cli_version: Some(version),
+                ..options
+            },
+        )?;
         let process = spawn_provider_process(ProviderProcessConfig {
             executable: executable.executable,
             arguments,
@@ -240,12 +256,16 @@ impl ClaudeProviderDriver {
         }
         let workspace = canonical_verified_workspace(input.workspace())?;
         let home = resolve_claude_home(&self.configuration)?;
-        let continuation_group_id = home.continuation_group()?;
+        let organizational = self.organizational_authority();
+        let continuation_group_id = home.continuation_group_with_authority(organizational)?;
         input.verify_continuation(&continuation_group_id)?;
         let cursor = input.resume_cursor(&self.configuration.instance_id)?;
         let model = input.model_id().cloned();
         let effort = selected_effort(input.model_options())?;
         let fast_mode = selected_fast_mode(input.model_options())?;
+        let instructions = session_instructions(input.developer_instructions())?
+            .map(ClaudeSessionInstructions::prepare)
+            .transpose()?;
         let fresh_uuid =
             matches!(&input, SessionOpenInput::Fresh(_)).then_some(cursor.session_uuid.as_str());
         let resume_uuid =
@@ -262,6 +282,12 @@ impl ClaudeProviderDriver {
                     fast_mode,
                     modes: input.modes(),
                     project_configuration: input.workspace().project_configuration,
+                    internal_mcp: None,
+                    organizational: None,
+                    cli_version: None,
+                    system_prompt: instructions
+                        .as_ref()
+                        .map(ClaudeSessionInstructions::argument),
                 },
             )
             .await?;
@@ -281,6 +307,17 @@ impl ClaudeProviderDriver {
             }
             Err(error) => return Err(error),
         };
+        let organizational_server = self.organizational_server_name();
+        if let Some(expected_server) = organizational_server.as_deref() {
+            if let Err(error) =
+                verify_mcp_status(&connection.client(), expected_server, context).await
+            {
+                let _ = connection
+                    .stop(SESSION_GRACEFUL_STOP, SESSION_FORCE_STOP)
+                    .await;
+                return Err(error);
+            }
+        }
         let models = provider_models(
             initialize.models.clone(),
             if self.settings.allow_custom_models {
@@ -314,6 +351,9 @@ impl ClaudeProviderDriver {
         let expected_shutdown = Arc::new(AtomicBool::new(false));
         let terminal_error = Arc::new(Mutex::new(None));
         let inbound = connection.take_inbound()?;
+        let (organizational_deadline, organizational_route) = organizational_server
+            .map(|server| organizational_route(server, connection.kill_handle()))
+            .unzip();
         let router_task = spawn_claude_router(ClaudeRouterResources {
             client: connection.client(),
             inbound,
@@ -323,6 +363,7 @@ impl ClaudeProviderDriver {
             sink: Arc::clone(&sink),
             expected_shutdown: Arc::clone(&expected_shutdown),
             terminal_error: Arc::clone(&terminal_error),
+            organizational: organizational_route,
         });
         let capabilities = claude_capabilities();
         let started_at = now_utc()?;
@@ -371,6 +412,9 @@ impl ClaudeProviderDriver {
             effective_model: model,
             effective_effort: effort,
             effective_fast_mode: fast_mode,
+            organizational,
+            organizational_deadline,
+            instructions,
         });
         Ok(ProviderSessionSnapshot {
             session_id,
@@ -382,6 +426,24 @@ impl ClaudeProviderDriver {
             capabilities,
             started_at,
         })
+    }
+
+    /// Whether launches use the organizational surface. Only the internal server's
+    /// organizational flag selects it; the server's presence alone never does.
+    pub(super) fn organizational_authority(&self) -> bool {
+        self.configuration
+            .internal_mcp
+            .as_ref()
+            .is_some_and(|server| server.organizational_authority)
+    }
+
+    /// The internal server an organizational session must report, or none for direct runs.
+    fn organizational_server_name(&self) -> Option<String> {
+        self.configuration
+            .internal_mcp
+            .as_ref()
+            .filter(|server| server.organizational_authority)
+            .map(|server| server.name.clone())
     }
 
     pub(super) fn live_mut(

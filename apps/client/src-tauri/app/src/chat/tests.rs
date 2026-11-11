@@ -2,7 +2,7 @@ mod config;
 mod contracts;
 mod credentials;
 mod device_state;
-mod fake_driver;
+pub(crate) mod fake_driver;
 mod launch_gate;
 mod process;
 #[cfg(windows)]

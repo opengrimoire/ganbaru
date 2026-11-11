@@ -58,6 +58,8 @@ export interface StartSessionRequest {
   modes: TurnModeSnapshot;
   modelId: ModelId | null;
   modelOptions: ModelOptionSelection[];
+  /** Instructions the provider places at system level when the session opens. */
+  developerInstructions: string | null;
 }
 
 export interface ResumeSessionRequest {
@@ -68,6 +70,8 @@ export interface ResumeSessionRequest {
   continuationGroupId: ContinuationGroupId;
   resumeCursor: VersionedJson;
   modes: TurnModeSnapshot;
+  /** Instructions the provider places at system level when the session resumes. */
+  developerInstructions: string | null;
 }
 
 export interface SendTurnRequest {

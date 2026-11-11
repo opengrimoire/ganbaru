@@ -239,6 +239,16 @@
   --mobile-chrome-highlight: 2rem;
 }
 
+/* Touch layouts raise collection rows to the 44px target that their header menu triggers already use. These stay outside the layers so they win over the default above. */
+html[data-shell="mobile"] {
+  --collection-table-row-height: 2.75rem;
+}
+@media (any-pointer: coarse) and (any-hover: none) {
+  :root {
+    --collection-table-row-height: 2.75rem;
+  }
+}
+
 svg.lucide:not(.app-title-bar *, .explorer-sidebar *) {
   stroke-width: var(--icon-stroke-width);
 }
@@ -490,7 +500,6 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   html[data-shell="mobile"] {
     --titlebar-h: var(--mobile-topbar-h);
     --toolbar-h: 56px;
-    --collection-table-row-height: 2.75rem;
   }
   .mobile-viewport-height {
     height: calc(100% - var(--page-keyboard-inset));
@@ -498,11 +507,6 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   @supports (height: 100dvh) {
     .mobile-viewport-height {
       height: calc(100dvh - var(--page-keyboard-inset));
-    }
-  }
-  @media (any-pointer: coarse) and (any-hover: none) {
-    :root {
-      --collection-table-row-height: 2.75rem;
     }
   }
   html[data-shell="mobile"] :where(button, a, input, select, textarea) {

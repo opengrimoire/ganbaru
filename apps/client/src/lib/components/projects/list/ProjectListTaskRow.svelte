@@ -6,6 +6,7 @@
   import { collectionRowIndent } from "$lib/components/collections/row-expansion";
   import PanelRight from "@lucide/svelte/icons/panel-right";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
   import {
     projectTagColorDotStyle,
     projectTagColorSwatchClass,
@@ -162,6 +163,8 @@
   } = $props();
 
   const { t } = getLocalization();
+  /** The Open button shows only its label on the mobile shell, where it has no room for the side panel icon. */
+  const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
   const context = getProjectListTableContext();
 
   /** Save the edited title; an empty title is not allowed, so the field falls back to the saved one. */
@@ -265,7 +268,7 @@
     <button type="button" data-collection-hover-reveal=""
       class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground opacity-100 hover:bg-accent hover:text-accent-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-has-focus-visible/row:opacity-100"
       aria-label={t("projects.actions.openTaskDetails", task.title)} onclick={() => onOpenTask(task)}>
-      <PanelRight class="size-3.5" aria-hidden="true" /><span>{t("collections.property.open")}</span>
+      {#if !mobileShell}<PanelRight class="size-3.5" aria-hidden="true" />{/if}<span>{t("collections.property.open")}</span>
     </button>
     </CollectionCell>
     {#each taskListColumns as column (column)}

@@ -116,7 +116,7 @@ describe("canonical timeline projection", () => {
       stored(2, { type: "content_delta", payload: { itemId: "answer", streamKind: "assistant_text", contentIndex: 0, delta: "Done" } }),
       stored(3, { type: "diff_updated", payload: { source: "provider", files: [changed], providerDiff: null } }),
       stored(4, { type: "model_rerouted", payload: { requestedModelId: "gpt-5", effectiveModelId: "gpt-5.1", reason: "Capacity" } }),
-      stored(5, { type: "turn_completed", payload: { state: "completed", stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 4, cachedInputTokens: 2, contextTokens: 16, contextLimit: 100, cost: null }, changedFiles: [changed] } }, { createdAt: "2026-07-21T14:00:12.500Z" }),
+      stored(5, { type: "turn_completed", payload: { state: "completed", stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 4, cachedInputTokens: 2, cacheWriteInputTokens: null, contextTokens: 16, contextLimit: 100, cost: null }, changedFiles: [changed] } }, { createdAt: "2026-07-21T14:00:12.500Z" }),
     ];
 
     const projection = projectCanonicalTimeline(events);

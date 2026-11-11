@@ -117,6 +117,8 @@ export interface ThreadUsageUpdatedEvent {
   inputTokens: number | null;
   outputTokens: number | null;
   cachedInputTokens: number | null;
+  /** Input tokens written to the provider prompt cache; null when unreported or stored before the field existed. */
+  cacheWriteInputTokens: number | null;
   contextTokens: number | null;
   contextLimit: number | null;
   cost: ProviderAttributedCost | null;

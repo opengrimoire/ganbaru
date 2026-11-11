@@ -133,6 +133,7 @@ impl CodexEventNormalizer {
             input_tokens: unsigned(total, "inputTokens"),
             output_tokens: unsigned(total, "outputTokens"),
             cached_input_tokens: unsigned(total, "cachedInputTokens"),
+            cache_write_input_tokens: None,
             context_tokens: unsigned(total, "totalTokens"),
             context_limit: unsigned(usage, "modelContextWindow"),
             cost: None,

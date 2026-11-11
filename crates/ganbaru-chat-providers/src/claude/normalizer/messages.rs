@@ -2,7 +2,7 @@
 
 use super::{
     ClaudeEventNormalizer, ClaudeItemEvent, ClaudeRouteState, MAX_TEXT_BYTES, bounded_shape,
-    bounded_text, normalize_usage, text,
+    bounded_text, text,
 };
 use crate::claude::protocol::{protocol_error, resume_cursor};
 use crate::events::*;
@@ -34,6 +34,7 @@ impl ClaudeEventNormalizer {
                     .unwrap_or_else(|| state.resume_cursor.session_uuid.clone());
                 let provider_id = ProviderThreadId::new(provider_thread.clone())
                     .map_err(|_| protocol_error("session UUID"))?;
+                state.usage.session_model(text(object, "model"));
                 state.session_state = ProviderSessionState::Ready;
                 let mut events = vec![
                     self.event(
@@ -232,7 +233,8 @@ impl ClaudeEventNormalizer {
         object: &Map<String, Value>,
         _raw: &Value,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
-        let usage = normalize_usage(object);
+        let route_model = state.model_id.as_ref().map(ModelId::as_str);
+        let usage = state.usage.finish_turn(object, route_model);
         let subtype = text(object, "subtype").unwrap_or("unknown");
         let error_text = object
             .get("errors")

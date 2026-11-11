@@ -146,10 +146,14 @@ impl ClaudeEventNormalizer {
         scope: &ClaudeStreamScope,
         event: &Map<String, Value>,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
-        let message_id = event
-            .get("message")
-            .and_then(Value::as_object)
-            .and_then(|message| text(message, "id"));
+        let message = event.get("message").and_then(Value::as_object);
+        let message_id = message.and_then(|message| text(message, "id"));
+        if scope.is_root()
+            && let Some(message) = message
+        {
+            let usable_id = message_id.filter(|id| usable_message_id(id));
+            state.usage.message_start(message, usable_id);
+        }
         let abandoned = state.stream.start_message(scope, message_id);
         let mut events = Vec::new();
         for block in abandoned.into_iter().filter(|block| block.complete_on_stop) {

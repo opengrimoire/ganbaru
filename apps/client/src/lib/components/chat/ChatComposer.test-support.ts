@@ -137,6 +137,7 @@ export function interactionState(): ChatInteractionStateRead {
       inputTokens: 80_000,
       outputTokens: 20_000,
       cachedInputTokens: 10_000,
+      cacheWriteInputTokens: null,
       contextTokens: 100_000,
       contextLimit: 258_000,
       cost: null,

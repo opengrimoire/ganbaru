@@ -79,11 +79,32 @@ pub(crate) fn append_project_configuration_arguments(
     Ok(())
 }
 
+/// Interrupts the running turn. A turn waiting out a capacity retry has no provider turn to
+/// interrupt, so the retry is cancelled and the chat turn settles as interrupted here.
 pub(super) async fn interrupt_live_turn(
     live: &mut CodexLiveSession,
     context: &DriverOperationContext,
 ) -> ChatResult<()> {
-    let state = live.route.lock().map_err(|_| driver_state_error())?.clone();
+    let (state, waiting_retry) = {
+        let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+        let retry = state.capacity_retry.take();
+        let waiting_retry = retry.as_ref().is_some_and(CodexCapacityRetry::retrying);
+        if let Some(retry) = retry {
+            retry.cancel();
+        }
+        (state.clone(), waiting_retry)
+    };
+    if waiting_retry
+        && state.active_provider_turn_id.is_none()
+        && state.active_chat_turn_id.is_some()
+    {
+        let event = {
+            let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+            live.normalizer
+                .settled_turn(&mut state, None, ChatTurnState::Interrupted, None)?
+        };
+        return live.sink.emit(event).await;
+    }
     let (Some(provider_thread_id), Some(provider_turn_id)) =
         (state.provider_thread_id, state.active_provider_turn_id)
     else {

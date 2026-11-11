@@ -11,9 +11,11 @@ mod items;
 mod lifecycle;
 mod rate_limits;
 mod status;
+mod stop_reason;
 mod value;
 
 pub use rate_limits::CodexRateLimits;
+pub use stop_reason::CodexStopReason;
 use value::*;
 
 const MAX_PROVIDER_TEXT_BYTES: usize = 64 * 1024;
@@ -82,6 +84,8 @@ pub struct CodexRouteState {
     pub stream_indexes: HashMap<(String, ContentStreamKind), u32>,
     pub changed_files: Vec<ChangedFileSummary>,
     pub rate_limits: CodexRateLimits,
+    /// The capacity retry armed for the active `turn/start` turn.
+    pub capacity_retry: Option<super::capacity_retry::CodexCapacityRetry>,
 }
 
 impl CodexRouteState {
@@ -97,6 +101,7 @@ impl CodexRouteState {
             stream_indexes: HashMap::new(),
             changed_files: Vec::new(),
             rate_limits: CodexRateLimits::default(),
+            capacity_retry: None,
         }
     }
 }

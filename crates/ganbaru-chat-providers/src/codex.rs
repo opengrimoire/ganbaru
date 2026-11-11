@@ -1,5 +1,6 @@
 //! Codex app-server provider.
 
+mod capacity_retry;
 mod driver;
 mod home;
 mod normalizer;

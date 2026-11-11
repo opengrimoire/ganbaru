@@ -1,5 +1,6 @@
 //! Codex provider driver over app-server stdio.
 
+use super::capacity_retry::CodexCapacityRetry;
 use super::home::*;
 use super::normalizer::{CodexEventNormalizer, CodexRouteState};
 use super::organizational::*;
@@ -81,6 +82,8 @@ struct CodexLiveSession {
     workspace: PathBuf,
     effective_model: String,
     mcp_reload: CodexMcpReloadState,
+    /// The developer instructions `thread/start` or `thread/resume` carried, if any.
+    open_instructions: Option<String>,
     organizational: bool,
     internal_mcp_name: Option<String>,
 }
@@ -88,6 +91,11 @@ struct CodexLiveSession {
 impl Drop for CodexLiveSession {
     fn drop(&mut self) {
         self.expected_shutdown.store(true, Ordering::Release);
+        if let Ok(mut state) = self.route.lock()
+            && let Some(retry) = state.capacity_retry.take()
+        {
+            retry.cancel();
+        }
         self.router_task.abort();
     }
 }
@@ -651,12 +659,20 @@ impl ProviderDriver for CodexProviderDriver {
                 &request,
                 custom_safety.as_ref(),
                 live.organizational,
+                live.open_instructions.is_some()
+                    && live.open_instructions == request.developer_instructions,
             )?;
             let network_access = sandbox_network_access(&params);
             {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 state.active_chat_turn_id = Some(request.turn_id.clone());
                 state.active_provider_turn_id = None;
+                if let Some(previous) = state
+                    .capacity_retry
+                    .replace(CodexCapacityRetry::arm(&params))
+                {
+                    previous.cancel();
+                }
                 state.modes = request.modes;
                 if let Some(model) = request.model_id.clone() {
                     state.effective_model_id = Some(model);
@@ -698,7 +714,14 @@ impl ProviderDriver for CodexProviderDriver {
                     .active_provider_turn_id
                     .as_deref()
                     .is_some_and(|observed| observed != provider_turn_id.as_str());
-                if !mismatch {
+                // The router may already have settled the turn or started a capacity retry; the
+                // response must not revive the provider turn that ended.
+                let ended = state.active_chat_turn_id.as_ref() != Some(&request.turn_id)
+                    || state
+                        .capacity_retry
+                        .as_ref()
+                        .is_some_and(CodexCapacityRetry::retrying);
+                if !mismatch && !ended {
                     state.active_provider_turn_id = Some(provider_turn_id.as_str().to_string());
                     state.session_state = ProviderSessionState::Active;
                 }

@@ -298,6 +298,7 @@ impl CodexProviderDriver {
         });
 
         let developer_instructions = input.developer_instructions();
+        let open_instructions = developer_instructions.map(str::to_owned);
         let start_params = thread_open_params(
             None,
             &workspace,
@@ -468,6 +469,7 @@ impl CodexProviderDriver {
                         .iter()
                         .any(|argument| argument.contains("mcp_servers.")),
             ),
+            open_instructions,
             organizational,
             internal_mcp_name: self
                 .configuration
@@ -530,7 +532,10 @@ impl SessionOpenInput {
     }
 
     fn developer_instructions(&self) -> Option<&str> {
-        None
+        match self {
+            Self::Fresh(request) => request.developer_instructions.as_deref(),
+            Self::Resume(request) => request.developer_instructions.as_deref(),
+        }
     }
 
     fn resume_provider_thread_id(&self) -> Option<&str> {

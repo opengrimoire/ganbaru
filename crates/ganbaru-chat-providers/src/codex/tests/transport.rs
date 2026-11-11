@@ -140,7 +140,7 @@ fn transport_honors_cancellation_while_waiting_for_response() {
 }
 
 #[test]
-fn oversized_message_fails_pending_requests_without_a_newline() {
+fn oversized_message_fails_pending_requests() {
     crate::test_block_on(async {
         let (client_reader, mut server_writer) = tokio::io::duplex(64 * 1024);
         let (server_reader, client_writer) = tokio::io::duplex(64 * 1024);

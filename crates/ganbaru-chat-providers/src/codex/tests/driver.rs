@@ -685,7 +685,7 @@ fn mcp_reload_runs_when_token_changes() {
 }
 
 #[test]
-fn thread_admin_reuses_the_live_connection() {
+fn thread_admin_reuses_live_connection() {
     crate::test_block_on(async {
         let workspace = TestDirectory::new("driver-admin-live");
         let (mut driver, fixture, _snapshot) =

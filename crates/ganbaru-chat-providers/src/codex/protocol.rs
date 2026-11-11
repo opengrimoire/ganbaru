@@ -446,6 +446,12 @@ pub fn preset_network_access(mode: SafetyMode) -> Option<bool> {
     safety_settings(mode).map(|settings| settings.turn_sandbox_type == "dangerFullAccess")
 }
 
+/// The `turn/start` parameters for `request`.
+///
+/// `instructions_at_open` reports that the live thread received these same developer
+/// instructions through `thread/start` or `thread/resume`. The collaboration settings then omit
+/// them, so the per-turn copy is only the fallback for a thread opened without them or with
+/// different ones.
 pub fn turn_start_params(
     provider_thread_id: &str,
     workspace: &Path,
@@ -453,6 +459,7 @@ pub fn turn_start_params(
     request: &SendTurnRequest,
     custom_safety: Option<&CodexCustomSafetySettings>,
     organizational: bool,
+    instructions_at_open: bool,
 ) -> ChatResult<Value> {
     if request.prompt.len() > MAX_PROMPT_BYTES || request.prompt.contains('\0') {
         return Err(ChatError::validation(
@@ -632,7 +639,11 @@ pub fn turn_start_params(
     if let Some(effort) = effort {
         collaboration_settings.insert("reasoning_effort".to_string(), Value::String(effort));
     }
-    if let Some(instructions) = request.developer_instructions.as_ref() {
+    if let Some(instructions) = request
+        .developer_instructions
+        .as_ref()
+        .filter(|_| !instructions_at_open)
+    {
         collaboration_settings.insert(
             "developer_instructions".to_string(),
             Value::String(instructions.clone()),

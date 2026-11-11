@@ -40,6 +40,7 @@ mod models;
 mod normalizer;
 mod protocol_coverage;
 mod transport;
+mod turn_errors;
 mod usage;
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -149,6 +150,9 @@ enum FixtureScenario {
     CommandApproval,
     StructuredQuestion,
     TurnNotInProgress,
+    CapacityFailure,
+    UsageLimit,
+    Elicitation,
 }
 
 #[derive(Default)]
@@ -238,6 +242,7 @@ async fn run_app_server_fixture<R, W>(
 {
     let mut reader = BufReader::new(reader);
     let mut resume_failed = false;
+    let mut turn_starts = 0_u32;
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line).await {
@@ -515,6 +520,48 @@ async fn run_app_server_fixture<R, W>(
             "config/mcpServer/reload" => {
                 write_fixture_message(&mut writer, json!({ "id": id, "result": {} })).await;
             }
+            "turn/start"
+                if matches!(
+                    scenario,
+                    FixtureScenario::CapacityFailure | FixtureScenario::UsageLimit
+                ) =>
+            {
+                turn_starts += 1;
+                let turn_id = format!("fixture-provider-turn-{turn_starts}");
+                let thread_id = message["params"]["threadId"].clone();
+                let error_info = if scenario == FixtureScenario::CapacityFailure {
+                    json!("serverOverloaded")
+                } else {
+                    json!("usageLimitExceeded")
+                };
+                for frame in [
+                    json!({
+                        "id": id,
+                        "result": { "turn": { "id": turn_id, "status": "inProgress" } }
+                    }),
+                    json!({
+                        "method": "turn/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turn": { "id": turn_id, "status": "inProgress" }
+                        }
+                    }),
+                    json!({
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "turn": {
+                                "id": turn_id,
+                                "status": "failed",
+                                "items": [],
+                                "error": { "message": "Fixture failure", "codexErrorInfo": error_info }
+                            }
+                        }
+                    }),
+                ] {
+                    write_fixture_message(&mut writer, frame).await;
+                }
+            }
             "turn/start" if scenario == FixtureScenario::TurnNotInProgress => {
                 write_fixture_message(
                     &mut writer,
@@ -557,6 +604,24 @@ async fn run_app_server_fixture<R, W>(
                                 "itemId": "fixture-command-item",
                                 "command": "pnpm test",
                                 "reason": "Run focused tests"
+                            }
+                        }),
+                    )
+                    .await;
+                }
+                if scenario == FixtureScenario::Elicitation {
+                    write_fixture_message(
+                        &mut writer,
+                        json!({
+                            "id": "fixture-elicitation",
+                            "method": "mcpServer/elicitation/request",
+                            "params": {
+                                "threadId": message["params"]["threadId"],
+                                "turnId": "fixture-provider-turn",
+                                "serverName": "fixture-docs",
+                                "mode": "form",
+                                "message": "Sign in to continue",
+                                "requestedSchema": { "type": "object", "properties": {} }
                             }
                         }),
                     )

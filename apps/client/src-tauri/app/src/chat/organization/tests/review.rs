@@ -73,6 +73,42 @@ async fn request_changes(
     }
 }
 
+/// Replies routed to `assignment_id` that still wait for delivery.
+async fn pending_reply_count(pool: &SqlitePool, assignment_id: &ChatWorkAssignmentId) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM chat_work_assignment_inputs
+         WHERE assignment_id = ? AND routing_kind <> 'trigger' AND delivery_state = 'pending'",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn deliver_input(pool: &SqlitePool, input_id: &str) {
+    sqlx::query(
+        "UPDATE chat_work_assignment_inputs
+         SET delivery_state = 'delivered', delivered_at = '2026-08-04T17:02:30.000Z'
+         WHERE id = ?",
+    )
+    .bind(input_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+fn assert_review_refusal(error: &ChatError, reason: &str) {
+    assert_eq!(error.code, ChatErrorCode::Conflict, "{error}");
+    assert_eq!(
+        error
+            .details
+            .as_deref()
+            .and_then(|details| details["reason"].as_str()),
+        Some(reason),
+        "{error}"
+    );
+}
+
 fn assert_reviewed(assignment: &ChatWorkAssignmentRead, outcome: ChatAssignmentReviewOutcome) {
     assert_eq!(assignment.state, ChatWorkAssignmentState::Completed);
     assert!(assignment.settled_at.is_some());
@@ -233,18 +269,21 @@ fn requesting_changes_continues_in_one_follow_up_and_records_the_request() {
 }
 
 #[test]
-fn requesting_changes_without_a_device_for_the_teammate_still_records_the_request() {
+fn requesting_changes_without_a_device_for_the_teammate_is_refused_and_posts_nothing() {
     tauri::async_runtime::block_on(async {
         let (pool, before) = reviewed_work("ready_for_review").await;
 
-        let posted = request_changes(&pool, &before, "Cover the empty case", false)
+        let error = request_changes(&pool, &before, "Cover the empty case", false)
             .await
-            .unwrap();
+            .err()
+            .expect("a note no device can run was posted");
 
-        assert!(posted.assignment_write.assignment_id.is_none());
+        assert_review_refusal(&error, "no_executing_device");
         assert_eq!(assignment_count(&pool).await, 1, "a follow-up was created");
-        let reviewed = read_assignment(&pool, &before.id).await.unwrap();
-        assert_reviewed(&reviewed, ChatAssignmentReviewOutcome::ChangesRequested);
+        let after = read_assignment(&pool, &before.id).await.unwrap();
+        assert_eq!(after.state, ChatWorkAssignmentState::ReadyForReview);
+        assert_eq!(after.revision, before.revision);
+        assert!(after.review.is_none());
         let notes: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM chat_communication_message_revisions
              WHERE normalized_markdown = 'Cover the empty case'",
@@ -252,7 +291,95 @@ fn requesting_changes_without_a_device_for_the_teammate_still_records_the_reques
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(notes, 1);
+        assert_eq!(notes, 0, "the refused note was posted");
+        let receipts: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_organizational_command_receipts
+             WHERE client_command_id LIKE 'assignment-review:%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(receipts, 0, "a refused note kept its receipt");
+    });
+}
+
+#[test]
+fn accept_is_refused_while_replies_wait_on_the_reviewed_work() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let before = read_assignment(&pool, &reviewed_id()).await.unwrap();
+
+        let error = assignments::accept_reviewed_assignment(&pool, &before.id, before.revision)
+            .await
+            .unwrap_err();
+
+        assert_review_refusal(&error, "pending_replies");
+        let after = read_assignment(&pool, &before.id).await.unwrap();
+        assert_eq!(after.state, ChatWorkAssignmentState::ReadyForReview);
+        assert_eq!(after.revision, before.revision);
+        assert!(after.review.is_none());
+        assert_eq!(pending_reply_count(&pool, &before.id).await, 2);
+    });
+}
+
+#[test]
+fn accept_refuses_a_waiting_steer_and_ignores_delivered_replies() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        sqlx::query(
+            "UPDATE chat_work_assignment_inputs SET routing_kind = 'steer'
+             WHERE id = 'input:review-reply-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        deliver_input(&pool, "input:review-reply-2").await;
+        let before = read_assignment(&pool, &reviewed_id()).await.unwrap();
+
+        let error = assignments::accept_reviewed_assignment(&pool, &before.id, before.revision)
+            .await
+            .unwrap_err();
+        assert_review_refusal(&error, "pending_replies");
+
+        deliver_input(&pool, "input:review-reply-1").await;
+        let accepted = assignments::accept_reviewed_assignment(&pool, &before.id, before.revision)
+            .await
+            .unwrap();
+        assert_reviewed(&accepted, ChatAssignmentReviewOutcome::Accepted);
+    });
+}
+
+#[test]
+fn requesting_changes_carries_waiting_replies_into_the_follow_up() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let before = read_assignment(&pool, &reviewed_id()).await.unwrap();
+
+        let posted = request_changes(&pool, &before, "Cover the empty case", true)
+            .await
+            .unwrap();
+
+        let follow_up_id = posted.assignment_write.assignment_id.clone().unwrap();
+        assert_eq!(pending_reply_count(&pool, &before.id).await, 0);
+        let carried: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM chat_work_assignment_inputs
+             WHERE assignment_id = ? AND delivery_state = 'pending'",
+        )
+        .bind(follow_up_id.as_str())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        for reply in ["input:review-reply-1", "input:review-reply-2"] {
+            assert!(
+                carried.iter().any(|id| id == reply),
+                "{reply} stayed behind: {carried:?}"
+            );
+        }
+        let reviewed = read_assignment(&pool, &before.id).await.unwrap();
+        assert_reviewed(&reviewed, ChatAssignmentReviewOutcome::ChangesRequested);
     });
 }
 

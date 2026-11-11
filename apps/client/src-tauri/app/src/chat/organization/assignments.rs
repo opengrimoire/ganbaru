@@ -11,8 +11,8 @@ use super::workflow::{
     NewAssignment, PostingDevice, complete_reviewed_assignment, create_assignment,
     drop_input_requested_targets, end_assignment_dispatch_jobs, move_pending_inputs,
     pending_thread_inputs, read_assignment_executing_device, read_input_requested_target,
-    require_participating_teammate, require_reviewable_assignment, set_assignment_state,
-    take_requested_target,
+    require_no_pending_replies, require_participating_teammate, require_reviewable_assignment,
+    set_assignment_state, take_requested_target,
 };
 use super::{
     LOCAL_PARTICIPANT_ID, PostOutcome, ReviewedWork, chat_pool, i64_value, identifier_error,
@@ -560,7 +560,9 @@ async fn recover_follow_up(
 
 /// Reviews the ready-for-review work `assignment_id` at `expected_revision`. Accept completes
 /// it; Request changes posts the note as a reply, which continues the work in a follow-up
-/// assignment and completes the reviewed one with changes requested.
+/// assignment and completes the reviewed one with changes requested. Accept is refused while
+/// replies wait on the work, and Request changes when no device can run the teammate, so a
+/// review never leaves a reply with no run to reach.
 pub(super) async fn review_assignment(
     app: tauri::AppHandle,
     db_url: String,
@@ -587,7 +589,8 @@ pub(super) async fn review_assignment(
 }
 
 /// Completes the ready-for-review work `assignment_id` at `expected_revision` as accepted by
-/// the local participant, and ends whatever dispatch it still holds here.
+/// the local participant, and ends whatever dispatch it still holds here. Pending replies of
+/// the work refuse it, since completed work delivers nothing.
 pub(super) async fn accept_reviewed_assignment(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
@@ -596,6 +599,7 @@ pub(super) async fn accept_reviewed_assignment(
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     require_reviewable_assignment(&mut transaction, assignment_id, expected_revision).await?;
+    require_no_pending_replies(&mut transaction, assignment_id).await?;
     let accepted = complete_reviewed_assignment(
         &mut transaction,
         assignment_id,

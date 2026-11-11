@@ -282,6 +282,8 @@ export const chat = {
     reviewCancel: "Cancel",
     reviewAccepted: "Work accepted.",
     reviewChanged: "This work changed before your review, so check the latest result first.",
+    reviewPendingReplies: "Replies still wait for this agent, so request changes to continue the work instead.",
+    reviewNoDevice: "No device can run this agent right now, so the changes cannot be requested yet.",
     replyInThread: "Reply in thread, or type '@' to mention and '#' for channels",
     members: "Members",
     addTeammate: "Add agent",

@@ -1808,6 +1808,48 @@ pub(super) async fn require_reviewable_assignment(
     Ok(())
 }
 
+/// Error detail reason of an Accept refused because replies still wait on the reviewed work.
+#[cfg(desktop)]
+pub(super) const REVIEW_REFUSED_PENDING_REPLIES: &str = "pending_replies";
+
+/// Error detail reason of a Request changes refused because no device can run the teammate.
+pub(super) const REVIEW_REFUSED_NO_EXECUTING_DEVICE: &str = "no_executing_device";
+
+/// A `Conflict` that refuses a review for `reason`, one of the `REVIEW_REFUSED_*` reasons, which
+/// the client shows as a localized explanation.
+pub(super) fn review_refusal(reason: &str, message: &str) -> ChatError {
+    let mut error = ChatError::new(ChatErrorCode::Conflict, message, true);
+    error.details = Some(Box::new(serde_json::json!({ "reason": reason })));
+    error
+}
+
+/// Refuses to accept `assignment_id` while replies routed to it still wait for delivery: once
+/// the work completes, no run or follow-up would ever deliver them.
+#[cfg(desktop)]
+pub(super) async fn require_no_pending_replies(
+    connection: &mut sqlx::SqliteConnection,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<()> {
+    let pending = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM chat_work_assignment_inputs
+         WHERE assignment_id = ?
+           AND routing_kind IN ('steer', 'queued_continuation')
+           AND delivery_state = 'pending'",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_one(connection)
+    .await
+    .map_err(persistence_error)?;
+    if pending == 0 {
+        Ok(())
+    } else {
+        Err(review_refusal(
+            REVIEW_REFUSED_PENDING_REPLIES,
+            "Replies still wait on this work, so it cannot be accepted yet",
+        ))
+    }
+}
+
 /// Completes `assignment_id` with the review `outcome` by `reviewer_participant_id`, and
 /// returns whether it was still ready for review, and at `expected_revision` when one is given.
 pub(super) async fn complete_reviewed_assignment(

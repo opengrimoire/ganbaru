@@ -69,10 +69,10 @@ use teammate_lifecycle::set_teammate_archived;
 use workflow::insert_policy_revision;
 use workflow::{
     AssignmentWrite, ChannelCopy, CommunicationMessageWrite, PostingDevice,
-    complete_reviewed_assignment, insert_channel_copy, insert_communication_message,
+    REVIEW_REFUSED_NO_EXECUTING_DEVICE, insert_channel_copy, insert_communication_message,
     next_item_order_key, persist_assignment_routing, read_post_receipt,
     require_continuation_scope_is_unchanged, require_reply_thread, require_reviewable_assignment,
-    require_reviewed_work_is_latest, resolve_invoked_teammate,
+    require_reviewed_work_is_latest, resolve_invoked_teammate, review_refusal,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -303,7 +303,8 @@ pub(super) struct ScheduledSend<'a> {
 }
 
 /// Ready-for-review work a post asks changes on. The post checks it in its own transaction and
-/// completes it with changes requested, whether or not the post creates the follow-up.
+/// refuses it unless the post continues it in a follow-up, which completes it with changes
+/// requested.
 #[cfg_attr(mobile, allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ReviewedWork<'a> {
@@ -471,7 +472,8 @@ async fn persist_post(
 /// between steps. An unattended send still posts, but queues no dispatch for the work it creates
 /// and leaves existing work as it is. With `review`, the same transaction refuses the post
 /// unless that work is still the latest of the reply thread, ready for review, and at the
-/// revision the reviewer saw, and completes it with changes requested.
+/// revision the reviewer saw, and unless the post continues it in a follow-up assignment, which
+/// completes it with changes requested and carries its pending replies.
 async fn persist_post_with(
     pool: &SqlitePool,
     request: &PostChatMessageCommand,
@@ -658,17 +660,19 @@ async fn persist_post_with(
         None => AssignmentWrite::NONE,
     };
     if let Some(review) = review {
-        // A follow-up already completed the reviewed work, so this write only lands when no
-        // device can run new work for the teammate and the note waits for a later Start.
-        complete_reviewed_assignment(
-            &mut transaction,
-            review.assignment_id,
-            None,
-            ChatAssignmentReviewOutcome::ChangesRequested,
-            LOCAL_PARTICIPANT_ID,
-            &now,
-        )
-        .await?;
+        // Only a follow-up completes the reviewed work and carries its pending replies. Without
+        // one no device can run the teammate, so the note and the replies would reach no run:
+        // the whole post rolls back and the reviewer keeps the note.
+        let continued = assignment_write
+            .assignment_id
+            .as_ref()
+            .is_some_and(|id| id != review.assignment_id);
+        if !continued {
+            return Err(review_refusal(
+                REVIEW_REFUSED_NO_EXECUTING_DEVICE,
+                "No device can run this teammate, so the changes cannot be requested yet",
+            ));
+        }
     }
     if request.also_send_to_channel && request.reply_thread_id.is_some() {
         insert_channel_copy(

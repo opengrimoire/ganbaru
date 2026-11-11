@@ -7,6 +7,7 @@ import type {
   ChatReplyThreadPageRead,
   PostChatMessageResult,
 } from "$lib/chat/contracts";
+import * as chatApi from "$lib/api/chat";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatMessageComposer from "./ChatMessageComposer.svelte";
 
@@ -330,5 +331,36 @@ describe("ChatMessageComposer", () => {
 
     expect(card.querySelector("textarea")).toBeNull();
     expect(review).not.toHaveBeenCalled();
+  });
+
+  it("explains an Accept refused because replies still wait on the work", async () => {
+    vi.spyOn(chatApi, "reviewChatAssignment").mockRejectedValue({
+      code: "conflict",
+      message: "Replies still wait on this work, so it cannot be accepted yet",
+      recoverable: true,
+      details: { reason: "pending_replies" },
+    });
+    const card = mountReviewedWork();
+
+    buttonLabeled(card, "Accept").click();
+
+    await vi.waitFor(() => expect(target?.textContent).toContain("Replies still wait for this agent"));
+    expect(target?.querySelector(".review-card")).not.toBeNull();
+  });
+
+  it("keeps the note and explains a Request changes refused because no device can run the agent", async () => {
+    vi.spyOn(chatApi, "reviewChatAssignment").mockRejectedValue({
+      code: "conflict",
+      message: "No device can run this teammate, so the changes cannot be requested yet",
+      recoverable: true,
+      details: { reason: "no_executing_device" },
+    });
+    const card = mountReviewedWork();
+
+    await typeNote(card, "Cover the empty case");
+    buttonLabeled(card, "Send").click();
+
+    await vi.waitFor(() => expect(target?.textContent).toContain("No device can run this agent right now"));
+    expect(card.querySelector("textarea")?.value).toBe("Cover the empty case");
   });
 });

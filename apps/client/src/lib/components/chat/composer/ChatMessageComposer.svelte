@@ -50,6 +50,7 @@
     type ChatReferenceClipboardSlice,
     type ChatReferenceTrigger,
   } from "$lib/chat/composer/message-references";
+  import { chatErrorMessage, chatErrorReason } from "$lib/chat/error-presentation";
   import { parseChatMessageReference } from "$lib/chat/validation";
   import { formatList } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -1033,8 +1034,17 @@
       if (!reviewed) error = t("chat.organization.reviewChanged");
       return reviewed;
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = reviewRefusalMessage(cause);
       return false;
+    }
+  }
+
+  /** The localized reason a review was refused, or the failure message when the refusal names no known reason. */
+  function reviewRefusalMessage(cause: unknown): string {
+    switch (chatErrorReason(cause)) {
+      case "pending_replies": return t("chat.organization.reviewPendingReplies");
+      case "no_executing_device": return t("chat.organization.reviewNoDevice");
+      default: return chatErrorMessage(cause);
     }
   }
 

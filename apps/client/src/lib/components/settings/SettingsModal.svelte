@@ -420,7 +420,8 @@
     style="padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);"
   >
     {#if mobileSectionOpen}
-      <header class="flex min-h-14 shrink-0 items-center gap-1 border-b border-border px-1">
+      <!-- Inside a section the header only offers Back; closing Settings stays on the category screen. -->
+      <header class="flex min-h-14 shrink-0 items-center gap-1 border-b border-border pl-1 pr-3">
         <button
           type="button"
           onclick={detailView ? closeDetailView : requestMobileSectionClose}
@@ -434,14 +435,6 @@
         <h2 class="min-w-0 flex-1 truncate px-2 text-base font-semibold">
           {activeSectionLabel()}
         </h2>
-        <button
-          type="button"
-          onclick={requestSettingsClose}
-          aria-label={t("settings.close")}
-          class="flex min-h-12 min-w-12 items-center justify-center rounded-xl active:bg-accent"
-        >
-          <X size={21} aria-hidden="true" />
-        </button>
       </header>
 
       <section

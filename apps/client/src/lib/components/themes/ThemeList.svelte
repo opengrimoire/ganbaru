@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import Upload from "@lucide/svelte/icons/upload";
+  import ClipboardPaste from "@lucide/svelte/icons/clipboard-paste";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import X from "@lucide/svelte/icons/x";
   import Sun from "@lucide/svelte/icons/sun";
@@ -338,25 +339,27 @@
                 {/each}
               </ul>
             {/if}
-            <div class="flex items-center justify-between gap-2 max-[520px]:flex-col max-[520px]:items-stretch">
-              <div class="flex items-center gap-1.5 max-[520px]:flex-wrap">
+            <!-- Wraps only when the three actions do not fit, so Import stays on the same line whenever there is room. -->
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex flex-wrap items-center gap-1.5">
                 <button
                   type="button"
                   onclick={handlePasteFromClipboard}
                   class={desktopShell
-                    ? "rounded-md border border-border bg-card px-2.5 py-1 text-[0.733333rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
-                    : "min-h-12 rounded-xl border border-border bg-card px-3 text-sm text-foreground active:bg-accent dark:bg-transparent"}
+                    ? "flex h-(--control-height) items-center gap-1.5 rounded-md border border-border bg-card px-3 text-[0.8rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+                    : "flex h-(--control-height) items-center gap-1.5 rounded-xl border border-border bg-card px-3 text-sm text-foreground active:bg-accent dark:bg-transparent"}
                 >
-                  {desktopShell ? t("settings.theme.pasteClipboard") : t("settings.theme.paste")}
+                  <ClipboardPaste size={13} strokeWidth={2} class="shrink-0" />
+                  <span>{desktopShell ? t("settings.theme.pasteClipboard") : t("settings.theme.paste")}</span>
                 </button>
                 <button
                   type="button"
                   onclick={handleImportFromFile}
                   class={desktopShell
-                    ? "flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-[0.733333rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
-                    : "flex min-h-12 items-center gap-1.5 rounded-xl border border-border bg-card px-3 text-sm text-foreground active:bg-accent dark:bg-transparent"}
+                    ? "flex h-(--control-height) items-center gap-1.5 rounded-md border border-border bg-card px-3 text-[0.8rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+                    : "flex h-(--control-height) items-center gap-1.5 rounded-xl border border-border bg-card px-3 text-sm text-foreground active:bg-accent dark:bg-transparent"}
                 >
-                  <FolderOpen size={11} strokeWidth={2.25} />
+                  <FolderOpen size={13} strokeWidth={2} class="shrink-0" />
                   <span>{t("settings.theme.openFile")}</span>
                 </button>
               </div>
@@ -364,8 +367,8 @@
                 type="button"
                 onclick={handleImport}
                 class={desktopShell
-                  ? "rounded-md border border-border bg-primary px-3 py-1 text-[0.8rem] font-medium text-primary-foreground transition-colors hover:bg-primary/90 max-[520px]:self-end"
-                  : "min-h-12 rounded-xl border border-primary bg-primary px-4 text-sm font-medium text-primary-foreground active:bg-primary/90 max-[520px]:self-end"}
+                  ? "ml-auto h-(--control-height) rounded-md border border-border bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                  : "ml-auto h-(--control-height) rounded-xl border border-primary bg-primary px-4 text-sm font-medium text-primary-foreground active:bg-primary/90"}
               >
                 {t("settings.theme.import")}
               </button>

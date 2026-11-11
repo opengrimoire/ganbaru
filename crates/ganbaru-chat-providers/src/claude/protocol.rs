@@ -251,9 +251,9 @@ pub fn launch_arguments(
         arguments.push("--effort".to_string());
         arguments.push(effort.to_string());
     }
-    if let Some(fast_mode) = options.fast_mode {
+    if let Some(settings) = launch_settings(options.fast_mode) {
         arguments.push("--settings".to_string());
-        arguments.push(json!({ "fastMode": fast_mode }).to_string());
+        arguments.push(settings);
     }
     if options.project_configuration == ProjectConfigurationAccess::Restricted {
         arguments.push("--setting-sources".to_string());
@@ -261,6 +261,18 @@ pub fn launch_arguments(
     }
     arguments.extend(configured.iter().cloned());
     Ok(arguments)
+}
+
+/// Serializes the one `--settings` object a launch passes, or none when it would be empty.
+///
+/// Every launch setting joins this object, because the CLI reads a single `--settings` value.
+/// A configured `--settings` argument stays refused for every run.
+pub fn launch_settings(fast_mode: Option<bool>) -> Option<String> {
+    let mut settings = Map::new();
+    if let Some(fast_mode) = fast_mode {
+        settings.insert("fastMode".to_string(), Value::Bool(fast_mode));
+    }
+    (!settings.is_empty()).then(|| Value::Object(settings).to_string())
 }
 
 pub fn permission_mode(modes: TurnModeSnapshot) -> Option<&'static str> {
@@ -286,6 +298,20 @@ pub fn control_success(request_id: &str, response: Value) -> ChatResult<Value> {
             "subtype": "success",
             "request_id": request_id,
             "response": response,
+        },
+    }))
+}
+
+/// Answers a control request with the CLI's error shape, used for subtypes Ganbaru does not
+/// serve so the CLI sees a refusal rather than a successful empty result.
+pub fn control_error(request_id: &str, message: &str) -> ChatResult<Value> {
+    validate_protocol_id(request_id, "requestId")?;
+    Ok(json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "error",
+            "request_id": request_id,
+            "error": message,
         },
     }))
 }

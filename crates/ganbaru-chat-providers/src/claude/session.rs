@@ -2,7 +2,7 @@
 
 use super::approvals::{approval_subject, session_grants, session_permission_updates};
 use super::normalizer::{ClaudeEventNormalizer, ClaudeRouteState};
-use super::protocol::{control_success, protocol_error};
+use super::protocol::{control_error, control_success, protocol_error};
 use super::transport::{ClaudeInboundMessage, ClaudeJsonlClient};
 use crate::events::*;
 use crate::models::*;
@@ -18,6 +18,8 @@ use tokio::task::JoinHandle;
 const MAX_QUESTIONS: usize = 16;
 const MAX_OPTIONS: usize = 32;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
+/// Error text returned for control request subtypes Ganbaru does not serve.
+const UNSUPPORTED_CONTROL_REQUEST: &str = "Unsupported control request";
 
 #[derive(Clone, Debug)]
 pub enum PendingClaudeRequestKind {
@@ -259,9 +261,9 @@ pub fn route_control_request(
                     value: json!({ "keys": bounded_keys(request) }),
                 }),
             }),
-            immediate_response: Some(control_success(
+            immediate_response: Some(control_error(
                 control_request_id,
-                json!({ "behavior": "deny", "message": "Unsupported client operation" }),
+                UNSUPPORTED_CONTROL_REQUEST,
             )?),
         });
     }

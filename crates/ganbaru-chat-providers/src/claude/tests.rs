@@ -775,3 +775,140 @@ fn separate_sessions_never_share_event_or_fallback_item_ids() {
         item_ids.extend(session_items);
     }
 }
+
+#[test]
+fn environment_forwards_proxy_and_ca_variables() {
+    let host = BTreeMap::from([
+        ("HTTPS_PROXY", "http://proxy.example:3128"),
+        ("http_proxy", "http://proxy.example:3128"),
+        ("NO_PROXY", "localhost"),
+        ("NODE_EXTRA_CA_CERTS", "/etc/ssl/corporate.pem"),
+        ("SSL_CERT_FILE", "/etc/ssl/cert.pem"),
+        ("SHELL", "/bin/zsh"),
+        ("USER", "someone"),
+        ("TERM", "xterm-256color"),
+        ("HTTP_PROXY", "http://bad\0proxy"),
+    ]);
+    let environment = inherited_environment(|name| host.get(name).map(|value| value.to_string()));
+    for name in [
+        "HTTPS_PROXY",
+        "http_proxy",
+        "NO_PROXY",
+        "NODE_EXTRA_CA_CERTS",
+        "SSL_CERT_FILE",
+        "SHELL",
+        "USER",
+        "TERM",
+    ] {
+        assert_eq!(
+            environment.get(name).map(String::as_str),
+            host.get(name).copied(),
+            "{name}"
+        );
+    }
+    assert!(
+        !environment.contains_key("HTTP_PROXY"),
+        "a value with NUL is never forwarded"
+    );
+    assert!(
+        !environment.contains_key("https_proxy"),
+        "unset variables stay unset"
+    );
+}
+
+#[test]
+fn environment_excludes_host_session_variables() {
+    let host = BTreeMap::from([
+        ("CLAUDECODE", "1"),
+        ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+        ("CLAUDE_CODE_SSE_PORT", "4242"),
+        ("CLAUDE_CONFIG_DIR", "/elsewhere"),
+        ("ANTHROPIC_API_KEY", "secret"),
+        ("GANBARU_CHAT_MCP_TOKEN", "token"),
+        ("SSH_AUTH_SOCK", "/tmp/agent"),
+        ("TERM", "dumb"),
+    ]);
+    let environment = inherited_environment(|name| host.get(name).map(|value| value.to_string()));
+    assert_eq!(
+        environment.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["TERM"]
+    );
+}
+
+#[test]
+fn unsupported_control_subtype_gets_error_response() {
+    let request = json!({ "subtype": "elicitation", "mcp_server_name": "other" });
+    let routed = route_control_request("ctrl-9", request.as_object().unwrap()).unwrap();
+    assert!(routed.pending.is_none());
+    assert!(matches!(&routed.event, CanonicalEvent::Unknown(unknown)
+        if unknown.source_type == "claude/control/elicitation"));
+    assert_eq!(
+        routed.immediate_response,
+        Some(json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "error",
+                "request_id": "ctrl-9",
+                "error": "Unsupported control request",
+            },
+        }))
+    );
+}
+
+#[test]
+fn launch_settings_merge_into_one_object_or_none() {
+    assert_eq!(launch_settings(None), None);
+    assert_eq!(
+        launch_settings(Some(false)).as_deref(),
+        Some(r#"{"fastMode":false}"#)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn version_cache_reuses_probe_until_metadata_changes() {
+    use super::support::cached_probe_version;
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = TestDirectory::new("version-cache");
+    let counter = directory.path().join("count");
+    let executable = directory.path().join("claude");
+    let write_script = |version: &str| {
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\necho probe >> '{}'\necho '{version} (Claude Code)'\n",
+                counter.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    };
+    let probes = || {
+        fs::read_to_string(&counter)
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    };
+    let resolved = ResolvedClaudeExecutable {
+        executable: executable.clone(),
+        prefix_arguments: Vec::new(),
+    };
+    let environment = BTreeMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
+    let probe = || {
+        crate::test_block_on(cached_probe_version(
+            &resolved,
+            directory.path(),
+            environment.clone(),
+        ))
+        .unwrap()
+    };
+
+    write_script("2.1.322");
+    assert_eq!(probe(), ClaudeVersion::new(2, 1, 322));
+    assert_eq!(probe(), ClaudeVersion::new(2, 1, 322));
+    assert_eq!(probes(), 1, "an unchanged executable is probed once");
+
+    write_script("2.1.3230");
+    assert_eq!(probe(), ClaudeVersion::new(2, 1, 3230));
+    assert_eq!(probes(), 2, "a changed executable is probed again");
+}

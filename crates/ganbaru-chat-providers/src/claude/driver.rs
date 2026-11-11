@@ -182,7 +182,8 @@ impl ClaudeProviderDriver {
         let home = resolve_claude_home(&self.configuration)?;
         let mut environment = claude_process_environment(&self.configuration, &home)?;
         let executable = resolve_claude_executable(&self.configuration.executable, &environment)?;
-        let version = probe_version(&executable, working_directory, environment.clone()).await?;
+        let version =
+            cached_probe_version(&executable, working_directory, environment.clone()).await?;
         ensure_supported_version(version)?;
         let mut arguments = launch_arguments(
             executable.prefix_arguments.clone(),

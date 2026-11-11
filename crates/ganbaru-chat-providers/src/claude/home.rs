@@ -109,14 +109,7 @@ pub fn claude_process_environment(
     configuration: &ProviderInstanceConfig,
     home: &ClaudeHome,
 ) -> ChatResult<BTreeMap<String, String>> {
-    let mut environment = BTreeMap::new();
-    for name in minimal_inherited_environment_names() {
-        if let Ok(value) = std::env::var(name) {
-            if !value.contains('\0') {
-                environment.insert((*name).to_string(), value);
-            }
-        }
-    }
+    let mut environment = inherited_environment(|name| std::env::var(name).ok());
     for (name, value) in &configuration.environment {
         if name.is_empty()
             || name.contains(['=', '\0'])
@@ -224,6 +217,38 @@ fn path_identity_bytes(path: &Path) -> Vec<u8> {
     {
         path.to_string_lossy().to_lowercase().into_bytes()
     }
+}
+
+/// Host variables every Claude process inherits when they are set: proxy and certificate
+/// settings so network access works behind a corporate proxy, plus the shell and terminal
+/// identity the CLI's tools read. Host Claude session variables are never inherited.
+const PORTABLE_INHERITED_ENVIRONMENT_NAMES: [&str; 11] = [
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "SHELL",
+    "USER",
+    "TERM",
+];
+
+/// Copies the allowlisted host variables that `lookup` reports, skipping values with NUL.
+pub(super) fn inherited_environment(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> BTreeMap<String, String> {
+    minimal_inherited_environment_names()
+        .iter()
+        .chain(PORTABLE_INHERITED_ENVIRONMENT_NAMES.iter())
+        .filter_map(|name| {
+            lookup(name)
+                .filter(|value| !value.contains('\0'))
+                .map(|value| ((*name).to_string(), value))
+        })
+        .collect()
 }
 
 fn minimal_inherited_environment_names() -> &'static [&'static str] {

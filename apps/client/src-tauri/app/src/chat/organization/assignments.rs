@@ -47,6 +47,8 @@ pub(super) async fn recover_assignment_dispatch_jobs(
         Err(error) => eprintln!("Chat work recovery could not read this device's scope: {error}"),
     }
     reclaim_stale_dispatch_claims(&pool, &now).await?;
+    // Reclaiming fails stale starting runs, which ends their live authority.
+    crate::chat::authority_epoch::bump_authority_epoch(&app);
     let working_assignment_ids = sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT assignment.id
          FROM chat_work_assignments assignment

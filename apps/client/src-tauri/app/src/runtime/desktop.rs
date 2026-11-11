@@ -276,6 +276,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(chat::settings_commands::ChatSettingsState::default())
         .manage(chat::provider_files::ProviderFileState::default())
         .manage(chat::internal_mcp::InternalMcpRegistry::default())
+        .manage(chat::authority_epoch::ChatAuthorityEpoch::default())
         .manage(chat::preview::ChatBrowserManager::default())
         .manage(ganbaru_chat::runtime::ChatRuntimeRegistry::default())
         .manage(chat::review::engine::ChatReviewRegistry::default())

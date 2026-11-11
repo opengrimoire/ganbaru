@@ -3,6 +3,7 @@
 mod checkpoints;
 mod coordinator;
 mod interactions;
+mod live_authorization;
 mod persistence;
 mod session;
 mod support;

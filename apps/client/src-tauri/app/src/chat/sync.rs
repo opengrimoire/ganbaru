@@ -448,6 +448,7 @@ pub(crate) trait RevocationWake {
 
 impl<R: tauri::Runtime> RevocationWake for tauri::AppHandle<R> {
     fn wake_revocation_drain(&self) {
+        crate::chat::authority_epoch::bump_authority_epoch(self);
         #[cfg(desktop)]
         waker::wake(self);
     }

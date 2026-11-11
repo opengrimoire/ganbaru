@@ -1,9 +1,11 @@
 //! Provider session startup and serialized durable event ingestion.
 
 use super::checkpoints::ensure_post_turn_checkpoint;
+use super::live_authorization::LiveAuthorizationCache;
 use super::persistence::ThreadRuntimeData;
 use super::support::{PROVIDER_START_TIMEOUT, now_timestamp, operation_context};
 use super::validation::validate_modes;
+use crate::chat::authority_epoch::current_authority_epoch;
 use crate::chat::ingestion::{ChatEventIngestor, TauriChatChangeEmitter, run_idle_flush};
 use crate::chat::send_commands::SendChatTurnCommand;
 use crate::chat::workspace::AuthorizedWorkingFolder;
@@ -22,6 +24,7 @@ use ganbaru_chat_providers::{
 };
 use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
@@ -334,6 +337,8 @@ struct DurableChatEventSink {
     ingestor: Arc<Mutex<ChatEventIngestor>>,
     /// Flushes held text deltas on a short interval; stopped when the sink is dropped.
     idle_flush: tauri::async_runtime::JoinHandle<()>,
+    /// The last passing live authorization check, which later text deltas may reuse.
+    live_check: std::sync::Mutex<LiveAuthorizationCache>,
 }
 
 impl DurableChatEventSink {
@@ -352,6 +357,7 @@ impl DurableChatEventSink {
             app,
             ingestor,
             idle_flush,
+            live_check: std::sync::Mutex::new(LiveAuthorizationCache::default()),
             pool,
             workspace,
             organizational: authorization.is_some(),
@@ -359,6 +365,45 @@ impl DurableChatEventSink {
             checkpoint_enabled,
         }
     }
+
+    /// Checks the live authority of an organizational run for `event`, reusing a recent passing
+    /// check for a text delta of the same turn while no authority change happened on this
+    /// device. A failed check or a settled turn forgets the pass.
+    async fn check_live_authorization(&self, event: &CanonicalRuntimeEvent) -> ChatResult<()> {
+        let epoch = current_authority_epoch(&self.app);
+        let started_at = Instant::now();
+        let turn_id = event.turn_id.as_ref();
+        if self
+            .lock_live_check()
+            .may_reuse(epoch, turn_id, &event.event, started_at)
+        {
+            return Ok(());
+        }
+        let checked = require_live_authorization(&self.pool, &event.thread_id, turn_id).await;
+        let mut cache = self.lock_live_check();
+        if checked.is_ok() && !settles_turn(&event.event) {
+            cache.record_pass(epoch, turn_id, started_at);
+        } else {
+            cache.clear();
+        }
+        checked
+    }
+
+    fn lock_live_check(&self) -> std::sync::MutexGuard<'_, LiveAuthorizationCache> {
+        // The cache holds no invariant a panic could break, so a poisoned lock is still usable.
+        self.live_check
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+fn settles_turn(event: &CanonicalEvent) -> bool {
+    matches!(
+        event,
+        CanonicalEvent::TurnCompleted(_)
+            | CanonicalEvent::TurnAborted(_)
+            | CanonicalEvent::SessionExited(_)
+    )
 }
 
 impl Drop for DurableChatEventSink {
@@ -371,10 +416,7 @@ impl ProviderEventSink for DurableChatEventSink {
     fn emit<'a>(&'a self, mut event: CanonicalRuntimeEvent) -> DriverFuture<'a, ()> {
         Box::pin(async move {
             if self.organizational {
-                if let Err(error) =
-                    require_live_authorization(&self.pool, &event.thread_id, event.turn_id.as_ref())
-                        .await
-                {
+                if let Err(error) = self.check_live_authorization(&event).await {
                     self.app
                         .state::<crate::chat::internal_mcp::InternalMcpRegistry>()
                         .revoke_run_scope(&event.thread_id)

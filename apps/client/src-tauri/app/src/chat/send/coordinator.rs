@@ -326,6 +326,7 @@ pub(crate) async fn send_turn(
             &now_timestamp()?,
         )
         .await?;
+        crate::chat::authority_epoch::bump_authority_epoch(&app);
         if settlement.stops_session() {
             mcp_registry.revoke_run_scope(&thread_id).await;
             if let Err(error) = owner

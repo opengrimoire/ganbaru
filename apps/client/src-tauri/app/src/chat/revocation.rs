@@ -142,7 +142,11 @@ pub(crate) async fn drain_access_revocation_jobs(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
 ) -> ChatResult<u64> {
+    // Callers drain after committing a revocation, and the pass settles runs, so live checks that
+    // passed before either must run again.
+    crate::chat::authority_epoch::bump_authority_epoch(app);
     let pass = run_drain_pass(app, pool).await;
+    crate::chat::authority_epoch::bump_authority_epoch(app);
     if pass.retry {
         let retry_app = app.clone();
         let retry_pool = pool.clone();

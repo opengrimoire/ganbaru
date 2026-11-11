@@ -79,7 +79,7 @@
 
 <div
   class={cn(
-    "project-list-divider project-list-sticky-row group/section-header grid min-h-(--collection-table-row-height) items-center px-1",
+    "project-list-divider project-list-sticky-row group/section-header grid min-h-(--collection-table-row-height) items-center",
     canDrag && "cursor-grab active:cursor-grabbing",
   )}
   style={`grid-template-columns: ${gridTemplate}; min-width: ${gridMinWidth};`}

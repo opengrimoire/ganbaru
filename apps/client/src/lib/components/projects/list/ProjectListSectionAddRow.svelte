@@ -31,7 +31,7 @@
 </script>
 
 <div
-  class="project-list-sticky-row grid min-h-(--collection-table-row-height) cursor-text items-center px-1 text-collection"
+  class="project-list-sticky-row grid min-h-(--collection-table-row-height) cursor-text items-center text-collection"
   data-add-section-row="true"
   style={`grid-template-columns: ${gridTemplate}; min-width: max(100%, ${gridMinWidth});`}
   use:projectListAddRowInputFocus={{

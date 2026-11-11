@@ -71,7 +71,7 @@ fn versioned_value<T: serde::Serialize>(value: &T) -> ChatResult<VersionedJson> 
     })
 }
 
-fn now_timestamp() -> ChatResult<UtcTimestamp> {
+pub(crate) fn now_timestamp() -> ChatResult<UtcTimestamp> {
     let now: chrono::DateTime<Utc> = std::time::SystemTime::now().into();
     UtcTimestamp::new(now.to_rfc3339_opts(SecondsFormat::Millis, true))
         .map_err(|_| ChatError::new(ChatErrorCode::Internal, "create Chat timestamp", false))

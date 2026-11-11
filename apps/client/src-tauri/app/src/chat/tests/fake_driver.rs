@@ -69,6 +69,22 @@ impl FakeDriverControl {
             .await
     }
 
+    /// Emits the provider's own interrupted abort of `turn_id`, as a provider that confirms Stop
+    /// late would.
+    pub async fn emit_late_abort(&self, turn_id: &str) -> ChatResult<()> {
+        let sink = self.sink.lock().unwrap().clone().unwrap();
+        sink.emit(event(
+            "late-abort",
+            Some(turn_id),
+            CanonicalEvent::TurnAborted(ganbaru_chat_contracts::events::TurnAbortedEvent {
+                state: ganbaru_chat_contracts::models::ChatTurnState::Interrupted,
+                reason: "Interrupted".to_string(),
+                recoverable: true,
+            }),
+        ))
+        .await
+    }
+
     pub async fn emit_cross_thread(&self) -> ChatResult<()> {
         let sink = self.sink.lock().unwrap().clone().unwrap();
         let mut runtime_event = event(

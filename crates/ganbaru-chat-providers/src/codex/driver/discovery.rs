@@ -224,14 +224,34 @@ impl CodexProviderDriver {
         Ok(models)
     }
 
+    /// Sends one thread admin request, on the live session's connection when it can carry it,
+    /// otherwise on a short-lived connection opened in `working_directory` or, without one, in
+    /// a probe directory with restricted project configuration.
     pub(super) async fn execute_thread_request(
         &self,
-        working_directory: &Path,
+        working_directory: Option<&Path>,
         project_configuration: ProjectConfigurationAccess,
         method: &str,
         params: Value,
         context: &DriverOperationContext,
     ) -> ChatResult<Value> {
+        if let Some(client) = self.live_admin_client(working_directory, method, &params)? {
+            return client
+                .request(method, params, context)
+                .await
+                .map_err(|error| error.to_chat_error(method));
+        }
+        let probe_directory;
+        let (working_directory, project_configuration) = match working_directory {
+            Some(working_directory) => (working_directory, project_configuration),
+            None => {
+                probe_directory = crate::probe_directory::ProbeDirectory::create()?;
+                (
+                    probe_directory.as_ref(),
+                    ProjectConfigurationAccess::Restricted,
+                )
+            }
+        };
         let (mut connection, layout) =
             self.open_connection(working_directory, project_configuration)?;
         let client = connection.client();
@@ -264,6 +284,42 @@ impl CodexProviderDriver {
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// The live session's client when a thread admin request can share its connection.
+    ///
+    /// A driver spawns every connection from one provider home, so the live session shares the
+    /// home a fresh connection would use. It must also be a personal session, because a fresh
+    /// admin connection is never organizational, must not have failed, and must run in the
+    /// requested workspace when the request names one. Unsubscribing the live session's own
+    /// thread stays on a fresh connection, because on the live one it would silence the session.
+    fn live_admin_client(
+        &self,
+        working_directory: Option<&Path>,
+        method: &str,
+        params: &Value,
+    ) -> ChatResult<Option<super::super::transport::CodexRpcClient>> {
+        let Some(live) = self.live.as_ref() else {
+            return Ok(None);
+        };
+        if live.organizational
+            || working_directory.is_some_and(|directory| directory != live.workspace)
+            || live
+                .terminal_error
+                .lock()
+                .map_err(|_| driver_state_error())?
+                .is_some()
+        {
+            return Ok(None);
+        }
+        if method == "thread/unsubscribe" {
+            let route = live.route.lock().map_err(|_| driver_state_error())?;
+            if route.provider_thread_id.as_deref() == params.get("threadId").and_then(Value::as_str)
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(live.connection.client()))
     }
 
     pub(super) async fn fetch_mcp_status(

@@ -285,6 +285,30 @@ impl CodexEventNormalizer {
         )
     }
 
+    /// The runtime error for a line over the JSON Lines bound, which ends the session.
+    pub fn oversized_event(
+        &self,
+        state: &CodexRouteState,
+        byte_length: usize,
+    ) -> ChatResult<CanonicalRuntimeEvent> {
+        self.event(
+            state,
+            "malformed",
+            None,
+            None,
+            None,
+            CanonicalEvent::RuntimeError(RuntimeErrorEvent {
+                code: "codex_oversized_message".to_string(),
+                message: super::transport::OVERSIZED_MESSAGE_ERROR.to_string(),
+                recoverable: false,
+                safe_details: Some(VersionedJson {
+                    schema_version: 1,
+                    value: json!({ "byteLength": byte_length }),
+                }),
+            }),
+        )
+    }
+
     pub fn request_event(
         &self,
         state: &CodexRouteState,

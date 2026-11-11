@@ -62,6 +62,8 @@ const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_MODEL_OPTIONS: usize = 32;
 const STANDARD_SERVICE_TIER: &str = "standard";
+/// The `ReasoningSummary` value each turn requests, so reasoning models stream full summaries.
+const REASONING_SUMMARY: &str = "detailed";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -611,6 +613,12 @@ pub fn turn_start_params(
     if let Some(service_tier) = service_tier.filter(|tier| tier != STANDARD_SERVICE_TIER) {
         params.insert("serviceTier".to_string(), Value::String(service_tier));
     }
+    // The Codex model list has no per-model summary field, and every Codex model advertises
+    // reasoning summaries, so each turn asks for the detailed stream.
+    params.insert(
+        "summary".to_string(),
+        Value::String(REASONING_SUMMARY.to_string()),
+    );
     let collaboration_model = request
         .model_id
         .as_ref()

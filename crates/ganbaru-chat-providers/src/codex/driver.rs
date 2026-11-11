@@ -27,6 +27,7 @@ use tokio::task::JoinHandle;
 
 mod commands;
 mod discovery;
+mod mcp_reload;
 mod session_open;
 mod support;
 
@@ -34,6 +35,7 @@ pub(super) use commands::codex_native_command;
 #[cfg(test)]
 pub(super) use commands::{CodexNativeCommand, goal_request, parse_mcp_status_page};
 use commands::{clear_codex_command_route, dispatch_codex_command};
+use mcp_reload::CodexMcpReloadState;
 use session_open::SessionOpenInput;
 use support::*;
 #[cfg(test)]
@@ -78,7 +80,7 @@ struct CodexLiveSession {
     session_id: ProviderSessionId,
     workspace: PathBuf,
     effective_model: String,
-    refresh_mcp_before_turn: bool,
+    mcp_reload: CodexMcpReloadState,
     organizational: bool,
     internal_mcp_name: Option<String>,
 }
@@ -119,6 +121,13 @@ impl CodexProviderDriver {
     #[cfg(test)]
     pub(super) fn set_connection_factory(&mut self, factory: TestConnectionFactory) {
         self.connection_factory = Some(factory);
+    }
+
+    /// Replaces the internal MCP endpoint of a driver whose session is already open, which no
+    /// host path does today; the reload digest is what notices it.
+    #[cfg(test)]
+    pub(super) fn replace_internal_mcp(&mut self, endpoint: Option<ProviderInternalMcpConfig>) {
+        self.configuration.internal_mcp = endpoint;
     }
 
     pub fn metadata_read() -> ProviderFamilyMetadataRead {
@@ -250,7 +259,7 @@ impl ProviderDriver for CodexProviderDriver {
             let workspace = canonical_verified_workspace(&request.workspace)?;
             let response = self
                 .execute_thread_request(
-                    &workspace,
+                    Some(&workspace),
                     request.workspace.project_configuration,
                     "thread/fork",
                     json!({
@@ -280,7 +289,7 @@ impl ProviderDriver for CodexProviderDriver {
                 ChatError::validation("title", "A provider thread title is required")
             })?;
             self.execute_thread_request(
-                &crate::probe_directory::ProbeDirectory::create()?,
+                None,
                 ProjectConfigurationAccess::Restricted,
                 "thread/name/set",
                 json!({ "threadId": request.provider_thread_id.as_str(), "name": title }),
@@ -298,7 +307,7 @@ impl ProviderDriver for CodexProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             self.execute_thread_request(
-                &crate::probe_directory::ProbeDirectory::create()?,
+                None,
                 ProjectConfigurationAccess::Restricted,
                 "thread/archive",
                 json!({ "threadId": request.provider_thread_id.as_str() }),
@@ -316,7 +325,7 @@ impl ProviderDriver for CodexProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             self.execute_thread_request(
-                &crate::probe_directory::ProbeDirectory::create()?,
+                None,
                 ProjectConfigurationAccess::Restricted,
                 "thread/delete",
                 json!({ "threadId": request.provider_thread_id.as_str() }),
@@ -334,7 +343,7 @@ impl ProviderDriver for CodexProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             self.execute_thread_request(
-                &crate::probe_directory::ProbeDirectory::create()?,
+                None,
                 ProjectConfigurationAccess::Restricted,
                 "thread/unsubscribe",
                 json!({ "threadId": request.provider_thread_id.as_str() }),
@@ -584,6 +593,7 @@ impl ProviderDriver for CodexProviderDriver {
         context: &'a DriverOperationContext,
     ) -> DriverFuture<'a, TurnDispatchReceipt> {
         Box::pin(async move {
+            let endpoint = self.configuration.internal_mcp.clone();
             let live = self.live_mut(&request.session_id)?;
             let client = live.connection.client();
             let command = if live.organizational {
@@ -591,7 +601,7 @@ impl ProviderDriver for CodexProviderDriver {
             } else {
                 codex_native_command(&request)
             };
-            if live.refresh_mcp_before_turn {
+            if live.mcp_reload.take_reload(endpoint.as_ref()) {
                 client
                     .request("config/mcpServer/reload", json!({}), context)
                     .await

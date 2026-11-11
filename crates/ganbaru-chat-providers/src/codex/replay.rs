@@ -51,6 +51,8 @@ pub(crate) fn recording_driver(
 
 fn replay_configuration(setup: &ReplaySetup<'_>) -> ProviderInstanceConfig {
     let mut configuration = super::tests::configuration(setup.home, None);
+    // Transcripts follow the default setting, which reloads MCP only when the endpoint changes.
+    configuration.provider_config.value["refreshMcpBeforeTurn"] = Value::Bool(false);
     if setup.organizational {
         configuration.internal_mcp = Some(organizational_mcp());
     }

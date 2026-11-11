@@ -11,7 +11,9 @@ use super::session::{
     CodexApprovalResponse, PendingCodexRequest, PendingCodexRequestKind, PendingCodexRequests,
     approval_display, provider_request_id, resolve_codex_approval, resolve_codex_user_input,
 };
-use super::transport::{CodexInboundMessage, CodexRpcConnection, CodexRpcFailure};
+use super::transport::{
+    CodexInboundMessage, CodexRpcConnection, CodexRpcFailure, MAX_JSONL_MESSAGE_BYTES,
+};
 use crate::events::{
     ApprovalSubjectKind, CanonicalEvent, CanonicalRuntimeEvent, SessionPermissionGrant,
 };
@@ -166,7 +168,17 @@ fn fixture_driver(
     workspace: &Path,
     scenario: FixtureScenario,
 ) -> (CodexProviderDriver, Arc<AppServerFixtureState>) {
+    fixture_driver_with(workspace, scenario, |_| {})
+}
+
+/// A fixture driver whose configuration `adjust` edits before the driver is built.
+fn fixture_driver_with(
+    workspace: &Path,
+    scenario: FixtureScenario,
+    adjust: impl FnOnce(&mut ProviderInstanceConfig),
+) -> (CodexProviderDriver, Arc<AppServerFixtureState>) {
     let mut config = configuration(workspace, None);
+    adjust(&mut config);
     if scenario == FixtureScenario::Organizational {
         config.internal_mcp = Some(ProviderInternalMcpConfig {
             name: "ganbaru-chat".to_string(),

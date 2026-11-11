@@ -1,7 +1,9 @@
 //! Live Codex session routing, approvals, and structured input.
 
 use super::normalizer::{CodexEventNormalizer, CodexRouteState};
-use super::transport::{CodexInboundMessage, CodexRpcClient};
+use super::transport::{
+    CodexInboundMessage, CodexRpcClient, CodexRpcFailure, OVERSIZED_MESSAGE_ERROR,
+};
 use crate::events::*;
 use crate::models::*;
 use crate::{DriverOperationContext, ProviderEventSink};
@@ -99,6 +101,10 @@ async fn run_codex_router(mut resources: CodexRouterResources) {
                             .malformed_event(&state, &reason, byte_length)
                     });
                 emit_events(&resources.sink, event.map(|event| vec![event])).await
+            }
+            CodexInboundMessage::Oversized { byte_length } => {
+                route_oversized(&resources, byte_length).await;
+                return;
             }
             CodexInboundMessage::Closed => {
                 route_closed(&resources).await;
@@ -784,6 +790,40 @@ async fn route_closed(resources: &CodexRouterResources) {
         if let Ok(mut terminal) = resources.terminal_error.lock() {
             *terminal = Some(error);
         }
+    }
+}
+
+/// Ends the session after Codex sent a line over the byte bound: records the protocol error,
+/// marks the session failed, and keeps that error as the terminal error so later commands
+/// report it instead of a generic transport loss.
+async fn route_oversized(resources: &CodexRouterResources, byte_length: usize) {
+    let error = CodexRpcFailure::Oversized.to_chat_error("message");
+    let events = resources
+        .route
+        .lock()
+        .map_err(|_| router_state_error())
+        .and_then(|mut state| {
+            let malformed = resources.normalizer.oversized_event(&state, byte_length)?;
+            let previous = state.session_state;
+            state.session_state = ProviderSessionState::Failed;
+            let closed = resources.normalizer.event(
+                &state,
+                "transport/closed",
+                None,
+                None,
+                None,
+                CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
+                    session_id: resources.normalizer.session_id(),
+                    previous_state: previous,
+                    state: ProviderSessionState::Failed,
+                    reason: Some(OVERSIZED_MESSAGE_ERROR.to_string()),
+                }),
+            )?;
+            Ok(vec![malformed, closed])
+        });
+    let result = emit_events(&resources.sink, events).await;
+    if let Ok(mut terminal) = resources.terminal_error.lock() {
+        *terminal = Some(result.err().unwrap_or(error));
     }
 }
 

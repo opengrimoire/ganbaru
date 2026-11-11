@@ -459,13 +459,15 @@ impl CodexProviderDriver {
             session_id: session_id.clone(),
             workspace,
             effective_model: effective_model.as_str().to_string(),
-            refresh_mcp_before_turn: self.settings.refresh_mcp_before_turn
-                || self.configuration.internal_mcp.is_some()
-                || self
-                    .configuration
-                    .launch_arguments
-                    .iter()
-                    .any(|argument| argument.contains("mcp_servers.")),
+            mcp_reload: CodexMcpReloadState::at_open(
+                self.configuration.internal_mcp.as_ref(),
+                self.settings.refresh_mcp_before_turn
+                    || self
+                        .configuration
+                        .launch_arguments
+                        .iter()
+                        .any(|argument| argument.contains("mcp_servers.")),
+            ),
             organizational,
             internal_mcp_name: self
                 .configuration

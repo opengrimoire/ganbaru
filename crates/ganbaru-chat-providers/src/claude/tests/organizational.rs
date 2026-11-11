@@ -58,7 +58,7 @@ fn flag_value<'a>(arguments: &'a [String], flag: &str) -> Option<&'a str> {
 
 #[test]
 fn organizational_launch_uses_strict_mcp_and_denies_tools() {
-    let arguments = launch(&["--verbose"], options(ask(InteractionMode::Build), true)).unwrap();
+    let arguments = launch(&[], options(ask(InteractionMode::Build), true)).unwrap();
     let mcp_config = internal_mcp_config_argument(SERVER_NAME, SERVER_URL).unwrap();
     assert_eq!(
         arguments,
@@ -89,7 +89,6 @@ fn organizational_launch_uses_strict_mcp_and_denies_tools() {
             mcp_config.as_str(),
             "--disallowed-tools",
             "Task,Agent,WebFetch,WebSearch,Bash",
-            "--verbose",
         ]
     );
     assert!(
@@ -134,31 +133,68 @@ fn direct_launch_keeps_accept_edits() {
 }
 
 #[test]
-fn organizational_launch_refuses_widening_arguments() {
-    for flag in ORGANIZATIONAL_PROTECTED_ARGUMENTS {
+fn organizational_launch_refuses_every_configured_argument() {
+    for configured in [
+        vec!["--verbose"],
+        vec!["--fallback-model", "sonnet"],
+        vec!["--tools", "default"],
+        vec!["--debug"],
+        vec!["prompt text"],
+    ] {
+        let error = launch(&configured, options(ask(InteractionMode::Build), true)).unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation, "{configured:?}");
+        assert_eq!(error.field.as_deref(), Some("launchArguments"));
+    }
+}
+
+#[test]
+fn every_launch_refuses_session_selecting_arguments() {
+    let session = "22222222-2222-4222-8222-222222222222";
+    let attached_resume = format!("-r{session}");
+    for organizational in [false, true] {
         for configured in [
-            vec![flag.to_string(), "value".to_string()],
-            vec![format!("{flag}=value")],
+            vec![attached_resume.as_str()],
+            vec!["-pc"],
+            vec!["-cp"],
+            vec!["-dr"],
+            vec!["--from-pr", "12"],
+            vec!["--from-pr=12"],
+            vec!["--teleport"],
+            vec!["--cloud", session],
+            vec!["--environment=ccpool_1"],
+            vec!["--bg"],
+            vec!["--background"],
+            vec!["--desktop"],
+            vec!["-w"],
+            vec!["--worktree=other"],
+            vec!["--no-session-persistence"],
         ] {
-            let configured = configured.iter().map(String::as_str).collect::<Vec<_>>();
-            let error =
-                launch(&configured, options(ask(InteractionMode::Build), true)).unwrap_err();
-            assert_eq!(error.code, ChatErrorCode::Validation, "{configured:?}");
+            let error = launch(
+                &configured,
+                options(ask(InteractionMode::Build), organizational),
+            )
+            .unwrap_err();
             assert_eq!(
-                error.message, "This launch argument is not allowed for organizational runs",
-                "{configured:?}"
+                error.message, "Claude launch arguments conflict with the managed transport",
+                "{configured:?} organizational {organizational}"
             );
         }
     }
-    let similar = launch(
-        &["--tools-extra", "--filesystem"],
-        options(ask(InteractionMode::Build), true),
+}
+
+#[test]
+fn direct_launch_keeps_unrelated_short_and_similar_long_arguments() {
+    let direct = launch(
+        &["-d", "--tools-extra", "--bgcolor", "-"],
+        options(ask(InteractionMode::Build), false),
     )
     .unwrap();
-    assert!(
-        similar.ends_with(&["--tools-extra".to_string(), "--filesystem".to_string()]),
-        "only the exact flag names are refused"
-    );
+    for kept in ["-d", "--tools-extra", "--bgcolor", "-"] {
+        assert!(
+            direct.iter().any(|argument| argument == kept),
+            "only exact long names and clusters with a protected letter are refused: {direct:?}"
+        );
+    }
 }
 
 #[test]

@@ -237,33 +237,6 @@ pub const ORGANIZATIONAL_ASK_PERMISSION_MODE: &str = "default";
 /// Environment variable that carries the internal server bearer token to the CLI.
 pub const INTERNAL_MCP_TOKEN_ENVIRONMENT: &str = "GANBARU_CHAT_MCP_TOKEN";
 
-/// Configured arguments refused for organizational launches, beyond the ones refused for every
-/// run, because each could widen the tool, settings, agent, prompt, or folder surface.
-pub const ORGANIZATIONAL_PROTECTED_ARGUMENTS: &[&str] = &[
-    "--strict-mcp-config",
-    "--disallowed-tools",
-    "--disallowedTools",
-    "--allowed-tools",
-    "--allowedTools",
-    "--tools",
-    "--setting-sources",
-    "--append-system-prompt",
-    "--append-system-prompt-file",
-    "--system-prompt",
-    "--system-prompt-file",
-    "--add-dir",
-    "--agents",
-    "--agent",
-    "--plugin-dir",
-    "--plugin-url",
-    "--bare",
-    "--restricted",
-    "--chrome",
-    "--ide",
-    "--remote-control",
-    "--file",
-];
-
 pub fn launch_arguments(
     prefix: Vec<String>,
     configured: &[String],
@@ -345,7 +318,8 @@ pub fn launch_arguments(
         arguments.push(settings);
     }
     if let Some(server) = organizational_server {
-        // The deny list comes last, so a stray configured positional can only join it.
+        // Configured arguments never reach an organizational launch, so nothing follows the
+        // variadic deny list.
         arguments.extend([
             "--setting-sources".to_string(),
             ORGANIZATIONAL_SETTING_SOURCES.to_string(),
@@ -360,7 +334,6 @@ pub fn launch_arguments(
             "--disallowed-tools".to_string(),
             ORGANIZATIONAL_DISALLOWED_TOOLS.join(","),
         ]);
-        arguments.extend(configured.iter().cloned());
         return Ok(arguments);
     }
     if options.project_configuration == ProjectConfigurationAccess::Restricted {
@@ -968,35 +941,48 @@ fn validate_model_options(options: &[ModelOptionSelection]) -> ChatResult<()> {
     Ok(())
 }
 
+/// Configured arguments refused for every run: they would replace the managed transport,
+/// permission handling, or session continuation, or select, relocate, or detach the session.
+const PROTECTED_LAUNCH_ARGUMENTS: &[&str] = &[
+    "-p",
+    "--print",
+    "--output-format",
+    "--input-format",
+    "--permission-prompt-tool",
+    "--include-partial-messages",
+    "--replay-user-messages",
+    "--permission-mode",
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions",
+    "-c",
+    "--continue",
+    "-r",
+    "--fork-session",
+    "--resume",
+    "--resume-session-at",
+    "--session-id",
+    "--no-session-persistence",
+    "--from-pr",
+    "--teleport",
+    "--cloud",
+    "--environment",
+    "--bg",
+    "--background",
+    "--desktop",
+    "-w",
+    "--worktree",
+    "--model",
+    "--effort",
+    "--settings",
+    "--mcp-config",
+];
+
 fn validate_launch_arguments(arguments: &[String]) -> ChatResult<()> {
-    const PROTECTED: &[&str] = &[
-        "-p",
-        "--print",
-        "--output-format",
-        "--input-format",
-        "--permission-prompt-tool",
-        "--include-partial-messages",
-        "--replay-user-messages",
-        "--permission-mode",
-        "--dangerously-skip-permissions",
-        "--allow-dangerously-skip-permissions",
-        "-c",
-        "--continue",
-        "-r",
-        "--fork-session",
-        "--resume",
-        "--resume-session-at",
-        "--session-id",
-        "--model",
-        "--effort",
-        "--settings",
-        "--mcp-config",
-    ];
     if arguments.len() > MAX_LAUNCH_ARGUMENTS
         || arguments.iter().any(|argument| {
             argument.len() > MAX_LAUNCH_ARGUMENT_BYTES
                 || argument.contains('\0')
-                || names_flag(argument, PROTECTED)
+                || names_flag(argument, PROTECTED_LAUNCH_ARGUMENTS)
         })
     {
         return Err(ChatError::validation(
@@ -1007,26 +993,43 @@ fn validate_launch_arguments(arguments: &[String]) -> ChatResult<()> {
     Ok(())
 }
 
+/// Refuses every configured argument on an organizational launch. Each flag the CLI accepts
+/// could select another session or widen the tool, settings, agent, prompt, or folder
+/// surface, and a deny list cannot keep up with new CLI flags.
 fn validate_organizational_launch_arguments(arguments: &[String]) -> ChatResult<()> {
-    if arguments
-        .iter()
-        .any(|argument| names_flag(argument, ORGANIZATIONAL_PROTECTED_ARGUMENTS))
-    {
+    if !arguments.is_empty() {
         return Err(ChatError::validation(
             "launchArguments",
-            "This launch argument is not allowed for organizational runs",
+            "Launch arguments do not apply to organizational runs; remove them from this provider instance or use another instance for teammates",
         ));
     }
     Ok(())
 }
 
-/// Whether `argument` is one of `flags`, in the spaced or the `--flag=value` form.
+/// Whether `argument` names one of `flags`.
+///
+/// Long flags match in the spaced and the `--flag=value` form. A single-letter flag matches
+/// any single-dash argument that contains its letter, because the CLI reads `-pc` as two
+/// flags and `-r<id>` as `-r` with an attached value. This also refuses some harmless
+/// clusters, which keeps the check independent of which letters take values.
 fn names_flag(argument: &str, flags: &[&str]) -> bool {
-    flags.iter().any(|flag| {
-        argument
+    flags.iter().any(|flag| match short_flag_letter(flag) {
+        Some(letter) => argument
+            .strip_prefix('-')
+            .is_some_and(|cluster| !cluster.starts_with('-') && cluster.contains(letter)),
+        None => argument
             .strip_prefix(flag)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('=')),
     })
+}
+
+/// The letter of a single-letter flag such as `-p`, or none for a long flag.
+fn short_flag_letter(flag: &str) -> Option<char> {
+    let mut letters = flag.strip_prefix('-')?.chars();
+    match (letters.next(), letters.next()) {
+        (Some(letter), None) if letter != '-' => Some(letter),
+        _ => None,
+    }
 }
 
 fn validate_model_id(value: &str) -> ChatResult<()> {

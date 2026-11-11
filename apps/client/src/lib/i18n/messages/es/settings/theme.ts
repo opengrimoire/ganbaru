@@ -13,6 +13,7 @@ export const theme = {
   pasteJson: "Pegar JSON de tema",
   closeImport: "Cerrar importación",
   pasteClipboard: "Pegar desde portapapeles",
+  paste: "Pegar",
   openFile: "Abrir archivo",
   import: "Importar",
   importTheme: "Importar tema",

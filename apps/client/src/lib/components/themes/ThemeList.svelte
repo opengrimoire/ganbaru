@@ -347,7 +347,7 @@
                     ? "rounded-md border border-border bg-card px-2.5 py-1 text-[0.733333rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
                     : "min-h-12 rounded-xl border border-border bg-card px-3 text-sm text-foreground active:bg-accent dark:bg-transparent"}
                 >
-                  {t("settings.theme.pasteClipboard")}
+                  {desktopShell ? t("settings.theme.pasteClipboard") : t("settings.theme.paste")}
                 </button>
                 <button
                   type="button"
@@ -373,12 +373,13 @@
           </div>
         </div>
       {:else}
+        <!-- Matches a theme row's padding and content height (its action buttons, and on desktop the 1.875rem mini preview) so the icon lines up with the theme icons and the list spacing stays even. -->
         <button
           type="button"
           onclick={handleImportToggle}
           class={desktopShell
-            ? "flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-1 text-[0.866667rem] text-foreground transition-colors hover:bg-accent/25 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            : "flex min-h-12 w-full min-w-0 items-center gap-2 rounded-xl px-3 text-sm text-foreground active:bg-accent/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"}
+            ? "flex min-h-[calc(max(var(--control-height),1.875rem)+0.5rem)] w-full min-w-0 items-center gap-2 rounded-md px-1 py-1 text-[0.866667rem] text-foreground transition-colors hover:bg-accent/25 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            : "flex min-h-[calc(var(--control-height)+1rem)] w-full min-w-0 items-center gap-2 rounded-xl px-1 py-2 text-[0.866667rem] text-foreground active:bg-accent/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"}
         >
           <Upload
             size={13}

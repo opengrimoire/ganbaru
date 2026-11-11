@@ -222,6 +222,9 @@ describe("ChatMessageComposer", () => {
     await vi.waitFor(() => expect(target?.textContent).toContain("This work changed before it started"));
   });
 
+  /** The reply draft of the composer `mountReviewedWork` mounts, unique per test so drafts never carry over. */
+  let reviewedDestination = "";
+
   function mountReviewedWork(): HTMLElement {
     const page = workingReplyThread();
     if (!page.assignment) throw new Error("The fixture holds an assignment");
@@ -229,10 +232,11 @@ describe("ChatMessageComposer", () => {
     vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
     target = document.createElement("div");
     document.body.append(target);
+    reviewedDestination = `reply-thread:${crypto.randomUUID()}`;
     component = mount(ChatMessageComposer, {
       target,
       props: {
-        destination: `reply-thread:${page.thread.id}`,
+        destination: reviewedDestination,
         placeholder: "Reply",
         threadComposer: true,
       },
@@ -362,5 +366,70 @@ describe("ChatMessageComposer", () => {
 
     await vi.waitFor(() => expect(target?.textContent).toContain("No device can run this agent right now"));
     expect(card.querySelector("textarea")?.value).toBe("Cover the empty case");
+  });
+
+  /** Settles the reviewed work elsewhere, as another device's review or a sync would. */
+  function settleReviewedWork(): void {
+    const page = chat.replyThread;
+    if (!page?.assignment) throw new Error("The reviewed work is not loaded");
+    chat.replyThread = {
+      ...page,
+      assignment: { ...page.assignment, state: "completed", revision: page.assignment.revision + 1 },
+    };
+  }
+
+  it("moves the note into the reply draft when the work changes during Request changes", async () => {
+    vi.spyOn(chatApi, "reviewChatAssignment").mockImplementation(() => {
+      settleReviewedWork();
+      return Promise.reject({
+        code: "stale_revision",
+        message: "The assignment changed before the review",
+        recoverable: true,
+      });
+    });
+    const card = mountReviewedWork();
+
+    await typeNote(card, "  Cover the empty case  ");
+    buttonLabeled(card, "Send").click();
+
+    await vi.waitFor(() => expect(target?.querySelector(".review-card")).toBeNull());
+    expect(chat.organizationalDraft(reviewedDestination).normalizedMarkdown).toBe("Cover the empty case");
+    expect(target?.textContent).toContain("your note moved to the reply box");
+  });
+
+  it("moves the note into the reply draft when the work changes while it is typed", async () => {
+    const review = vi.spyOn(chatApi, "reviewChatAssignment");
+    const card = mountReviewedWork();
+
+    await typeNote(card, "Cover the empty case");
+    settleReviewedWork();
+    await tick();
+
+    expect(target?.querySelector(".review-card")).toBeNull();
+    expect(chat.organizationalDraft(reviewedDestination).normalizedMarkdown).toBe("Cover the empty case");
+    expect(review).not.toHaveBeenCalled();
+  });
+
+  it("keeps the note in the reply draft when the composer closes before it is sent", async () => {
+    const card = mountReviewedWork();
+
+    await typeNote(card, "Cover the empty case");
+    if (component) await unmount(component);
+    component = undefined;
+
+    expect(chat.organizationalDraft(reviewedDestination).normalizedMarkdown).toBe("Cover the empty case");
+  });
+
+  it("clears the note once the changes are requested", async () => {
+    vi.spyOn(chat, "reviewAssignment").mockResolvedValue(true);
+    const card = mountReviewedWork();
+
+    await typeNote(card, "Cover the empty case");
+    buttonLabeled(card, "Send").click();
+    await vi.waitFor(() => expect(card.querySelector("textarea")).toBeNull());
+    settleReviewedWork();
+    await tick();
+
+    expect(chat.organizationalDraft(reviewedDestination).normalizedMarkdown).toBe("");
   });
 });

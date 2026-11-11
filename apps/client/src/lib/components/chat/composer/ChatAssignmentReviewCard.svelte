@@ -5,22 +5,27 @@
   /**
    * Accept and Request changes for work that waits for review in a reply thread. The handlers report their own
    * errors and resolve whether the review was recorded; the card keeps both actions disabled while one runs and
-   * keeps the note when it was not sent.
+   * keeps the note when it was not sent. The note and whether it is open are bound to the parent, which keeps a
+   * typed note when the card closes before it is sent.
    */
   let {
     onAccept,
     onRequestChanges,
+    note = $bindable(""),
+    composingNote = $bindable(false),
   }: {
     onAccept: () => Promise<boolean>;
     /** Posts the trimmed note as the changes to make. */
     onRequestChanges: (note: string) => Promise<boolean>;
+    /** The Request changes note being typed. */
+    note?: string;
+    /** Whether the note field is open. */
+    composingNote?: boolean;
   } = $props();
 
   const localization = getLocalization();
   const { t } = localization;
 
-  let composingNote = $state(false);
-  let note = $state("");
   let busy = $state(false);
   let noteElement: HTMLTextAreaElement | undefined = $state();
   const trimmedNote = $derived(note.trim());

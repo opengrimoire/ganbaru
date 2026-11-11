@@ -287,6 +287,7 @@ export const chat = {
     reviewChanged: "Este trabajo cambió antes de tu revisión, así que revisa primero el resultado más reciente.",
     reviewPendingReplies: "Aún hay respuestas esperando a este agente, así que pide cambios para continuar el trabajo.",
     reviewNoDevice: "Ningún dispositivo puede ejecutar este agente ahora, así que aún no se pueden pedir cambios.",
+    reviewNoteMoved: "Este trabajo cambió, así que tu nota pasó al cuadro de respuesta.",
     replyInThread: "Responder en el hilo, o escribe '@' para mencionar y '#' para canales",
     members: "Miembros",
     addTeammate: "Agregar agente",

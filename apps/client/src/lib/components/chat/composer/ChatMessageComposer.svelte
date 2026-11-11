@@ -27,6 +27,7 @@
     ChatParticipantRead,
     ChatScheduledMessageRead,
     ChatTeammateAccessRead,
+    ChatWorkAssignmentId,
     ChatWorkAssignmentState,
     ProjectWorkingFolderPathRead,
   } from "$lib/chat/contracts";
@@ -37,6 +38,7 @@
     chatComposerDocumentVersioned,
     chatComposerMarkdown,
     chatComposerPlainText,
+    replaceChatComposerText,
     parseChatComposerDocument,
     type ChatComposerDocument,
     type ChatComposerMark,
@@ -202,6 +204,11 @@
   let sending = $state(false);
   let stopping = $state(false);
   let retryingAssignment = $state(false);
+  let reviewNote = $state("");
+  let reviewNoteOpen = $state(false);
+  let reviewing = $state(false);
+  /** The reviewed work the open review card belongs to, so a note typed for it never reaches other work. */
+  let reviewNoteAssignmentId: ChatWorkAssignmentId | null = null;
   let error = $state<string | null>(null);
   let disclosureBlocker = $state<DisclosureBlocker | null>(null);
   let blockerElement = $state<HTMLDivElement | null>(null);
@@ -325,8 +332,20 @@
     return () => {
       document.removeEventListener("selectionchange", selectionChanged);
       paneEvents.removeEventListener("ganbaru:chat-stop-requested", stop);
+      releaseReviewNote();
       editorController = null;
     };
+  });
+
+  $effect(() => {
+    const reviewedId = assignmentAwaitingReview?.id ?? null;
+    if (reviewing) return;
+    untrack(() => {
+      if (reviewedId === reviewNoteAssignmentId) return;
+      // Without earlier reviewed work no card held a note, and one opened before this first run belongs to it.
+      if (reviewNoteAssignmentId !== null) releaseReviewNote();
+      reviewNoteAssignmentId = reviewedId;
+    });
   });
 
   $effect(() => {
@@ -1027,15 +1046,23 @@
 
   async function reviewWork(review: ChatAssignmentReviewRequest): Promise<boolean> {
     const assignment = assignmentAwaitingReview;
-    if (!assignment) return false;
+    if (!assignment || reviewing) return false;
     error = null;
+    reviewing = true;
     try {
       const reviewed = await chat.reviewAssignment(assignment.id, review);
-      if (!reviewed) error = t("chat.organization.reviewChanged");
+      if (reviewed) {
+        reviewNote = "";
+        reviewNoteOpen = false;
+      } else {
+        error = t("chat.organization.reviewChanged");
+      }
       return reviewed;
     } catch (cause: unknown) {
       error = reviewRefusalMessage(cause);
       return false;
+    } finally {
+      reviewing = false;
     }
   }
 
@@ -1046,6 +1073,28 @@
       case "no_executing_device": return t("chat.organization.reviewNoDevice");
       default: return chatErrorMessage(cause);
     }
+  }
+
+  /**
+   * Moves a Request changes note the card no longer shows into the reply draft, where it posts as a plain reply,
+   * which also asks for more work. The note follows any text already in the draft.
+   */
+  function releaseReviewNote(): void {
+    const note = reviewNote.trim();
+    reviewNote = "";
+    reviewNoteOpen = false;
+    if (!note) return;
+    const existing = chatComposerPlainText(editorDocument);
+    const end = existing.length;
+    const separator = existing.trim() ? "\n\n" : "";
+    const next = replaceChatComposerText(editorDocument, { start: end, end }, `${separator}${note}`);
+    editorDocument = next.document;
+    normalizedMarkdown = chatComposerMarkdown(next.document);
+    selectionStart = next.selection.start;
+    selectionEnd = next.selection.end;
+    editorController?.setDocument(editorDocument, editorReferences);
+    persist();
+    error = t("chat.organization.reviewNoteMoved");
   }
 
   async function acceptReviewedWork(): Promise<boolean> {
@@ -1361,7 +1410,7 @@
     <Notice class="assignment-notice" role="status" message={t("chat.organization.workStopped")} retryLabel={t("chat.organization.retry")} onRetry={retryFailedAssignment} copy={false} />
   {/if}
   {#if assignmentAwaitingReview}
-    <ChatAssignmentReviewCard onAccept={acceptReviewedWork} onRequestChanges={requestChangesOnReviewedWork} />
+    <ChatAssignmentReviewCard bind:note={reviewNote} bind:composingNote={reviewNoteOpen} onAccept={acceptReviewedWork} onRequestChanges={requestChangesOnReviewedWork} />
   {/if}
   {#if assignmentAwaitingStart}
     <Notice class="assignment-notice" role="status" message={workAwaitsStartMessage} retryLabel={t("chat.organization.startHere")} onRetry={startAssignmentHere} copy={false} />

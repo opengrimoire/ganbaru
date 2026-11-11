@@ -22,6 +22,8 @@
   --panel-detail-font-size: calc(var(--panel-font-size) * 0.875);
   /* Row and field height inside panels; touch layouts raise it to a 44px target. */
   --panel-row-height: calc(var(--panel-font-size) * 1.5 + 0.5rem);
+  /* Height of a standalone control (button, select trigger, color swatch) beside fields and text. Touch layouts match the field row height so controls never look shorter than the fields next to them. */
+  --control-height: 1.75rem;
   /* Hairline that separates a tab's content surface from the window frame. It is opaque, the frame darkened slightly, so it reads the same over any content it covers. */
   --content-edge: color-mix(in srgb, var(--sidebar) 93%, rgb(0 0 20));
   /* Its width; content inside a surface starts past it. */
@@ -37,11 +39,13 @@
 
 html[data-shell="mobile"] {
   --panel-row-height: 2.75rem;
+  --control-height: var(--panel-row-height);
 }
 
 @media (any-pointer: coarse) and (any-hover: none) {
   :root {
     --panel-row-height: 2.75rem;
+    --control-height: var(--panel-row-height);
   }
 }
 

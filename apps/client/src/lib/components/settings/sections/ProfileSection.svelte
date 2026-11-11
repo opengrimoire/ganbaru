@@ -443,7 +443,7 @@
         onclick={() => void saveIdentity()}
         disabled={!hasSaveableChange || saving}
         class={cn(
-          "flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground transition-colors disabled:pointer-events-none",
+          "flex h-8 min-h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground transition-colors disabled:pointer-events-none",
           hasSaveableChange || saving ? "hover:bg-primary/90" : "opacity-55",
         )}
       >

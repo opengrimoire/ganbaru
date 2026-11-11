@@ -8,7 +8,7 @@
 
   const { t } = getLocalization();
   const actionButtonClass =
-    "inline-flex h-7 shrink-0 items-center justify-center rounded-md border border-primary bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground transition-colors active:bg-primary/90 disabled:pointer-events-none disabled:opacity-55";
+    "inline-flex h-(--control-height) shrink-0 items-center justify-center rounded-md border border-primary bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground transition-colors active:bg-primary/90 disabled:pointer-events-none disabled:opacity-55";
 </script>
 
 <div class="flex flex-col gap-6">

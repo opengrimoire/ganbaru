@@ -136,7 +136,7 @@
             <div class="flex shrink-0 items-center gap-2">
               <button
                 type="button"
-                class="inline-flex h-7 items-center justify-center rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 dark:bg-transparent"
+                class="inline-flex h-(--control-height) items-center justify-center rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 dark:bg-transparent"
                 disabled={pendingGroupId === group.id}
                 aria-label={t("settings.projectsGroups.renameGroup", displayName(group))}
                 onclick={() => beginRename(group)}
@@ -145,7 +145,7 @@
               </button>
               <button
                 type="button"
-                class="inline-flex h-7 items-center justify-center rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-destructive transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 dark:bg-transparent"
+                class="inline-flex h-(--control-height) items-center justify-center rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-destructive transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 dark:bg-transparent"
                 disabled={pendingGroupId === group.id}
                 aria-label={t("projects.navigator.deleteGroup", displayName(group))}
                 onclick={() => { deleteCandidate = group; }}

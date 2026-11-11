@@ -61,7 +61,7 @@
       </div>
       <button
         type="button"
-        class="inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 max-[480px]:self-end dark:bg-transparent"
+        class="inline-flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 max-[480px]:self-end dark:bg-transparent"
         disabled={loading || opening !== null}
         aria-busy={opening === "autostart" || undefined}
         onclick={() => void open("autostart")}
@@ -83,7 +83,7 @@
     </div>
     <button
       type="button"
-      class="inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 max-[480px]:self-end dark:bg-transparent"
+      class="inline-flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 max-[480px]:self-end dark:bg-transparent"
       disabled={loading || opening !== null}
       aria-busy={opening === "battery" || undefined}
       onclick={() => void open("battery")}

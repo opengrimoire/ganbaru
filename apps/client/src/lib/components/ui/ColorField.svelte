@@ -502,8 +502,8 @@
       class={cn(
         "flex shrink-0 items-center justify-center text-secondary-foreground transition-colors",
         mobileShell
-          ? "size-8 rounded-md border border-border bg-secondary active:bg-accent"
-          : "h-7 w-7 rounded-md border border-border bg-secondary",
+          ? "size-(--control-height) rounded-md border border-border bg-secondary active:bg-accent"
+          : "size-(--control-height) rounded-md border border-border bg-secondary",
         canReset
           ? "hover:bg-accent hover:text-accent-foreground"
           : "cursor-not-allowed opacity-40 hover:bg-transparent",

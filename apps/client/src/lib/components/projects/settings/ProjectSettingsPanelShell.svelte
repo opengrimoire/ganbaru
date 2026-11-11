@@ -120,7 +120,7 @@
         <button
           type="button"
           class={cn(
-            "flex min-h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[0.8rem] font-medium disabled:cursor-not-allowed",
+            "flex h-8 min-h-(--control-height) shrink-0 items-center gap-1.5 rounded-md px-2 text-[0.8rem] font-medium disabled:cursor-not-allowed",
             dirty || saving ? "bg-primary text-primary-foreground hover:bg-primary/90" : "bg-secondary text-muted-foreground",
           )}
           disabled={saving || busy || !dirty}

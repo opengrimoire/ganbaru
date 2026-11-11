@@ -165,7 +165,7 @@
   <button
     bind:this={triggerElement}
     type="button"
-    class="flex h-7 w-full max-w-full items-center justify-between gap-2 rounded-md border border-border bg-transparent px-2.5 text-left text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent"
+    class="flex h-(--control-height) w-full max-w-full items-center justify-between gap-2 rounded-md border border-border bg-transparent px-2.5 text-left text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent"
     aria-haspopup="listbox"
     aria-expanded={pickerOpen}
     aria-label={t("projects.customFields.fieldType")}

@@ -285,7 +285,7 @@
             </div>
             <button
               type="button"
-              class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent max-[520px]:w-fit"
+              class="flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent max-[520px]:w-fit"
               onclick={() => onOpenTransferPanel(action.id)}
             >
               <Icon size={13} strokeWidth={2.25} />
@@ -313,7 +313,7 @@
             </div>
             <button
               type="button"
-              class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent max-[520px]:w-fit"
+              class="flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent max-[520px]:w-fit"
               onclick={() => onOpenTransferPanel(action.id)}
             >
               <Icon size={13} strokeWidth={2.25} />

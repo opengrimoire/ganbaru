@@ -132,7 +132,7 @@
       <div class="field flex min-w-0 items-center gap-2 px-2.5 py-1.5">
         <Search size={14} class="shrink-0 text-muted-foreground" />
         <input bind:value={query} placeholder={t("settings.distractions.appSelector.search")} class="field-bare h-7 text-[0.866667rem] text-foreground" />
-        <button type="button" onclick={loadApps} disabled={loading} aria-label={t("settings.distractions.appSelector.refresh")} class="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40">
+        <button type="button" onclick={loadApps} disabled={loading} aria-label={t("settings.distractions.appSelector.refresh")} class="flex size-(--control-height) items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40">
           {#if loading}<LoaderCircle size={14} class="animate-spin" />{:else}<RefreshCw size={14} />{/if}
         </button>
       </div>

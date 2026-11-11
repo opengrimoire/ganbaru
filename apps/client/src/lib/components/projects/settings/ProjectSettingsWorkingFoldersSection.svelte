@@ -261,7 +261,7 @@
     <ProjectSettingsSectionHeading label={t("projects.settings.workingFolders.title")} />
     <button
       type="button"
-      class="flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[0.733333rem] text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+      class="flex min-h-(--control-height) shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[0.733333rem] text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
       disabled={saving || operationId !== null || loading || !draft.primaryReady}
       onclick={() => { void run("add", () => draft.choose()); }}
     >

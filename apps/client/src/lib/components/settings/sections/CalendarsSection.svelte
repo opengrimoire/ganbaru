@@ -49,8 +49,8 @@
     label: t("settings.appearance.calendarZoomOption", percent, calendarZoomGridMinutesForPercent(percent)),
   })));
   const iconButtonClass = $derived(mobileShell
-    ? "flex size-8 items-center justify-center rounded-lg border border-border bg-card text-foreground transition-colors active:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:active:bg-transparent dark:bg-transparent"
-    : "flex h-7 w-7 items-center justify-center rounded-md border border-border bg-card text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-card dark:bg-transparent dark:disabled:hover:bg-transparent");
+    ? "flex size-(--control-height) items-center justify-center rounded-lg border border-border bg-card text-foreground transition-colors active:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:active:bg-transparent dark:bg-transparent"
+    : "flex size-(--control-height) items-center justify-center rounded-md border border-border bg-card text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-card dark:bg-transparent dark:disabled:hover:bg-transparent");
   const MAX_VISIBLE_IMPORT_WARNINGS = 8;
   const TOAST_TIMEOUT_MS = 5_000;
 

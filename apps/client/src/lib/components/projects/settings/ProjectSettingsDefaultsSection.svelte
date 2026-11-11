@@ -536,7 +536,7 @@
 
     {#if projectPomodoroModeDraft === "custom"}
       <div class="flex justify-end px-1 py-1">
-        <div class="project-pomodoro-rhythm flex h-7 w-56 min-w-0 items-center justify-end gap-1.5 text-[0.733333rem] text-muted-foreground max-[480px]:w-full max-[480px]:justify-start">
+        <div class="project-pomodoro-rhythm flex h-(--control-height) w-56 min-w-0 items-center justify-end gap-1.5 text-[0.733333rem] text-muted-foreground max-[480px]:w-full max-[480px]:justify-start">
           {#each pomodoroCustomFields as field, fieldIndex}
             <span>{field.compactLabel}</span>
             <label class="contents">

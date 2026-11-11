@@ -244,7 +244,7 @@
       <button
         type="button"
         onclick={() => onOpenLimitEditor({ mode: "create" })}
-        class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+        class="flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent"
       >
         <Plus size={13} strokeWidth={2.25} />
         <span>{t("settings.distractions.limits.addLimit")}</span>
@@ -320,7 +320,7 @@
                   ? t("settings.distractions.shared.disable", limit.name)
                   : t("settings.distractions.shared.enable", limit.name)}
                 data-app-tooltip-disabled="true"
-                class="flex h-7 w-24 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2 text-[0.8rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+                class="flex h-(--control-height) w-24 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2 text-[0.8rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
               >
                 {#if limit.enabled}
                   <Check size={13} strokeWidth={2.25} class="shrink-0" />
@@ -336,7 +336,7 @@
                 disabled={!limit.enabled}
                 aria-label={t("settings.distractions.shared.edit", limit.name)}
                 data-app-tooltip-disabled="true"
-                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-card text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 dark:bg-transparent"
+                class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md border border-border bg-card text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 dark:bg-transparent"
               >
                 <Pencil size={13} strokeWidth={2} />
               </button>
@@ -345,7 +345,7 @@
                 onclick={() => requestLimitDelete(limit)}
                 aria-label={t("settings.distractions.shared.delete", limit.name)}
                 data-app-tooltip-disabled="true"
-                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-card text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+                class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md border border-border bg-card text-foreground transition-colors hover:bg-accent dark:bg-transparent"
               >
                 <Trash2 size={13} strokeWidth={2} />
               </button>

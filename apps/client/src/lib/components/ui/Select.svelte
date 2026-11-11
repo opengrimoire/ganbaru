@@ -309,7 +309,7 @@
       aria-disabled={unavailable ? "true" : undefined}
       aria-label={ariaLabel ?? label}
       class={cn(
-        "flex h-7 w-full max-w-full items-center gap-2 rounded-md text-foreground transition-colors disabled:cursor-not-allowed max-[480px]:w-full",
+        "flex h-(--control-height) w-full max-w-full items-center gap-2 rounded-md text-foreground transition-colors disabled:cursor-not-allowed max-[480px]:w-full",
         textWeight === "medium" ? "font-medium" : "font-normal",
         unavailable && "control-unavailable",
         textClass,
@@ -415,7 +415,7 @@
           aria-label={t("common.reset")}
           data-app-tooltip-disabled="true"
           class={cn(
-            "flex h-7 w-7 items-center justify-center rounded-md border border-border bg-secondary text-secondary-foreground transition-colors",
+            "flex size-(--control-height) items-center justify-center rounded-md border border-border bg-secondary text-secondary-foreground transition-colors",
             canReset
               ? "hover:bg-accent hover:text-accent-foreground"
               : "cursor-not-allowed opacity-40",

@@ -33,7 +33,7 @@
     <ProjectSettingsSectionHeading label={t("projects.settings.members.heading")} count={OWNER_COUNT} inlineCount />
     <button
       type="button"
-      class="flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[0.733333rem] text-muted-foreground hover:bg-accent hover:text-foreground"
+      class="flex min-h-(--control-height) shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[0.733333rem] text-muted-foreground hover:bg-accent hover:text-foreground"
       aria-haspopup="dialog"
       aria-expanded={inviteOpen}
       onclick={() => { inviteOpen = true; }}

@@ -609,7 +609,7 @@
       >
         <div class={cn("flex items-center", useIconRail ? "justify-center" : "justify-between")}>
           {#if !useIconRail}
-            <span class="flex h-7 min-w-0 items-center gap-2.5 px-3 text-[0.866667rem] font-semibold text-muted-foreground">
+            <span class="flex h-(--control-height) min-w-0 items-center gap-2.5 px-3 text-[0.866667rem] font-semibold text-muted-foreground">
               <SettingsIcon size={15} strokeWidth={1.75} class="shrink-0" />
               <span class="truncate">{t("settings.title")}</span>
             </span>
@@ -619,7 +619,7 @@
             onclick={requestSettingsClose}
             aria-label={t("settings.close")}
             data-app-tooltip-disabled="true"
-            class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            class="flex size-(--control-height) items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             <X size={14} strokeWidth={2} />
           </button>

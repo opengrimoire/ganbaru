@@ -6,7 +6,7 @@
 
   const LICENSE_URL = "https://github.com/opengrimoire/ganbaru/blob/main/LICENSE";
   const actionButtonClass =
-    "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-transparent";
+    "inline-flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-transparent";
   const { t } = getLocalization();
 
   async function openExternalUrl(url: string): Promise<void> {

@@ -674,13 +674,13 @@
             type="text"
             spellcheck="false"
             placeholder={t("settings.distractions.browser.categoryName")}
-            class="field flex h-7 min-w-32 flex-1 px-2 text-[0.8rem] leading-snug text-foreground"
+            class="field flex h-(--control-height) min-w-32 flex-1 px-2 text-[0.8rem] leading-snug text-foreground"
           />
           <button
             type="button"
             onclick={saveCustomCategoryWithPendingHost}
             disabled={!customCategoryDraft.name.trim() || customCategoryDraft.hosts.length === 0}
-            class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-card dark:bg-transparent dark:disabled:hover:bg-transparent"
+            class="flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-card dark:bg-transparent dark:disabled:hover:bg-transparent"
           >
             {#if customCategoryEditingId}
               <Save size={13} strokeWidth={2.25} />
@@ -694,7 +694,7 @@
             <button
               type="button"
               onclick={requestEditingCustomCategoryDelete}
-              class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+              class="flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
             >
               <Trash2 size={13} strokeWidth={2} />
               <span>{t("settings.distractions.browser.delete")}</span>
@@ -703,7 +703,7 @@
           <button
             type="button"
             onclick={closeCustomCategoryForm}
-            class="flex h-7 shrink-0 items-center justify-center rounded-md border border-border bg-card px-2.5 text-[0.8rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+            class="flex h-(--control-height) shrink-0 items-center justify-center rounded-md border border-border bg-card px-2.5 text-[0.8rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
           >
             {t("settings.distractions.browser.cancel")}
           </button>
@@ -722,12 +722,12 @@
                 type="text"
                 spellcheck="false"
                 placeholder={t("settings.distractions.browser.enterDomain")}
-                class="flex h-7 min-w-0 flex-1 bg-transparent px-1 text-[0.8rem] leading-snug text-foreground outline-none placeholder:text-muted-foreground"
+                class="flex h-(--control-height) min-w-0 flex-1 bg-transparent px-1 text-[0.8rem] leading-snug text-foreground outline-none placeholder:text-muted-foreground"
               />
               <button
                 type="submit"
                 disabled={!customCategoryDraft.hostInput.trim()}
-                class="flex h-7 shrink-0 items-center justify-center gap-1.5 px-1 text-[0.8rem] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                class="flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 px-1 text-[0.8rem] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Plus size={13} strokeWidth={2.25} />
                 <span>{t("settings.distractions.browser.add")}</span>
@@ -736,7 +736,7 @@
             <div class="flex flex-col">
               {#each customCategoryDraft.hosts as host (host)}
                 <div class="flex min-w-0 items-center gap-2 border-b border-border/70 py-1.5">
-                  <span class="flex h-7 min-w-0 flex-1 items-center truncate px-1 text-[0.8rem] leading-snug text-foreground">
+                  <span class="flex h-(--control-height) min-w-0 flex-1 items-center truncate px-1 text-[0.8rem] leading-snug text-foreground">
                     {host}
                   </span>
                   <button
@@ -744,7 +744,7 @@
                     onclick={() => requestCustomCategoryDraftHostDelete(host)}
                     aria-label={t("settings.distractions.shared.remove", host)}
                     data-app-tooltip-disabled="true"
-                    class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-card text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+                    class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md border border-border bg-card text-foreground transition-colors hover:bg-accent dark:bg-transparent"
                   >
                     <Trash2 size={13} strokeWidth={2} />
                   </button>

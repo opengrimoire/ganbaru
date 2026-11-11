@@ -97,7 +97,7 @@
         <IconPicker
           value={projectIconDraft}
           ariaLabel={t("projects.settings.selectIcon", projectIconDraft)}
-          class="h-7 w-44 max-[480px]:w-full"
+          class="h-(--control-height) w-44 max-[480px]:w-full"
           onChange={(nextIcon) => {
             projectIconDraft = nextIcon;
           }}

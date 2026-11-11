@@ -34,7 +34,7 @@
             role="tab"
             aria-selected={active}
             class={cn(
-              "flex min-h-7 items-center justify-center rounded-sm px-3 text-center text-[0.8rem] font-medium text-muted-foreground",
+              "flex min-h-(--control-height) items-center justify-center rounded-sm px-3 text-center text-[0.8rem] font-medium text-muted-foreground",
               active && "bg-background text-foreground dark:bg-foreground/5",
             )}
             onclick={() => { direction = entry.id; }}

@@ -149,13 +149,13 @@
       {@const displayedFieldOptionCount = fieldOptions.length + fieldOptionDraftRows.length}
       <div class="custom-field-config flex flex-col gap-2" {@attach customFieldSortable.item(field.id)}>
         <div
-          class="grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 px-1 py-0.5"
+          class="grid min-h-(--control-height) grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 px-1 py-0.5"
           role="group"
           aria-label={field.name}
         >
           <button
             type="button"
-            class="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 touch-none"
+            class="flex size-(--control-height) shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 touch-none"
             disabled={projectCustomFields.length <= 1 || customFieldSortable.pending}
             aria-label={t("projects.actions.dragCustomField", field.name)}
             onpointerdown={(event) => customFieldSortable.pointerDown(event, field.id)}
@@ -180,7 +180,7 @@
             oninput={(event) => setCustomFieldNameDraft(field.id, event.currentTarget.value)}
           />
           <div
-            class="flex h-7 w-32 shrink-0 cursor-not-allowed items-center justify-between gap-2 rounded-md border border-border bg-transparent px-2.5 text-[0.8rem] font-medium text-foreground transition-colors"
+            class="flex h-(--control-height) w-32 shrink-0 cursor-not-allowed items-center justify-between gap-2 rounded-md border border-border bg-transparent px-2.5 text-[0.8rem] font-medium text-foreground transition-colors"
             aria-label={t("projects.customFields.fieldType")}
             data-app-tooltip={t("projects.customFields.typeLockedTooltip")}
           >
@@ -212,14 +212,14 @@
                 </svg>
                 {#each fieldOptions as option (option.id)}
                   <div
-                    class="grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5"
+                    class="grid min-h-(--control-height) grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5"
                     role="group"
                     aria-label={option.name}
                     {@attach customFieldOptionSortable.item(option.id)}
                   >
                     <button
                       type="button"
-                      class="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 touch-none"
+                      class="flex size-(--control-height) shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 touch-none"
                       disabled={fieldOptions.length <= 1 || customFieldOptionSortable.pending}
                       aria-label={t("projects.actions.dragCustomFieldOption", option.name)}
                       onpointerdown={(event) => customFieldOptionSortable.pointerDown(event, option.id)}
@@ -256,12 +256,12 @@
                 {/each}
                 {#each fieldOptionDraftRows as option (option.id)}
                   <div
-                    class="relative grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5"
+                    class="relative grid min-h-(--control-height) grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5"
                     role="group"
                     aria-label={option.name || t("projects.customFields.optionName")}
                   >
                     <div
-                      class="flex h-7 w-7 shrink-0 cursor-not-allowed items-center justify-center rounded-md text-muted-foreground opacity-40"
+                      class="flex size-(--control-height) shrink-0 cursor-not-allowed items-center justify-center rounded-md text-muted-foreground opacity-40"
                       aria-hidden="true"
                     >
                       <GripVertical size={13} strokeWidth={1.75} />
@@ -288,7 +288,7 @@
                 {/each}
               </div>
             {/if}
-            <div class="grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5">
+            <div class="grid min-h-(--control-height) grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5">
               <ProjectSettingsNewRowDragHandle showIcon={displayedFieldOptionCount === 0} />
               <input
                 value={newCustomFieldOptionDrafts[field.id] ?? ""}
@@ -305,7 +305,7 @@
               />
               <button
                 type="button"
-                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
                 aria-label={t("projects.customFields.addOption")}
                 title={t("projects.customFields.addOption")}
                 onclick={() => { void submitCustomFieldOption(field); }}
@@ -322,12 +322,12 @@
       {@const displayedFieldOptionCount = field.optionRows.length}
       <div class="custom-field-config flex flex-col gap-2">
         <div
-          class="grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 px-1 py-0.5"
+          class="grid min-h-(--control-height) grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 px-1 py-0.5"
           role="group"
           aria-label={field.name || t("projects.customFields.fieldName")}
         >
           <div
-            class="flex h-7 w-7 shrink-0 cursor-not-allowed items-center justify-center rounded-md text-muted-foreground opacity-40"
+            class="flex size-(--control-height) shrink-0 cursor-not-allowed items-center justify-center rounded-md text-muted-foreground opacity-40"
             aria-hidden="true"
           >
             <GripVertical size={13} strokeWidth={1.75} />
@@ -340,7 +340,7 @@
             oninput={(event) => setCustomFieldCreateDraftName(field.id, event.currentTarget.value)}
           />
           <div
-            class="flex h-7 w-32 shrink-0 cursor-not-allowed items-center justify-between gap-2 rounded-md border border-border bg-transparent px-2.5 text-[0.8rem] font-medium text-foreground transition-colors"
+            class="flex h-(--control-height) w-32 shrink-0 cursor-not-allowed items-center justify-between gap-2 rounded-md border border-border bg-transparent px-2.5 text-[0.8rem] font-medium text-foreground transition-colors"
             aria-label={t("projects.customFields.fieldType")}
             data-app-tooltip={t("projects.customFields.typeLockedTooltip")}
           >
@@ -372,12 +372,12 @@
                 </svg>
                 {#each field.optionRows as option (option.id)}
                   <div
-                    class="relative grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5"
+                    class="relative grid min-h-(--control-height) grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5"
                     role="group"
                     aria-label={option.name || t("projects.customFields.optionName")}
                   >
                     <div
-                      class="flex h-7 w-7 shrink-0 cursor-not-allowed items-center justify-center rounded-md text-muted-foreground opacity-40"
+                      class="flex size-(--control-height) shrink-0 cursor-not-allowed items-center justify-center rounded-md text-muted-foreground opacity-40"
                       aria-hidden="true"
                     >
                       <GripVertical size={13} strokeWidth={1.75} />
@@ -403,7 +403,7 @@
                 {/each}
               </div>
             {/if}
-            <div class="grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5">
+            <div class="grid min-h-(--control-height) grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5">
               <ProjectSettingsNewRowDragHandle showIcon={displayedFieldOptionCount === 0} />
               <input
                 value={field.optionName}
@@ -421,7 +421,7 @@
               />
               <button
                 type="button"
-                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
                 aria-label={t("projects.customFields.addOption")}
                 title={t("projects.customFields.addOption")}
                 onclick={() => submitCustomFieldCreateDraftOption(field)}
@@ -437,7 +437,7 @@
     <div class="flex flex-col gap-2">
       <div
         bind:this={newCustomFieldRowElement}
-        class="grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 px-1 py-0.5"
+        class="grid min-h-(--control-height) grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 px-1 py-0.5"
       >
         <ProjectSettingsNewRowDragHandle
           showIcon={projectCustomFields.length + customFieldCreateDraftRows.length === 0}
@@ -460,7 +460,7 @@
         />
         <button
           type="button"
-          class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
           aria-label={t("projects.customFields.addField")}
           title={t("projects.customFields.addField")}
           onclick={submitCustomField}
@@ -472,9 +472,9 @@
       {#if projectCustomFieldUsesOptions(newCustomFieldType)}
         <div class="flex flex-col gap-2 pl-9 pr-1">
           {#each newCustomFieldOptionRows as option (option.id)}
-            <div class="grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5">
+            <div class="grid min-h-(--control-height) grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5">
               <div
-                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-40"
+                class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-40"
                 aria-hidden="true"
               >
                 <GripVertical size={13} strokeWidth={1.75} />
@@ -497,7 +497,7 @@
               </button>
             </div>
           {/each}
-          <div class="grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5">
+          <div class="grid min-h-(--control-height) grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5">
             <ProjectSettingsNewRowDragHandle showIcon={newCustomFieldOptionRows.length === 0} />
             <input
               bind:value={newCustomFieldOptionName}
@@ -513,7 +513,7 @@
             />
             <button
               type="button"
-              class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
               aria-label={t("projects.customFields.addOption")}
               title={t("projects.customFields.addOption")}
               onclick={submitNewCustomFieldOptionDraft}

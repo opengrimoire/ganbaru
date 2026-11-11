@@ -93,12 +93,12 @@
           type="text"
           spellcheck="false"
           {placeholder}
-          class="flex h-7 min-w-0 flex-1 items-center bg-transparent px-1 text-[0.8rem] leading-snug text-foreground outline-none placeholder:text-muted-foreground"
+          class="flex h-(--control-height) min-w-0 flex-1 items-center bg-transparent px-1 text-[0.8rem] leading-snug text-foreground outline-none placeholder:text-muted-foreground"
         />
         <button
           type="submit"
           disabled={!draft.trim()}
-          class="flex h-7 shrink-0 items-center justify-center gap-1.5 px-1 text-[0.8rem] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          class="flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 px-1 text-[0.8rem] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus size={13} strokeWidth={2.25} />
           <span>{t("settings.distractions.shared.add")}</span>
@@ -119,14 +119,14 @@
         >
           <span
             class={cn(
-              "flex h-7 min-w-0 flex-1 items-center truncate px-1 text-[0.8rem] leading-snug text-foreground",
+              "flex h-(--control-height) min-w-0 flex-1 items-center truncate px-1 text-[0.8rem] leading-snug text-foreground",
               !item.enabled && "opacity-50 line-through",
             )}
           >
             {item.label}
           </span>
           {#if item.locked}
-            <span class="flex h-7 w-32 shrink-0 items-center justify-center rounded-md border border-border bg-card px-2 text-[0.8rem] text-muted-foreground dark:bg-transparent">
+            <span class="flex h-(--control-height) w-32 shrink-0 items-center justify-center rounded-md border border-border bg-card px-2 text-[0.8rem] text-muted-foreground dark:bg-transparent">
               {item.stateLabel ?? t("settings.distractions.shared.locked")}
             </span>
           {:else}
@@ -137,7 +137,7 @@
                 ? t("settings.distractions.shared.disable", item.label)
                 : t("settings.distractions.shared.enable", item.label)}
               data-app-tooltip-disabled="true"
-              class="flex h-7 w-24 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2 text-[0.8rem] text-foreground hover:bg-accent dark:bg-transparent"
+              class="flex h-(--control-height) w-24 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2 text-[0.8rem] text-foreground hover:bg-accent dark:bg-transparent"
             >
               {#if item.enabled}
                 <Check size={13} strokeWidth={2.25} class="shrink-0" />
@@ -152,7 +152,7 @@
               onclick={() => onDelete(item.id)}
               aria-label={t("settings.distractions.shared.remove", item.label)}
               data-app-tooltip-disabled="true"
-              class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-card text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+              class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md border border-border bg-card text-foreground transition-colors hover:bg-accent dark:bg-transparent"
             >
               <Trash2 size={13} strokeWidth={2} />
             </button>

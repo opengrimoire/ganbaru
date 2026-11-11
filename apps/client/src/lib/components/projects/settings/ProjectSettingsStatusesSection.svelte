@@ -73,14 +73,14 @@
     {#each statuses as status (status.id)}
       {@const deleteStatusTitle = statusDeleteTitle(status)}
       <div
-        class="grid min-h-7 grid-cols-[auto_auto_minmax(0,1fr)_auto_auto] items-center gap-1 px-1 py-0.5"
+        class="grid min-h-(--control-height) grid-cols-[auto_auto_minmax(0,1fr)_auto_auto] items-center gap-1 px-1 py-0.5"
         role="group"
         aria-label={status.name}
         {@attach statusSortable.item(status.id)}
       >
         <button
           type="button"
-          class="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 touch-none"
+          class="flex size-(--control-height) shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 touch-none"
           disabled={statuses.length <= 1 || statusSortable.pending}
           aria-label={t("projects.actions.dragStatus", status.name)}
           onpointerdown={(event) => statusSortable.pointerDown(event, status.id)}
@@ -102,8 +102,8 @@
           color={statusColorDraftValue(status)}
           {theme}
           ariaLabel={t("projects.settings.selectStatusColor", status.name)}
-          class="h-7 w-7 justify-center self-center"
-          buttonClass="size-6 rounded-md"
+          class="size-(--control-height) justify-center self-center"
+          buttonClass="size-[calc(var(--control-height)-0.25rem)] rounded-md"
           onSelect={(color) => setStatusColor(status.id, color)}
         />
         <input
@@ -136,7 +136,7 @@
 
   <div
     bind:this={newStatusRowElement}
-    class="grid min-h-7 grid-cols-[auto_auto_minmax(0,1fr)_auto_auto] items-center gap-1 px-1 py-0.5"
+    class="grid min-h-(--control-height) grid-cols-[auto_auto_minmax(0,1fr)_auto_auto] items-center gap-1 px-1 py-0.5"
   >
     <ProjectSettingsNewRowDragHandle showIcon={statuses.length === 0} />
     <EventColorPicker
@@ -144,8 +144,8 @@
       color={newStatusColor}
       {theme}
       ariaLabel={t("projects.settings.selectNewStatusColor")}
-      class="h-7 w-7 justify-center self-center"
-      buttonClass="size-6 rounded-md"
+      class="size-(--control-height) justify-center self-center"
+      buttonClass="size-[calc(var(--control-height)-0.25rem)] rounded-md"
       onSelect={setNewStatusColor}
     />
     <input
@@ -169,7 +169,7 @@
     />
     <button
       type="button"
-      class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+      class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
       aria-label={t("projects.settings.addStatus")}
       title={t("projects.settings.addStatus")}
       onclick={() => { void submitStatus(); }}

@@ -45,6 +45,7 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 ## Fields and controls
 
 - `field` styles a text input, textarea, or a wrapper that holds a borderless `field-bare` input with icons. Fields are transparent with a thin border; `aria-invalid="true"` on the input marks an error border that stays while focused.
+- Standalone controls that sit beside fields or body text (buttons, `Select` triggers, color swatches, icon buttons in settings rows) take their height from `--control-height`. It equals the compact desktop height and follows `--panel-row-height` on touch layouts, so a control never looks shorter than the field next to it. Do not give such controls fixed heights like `h-7`, which stay desktop-sized on phones.
 - Text entry never shows a focus contour, ring, border change, or fill; the caret is enough. The global keyboard focus outline excludes text entry for the same reason. Buttons, checkboxes, and switches keep the keyboard focus outline.
 - Checkboxes use `ui/Checkbox`, a native input drawn with theme tokens. Use `indeterminate` for partly selected parents, and wrap it in a `<label>` with visible text when the label is visible.
 - Fields that take a pasted secret code (pairing codes, server setup codes, recovery kits) use `ui/MaskedCodeInput`: a pasted code shows only its scheme and its first and last four characters, so it can be checked against its source without the whole secret on screen. Typed text stays visible so it can be checked character by character.

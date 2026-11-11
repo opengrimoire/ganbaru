@@ -196,14 +196,14 @@
           <div class="text-[0.866667rem] text-foreground">{t("settings.distractions.mobile.usageAccess")}</div>
           <div class="mt-0.5 text-[0.8rem] text-muted-foreground">{t("settings.distractions.mobile.usageAccessDescription")}</div>
         </div>
-        <button type="button" onclick={() => reviewAccess("usage")} class="h-7 shrink-0 rounded-md bg-primary px-2.5 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90">{t("mobile.focusOnboarding.review")}</button>
+        <button type="button" onclick={() => reviewAccess("usage")} class="h-(--control-height) shrink-0 rounded-md bg-primary px-2.5 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90">{t("mobile.focusOnboarding.review")}</button>
       </div>
       <div class="flex items-center justify-between gap-4 px-1 py-1">
         <div class="min-w-0 flex-1">
           <div class="text-[0.866667rem] text-foreground">{t("settings.distractions.mobile.appBlocking")}</div>
           <div class="mt-0.5 text-[0.8rem] text-muted-foreground">{t("settings.distractions.mobile.appBlockingDescription")}</div>
         </div>
-        <button type="button" onclick={() => reviewAccess("accessibility")} class="h-7 shrink-0 rounded-md bg-primary px-2.5 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90">{t("mobile.focusOnboarding.review")}</button>
+        <button type="button" onclick={() => reviewAccess("accessibility")} class="h-(--control-height) shrink-0 rounded-md bg-primary px-2.5 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90">{t("mobile.focusOnboarding.review")}</button>
       </div>
     </div>
     {#if loadingStatus}

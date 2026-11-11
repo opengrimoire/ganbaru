@@ -56,14 +56,14 @@
   <div class="flex flex-col gap-2">
     {#each tags as tag (tag.id)}
       <div
-        class="grid min-h-7 grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-1.5 px-1 py-0.5"
+        class="grid min-h-(--control-height) grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-1.5 px-1 py-0.5"
         role="group"
         aria-label={tag.name}
         {@attach tagSortable.item(tag.id)}
       >
         <button
           type="button"
-          class="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 touch-none"
+          class="flex size-(--control-height) shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 touch-none"
           disabled={tags.length <= 1 || tagSortable.pending}
           aria-label={t("projects.actions.dragTag", tag.name)}
           onpointerdown={(event) => tagSortable.pointerDown(event, tag.id)}
@@ -85,8 +85,8 @@
           color={tagColorDraftValue(tag)}
           {theme}
           ariaLabel={t("projects.settings.selectTagColor", tag.name)}
-          class="h-7 w-7 justify-center self-center"
-          buttonClass="size-6 rounded-md"
+          class="size-(--control-height) justify-center self-center"
+          buttonClass="size-[calc(var(--control-height)-0.25rem)] rounded-md"
           onSelect={(color) => setTagColor(tag.id, color)}
         />
         <input
@@ -110,7 +110,7 @@
 
     <div
       bind:this={newTagRowElement}
-      class="grid min-h-7 grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-1.5 px-1 py-0.5"
+      class="grid min-h-(--control-height) grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-1.5 px-1 py-0.5"
     >
       <ProjectSettingsNewRowDragHandle showIcon={tags.length === 0} />
       <EventColorPicker
@@ -118,8 +118,8 @@
         color={newTagColor}
         {theme}
         ariaLabel={t("projects.settings.selectNewTagColor")}
-        class="h-7 w-7 justify-center self-center"
-        buttonClass="size-6 rounded-md"
+        class="size-(--control-height) justify-center self-center"
+        buttonClass="size-[calc(var(--control-height)-0.25rem)] rounded-md"
         onSelect={setNewTagColor}
       />
       <input
@@ -136,7 +136,7 @@
       />
       <button
         type="button"
-        class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
         aria-label={t("projects.settings.addTag")}
         title={t("projects.settings.addTag")}
         onclick={() => { void submitTag(); }}

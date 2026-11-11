@@ -189,7 +189,7 @@
         onclick={onCancel}
         aria-label={t("settings.distractions.appSelector.close")}
         data-app-tooltip-disabled="true"
-        class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       >
         <X size={15} strokeWidth={2} />
       </button>
@@ -211,7 +211,7 @@
           onclick={loadApps}
           disabled={loading}
           aria-label={t("settings.distractions.appSelector.refresh")}
-          class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
         >
           {#if loading}
             <LoaderCircle size={14} strokeWidth={2.25} class="animate-spin" />

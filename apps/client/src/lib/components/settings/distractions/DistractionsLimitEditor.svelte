@@ -697,7 +697,7 @@
                   class="field h-8 min-w-0 flex-1 px-2.5 text-[0.8rem] text-foreground"
                   placeholder={t("settings.distractions.limits.editor.sourceNamePlaceholder")}
                 />
-                <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-transparent">
+                <div class="flex size-8 min-h-(--control-height) min-w-(--control-height) shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-transparent">
                   <EventColorPicker
                     color={entry.color ?? undefined}
                     theme={theme.current}
@@ -710,7 +710,7 @@
                   onclick={() => requestRemoveEntry(entry)}
                   aria-label={t("settings.distractions.limits.editor.removeLinkedSourceRow")}
                   data-app-tooltip-disabled="true"
-                  class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-transparent"
+                  class="flex size-8 min-h-(--control-height) min-w-(--control-height) shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-transparent"
                 >
                   <Trash2 size={13} strokeWidth={2.25} />
                 </button>
@@ -783,7 +783,7 @@
           <button
             type="button"
             onclick={addEntry}
-            class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+            class="flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent"
           >
             <Plus size={13} strokeWidth={2.25} />
             <span>{t("settings.distractions.limits.editor.addSource")}</span>
@@ -806,14 +806,14 @@
         <button
           type="button"
           onclick={onCancel}
-          class="flex h-8 items-center justify-center rounded-md border border-border bg-card px-3 text-[0.8rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+          class="flex h-8 min-h-(--control-height) items-center justify-center rounded-md border border-border bg-card px-3 text-[0.8rem] text-foreground transition-colors hover:bg-accent dark:bg-transparent"
         >
           {t("common.cancel")}
         </button>
         <button
           type="button"
           onclick={saveLimit}
-          class="flex h-8 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          class="flex h-8 min-h-(--control-height) items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[0.8rem] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
         >
           <Save size={13} strokeWidth={2.25} />
           <span>{t("common.save")}</span>

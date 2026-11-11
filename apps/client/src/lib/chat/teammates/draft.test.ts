@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  TEAMMATE_INSTRUCTIONS_MAX_BYTES,
   teammateExecutionSummary,
+  teammateInstructionsTooLong,
   teammateProfileDraftSnapshot,
   type TeammateProfileDraftSnapshotInput,
 } from "./draft";
@@ -71,4 +73,17 @@ describe("teammate draft snapshots", () => {
     ], null)).toEqual({ effort: null, speed: "standard" });
   });
 
+});
+
+describe("teammate instruction bound", () => {
+  it("counts UTF-8 bytes of the trimmed text, not characters", () => {
+    const ascii = "a".repeat(TEAMMATE_INSTRUCTIONS_MAX_BYTES);
+    expect(teammateInstructionsTooLong(ascii)).toBe(false);
+    expect(teammateInstructionsTooLong(`  ${ascii}\n`)).toBe(false);
+    expect(teammateInstructionsTooLong(`${ascii}a`)).toBe(true);
+    const multibyte = "é".repeat(TEAMMATE_INSTRUCTIONS_MAX_BYTES / 2);
+    expect(teammateInstructionsTooLong(multibyte)).toBe(false);
+    expect(teammateInstructionsTooLong(`${multibyte}é`)).toBe(true);
+    expect(teammateInstructionsTooLong("😀".repeat(TEAMMATE_INSTRUCTIONS_MAX_BYTES / 4 + 1))).toBe(true);
+  });
 });

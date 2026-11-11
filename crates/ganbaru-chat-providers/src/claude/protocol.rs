@@ -10,7 +10,6 @@ use std::path::Path;
 
 pub const MINIMUM_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 170);
 const MAX_PROMPT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_DEVELOPER_INSTRUCTIONS_BYTES: usize = 64 * 1024;
 const MAX_TEXT_ATTACHMENT_BYTES: usize = 128 * 1024;
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_MODEL_ID_BYTES: usize = 256;

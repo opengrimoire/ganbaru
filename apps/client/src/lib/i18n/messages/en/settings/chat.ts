@@ -39,6 +39,7 @@ export const chatSettings = {
     rolePlaceholder: "What does this agent do?",
     instructions: "Instructions",
     instructionsPlaceholder: "Add working style, constraints, and project-specific guidance.",
+    instructionsTooLong: "Instructions are too long",
     provider: "Provider instance",
     model: "Model",
     effort: "Reasoning",

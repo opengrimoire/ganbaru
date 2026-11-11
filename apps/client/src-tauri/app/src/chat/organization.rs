@@ -133,7 +133,11 @@ pub async fn chat_create_teammate(
 ) -> ChatResult<ChatAiTeammateRead> {
     let display_name = validate_display_name(&request.display_name)?;
     let role = validate_teammate_role(&request.role)?;
-    validate_profile_text(&request.instructions, 65_536, "instructions")?;
+    validate_profile_text(
+        &request.instructions,
+        dispatch::MAX_TEAMMATE_INSTRUCTIONS_BYTES,
+        "instructions",
+    )?;
     validate_policy(&app, &request.policy)?;
     let avatar_data = json_object(&request.avatar, "avatar")?;
     let home_device_id = crate::sync::devices::stable_device_id(&app)

@@ -974,6 +974,26 @@ pub(super) async fn deliver_assignment_input(
     Ok(())
 }
 
+/// Separates the context package format from the teammate's own instructions.
+const ASSIGNMENT_INSTRUCTIONS_SEPARATOR: &str = "\n\n";
+
+/// Room in the provider developer instruction cap kept for the framing that dispatch puts
+/// before a teammate's instructions. It is fixed rather than measured so the teammate limit,
+/// which the settings editor mirrors, stays put when the format description grows.
+const ASSIGNMENT_INSTRUCTIONS_FRAMING_RESERVE_BYTES: usize = 4 * 1024;
+
+const _: () = assert!(
+    super::context::CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS.len()
+        + ASSIGNMENT_INSTRUCTIONS_SEPARATOR.len()
+        <= ASSIGNMENT_INSTRUCTIONS_FRAMING_RESERVE_BYTES,
+    "the assignment instruction framing must fit its reserve"
+);
+
+/// Largest teammate instructions, in UTF-8 bytes, that still fit the provider developer
+/// instruction cap once dispatch adds the context package framing.
+pub(super) const MAX_TEAMMATE_INSTRUCTIONS_BYTES: usize =
+    MAX_DEVELOPER_INSTRUCTIONS_BYTES - ASSIGNMENT_INSTRUCTIONS_FRAMING_RESERVE_BYTES;
+
 /// Builds the developer instructions of an assignment turn: the context package format first,
 /// then the teammate's own instructions when it has any.
 fn assignment_developer_instructions(teammate_instructions: &str) -> String {
@@ -981,7 +1001,7 @@ fn assignment_developer_instructions(teammate_instructions: &str) -> String {
     if teammate_instructions.trim().is_empty() {
         format.to_string()
     } else {
-        format!("{format}\n\n{teammate_instructions}")
+        format!("{format}{ASSIGNMENT_INSTRUCTIONS_SEPARATOR}{teammate_instructions}")
     }
 }
 
@@ -1011,8 +1031,9 @@ fn assignment_turn_modes(
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatApprovalPolicy, ChatRuntimeApprovalPolicy, InteractionMode, SafetyMode,
-        assignment_developer_instructions, assignment_turn_modes,
+        ChatApprovalPolicy, ChatErrorCode, ChatRuntimeApprovalPolicy, InteractionMode,
+        MAX_DEVELOPER_INSTRUCTIONS_BYTES, SafetyMode, assignment_developer_instructions,
+        assignment_turn_modes,
     };
 
     #[test]
@@ -1089,5 +1110,41 @@ mod tests {
             assignment_developer_instructions("Review carefully."),
             format!("{format}\n\nReview carefully.")
         );
+    }
+
+    #[test]
+    fn the_longest_valid_teammate_instructions_fit_the_provider_cap_after_framing() {
+        use super::super::common::validate_profile_text;
+        use super::MAX_TEAMMATE_INSTRUCTIONS_BYTES;
+        let ascii = "a".repeat(MAX_TEAMMATE_INSTRUCTIONS_BYTES);
+        let multibyte = "é".repeat(MAX_TEAMMATE_INSTRUCTIONS_BYTES / 'é'.len_utf8());
+        for instructions in [&ascii, &multibyte] {
+            validate_profile_text(
+                instructions,
+                MAX_TEAMMATE_INSTRUCTIONS_BYTES,
+                "instructions",
+            )
+            .unwrap();
+            assert!(
+                assignment_developer_instructions(instructions).len()
+                    <= MAX_DEVELOPER_INSTRUCTIONS_BYTES
+            );
+        }
+        let over = format!("{multibyte}é");
+        let refused = validate_profile_text(&over, MAX_TEAMMATE_INSTRUCTIONS_BYTES, "instructions")
+            .expect_err("one character over the byte bound is refused");
+        assert_eq!(refused.code, ChatErrorCode::Validation);
+    }
+
+    #[test]
+    fn the_settings_editor_mirrors_the_teammate_instruction_bound() {
+        let editor = include_str!("../../../../../src/lib/chat/teammates/draft.ts");
+        let mirrored = editor
+            .lines()
+            .find_map(|line| line.strip_prefix("export const TEAMMATE_INSTRUCTIONS_MAX_BYTES = "))
+            .and_then(|value| value.strip_suffix(';'))
+            .map(|value| value.replace('_', ""))
+            .and_then(|value| value.parse::<usize>().ok());
+        assert_eq!(mirrored, Some(super::MAX_TEAMMATE_INSTRUCTIONS_BYTES));
     }
 }

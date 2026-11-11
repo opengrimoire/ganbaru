@@ -80,3 +80,19 @@ export function teammateProfileDraftSnapshot(
     speed: input.speed,
   });
 }
+
+/**
+ * Largest teammate instructions, in UTF-8 bytes, that the backend accepts. Mirrors the Rust
+ * bound, which keeps room in the provider developer instruction cap for the context package
+ * framing that dispatch adds before the instructions.
+ */
+export const TEAMMATE_INSTRUCTIONS_MAX_BYTES = 61_440;
+
+const utf8Encoder = new TextEncoder();
+
+/**
+ * Whether `instructions`, trimmed as saving trims them, pass the backend byte bound.
+ */
+export function teammateInstructionsTooLong(instructions: string): boolean {
+  return utf8Encoder.encode(instructions.trim()).length > TEAMMATE_INSTRUCTIONS_MAX_BYTES;
+}

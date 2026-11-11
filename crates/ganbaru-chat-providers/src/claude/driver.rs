@@ -1,6 +1,7 @@
 //! Claude Code provider driver over the native SDK JSONL protocol.
 
 use super::home::*;
+use super::instructions::{ClaudeSessionInstructions, session_instructions};
 use super::normalizer::{ClaudeEventNormalizer, ClaudeRouteState};
 use super::organizational::{
     ClaudeOrganizationalDeadline, organizational_route, verify_mcp_status,
@@ -62,6 +63,9 @@ pub(super) struct ClaudeLiveSession {
     pub(super) organizational: bool,
     /// The gate 2 deadline an organizational session arms with each user message.
     pub(super) organizational_deadline: Option<ClaudeOrganizationalDeadline>,
+    /// The instructions in the session system prompt, with the file that carries them when
+    /// they are too large to pass inline. Turns compare their instructions to its digest.
+    pub(super) instructions: Option<ClaudeSessionInstructions>,
 }
 
 impl Drop for ClaudeLiveSession {
@@ -146,6 +150,7 @@ impl ClaudeProviderDriver {
                     project_configuration: ProjectConfigurationAccess::Restricted,
                     internal_mcp: None,
                     organizational: None,
+                    system_prompt: None,
                 },
             )
             .await?;
@@ -256,6 +261,9 @@ impl ClaudeProviderDriver {
         let model = input.model_id().cloned();
         let effort = selected_effort(input.model_options())?;
         let fast_mode = selected_fast_mode(input.model_options())?;
+        let instructions = session_instructions(input.developer_instructions())?
+            .map(ClaudeSessionInstructions::prepare)
+            .transpose()?;
         let fresh_uuid =
             matches!(&input, SessionOpenInput::Fresh(_)).then_some(cursor.session_uuid.as_str());
         let resume_uuid =
@@ -274,6 +282,9 @@ impl ClaudeProviderDriver {
                     project_configuration: input.workspace().project_configuration,
                     internal_mcp: None,
                     organizational: None,
+                    system_prompt: instructions
+                        .as_ref()
+                        .map(ClaudeSessionInstructions::argument),
                 },
             )
             .await?;
@@ -400,6 +411,7 @@ impl ClaudeProviderDriver {
             effective_fast_mode: fast_mode,
             organizational,
             organizational_deadline,
+            instructions,
         });
         Ok(ProviderSessionSnapshot {
             session_id,

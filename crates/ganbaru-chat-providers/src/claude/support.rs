@@ -71,6 +71,14 @@ impl SessionOpenInput {
         matches!(self, Self::Resume(_))
     }
 
+    /// The instructions the session places in its system prompt, as the request carries them.
+    pub(super) fn developer_instructions(&self) -> Option<&str> {
+        match self {
+            Self::Fresh(request) => request.developer_instructions.as_deref(),
+            Self::Resume(request) => request.developer_instructions.as_deref(),
+        }
+    }
+
     pub(super) fn resume_cursor(
         &self,
         instance_id: &ProviderInstanceId,

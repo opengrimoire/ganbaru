@@ -15,13 +15,13 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
-const SERVER_NAME: &str = "ganbaru-chat";
+pub(super) const SERVER_NAME: &str = "ganbaru-chat";
 const SESSION_UUID: &str = "11111111-1111-4111-8111-111111111111";
-const DRIVER_EOF: &str = "driver-eof";
+pub(super) const DRIVER_EOF: &str = "driver-eof";
 
 /// The test's view of a scripted Claude process: every line the driver writes, and a queue
 /// of frames to send back. A line `{"type": "driver-eof"}` marks the driver closing stdin.
-struct ScriptedClaude {
+pub(super) struct ScriptedClaude {
     written: mpsc::UnboundedReceiver<Value>,
     frames: mpsc::UnboundedSender<Value>,
 }
@@ -35,7 +35,7 @@ impl ScriptedClaude {
     }
 
     /// Waits for the next written line of `kind`, collecting every line seen on the way.
-    async fn wait_for(&mut self, kind: &str, seen: &mut Vec<Value>) -> Value {
+    pub(super) async fn wait_for(&mut self, kind: &str, seen: &mut Vec<Value>) -> Value {
         loop {
             let line = self.next_written().await;
             seen.push(line.clone());
@@ -129,7 +129,7 @@ fn organizational_configuration(home: &Path, organizational: bool) -> ProviderIn
     configuration
 }
 
-fn internal_status(status: &str) -> Value {
+pub(super) fn internal_status(status: &str) -> Value {
     json!({ "mcpServers": [{ "name": SERVER_NAME, "status": status }] })
 }
 
@@ -174,7 +174,7 @@ fn can_use_tool(request_id: &str) -> Value {
     })
 }
 
-struct GateHarness {
+pub(super) struct GateHarness {
     driver: ClaudeProviderDriver,
     claude: Option<ScriptedClaude>,
     sink: Arc<RecordingSink>,
@@ -183,7 +183,7 @@ struct GateHarness {
 }
 
 impl GateHarness {
-    fn new(organizational: bool, mcp_status: Value) -> Self {
+    pub(super) fn new(organizational: bool, mcp_status: Value) -> Self {
         let home = TestDirectory::new("gate-home");
         let workspace = TestDirectory::new("gate-workspace");
         let mut driver =
@@ -209,33 +209,40 @@ impl GateHarness {
         }
     }
 
-    fn claude(&mut self) -> &mut ScriptedClaude {
+    pub(super) fn claude(&mut self) -> &mut ScriptedClaude {
         self.claude.as_mut().unwrap()
     }
 
     async fn start(&mut self) -> ChatResult<ProviderSessionSnapshot> {
+        let request = self.start_request();
+        self.start_with(request).await
+    }
+
+    /// The fresh session request every harness session starts from.
+    pub(super) fn start_request(&self) -> StartSessionRequest {
+        StartSessionRequest {
+            thread_id: ChatThreadId::new("thread-1".to_string()).unwrap(),
+            workspace: VerifiedWorkspaceContext {
+                working_folder_id: ProjectWorkingFolderId::new("workspace-1".to_string()).unwrap(),
+                canonical_path: self.workspace.path().to_string_lossy().into_owned(),
+                repository_kind: RepositoryKind::None,
+                repository_identity: None,
+                project_configuration: ProjectConfigurationAccess::Restricted,
+            },
+            provider_instance_id: ProviderInstanceId::new("claude-instance-1".to_string()).unwrap(),
+            modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
+            model_id: None,
+            model_options: Vec::new(),
+            developer_instructions: None,
+        }
+    }
+
+    pub(super) async fn start_with(
+        &mut self,
+        request: StartSessionRequest,
+    ) -> ChatResult<ProviderSessionSnapshot> {
         self.driver
-            .start_session(
-                StartSessionRequest {
-                    thread_id: ChatThreadId::new("thread-1".to_string()).unwrap(),
-                    workspace: VerifiedWorkspaceContext {
-                        working_folder_id: ProjectWorkingFolderId::new("workspace-1".to_string())
-                            .unwrap(),
-                        canonical_path: self.workspace.path().to_string_lossy().into_owned(),
-                        repository_kind: RepositoryKind::None,
-                        repository_identity: None,
-                        project_configuration: ProjectConfigurationAccess::Restricted,
-                    },
-                    provider_instance_id: ProviderInstanceId::new("claude-instance-1".to_string())
-                        .unwrap(),
-                    modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
-                    model_id: None,
-                    model_options: Vec::new(),
-                    developer_instructions: None,
-                },
-                self.sink.clone(),
-                &context("start"),
-            )
+            .start_session(request, self.sink.clone(), &context("start"))
             .await
     }
 
@@ -244,30 +251,38 @@ impl GateHarness {
         session_id: &ProviderSessionId,
         turn: &str,
     ) -> ChatResult<TurnDispatchReceipt> {
-        self.driver
-            .send_turn(
-                SendTurnRequest {
-                    command: ChatCommandContext {
-                        client_command_id: ChatCommandId::new(format!("command-{turn}")).unwrap(),
-                        expected_thread_revision: None,
-                    },
-                    session_id: session_id.clone(),
-                    turn_id: ChatTurnId::new(turn.to_string()).unwrap(),
-                    prompt: "Work on the notes".to_string(),
-                    attachments: Vec::new(),
-                    mentions: Vec::new(),
-                    model_id: None,
-                    model_options: Vec::new(),
-                    modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
-                    developer_instructions: None,
-                },
-                &context(turn),
-            )
-            .await
+        self.send(turn_request(session_id, turn)).await
     }
 
-    fn events(&self) -> Vec<CanonicalRuntimeEvent> {
+    pub(super) async fn send(
+        &mut self,
+        request: SendTurnRequest,
+    ) -> ChatResult<TurnDispatchReceipt> {
+        let context = context(request.turn_id.as_str());
+        self.driver.send_turn(request, &context).await
+    }
+
+    pub(super) fn events(&self) -> Vec<CanonicalRuntimeEvent> {
         self.sink.events()
+    }
+}
+
+/// A plain Build turn on `session_id` with no instructions or model options.
+pub(super) fn turn_request(session_id: &ProviderSessionId, turn: &str) -> SendTurnRequest {
+    SendTurnRequest {
+        command: ChatCommandContext {
+            client_command_id: ChatCommandId::new(format!("command-{turn}")).unwrap(),
+            expected_thread_revision: None,
+        },
+        session_id: session_id.clone(),
+        turn_id: ChatTurnId::new(turn.to_string()).unwrap(),
+        prompt: "Work on the notes".to_string(),
+        attachments: Vec::new(),
+        mentions: Vec::new(),
+        model_id: None,
+        model_options: Vec::new(),
+        modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
+        developer_instructions: None,
     }
 }
 
@@ -299,7 +314,7 @@ fn assert_failed_closed(events: &[CanonicalRuntimeEvent]) {
     )));
 }
 
-fn written_subtypes(lines: &[Value]) -> Vec<String> {
+pub(super) fn written_subtypes(lines: &[Value]) -> Vec<String> {
     lines
         .iter()
         .filter_map(|line| line.pointer("/request/subtype").and_then(Value::as_str))

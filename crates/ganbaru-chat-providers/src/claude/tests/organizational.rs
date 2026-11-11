@@ -33,6 +33,7 @@ fn options(modes: TurnModeSnapshot, organizational: bool) -> ClaudeLaunchOptions
         organizational: organizational.then_some(ClaudeOrganizationalLaunch {
             internal_server_name: SERVER_NAME,
         }),
+        system_prompt: None,
     }
 }
 

@@ -1,5 +1,6 @@
 //! Typed builders and bounded decoders for Claude Code's SDK JSONL protocol.
 
+use super::instructions::session_instructions;
 use crate::models::*;
 use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
@@ -10,13 +11,23 @@ use std::path::Path;
 
 pub const MINIMUM_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 170);
 const MAX_PROMPT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_DEVELOPER_INSTRUCTIONS_BYTES: usize = 64 * 1024;
 const MAX_TEXT_ATTACHMENT_BYTES: usize = 128 * 1024;
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_MODEL_OPTIONS: usize = 32;
 const MAX_LAUNCH_ARGUMENTS: usize = 128;
 const MAX_LAUNCH_ARGUMENT_BYTES: usize = 16 * 1024;
+/// Largest instructions passed inline as one launch argument; larger ones use the file form.
+pub const MAX_INLINE_SYSTEM_PROMPT_BYTES: usize = MAX_LAUNCH_ARGUMENT_BYTES;
+
+/// How session instructions reach the Claude system prompt at launch.
+#[derive(Clone, Copy, Debug)]
+pub enum ClaudeSystemPromptArgument<'a> {
+    /// The text itself, passed with `--append-system-prompt`.
+    Inline(&'a str),
+    /// An owner-only file, passed with `--append-system-prompt-file`.
+    File(&'a Path),
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ClaudeVersion {
@@ -191,6 +202,8 @@ pub struct ClaudeLaunchOptions<'a> {
     pub internal_mcp: Option<ClaudeInternalMcpLaunch<'a>>,
     /// Set only when the internal server carries organizational authority.
     pub organizational: Option<ClaudeOrganizationalLaunch<'a>>,
+    /// Session instructions appended to the system prompt.
+    pub system_prompt: Option<ClaudeSystemPromptArgument<'a>>,
 }
 
 /// The internal MCP server a Claude launch connects to.
@@ -339,6 +352,11 @@ pub fn launch_arguments(
             "--strict-mcp-config".to_string(),
             "--mcp-config".to_string(),
             internal_mcp_config_argument(server.name, server.url)?,
+        ]);
+        if let Some(system_prompt) = options.system_prompt {
+            arguments.extend(system_prompt_arguments(system_prompt)?);
+        }
+        arguments.extend([
             "--disallowed-tools".to_string(),
             ORGANIZATIONAL_DISALLOWED_TOOLS.join(","),
         ]);
@@ -349,12 +367,59 @@ pub fn launch_arguments(
         arguments.push("--setting-sources".to_string());
         arguments.push("user".to_string());
     }
+    if let Some(system_prompt) = options.system_prompt {
+        if configured
+            .iter()
+            .any(|argument| names_flag(argument, SYSTEM_PROMPT_ARGUMENTS))
+        {
+            return Err(ChatError::validation(
+                "launchArguments",
+                "Claude launch arguments conflict with the session instructions",
+            ));
+        }
+        arguments.extend(system_prompt_arguments(system_prompt)?);
+    }
     arguments.extend(configured.iter().cloned());
     if let Some(server) = options.internal_mcp {
         arguments.push("--mcp-config".to_string());
         arguments.push(internal_mcp_config_argument(server.name, server.url)?);
     }
     Ok(arguments)
+}
+
+/// Configured arguments that would replace or add to the system prompt of a session that
+/// carries instructions.
+const SYSTEM_PROMPT_ARGUMENTS: &[&str] = &[
+    "--append-system-prompt",
+    "--append-system-prompt-file",
+    "--system-prompt",
+    "--system-prompt-file",
+];
+
+/// The flag and value that append session instructions to the system prompt. Text that starts
+/// with `--` is still read as the value of the spaced form.
+fn system_prompt_arguments(argument: ClaudeSystemPromptArgument<'_>) -> ChatResult<[String; 2]> {
+    match argument {
+        ClaudeSystemPromptArgument::Inline(text) => {
+            if text.len() > MAX_INLINE_SYSTEM_PROMPT_BYTES || text.contains('\0') {
+                return Err(ChatError::validation(
+                    "developerInstructions",
+                    "Claude developer instructions exceed the supported limit",
+                ));
+            }
+            Ok(["--append-system-prompt".to_string(), text.to_string()])
+        }
+        ClaudeSystemPromptArgument::File(path) => {
+            let path = path.to_str().ok_or_else(|| {
+                ChatError::new(
+                    ChatErrorCode::ConfigurationInvalid,
+                    "Claude instructions file is unavailable",
+                    true,
+                )
+            })?;
+            Ok(["--append-system-prompt-file".to_string(), path.to_string()])
+        }
+    }
 }
 
 /// Builds the `--mcp-config` JSON for the internal server. The header names the token
@@ -467,16 +532,7 @@ pub fn build_user_message(request: &SendTurnRequest) -> ChatResult<Value> {
             "Claude prompt exceeds the supported limit",
         ));
     }
-    if request
-        .developer_instructions
-        .as_deref()
-        .is_some_and(|value| value.len() > MAX_DEVELOPER_INSTRUCTIONS_BYTES || value.contains('\0'))
-    {
-        return Err(ChatError::validation(
-            "developerInstructions",
-            "Claude developer instructions exceed the supported limit",
-        ));
-    }
+    session_instructions(request.developer_instructions.as_deref())?;
     validate_model_options(&request.model_options)?;
     let mut content = Vec::new();
     let mut prompt = request.prompt.clone();
@@ -489,10 +545,6 @@ pub fn build_user_message(request: &SendTurnRequest) -> ChatResult<Value> {
             .join("\n");
         prompt.push_str("\n\nReferenced workspace paths:\n");
         prompt.push_str(&paths);
-    }
-    if let Some(instructions) = request.developer_instructions.as_deref() {
-        prompt.push_str("\n\nAdditional Ganbaru instructions:\n");
-        prompt.push_str(instructions);
     }
     if !prompt.is_empty() {
         content.push(json!({ "type": "text", "text": prompt }));

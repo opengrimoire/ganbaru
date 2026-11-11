@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 mod approvals;
 mod init_gate;
+mod instructions;
 mod limits;
 mod organizational;
 mod streams;
@@ -397,6 +398,7 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             project_configuration: ProjectConfigurationAccess::Trusted,
             internal_mcp: None,
             organizational: None,
+            system_prompt: None,
         },
     )
     .unwrap();
@@ -436,6 +438,7 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             project_configuration: ProjectConfigurationAccess::Trusted,
             internal_mcp: None,
             organizational: None,
+            system_prompt: None,
         },
     )
     .unwrap();
@@ -459,6 +462,7 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             project_configuration: ProjectConfigurationAccess::Trusted,
             internal_mcp: None,
             organizational: None,
+            system_prompt: None,
         },
     )
     .unwrap();
@@ -496,6 +500,7 @@ fn claude_launch_arguments_restrict_project_setting_sources() {
                 project_configuration,
                 internal_mcp: None,
                 organizational: None,
+                system_prompt: None,
             },
         )
         .unwrap()
@@ -556,6 +561,7 @@ fn protected_transport_arguments_cannot_be_overridden() {
                 project_configuration: ProjectConfigurationAccess::Trusted,
                 internal_mcp: None,
                 organizational: None,
+                system_prompt: None,
             },
         )
         .unwrap_err();

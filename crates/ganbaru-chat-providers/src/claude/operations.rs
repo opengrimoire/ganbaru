@@ -2,6 +2,7 @@
 
 use super::driver::*;
 use super::home::resolve_claude_home;
+use super::instructions::{ClaudeSessionInstructions, check_turn_instructions};
 use super::normalizer::ClaudeRouteState;
 use super::protocol::*;
 use super::session::*;
@@ -203,6 +204,12 @@ impl ProviderDriver for ClaudeProviderDriver {
             let requested_effort = selected_effort(&request.model_options)?;
             let requested_fast_mode = selected_fast_mode(&request.model_options)?;
             let live = self.live_mut(&request.session_id)?;
+            check_turn_instructions(
+                live.instructions
+                    .as_ref()
+                    .map(ClaudeSessionInstructions::digest),
+                request.developer_instructions.as_deref(),
+            )?;
             if requested_effort.is_some() && requested_effort != live.effective_effort {
                 return Err(ChatError::unsupported(
                     "Claude effort can only be changed when starting a session",

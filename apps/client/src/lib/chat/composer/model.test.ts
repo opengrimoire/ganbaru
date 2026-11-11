@@ -305,9 +305,22 @@ describe("Chat composer model", () => {
       providerData: {
         schemaVersion: 1,
         value: {
-          limitId: "codex",
-          primary: { usedPercent: 31, windowDurationMins: 300, resetsAt: 1_730_948_100 },
-          secondary: { usedPercent: 108, windowDurationMins: 10_080, resetsAt: 1_731_000_000 },
+          rateLimitsByLimitId: {
+            codex: {
+              limitId: "codex",
+              limitName: null,
+              primary: { usedPercent: 31, windowDurationMins: 300, resetsAt: 1_730_948_100 },
+              secondary: { usedPercent: 108, windowDurationMins: 10_080, resetsAt: 1_731_000_000 },
+              rateLimitReachedType: null,
+            },
+            codex_mini: {
+              limitId: "codex_mini",
+              limitName: "GPT mini",
+              primary: { usedPercent: 100, windowDurationMins: null, resetsAt: null },
+              secondary: null,
+              rateLimitReachedType: "rate_limit_reached",
+            },
+          },
         },
       },
     })).toEqual([
@@ -325,7 +338,20 @@ describe("Chat composer model", () => {
         windowDurationMinutes: 10_080,
         resetsAtSeconds: 1_731_000_000,
       },
+      {
+        id: "codex_mini:primary",
+        label: "GPT mini",
+        usedPercent: 100,
+        windowDurationMinutes: null,
+        resetsAtSeconds: null,
+      },
     ]);
+    expect(composerRateLimitWindows({
+      limited: true,
+      resetsAt: null,
+      detail: null,
+      providerData: { schemaVersion: 1, value: { primary: { usedPercent: 50 } } },
+    })).toEqual([]);
   });
 
   it("implements send keys and image limits", () => {

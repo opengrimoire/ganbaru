@@ -194,6 +194,7 @@ export function parseThreadUsage(value: unknown, label: string): ThreadUsageUpda
     inputTokens: readNullable(record.inputTokens, `${label}.inputTokens`, readNonNegativeSafeInteger),
     outputTokens: readNullable(record.outputTokens, `${label}.outputTokens`, readNonNegativeSafeInteger),
     cachedInputTokens: readNullable(record.cachedInputTokens, `${label}.cachedInputTokens`, readNonNegativeSafeInteger),
+    cacheWriteInputTokens: readNullable(record.cacheWriteInputTokens ?? null, `${label}.cacheWriteInputTokens`, readNonNegativeSafeInteger),
     contextTokens: readNullable(record.contextTokens, `${label}.contextTokens`, readNonNegativeSafeInteger),
     contextLimit: readNullable(record.contextLimit, `${label}.contextLimit`, readNonNegativeSafeInteger),
     cost: readNullable(record.cost, `${label}.cost`, parseProviderCost),

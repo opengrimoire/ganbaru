@@ -159,6 +159,9 @@ pub struct ThreadUsageUpdatedEvent {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cached_input_tokens: Option<u64>,
+    /// Input tokens written to the provider's prompt cache, when the provider reports them.
+    #[serde(default)]
+    pub cache_write_input_tokens: Option<u64>,
     pub context_tokens: Option<u64>,
     pub context_limit: Option<u64>,
     pub cost: Option<ProviderAttributedCost>,

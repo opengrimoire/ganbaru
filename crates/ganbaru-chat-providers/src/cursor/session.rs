@@ -37,6 +37,7 @@ use tokio::task::JoinHandle;
 
 mod callbacks;
 mod configuration;
+mod load_replay;
 mod router;
 
 #[cfg(test)]
@@ -50,6 +51,7 @@ pub use configuration::{
     AcpRequestedConfiguration, AcpSessionInitialization, apply_provider_configuration,
     initialize_provider_session,
 };
+pub use load_replay::AcpInboundQueue;
 pub use router::{restore_pending, spawn_cursor_router, take_pending};
 
 const MAX_ACP_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -69,7 +71,7 @@ pub struct AcpStartedSession {
 
 pub struct CursorRouterResources {
     pub client: AcpRpcClient,
-    pub inbound: mpsc::Receiver<AcpInboundMessage>,
+    pub inbound: AcpInboundQueue,
     pub normalizer: Arc<CursorEventNormalizer>,
     pub route: Arc<Mutex<CursorRouteState>>,
     pub pending: PendingCursorRequests,

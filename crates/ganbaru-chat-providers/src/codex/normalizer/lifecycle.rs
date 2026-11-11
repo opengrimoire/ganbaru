@@ -129,11 +129,15 @@ impl CodexEventNormalizer {
             .get("total")
             .and_then(Value::as_object)
             .ok_or_else(|| protocol_error("thread/tokenUsage/updated.total"))?;
+        // `total` sums the whole thread, which budgets count; `last` covers the newest model
+        // request, whose size is the current context fill.
+        let last = usage.get("last").and_then(Value::as_object);
         let event = ThreadUsageUpdatedEvent {
             input_tokens: unsigned(total, "inputTokens"),
             output_tokens: unsigned(total, "outputTokens"),
             cached_input_tokens: unsigned(total, "cachedInputTokens"),
-            context_tokens: unsigned(total, "totalTokens"),
+            cache_write_input_tokens: unsigned(total, "cacheWriteInputTokens"),
+            context_tokens: last.and_then(|last| unsigned(last, "totalTokens")),
             context_limit: unsigned(usage, "modelContextWindow"),
             cost: None,
         };

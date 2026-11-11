@@ -251,17 +251,19 @@ export interface ComposerRateLimitWindow {
   resetsAtSeconds: number | null;
 }
 
+/**
+ * Lists the usage windows of every limit in a provider's `rateLimitsByLimitId` status.
+ *
+ * Windows without a readable usage percentage are skipped and percentages are clamped to 0 to 100.
+ */
 export function composerRateLimitWindows(
   status: RateLimitStatusEvent | null,
 ): ComposerRateLimitWindow[] {
   const root = readJsonRecord(status?.providerData?.value);
-  if (!root) return [];
-  const bucketRecords = readJsonRecord(root.rateLimitsByLimitId);
-  const buckets: [string, unknown][] = bucketRecords
-    ? Object.entries(bucketRecords)
-    : [[readJsonString(root.limitId) ?? "rate-limit", root]];
+  const bucketRecords = readJsonRecord(root?.rateLimitsByLimitId);
+  if (!bucketRecords) return [];
   const windows: ComposerRateLimitWindow[] = [];
-  for (const [bucketId, bucketValue] of buckets) {
+  for (const [bucketId, bucketValue] of Object.entries(bucketRecords)) {
     const bucket = readJsonRecord(bucketValue);
     if (!bucket) continue;
     const bucketLabel = readJsonString(bucket.limitName) ?? readJsonString(bucket.limitId) ?? bucketId;

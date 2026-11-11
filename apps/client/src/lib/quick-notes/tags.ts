@@ -93,7 +93,7 @@ function rowWidth(widths: readonly number[], gap: number): number {
  * chip shows its full color; the others show a faint tint of theirs, so the selection reads without a ring.
  */
 export function quickNoteChipClass(mobileLayout: boolean, selected: boolean): string {
-  const size = mobileLayout ? "min-h-12 max-w-40 rounded-xl px-4 text-sm" : "h-7 max-w-32 rounded-md px-2.5 text-xs";
+  const size = mobileLayout ? "relative h-9 max-w-40 rounded-lg px-3.5 text-sm after:absolute after:inset-x-0 after:-inset-y-1" : "h-7 max-w-32 rounded-md px-2.5 text-xs";
   const tone = selected
     ? "bg-(--tag-bg) text-(--tag-fg) hover:brightness-95"
     : "bg-(--tag-bg)/30 text-foreground hover:bg-(--tag-bg)/50";

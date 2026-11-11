@@ -162,7 +162,7 @@
 
 <div
   bind:this={row}
-  class={mobileLayout ? "relative flex min-h-12 w-full min-w-0 items-center gap-1" : "relative flex min-w-0 flex-1 items-center gap-1"}
+  class={mobileLayout ? "relative flex min-h-11 w-full min-w-0 items-center gap-1" : "relative flex min-w-0 flex-1 items-center gap-1"}
   role="group"
   aria-label={t("quickNotes.title")}
 >

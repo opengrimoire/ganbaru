@@ -48,7 +48,7 @@
   bind:this={form}
   class={cn(
     "flex shrink-0 items-center gap-1",
-    mobileLayout ? "min-h-12 max-w-40 rounded-xl px-4 text-sm" : "h-7 max-w-32 rounded-md px-2.5 text-xs",
+    mobileLayout ? "h-9 max-w-40 rounded-lg px-3.5 text-sm" : "h-7 max-w-32 rounded-md px-2.5 text-xs",
     error ? "bg-destructive/15 text-destructive" : !colored && "bg-accent/60 text-foreground",
   )}
   style={colored && colors ? `background-color: ${colors.bg}; color: ${colors.text};` : undefined}

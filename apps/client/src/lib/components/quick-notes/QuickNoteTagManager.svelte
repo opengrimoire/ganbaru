@@ -123,7 +123,7 @@
     <button
       bind:this={createButton}
       type="button"
-      class={mobileLayout ? "flex min-h-12 shrink-0 items-center gap-1 rounded-xl px-4 text-sm text-muted-foreground transition-colors active:bg-accent active:text-foreground" : "flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"}
+      class={mobileLayout ? "relative flex h-9 shrink-0 items-center gap-1 rounded-lg px-3.5 text-sm after:absolute after:inset-x-0 after:-inset-y-1 text-muted-foreground transition-colors active:bg-accent active:text-foreground" : "flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"}
       aria-label={t("quickNotes.tag.add")}
       onclick={() => void begin()}
     >

@@ -207,7 +207,7 @@ export class ChatStore {
       selectedExecutionEnvironmentId: () => this.selectedExecutionEnvironmentId,
       setSelectedThreadId: (threadId) => { this.selectedThreadId = threadId; },
       upsertThread: (thread) => this.threadCollectionController.upsert(thread),
-      loadTimeline: (threadId) => this.loadTimeline(threadId),
+      refreshTimeline: (threadId) => this.timelineController.refreshLatest(threadId),
       clearTimeline: () => this.timelineController.clear(),
       setSettings: (settings) => { this.settings = settings; },
       onComposerChanged: () => this.composerDefaultsCoordinator.schedule(),
@@ -1158,7 +1158,7 @@ export class ChatStore {
     if (channelId) await this.loadChannelMessages(channelId, true);
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
     if (threadId !== this.selectedThreadId) return;
-    await this.loadTimeline(threadId);
+    await this.timelineController.refreshLatest(threadId);
     await this.refreshInteraction(threadId);
   }
 

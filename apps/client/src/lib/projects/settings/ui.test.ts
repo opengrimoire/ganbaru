@@ -53,7 +53,7 @@ describe("projectSettingsScrollTargetTop", () => {
       scrollBottomBoundary: 120,
       rowTop: 40,
       rowBottom: 90,
-      fadeInset: 16,
+      fadeInsets: { top: 16, bottom: 16 },
     })).toBe(20);
   });
 
@@ -66,7 +66,7 @@ describe("projectSettingsScrollTargetTop", () => {
       scrollBottomBoundary: 120,
       rowTop: 8,
       rowBottom: 48,
-      fadeInset: 16,
+      fadeInsets: { top: 16, bottom: 16 },
     })).toBe(48);
   });
 
@@ -79,7 +79,20 @@ describe("projectSettingsScrollTargetTop", () => {
       scrollBottomBoundary: 120,
       rowTop: 100,
       rowBottom: 150,
-      fadeInset: 16,
+      fadeInsets: { top: 16, bottom: 16 },
     })).toBe(70);
+  });
+
+  it("clears the larger bottom fade when it differs from the top one", () => {
+    expect(projectSettingsScrollTargetTop({
+      scrollTop: 20,
+      scrollHeight: 400,
+      clientHeight: 120,
+      scrollTopBoundary: 0,
+      scrollBottomBoundary: 120,
+      rowTop: 100,
+      rowBottom: 150,
+      fadeInsets: { top: 16, bottom: 32 },
+    })).toBe(86);
   });
 });

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { limitScrollEdgeFade, scrollEdgeFade, scrollEdgeFadeAction } from "./scroll-edge-fade";
+import { limitScrollEdgeFade, scrollEdgeFade, scrollEdgeFadeAction, scrollEdgeFadeDistances } from "./scroll-edge-fade";
 
 describe("scroll edge fade", () => {
   it("does not fade content that fits", () => {
@@ -29,6 +29,23 @@ describe("scroll edge fade", () => {
     expect(limitScrollEdgeFade("none", "bottom")).toBe("none");
     expect(limitScrollEdgeFade("both", "both")).toBe("both");
     expect(limitScrollEdgeFade("top", "both")).toBe("top");
+  });
+
+  it("sizes each fade by the distance left to its edge, up to that edge's size", () => {
+    const sizes = { top: 24, bottom: 48 };
+    const metrics = { scrollHeight: 400, clientHeight: 200 };
+    expect(scrollEdgeFadeDistances({ ...metrics, scrollTop: 0 }, "bottom", sizes)).toEqual({ top: 0, bottom: 48 });
+    expect(scrollEdgeFadeDistances({ ...metrics, scrollTop: 9.6 }, "both", sizes)).toEqual({ top: 10, bottom: 48 });
+    expect(scrollEdgeFadeDistances({ ...metrics, scrollTop: 100 }, "both", sizes)).toEqual({ top: 24, bottom: 48 });
+    expect(scrollEdgeFadeDistances({ ...metrics, scrollTop: 180 }, "both", sizes)).toEqual({ top: 24, bottom: 20 });
+  });
+
+  it("gives no distance to an edge the fade leaves out", () => {
+    const sizes = { top: 24, bottom: 48 };
+    expect(scrollEdgeFadeDistances({ scrollTop: 100, scrollHeight: 400, clientHeight: 200 }, "bottom", sizes))
+      .toEqual({ top: 0, bottom: 48 });
+    expect(scrollEdgeFadeDistances({ scrollTop: 100, scrollHeight: 400, clientHeight: 200 }, "none", sizes))
+      .toEqual({ top: 0, bottom: 0 });
   });
 });
 
@@ -95,5 +112,24 @@ describe("scroll edge fade action", () => {
     action.update({});
     expect(node.getAttribute("data-scroll-fade")).toBe("top");
     action.destroy();
+  });
+
+  it("writes the distance left to each fading edge, capped at its fade size, and clears it on destroy", () => {
+    const node = scroller({ scrollHeight: 400, clientHeight: 200 });
+    node.style.setProperty("--scroll-fade-size", "24px");
+    node.style.setProperty("--scroll-fade-bottom-size", "48px");
+    node.scrollTop = 10;
+    const action = scrollEdgeFadeAction(node);
+    expect(node.style.getPropertyValue("--scroll-fade-top-distance")).toBe("10px");
+    expect(node.style.getPropertyValue("--scroll-fade-bottom-distance")).toBe("48px");
+
+    node.scrollTop = 170;
+    node.dispatchEvent(new Event("scroll"));
+    expect(node.style.getPropertyValue("--scroll-fade-top-distance")).toBe("24px");
+    expect(node.style.getPropertyValue("--scroll-fade-bottom-distance")).toBe("30px");
+
+    action.destroy();
+    expect(node.style.getPropertyValue("--scroll-fade-top-distance")).toBe("");
+    expect(node.style.getPropertyValue("--scroll-fade-bottom-distance")).toBe("");
   });
 });

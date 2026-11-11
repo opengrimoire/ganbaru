@@ -1,6 +1,7 @@
 import type { EventColor } from "$lib/calendar/types";
 import { EVENT_COLOR_OPTIONS } from "$lib/calendar/utils";
 import { cn } from "$lib/utils";
+import { scrollFadeSizes, type ScrollFadeSizes } from "$lib/utils/scroll-edge-fade";
 
 export type ProjectSettingsIconButtonTone = "neutral" | "danger";
 export interface ProjectSettingsScrollInput {
@@ -11,7 +12,8 @@ export interface ProjectSettingsScrollInput {
   scrollBottomBoundary: number;
   rowTop: number;
   rowBottom: number;
-  fadeInset: number;
+  /** Full sizes of the top and bottom scroll edge fades, which a revealed row must clear. */
+  fadeInsets: ScrollFadeSizes;
   breathingRoom?: number;
 }
 
@@ -58,41 +60,14 @@ export function nextUnusedProjectSettingsColor({
   return fallbackColor;
 }
 
-export function projectSettingsCssLengthToPixels(
-  value: string,
-  context: HTMLElement,
-  fallback: number,
-): number {
-  const trimmed = value.trim();
-  const parsed = Number.parseFloat(trimmed);
-  if (!Number.isFinite(parsed)) return fallback;
-  if (trimmed.endsWith("rem")) {
-    const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
-    return parsed * (Number.isFinite(rootFontSize) ? rootFontSize : 16);
-  }
-  if (trimmed.endsWith("em")) {
-    const contextFontSize = Number.parseFloat(getComputedStyle(context).fontSize);
-    return parsed * (Number.isFinite(contextFontSize) ? contextFontSize : 16);
-  }
-  return parsed;
-}
-
-export function projectSettingsScrollFadeInset(scrollElement: HTMLElement): number {
-  return projectSettingsCssLengthToPixels(
-    getComputedStyle(scrollElement).getPropertyValue("--scroll-fade-size"),
-    scrollElement,
-    32,
-  );
-}
-
 export function projectSettingsScrollTargetTop(input: ProjectSettingsScrollInput): number {
   const breathingRoom = input.breathingRoom ?? 4;
   const maxScrollTop = Math.max(0, input.scrollHeight - input.clientHeight);
   const safeTop = input.scrollTopBoundary
-    + (input.scrollTop > 1 ? input.fadeInset : 0)
+    + (input.scrollTop > 1 ? input.fadeInsets.top : 0)
     + breathingRoom;
   const safeBottom = input.scrollBottomBoundary
-    - (input.scrollTop < maxScrollTop - 1 ? input.fadeInset : 0)
+    - (input.scrollTop < maxScrollTop - 1 ? input.fadeInsets.bottom : 0)
     - breathingRoom;
   if (input.rowTop >= safeTop && input.rowBottom <= safeBottom) return input.scrollTop;
   const scrollDelta = input.rowTop < safeTop
@@ -119,7 +94,7 @@ export function scrollProjectSettingsRowIntoView(
     scrollBottomBoundary: scrollRect.bottom,
     rowTop: rowRect.top,
     rowBottom: rowRect.bottom,
-    fadeInset: projectSettingsScrollFadeInset(scrollElement),
+    fadeInsets: scrollFadeSizes(scrollElement, 0),
   });
   if (Math.abs(nextScrollTop - scrollElement.scrollTop) <= 1) return;
   scrollElement.scrollTo({ top: nextScrollTop, behavior: "auto" });

@@ -83,9 +83,9 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 
 ## Scrolling
 
-- Every scrollable panel body fades the edge that has more content beyond it with `scrollEdgeFadeAction`.
+- Every scrollable panel body fades the edge that has more content beyond it with `scrollEdgeFadeAction`. Each fade is as long as the distance left to scroll toward its edge, up to its full size, so it eases in and out with the scroll position instead of appearing or vanishing at once.
 - The fade is a mask, so put it on an inner scroll element, never on the bordered surface, or the border and background fade too.
-- The mobile shell shows no scrollbars and reserves no space for them; vertical overflow is signaled only by the edge fade. `installMobileScrollFades` applies it to every vertical scroll container (`overflow-y-auto`, `overflow-y-scroll`, `overflow-auto`, or `data-mobile-scroll-fade` for containers styled in a component stylesheet), leaving text entry, floating surfaces, dialogs, and containers that attach their own fade alone. The fade is twice the desktop size there. The Calendar opts out of the fade (`data-mobile-scroll-fade-off`) so it does not mask the time grid, while its scrollbars stay hidden like the rest.
+- The mobile shell shows no scrollbars and reserves no space for them; vertical overflow is signaled only by the edge fade. `installMobileScrollFades` applies it to every vertical scroll container (`overflow-y-auto`, `overflow-y-scroll`, `overflow-auto`, or `data-mobile-scroll-fade` for containers styled in a component stylesheet), leaving text entry, floating surfaces, dialogs, and containers that attach their own fade alone. The bottom fade is twice the desktop size there; the top fade keeps the desktop size. The Calendar opts out of the fade (`data-mobile-scroll-fade-off`) so it does not mask the time grid, while its scrollbars stay hidden like the rest.
 
 ## Hover submenus
 

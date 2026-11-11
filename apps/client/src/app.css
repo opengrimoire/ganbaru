@@ -540,12 +540,12 @@ html[data-shell="mobile"] [data-keyboard-surface="shift"] {
 
 /*
  * The mobile shell shows no native scrollbars and reserves no space for them; the scroll edge fade signals vertical
- * overflow instead (see installMobileScrollFades), at twice the desktop size so it reads on a phone. The rules win over
- * component stylesheets that style their own bars.
+ * overflow instead (see installMobileScrollFades), with the bottom fade at twice the desktop size so it reads on a
+ * phone. The rules win over component stylesheets that style their own bars.
  */
 html[data-shell="mobile"] {
   --app-scrollbar-size: 0px;
-  --scroll-fade-size: 3rem;
+  --scroll-fade-bottom-size: 3rem;
 }
 html[data-shell="mobile"] .explorer-list {
   --explorer-list-scrollbar-gap: 0px;
@@ -741,21 +741,41 @@ html[data-hover-suppressed] .content-panel * {
   display: none;
 }
 
-/* Scroll containers using the scroll edge fade action fade the edges that have more content beyond them. */
+/*
+ * Scroll containers using the scroll edge fade action fade the edges that have more content beyond them. Each fade is
+ * as long as the distance left to scroll toward its edge, up to its full size, so it eases in and out with the scroll
+ * position. The distances are registered as non-inherited so writing them on every scroll frame restyles only the
+ * container.
+ */
+@property --scroll-fade-top-distance {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --scroll-fade-bottom-distance {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
 :root {
   --scroll-fade-size: 1.5rem;
+  --scroll-fade-bottom-size: var(--scroll-fade-size);
 }
-[data-scroll-fade="top"] {
-  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-size), black);
-  mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-size), black);
-}
-[data-scroll-fade="bottom"] {
-  -webkit-mask-image: linear-gradient(to bottom, black, black calc(100% - var(--scroll-fade-size)), transparent);
-  mask-image: linear-gradient(to bottom, black, black calc(100% - var(--scroll-fade-size)), transparent);
-}
-[data-scroll-fade="both"] {
-  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-size), black calc(100% - var(--scroll-fade-size)), transparent);
-  mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-size), black calc(100% - var(--scroll-fade-size)), transparent);
+[data-scroll-fade] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    black min(var(--scroll-fade-size), var(--scroll-fade-top-distance, 0px)),
+    black calc(100% - min(var(--scroll-fade-bottom-size), var(--scroll-fade-bottom-distance, 0px))),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    black min(var(--scroll-fade-size), var(--scroll-fade-top-distance, 0px)),
+    black calc(100% - min(var(--scroll-fade-bottom-size), var(--scroll-fade-bottom-distance, 0px))),
+    transparent
+  );
 }
 
 /*

@@ -91,6 +91,7 @@
 
   interface DropSettle {
     noteId: string;
+    node: HTMLDivElement;
     left: number;
     top: number;
     width: number;
@@ -109,7 +110,6 @@
   let pendingPointer: PendingPointer | null = null;
   let dragFrame: number | null = null;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
-  let handoffFrame: number | null = null;
   let previousCursor = "";
   const touchHold = new TouchHoldArbiter();
   const heights = new Map<string, number>();
@@ -352,7 +352,7 @@
       drag = null;
       visualOrder = notes.map((note) => note.id);
       applyLayout();
-      suppressLayoutTransition(active.noteId);
+      void suppressLayoutTransition(active.noteId, active.node);
     } else {
       const position = visualOrder.indexOf(active.noteId);
       if (position !== active.originalIndex) {
@@ -369,11 +369,12 @@
     const rect = container?.getBoundingClientRect();
     if (!position || !rect) {
       drag = null;
-      suppressLayoutTransition(active.noteId);
+      void suppressLayoutTransition(active.noteId, active.node);
       return;
     }
     settling = {
       noteId: active.noteId,
+      node: active.node,
       left: active.clientX - active.grabX,
       top: active.clientY - active.grabY,
       width: active.width,
@@ -394,21 +395,25 @@
     settleTimer = setTimeout(completeDropSettle, reducedMotion ? 0 : 180);
   }
 
-  function suppressLayoutTransition(noteId: string): void {
+  /**
+   * Returns a card from fixed positioning to its masonry slot without a layout transition. The browser must compute
+   * the slot position while transitions are off; otherwise turning them back on animates the card from the list's
+   * corner, where `transform: none` left it, to the slot.
+   */
+  async function suppressLayoutTransition(noteId: string, node: HTMLElement): Promise<void> {
     handoffId = noteId;
-    if (handoffFrame !== null) cancelAnimationFrame(handoffFrame);
-    handoffFrame = requestAnimationFrame(() => {
-      handoffFrame = null;
-      if (handoffId === noteId) handoffId = null;
-    });
+    await tick();
+    if (handoffId !== noteId) return;
+    void getComputedStyle(node).transform;
+    handoffId = null;
   }
 
   function completeDropSettle(): void {
-    const noteId = settling?.noteId;
+    const active = settling;
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = null;
     settling = null;
-    if (noteId) suppressLayoutTransition(noteId);
+    if (active) void suppressLayoutTransition(active.noteId, active.node);
   }
 
   function cancelDragFromKeyboard(event: KeyboardEvent): void {
@@ -426,7 +431,7 @@
     drag = null;
     visualOrder = notes.map((note) => note.id);
     applyLayout();
-    suppressLayoutTransition(active.noteId);
+    void suppressLayoutTransition(active.noteId, active.node);
     releaseClickSuppression(active.noteId);
   }
 
@@ -490,7 +495,6 @@
       for (const cardObserver of observers.values()) cardObserver.disconnect();
       if (dragFrame !== null) cancelAnimationFrame(dragFrame);
       if (settleTimer) clearTimeout(settleTimer);
-      if (handoffFrame !== null) cancelAnimationFrame(handoffFrame);
       if (drag) {
         restoreDocumentDragState();
       }

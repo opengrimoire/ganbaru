@@ -3,6 +3,8 @@
 mod blocks;
 mod messages;
 
+use blocks::{ClaudeStreamScope, ClaudeStreamState};
+
 use super::protocol::{ClaudeResumeCursor, protocol_error, resume_cursor};
 use crate::events::*;
 use crate::models::*;
@@ -11,6 +13,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) const MAX_TEXT_BYTES: usize = 64 * 1024;
+/// Model name Claude gives to assistant messages it builds locally (CLI notices, API errors).
+pub(super) const SYNTHETIC_MODEL: &str = "<synthetic>";
 
 #[derive(Clone, Debug)]
 pub(super) struct StreamBlock {
@@ -38,7 +42,7 @@ pub struct ClaudeRouteState {
     pub modes: TurnModeSnapshot,
     pub model_id: Option<ModelId>,
     pub resume_cursor: ClaudeResumeCursor,
-    pub(super) stream_blocks: HashMap<u32, StreamBlock>,
+    pub(super) stream: ClaudeStreamState,
     pub(super) tool_kinds: HashMap<String, CanonicalItemKind>,
 }
 
@@ -55,7 +59,7 @@ impl ClaudeRouteState {
             modes,
             model_id,
             resume_cursor,
-            stream_blocks: HashMap::new(),
+            stream: ClaudeStreamState::default(),
             tool_kinds: HashMap::new(),
         }
     }
@@ -167,12 +171,19 @@ impl ClaudeEventNormalizer {
             .get("event")
             .and_then(Value::as_object)
             .ok_or_else(|| protocol_error("stream event"))?;
+        let scope = ClaudeStreamScope::of(object);
+        if !scope.is_root() {
+            // Subagent frames belong to the sidechain transcript; the subagent's result reaches
+            // the root conversation through its task lifecycle and tool result.
+            return Ok(Vec::new());
+        }
         match text(event, "type").unwrap_or("unknown") {
-            "content_block_start" => self.content_block_start(state, event),
-            "content_block_delta" => self.content_block_delta(state, event),
-            "content_block_stop" => self.content_block_stop(state, event),
+            "message_start" => self.message_start(state, &scope, event),
+            "content_block_start" => self.content_block_start(state, &scope, event),
+            "content_block_delta" => self.content_block_delta(state, &scope, event),
+            "content_block_stop" => self.content_block_stop(state, &scope, event),
             "message_delta" => Ok(Vec::new()),
-            "message_start" | "message_stop" | "ping" => Ok(Vec::new()),
+            "message_stop" | "ping" => Ok(Vec::new()),
             event_type => Ok(vec![self.event(
                 state,
                 event_type,
@@ -195,7 +206,15 @@ impl ClaudeEventNormalizer {
         raw: &Value,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
         let mut events = Vec::new();
-        if let Some(uuid) = text(object, "uuid") {
+        let scope = ClaudeStreamScope::of(object);
+        let model = object
+            .get("message")
+            .and_then(Value::as_object)
+            .and_then(|message| text(message, "model"));
+        // Subagent uuids exist only in the sidechain transcript and synthetic notices are not
+        // model turns, so resuming at either would fail or fork the conversation.
+        let advances_cursor = scope.is_root() && model != Some(SYNTHETIC_MODEL);
+        if let Some(uuid) = text(object, "uuid").filter(|_| advances_cursor) {
             state.resume_cursor.last_assistant_uuid = Some(uuid.to_string());
             events.push(
                 self.event(
@@ -215,6 +234,10 @@ impl ClaudeEventNormalizer {
                     }),
                 )?,
             );
+        }
+        if !scope.is_root() {
+            // A subagent's plans and checklists are its own; they must not replace the root's.
+            return Ok(events);
         }
         let content = object
             .get("message")
@@ -286,6 +309,10 @@ impl ClaudeEventNormalizer {
         object: &Map<String, Value>,
         _raw: &Value,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+        if !ClaudeStreamScope::of(object).is_root() {
+            // Subagent tool calls never opened root items, so their results have nothing to close.
+            return Ok(Vec::new());
+        }
         let content = object
             .get("message")
             .and_then(Value::as_object)
@@ -408,6 +435,11 @@ impl ClaudeEventNormalizer {
             event,
             redacted_diagnostic: None,
         })
+    }
+
+    /// Item id of one content block of an API message, the same for every frame that carries it.
+    pub(super) fn message_item_id(&self, message_id: &str, index: u32) -> String {
+        format!("{}:{message_id}:{index}", self.session_id.as_str())
     }
 
     pub(super) fn fallback_item_id(&self, prefix: &str) -> String {

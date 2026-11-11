@@ -78,6 +78,8 @@
   const viewport = getViewport();
   const mobileBackStack = getMobileBackStack();
   const { t } = getLocalization();
+  /** Icon and chevron size, in pixels, of the mobile category rows; the mobile header aligns to it. */
+  const MOBILE_CATEGORY_ICON_SIZE = 19;
   const mobilePresentation = $derived(
     (presentation ?? (BUILD_PLATFORM_PROFILE.shell === "mobile" ? "mobile" : "dialog"))
       === "mobile",
@@ -499,17 +501,22 @@
         {/if}
       </section>
     {:else}
-      <!-- The header shares the category list's gutter and width: the title starts at the row icons and the close button centers on the row chevrons. -->
-      <header class="flex min-h-14 shrink-0 items-center border-b border-border px-3">
+      <!-- The header mirrors the category list's padding, width, and reserved scrollbar gutter: the title starts at the row icons (row padding plus the centered icon's inset) and the close button, as wide as the chevron plus the row padding on both sides, centers on the row chevrons. -->
+      <header class="flex min-h-14 shrink-0 items-center overflow-hidden border-b border-border px-3 [scrollbar-gutter:stable]">
         <div class="mx-auto flex w-full max-w-xl items-center gap-2">
-          <h2 class="min-w-0 flex-1 truncate pl-5.5 text-lg font-semibold">
+          <h2
+            class="min-w-0 flex-1 truncate text-lg font-semibold"
+            style:padding-left={`calc(0.75rem + (2.25rem - ${MOBILE_CATEGORY_ICON_SIZE}px) / 2)`}
+          >
             {t("settings.title")}
           </h2>
           <button
             type="button"
             onclick={requestSettingsClose}
             aria-label={t("settings.close")}
-            class="flex size-11 shrink-0 items-center justify-center rounded-xl active:bg-accent"
+            class="flex shrink-0 items-center justify-center rounded-xl active:bg-accent"
+            style:width={`calc(2 * 0.75rem + ${MOBILE_CATEGORY_ICON_SIZE}px)`}
+            style:height={`calc(2 * 0.75rem + ${MOBILE_CATEGORY_ICON_SIZE}px)`}
           >
             <X size={22} aria-hidden="true" />
           </button>
@@ -519,7 +526,7 @@
       <nav
         aria-label={t("mobile.settings.categoriesLabel")}
         use:scrollEdgeFadeAction
-        class="min-h-0 flex-1 overflow-y-auto px-3 py-3"
+        class="min-h-0 flex-1 overflow-y-auto px-3 py-3 [scrollbar-gutter:stable]"
       >
         <div class="mx-auto flex w-full max-w-xl flex-col gap-1">
           {#each sections as section}
@@ -530,10 +537,10 @@
               class="flex min-h-14 w-full items-center gap-3 rounded-xl px-3 text-left text-[0.95rem] font-medium active:bg-accent"
             >
               <span class="flex size-9 shrink-0 items-center justify-center">
-                <Icon size={19} strokeWidth={1.75} aria-hidden="true" />
+                <Icon size={MOBILE_CATEGORY_ICON_SIZE} strokeWidth={1.75} aria-hidden="true" />
               </span>
               <span class="min-w-0 flex-1">{t(section.labelKey)}</span>
-              <ChevronRight size={19} class="shrink-0 text-muted-foreground" aria-hidden="true" />
+              <ChevronRight size={MOBILE_CATEGORY_ICON_SIZE} class="shrink-0 text-muted-foreground" aria-hidden="true" />
             </button>
           {/each}
         </div>

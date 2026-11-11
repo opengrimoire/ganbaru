@@ -753,7 +753,7 @@ table 390 chat_scheduled_messages replicated key id rule any redirects
 table 395 chat_work_assignments replicated key id rule any
   group 0 immutable reply_thread_id:row_key->370:cascade teammate_id:row_key->353:cascade triggering_message_item_id:row_key->372:cascade executing_device_id:optional_text(..=160) created_at:timestamp
   group 1 register previous_assignment_id:optional_row_key->395:set_null
-  group 2 coupled state:text(..=32) state_reason:optional_text(..=4000) settled_at:optional_timestamp review_outcome:optional_text(..=32) reviewed_at:optional_timestamp reviewed_by_participant_id:optional_text(..=1024)
+  group 2 coupled state:text(..=32) state_reason:optional_text(..=4000) settled_at:optional_timestamp review_outcome:optional_text(..=32) reviewed_at:optional_timestamp reviewed_by_participant_id:optional_row_key
   group 3 max updated_at:timestamp
 table 396 chat_work_assignment_inputs replicated key id rule any
   derived key exists 4 inputs message_item_id prefix assignment-input

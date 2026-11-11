@@ -1362,7 +1362,22 @@ fn assignment_review_columns_accept_only_known_outcomes_and_full_timestamps() {
                 .is_err()
         );
         assert!(review("accepted", NOW, "").await.is_err());
-        assert!(review("accepted", NOW, &"p".repeat(1025)).await.is_err());
+        for reviewer in [
+            "p".repeat(129),
+            "é".repeat(65),
+            "participant:\0local".to_owned(),
+            "participant:\tlocal".to_owned(),
+            "participant:local\u{7f}".to_owned(),
+            "participant:\u{85}local".to_owned(),
+        ] {
+            assert!(
+                review("accepted", NOW, &reviewer).await.is_err(),
+                "{reviewer:?}"
+            );
+        }
+        for reviewer in ["p".repeat(128), "participant:ñandú".to_owned()] {
+            review("accepted", NOW, &reviewer).await.unwrap();
+        }
         for outcome in ["accepted", "changes_requested"] {
             review(outcome, NOW, "participant:local-owner")
                 .await

@@ -1604,7 +1604,7 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
                 optional_timestamp("settled_at"),
                 optional_text("review_outcome", MAX_ENUM_CHARS),
                 optional_timestamp("reviewed_at"),
-                optional_text("reviewed_by_participant_id", MAX_ID_CHARS),
+                optional_row_key("reviewed_by_participant_id"),
             ],
         )),
         updated(assignment_group::UPDATED),

@@ -1,7 +1,8 @@
 -- Record the outcome of a review of ready-for-review work beside the completion it judges. The
 -- three columns are all null, or all set on completed work; the sync adapter and the writers
 -- enforce that, because SQLite cannot add a table CHECK to an existing table. The reviewer has
--- no foreign key, since a participant row may arrive through sync after the review.
+-- no foreign key, since a participant row may arrive through sync after the review, and takes
+-- the participant id bounds: at most 128 bytes and no control characters.
 ALTER TABLE chat_work_assignments ADD COLUMN review_outcome TEXT CHECK (
     review_outcome IS NULL OR review_outcome IN ('accepted', 'changes_requested')
 );
@@ -9,7 +10,12 @@ ALTER TABLE chat_work_assignments ADD COLUMN reviewed_at TEXT CHECK (
     reviewed_at IS NULL OR length(reviewed_at) >= 20
 );
 ALTER TABLE chat_work_assignments ADD COLUMN reviewed_by_participant_id TEXT CHECK (
-    reviewed_by_participant_id IS NULL OR length(reviewed_by_participant_id) BETWEEN 1 AND 1024
+    reviewed_by_participant_id IS NULL OR (
+        length(CAST(reviewed_by_participant_id AS BLOB)) BETWEEN 1 AND 128
+        AND instr(CAST(reviewed_by_participant_id AS BLOB), x'00') = 0
+        AND reviewed_by_participant_id NOT GLOB
+            '*[' || char(1) || '-' || char(31) || char(127) || '-' || char(159) || ']*'
+    )
 );
 
 DROP TRIGGER sync_values_chat_work_assignments_insert;
@@ -30,7 +36,7 @@ WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND tr
     AND (NEW.settled_at IS NULL OR (typeof(NEW.settled_at) = 'text' AND instr(CAST(NEW.settled_at AS BLOB), x'00') = 0 AND trim(NEW.settled_at) <> '' AND length(CAST(NEW.settled_at AS BLOB)) <= 64))
     AND (NEW.review_outcome IS NULL OR (typeof(NEW.review_outcome) = 'text' AND instr(CAST(NEW.review_outcome AS BLOB), x'00') = 0 AND length(NEW.review_outcome) <= 32 AND length(CAST(NEW.review_outcome AS BLOB)) <= 262144))
     AND (NEW.reviewed_at IS NULL OR (typeof(NEW.reviewed_at) = 'text' AND instr(CAST(NEW.reviewed_at AS BLOB), x'00') = 0 AND trim(NEW.reviewed_at) <> '' AND length(CAST(NEW.reviewed_at AS BLOB)) <= 64))
-    AND (NEW.reviewed_by_participant_id IS NULL OR (typeof(NEW.reviewed_by_participant_id) = 'text' AND instr(CAST(NEW.reviewed_by_participant_id AS BLOB), x'00') = 0 AND length(NEW.reviewed_by_participant_id) <= 1024 AND length(CAST(NEW.reviewed_by_participant_id AS BLOB)) <= 262144))
+    AND (NEW.reviewed_by_participant_id IS NULL OR (typeof(NEW.reviewed_by_participant_id) = 'text' AND instr(CAST(NEW.reviewed_by_participant_id AS BLOB), x'00') = 0 AND trim(NEW.reviewed_by_participant_id) <> '' AND length(CAST(NEW.reviewed_by_participant_id AS BLOB)) <= 128))
     AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)) IS NOT 1
 BEGIN
     SELECT RAISE(ABORT, 'Replicated row values are invalid');
@@ -49,7 +55,7 @@ WHEN ((NEW.reply_thread_id IS NULL OR (typeof(NEW.reply_thread_id) = 'text' AND 
     AND (NEW.settled_at IS NULL OR (typeof(NEW.settled_at) = 'text' AND instr(CAST(NEW.settled_at AS BLOB), x'00') = 0 AND trim(NEW.settled_at) <> '' AND length(CAST(NEW.settled_at AS BLOB)) <= 64))
     AND (NEW.review_outcome IS NULL OR (typeof(NEW.review_outcome) = 'text' AND instr(CAST(NEW.review_outcome AS BLOB), x'00') = 0 AND length(NEW.review_outcome) <= 32 AND length(CAST(NEW.review_outcome AS BLOB)) <= 262144))
     AND (NEW.reviewed_at IS NULL OR (typeof(NEW.reviewed_at) = 'text' AND instr(CAST(NEW.reviewed_at AS BLOB), x'00') = 0 AND trim(NEW.reviewed_at) <> '' AND length(CAST(NEW.reviewed_at AS BLOB)) <= 64))
-    AND (NEW.reviewed_by_participant_id IS NULL OR (typeof(NEW.reviewed_by_participant_id) = 'text' AND instr(CAST(NEW.reviewed_by_participant_id AS BLOB), x'00') = 0 AND length(NEW.reviewed_by_participant_id) <= 1024 AND length(CAST(NEW.reviewed_by_participant_id AS BLOB)) <= 262144))
+    AND (NEW.reviewed_by_participant_id IS NULL OR (typeof(NEW.reviewed_by_participant_id) = 'text' AND instr(CAST(NEW.reviewed_by_participant_id AS BLOB), x'00') = 0 AND trim(NEW.reviewed_by_participant_id) <> '' AND length(CAST(NEW.reviewed_by_participant_id AS BLOB)) <= 128))
     AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)) IS NOT 1
 BEGIN
     SELECT RAISE(ABORT, 'Replicated row values are invalid');

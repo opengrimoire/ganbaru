@@ -106,6 +106,8 @@ pub const MEMBERSHIP_ROLES: [&str; 2] = ["owner", "member"];
 pub const APPROVAL_POLICIES: [&str; 4] = ["provider_custom", "unattended", "auto_approve", "ask"];
 /// Characters of a Chat row id the timeline tables hold, as the tables check it.
 pub const MAX_ID_CHARS: usize = 1024;
+/// Bytes of a Chat participant id, the Chat organizational identifier limit.
+pub const MAX_PARTICIPANT_ID_BYTES: usize = 128;
 /// Characters of an execution environment id.
 pub const MAX_ENVIRONMENT_ID_CHARS: usize = 2048;
 /// Characters of a mention label or its plain text projection.
@@ -261,6 +263,17 @@ fn trimmed(field: &Field, max: usize, what: &'static str) -> Result<(), AdapterE
 
 fn bounded(field: &Field, min: usize, max: usize, what: &'static str) -> Result<(), AdapterError> {
     if (min..=max).contains(&text(field)?.chars().count()) {
+        Ok(())
+    } else {
+        Err(AdapterError(what))
+    }
+}
+
+/// Checks a Chat participant id held outside a row key: nonempty, at most
+/// [`MAX_PARTICIPANT_ID_BYTES`], and free of control characters, as Chat validates its ids.
+fn participant_id(field: &Field, what: &'static str) -> Result<(), AdapterError> {
+    let id = text(field)?;
+    if !id.is_empty() && id.len() <= MAX_PARTICIPANT_ID_BYTES && !id.chars().any(char::is_control) {
         Ok(())
     } else {
         Err(AdapterError(what))
@@ -1094,7 +1107,7 @@ fn assignment_review(
                 "chat assignment review outcome",
             )?;
             timestamp(reviewed_at)?;
-            bounded(reviewer, 1, MAX_ID_CHARS, "chat assignment reviewer")
+            participant_id(reviewer, "chat assignment reviewer")
         }
     }
 }
@@ -2065,6 +2078,20 @@ mod tests {
         let mut anonymous = complete.fields().to_vec();
         anonymous[5] = t("");
         assert!(check(anonymous).is_err());
+        let mut longest = complete.fields().to_vec();
+        longest[5] = t(&"p".repeat(MAX_PARTICIPANT_ID_BYTES));
+        assert!(check(longest).is_ok());
+        for reviewer in [
+            "p".repeat(MAX_PARTICIPANT_ID_BYTES + 1),
+            "é".repeat(MAX_PARTICIPANT_ID_BYTES / 2 + 1),
+            "participant:\tlocal".to_owned(),
+            "participant:local\n".to_owned(),
+            "participant:\u{85}local".to_owned(),
+        ] {
+            let mut invalid = complete.fields().to_vec();
+            invalid[5] = t(&reviewer);
+            assert!(check(invalid).is_err(), "{reviewer:?}");
+        }
         let mut short = complete.fields().to_vec();
         short.truncate(3);
         assert!(

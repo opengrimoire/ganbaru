@@ -132,6 +132,9 @@ async fn route_provider_request(
     }
     let event = {
         let mut state = resources.route.lock().map_err(|_| state_error())?;
+        if !claims_routed_plan(&mut state, &routed.event) {
+            return Ok(());
+        }
         if provider_request_id.is_some() {
             state.session_state = if matches!(&routed.event, CanonicalEvent::UserInputRequested(_))
             {
@@ -231,6 +234,15 @@ async fn emit_events(
     Ok(())
 }
 
+/// Whether a routed control request event should be emitted: a plan already projected from the
+/// assistant message is not projected again. The deny response is sent either way.
+pub(super) fn claims_routed_plan(state: &mut ClaudeRouteState, event: &CanonicalEvent) -> bool {
+    match event {
+        CanonicalEvent::ProposedPlanCompleted(plan) => state.claim_plan(&plan.plan_id),
+        _ => true,
+    }
+}
+
 pub fn route_control_request(
     control_request_id: &str,
     request: &Map<String, Value>,
@@ -266,10 +278,16 @@ pub fn route_control_request(
     }
     if tool_name == "ExitPlanMode" {
         let markdown = extract_plan_markdown(&tool_input).unwrap_or_default();
+        // The assistant message carries the same plan under its tool use id.
+        let plan_id = request
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(control_request_id);
         return Ok(RoutedClaudeRequest {
             pending: None,
             event: CanonicalEvent::ProposedPlanCompleted(ProposedPlanCompletedEvent {
-                plan_id: control_request_id.to_string(),
+                plan_id: plan_id.to_string(),
                 markdown,
             }),
             immediate_response: Some(control_success(

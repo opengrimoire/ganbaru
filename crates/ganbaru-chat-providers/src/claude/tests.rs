@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 mod approvals;
 mod streams;
 mod transport;
+mod turns;
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 

@@ -109,6 +109,18 @@ impl ClaudeStreamState {
         message
     }
 
+    /// Forgets every scope's message and returns the blocks still open, in index order.
+    pub(super) fn finish_turn(&mut self) -> Vec<StreamBlock> {
+        let mut open = self
+            .blocks
+            .drain()
+            .map(|(_, block)| block)
+            .collect::<Vec<_>>();
+        open.sort_by_key(|block| block.content_index);
+        self.current_messages.clear();
+        open
+    }
+
     fn key(&mut self, scope: &ClaudeStreamScope, index: u32) -> StreamBlockKey {
         StreamBlockKey {
             scope: scope.clone(),
@@ -123,7 +135,7 @@ impl ClaudeStreamState {
     }
 }
 
-fn usable_message_id(id: &str) -> bool {
+pub(super) fn usable_message_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= MAX_MESSAGE_ID_BYTES && !id.chars().any(char::is_control)
 }
 
@@ -225,6 +237,11 @@ impl ClaudeEventNormalizer {
         };
         if !complete_on_stop {
             state.tool_kinds.insert(item_id.clone(), item_kind);
+        }
+        if block_type == "text"
+            && let Some(message_id) = key.message.message_id()
+        {
+            state.turn_text.mark_streamed(message_id);
         }
         state.stream.blocks.insert(
             key,

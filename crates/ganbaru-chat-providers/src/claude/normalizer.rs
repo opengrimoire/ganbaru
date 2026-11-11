@@ -2,8 +2,10 @@
 
 mod blocks;
 mod messages;
+mod seen;
 
-use blocks::{ClaudeStreamScope, ClaudeStreamState};
+use blocks::{ClaudeStreamScope, ClaudeStreamState, usable_message_id};
+use seen::{BoundedIdSet, ClaudeTurnText, plan_id_set};
 
 use super::protocol::{ClaudeResumeCursor, protocol_error, resume_cursor};
 use crate::events::*;
@@ -43,6 +45,8 @@ pub struct ClaudeRouteState {
     pub model_id: Option<ModelId>,
     pub resume_cursor: ClaudeResumeCursor,
     pub(super) stream: ClaudeStreamState,
+    pub(super) turn_text: ClaudeTurnText,
+    emitted_plan_ids: BoundedIdSet,
     pub(super) tool_kinds: HashMap<String, CanonicalItemKind>,
 }
 
@@ -60,8 +64,16 @@ impl ClaudeRouteState {
             model_id,
             resume_cursor,
             stream: ClaudeStreamState::default(),
+            turn_text: ClaudeTurnText::default(),
+            emitted_plan_ids: plan_id_set(),
             tool_kinds: HashMap::new(),
         }
+    }
+
+    /// Claims the right to project the ExitPlanMode plan `plan_id`, which both the assistant
+    /// message and the permission request carry; only the first claim succeeds.
+    pub(super) fn claim_plan(&mut self, plan_id: &str) -> bool {
+        self.emitted_plan_ids.insert(plan_id)
     }
 }
 
@@ -239,9 +251,12 @@ impl ClaudeEventNormalizer {
             // A subagent's plans and checklists are its own; they must not replace the root's.
             return Ok(events);
         }
-        let content = object
-            .get("message")
-            .and_then(Value::as_object)
+        let message = object.get("message").and_then(Value::as_object);
+        let message_id = message
+            .and_then(|message| text(message, "id"))
+            .filter(|id| usable_message_id(id))
+            .map(str::to_string);
+        let content = message
             .and_then(|message| message.get("content"))
             .and_then(Value::as_array)
             .cloned()
@@ -251,7 +266,17 @@ impl ClaudeEventNormalizer {
                 continue;
             };
             let block_type = text(block, "type").unwrap_or("unknown");
-            if block_type == "tool_use" && text(block, "name") == Some("ExitPlanMode") {
+            if block_type == "text" {
+                if let Some(body) = text(block, "text").filter(|body| !body.is_empty()) {
+                    events.extend(self.unstreamed_text(state, message_id.as_deref(), body)?);
+                }
+                continue;
+            }
+            let tool_use_id = text(block, "id");
+            if block_type == "tool_use"
+                && text(block, "name") == Some("ExitPlanMode")
+                && tool_use_id.is_none_or(|id| state.claim_plan(id))
+            {
                 let markdown = block
                     .get("input")
                     .and_then(Value::as_object)
@@ -435,6 +460,55 @@ impl ClaudeEventNormalizer {
             event,
             redacted_diagnostic: None,
         })
+    }
+
+    /// One completed assistant item for a root text block that did not stream, such as a
+    /// `<synthetic>` notice, or nothing when the message's text already streamed.
+    ///
+    /// Positions count text blocks per message, because the CLI sends each block in its own frame
+    /// at array position zero.
+    fn unstreamed_text(
+        &self,
+        state: &mut ClaudeRouteState,
+        message_id: Option<&str>,
+        body: &str,
+    ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+        if message_id.is_some_and(|id| state.turn_text.was_streamed(id)) {
+            return Ok(Vec::new());
+        }
+        let item_id = message_id
+            .and_then(|id| {
+                state
+                    .turn_text
+                    .next_unstreamed_block(id)
+                    .map(|position| self.message_item_id(id, position))
+            })
+            .unwrap_or_else(|| self.fallback_item_id("assistant"));
+        let lifecycle = |status| ClaudeItemEvent {
+            source: "assistant/text",
+            item_id: item_id.clone(),
+            kind: CanonicalItemKind::AssistantMessage,
+            status,
+            title: None,
+            safe_metadata: None,
+        };
+        Ok(vec![
+            self.item_event(state, lifecycle(ActivityStatus::Active))?,
+            self.event(
+                state,
+                "assistant/text",
+                None,
+                None,
+                ProviderItemId::new(item_id.clone()).ok(),
+                CanonicalEvent::ContentDelta(ContentDeltaEvent {
+                    item_id: item_id.clone(),
+                    stream_kind: ContentStreamKind::AssistantText,
+                    content_index: 0,
+                    delta: bounded_text(body, MAX_TEXT_BYTES),
+                }),
+            )?,
+            self.item_event(state, lifecycle(ActivityStatus::Completed))?,
+        ])
     }
 
     /// Item id of one content block of an API message, the same for every frame that carries it.

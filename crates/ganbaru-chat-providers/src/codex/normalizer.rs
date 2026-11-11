@@ -9,9 +9,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod diff;
 mod items;
 mod lifecycle;
+mod rate_limits;
 mod status;
 mod value;
 
+pub use rate_limits::CodexRateLimits;
 use value::*;
 
 const MAX_PROVIDER_TEXT_BYTES: usize = 64 * 1024;
@@ -29,6 +31,7 @@ pub struct CodexRouteState {
     pub effective_model_id: Option<ModelId>,
     pub stream_indexes: HashMap<(String, ContentStreamKind), u32>,
     pub changed_files: Vec<ChangedFileSummary>,
+    pub rate_limits: CodexRateLimits,
 }
 
 impl CodexRouteState {
@@ -43,6 +46,7 @@ impl CodexRouteState {
             effective_model_id: model_id,
             stream_indexes: HashMap::new(),
             changed_files: Vec::new(),
+            rate_limits: CodexRateLimits::default(),
         }
     }
 }

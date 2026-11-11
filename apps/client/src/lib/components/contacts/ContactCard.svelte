@@ -252,7 +252,7 @@
 </div>
 
 <style>
-  .contacts-card-action { display: inline-flex; height: 1.75rem; flex: 0 0 auto; align-items: center; justify-content: center; gap: 0.375rem; border: 1px solid var(--border); border-radius: 0.375rem; padding-inline: 0.625rem; color: var(--foreground); font-size: calc(0.8rem * var(--type-scale)); font-weight: 500; transition: background-color 120ms ease; }
+  .contacts-card-action { display: inline-flex; height: var(--control-height); flex: 0 0 auto; align-items: center; justify-content: center; gap: 0.375rem; border: 1px solid var(--border); border-radius: 0.375rem; padding-inline: 0.625rem; color: var(--foreground); font-size: calc(0.8rem * var(--type-scale)); font-weight: 500; transition: background-color 120ms ease; }
   .contacts-card-action:hover:not([aria-disabled="true"]) { background: var(--accent); }
   .contacts-card-action[aria-disabled="true"] { cursor: not-allowed; }
   .contacts-card-action-blocked { color: var(--muted-foreground); opacity: 0.5; }

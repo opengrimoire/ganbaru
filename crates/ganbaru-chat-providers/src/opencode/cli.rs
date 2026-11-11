@@ -15,6 +15,8 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 pub const MINIMUM_OPENCODE_VERSION: &str = "1.14.19";
+/// First OpenCode major version whose server protocol Ganbaru has no runtime for.
+pub const UNSUPPORTED_OPENCODE_MAJOR: u32 = 2;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_COMMAND_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MODELS: usize = 2_048;
@@ -207,11 +209,11 @@ pub fn parse_version(value: &str) -> ChatResult<OpenCodeVersion> {
 
 pub fn ensure_supported_version(version: OpenCodeVersion) -> ChatResult<()> {
     let minimum = parse_version(MINIMUM_OPENCODE_VERSION)?;
-    if version < minimum {
+    if version < minimum || version.major >= UNSUPPORTED_OPENCODE_MAJOR {
         return Err(ChatError::new(
             ChatErrorCode::UnsupportedVersion,
             format!(
-                "OpenCode {version} is unsupported; version {MINIMUM_OPENCODE_VERSION} or newer is required"
+                "OpenCode {version} is unsupported; Ganbaru supports versions from {MINIMUM_OPENCODE_VERSION} and below {UNSUPPORTED_OPENCODE_MAJOR}.0"
             ),
             false,
         ));

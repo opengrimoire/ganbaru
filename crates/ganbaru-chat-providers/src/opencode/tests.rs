@@ -441,7 +441,7 @@ fn model_and_agent_fixtures_are_bounded_validated_and_typed() {
 }
 
 #[test]
-fn semantic_version_floor_is_explicit() {
+fn semantic_version_range_is_explicit() {
     assert_eq!(
         parse_version("opencode 1.14.19\n").unwrap().to_string(),
         "1.14.19"
@@ -452,7 +452,22 @@ fn semantic_version_floor_is_explicit() {
             .code,
         ChatErrorCode::UnsupportedVersion
     );
+    ensure_supported_version(parse_version("1.14.19").unwrap()).unwrap();
     ensure_supported_version(parse_version("1.15.0-beta.1").unwrap()).unwrap();
+    ensure_supported_version(parse_version("1.99.0").unwrap()).unwrap();
+    for unsupported in ["2.0.0-beta", "2.0.18", "v3.1.0"] {
+        let error = ensure_supported_version(parse_version(unsupported).unwrap()).unwrap_err();
+        assert_eq!(
+            error.code,
+            ChatErrorCode::UnsupportedVersion,
+            "{unsupported}"
+        );
+        assert!(
+            error.message.contains("from 1.14.19 and below 2.0"),
+            "{}",
+            error.message
+        );
+    }
     assert!(parse_version("OpenCode development").is_err());
 }
 

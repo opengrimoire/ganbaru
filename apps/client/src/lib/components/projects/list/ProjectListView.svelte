@@ -842,6 +842,11 @@
     background-color: var(--cal-bg);
   }
 
+  /* A header row is its own stacking context, so while its menu is open it rises above the rows below, including their open buttons and focused frozen cells (`z-index: 10`). */
+  :global(.project-list-scroll .project-list-sticky-row:has([aria-expanded="true"])) {
+    z-index: 11;
+  }
+
   /* Native sticky positioning moves with the scroll in the same frame; a transform written from script lags behind compositor scrolling. */
   :global(.project-list-scroll .project-list-leading-row) {
     position: sticky;

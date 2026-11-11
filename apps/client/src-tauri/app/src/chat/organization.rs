@@ -1033,6 +1033,19 @@ pub async fn chat_cancel_assignment(
     assignments::cancel_assignment(app, db_url, assignment_id, expected_revision).await
 }
 
+/// Accepts ready-for-review work or requests changes with a note, which continues the work in the same thread.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_review_assignment(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+    expected_revision: u64,
+    review: ChatAssignmentReviewRequest,
+) -> ChatResult<ChatWorkAssignmentRead> {
+    assignments::review_assignment(app, db_url, assignment_id, expected_revision, review).await
+}
+
 #[tauri::command]
 #[cfg(desktop)]
 pub async fn chat_retry_assignment(

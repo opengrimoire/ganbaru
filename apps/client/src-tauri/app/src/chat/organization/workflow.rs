@@ -461,7 +461,7 @@ pub(super) async fn create_assignment(
         .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview);
     if let Some(previous) = reviewed_previous {
         let settled = complete_reviewed_assignment(
-            &mut **transaction,
+            transaction,
             &previous.id,
             None,
             ChatAssignmentReviewOutcome::ChangesRequested,

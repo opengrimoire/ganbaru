@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "cliVersion": "codex-cli 0.147.0",
+  "cliVersion": "codex-cli 0.167.1",
   "files": {
     "codex_app_server_protocol.schemas.json": {
-      "sha256": "962cd99bff434079bd6028b398852aa5bf1773db731288e91f78f1830371ecdf",
-      "bytes": 606246
+      "sha256": "ac6b7cd4d7929216365eaae915568e1b45a369daba47ed037ad32c91c79923f2",
+      "bytes": 753029
     },
     "codex_app_server_protocol.v2.schemas.json": {
-      "sha256": "2fd8bf08bbe3d85b2e701c70a44b5cb8229b711992259a627ae678ddebd3b907",
-      "bytes": 513284
+      "sha256": "eab119f751de4f55216825259838426b8b81a64534fc32d61470ee95a688e567",
+      "bytes": 648713
     }
   }
 }

@@ -20,6 +20,56 @@ const MAX_PROVIDER_TEXT_BYTES: usize = 64 * 1024;
 const MAX_UNKNOWN_KEYS: usize = 32;
 const MAX_FILE_CHANGES: usize = 512;
 
+/// Every Codex server notification the normalizer dispatches. Any other method becomes an
+/// unknown event, and the protocol coverage test checks each entry against the vendored schema.
+pub(super) const CODEX_NOTIFICATION_METHODS: &[&str] = &[
+    "thread/started",
+    "thread/status/changed",
+    "thread/name/updated",
+    "thread/tokenUsage/updated",
+    "turn/started",
+    "turn/completed",
+    "turn/plan/updated",
+    "turn/diff/updated",
+    "item/fileChange/patchUpdated",
+    "item/started",
+    "item/completed",
+    "item/agentMessage/delta",
+    "item/reasoning/summaryTextDelta",
+    "item/reasoning/textDelta",
+    "item/plan/delta",
+    "item/commandExecution/outputDelta",
+    "item/fileChange/outputDelta",
+    "item/mcpToolCall/progress",
+    "hook/started",
+    "hook/completed",
+    "thread/compacted",
+    "account/updated",
+    "account/login/completed",
+    "account/rateLimits/updated",
+    "mcpServer/startupStatus/updated",
+    "mcpServer/oauthLogin/completed",
+    "model/rerouted",
+    "configWarning",
+    "deprecationNotice",
+    "warning",
+    "guardianWarning",
+    "windows/worldWritableWarning",
+    "windowsSandbox/setupCompleted",
+    "model/verification",
+    "model/safetyBuffering/updated",
+    "error",
+    "thread/closed",
+    "serverRequest/resolved",
+    "thread/archived",
+    "thread/unarchived",
+    "thread/deleted",
+    "item/reasoning/summaryPartAdded",
+    "item/commandExecution/terminalInteraction",
+    "item/autoApprovalReview/started",
+    "item/autoApprovalReview/completed",
+];
+
 #[derive(Clone, Debug)]
 pub struct CodexRouteState {
     pub provider_thread_id: Option<String>,
@@ -88,6 +138,9 @@ impl CodexEventNormalizer {
             if expected != actual && is_child_thread_lifecycle(method) {
                 return Ok(Vec::new());
             }
+        }
+        if !CODEX_NOTIFICATION_METHODS.contains(&method) {
+            return self.unknown_notification(state, method, &params);
         }
         match method {
             "thread/started" => self.thread_started(state, params),
@@ -182,19 +235,30 @@ impl CodexEventNormalizer {
             | "item/commandExecution/terminalInteraction"
             | "item/autoApprovalReview/started"
             | "item/autoApprovalReview/completed" => Ok(Vec::new()),
-            _ => Ok(vec![self.event(
-                state,
-                method,
-                route_turn(state, object),
-                None,
-                None,
-                CanonicalEvent::Unknown(UnknownEvent {
-                    source_type: method.to_string(),
-                    summary: "Codex emitted an unsupported notification".to_string(),
-                    safe_payload: bounded_shape(&params),
-                }),
-            )?]),
+            _ => self.unknown_notification(state, method, &params),
         }
+    }
+
+    /// An unknown event that keeps the bounded shape of a notification the normalizer does not
+    /// handle.
+    fn unknown_notification(
+        &self,
+        state: &CodexRouteState,
+        method: &str,
+        params: &Value,
+    ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+        Ok(vec![self.event(
+            state,
+            method,
+            route_turn(state, params.as_object()),
+            None,
+            None,
+            CanonicalEvent::Unknown(UnknownEvent {
+                source_type: method.to_string(),
+                summary: "Codex emitted an unsupported notification".to_string(),
+                safe_payload: bounded_shape(params),
+            }),
+        )?])
     }
 
     pub fn malformed_event(

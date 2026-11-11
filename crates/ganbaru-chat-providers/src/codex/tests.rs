@@ -36,6 +36,7 @@ mod home;
 mod interactions;
 mod models;
 mod normalizer;
+mod protocol_coverage;
 mod transport;
 mod usage;
 
@@ -253,7 +254,7 @@ async fn run_app_server_fixture<R, W>(
                     json!({
                         "id": id,
                         "result": {
-                            "userAgent": "codex-cli/0.147.0",
+                            "userAgent": "codex-cli/0.167.1",
                             "codexHome": home,
                             "platformFamily": "unix",
                             "platformOs": "linux"
@@ -687,7 +688,7 @@ async fn wait_for_fixture_message(
 fn codex_user_agents_admit_against_the_tested_range() {
     use crate::registry::refused_version;
     for (user_agent, admission) in [
-        ("codex-cli/0.146.9", ProviderVersionAdmission::BelowMinimum),
+        ("codex-cli/0.155.9", ProviderVersionAdmission::BelowMinimum),
         (
             "codex-cli/1.0.0",
             ProviderVersionAdmission::AtOrAboveCeiling,
@@ -708,9 +709,10 @@ fn codex_user_agents_admit_against_the_tested_range() {
         );
     }
     for (user_agent, admission) in [
-        ("codex-cli/0.147.0", ProviderVersionAdmission::Supported),
+        ("codex-cli/0.156.0", ProviderVersionAdmission::Supported),
+        ("codex-cli/0.167.1", ProviderVersionAdmission::Supported),
         (
-            "codex-cli/0.148.0-alpha.2 (Linux; x86_64)",
+            "codex-cli/0.168.0-alpha.2 (Linux; x86_64)",
             ProviderVersionAdmission::UntestedNewer,
         ),
         ("codex-cli", ProviderVersionAdmission::Unreadable),

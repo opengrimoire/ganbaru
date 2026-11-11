@@ -14,16 +14,48 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// The oldest Codex app server whose protocol the vendored schema describes.
-pub const MINIMUM_CODEX_VERSION: &str = "0.147.0";
-/// Codex app servers the vendored schema and the Codex replay scenarios cover, below the first
-/// major line Ganbaru has no runtime for.
+/// The oldest Codex app server that has every method Ganbaru sends, including `thread/revert`
+/// and `thread/turns/list`, which replaced `thread/rollback`.
+pub const MINIMUM_CODEX_VERSION: &str = "0.156.0";
+/// Codex app servers from the minimum to the version the vendored schema and the Codex replay
+/// scenarios were taken from, below the first major line Ganbaru has no runtime for.
 pub const CODEX_COMPATIBILITY: crate::registry::ProviderCompatibilityRange =
     crate::registry::ProviderCompatibilityRange {
         minimum: MINIMUM_CODEX_VERSION,
-        maximum_tested: "0.147.0",
+        maximum_tested: "0.167.1",
         ceiling_exclusive: Some("1.0.0"),
     };
+
+/// Every client request and notification method Ganbaru sends to Codex. The protocol coverage
+/// test checks each entry against the vendored schema and every method literal the driver sends
+/// against this list.
+#[cfg(test)]
+pub(super) const CODEX_CLIENT_REQUEST_METHODS: &[&str] = &[
+    "initialize",
+    "initialized",
+    "account/read",
+    "config/read",
+    "config/mcpServer/reload",
+    "mcpServerStatus/list",
+    "model/list",
+    "permissionProfile/list",
+    "review/start",
+    "thread/start",
+    "thread/resume",
+    "thread/read",
+    "thread/fork",
+    "thread/name/set",
+    "thread/archive",
+    "thread/delete",
+    "thread/unsubscribe",
+    "thread/compact/start",
+    "thread/goal/get",
+    "thread/goal/set",
+    "thread/goal/clear",
+    "turn/start",
+    "turn/steer",
+    "turn/interrupt",
+];
 
 const MAX_PROMPT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;

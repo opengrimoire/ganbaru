@@ -7,7 +7,7 @@ use crate::ProviderDriver;
 use crate::models::*;
 use crate::replay::runner::{ReplayConnection, ReplaySetup, one_shot, organizational_mcp};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::BufReader;
@@ -65,4 +65,44 @@ pub(crate) async fn read_jsonl_frames(bytes: &[u8]) -> Vec<Value> {
         frames.push(serde_json::from_slice(&line).expect("each line is one JSON frame"));
     }
     frames
+}
+
+/// Every `method` enum value the vendored Codex schema declares under an object's `properties`.
+pub(crate) fn vendored_schema_methods() -> BTreeSet<String> {
+    let schema_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/codex/compat/codex_app_server_protocol.schemas.json");
+    let schema: Value = serde_json::from_str(
+        &std::fs::read_to_string(&schema_path).expect("the vendored Codex schema is readable"),
+    )
+    .expect("the vendored Codex schema is JSON");
+    let mut methods = BTreeSet::new();
+    collect_schema_methods(&schema, &mut methods);
+    assert!(
+        methods.contains("turn/start"),
+        "the schema walk finds methods"
+    );
+    methods
+}
+
+fn collect_schema_methods(schema: &Value, methods: &mut BTreeSet<String>) {
+    match schema {
+        Value::Object(fields) => {
+            if let Some(Value::Array(values)) = fields
+                .get("properties")
+                .and_then(|properties| properties.get("method"))
+                .and_then(|method| method.get("enum"))
+            {
+                methods.extend(values.iter().filter_map(Value::as_str).map(str::to_string));
+            }
+            for value in fields.values() {
+                collect_schema_methods(value, methods);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_schema_methods(item, methods);
+            }
+        }
+        _ => {}
+    }
 }

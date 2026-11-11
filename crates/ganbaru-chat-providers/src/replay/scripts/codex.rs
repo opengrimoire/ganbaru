@@ -30,48 +30,13 @@ replay_scenarios!(Codex: simple, multi_turn, approval_request);
 
 #[cfg(test)]
 mod schema {
+    use crate::codex::replay::vendored_schema_methods;
     use crate::replay::runner::ReplayProvider;
     use serde_json::Value;
-    use std::collections::BTreeSet;
-    use std::path::Path;
-
-    /// Every `method` enum value the schema declares under an object's `properties`.
-    fn schema_methods(schema: &Value, methods: &mut BTreeSet<String>) {
-        match schema {
-            Value::Object(fields) => {
-                if let Some(Value::Array(values)) = fields
-                    .get("properties")
-                    .and_then(|properties| properties.get("method"))
-                    .and_then(|method| method.get("enum"))
-                {
-                    methods.extend(values.iter().filter_map(Value::as_str).map(str::to_string));
-                }
-                for value in fields.values() {
-                    schema_methods(value, methods);
-                }
-            }
-            Value::Array(items) => {
-                for item in items {
-                    schema_methods(item, methods);
-                }
-            }
-            _ => {}
-        }
-    }
 
     #[test]
     fn authored_codex_frames_exist_in_schema() {
-        let schema_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/codex/compat/codex_app_server_protocol.schemas.json");
-        let schema: Value =
-            serde_json::from_str(&std::fs::read_to_string(&schema_path).unwrap()).unwrap();
-        let mut known = BTreeSet::new();
-        schema_methods(&schema, &mut known);
-        assert!(
-            known.contains("turn/start"),
-            "the schema walk finds methods"
-        );
-
+        let known = vendored_schema_methods();
         let mut checked = 0;
         let directory = ReplayProvider::Codex.scenario_directory();
         for entry in std::fs::read_dir(&directory).unwrap() {

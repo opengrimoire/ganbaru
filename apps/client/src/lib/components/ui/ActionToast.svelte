@@ -19,6 +19,7 @@
     reserveActionLabel,
     onAction,
     onDismiss,
+    class: className = "",
   }: {
     message: string;
     /** The language of `message` when it differs from the interface language. */
@@ -37,6 +38,8 @@
     reserveActionLabel?: string;
     onAction?: () => void | Promise<void>;
     onDismiss: () => void;
+    /** Extra classes for the toast surface, such as a width cap inside an anchored container. */
+    class?: string;
   } = $props();
 
   const toastVariantClass = $derived(
@@ -79,6 +82,7 @@
     "z-70 flex w-[min(22rem,calc(100vw-2rem))] items-center gap-3 rounded-floating border px-3 py-2 text-[0.866667rem] shadow-floating",
     !anchored && "fixed left-1/2 -translate-x-1/2",
     toastVariantClass,
+    className,
   )}
 >
   <span class={cn("min-w-0 flex-1", wrap ? "text-pretty" : "truncate")}><span lang={messageLang} dir={messageDir}>{message}</span></span>

@@ -48,6 +48,7 @@
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
+  import ActionToast from "$lib/components/ui/ActionToast.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import QuickNoteColorPicker from "./QuickNoteColorPicker.svelte";
   import QuickNoteEditorModal from "./QuickNoteEditorModal.svelte";
@@ -336,11 +337,20 @@
     if (undoTimer) clearTimeout(undoTimer);
     undoMessage = message;
     undoAction = action;
-    undoTimer = setTimeout(() => {
-      undoMessage = "";
-      undoAction = null;
-      undoTimer = null;
-    }, 5_000);
+    undoTimer = setTimeout(dismissUndo, 5_000);
+  }
+
+  function dismissUndo(): void {
+    if (undoTimer) clearTimeout(undoTimer);
+    undoTimer = null;
+    undoMessage = "";
+    undoAction = null;
+  }
+
+  function runUndo(): void {
+    const action = undoAction;
+    dismissUndo();
+    if (action) void action();
   }
 
   async function runMutation(action: () => Promise<unknown>): Promise<void> {
@@ -799,17 +809,14 @@
     <p class="sr-only" aria-live="polite">{reorderAnnouncement}</p>
   </div>
 
-  <!-- The undo toast stacks above the selection bar, which stays within thumb reach at the bottom. -->
-  <div class="pointer-events-none absolute inset-x-3 bottom-3 z-10 flex flex-col items-center gap-2">
-    {#if undoAction}
-      <div class="surface-floating pointer-events-auto flex max-w-full items-center gap-3 px-3 py-2">
-        <span>{undoMessage}</span>
-        <button type="button" class={mobileLayout ? "min-h-12 shrink-0 px-2 font-semibold underline" : "font-semibold underline"} onclick={() => { const action = undoAction; undoAction = null; undoMessage = ""; if (action) void action(); }}>{t("quickNotes.action.undo")}</button>
-      </div>
-    {/if}
+  <!--
+    The selection bar and the undo toast share one slot within thumb reach at the bottom: whichever appears takes the
+    other's place instead of stacking, and a toast hidden by a selection returns when the selection ends.
+  -->
+  <div class="pointer-events-none absolute inset-x-3 bottom-3 z-10 grid items-end justify-items-center">
     {#if selectedNote}
       <div
-        class="surface-floating pointer-events-auto flex max-w-full items-center gap-0.5 overflow-x-auto p-1"
+        class="surface-floating pointer-events-auto col-start-1 row-start-1 flex max-w-full items-center gap-0.5 overflow-x-auto p-1"
         role="toolbar"
         aria-label={t("quickNotes.selectionActions")}
         data-quick-note-selection-bar
@@ -833,6 +840,10 @@
           <button class={selectionBarButton} type="button" aria-label={t("quickNotes.action.restore")} title={t("quickNotes.action.restore")} onclick={() => actOnSelection(restoreNote, true)}><RotateCcw class="size-4" strokeWidth={1.5} /></button>
           <button class={selectionBarButton} type="button" aria-label={t("quickNotes.action.deletePermanently")} title={t("quickNotes.action.deletePermanently")} onclick={() => actOnSelection((note) => { deleteTarget = note; }, true)}><Trash2 class="size-4" strokeWidth={1.5} /></button>
         {/if}
+      </div>
+    {:else if undoAction}
+      <div class="pointer-events-auto col-start-1 row-start-1 flex max-w-full justify-center" transition:fly={selectionBarMotion}>
+        <ActionToast anchored class="max-w-full" message={undoMessage} actionLabel={t("quickNotes.action.undo")} onAction={runUndo} onDismiss={dismissUndo} />
       </div>
     {/if}
   </div>

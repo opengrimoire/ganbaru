@@ -204,6 +204,8 @@ pub struct ClaudeLaunchOptions<'a> {
     pub organizational: Option<ClaudeOrganizationalLaunch<'a>>,
     /// Session instructions appended to the system prompt.
     pub system_prompt: Option<ClaudeSystemPromptArgument<'a>>,
+    /// The probed CLI version, which decides how session instructions are passed.
+    pub cli_version: Option<ClaudeVersion>,
 }
 
 /// The internal MCP server a Claude launch connects to.
@@ -328,7 +330,7 @@ pub fn launch_arguments(
             internal_mcp_config_argument(server.name, server.url)?,
         ]);
         if let Some(system_prompt) = options.system_prompt {
-            arguments.extend(system_prompt_arguments(system_prompt)?);
+            arguments.extend(system_prompt_arguments(system_prompt, options.cli_version)?);
         }
         arguments.extend([
             "--disallowed-tools".to_string(),
@@ -350,7 +352,7 @@ pub fn launch_arguments(
                 "Claude launch arguments conflict with the session instructions",
             ));
         }
-        arguments.extend(system_prompt_arguments(system_prompt)?);
+        arguments.extend(system_prompt_arguments(system_prompt, options.cli_version)?);
     }
     arguments.extend(configured.iter().cloned());
     if let Some(server) = options.internal_mcp {
@@ -361,18 +363,30 @@ pub fn launch_arguments(
 }
 
 /// Configured arguments that would replace or add to the system prompt of a session that
-/// carries instructions.
+/// carries instructions, or keep a resumed session on its recorded prompt.
 const SYSTEM_PROMPT_ARGUMENTS: &[&str] = &[
     "--append-system-prompt",
     "--append-system-prompt-file",
     "--system-prompt",
     "--system-prompt-file",
+    "--system-prompt-snapshot",
 ];
 
-/// The flag and value that append session instructions to the system prompt. Text that starts
-/// with `--` is still read as the value of the spaced form.
-fn system_prompt_arguments(argument: ClaudeSystemPromptArgument<'_>) -> ChatResult<[String; 2]> {
-    match argument {
+/// First CLI version that records the system prompt on a conversation's first request and
+/// sends that record on every later request and resume, together with the
+/// `--system-prompt-snapshot` flag that turns the record off. Earlier versions render the
+/// prompt fresh on every request.
+pub const SYSTEM_PROMPT_SNAPSHOT_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 267);
+
+/// The arguments that append session instructions to the system prompt. Text that starts
+/// with `--` is still read as the value of the spaced form. On CLI versions that record the
+/// prompt, the record is turned off, so a resumed session uses the instructions of this
+/// launch and not the ones it first opened with.
+fn system_prompt_arguments(
+    argument: ClaudeSystemPromptArgument<'_>,
+    cli_version: Option<ClaudeVersion>,
+) -> ChatResult<Vec<String>> {
+    let mut arguments = match argument {
         ClaudeSystemPromptArgument::Inline(text) => {
             if text.len() > MAX_INLINE_SYSTEM_PROMPT_BYTES || text.contains('\0') {
                 return Err(ChatError::validation(
@@ -380,7 +394,7 @@ fn system_prompt_arguments(argument: ClaudeSystemPromptArgument<'_>) -> ChatResu
                     "Claude developer instructions exceed the supported limit",
                 ));
             }
-            Ok(["--append-system-prompt".to_string(), text.to_string()])
+            vec!["--append-system-prompt".to_string(), text.to_string()]
         }
         ClaudeSystemPromptArgument::File(path) => {
             let path = path.to_str().ok_or_else(|| {
@@ -390,9 +404,13 @@ fn system_prompt_arguments(argument: ClaudeSystemPromptArgument<'_>) -> ChatResu
                     true,
                 )
             })?;
-            Ok(["--append-system-prompt-file".to_string(), path.to_string()])
+            vec!["--append-system-prompt-file".to_string(), path.to_string()]
         }
+    };
+    if cli_version.is_some_and(|version| version >= SYSTEM_PROMPT_SNAPSHOT_VERSION) {
+        arguments.extend(["--system-prompt-snapshot".to_string(), "off".to_string()]);
     }
+    Ok(arguments)
 }
 
 /// Builds the `--mcp-config` JSON for the internal server. The header names the token

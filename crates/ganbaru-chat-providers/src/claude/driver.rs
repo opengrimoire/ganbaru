@@ -151,6 +151,7 @@ impl ClaudeProviderDriver {
                     internal_mcp: None,
                     organizational: None,
                     system_prompt: None,
+                    cli_version: None,
                 },
             )
             .await?;
@@ -219,6 +220,7 @@ impl ClaudeProviderDriver {
                         internal_server_name: &server.name,
                     },
                 ),
+                cli_version: Some(version),
                 ..options
             },
         )?;
@@ -282,6 +284,7 @@ impl ClaudeProviderDriver {
                     project_configuration: input.workspace().project_configuration,
                     internal_mcp: None,
                     organizational: None,
+                    cli_version: None,
                     system_prompt: instructions
                         .as_ref()
                         .map(ClaudeSessionInstructions::argument),

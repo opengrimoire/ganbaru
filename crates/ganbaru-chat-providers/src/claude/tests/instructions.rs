@@ -31,6 +31,7 @@ fn options(
             internal_server_name: SERVER_NAME,
         }),
         system_prompt,
+        cli_version: None,
     }
 }
 
@@ -168,6 +169,7 @@ fn direct_launch_refuses_a_configured_system_prompt_beside_instructions() {
         "--append-system-prompt-file=notes.md",
         "--system-prompt",
         "--system-prompt-file",
+        "--system-prompt-snapshot",
     ] {
         let error = launch(
             &[configured, "value"],
@@ -259,4 +261,44 @@ fn changed_instructions_conflict_on_send_turn() {
             "only the accepted turn started"
         );
     });
+}
+
+#[test]
+fn instructions_turn_off_the_system_prompt_record_on_versions_that_keep_it() {
+    let inline = ClaudeSessionInstructions::prepare("Be brief").unwrap();
+    let large = "Follow the plan. ".repeat(MAX_INLINE_SYSTEM_PROMPT_BYTES / 8);
+    let file = ClaudeSessionInstructions::prepare(&large).unwrap();
+    for organizational in [true, false] {
+        for instructions in [&inline, &file] {
+            let mut recorded = options(organizational, Some(instructions.argument()));
+            recorded.cli_version = Some(SYSTEM_PROMPT_SNAPSHOT_VERSION);
+            let arguments = launch(&[], recorded).unwrap();
+            let snapshot = position(&arguments, "--system-prompt-snapshot");
+            assert_eq!(arguments[snapshot + 1], "off");
+            let prompt = arguments
+                .iter()
+                .position(|argument| argument.starts_with("--append-system-prompt"))
+                .unwrap();
+            assert_eq!(snapshot, prompt + 2, "the flag follows the prompt pair");
+
+            let mut older = options(organizational, Some(instructions.argument()));
+            older.cli_version = Some(ClaudeVersion::new(2, 1, 266));
+            assert!(
+                !launch(&[], older)
+                    .unwrap()
+                    .iter()
+                    .any(|argument| argument == "--system-prompt-snapshot"),
+                "versions before the record have no flag"
+            );
+        }
+    }
+    let mut without = options(true, None);
+    without.cli_version = Some(ClaudeVersion::new(2, 1, 322));
+    assert!(
+        !launch(&[], without)
+            .unwrap()
+            .iter()
+            .any(|argument| argument == "--system-prompt-snapshot"),
+        "launches without instructions keep the CLI default"
+    );
 }

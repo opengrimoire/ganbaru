@@ -34,6 +34,7 @@ fn options(modes: TurnModeSnapshot, organizational: bool) -> ClaudeLaunchOptions
             internal_server_name: SERVER_NAME,
         }),
         system_prompt: None,
+        cli_version: None,
     }
 }
 

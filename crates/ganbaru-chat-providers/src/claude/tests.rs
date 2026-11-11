@@ -400,6 +400,7 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             internal_mcp: None,
             organizational: None,
             system_prompt: None,
+            cli_version: None,
         },
     )
     .unwrap();
@@ -440,6 +441,7 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             internal_mcp: None,
             organizational: None,
             system_prompt: None,
+            cli_version: None,
         },
     )
     .unwrap();
@@ -464,6 +466,7 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             internal_mcp: None,
             organizational: None,
             system_prompt: None,
+            cli_version: None,
         },
     )
     .unwrap();
@@ -502,6 +505,7 @@ fn claude_launch_arguments_restrict_project_setting_sources() {
                 internal_mcp: None,
                 organizational: None,
                 system_prompt: None,
+                cli_version: None,
             },
         )
         .unwrap()
@@ -563,6 +567,7 @@ fn protected_transport_arguments_cannot_be_overridden() {
                 internal_mcp: None,
                 organizational: None,
                 system_prompt: None,
+                cli_version: None,
             },
         )
         .unwrap_err();

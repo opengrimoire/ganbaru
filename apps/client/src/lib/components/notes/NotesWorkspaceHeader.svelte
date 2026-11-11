@@ -53,7 +53,6 @@
   import NotesProjectNavigator from "$lib/components/notes/navigation/NotesProjectNavigator.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import MobileContextSwitcher from "$lib/components/mobile/MobileContextSwitcher.svelte";
-  import MobileWorkspaceName from "$lib/components/mobile/MobileWorkspaceName.svelte";
 
   type NotesNavigatorMode = ProjectNavigatorPanelMode | "notes";
 
@@ -533,9 +532,6 @@
     {/if}
     {#if projectViewSwitcher && !databaseSelected}
       {@render projectViewSwitcher()}
-    {/if}
-    {#if selectedPageTitle && !databaseSelected}
-      <MobileWorkspaceName name={selectedPageTitle} />
     {/if}
     {#if databaseSelected}
       <button

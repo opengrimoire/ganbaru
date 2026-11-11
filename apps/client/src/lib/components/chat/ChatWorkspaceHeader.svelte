@@ -36,7 +36,6 @@
   import { CHAT_OPEN_MEMBERS_EVENT, readChatOpenMembersDetail } from "$lib/components/chat/channels/members-panel-events";
   import ChatTitleEditor from "./ChatTitleEditor.svelte";
   import MobileContextSwitcher from "$lib/components/mobile/MobileContextSwitcher.svelte";
-  import MobileWorkspaceName from "$lib/components/mobile/MobileWorkspaceName.svelte";
 
   type ChatNavigatorMode = ProjectNavigatorPanelMode | "channels";
 
@@ -284,7 +283,8 @@
       {:else if projectViewSwitcher || selectedChannel}
         <div class="flex h-12 min-w-0 items-center">
           {#if projectViewSwitcher}{@render projectViewSwitcher()}{/if}
-          {#if selectedChannel}<MobileWorkspaceName name={`#${selectedChannel.name}`} />{/if}
+          <!-- The top bar switcher names only the project, so the row names the open channel in the view switcher type. -->
+          {#if selectedChannel}<span class="min-w-0 flex-1 truncate px-1.5 text-xs font-medium text-foreground" data-mobile-channel-name>#{selectedChannel.name}</span>{/if}
         </div>
       {/if}
     {:else}

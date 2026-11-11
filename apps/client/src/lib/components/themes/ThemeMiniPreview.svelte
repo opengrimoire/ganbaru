@@ -28,12 +28,12 @@
     "flex shrink-0 flex-col rounded-md outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10",
     touch ? "w-35 gap-1 p-1.5" : "w-24 gap-0.5 p-1",
   )}
-  style:background={appTokens["--background"]}
+  style:background={appTokens["--card"]}
   aria-hidden="true"
 >
   <div
     class={cn("flex items-center gap-1 rounded-sm", touch ? "h-4.5 px-1.5" : "h-3 px-1")}
-    style:background={appTokens["--card"]}
+    style:background={appTokens["--background"]}
   >
     <span
       class={cn("flex-1 truncate font-bold leading-none", touch ? "text-[0.666667rem]" : "text-[0.533333rem]")}

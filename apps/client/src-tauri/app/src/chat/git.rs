@@ -404,7 +404,8 @@ fn validate_relative_path(path: &str) -> ChatResult<&str> {
     Ok(path)
 }
 
-/// Longest commit message, in UTF-8 bytes, matching the source control panel's message field.
+/// Longest commit message, in UTF-8 bytes. The source control panel mirrors it as
+/// `COMMIT_MESSAGE_MAX_BYTES`.
 const MAX_COMMIT_MESSAGE_BYTES: usize = 4_000;
 
 /// Normalizes a commit message from the source control panel: line endings become LF and
@@ -508,6 +509,18 @@ mod tests {
             let refused = normalize_commit_message(raw).expect_err("message is refused");
             assert_eq!(refused.code, ChatErrorCode::Validation);
         }
+    }
+
+    #[test]
+    fn the_source_control_panel_mirrors_the_commit_message_bound() {
+        let panel = include_str!("../../../../src/lib/chat/workspace/commit-message.ts");
+        let mirrored = panel
+            .lines()
+            .find_map(|line| line.strip_prefix("export const COMMIT_MESSAGE_MAX_BYTES = "))
+            .and_then(|value| value.strip_suffix(';'))
+            .map(|value| value.replace('_', ""))
+            .and_then(|value| value.parse::<usize>().ok());
+        assert_eq!(mirrored, Some(MAX_COMMIT_MESSAGE_BYTES));
     }
 
     #[test]

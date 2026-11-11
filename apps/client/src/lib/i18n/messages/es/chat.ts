@@ -693,6 +693,7 @@ export const chat = {
     confirmDiscard: (path: string) => `¿Descartar permanentemente los cambios no preparados en ${path}?`,
     commitMessage: "Mensaje de confirmación",
     commitPlaceholder: "Describe los cambios",
+    commitMessageTooLong: "El mensaje de confirmación es demasiado largo",
     commit: "Confirmar",
     operationFailed: "La operación de Git falló de forma segura.",
     repositorySetup: "Configuración del repositorio",

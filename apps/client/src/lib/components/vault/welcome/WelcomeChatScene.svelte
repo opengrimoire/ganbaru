@@ -401,10 +401,6 @@
           <div class="absolute inset-0 flex flex-col" style:opacity={threadColumn ? undefined : 1 - threadShown} style:--gutter={`${gutterRem}rem`}>
             <div class="flex min-h-0 flex-1 flex-col justify-end overflow-hidden">
               <div class="feed-canvas">
-                <header class="channel-introduction">
-                  <h1>#{channelName}</h1>
-                  <p>{t("chat.channels.welcomeDescription")}</p>
-                </header>
                 {#if sent}
                   <div class="divider first-date" style={riseStyle(messageIn)}><span>{sentDay}</span></div>
                   {@render message(true)}
@@ -514,9 +510,6 @@
 
   /* The channel feed, its introduction, and its date divider, as the channel draws them. */
   .feed-canvas { width: calc(100% - 2 * var(--gutter)); min-height: 100%; flex-shrink: 0; margin-inline: auto; padding-bottom: 1rem; }
-  .channel-introduction { padding-top: 1.2rem; }
-  .channel-introduction h1 { font-size: 1.25rem; font-weight: 700; }
-  .channel-introduction p { margin-top: 0.3rem; color: var(--muted-foreground); font-size: 0.82rem; line-height: 1.35rem; }
   .divider, .date-divider { display: flex; align-items: center; gap: 0.5rem; color: var(--muted-foreground); font-size: 0.65rem; }
   .divider::before, .divider::after, .date-divider::before, .date-divider::after { height: 1px; flex: 1; background: var(--border); content: ""; }
   .divider.first-date { margin-block: 1.2rem 0.75rem; }

@@ -128,8 +128,6 @@ export const chat = {
     archivedLoadFailed: (message: string) => `Archived channels could not be loaded: ${message}`,
     noTopic: "No topic",
     changeFolderDraftWarning: "Changing the working folder removes this draft's attachments and file mentions. Continue?",
-    welcomeTitle: (name: string) => `Welcome to #${name}`,
-    welcomeDescription: "This is the start of the channel.",
     startDirectMessage: "Start conversation",
   },
   organization: {

@@ -36,6 +36,7 @@
   import { CHAT_OPEN_MEMBERS_EVENT, readChatOpenMembersDetail } from "$lib/components/chat/channels/members-panel-events";
   import ChatTitleEditor from "./ChatTitleEditor.svelte";
   import MobileContextSwitcher from "$lib/components/mobile/MobileContextSwitcher.svelte";
+  import MobileWorkspaceName from "$lib/components/mobile/MobileWorkspaceName.svelte";
 
   type ChatNavigatorMode = ProjectNavigatorPanelMode | "channels";
 
@@ -278,11 +279,13 @@
           {/if}
         {/snippet}
       </MobileContextSwitcher>
-      <!-- The switcher opens at the project's channels, so the action row names the channel only while renaming it. -->
       {#if selectedChannel && editingTitle && !selectedChannel.isDefault}
         <div class="flex h-12 min-w-0 items-center px-1 text-identity font-medium"><div class="min-w-0 flex-1"><ChatTitleEditor title={selectedChannel.name} onCommit={commitTitle} onCancel={() => { editingTitle = false; }} /></div></div>
-      {:else if projectViewSwitcher}
-        <div class="flex h-12 min-w-0 items-center">{@render projectViewSwitcher()}</div>
+      {:else if projectViewSwitcher || selectedChannel}
+        <div class="flex h-12 min-w-0 items-center">
+          {#if projectViewSwitcher}{@render projectViewSwitcher()}{/if}
+          {#if selectedChannel}<MobileWorkspaceName name={`#${selectedChannel.name}`} />{/if}
+        </div>
       {/if}
     {:else}
     <div class="flex h-7 min-w-0 max-w-full items-center gap-0.5 overflow-hidden text-identity font-medium">

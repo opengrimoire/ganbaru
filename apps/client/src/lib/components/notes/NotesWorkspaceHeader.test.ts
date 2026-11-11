@@ -237,7 +237,7 @@ describe("NotesWorkspaceHeader", () => {
     expect(notesState.store.selectPage).not.toHaveBeenCalled();
   });
 
-  it("shows only the project in the mobile switcher and keeps the note path out of the header", () => {
+  it("shows only the project in the mobile switcher and names only the open note in the action row", () => {
     const parent = createProvisionalNotesPage({
       id: "main", title: "Main note", first_block_id: "main-body", folder_id: null,
       parent: { type: "workspace", workspace: true }, project_id: project.id,
@@ -253,6 +253,9 @@ describe("NotesWorkspaceHeader", () => {
     expect(switchers[0].getAttribute("aria-label")).toContain("Learning");
     expect(header.textContent).not.toContain("Routine");
     expect(header.textContent).not.toContain("Main note");
+    const name = header.querySelector("[data-mobile-workspace-name]");
+    expect(name?.textContent).toBe("Sub-note");
+    expect(name?.closest('[data-notes-mobile-action-row="visible"]')).not.toBeNull();
 
     switchers[0].click();
     flushSync();

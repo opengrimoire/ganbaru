@@ -145,12 +145,6 @@
     onscroll={rememberScrollPosition}
   >
     <div class="feed-canvas">
-      {#if channel}
-        <header class="channel-introduction">
-          <h1>#{channel.name}</h1>
-          <p>{channel.topic || t("chat.channels.welcomeDescription")}</p>
-        </header>
-      {/if}
       {#if chat.channelMessagesError}<Notice class="feed-error" message={chat.channelMessagesError} onRetry={retryChannelMessages} />{/if}
       {#if chat.channelPages[0]?.previousCursor}<button type="button" class="load-older" onclick={() => void chat.loadOlderChannelMessages()}>{t("chat.organization.loadOlder")}</button>{/if}
       {#each chat.channelMessages as message, index (message.itemId)}
@@ -176,9 +170,6 @@
   .channel-surface { display:flex; min-height:0; flex:1; flex-direction:column; overflow:hidden; }
   .channel-feed { min-height:0; flex:1; overflow-y:scroll; overscroll-behavior:contain; }
   .feed-canvas { --channel-feed-section-space:1.2rem; --chat-message-row-padding-inline:0rem; width:min(calc(100% - var(--chat-conversation-gutter,1rem) - var(--chat-conversation-gutter,1rem)),var(--chat-conversation-max-width,60rem)); min-height:100%; margin-inline:auto; padding-bottom:1rem; }
-  .channel-introduction { width:100%; padding-top:var(--channel-feed-section-space); }
-  .channel-introduction h1 { font-size: calc(1.25rem * var(--type-scale)); font-weight:700; }
-  .channel-introduction p { margin-top:0.3rem; color:var(--muted-foreground); font-size: calc(0.82rem * var(--type-scale)); line-height: calc(1.35rem * var(--type-scale)); }
   .divider { display:flex; align-items:center; gap:0.5rem; margin:0.75rem 0; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .divider.first-date { margin-top:var(--channel-feed-section-space); margin-bottom:calc(var(--channel-feed-section-space) - var(--chat-conversation-entry-space,0.45rem)); }
   .divider::before,.divider::after { height:1px; flex:1; background:var(--border); content:""; }.divider.unread { color:var(--primary); }.divider.unread::before,.divider.unread::after { background:color-mix(in srgb,var(--primary) 55%,var(--border)); }

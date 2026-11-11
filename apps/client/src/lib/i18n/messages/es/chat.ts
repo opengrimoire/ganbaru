@@ -131,8 +131,6 @@ export const chat = {
     archivedLoadFailed: (message: string) => `No se pudieron cargar los canales archivados: ${message}`,
     noTopic: "Sin tema",
     changeFolderDraftWarning: "Cambiar la carpeta de trabajo elimina los adjuntos y menciones de archivos de este borrador. ¿Continuar?",
-    welcomeTitle: (name: string) => `Te damos la bienvenida a #${name}`,
-    welcomeDescription: "Este es el inicio del canal.",
     startDirectMessage: "Iniciar conversación",
   },
   organization: {

@@ -384,6 +384,7 @@ describe("ChatWorkspaceHeader", () => {
     expect(switchers).toHaveLength(1);
     expect(switchers[0].textContent).toContain("Ganbaru");
     expect(switchers[0].textContent).not.toContain("general");
+    expect(target.querySelector("[data-mobile-workspace-name]")?.textContent).toBe("#general");
     expect(target.querySelector("[data-chat-channel-trigger]")).toBeNull();
     expect(target.querySelector("[data-chat-group-trigger]")).toBeNull();
     expect(target.querySelector("[data-chat-project-trigger]")).toBeNull();
@@ -399,6 +400,7 @@ describe("ChatWorkspaceHeader", () => {
     const target = setup(true, false, false, true);
 
     expect(target.querySelector("[data-mobile-context-switcher]")?.textContent).toContain("Ganbaru");
+    expect(target.querySelector("[data-mobile-workspace-name]")).toBeNull();
   });
 
   it("opens the mobile channel list from the channel action row", () => {

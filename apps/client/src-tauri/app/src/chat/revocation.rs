@@ -656,18 +656,19 @@ async fn persist_revocation_before_cleanup(
         return Err(revocation_error());
     }
     if let Some(authorization_revision_id) = authorization_revision_id {
-        sqlx::query(
+        let run_cancel = format!(
             "UPDATE chat_agent_runs
              SET state = 'cancelled', settled_at = coalesce(settled_at, ?), updated_at = ?
-             WHERE authorization_revision_id = ?
-               AND state IN ('queued', 'starting', 'working', 'waiting')",
-        )
-        .bind(&settled_at)
-        .bind(&settled_at)
-        .bind(authorization_revision_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
+             WHERE authorization_revision_id = ? AND {}",
+            ganbaru_chat::agent_runs::unsettled_run_state_sql("state")
+        );
+        sqlx::query(sqlx::AssertSqlSafe(run_cancel.as_str()))
+            .bind(&settled_at)
+            .bind(&settled_at)
+            .bind(authorization_revision_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(persistence_error)?;
         sqlx::query(
             "UPDATE chat_work_assignments
              SET state = 'cancelled', state_reason = ?, settled_at = coalesce(settled_at, ?),

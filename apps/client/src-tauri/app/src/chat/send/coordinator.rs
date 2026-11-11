@@ -313,7 +313,7 @@ pub(crate) async fn send_turn(
             &now_timestamp()?,
         )
         .await?;
-        if settlement == ganbaru_chat::agent_runs::LaunchSettlement::Superseded {
+        if settlement.stops_session() {
             mcp_registry.revoke_run_scope(&thread_id).await;
             if let Err(error) = owner
                 .stop_session(

@@ -8,6 +8,21 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, Sqlite, Transaction};
 
+/// Run states that end a run. A settled run never changes state again, so every run write
+/// excludes them.
+pub const SETTLED_RUN_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
+
+/// SQL condition that holds while the run state in `column` is not settled, built from
+/// `SETTLED_RUN_STATES` so run writes and the projection check share one list.
+pub fn unsettled_run_state_sql(column: &str) -> String {
+    let settled = SETTLED_RUN_STATES
+        .iter()
+        .map(|state| format!("'{state}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{column} NOT IN ({settled})")
+}
+
 #[derive(Clone, Debug)]
 pub struct AgentRunBinding {
     pub run_id: ChatAgentRunId,
@@ -66,6 +81,16 @@ pub enum LaunchSettlement {
     /// The assignment settled while the provider turn launched, so the run was cancelled and
     /// the caller must stop the provider session it started.
     Superseded,
+    /// The run had already settled, for example through a revocation, so nothing was written
+    /// and the caller must stop the provider session it started.
+    RunSettled,
+}
+
+impl LaunchSettlement {
+    /// Whether the caller must stop the provider session the launch started.
+    pub fn stops_session(self) -> bool {
+        matches!(self, Self::Superseded | Self::RunSettled)
+    }
 }
 
 /// Records the starting run of `run`, refusing when its assignment already settled so the
@@ -122,6 +147,10 @@ pub async fn insert_starting_run(
 /// An assignment that settled meanwhile, for example through a cancel applied from another
 /// device, keeps its settled state: the run is cancelled, the dispatch job ends, and the result
 /// reports the launch as superseded so the caller stops the provider session.
+///
+/// A run that already settled, for example through a revocation, is never rewritten: the
+/// transaction rolls back, leaving the assignment, dispatch job, and messages as they were, and
+/// the result reports the run as settled so the caller stops the provider session.
 pub async fn settle_launch(
     pool: &sqlx::SqlitePool,
     binding: &AgentRunBinding,
@@ -159,24 +188,45 @@ pub async fn settle_launch(
         (true, Some(_)) => ("failed", "failed", LaunchSettlement::Recorded),
         (true, None) => ("working", "completed", LaunchSettlement::Recorded),
     };
-    sqlx::query(
+    let run_update = format!(
         "UPDATE chat_agent_runs
          SET state = ?,
              started_at = CASE WHEN ? = 'working' THEN ? ELSE started_at END,
              settled_at = CASE WHEN ? = 'working' THEN settled_at ELSE ? END,
              updated_at = ?
-         WHERE id = ?",
-    )
-    .bind(run_state)
-    .bind(run_state)
-    .bind(now.as_str())
-    .bind(run_state)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(binding.run_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
+         WHERE id = ? AND {}",
+        unsettled_run_state_sql("state")
+    );
+    let run_updated = sqlx::query(sqlx::AssertSqlSafe(run_update.as_str()))
+        .bind(run_state)
+        .bind(run_state)
+        .bind(now.as_str())
+        .bind(run_state)
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .bind(binding.run_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?
+        .rows_affected()
+        > 0;
+    if !run_updated {
+        let run_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_agent_runs WHERE id = ?)")
+                .bind(binding.run_id.as_str())
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(persistence_error)?;
+        transaction.rollback().await.map_err(persistence_error)?;
+        if !run_exists {
+            return Err(ChatError::new(
+                ChatErrorCode::Persistence,
+                "The agent run of this launch is missing",
+                false,
+            ));
+        }
+        return Ok(LaunchSettlement::RunSettled);
+    }
     sqlx::query(
         "UPDATE chat_assignment_dispatch_jobs
          SET state = ?, last_error = ?, updated_at = ? WHERE assignment_id = ?",
@@ -343,4 +393,42 @@ fn serialization_error<T>(_error: T) -> ChatError {
         "Chat agent-run content could not be encoded",
         false,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LaunchSettlement, SETTLED_RUN_STATES, unsettled_run_state_sql};
+
+    #[tokio::test]
+    async fn the_unsettled_condition_admits_only_active_run_states() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let condition = format!("SELECT {}", unsettled_run_state_sql("?"));
+        for state in [
+            "queued",
+            "starting",
+            "working",
+            "waiting",
+            "completed",
+            "failed",
+            "cancelled",
+        ] {
+            let unsettled: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(condition.as_str()))
+                .bind(state)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(unsettled, !SETTLED_RUN_STATES.contains(&state), "{state}");
+        }
+    }
+
+    #[test]
+    fn launches_that_lost_their_run_stop_the_provider_session() {
+        assert!(!LaunchSettlement::Recorded.stops_session());
+        assert!(LaunchSettlement::Superseded.stops_session());
+        assert!(LaunchSettlement::RunSettled.stops_session());
+    }
 }

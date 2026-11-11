@@ -4,9 +4,12 @@ use super::config::OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT;
 use crate::models::{
     ChatError, ChatErrorCode, ChatResult, ModelAvailability, ModelChoiceOption,
     ModelOptionDefinition, ProjectConfigurationAccess, ProviderCapability, ProviderInstanceConfig,
-    ProviderModel,
+    ProviderModel, ProviderVersionAdmission,
 };
 use crate::process::{BoundedCommand, BoundedCommandFailure, run_bounded_command};
+use crate::registry::{
+    ProviderCompatibilityRange, VersionOrder, admit_version, admits_sessions, version_refusal,
+};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -15,8 +18,13 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 pub const MINIMUM_OPENCODE_VERSION: &str = "1.14.19";
-/// First OpenCode major version whose server protocol Ganbaru has no runtime for.
-pub const UNSUPPORTED_OPENCODE_MAJOR: u32 = 2;
+/// OpenCode versions whose server protocol the OpenCode runtime speaks, up to the version the
+/// focused tests cover, below the first major line Ganbaru has no runtime for.
+pub const OPENCODE_COMPATIBILITY: ProviderCompatibilityRange = ProviderCompatibilityRange {
+    minimum: MINIMUM_OPENCODE_VERSION,
+    maximum_tested: "1.14.19",
+    ceiling_exclusive: Some("2.0.0"),
+};
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_COMMAND_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MODELS: usize = 2_048;
@@ -207,18 +215,32 @@ pub fn parse_version(value: &str) -> ChatResult<OpenCodeVersion> {
     Ok(version)
 }
 
-pub fn ensure_supported_version(version: OpenCodeVersion) -> ChatResult<()> {
-    let minimum = parse_version(MINIMUM_OPENCODE_VERSION)?;
-    if version < minimum || version.major >= UNSUPPORTED_OPENCODE_MAJOR {
-        return Err(ChatError::new(
-            ChatErrorCode::UnsupportedVersion,
-            format!(
-                "OpenCode {version} is unsupported; Ganbaru supports versions from {MINIMUM_OPENCODE_VERSION} and below {UNSUPPORTED_OPENCODE_MAJOR}.0"
-            ),
-            false,
-        ));
+impl VersionOrder for OpenCodeVersion {
+    fn parse_version(value: &str) -> ChatResult<Self> {
+        parse_version(value)
     }
-    Ok(())
+}
+
+/// Where `version` falls in `OPENCODE_COMPATIBILITY`, refusing a version below the minimum or
+/// at or above the ceiling.
+pub fn ensure_supported_version(version: OpenCodeVersion) -> ChatResult<ProviderVersionAdmission> {
+    let text = version.to_string();
+    let admission = admit_version::<OpenCodeVersion>(&OPENCODE_COMPATIBILITY, &text)?;
+    if admits_sessions(admission) {
+        return Ok(admission);
+    }
+    let ceiling = OPENCODE_COMPATIBILITY
+        .ceiling_exclusive
+        .and_then(|ceiling| ceiling.strip_suffix(".0"))
+        .unwrap_or_default();
+    Err(version_refusal(
+        admission,
+        &text,
+        format!(
+            "OpenCode {version} is unsupported; Ganbaru supports versions from {MINIMUM_OPENCODE_VERSION} and below {ceiling}"
+        ),
+        false,
+    ))
 }
 
 pub fn parse_models_cli_output(output: &[u8]) -> ChatResult<Vec<OpenCodeCatalogModel>> {

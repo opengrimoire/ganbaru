@@ -253,7 +253,7 @@ async fn run_app_server_fixture<R, W>(
                     json!({
                         "id": id,
                         "result": {
-                            "userAgent": "codex-cli/0.144.6",
+                            "userAgent": "codex-cli/0.147.0",
                             "codexHome": home,
                             "platformFamily": "unix",
                             "platformOs": "linux"

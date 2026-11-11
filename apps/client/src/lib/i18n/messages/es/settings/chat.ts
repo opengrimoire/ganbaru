@@ -345,6 +345,7 @@ export const chatSettings = {
     unavailable: "No disponible",
     authenticationRequired: "Se requiere autenticación",
     unsupported: "No compatible",
+    untestedNewer: "Más nueva que la probada",
     disabled: "Desactivado",
     neverChecked: "Sin probar",
     lastChecked: (date: string) => `Comprobado ${date}`,

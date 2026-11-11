@@ -190,6 +190,28 @@ impl Drop for ProviderProcessHandle {
     }
 }
 
+/// Version manager switches that would let a shim install a missing tool while a provider
+/// starts or is probed. mise reads each as a boolean, and a provider launch must never download
+/// or install software on the user's behalf.
+const AUTO_INSTALL_GUARDS: [&str; 3] = [
+    "MISE_AUTO_INSTALL",
+    "MISE_EXEC_AUTO_INSTALL",
+    "MISE_NOT_FOUND_AUTO_INSTALL",
+];
+
+/// The child environment: `environment` with every auto install switch forced off, whatever the
+/// configured value.
+fn guarded_environment(environment: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
+    let mut guarded = environment
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    for key in AUTO_INSTALL_GUARDS {
+        guarded.insert(key, "false");
+    }
+    guarded
+}
+
 pub fn spawn_provider_process(config: ProviderProcessConfig) -> ChatResult<ProviderProcessHandle> {
     validate_config(&config)?;
     let mut command = Command::new(&config.executable);
@@ -197,7 +219,7 @@ pub fn spawn_provider_process(config: ProviderProcessConfig) -> ChatResult<Provi
         .args(&config.arguments)
         .current_dir(&config.working_directory)
         .env_clear()
-        .envs(&config.environment)
+        .envs(guarded_environment(&config.environment))
         .kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -425,7 +447,7 @@ pub async fn run_bounded_command(
         .args(command.arguments)
         .current_dir(command.working_directory)
         .env_clear()
-        .envs(command.environment)
+        .envs(guarded_environment(command.environment))
         .kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -834,4 +856,25 @@ fn process_timeout_error() -> ChatError {
         "Provider process did not stop before the force deadline",
         true,
     )
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::{AUTO_INSTALL_GUARDS, guarded_environment};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn child_environment_forces_auto_install_off() {
+        let environment = BTreeMap::from([
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("MISE_AUTO_INSTALL".to_string(), "true".to_string()),
+            ("MISE_EXEC_AUTO_INSTALL".to_string(), "1".to_string()),
+        ]);
+        let guarded = guarded_environment(&environment);
+        assert_eq!(guarded.get("PATH"), Some(&"/usr/bin"));
+        for key in AUTO_INSTALL_GUARDS {
+            assert_eq!(guarded.get(key), Some(&"false"), "{key}");
+        }
+        assert_eq!(guarded.len(), 4);
+    }
 }

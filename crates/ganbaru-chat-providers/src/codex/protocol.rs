@@ -14,6 +14,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The oldest Codex app server whose protocol the vendored schema describes.
+pub const MINIMUM_CODEX_VERSION: &str = "0.147.0";
+/// Codex app servers the vendored schema and the Codex replay scenarios cover, below the first
+/// major line Ganbaru has no runtime for.
+pub const CODEX_COMPATIBILITY: crate::registry::ProviderCompatibilityRange =
+    crate::registry::ProviderCompatibilityRange {
+        minimum: MINIMUM_CODEX_VERSION,
+        maximum_tested: "0.147.0",
+        ceiling_exclusive: Some("1.0.0"),
+    };
+
 const MAX_PROMPT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_MODEL_ID_BYTES: usize = 256;

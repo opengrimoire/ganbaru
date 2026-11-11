@@ -19,6 +19,7 @@ impl CodexProviderDriver {
             let initialize: InitializeResponse = decode_response(initialize, "initialize response")
                 .map_err(|error| error.to_chat_error("initialize"))?;
             verify_reported_home(&layout, &initialize.codex_home)?;
+            ensure_supported_user_agent(&initialize.user_agent)?;
             client
                 .notify("initialized", json!({}))
                 .await
@@ -87,6 +88,7 @@ impl CodexProviderDriver {
                 decode_response(initialize, "organizational authority initialize response")
                     .map_err(|error| error.to_chat_error("organizational authority initialize"))?;
             verify_reported_home(&layout, &initialize.codex_home)?;
+            ensure_supported_user_agent(&initialize.user_agent)?;
             client
                 .notify("initialized", json!({}))
                 .await
@@ -241,6 +243,7 @@ impl CodexProviderDriver {
             let initialize: InitializeResponse = decode_response(initialize, "initialize response")
                 .map_err(|error| error.to_chat_error("initialize"))?;
             verify_reported_home(&layout, &initialize.codex_home)?;
+            ensure_supported_user_agent(&initialize.user_agent)?;
             client
                 .notify("initialized", json!({}))
                 .await
@@ -334,6 +337,7 @@ impl CodexProviderDriver {
             let initialize: InitializeResponse = decode_response(initialize, "initialize response")
                 .map_err(|error| error.to_chat_error("initialize"))?;
             verify_reported_home(&layout, &initialize.codex_home)?;
+            ensure_supported_user_agent(&initialize.user_agent)?;
             client
                 .notify("initialized", json!({}))
                 .await

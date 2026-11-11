@@ -1,11 +1,13 @@
 use crate::models::{
-    ChatResult, ProviderCapability, ProviderFamilyId, ProviderFamilyMetadataRead,
-    ProviderImplementationStatus, ProviderInstanceConfig, ProviderMaturity,
+    ChatError, ChatErrorCode, ChatResult, ProviderCapability, ProviderFamilyId,
+    ProviderFamilyMetadataRead, ProviderImplementationStatus, ProviderInstanceConfig,
+    ProviderMaturity, ProviderVersionAdmission,
 };
 use crate::{
     ProviderDriver, ProviderDriverFactory, UnsupportedProviderDriver, claude::ClaudeProviderDriver,
     codex::CodexProviderDriver, cursor::CursorProviderDriver, opencode::OpenCodeProviderDriver,
 };
+use serde_json::json;
 
 const DESKTOP_PLATFORMS: &[&str] = &["linux", "windows", "macos"];
 
@@ -121,6 +123,7 @@ impl ProviderMetadataDefinition {
                 .map(|platform| (*platform).to_string())
                 .collect(),
             minimum_tested_cli_version: self.minimum_tested_cli_version.map(str::to_string),
+            maximum_tested_cli_version: None,
             default_executable_candidates: self
                 .default_executable_candidates
                 .iter()
@@ -261,6 +264,7 @@ fn unsupported_metadata(family_id: &ProviderFamilyId) -> ProviderFamilyMetadataR
         configuration_schema_version: 0,
         supported_platforms: Vec::new(),
         minimum_tested_cli_version: None,
+        maximum_tested_cli_version: None,
         default_executable_candidates: Vec::new(),
         implementation_status: ProviderImplementationStatus::Unsupported,
         maturity: ProviderMaturity::Experimental,
@@ -271,3 +275,131 @@ fn unsupported_metadata(family_id: &ProviderFamilyId) -> ProviderFamilyMetadataR
         ),
     }
 }
+
+/// The CLI versions one provider family supports. The minimum and the ceiling bound what
+/// starts; the newest tested version is the newest the replay transcripts and focused tests
+/// cover, and anything between it and the ceiling runs with a notice.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProviderCompatibilityRange {
+    pub minimum: &'static str,
+    pub maximum_tested: &'static str,
+    /// The first version of a protocol line Ganbaru has no runtime for, when the family has
+    /// major lines.
+    pub ceiling_exclusive: Option<&'static str>,
+}
+
+impl ProviderCompatibilityRange {
+    /// The probe detail of a version newer than the tested one.
+    pub fn untested_newer_detail(&self) -> String {
+        format!("Newer than the tested version {}", self.maximum_tested)
+    }
+}
+
+/// A provider's own version parser and ordering, which `admit_version` compares through.
+pub trait VersionOrder: Ord + Sized {
+    fn parse_version(value: &str) -> ChatResult<Self>;
+}
+
+/// Where `version` falls in `range`, read with the provider's parser `V`. An unreadable version
+/// is `Unreadable`; an error means the range itself does not parse.
+pub fn admit_version<V: VersionOrder>(
+    range: &ProviderCompatibilityRange,
+    version: &str,
+) -> ChatResult<ProviderVersionAdmission> {
+    let minimum = V::parse_version(range.minimum)?;
+    let maximum_tested = V::parse_version(range.maximum_tested)?;
+    let ceiling = range.ceiling_exclusive.map(V::parse_version).transpose()?;
+    let Ok(version) = V::parse_version(version) else {
+        return Ok(ProviderVersionAdmission::Unreadable);
+    };
+    Ok(if version < minimum {
+        ProviderVersionAdmission::BelowMinimum
+    } else if ceiling.is_some_and(|ceiling| version >= ceiling) {
+        ProviderVersionAdmission::AtOrAboveCeiling
+    } else if version > maximum_tested {
+        ProviderVersionAdmission::UntestedNewer
+    } else {
+        ProviderVersionAdmission::Supported
+    })
+}
+
+/// Whether `admission` lets a session start.
+pub fn admits_sessions(admission: ProviderVersionAdmission) -> bool {
+    !matches!(
+        admission,
+        ProviderVersionAdmission::BelowMinimum | ProviderVersionAdmission::AtOrAboveCeiling
+    )
+}
+
+const VERSION_ADMISSION_DETAIL: &str = "versionAdmission";
+const VERSION_DETAIL: &str = "version";
+
+/// An `UnsupportedVersion` refusal that carries the admission and the refused version, so a
+/// probe that fails on it can still report both.
+pub fn version_refusal(
+    admission: ProviderVersionAdmission,
+    version: &str,
+    message: String,
+    recoverable: bool,
+) -> ChatError {
+    let mut error = ChatError::new(ChatErrorCode::UnsupportedVersion, message, recoverable);
+    error.details = Some(Box::new(json!({
+        VERSION_ADMISSION_DETAIL: admission,
+        VERSION_DETAIL: version,
+    })));
+    error
+}
+
+/// The admission and version a `version_refusal` carries.
+pub fn refused_version(error: &ChatError) -> Option<(ProviderVersionAdmission, String)> {
+    if error.code != ChatErrorCode::UnsupportedVersion {
+        return None;
+    }
+    let details = error.details.as_deref()?;
+    let admission = serde_json::from_value(details.get(VERSION_ADMISSION_DETAIL)?.clone()).ok()?;
+    let version = details.get(VERSION_DETAIL)?.as_str()?.to_string();
+    Some((admission, version))
+}
+
+/// A `major.minor.patch` version, read from the first token that starts with a digit. A
+/// prerelease or build suffix after `-` or `+` is ignored, so `0.148.0-alpha.2` orders as
+/// `0.148.0`.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct CoreVersion {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+}
+
+impl VersionOrder for CoreVersion {
+    fn parse_version(value: &str) -> ChatResult<Self> {
+        let unreadable = || {
+            ChatError::new(
+                ChatErrorCode::UnsupportedVersion,
+                format!("Provider version {value:?} is not a readable version"),
+                false,
+            )
+        };
+        let token = value
+            .split_whitespace()
+            .find(|token| token.starts_with(|character: char| character.is_ascii_digit()))
+            .ok_or_else(unreadable)?;
+        let core = token.split(['-', '+']).next().unwrap_or_default();
+        let parts = core
+            .split('.')
+            .map(|part| part.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(unreadable)?;
+        let [major, minor, patch] = parts[..] else {
+            return Err(unreadable());
+        };
+        Ok(Self {
+            major,
+            minor,
+            patch,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests;

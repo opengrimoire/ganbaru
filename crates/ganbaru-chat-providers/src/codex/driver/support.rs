@@ -1,4 +1,5 @@
 use super::*;
+use crate::registry::{CoreVersion, admit_version, admits_sessions, version_refusal};
 
 pub(crate) fn validated_app_server_arguments(arguments: &[String]) -> ChatResult<Vec<String>> {
     let mut output = Vec::new();
@@ -324,6 +325,30 @@ pub(super) fn now_utc() -> ChatResult<UtcTimestamp> {
 pub(super) fn parse_user_agent_version(user_agent: &str) -> Option<String> {
     let (_, suffix) = user_agent.split_once('/')?;
     suffix.split_whitespace().next().map(str::to_string)
+}
+
+/// Where the Codex version in `user_agent` falls in `CODEX_COMPATIBILITY`, refusing one below the
+/// minimum or at or above the ceiling. A user agent without a readable version is `Unreadable`
+/// and still starts.
+pub(super) fn ensure_supported_user_agent(
+    user_agent: &str,
+) -> ChatResult<ProviderVersionAdmission> {
+    let Some(version) = parse_user_agent_version(user_agent) else {
+        return Ok(ProviderVersionAdmission::Unreadable);
+    };
+    let admission = admit_version::<CoreVersion>(&CODEX_COMPATIBILITY, &version)?;
+    if admits_sessions(admission) {
+        return Ok(admission);
+    }
+    Err(version_refusal(
+        admission,
+        &version,
+        format!(
+            "Codex {version} is unsupported; Ganbaru supports versions from {MINIMUM_CODEX_VERSION} and below {}",
+            CODEX_COMPATIBILITY.ceiling_exclusive.unwrap_or_default()
+        ),
+        true,
+    ))
 }
 
 pub(super) fn probe_state_for_error(code: ChatErrorCode) -> ProbeState {

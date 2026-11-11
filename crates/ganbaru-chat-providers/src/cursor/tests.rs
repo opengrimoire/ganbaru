@@ -887,3 +887,27 @@ fn cursor_and_grok_read_their_verified_configuration_paths() {
         }
     }
 }
+
+#[test]
+fn cursor_versions_admit_against_the_tested_range() {
+    use crate::registry::{admits_sessions, refused_version};
+    for (version, admission) in [
+        ("2026.04.07", ProviderVersionAdmission::BelowMinimum),
+        (MINIMUM_CURSOR_VERSION, ProviderVersionAdmission::Supported),
+        ("2026.04.08-abc1234", ProviderVersionAdmission::Supported),
+        ("2026.05.01", ProviderVersionAdmission::UntestedNewer),
+        ("2031.01.01", ProviderVersionAdmission::UntestedNewer),
+    ] {
+        let parsed = parse_version(version).unwrap();
+        let result = ensure_supported_version(parsed);
+        assert_eq!(result.is_ok(), admits_sessions(admission), "{version}");
+        match result {
+            Ok(admitted) => assert_eq!(admitted, admission, "{version}"),
+            Err(error) => assert_eq!(
+                refused_version(&error),
+                Some((admission, parsed.to_string())),
+                "{version}"
+            ),
+        }
+    }
+}

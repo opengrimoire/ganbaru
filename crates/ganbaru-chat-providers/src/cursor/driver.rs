@@ -223,6 +223,8 @@ impl CursorProviderDriver {
             ],
             minimum_tested_cli_version: (flavor == AcpProviderFlavor::Cursor)
                 .then(|| MINIMUM_CURSOR_VERSION.to_string()),
+            maximum_tested_cli_version: (flavor == AcpProviderFlavor::Cursor)
+                .then(|| CURSOR_COMPATIBILITY.maximum_tested.to_string()),
             default_executable_candidates: match flavor {
                 AcpProviderFlavor::Cursor => {
                     vec!["cursor-agent".to_string(), "agent".to_string()]

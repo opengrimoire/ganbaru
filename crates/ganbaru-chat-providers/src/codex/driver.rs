@@ -132,7 +132,8 @@ impl CodexProviderDriver {
                 "windows".to_string(),
                 "macos".to_string(),
             ],
-            minimum_tested_cli_version: None,
+            minimum_tested_cli_version: Some(MINIMUM_CODEX_VERSION.to_string()),
+            maximum_tested_cli_version: Some(CODEX_COMPATIBILITY.maximum_tested.to_string()),
             default_executable_candidates: vec!["codex".to_string()],
             implementation_status: ProviderImplementationStatus::Available,
             maturity: ProviderMaturity::Stable,
@@ -438,6 +439,9 @@ impl ProviderDriver for CodexProviderDriver {
                 Ok(snapshot) => {
                     let authenticated = snapshot.account.account.is_some()
                         || !snapshot.account.requires_openai_auth;
+                    let version_admission = Some(ensure_supported_user_agent(
+                        &snapshot.initialize.user_agent,
+                    )?);
                     let state = if authenticated {
                         ProbeState::Healthy
                     } else {
@@ -465,22 +469,31 @@ impl ProviderDriver for CodexProviderDriver {
                         capabilities: codex_capabilities(),
                         authority_support: snapshot.authority_support,
                         checked_at,
-                        detail: (!authenticated)
-                            .then_some("Codex requires authentication".to_string()),
+                        detail: if authenticated {
+                            (version_admission == Some(ProviderVersionAdmission::UntestedNewer))
+                                .then(|| CODEX_COMPATIBILITY.untested_newer_detail())
+                        } else {
+                            Some("Codex requires authentication".to_string())
+                        },
+                        version_admission,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
-                Err(error) => Ok(ProviderProbeResult {
-                    instance_id: self.configuration.instance_id.clone(),
-                    state: probe_state_for_error(error.code),
-                    version: None,
-                    negotiated_protocol_version: None,
-                    account_label: None,
-                    capabilities: codex_capabilities(),
-                    authority_support: ProviderAuthoritySupport::default(),
-                    checked_at,
-                    detail: Some(probe_detail(error.code).to_string()),
-                }),
+                Err(error) => {
+                    let refusal = crate::registry::refused_version(&error);
+                    Ok(ProviderProbeResult {
+                        instance_id: self.configuration.instance_id.clone(),
+                        state: probe_state_for_error(error.code),
+                        version: refusal.as_ref().map(|(_, version)| version.clone()),
+                        negotiated_protocol_version: None,
+                        account_label: None,
+                        capabilities: codex_capabilities(),
+                        authority_support: ProviderAuthoritySupport::default(),
+                        checked_at,
+                        detail: Some(probe_detail(error.code).to_string()),
+                        version_admission: refusal.map(|(admission, _)| admission),
+                    })
+                }
             }
         })
     }

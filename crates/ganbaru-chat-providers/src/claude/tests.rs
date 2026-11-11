@@ -970,3 +970,39 @@ fn sign_in_hint_names_only_a_custom_config_directory() {
         "Claude authentication is required; sign in with CLAUDE_CONFIG_DIR=/srv/claude-work"
     );
 }
+
+#[test]
+fn claude_versions_admit_against_the_tested_range() {
+    assert_eq!(
+        parse_version(CLAUDE_COMPATIBILITY.minimum).unwrap(),
+        MINIMUM_CLAUDE_VERSION
+    );
+    for (version, admission) in [
+        ("2.1.169", ProviderVersionAdmission::BelowMinimum),
+        ("2.1.170", ProviderVersionAdmission::Supported),
+        ("2.1.322 (Claude Code)", ProviderVersionAdmission::Supported),
+        ("2.1.323", ProviderVersionAdmission::UntestedNewer),
+        ("2.9.0-beta.1", ProviderVersionAdmission::UntestedNewer),
+        ("3.0.0", ProviderVersionAdmission::AtOrAboveCeiling),
+    ] {
+        let parsed = parse_version(version).unwrap();
+        let result = ensure_supported_version(parsed);
+        assert_eq!(
+            result.is_ok(),
+            crate::registry::admits_sessions(admission),
+            "{version}"
+        );
+        match result {
+            Ok(admitted) => assert_eq!(admitted, admission, "{version}"),
+            Err(error) => {
+                assert_eq!(error.code, ChatErrorCode::UnsupportedVersion, "{version}");
+                assert!(error.recoverable, "{version}");
+                assert_eq!(
+                    crate::registry::refused_version(&error),
+                    Some((admission, parsed.to_string())),
+                    "{version}"
+                );
+            }
+        }
+    }
+}

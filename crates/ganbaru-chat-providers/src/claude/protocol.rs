@@ -2,6 +2,7 @@
 
 use super::instructions::session_instructions;
 use crate::models::*;
+use crate::registry::{ProviderCompatibilityRange, VersionOrder, admit_version, version_refusal};
 use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -166,17 +167,45 @@ pub fn parse_version(value: &str) -> ChatResult<ClaudeVersion> {
     Ok(ClaudeVersion::new(major, minor, patch))
 }
 
-pub fn ensure_supported_version(value: ClaudeVersion) -> ChatResult<()> {
-    if value < MINIMUM_CLAUDE_VERSION {
-        return Err(ChatError::new(
-            ChatErrorCode::UnsupportedVersion,
+/// Claude Code versions with the complete interactive SDK protocol, up to the version the
+/// Claude replay scenarios record, below the next major line.
+pub const CLAUDE_COMPATIBILITY: ProviderCompatibilityRange = ProviderCompatibilityRange {
+    minimum: "2.1.170",
+    maximum_tested: "2.1.322",
+    ceiling_exclusive: Some("3.0.0"),
+};
+
+impl VersionOrder for ClaudeVersion {
+    fn parse_version(value: &str) -> ChatResult<Self> {
+        parse_version(value)
+    }
+}
+
+/// Where `value` falls in `CLAUDE_COMPATIBILITY`, refusing a version below the minimum or at
+/// or above the ceiling.
+pub fn ensure_supported_version(value: ClaudeVersion) -> ChatResult<ProviderVersionAdmission> {
+    let text = value.to_string();
+    let admission = admit_version::<ClaudeVersion>(&CLAUDE_COMPATIBILITY, &text)?;
+    match admission {
+        ProviderVersionAdmission::BelowMinimum => Err(version_refusal(
+            admission,
+            &text,
             format!(
                 "Claude Code {value} lacks the complete interactive SDK protocol; version {MINIMUM_CLAUDE_VERSION} or newer is required"
             ),
             true,
-        ));
+        )),
+        ProviderVersionAdmission::AtOrAboveCeiling => Err(version_refusal(
+            admission,
+            &text,
+            format!(
+                "Claude Code {value} is unsupported; Ganbaru supports versions below {}",
+                CLAUDE_COMPATIBILITY.ceiling_exclusive.unwrap_or_default()
+            ),
+            true,
+        )),
+        _ => Ok(admission),
     }
-    Ok(())
 }
 
 fn parse_version_part(value: Option<&str>) -> ChatResult<u64> {

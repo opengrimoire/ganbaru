@@ -261,6 +261,7 @@ export function modelSettings(): ChatSettingsRead {
       configurationSchemaVersion: 1,
       supportedPlatforms: ["linux", "windows", "macos"],
       minimumTestedCliVersion: null,
+      maximumTestedCliVersion: null,
       defaultExecutableCandidates: ["codex"],
       implementationStatus: "available",
       maturity: "stable",
@@ -273,6 +274,7 @@ export function modelSettings(): ChatSettingsRead {
       configurationSchemaVersion: 1,
       supportedPlatforms: ["linux", "windows", "macos"],
       minimumTestedCliVersion: null,
+      maximumTestedCliVersion: null,
       defaultExecutableCandidates: ["claude"],
       implementationStatus: "available",
       maturity: "stable",
@@ -316,6 +318,7 @@ export function modelSettings(): ChatSettingsRead {
         },
         checkedAt: "2026-07-22T12:00:00.000Z",
         detail: null,
+        versionAdmission: "supported",
       },
       lastSuccessfulProbeAt: "2026-07-22T12:00:00.000Z",
       modelCatalog: {

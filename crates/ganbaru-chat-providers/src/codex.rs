@@ -8,6 +8,9 @@ mod protocol;
 mod session;
 mod transport;
 
+#[cfg(test)]
+pub(crate) mod replay;
+
 pub use driver::CodexProviderDriver;
 
 #[cfg(test)]

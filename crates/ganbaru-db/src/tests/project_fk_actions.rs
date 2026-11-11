@@ -250,11 +250,10 @@ fn rebuilding_projects_for_optional_groups_keeps_every_dependent_row() {
 
         crate::run_migrations(&pool).await.unwrap();
 
-        assert_eq!(
-            row_counts(&pool).await,
-            loaded,
-            "every row survives the rebuild"
-        );
+        // Later migrations add tables, so only the tables that held the loaded graph compare.
+        let mut migrated = row_counts(&pool).await;
+        migrated.retain(|table, _| loaded.contains_key(table));
+        assert_eq!(migrated, loaded, "every row survives the rebuild");
         assert_eq!(foreign_key_violations(&pool).await, 0);
         let action: String = sqlx::query_scalar(
             "SELECT on_delete FROM pragma_foreign_key_list('projects') WHERE \"from\" = 'group_id'",

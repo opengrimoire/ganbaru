@@ -1,10 +1,12 @@
 //! Background runner for due Chat cleanup jobs: checkpoint refs and managed
-//! attachment and browser artifact files queued by permanent deletion.
+//! attachment and browser artifact files queued by permanent deletion, and
+//! expired timeline removal records.
 
 use super::checkpoints::run_checkpoint_cleanup;
 use crate::{db, vault};
 use chrono::{SecondsFormat, Utc};
 use ganbaru_chat::repository::attachments::run_due_attachment_cleanup;
+use ganbaru_chat::repository::reads::prune_timeline_removals;
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult, UtcTimestamp};
 use sqlx::SqlitePool;
 use std::time::Duration;
@@ -25,6 +27,7 @@ pub(crate) async fn run_due_chat_cleanup(
         Ok(vault_root) => run_due_attachment_cleanup(pool, &vault_root, &now).await?,
         Err(_) => 0,
     };
+    prune_timeline_removals(pool, &now).await?;
     Ok(checkpoint_refs + attachment_files)
 }
 

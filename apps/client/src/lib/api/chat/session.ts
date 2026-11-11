@@ -13,6 +13,7 @@ import type {
   ChatThreadId,
   ChatTurnId,
   ChatThreadShellRead,
+  ChatTimelineDeltaRead,
   ChatTimelinePageRead,
   ProjectWorkingFolderId,
   ProviderInstanceId,
@@ -38,6 +39,7 @@ import {
   parseChatError,
   parseChatThreadShell,
   parseChatThreadShells,
+  parseChatTimelineDelta,
   parseChatTimelinePage,
 } from "$lib/chat/validation";
 
@@ -70,6 +72,20 @@ export async function readChatTimelinePage(
     dbUrl: await ensureDbUrl(),
     threadId,
     cursor,
+    limit,
+  }));
+}
+
+/** Reads the visible timeline rows and turns that changed after a change clock value. */
+export async function readChatTimelineSince(
+  threadId: ChatThreadId,
+  afterChange: number,
+  limit = 100,
+): Promise<ChatTimelineDeltaRead> {
+  return parseChatTimelineDelta(await invoke<unknown>("chat_read_timeline_since", {
+    dbUrl: await ensureDbUrl(),
+    threadId,
+    afterChange,
     limit,
   }));
 }

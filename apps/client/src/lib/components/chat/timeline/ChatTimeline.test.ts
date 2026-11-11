@@ -242,6 +242,7 @@ function message(
     activityId,
     turnId,
     sequenceAnchor: sequence,
+    changeSequence: sequence,
     kind: "message",
     data: {
       schemaVersion: 1,
@@ -274,6 +275,7 @@ function activity(
     activityId,
     turnId,
     sequenceAnchor: options.sequence ?? 2,
+    changeSequence: options.sequence ?? 2,
     kind: "activity",
     data: {
       schemaVersion: 1,
@@ -310,5 +312,6 @@ function timelinePage(state: "active" | "completed" = "completed"): ChatTimeline
     previousCursor: null,
     nextCursor: null,
     threadRevision: 1,
+    changeCursor: 0,
   };
 }

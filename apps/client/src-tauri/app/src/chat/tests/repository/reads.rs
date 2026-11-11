@@ -292,3 +292,192 @@ fn exact_turn_timeline_read_does_not_depend_on_the_latest_thread_page() {
         assert!(page.next_cursor.is_none());
     });
 }
+
+async fn insert_activity(pool: &sqlx::SqlitePool, id: &str, sequence: i64, detail: Option<&str>) {
+    sqlx::query(
+        "INSERT INTO chat_activities
+            (id, thread_id, sequence_anchor, item_kind, status, title, detail,
+             source_event_type, created_at, updated_at)
+         VALUES (?, 'thread-1', ?, 'command_execution', 'completed', 'Command', ?,
+                 'item_completed', ?, ?)",
+    )
+    .bind(id)
+    .bind(sequence)
+    .bind(detail)
+    .bind(NOW)
+    .bind(NOW)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+fn item_ids(items: &[ganbaru_chat_contracts::models::ChatTimelineItemRead]) -> Vec<&str> {
+    items.iter().map(|item| item.activity_id.as_str()).collect()
+}
+
+#[test]
+fn timeline_since_read_returns_only_rows_changed_after_the_page_cursor() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        append_canonical_event(&pool, content_event("event-since-1", "Hello"))
+            .await
+            .unwrap();
+        insert_activity(&pool, "activity-old", 1, None).await;
+        let page = read_timeline_page(&pool, &thread_id, None, 20)
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 2);
+
+        let unchanged = read_timeline_since(&pool, &thread_id, page.change_cursor, 20)
+            .await
+            .unwrap();
+        assert!(unchanged.items.is_empty());
+        assert_eq!(unchanged.change_cursor, page.change_cursor);
+
+        append_canonical_event(&pool, content_event("event-since-2", " again"))
+            .await
+            .unwrap();
+        let delta = read_timeline_since(&pool, &thread_id, page.change_cursor, 20)
+            .await
+            .unwrap();
+        assert_eq!(item_ids(&delta.items), ["assistant-message-1"]);
+        assert!(!delta.has_more && !delta.reset_required);
+        assert!(delta.removed_item_ids.is_empty());
+        let reread = read_timeline_page(&pool, &thread_id, None, 20)
+            .await
+            .unwrap();
+        assert_eq!(delta.change_cursor, reread.change_cursor);
+        assert!(delta.items[0].change_sequence > page.change_cursor);
+    });
+}
+
+#[test]
+fn timeline_since_read_reports_deleted_and_invalidated_rows_as_removed() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        append_canonical_event(
+            &pool,
+            canonical_request(
+                "event-removal-start",
+                Some("turn-removal"),
+                CanonicalEvent::TurnStarted(TurnStartedEvent {
+                    provider_turn_id: None,
+                    state: ChatTurnState::Active,
+                    modes: TurnModeSnapshot {
+                        safety_mode: SafetyMode::AskForApproval,
+                        interaction_mode: InteractionMode::Build,
+                    },
+                    model_id: None,
+                    model_options: Vec::new(),
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        append_canonical_event(
+            &pool,
+            canonical_request(
+                "event-removal-answer",
+                Some("turn-removal"),
+                CanonicalEvent::ItemCompleted(ItemLifecycleEvent {
+                    item_id: "answer-removal".to_string(),
+                    kind: CanonicalItemKind::AssistantMessage,
+                    status: ActivityStatus::Completed,
+                    title: None,
+                    detail: Some("Answer".to_string()),
+                    safe_metadata: None,
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        insert_activity(&pool, "activity-deleted", 1, None).await;
+        let page = read_timeline_page(&pool, &thread_id, None, 20)
+            .await
+            .unwrap();
+
+        sqlx::query("DELETE FROM chat_activities WHERE id = 'activity-deleted'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE chat_turns SET invalidated_at = ? WHERE id = 'turn-removal'")
+            .bind(NOW)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let delta = read_timeline_since(&pool, &thread_id, page.change_cursor, 20)
+            .await
+            .unwrap();
+
+        let removed = delta
+            .removed_item_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            removed,
+            HashSet::from(["activity-deleted", "answer-removal"])
+        );
+        assert!(delta.items.is_empty());
+        assert!(delta.turns.is_empty());
+    });
+}
+
+#[test]
+fn timeline_since_read_caps_bytes_but_always_returns_one_large_row() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        let start = read_timeline_page(&pool, &thread_id, None, 20)
+            .await
+            .unwrap()
+            .change_cursor;
+        let large = "x".repeat(2 * 1024 * 1024);
+        insert_activity(&pool, "activity-large-1", 1, Some(&large)).await;
+        insert_activity(&pool, "activity-large-2", 2, Some(&large)).await;
+
+        let first = read_timeline_since(&pool, &thread_id, start, 20)
+            .await
+            .unwrap();
+        assert_eq!(item_ids(&first.items), ["activity-large-1"]);
+        assert!(first.has_more);
+        let second = read_timeline_since(&pool, &thread_id, first.change_cursor, 20)
+            .await
+            .unwrap();
+        assert_eq!(item_ids(&second.items), ["activity-large-2"]);
+        assert!(!second.has_more);
+    });
+}
+
+#[test]
+fn timeline_since_read_asks_for_a_reload_below_the_pruned_removals() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        insert_activity(&pool, "activity-pruned", 1, None).await;
+        let page = read_timeline_page(&pool, &thread_id, None, 20)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM chat_activities WHERE id = 'activity-pruned'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let after_delete = read_timeline_since(&pool, &thread_id, page.change_cursor, 20)
+            .await
+            .unwrap();
+        assert_eq!(after_delete.removed_item_ids.len(), 1);
+
+        let later = UtcTimestamp::new("2999-01-01T00:00:00Z").unwrap();
+        assert_eq!(prune_timeline_removals(&pool, &later).await.unwrap(), 1);
+        let stale = read_timeline_since(&pool, &thread_id, page.change_cursor, 20)
+            .await
+            .unwrap();
+        assert!(stale.reset_required);
+        let current = read_timeline_since(&pool, &thread_id, after_delete.change_cursor, 20)
+            .await
+            .unwrap();
+        assert!(!current.reset_required);
+    });
+}

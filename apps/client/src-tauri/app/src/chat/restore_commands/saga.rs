@@ -1,4 +1,5 @@
 use super::*;
+use ganbaru_chat_contracts::models::ChatProjectionKey;
 use ganbaru_chat_contracts::models::ProviderSessionState;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -235,6 +236,13 @@ pub(super) async fn execute_restore(
         }
     };
     mark_preview_state(pool, &preview.id, "completed", now).await?;
+    crate::chat::ingestion::notify_rows_changed(
+        app,
+        pool,
+        &request.thread_id,
+        &[ChatProjectionKey::Thread, ChatProjectionKey::Turns],
+    )
+    .await;
     let thread_revision: i64 = sqlx::query_scalar("SELECT revision FROM chat_threads WHERE id = ?")
         .bind(request.thread_id.as_str())
         .fetch_one(pool)

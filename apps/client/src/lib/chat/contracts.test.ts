@@ -127,6 +127,7 @@ describe("Chat provider contracts", () => {
       previousCursor: null,
       nextCursor: null,
       threadRevision: 1,
+      changeCursor: 0,
     });
 
     expect(page.turns[0]?.changedFiles).toEqual([relative]);

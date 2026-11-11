@@ -92,17 +92,38 @@ export interface ChatProjectShellRead {
   archivedThreadCount: number;
 }
 
+/**
+ * Projections a change notification can name. `unknown` stands for a key this build does not
+ * recognize, which readers treat as a change to everything.
+ */
+export const CHAT_PROJECTION_KEYS = [
+  "thread",
+  "turns",
+  "messages",
+  "activities",
+  "plans",
+  "pending_requests",
+  "organizational",
+  "unknown",
+] as const;
+export type ChatProjectionKey = (typeof CHAT_PROJECTION_KEYS)[number];
+
 export interface ChatChangeNotification {
   threadId: ChatThreadId;
+  /** The newest event sequence the notification covers. */
   sequence: number;
+  /** The first event sequence the notification covers; equal to `sequence` for one event. */
+  sinceSequence: number;
   revision: number;
-  changedProjectionKeys: string[];
+  changedProjectionKeys: ChatProjectionKey[];
 }
 
 export interface ChatTimelineItemRead {
   activityId: ChatActivityId;
   turnId: ChatTurnId | null;
   sequenceAnchor: number;
+  /** The thread change clock value of the row's last write. */
+  changeSequence: number;
   kind: string;
   data: VersionedJson;
   sourceThreadId?: ChatThreadId;
@@ -127,5 +148,22 @@ export interface ChatTimelinePageRead {
   turns: ChatTimelineTurnRead[];
   previousCursor: string | null;
   nextCursor: string | null;
+  threadRevision: number;
+  /** The thread change clock the rows were read at. */
+  changeCursor: number;
+}
+
+/** Timeline rows that changed after a change clock value. */
+export interface ChatTimelineDeltaRead {
+  threadId: ChatThreadId;
+  items: ChatTimelineItemRead[];
+  turns: ChatTimelineTurnRead[];
+  /** Rows deleted or hidden by an invalidated turn and not visible again. */
+  removedItemIds: ChatActivityId[];
+  changeCursor: number;
+  /** More changes follow `changeCursor` than one read returns. */
+  hasMore: boolean;
+  /** The reader must reload the timeline because older removals were pruned. */
+  resetRequired: boolean;
   threadRevision: number;
 }

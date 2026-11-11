@@ -142,6 +142,7 @@ commands.allow = [
   "chat_read_thread_shell",
   "chat_read_timeline_page",
   "chat_read_timeline_turn",
+  "chat_read_timeline_since",
   "chat_read_user_input_draft",
   "chat_rebuild_projections",
   "chat_recover_assignment_dispatch_jobs",

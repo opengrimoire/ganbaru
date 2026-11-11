@@ -44,7 +44,7 @@ When a message looks actionable but lacks an authorized target or a clear object
 
 ## Timeline
 
-The timeline combines organizational messages with normalized run events in canonical order, with stable anchors and enough provenance to show who requested work, which provider executed it, what authority applied, and what it produced.
+The timeline combines organizational messages with normalized run events in canonical order, with stable anchors and enough provenance to show who requested work, which provider executed it, what authority applied, and what it produced. Live changes reread only the rows that changed, so older history a reader scrolled to stays loaded.
 
 Routine low-level provider events can fold after settlement. Errors, interactive requests, decisions, file changes, checkpoints, and final results stay easy to find. Folding is presentation only and never deletes history.
 

@@ -1,6 +1,7 @@
 import * as chatApi from "$lib/api/chat";
 import * as workingFolderApi from "$lib/api/project-working-folders";
 import type {
+  ChatChangeNotification,
   ChatBehaviorPreferences,
   ChatChannelId,
   ChatChannelRead,
@@ -68,6 +69,13 @@ import {
 } from "$lib/stores/chat/organizational-controller.svelte";
 import { ChatCommunicationController } from "$lib/stores/chat/communication-controller.svelte";
 import { ChatTimelineController } from "$lib/stores/chat/timeline-controller.svelte";
+import {
+  fullNativeChange,
+  mergeNativeChanges,
+  nativeChangeFromNotification,
+  planNativeRefresh,
+  type ChatNativeChange,
+} from "$lib/stores/chat/native-change-routing";
 import { ChatConfigurationController } from "$lib/stores/chat/configuration-controller.svelte";
 import { ChatChannelNavigationController } from "$lib/stores/chat/channel-navigation-controller.svelte";
 import { ChatThreadCollectionController } from "$lib/stores/chat/thread-collection-controller.svelte";
@@ -144,10 +152,12 @@ export class ChatStore {
   private channelReadPromise: { channelId: ChatChannelId; promise: Promise<void> } | null = null;
   private sessionMessageReactions = $state<Record<string, ChatMessageReaction[]>>({});
   private loadPromise: Promise<void> | null = null;
-  private readonly nativeChanges = new AsyncFrameKeyedCoalescer<string, null>(
-    (threadId) => this.refreshNativeChange(threadId),
-    () => null,
+  private readonly nativeChanges = new AsyncFrameKeyedCoalescer<string, ChatNativeChange>(
+    (threadId, change) => this.refreshNativeChange(threadId, change),
+    mergeNativeChanges,
   );
+  /** The newest native event sequence handled per thread, so a skipped notification forces a full reread. */
+  private readonly lastNativeSequences = new Map<string, number>();
   private vaultGeneration = 0;
   private otherWindowListening = false;
   private syncListening = false;
@@ -427,6 +437,7 @@ export class ChatStore {
   /** Invalidates this pane's vault-scoped Chat state; {@link resetChatForVault} also resets the shared state. */
   resetPaneForVault(): void {
     this.vaultGeneration += 1;
+    this.lastNativeSequences.clear();
     this.loadRequest += 1;
     this.channelSelectionRequest += 1;
     this.loaded = false;
@@ -1146,21 +1157,40 @@ export class ChatStore {
   pickComposerImages(title: string): Promise<void> { return this.composerRuntimeController.pickImages(title); }
   removeComposerAttachment(attachmentId: string): void { this.composerRuntimeController.removeAttachment(attachmentId); }
 
-  async handleNativeChange(threadId: string): Promise<void> {
-    await this.nativeChanges.push(threadId, null);
+  /**
+   * Queues a native change to one thread for the next frame. Without a notification, as after a checkpoint restore
+   * this window ran, everything the thread shows rereads.
+   */
+  async handleNativeChange(threadId: string, notification: ChatChangeNotification | null = null): Promise<void> {
+    await this.nativeChanges.push(
+      threadId,
+      notification ? nativeChangeFromNotification(notification) : fullNativeChange(),
+    );
   }
 
-  private async refreshNativeChange(threadId: string): Promise<void> {
-    const thread = await chatApi.readChatThreadShell(threadId);
-    if (thread.workingFolderId !== null && thread.scratchGenerationId === null) {
-      this.threadCollectionController.upsert(thread);
+  private async refreshNativeChange(threadId: string, change: ChatNativeChange): Promise<void> {
+    const plan = planNativeRefresh(
+      change,
+      threadId === this.selectedThreadId,
+      this.lastNativeSequences.get(threadId) ?? null,
+    );
+    if (change.sequence !== null) {
+      this.lastNativeSequences.set(threadId, Math.max(change.sequence, this.lastNativeSequences.get(threadId) ?? 0));
     }
-    const channelId = this.selectedChannelId;
-    if (channelId) await this.loadChannelMessages(channelId, true);
-    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
+    if (plan.shell) {
+      const thread = await chatApi.readChatThreadShell(threadId);
+      if (thread.workingFolderId !== null && thread.scratchGenerationId === null) {
+        this.threadCollectionController.upsert(thread);
+      }
+    }
+    if (plan.organizational) {
+      const channelId = this.selectedChannelId;
+      if (channelId) await this.loadChannelMessages(channelId, true);
+      if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
+    }
     if (threadId !== this.selectedThreadId) return;
-    await this.timelineController.refreshLatest(threadId);
-    await this.refreshInteraction(threadId);
+    if (plan.timeline) await this.timelineController.refreshLatest(threadId);
+    if (plan.interaction) await this.refreshInteraction(threadId);
   }
 
   private publishChannelChange(channelId: ChatChannelId | null): void {

@@ -1,18 +1,23 @@
 use crate::events::{ChangedFileSummary, ThreadUsageUpdatedEvent};
 use crate::models::{
-    ChatActivityId, ChatError, ChatErrorCode, ChatExecutionEnvironmentId, ChatResult,
-    ChatScratchGenerationId, ChatThreadId, ChatThreadShellRead, ChatThreadState,
-    ChatTimelineItemRead, ChatTimelinePageRead, ChatTimelineTurnRead, ChatTurnId, ChatTurnState,
-    InteractionMode, ModelId, ModelOptionSelection, ProjectWorkingFolderId, ProviderFamilyId,
-    ProviderInstanceId, ProviderThreadId, SafetyMode, TurnModeSnapshot, UtcTimestamp,
-    VersionedJson,
+    ChatActivityId, ChatChangeNotification, ChatError, ChatErrorCode, ChatExecutionEnvironmentId,
+    ChatProjectionKey, ChatResult, ChatScratchGenerationId, ChatThreadId, ChatThreadShellRead,
+    ChatThreadState, ChatTimelineDeltaRead, ChatTimelineItemRead, ChatTimelinePageRead,
+    ChatTimelineTurnRead, ChatTurnId, ChatTurnState, InteractionMode, ModelId,
+    ModelOptionSelection, ProjectWorkingFolderId, ProviderFamilyId, ProviderInstanceId,
+    ProviderThreadId, SafetyMode, TurnModeSnapshot, UtcTimestamp, VersionedJson,
 };
 use serde::{Deserialize, Deserializer, Serialize};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, SqliteConnection, SqlitePool};
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 const MAX_PAGE_SIZE: u32 = 200;
 const MAX_SEARCH_LENGTH: usize = 240;
+/// Body bytes after which a since-read stops returning rows.
+pub const MAX_SINCE_READ_BYTES: u64 = 1024 * 1024;
+/// How long removal records stay, so a reader that falls further behind reloads the timeline.
+pub const TIMELINE_REMOVAL_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -222,15 +227,81 @@ pub async fn search_thread_titles(
     rows.into_iter().map(row_to_thread_shell).collect()
 }
 
+/// The visible timeline rows of one thread as `(row_id, turn_id, sequence_anchor, change_sequence,
+/// item_kind, schema_version, item_data)`. Rows of an invalidated turn are hidden. `$filter` adds
+/// a condition to every branch, binding one value per branch.
+macro_rules! visible_timeline_rows {
+    ($filter:literal) => {
+        concat!(
+            "SELECT id AS row_id, turn_id, sequence_anchor, change_sequence, 'message' AS item_kind,
+                    content_metadata_schema_version AS schema_version,
+                    json_object('role', role, 'markdown', normalized_markdown,
+                                'streamingState', streaming_state,
+                                'providerItemId', provider_item_id,
+                                'metadata', json(content_metadata_data),
+                                'createdAt', created_at, 'updatedAt', updated_at) AS item_data
+             FROM chat_messages m WHERE thread_id = ? ",
+            $filter,
+            "
+               AND (turn_id IS NULL OR EXISTS (
+                 SELECT 1 FROM chat_turns t WHERE t.id = m.turn_id AND t.invalidated_at IS NULL
+               ))
+             UNION ALL
+             SELECT id, turn_id, sequence_anchor, change_sequence, 'activity', safe_metadata_schema_version,
+                    json_object('activityKind', item_kind, 'status', status, 'title', title,
+                                'detail', detail, 'providerItemId', provider_item_id,
+                                'metadata', json(safe_metadata_data),
+                                'createdAt', created_at, 'updatedAt', updated_at)
+             FROM chat_activities a WHERE thread_id = ? ",
+            $filter,
+            "
+               AND (turn_id IS NULL OR EXISTS (
+                 SELECT 1 FROM chat_turns t WHERE t.id = a.turn_id AND t.invalidated_at IS NULL
+               ))
+             UNION ALL
+             SELECT id, origin_turn_id, sequence_anchor, change_sequence, 'plan', steps_schema_version,
+                    json_object('markdown', markdown, 'steps', json(steps_data), 'state', state,
+                                'createdAt', created_at, 'updatedAt', updated_at)
+             FROM chat_plans p WHERE thread_id = ? ",
+            $filter,
+            "
+               AND (origin_turn_id IS NULL OR EXISTS (
+                 SELECT 1 FROM chat_turns t
+                 WHERE t.id = p.origin_turn_id AND t.invalidated_at IS NULL
+               ))"
+        )
+    };
+}
+
+/// Reads `(last_change, removals_pruned_through)` of a thread's timeline change clock.
+async fn read_timeline_clock(
+    connection: &mut SqliteConnection,
+    thread_id: &ChatThreadId,
+) -> ChatResult<(u64, u64)> {
+    let clock = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT last_change, removals_pruned_through
+         FROM chat_timeline_change_clocks WHERE thread_id = ?",
+    )
+    .bind(thread_id.as_str())
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(persistence_error)?
+    .unwrap_or((0, 0));
+    Ok((unsigned(clock.0)?, unsigned(clock.1)?))
+}
+
+/// Reads one page of a thread's visible timeline, newest first from `cursor`, together with the
+/// change clock it was read at, in one read transaction.
 pub async fn read_timeline_page(
     pool: &SqlitePool,
     thread_id: &ChatThreadId,
     cursor: Option<&ChatTimelineCursor>,
     limit: u32,
 ) -> ChatResult<ChatTimelinePageRead> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let thread = sqlx::query("SELECT revision, last_event_sequence FROM chat_threads WHERE id = ?")
         .bind(thread_id.as_str())
-        .fetch_optional(pool)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(persistence_error)?
         .ok_or_else(not_found_error)?;
@@ -240,50 +311,22 @@ pub async fn read_timeline_page(
             .try_get("last_event_sequence")
             .map_err(persistence_error)?,
     )?;
+    let (change_cursor, _) = read_timeline_clock(&mut transaction, thread_id).await?;
     let anchor = cursor
         .map_or(last_sequence, |value| value.sequence)
         .min(last_sequence);
     let anchor_row_id = cursor.and_then(|value| value.row_id.as_deref());
     let page_limit = limit.clamp(1, MAX_PAGE_SIZE);
-    let mut rows = sqlx::query(
-        "SELECT row_id, turn_id, sequence_anchor, item_kind, schema_version, item_data
-         FROM (
-           SELECT id AS row_id, turn_id, sequence_anchor, 'message' AS item_kind,
-                  content_metadata_schema_version AS schema_version,
-                  json_object('role', role, 'markdown', normalized_markdown,
-                              'streamingState', streaming_state,
-                              'providerItemId', provider_item_id,
-                              'metadata', json(content_metadata_data),
-                              'createdAt', created_at, 'updatedAt', updated_at) AS item_data
-           FROM chat_messages m WHERE thread_id = ?
-             AND (turn_id IS NULL OR EXISTS (
-               SELECT 1 FROM chat_turns t WHERE t.id = m.turn_id AND t.invalidated_at IS NULL
-             ))
-           UNION ALL
-           SELECT id, turn_id, sequence_anchor, 'activity', safe_metadata_schema_version,
-                  json_object('activityKind', item_kind, 'status', status, 'title', title,
-                              'detail', detail, 'providerItemId', provider_item_id,
-                              'metadata', json(safe_metadata_data),
-                              'createdAt', created_at, 'updatedAt', updated_at)
-           FROM chat_activities a WHERE thread_id = ?
-             AND (turn_id IS NULL OR EXISTS (
-               SELECT 1 FROM chat_turns t WHERE t.id = a.turn_id AND t.invalidated_at IS NULL
-             ))
-           UNION ALL
-           SELECT id, origin_turn_id, sequence_anchor, 'plan', steps_schema_version,
-                  json_object('markdown', markdown, 'steps', json(steps_data), 'state', state,
-                              'createdAt', created_at, 'updatedAt', updated_at)
-           FROM chat_plans p WHERE thread_id = ?
-             AND (origin_turn_id IS NULL OR EXISTS (
-               SELECT 1 FROM chat_turns t
-               WHERE t.id = p.origin_turn_id AND t.invalidated_at IS NULL
-             ))
-         )
+    let mut rows = sqlx::query(concat!(
+        "SELECT row_id, turn_id, sequence_anchor, change_sequence, item_kind, schema_version, item_data
+         FROM (",
+        visible_timeline_rows!(""),
+        ")
          WHERE sequence_anchor < ?
             OR (sequence_anchor = ? AND (? IS NULL OR row_id < ?))
          ORDER BY sequence_anchor DESC, row_id DESC
-         LIMIT ?",
-    )
+         LIMIT ?"
+    ))
     .bind(thread_id.as_str())
     .bind(thread_id.as_str())
     .bind(thread_id.as_str())
@@ -292,7 +335,7 @@ pub async fn read_timeline_page(
     .bind(anchor_row_id)
     .bind(anchor_row_id)
     .bind(i64::from(page_limit) + 1)
-    .fetch_all(pool)
+    .fetch_all(&mut *transaction)
     .await
     .map_err(persistence_error)?;
     let has_older = rows.len() > page_limit as usize;
@@ -302,15 +345,8 @@ pub async fn read_timeline_page(
         .map(|row| row_to_timeline_item(row, None))
         .collect::<ChatResult<Vec<_>>>()?;
     items.reverse();
-    let turn_ids = items
-        .iter()
-        .filter_map(|item| {
-            item.turn_id
-                .as_ref()
-                .map(|turn_id| turn_id.as_str().to_string())
-        })
-        .collect::<BTreeSet<_>>();
-    let turns = read_timeline_turns_by_ids(pool, &turn_ids).await?;
+    let turns = read_timeline_turns_in(&mut transaction, &item_turn_ids(&items)).await?;
+    transaction.commit().await.map_err(persistence_error)?;
     let last = items.last().map(|item| item.sequence_anchor);
     Ok(ChatTimelinePageRead {
         thread_id: thread_id.clone(),
@@ -332,7 +368,210 @@ pub async fn read_timeline_page(
         items,
         turns,
         thread_revision: revision,
+        change_cursor,
     })
+}
+
+/// Reads the visible timeline rows, turns, and removals of a thread written after `after_change`,
+/// in one read transaction. The read returns at most `limit` rows and stops once their bodies
+/// pass [`MAX_SINCE_READ_BYTES`], always returning at least one row; either cap sets `has_more`
+/// and leaves `change_cursor` at the last returned change.
+pub async fn read_timeline_since(
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+    after_change: u64,
+    limit: u32,
+) -> ChatResult<ChatTimelineDeltaRead> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let revision = sqlx::query_scalar::<_, i64>("SELECT revision FROM chat_threads WHERE id = ?")
+        .bind(thread_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(persistence_error)?
+        .ok_or_else(not_found_error)
+        .and_then(unsigned)?;
+    let (last_change, pruned_through) = read_timeline_clock(&mut transaction, thread_id).await?;
+    let mut delta = ChatTimelineDeltaRead {
+        thread_id: thread_id.clone(),
+        items: Vec::new(),
+        turns: Vec::new(),
+        removed_item_ids: Vec::new(),
+        change_cursor: last_change,
+        has_more: false,
+        reset_required: false,
+        thread_revision: revision,
+    };
+    if after_change < pruned_through || after_change > last_change {
+        delta.reset_required = true;
+        return Ok(delta);
+    }
+    if after_change == last_change {
+        return Ok(delta);
+    }
+    let after = i64_value(after_change)?;
+    let row_limit = limit.clamp(1, MAX_PAGE_SIZE);
+    let sizes = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT change_sequence, body_bytes FROM (
+           SELECT change_sequence,
+                  length(CAST(normalized_markdown AS BLOB))
+                    + length(CAST(content_metadata_data AS BLOB)) AS body_bytes
+           FROM chat_messages WHERE thread_id = ? AND change_sequence > ?
+           UNION ALL
+           SELECT change_sequence,
+                  coalesce(length(CAST(detail AS BLOB)), 0)
+                    + length(CAST(safe_metadata_data AS BLOB))
+           FROM chat_activities WHERE thread_id = ? AND change_sequence > ?
+           UNION ALL
+           SELECT change_sequence,
+                  length(CAST(markdown AS BLOB)) + length(CAST(steps_data AS BLOB))
+           FROM chat_plans WHERE thread_id = ? AND change_sequence > ?
+         )
+         ORDER BY change_sequence
+         LIMIT ?",
+    )
+    .bind(thread_id.as_str())
+    .bind(after)
+    .bind(thread_id.as_str())
+    .bind(after)
+    .bind(thread_id.as_str())
+    .bind(after)
+    .bind(i64::from(row_limit) + 1)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    let cutoff = since_read_cutoff(&sizes, row_limit as usize)?;
+    if let Some(cutoff) = cutoff {
+        delta.has_more = true;
+        delta.change_cursor = cutoff;
+    }
+    let through = i64_value(delta.change_cursor)?;
+    let rows = sqlx::query(concat!(
+        "SELECT row_id, turn_id, sequence_anchor, change_sequence, item_kind, schema_version, item_data
+         FROM (",
+        visible_timeline_rows!("AND change_sequence > ? AND change_sequence <= ?"),
+        ")
+         ORDER BY change_sequence"
+    ))
+    .bind(thread_id.as_str())
+    .bind(after)
+    .bind(through)
+    .bind(thread_id.as_str())
+    .bind(after)
+    .bind(through)
+    .bind(thread_id.as_str())
+    .bind(after)
+    .bind(through)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    delta.items = rows
+        .into_iter()
+        .map(|row| row_to_timeline_item(row, None))
+        .collect::<ChatResult<Vec<_>>>()?;
+    let changed_turns = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM chat_turns
+         WHERE thread_id = ? AND change_sequence > ? AND change_sequence <= ?
+           AND invalidated_at IS NULL",
+    )
+    .bind(thread_id.as_str())
+    .bind(after)
+    .bind(through)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    let mut turn_ids = item_turn_ids(&delta.items);
+    turn_ids.extend(changed_turns);
+    delta.turns = read_timeline_turns_in(&mut transaction, &turn_ids).await?;
+    let removed = sqlx::query_scalar::<_, String>(
+        "SELECT item_id FROM chat_timeline_removals
+         WHERE thread_id = ? AND change_sequence > ? AND change_sequence <= ?
+         UNION
+         SELECT item.id FROM chat_turns t
+         JOIN (
+           SELECT id, turn_id FROM chat_messages WHERE thread_id = ?
+           UNION ALL SELECT id, turn_id FROM chat_activities WHERE thread_id = ?
+           UNION ALL SELECT id, origin_turn_id FROM chat_plans WHERE thread_id = ?
+         ) item ON item.turn_id = t.id
+         WHERE t.thread_id = ? AND t.invalidated_at IS NOT NULL
+           AND t.change_sequence > ? AND t.change_sequence <= ?",
+    )
+    .bind(thread_id.as_str())
+    .bind(after)
+    .bind(through)
+    .bind(thread_id.as_str())
+    .bind(thread_id.as_str())
+    .bind(thread_id.as_str())
+    .bind(thread_id.as_str())
+    .bind(after)
+    .bind(through)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    transaction.commit().await.map_err(persistence_error)?;
+    let returned = delta
+        .items
+        .iter()
+        .map(|item| item.activity_id.as_str())
+        .collect::<BTreeSet<_>>();
+    delta.removed_item_ids = removed
+        .into_iter()
+        .filter(|id| !returned.contains(id.as_str()))
+        .map(ChatActivityId::new)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| corrupt_data_error())?;
+    Ok(delta)
+}
+
+/// Returns the last change a since-read may return when the row or byte cap cuts it short, given
+/// `(change_sequence, body_bytes)` pairs in change order, or `None` when every change fits.
+fn since_read_cutoff(sizes: &[(i64, i64)], row_limit: usize) -> ChatResult<Option<u64>> {
+    let mut total = 0_u64;
+    for (index, (_, bytes)) in sizes.iter().enumerate() {
+        total = total.saturating_add(unsigned(*bytes)?);
+        if index > 0 && (index >= row_limit || total > MAX_SINCE_READ_BYTES) {
+            return unsigned(sizes[index - 1].0).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+/// Removes timeline removal records older than [`TIMELINE_REMOVAL_RETENTION`] before `now` and
+/// records the highest pruned change per thread, so a since-read from before it asks for a reload.
+pub async fn prune_timeline_removals(pool: &SqlitePool, now: &UtcTimestamp) -> ChatResult<u64> {
+    let retention = format!("-{} seconds", TIMELINE_REMOVAL_RETENTION.as_secs());
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    sqlx::query(
+        "UPDATE chat_timeline_change_clocks
+         SET removals_pruned_through = max(removals_pruned_through, (
+             SELECT max(change_sequence) FROM chat_timeline_removals r
+             WHERE r.thread_id = chat_timeline_change_clocks.thread_id
+               AND r.removed_at < strftime('%Y-%m-%dT%H:%M:%fZ', ?, ?)
+         ))
+         WHERE EXISTS (
+             SELECT 1 FROM chat_timeline_removals r
+             WHERE r.thread_id = chat_timeline_change_clocks.thread_id
+               AND r.removed_at < strftime('%Y-%m-%dT%H:%M:%fZ', ?, ?)
+         )",
+    )
+    .bind(now.as_str())
+    .bind(&retention)
+    .bind(now.as_str())
+    .bind(&retention)
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    let pruned = sqlx::query(
+        "DELETE FROM chat_timeline_removals
+         WHERE removed_at < strftime('%Y-%m-%dT%H:%M:%fZ', ?, ?)",
+    )
+    .bind(now.as_str())
+    .bind(&retention)
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?
+    .rows_affected();
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(pruned)
 }
 
 /// Reads the complete projected timeline for one exact turn.
@@ -341,6 +580,7 @@ pub async fn read_timeline_turn(
     thread_id: &ChatThreadId,
     turn_id: &ChatTurnId,
 ) -> ChatResult<ChatTimelinePageRead> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let revision = sqlx::query_scalar::<_, i64>(
         "SELECT t.revision
          FROM chat_threads t
@@ -349,15 +589,16 @@ pub async fn read_timeline_turn(
     )
     .bind(thread_id.as_str())
     .bind(turn_id.as_str())
-    .fetch_optional(pool)
+    .fetch_optional(&mut *transaction)
     .await
     .map_err(persistence_error)?
     .ok_or_else(turn_not_found_error)
     .and_then(unsigned)?;
+    let (change_cursor, _) = read_timeline_clock(&mut transaction, thread_id).await?;
     let rows = sqlx::query(
-        "SELECT row_id, turn_id, sequence_anchor, item_kind, schema_version, item_data
+        "SELECT row_id, turn_id, sequence_anchor, change_sequence, item_kind, schema_version, item_data
          FROM (
-           SELECT id AS row_id, turn_id, sequence_anchor, 'message' AS item_kind,
+           SELECT id AS row_id, turn_id, sequence_anchor, change_sequence, 'message' AS item_kind,
                   content_metadata_schema_version AS schema_version,
                   json_object('role', role, 'markdown', normalized_markdown,
                               'streamingState', streaming_state,
@@ -366,14 +607,14 @@ pub async fn read_timeline_turn(
                               'createdAt', created_at, 'updatedAt', updated_at) AS item_data
            FROM chat_messages WHERE thread_id = ?
            UNION ALL
-           SELECT id, turn_id, sequence_anchor, 'activity', safe_metadata_schema_version,
+           SELECT id, turn_id, sequence_anchor, change_sequence, 'activity', safe_metadata_schema_version,
                   json_object('activityKind', item_kind, 'status', status, 'title', title,
                               'detail', detail, 'providerItemId', provider_item_id,
                               'metadata', json(safe_metadata_data),
                               'createdAt', created_at, 'updatedAt', updated_at)
            FROM chat_activities WHERE thread_id = ?
            UNION ALL
-           SELECT id, origin_turn_id, sequence_anchor, 'plan', steps_schema_version,
+           SELECT id, origin_turn_id, sequence_anchor, change_sequence, 'plan', steps_schema_version,
                   json_object('markdown', markdown, 'steps', json(steps_data), 'state', state,
                               'createdAt', created_at, 'updatedAt', updated_at)
            FROM chat_plans WHERE thread_id = ?
@@ -385,7 +626,7 @@ pub async fn read_timeline_turn(
     .bind(thread_id.as_str())
     .bind(thread_id.as_str())
     .bind(turn_id.as_str())
-    .fetch_all(pool)
+    .fetch_all(&mut *transaction)
     .await
     .map_err(persistence_error)?;
     let items = rows
@@ -393,7 +634,8 @@ pub async fn read_timeline_turn(
         .map(|row| row_to_timeline_item(row, Some(thread_id.clone())))
         .collect::<ChatResult<Vec<_>>>()?;
     let turn_ids = BTreeSet::from([turn_id.as_str().to_string()]);
-    let turns = read_timeline_turns_by_ids(pool, &turn_ids).await?;
+    let turns = read_timeline_turns_in(&mut transaction, &turn_ids).await?;
+    transaction.commit().await.map_err(persistence_error)?;
     Ok(ChatTimelinePageRead {
         thread_id: thread_id.clone(),
         items,
@@ -401,7 +643,19 @@ pub async fn read_timeline_turn(
         previous_cursor: None,
         next_cursor: None,
         thread_revision: revision,
+        change_cursor,
     })
+}
+
+fn item_turn_ids(items: &[ChatTimelineItemRead]) -> BTreeSet<String> {
+    items
+        .iter()
+        .filter_map(|item| {
+            item.turn_id
+                .as_ref()
+                .map(|turn_id| turn_id.as_str().to_string())
+        })
+        .collect()
 }
 
 fn row_to_timeline_item(
@@ -419,6 +673,7 @@ fn row_to_timeline_item(
             .transpose()
             .map_err(|_| corrupt_data_error())?,
         sequence_anchor: unsigned(row.try_get("sequence_anchor").map_err(persistence_error)?)?,
+        change_sequence: unsigned(row.try_get("change_sequence").map_err(persistence_error)?)?,
         kind: row.try_get("item_kind").map_err(persistence_error)?,
         data: VersionedJson {
             schema_version: u32::try_from(
@@ -436,6 +691,14 @@ pub async fn read_timeline_turns_by_ids(
     pool: &SqlitePool,
     turn_ids: &BTreeSet<String>,
 ) -> ChatResult<Vec<ChatTimelineTurnRead>> {
+    let mut connection = pool.acquire().await.map_err(persistence_error)?;
+    read_timeline_turns_in(&mut connection, turn_ids).await
+}
+
+async fn read_timeline_turns_in(
+    connection: &mut SqliteConnection,
+    turn_ids: &BTreeSet<String>,
+) -> ChatResult<Vec<ChatTimelineTurnRead>> {
     if turn_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -450,7 +713,7 @@ pub async fn read_timeline_turns_by_ids(
          ORDER BY started_at, id",
     )
     .bind(encoded_turn_ids)
-    .fetch_all(pool)
+    .fetch_all(&mut *connection)
     .await
     .map_err(persistence_error)?
     .into_iter()
@@ -687,6 +950,32 @@ fn corrupt_data_error() -> ChatError {
         "Stored Chat record is invalid",
         false,
     )
+}
+
+/// Builds the change notification for a write that changed a thread's rows without an event. It
+/// carries the thread's last event sequence as both `sequence` and `since_sequence`, so a reader
+/// sees no skipped event.
+pub async fn read_change_notification(
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+    changed_projection_keys: Vec<ChatProjectionKey>,
+) -> ChatResult<ChatChangeNotification> {
+    let (revision, sequence) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT revision, last_event_sequence FROM chat_threads WHERE id = ?",
+    )
+    .bind(thread_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?
+    .ok_or_else(not_found_error)?;
+    let sequence = unsigned(sequence)?;
+    Ok(ChatChangeNotification {
+        thread_id: thread_id.clone(),
+        sequence,
+        since_sequence: sequence,
+        revision: unsigned(revision)?,
+        changed_projection_keys,
+    })
 }
 
 #[cfg(test)]

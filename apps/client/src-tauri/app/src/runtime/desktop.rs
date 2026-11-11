@@ -443,6 +443,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::threads::chat_read_thread_shell,
             chat::threads::chat_read_timeline_page,
             chat::threads::chat_read_timeline_turn,
+            chat::threads::chat_read_timeline_since,
             chat::threads::chat_fork_thread,
             chat::threads::chat_open_external_url,
             chat::threads::chat_rename_thread,

@@ -1,6 +1,7 @@
 import * as chatApi from "$lib/api/chat";
 import type {
   ChatThreadId,
+  ChatTimelineDeltaRead,
   ChatTimelineItemRead,
   ChatTimelinePageRead,
   ChatTimelineTurnRead,
@@ -29,6 +30,8 @@ export class ChatTimelineController {
   private refreshRequest = 0;
   /** Whether the loaded pages still end at the thread's newest row, so a live refresh can attach to them. */
   private holdsNewest = false;
+  /** The change clock the loaded rows are current at, or null before a full load; a live refresh reads after it. */
+  private changeCursor: number | null = null;
 
   constructor(private readonly options: ChatTimelineControllerOptions) {}
 
@@ -44,6 +47,7 @@ export class ChatTimelineController {
     this.items = [];
     this.error = null;
     this.holdsNewest = false;
+    this.changeCursor = null;
   }
 
   async loadOlder(selectedSequence: number | null = null): Promise<void> {
@@ -73,10 +77,13 @@ export class ChatTimelineController {
       if (prepend) {
         const newest = this.pages.at(-1);
         const pages = evictTimelinePages([page, ...this.pages], selectedSequence, MAX_TIMELINE_PAGES);
+        // A page read before the held cursor may predate changes in its range, so the next since-read covers them.
+        if (this.changeCursor !== null) this.changeCursor = Math.min(this.changeCursor, page.changeCursor);
         this.holdsNewest &&= pages.at(-1) === newest;
         this.setPages(pages);
       } else {
         this.holdsNewest = cursor === null;
+        this.changeCursor = page.changeCursor;
         this.setPages([page]);
       }
     } catch (error: unknown) {
@@ -89,8 +96,9 @@ export class ChatTimelineController {
   }
 
   /**
-   * Rereads the newest page of the selected thread and merges it into the loaded pages, keeping older pages. A
-   * refresh never blocks or discards an older-page load in flight.
+   * Brings the loaded pages of the selected thread up to date, keeping older pages. With a held change cursor it
+   * reads only the rows that changed after it; otherwise, or when more changes are pending than one read returns, it
+   * rereads the newest page and merges it. A refresh never blocks or discards an older-page load in flight.
    */
   async refreshLatest(threadId: ChatThreadId, selectedSequence: number | null = null): Promise<void> {
     if (this.options.selectedThreadId() !== threadId) return;
@@ -98,13 +106,25 @@ export class ChatTimelineController {
       await this.load(threadId, null, false, selectedSequence);
       return;
     }
-    if (!this.holdsNewest) return;
     const generation = this.generation;
     const refresh = ++this.refreshRequest;
     try {
+      if (this.changeCursor !== null) {
+        const delta = await chatApi.readChatTimelineSince(threadId, this.changeCursor);
+        if (!this.isCurrentRefresh(generation, refresh, threadId)) return;
+        if (delta.resetRequired) {
+          await this.load(threadId, null, false, selectedSequence);
+          return;
+        }
+        this.applyPages(mergeTimelineDelta(this.pages, delta, this.holdsNewest), selectedSequence);
+        this.changeCursor = delta.changeCursor;
+        if (!delta.hasMore) return;
+      }
+      if (!this.holdsNewest) return;
       const page = await chatApi.readChatTimelinePage(threadId, null);
       if (!this.isCurrentRefresh(generation, refresh, threadId) || !this.holdsNewest) return;
-      this.setPages(evictTimelinePages(mergeNewestPage(this.pages, page), selectedSequence, MAX_TIMELINE_PAGES));
+      this.applyPages(mergeNewestPage(this.pages, page), selectedSequence);
+      this.changeCursor = page.changeCursor;
     } catch (error: unknown) {
       if (!this.isCurrentRefresh(generation, refresh, threadId)) return;
       this.error = chatErrorMessage(error, "Chat could not be loaded");
@@ -116,6 +136,14 @@ export class ChatTimelineController {
     return generation === this.generation
       && refresh === this.refreshRequest
       && this.options.selectedThreadId() === threadId;
+  }
+
+  /** Evicts distant pages from a live merge and tracks whether the newest merged page survived. */
+  private applyPages(merged: ChatTimelinePageRead[], selectedSequence: number | null): void {
+    const newest = merged.at(-1);
+    const pages = evictTimelinePages(merged, selectedSequence, MAX_TIMELINE_PAGES);
+    this.holdsNewest &&= pages.at(-1) === newest;
+    this.setPages(pages);
   }
 
   private setPages(pages: ChatTimelinePageRead[]): void {
@@ -155,6 +183,67 @@ export function mergeNewestPage(
       previousCursor: reachesOlder && older.length === 0 ? fresh.previousCursor : newest.previousCursor,
     },
   ];
+}
+
+/**
+ * Applies a since-read to loaded pages. Removed and changed rows leave their pages first; each changed row then joins
+ * the newest page whose first loaded row is not after it. A changed row older than the oldest loaded row is dropped
+ * while older history is not loaded, and one newer than the newest loaded row is dropped unless the pages hold the
+ * thread's newest row. Pages a removal empties are dropped, keeping the outer paging cursors.
+ */
+export function mergeTimelineDelta(
+  pages: readonly ChatTimelinePageRead[],
+  delta: ChatTimelineDeltaRead,
+  holdsNewest: boolean,
+): ChatTimelinePageRead[] {
+  const oldest = pages[0];
+  const newest = pages.at(-1);
+  if (!oldest || !newest) return [];
+  const leaving = new Set<string>(delta.removedItemIds);
+  for (const entry of delta.items) leaving.add(entry.activityId);
+  const firstRows = pages.map((page) => page.items[0]);
+  const loadedFirst = firstRows.find((row) => row !== undefined);
+  const loadedLast = pages.findLast((page) => page.items.length > 0)?.items.at(-1);
+  const merged = pages.map((page) => ({
+    ...page,
+    items: page.items.filter((entry) => !leaving.has(entry.activityId)),
+    turns: page.turns.map((turn) => delta.turns.find((fresh) => fresh.turnId === turn.turnId) ?? turn),
+  }));
+  const placedTurns = new Set(pages.flatMap((page) => page.turns.map((turn) => turn.turnId)));
+  for (const entry of delta.items) {
+    if (loadedFirst && oldest.previousCursor !== null && compareRows(entry, loadedFirst) < 0) continue;
+    if (loadedLast && !holdsNewest && compareRows(entry, loadedLast) > 0) continue;
+    const index = firstRows.findLastIndex((row) => row !== undefined && compareRows(row, entry) <= 0);
+    const target = merged[Math.max(0, index)];
+    if (!target) continue;
+    target.items.push(entry);
+    const turn = entry.turnId === null ? undefined : delta.turns.find((fresh) => fresh.turnId === entry.turnId);
+    if (turn && !placedTurns.has(turn.turnId)) {
+      target.turns.push(turn);
+      placedTurns.add(turn.turnId);
+    }
+  }
+  const unplacedTurns = holdsNewest ? delta.turns.filter((turn) => !placedTurns.has(turn.turnId)) : [];
+  merged.at(-1)?.turns.push(...unplacedTurns);
+  for (const page of merged) page.items.sort(compareRows);
+  return dropEmptyPages(merged, oldest, newest);
+}
+
+function dropEmptyPages(
+  pages: readonly ChatTimelinePageRead[],
+  oldest: ChatTimelinePageRead,
+  newest: ChatTimelinePageRead,
+): ChatTimelinePageRead[] {
+  const kept = pages.filter((page) => page.items.length > 0);
+  const orphanTurns = pages.filter((page) => page.items.length === 0).flatMap((page) => page.turns);
+  if (kept.length === 0) return [{ ...newest, items: [], turns: orphanTurns, previousCursor: oldest.previousCursor }];
+  const lastIndex = kept.length - 1;
+  return kept.map((page, index) => ({
+    ...page,
+    previousCursor: index === 0 ? oldest.previousCursor : page.previousCursor,
+    nextCursor: index === lastIndex ? newest.nextCursor : page.nextCursor,
+    turns: index === lastIndex ? mergeTurns(orphanTurns, page.turns) : page.turns,
+  }));
 }
 
 function compareRows(left: ChatTimelineItemRead, right: ChatTimelineItemRead): number {

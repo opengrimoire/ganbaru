@@ -18,11 +18,11 @@ function row(index: number): TimelineMessageRow {
 }
 
 function item(sequence: number): ChatTimelineItemRead {
-  return { activityId: `item-${sequence}`, turnId: null, sequenceAnchor: sequence, kind: "message", data: { schemaVersion: 1, value: {} } };
+  return { activityId: `item-${sequence}`, turnId: null, sequenceAnchor: sequence, changeSequence: sequence, kind: "message", data: { schemaVersion: 1, value: {} } };
 }
 
 function page(start: number, end: number): ChatTimelinePageRead {
-  return { threadId: "thread", items: Array.from({ length: end - start + 1 }, (_, offset) => item(start + offset)), turns: [], previousCursor: null, nextCursor: null, threadRevision: 1 };
+  return { threadId: "thread", items: Array.from({ length: end - start + 1 }, (_, offset) => item(start + offset)), turns: [], previousCursor: null, nextCursor: null, threadRevision: 1, changeCursor: 0 };
 }
 
 describe("timeline virtualization", () => {

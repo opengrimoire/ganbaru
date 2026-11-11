@@ -30,7 +30,7 @@ Provider configuration and model mapping are separate from provider sessions. Ch
 
 Provider events are validated, bounded, normalized, and appended as canonical application events. Sequence and projection changes commit before a lightweight frontend notification is emitted. Event, item, and request IDs that a provider numbers per process are scoped to the provider session, and a projection row keyed by a provider item ID is only ever updated by events of its own thread.
 
-The combined timeline, turn state, message view, command activity, usage summary, and inspector data are projections. They may be persisted for performance but remain rebuildable from canonical events and organizational messages. Projection rebuild preserves channel and authorization scope.
+The combined timeline, turn state, message view, command activity, usage summary, and inspector data are projections. They may be persisted for performance but remain rebuildable from canonical events and organizational messages. Projection rebuild preserves channel and authorization scope. Each provider thread keeps a device-local change clock that every write to a timeline row or turn advances, with a bounded record of deleted rows, so a live reader rereads only the rows written after the clock value it last saw and reloads in full when that record no longer reaches back far enough.
 
 Provider-reported changed paths are converted to canonical relative paths only after verifying that they remain below the authorized workspace. Absolute paths, traversal, malformed paths, duplicates, and secret-bearing diagnostics are removed at ingestion.
 
@@ -49,7 +49,7 @@ Scratch generations have logical identity, ownership, lifecycle, provenance, and
 
 ## Access profiles and authorization revisions
 
-Portable rows store participants, memberships, channel capabilities, history cutoffs, reusable access profiles, immutable or historically interpretable profile revisions, exact resource grants, assignments, approvals, authorization revisions, revocations, and command receipts.
+Portable rows store participants, memberships, channel capabilities, history cutoffs, reusable access profiles, immutable or historically interpretable profile revisions, exact resource grants, assignments, approvals, authorization revisions, and revocations. Command receipts stay device-local, because a retry happens on the device that sent the command.
 
 Historical runs retain the revision and target under which they were authorized. A later profile edit does not retroactively change that meaning. A reduction may revoke active work, but a more permissive revision does not silently upgrade it.
 

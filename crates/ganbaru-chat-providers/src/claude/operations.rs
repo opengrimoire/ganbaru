@@ -268,7 +268,9 @@ impl ProviderDriver for ClaudeProviderDriver {
                 release_active_turn(&live.route);
                 return Err(error);
             }
+            let armed = arm_organizational_deadline(live);
             if let Err(error) = client.send(message).await {
+                disarm_organizational_deadline(live, armed);
                 release_active_turn(&live.route);
                 return Err(error.to_chat_error("turn dispatch"));
             }
@@ -321,7 +323,9 @@ impl ProviderDriver for ClaudeProviderDriver {
                 release_active_turn(&live.route);
                 return Err(error);
             }
+            let armed = arm_organizational_deadline(live);
             if let Err(error) = live.connection.client().send(message).await {
+                disarm_organizational_deadline(live, armed);
                 release_active_turn(&live.route);
                 return Err(error.to_chat_error("context compaction"));
             }
@@ -539,6 +543,23 @@ impl ProviderDriver for ClaudeProviderDriver {
                 "Claude session stopped",
             ))
         })
+    }
+}
+
+/// Starts the organizational init deadline before a user message is written, because the
+/// CLI answers the first user message with `system/init`. Returns whether this call started it.
+fn arm_organizational_deadline(live: &ClaudeLiveSession) -> bool {
+    live.organizational_deadline
+        .as_ref()
+        .is_some_and(|deadline| deadline.arm())
+}
+
+/// Clears a deadline this dispatch started when its user message never reached the CLI.
+fn disarm_organizational_deadline(live: &ClaudeLiveSession, armed: bool) {
+    if armed {
+        if let Some(deadline) = live.organizational_deadline.as_ref() {
+            deadline.disarm();
+        }
     }
 }
 

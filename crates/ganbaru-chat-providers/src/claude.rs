@@ -5,6 +5,7 @@ mod driver;
 mod home;
 mod normalizer;
 mod operations;
+mod organizational;
 mod protocol;
 mod session;
 mod support;

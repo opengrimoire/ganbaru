@@ -20,6 +20,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 mod approvals;
+mod init_gate;
 mod limits;
 mod organizational;
 mod streams;

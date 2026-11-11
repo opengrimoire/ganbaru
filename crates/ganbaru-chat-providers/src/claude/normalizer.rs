@@ -164,21 +164,53 @@ impl ClaudeEventNormalizer {
         state: &mut ClaudeRouteState,
         reason: &str,
     ) -> ChatResult<Option<CanonicalRuntimeEvent>> {
+        self.aborted_event(
+            state,
+            "stream/closed",
+            TurnAbortedEvent {
+                state: ChatTurnState::Interrupted,
+                reason: bounded_text(reason, MAX_TEXT_BYTES),
+                recoverable: true,
+            },
+        )
+    }
+
+    /// Fails the active turn for good, for example when the session's authority boundary
+    /// cannot be proven.
+    pub fn failed_event(
+        &self,
+        state: &mut ClaudeRouteState,
+        source: &str,
+        reason: &str,
+    ) -> ChatResult<Option<CanonicalRuntimeEvent>> {
+        self.aborted_event(
+            state,
+            source,
+            TurnAbortedEvent {
+                state: ChatTurnState::Failed,
+                reason: bounded_text(reason, MAX_TEXT_BYTES),
+                recoverable: false,
+            },
+        )
+    }
+
+    fn aborted_event(
+        &self,
+        state: &mut ClaudeRouteState,
+        source: &str,
+        aborted: TurnAbortedEvent,
+    ) -> ChatResult<Option<CanonicalRuntimeEvent>> {
         let Some(turn_id) = state.active_chat_turn_id.take() else {
             return Ok(None);
         };
         state.session_state = ProviderSessionState::Ready;
         self.event(
             state,
-            "stream/closed",
+            source,
             Some(turn_id),
             None,
             None,
-            CanonicalEvent::TurnAborted(TurnAbortedEvent {
-                state: ChatTurnState::Interrupted,
-                reason: bounded_text(reason, MAX_TEXT_BYTES),
-                recoverable: true,
-            }),
+            CanonicalEvent::TurnAborted(aborted),
         )
         .map(Some)
     }

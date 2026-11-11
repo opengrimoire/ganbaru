@@ -1,8 +1,14 @@
 //! Claude inbound message routing, permission callbacks, structured questions, and pending request state.
 
 use super::approvals::{approval_subject, session_grants, session_permission_updates};
+use super::driver::SESSION_FORCE_STOP;
 use super::normalizer::{ClaudeEventNormalizer, ClaudePlanSource, ClaudeRouteState};
-use super::protocol::{control_error, control_success, protocol_error};
+use super::organizational::{
+    ClaudeGateAction, ClaudeOrganizationalGate, ClaudeOrganizationalRoute,
+};
+use super::protocol::{
+    control_error, control_success, organizational_permission_error, protocol_error,
+};
 use super::transport::{ClaudeInboundMessage, ClaudeJsonlClient};
 use crate::events::*;
 use crate::models::*;
@@ -58,6 +64,8 @@ pub struct ClaudeRouterResources {
     pub sink: Arc<dyn crate::ProviderEventSink>,
     pub expected_shutdown: Arc<AtomicBool>,
     pub terminal_error: Arc<Mutex<Option<ChatError>>>,
+    /// Present for organizational sessions, whose tool surface is verified before routing.
+    pub organizational: Option<ClaudeOrganizationalRoute>,
 }
 
 pub fn spawn_claude_router(resources: ClaudeRouterResources) -> JoinHandle<()> {
@@ -65,9 +73,38 @@ pub fn spawn_claude_router(resources: ClaudeRouterResources) -> JoinHandle<()> {
 }
 
 async fn run_claude_router(mut resources: ClaudeRouterResources) {
-    while let Some(message) = resources.inbound.recv().await {
+    let mut gate = resources
+        .organizational
+        .take()
+        .map(ClaudeOrganizationalGate::new);
+    loop {
+        let received = match gate.as_mut().filter(|gate| !gate.verified()) {
+            Some(gate) => tokio::select! {
+                message = resources.inbound.recv() => RouterInput::Inbound(message),
+                () = gate.deadline_elapsed() => RouterInput::VerificationExpired,
+            },
+            None => RouterInput::Inbound(resources.inbound.recv().await),
+        };
+        let message = match received {
+            RouterInput::Inbound(Some(message)) => message,
+            RouterInput::Inbound(None) => break,
+            RouterInput::VerificationExpired => {
+                if let Some(gate) = gate.as_mut() {
+                    fail_organizational(&resources, gate).await;
+                }
+                return;
+            }
+        };
+        if matches!(message, ClaudeInboundMessage::Closed) {
+            if let Some(gate) = gate.as_mut() {
+                gate.discard();
+            }
+        }
         let result = match message {
-            ClaudeInboundMessage::Message(value) => route_message(&resources, value).await,
+            ClaudeInboundMessage::Message(value) => match gate.as_mut() {
+                Some(gate) => route_gated(&resources, gate, value).await,
+                None => route_message(&resources, value).await,
+            },
             ClaudeInboundMessage::Malformed {
                 reason,
                 byte_length,
@@ -85,6 +122,84 @@ async fn run_claude_router(mut resources: ClaudeRouterResources) {
         }
     }
     route_closed(&resources).await;
+}
+
+enum RouterInput {
+    Inbound(Option<ClaudeInboundMessage>),
+    VerificationExpired,
+}
+
+/// Routes one frame of an organizational session through its verification gate.
+async fn route_gated(
+    resources: &ClaudeRouterResources,
+    gate: &mut ClaudeOrganizationalGate,
+    value: Value,
+) -> ChatResult<()> {
+    match gate.admit(value)? {
+        ClaudeGateAction::Route(frames) => {
+            for frame in frames {
+                route_message(resources, frame).await?;
+            }
+            Ok(())
+        }
+        ClaudeGateAction::Hold => Ok(()),
+        ClaudeGateAction::Reply(response) => resources
+            .client
+            .send(response)
+            .await
+            .map_err(|error| error.to_chat_error("control response")),
+        ClaudeGateAction::Fail => {
+            fail_organizational(resources, gate).await;
+            Err(organizational_permission_error())
+        }
+    }
+}
+
+/// Fails an organizational session whose tool surface could not be proven: held frames are
+/// dropped, the active turn fails without retry, and the process is killed. The router
+/// returns afterwards, so the closed stream never replaces the permission error.
+async fn fail_organizational(
+    resources: &ClaudeRouterResources,
+    gate: &mut ClaudeOrganizationalGate,
+) {
+    gate.discard();
+    let error = organizational_permission_error();
+    if let Ok(mut terminal) = resources.terminal_error.lock() {
+        *terminal = Some(error.clone());
+    }
+    let events = resources
+        .route
+        .lock()
+        .map_err(|_| state_error())
+        .and_then(|mut state| {
+            let failed = resources.normalizer.failed_event(
+                &mut state,
+                "organizational/unverified",
+                &error.message,
+            )?;
+            let previous_state = if failed.is_some() {
+                ProviderSessionState::Active
+            } else {
+                state.session_state
+            };
+            state.session_state = ProviderSessionState::Failed;
+            let changed = resources.normalizer.external_event(
+                &state,
+                "organizational/unverified",
+                None,
+                CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
+                    session_id: resources.normalizer.session_id(),
+                    previous_state,
+                    state: ProviderSessionState::Failed,
+                    reason: Some(error.message.clone()),
+                }),
+            )?;
+            Ok(failed.into_iter().chain([changed]).collect::<Vec<_>>())
+        });
+    if let Ok(events) = events {
+        let _ = emit_events(&resources.sink, events).await;
+    }
+    let _ = gate.kill_handle().kill(SESSION_FORCE_STOP).await;
 }
 
 async fn route_message(resources: &ClaudeRouterResources, value: Value) -> ChatResult<()> {

@@ -4,6 +4,7 @@ use super::{TestDirectory, configuration, modes};
 use crate::ProviderDriver;
 use crate::claude::driver::ClaudeProviderDriver;
 use crate::claude::home::resolve_claude_home;
+use crate::claude::organizational::*;
 use crate::claude::protocol::*;
 use crate::models::*;
 
@@ -227,4 +228,172 @@ fn claude_support_bits_keep_organizational_runs_conversation_only() {
         "raising these admits folder targets, so the organizational Bash denial must be revisited"
     );
     assert!(support.isolated_conversation && support.internal_host_tools);
+}
+
+fn server(name: &str, status: &str) -> ClaudeMcpServerStatus {
+    ClaudeMcpServerStatus {
+        name: name.to_string(),
+        status: status.to_string(),
+    }
+}
+
+fn init_report(servers: Vec<ClaudeMcpServerStatus>, tools: &[&str]) -> ClaudeInitReport {
+    ClaudeInitReport {
+        mcp_servers: servers,
+        tools: tools.iter().map(|tool| tool.to_string()).collect(),
+    }
+}
+
+fn assert_permission(result: ChatResult<()>) {
+    let error = result.unwrap_err();
+    assert_eq!(error, organizational_permission_error());
+}
+
+#[test]
+fn organizational_mcp_status_rejects_extra_server() {
+    assert_permission(verify_organizational_mcp(
+        &[
+            server(SERVER_NAME, "connected"),
+            server("user-server", "connected"),
+        ],
+        SERVER_NAME,
+    ));
+    assert_permission(verify_organizational_mcp(
+        &[
+            server("user-server", "disabled"),
+            server(SERVER_NAME, "connected"),
+        ],
+        SERVER_NAME,
+    ));
+    assert_permission(verify_organizational_mcp(
+        &[
+            server(SERVER_NAME, "connected"),
+            server(SERVER_NAME, "connected"),
+        ],
+        SERVER_NAME,
+    ));
+    assert_permission(verify_organizational_mcp(&[], SERVER_NAME));
+}
+
+#[test]
+fn organizational_mcp_status_rejects_failed_internal_server() {
+    for status in ["failed", "needs-auth", "disabled", ""] {
+        assert_permission(verify_organizational_mcp(
+            &[server(SERVER_NAME, status)],
+            SERVER_NAME,
+        ));
+    }
+    for status in ["connected", "pending"] {
+        verify_organizational_mcp(&[server(SERVER_NAME, status)], SERVER_NAME).unwrap();
+    }
+}
+
+#[test]
+fn organizational_mcp_status_parses_only_names_and_statuses() {
+    let response = serde_json::json!({
+        "mcpServers": [{
+            "name": SERVER_NAME,
+            "status": "connected",
+            "config": { "headers": { "Authorization": "Bearer redacted" } },
+            "tools": [{ "name": "ping" }]
+        }]
+    });
+    assert_eq!(
+        parse_mcp_status(&response).unwrap(),
+        [server(SERVER_NAME, "connected")]
+    );
+    for malformed in [
+        serde_json::json!({}),
+        serde_json::json!({ "mcpServers": {} }),
+        serde_json::json!({ "mcpServers": [{ "name": SERVER_NAME }] }),
+        serde_json::json!({ "mcpServers": [{ "name": 1, "status": "connected" }] }),
+    ] {
+        let error = parse_mcp_status(&malformed).unwrap_err();
+        assert_eq!(error, organizational_permission_error());
+    }
+}
+
+#[test]
+fn organizational_init_accepts_internal_only() {
+    verify_organizational_init(
+        &init_report(
+            vec![server(SERVER_NAME, "connected")],
+            &["Read", "Edit", "AskUserQuestion", "mcp__ganbaru-chat__ping"],
+        ),
+        SERVER_NAME,
+    )
+    .unwrap();
+}
+
+#[test]
+fn organizational_init_requires_a_connected_internal_server() {
+    for status in ["pending", "failed", "needs-auth"] {
+        assert_permission(verify_organizational_init(
+            &init_report(vec![server(SERVER_NAME, status)], &["Read"]),
+            SERVER_NAME,
+        ));
+    }
+    assert_permission(verify_organizational_init(
+        &init_report(
+            vec![
+                server(SERVER_NAME, "connected"),
+                server("claude.ai Drive", "connected"),
+            ],
+            &["Read"],
+        ),
+        SERVER_NAME,
+    ));
+}
+
+#[test]
+fn organizational_init_rejects_foreign_mcp_tool() {
+    for tool in [
+        "mcp__user-server__fetch",
+        "mcp__ganbaru-chat-extra__ping",
+        "mcp__ganbaru-chat",
+    ] {
+        assert_permission(verify_organizational_init(
+            &init_report(vec![server(SERVER_NAME, "connected")], &["Read", tool]),
+            SERVER_NAME,
+        ));
+    }
+}
+
+#[test]
+fn organizational_init_rejects_disallowed_tool() {
+    for tool in ORGANIZATIONAL_DISALLOWED_TOOLS {
+        assert_permission(verify_organizational_init(
+            &init_report(vec![server(SERVER_NAME, "connected")], &["Read", tool]),
+            SERVER_NAME,
+        ));
+    }
+}
+
+#[test]
+fn organizational_init_report_requires_both_lists() {
+    let complete = serde_json::json!({
+        "type": "system",
+        "subtype": "init",
+        "tools": ["Read"],
+        "mcp_servers": [{ "name": SERVER_NAME, "status": "connected", "source": "dynamic" }]
+    });
+    assert_eq!(
+        parse_init_report(complete.as_object().unwrap()).unwrap(),
+        init_report(vec![server(SERVER_NAME, "connected")], &["Read"])
+    );
+    for key in ["tools", "mcp_servers"] {
+        let mut missing = complete.as_object().unwrap().clone();
+        missing.remove(key);
+        assert_eq!(
+            parse_init_report(&missing).unwrap_err(),
+            organizational_permission_error(),
+            "{key}"
+        );
+    }
+    let mut numeric_tool = complete.as_object().unwrap().clone();
+    numeric_tool.insert("tools".to_string(), serde_json::json!(["Read", 7]));
+    assert_eq!(
+        parse_init_report(&numeric_tool).unwrap_err(),
+        organizational_permission_error()
+    );
 }

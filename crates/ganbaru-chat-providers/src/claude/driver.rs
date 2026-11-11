@@ -2,6 +2,9 @@
 
 use super::home::*;
 use super::normalizer::{ClaudeEventNormalizer, ClaudeRouteState};
+use super::organizational::{
+    ClaudeOrganizationalDeadline, organizational_route, verify_mcp_status,
+};
 use super::protocol::*;
 use super::session::*;
 use super::support::*;
@@ -57,6 +60,8 @@ pub(super) struct ClaudeLiveSession {
     /// Whether the session runs under the organizational launch surface, which also fixes the
     /// per-turn permission mode mapping.
     pub(super) organizational: bool,
+    /// The gate 2 deadline an organizational session arms with each user message.
+    pub(super) organizational_deadline: Option<ClaudeOrganizationalDeadline>,
 }
 
 impl Drop for ClaudeLiveSession {
@@ -288,6 +293,17 @@ impl ClaudeProviderDriver {
             }
             Err(error) => return Err(error),
         };
+        let organizational_server = self.organizational_server_name();
+        if let Some(expected_server) = organizational_server.as_deref() {
+            if let Err(error) =
+                verify_mcp_status(&connection.client(), expected_server, context).await
+            {
+                let _ = connection
+                    .stop(SESSION_GRACEFUL_STOP, SESSION_FORCE_STOP)
+                    .await;
+                return Err(error);
+            }
+        }
         let models = provider_models(
             initialize.models.clone(),
             if self.settings.allow_custom_models {
@@ -321,6 +337,9 @@ impl ClaudeProviderDriver {
         let expected_shutdown = Arc::new(AtomicBool::new(false));
         let terminal_error = Arc::new(Mutex::new(None));
         let inbound = connection.take_inbound()?;
+        let (organizational_deadline, organizational_route) = organizational_server
+            .map(|server| organizational_route(server, connection.kill_handle()))
+            .unzip();
         let router_task = spawn_claude_router(ClaudeRouterResources {
             client: connection.client(),
             inbound,
@@ -330,6 +349,7 @@ impl ClaudeProviderDriver {
             sink: Arc::clone(&sink),
             expected_shutdown: Arc::clone(&expected_shutdown),
             terminal_error: Arc::clone(&terminal_error),
+            organizational: organizational_route,
         });
         let capabilities = claude_capabilities();
         let started_at = now_utc()?;
@@ -379,6 +399,7 @@ impl ClaudeProviderDriver {
             effective_effort: effort,
             effective_fast_mode: fast_mode,
             organizational,
+            organizational_deadline,
         });
         Ok(ProviderSessionSnapshot {
             session_id,
@@ -399,6 +420,15 @@ impl ClaudeProviderDriver {
             .internal_mcp
             .as_ref()
             .is_some_and(|server| server.organizational_authority)
+    }
+
+    /// The internal server an organizational session must report, or none for direct runs.
+    fn organizational_server_name(&self) -> Option<String> {
+        self.configuration
+            .internal_mcp
+            .as_ref()
+            .filter(|server| server.organizational_authority)
+            .map(|server| server.name.clone())
     }
 
     pub(super) fn live_mut(

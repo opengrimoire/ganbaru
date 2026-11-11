@@ -208,3 +208,28 @@ fn api_retry_details_clamp_untrusted_numbers() {
     let sparse = retry_warning(json!({ "attempt": 0, "retry_delay_ms": "soon" }));
     assert_eq!(sparse.detail.as_deref(), Some("Attempt 1"));
 }
+
+#[test]
+fn subagent_api_retries_stay_out_of_the_root_stream() {
+    let normalizer = normalizer();
+    let mut state = active_state();
+    let retry = |parent: Value| {
+        json!({
+            "type": "system", "subtype": "api_retry", "parent_tool_use_id": parent,
+            "attempt": 2, "max_retries": 10, "retry_delay_ms": 5000, "error_status": 529
+        })
+    };
+    let subagent = normalizer
+        .normalize_message(&mut state, retry(json!("toolu_task")))
+        .unwrap();
+    assert!(subagent.is_empty(), "a subagent retry projects nothing");
+    for parent in [Value::Null, json!("")] {
+        let root = normalizer
+            .normalize_message(&mut state, retry(parent.clone()))
+            .unwrap();
+        assert!(
+            matches!(&root[..], [event] if matches!(&event.event, CanonicalEvent::RuntimeWarning(_))),
+            "{parent}"
+        );
+    }
+}

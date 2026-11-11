@@ -1,5 +1,6 @@
 //! Claude rate limit and API retry normalization.
 
+use super::blocks::ClaudeStreamScope;
 use super::{ClaudeEventNormalizer, ClaudeRouteState, bounded_text, text};
 use crate::events::*;
 use crate::models::*;
@@ -81,13 +82,17 @@ impl ClaudeEventNormalizer {
         }
     }
 
-    /// Maps `system/api_retry` to a warning naming the attempt, its maximum, and the delay.
+    /// Maps a root `system/api_retry` to a warning naming the attempt, its maximum, and the
+    /// delay. A subagent's retries stay inside its task, like the rest of its stream.
     pub(super) fn api_retry(
         &self,
         state: &ClaudeRouteState,
         object: &Map<String, Value>,
-    ) -> ChatResult<CanonicalRuntimeEvent> {
-        self.event(
+    ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+        if !ClaudeStreamScope::of(object).is_root() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![self.event(
             state,
             "system/api_retry",
             None,
@@ -98,7 +103,7 @@ impl ClaudeEventNormalizer {
                 title: API_RETRY_TITLE.to_string(),
                 detail: Some(api_retry_detail(object)),
             }),
-        )
+        )?])
     }
 
     fn rate_limit_status(

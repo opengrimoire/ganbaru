@@ -210,6 +210,8 @@ impl ProviderDriver for ClaudeProviderDriver {
                     .map(ClaudeSessionInstructions::digest),
                 request.developer_instructions.as_deref(),
             )?;
+            // A busy session keeps the running turn's permission mode, model, and effort.
+            ensure_no_active_turn(&live.route)?;
             let flags_changed = (requested_effort.is_some()
                 && requested_effort != live.effective_effort)
                 || (requested_fast_mode.is_some()
@@ -258,11 +260,7 @@ impl ProviderDriver for ClaudeProviderDriver {
             let event = {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 if state.active_chat_turn_id.is_some() {
-                    return Err(ChatError::new(
-                        ChatErrorCode::Busy,
-                        "Claude already has an active turn; queue or steer the prompt",
-                        true,
-                    ));
+                    return Err(send_busy_error());
                 }
                 state.active_chat_turn_id = Some(request.turn_id.clone());
                 state.session_state = ProviderSessionState::Active;
@@ -578,6 +576,23 @@ fn disarm_organizational_deadline(live: &ClaudeLiveSession, armed: bool) {
             deadline.disarm();
         }
     }
+}
+
+/// Refuses a send while a turn is active, before any live option changes.
+fn ensure_no_active_turn(route: &Mutex<ClaudeRouteState>) -> ChatResult<()> {
+    let state = route.lock().map_err(|_| driver_state_error())?;
+    if state.active_chat_turn_id.is_some() {
+        return Err(send_busy_error());
+    }
+    Ok(())
+}
+
+fn send_busy_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Busy,
+        "Claude already has an active turn; queue or steer the prompt",
+        true,
+    )
 }
 
 /// Clears the active turn claim after a turn fails before the provider accepted it.

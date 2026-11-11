@@ -45,6 +45,11 @@ impl ScriptedClaude {
         }
     }
 
+    /// Drains the lines the driver already wrote, without waiting for more.
+    pub(super) fn drain_written(&mut self) -> Vec<Value> {
+        std::iter::from_fn(|| self.written.try_recv().ok()).collect()
+    }
+
     fn send(&self, frame: Value) {
         self.frames.send(frame).unwrap();
     }

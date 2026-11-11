@@ -108,6 +108,33 @@ fn unchanged_options_send_no_flag_settings() {
 }
 
 #[test]
+fn busy_send_changes_no_live_option() {
+    crate::test_block_on(async {
+        let mut harness = GateHarness::new(false, internal_status("connected"));
+        let mut start = harness.start_request();
+        start.model_options = vec![effort("high"), fast_mode(false)];
+        let session = harness.start_with(start).await.unwrap();
+        harness
+            .send(turn_request(&session.session_id, "turn-1"))
+            .await
+            .unwrap();
+        let mut seen = Vec::new();
+        harness.claude().wait_for("user", &mut seen).await;
+
+        let mut second = turn_request(&session.session_id, "turn-2");
+        second.model_id = Some(ModelId::new("claude-opus-4-1").unwrap());
+        second.model_options = vec![effort("low"), fast_mode(true)];
+        let error = harness.send(second).await.unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Busy);
+        assert_eq!(
+            written_subtypes(&harness.claude().drain_written()),
+            Vec::<String>::new(),
+            "a busy send writes no mode, model, or effort change"
+        );
+    });
+}
+
+#[test]
 fn apply_flag_settings_payload_checks_effort() {
     assert_eq!(
         apply_flag_settings_payload(Some("xhigh"), None).unwrap(),

@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 mod approvals;
 mod limits;
+mod organizational;
 mod streams;
 mod transport;
 mod turns;
@@ -393,6 +394,8 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             fast_mode: Some(true),
             modes: modes(SafetyMode::FullAccess, InteractionMode::Build),
             project_configuration: ProjectConfigurationAccess::Trusted,
+            internal_mcp: None,
+            organizational: None,
         },
     )
     .unwrap();
@@ -430,6 +433,8 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             fast_mode: None,
             modes: modes(SafetyMode::Custom, InteractionMode::Build),
             project_configuration: ProjectConfigurationAccess::Trusted,
+            internal_mcp: None,
+            organizational: None,
         },
     )
     .unwrap();
@@ -451,6 +456,8 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             fast_mode: None,
             modes: modes(SafetyMode::AskForApproval, InteractionMode::Plan),
             project_configuration: ProjectConfigurationAccess::Trusted,
+            internal_mcp: None,
+            organizational: None,
         },
     )
     .unwrap();
@@ -486,6 +493,8 @@ fn claude_launch_arguments_restrict_project_setting_sources() {
                 fast_mode: Some(false),
                 modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
                 project_configuration,
+                internal_mcp: None,
+                organizational: None,
             },
         )
         .unwrap()
@@ -544,6 +553,8 @@ fn protected_transport_arguments_cannot_be_overridden() {
                 fast_mode: None,
                 modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
                 project_configuration: ProjectConfigurationAccess::Trusted,
+                internal_mcp: None,
+                organizational: None,
             },
         )
         .unwrap_err();

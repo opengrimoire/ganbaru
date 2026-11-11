@@ -76,10 +76,23 @@ pub struct ClaudeHome {
 }
 
 impl ClaudeHome {
+    /// The continuation group of a direct session in this config directory, which tests use to
+    /// compare config directories.
+    #[cfg(test)]
     pub fn continuation_group(&self) -> ChatResult<ContinuationGroupId> {
+        self.continuation_group_with_authority(false)
+    }
+
+    /// The continuation group of a session in this config directory. Organizational sessions
+    /// launch with a different surface, so they never continue a direct session or the reverse.
+    pub fn continuation_group_with_authority(
+        &self,
+        organizational_authority: bool,
+    ) -> ChatResult<ContinuationGroupId> {
         let mut digest = Sha256::new();
-        digest.update(b"ganbaru-chat-claude-config-v1\0");
+        digest.update(b"ganbaru-chat-claude-config-v2\0");
         digest.update(path_identity_bytes(&self.config_directory));
+        digest.update([u8::from(organizational_authority)]);
         ContinuationGroupId::new(format!("claude-config-{:x}", digest.finalize()))
             .map_err(|_| internal_identity_error())
     }

@@ -165,7 +165,7 @@ impl ProviderDriver for ClaudeProviderDriver {
                     ));
                 }
             }
-            home.continuation_group()
+            home.continuation_group_with_authority(self.organizational_authority())
         })
     }
 
@@ -213,8 +213,13 @@ impl ProviderDriver for ClaudeProviderDriver {
                     "Claude Fast mode can only be changed when starting a session",
                 ));
             }
+            let permission_mode = if live.organizational {
+                Some(organizational_permission_mode(request.modes)?)
+            } else {
+                permission_mode(request.modes)
+            };
             let client = live.connection.client();
-            if let Some(mode) = permission_mode(request.modes) {
+            if let Some(mode) = permission_mode {
                 client
                     .request("set_permission_mode", json!({ "mode": mode }), context)
                     .await

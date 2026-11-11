@@ -187,7 +187,69 @@ pub struct ClaudeLaunchOptions<'a> {
     /// settings, hooks, skills, commands, agents, MCP servers, and `CLAUDE.md`
     /// unloaded.
     pub project_configuration: ProjectConfigurationAccess,
+    /// The internal `ganbaru-chat` server, whose bearer token stays in the environment.
+    pub internal_mcp: Option<ClaudeInternalMcpLaunch<'a>>,
+    /// Set only when the internal server carries organizational authority.
+    pub organizational: Option<ClaudeOrganizationalLaunch<'a>>,
 }
+
+/// The internal MCP server a Claude launch connects to.
+#[derive(Clone, Copy, Debug)]
+pub struct ClaudeInternalMcpLaunch<'a> {
+    pub name: &'a str,
+    pub url: &'a str,
+}
+
+/// The fail-closed launch surface of an organizational Claude run.
+///
+/// It sees only the internal server, loads no settings files, and cannot reach the denied
+/// tools. Every organizational Claude run is conversation-only, because the Claude authority
+/// support bits enforce no folder target, so the Bash denial always applies.
+#[derive(Clone, Copy, Debug)]
+pub struct ClaudeOrganizationalLaunch<'a> {
+    pub internal_server_name: &'a str,
+}
+
+/// Tools an organizational Claude run never reaches: subagents, the network, and the shell.
+pub const ORGANIZATIONAL_DISALLOWED_TOOLS: [&str; 5] =
+    ["Task", "Agent", "WebFetch", "WebSearch", "Bash"];
+
+/// Setting sources an organizational launch loads: none, so no user, project, or local file
+/// adds MCP servers, hooks, agents, plugins, or environment.
+pub const ORGANIZATIONAL_SETTING_SOURCES: &str = "";
+
+/// Permission mode of AskForApproval in an organizational Build run, which asks before edits.
+pub const ORGANIZATIONAL_ASK_PERMISSION_MODE: &str = "default";
+
+/// Environment variable that carries the internal server bearer token to the CLI.
+pub const INTERNAL_MCP_TOKEN_ENVIRONMENT: &str = "GANBARU_CHAT_MCP_TOKEN";
+
+/// Configured arguments refused for organizational launches, beyond the ones refused for every
+/// run, because each could widen the tool, settings, agent, prompt, or folder surface.
+pub const ORGANIZATIONAL_PROTECTED_ARGUMENTS: &[&str] = &[
+    "--strict-mcp-config",
+    "--disallowed-tools",
+    "--disallowedTools",
+    "--allowed-tools",
+    "--allowedTools",
+    "--tools",
+    "--setting-sources",
+    "--append-system-prompt",
+    "--append-system-prompt-file",
+    "--system-prompt",
+    "--system-prompt-file",
+    "--add-dir",
+    "--agents",
+    "--agent",
+    "--plugin-dir",
+    "--plugin-url",
+    "--bare",
+    "--restricted",
+    "--chrome",
+    "--ide",
+    "--remote-control",
+    "--file",
+];
 
 pub fn launch_arguments(
     prefix: Vec<String>,
@@ -195,6 +257,16 @@ pub fn launch_arguments(
     options: ClaudeLaunchOptions<'_>,
 ) -> ChatResult<Vec<String>> {
     validate_launch_arguments(configured)?;
+    let organizational_server = match options.organizational {
+        Some(organizational) => {
+            validate_organizational_launch_arguments(configured)?;
+            match options.internal_mcp {
+                Some(server) if server.name == organizational.internal_server_name => Some(server),
+                _ => return Err(organizational_permission_error()),
+            }
+        }
+        None => None,
+    };
     let mut arguments = prefix;
     arguments.extend([
         "-p".to_string(),
@@ -208,7 +280,11 @@ pub fn launch_arguments(
         "--include-partial-messages".to_string(),
         "--replay-user-messages".to_string(),
     ]);
-    if let Some(permission_mode) = permission_mode(options.modes) {
+    let permission_mode = match organizational_server {
+        Some(_) => Some(organizational_permission_mode(options.modes)?),
+        None => permission_mode(options.modes),
+    };
+    if let Some(permission_mode) = permission_mode {
         arguments.push("--permission-mode".to_string());
         arguments.push(permission_mode.to_string());
         if permission_mode == "bypassPermissions" {
@@ -255,12 +331,76 @@ pub fn launch_arguments(
         arguments.push("--settings".to_string());
         arguments.push(settings);
     }
+    if let Some(server) = organizational_server {
+        // The deny list comes last, so a stray configured positional can only join it.
+        arguments.extend([
+            "--setting-sources".to_string(),
+            ORGANIZATIONAL_SETTING_SOURCES.to_string(),
+            "--strict-mcp-config".to_string(),
+            "--mcp-config".to_string(),
+            internal_mcp_config_argument(server.name, server.url)?,
+            "--disallowed-tools".to_string(),
+            ORGANIZATIONAL_DISALLOWED_TOOLS.join(","),
+        ]);
+        arguments.extend(configured.iter().cloned());
+        return Ok(arguments);
+    }
     if options.project_configuration == ProjectConfigurationAccess::Restricted {
         arguments.push("--setting-sources".to_string());
         arguments.push("user".to_string());
     }
     arguments.extend(configured.iter().cloned());
+    if let Some(server) = options.internal_mcp {
+        arguments.push("--mcp-config".to_string());
+        arguments.push(internal_mcp_config_argument(server.name, server.url)?);
+    }
     Ok(arguments)
+}
+
+/// Builds the `--mcp-config` JSON for the internal server. The header names the token
+/// variable, which the CLI expands, so the bearer token never appears in argv.
+pub fn internal_mcp_config_argument(name: &str, url: &str) -> ChatResult<String> {
+    if name.is_empty() || url.is_empty() || name.contains('\0') || url.contains('\0') {
+        return Err(ChatError::validation(
+            "internalMcp",
+            "Claude internal MCP server is invalid",
+        ));
+    }
+    Ok(json!({
+        "mcpServers": {
+            name: {
+                "type": "http",
+                "url": url,
+                "headers": {
+                    "Authorization": format!("Bearer ${{{INTERNAL_MCP_TOKEN_ENVIRONMENT}}}")
+                }
+            }
+        }
+    })
+    .to_string())
+}
+
+/// Maps the modes of an organizational run to its permission mode.
+///
+/// AskForApproval asks before edits in Build and stays read-only in Plan. Other safety modes
+/// are refused, because organizational targetless runs admit only AskForApproval.
+pub fn organizational_permission_mode(modes: TurnModeSnapshot) -> ChatResult<&'static str> {
+    if modes.safety_mode != SafetyMode::AskForApproval {
+        return Err(organizational_permission_error());
+    }
+    Ok(match modes.interaction_mode {
+        InteractionMode::Plan => "plan",
+        InteractionMode::Build => ORGANIZATIONAL_ASK_PERMISSION_MODE,
+    })
+}
+
+/// The error of an organizational Claude run whose boundary cannot be proven.
+pub fn organizational_permission_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Permission,
+        "Claude could not prove the required organizational authority boundary",
+        false,
+    )
 }
 
 /// Serializes the one `--settings` object a launch passes, or none when it would be empty.
@@ -781,9 +921,7 @@ fn validate_launch_arguments(arguments: &[String]) -> ChatResult<()> {
         || arguments.iter().any(|argument| {
             argument.len() > MAX_LAUNCH_ARGUMENT_BYTES
                 || argument.contains('\0')
-                || PROTECTED.iter().any(|protected| {
-                    argument == protected || argument.starts_with(&format!("{protected}="))
-                })
+                || names_flag(argument, PROTECTED)
         })
     {
         return Err(ChatError::validation(
@@ -792,6 +930,28 @@ fn validate_launch_arguments(arguments: &[String]) -> ChatResult<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_organizational_launch_arguments(arguments: &[String]) -> ChatResult<()> {
+    if arguments
+        .iter()
+        .any(|argument| names_flag(argument, ORGANIZATIONAL_PROTECTED_ARGUMENTS))
+    {
+        return Err(ChatError::validation(
+            "launchArguments",
+            "This launch argument is not allowed for organizational runs",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `argument` is one of `flags`, in the spaced or the `--flag=value` form.
+fn names_flag(argument: &str, flags: &[&str]) -> bool {
+    flags.iter().any(|flag| {
+        argument
+            .strip_prefix(flag)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
+    })
 }
 
 fn validate_model_id(value: &str) -> ChatResult<()> {

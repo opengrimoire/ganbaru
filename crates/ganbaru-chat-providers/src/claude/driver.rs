@@ -10,7 +10,6 @@ use crate::events::*;
 use crate::models::*;
 use crate::process::{ProviderProcessConfig, spawn_provider_process};
 use crate::{DriverOperationContext, ProviderEventSink};
-use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{
@@ -55,6 +54,9 @@ pub(super) struct ClaudeLiveSession {
     pub(super) effective_model: Option<ModelId>,
     pub(super) effective_effort: Option<String>,
     pub(super) effective_fast_mode: Option<bool>,
+    /// Whether the session runs under the organizational launch surface, which also fixes the
+    /// per-turn permission mode mapping.
+    pub(super) organizational: bool,
 }
 
 impl Drop for ClaudeLiveSession {
@@ -137,6 +139,8 @@ impl ClaudeProviderDriver {
                         interaction_mode: InteractionMode::Build,
                     },
                     project_configuration: ProjectConfigurationAccess::Restricted,
+                    internal_mcp: None,
+                    organizational: None,
                 },
             )
             .await?;
@@ -185,30 +189,29 @@ impl ClaudeProviderDriver {
         let version =
             cached_probe_version(&executable, working_directory, environment.clone()).await?;
         ensure_supported_version(version)?;
-        let mut arguments = launch_arguments(
-            executable.prefix_arguments.clone(),
-            &self.configuration.launch_arguments,
-            options,
-        )?;
-        if let Some(server) = &self.configuration.internal_mcp {
-            const TOKEN_ENVIRONMENT: &str = "GANBARU_CHAT_MCP_TOKEN";
-            environment.insert(TOKEN_ENVIRONMENT.to_string(), server.bearer_token.clone());
-            arguments.push("--mcp-config".to_string());
-            arguments.push(
-                json!({
-                    "mcpServers": {
-                        server.name.clone(): {
-                            "type": "http",
-                            "url": server.url,
-                            "headers": {
-                                "Authorization": format!("Bearer ${{{TOKEN_ENVIRONMENT}}}")
-                            }
-                        }
-                    }
-                })
-                .to_string(),
+        let server = self.configuration.internal_mcp.as_ref();
+        if let Some(server) = server {
+            environment.insert(
+                INTERNAL_MCP_TOKEN_ENVIRONMENT.to_string(),
+                server.bearer_token.clone(),
             );
         }
+        let arguments = launch_arguments(
+            executable.prefix_arguments.clone(),
+            &self.configuration.launch_arguments,
+            ClaudeLaunchOptions {
+                internal_mcp: server.map(|server| ClaudeInternalMcpLaunch {
+                    name: &server.name,
+                    url: &server.url,
+                }),
+                organizational: server.filter(|server| server.organizational_authority).map(
+                    |server| ClaudeOrganizationalLaunch {
+                        internal_server_name: &server.name,
+                    },
+                ),
+                ..options
+            },
+        )?;
         let process = spawn_provider_process(ProviderProcessConfig {
             executable: executable.executable,
             arguments,
@@ -241,7 +244,8 @@ impl ClaudeProviderDriver {
         }
         let workspace = canonical_verified_workspace(input.workspace())?;
         let home = resolve_claude_home(&self.configuration)?;
-        let continuation_group_id = home.continuation_group()?;
+        let organizational = self.organizational_authority();
+        let continuation_group_id = home.continuation_group_with_authority(organizational)?;
         input.verify_continuation(&continuation_group_id)?;
         let cursor = input.resume_cursor(&self.configuration.instance_id)?;
         let model = input.model_id().cloned();
@@ -263,6 +267,8 @@ impl ClaudeProviderDriver {
                     fast_mode,
                     modes: input.modes(),
                     project_configuration: input.workspace().project_configuration,
+                    internal_mcp: None,
+                    organizational: None,
                 },
             )
             .await?;
@@ -372,6 +378,7 @@ impl ClaudeProviderDriver {
             effective_model: model,
             effective_effort: effort,
             effective_fast_mode: fast_mode,
+            organizational,
         });
         Ok(ProviderSessionSnapshot {
             session_id,
@@ -383,6 +390,15 @@ impl ClaudeProviderDriver {
             capabilities,
             started_at,
         })
+    }
+
+    /// Whether launches use the organizational surface. Only the internal server's
+    /// organizational flag selects it; the server's presence alone never does.
+    pub(super) fn organizational_authority(&self) -> bool {
+        self.configuration
+            .internal_mcp
+            .as_ref()
+            .is_some_and(|server| server.organizational_authority)
     }
 
     pub(super) fn live_mut(

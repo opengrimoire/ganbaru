@@ -148,9 +148,10 @@ pub async fn insert_starting_run(
 /// device, keeps its settled state: the run is cancelled, the dispatch job ends, and the result
 /// reports the launch as superseded so the caller stops the provider session.
 ///
-/// A run that already settled, for example through a revocation, is never rewritten: the
-/// transaction rolls back, leaving the assignment, dispatch job, and messages as they were, and
-/// the result reports the run as settled so the caller stops the provider session.
+/// A run that already settled, for example through a revocation, or that was deleted with its
+/// assignment, thread, or turn, is never rewritten: the transaction rolls back, leaving the
+/// assignment, dispatch job, and messages as they were, and the result reports the run as
+/// settled so the caller stops the provider session.
 pub async fn settle_launch(
     pool: &sqlx::SqlitePool,
     binding: &AgentRunBinding,
@@ -211,20 +212,7 @@ pub async fn settle_launch(
         .rows_affected()
         > 0;
     if !run_updated {
-        let run_exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_agent_runs WHERE id = ?)")
-                .bind(binding.run_id.as_str())
-                .fetch_one(&mut *transaction)
-                .await
-                .map_err(persistence_error)?;
         transaction.rollback().await.map_err(persistence_error)?;
-        if !run_exists {
-            return Err(ChatError::new(
-                ChatErrorCode::Persistence,
-                "The agent run of this launch is missing",
-                false,
-            ));
-        }
         return Ok(LaunchSettlement::RunSettled);
     }
     sqlx::query(

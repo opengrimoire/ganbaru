@@ -1009,7 +1009,7 @@ async fn a_launch_cannot_rewrite_a_run_that_revocation_already_cancelled() {
 }
 
 #[tokio::test]
-async fn a_launch_of_a_missing_run_reports_an_error_and_writes_nothing() {
+async fn a_launch_of_a_missing_run_stops_the_session_and_writes_nothing() {
     let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
     starting_folder_run(&pool).await;
     let binding = ganbaru_chat::agent_runs::AgentRunBinding {
@@ -1018,11 +1018,14 @@ async fn a_launch_of_a_missing_run_reports_an_error_and_writes_nothing() {
     };
     let now = UtcTimestamp::new("2026-10-20T12:02:00.000Z".to_string()).unwrap();
 
-    let error = ganbaru_chat::agent_runs::settle_launch(&pool, &binding, None, &now)
+    let settlement = ganbaru_chat::agent_runs::settle_launch(&pool, &binding, None, &now)
         .await
-        .expect_err("a missing run is not settled");
+        .unwrap();
 
-    assert_eq!(error.code, ChatErrorCode::Persistence);
+    assert_eq!(
+        settlement,
+        ganbaru_chat::agent_runs::LaunchSettlement::RunSettled
+    );
     assert_eq!(
         folder_assignment_and_run(&pool).await,
         (

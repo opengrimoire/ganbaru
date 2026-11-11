@@ -2607,14 +2607,36 @@ fn history_access_admits_positions_from_its_lower_bound() {
 }
 
 /// Freezes the seeded review assignment for a reply that mentions the agent,
-/// with the given channel history settings, and returns the source kinds and
-/// the excluded thread reply count.
+/// with the given channel history settings and an optional replacement text for
+/// the older thread reply, and returns the source kinds and the excluded thread
+/// reply count.
 async fn freeze_review_reply_context(
     read_history: bool,
     history_from_order_key: Option<&str>,
+    older_reply_text: Option<&str>,
 ) -> (Vec<String>, i64) {
     let pool = migrated_pool().await;
     seed_review_assignment_with_stranded_replies(&pool).await;
+    if let Some(text) = older_reply_text {
+        sqlx::query(
+            "INSERT INTO chat_communication_message_revisions
+                 (id, message_item_id, normalized_markdown, created_at)
+             VALUES ('revision:review-reply-1-edit', 'item:review-reply-1', ?,
+                     '2026-08-04T17:01:30.000Z')",
+        )
+        .bind(text)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE chat_communication_messages
+             SET current_revision_id = 'revision:review-reply-1-edit'
+             WHERE item_id = 'item:review-reply-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
     sqlx::raw_sql(
         "INSERT INTO chat_conversation_items
              (id, conversation_id, item_kind, order_key, created_at)
@@ -2688,20 +2710,20 @@ async fn freeze_review_reply_context(
 #[test]
 fn context_packages_include_threads_within_the_history_boundary() {
     tauri::async_runtime::block_on(async {
-        let (kinds, excluded) = freeze_review_reply_context(true, None).await;
+        let (kinds, excluded) = freeze_review_reply_context(true, None, None).await;
         assert_eq!(
             kinds,
             [
                 "thread_root:item:review-root",
                 "thread_reply:item:review-reply-1",
-                "trigger:item:review-reply-2",
                 "channel_message:item:review-later",
+                "trigger:item:review-reply-2",
             ]
             .map(String::from)
         );
         assert_eq!(excluded, 0);
 
-        let (kinds, _) = freeze_review_reply_context(true, Some("a1")).await;
+        let (kinds, _) = freeze_review_reply_context(true, Some("a1"), None).await;
         assert!(kinds.contains(&"thread_root:item:review-root".to_string()));
     });
 }
@@ -2709,12 +2731,12 @@ fn context_packages_include_threads_within_the_history_boundary() {
 #[test]
 fn context_packages_exclude_threads_rooted_before_the_history_boundary() {
     tauri::async_runtime::block_on(async {
-        let (kinds, excluded) = freeze_review_reply_context(true, Some("a2")).await;
+        let (kinds, excluded) = freeze_review_reply_context(true, Some("a2"), None).await;
         assert_eq!(
             kinds,
             [
-                "trigger:item:review-reply-2",
                 "channel_message:item:review-later",
+                "trigger:item:review-reply-2",
             ]
             .map(String::from)
         );
@@ -2725,9 +2747,28 @@ fn context_packages_exclude_threads_rooted_before_the_history_boundary() {
 #[test]
 fn context_packages_without_history_access_hold_only_the_trigger() {
     tauri::async_runtime::block_on(async {
-        let (kinds, excluded) = freeze_review_reply_context(false, None).await;
+        let (kinds, excluded) = freeze_review_reply_context(false, None, None).await;
         assert_eq!(kinds, ["trigger:item:review-reply-2".to_string()]);
         assert_eq!(excluded, 0);
+    });
+}
+
+#[test]
+fn context_package_sources_list_only_the_records_that_fit() {
+    tauri::async_runtime::block_on(async {
+        let oversized_reply = "x".repeat(super::common::MAX_MESSAGE_BYTES - 64);
+        let (kinds, excluded) =
+            freeze_review_reply_context(true, None, Some(&oversized_reply)).await;
+        assert_eq!(
+            kinds,
+            [
+                "thread_root:item:review-root",
+                "channel_message:item:review-later",
+                "trigger:item:review-reply-2",
+            ]
+            .map(String::from)
+        );
+        assert_eq!(excluded, 1);
     });
 }
 

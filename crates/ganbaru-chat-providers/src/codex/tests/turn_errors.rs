@@ -86,6 +86,19 @@ fn capacity_error_retries_three_times_then_fails() {
             assert_eq!(retry["params"]["threadId"], starts[0]["params"]["threadId"]);
         }
         assert_eq!(warnings(&sink, "codex_capacity_retry"), 3);
+        let recoverable = sink
+            .events()
+            .into_iter()
+            .filter_map(|event| match event.event {
+                CanonicalEvent::RuntimeError(error) => Some(error.recoverable),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            recoverable,
+            vec![true, true, true, false],
+            "only the error the session will not retry ends the session"
+        );
         let completed = completed_turns(&sink);
         assert_eq!(completed.len(), 1, "only the last failure settles the turn");
         assert_eq!(completed[0].state, ChatTurnState::Failed);
@@ -143,6 +156,71 @@ fn interrupt_during_capacity_backoff_settles_the_turn() {
         let completed = completed_turns(&sink);
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].state, ChatTurnState::Interrupted);
+    });
+}
+
+#[test]
+fn interrupt_during_retry_request_stops_the_started_turn() {
+    crate::test_block_on(async {
+        tokio::time::pause();
+        let workspace = TestDirectory::new("driver-capacity-in-flight");
+        let (mut driver, fixture, sink, snapshot) = start_fixture_session(
+            workspace.path(),
+            FixtureScenario::CapacityRetryInFlight,
+            None,
+        )
+        .await;
+        driver
+            .send_turn(
+                fixture_turn(&snapshot.session_id, "build"),
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        wait_until(|| turn_starts(&fixture).len() == 2).await;
+        driver
+            .interrupt_turn(
+                InterruptTurnRequest {
+                    command: ChatCommandContext {
+                        client_command_id: identifier("interrupt-command", ChatCommandId::new),
+                        expected_thread_revision: Some(3),
+                    },
+                    session_id: snapshot.session_id.clone(),
+                    turn_id: identifier("chat-turn-fixture", ChatTurnId::new),
+                },
+                &context("interrupt"),
+            )
+            .await
+            .unwrap();
+        wait_until(|| {
+            fixture
+                .received()
+                .iter()
+                .any(|message| message["method"] == "turn/interrupt")
+        })
+        .await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        let interrupts = fixture
+            .received()
+            .into_iter()
+            .filter(|message| message["method"] == "turn/interrupt")
+            .collect::<Vec<_>>();
+        assert_eq!(interrupts.len(), 1);
+        assert_eq!(interrupts[0]["params"]["turnId"], "fixture-provider-turn-2");
+        let chat_terminals = sink
+            .events()
+            .into_iter()
+            .filter(|event| {
+                matches!(event.event, CanonicalEvent::TurnCompleted(_))
+                    && event.turn_id.as_ref().map(ChatTurnId::as_str) == Some("chat-turn-fixture")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chat_terminals.len(), 1);
+        assert!(matches!(
+            &chat_terminals[0].event,
+            CanonicalEvent::TurnCompleted(turn) if turn.state == ChatTurnState::Interrupted
+        ));
     });
 }
 

@@ -168,7 +168,8 @@ async fn run_capacity_retry(
     let context = DriverOperationContext {
         operation_id: format!("codex-capacity-retry-{attempt}"),
         deadline: Instant::now() + RETRY_REQUEST_TIMEOUT,
-        cancellation: retry.cancellation.clone(),
+        // Cancelling the retry must not abandon a request Codex may already have accepted.
+        cancellation: DriverCancellation::default(),
     };
     let accepted = resources
         .client
@@ -192,6 +193,12 @@ async fn run_capacity_retry(
         });
     match accepted {
         Ok(provider_turn_id) => {
+            if !retry_is_current(&resources, &chat_turn, &retry) {
+                // The turn settled while the request was in flight, so Codex runs a turn nobody
+                // watches; stop it.
+                abandon_started_retry(&resources, &retry, provider_turn_id).await;
+                return;
+            }
             if let Ok(mut state) = resources.route.lock() {
                 // A later failure may already have absorbed this turn into the next attempt.
                 let still_this_attempt = state
@@ -212,6 +219,33 @@ async fn run_capacity_retry(
             }
         }
     }
+}
+
+/// Interrupts a retried turn Codex accepted after the chat turn had settled. A session that is
+/// shutting down ends the turn with its process instead.
+async fn abandon_started_retry(
+    resources: &CodexRetryResources,
+    retry: &CodexCapacityRetry,
+    provider_turn_id: String,
+) {
+    if resources.expected_shutdown.load(Ordering::Acquire) {
+        return;
+    }
+    let context = DriverOperationContext {
+        operation_id: "codex-capacity-retry-abandon".to_string(),
+        deadline: Instant::now() + RETRY_REQUEST_TIMEOUT,
+        cancellation: DriverCancellation::default(),
+    };
+    let params = serde_json::json!({
+        "threadId": retry.params.get("threadId").cloned().unwrap_or(Value::Null),
+        "turnId": provider_turn_id,
+    });
+    // A refused interrupt leaves nothing to settle: the chat turn already ended and the
+    // provider turn's own completion is routed like any other.
+    let _ = resources
+        .client
+        .request("turn/interrupt", params, &context)
+        .await;
 }
 
 /// Whether the session still runs `chat_turn` with this retry armed and not cancelled.

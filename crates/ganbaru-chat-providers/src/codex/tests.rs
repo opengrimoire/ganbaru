@@ -151,6 +151,7 @@ enum FixtureScenario {
     StructuredQuestion,
     TurnNotInProgress,
     CapacityFailure,
+    CapacityRetryInFlight,
     UsageLimit,
     Elicitation,
 }
@@ -523,18 +524,24 @@ async fn run_app_server_fixture<R, W>(
             "turn/start"
                 if matches!(
                     scenario,
-                    FixtureScenario::CapacityFailure | FixtureScenario::UsageLimit
+                    FixtureScenario::CapacityFailure
+                        | FixtureScenario::CapacityRetryInFlight
+                        | FixtureScenario::UsageLimit
                 ) =>
             {
                 turn_starts += 1;
                 let turn_id = format!("fixture-provider-turn-{turn_starts}");
                 let thread_id = message["params"]["threadId"].clone();
-                let error_info = if scenario == FixtureScenario::CapacityFailure {
-                    json!("serverOverloaded")
+                let error = if scenario == FixtureScenario::UsageLimit {
+                    json!({ "message": "Fixture failure", "codexErrorInfo": "usageLimitExceeded" })
                 } else {
-                    json!("usageLimitExceeded")
+                    json!({ "message": "Fixture failure", "codexErrorInfo": "serverOverloaded" })
                 };
-                for frame in [
+                let held = scenario == FixtureScenario::CapacityRetryInFlight && turn_starts > 1;
+                if held {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                }
+                let mut frames = vec![
                     json!({
                         "id": id,
                         "result": { "turn": { "id": turn_id, "status": "inProgress" } }
@@ -546,19 +553,26 @@ async fn run_app_server_fixture<R, W>(
                             "turn": { "id": turn_id, "status": "inProgress" }
                         }
                     }),
-                    json!({
+                ];
+                if !held {
+                    frames.push(json!({
+                        "method": "error",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "error": error,
+                            "willRetry": false
+                        }
+                    }));
+                    frames.push(json!({
                         "method": "turn/completed",
                         "params": {
                             "threadId": thread_id,
-                            "turn": {
-                                "id": turn_id,
-                                "status": "failed",
-                                "items": [],
-                                "error": { "message": "Fixture failure", "codexErrorInfo": error_info }
-                            }
+                            "turn": { "id": turn_id, "status": "failed", "items": [], "error": error }
                         }
-                    }),
-                ] {
+                    }));
+                }
+                for frame in frames {
                     write_fixture_message(&mut writer, frame).await;
                 }
             }

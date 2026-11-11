@@ -14,4 +14,6 @@ mod diff;
 pub(crate) mod runner;
 pub(crate) mod scripts;
 
+mod record;
+
 mod tests;

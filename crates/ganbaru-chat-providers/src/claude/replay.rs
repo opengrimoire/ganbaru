@@ -7,6 +7,8 @@ use super::transport::ClaudeJsonlConnection;
 use crate::ProviderDriver;
 use crate::models::*;
 use crate::replay::runner::{ReplayConnection, ReplaySetup};
+use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// A Claude driver whose next session runs over `connection`.
@@ -16,12 +18,7 @@ pub(crate) fn replay_driver(
 ) -> ChatResult<Box<dyn ProviderDriver>> {
     let mut configuration = super::tests::configuration(setup.home);
     if setup.organizational {
-        configuration.internal_mcp = Some(ProviderInternalMcpConfig {
-            name: "ganbaru-chat".to_string(),
-            url: "http://127.0.0.1:41234/mcp".to_string(),
-            bearer_token: "replay-token".to_string(),
-            organizational_authority: true,
-        });
+        configuration.internal_mcp = Some(organizational_mcp());
     }
     let mut driver = ClaudeProviderDriver::new(configuration)?;
     let home = setup.home.to_path_buf();
@@ -61,4 +58,32 @@ pub(crate) async fn read_jsonl_frames(bytes: &[u8]) -> Vec<serde_json::Value> {
         buffer.clear();
     }
     frames
+}
+
+/// A Claude driver that spawns `executable` with `environment`, for recording a real CLI through
+/// the fake CLI's record mode.
+pub(crate) fn recording_driver(
+    setup: &ReplaySetup<'_>,
+    executable: &Path,
+    environment: BTreeMap<String, String>,
+) -> ChatResult<Box<dyn ProviderDriver>> {
+    let mut configuration = super::tests::configuration(setup.home);
+    configuration.executable = executable.to_string_lossy().into_owned();
+    configuration.environment = environment;
+    if setup.organizational {
+        configuration.internal_mcp = Some(organizational_mcp());
+    }
+    Ok(Box::new(ClaudeProviderDriver::new(configuration)?))
+}
+
+/// The internal MCP endpoint an organizational replay launches with. Nothing listens on it; the
+/// transcript answers the CLI's MCP status itself, and a real CLI being recorded reports it as
+/// unreachable.
+fn organizational_mcp() -> ProviderInternalMcpConfig {
+    ProviderInternalMcpConfig {
+        name: "ganbaru-chat".to_string(),
+        url: "http://127.0.0.1:41234/mcp".to_string(),
+        bearer_token: "replay-token".to_string(),
+        organizational_authority: true,
+    }
 }

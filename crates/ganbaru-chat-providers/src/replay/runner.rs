@@ -70,7 +70,7 @@ pub(crate) enum ReplayProvider {
 
 impl ReplayProvider {
     /// The provider name transcript headers and scenario directories use.
-    fn name(self) -> &'static str {
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::Claude => "claude",
         }
@@ -110,6 +110,32 @@ impl ReplayProvider {
     ) -> ChatResult<Box<dyn ProviderDriver>> {
         match self {
             Self::Claude => crate::claude::replay::replay_driver(setup, connection),
+        }
+    }
+
+    /// The wire protocol transcript headers name for this provider.
+    pub(super) fn protocol(self) -> &'static str {
+        match self {
+            Self::Claude => "stream-json",
+        }
+    }
+
+    /// The provider with transcript header name `name`.
+    pub(super) fn from_name(name: &str) -> Option<Self> {
+        [Self::Claude]
+            .into_iter()
+            .find(|provider| provider.name() == name)
+    }
+
+    /// A driver that spawns `executable` with `environment` instead of a replay connection.
+    pub(super) fn recording_driver(
+        self,
+        setup: &ReplaySetup<'_>,
+        executable: &Path,
+        environment: std::collections::BTreeMap<String, String>,
+    ) -> ChatResult<Box<dyn ProviderDriver>> {
+        match self {
+            Self::Claude => crate::claude::replay::recording_driver(setup, executable, environment),
         }
     }
 }
@@ -388,7 +414,7 @@ async fn write_frame(writer: &mut DuplexStream, frame: &Value) -> Result<(), Str
 }
 
 /// Runs the script steps against the driver, returning one outcome per step.
-async fn run_script(
+pub(super) async fn run_script(
     mut driver: Box<dyn ProviderDriver>,
     script: &ReplayScript,
     setup: &ReplaySetup<'_>,
@@ -718,13 +744,30 @@ fn compare_snapshot(path: &Path, report: &ReplayReport) -> Result<(), ReplayFail
 }
 
 /// Collects the driver's canonical events and wakes script steps that wait for one.
-#[derive(Default)]
 pub(crate) struct ReplaySink {
     events: Mutex<Vec<CanonicalRuntimeEvent>>,
     changed: Notify,
+    /// How long a step waits for an event: paused clock time in a replay, wall time when a real
+    /// CLI is recorded.
+    step_timeout: Duration,
+}
+
+impl Default for ReplaySink {
+    fn default() -> Self {
+        Self::with_step_timeout(STEP_TIMEOUT)
+    }
 }
 
 impl ReplaySink {
+    /// A sink whose event waits give up after `step_timeout`.
+    pub(super) fn with_step_timeout(step_timeout: Duration) -> Self {
+        Self {
+            events: Mutex::new(Vec::new()),
+            changed: Notify::new(),
+            step_timeout,
+        }
+    }
+
     pub(crate) fn events(&self) -> Vec<CanonicalRuntimeEvent> {
         self.events.lock().unwrap().clone()
     }
@@ -753,7 +796,7 @@ impl ReplaySink {
                 .count()
                 >= count
         };
-        tokio::time::timeout(STEP_TIMEOUT, async {
+        tokio::time::timeout(self.step_timeout, async {
             loop {
                 let changed = self.changed.notified();
                 if reached() {
@@ -778,14 +821,14 @@ impl ProviderEventSink for ReplaySink {
 }
 
 /// The workspace and provider home of one replay, removed when the replay ends.
-struct ReplayDirectories {
-    root: PathBuf,
-    workspace: PathBuf,
-    home: PathBuf,
+pub(super) struct ReplayDirectories {
+    pub(super) root: PathBuf,
+    pub(super) workspace: PathBuf,
+    pub(super) home: PathBuf,
 }
 
 impl ReplayDirectories {
-    fn new() -> Result<Self, ReplayFailure> {
+    pub(super) fn new() -> Result<Self, ReplayFailure> {
         let root = std::env::temp_dir().join(format!(
             "ganbaru-replay-{}-{}",
             std::process::id(),

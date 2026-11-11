@@ -977,6 +977,7 @@
 {:else if viewLoadState?.status === "failed" && viewLoadState.key === activeViewKind}
   <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("common.viewLoadFailed", viewLabel(activeViewKind))} copy={false} onRetry={() => requestActiveView(true)} /></div>
 {:else}
-  <NotesLoadingSkeleton kind={activeViewKind} />
+  <!-- The top padding matches the view sections, which start with `pt-2`. -->
+  <div class="pt-2"><NotesLoadingSkeleton kind={activeViewKind} /></div>
 {/if}
 {/key}

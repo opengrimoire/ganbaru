@@ -47,8 +47,10 @@ export interface NotesDatabaseTableRelationItem {
 
 export type NotesDatabaseTableEditValue = string | boolean | string[] | NotesDatabaseDateValue | null;
 
-const DEFAULT_COLUMN_WIDTH = 180;
-const TITLE_COLUMN_WIDTH = 220;
+/** Width of a table column the user has not resized, in pixels. */
+export const NOTES_DATABASE_DEFAULT_COLUMN_WIDTH = 180;
+/** Width of the title column before the user resizes it, in pixels. */
+export const NOTES_DATABASE_TITLE_COLUMN_WIDTH = 220;
 const MIN_COLUMN_WIDTH = 96;
 const MAX_COLUMN_WIDTH = 480;
 const TABLE_SORT_DIRECTIONS = new Set<NotesDatabaseTableSortDirection>([
@@ -112,7 +114,7 @@ export function notesDatabaseTableColumns(
       name: readString(rawProperty.name, key),
       type,
       hidden: type === "title" ? false : hidden.has(id),
-      width: configuration.column_widths[id] ?? (type === "title" ? TITLE_COLUMN_WIDTH : DEFAULT_COLUMN_WIDTH),
+      width: configuration.column_widths[id] ?? (type === "title" ? NOTES_DATABASE_TITLE_COLUMN_WIDTH : NOTES_DATABASE_DEFAULT_COLUMN_WIDTH),
       options: propertyOptions(rawProperty, type),
       relationDataSourceId: relationDataSourceId(rawProperty, type),
       buttonLabel: buttonLabel(rawProperty, type),

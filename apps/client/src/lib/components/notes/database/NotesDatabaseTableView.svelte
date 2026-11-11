@@ -35,7 +35,8 @@
   import CollectionExpandToggle from "$lib/components/collections/CollectionExpandToggle.svelte";
   import CollectionSelectionBar from "$lib/components/collections/CollectionSelectionBar.svelte";
   import CollectionSelectionAction from "$lib/components/collections/CollectionSelectionAction.svelte";
-  import { COLLECTION_ROW_INSET, COLLECTION_ROW_INSET_REM, collectionRowExpanded, collectionRowIndent, toggledCollectionRowExpansion, type CollectionRowExpansion } from "$lib/components/collections/row-expansion";
+  import { COLLECTION_ROW_INSET, collectionRowExpanded, collectionRowIndent, toggledCollectionRowExpansion, type CollectionRowExpansion } from "$lib/components/collections/row-expansion";
+  import { NOTES_TABLE_ROW_CONTENT_START as ROW_CONTENT_START, NOTES_TABLE_ROW_CONTENT_START_REM as ROW_CONTENT_START_REM, NOTES_TABLE_ROW_GUTTER as ROW_GUTTER, NOTES_TABLE_SELECTION_TRACK as SELECTION_TRACK, notesTableGutterMargin, notesTableRowTemplate } from "./table-layout";
   import { collectionGutterRoom } from "$lib/components/collections/gutter-room";
   import { NOTES_DATABASE_MAX_COLLAPSED_ROWS, NOTES_DATABASE_ROW_MAX_DEPTH, notesDatabaseCollapsedRows, notesDatabaseHierarchyItems, notesDatabaseTopmostRows } from "$lib/notes/database/row-hierarchy";
   import { NOTES_DATABASE_QUERY_MAX_SORTS, notesDatabaseFilterCount, notesDatabaseFilterConditions, notesDatabaseNewFilter, notesDatabaseRowMatchesFilters, notesDatabaseSortsWithColumn } from "$lib/notes/database/query-controls";
@@ -368,20 +369,6 @@
   const renderedColumns = $derived(visibleColumns.map((column) => ({ ...column,
     width: columnResize?.id === column.id ? columnResize.width : pendingColumnWidth?.id === column.id ? pendingColumnWidth.width : column.width,
   })));
-  /** Minimum width of the trailing track, which only holds the add property button (`size-9`). */
-  const ADD_PROPERTY_TRACK_MIN = "2.25rem";
-  /** Leading tracks for the selection checkbox and the expand chevron (`size-7`), in rem. */
-  const SELECTION_TRACK_REM = 1.5;
-  const EXPAND_TRACK_REM = 1.75;
-  const SELECTION_TRACK = `${SELECTION_TRACK_REM}rem`;
-  const EXPAND_TRACK = `${EXPAND_TRACK_REM}rem`;
-  /**
-   * The selection and expand tracks sit outside the table: row fills and dividers start after them, and the table hangs
-   * them into the margin so its content lines up with the database title and toolbar.
-   */
-  const ROW_GUTTER = `calc(${SELECTION_TRACK} + ${EXPAND_TRACK})`;
-  const ROW_CONTENT_START_REM = COLLECTION_ROW_INSET_REM + SELECTION_TRACK_REM + EXPAND_TRACK_REM;
-  const ROW_CONTENT_START = `${ROW_CONTENT_START_REM}rem`;
   /** Draws row dividers above sticky frozen cells (`z-20`) and frozen headers (`z-30`). */
   const ROW_DIVIDER_LAYER = 31;
   /** Pixels of one rem, so frozen columns can budget the viewport left after the gutter. */
@@ -410,7 +397,7 @@
       ? `left: ${COLLECTION_ROW_INSET}; box-shadow: calc(-1 * ${COLLECTION_ROW_INSET}) 0 0 var(--background);`
       : `left: calc(${COLLECTION_ROW_INSET} + ${SELECTION_TRACK});`;
   }
-  const gridTemplate = $derived(`${SELECTION_TRACK} ${EXPAND_TRACK} ${renderedColumns.map((column) => `${column.width}px`).join(" ")} minmax(${ADD_PROPERTY_TRACK_MIN}, 1fr)`);
+  const gridTemplate = $derived(notesTableRowTemplate(renderedColumns.map((column) => column.width)));
   const filters = $derived(table ? notesDatabaseTableFiltersFromView(table.view) : []);
   const sorts = $derived(table ? notesDatabaseTableSortsFromView(table.view) : []);
   const rowOpenMode = $derived(
@@ -1351,7 +1338,7 @@
 
       <!-- The bottom padding keeps the last row border inside the scroll clip when zoom gives rows fractional heights. -->
       <div bind:this={tableRoot} use:rememberDatabaseScroll={databaseResource("table", dataSourceId, viewScope()).key} class="min-w-0 overflow-x-auto overflow-y-hidden pb-px"
-        style={`margin-left: calc(-1 * min(${gutterRoom}px, ${ROW_CONTENT_START}));`}>
+        style={`margin-left: ${notesTableGutterMargin(gutterRoom)};`}>
         <div role="table" aria-label={t("notes.databaseViewTable")} class="isolate min-w-max" style={`--collection-divider-layer: ${ROW_DIVIDER_LAYER};`}>
           <CollectionRow template={gridTemplate} gutter={ROW_GUTTER} header dividerTop role="row">
             <div role="columnheader" class={`flex justify-center self-stretch items-center ${gutterCellClass(true)}`} style={gutterCellStyle("selection")}>

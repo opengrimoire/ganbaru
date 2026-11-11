@@ -1070,7 +1070,7 @@
       {#if advancedBlockFamily && advancedBlockLoadState?.status === "failed" && advancedBlockLoadState.key === advancedBlockFamily}
         <Notice class="my-1 text-[0.8rem]" message={t("common.viewLoadFailed", block.type)} copy={false} onRetry={() => requestAdvancedBlock(true)} />
       {:else if advancedBlockFamily && advancedBlockFamily !== "child-database" && advancedBlockLoadState?.status !== "ready"}
-        <NotesLoadingSkeleton kind={advancedBlockFamily === "table" ? "table" : "block"} />
+        <NotesLoadingSkeleton kind={advancedBlockFamily === "table" ? "simple-table" : "block"} />
       {/if}
 
       {#if slashOpen}

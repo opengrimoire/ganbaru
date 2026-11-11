@@ -59,6 +59,16 @@ describe("Notes loading handoff", () => {
     expect(document.querySelector<HTMLElement>(".notes-skeleton-shapes")?.style.opacity).toBe("1");
   });
 
+  it("draws the database table with a header and rows on the loaded table tracks", async () => {
+    await mountLoadingSkeleton(false, "database");
+    const rows = [...document.querySelectorAll<HTMLElement>("[data-notes-skeleton-table] .collection-row")];
+    expect(rows).toHaveLength(4);
+    expect(rows[0].hasAttribute("data-collection-divider-top")).toBe(true);
+    expect(rows.slice(1).some((row) => row.hasAttribute("data-collection-divider-top"))).toBe(false);
+    expect(new Set(rows.map((row) => row.style.getPropertyValue("--collection-columns"))).size).toBe(1);
+    expect(rows[0].style.getPropertyValue("--collection-columns")).toContain("220px 180px 180px");
+  });
+
   it("skips the placeholder and fade for already ready content", async () => {
     const { content, onAction } = await mountLoadingSkeleton(true);
     expect(document.querySelector(".notes-skeleton-placeholder")).toBeNull();

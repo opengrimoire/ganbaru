@@ -3,6 +3,10 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { NotesDatabaseViewKind, NotesPage } from "$lib/notes/types";
   import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
+  import CollectionRow from "$lib/components/collections/CollectionRow.svelte";
+  import { collectionGutterRoom } from "$lib/components/collections/gutter-room";
+  import { NOTES_DATABASE_DEFAULT_COLUMN_WIDTH, NOTES_DATABASE_TITLE_COLUMN_WIDTH } from "$lib/notes/database/table";
+  import { NOTES_TABLE_ROW_GUTTER, notesTableGutterMargin, notesTableRowTemplate } from "./database/table-layout";
 
   let {
     kind = "page",
@@ -11,7 +15,8 @@
     ready = false,
     children,
   }: {
-    kind?: "page" | "cover" | "block" | "database" | NotesDatabaseViewKind;
+    /** `simple-table` is a Notes table block, which has no row gutter; `table` and the other view kinds are database views. */
+    kind?: "page" | "cover" | "block" | "simple-table" | "database" | NotesDatabaseViewKind;
     page?: NotesPage | null;
     openMode?: NotesPageOpenMode;
     ready?: boolean;
@@ -44,9 +49,45 @@
     }, HANDOFF_DURATION_MS);
     return () => clearTimeout(timer);
   });
+
+  /** Columns of a fresh database table: the title and two properties at their default widths. */
+  const TABLE_COLUMN_WIDTHS = [NOTES_DATABASE_TITLE_COLUMN_WIDTH, NOTES_DATABASE_DEFAULT_COLUMN_WIDTH, NOTES_DATABASE_DEFAULT_COLUMN_WIDTH];
+  const TABLE_TEMPLATE = notesTableRowTemplate(TABLE_COLUMN_WIDTHS);
+  /** Text bar widths per row and column, as percentages of the cell, varied so rows read as content. */
+  const TABLE_HEADER_BARS = [45, 40, 35];
+  const TABLE_ROW_BARS = [[60, 45, 30], [75, 30, 50], [50, 55, 40]];
+  const LIST_ROW_BARS = [55, 40, 65];
+
+  let root: HTMLDivElement | null = $state(null);
+  /** Room left of the skeleton for the table gutter, measured as the loaded table measures it so columns line up. */
+  let gutterRoom = $state(0);
+  const showsDatabaseTable = $derived(kind === "database" || kind === "table");
+
+  $effect(() => {
+    const element = root;
+    if (!element || !showsDatabaseTable || !shouldRetainPlaceholder) return;
+    const measure = () => { gutterRoom = collectionGutterRoom(element).room; };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    const clip = collectionGutterRoom(element).clip;
+    if (clip) observer.observe(clip);
+    return () => observer.disconnect();
+  });
+
+  /** Placeholder spacing that mirrors the loaded content: the database block margin, or the inline block padding. */
+  function placeholderClass(): string {
+    if (kind === "page") return "h-full min-h-0 overflow-x-hidden overflow-y-scroll";
+    if (kind === "cover") return "size-full";
+    if (kind === "database") return "my-5";
+    if (kind === "block" || kind === "simple-table") return "overflow-hidden py-2";
+    return "overflow-hidden";
+  }
 </script>
 
 <div
+  bind:this={root}
   class="notes-loading-skeleton {children ? 'notes-loading-surface' : ''} {kind === 'page' ? 'min-h-0 min-w-0 flex-1 overflow-hidden' : kind === 'cover' ? 'size-full' : 'w-full min-w-0'}"
   style={`--notes-skeleton-handoff: ${HANDOFF_DURATION_MS}ms;`}
   role={!ready ? "status" : undefined}
@@ -66,17 +107,32 @@
   {/if}
   {#if shouldRetainPlaceholder}
     <div
-      class="notes-skeleton-placeholder {kind === 'page' ? 'h-full min-h-0 overflow-x-hidden overflow-y-scroll' : kind === 'cover' ? 'size-full' : kind === 'database' ? 'my-5' : 'overflow-hidden py-2'}"
+      class="notes-skeleton-placeholder {placeholderClass()}"
       style:container-type={kind === "page" ? "inline-size" : undefined}
       data-retiring={ready}
       aria-hidden="true"
     >
       <div class="notes-skeleton-shapes {kind === 'cover' ? 'size-full' : ''}" style:opacity={!ready && revealed ? 1 : 0}>
         {#if kind === "database"}
-          <div class="skeleton-fill mb-3 h-7 w-1/2 rounded-md"></div>
-          <div class="mb-3 flex h-8 items-center gap-3"><div class="skeleton-fill h-5 w-1/4 rounded"></div><div class="skeleton-fill h-5 w-1/5 rounded"></div><div class="skeleton-fill ml-auto h-7 w-16 rounded"></div></div>
-        {/if}
-        {#if kind === "page"}
+          <!-- Mirrors the database block: title row, view toolbar, then the view section's top padding. -->
+          <div class="space-y-1">
+            <div class="flex min-h-10 items-center pl-1"><div class="skeleton-fill h-6 w-2/5 max-w-64 rounded-md"></div></div>
+            <div class="flex items-center gap-1 py-1">
+              <div class="skeleton-fill h-8 w-24 rounded-md"></div>
+              <div class="skeleton-fill ml-auto size-8 rounded-md"></div>
+              <div class="skeleton-fill h-8 w-20 rounded-md"></div>
+            </div>
+            <div class="pt-2">{@render databaseTable()}</div>
+          </div>
+        {:else if kind === "table"}
+          {@render databaseTable()}
+        {:else if kind === "list"}
+          {#each LIST_ROW_BARS as width}
+            <CollectionRow template="minmax(0, 1fr)">
+              <div class="flex min-w-0 items-center px-2"><div class="skeleton-fill h-3 rounded" style:width="{width}%"></div></div>
+            </CollectionRow>
+          {/each}
+        {:else if kind === "page"}
           {#if page?.cover}<div class="notes-page-banner skeleton-fill" data-notes-skeleton-cover></div>{/if}
           <div class="mx-auto flex w-full max-w-208 flex-col pt-3 {openMode === 'side' ? 'pl-16 pr-4 sm:pr-8' : 'px-4 sm:px-8'}">
             <div class="min-h-8"></div>
@@ -120,14 +176,12 @@
             {/each}
           </div>
         {:else}
-          <div class="overflow-hidden {kind === 'list' ? '' : 'border-y border-border/50'}">
+          <div class="overflow-hidden border-y border-border/50">
             {#each [0, 1, 2, 3] as row}
               <div class="flex min-h-10 items-center gap-6 border-b border-border/50 px-2 last:border-b-0">
-                <div class="skeleton-fill h-3 rounded {kind === 'list' ? 'w-1/2' : 'w-1/3'}"></div>
-                {#if kind !== "list"}
-                  <div class="skeleton-fill h-3 w-1/5 rounded"></div>
-                  <div class="skeleton-fill h-3 w-1/6 rounded"></div>
-                {/if}
+                <div class="skeleton-fill h-3 w-1/3 rounded"></div>
+                <div class="skeleton-fill h-3 w-1/5 rounded"></div>
+                <div class="skeleton-fill h-3 w-1/6 rounded"></div>
               </div>
             {/each}
           </div>
@@ -136,6 +190,33 @@
     </div>
   {/if}
 </div>
+
+<!-- Same rows, tracks, gutter hang, and dividers as the loaded database table, so nothing shifts at the handoff. -->
+{#snippet databaseTable()}
+  <div class="min-w-0 overflow-hidden" style:margin-left={notesTableGutterMargin(gutterRoom)} data-notes-skeleton-table>
+    <div class="min-w-max">
+      <CollectionRow template={TABLE_TEMPLATE} gutter={NOTES_TABLE_ROW_GUTTER} header dividerTop>
+        {@render tableCells(TABLE_HEADER_BARS, true)}
+      </CollectionRow>
+      {#each TABLE_ROW_BARS as bars}
+        <CollectionRow template={TABLE_TEMPLATE} gutter={NOTES_TABLE_ROW_GUTTER}>
+          {@render tableCells(bars, false)}
+        </CollectionRow>
+      {/each}
+    </div>
+  </div>
+{/snippet}
+
+{#snippet tableCells(bars: number[], header: boolean)}
+  <div></div><div></div>
+  {#each bars as width}
+    <div class="flex min-w-0 items-center gap-1.5 px-2">
+      {#if header}<div class="skeleton-fill size-3.5 shrink-0 rounded-sm"></div>{/if}
+      <div class="skeleton-fill h-3 rounded" style:width="{width}%"></div>
+    </div>
+  {/each}
+  <div></div>
+{/snippet}
 
 {#snippet lines()}
   <div class="space-y-3">

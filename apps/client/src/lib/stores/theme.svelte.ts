@@ -79,8 +79,8 @@ import {
 const ACTIVE_KEY = "theme.activeId";
 const QUICK_TOGGLE_LIGHT_KEY = "theme.quickToggleLightId";
 const QUICK_TOGGLE_DARK_KEY = "theme.quickToggleDarkId";
-/** Theme surface the Android shell paints behind the WebView before the page draws. */
-const ANDROID_WINDOW_BACKGROUND_TOKEN = "--background";
+/** Theme surface the Android shell paints behind the WebView before the page draws; it matches the mobile shell canvas so loading shows no color change. */
+const ANDROID_WINDOW_BACKGROUND_TOKEN = "--cal-bg";
 const THEME_WINDOW_SYNC_EVENT = "theme-window-sync";
 /** Replicated table of user themes; its rows carry their tokens and palettes. */
 export const THEMES_SYNC_TABLE = "themes";

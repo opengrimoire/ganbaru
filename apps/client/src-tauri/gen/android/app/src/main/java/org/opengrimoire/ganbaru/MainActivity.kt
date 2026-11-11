@@ -35,8 +35,8 @@ private const val APPEARANCE_PREFERENCES_NAME = "ganbaru_appearance"
 private const val WINDOW_BACKGROUND_KEY = "window_background"
 private const val NIGHT_MODE_KEY = "night_mode"
 
-/** Content background of the default dark theme, painted until the page reports the active theme. */
-private const val DEFAULT_WINDOW_BACKGROUND = 0xFF27282A.toInt()
+/** Content canvas (`--cal-bg`) of the default dark theme, painted until the page reports the active theme. */
+private const val DEFAULT_WINDOW_BACKGROUND = 0xFF1F2023.toInt()
 
 private class AndroidInsetsBridge(displayDensity: Float) {
   private val density = displayDensity.takeIf { it.isFinite() && it > 0f } ?: 1f

@@ -495,7 +495,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   html[data-shell="mobile"] body {
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
-    background: var(--background);
+    background: var(--cal-bg);
   }
   html[data-shell="mobile"] {
     --titlebar-h: var(--mobile-topbar-h);

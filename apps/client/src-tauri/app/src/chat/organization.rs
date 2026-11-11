@@ -68,10 +68,11 @@ use teammate_lifecycle::set_teammate_archived;
 #[cfg(desktop)]
 use workflow::insert_policy_revision;
 use workflow::{
-    AssignmentWrite, ChannelCopy, CommunicationMessageWrite, PostingDevice, insert_channel_copy,
-    insert_communication_message, next_item_order_key, persist_assignment_routing,
-    read_post_receipt, require_continuation_scope_is_unchanged, require_reply_thread,
-    resolve_invoked_teammate,
+    AssignmentWrite, ChannelCopy, CommunicationMessageWrite, PostingDevice,
+    complete_reviewed_assignment, insert_channel_copy, insert_communication_message,
+    next_item_order_key, persist_assignment_routing, read_post_receipt,
+    require_continuation_scope_is_unchanged, require_reply_thread, require_reviewable_assignment,
+    require_reviewed_work_is_latest, resolve_invoked_teammate,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -266,7 +267,7 @@ pub async fn chat_post_message(
     db_url: String,
     request: PostChatMessageCommand,
 ) -> ChatResult<PostChatMessageResult> {
-    match post_message(app, db_url, &request, None).await? {
+    match post_message(app, db_url, &request, None, None).await? {
         PostOutcome::Posted(result) => Ok(result),
         PostOutcome::Refused(refusal) => Err(refusal),
     }
@@ -301,14 +302,26 @@ pub(super) struct ScheduledSend<'a> {
     pub(super) consent: ScheduledConsent,
 }
 
+/// Ready-for-review work a post asks changes on. The post checks it in its own transaction and
+/// completes it with changes requested, whether or not the post creates the follow-up.
+#[cfg_attr(mobile, allow(dead_code))]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ReviewedWork<'a> {
+    /// Assignment under review, which must be the latest work of the post's reply thread.
+    pub(super) assignment_id: &'a ChatWorkAssignmentId,
+    /// Revision the reviewer saw.
+    pub(super) expected_revision: u64,
+}
+
 /// Posts `request`, or sends the scheduled message `scheduled` with it, and starts the work the
 /// post routes to. A scheduled send whose request does not match its stored row is refused
-/// and starts nothing.
+/// and starts nothing. With `review`, the post is the note that asks changes on that work.
 pub(super) async fn post_message(
     app: tauri::AppHandle,
     db_url: String,
     request: &PostChatMessageCommand,
     scheduled: Option<ScheduledSend<'_>>,
+    review: Option<ReviewedWork<'_>>,
 ) -> ChatResult<PostOutcome<PostChatMessageResult>> {
     #[cfg(desktop)]
     let dispatch_app = app.clone();
@@ -321,6 +334,7 @@ pub(super) async fn post_message(
         &pool,
         request,
         scheduled,
+        review,
         PostingDevice::this_device(&device_id, &writers),
     )
     .await?
@@ -383,6 +397,7 @@ async fn write_post(
     pool: &SqlitePool,
     request: &PostChatMessageCommand,
     scheduled: Option<ScheduledSend<'_>>,
+    review: Option<ReviewedWork<'_>>,
     device: PostingDevice<'_>,
 ) -> ChatResult<PostOutcome<PersistedPost>> {
     if let Some(send) = scheduled
@@ -391,7 +406,7 @@ async fn write_post(
         return Ok(PostOutcome::Refused(refusal));
     }
     validate_message_request(request)?;
-    persist_post(pool, request, scheduled, device)
+    persist_post_with(pool, request, scheduled, review, device)
         .await
         .map(PostOutcome::Posted)
 }
@@ -439,15 +454,29 @@ const DELETE_CLAIMED_SCHEDULED_MESSAGE: &str = "DELETE FROM chat_scheduled_messa
          WHERE dispatch.scheduled_message_id = ?1 AND dispatch.claim_token = ?2
      )";
 
-/// Writes the post of `request` from `device` in one transaction. A scheduled send posts under
-/// ids derived from the scheduled message, copies its stored attachment values, and deletes the
-/// scheduled message in the same transaction, so it posts once even when the device stops
-/// between steps. An unattended send still posts, but queues no dispatch for the work it creates
-/// and leaves existing work as it is.
+/// Writes the post of `request` from `device` with no review.
+#[cfg(test)]
 async fn persist_post(
     pool: &SqlitePool,
     request: &PostChatMessageCommand,
     scheduled: Option<ScheduledSend<'_>>,
+    device: PostingDevice<'_>,
+) -> ChatResult<PersistedPost> {
+    persist_post_with(pool, request, scheduled, None, device).await
+}
+
+/// Writes the post of `request` from `device` in one transaction. A scheduled send posts under
+/// ids derived from the scheduled message, copies its stored attachment values, and deletes the
+/// scheduled message in the same transaction, so it posts once even when the device stops
+/// between steps. An unattended send still posts, but queues no dispatch for the work it creates
+/// and leaves existing work as it is. With `review`, the same transaction refuses the post
+/// unless that work is still the latest of the reply thread, ready for review, and at the
+/// revision the reviewer saw, and completes it with changes requested.
+async fn persist_post_with(
+    pool: &SqlitePool,
+    request: &PostChatMessageCommand,
+    scheduled: Option<ScheduledSend<'_>>,
+    review: Option<ReviewedWork<'_>>,
     device: PostingDevice<'_>,
 ) -> ChatResult<PersistedPost> {
     let device = match scheduled {
@@ -497,6 +526,9 @@ async fn persist_post(
             .is_some(),
         &request.references,
     )?;
+    if let Some(review) = review {
+        require_reviewed_work_is_latest(resolved_invocation.as_ref(), review)?;
+    }
     let now = now_timestamp()?;
     let (item_id, revision_id) = match scheduled {
         Some(scheduled) => {
@@ -521,6 +553,14 @@ async fn persist_post(
         None => None,
     };
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    if let Some(review) = review {
+        require_reviewable_assignment(
+            &mut transaction,
+            review.assignment_id,
+            review.expected_revision,
+        )
+        .await?;
+    }
     sqlx::query(
         "INSERT INTO chat_organizational_command_receipts
             (client_command_id, command_kind, state, created_at, updated_at)
@@ -617,6 +657,19 @@ async fn persist_post(
         }
         None => AssignmentWrite::NONE,
     };
+    if let Some(review) = review {
+        // A follow-up already completed the reviewed work, so this write only lands when no
+        // device can run new work for the teammate and the note waits for a later Start.
+        complete_reviewed_assignment(
+            &mut transaction,
+            review.assignment_id,
+            None,
+            ChatAssignmentReviewOutcome::ChangesRequested,
+            LOCAL_PARTICIPANT_ID,
+            &now,
+        )
+        .await?;
+    }
     if request.also_send_to_channel && request.reply_thread_id.is_some() {
         insert_channel_copy(
             &mut transaction,

@@ -19,6 +19,8 @@ use ganbaru_chat::coordination::acceptance::scheduled_consent_digest;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
 
+mod review;
+
 #[test]
 fn teammate_effort_accepts_every_catalog_reasoning_level() {
     for effort in [
@@ -820,7 +822,7 @@ fn scheduled_request_mismatch_refuses_foreign_channel() {
         let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
         let device = PostingDevice::this_device(SCHEDULING_DEVICE, &writers);
 
-        let outcome = write_post(&pool, &request, Some(send), device)
+        let outcome = write_post(&pool, &request, Some(send), None, device)
             .await
             .unwrap();
 
@@ -878,7 +880,7 @@ fn scheduled_write_post_sends_a_matching_request() {
         let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
         let device = PostingDevice::this_device(SCHEDULING_DEVICE, &writers);
 
-        let outcome = write_post(&pool, &request, Some(send), device)
+        let outcome = write_post(&pool, &request, Some(send), None, device)
             .await
             .unwrap();
 

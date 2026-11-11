@@ -6,7 +6,7 @@ use super::common::{
     AttachmentSource, ScheduledPostIds, assignment_input_id, conversation_item_id,
     has_thread_eligible_mention, insert_revision_attachments, json_object, message_revision_id,
     new_id, parse_participant_kind, reply_thread_id, serialization_error, wire_participant_kind,
-    work_assignment_id,
+    wire_review_outcome, work_assignment_id,
 };
 #[cfg(desktop)]
 use super::common::{wire_approval_policy, wire_work_state};
@@ -18,8 +18,8 @@ use super::reads::{
     read_active_or_latest_assignment, read_assignment, read_message, read_participant,
 };
 use super::{
-    LOCAL_PARTICIPANT_ID, StoredPostMessageReceipt, i64_value, identifier_error, persistence_error,
-    u64_value,
+    LOCAL_PARTICIPANT_ID, ReviewedWork, StoredPostMessageReceipt, i64_value, identifier_error,
+    persistence_error, u64_value,
 };
 use ganbaru_chat::coordination::contracts::*;
 use ganbaru_chat_contracts::models::*;
@@ -405,6 +405,7 @@ pub(super) async fn persist_assignment_routing(
             latest_assignment,
             executing_device_id: &executing_device_id,
             execution_target,
+            poster_participant_id: LOCAL_PARTICIPANT_ID,
         },
         device,
         now,
@@ -429,10 +430,14 @@ pub(super) struct NewAssignment<'a> {
     pub(super) latest_assignment: Option<&'a ChatWorkAssignmentRead>,
     pub(super) executing_device_id: &'a str,
     pub(super) execution_target: Option<&'a ChatExecutionTarget>,
+    /// Participant who posted the trigger, recorded as the reviewer when the new assignment
+    /// follows reviewed work.
+    pub(super) poster_participant_id: &'a str,
 }
 
 /// Writes the queued assignment `assignment` with its trigger input, settling a reviewed
-/// predecessor. A trigger message that is already an input moves to the new assignment, since
+/// predecessor as completed with changes requested by the poster, since more work was asked
+/// for. A trigger message that is already an input moves to the new assignment, since
 /// its input id derives from the message, and the predecessor's other pending replies of the
 /// same reply thread follow it in order. The execution targets kept for the predecessor's
 /// pending replies go, since no reply waits on it anymore. When this device executes it and
@@ -455,18 +460,16 @@ pub(super) async fn create_assignment(
         .latest_assignment
         .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview);
     if let Some(previous) = reviewed_previous {
-        let settled = sqlx::query(
-            "UPDATE chat_work_assignments
-             SET state = 'completed', settled_at = ?, revision = revision + 1, updated_at = ?
-             WHERE id = ? AND state = 'ready_for_review'",
+        let settled = complete_reviewed_assignment(
+            &mut **transaction,
+            &previous.id,
+            None,
+            ChatAssignmentReviewOutcome::ChangesRequested,
+            assignment.poster_participant_id,
+            now,
         )
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .bind(previous.id.as_str())
-        .execute(&mut **transaction)
-        .await
-        .map_err(persistence_error)?;
-        if settled.rows_affected() != 1 {
+        .await?;
+        if !settled {
             return Err(ChatError::new(
                 ChatErrorCode::Conflict,
                 "The reviewed assignment changed before the follow-up was created",
@@ -1746,6 +1749,95 @@ pub(super) async fn read_post_receipt(
     }))
 }
 
+/// Refuses a review note unless `invocation` routes it to the reviewed work: that work must be
+/// the latest of the reply thread, with no active work in front of it.
+pub(super) fn require_reviewed_work_is_latest(
+    invocation: Option<&ResolvedInvocation>,
+    review: ReviewedWork<'_>,
+) -> ChatResult<()> {
+    let routes_to_review = invocation.is_some_and(|invocation| {
+        invocation.active_assignment.is_none()
+            && invocation
+                .latest_assignment
+                .as_ref()
+                .is_some_and(|latest| &latest.id == review.assignment_id)
+    });
+    if routes_to_review {
+        Ok(())
+    } else {
+        Err(ChatError::new(
+            ChatErrorCode::Conflict,
+            "The reviewed work is no longer the latest work of its reply thread",
+            true,
+        ))
+    }
+}
+
+/// Refuses a review of `assignment_id` unless it is ready for review at `expected_revision`.
+pub(super) async fn require_reviewable_assignment(
+    connection: &mut sqlx::SqliteConnection,
+    assignment_id: &ChatWorkAssignmentId,
+    expected_revision: u64,
+) -> ChatResult<()> {
+    let row = sqlx::query("SELECT state, revision FROM chat_work_assignments WHERE id = ?")
+        .bind(assignment_id.as_str())
+        .fetch_optional(connection)
+        .await
+        .map_err(persistence_error)?
+        .ok_or_else(|| {
+            ChatError::new(
+                ChatErrorCode::NotFound,
+                "The assignment was not found",
+                false,
+            )
+        })?;
+    let revision = u64_value(row.try_get("revision").map_err(persistence_error)?)?;
+    if revision != expected_revision {
+        return Err(ChatError::new(
+            ChatErrorCode::StaleRevision,
+            "The assignment changed before the review",
+            true,
+        ));
+    }
+    let state: String = row.try_get("state").map_err(persistence_error)?;
+    if state != "ready_for_review" {
+        return Err(ChatError::invalid_transition(
+            "Only work that is ready for review can be reviewed",
+        ));
+    }
+    Ok(())
+}
+
+/// Completes `assignment_id` with the review `outcome` by `reviewer_participant_id`, and
+/// returns whether it was still ready for review, and at `expected_revision` when one is given.
+pub(super) async fn complete_reviewed_assignment(
+    connection: &mut sqlx::SqliteConnection,
+    assignment_id: &ChatWorkAssignmentId,
+    expected_revision: Option<u64>,
+    outcome: ChatAssignmentReviewOutcome,
+    reviewer_participant_id: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<bool> {
+    let expected_revision = expected_revision.map(i64_value).transpose()?;
+    let settled = sqlx::query(
+        "UPDATE chat_work_assignments
+         SET state = 'completed', settled_at = ?1, review_outcome = ?2, reviewed_at = ?1,
+             reviewed_by_participant_id = ?3, revision = revision + 1, updated_at = ?1
+         WHERE id = ?4 AND state = 'ready_for_review' AND (?5 IS NULL OR revision = ?5)",
+    )
+    .bind(now.as_str())
+    .bind(wire_review_outcome(outcome))
+    .bind(reviewer_participant_id)
+    .bind(assignment_id.as_str())
+    .bind(expected_revision)
+    .execute(connection)
+    .await
+    .map_err(persistence_error)?;
+    Ok(settled.rows_affected() == 1)
+}
+
+/// Moves `assignment_id` to `state` when it is still at `expected_revision`. The write clears
+/// any review, since a review only judges completed work and this write replaces that state.
 #[cfg(desktop)]
 pub(super) async fn set_assignment_state(
     pool: &SqlitePool,
@@ -1757,7 +1849,8 @@ pub(super) async fn set_assignment_state(
     let now = now_timestamp()?;
     let updated = sqlx::query(
         "UPDATE chat_work_assignments
-         SET state = ?, state_reason = ?, settled_at = ?,
+         SET state = ?, state_reason = ?, settled_at = ?, review_outcome = NULL,
+             reviewed_at = NULL, reviewed_by_participant_id = NULL,
              revision = revision + 1, updated_at = ?
          WHERE id = ? AND revision = ?",
     )

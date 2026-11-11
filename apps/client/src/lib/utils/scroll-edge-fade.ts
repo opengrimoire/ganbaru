@@ -80,6 +80,8 @@ export function scrollEdgeFadeAction(node: HTMLElement, options: { edges?: Scrol
   let edges = options.edges ?? "both";
   // An unreadable size leaves the distance uncapped; the stylesheet caps it again at the fade size.
   let sizes: ScrollFadeSizes = { top: Number.POSITIVE_INFINITY, bottom: Number.POSITIVE_INFINITY };
+  // Reading the sizes forces a style computation, so it waits until an edge fades; most containers never overflow.
+  let sizesStale = true;
   const written: ScrollFadeSizes = { top: -1, bottom: -1 };
   node.setAttribute(SCROLL_FADE_OWNER_ATTRIBUTE, "");
 
@@ -92,6 +94,10 @@ export function scrollEdgeFadeAction(node: HTMLElement, options: { edges?: Scrol
 
   const refresh = () => {
     const fade = limitScrollEdgeFade(scrollEdgeFade(node), edges);
+    if (fade !== "none" && sizesStale) {
+      sizes = scrollFadeSizes(node, Number.POSITIVE_INFINITY);
+      sizesStale = false;
+    }
     const distances = scrollEdgeFadeDistances(node, fade, sizes);
     writeDistance("top", distances.top);
     writeDistance("bottom", distances.bottom);
@@ -100,7 +106,7 @@ export function scrollEdgeFadeAction(node: HTMLElement, options: { edges?: Scrol
   };
 
   const measureAndRefresh = () => {
-    sizes = scrollFadeSizes(node, Number.POSITIVE_INFINITY);
+    sizesStale = true;
     refresh();
   };
 

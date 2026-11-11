@@ -199,6 +199,10 @@ pub struct ProviderForkThreadRequest {
     pub last_provider_turn_id: Option<String>,
 }
 
+/// Largest `SendTurnRequest::developer_instructions`, in UTF-8 bytes, that every provider
+/// accepts. The Claude and Codex protocols carry the instructions under this cap.
+pub const MAX_DEVELOPER_INSTRUCTIONS_BYTES: usize = 64 * 1024;
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendTurnRequest {

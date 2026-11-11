@@ -3,9 +3,9 @@
 use super::organizational::{ORGANIZATIONAL_PERMISSION_PROFILE, organizational_safety};
 use super::transport::CodexRpcFailure;
 use crate::models::{
-    ChatError, ChatResult, InteractionMode, ModelAvailability, ModelChoiceOption, ModelId,
-    ModelOptionDefinition, ModelOptionSelection, ModelOptionValue, ProviderCapability,
-    ProviderModel, SafetyMode, SendTurnRequest, TurnModeSnapshot,
+    ChatError, ChatResult, InteractionMode, MAX_DEVELOPER_INSTRUCTIONS_BYTES, ModelAvailability,
+    ModelChoiceOption, ModelId, ModelOptionDefinition, ModelOptionSelection, ModelOptionValue,
+    ProviderCapability, ProviderModel, SafetyMode, SendTurnRequest, TurnModeSnapshot,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -16,7 +16,6 @@ use std::{
 
 const MAX_PROMPT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
-const MAX_DEVELOPER_INSTRUCTIONS_BYTES: usize = 64 * 1024;
 const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_MODEL_OPTIONS: usize = 32;
 const STANDARD_SERVICE_TIER: &str = "standard";

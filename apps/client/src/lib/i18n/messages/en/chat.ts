@@ -690,6 +690,7 @@ export const chat = {
     confirmDiscard: (path: string) => `Permanently discard the unstaged changes in ${path}?`,
     commitMessage: "Commit message",
     commitPlaceholder: "Describe the changes",
+    commitMessageTooLong: "Commit message is too long",
     commit: "Commit",
     operationFailed: "The Git operation failed safely.",
     repositorySetup: "Repository setup",

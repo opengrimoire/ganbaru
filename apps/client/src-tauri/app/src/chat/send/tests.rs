@@ -699,6 +699,56 @@ async fn late_provider_events_cannot_reopen_or_rewrite_a_settled_run() {
     .await
     .unwrap();
     assert_eq!(projected, 0, "a settled run projects no late messages");
+
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    sqlx::raw_sql(
+        "UPDATE chat_agent_runs SET state = 'cancelled', settled_at = '2026-10-20T12:01:00.000Z'
+         WHERE id = 'run:working';",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let assignment_before: String = sqlx::query_scalar(
+        "SELECT assignment.state FROM chat_work_assignments assignment
+         JOIN chat_agent_runs run ON run.assignment_id = assignment.id
+         WHERE run.id = 'run:working'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    append_canonical_event(
+        &pool,
+        canonical_request(
+            "event:late-after-revocation",
+            Some("turn:working"),
+            CanonicalEvent::TurnCompleted(TurnCompletedEvent {
+                state: ChatTurnState::Completed,
+                stop_reason: None,
+                usage: None,
+                changed_files: Vec::new(),
+            }),
+        ),
+    )
+    .await
+    .unwrap();
+    let states: (String, String, String) = sqlx::query_as(
+        "SELECT assignment.state, run.state, run.settled_at
+         FROM chat_work_assignments assignment
+         JOIN chat_agent_runs run ON run.assignment_id = assignment.id
+         WHERE run.id = 'run:working'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        states,
+        (
+            assignment_before,
+            "cancelled".to_string(),
+            "2026-10-20T12:01:00.000Z".to_string()
+        ),
+        "a run cancelled by revocation stays cancelled while its assignment is still active"
+    );
 }
 
 #[tokio::test]
@@ -900,6 +950,90 @@ async fn a_launch_that_settles_after_a_remote_cancel_keeps_the_assignment_cancel
             "working".to_string(),
             "working".to_string(),
             "completed".to_string()
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_launch_cannot_rewrite_a_run_that_revocation_already_cancelled() {
+    use ganbaru_chat::agent_runs::{LaunchSettlement, settle_launch};
+    let now = UtcTimestamp::new("2026-10-20T12:02:00.000Z".to_string()).unwrap();
+    let launch_error = ChatError::new(ChatErrorCode::DriverUnavailable, "Provider exited", true);
+    for error in [None, Some(&launch_error)] {
+        let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+        starting_folder_run(&pool).await;
+        sqlx::query(
+            "UPDATE chat_agent_runs
+             SET state = 'cancelled', settled_at = '2026-10-20T12:01:00.000Z'
+             WHERE id = 'run:working'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let binding = working_run_binding(&pool).await;
+        let revision_before: i64 = sqlx::query_scalar(
+            "SELECT revision FROM chat_work_assignments WHERE id = 'assignment:folders'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let settlement = settle_launch(&pool, &binding, error, &now).await.unwrap();
+
+        assert_eq!(settlement, LaunchSettlement::RunSettled);
+        let rows: (String, i64, String, Option<String>, String, Option<String>) = sqlx::query_as(
+            "SELECT assignment.state, assignment.revision, run.state, run.settled_at,
+                        job.state, job.last_error
+                 FROM chat_work_assignments assignment
+                 JOIN chat_agent_runs run ON run.assignment_id = assignment.id
+                 JOIN chat_assignment_dispatch_jobs job ON job.assignment_id = assignment.id
+                 WHERE run.id = 'run:working'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let (assignment_state, assignment_revision, run_state, settled_at, job_state, last_error) =
+            rows;
+        assert_eq!(assignment_state, "queued");
+        assert_eq!(run_state, "cancelled");
+        assert_eq!(settled_at.as_deref(), Some("2026-10-20T12:01:00.000Z"));
+        assert_eq!(job_state, "claimed");
+        assert_eq!(last_error, None);
+        assert_eq!(assignment_revision, revision_before);
+        let failure_messages: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_conversation_items WHERE id LIKE 'organizational-item:%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(failure_messages, 0);
+    }
+}
+
+#[tokio::test]
+async fn a_launch_of_a_missing_run_stops_the_session_and_writes_nothing() {
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    starting_folder_run(&pool).await;
+    let binding = ganbaru_chat::agent_runs::AgentRunBinding {
+        run_id: ChatAgentRunId::new("run:missing").unwrap(),
+        ..working_run_binding(&pool).await
+    };
+    let now = UtcTimestamp::new("2026-10-20T12:02:00.000Z".to_string()).unwrap();
+
+    let settlement = ganbaru_chat::agent_runs::settle_launch(&pool, &binding, None, &now)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        settlement,
+        ganbaru_chat::agent_runs::LaunchSettlement::RunSettled
+    );
+    assert_eq!(
+        folder_assignment_and_run(&pool).await,
+        (
+            "queued".to_string(),
+            "starting".to_string(),
+            "claimed".to_string()
         )
     );
 }

@@ -13,6 +13,7 @@
   import * as chatApi from "$lib/api/chat";
   import type { ChatExecutionEnvironmentRead, GitChangedPathRead, GitStatusRead, HostedChangeRequestRead, HostedSourceControlRead } from "$lib/chat/contracts";
   import { subscribeChatWorkspaceChanges } from "$lib/chat/workspace/observer-client";
+  import { COMMIT_MESSAGE_MAX_BYTES, commitMessageTooLong } from "$lib/chat/workspace/commit-message";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -61,6 +62,7 @@
   const workspace = $derived(chat.selectedWorkingFolderId);
   const staged = $derived(status?.files.filter(isStaged) ?? []);
   const unstaged = $derived(status?.files.filter(isUnstaged) ?? []);
+  const commitTooLong = $derived(commitMessageTooLong(commitMessage));
   const hostedProvider = $derived(hostedProviders.find((entry) => entry.kind === hostedProviderKind) ?? null);
 
   onMount(() => {
@@ -445,7 +447,7 @@
 
   async function commit(): Promise<void> {
     const nextMessage = commitMessage.trim();
-    if (!nextMessage) return;
+    if (!nextMessage || commitTooLong) return;
     if (await run("commit", (workspaceId, environmentId) => chatApi.commitGitChanges(workspaceId, nextMessage, environmentId))) {
       commitMessage = "";
     }
@@ -644,8 +646,9 @@
     </div>
     <form class="commit" onsubmit={(event) => { event.preventDefault(); void commit(); }}>
       <label for="chat-commit-message">{t("chat.sourceControl.commitMessage")}</label>
-      <textarea class="field" id="chat-commit-message" maxlength="4000" rows="3" bind:value={commitMessage} placeholder={t("chat.sourceControl.commitPlaceholder")}></textarea>
-      <button type="submit" class="chat-primary-button" disabled={!commitMessage.trim() || staged.length === 0 || operation !== null}><Check size={14} />{t("chat.sourceControl.commit")}</button>
+      <textarea class="field" id="chat-commit-message" maxlength={COMMIT_MESSAGE_MAX_BYTES} rows="3" bind:value={commitMessage} placeholder={t("chat.sourceControl.commitPlaceholder")} aria-describedby={commitTooLong ? "chat-commit-message-error" : undefined} aria-invalid={commitTooLong ? "true" : undefined}></textarea>
+      {#if commitTooLong}<small id="chat-commit-message-error" class="field-error" role="alert">{t("chat.sourceControl.commitMessageTooLong")}</small>{/if}
+      <button type="submit" class="chat-primary-button" disabled={!commitMessage.trim() || commitTooLong || staged.length === 0 || operation !== null}><Check size={14} />{t("chat.sourceControl.commit")}</button>
     </form>
   {/if}
 </section>
@@ -720,6 +723,7 @@
   .commit { display: grid; gap: 0.4rem; border-top: 1px solid var(--border); padding: 0.6rem 0.7rem; }
   .commit label { font-size: calc(0.68rem * var(--type-scale)); font-weight: 600; }
   .commit textarea { min-height: 3.8rem; resize: vertical; font-size: var(--panel-font-size); }
+  .commit .field-error { color: var(--destructive); font-size: calc(0.65rem * var(--type-scale)); }
   .commit button { display: inline-flex; align-items: center; justify-content: center; gap: 0.3rem; }
   .empty { padding: 1rem; text-align: center; color: var(--muted-foreground); font-size: calc(0.72rem * var(--type-scale)); }
   .empty.compact { padding: 0.4rem; }

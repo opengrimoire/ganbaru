@@ -333,7 +333,7 @@
     style="
       height: var(--toolbar-h);
       background-color: var(--cal-bg);
-      border-bottom: 1px solid var(--sidebar);
+      border-bottom: 1px solid var(--sidebar-border);
     "
   >
     <div class="grid h-full grid-cols-7">

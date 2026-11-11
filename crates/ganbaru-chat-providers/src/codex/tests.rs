@@ -37,6 +37,7 @@ mod interactions;
 mod models;
 mod normalizer;
 mod transport;
+mod usage;
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 

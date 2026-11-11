@@ -303,6 +303,7 @@ impl OpenCodeEventNormalizer {
             cached_input_tokens: cache
                 .and_then(|cache| cache.get("read"))
                 .and_then(Value::as_u64),
+            cache_write_input_tokens: None,
             context_tokens: tokens
                 .and_then(|tokens| tokens.get("total"))
                 .and_then(Value::as_u64),

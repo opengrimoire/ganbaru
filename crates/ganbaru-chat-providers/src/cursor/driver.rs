@@ -272,10 +272,20 @@ impl CursorProviderDriver {
     ) -> ChatResult<(AcpStartedSession, AcpProviderAbout)> {
         let workspace = crate::probe_directory::ProbeDirectory::create()?;
         let (mut connection, about) = self.open_connection(&workspace).await?;
+        let mut inbound = match connection.take_inbound() {
+            Ok(receiver) => AcpInboundQueue::new(receiver),
+            Err(error) => {
+                let _ = connection
+                    .stop(SESSION_GRACEFUL_STOP, SESSION_FORCE_STOP)
+                    .await;
+                return Err(error);
+            }
+        };
         let result = initialize_provider_session(AcpSessionInitialization {
             flavor: self.flavor,
             grok_uses_api_key: self.grok_uses_api_key(),
             connection: &connection,
+            inbound: &mut inbound,
             workspace: workspace.to_string_lossy().as_ref(),
             resume_session_id: None,
             requested: AcpRequestedConfiguration {
@@ -350,10 +360,20 @@ impl CursorProviderDriver {
                 true,
             ));
         }
+        let mut inbound = match connection.take_inbound() {
+            Ok(receiver) => AcpInboundQueue::new(receiver),
+            Err(error) => {
+                let _ = connection
+                    .stop(SESSION_GRACEFUL_STOP, SESSION_FORCE_STOP)
+                    .await;
+                return Err(error);
+            }
+        };
         let started = match initialize_provider_session(AcpSessionInitialization {
             flavor: self.flavor,
             grok_uses_api_key: self.grok_uses_api_key(),
             connection: &connection,
+            inbound: &mut inbound,
             workspace: workspace.to_string_lossy().as_ref(),
             resume_session_id: cursor.as_ref().map(|cursor| cursor.session_id.as_str()),
             requested: AcpRequestedConfiguration {
@@ -405,7 +425,6 @@ impl CursorProviderDriver {
         ));
         let expected_shutdown = Arc::new(AtomicBool::new(false));
         let terminal_error = Arc::new(Mutex::new(None));
-        let inbound = connection.take_inbound()?;
         let terminal_callbacks =
             AcpTerminalCallbacks::new(workspace.clone(), started.session_id.clone());
         let router_task = spawn_cursor_router(CursorRouterResources {

@@ -20,7 +20,11 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 mod approvals;
+mod limits;
+mod streams;
 mod transport;
+mod turns;
+mod usage;
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 
@@ -171,7 +175,7 @@ pub(super) fn configuration(home: &Path) -> ProviderInstanceConfig {
     .unwrap()
 }
 
-fn route_state() -> ClaudeRouteState {
+pub(super) fn route_state() -> ClaudeRouteState {
     ClaudeRouteState::new(
         modes(SafetyMode::AskForApproval, InteractionMode::Build),
         None,

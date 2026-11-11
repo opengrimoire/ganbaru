@@ -1,7 +1,15 @@
 //! Claude SDK message normalization into Ganbaru's canonical event model.
 
 mod blocks;
+mod limits;
 mod messages;
+mod seen;
+mod usage;
+
+use blocks::{ClaudeStreamScope, ClaudeStreamState, usable_message_id};
+use limits::ClaudeRateLimitMemory;
+use seen::{BoundedIdSet, ClaudeTurnText, plan_id_set};
+use usage::ClaudeUsageTracker;
 
 use super::protocol::{ClaudeResumeCursor, protocol_error, resume_cursor};
 use crate::events::*;
@@ -11,6 +19,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) const MAX_TEXT_BYTES: usize = 64 * 1024;
+/// Model name Claude gives to assistant messages it builds locally (CLI notices, API errors).
+pub(super) const SYNTHETIC_MODEL: &str = "<synthetic>";
 
 #[derive(Clone, Debug)]
 pub(super) struct StreamBlock {
@@ -38,7 +48,11 @@ pub struct ClaudeRouteState {
     pub modes: TurnModeSnapshot,
     pub model_id: Option<ModelId>,
     pub resume_cursor: ClaudeResumeCursor,
-    pub(super) stream_blocks: HashMap<u32, StreamBlock>,
+    pub(super) stream: ClaudeStreamState,
+    pub(super) turn_text: ClaudeTurnText,
+    emitted_plan_ids: BoundedIdSet,
+    rate_limits: ClaudeRateLimitMemory,
+    pub(super) usage: ClaudeUsageTracker,
     pub(super) tool_kinds: HashMap<String, CanonicalItemKind>,
 }
 
@@ -55,9 +69,19 @@ impl ClaudeRouteState {
             modes,
             model_id,
             resume_cursor,
-            stream_blocks: HashMap::new(),
+            stream: ClaudeStreamState::default(),
+            turn_text: ClaudeTurnText::default(),
+            emitted_plan_ids: plan_id_set(),
+            rate_limits: ClaudeRateLimitMemory::default(),
+            usage: ClaudeUsageTracker::default(),
             tool_kinds: HashMap::new(),
         }
+    }
+
+    /// Claims the right to project the ExitPlanMode plan `plan_id`, which both the assistant
+    /// message and the permission request carry; only the first claim succeeds.
+    pub(super) fn claim_plan(&mut self, plan_id: &str) -> bool {
+        self.emitted_plan_ids.insert(plan_id)
     }
 }
 
@@ -106,6 +130,7 @@ impl ClaudeEventNormalizer {
             "assistant" => self.assistant_message(state, object, &value),
             "user" => self.user_message(state, object, &value),
             "result" => self.result_message(state, object, &value),
+            "rate_limit_event" => self.rate_limit_event(state, object),
             "control_request" => Ok(Vec::new()),
             "keep_alive" | "control_cancel_request" => Ok(Vec::new()),
             _ => Ok(vec![self.event(
@@ -167,12 +192,22 @@ impl ClaudeEventNormalizer {
             .get("event")
             .and_then(Value::as_object)
             .ok_or_else(|| protocol_error("stream event"))?;
+        let scope = ClaudeStreamScope::of(object);
+        if !scope.is_root() {
+            // Subagent frames belong to the sidechain transcript; the subagent's result reaches
+            // the root conversation through its task lifecycle and tool result.
+            return Ok(Vec::new());
+        }
         match text(event, "type").unwrap_or("unknown") {
-            "content_block_start" => self.content_block_start(state, event),
-            "content_block_delta" => self.content_block_delta(state, event),
-            "content_block_stop" => self.content_block_stop(state, event),
-            "message_delta" => Ok(Vec::new()),
-            "message_start" | "message_stop" | "ping" => Ok(Vec::new()),
+            "message_start" => self.message_start(state, &scope, event),
+            "content_block_start" => self.content_block_start(state, &scope, event),
+            "content_block_delta" => self.content_block_delta(state, &scope, event),
+            "content_block_stop" => self.content_block_stop(state, &scope, event),
+            "message_delta" => {
+                state.usage.message_delta(event);
+                Ok(Vec::new())
+            }
+            "message_stop" | "ping" => Ok(Vec::new()),
             event_type => Ok(vec![self.event(
                 state,
                 event_type,
@@ -195,7 +230,15 @@ impl ClaudeEventNormalizer {
         raw: &Value,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
         let mut events = Vec::new();
-        if let Some(uuid) = text(object, "uuid") {
+        let scope = ClaudeStreamScope::of(object);
+        let model = object
+            .get("message")
+            .and_then(Value::as_object)
+            .and_then(|message| text(message, "model"));
+        // Subagent uuids exist only in the sidechain transcript and synthetic notices are not
+        // model turns, so resuming at either would fail or fork the conversation.
+        let advances_cursor = scope.is_root() && model != Some(SYNTHETIC_MODEL);
+        if let Some(uuid) = text(object, "uuid").filter(|_| advances_cursor) {
             state.resume_cursor.last_assistant_uuid = Some(uuid.to_string());
             events.push(
                 self.event(
@@ -216,9 +259,20 @@ impl ClaudeEventNormalizer {
                 )?,
             );
         }
-        let content = object
-            .get("message")
-            .and_then(Value::as_object)
+        if !scope.is_root() {
+            // A subagent's plans and checklists are its own; they must not replace the root's.
+            return Ok(events);
+        }
+        events.extend(self.blocked_assistant(state, object)?);
+        let message = object.get("message").and_then(Value::as_object);
+        let message_id = message
+            .and_then(|message| text(message, "id"))
+            .filter(|id| usable_message_id(id))
+            .map(str::to_string);
+        if let Some(message) = message {
+            state.usage.assistant(message, message_id.as_deref());
+        }
+        let content = message
             .and_then(|message| message.get("content"))
             .and_then(Value::as_array)
             .cloned()
@@ -228,7 +282,17 @@ impl ClaudeEventNormalizer {
                 continue;
             };
             let block_type = text(block, "type").unwrap_or("unknown");
-            if block_type == "tool_use" && text(block, "name") == Some("ExitPlanMode") {
+            if block_type == "text" {
+                if let Some(body) = text(block, "text").filter(|body| !body.is_empty()) {
+                    events.extend(self.unstreamed_text(state, message_id.as_deref(), body)?);
+                }
+                continue;
+            }
+            let tool_use_id = text(block, "id");
+            if block_type == "tool_use"
+                && text(block, "name") == Some("ExitPlanMode")
+                && tool_use_id.is_none_or(|id| state.claim_plan(id))
+            {
                 let markdown = block
                     .get("input")
                     .and_then(Value::as_object)
@@ -286,6 +350,10 @@ impl ClaudeEventNormalizer {
         object: &Map<String, Value>,
         _raw: &Value,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+        if !ClaudeStreamScope::of(object).is_root() {
+            // Subagent tool calls never opened root items, so their results have nothing to close.
+            return Ok(Vec::new());
+        }
         let content = object
             .get("message")
             .and_then(Value::as_object)
@@ -410,6 +478,60 @@ impl ClaudeEventNormalizer {
         })
     }
 
+    /// One completed assistant item for a root text block that did not stream, such as a
+    /// `<synthetic>` notice, or nothing when the message's text already streamed.
+    ///
+    /// Positions count text blocks per message, because the CLI sends each block in its own frame
+    /// at array position zero.
+    fn unstreamed_text(
+        &self,
+        state: &mut ClaudeRouteState,
+        message_id: Option<&str>,
+        body: &str,
+    ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+        if message_id.is_some_and(|id| state.turn_text.was_streamed(id)) {
+            return Ok(Vec::new());
+        }
+        let item_id = message_id
+            .and_then(|id| {
+                state
+                    .turn_text
+                    .next_unstreamed_block(id)
+                    .map(|position| self.message_item_id(id, position))
+            })
+            .unwrap_or_else(|| self.fallback_item_id("assistant"));
+        let lifecycle = |status| ClaudeItemEvent {
+            source: "assistant/text",
+            item_id: item_id.clone(),
+            kind: CanonicalItemKind::AssistantMessage,
+            status,
+            title: None,
+            safe_metadata: None,
+        };
+        Ok(vec![
+            self.item_event(state, lifecycle(ActivityStatus::Active))?,
+            self.event(
+                state,
+                "assistant/text",
+                None,
+                None,
+                ProviderItemId::new(item_id.clone()).ok(),
+                CanonicalEvent::ContentDelta(ContentDeltaEvent {
+                    item_id: item_id.clone(),
+                    stream_kind: ContentStreamKind::AssistantText,
+                    content_index: 0,
+                    delta: bounded_text(body, MAX_TEXT_BYTES),
+                }),
+            )?,
+            self.item_event(state, lifecycle(ActivityStatus::Completed))?,
+        ])
+    }
+
+    /// Item id of one content block of an API message, the same for every frame that carries it.
+    pub(super) fn message_item_id(&self, message_id: &str, index: u32) -> String {
+        format!("{}:{message_id}:{index}", self.session_id.as_str())
+    }
+
     pub(super) fn fallback_item_id(&self, prefix: &str) -> String {
         format!(
             "{}:{prefix}:{}",
@@ -458,34 +580,6 @@ fn todo_plan(input: Option<&Value>) -> Option<PlanUpdatedEvent> {
             .collect::<Vec<_>>()
             .join("\n"),
         steps,
-    })
-}
-
-pub(super) fn normalize_usage(object: &Map<String, Value>) -> Option<ThreadUsageUpdatedEvent> {
-    let usage = object.get("usage")?.as_object()?;
-    let cost = object
-        .get("total_cost_usd")
-        .and_then(Value::as_f64)
-        .map(|amount| ProviderAttributedCost {
-            amount,
-            currency: "USD".to_string(),
-            provider_reported: true,
-        });
-    Some(ThreadUsageUpdatedEvent {
-        input_tokens: unsigned(usage, "input_tokens"),
-        output_tokens: unsigned(usage, "output_tokens"),
-        cached_input_tokens: unsigned(usage, "cache_read_input_tokens"),
-        context_tokens: unsigned(usage, "total_tokens"),
-        context_limit: object
-            .get("modelUsage")
-            .and_then(Value::as_object)
-            .and_then(|models| {
-                models
-                    .values()
-                    .filter_map(|value| value.get("contextWindow").and_then(Value::as_u64))
-                    .max()
-            }),
-        cost,
     })
 }
 

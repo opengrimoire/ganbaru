@@ -1133,7 +1133,7 @@
     bind:this={triggerElement}
     type="button"
     class={cn(
-      "flex h-8 min-w-0 items-center justify-between gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground hover:bg-accent/60",
+      "flex h-8 min-w-0 items-center justify-between gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground hover:bg-accent/60 dark:bg-transparent",
       className,
     )}
     aria-label={ariaLabel}

@@ -125,7 +125,7 @@
   );
 
   const buttonClass =
-    "inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md border border-border px-3 text-[0.8rem] font-medium transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-55";
+    "inline-flex min-h-[max(2rem,var(--control-height))] items-center justify-center gap-1.5 rounded-md border border-border px-3 text-[0.8rem] font-medium transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-55";
   const primaryButtonClass = `${buttonClass} border-primary bg-primary text-primary-foreground hover:bg-primary/90`;
   const controlButtonClass = $derived(
     `flex min-w-0 w-full items-center justify-between gap-4 overflow-hidden px-3 text-left text-sm transition-colors ${platform === "android" ? "min-h-12 active:bg-accent" : "py-1.5 hover:bg-accent"} disabled:cursor-not-allowed disabled:text-muted-foreground/50`,

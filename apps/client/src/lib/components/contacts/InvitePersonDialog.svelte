@@ -146,13 +146,13 @@
     </Select>
 
     <div class="flex flex-col gap-1 px-1 py-1">
-      <div class="flex min-h-7 items-center justify-between gap-4">
+      <div class="flex min-h-(--control-height) items-center justify-between gap-4">
         <span class="text-[0.866667rem] text-foreground">{t("contacts.invite.spaces")}</span>
         {#if !fixedSpace}
           <button
             bind:this={spacesAction}
             type="button"
-            class="flex h-7 w-44 max-w-full items-center justify-between gap-2 rounded-md border border-border bg-transparent px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent"
+            class="flex h-(--control-height) w-44 max-w-full items-center justify-between gap-2 rounded-md border border-border bg-transparent px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent"
             aria-haspopup="dialog"
             aria-expanded={spacePickerOpen}
             onclick={() => { spacePickerOpen = true; }}

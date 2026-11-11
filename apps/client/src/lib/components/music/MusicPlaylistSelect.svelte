@@ -188,7 +188,7 @@
     aria-controls={open ? id : undefined}
     aria-label={label}
     class={cn(
-      "flex h-7 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:hover:bg-card dark:bg-transparent dark:disabled:hover:bg-transparent",
+      "flex h-(--control-height) w-full min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:hover:bg-card dark:bg-transparent dark:disabled:hover:bg-transparent",
       triggerClass,
       missing && "text-warning-foreground ring-1 ring-warning/55",
     )}

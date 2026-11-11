@@ -251,7 +251,7 @@
     onclick={togglePalette}
     onkeydown={handleButtonKeydown}
     class={displayLabel
-      ? cn("flex w-full max-w-full items-center justify-between gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent/60 dark:bg-transparent", mobileLayout ? "h-12" : "h-7", buttonClass)
+      ? cn("flex w-full max-w-full items-center justify-between gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent/60 dark:bg-transparent", mobileLayout ? "h-12" : "h-(--control-height)", buttonClass)
       : cn(mobileLayout ? "flex size-12 shrink-0 items-center justify-center rounded-xl active:bg-accent" : "size-4.5 shrink-0 rounded-sm", buttonClass)}
     style={!displayLabel && !mobileLayout ? `background-color: ${colorEntry.bg};` : undefined}
     aria-label={ariaLabel ?? t("calendar.color.eventColor")}

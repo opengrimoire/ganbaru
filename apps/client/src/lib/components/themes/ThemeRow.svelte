@@ -122,8 +122,8 @@
         class={cn(
           "flex items-center gap-1.5 text-[0.8rem] text-foreground transition-colors",
           mobileLayout
-            ? "h-8 rounded-lg border border-border bg-card px-2.5 active:bg-accent dark:bg-transparent"
-            : "h-7 rounded-md border border-border bg-card px-2.5 hover:bg-accent dark:bg-transparent",
+            ? "h-(--control-height) rounded-lg border border-border bg-card px-2.5 active:bg-accent dark:bg-transparent"
+            : "h-(--control-height) rounded-md border border-border bg-card px-2.5 hover:bg-accent dark:bg-transparent",
         )}
       >
         <Copy size={13} strokeWidth={2} />
@@ -137,8 +137,8 @@
         class={cn(
           "flex items-center justify-center text-foreground transition-colors",
           mobileLayout
-            ? "size-8 rounded-lg border border-border bg-card active:bg-accent dark:bg-transparent"
-            : "h-7 w-7 rounded-md border border-border bg-card hover:bg-accent dark:bg-transparent",
+            ? "size-(--control-height) rounded-lg border border-border bg-card active:bg-accent dark:bg-transparent"
+            : "size-(--control-height) rounded-md border border-border bg-card hover:bg-accent dark:bg-transparent",
         )}
       >
         {#if isBuiltin}
@@ -161,8 +161,8 @@
         class={cn(
           "flex items-center justify-center text-foreground transition-colors disabled:cursor-wait disabled:opacity-55",
           mobileLayout
-            ? "size-8 rounded-lg border border-border bg-card active:bg-accent dark:bg-transparent"
-            : "h-7 w-7 rounded-md border border-border bg-card hover:bg-accent dark:bg-transparent",
+            ? "size-(--control-height) rounded-lg border border-border bg-card active:bg-accent dark:bg-transparent"
+            : "size-(--control-height) rounded-md border border-border bg-card hover:bg-accent dark:bg-transparent",
         )}
       >
         {#if exporting}
@@ -185,8 +185,8 @@
       class={cn(
         "flex items-center justify-center text-foreground transition-colors disabled:cursor-not-allowed disabled:opacity-40",
         mobileLayout
-          ? "size-8 rounded-lg border border-border bg-card active:bg-accent disabled:active:bg-transparent dark:bg-transparent"
-          : "h-7 w-7 rounded-md border border-border bg-card hover:bg-accent disabled:hover:bg-card dark:bg-transparent dark:disabled:hover:bg-transparent",
+          ? "size-(--control-height) rounded-lg border border-border bg-card active:bg-accent disabled:active:bg-transparent dark:bg-transparent"
+          : "size-(--control-height) rounded-md border border-border bg-card hover:bg-accent disabled:hover:bg-card dark:bg-transparent dark:disabled:hover:bg-transparent",
       )}
     >
       <Trash2 size={13} strokeWidth={2} />

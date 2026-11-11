@@ -69,7 +69,7 @@
       <code dir="ltr" class="min-w-0 flex-1 truncate font-mono text-[0.8rem] text-foreground">{maskCode(invitation.invitation)}</code>
       <button
         type="button"
-        class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-sm px-2 text-[0.8rem] font-medium text-foreground hover:bg-background"
+        class="inline-flex h-(--control-height) shrink-0 items-center gap-1.5 rounded-sm px-2 text-[0.8rem] font-medium text-foreground hover:bg-background"
         onclick={() => void copyCode()}
       >
         {#if copied}<Check size={14} aria-hidden="true" />{:else}<Copy size={14} aria-hidden="true" />{/if}

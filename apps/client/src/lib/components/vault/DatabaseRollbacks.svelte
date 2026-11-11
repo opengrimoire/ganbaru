@@ -26,7 +26,7 @@
   const { t } = localization;
   const BYTES_PER_MEGABYTE = 1_000_000;
   const buttonClass =
-    "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-55 dark:bg-transparent";
+    "inline-flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-55 dark:bg-transparent";
 
   let rollbacks = $state<DatabaseRollback[]>([]);
   let pendingRollback = $state<DatabaseRollback | null>(null);

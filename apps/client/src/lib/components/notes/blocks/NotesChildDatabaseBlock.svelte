@@ -499,7 +499,7 @@
   class="my-5 min-w-0 space-y-1"
   aria-label={t("notes.blockType.childDatabase")}
 >
-  <div class="flex min-w-0 items-center gap-2 px-1">
+  <div class="flex min-w-0 items-center gap-2 pl-1">
     {#if reference?.is_linked && onOpenDatabase}
       <button type="button" class="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         aria-label={t("notes.databaseOpenSource")} title={t("notes.databaseOpenSource")} onclick={() => void openDatabase(reference!.source_block_id)}>
@@ -531,7 +531,7 @@
     {/if}
     {#if isLocalDatabase}
       <CollectionSaveIndicator pending={saving || titleSaving || linking || viewSaving} label={t("notes.databaseSaving")} />
-      <CollectionMenu label={t("notes.databaseMore")} kind="actions" iconOnly showHeader={false}>
+      <CollectionMenu label={t("notes.databaseMore")} kind="actions" iconOnly compact showHeader={false}>
         {#if onOpenDatabase}
           <CollectionMenuItem icon={ArrowUpRight} label={t("notes.databaseOpen")} onclick={() => void openDatabase(block.id)} />
         {/if}

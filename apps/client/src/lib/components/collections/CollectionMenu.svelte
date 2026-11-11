@@ -25,7 +25,7 @@
    * A collection toolbar menu, settings row, or column menu.
    * A full-width row inside another floating menu is a submenu: it opens beside its row on hover or ArrowRight instead of covering it.
    */
-  let { label, ariaLabel, kind = "layout", iconOnly = false, fullWidth = false, row = false, primary = false, showHeader, activeCount = 0, dismissOnAction = false, summary, leading, icon, rootClass, triggerClass, triggerAttributes, triggerElement = $bindable(), pressed, contextMenu = false, beforeOpen, disabled = false, onOpenChange, children }: {
+  let { label, ariaLabel, kind = "layout", iconOnly = false, fullWidth = false, row = false, primary = false, compact = false, showHeader, activeCount = 0, dismissOnAction = false, summary, leading, icon, rootClass, triggerClass, triggerAttributes, triggerElement = $bindable(), pressed, contextMenu = false, beforeOpen, disabled = false, onOpenChange, children }: {
     label: string;
     ariaLabel?: string;
     kind?: "layout" | "filter" | "sort" | "properties" | "property" | "group" | "actions" | "new" | "new-options";
@@ -34,6 +34,8 @@
     /** Keeps a full-width trigger with a custom leading snippet a row, such as an option badge that opens a submenu. */
     row?: boolean;
     primary?: boolean;
+    /** Keeps the trigger at its toolbar size on touch layouts instead of raising it to the touch row height, such as beside other toolbar buttons. */
+    compact?: boolean;
     showHeader?: boolean;
     activeCount?: number;
     dismissOnAction?: boolean;
@@ -380,6 +382,7 @@
     class:bg-accent={!primary && ((expanded && !(submenu && pointerElsewhere)) || pressed === true)}
     class:text-foreground={!primary && (expanded || pressed === true || activeCount > 0)}
     data-collection-settings-row={settingsRow ? "" : undefined}
+    data-collection-menu-compact={compact ? "" : undefined}
     data-collection-submenu-trigger={submenu ? "" : undefined}
     aria-label={ariaLabel ?? (countLabel ? `${label} (${countLabel})` : label)}
     aria-expanded={expanded}
@@ -432,7 +435,7 @@
 
 <style>
   @media (any-pointer: coarse) and (any-hover: none) {
-    .collection-menu-trigger {
+    .collection-menu-trigger:not([data-collection-menu-compact]) {
       min-height: var(--panel-row-height);
       min-width: 2.75rem;
     }

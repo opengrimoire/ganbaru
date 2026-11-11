@@ -844,7 +844,7 @@
         {#if viewDropTarget?.id === view.id}
           <span class={cn("pointer-events-none absolute inset-y-1 w-0.5 rounded-full bg-primary", viewDropTarget.placement === "before" ? "left-0" : "right-0")} aria-hidden="true"></span>
         {/if}
-        <CollectionMenu label={view.name} kind="actions" showHeader={false} contextMenu pressed={active} iconOnly={display === "icon"} rootClass="shrink-0"
+        <CollectionMenu label={view.name} kind="actions" showHeader={false} compact contextMenu pressed={active} iconOnly={display === "icon"} rootClass="shrink-0"
           triggerClass="max-w-44 rounded-md text-[0.866667rem] font-medium" disabled={selectionDisabled}
           beforeOpen={(source) => openViewMenu(view.id, source)} onOpenChange={viewMenuOpenChanged}>
           {#snippet leading()}
@@ -855,7 +855,7 @@
       </div>
     {/each}
     {#if overflowCount > 0}
-      <CollectionMenu label={t("notes.databaseMoreViews", overflowCount)} kind="actions" showHeader={false} dismissOnAction rootClass="shrink-0"
+      <CollectionMenu label={t("notes.databaseMoreViews", overflowCount)} kind="actions" showHeader={false} compact dismissOnAction rootClass="shrink-0"
         triggerClass="rounded-md text-[0.866667rem] font-medium" disabled={selectionDisabled} onOpenChange={overflowMenuOpenChanged}>
         <!-- An empty leading snippet keeps the trigger text only. -->
         {#snippet leading()}{/snippet}
@@ -898,7 +898,7 @@
         <CollectionMenuItem icon={Database} label={t("notes.databaseNewDataSource")} disabled={selectionDisabled || editingLocked} onclick={() => { pendingSettings = "source"; }} />
       </CollectionMenu>
     {/if}
-    <CollectionMenu label={t("notes.databaseAddView")} kind="new" iconOnly showHeader={false} dismissOnAction disabled={selectionDisabled || editingLocked}>
+    <CollectionMenu label={t("notes.databaseAddView")} kind="new" iconOnly compact showHeader={false} dismissOnAction disabled={selectionDisabled || editingLocked}>
       <p class="menu-label">{t("notes.databaseAddView")}</p>
       <div class="grid gap-0">
         {#each NOTES_DATABASE_VIEW_KINDS as kind}
@@ -918,7 +918,7 @@
   <div class="inline-flex shrink-0 items-center rounded-md bg-primary">
     <button type="button" class="min-h-8 rounded-l-md px-3 text-[0.866667rem] font-medium text-primary-foreground hover:bg-primary/90" disabled={busy} onclick={() => { void createNewRow(); }}>{t("notes.databaseNew")}</button>
     <span class="h-5 w-px bg-primary-foreground/25" aria-hidden="true"></span>
-    <CollectionMenu label={t("notes.databaseNewOptions")} kind="new-options" iconOnly primary showHeader={false} dismissOnAction>
+    <CollectionMenu label={t("notes.databaseNewOptions")} kind="new-options" iconOnly primary compact showHeader={false} dismissOnAction>
       <p class="menu-label">{t("notes.databaseTemplatesTitle")}</p>
       {#if templateError}<Notice class="mb-2 px-2 text-panel-detail" message={templateError} />{/if}
       {#if templates.length === 0}

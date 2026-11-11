@@ -1,5 +1,6 @@
 //! Typed builders and bounded decoders for Claude Code's SDK JSONL protocol.
 
+use super::instructions::session_instructions;
 use crate::models::*;
 use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
@@ -16,6 +17,17 @@ const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_MODEL_OPTIONS: usize = 32;
 const MAX_LAUNCH_ARGUMENTS: usize = 128;
 const MAX_LAUNCH_ARGUMENT_BYTES: usize = 16 * 1024;
+/// Largest instructions passed inline as one launch argument; larger ones use the file form.
+pub const MAX_INLINE_SYSTEM_PROMPT_BYTES: usize = MAX_LAUNCH_ARGUMENT_BYTES;
+
+/// How session instructions reach the Claude system prompt at launch.
+#[derive(Clone, Copy, Debug)]
+pub enum ClaudeSystemPromptArgument<'a> {
+    /// The text itself, passed with `--append-system-prompt`.
+    Inline(&'a str),
+    /// An owner-only file, passed with `--append-system-prompt-file`.
+    File(&'a Path),
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ClaudeVersion {
@@ -186,7 +198,67 @@ pub struct ClaudeLaunchOptions<'a> {
     /// settings, hooks, skills, commands, agents, MCP servers, and `CLAUDE.md`
     /// unloaded.
     pub project_configuration: ProjectConfigurationAccess,
+    /// The internal `ganbaru-chat` server, whose bearer token stays in the environment.
+    pub internal_mcp: Option<ClaudeInternalMcpLaunch<'a>>,
+    /// Set only when the internal server carries organizational authority.
+    pub organizational: Option<ClaudeOrganizationalLaunch<'a>>,
+    /// Session instructions appended to the system prompt.
+    pub system_prompt: Option<ClaudeSystemPromptArgument<'a>>,
+    /// The probed CLI version, which decides how session instructions are passed.
+    pub cli_version: Option<ClaudeVersion>,
 }
+
+/// The internal MCP server a Claude launch connects to.
+#[derive(Clone, Copy, Debug)]
+pub struct ClaudeInternalMcpLaunch<'a> {
+    pub name: &'a str,
+    pub url: &'a str,
+}
+
+/// The fail-closed launch surface of an organizational Claude run.
+///
+/// It sees only the internal server, loads no settings files, loads only the allowlisted
+/// built-in tools, and cannot reach the denied ones. Every organizational Claude run is
+/// conversation-only, because the Claude authority support bits enforce no folder target, so
+/// the Bash denial always applies.
+#[derive(Clone, Copy, Debug)]
+pub struct ClaudeOrganizationalLaunch<'a> {
+    pub internal_server_name: &'a str,
+}
+
+/// Built-in tools an organizational Claude run may load, passed as `--tools`.
+///
+/// They are the local file tools, the planning and question tools the driver maps, and the
+/// todo list. Anything else the CLI ships (the shell, subagents, the network, schedules, other
+/// sessions, skills, worktrees) stays unloaded, and the startup gate fails the session when
+/// the init report carries a built-in tool outside this list. Internal MCP tools are not
+/// built-in and survive the allowlist.
+pub const ORGANIZATIONAL_ALLOWED_TOOLS: [&str; 9] = [
+    "Read",
+    "Edit",
+    "Write",
+    "Glob",
+    "Grep",
+    "NotebookEdit",
+    "ExitPlanMode",
+    "AskUserQuestion",
+    "TodoWrite",
+];
+
+/// Tools an organizational Claude run never reaches, denied on top of the allowlist as defense
+/// in depth: subagents, the network, and the shell.
+pub const ORGANIZATIONAL_DISALLOWED_TOOLS: [&str; 5] =
+    ["Task", "Agent", "WebFetch", "WebSearch", "Bash"];
+
+/// Setting sources an organizational launch loads: none, so no user, project, or local file
+/// adds MCP servers, hooks, agents, plugins, or environment.
+pub const ORGANIZATIONAL_SETTING_SOURCES: &str = "";
+
+/// Permission mode of AskForApproval in an organizational Build run, which asks before edits.
+pub const ORGANIZATIONAL_ASK_PERMISSION_MODE: &str = "default";
+
+/// Environment variable that carries the internal server bearer token to the CLI.
+pub const INTERNAL_MCP_TOKEN_ENVIRONMENT: &str = "GANBARU_CHAT_MCP_TOKEN";
 
 pub fn launch_arguments(
     prefix: Vec<String>,
@@ -194,6 +266,16 @@ pub fn launch_arguments(
     options: ClaudeLaunchOptions<'_>,
 ) -> ChatResult<Vec<String>> {
     validate_launch_arguments(configured)?;
+    let organizational_server = match options.organizational {
+        Some(organizational) => {
+            validate_organizational_launch_arguments(configured)?;
+            match options.internal_mcp {
+                Some(server) if server.name == organizational.internal_server_name => Some(server),
+                _ => return Err(organizational_permission_error()),
+            }
+        }
+        None => None,
+    };
     let mut arguments = prefix;
     arguments.extend([
         "-p".to_string(),
@@ -207,7 +289,11 @@ pub fn launch_arguments(
         "--include-partial-messages".to_string(),
         "--replay-user-messages".to_string(),
     ]);
-    if let Some(permission_mode) = permission_mode(options.modes) {
+    let permission_mode = match organizational_server {
+        Some(_) => Some(organizational_permission_mode(options.modes)?),
+        None => permission_mode(options.modes),
+    };
+    if let Some(permission_mode) = permission_mode {
         arguments.push("--permission-mode".to_string());
         arguments.push(permission_mode.to_string());
         if permission_mode == "bypassPermissions" {
@@ -241,7 +327,7 @@ pub fn launch_arguments(
         arguments.push(model.as_str().to_string());
     }
     if let Some(effort) = options.effort {
-        if !matches!(effort, "low" | "medium" | "high" | "xhigh" | "max") {
+        if !is_claude_effort(effort) {
             return Err(ChatError::validation(
                 "modelOptions",
                 "Claude effort value is unsupported",
@@ -250,16 +336,162 @@ pub fn launch_arguments(
         arguments.push("--effort".to_string());
         arguments.push(effort.to_string());
     }
-    if let Some(fast_mode) = options.fast_mode {
+    if let Some(settings) = launch_settings(options.fast_mode) {
         arguments.push("--settings".to_string());
-        arguments.push(json!({ "fastMode": fast_mode }).to_string());
+        arguments.push(settings);
+    }
+    if let Some(server) = organizational_server {
+        // Configured arguments never reach an organizational launch, so nothing follows the
+        // variadic deny list.
+        arguments.extend([
+            "--setting-sources".to_string(),
+            ORGANIZATIONAL_SETTING_SOURCES.to_string(),
+            "--strict-mcp-config".to_string(),
+            "--mcp-config".to_string(),
+            internal_mcp_config_argument(server.name, server.url)?,
+        ]);
+        if let Some(system_prompt) = options.system_prompt {
+            arguments.extend(system_prompt_arguments(system_prompt, options.cli_version)?);
+        }
+        arguments.extend([
+            "--tools".to_string(),
+            ORGANIZATIONAL_ALLOWED_TOOLS.join(","),
+            "--disallowed-tools".to_string(),
+            ORGANIZATIONAL_DISALLOWED_TOOLS.join(","),
+        ]);
+        return Ok(arguments);
     }
     if options.project_configuration == ProjectConfigurationAccess::Restricted {
         arguments.push("--setting-sources".to_string());
         arguments.push("user".to_string());
     }
+    if let Some(system_prompt) = options.system_prompt {
+        if configured
+            .iter()
+            .any(|argument| names_flag(argument, SYSTEM_PROMPT_ARGUMENTS))
+        {
+            return Err(ChatError::validation(
+                "launchArguments",
+                "Claude launch arguments conflict with the session instructions",
+            ));
+        }
+        arguments.extend(system_prompt_arguments(system_prompt, options.cli_version)?);
+    }
     arguments.extend(configured.iter().cloned());
+    if let Some(server) = options.internal_mcp {
+        arguments.push("--mcp-config".to_string());
+        arguments.push(internal_mcp_config_argument(server.name, server.url)?);
+    }
     Ok(arguments)
+}
+
+/// Configured arguments that would replace or add to the system prompt of a session that
+/// carries instructions, or keep a resumed session on its recorded prompt.
+const SYSTEM_PROMPT_ARGUMENTS: &[&str] = &[
+    "--append-system-prompt",
+    "--append-system-prompt-file",
+    "--system-prompt",
+    "--system-prompt-file",
+    "--system-prompt-snapshot",
+];
+
+/// First CLI version that records the system prompt on a conversation's first request and
+/// sends that record on every later request and resume, together with the
+/// `--system-prompt-snapshot` flag that turns the record off. Earlier versions render the
+/// prompt fresh on every request.
+pub const SYSTEM_PROMPT_SNAPSHOT_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 267);
+
+/// The arguments that append session instructions to the system prompt. Text that starts
+/// with `--` is still read as the value of the spaced form. On CLI versions that record the
+/// prompt, the record is turned off, so a resumed session uses the instructions of this
+/// launch and not the ones it first opened with.
+fn system_prompt_arguments(
+    argument: ClaudeSystemPromptArgument<'_>,
+    cli_version: Option<ClaudeVersion>,
+) -> ChatResult<Vec<String>> {
+    let mut arguments = match argument {
+        ClaudeSystemPromptArgument::Inline(text) => {
+            if text.len() > MAX_INLINE_SYSTEM_PROMPT_BYTES || text.contains('\0') {
+                return Err(ChatError::validation(
+                    "developerInstructions",
+                    "Claude developer instructions exceed the supported limit",
+                ));
+            }
+            vec!["--append-system-prompt".to_string(), text.to_string()]
+        }
+        ClaudeSystemPromptArgument::File(path) => {
+            let path = path.to_str().ok_or_else(|| {
+                ChatError::new(
+                    ChatErrorCode::ConfigurationInvalid,
+                    "Claude instructions file is unavailable",
+                    true,
+                )
+            })?;
+            vec!["--append-system-prompt-file".to_string(), path.to_string()]
+        }
+    };
+    if cli_version.is_some_and(|version| version >= SYSTEM_PROMPT_SNAPSHOT_VERSION) {
+        arguments.extend(["--system-prompt-snapshot".to_string(), "off".to_string()]);
+    }
+    Ok(arguments)
+}
+
+/// Builds the `--mcp-config` JSON for the internal server. The header names the token
+/// variable, which the CLI expands, so the bearer token never appears in argv.
+pub fn internal_mcp_config_argument(name: &str, url: &str) -> ChatResult<String> {
+    if name.is_empty() || url.is_empty() || name.contains('\0') || url.contains('\0') {
+        return Err(ChatError::validation(
+            "internalMcp",
+            "Claude internal MCP server is invalid",
+        ));
+    }
+    Ok(json!({
+        "mcpServers": {
+            name: {
+                "type": "http",
+                "url": url,
+                "headers": {
+                    "Authorization": format!("Bearer ${{{INTERNAL_MCP_TOKEN_ENVIRONMENT}}}")
+                }
+            }
+        }
+    })
+    .to_string())
+}
+
+/// Maps the modes of an organizational run to its permission mode.
+///
+/// AskForApproval asks before edits in Build and stays read-only in Plan. Other safety modes
+/// are refused, because organizational targetless runs admit only AskForApproval.
+pub fn organizational_permission_mode(modes: TurnModeSnapshot) -> ChatResult<&'static str> {
+    if modes.safety_mode != SafetyMode::AskForApproval {
+        return Err(organizational_permission_error());
+    }
+    Ok(match modes.interaction_mode {
+        InteractionMode::Plan => "plan",
+        InteractionMode::Build => ORGANIZATIONAL_ASK_PERMISSION_MODE,
+    })
+}
+
+/// The error of an organizational Claude run whose boundary cannot be proven.
+pub fn organizational_permission_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Permission,
+        "Claude could not prove the required organizational authority boundary",
+        false,
+    )
+}
+
+/// Serializes the one `--settings` object a launch passes, or none when it would be empty.
+///
+/// Every launch setting joins this object, because the CLI reads a single `--settings` value.
+/// A configured `--settings` argument stays refused for every run.
+pub fn launch_settings(fast_mode: Option<bool>) -> Option<String> {
+    let mut settings = Map::new();
+    if let Some(fast_mode) = fast_mode {
+        settings.insert("fastMode".to_string(), Value::Bool(fast_mode));
+    }
+    (!settings.is_empty()).then(|| Value::Object(settings).to_string())
 }
 
 pub fn permission_mode(modes: TurnModeSnapshot) -> Option<&'static str> {
@@ -289,6 +521,20 @@ pub fn control_success(request_id: &str, response: Value) -> ChatResult<Value> {
     }))
 }
 
+/// Answers a control request with the CLI's error shape, used for subtypes Ganbaru does not
+/// serve so the CLI sees a refusal rather than a successful empty result.
+pub fn control_error(request_id: &str, message: &str) -> ChatResult<Value> {
+    validate_protocol_id(request_id, "requestId")?;
+    Ok(json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "error",
+            "request_id": request_id,
+            "error": message,
+        },
+    }))
+}
+
 pub fn decode_initialize(value: Value) -> ChatResult<ClaudeInitializeResponse> {
     serde_json::from_value(value).map_err(|_| protocol_error("initialize response"))
 }
@@ -300,16 +546,7 @@ pub fn build_user_message(request: &SendTurnRequest) -> ChatResult<Value> {
             "Claude prompt exceeds the supported limit",
         ));
     }
-    if request
-        .developer_instructions
-        .as_deref()
-        .is_some_and(|value| value.len() > MAX_DEVELOPER_INSTRUCTIONS_BYTES || value.contains('\0'))
-    {
-        return Err(ChatError::validation(
-            "developerInstructions",
-            "Claude developer instructions exceed the supported limit",
-        ));
-    }
+    session_instructions(request.developer_instructions.as_deref())?;
     validate_model_options(&request.model_options)?;
     let mut content = Vec::new();
     let mut prompt = request.prompt.clone();
@@ -322,10 +559,6 @@ pub fn build_user_message(request: &SendTurnRequest) -> ChatResult<Value> {
             .join("\n");
         prompt.push_str("\n\nReferenced workspace paths:\n");
         prompt.push_str(&paths);
-    }
-    if let Some(instructions) = request.developer_instructions.as_deref() {
-        prompt.push_str("\n\nAdditional Ganbaru instructions:\n");
-        prompt.push_str(instructions);
     }
     if !prompt.is_empty() {
         content.push(json!({ "type": "text", "text": prompt }));
@@ -510,11 +743,7 @@ pub fn provider_models(
             context_limit: None,
             availability: ModelAvailability::Unknown,
             capabilities: claude_model_capabilities(),
-            options: claude_model_options(
-                true,
-                &["low", "medium", "high", "xhigh", "max"].map(str::to_string),
-                false,
-            ),
+            options: claude_model_options(true, &CLAUDE_EFFORT_LEVELS.map(str::to_string), false),
             custom: true,
         });
     }
@@ -619,7 +848,7 @@ fn claude_model_options(
         let mut seen = BTreeSet::new();
         let levels = supported_effort_levels
             .iter()
-            .filter(|level| matches!(level.as_str(), "low" | "medium" | "high" | "xhigh" | "max"))
+            .filter(|level| is_claude_effort(level))
             .filter(|level| seen.insert(level.as_str()))
             .map(|level| ModelChoiceOption {
                 value: level.clone(),
@@ -684,6 +913,33 @@ pub fn selected_fast_mode(options: &[ModelOptionSelection]) -> ChatResult<Option
     Ok(None)
 }
 
+/// Effort levels Ganbaru passes to Claude, at launch and in a running session.
+pub const CLAUDE_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Whether `value` is one of [`CLAUDE_EFFORT_LEVELS`].
+pub fn is_claude_effort(value: &str) -> bool {
+    CLAUDE_EFFORT_LEVELS.contains(&value)
+}
+
+/// Builds the `apply_flag_settings` payload that changes effort and Fast mode in a running
+/// session. The CLI acknowledges an unknown effort level, so the level is checked here.
+///
+/// # Errors
+///
+/// Returns a `modelOptions` validation error for an unsupported effort level.
+pub fn apply_flag_settings_payload(
+    effort: Option<&str>,
+    fast_mode: Option<bool>,
+) -> ChatResult<Value> {
+    if effort.is_some_and(|effort| !is_claude_effort(effort)) {
+        return Err(ChatError::validation(
+            "modelOptions",
+            "Claude effort value is unsupported",
+        ));
+    }
+    Ok(json!({ "settings": { "effortLevel": effort, "fastMode": fast_mode } }))
+}
+
 fn validate_model_options(options: &[ModelOptionSelection]) -> ChatResult<()> {
     if options.len() > MAX_MODEL_OPTIONS {
         return Err(ChatError::validation(
@@ -707,7 +963,7 @@ fn validate_model_options(options: &[ModelOptionSelection]) -> ChatResult<()> {
                         "Claude effort must use a single choice",
                     ));
                 };
-                if !matches!(value.as_str(), "low" | "medium" | "high" | "xhigh" | "max") {
+                if !is_claude_effort(value) {
                     return Err(ChatError::validation(
                         "modelOptions",
                         "Claude effort value is unsupported",
@@ -726,37 +982,48 @@ fn validate_model_options(options: &[ModelOptionSelection]) -> ChatResult<()> {
     Ok(())
 }
 
+/// Configured arguments refused for every run: they would replace the managed transport,
+/// permission handling, or session continuation, or select, relocate, or detach the session.
+const PROTECTED_LAUNCH_ARGUMENTS: &[&str] = &[
+    "-p",
+    "--print",
+    "--output-format",
+    "--input-format",
+    "--permission-prompt-tool",
+    "--include-partial-messages",
+    "--replay-user-messages",
+    "--permission-mode",
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions",
+    "-c",
+    "--continue",
+    "-r",
+    "--fork-session",
+    "--resume",
+    "--resume-session-at",
+    "--session-id",
+    "--no-session-persistence",
+    "--from-pr",
+    "--teleport",
+    "--cloud",
+    "--environment",
+    "--bg",
+    "--background",
+    "--desktop",
+    "-w",
+    "--worktree",
+    "--model",
+    "--effort",
+    "--settings",
+    "--mcp-config",
+];
+
 fn validate_launch_arguments(arguments: &[String]) -> ChatResult<()> {
-    const PROTECTED: &[&str] = &[
-        "-p",
-        "--print",
-        "--output-format",
-        "--input-format",
-        "--permission-prompt-tool",
-        "--include-partial-messages",
-        "--replay-user-messages",
-        "--permission-mode",
-        "--dangerously-skip-permissions",
-        "--allow-dangerously-skip-permissions",
-        "-c",
-        "--continue",
-        "-r",
-        "--fork-session",
-        "--resume",
-        "--resume-session-at",
-        "--session-id",
-        "--model",
-        "--effort",
-        "--settings",
-        "--mcp-config",
-    ];
     if arguments.len() > MAX_LAUNCH_ARGUMENTS
         || arguments.iter().any(|argument| {
             argument.len() > MAX_LAUNCH_ARGUMENT_BYTES
                 || argument.contains('\0')
-                || PROTECTED.iter().any(|protected| {
-                    argument == protected || argument.starts_with(&format!("{protected}="))
-                })
+                || names_flag(argument, PROTECTED_LAUNCH_ARGUMENTS)
         })
     {
         return Err(ChatError::validation(
@@ -765,6 +1032,45 @@ fn validate_launch_arguments(arguments: &[String]) -> ChatResult<()> {
         ));
     }
     Ok(())
+}
+
+/// Refuses every configured argument on an organizational launch. Each flag the CLI accepts
+/// could select another session or widen the tool, settings, agent, prompt, or folder
+/// surface, and a deny list cannot keep up with new CLI flags.
+fn validate_organizational_launch_arguments(arguments: &[String]) -> ChatResult<()> {
+    if !arguments.is_empty() {
+        return Err(ChatError::validation(
+            "launchArguments",
+            "Launch arguments do not apply to organizational runs; remove them from this provider instance or use another instance for teammates",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `argument` names one of `flags`.
+///
+/// Long flags match in the spaced and the `--flag=value` form. A single-letter flag matches
+/// any single-dash argument that contains its letter, because the CLI reads `-pc` as two
+/// flags and `-r<id>` as `-r` with an attached value. This also refuses some harmless
+/// clusters, which keeps the check independent of which letters take values.
+fn names_flag(argument: &str, flags: &[&str]) -> bool {
+    flags.iter().any(|flag| match short_flag_letter(flag) {
+        Some(letter) => argument
+            .strip_prefix('-')
+            .is_some_and(|cluster| !cluster.starts_with('-') && cluster.contains(letter)),
+        None => argument
+            .strip_prefix(flag)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('=')),
+    })
+}
+
+/// The letter of a single-letter flag such as `-p`, or none for a long flag.
+fn short_flag_letter(flag: &str) -> Option<char> {
+    let mut letters = flag.strip_prefix('-')?.chars();
+    match (letters.next(), letters.next()) {
+        (Some(letter), None) if letter != '-' => Some(letter),
+        _ => None,
+    }
 }
 
 fn validate_model_id(value: &str) -> ChatResult<()> {

@@ -245,6 +245,7 @@ pub(crate) async fn send_turn(
             continuation_group_id: &continuation_group_id,
             request: &request,
             authorization: origin.run(),
+            developer_instructions: origin.developer_instructions(),
         })
         .await?;
         if origin.run().is_some() && authority_support.internal_host_tools {

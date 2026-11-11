@@ -2,6 +2,7 @@
 
 use super::driver::*;
 use super::home::resolve_claude_home;
+use super::instructions::{ClaudeSessionInstructions, check_turn_instructions};
 use super::normalizer::ClaudeRouteState;
 use super::protocol::*;
 use super::session::*;
@@ -165,7 +166,7 @@ impl ProviderDriver for ClaudeProviderDriver {
                     ));
                 }
             }
-            home.continuation_group()
+            home.continuation_group_with_authority(self.organizational_authority())
         })
     }
 
@@ -203,18 +204,25 @@ impl ProviderDriver for ClaudeProviderDriver {
             let requested_effort = selected_effort(&request.model_options)?;
             let requested_fast_mode = selected_fast_mode(&request.model_options)?;
             let live = self.live_mut(&request.session_id)?;
-            if requested_effort.is_some() && requested_effort != live.effective_effort {
-                return Err(ChatError::unsupported(
-                    "Claude effort can only be changed when starting a session",
-                ));
-            }
-            if requested_fast_mode.is_some() && requested_fast_mode != live.effective_fast_mode {
-                return Err(ChatError::unsupported(
-                    "Claude Fast mode can only be changed when starting a session",
-                ));
-            }
+            check_turn_instructions(
+                live.instructions
+                    .as_ref()
+                    .map(ClaudeSessionInstructions::digest),
+                request.developer_instructions.as_deref(),
+            )?;
+            // A busy session keeps the running turn's permission mode, model, and effort.
+            ensure_no_active_turn(&live.route)?;
+            let flags_changed = (requested_effort.is_some()
+                && requested_effort != live.effective_effort)
+                || (requested_fast_mode.is_some()
+                    && requested_fast_mode != live.effective_fast_mode);
+            let permission_mode = if live.organizational {
+                Some(organizational_permission_mode(request.modes)?)
+            } else {
+                permission_mode(request.modes)
+            };
             let client = live.connection.client();
-            if let Some(mode) = permission_mode(request.modes) {
+            if let Some(mode) = permission_mode {
                 client
                     .request("set_permission_mode", json!({ "mode": mode }), context)
                     .await
@@ -229,6 +237,22 @@ impl ProviderDriver for ClaudeProviderDriver {
                     live.effective_model = Some(model.clone());
                 }
             }
+            if flags_changed {
+                // An option the turn leaves unset keeps its live value, so changing one never
+                // resets the other.
+                let effort = requested_effort.or_else(|| live.effective_effort.clone());
+                let fast_mode = requested_fast_mode.or(live.effective_fast_mode);
+                client
+                    .request(
+                        "apply_flag_settings",
+                        apply_flag_settings_payload(effort.as_deref(), fast_mode)?,
+                        context,
+                    )
+                    .await
+                    .map_err(|error| error.to_chat_error("effort change"))?;
+                live.effective_effort = effort;
+                live.effective_fast_mode = fast_mode;
+            }
             let effective_model = live.effective_model.clone();
             let provider_turn_id =
                 ProviderTurnId::new(format!("claude-{}", request.turn_id.as_str()))
@@ -236,11 +260,7 @@ impl ProviderDriver for ClaudeProviderDriver {
             let event = {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 if state.active_chat_turn_id.is_some() {
-                    return Err(ChatError::new(
-                        ChatErrorCode::Busy,
-                        "Claude already has an active turn; queue or steer the prompt",
-                        true,
-                    ));
+                    return Err(send_busy_error());
                 }
                 state.active_chat_turn_id = Some(request.turn_id.clone());
                 state.session_state = ProviderSessionState::Active;
@@ -263,7 +283,9 @@ impl ProviderDriver for ClaudeProviderDriver {
                 release_active_turn(&live.route);
                 return Err(error);
             }
+            let armed = arm_organizational_deadline(live);
             if let Err(error) = client.send(message).await {
+                disarm_organizational_deadline(live, armed);
                 release_active_turn(&live.route);
                 return Err(error.to_chat_error("turn dispatch"));
             }
@@ -316,7 +338,9 @@ impl ProviderDriver for ClaudeProviderDriver {
                 release_active_turn(&live.route);
                 return Err(error);
             }
+            let armed = arm_organizational_deadline(live);
             if let Err(error) = live.connection.client().send(message).await {
+                disarm_organizational_deadline(live, armed);
                 release_active_turn(&live.route);
                 return Err(error.to_chat_error("context compaction"));
             }
@@ -535,6 +559,40 @@ impl ProviderDriver for ClaudeProviderDriver {
             ))
         })
     }
+}
+
+/// Starts the organizational init deadline before a user message is written, because the
+/// CLI answers the first user message with `system/init`. Returns whether this call started it.
+fn arm_organizational_deadline(live: &ClaudeLiveSession) -> bool {
+    live.organizational_deadline
+        .as_ref()
+        .is_some_and(|deadline| deadline.arm())
+}
+
+/// Clears a deadline this dispatch started when its user message never reached the CLI.
+fn disarm_organizational_deadline(live: &ClaudeLiveSession, armed: bool) {
+    if armed {
+        if let Some(deadline) = live.organizational_deadline.as_ref() {
+            deadline.disarm();
+        }
+    }
+}
+
+/// Refuses a send while a turn is active, before any live option changes.
+fn ensure_no_active_turn(route: &Mutex<ClaudeRouteState>) -> ChatResult<()> {
+    let state = route.lock().map_err(|_| driver_state_error())?;
+    if state.active_chat_turn_id.is_some() {
+        return Err(send_busy_error());
+    }
+    Ok(())
+}
+
+fn send_busy_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Busy,
+        "Claude already has an active turn; queue or steer the prompt",
+        true,
+    )
 }
 
 /// Clears the active turn claim after a turn fails before the provider accepted it.

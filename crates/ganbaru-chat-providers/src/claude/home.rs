@@ -15,6 +15,8 @@ const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_MODEL_LABEL_BYTES: usize = 160;
 #[cfg(windows)]
 const MAX_SHIM_BYTES: u64 = 64 * 1024;
+/// Appended to the continuation group digest of organizational sessions only.
+const ORGANIZATIONAL_CONTINUATION_MARKER: &[u8] = b"\0organizational";
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
@@ -76,10 +78,27 @@ pub struct ClaudeHome {
 }
 
 impl ClaudeHome {
+    /// The continuation group of a direct session in this config directory, which tests use to
+    /// compare config directories.
+    #[cfg(test)]
     pub fn continuation_group(&self) -> ChatResult<ContinuationGroupId> {
+        self.continuation_group_with_authority(false)
+    }
+
+    /// The continuation group of a session in this config directory. Organizational sessions
+    /// launch with a different surface, so they never continue a direct session or the reverse.
+    /// Only organizational groups carry the authority marker, because the direct launch
+    /// identity is unchanged by it.
+    pub fn continuation_group_with_authority(
+        &self,
+        organizational_authority: bool,
+    ) -> ChatResult<ContinuationGroupId> {
         let mut digest = Sha256::new();
         digest.update(b"ganbaru-chat-claude-config-v1\0");
         digest.update(path_identity_bytes(&self.config_directory));
+        if organizational_authority {
+            digest.update(ORGANIZATIONAL_CONTINUATION_MARKER);
+        }
         ContinuationGroupId::new(format!("claude-config-{:x}", digest.finalize()))
             .map_err(|_| internal_identity_error())
     }
@@ -109,14 +128,7 @@ pub fn claude_process_environment(
     configuration: &ProviderInstanceConfig,
     home: &ClaudeHome,
 ) -> ChatResult<BTreeMap<String, String>> {
-    let mut environment = BTreeMap::new();
-    for name in minimal_inherited_environment_names() {
-        if let Ok(value) = std::env::var(name) {
-            if !value.contains('\0') {
-                environment.insert((*name).to_string(), value);
-            }
-        }
-    }
+    let mut environment = inherited_environment(|name| std::env::var(name).ok());
     for (name, value) in &configuration.environment {
         if name.is_empty()
             || name.contains(['=', '\0'])
@@ -224,6 +236,38 @@ fn path_identity_bytes(path: &Path) -> Vec<u8> {
     {
         path.to_string_lossy().to_lowercase().into_bytes()
     }
+}
+
+/// Host variables every Claude process inherits when they are set: proxy and certificate
+/// settings so network access works behind a corporate proxy, plus the shell and terminal
+/// identity the CLI's tools read. Host Claude session variables are never inherited.
+const PORTABLE_INHERITED_ENVIRONMENT_NAMES: [&str; 11] = [
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "SHELL",
+    "USER",
+    "TERM",
+];
+
+/// Copies the allowlisted host variables that `lookup` reports, skipping values with NUL.
+pub(super) fn inherited_environment(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> BTreeMap<String, String> {
+    minimal_inherited_environment_names()
+        .iter()
+        .chain(PORTABLE_INHERITED_ENVIRONMENT_NAMES.iter())
+        .filter_map(|name| {
+            lookup(name)
+                .filter(|value| !value.contains('\0'))
+                .map(|value| ((*name).to_string(), value))
+        })
+        .collect()
 }
 
 fn minimal_inherited_environment_names() -> &'static [&'static str] {

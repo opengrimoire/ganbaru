@@ -8,7 +8,8 @@ mod usage;
 
 use blocks::{ClaudeStreamScope, ClaudeStreamState, usable_message_id};
 use limits::ClaudeRateLimitMemory;
-use seen::{BoundedIdSet, ClaudeTurnText, plan_id_set};
+pub(super) use seen::ClaudePlanSource;
+use seen::{ClaudePlanMemory, ClaudeTurnText};
 use usage::ClaudeUsageTracker;
 
 use super::protocol::{ClaudeResumeCursor, protocol_error, resume_cursor};
@@ -50,7 +51,7 @@ pub struct ClaudeRouteState {
     pub resume_cursor: ClaudeResumeCursor,
     pub(super) stream: ClaudeStreamState,
     pub(super) turn_text: ClaudeTurnText,
-    emitted_plan_ids: BoundedIdSet,
+    plans: ClaudePlanMemory,
     rate_limits: ClaudeRateLimitMemory,
     pub(super) usage: ClaudeUsageTracker,
     pub(super) tool_kinds: HashMap<String, CanonicalItemKind>,
@@ -71,17 +72,17 @@ impl ClaudeRouteState {
             resume_cursor,
             stream: ClaudeStreamState::default(),
             turn_text: ClaudeTurnText::default(),
-            emitted_plan_ids: plan_id_set(),
+            plans: ClaudePlanMemory::default(),
             rate_limits: ClaudeRateLimitMemory::default(),
             usage: ClaudeUsageTracker::default(),
             tool_kinds: HashMap::new(),
         }
     }
 
-    /// Claims the right to project the ExitPlanMode plan `plan_id`, which both the assistant
-    /// message and the permission request carry; only the first claim succeeds.
-    pub(super) fn claim_plan(&mut self, plan_id: &str) -> bool {
-        self.emitted_plan_ids.insert(plan_id)
+    /// Claims the right to project an ExitPlanMode plan, which both the assistant message and
+    /// the permission request carry; only the first frame of each plan succeeds.
+    pub(super) fn claim_plan(&mut self, source: ClaudePlanSource<'_>, markdown: &str) -> bool {
+        self.plans.claim(source, markdown)
     }
 }
 
@@ -163,21 +164,53 @@ impl ClaudeEventNormalizer {
         state: &mut ClaudeRouteState,
         reason: &str,
     ) -> ChatResult<Option<CanonicalRuntimeEvent>> {
+        self.aborted_event(
+            state,
+            "stream/closed",
+            TurnAbortedEvent {
+                state: ChatTurnState::Interrupted,
+                reason: bounded_text(reason, MAX_TEXT_BYTES),
+                recoverable: true,
+            },
+        )
+    }
+
+    /// Fails the active turn for good, for example when the session's authority boundary
+    /// cannot be proven.
+    pub fn failed_event(
+        &self,
+        state: &mut ClaudeRouteState,
+        source: &str,
+        reason: &str,
+    ) -> ChatResult<Option<CanonicalRuntimeEvent>> {
+        self.aborted_event(
+            state,
+            source,
+            TurnAbortedEvent {
+                state: ChatTurnState::Failed,
+                reason: bounded_text(reason, MAX_TEXT_BYTES),
+                recoverable: false,
+            },
+        )
+    }
+
+    fn aborted_event(
+        &self,
+        state: &mut ClaudeRouteState,
+        source: &str,
+        aborted: TurnAbortedEvent,
+    ) -> ChatResult<Option<CanonicalRuntimeEvent>> {
         let Some(turn_id) = state.active_chat_turn_id.take() else {
             return Ok(None);
         };
         state.session_state = ProviderSessionState::Ready;
         self.event(
             state,
-            "stream/closed",
+            source,
             Some(turn_id),
             None,
             None,
-            CanonicalEvent::TurnAborted(TurnAbortedEvent {
-                state: ChatTurnState::Interrupted,
-                reason: bounded_text(reason, MAX_TEXT_BYTES),
-                recoverable: true,
-            }),
+            CanonicalEvent::TurnAborted(aborted),
         )
         .map(Some)
     }
@@ -288,20 +321,22 @@ impl ClaudeEventNormalizer {
                 }
                 continue;
             }
-            let tool_use_id = text(block, "id");
-            if block_type == "tool_use"
-                && text(block, "name") == Some("ExitPlanMode")
-                && tool_use_id.is_none_or(|id| state.claim_plan(id))
-            {
-                let markdown = block
-                    .get("input")
-                    .and_then(Value::as_object)
-                    .and_then(|input| {
-                        ["plan", "planMarkdown", "markdown"]
-                            .into_iter()
-                            .find_map(|key| input.get(key).and_then(Value::as_str))
-                    })
-                    .unwrap_or_default();
+            if block_type == "tool_use" && text(block, "name") == Some("ExitPlanMode") {
+                let markdown = bounded_text(
+                    block
+                        .get("input")
+                        .and_then(Value::as_object)
+                        .and_then(|input| {
+                            ["plan", "planMarkdown", "markdown"]
+                                .into_iter()
+                                .find_map(|key| input.get(key).and_then(Value::as_str))
+                        })
+                        .unwrap_or_default(),
+                    MAX_TEXT_BYTES,
+                );
+                if !state.claim_plan(ClaudePlanSource::Message(text(block, "id")), &markdown) {
+                    continue;
+                }
                 events.push(self.event(
                     state,
                     "assistant/ExitPlanMode",
@@ -310,7 +345,7 @@ impl ClaudeEventNormalizer {
                     text(block, "id").and_then(|id| ProviderItemId::new(id.to_string()).ok()),
                     CanonicalEvent::ProposedPlanCompleted(ProposedPlanCompletedEvent {
                         plan_id: text(block, "id").unwrap_or("claude-plan").to_string(),
-                        markdown: bounded_text(markdown, MAX_TEXT_BYTES),
+                        markdown,
                     }),
                 )?);
             }

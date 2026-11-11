@@ -40,6 +40,8 @@ pub(super) struct EnsureSessionContext<'a> {
     pub(super) continuation_group_id: &'a ContinuationGroupId,
     pub(super) request: &'a SendChatTurnCommand,
     pub(super) authorization: Option<&'a AgentRunBinding>,
+    /// Instructions the provider places at system level when the session opens.
+    pub(super) developer_instructions: Option<&'a str>,
 }
 
 pub(super) async fn ensure_session_with_executable_recovery(
@@ -57,6 +59,7 @@ pub(super) async fn ensure_session_with_executable_recovery(
         continuation_group_id,
         request,
         authorization,
+        developer_instructions,
     } = context;
     let internal_mcp = configuration.internal_mcp.clone();
     let initial = ensure_session(EnsureSessionContext {
@@ -71,6 +74,7 @@ pub(super) async fn ensure_session_with_executable_recovery(
         continuation_group_id,
         request,
         authorization,
+        developer_instructions,
     })
     .await;
     let error = match initial {
@@ -105,6 +109,7 @@ pub(super) async fn ensure_session_with_executable_recovery(
         continuation_group_id,
         request,
         authorization,
+        developer_instructions,
     })
     .await;
     if retry
@@ -135,6 +140,7 @@ pub(super) async fn ensure_session(
         continuation_group_id,
         request,
         authorization,
+        developer_instructions,
     } = context;
     let snapshot = owner.snapshot()?;
     if reuse_existing_session(snapshot.session_id.is_some(), snapshot.session_state)? {
@@ -186,27 +192,91 @@ pub(super) async fn ensure_session(
         native_workspace_authorized,
         checkpoint_enabled,
     ));
+    match session_open_request(SessionOpenRequestInput {
+        thread_id,
+        workspace: verified,
+        request,
+        existing,
+        continuation_group_id,
+        developer_instructions,
+    })? {
+        SessionOpenRequest::Resume(resume) => {
+            owner
+                .resume_session(
+                    driver,
+                    resume,
+                    sink,
+                    operation_context("resume-session", PROVIDER_START_TIMEOUT),
+                )
+                .await
+        }
+        SessionOpenRequest::Start(start) => {
+            owner
+                .start_session(
+                    driver,
+                    start,
+                    sink,
+                    operation_context("start-session", PROVIDER_START_TIMEOUT),
+                )
+                .await
+        }
+    }
+}
+
+/// Inputs of the provider request that opens a session for a thread.
+pub(super) struct SessionOpenRequestInput<'a> {
+    pub(super) thread_id: &'a ChatThreadId,
+    pub(super) workspace: VerifiedWorkspaceContext,
+    pub(super) request: &'a SendChatTurnCommand,
+    pub(super) existing: Option<&'a ThreadRuntimeData>,
+    pub(super) continuation_group_id: &'a ContinuationGroupId,
+    pub(super) developer_instructions: Option<&'a str>,
+}
+
+/// The provider request that opens a session, a resume or a fresh start.
+#[derive(Debug)]
+pub(super) enum SessionOpenRequest {
+    Start(StartSessionRequest),
+    Resume(ResumeSessionRequest),
+}
+
+/// Builds the request that opens a session for a thread.
+///
+/// A thread with native continuation data resumes it; a thread without a provider thread
+/// starts fresh. Both requests carry the run's instructions, so a resumed session gets the
+/// same system-level instructions as a fresh one.
+///
+/// # Errors
+///
+/// Returns `ResumeNotFound` when the thread names a provider thread but its resume cursor is
+/// missing.
+pub(super) fn session_open_request(
+    input: SessionOpenRequestInput<'_>,
+) -> ChatResult<SessionOpenRequest> {
+    let SessionOpenRequestInput {
+        thread_id,
+        workspace,
+        request,
+        existing,
+        continuation_group_id,
+        developer_instructions,
+    } = input;
+    let developer_instructions = developer_instructions.map(str::to_string);
     if let Some(existing) = existing {
         if let (Some(provider_thread_id), Some(resume_cursor)) = (
             existing.provider_thread_id.clone(),
             existing.resume_cursor.clone(),
         ) {
-            return owner
-                .resume_session(
-                    driver,
-                    ResumeSessionRequest {
-                        thread_id: thread_id.clone(),
-                        workspace: verified,
-                        provider_instance_id: request.provider_instance_id.clone(),
-                        provider_thread_id,
-                        continuation_group_id: continuation_group_id.clone(),
-                        resume_cursor,
-                        modes: request.modes,
-                    },
-                    sink,
-                    operation_context("resume-session", PROVIDER_START_TIMEOUT),
-                )
-                .await;
+            return Ok(SessionOpenRequest::Resume(ResumeSessionRequest {
+                thread_id: thread_id.clone(),
+                workspace,
+                provider_instance_id: request.provider_instance_id.clone(),
+                provider_thread_id,
+                continuation_group_id: continuation_group_id.clone(),
+                resume_cursor,
+                modes: request.modes,
+                developer_instructions,
+            }));
         }
         if existing.provider_thread_id.is_some() {
             return Err(ChatError::new(
@@ -216,21 +286,15 @@ pub(super) async fn ensure_session(
             ));
         }
     }
-    owner
-        .start_session(
-            driver,
-            StartSessionRequest {
-                thread_id: thread_id.clone(),
-                workspace: verified,
-                provider_instance_id: request.provider_instance_id.clone(),
-                modes: request.modes,
-                model_id: request.model_id.clone(),
-                model_options: request.model_options.clone(),
-            },
-            sink,
-            operation_context("start-session", PROVIDER_START_TIMEOUT),
-        )
-        .await
+    Ok(SessionOpenRequest::Start(StartSessionRequest {
+        thread_id: thread_id.clone(),
+        workspace,
+        provider_instance_id: request.provider_instance_id.clone(),
+        modes: request.modes,
+        model_id: request.model_id.clone(),
+        model_options: request.model_options.clone(),
+        developer_instructions,
+    }))
 }
 
 pub(super) fn reuse_existing_session(

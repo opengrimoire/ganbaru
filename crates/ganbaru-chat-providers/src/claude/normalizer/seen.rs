@@ -1,5 +1,6 @@
 //! Bounded memory of provider ids that were already projected.
 
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Root message ids whose text one turn can remember before the oldest is forgotten.
@@ -36,6 +37,15 @@ impl BoundedIdSet {
         }
         self.order.push_back(id.to_string());
         self.members.insert(id.to_string());
+        true
+    }
+
+    /// Removes `id` and reports whether it was present.
+    fn remove(&mut self, id: &str) -> bool {
+        if !self.members.remove(id) {
+            return false;
+        }
+        self.order.retain(|member| member != id);
         true
     }
 
@@ -102,9 +112,73 @@ impl ClaudeTurnText {
     }
 }
 
-/// A new bounded set for ExitPlanMode tool use ids.
-pub(in crate::claude) fn plan_id_set() -> BoundedIdSet {
-    BoundedIdSet::new(MAX_TRACKED_PLAN_IDS)
+/// Where a projected ExitPlanMode plan came from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::claude) enum ClaudePlanSource<'a> {
+    /// An assistant `tool_use` block, with its id when it has one.
+    Message(Option<&'a str>),
+    /// A permission request naming the tool use id of its plan.
+    IdentifiedRequest(&'a str),
+    /// A permission request without a tool use id, whose plan id is its control request id.
+    AnonymousRequest,
+}
+
+/// ExitPlanMode plans already projected.
+///
+/// The assistant message and the permission request both carry each plan. Their ids match
+/// when the request names its tool use id. A request without one cannot be matched by id, so
+/// within the current turn it pairs with one message carrying the same plan text: whichever
+/// arrives first is projected and the second is consumed silently.
+#[derive(Clone, Debug)]
+pub(in crate::claude) struct ClaudePlanMemory {
+    ids: BoundedIdSet,
+    unpaired_message_digests: BoundedIdSet,
+    unpaired_request_digests: BoundedIdSet,
+}
+
+impl Default for ClaudePlanMemory {
+    fn default() -> Self {
+        Self {
+            ids: BoundedIdSet::new(MAX_TRACKED_PLAN_IDS),
+            unpaired_message_digests: BoundedIdSet::new(MAX_TRACKED_PLAN_IDS),
+            unpaired_request_digests: BoundedIdSet::new(MAX_TRACKED_PLAN_IDS),
+        }
+    }
+}
+
+impl ClaudePlanMemory {
+    /// Claims the right to project a plan and reports whether no earlier frame projected it.
+    pub(super) fn claim(&mut self, source: ClaudePlanSource<'_>, markdown: &str) -> bool {
+        let digest = || format!("{:x}", Sha256::digest(markdown.as_bytes()));
+        match source {
+            ClaudePlanSource::IdentifiedRequest(id) => self.ids.insert(id),
+            ClaudePlanSource::Message(id) => {
+                if id.is_some_and(|id| !self.ids.insert(id)) {
+                    return false;
+                }
+                let digest = digest();
+                if self.unpaired_request_digests.remove(&digest) {
+                    return false;
+                }
+                self.unpaired_message_digests.insert(&digest);
+                true
+            }
+            ClaudePlanSource::AnonymousRequest => {
+                let digest = digest();
+                if self.unpaired_message_digests.remove(&digest) {
+                    return false;
+                }
+                self.unpaired_request_digests.insert(&digest);
+                true
+            }
+        }
+    }
+
+    /// Forgets the unpaired plan text of the finished turn; plan ids stay remembered.
+    pub(super) fn end_turn(&mut self) {
+        self.unpaired_message_digests.clear();
+        self.unpaired_request_digests.clear();
+    }
 }
 
 #[cfg(test)]
@@ -120,6 +194,20 @@ mod tests {
         assert!(set.insert("c"));
         assert!(!set.contains("a"));
         assert!(set.contains("b") && set.contains("c"));
+    }
+
+    #[test]
+    fn anonymous_plan_requests_pair_with_message_text_only_within_a_turn() {
+        let mut plans = ClaudePlanMemory::default();
+        assert!(plans.claim(ClaudePlanSource::Message(Some("toolu_a")), "plan"));
+        plans.end_turn();
+        assert!(
+            plans.claim(ClaudePlanSource::AnonymousRequest, "plan"),
+            "an earlier turn's message never absorbs a new request"
+        );
+        assert!(!plans.claim(ClaudePlanSource::Message(None), "plan"));
+        assert!(!plans.claim(ClaudePlanSource::IdentifiedRequest("toolu_a"), "other"));
+        assert!(plans.claim(ClaudePlanSource::IdentifiedRequest("toolu_b"), "plan"));
     }
 
     #[test]

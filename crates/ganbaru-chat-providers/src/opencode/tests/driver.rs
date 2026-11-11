@@ -487,6 +487,7 @@ fn resume_forks_changed_directory_reasserts_permissions_and_reconciles_reconnect
                     continuation_group_id,
                     resume_cursor: crate::opencode::protocol::resume_cursor("ses_resume").unwrap(),
                     modes: modes(),
+                    developer_instructions: None,
                 },
                 sink,
                 &context("resume"),
@@ -550,6 +551,7 @@ fn resume_creates_a_fresh_session_only_after_confirmed_not_found() {
                     continuation_group_id,
                     resume_cursor: crate::opencode::protocol::resume_cursor("ses_missing").unwrap(),
                     modes: modes(),
+                    developer_instructions: None,
                 },
                 Arc::new(RecordingSink::default()),
                 &context("resume-missing"),
@@ -604,6 +606,7 @@ fn start_request(workspace: &std::path::Path) -> StartSessionRequest {
         modes: modes(),
         model_id: Some(ModelId::new("anthropic/claude-sonnet").unwrap()),
         model_options: vec![],
+        developer_instructions: None,
     }
 }
 

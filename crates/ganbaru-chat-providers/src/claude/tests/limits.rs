@@ -17,8 +17,21 @@ fn statuses(events: &[CanonicalRuntimeEvent]) -> Vec<&RateLimitStatusEvent> {
         .collect()
 }
 
-fn data<'a>(status: &'a RateLimitStatusEvent, key: &str) -> &'a Value {
-    &status.provider_data.as_ref().unwrap().value[key]
+fn types(status: &RateLimitStatusEvent) -> &serde_json::Map<String, Value> {
+    status.provider_data.as_ref().unwrap().value["rateLimitsByType"]
+        .as_object()
+        .expect("a merged map of limit types")
+}
+
+fn limit<'a>(status: &'a RateLimitStatusEvent, limit_type: &str, key: &str) -> &'a Value {
+    &types(status)[limit_type][key]
+}
+
+fn limit_statuses(status: &RateLimitStatusEvent) -> Vec<(&str, &str)> {
+    types(status)
+        .iter()
+        .map(|(limit_type, entry)| (limit_type.as_str(), entry["status"].as_str().unwrap()))
+        .collect()
 }
 
 fn single_status(info: Value) -> RateLimitStatusEvent {
@@ -62,30 +75,42 @@ fn rate_limit_statuses_are_reported_once_per_change_of_each_limit() {
     let reported = statuses(&events);
     let summary = reported
         .iter()
-        .map(|status| {
-            (
-                data(status, "rateLimitType").as_str().unwrap(),
-                data(status, "status").as_str().unwrap(),
-                status.limited,
-            )
-        })
+        .map(|status| (limit_statuses(status), status.limited))
         .collect::<Vec<_>>();
     assert_eq!(
         summary,
         [
-            ("five_hour", "allowed_warning", false),
-            ("five_hour", "rejected", true),
-            ("seven_day", "allowed", false),
-            ("five_hour", "allowed", false),
+            (vec![("five_hour", "allowed_warning")], false),
+            (vec![("five_hour", "rejected")], true),
+            (
+                vec![("five_hour", "rejected"), ("seven_day", "allowed")],
+                true
+            ),
+            (
+                vec![("five_hour", "allowed"), ("seven_day", "allowed")],
+                false
+            ),
         ],
-        "an unchanged frame and the blocked response repeating the rejection report nothing"
+        "an unchanged frame and the blocked response repeating the rejection report nothing, \
+         and another type's report keeps the rejection"
+    );
+    for blocked in &reported[1..3] {
+        assert_eq!(
+            blocked.resets_at.as_ref().map(UtcTimestamp::as_str),
+            Some("2030-01-01T00:00:00Z")
+        );
+    }
+    assert_eq!(reported[3].resets_at, None);
+    assert_eq!(limit(reported[0], "five_hour", "utilization"), &json!(0.85));
+    assert_eq!(
+        limit(reported[1], "five_hour", "utilization"),
+        &json!(0.9),
+        "an unreported change still merges into the next report"
     );
     assert_eq!(
-        reported[1].resets_at.as_ref().map(UtcTimestamp::as_str),
-        Some("2030-01-01T00:00:00Z")
+        limit(reported[1], "five_hour", "overageStatus"),
+        &json!("rejected")
     );
-    assert_eq!(data(reported[0], "utilization"), &json!(0.85));
-    assert_eq!(data(reported[1], "overageStatus"), &json!("rejected"));
 }
 
 #[test]
@@ -108,7 +133,10 @@ fn a_blocked_assistant_response_reports_its_rate_limit_and_text() {
     let reported = statuses(&events);
     assert_eq!(reported.len(), 1);
     assert!(reported[0].limited);
-    assert_eq!(data(reported[0], "rateLimitType"), &json!("seven_day_opus"));
+    assert_eq!(
+        limit_statuses(reported[0]),
+        [("seven_day_opus", "rejected")]
+    );
     assert!(events.iter().any(|event| matches!(&event.event,
         CanonicalEvent::ContentDelta(delta) if delta.delta == "Opus weekly limit reached")));
 }
@@ -162,7 +190,7 @@ fn reset_instants_outside_the_writable_range_are_dropped() {
             "status": "rejected", "rateLimitType": "five_hour", "resetsAt": resets_at
         }));
         assert_eq!(status.resets_at, None, "{resets_at}");
-        assert_eq!(data(&status, "resetsAt"), &Value::Null);
+        assert_eq!(limit(&status, "five_hour", "resetsAt"), &Value::Null);
     }
 }
 
@@ -171,8 +199,15 @@ fn oversized_limit_strings_are_capped() {
     let status = single_status(json!({
         "status": "s".repeat(500), "rateLimitType": "t".repeat(500)
     }));
-    assert_eq!(data(&status, "status").as_str().unwrap().len(), 64);
-    assert_eq!(data(&status, "rateLimitType").as_str().unwrap().len(), 64);
+    let [(limit_type, limit_status)] = limit_statuses(&status)[..] else {
+        panic!("one limit type");
+    };
+    assert_eq!(limit_status.len(), 64);
+    assert_eq!(limit_type.len(), 64);
+    assert_eq!(
+        limit(&status, limit_type, "rateLimitType"),
+        &json!(limit_type)
+    );
     assert!(!status.limited);
 }
 
@@ -207,4 +242,113 @@ fn api_retry_details_clamp_untrusted_numbers() {
     );
     let sparse = retry_warning(json!({ "attempt": 0, "retry_delay_ms": "soon" }));
     assert_eq!(sparse.detail.as_deref(), Some("Attempt 1"));
+}
+
+#[test]
+fn subagent_api_retries_stay_out_of_the_root_stream() {
+    let normalizer = normalizer();
+    let mut state = active_state();
+    let retry = |parent: Value| {
+        json!({
+            "type": "system", "subtype": "api_retry", "parent_tool_use_id": parent,
+            "attempt": 2, "max_retries": 10, "retry_delay_ms": 5000, "error_status": 529
+        })
+    };
+    let subagent = normalizer
+        .normalize_message(&mut state, retry(json!("toolu_task")))
+        .unwrap();
+    assert!(subagent.is_empty(), "a subagent retry projects nothing");
+    for parent in [Value::Null, json!("")] {
+        let root = normalizer
+            .normalize_message(&mut state, retry(parent.clone()))
+            .unwrap();
+        assert!(
+            matches!(&root[..], [event] if matches!(&event.event, CanonicalEvent::RuntimeWarning(_))),
+            "{parent}"
+        );
+    }
+}
+
+fn rate_limit_event(info: Value) -> Value {
+    json!({ "type": "rate_limit_event", "rate_limit_info": info })
+}
+
+#[test]
+fn every_blocking_type_must_reset_before_requests_run() {
+    let normalizer = normalizer();
+    let mut state = active_state();
+    let mut report = |info: Value| {
+        statuses(
+            &normalizer
+                .normalize_message(&mut state, rate_limit_event(info))
+                .unwrap(),
+        )
+        .into_iter()
+        .next()
+        .cloned()
+        .expect("a changed limit is reported")
+    };
+    let first = report(json!({
+        "status": "rejected", "rateLimitType": "five_hour", "resetsAt": 1893456000
+    }));
+    assert_eq!(
+        first.resets_at.as_ref().map(UtcTimestamp::as_str),
+        Some("2030-01-01T00:00:00Z")
+    );
+    let both = report(json!({
+        "status": "rejected", "rateLimitType": "seven_day", "resetsAt": 1894000000
+    }));
+    assert!(both.limited);
+    assert_eq!(
+        both.resets_at.as_ref().map(UtcTimestamp::as_str),
+        Some("2030-01-07T07:06:40Z"),
+        "the latest reset among blocking types"
+    );
+    let one_left = report(json!({
+        "status": "allowed", "rateLimitType": "five_hour", "resetsAt": 1893474000
+    }));
+    assert!(one_left.limited, "the weekly rejection still blocks");
+    assert_eq!(
+        one_left.resets_at.as_ref().map(UtcTimestamp::as_str),
+        Some("2030-01-07T07:06:40Z")
+    );
+    let unknown_reset = report(json!({ "status": "rejected", "rateLimitType": "opus" }));
+    assert!(unknown_reset.limited);
+    assert_eq!(
+        unknown_reset.resets_at, None,
+        "a blocking type without a reset leaves the reset unknown"
+    );
+}
+
+#[test]
+fn limit_types_beyond_the_tracked_bound_are_ignored() {
+    let normalizer = normalizer();
+    let mut state = active_state();
+    for index in 0..16 {
+        let events = normalizer
+            .normalize_message(
+                &mut state,
+                rate_limit_event(
+                    json!({ "status": "allowed", "rateLimitType": format!("t{index}") }),
+                ),
+            )
+            .unwrap();
+        assert_eq!(statuses(&events).len(), 1);
+    }
+    let overflow = normalizer
+        .normalize_message(
+            &mut state,
+            rate_limit_event(json!({ "status": "rejected", "rateLimitType": "extra" })),
+        )
+        .unwrap();
+    assert!(statuses(&overflow).is_empty());
+    let known = normalizer
+        .normalize_message(
+            &mut state,
+            rate_limit_event(json!({ "status": "rejected", "rateLimitType": "t0" })),
+        )
+        .unwrap();
+    let reported = statuses(&known);
+    assert!(reported[0].limited);
+    assert_eq!(types(reported[0]).len(), 16);
 }

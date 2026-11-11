@@ -1,9 +1,11 @@
 use super::persistence::{
-    PersistUserTurnContext, TurnPersistenceTarget, persist_user_turn, read_thread_runtime_data,
+    PersistUserTurnContext, ThreadRuntimeData, TurnPersistenceTarget, persist_user_turn,
+    read_thread_runtime_data,
 };
 use super::session::{
-    merge_checkpoint_changed_files, normalize_changed_file_paths, require_live_authorization,
-    reuse_existing_session,
+    SessionOpenRequest, SessionOpenRequestInput, merge_checkpoint_changed_files,
+    normalize_changed_file_paths, require_live_authorization, reuse_existing_session,
+    session_open_request,
 };
 #[cfg(unix)]
 use super::validation::validate_send_mentions;
@@ -1135,4 +1137,156 @@ fn mentions_with_control_characters_are_rejected_before_send() {
         let error = validate_mentions(&[mention(path)]).unwrap_err();
         assert_eq!(error.code, ChatErrorCode::Validation, "{path:?}");
     }
+}
+
+fn session_open_command() -> SendChatTurnCommand {
+    SendChatTurnCommand {
+        command: ChatCommandContext {
+            client_command_id: ChatCommandId::new("send-session-open").unwrap(),
+            expected_thread_revision: Some(1),
+        },
+        working_folder_id: None,
+        scratch_generation_id: None,
+        thread_id: Some(ChatThreadId::new("thread-1").unwrap()),
+        new_thread_id: None,
+        execution_environment_id: None,
+        turn_id: ChatTurnId::new("turn-session-open").unwrap(),
+        message_id: ChatMessageId::new("message-session-open").unwrap(),
+        provider_instance_id: ProviderInstanceId::new("fake-instance").unwrap(),
+        provider_managed_model: false,
+        model_id: Some(ModelId::new("fake-model").unwrap()),
+        model_options: Vec::new(),
+        modes: TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+        prompt: "Start".to_string(),
+        attachment_ids: Vec::new(),
+        mentions: Vec::new(),
+    }
+}
+
+fn session_open_runtime_data(
+    provider_thread_id: Option<&str>,
+    resume_cursor: Option<VersionedJson>,
+) -> ThreadRuntimeData {
+    ThreadRuntimeData {
+        working_folder_id: None,
+        scratch_generation_id: None,
+        provider_instance_id: ProviderInstanceId::new("fake-instance").unwrap(),
+        continuation_group_id: ContinuationGroupId::new("group-1").unwrap(),
+        provider_thread_id: provider_thread_id.map(|id| ProviderThreadId::new(id).unwrap()),
+        resume_cursor,
+        revision: 1,
+        execution_environment_id: None,
+    }
+}
+
+fn session_open_input<'a>(
+    command: &'a SendChatTurnCommand,
+    existing: Option<&'a ThreadRuntimeData>,
+    continuation_group_id: &'a ContinuationGroupId,
+    developer_instructions: Option<&'a str>,
+) -> SessionOpenRequestInput<'a> {
+    SessionOpenRequestInput {
+        thread_id: command.thread_id.as_ref().unwrap(),
+        workspace: VerifiedWorkspaceContext {
+            working_folder_id: ProjectWorkingFolderId::new("fake-workspace").unwrap(),
+            canonical_path: "/fake/workspace".to_string(),
+            repository_kind: RepositoryKind::None,
+            repository_identity: None,
+            project_configuration: ProjectConfigurationAccess::Restricted,
+        },
+        request: command,
+        existing,
+        continuation_group_id,
+        developer_instructions,
+    }
+}
+
+#[tokio::test]
+async fn session_open_requests_pass_instructions_on_start_and_resume() {
+    use crate::chat::tests::fake_driver::{
+        FakeDriverControl, RecordingEventSink, fake_driver, operation_context,
+    };
+    use ganbaru_chat_providers::ProviderEventSink;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let command = session_open_command();
+    let group = ContinuationGroupId::new("group-1").unwrap();
+    let instructions = "Review the plan before editing.";
+    let fresh = session_open_runtime_data(None, None);
+    let resumable = session_open_runtime_data(
+        Some("provider-thread-1"),
+        Some(VersionedJson {
+            schema_version: 1,
+            value: serde_json::json!({ "cursor": 1 }),
+        }),
+    );
+    let control = Arc::new(FakeDriverControl::default());
+    let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingEventSink::new(Arc::clone(&control)));
+    let context = operation_context("session-open", Duration::from_secs(1));
+
+    for existing in [None, Some(&fresh)] {
+        let SessionOpenRequest::Start(start) = session_open_request(session_open_input(
+            &command,
+            existing,
+            &group,
+            Some(instructions),
+        ))
+        .unwrap() else {
+            panic!("a thread without a provider thread starts fresh");
+        };
+        assert_eq!(start.model_id, command.model_id);
+        fake_driver(Arc::clone(&control))
+            .start_session(start, Arc::clone(&sink), &context)
+            .await
+            .unwrap();
+    }
+    let SessionOpenRequest::Resume(resume) = session_open_request(session_open_input(
+        &command,
+        Some(&resumable),
+        &group,
+        Some(instructions),
+    ))
+    .unwrap() else {
+        panic!("a thread with continuation data resumes");
+    };
+    assert_eq!(resume.provider_thread_id.as_str(), "provider-thread-1");
+    assert_eq!(resume.continuation_group_id, group);
+    fake_driver(Arc::clone(&control))
+        .resume_session(resume, Arc::clone(&sink), &context)
+        .await
+        .unwrap();
+    let SessionOpenRequest::Resume(direct) =
+        session_open_request(session_open_input(&command, Some(&resumable), &group, None)).unwrap()
+    else {
+        panic!("a thread with continuation data resumes");
+    };
+    fake_driver(Arc::clone(&control))
+        .resume_session(direct, sink, &context)
+        .await
+        .unwrap();
+
+    let expected = Some(instructions.to_string());
+    assert_eq!(
+        control.opened_instructions(),
+        vec![expected.clone(), expected.clone(), expected, None]
+    );
+}
+
+#[test]
+fn session_open_request_refuses_a_provider_thread_without_its_resume_cursor() {
+    let command = session_open_command();
+    let group = ContinuationGroupId::new("group-1").unwrap();
+    let broken = session_open_runtime_data(Some("provider-thread-1"), None);
+    let error = session_open_request(session_open_input(
+        &command,
+        Some(&broken),
+        &group,
+        Some("Instructions"),
+    ))
+    .unwrap_err();
+    assert_eq!(error.code, ChatErrorCode::ResumeNotFound);
 }

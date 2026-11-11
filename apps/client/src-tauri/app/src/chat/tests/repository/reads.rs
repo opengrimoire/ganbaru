@@ -481,3 +481,114 @@ fn timeline_since_read_asks_for_a_reload_below_the_pruned_removals() {
         assert!(!current.reset_required);
     });
 }
+
+#[test]
+fn timeline_reads_carry_a_shortened_detail_that_loads_whole_for_its_own_visible_thread() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        let long = format!("{}✓end", "x".repeat(ACTIVITY_DETAIL_PREVIEW_BYTES));
+        append_canonical_event(&pool, content_event("event-detail-1", "Hello"))
+            .await
+            .unwrap();
+        insert_activity(&pool, "activity-long", 1, Some(&long)).await;
+        insert_activity(&pool, "activity-short", 1, Some("done")).await;
+
+        let page = read_timeline_page(&pool, &thread_id, None, 20)
+            .await
+            .unwrap();
+        let long_item = page
+            .items
+            .iter()
+            .find(|item| item.activity_id.as_str() == "activity-long")
+            .unwrap();
+        let value = &long_item.data.value;
+        assert!(value.get("detail").is_none());
+        assert_eq!(value["detailBytes"], long.len());
+        assert_eq!(value["detailTruncated"], true);
+        let preview = value["detailPreview"].as_str().unwrap();
+        assert!(
+            preview.ends_with("✓end"),
+            "a command keeps its newest output"
+        );
+        assert!(preview.len() <= ACTIVITY_DETAIL_PREVIEW_BYTES);
+        let short_item = page
+            .items
+            .iter()
+            .find(|item| item.activity_id.as_str() == "activity-short")
+            .unwrap();
+        assert_eq!(short_item.data.value["detailPreview"], "done");
+        assert_eq!(short_item.data.value["detailTruncated"], false);
+
+        let delta = read_timeline_since(&pool, &thread_id, 0, 20).await.unwrap();
+        assert!(
+            delta
+                .items
+                .iter()
+                .all(|item| item.data.value.get("detail").is_none())
+        );
+
+        let activity_id = ChatActivityId::new("activity-long").unwrap();
+        let whole = read_activity_detail(&pool, &thread_id, &activity_id)
+            .await
+            .unwrap();
+        assert_eq!(whole.activity_id, activity_id);
+        assert_eq!(whole.detail.as_deref(), Some(long.as_str()));
+        assert_eq!(whole.updated_at.as_str(), NOW);
+
+        let other_thread = ChatThreadId::new("thread-other").unwrap();
+        let error = read_activity_detail(&pool, &other_thread, &activity_id)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::NotFound);
+        let missing = ChatActivityId::new("activity-missing").unwrap();
+        let error = read_activity_detail(&pool, &thread_id, &missing)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::NotFound);
+
+        append_canonical_event(
+            &pool,
+            canonical_request(
+                "event-hidden-start",
+                Some("turn-hidden"),
+                CanonicalEvent::TurnStarted(TurnStartedEvent {
+                    provider_turn_id: None,
+                    state: ChatTurnState::Active,
+                    modes: TurnModeSnapshot {
+                        safety_mode: SafetyMode::AskForApproval,
+                        interaction_mode: InteractionMode::Build,
+                    },
+                    model_id: None,
+                    model_options: Vec::new(),
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE chat_activities SET turn_id = 'turn-hidden' WHERE id = 'activity-short'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let hidden = ChatActivityId::new("activity-short").unwrap();
+        assert_eq!(
+            read_activity_detail(&pool, &thread_id, &hidden)
+                .await
+                .unwrap()
+                .detail
+                .as_deref(),
+            Some("done")
+        );
+        sqlx::query("UPDATE chat_turns SET invalidated_at = ? WHERE id = 'turn-hidden'")
+            .bind(NOW)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let error = read_activity_detail(&pool, &thread_id, &hidden)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::NotFound);
+    });
+}

@@ -69,7 +69,7 @@ describe("canonical timeline projection", () => {
     expect(thinking).toMatchObject({
       kind: "activity",
       activityKind: "reasoning_summary",
-      detail: "Checking attachment rendering",
+      detailPreview: "Checking attachment rendering",
     });
   });
 
@@ -145,7 +145,7 @@ describe("canonical timeline projection", () => {
 
     const projection = projectCanonicalTimeline(events);
     expect(projection.rows).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "activity:command", status: "completed", detail: "Passed" }),
+      expect.objectContaining({ id: "activity:command", status: "completed", detailPreview: "Passed" }),
       expect.objectContaining({ id: "plan:structured:turn-1", markdown: "Plan" }),
     ]));
     expect(projection.pendingRequests).toMatchObject([{ id: "request-1", state: "resolved" }]);
@@ -427,6 +427,44 @@ describe("canonical timeline projection", () => {
     ]);
   });
 
+  it("keeps a stored preview shortened until a live event carries the whole detail", () => {
+    const tail = "ok\n".repeat(4);
+    const items: ChatTimelineItemRead[] = [{
+      activityId: "activity:command",
+      turnId: "turn-1",
+      sequenceAnchor: 1,
+      changeSequence: 1,
+      kind: "activity",
+      data: { schemaVersion: 1, value: { activityKind: "command_execution", status: "active", title: "Run tests", detailPreview: tail, detailBytes: 9_000, detailTruncated: true, providerItemId: "command", metadata: {}, createdAt: start, updatedAt: "2026-07-21T14:00:05.000Z" } },
+    }];
+    const turns: ChatTimelineTurnRead[] = [{
+      turnId: "turn-1",
+      state: "active",
+      startedAt: start,
+      completedAt: null,
+      stopReason: null,
+      modelId: null,
+      modelOptions: [],
+      modes: { safetyMode: "ask_for_approval", interactionMode: "build" },
+      usage: null,
+      changedFiles: [],
+    }];
+    const projection = projectTimelineReadModel(items, turns);
+    const snapshot = projection.rows.find((row) => row.id === "activity:command");
+    expect(snapshot).toMatchObject({ detailPreview: tail, detailBytes: 9_000, detailTruncated: true, updatedAt: "2026-07-21T14:00:05.000Z" });
+
+    const live = projectCanonicalTimeline([
+      stored(1, { type: "item_completed", payload: { itemId: "command", kind: "command_execution", status: "completed", title: "Run tests", detail: "é✓𝄞", safeMetadata: null } }),
+    ]).rows.find((row) => row.id === "activity:command");
+    expect(live).toMatchObject({ detailPreview: "é✓𝄞", detailBytes: 9, detailTruncated: false });
+  });
+
+  it("offers a disclosure only when an activity has detail bytes or metadata", () => {
+    const base = { id: "activity:tool", kind: "activity", turnId: "turn-1", sequence: 1, createdAt: start, activityKind: "dynamic_tool_call", status: "completed", title: "Lookup", metadata: null } as const;
+    expect(timelineActivitySupportsDisclosure({ ...base, detailPreview: null, detailBytes: 0, detailTruncated: false })).toBe(false);
+    expect(timelineActivitySupportsDisclosure({ ...base, detailPreview: "", detailBytes: 5_000, detailTruncated: true })).toBe(true);
+  });
+
   it("hydrates the same display model from validated paged SQLite projections", () => {
     const items: ChatTimelineItemRead[] = [
       {
@@ -435,7 +473,7 @@ describe("canonical timeline projection", () => {
         sequenceAnchor: 1,
         changeSequence: 1,
         kind: "activity",
-        data: { schemaVersion: 1, value: { activityKind: "user_message", status: "completed", title: "User message", detail: null, providerItemId: "provider-user", metadata: {}, createdAt: start, updatedAt: start } },
+        data: { schemaVersion: 1, value: { activityKind: "user_message", status: "completed", title: "User message", detailPreview: null, providerItemId: "provider-user", metadata: {}, createdAt: start, updatedAt: start } },
       },
       {
         activityId: "message-1",
@@ -451,7 +489,7 @@ describe("canonical timeline projection", () => {
         sequenceAnchor: 3,
         changeSequence: 3,
         kind: "activity",
-        data: { schemaVersion: 1, value: { activityKind: "assistant_message", status: "completed", title: "Assistant response", detail: "Lifecycle copy", providerItemId: "provider-item", metadata: {}, createdAt: start, updatedAt: start } },
+        data: { schemaVersion: 1, value: { activityKind: "assistant_message", status: "completed", title: "Assistant response", detailPreview: "Lifecycle copy", providerItemId: "provider-item", metadata: {}, createdAt: start, updatedAt: start } },
       },
     ];
     const turns: ChatTimelineTurnRead[] = [{
@@ -480,7 +518,7 @@ describe("canonical timeline projection", () => {
         sequenceAnchor: 2,
         changeSequence: 2,
         kind: "activity",
-        data: { schemaVersion: 1, value: { activityKind: "assistant_message", status: "completed", title: "Assistant response", detail: "A normal **paragraph**.", providerItemId: "commentary", metadata: {}, createdAt: start, updatedAt: start } },
+        data: { schemaVersion: 1, value: { activityKind: "assistant_message", status: "completed", title: "Assistant response", detailPreview: "A normal **paragraph**.", providerItemId: "commentary", metadata: {}, createdAt: start, updatedAt: start } },
       },
       {
         activityId: "command",
@@ -488,7 +526,7 @@ describe("canonical timeline projection", () => {
         sequenceAnchor: 3,
         changeSequence: 3,
         kind: "activity",
-        data: { schemaVersion: 1, value: { activityKind: "command_execution", status: "completed", title: "Run tests", detail: "Passed", providerItemId: "command", metadata: {}, createdAt: start, updatedAt: start } },
+        data: { schemaVersion: 1, value: { activityKind: "command_execution", status: "completed", title: "Run tests", detailPreview: "Passed", providerItemId: "command", metadata: {}, createdAt: start, updatedAt: start } },
       },
       {
         activityId: "answer",

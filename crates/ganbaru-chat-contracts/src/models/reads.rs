@@ -217,3 +217,13 @@ pub struct ChatTimelineDeltaRead {
     pub reset_required: bool,
     pub thread_revision: u64,
 }
+
+/// The whole detail of one activity, read when its disclosure opens because timeline reads carry
+/// only a shortened preview.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatActivityDetailRead {
+    pub activity_id: ChatActivityId,
+    pub detail: Option<String>,
+    pub updated_at: UtcTimestamp,
+}

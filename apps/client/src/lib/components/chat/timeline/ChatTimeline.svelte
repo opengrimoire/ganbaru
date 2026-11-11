@@ -674,7 +674,7 @@
   }
 
   function activityDetail(activity: TimelineActivityRow): string | null {
-    if (activity.title !== "thread_reverted") return activity.detail;
+    if (activity.title !== "thread_reverted") return activity.detailPreview;
     const value = activity.metadata?.value;
     if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
     const count = "revertedTurnCount" in value && typeof value.revertedTurnCount === "number"
@@ -802,7 +802,7 @@
       <div class="chat-disclosure-region" class:expanded={activityExpanded} aria-hidden={!activityExpanded} inert={!activityExpanded}>
         <div class="chat-disclosure-inner">
           <div class="chat-step-detail">
-            <ChatActivityDetail {activity} detail={activityDetail(activity)} />
+            <ChatActivityDetail {activity} detail={activityDetail(activity)} threadId={activity.sourceThreadId ?? selectedThread?.id ?? chat.selectedThreadId} expanded={activityExpanded} />
           </div>
         </div>
       </div>

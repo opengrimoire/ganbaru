@@ -54,7 +54,7 @@ export function timelineActivitySupportsDisclosure(activity: TimelineActivityRow
     || activity.activityKind === "command_output"
     || activity.activityKind === "file_change"
     || activity.activityKind === "file_change_output") return true;
-  if (activity.detail?.trim()) return true;
+  if (activity.detailBytes > 0) return true;
   const metadata = activity.metadata?.value;
   return typeof metadata === "object"
     && metadata !== null
@@ -410,7 +410,7 @@ export function projectTimelineReadModel(
           createdAt: current?.createdAt ?? createdAt,
           markdown: current?.kind === "message" && current.markdown
             ? current.markdown
-            : jsonNullableString(data.detail) ?? "",
+            : jsonNullableString(data.detailPreview) ?? "",
           state: messageState(status),
           phase: parseMessagePhase(data.metadata),
           userContext: null,
@@ -428,7 +428,7 @@ export function projectTimelineReadModel(
         activityKind: knownKind,
         status,
         title,
-        detail: jsonNullableString(data.detail),
+        ...storedActivityDetail(data),
         metadata: data.metadata === undefined ? null : { schemaVersion: item.data.schemaVersion, value: data.metadata },
         sourceThreadId: item.sourceThreadId,
       });
@@ -618,7 +618,7 @@ function appendContentDelta(
         activityKind: "reasoning_text",
         status: "active",
         title: activityTitle(payload.streamKind),
-        detail: null,
+        ...wholeActivityDetail(null),
         metadata: null,
       });
     }
@@ -628,7 +628,7 @@ function appendContentDelta(
   if (!stream) {
     const row: TimelineMessageRow | TimelineActivityRow = assistant
       ? { id, kind: "message", role: "assistant", turnId: event.turnId, sequence: event.sequence, createdAt: event.createdAt, markdown: "", state: "streaming", phase: null, userContext: null, metadata: null }
-      : { id, kind: "activity", turnId: event.turnId, sequence: event.sequence, createdAt: event.createdAt, activityKind: payload.streamKind, status: "active", title: activityTitle(payload.streamKind), detail: null, metadata: null };
+      : { id, kind: "activity", turnId: event.turnId, sequence: event.sequence, createdAt: event.createdAt, activityKind: payload.streamKind, status: "active", title: activityTitle(payload.streamKind), ...wholeActivityDetail(null), metadata: null };
     stream = { row, parts: new Map() };
     streams.set(id, stream);
     rows.set(id, row);
@@ -638,7 +638,7 @@ function appendContentDelta(
   if (stream.row.kind === "message") stream.row.markdown = content;
   else if (stream.row.kind === "activity") {
     stream.row.activityKind = payload.streamKind;
-    stream.row.detail = content;
+    Object.assign(stream.row, wholeActivityDetail(content));
   }
 }
 
@@ -714,11 +714,56 @@ function upsertActivity(
     activityKind: resolvedActivityKind,
     status,
     title,
-    detail: detail && detail.length > 0
-      ? detail
-      : current?.kind === "activity" ? current.detail : null,
+    ...(detail && detail.length > 0
+      ? wholeActivityDetail(detail)
+      : current?.kind === "activity" ? heldActivityDetail(current) : wholeActivityDetail(null)),
     metadata,
   });
+}
+
+type ActivityDetailFields = Pick<TimelineActivityRow, "detailPreview" | "detailBytes" | "detailTruncated" | "updatedAt">;
+
+/** Describes detail text a live event carries in full. */
+function wholeActivityDetail(detail: string | null): ActivityDetailFields {
+  return { detailPreview: detail, detailBytes: detail === null ? 0 : utf8ByteLength(detail), detailTruncated: false };
+}
+
+/** Keeps the detail a row already holds, including a stored preview and its version. */
+function heldActivityDetail(row: TimelineActivityRow): ActivityDetailFields {
+  return { detailPreview: row.detailPreview, detailBytes: row.detailBytes, detailTruncated: row.detailTruncated, updatedAt: row.updatedAt };
+}
+
+/** Reads the shortened detail a native timeline read stores on an activity row. */
+function storedActivityDetail(data: Record<string, VersionedJson["value"]>): ActivityDetailFields {
+  const detailPreview = jsonNullableString(data.detailPreview);
+  const detailBytes = typeof data.detailBytes === "number" && Number.isSafeInteger(data.detailBytes) && data.detailBytes >= 0
+    ? data.detailBytes
+    : detailPreview === null ? 0 : utf8ByteLength(detailPreview);
+  const updatedAt = jsonString(data.updatedAt);
+  return {
+    detailPreview,
+    detailBytes,
+    detailTruncated: data.detailTruncated === true,
+    ...(updatedAt ? { updatedAt } : {}),
+  };
+}
+
+/** Counts the UTF-8 bytes of a string without allocating its encoding. */
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else bytes += 3;
+    } else bytes += 3;
+  }
+  return bytes;
 }
 
 function attachTerminalAssistantMetadata(rows: Map<string, TimelineRow>, turns: Map<ChatTurnId, TimelineTurn>): void {
@@ -757,7 +802,7 @@ function attachPendingTurnRows(rows: Map<string, TimelineRow>, turns: Map<ChatTu
       activityKind: "notice",
       status: "active",
       title: "Working",
-      detail: null,
+      ...wholeActivityDetail(null),
       metadata: null,
     });
   }

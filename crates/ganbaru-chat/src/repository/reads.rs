@@ -1,11 +1,12 @@
 use crate::events::{ChangedFileSummary, ThreadUsageUpdatedEvent};
 use crate::models::{
-    ChatActivityId, ChatChangeNotification, ChatError, ChatErrorCode, ChatExecutionEnvironmentId,
-    ChatProjectionKey, ChatResult, ChatScratchGenerationId, ChatThreadId, ChatThreadShellRead,
-    ChatThreadState, ChatTimelineDeltaRead, ChatTimelineItemRead, ChatTimelinePageRead,
-    ChatTimelineTurnRead, ChatTurnId, ChatTurnState, InteractionMode, ModelId,
-    ModelOptionSelection, ProjectWorkingFolderId, ProviderFamilyId, ProviderInstanceId,
-    ProviderThreadId, SafetyMode, TurnModeSnapshot, UtcTimestamp, VersionedJson,
+    ChatActivityDetailRead, ChatActivityId, ChatChangeNotification, ChatError, ChatErrorCode,
+    ChatExecutionEnvironmentId, ChatProjectionKey, ChatResult, ChatScratchGenerationId,
+    ChatThreadId, ChatThreadShellRead, ChatThreadState, ChatTimelineDeltaRead,
+    ChatTimelineItemRead, ChatTimelinePageRead, ChatTimelineTurnRead, ChatTurnId, ChatTurnState,
+    InteractionMode, ModelId, ModelOptionSelection, ProjectWorkingFolderId, ProviderFamilyId,
+    ProviderInstanceId, ProviderThreadId, SafetyMode, TurnModeSnapshot, UtcTimestamp,
+    VersionedJson,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::{Row, SqliteConnection, SqlitePool};
@@ -18,6 +19,9 @@ const MAX_SEARCH_LENGTH: usize = 240;
 pub const MAX_SINCE_READ_BYTES: u64 = 1024 * 1024;
 /// How long removal records stay, so a reader that falls further behind reloads the timeline.
 pub const TIMELINE_REMOVAL_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+/// Bytes of an activity detail that timeline reads carry; the whole detail loads through
+/// [`read_activity_detail`] when it is opened.
+pub const ACTIVITY_DETAIL_PREVIEW_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -664,6 +668,11 @@ fn row_to_timeline_item(
 ) -> ChatResult<ChatTimelineItemRead> {
     let row_id: String = row.try_get("row_id").map_err(persistence_error)?;
     let data: String = row.try_get("item_data").map_err(persistence_error)?;
+    let kind: String = row.try_get("item_kind").map_err(persistence_error)?;
+    let mut value: serde_json::Value = serde_json::from_str(&data).map_err(serialization_error)?;
+    if kind == "activity" {
+        shorten_activity_detail(&mut value)?;
+    }
     Ok(ChatTimelineItemRead {
         activity_id: ChatActivityId::new(row_id).map_err(|_| corrupt_data_error())?,
         turn_id: row
@@ -674,19 +683,99 @@ fn row_to_timeline_item(
             .map_err(|_| corrupt_data_error())?,
         sequence_anchor: unsigned(row.try_get("sequence_anchor").map_err(persistence_error)?)?,
         change_sequence: unsigned(row.try_get("change_sequence").map_err(persistence_error)?)?,
-        kind: row.try_get("item_kind").map_err(persistence_error)?,
+        kind,
         data: VersionedJson {
             schema_version: u32::try_from(
                 row.try_get::<i64, _>("schema_version")
                     .map_err(persistence_error)?,
             )
             .map_err(|_| corrupt_data_error())?,
-            value: serde_json::from_str(&data).map_err(serialization_error)?,
+            value,
         },
         source_thread_id,
     })
 }
 
+/// Activity kinds whose readers want the end of the detail: command output and reasoning
+/// summaries. Every other kind previews the start.
+const TAIL_PREVIEW_ACTIVITY_KINDS: [&str; 3] =
+    ["command_execution", "command_output", "reasoning_summary"];
+
+/// Replaces an activity row's `detail` with `detailPreview`, `detailBytes` (the UTF-8 length of
+/// the whole detail), and `detailTruncated`.
+fn shorten_activity_detail(value: &mut serde_json::Value) -> ChatResult<()> {
+    let object = value.as_object_mut().ok_or_else(corrupt_data_error)?;
+    let tail = object
+        .get("activityKind")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| TAIL_PREVIEW_ACTIVITY_KINDS.contains(&kind));
+    let detail = match object.remove("detail") {
+        Some(serde_json::Value::String(detail)) => Some(detail),
+        Some(serde_json::Value::Null) | None => None,
+        Some(_) => return Err(corrupt_data_error()),
+    };
+    let bytes = detail.as_deref().map_or(0, str::len);
+    let preview = detail
+        .as_deref()
+        .map(|detail| activity_detail_preview(detail, ACTIVITY_DETAIL_PREVIEW_BYTES, tail));
+    let truncated = preview.is_some_and(|preview| preview.len() < bytes);
+    object.insert(
+        "detailPreview".to_string(),
+        preview.map_or(serde_json::Value::Null, |preview| preview.into()),
+    );
+    object.insert("detailBytes".to_string(), bytes.into());
+    object.insert("detailTruncated".to_string(), truncated.into());
+    Ok(())
+}
+
+/// Returns at most `limit` bytes of `detail`, from its end when `tail` is set and from its start
+/// otherwise, cut on a character boundary so no code point splits.
+pub fn activity_detail_preview(detail: &str, limit: usize, tail: bool) -> &str {
+    if detail.len() <= limit {
+        return detail;
+    }
+    if tail {
+        let mut start = detail.len() - limit;
+        while !detail.is_char_boundary(start) {
+            start += 1;
+        }
+        &detail[start..]
+    } else {
+        let mut end = limit;
+        while !detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        &detail[..end]
+    }
+}
+
+/// Reads the whole detail of one activity of a thread. An activity of another thread, or of an
+/// invalidated turn, is not found.
+pub async fn read_activity_detail(
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+    activity_id: &ChatActivityId,
+) -> ChatResult<ChatActivityDetailRead> {
+    let (detail, updated_at) = sqlx::query_as::<_, (Option<String>, String)>(
+        "SELECT a.detail, a.updated_at
+         FROM chat_activities a
+         WHERE a.id = ? AND a.thread_id = ?
+           AND (a.turn_id IS NULL OR EXISTS (
+             SELECT 1 FROM chat_turns t WHERE t.id = a.turn_id AND t.invalidated_at IS NULL
+           ))",
+    )
+    .bind(activity_id.as_str())
+    .bind(thread_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?
+    .ok_or_else(activity_not_found_error)?;
+    Ok(ChatActivityDetailRead {
+        activity_id: activity_id.clone(),
+        detail,
+        updated_at: UtcTimestamp::new(updated_at).map_err(|_| corrupt_data_error())?,
+    })
+}
 pub async fn read_timeline_turns_by_ids(
     pool: &SqlitePool,
     turn_ids: &BTreeSet<String>,
@@ -930,6 +1019,9 @@ fn not_found_error() -> ChatError {
 fn turn_not_found_error() -> ChatError {
     ChatError::new(ChatErrorCode::NotFound, "Chat turn was not found", true)
 }
+fn activity_not_found_error() -> ChatError {
+    ChatError::new(ChatErrorCode::NotFound, "Chat activity was not found", true)
+}
 fn persistence_error<T>(_error: T) -> ChatError {
     ChatError::new(
         ChatErrorCode::Persistence,
@@ -1002,5 +1094,47 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn activity_detail_preview_cuts_on_character_boundaries_from_either_end() {
+        let detail = "aé✓b";
+        assert_eq!(super::activity_detail_preview(detail, 16, true), detail);
+        assert_eq!(super::activity_detail_preview(detail, 2, false), "a");
+        assert_eq!(super::activity_detail_preview(detail, 3, false), "aé");
+        assert_eq!(super::activity_detail_preview(detail, 3, true), "b");
+        assert_eq!(super::activity_detail_preview(detail, 4, true), "✓b");
+    }
+
+    #[test]
+    fn shortened_activity_detail_keeps_the_command_tail_and_the_tool_head() {
+        let long = format!(
+            "{}{}",
+            "h".repeat(super::ACTIVITY_DETAIL_PREVIEW_BYTES),
+            "tail"
+        );
+        let mut command =
+            serde_json::json!({ "activityKind": "command_execution", "detail": long });
+        super::shorten_activity_detail(&mut command).unwrap();
+        let preview = command["detailPreview"].as_str().unwrap();
+        assert!(preview.ends_with("tail"));
+        assert_eq!(preview.len(), super::ACTIVITY_DETAIL_PREVIEW_BYTES);
+        assert_eq!(command["detailBytes"], long.len());
+        assert_eq!(command["detailTruncated"], true);
+        assert!(command.get("detail").is_none());
+
+        let mut tool = serde_json::json!({ "activityKind": "dynamic_tool_call", "detail": long });
+        super::shorten_activity_detail(&mut tool).unwrap();
+        assert!(!tool["detailPreview"].as_str().unwrap().contains("tail"));
+
+        let mut short = serde_json::json!({ "activityKind": "notice", "detail": "done" });
+        super::shorten_activity_detail(&mut short).unwrap();
+        assert_eq!(short["detailPreview"], "done");
+        assert_eq!(short["detailTruncated"], false);
+
+        let mut empty = serde_json::json!({ "activityKind": "notice", "detail": null });
+        super::shorten_activity_detail(&mut empty).unwrap();
+        assert!(empty["detailPreview"].is_null());
+        assert_eq!(empty["detailBytes"], 0);
     }
 }

@@ -167,3 +167,10 @@ export interface ChatTimelineDeltaRead {
   resetRequired: boolean;
   threadRevision: number;
 }
+
+/** The whole detail of one activity, read when its disclosure opens. */
+export interface ChatActivityDetailRead {
+  activityId: ChatActivityId;
+  detail: string | null;
+  updatedAt: UtcTimestamp;
+}

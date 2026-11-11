@@ -3,6 +3,7 @@ import {
   CHAT_PROJECTION_KEYS,
   CHAT_THREAD_STATES,
   CHAT_TURN_STATES,
+  type ChatActivityDetailRead,
   type ChatChangeNotification,
   type ChatProjectionKey,
   type ChatError,
@@ -183,5 +184,15 @@ export function parseChatTimelineDelta(value: unknown, label = "Chat timeline de
     hasMore: readBoolean(record.hasMore, `${label}.hasMore`),
     resetRequired: readBoolean(record.resetRequired, `${label}.resetRequired`),
     threadRevision: readNonNegativeSafeInteger(record.threadRevision, `${label}.threadRevision`),
+  };
+}
+
+/** Validates the whole detail of one activity read from the native timeline. */
+export function parseChatActivityDetail(value: unknown, label = "Chat activity detail"): ChatActivityDetailRead {
+  const record = readRecord(value, label);
+  return {
+    activityId: readIdentifier(record.activityId, `${label}.activityId`),
+    detail: readNullable(record.detail, `${label}.detail`, readString),
+    updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
   };
 }

@@ -10,6 +10,8 @@ import { chatErrorMessage } from "$lib/chat/error-presentation";
 import { evictTimelinePages, mergeTimelineItems } from "$lib/chat/timeline/virtualization";
 
 const MAX_TIMELINE_PAGES = 8;
+/** Bounds the since-reads one live refresh pages through before it falls back to a full load. */
+const MAX_SINCE_READ_PASSES = 8;
 
 export interface ChatTimelineControllerOptions {
   selectedThreadId: () => ChatThreadId | null;
@@ -97,8 +99,9 @@ export class ChatTimelineController {
 
   /**
    * Brings the loaded pages of the selected thread up to date, keeping older pages. With a held change cursor it
-   * reads only the rows that changed after it; otherwise, or when more changes are pending than one read returns, it
-   * rereads the newest page and merges it. A refresh never blocks or discards an older-page load in flight.
+   * pages the rows that changed after it until none are pending, falling back to a full load after
+   * `MAX_SINCE_READ_PASSES` reads or when the read requires a reset; without a cursor it rereads the newest page and
+   * merges it. A refresh never blocks or discards an older-page load in flight.
    */
   async refreshLatest(threadId: ChatThreadId, selectedSequence: number | null = null): Promise<void> {
     if (this.options.selectedThreadId() !== threadId) return;
@@ -110,15 +113,17 @@ export class ChatTimelineController {
     const refresh = ++this.refreshRequest;
     try {
       if (this.changeCursor !== null) {
-        const delta = await chatApi.readChatTimelineSince(threadId, this.changeCursor);
-        if (!this.isCurrentRefresh(generation, refresh, threadId)) return;
-        if (delta.resetRequired) {
-          await this.load(threadId, null, false, selectedSequence);
-          return;
+        for (let pass = 0; pass < MAX_SINCE_READ_PASSES; pass += 1) {
+          const delta = await chatApi.readChatTimelineSince(threadId, this.changeCursor);
+          if (!this.isCurrentRefresh(generation, refresh, threadId)) return;
+          if (delta.resetRequired) break;
+          this.applyPages(mergeTimelineDelta(this.pages, delta, this.holdsNewest), selectedSequence);
+          this.changeCursor = delta.changeCursor;
+          if (!delta.hasMore) return;
         }
-        this.applyPages(mergeTimelineDelta(this.pages, delta, this.holdsNewest), selectedSequence);
-        this.changeCursor = delta.changeCursor;
-        if (!delta.hasMore) return;
+        // Changes still pending, or pruned removals, may touch any loaded page, so only a full load is current.
+        await this.load(threadId, null, false, selectedSequence);
+        return;
       }
       if (!this.holdsNewest) return;
       const page = await chatApi.readChatTimelinePage(threadId, null);

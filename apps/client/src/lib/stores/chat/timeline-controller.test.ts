@@ -145,7 +145,7 @@ describe("ChatTimelineController live refresh", () => {
     expect(api.readPage).toHaveBeenCalledTimes(2);
   });
 
-  it("reads the newest page when more changes are pending than one since-read returns", async () => {
+  it("pages the since-read until no change is pending, without rereading pages", async () => {
     const timeline = controller();
     await timeline.load("thread-1");
     await timeline.loadOlder();
@@ -153,12 +153,45 @@ describe("ChatTimelineController live refresh", () => {
 
     await timeline.refreshLatest("thread-1");
 
-    expect(api.readPage).toHaveBeenCalledTimes(3);
+    expect(api.readPage).toHaveBeenCalledTimes(2);
+    expect(api.readSince).toHaveBeenCalledTimes(2);
     expect(sequences(timeline.items)).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     thread.append(16);
     await timeline.refreshLatest("thread-1");
     expect(api.readSince).toHaveBeenLastCalledWith("thread-1", 15);
     expect(sequences(timeline.items).at(-1)).toBe(16);
+  });
+
+  it("keeps an older-page change that lands after a since-read reports more pending", async () => {
+    const timeline = controller();
+    await timeline.load("thread-1");
+    await timeline.loadOlder();
+    for (let sequence = 11; sequence <= 15; sequence += 1) thread.append(sequence);
+    thread.edit(5, "edited");
+
+    await timeline.refreshLatest("thread-1");
+
+    expect(sequences(timeline.items)).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(timeline.items[0]?.data.value).toEqual({ markdown: "edited" });
+    thread.append(16);
+    await timeline.refreshLatest("thread-1");
+    expect(api.readSince).toHaveBeenLastCalledWith("thread-1", thread.clock - 1);
+  });
+
+  it("falls back to a full load when changes stay pending after the pass bound", async () => {
+    const timeline = controller();
+    await timeline.load("thread-1");
+    await timeline.loadOlder();
+    for (let sequence = 11; sequence <= 40; sequence += 1) thread.append(sequence);
+
+    await timeline.refreshLatest("thread-1");
+
+    expect(api.readSince).toHaveBeenCalledTimes(8);
+    expect(timeline.pages).toHaveLength(1);
+    expect(sequences(timeline.items)).toEqual([38, 39, 40]);
+    thread.append(41);
+    await timeline.refreshLatest("thread-1");
+    expect(api.readSince).toHaveBeenLastCalledWith("thread-1", 40);
   });
 
   it("reloads the newest page when the removals after the cursor were pruned", async () => {

@@ -552,7 +552,7 @@
   .composer-tools { display: flex; min-width: 0; align-items: center; gap: 0.3rem; overflow: hidden; }
   .tool-button { display: grid; width: 1.9rem; height: 1.9rem; flex: 0 0 auto; place-items: center; border-radius: 0.5rem; color: var(--muted-foreground); }
   .tool-button.hovered { background: var(--accent); color: var(--foreground); }
-  .send-button { position: relative; display: grid; width: 2rem; height: 2rem; flex: 0 0 auto; place-items: center; border-radius: 999px; background: color-mix(in srgb, var(--primary) 92%, transparent); color: var(--primary-foreground); box-shadow: 0 2px 7px color-mix(in srgb, var(--primary) 22%, transparent); }
+  .send-button { position: relative; display: grid; width: 1.9rem; height: 1.9rem; flex: 0 0 auto; place-items: center; border-radius: 999px; background: color-mix(in srgb, var(--primary) 92%, transparent); color: var(--primary-foreground); box-shadow: 0 2px 7px color-mix(in srgb, var(--primary) 22%, transparent); }
   .send-button.disabled { opacity: 0.45; }
 
   /* The reply thread, as its panel draws it. */

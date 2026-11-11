@@ -6,10 +6,10 @@ use super::protocol::MINIMUM_CLAUDE_VERSION;
 use super::transport::ClaudeJsonlConnection;
 use crate::ProviderDriver;
 use crate::models::*;
-use crate::replay::runner::{ReplayConnection, ReplaySetup};
+use crate::replay::runner::{ReplayConnection, ReplaySetup, one_shot, organizational_mcp};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// A Claude driver whose next session runs over `connection`.
 pub(crate) fn replay_driver(
@@ -22,20 +22,13 @@ pub(crate) fn replay_driver(
     }
     let mut driver = ClaudeProviderDriver::new(configuration)?;
     let home = setup.home.to_path_buf();
-    let connection = Arc::new(Mutex::new(Some(ClaudeJsonlConnection::from_test_io(
+    let take = one_shot(ClaudeJsonlConnection::from_test_io(
         connection.reader,
         connection.writer,
-    ))));
+    ));
     driver.set_connection_factory(Arc::new(move |_| {
-        let connection = connection.lock().unwrap().take().ok_or_else(|| {
-            ChatError::new(
-                ChatErrorCode::TransportUnavailable,
-                "the replay connection was already used",
-                false,
-            )
-        })?;
         Ok((
-            connection,
+            take()?,
             ClaudeHome {
                 config_directory: home.clone(),
             },
@@ -74,16 +67,4 @@ pub(crate) fn recording_driver(
         configuration.internal_mcp = Some(organizational_mcp());
     }
     Ok(Box::new(ClaudeProviderDriver::new(configuration)?))
-}
-
-/// The internal MCP endpoint an organizational replay launches with. Nothing listens on it; the
-/// transcript answers the CLI's MCP status itself, and a real CLI being recorded reports it as
-/// unreachable.
-fn organizational_mcp() -> ProviderInternalMcpConfig {
-    ProviderInternalMcpConfig {
-        name: "ganbaru-chat".to_string(),
-        url: "http://127.0.0.1:41234/mcp".to_string(),
-        bearer_token: "replay-token".to_string(),
-        organizational_authority: true,
-    }
 }

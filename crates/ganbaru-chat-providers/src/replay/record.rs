@@ -106,6 +106,7 @@ fn record_scenario(request: &str) -> Result<PathBuf, String> {
         workspace: &directories.workspace,
         home: &home,
         organizational: script.organizational,
+        cli_version: "",
     };
     let driver = provider
         .recording_driver(&setup, &fake_cli, environment)

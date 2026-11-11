@@ -16,7 +16,7 @@ use std::time::Duration;
 use support::*;
 
 mod integration;
-mod support;
+pub(super) mod support;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

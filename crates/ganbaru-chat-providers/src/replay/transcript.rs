@@ -20,6 +20,9 @@ const SESSION_PLACEHOLDER: &str = "session";
 pub const REPLAY_SESSION: &str = "00000000-0000-4000-8000-000000000001";
 const REDACTED_PLACEHOLDER: &str = "redacted";
 const REFERENCE_PLACEHOLDER: &str = "ref";
+/// Angle-bracketed words a provider writes itself, kept as literal text: Claude names the model of
+/// the messages it generates locally `<synthetic>`.
+const PROVIDER_LITERALS: &[&str] = &["synthetic"];
 
 /// One line of a replay transcript.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -213,10 +216,12 @@ fn check_placeholders(
                     ) && outbound_labels.iter().any(|known| known == label)
                 }
                 Some(_) => false,
-                None => matches!(
-                    token,
-                    WORKSPACE_PLACEHOLDER | SESSION_PLACEHOLDER | REDACTED_PLACEHOLDER
-                ),
+                None => {
+                    matches!(
+                        token,
+                        WORKSPACE_PLACEHOLDER | SESSION_PLACEHOLDER | REDACTED_PLACEHOLDER
+                    ) || PROVIDER_LITERALS.contains(&token)
+                }
             };
             if !known {
                 return Err(ReplayError::UnknownPlaceholder {
@@ -628,10 +633,31 @@ pub const CLAUDE_MASK: ReplayMask = ReplayMask {
     ],
 };
 
+/// Codex app-server frames compared by presence only. Request ids are not masked: the driver
+/// numbers its requests from 1, so a reply carrying the wrong id fails the replay.
+pub const CODEX_MASK: ReplayMask = ReplayMask {
+    request_id: "/id",
+    presence_only: &[
+        // The client version follows the Ganbaru release.
+        "/params/clientInfo/version",
+    ],
+};
+
+/// Cursor ACP frames compared by presence only. Request ids are not masked, as for Codex.
+pub const CURSOR_MASK: ReplayMask = ReplayMask {
+    request_id: "/id",
+    presence_only: &[
+        // The client version follows the Ganbaru release.
+        "/params/clientInfo/version",
+    ],
+};
+
 /// The mask of the provider a transcript header names.
 pub fn mask_for_provider(provider: &str) -> Option<ReplayMask> {
     match provider {
         "claude" => Some(CLAUDE_MASK),
+        "codex" => Some(CODEX_MASK),
+        "cursor" => Some(CURSOR_MASK),
         _ => None,
     }
 }

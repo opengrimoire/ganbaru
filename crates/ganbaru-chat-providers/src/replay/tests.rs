@@ -1,7 +1,7 @@
 //! Replay harness tests: the transcript loader, matching rules, failures, and every scenario.
 
 use super::diff::json_diff;
-use super::runner::{ReplayProvider, replay, run_scenario};
+use super::runner::{ReplayProvider, replay};
 use super::scripts::{ReplayScript, ReplayStep};
 use super::transcript::*;
 use crate::models::{InteractionMode, SafetyMode};
@@ -298,23 +298,4 @@ fn line_and_paragraph_separators_round_trip_through_every_jsonl_reader() {
     for frames in readers {
         assert_eq!(frames, vec![frame.clone(), frame.clone()]);
     }
-}
-
-macro_rules! replay_scenarios {
-    ($provider:ident: $($scenario:ident),* $(,)?) => {
-        $(
-            #[test]
-            fn $scenario() {
-                if let Err(failure) = run_scenario(ReplayProvider::$provider, stringify!($scenario)) {
-                    panic!("{failure}");
-                }
-            }
-        )*
-    };
-}
-
-mod replay_claude {
-    use super::*;
-
-    replay_scenarios!(Claude: simple);
 }

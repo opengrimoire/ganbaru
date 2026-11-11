@@ -60,19 +60,70 @@ pub(crate) struct ReplaySetup<'a> {
     pub(crate) workspace: &'a Path,
     pub(crate) home: &'a Path,
     pub(crate) organizational: bool,
+    /// The CLI version the transcript header names; empty while recording a real CLI.
+    pub(crate) cli_version: &'a str,
+}
+
+/// A connection factory body that hands out `connection` once and refuses every later launch.
+pub(crate) fn one_shot<T>(connection: T) -> impl Fn() -> ChatResult<T> + Send + Sync
+where
+    T: Send,
+{
+    let slot = Mutex::new(Some(connection));
+    move || {
+        slot.lock()
+            .map_err(|_| {
+                ChatError::new(
+                    ChatErrorCode::TransportUnavailable,
+                    "the replay connection lock was poisoned",
+                    false,
+                )
+            })?
+            .take()
+            .ok_or_else(|| {
+                ChatError::new(
+                    ChatErrorCode::TransportUnavailable,
+                    "the replay connection was already used",
+                    false,
+                )
+            })
+    }
+}
+
+/// The internal MCP endpoint an organizational replay launches with. Nothing listens on it; the
+/// transcript answers the CLI's MCP status itself, and a real CLI being recorded reports it as
+/// unreachable.
+pub(crate) fn organizational_mcp() -> ProviderInternalMcpConfig {
+    ProviderInternalMcpConfig {
+        name: "ganbaru-chat".to_string(),
+        url: "http://127.0.0.1:41234/mcp".to_string(),
+        bearer_token: "replay-token".to_string(),
+        organizational_authority: true,
+    }
 }
 
 /// A provider the replay harness can drive in process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReplayProvider {
     Claude,
+    Codex,
+    Cursor,
 }
+
+/// Every provider the harness drives, in scenario directory order.
+const REPLAY_PROVIDERS: [ReplayProvider; 3] = [
+    ReplayProvider::Claude,
+    ReplayProvider::Codex,
+    ReplayProvider::Cursor,
+];
 
 impl ReplayProvider {
     /// The provider name transcript headers and scenario directories use.
     pub(super) fn name(self) -> &'static str {
         match self {
             Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Cursor => "cursor",
         }
     }
 
@@ -110,6 +161,8 @@ impl ReplayProvider {
     ) -> ChatResult<Box<dyn ProviderDriver>> {
         match self {
             Self::Claude => crate::claude::replay::replay_driver(setup, connection),
+            Self::Codex => crate::codex::replay::replay_driver(setup, connection),
+            Self::Cursor => crate::cursor::replay::replay_driver(setup, connection),
         }
     }
 
@@ -117,12 +170,14 @@ impl ReplayProvider {
     pub(super) fn protocol(self) -> &'static str {
         match self {
             Self::Claude => "stream-json",
+            Self::Codex => "app-server",
+            Self::Cursor => "acp",
         }
     }
 
     /// The provider with transcript header name `name`.
     pub(super) fn from_name(name: &str) -> Option<Self> {
-        [Self::Claude]
+        REPLAY_PROVIDERS
             .into_iter()
             .find(|provider| provider.name() == name)
     }
@@ -136,6 +191,8 @@ impl ReplayProvider {
     ) -> ChatResult<Box<dyn ProviderDriver>> {
         match self {
             Self::Claude => crate::claude::replay::recording_driver(setup, executable, environment),
+            Self::Codex => crate::codex::replay::recording_driver(setup, executable, environment),
+            Self::Cursor => crate::cursor::replay::recording_driver(setup, executable, environment),
         }
     }
 }
@@ -255,10 +312,12 @@ async fn replay_async(
     let workspace = directories.workspace.to_string_lossy().into_owned();
     let (driver_reader, process_writer) = tokio::io::duplex(DUPLEX_BYTES);
     let (process_reader, driver_writer) = tokio::io::duplex(DUPLEX_BYTES);
+    let cli_version = transcript.header.cli_version.clone();
     let setup = ReplaySetup {
         workspace: &directories.workspace,
         home: &directories.home,
         organizational: script.organizational,
+        cli_version: &cli_version,
     };
     let driver = provider
         .driver(
@@ -305,11 +364,14 @@ async fn replay_async(
         failure.actual = Some(Box::new(frame.clone()));
         return Err(failure);
     }
+    let mut request_ids = Vec::new();
+    let events = sink
+        .events()
+        .iter()
+        .map(|event| summarize(event, &workspace, &mut request_ids))
+        .collect::<Vec<_>>();
     Ok(ReplayReport {
-        snapshot: json!({
-            "calls": calls?,
-            "events": sink.events().iter().map(|event| summarize(event, &workspace)).collect::<Vec<_>>(),
-        }),
+        snapshot: json!({ "calls": calls?, "events": events }),
     })
 }
 
@@ -664,9 +726,26 @@ fn event_kind(event: &CanonicalRuntimeEvent) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// The snapshot name of `request_id`: `request-<n>` in order of first appearance, because some
+/// drivers derive request ids from a random session id.
+fn stable_request_id(request_id: &str, seen: &mut Vec<String>) -> String {
+    let index = match seen.iter().position(|known| known == request_id) {
+        Some(index) => index,
+        None => {
+            seen.push(request_id.to_string());
+            seen.len() - 1
+        }
+    };
+    format!("request-{}", index + 1)
+}
+
 /// The snapshot shape of one event: its kind, turn, and a few stable payload fields, with the
-/// workspace path written as `<workspace>`.
-fn summarize(event: &CanonicalRuntimeEvent, workspace: &str) -> Value {
+/// workspace path written as `<workspace>` and request ids numbered by `stable_request_id`.
+fn summarize(
+    event: &CanonicalRuntimeEvent,
+    workspace: &str,
+    request_ids: &mut Vec<String>,
+) -> Value {
     let mut summary = Map::new();
     summary.insert("type".to_string(), event_kind(event));
     if let Some(turn) = &event.turn_id {
@@ -678,6 +757,12 @@ fn summarize(event: &CanonicalRuntimeEvent, workspace: &str) -> Value {
     if let Some(Value::Object(payload)) = payload {
         for field in SNAPSHOT_FIELDS {
             match payload.get(*field) {
+                Some(Value::String(text)) if *field == "requestId" => {
+                    summary.insert(
+                        (*field).to_string(),
+                        json!(stable_request_id(text, request_ids)),
+                    );
+                }
                 Some(Value::String(text)) => {
                     summary.insert(
                         (*field).to_string(),

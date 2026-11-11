@@ -4,10 +4,6 @@ use super::runner::ReplayProvider;
 use crate::models::{ApprovalDecisionKind, InteractionMode, SafetyMode};
 
 /// One driver call or wait a script makes.
-#[expect(
-    dead_code,
-    reason = "the steering, interruption, approval, and stop scenarios construct these"
-)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ReplayStep {
     /// Starts a fresh session.
@@ -63,15 +59,17 @@ pub(crate) struct ReplayScript {
     pub(crate) steps: Vec<ReplayStep>,
 }
 
-const ASK: SafetyMode = SafetyMode::AskForApproval;
-const BUILD: InteractionMode = InteractionMode::Build;
+pub(super) const ASK: SafetyMode = SafetyMode::AskForApproval;
+pub(super) const BUILD: InteractionMode = InteractionMode::Build;
 
-const START: ReplayStep = ReplayStep::Start {
+/// Starts a session that asks for approval in build mode.
+pub(super) const START: ReplayStep = ReplayStep::Start {
     safety: ASK,
     interaction: BUILD,
 };
 
-const fn send(turn: &'static str, prompt: &'static str) -> ReplayStep {
+/// Sends `prompt` as `turn`, asking for approval in build mode.
+pub(super) const fn send(turn: &'static str, prompt: &'static str) -> ReplayStep {
     ReplayStep::Send {
         turn,
         prompt,
@@ -80,26 +78,64 @@ const fn send(turn: &'static str, prompt: &'static str) -> ReplayStep {
     }
 }
 
-const fn settled(count: usize) -> ReplayStep {
+/// Waits until `count` turns completed in total.
+pub(super) const fn settled(count: usize) -> ReplayStep {
     ReplayStep::AwaitEvent {
         kind: "turn_completed",
         count,
     }
 }
 
-fn direct(steps: Vec<ReplayStep>) -> ReplayScript {
+/// Waits until `count` events of `kind` were emitted in total.
+pub(super) const fn awaited(kind: &'static str, count: usize) -> ReplayStep {
+    ReplayStep::AwaitEvent { kind, count }
+}
+
+/// A script on a direct thread.
+pub(super) fn direct(steps: Vec<ReplayStep>) -> ReplayScript {
     ReplayScript {
         organizational: false,
         steps,
     }
 }
 
-/// The script of `scenario` for `provider`, when one exists.
-pub(crate) fn script(provider: ReplayProvider, scenario: &str) -> Option<ReplayScript> {
-    match (provider, scenario) {
-        (ReplayProvider::Claude, "simple") => {
-            Some(direct(vec![START, send("turn-1", "Say hello"), settled(1)]))
-        }
-        _ => None,
+/// A script with organizational authority.
+pub(super) fn organizational(steps: Vec<ReplayStep>) -> ReplayScript {
+    ReplayScript {
+        organizational: true,
+        steps,
     }
 }
+
+/// The script of `scenario` for `provider`, when one exists.
+pub(crate) fn script(provider: ReplayProvider, scenario: &str) -> Option<ReplayScript> {
+    match provider {
+        ReplayProvider::Claude => claude::script(scenario),
+        ReplayProvider::Codex => codex::script(scenario),
+        ReplayProvider::Cursor => cursor::script(scenario),
+    }
+}
+
+/// One test per scenario that replays its transcript and compares the snapshot.
+macro_rules! replay_scenarios {
+    ($provider:ident: $($scenario:ident),* $(,)?) => {
+        #[cfg(test)]
+        mod scenarios {
+            $(
+                #[test]
+                fn $scenario() {
+                    if let Err(failure) = crate::replay::runner::run_scenario(
+                        crate::replay::runner::ReplayProvider::$provider,
+                        stringify!($scenario),
+                    ) {
+                        panic!("{failure}");
+                    }
+                }
+            )*
+        }
+    };
+}
+
+mod claude;
+mod codex;
+mod cursor;

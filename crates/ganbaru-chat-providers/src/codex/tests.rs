@@ -97,7 +97,10 @@ fn identifier<T>(value: &str, constructor: impl FnOnce(String) -> Result<T, Stri
     constructor(value.to_string()).unwrap()
 }
 
-fn configuration(shared_home: &Path, shadow_home: Option<&Path>) -> ProviderInstanceConfig {
+pub(super) fn configuration(
+    shared_home: &Path,
+    shadow_home: Option<&Path>,
+) -> ProviderInstanceConfig {
     serde_json::from_value(json!({
         "schemaVersion": 1,
         "instanceId": "codex-instance-1",

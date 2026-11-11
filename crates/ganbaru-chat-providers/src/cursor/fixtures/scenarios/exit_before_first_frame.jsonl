@@ -1,0 +1,2 @@
+{"type":"transcript_start","provider":"cursor","protocol":"acp","cli_version":"2026.04.08","scenario":"exit_before_first_frame","generated_by":"authored"}
+{"type":"runtime_exit","status":1,"stderr":"Error: the runtime could not start\n"}

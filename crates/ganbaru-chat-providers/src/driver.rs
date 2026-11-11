@@ -8,21 +8,47 @@ use std::{
     },
     time::Instant,
 };
+use tokio::sync::Notify;
 
 pub type DriverFuture<'a, T> = Pin<Box<dyn Future<Output = ChatResult<T>> + Send + 'a>>;
 
+/// Shared cancellation flag for one driver operation.
+///
+/// Cloned handles observe the same flag. Synchronous callers check `is_cancelled`, and
+/// asynchronous callers await `cancelled`, which wakes as soon as `cancel` runs.
 #[derive(Clone, Debug, Default)]
 pub struct DriverCancellation {
     cancelled: Arc<AtomicBool>,
+    notify: Arc<Notify>,
 }
 
 impl DriverCancellation {
+    /// Marks the operation cancelled and wakes every task awaiting `cancelled`.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+        self.notify.notify_waiters();
     }
 
+    /// Reports whether `cancel` has run on any clone of this handle.
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Completes once the operation is cancelled, at once when it already is.
+    ///
+    /// Interest is registered before the flag is checked again, so a `cancel` that runs
+    /// between the first check and the await still wakes this task.
+    pub async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.is_cancelled() {
+            return;
+        }
+        notified.await;
     }
 }
 
@@ -256,4 +282,41 @@ pub trait ProviderDriverFactory: Send + Sync {
         &self,
         configuration: ProviderInstanceConfig,
     ) -> ChatResult<Box<dyn ProviderDriver>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DriverCancellation;
+    use std::time::Duration;
+
+    #[test]
+    fn cancelled_wakes_after_cancel() {
+        crate::test_block_on(async {
+            let cancellation = DriverCancellation::default();
+            let waiter = cancellation.clone();
+            let task = tokio::spawn(async move { waiter.cancelled().await });
+            tokio::task::yield_now().await;
+            assert!(!task.is_finished(), "an uncancelled wait stays pending");
+            cancellation.cancel();
+            tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .expect("cancel wakes the waiter")
+                .unwrap();
+            assert!(cancellation.is_cancelled());
+        });
+    }
+
+    #[test]
+    fn cancelled_returns_when_already_cancelled() {
+        crate::test_block_on(async {
+            let cancellation = DriverCancellation::default();
+            cancellation.cancel();
+            tokio::time::timeout(Duration::from_secs(5), cancellation.clone().cancelled())
+                .await
+                .expect("an earlier cancel completes the wait at once");
+            tokio::time::timeout(Duration::from_secs(5), cancellation.cancelled())
+                .await
+                .expect("every later wait completes at once");
+        });
+    }
 }

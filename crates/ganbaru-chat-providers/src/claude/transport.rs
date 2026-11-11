@@ -18,7 +18,6 @@ const MAX_JSONL_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PENDING_REQUESTS: usize = 128;
 const MAX_INBOUND_MESSAGES: usize = 256;
 const MAX_OUTBOUND_MESSAGES: usize = 256;
-const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClaudeTransportFailure {
@@ -266,24 +265,28 @@ async fn await_response(
     pending: &PendingResponses,
     context: &DriverOperationContext,
 ) -> Result<Value, ClaudeTransportFailure> {
-    loop {
-        if context.is_cancelled() {
+    if context.is_cancelled() {
+        remove_pending(pending, request_id);
+        return Err(if Instant::now() >= context.deadline {
+            ClaudeTransportFailure::Timeout
+        } else {
+            ClaudeTransportFailure::Cancelled
+        });
+    }
+    let deadline = tokio::time::Instant::from_std(context.deadline);
+    tokio::select! {
+        biased;
+        response = &mut receiver => match response {
+            Ok(result) => result,
+            Err(_) => Err(ClaudeTransportFailure::Closed),
+        },
+        () = context.cancellation.cancelled() => {
             remove_pending(pending, request_id);
-            return Err(if Instant::now() >= context.deadline {
-                ClaudeTransportFailure::Timeout
-            } else {
-                ClaudeTransportFailure::Cancelled
-            });
+            Err(ClaudeTransportFailure::Cancelled)
         }
-        let remaining = context.deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+        () = tokio::time::sleep_until(deadline) => {
             remove_pending(pending, request_id);
-            return Err(ClaudeTransportFailure::Timeout);
-        }
-        match tokio::time::timeout(remaining.min(CANCELLATION_POLL_INTERVAL), &mut receiver).await {
-            Ok(Ok(result)) => return result,
-            Ok(Err(_)) => return Err(ClaudeTransportFailure::Closed),
-            Err(_) => {}
+            Err(ClaudeTransportFailure::Timeout)
         }
     }
 }
@@ -430,7 +433,11 @@ fn route_control_response(value: &Value, pending: &PendingResponses) -> bool {
     true
 }
 
-async fn write_messages<W>(
+/// Writes queued frames until shutdown, a closed queue, or a write failure.
+///
+/// The task sleeps until a frame or the shutdown signal arrives. Shutdown wins over a
+/// queued frame, and a dropped shutdown sender counts as shutdown.
+pub(super) async fn write_messages<W>(
     mut writer: W,
     mut outbound: mpsc::Receiver<Vec<u8>>,
     mut shutdown: oneshot::Receiver<()>,
@@ -439,15 +446,13 @@ async fn write_messages<W>(
     W: AsyncWrite + Send + Unpin + 'static,
 {
     loop {
-        match shutdown.try_recv() {
-            Ok(()) | Err(oneshot::error::TryRecvError::Closed) => break,
-            Err(oneshot::error::TryRecvError::Empty) => {}
-        }
-        let message = match tokio::time::timeout(CANCELLATION_POLL_INTERVAL, outbound.recv()).await
-        {
-            Ok(Some(message)) => message,
-            Ok(None) => break,
-            Err(_) => continue,
+        let message = tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            message = outbound.recv() => match message {
+                Some(message) => message,
+                None => break,
+            },
         };
         if writer.write_all(&message).await.is_err() || writer.flush().await.is_err() {
             break;

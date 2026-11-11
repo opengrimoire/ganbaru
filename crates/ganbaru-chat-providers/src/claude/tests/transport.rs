@@ -8,15 +8,16 @@ use crate::claude::session::{
     PendingClaudeRequest, PendingClaudeRequestKind, PendingClaudeRequests, approval_response,
     resolve_approval, resolve_user_input,
 };
-use crate::claude::transport::read_bounded_line;
 use crate::claude::transport::{
     ClaudeInboundMessage, ClaudeJsonlConnection, ClaudeTransportFailure,
 };
+use crate::claude::transport::{read_bounded_line, write_messages};
 use crate::events::{CanonicalEvent, SessionPermissionGrant};
 use crate::models::*;
 use crate::{DriverCancellation, DriverOperationContext, ProviderDriver};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -133,6 +134,111 @@ fn transport_cancellation_removes_pending_request() {
             .await
             .unwrap();
     });
+}
+
+#[test]
+fn await_response_returns_on_cancellation() {
+    crate::test_block_on(async {
+        let (driver_reader, mut server_writer) = tokio::io::duplex(4 * 1024);
+        let (server_reader, driver_writer) = tokio::io::duplex(4 * 1024);
+        let mut connection = ClaudeJsonlConnection::from_test_io(driver_reader, driver_writer);
+        let client = connection.client();
+        let cancellation = DriverCancellation::default();
+        let waiting = DriverOperationContext {
+            operation_id: "waiting".to_string(),
+            deadline: Instant::now() + Duration::from_secs(600),
+            cancellation: cancellation.clone(),
+        };
+        let request = tokio::spawn(async move {
+            client
+                .request("mcp_status", json!({}), &waiting)
+                .await
+                .map(|_| ())
+        });
+        let mut reader = BufReader::new(server_reader);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let sent: Value = serde_json::from_str(&line).unwrap();
+        let request_id = sent["request_id"].as_str().unwrap().to_string();
+        cancellation.cancel();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), request)
+            .await
+            .expect("cancellation wakes the wait without its deadline")
+            .unwrap();
+        assert_eq!(outcome, Err(ClaudeTransportFailure::Cancelled));
+        write_json_line(
+            &mut server_writer,
+            json!({
+                "type": "control_response",
+                "response": { "subtype": "success", "request_id": request_id, "response": {} }
+            }),
+        )
+        .await;
+        write_json_line(&mut server_writer, json!({ "type": "marker" })).await;
+        let mut inbound = connection.take_inbound().unwrap();
+        let next = tokio::time::timeout(Duration::from_secs(5), inbound.recv())
+            .await
+            .expect("the reader keeps routing after the late response");
+        assert!(
+            matches!(next, Some(ClaudeInboundMessage::Message(ref value))
+                if value["type"] == "marker"),
+            "the late response for the cancelled request is dropped, got {next:?}"
+        );
+        connection
+            .stop(Duration::ZERO, Duration::from_millis(50))
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn writer_exits_on_shutdown_without_polling() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap()
+        .block_on(async {
+            let (writer, mut peer) = tokio::io::duplex(1024);
+            let (outbound, outbound_receiver) = tokio::sync::mpsc::channel(4);
+            let (shutdown, shutdown_receiver) = tokio::sync::oneshot::channel();
+            let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut writing = Box::pin(write_messages(
+                writer,
+                outbound_receiver,
+                shutdown_receiver,
+                Arc::new(Mutex::new(HashMap::new())),
+            ));
+            let counted = Arc::clone(&polls);
+            let task = tokio::spawn(std::future::poll_fn(move |cx| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                writing.as_mut().poll(cx)
+            }));
+            outbound.send(b"frame\n".to_vec()).await.unwrap();
+            let mut received = [0_u8; 6];
+            tokio::io::AsyncReadExt::read_exact(&mut peer, &mut received)
+                .await
+                .unwrap();
+            assert_eq!(&received, b"frame\n");
+            let idle_polls = polls.load(std::sync::atomic::Ordering::SeqCst);
+            tokio::time::advance(Duration::from_secs(3600)).await;
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                polls.load(std::sync::atomic::Ordering::SeqCst),
+                idle_polls,
+                "an idle writer is not woken by a timer"
+            );
+            shutdown.send(()).unwrap();
+            task.await.unwrap();
+            let mut rest = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut peer, &mut rest)
+                .await
+                .unwrap();
+            assert!(rest.is_empty(), "the writer closes its side on shutdown");
+            drop(outbound);
+        });
 }
 
 #[test]

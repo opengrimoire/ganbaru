@@ -1,10 +1,12 @@
 //! Claude SDK message normalization into Ganbaru's canonical event model.
 
 mod blocks;
+mod limits;
 mod messages;
 mod seen;
 
 use blocks::{ClaudeStreamScope, ClaudeStreamState, usable_message_id};
+use limits::ClaudeRateLimitMemory;
 use seen::{BoundedIdSet, ClaudeTurnText, plan_id_set};
 
 use super::protocol::{ClaudeResumeCursor, protocol_error, resume_cursor};
@@ -47,6 +49,7 @@ pub struct ClaudeRouteState {
     pub(super) stream: ClaudeStreamState,
     pub(super) turn_text: ClaudeTurnText,
     emitted_plan_ids: BoundedIdSet,
+    rate_limits: ClaudeRateLimitMemory,
     pub(super) tool_kinds: HashMap<String, CanonicalItemKind>,
 }
 
@@ -66,6 +69,7 @@ impl ClaudeRouteState {
             stream: ClaudeStreamState::default(),
             turn_text: ClaudeTurnText::default(),
             emitted_plan_ids: plan_id_set(),
+            rate_limits: ClaudeRateLimitMemory::default(),
             tool_kinds: HashMap::new(),
         }
     }
@@ -122,6 +126,7 @@ impl ClaudeEventNormalizer {
             "assistant" => self.assistant_message(state, object, &value),
             "user" => self.user_message(state, object, &value),
             "result" => self.result_message(state, object, &value),
+            "rate_limit_event" => self.rate_limit_event(state, object),
             "control_request" => Ok(Vec::new()),
             "keep_alive" | "control_cancel_request" => Ok(Vec::new()),
             _ => Ok(vec![self.event(
@@ -251,6 +256,7 @@ impl ClaudeEventNormalizer {
             // A subagent's plans and checklists are its own; they must not replace the root's.
             return Ok(events);
         }
+        events.extend(self.blocked_assistant(state, object)?);
         let message = object.get("message").and_then(Value::as_object);
         let message_id = message
             .and_then(|message| text(message, "id"))

@@ -210,6 +210,7 @@ impl ClaudeEventNormalizer {
                     )?,
                 ])
             }
+            "api_retry" => Ok(vec![self.api_retry(state, object)?]),
             _ => Ok(vec![self.event(
                 state,
                 subtype,

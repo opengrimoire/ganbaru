@@ -4,7 +4,7 @@ use super::checkpoints::ensure_post_turn_checkpoint;
 use super::persistence::ThreadRuntimeData;
 use super::support::{PROVIDER_START_TIMEOUT, now_timestamp, operation_context};
 use super::validation::validate_modes;
-use crate::chat::ingestion::{ChatEventIngestor, TauriChatChangeEmitter};
+use crate::chat::ingestion::{ChatEventIngestor, TauriChatChangeEmitter, run_idle_flush};
 use crate::chat::send_commands::SendChatTurnCommand;
 use crate::chat::workspace::AuthorizedWorkingFolder;
 use ganbaru_chat::agent_runs::AgentRunBinding;
@@ -331,7 +331,9 @@ struct DurableChatEventSink {
     organizational: bool,
     native_workspace_authorized: bool,
     checkpoint_enabled: bool,
-    ingestor: Mutex<ChatEventIngestor>,
+    ingestor: Arc<Mutex<ChatEventIngestor>>,
+    /// Flushes held text deltas on a short interval; stopped when the sink is dropped.
+    idle_flush: tauri::async_runtime::JoinHandle<()>,
 }
 
 impl DurableChatEventSink {
@@ -344,15 +346,24 @@ impl DurableChatEventSink {
         native_workspace_authorized: bool,
         checkpoint_enabled: bool,
     ) -> Self {
+        let ingestor = Arc::new(Mutex::new(ChatEventIngestor::new(pool.clone(), emitter)));
+        let idle_flush = tauri::async_runtime::spawn(run_idle_flush(Arc::downgrade(&ingestor)));
         Self {
             app,
-            ingestor: Mutex::new(ChatEventIngestor::new(pool.clone(), emitter)),
+            ingestor,
+            idle_flush,
             pool,
             workspace,
             organizational: authorization.is_some(),
             native_workspace_authorized,
             checkpoint_enabled,
         }
+    }
+}
+
+impl Drop for DurableChatEventSink {
+    fn drop(&mut self) {
+        self.idle_flush.abort();
     }
 }
 

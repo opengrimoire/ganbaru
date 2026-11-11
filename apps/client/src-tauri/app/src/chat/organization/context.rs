@@ -218,7 +218,8 @@ pub(super) async fn freeze_context_package(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    for (ordinal, source) in packed.included.iter().enumerate() {
+    for (ordinal, included) in packed.included.iter().enumerate() {
+        let source = included.source;
         sqlx::query(
             "INSERT OR IGNORE INTO chat_assignment_context_sources
                 (context_package_id, source_kind, source_id, source_revision,
@@ -229,7 +230,7 @@ pub(super) async fn freeze_context_package(
         .bind(&source.kind)
         .bind(&source.id)
         .bind(i64_value(source.revision)?)
-        .bind(sha256_hex(source.text.as_bytes()))
+        .bind(sha256_hex(included.sent_text.as_bytes()))
         .bind(i64::try_from(ordinal).unwrap_or(i64::MAX))
         .execute(&mut **transaction)
         .await
@@ -460,9 +461,22 @@ struct ContextTotals {
 /// visible sources each tier left out.
 struct PackedContext<'a> {
     serialized: String,
-    included: Vec<&'a ContextSource>,
+    included: Vec<IncludedSource<'a>>,
     excluded_replies: u64,
     excluded_channel_messages: u64,
+}
+
+/// A source held by a package, with the text its record carries. The text is a prefix of the
+/// source text when the record was cut, so a source row hashes what the teammate received.
+struct IncludedSource<'a> {
+    source: &'a ContextSource,
+    sent_text: &'a str,
+}
+
+/// One encoded context record and the text it carries.
+struct EncodedSource<'a> {
+    line: String,
+    text: &'a str,
 }
 
 /// Packs `sources` into one package of at most `MAX_MESSAGE_BYTES`.
@@ -487,8 +501,10 @@ fn pack_context_sources(
     let root_line = root
         .map(|root| bounded_context_source_line(root, MAX_ROOT_CONTEXT_BYTES))
         .transpose()?;
-    let mut used =
-        trigger_line.as_ref().map_or(0, String::len) + root_line.as_ref().map_or(0, String::len);
+    let mut used = trigger_line
+        .as_ref()
+        .map_or(0, |encoded| encoded.line.len())
+        + root_line.as_ref().map_or(0, |encoded| encoded.line.len());
     let replies = newest_fitting_sources(&sources.replies, &mut used)?;
     let channel_messages = newest_fitting_sources(&sources.channel_messages, &mut used)?;
     let excluded_replies = totals.replies.saturating_sub(count_value(replies.len()));
@@ -498,17 +514,18 @@ fn pack_context_sources(
 
     let mut serialized = String::with_capacity(used + CONTEXT_COVERAGE_RESERVE_BYTES);
     let mut included = Vec::with_capacity(replies.len() + channel_messages.len() + 2);
-    if let (Some(root), Some(line)) = (root, &root_line) {
-        serialized.push_str(line);
-        included.push(root);
-    }
-    for (source, line) in replies.into_iter().chain(channel_messages) {
-        serialized.push_str(&line);
-        included.push(source);
-    }
-    if let (Some(trigger), Some(line)) = (trigger, &trigger_line) {
-        serialized.push_str(line);
-        included.push(trigger);
+    let ordered = root
+        .zip(root_line)
+        .into_iter()
+        .chain(replies)
+        .chain(channel_messages)
+        .chain(trigger.zip(trigger_line));
+    for (source, encoded) in ordered {
+        serialized.push_str(&encoded.line);
+        included.push(IncludedSource {
+            source,
+            sent_text: encoded.text,
+        });
     }
     if excluded_replies > 0 || excluded_channel_messages > 0 {
         serialized.push_str(&coverage_line(excluded_replies, excluded_channel_messages)?);
@@ -529,7 +546,7 @@ fn pack_context_sources(
 fn newest_fitting_sources<'a>(
     sources: &'a [ContextSource],
     used: &mut usize,
-) -> ChatResult<Vec<(&'a ContextSource, String)>> {
+) -> ChatResult<Vec<(&'a ContextSource, EncodedSource<'a>)>> {
     let mut kept = Vec::new();
     for source in sources.iter().rev() {
         let line = context_source_line(source)?;
@@ -537,7 +554,13 @@ fn newest_fitting_sources<'a>(
             break;
         }
         *used += line.len();
-        kept.push((source, line));
+        kept.push((
+            source,
+            EncodedSource {
+                line,
+                text: &source.text,
+            },
+        ));
     }
     kept.reverse();
     Ok(kept)
@@ -582,7 +605,7 @@ pub(super) fn follow_up_context_line(
         revision,
         text,
     };
-    bounded_context_source_line(&source, MAX_MESSAGE_BYTES)
+    bounded_context_source_line(&source, MAX_MESSAGE_BYTES).map(|encoded| encoded.line)
 }
 
 /// Encodes one context source as a JSON Lines record, so message text stays inside its string
@@ -593,10 +616,16 @@ fn context_source_line(source: &ContextSource) -> ChatResult<String> {
 
 /// Encodes `source` whole when its record fits `maximum` bytes, and otherwise cut to fit with
 /// the original text length recorded, so a reader can tell the text is incomplete.
-fn bounded_context_source_line(source: &ContextSource, maximum: usize) -> ChatResult<String> {
+fn bounded_context_source_line(
+    source: &ContextSource,
+    maximum: usize,
+) -> ChatResult<EncodedSource<'_>> {
     let line = context_source_line(source)?;
     if line.len() <= maximum {
-        return Ok(line);
+        return Ok(EncodedSource {
+            line,
+            text: &source.text,
+        });
     }
     truncated_context_source_line(source, maximum, Some(source.text.len()))
 }
@@ -607,16 +636,13 @@ fn truncated_context_source_line(
     source: &ContextSource,
     maximum: usize,
     truncated_from_bytes: Option<usize>,
-) -> ChatResult<String> {
+) -> ChatResult<EncodedSource<'_>> {
     let mut text_limit = source.text.len().min(maximum);
     loop {
-        let line = encode_context_source(
-            source,
-            truncate_utf8(&source.text, text_limit),
-            truncated_from_bytes,
-        )?;
+        let text = truncate_utf8(&source.text, text_limit);
+        let line = encode_context_source(source, text, truncated_from_bytes)?;
         if line.len() <= maximum || text_limit == 0 {
-            return Ok(line);
+            return Ok(EncodedSource { line, text });
         }
         text_limit = text_limit.saturating_sub(line.len() - maximum);
     }
@@ -1747,7 +1773,7 @@ mod tests {
         packed
             .included
             .iter()
-            .map(|source| source.id.clone())
+            .map(|included| included.source.id.clone())
             .collect()
     }
 
@@ -1808,6 +1834,29 @@ mod tests {
         assert!(packed.serialized.lines().next().unwrap().len() < MAX_ROOT_CONTEXT_BYTES);
         assert_eq!(records[1]["text"], "Please review");
         assert!(records[1].get("truncated_from_bytes").is_none());
+    }
+
+    #[test]
+    fn included_sources_carry_the_text_their_records_send() {
+        let trigger = "t".repeat(200 * 1024);
+        let root = "r".repeat(MAX_ROOT_CONTEXT_BYTES * 2);
+        let sources = package(&trigger, Some(&root), &["Whole reply".to_string()], &[]);
+
+        let packed = pack_context_sources(&sources, totals_of(&sources)).unwrap();
+
+        let records = records(&packed.serialized);
+        assert_eq!(records.len(), packed.included.len());
+        for (included, record) in packed.included.iter().zip(&records) {
+            assert_eq!(record["id"], included.source.id.as_str());
+            assert_eq!(record["text"], included.sent_text);
+        }
+        let cut: Vec<_> = packed
+            .included
+            .iter()
+            .filter(|included| included.sent_text.len() < included.source.text.len())
+            .map(|included| included.source.id.as_str())
+            .collect();
+        assert_eq!(cut, ["item:root", "item:trigger"]);
     }
 
     #[test]
@@ -1980,12 +2029,12 @@ mod tests {
             let included_replies = packed
                 .included
                 .iter()
-                .filter(|source| source.kind == "thread_reply")
+                .filter(|included| included.source.kind == "thread_reply")
                 .count() as u64;
             let included_channel = packed
                 .included
                 .iter()
-                .filter(|source| source.kind == "channel_message")
+                .filter(|included| included.source.kind == "channel_message")
                 .count() as u64;
             assert_eq!(packed.excluded_replies, 80 - included_replies);
             assert_eq!(packed.excluded_channel_messages, 35 - included_channel);
@@ -2025,7 +2074,8 @@ mod tests {
 
         let line =
             truncated_context_source_line(&source("trigger", "item:t", &text), maximum, None)
-                .unwrap();
+                .unwrap()
+                .line;
 
         assert!(line.len() <= maximum);
         let records = records(&line);

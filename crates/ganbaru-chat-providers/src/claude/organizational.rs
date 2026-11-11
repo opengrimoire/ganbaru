@@ -7,7 +7,7 @@
 //! deadline armed by the first user message bounds the wait. Any failure stops the process.
 
 use super::protocol::{
-    ORGANIZATIONAL_DISALLOWED_TOOLS, control_error, control_success,
+    ORGANIZATIONAL_ALLOWED_TOOLS, ORGANIZATIONAL_DISALLOWED_TOOLS, control_error, control_success,
     organizational_permission_error,
 };
 use super::transport::{ClaudeConnectionKill, ClaudeJsonlClient, ClaudeTransportFailure};
@@ -58,7 +58,8 @@ pub fn verify_organizational_mcp(
 }
 
 /// Gate 2: the init report holds exactly the connected internal server, no tool from another
-/// MCP server, and none of the denied built-in tools.
+/// MCP server, and only allowlisted built-in tools, never a denied one. An allowlisted tool may
+/// be absent, because the CLI drops names it does not ship.
 pub fn verify_organizational_init(
     init: &ClaudeInitReport,
     expected_server: &str,
@@ -66,10 +67,12 @@ pub fn verify_organizational_init(
     verify_servers(&init.mcp_servers, expected_server, &[MCP_SERVER_CONNECTED])?;
     let internal_prefix = format!("mcp__{expected_server}__");
     for tool in &init.tools {
-        if tool.starts_with("mcp__") && !tool.starts_with(&internal_prefix) {
-            return Err(organizational_permission_error());
+        if tool.starts_with(&internal_prefix) {
+            continue;
         }
-        if ORGANIZATIONAL_DISALLOWED_TOOLS.contains(&tool.as_str()) {
+        if !ORGANIZATIONAL_ALLOWED_TOOLS.contains(&tool.as_str())
+            || ORGANIZATIONAL_DISALLOWED_TOOLS.contains(&tool.as_str())
+        {
             return Err(organizational_permission_error());
         }
     }

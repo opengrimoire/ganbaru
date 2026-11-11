@@ -88,6 +88,8 @@ fn organizational_launch_uses_strict_mcp_and_denies_tools() {
             "--strict-mcp-config",
             "--mcp-config",
             mcp_config.as_str(),
+            "--tools",
+            "Read,Edit,Write,Glob,Grep,NotebookEdit,ExitPlanMode,AskUserQuestion,TodoWrite",
             "--disallowed-tools",
             "Task,Agent,WebFetch,WebSearch,Bash",
         ]
@@ -126,11 +128,12 @@ fn direct_launch_keeps_accept_edits() {
         Some("acceptEdits")
     );
     assert_eq!(flag_value(&direct, "--setting-sources"), Some("user"));
-    assert!(
-        !direct.iter().any(|argument| {
-            argument == "--strict-mcp-config" || argument == "--disallowed-tools"
-        })
-    );
+    assert!(!direct.iter().any(|argument| {
+        matches!(
+            argument.as_str(),
+            "--strict-mcp-config" | "--tools" | "--disallowed-tools"
+        )
+    }));
 }
 
 #[test]
@@ -404,6 +407,48 @@ fn organizational_init_rejects_disallowed_tool() {
             &init_report(vec![server(SERVER_NAME, "connected")], &["Read", tool]),
             SERVER_NAME,
         ));
+    }
+}
+
+#[test]
+fn organizational_init_rejects_built_in_tools_outside_the_allowlist() {
+    for tool in [
+        "Skill",
+        "ToolSearch",
+        "CronCreate",
+        "SendMessage",
+        "EnterWorktree",
+        "RemoteTrigger",
+        "read",
+        "",
+    ] {
+        assert_permission(verify_organizational_init(
+            &init_report(vec![server(SERVER_NAME, "connected")], &["Read", tool]),
+            SERVER_NAME,
+        ));
+    }
+}
+
+#[test]
+fn organizational_init_accepts_any_subset_of_the_allowlist() {
+    let mut tools: Vec<&str> = ORGANIZATIONAL_ALLOWED_TOOLS.to_vec();
+    tools.push("mcp__ganbaru-chat__ping");
+    for report in [&tools[..], &["mcp__ganbaru-chat__ping"][..], &[][..]] {
+        verify_organizational_init(
+            &init_report(vec![server(SERVER_NAME, "connected")], report),
+            SERVER_NAME,
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn organizational_allowlist_never_names_a_denied_tool() {
+    for tool in ORGANIZATIONAL_ALLOWED_TOOLS {
+        assert!(
+            !ORGANIZATIONAL_DISALLOWED_TOOLS.contains(&tool),
+            "{tool} is both allowed and denied"
+        );
     }
 }
 

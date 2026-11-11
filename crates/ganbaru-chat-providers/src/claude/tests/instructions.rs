@@ -67,11 +67,11 @@ fn instructions_use_append_system_prompt_inline() {
         text,
         "text starting with -- stays the value"
     );
-    assert_eq!(flag + 2, position(&with, "--disallowed-tools"));
+    assert_eq!(flag + 2, position(&with, "--tools"));
     let mut expected = without.clone();
-    let deny = position(&without, "--disallowed-tools");
+    let tools = position(&without, "--tools");
     expected.splice(
-        deny..deny,
+        tools..tools,
         ["--append-system-prompt".to_string(), text.to_string()],
     );
     assert_eq!(

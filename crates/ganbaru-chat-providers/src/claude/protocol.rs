@@ -217,15 +217,36 @@ pub struct ClaudeInternalMcpLaunch<'a> {
 
 /// The fail-closed launch surface of an organizational Claude run.
 ///
-/// It sees only the internal server, loads no settings files, and cannot reach the denied
-/// tools. Every organizational Claude run is conversation-only, because the Claude authority
-/// support bits enforce no folder target, so the Bash denial always applies.
+/// It sees only the internal server, loads no settings files, loads only the allowlisted
+/// built-in tools, and cannot reach the denied ones. Every organizational Claude run is
+/// conversation-only, because the Claude authority support bits enforce no folder target, so
+/// the Bash denial always applies.
 #[derive(Clone, Copy, Debug)]
 pub struct ClaudeOrganizationalLaunch<'a> {
     pub internal_server_name: &'a str,
 }
 
-/// Tools an organizational Claude run never reaches: subagents, the network, and the shell.
+/// Built-in tools an organizational Claude run may load, passed as `--tools`.
+///
+/// They are the local file tools, the planning and question tools the driver maps, and the
+/// todo list. Anything else the CLI ships (the shell, subagents, the network, schedules, other
+/// sessions, skills, worktrees) stays unloaded, and the startup gate fails the session when
+/// the init report carries a built-in tool outside this list. Internal MCP tools are not
+/// built-in and survive the allowlist.
+pub const ORGANIZATIONAL_ALLOWED_TOOLS: [&str; 9] = [
+    "Read",
+    "Edit",
+    "Write",
+    "Glob",
+    "Grep",
+    "NotebookEdit",
+    "ExitPlanMode",
+    "AskUserQuestion",
+    "TodoWrite",
+];
+
+/// Tools an organizational Claude run never reaches, denied on top of the allowlist as defense
+/// in depth: subagents, the network, and the shell.
 pub const ORGANIZATIONAL_DISALLOWED_TOOLS: [&str; 5] =
     ["Task", "Agent", "WebFetch", "WebSearch", "Bash"];
 
@@ -333,6 +354,8 @@ pub fn launch_arguments(
             arguments.extend(system_prompt_arguments(system_prompt, options.cli_version)?);
         }
         arguments.extend([
+            "--tools".to_string(),
+            ORGANIZATIONAL_ALLOWED_TOOLS.join(","),
             "--disallowed-tools".to_string(),
             ORGANIZATIONAL_DISALLOWED_TOOLS.join(","),
         ]);

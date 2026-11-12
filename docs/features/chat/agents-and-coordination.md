@@ -1,6 +1,6 @@
 # Chat agents and coordination
 
-Status: Partial. AI agents, channel access profiles, mention-triggered assignments, frozen context packages, and assignment review states are implemented. Structured delegation, budgets, quiet periods, task-linked assignments, and human collaborators are planned.
+Status: Partial. AI agents, channel access profiles, mention-triggered assignments, frozen context packages, assignment review states, and structured delegation are implemented. Budgets, quiet periods, task-linked assignments, and human collaborators are planned.
 
 Ganbaru coordinates work through durable conversations, explicit assignments, and review. AI providers are execution mechanisms beneath that model, not organizational identities. There is no privileged manager agent or general vault agent, and no planning agent is seeded by default.
 
@@ -53,15 +53,15 @@ Context assembly follows participant access and the execution target. It never s
 
 ## Results and review
 
-Agents report material outcomes as typed updates (plan, replan, question, approval, failure, result, review) rather than narrating every tool call into a shared channel. Detailed execution stays in the run timeline.
+Agents report material outcomes as typed updates (plan, replan, question, approval, failure, result, review) rather than narrating every tool call into a shared channel. Detailed execution stays in the run timeline. Teammates post plan, replan, and result reports and ask questions of the person who assigned the work through host tools; a question offers answer choices, and a reported result moves the assignment to review.
 
 Each completed assignment that was reviewed records whether it was accepted or changes were requested, who reviewed it, and when. Review focuses on decisions and risk: what changed or was proposed, what could not be completed and why, which assumptions or approvals affected the outcome, what needs human judgment, and which checkpoint or files hold the result. Approval of one result does not grant standing approval for later work, and rejected or superseded proposals remain understandable in history.
 
 Proposals that would change Projects or Calendar remain drafts until accepted through the owning feature's typed command. See [Guided planning and review](../projects/guided-planning.md).
 
-## Delegation (planned)
+## Delegation
 
-Delegation creates explicit child assignments with their own parent, objective, target, authority subset, budget, expected result, and review path. An agent cannot delegate authority it does not hold. Parallel work stays visible as separate, independently cancellable assignments rather than hidden provider-native subagents, and a failed child never broadens another assignment to compensate.
+A teammate delegates through a host tool to another teammate in the channel. The child is a visible assignment in its own reply thread with its own objective, expected result, and review path, at most two levels below the work a person assigned and at most four open children per assignment. Its authority is never broader than the parent's, because the starting device clamps it against the parent's current grants, and its outcome is posted back to the parent's reply thread. Cancelling the parent cancels its open descendants. Delegation budgets are planned. Parallel work stays visible as separate, independently cancellable assignments rather than hidden provider-native subagents, and a failed child never broadens another assignment to compensate.
 
 ## Anti-burnout constraints
 

@@ -7,13 +7,13 @@
 //! it has not already received.
 
 use super::common::{MAX_MESSAGE_BYTES, sha256_hex, truncate_utf8};
-use super::context::SHORTENED_MARKER;
+use super::context::{CHANNEL_NOTE_SOURCE_KIND, SHORTENED_MARKER};
 use super::persistence_error;
-use ganbaru_chat::agent_runs::{AttemptReason, DeliveredSource, HandoffReason};
+use ganbaru_chat::agent_runs::{AttemptReason, DeliveredSource, DeliveryKind, HandoffReason};
 use ganbaru_chat_contracts::models::*;
 use serde::Serialize;
 use sqlx::SqlitePool;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Everything a reused native session must still agree with: the authority scope of the run,
 /// the provider instance that holds the session, the model selection, and the system-level
@@ -291,6 +291,9 @@ pub(super) struct SessionHistory {
     pub(super) delivered: HashSet<(String, String)>,
     /// Conversation items the thread's runs posted, which the session produced itself.
     pub(super) own_items: HashSet<String>,
+    /// Channel notes the session received that are now deleted and that no run has yet told
+    /// it were removed.
+    pub(super) deleted_notes: BTreeSet<String>,
 }
 
 /// A delta package: the header and the records a continued session has not received, and the
@@ -305,7 +308,10 @@ pub(super) struct DeltaPackage {
 /// every other source whose content the session has neither received nor produced. Records
 /// keep the package order behind one continuation header, so a delta is a subsequence of the
 /// full package. The coverage record passes through uncounted, so the session still learns how
-/// much history the package left out, including history newer than its last turn. Returns `None` when the header or the delta cannot fit its bound, so
+/// much history the package left out, including history newer than its last turn. Each channel
+/// note the session received that is now deleted gets one removal record right after the
+/// header, and its package record, if the package still holds it, is left out so nothing
+/// replaces the removal. Returns `None` when the header or the delta cannot fit its bound, so
 /// the run sends the full package instead.
 pub(super) fn select_delta(
     assignment_id: &ChatWorkAssignmentId,
@@ -315,11 +321,25 @@ pub(super) fn select_delta(
     let mut body = String::new();
     let mut sources = Vec::new();
     let mut omitted_delivered = 0_u64;
+    for note_id in &history.deleted_notes {
+        let line = super::context::channel_note_removed_line(note_id)?;
+        sources.push(DeliveredSource {
+            source_id: note_id.clone(),
+            content_sha256: sha256_hex(line.as_bytes()),
+            kind: DeliveryKind::Removal,
+        });
+        body.push_str(&line);
+    }
     for record in records {
         let Some(source) = record.source.as_ref() else {
             body.push_str(record.line);
             continue;
         };
+        if source.source_kind == CHANNEL_NOTE_SOURCE_KIND
+            && history.deleted_notes.contains(&source.source_id)
+        {
+            continue;
+        }
         let received = history.own_items.contains(&source.source_id)
             || history
                 .delivered
@@ -454,21 +474,39 @@ async fn read_session_history(
     provider_thread_id: &str,
 ) -> ChatResult<SessionHistory> {
     let delivered_sql = format!(
-        "SELECT delivered.source_id, delivered.content_sha256
+        "SELECT delivered.source_id, delivered.content_sha256, delivered.delivery_kind,
+                EXISTS (
+                  SELECT 1 FROM chat_channel_notes note
+                  WHERE note.id = delivered.source_id AND note.deleted_at IS NOT NULL
+                ) AS note_deleted
          FROM chat_agent_run_delivered_sources delivered
          JOIN chat_agent_runs run ON run.id = delivered.run_id
          WHERE run.provider_thread_id = ?1
            AND run.state IN ('working', 'waiting', 'completed')
            AND {SINCE_SESSION_OPENED_SQL}"
     );
-    let delivered =
-        sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(delivered_sql.as_str()))
-            .bind(provider_thread_id)
-            .fetch_all(pool)
-            .await
-            .map_err(persistence_error)?
-            .into_iter()
-            .collect();
+    let rows = sqlx::query_as::<_, (String, String, String, bool)>(sqlx::AssertSqlSafe(
+        delivered_sql.as_str(),
+    ))
+    .bind(provider_thread_id)
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)?;
+    let mut delivered = HashSet::with_capacity(rows.len());
+    let mut deleted_notes = BTreeSet::new();
+    let mut removed_notes = HashSet::new();
+    for (source_id, content_sha256, delivery_kind, note_deleted) in rows {
+        if delivery_kind == DeliveryKind::Removal.as_str() {
+            removed_notes.insert(source_id);
+            continue;
+        }
+        if note_deleted {
+            deleted_notes.insert(source_id.clone());
+        }
+        delivered.insert((source_id, content_sha256));
+    }
+    // A deleted note is never restored, so one removal record covers every earlier delivery.
+    deleted_notes.retain(|note_id| !removed_notes.contains(note_id));
     let own_items_sql = format!(
         "SELECT semantic.item_id
          FROM chat_work_semantic_updates semantic
@@ -488,6 +526,7 @@ async fn read_session_history(
     Ok(SessionHistory {
         delivered,
         own_items,
+        deleted_notes,
     })
 }
 
@@ -787,7 +826,8 @@ mod tests {
     mod delta {
         use super::super::*;
         use crate::chat::organization::context::{
-            TestPackageRecord, follow_up_context_line, test_package_records,
+            TestPackageRecord, channel_note_removed_line, follow_up_context_line,
+            test_package_records, test_package_records_with_notes,
         };
         use ganbaru_chat::agent_runs::DeliveryKind;
         use serde_json::Value;
@@ -853,6 +893,7 @@ mod tests {
             SessionHistory {
                 delivered: delivered(package, &["item:root", "item:human-1", "item:human-2"]),
                 own_items: HashSet::from(["item:teammate".to_string()]),
+                deleted_notes: BTreeSet::new(),
             }
         }
 
@@ -920,6 +961,7 @@ mod tests {
                         .unwrap(),
                 ]),
                 own_items: HashSet::new(),
+                deleted_notes: BTreeSet::new(),
             };
 
             let delta = select_delta(&assignment(), &records(&package), &history)
@@ -945,6 +987,7 @@ mod tests {
             let history = SessionHistory {
                 delivered: delivered(&package, &["item:root", "item:reply-2", "item:trigger"]),
                 own_items: HashSet::new(),
+                deleted_notes: BTreeSet::new(),
             };
 
             let delta = select_delta(&assignment(), &records(&package), &history)
@@ -1021,6 +1064,7 @@ mod tests {
             let history = SessionHistory {
                 delivered: delivered(&package, &["item:root", "item:reply"]),
                 own_items: HashSet::new(),
+                deleted_notes: BTreeSet::new(),
             };
             let longest =
                 ChatWorkAssignmentId::new("a".repeat(MAX_ORGANIZATIONAL_IDENTIFIER_BYTES)).unwrap();
@@ -1219,6 +1263,138 @@ mod tests {
                 vec!["item:root", "item:trigger"],
                 "only what the current session received is skipped"
             );
+        }
+
+        fn package_sha(package: &[TestPackageRecord], id: &str) -> String {
+            package
+                .iter()
+                .filter_map(|(_, source)| source.as_ref())
+                .find(|(source_id, _, _)| source_id == id)
+                .map(|(_, _, sha)| sha.clone())
+                .unwrap()
+        }
+
+        #[test]
+        fn a_continuation_receives_edited_notes_and_removals_only() {
+            let earlier = test_package_records_with_notes(
+                &[
+                    ("note:edited", "Ship on Tuesdays"),
+                    ("note:same", "Use tabs"),
+                ],
+                ("item:earlier", "Plan the release"),
+                None,
+                &[],
+                0,
+            );
+            let package = test_package_records_with_notes(
+                &[
+                    ("note:edited", "Ship on Wednesdays"),
+                    ("note:same", "Use tabs"),
+                    ("note:late", "Deleted after the package froze"),
+                ],
+                ("item:trigger", "Now ship it"),
+                None,
+                &[],
+                0,
+            );
+            let mut delivered = delivered(&earlier, &["note:edited", "note:same"]);
+            delivered.insert(("note:late".to_string(), package_sha(&package, "note:late")));
+            let history = SessionHistory {
+                delivered,
+                own_items: HashSet::new(),
+                deleted_notes: BTreeSet::from(["note:gone".to_string(), "note:late".to_string()]),
+            };
+
+            let delta = select_delta(&assignment(), &records(&package), &history)
+                .unwrap()
+                .unwrap();
+
+            let parsed = parsed(&delta.text);
+            assert_eq!(parsed[0]["kind"], "continuation");
+            assert_eq!(parsed[0]["omitted_delivered"], 1, "only the unchanged note");
+            assert_eq!(
+                ids(&delta.text),
+                vec!["note:gone", "note:late", "note:edited", "item:trigger"]
+            );
+            assert_eq!(parsed[1]["kind"], "channel_note_removed");
+            assert_eq!(parsed[2]["kind"], "channel_note_removed");
+            assert_eq!(parsed[3]["text"], "Ship on Wednesdays");
+            let removal = delta.text.lines().nth(1).unwrap();
+            assert_eq!(
+                delta.sources[0],
+                DeliveredSource {
+                    source_id: "note:gone".to_string(),
+                    content_sha256: sha256_hex(format!("{removal}\n").as_bytes()),
+                    kind: DeliveryKind::Removal,
+                }
+            );
+            assert_eq!(delta.sources[2].source_id, "note:edited");
+            assert_eq!(delta.sources[2].kind, DeliveryKind::Package);
+        }
+
+        #[tokio::test]
+        async fn a_stored_delta_removes_a_deleted_note_once() {
+            let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+            let (_, channel) =
+                ganbaru_chat::project_defaults::default_channel_ids("project-chat").unwrap();
+            let package = test_package_records_with_notes(
+                &[("note:kept", "Use tabs")],
+                ("item:trigger", "Now update the docs"),
+                None,
+                &[],
+                0,
+            );
+            let serialized = store_package(&pool, &package).await;
+            let removed_line = channel_note_removed_line("note:removed").unwrap();
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO chat_channel_notes
+                    (id, channel_id, body, edited_by_participant_id, deleted_at, created_at,
+                     updated_at)
+                 VALUES
+                    ('note:kept', '{channel}', 'Use tabs', 'participant:local-owner', NULL,
+                     '2026-10-20T12:00:00.000Z', '2026-10-20T12:00:00.000Z'),
+                    ('note:gone', '{channel}', 'Use spaces', 'participant:local-owner',
+                     '2026-10-20T12:10:00.000Z', '2026-10-20T12:00:00.000Z',
+                     '2026-10-20T12:10:00.000Z'),
+                    ('note:removed', '{channel}', 'Old rule', 'participant:local-owner',
+                     '2026-10-20T12:10:00.000Z', '2026-10-20T12:00:00.000Z',
+                     '2026-10-20T12:10:00.000Z');
+                 INSERT INTO chat_agent_run_delivered_sources
+                    (run_id, source_id, content_sha256, delivery_kind, delivered_at)
+                 VALUES
+                    ('run:working', 'note:kept', '{kept}', 'package', '2026-10-20T12:00:00.000Z'),
+                    ('run:working', 'note:gone', '{gone}', 'package', '2026-10-20T12:00:00.000Z'),
+                    ('run:working', 'note:removed', '{gone}', 'package',
+                     '2026-10-20T12:00:00.000Z'),
+                    ('run:working', 'note:removed', '{removed}', 'removal',
+                     '2026-10-20T12:20:00.000Z');",
+                channel = channel.as_str(),
+                kept = package_sha(&package, "note:kept"),
+                gone = sha256_hex(b"Use spaces"),
+                removed = sha256_hex(removed_line.as_bytes()),
+            )))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let delta = build_delta_package(
+                &pool,
+                &assignment(),
+                "context:later",
+                &serialized,
+                "thread-1",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            assert_eq!(
+                ids(&delta.text),
+                vec!["note:gone", "item:trigger"],
+                "a note already removed is not removed again and an unchanged note is skipped"
+            );
+            assert_eq!(parsed(&delta.text)[0]["omitted_delivered"], 1);
+            assert_eq!(delta.sources[0].kind, DeliveryKind::Removal);
         }
     }
 }

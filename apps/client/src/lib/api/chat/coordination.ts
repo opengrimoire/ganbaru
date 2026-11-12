@@ -29,6 +29,7 @@ import type {
   ChatScratchCleanupResultRead,
   ChatScratchDirectoryPageRead,
   ChatScratchPromotionResultRead,
+  ChatScratchReclaimReportRead,
   ChatScratchScopeRead,
   ChatProjectPrimaryWorkingFolderRead,
   ChatChannelPageRead,
@@ -69,6 +70,7 @@ import {
   parseChatScratchCleanupResult,
   parseChatScratchDirectoryPage,
   parseChatScratchPromotionResult,
+  parseChatScratchReclaimReport,
   parseChatScratchScopes,
   parseChatProjectPrimaryWorkingFolder,
   parseChatChannelPage,
@@ -300,6 +302,17 @@ export async function cleanupChatScratch(
 ): Promise<ChatScratchCleanupResultRead> {
   return parseChatScratchCleanupResult(await invoke<unknown>("chat_cleanup_scratch", {
     dbUrl: await ensureDbUrl(), request,
+  }));
+}
+
+/**
+ * Reads the largest scratch generations that the confirmed cleanup can reclaim.
+ *
+ * The report never deletes anything; cleanup stays in the scratch manager.
+ */
+export async function readChatScratchReclaimReport(): Promise<ChatScratchReclaimReportRead> {
+  return parseChatScratchReclaimReport(await invoke<unknown>("chat_read_scratch_reclaim_report", {
+    dbUrl: await ensureDbUrl(),
   }));
 }
 

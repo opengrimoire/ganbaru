@@ -7,6 +7,7 @@ use super::transport::{
 };
 use crate::events::*;
 use crate::models::*;
+use crate::process::systemd_scope::{memory_limit_warning, reached_memory_limit};
 use crate::{DriverOperationContext, ProviderEventSink};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -77,6 +78,8 @@ pub struct CodexRouterResources {
     pub expected_shutdown: Arc<AtomicBool>,
     pub terminal_error: Arc<Mutex<Option<ChatError>>>,
     pub organizational: bool,
+    /// Tells whether the resource scope's memory ceiling stopped the provider; `None` when unscoped.
+    pub memory_limit: Option<crate::process::systemd_scope::MemoryLimitWatch>,
 }
 
 impl CodexRouterResources {
@@ -829,6 +832,23 @@ async fn resolve_provider_cleared_request(
 async fn route_closed(resources: &CodexRouterResources) {
     cancel_capacity_retry(resources);
     let expected = resources.expected_shutdown.load(Ordering::Acquire);
+    if !expected && reached_memory_limit(resources.memory_limit.as_ref()).await {
+        let warning = resources
+            .route
+            .lock()
+            .map_err(|_| router_state_error())
+            .and_then(|state| {
+                resources.normalizer.event(
+                    &state,
+                    "transport/memory_limit",
+                    None,
+                    None,
+                    None,
+                    CanonicalEvent::RuntimeWarning(memory_limit_warning()),
+                )
+            });
+        let _ = emit_events(&resources.sink, warning.map(|event| vec![event])).await;
+    }
     let event = resources
         .route
         .lock()

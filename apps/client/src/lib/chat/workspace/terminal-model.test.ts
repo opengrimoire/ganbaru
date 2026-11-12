@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyTerminalOutput,
+  replayStartState,
   boundTerminalContext,
   sanitizeTerminalPaste,
   TerminalOutputAcknowledger,
@@ -31,6 +32,21 @@ describe("Chat terminal model", () => {
     expect(applyTerminalOutput(accepted.state, chunk(1, 1, "hello")).kind).toBe("duplicate");
     expect(applyTerminalOutput(accepted.state, chunk(1, 3, "later")).kind).toBe("gap");
     expect(applyTerminalOutput(accepted.state, chunk(2, 1, "restart")).kind).toBe("accept");
+  });
+
+  it("starts a replay at the first retained chunk so trimmed scrollback is written", () => {
+    expect(replayStartState(1, [])).toEqual({ generation: 1, lastSequence: 0 });
+    expect(replayStartState(1, [chunk(1, 1, "a"), chunk(1, 2, "b")])).toEqual({ generation: 1, lastSequence: 0 });
+    const trimmed = [chunk(1, 41, "a"), chunk(1, 42, "b")];
+    let state = replayStartState(1, trimmed);
+    expect(state).toEqual({ generation: 1, lastSequence: 40 });
+    for (const retained of trimmed) {
+      const decision = applyTerminalOutput(state, retained);
+      expect(decision.kind).toBe("accept");
+      state = decision.state;
+    }
+    expect(applyTerminalOutput(state, chunk(1, 43, "live")).kind).toBe("accept");
+    expect(replayStartState(2, [chunk(1, 9, "old"), chunk(2, 5, "new")])).toEqual({ generation: 2, lastSequence: 4 });
   });
 
   it("requires confirmation only for multiline paste when enabled", () => {

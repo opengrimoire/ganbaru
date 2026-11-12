@@ -203,6 +203,8 @@ fn error_code(code: ChatErrorCode) -> &'static str {
         ChatErrorCode::Permission => "permission",
         ChatErrorCode::TrustDecisionRequired => "trust_decision_required",
         ChatErrorCode::RuntimeApprovalRequired => "runtime_approval_required",
+        ChatErrorCode::ProcessNotFound => "process_not_found",
+        ChatErrorCode::ProcessIdentityChanged => "process_identity_changed",
         ChatErrorCode::Timeout => "timeout",
         ChatErrorCode::Cancelled => "cancelled",
         ChatErrorCode::Persistence => "persistence",

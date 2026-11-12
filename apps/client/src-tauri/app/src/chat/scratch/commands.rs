@@ -3,11 +3,13 @@
 mod cleanup;
 mod inspection;
 mod promotion;
+mod reclaim;
 
 // Re-export the commands and their generated Tauri wrappers through the stable facade.
 pub use cleanup::*;
 pub use inspection::*;
 pub use promotion::*;
+pub use reclaim::*;
 
 use crate::chat::channels::{identifier_error, persistence_error, u64_value};
 use crate::chat::scratch;

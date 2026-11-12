@@ -17,6 +17,7 @@ import {
   CHAT_SCRATCH_DEVICE_AVAILABILITIES,
   CHAT_SCRATCH_DIRECTORY_ENTRY_KINDS,
   CHAT_SCRATCH_GENERATION_LIFECYCLE_STATES,
+  CHAT_SCRATCH_RECLAIM_REASONS,
   CHAT_SCRATCH_SCOPE_LIFECYCLE_STATES,
   CHAT_SCHEDULED_MESSAGE_STATES,
   CHAT_TEAMMATE_CONFIGURATION_STATES,
@@ -53,6 +54,8 @@ import {
   type ChatScheduledMessageRead,
   type ChatScratchCleanupPreviewRead,
   type ChatScratchCleanupResultRead,
+  type ChatScratchReclaimReportRead,
+  type ChatScratchReclaimRow,
   type ChatScratchDirectoryEntryRead,
   type ChatScratchDirectoryPageRead,
   type ChatScratchGenerationRead,
@@ -862,6 +865,50 @@ export function parseChatScratchCleanupResult(
       `${label}.deviceAvailability`,
     ),
     completedAt: readNullable(record.completedAt, `${label}.completedAt`, readUtcTimestamp),
+  };
+}
+
+function parseChatScratchReclaimRow(
+  value: unknown,
+  label = "Chat scratch reclaim row",
+): ChatScratchReclaimRow {
+  const record = readRecord(value, label);
+  return {
+    scratchScopeId: readIdentifier(record.scratchScopeId, `${label}.scratchScopeId`),
+    scratchGenerationId: readIdentifier(
+      record.scratchGenerationId,
+      `${label}.scratchGenerationId`,
+    ),
+    replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
+    generation: readNonNegativeSafeInteger(record.generation, `${label}.generation`),
+    teammateName: readString(record.teammateName, `${label}.teammateName`),
+    channelName: readString(record.channelName, `${label}.channelName`),
+    projectName: readString(record.projectName, `${label}.projectName`),
+    groupName: readNullable(record.groupName, `${label}.groupName`, readString),
+    reason: readEnum(record.reason, CHAT_SCRATCH_RECLAIM_REASONS, `${label}.reason`),
+    byteSize: readNonNegativeSafeInteger(record.byteSize, `${label}.byteSize`),
+    sizeTruncated: readBoolean(record.sizeTruncated, `${label}.sizeTruncated`),
+    deviceAvailability: readEnum(
+      record.deviceAvailability,
+      CHAT_SCRATCH_DEVICE_AVAILABILITIES,
+      `${label}.deviceAvailability`,
+    ),
+    lastActivityAt: readUtcTimestamp(record.lastActivityAt, `${label}.lastActivityAt`),
+  };
+}
+
+/** Validates the reclaimable scratch report returned by the native command. */
+export function parseChatScratchReclaimReport(
+  value: unknown,
+  label = "Chat scratch reclaim report",
+): ChatScratchReclaimReportRead {
+  const record = readRecord(value, label);
+  return {
+    rows: readArray(record.rows, `${label}.rows`, parseChatScratchReclaimRow),
+    totalBytes: readNonNegativeSafeInteger(record.totalBytes, `${label}.totalBytes`),
+    totalTruncated: readBoolean(record.totalTruncated, `${label}.totalTruncated`),
+    omitted: readNonNegativeSafeInteger(record.omitted, `${label}.omitted`),
+    idleDays: readNonNegativeSafeInteger(record.idleDays, `${label}.idleDays`),
   };
 }
 

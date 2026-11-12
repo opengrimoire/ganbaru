@@ -545,6 +545,7 @@ impl CursorProviderDriver {
             flavor: self.flavor,
             prompt_completions: Arc::clone(&prompt_completions),
             terminal_callbacks,
+            memory_limit: connection.memory_limit_watch(),
         });
         let state = route.lock().map_err(|_| driver_state_error())?.clone();
         let cursor = resume_cursor(&started.session_id);

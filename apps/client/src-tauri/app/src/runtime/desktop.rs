@@ -365,6 +365,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::diagnostics_commands::chat_delete_diagnostics,
             chat::diagnostics_commands::chat_export_redacted_diagnostics,
             chat::diagnostics_commands::chat_stop_all_processes,
+            chat::diagnostics_commands::chat_list_processes,
+            chat::diagnostics_commands::chat_stop_process,
             chat::diagnostics_commands::chat_rebuild_projections,
             chat::restore_commands::chat_preview_checkpoint_restore,
             chat::restore_commands::chat_execute_checkpoint_restore,
@@ -422,6 +424,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::scratch::commands::chat_promote_scratch_file,
             chat::scratch::commands::chat_preview_scratch_cleanup,
             chat::scratch::commands::chat_cleanup_scratch,
+            chat::scratch::commands::chat_read_scratch_reclaim_report,
             chat::organization::chat_read_project_primary_working_folder,
             chat::organization::chat_set_project_primary_working_folder,
             chat::organization::chat_post_message,
@@ -458,6 +461,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::threads::chat_restore_thread,
             chat::threads::chat_delete_thread_permanently,
             chat::git::chat_git_status,
+            chat::git::chat_read_commit_draft_context,
+            chat::git::chat_read_change_request_draft_context,
             chat::git::chat_git_stage,
             chat::git::chat_git_unstage,
             chat::git::chat_git_commit,
@@ -1060,6 +1065,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             app.manage(chat::sync::AssignmentWaker::new(app.handle().clone()));
             chat::revocation::start_job_drain(app.handle());
             chat::cleanup_service::start(app.handle());
+            #[cfg(target_os = "linux")]
+            tauri::async_runtime::spawn(ganbaru_chat_providers::process::probe_resource_scope());
             music::setup_youtube_host(app.handle())?;
             music::session::setup(app.handle());
             distractions::runtime::setup(app.handle());

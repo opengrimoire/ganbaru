@@ -33,9 +33,11 @@
 
   let {
     initialReplyThreadId,
+    initialGenerationId,
     onClose,
   }: {
     initialReplyThreadId?: string;
+    initialGenerationId?: string;
     onClose: () => void;
   } = $props();
 
@@ -128,7 +130,7 @@
       ? document.activeElement
       : null;
     window.addEventListener("keydown", handleKeydown, true);
-    void loadScopes().then(() => tick()).then(() => dialog?.focus());
+    void loadScopes(initialGenerationId).then(() => tick()).then(() => dialog?.focus());
     return () => {
       window.removeEventListener("keydown", handleKeydown, true);
       queueMicrotask(() => returnFocus?.focus());
@@ -141,6 +143,7 @@
     try {
       scopes = await chatApi.listChatScratchScopes(null, initialReplyThreadId ?? null);
       const selected = scopes.find((scope) => scope.id === selectedScopeId)
+        ?? scopes.find((scope) => scope.generations.some((entry) => entry.id === preferredGenerationId))
         ?? scopes.find((scope) => scope.replyThreadId === initialReplyThreadId)
         ?? scopes[0]
         ?? null;

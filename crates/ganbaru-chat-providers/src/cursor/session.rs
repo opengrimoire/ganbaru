@@ -7,6 +7,7 @@ use super::protocol::*;
 use super::transport::{AcpInboundMessage, AcpRpcClient, AcpRpcConnection, AcpRpcFailure};
 use crate::events::*;
 use crate::models::*;
+use crate::process::systemd_scope::{memory_limit_warning, reached_memory_limit};
 use crate::{DriverOperationContext, ProviderEventSink};
 use agent_client_protocol::schema::{
     ProtocolVersion,
@@ -92,6 +93,8 @@ pub struct CursorRouterResources {
     pub flavor: AcpProviderFlavor,
     pub prompt_completions: PendingPromptCompletions,
     pub terminal_callbacks: AcpTerminalCallbacks,
+    /// Tells whether the resource scope's memory ceiling stopped the provider; `None` when unscoped.
+    pub memory_limit: Option<crate::process::systemd_scope::MemoryLimitWatch>,
 }
 
 #[derive(Clone)]

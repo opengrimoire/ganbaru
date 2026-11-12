@@ -26,6 +26,10 @@ pub enum ChatErrorCode {
     TrustDecisionRequired,
     /// A provider runtime carries portable settings this device has not confirmed.
     RuntimeApprovalRequired,
+    /// The process to stop is no longer running or was never started by Chat.
+    ProcessNotFound,
+    /// The process ID now names a different process than the one listed.
+    ProcessIdentityChanged,
     Timeout,
     Cancelled,
     Persistence,

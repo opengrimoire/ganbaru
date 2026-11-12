@@ -220,6 +220,8 @@ export const CHAT_ERROR_CODES = [
   "permission",
   "trust_decision_required",
   "runtime_approval_required",
+  "process_not_found",
+  "process_identity_changed",
   "timeout",
   "cancelled",
   "persistence",

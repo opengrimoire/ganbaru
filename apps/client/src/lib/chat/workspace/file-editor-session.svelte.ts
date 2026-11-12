@@ -8,6 +8,7 @@ import { chatErrorMessage } from "$lib/chat/error-presentation";
 import { boundTerminalContext } from "./terminal-model";
 import { workspacePreviewImpact } from "./change-model";
 import { useChat } from "$lib/stores/chat.svelte";
+import { requestConfirmation, type ConfirmationRequest } from "$lib/components/ui/confirmation.svelte";
 
 interface FileMutationContext {
   requestId: number;
@@ -22,9 +23,12 @@ export interface ChatFileEditorSessionOptions {
   setSelectedPath: (path: string) => void;
   refreshParentDirectory: (path: string) => Promise<void>;
   onReviewCreated: () => void;
-  discardUnsavedMessage: () => string;
-  confirmOverwriteMessage: () => string;
-  confirmRecreateMessage: () => string;
+  /** Asks before unsaved edits are replaced by another file or a reload. */
+  discardUnsavedConfirmation: () => ConfirmationRequest;
+  /** Asks before the draft overwrites a newer file on disk. */
+  overwriteConfirmation: () => ConfirmationRequest;
+  /** Asks before a deleted file is recreated from the draft. */
+  recreateConfirmation: () => ConfirmationRequest;
   previewUnavailableMessage: () => string;
 }
 
@@ -114,7 +118,7 @@ export class ChatFileEditorSession {
     if (!discardDirty
       && path !== this.preview?.relativePath
       && this.dirty
-      && !window.confirm(this.options.discardUnsavedMessage())) return false;
+      && !await this.confirmForCurrentFile(workingFolderId, this.options.discardUnsavedConfirmation())) return false;
     this.mutationRequestId += 1;
     this.saving = false;
     const scopeRevision = this.scopeRevision;
@@ -293,18 +297,23 @@ export class ChatFileEditorSession {
     }
   }
 
-  reloadSelectedFile(): void {
+  async reloadSelectedFile(): Promise<void> {
     const selectedPath = this.options.selectedPath();
-    if (!selectedPath) return;
-    if (this.dirty && !window.confirm(this.options.discardUnsavedMessage())) return;
-    void this.select(selectedPath, this.chat.selectedExecutionEnvironmentId, true);
+    const workingFolderId = this.chat.selectedWorkingFolderId;
+    if (!selectedPath || !workingFolderId) return;
+    if (this.dirty) {
+      if (!await this.confirmForCurrentFile(workingFolderId, this.options.discardUnsavedConfirmation())
+        || this.options.selectedPath() !== selectedPath) return;
+    }
+    await this.select(selectedPath, this.chat.selectedExecutionEnvironmentId, true);
   }
 
   async overwriteExternalFile(): Promise<void> {
     const workingFolderId = this.chat.selectedWorkingFolderId;
     const current = this.preview;
     if (!workingFolderId || !current || this.fileDeleted || this.saving
-      || !window.confirm(this.options.confirmOverwriteMessage())) return;
+      || !await this.confirmForCurrentFile(workingFolderId, this.options.overwriteConfirmation())
+      || this.fileDeleted || this.saving) return;
     const mutation = this.beginMutation(workingFolderId, current.relativePath);
     this.saving = true;
     this.error = null;
@@ -339,7 +348,8 @@ export class ChatFileEditorSession {
     const workingFolderId = this.chat.selectedWorkingFolderId;
     const current = this.preview;
     if (!workingFolderId || !current || !this.fileDeleted || this.saving
-      || !window.confirm(this.options.confirmRecreateMessage())) return;
+      || !await this.confirmForCurrentFile(workingFolderId, this.options.recreateConfirmation())
+      || !this.fileDeleted || this.saving) return;
     const mutation = this.beginMutation(workingFolderId, current.relativePath);
     this.saving = true;
     this.error = null;
@@ -428,6 +438,20 @@ export class ChatFileEditorSession {
       if (this.scopeIsCurrent(workingFolderId, environmentId, scopeRevision)
         && this.chat.selectedThreadId === threadId) this.creatingReview = false;
     }
+  }
+
+  /**
+   * Asks for a confirmation and accepts it only while the same file in the same scope is still open, so an answer
+   * never acts on a file or working folder that changed while the dialog was shown.
+   */
+  private async confirmForCurrentFile(workingFolderId: string, request: ConfirmationRequest): Promise<boolean> {
+    const scopeRevision = this.scopeRevision;
+    const executionEnvironmentId = this.chat.selectedExecutionEnvironmentId;
+    const relativePath = this.preview?.relativePath ?? null;
+    const confirmed = await requestConfirmation(request);
+    return confirmed
+      && this.scopeIsCurrent(workingFolderId, executionEnvironmentId, scopeRevision)
+      && (this.preview?.relativePath ?? null) === relativePath;
   }
 
   private beginLoading(): void {

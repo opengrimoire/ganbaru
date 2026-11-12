@@ -66,6 +66,8 @@ impl OwnedOpenCodeServer {
             working_directory: workspace.to_path_buf(),
             environment,
             stderr_limit_bytes: STDERR_LIMIT_BYTES,
+            purpose: crate::process::ProviderProcessPurpose::LocalServer,
+            provider_instance_label: Some(configuration.label.clone()),
         })?;
         let stdout = process.take_stdout()?;
         let (ready_sender, ready_receiver) = oneshot::channel();

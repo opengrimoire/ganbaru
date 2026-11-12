@@ -66,6 +66,7 @@ import { readLastChatChannelId, saveLastChatChannelId } from "$lib/chat/channel-
 import {
   ChatOrganizationalController,
   type ChatOrganizationalDraft,
+  type ChatOrganizationalPostOptions,
 } from "$lib/stores/chat/organizational-controller.svelte";
 import { ChatCommunicationController } from "$lib/stores/chat/communication-controller.svelte";
 import { ChatTimelineController } from "$lib/stores/chat/timeline-controller.svelte";
@@ -86,7 +87,7 @@ import {
   type ChatComposerSendOptions,
 } from "$lib/stores/chat/composer-runtime-controller.svelte";
 
-export type { ChatOrganizationalDraft } from "$lib/stores/chat/organizational-controller.svelte";
+export type { ChatOrganizationalDraft, ChatOrganizationalPostOptions } from "$lib/stores/chat/organizational-controller.svelte";
 
 const localExecutionAvailable = platformHasCapability(
   BUILD_PLATFORM_PROFILE,
@@ -737,13 +738,22 @@ export class ChatStore {
     this.organizationalController.setDraft(destination, draft);
   }
 
+  /** The steer or queue choice made for a destination, if any. */
+  organizationalFollowupRouting(destination: string): import("$lib/chat/contracts").ChatFollowupRouting | null {
+    return this.organizationalController.followupRouting(destination);
+  }
+
+  setOrganizationalFollowupRouting(destination: string, routing: import("$lib/chat/contracts").ChatFollowupRouting): void {
+    this.organizationalController.setFollowupRouting(destination, routing);
+  }
+
   setOrganizationalScrollPosition(destination: string, scrollTop: number): void {
     this.organizationalController.setScrollPosition(destination, scrollTop);
   }
 
   async postOrganizationalMessage(
     destination: string,
-    options: { alsoSendToChannel?: boolean } = {},
+    options: ChatOrganizationalPostOptions = {},
   ): Promise<import("$lib/chat/contracts").PostChatMessageResult> {
     const result = await this.organizationalController.post(destination, options);
     await this.markSelectedChannelRead();

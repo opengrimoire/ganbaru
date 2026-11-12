@@ -6005,3 +6005,24 @@ fn start_creates_the_assignment_of_an_unrouted_mention_on_this_device() {
         assert_eq!(again.code, ChatErrorCode::Conflict);
     });
 }
+
+#[tokio::test]
+async fn an_assignment_read_names_the_newest_local_run_thread_and_none_without_local_runs() {
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    let assignment_id = ChatWorkAssignmentId::new("assignment:folders").unwrap();
+
+    let read = read_assignment(&pool, &assignment_id).await.unwrap();
+    assert_eq!(
+        read.latest_run_provider_thread_id
+            .as_ref()
+            .map(ChatThreadId::as_str),
+        Some("thread-1")
+    );
+
+    sqlx::query("DELETE FROM chat_agent_runs")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let elsewhere = read_assignment(&pool, &assignment_id).await.unwrap();
+    assert_eq!(elsewhere.latest_run_provider_thread_id, None);
+}

@@ -2,7 +2,9 @@ import * as chatApi from "$lib/api/chat";
 import type {
   ChatChannelId,
   ChatChannelRead,
+  ChatAssignmentModelOverride,
   ChatExecutionTarget,
+  ChatFollowupRouting,
   ChatMessageReference,
   ChatReplyThreadId,
   ChatScheduledMessageDispatchRead,
@@ -25,6 +27,15 @@ export interface ChatOrganizationalDraft {
   scheduledFor: UtcTimestamp | null;
 }
 
+/** Options a post carries beyond its draft. */
+export interface ChatOrganizationalPostOptions {
+  alsoSendToChannel?: boolean;
+  /** How a reply reaches active work in its thread. */
+  followupRouting?: ChatFollowupRouting;
+  /** Model for the new work the post starts, over the teammate default. */
+  modelOverride?: ChatAssignmentModelOverride;
+}
+
 export interface ChatOrganizationalControllerOptions {
   selectedChannel: () => ChatChannelRead | null;
   selectedChannelId: () => ChatChannelId | null;
@@ -40,12 +51,15 @@ export class ChatOrganizationalController {
   drafts = $state<Record<string, ChatOrganizationalDraft>>({});
   scrollPositions = $state<Record<string, number>>({});
   scheduledMessagesVersion = $state(0);
+  /** Steer or queue choice per destination, kept across posts so the next reply defaults to it. */
+  followupRoutings = $state<Record<string, ChatFollowupRouting>>({});
 
   constructor(private readonly options: ChatOrganizationalControllerOptions) {}
 
   reset(): void {
     this.drafts = {};
     this.scrollPositions = {};
+    this.followupRoutings = {};
     this.scheduledMessagesVersion += 1;
   }
 
@@ -57,13 +71,22 @@ export class ChatOrganizationalController {
     this.drafts = { ...this.drafts, [destination]: cloneData(draft) };
   }
 
+  /** The steer or queue choice the user made for a destination, if any. */
+  followupRouting(destination: string): ChatFollowupRouting | null {
+    return this.followupRoutings[destination] ?? null;
+  }
+
+  setFollowupRouting(destination: string, routing: ChatFollowupRouting): void {
+    this.followupRoutings = { ...this.followupRoutings, [destination]: routing };
+  }
+
   setScrollPosition(destination: string, scrollTop: number): void {
     this.scrollPositions = { ...this.scrollPositions, [destination]: scrollTop };
   }
 
   async post(
     destination: string,
-    options: { alsoSendToChannel?: boolean } = {},
+    options: ChatOrganizationalPostOptions = {},
   ): Promise<PostChatMessageResult> {
     const channel = this.requiredChannel("posting");
     const draft = this.requiredDraft(destination, "posting");
@@ -78,6 +101,8 @@ export class ChatOrganizationalController {
       references: cloneData(draft.references),
       executionTarget: draft.executionTarget ? cloneData(draft.executionTarget) : null,
       alsoSendToChannel: options.alsoSendToChannel ?? false,
+      ...(options.followupRouting ? { followupRouting: options.followupRouting } : {}),
+      ...(options.modelOverride ? { modelOverride: cloneData(options.modelOverride) } : {}),
     });
     this.setDraft(destination, emptyOrganizationalDraft());
     await this.options.loadChannelMessages(channel.id, true);

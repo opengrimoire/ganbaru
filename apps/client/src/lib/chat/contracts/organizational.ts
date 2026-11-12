@@ -2,6 +2,7 @@ import type {
   ChatAgentRunId,
   ChatAccessProfileId,
   ChatAccessProfileRevisionId,
+  ChatAssignmentInputId,
   ChatAttachmentId,
   ChatChannelId,
   ChatCommandId,
@@ -676,6 +677,8 @@ export interface ChatWorkAssignmentRead {
   review: ChatAssignmentReview | null;
   /** What starting this work here would run, present while it waits for a local action on the reading device. */
   localAcceptance: ChatAssignmentAcceptanceOfferRead | null;
+  /** Chat thread of the newest run of this reply thread on the reading device, used to show its usage; null when none ran here. */
+  latestRunProviderThreadId: ChatThreadId | null;
 }
 
 /** A folder an assignment waiting for local acceptance would run in. */
@@ -703,6 +706,36 @@ export interface ChatWaitingAssignmentRead {
   replyThreadId: ChatReplyThreadId;
   teammateDisplayName: string;
   createdAt: UtcTimestamp;
+}
+
+export const CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS = ["steer", "queued_continuation", "follow_up"] as const;
+/** How a reply reaches running or finished work: into the current turn, after it, or as new work. */
+export type ChatAssignmentInputRoutingKind = (typeof CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS)[number];
+
+export const CHAT_ASSIGNMENT_INPUT_DELIVERY_STATES = ["pending", "delivered", "failed", "ignored"] as const;
+export type ChatAssignmentInputDeliveryState = (typeof CHAT_ASSIGNMENT_INPUT_DELIVERY_STATES)[number];
+
+/** A reply addressed to running work, editable and cancellable while it is pending. */
+export interface ChatAssignmentInputRead {
+  inputId: ChatAssignmentInputId;
+  messageItemId: ChatConversationItemId;
+  ordinal: number;
+  routingKind: ChatAssignmentInputRoutingKind;
+  deliveryState: ChatAssignmentInputDeliveryState;
+  deliveredAt: UtcTimestamp | null;
+  /** The message revision the run received, present once the input is delivered. */
+  deliveredRevisionId: ChatMessageRevisionId | null;
+  currentRevisionId: ChatMessageRevisionId | null;
+  preview: string;
+  /** Whether the message continues past the preview. */
+  previewTruncated: boolean;
+  authorParticipantId: ChatParticipantId | null;
+}
+
+/** New text for a pending assignment input, which replaces its message's current revision. */
+export interface ChatAssignmentInputEditRequest {
+  normalizedMarkdown: string;
+  richContent: VersionedJson;
 }
 
 export interface ChatAgentRunRead {

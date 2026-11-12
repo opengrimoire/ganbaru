@@ -20,7 +20,9 @@
     disabled,
     label,
     placeholder,
+    role = "textbox",
     menuOpen = false,
+    menuId = "chat-composer-menu",
     activeOptionId,
     showMeter = true,
     meter = null,
@@ -29,6 +31,9 @@
     onKeydown,
     onFiles,
     onFocusChange,
+    onPaste,
+    onCopy,
+    onCompositionChange,
     above,
     menu,
     leading,
@@ -45,8 +50,15 @@
     /** Accessible name of the editor. */
     label: string;
     placeholder: string;
-    /** Whether a token menu is open, so the editor controls `chat-composer-menu`. */
+    /**
+     * The editor's role: `textbox`, or `combobox` when its token menus act as an autocomplete
+     * listbox the editor announces.
+     */
+    role?: "textbox" | "combobox";
+    /** Whether a token menu is open, so the editor controls the element named by `menuId`. */
     menuOpen?: boolean;
+    /** Id of the open token menu. */
+    menuId?: string;
     /** Id of the highlighted token menu option. */
     activeOptionId?: string;
     /** Whether the context meter shows; hidden where no provider session can exist. */
@@ -60,6 +72,15 @@
     /** Receives images pasted or dropped into the composer. */
     onFiles: (files: File[]) => void;
     onFocusChange?: (focused: boolean) => void;
+    /**
+     * Runs before the frame's own paste handling; returning `true` means the caller handled the
+     * paste, such as one carrying references, and the frame does nothing more.
+     */
+    onPaste?: (event: ClipboardEvent) => boolean;
+    /** Handles a copy from the editor, such as one that keeps references in the clipboard. */
+    onCopy?: (event: ClipboardEvent) => void;
+    /** Reports when an input method composition starts and ends. */
+    onCompositionChange?: (composing: boolean) => void;
     /** Content above the editor, such as notices, attachment chips, and panels. */
     above?: Snippet;
     /** The open token menu, rendered over the editor. */
@@ -102,6 +123,7 @@
   }
 
   function handlePaste(event: ClipboardEvent): void {
+    if (onPaste?.(event)) return;
     const files = clipboardImageFiles(event.clipboardData);
     if (files.length > 0) {
       event.preventDefault();
@@ -142,16 +164,20 @@
   {@render above?.()}
   <div class="editor-shell">
     <div class="composer-editor-frame">
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <div
         bind:this={editorRoot}
         class="composer-editor"
         data-chat-composer
         contenteditable={disabled ? "false" : "true"}
-        role="textbox"
-        aria-multiline="true"
+        {role}
+        aria-multiline={role === "textbox" ? "true" : undefined}
+        aria-autocomplete={role === "combobox" ? "list" : undefined}
+        aria-haspopup={role === "combobox" ? "listbox" : undefined}
+        aria-expanded={role === "combobox" ? menuOpen : undefined}
         aria-disabled={disabled}
         aria-label={label}
-        aria-controls={menuOpen ? "chat-composer-menu" : undefined}
+        aria-controls={menuOpen ? menuId : undefined}
         aria-activedescendant={menuOpen ? activeOptionId : undefined}
         data-placeholder={placeholder}
         spellcheck="true"
@@ -162,8 +188,9 @@
         onbeforeinput={(event) => editor()?.handleBeforeInput(event)}
         onkeydown={onKeydown}
         onpaste={handlePaste}
-        oncompositionstart={() => editor()?.handleCompositionStart()}
-        oncompositionend={() => editor()?.handleCompositionEnd()}
+        oncopy={onCopy}
+        oncompositionstart={() => { onCompositionChange?.(true); editor()?.handleCompositionStart(); }}
+        oncompositionend={() => { onCompositionChange?.(false); editor()?.handleCompositionEnd(); }}
       ></div>
     </div>
     {@render menu?.()}
@@ -202,6 +229,7 @@
   .composer-editor-frame { padding: 1rem 1.25rem 0; }
   .composer-editor { position: relative; display: block; box-sizing: border-box; width: 100%; min-height: 2lh; max-height: 6lh; overflow-y: auto; background: transparent; padding: 0; color: var(--foreground); caret-color: var(--foreground); font-size: var(--chat-conversation-font-size, calc(0.875rem * var(--type-scale))); line-height: var(--chat-conversation-line-height, calc(1.3125rem * var(--type-scale))); outline: none; overflow-wrap: anywhere; white-space: pre-wrap; }
   .composer-editor:global([data-empty="true"])::before { position: absolute; color: color-mix(in srgb, var(--muted-foreground) 52%, transparent); content: attr(data-placeholder); pointer-events: none; }
+  .composer-editor :global(.chat-reference-atom) { display: inline-block; border-radius: 0.3rem; background: color-mix(in srgb, var(--primary) 13%, transparent); padding-inline: 0.12rem; color: color-mix(in srgb, var(--primary) 78%, var(--foreground)); box-decoration-break: clone; cursor: default; user-select: all; }
   .composer-editor :global([data-chat-composer-line]) { display: block; min-height: var(--chat-conversation-line-height, calc(1.3125rem * var(--type-scale))); line-height: inherit; }
   .composer-toolbar { display: grid; min-height: 2.6rem; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.5rem; padding: 0 0.75rem 0.5rem; }
   .toolbar-left, .toolbar-right { display: flex; min-width: 0; align-items: center; gap: 0.3rem; }

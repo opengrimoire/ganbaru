@@ -790,7 +790,46 @@ export interface ChatWaitingAssignmentsRead {
   total: number;
 }
 
-export const CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS = ["steer", "queued_continuation", "follow_up"] as const;
+/** What a review queue item asks of the person, in priority order. */
+export const CHAT_REVIEW_QUEUE_KINDS = ["answer", "approval", "review", "failure"] as const;
+/**
+ * `answer` and `approval` wait for the person's reply, `review` is finished work to review, and `failure` is recent
+ * work that failed with nothing continuing it.
+ */
+export type ChatReviewQueueKind = (typeof CHAT_REVIEW_QUEUE_KINDS)[number];
+
+/** One assignment that waits for the person, in any channel of any project. */
+export interface ChatReviewQueueItemRead {
+  assignmentId: ChatWorkAssignmentId;
+  /** The assignment revision the item was read at, passed back by accept and retry. */
+  revision: number;
+  kind: ChatReviewQueueKind;
+  projectId: string;
+  projectName: string;
+  channelId: ChatChannelId;
+  channelName: string;
+  replyThreadId: ChatReplyThreadId;
+  teammateParticipantId: ChatParticipantId;
+  teammateDisplayName: string;
+  /** The assignment state reason, clipped for display. */
+  stateReason: string | null;
+  /** Distinct files the assignment's review updates report as changed. */
+  changedFileCount: number;
+  /** Whether this device executed the assignment. */
+  executedHere: boolean;
+  updatedAt: UtcTimestamp;
+}
+
+/** The review queue: the first items by priority and recency, with how many match in all. */
+export interface ChatReviewQueueRead {
+  items: ChatReviewQueueItemRead[];
+  /** Every matching item, including those past the cap. */
+  total: number;
+  /** Whether `total` exceeds the items read. */
+  truncated: boolean;
+}
+
+export const CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS =["steer", "queued_continuation", "follow_up"] as const;
 /** How a reply reaches running or finished work: into the current turn, after it, or as new work. */
 export type ChatAssignmentInputRoutingKind = (typeof CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS)[number];
 

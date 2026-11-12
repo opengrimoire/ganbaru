@@ -48,6 +48,7 @@ import type {
   ChatScheduledMessageId,
   ChatScheduledMessageRead,
   ChatWaitingAssignmentsRead,
+  ChatReviewQueueRead,
   ChatSecretRequestRead,
   CreateChatChannelRequest,
   UpdateChatChannelDetailsRequest,
@@ -77,6 +78,7 @@ import {
   parseChatReplyThreadPage,
   parseChatMessageSearchResults,
   parseChatWaitingAssignments,
+  parseChatReviewQueue,
   parseChatSecretRequests,
   parsePostChatMessageResult,
   parseChatScheduledMessage,
@@ -475,6 +477,19 @@ export async function acceptChatAssignmentHere(
 export async function listChatWaitingAssignments(): Promise<ChatWaitingAssignmentsRead> {
   return parseChatWaitingAssignments(await invoke<unknown>("chat_list_waiting_assignments", {
     dbUrl: await ensureDbUrl(),
+  }));
+}
+
+/**
+ * Lists the assignments that wait for the person, ordered by priority and recency and capped,
+ * with the total count.
+ *
+ * @param projectId Limits the queue to one project, or `null` for every project.
+ */
+export async function listChatReviewQueue(projectId: string | null): Promise<ChatReviewQueueRead> {
+  return parseChatReviewQueue(await invoke<unknown>("chat_list_review_queue", {
+    dbUrl: await ensureDbUrl(),
+    projectId,
   }));
 }
 

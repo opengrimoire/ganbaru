@@ -6,6 +6,8 @@ import type {
   ChatChannelId,
   ChatChannelRead,
   ChatChannelPageRead,
+  ChatReviewQueueItemRead,
+  ChatReviewQueueRead,
   ChatWaitingAssignmentRead,
   ChatProjectPrimaryWorkingFolderRead,
   ChatReplyThreadId,
@@ -69,6 +71,8 @@ import {
   type ChatOrganizationalPostOptions,
 } from "$lib/stores/chat/organizational-controller.svelte";
 import { ChatCommunicationController } from "$lib/stores/chat/communication-controller.svelte";
+import { ChatReviewQueueController } from "$lib/stores/chat/review-queue-controller.svelte";
+import type { ChatBatchAcceptSummary } from "$lib/chat/review-queue/model";
 import { ChatTimelineController } from "$lib/stores/chat/timeline-controller.svelte";
 import {
   fullNativeChange,
@@ -110,6 +114,14 @@ class ChatSharedState {
   readonly configuration = new ChatConfigurationController({
     onSettingsChanged: () => {
       for (const store of paneStores.all()) store.scheduleComposerDefaults();
+    },
+  });
+  /** The vault-wide queue of work that waits for the person, which every pane's rail shows. */
+  readonly reviewQueue = new ChatReviewQueueController({
+    onReviewed: (channelIds) => {
+      const changes = chatWindowChanges({ channelIds });
+      publishChatChanges(changes);
+      for (const store of paneStores.all()) store.refreshFromOtherPane(changes);
     },
   });
 }
@@ -253,6 +265,11 @@ export class ChatStore {
   set teammates(teammates: ChatAiTeammateRead[]) { shared.teammates = teammates; }
   get archivedTeammates(): ChatAiTeammateRead[] { return shared.archivedTeammates; }
   set archivedTeammates(teammates: ChatAiTeammateRead[]) { shared.archivedTeammates = teammates; }
+  /** The vault-wide queue of work that waits for the person, or `null` before the first read. */
+  get reviewQueue(): ChatReviewQueueRead | null { return shared.reviewQueue.queue; }
+  set reviewQueue(queue: ChatReviewQueueRead | null) { shared.reviewQueue.queue = queue; }
+  /** Why the last review queue refresh failed, while the previous queue stays shown. */
+  get reviewQueueError(): string | null { return shared.reviewQueue.error; }
 
   /** Applies changed shared settings to this pane's composer defaults. */
   scheduleComposerDefaults(): void {
@@ -508,6 +525,7 @@ export class ChatStore {
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
       this.loaded = true;
       this.refreshWaitingAssignments();
+      this.refreshReviewQueue();
       this.listenForOtherWindows();
       this.listenForSync();
       if (!this.owner) return;
@@ -867,6 +885,7 @@ export class ChatStore {
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
     await chatApi.cancelChatAssignment(assignmentId, expectedRevision);
     this.publishChannelChange(this.selectedChannelId);
+    this.refreshReviewQueue();
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
     if (this.selectedChannelId) await this.loadChannelMessages(this.selectedChannelId, true);
   }
@@ -888,6 +907,7 @@ export class ChatStore {
       reviewed = false;
     }
     this.publishChannelChange(this.selectedChannelId);
+    this.refreshReviewQueue();
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
     if (this.selectedChannelId) await this.loadChannelMessages(this.selectedChannelId, true);
     return reviewed;
@@ -900,6 +920,7 @@ export class ChatStore {
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
     await chatApi.retryChatAssignment(assignmentId, expectedRevision);
     this.publishChannelChange(this.selectedChannelId);
+    this.refreshReviewQueue();
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
   }
 
@@ -911,17 +932,57 @@ export class ChatStore {
     const started = await chatApi.acceptChatAssignmentHere(assignmentId, seenDigest);
     this.publishChannelChange(this.selectedChannelId);
     this.refreshWaitingAssignments();
+    this.refreshReviewQueue();
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
     return started !== null;
   }
 
   /** Opens the reply thread of waiting work, where its details and Start here live. */
   async openWaitingAssignment(waiting: ChatWaitingAssignmentRead): Promise<void> {
+    await this.openAssignmentReplyThread(waiting);
+  }
+
+  /** Opens the reply thread of a review queue item, where its question, approval, review, or failure lives. */
+  async openReviewItem(item: ChatReviewQueueItemRead): Promise<void> {
+    await this.openAssignmentReplyThread(item);
+  }
+
+  /** Selects the project and channel of an assignment and opens its reply thread. */
+  private async openAssignmentReplyThread(
+    target: Pick<ChatReviewQueueItemRead, "projectId" | "channelId" | "replyThreadId">,
+  ): Promise<void> {
     this.messageAnchorId = null;
-    await this.projects.selectProject(waiting.projectId);
-    await this.loadProjectChannels(waiting.projectId);
-    await this.selectChannel(waiting.channelId);
-    await this.openReplyThread(waiting.replyThreadId);
+    await this.projects.selectProject(target.projectId);
+    await this.loadProjectChannels(target.projectId);
+    await this.selectChannel(target.channelId);
+    await this.openReplyThread(target.replyThreadId);
+  }
+
+  /**
+   * Accepts the selected reviews of the queue against the revisions it showed, then rereads the queue. Work that
+   * changed since then is counted as stale and stays in the queue.
+   */
+  async acceptReviewItems(assignmentIds: readonly ChatWorkAssignmentId[]): Promise<ChatBatchAcceptSummary> {
+    return shared.reviewQueue.acceptReviewItems(assignmentIds);
+  }
+
+  /** Retries failed work from the queue on the device that ran it, against the revision the queue showed. */
+  async retryReviewItem(item: ChatReviewQueueItemRead): Promise<void> {
+    if (item.kind !== "failure" || !item.executedHere) throw new Error("Only failed work that ran here can be retried");
+    await chatApi.retryChatAssignment(item.assignmentId, item.revision);
+    this.publishChannelChange(item.channelId);
+    this.refreshReviewQueue();
+    if (this.openReplyThreadId === item.replyThreadId) await this.loadReplyThread(item.replyThreadId, true);
+  }
+
+  /** Rereads the vault-wide review queue and resolves once the read settled; a failure sets `reviewQueueError`. */
+  reloadReviewQueue(): Promise<void> {
+    return shared.reviewQueue.refresh();
+  }
+
+  /** Rereads the vault-wide review queue; overlapping requests from every pane coalesce. */
+  private refreshReviewQueue(): void {
+    void shared.reviewQueue.refresh();
   }
 
   /** Rereads the work waiting for a local action here, which only its own reply thread would otherwise reveal. */
@@ -1203,6 +1264,7 @@ export class ChatStore {
       }
     }
     if (plan.organizational) {
+      this.refreshReviewQueue();
       const channelId = this.selectedChannelId;
       if (channelId) await this.loadChannelMessages(channelId, true);
       if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
@@ -1279,6 +1341,7 @@ export class ChatStore {
     if (!isCurrentVault()) return;
     this.channelNavigationController.refreshNavigation(channels);
     this.refreshWaitingAssignments();
+    this.refreshReviewQueue();
     if (this.owner) await this.refreshTeammates();
     const channelId = this.selectedChannelId;
     if (!isCurrentVault() || !channelId || !this.channelNavigationController.find(channelId)) return;
@@ -1293,6 +1356,7 @@ export class ChatStore {
     if (!this.loaded) return;
     const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
     this.refreshWaitingAssignments();
+    this.refreshReviewQueue();
     await Promise.all([
       ...[...changes.threadIds].map((threadId) => this.refreshThreadFromOtherWindow(threadId, isCurrentVault)),
       ...[...changes.channelIds].map((channelId) => this.refreshChannelFromOtherWindow(channelId, isCurrentVault)),
@@ -1441,6 +1505,7 @@ export function resetChatForVault(): void {
   shared.teammates = [];
   shared.archivedTeammates = [];
   shared.configuration.reset();
+  shared.reviewQueue.reset();
 }
 
 /** Show a project's newly saved primary working folder in every pane whose channel belongs to that project. */

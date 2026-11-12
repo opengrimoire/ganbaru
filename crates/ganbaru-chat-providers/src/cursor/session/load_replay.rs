@@ -52,10 +52,11 @@ impl AcpInboundQueue {
     /// Sends `session/load` and drains its replay until the response and a quiet period.
     ///
     /// Replayed updates for the loading session are dropped, except the latest command list,
-    /// which the load response does not carry. Permission requests are cancelled and other
-    /// requests refused; every other message is kept for the router. The quiet period is
-    /// measured from the later of the response and the last replayed update and never runs past
-    /// the operation deadline.
+    /// which the load response does not carry, and the latest mode and configuration updates
+    /// that arrive after the response. Permission requests are cancelled and other requests
+    /// refused; every other message is kept for the router. The quiet period is measured from
+    /// the later of the response and the last replayed update, never runs past the operation
+    /// deadline, and ends with `Cancelled` when the operation is cancelled.
     pub async fn load_session(
         &mut self,
         client: &AcpRpcClient,
@@ -71,7 +72,7 @@ impl AcpInboundQueue {
                 response = &mut load => break response?,
                 message = self.receiver.recv(), if receiving => match message {
                     Some(message) => {
-                        self.screen(client, session_id, message).await?;
+                        self.screen(client, session_id, message, false).await?;
                     }
                     None => receiving = false,
                 },
@@ -80,10 +81,16 @@ impl AcpInboundQueue {
         let deadline = Instant::from_std(context.deadline);
         let mut quiet_until = (Instant::now() + self.replay_idle).min(deadline);
         while receiving && !self.closed() {
-            match tokio::time::timeout_at(quiet_until, self.receiver.recv()).await {
+            let message = tokio::select! {
+                biased;
+                () = context.cancellation.cancelled() => return Err(AcpRpcFailure::Cancelled),
+                message = tokio::time::timeout_at(quiet_until, self.receiver.recv()) => message,
+            };
+            match message {
                 Err(_) | Ok(None) => break,
                 Ok(Some(message)) => {
-                    if self.screen(client, session_id, message).await? == LoadMessage::Replay {
+                    if self.screen(client, session_id, message, true).await? == LoadMessage::Replay
+                    {
                         quiet_until = (Instant::now() + self.replay_idle).min(deadline);
                     }
                 }
@@ -103,13 +110,16 @@ impl AcpInboundQueue {
         client: &AcpRpcClient,
         session_id: &str,
         message: AcpInboundMessage,
+        after_response: bool,
     ) -> Result<LoadMessage, AcpRpcFailure> {
         match message {
             AcpInboundMessage::Notification { method, params }
                 if method == "session/update" && update_session_id(&params) == Some(session_id) =>
             {
-                if update_kind(&params) == Some("available_commands_update") {
-                    self.retained.retain(|retained| !is_command_list(retained));
+                let kind = update_kind(&params).map(str::to_string);
+                if let Some(kind) = kind.filter(|kind| keeps_latest(kind, after_response)) {
+                    self.retained
+                        .retain(|retained| !is_update_of_kind(retained, &kind));
                     self.retain(AcpInboundMessage::Notification { method, params })?;
                 }
                 Ok(LoadMessage::Replay)
@@ -161,11 +171,20 @@ fn update_kind(params: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-fn is_command_list(message: &AcpInboundMessage) -> bool {
+/// Whether the gate keeps the latest replayed update of `kind` for the router.
+///
+/// The load response carries no command list, so the latest one is always kept. Mode and
+/// configuration updates before the response are already reflected in it; after the response
+/// they change the session state, so the latest of each is kept.
+fn keeps_latest(kind: &str, after_response: bool) -> bool {
+    kind == "available_commands_update"
+        || (after_response && matches!(kind, "current_mode_update" | "config_option_update"))
+}
+
+fn is_update_of_kind(message: &AcpInboundMessage, kind: &str) -> bool {
     matches!(
         message,
         AcpInboundMessage::Notification { method, params }
-            if method == "session/update"
-                && update_kind(params) == Some("available_commands_update")
+            if method == "session/update" && update_kind(params) == Some(kind)
     )
 }

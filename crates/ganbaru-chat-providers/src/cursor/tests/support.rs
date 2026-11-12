@@ -214,8 +214,8 @@ pub enum FixtureScenario {
     AuthenticationRequired,
     ResumeMissing,
     RejectFastMode,
-    /// `session/load` replays history, a command list, and a permission request before and
-    /// after its response.
+    /// `session/load` replays history, a command list, mode and configuration updates, and a
+    /// permission request before and after its response.
     ReplayOnLoad,
 }
 
@@ -228,6 +228,10 @@ pub const REPLAYED_PERMISSION_ID: &str = "replayed-permission";
 /// Delay between the `session/load` response and the last replayed update, shorter than the
 /// quiet period tests use.
 pub const LATE_REPLAY_DELAY: Duration = Duration::from_millis(50);
+/// Mode the `ReplayOnLoad` fixture replays before and after its response.
+pub const REPLAYED_MODE_ID: &str = "ask";
+/// Last mode the `ReplayOnLoad` fixture reports after its response.
+pub const LATE_MODE_ID: &str = "plan";
 
 #[derive(Default)]
 pub struct AcpFixtureState {
@@ -346,9 +350,20 @@ async fn run_fixture<R, W>(
                     }),
                 )
                 .await;
+                write_message(&mut writer, mode_update(REPLAYED_MODE_ID)).await;
                 write_result(&mut writer, id, session_setup(None, options.clone())).await;
                 tokio::time::sleep(LATE_REPLAY_DELAY).await;
                 write_message(&mut writer, replayed_text_update()).await;
+                write_message(&mut writer, mode_update(REPLAYED_MODE_ID)).await;
+                write_message(&mut writer, mode_update(LATE_MODE_ID)).await;
+                write_message(
+                    &mut writer,
+                    session_update(json!({
+                        "sessionUpdate": "config_option_update",
+                        "configOptions": config_options()
+                    })),
+                )
+                .await;
             }
             "session/load" => {
                 write_result(&mut writer, id, session_setup(None, options.clone())).await;
@@ -463,6 +478,10 @@ fn session_update(update: Value) -> Value {
         "method": "session/update",
         "params": { "sessionId": "cursor-session-fixture", "update": update }
     })
+}
+
+fn mode_update(mode_id: &str) -> Value {
+    session_update(json!({ "sessionUpdate": "current_mode_update", "currentModeId": mode_id }))
 }
 
 fn replayed_text_update() -> Value {

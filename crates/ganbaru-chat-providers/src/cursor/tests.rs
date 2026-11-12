@@ -934,6 +934,33 @@ fn session_load_drains_replayed_history_and_keeps_live_updates() {
             AcpInboundMessage::Notification { params, .. }
                 if params["update"]["sessionUpdate"] == "available_commands_update"
         ));
+        let modes_routed: Vec<&str> = routed
+            .iter()
+            .filter_map(|message| match message {
+                AcpInboundMessage::Notification { params, .. }
+                    if params["update"]["sessionUpdate"] == "current_mode_update" =>
+                {
+                    params["update"]["currentModeId"].as_str()
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            modes_routed,
+            [LATE_MODE_ID],
+            "only the latest mode after the response reaches the router"
+        );
+        let config_updates = routed
+            .iter()
+            .filter(|message| {
+                matches!(
+                    message,
+                    AcpInboundMessage::Notification { params, .. }
+                        if params["update"]["sessionUpdate"] == "config_option_update"
+                )
+            })
+            .count();
+        assert_eq!(config_updates, 1, "the late configuration update is kept");
         prompt.abort();
         connection
             .stop(Duration::ZERO, Duration::from_millis(20))

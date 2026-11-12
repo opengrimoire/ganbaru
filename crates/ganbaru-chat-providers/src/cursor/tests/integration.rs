@@ -2,6 +2,7 @@
 
 use super::support::*;
 use crate::cursor::driver::CursorProviderDriver;
+use crate::cursor::session::AcpInboundQueue;
 use crate::cursor::transport::{AcpInboundMessage, AcpRpcConnection, AcpRpcFailure};
 use crate::events::CanonicalEvent;
 use crate::models::*;
@@ -274,6 +275,52 @@ fn probe_sends_only_initialize_and_stops_the_agent() {
         );
         assert!(probe.capabilities.supports(ProviderCapability::NativePlan));
         assert!(driver.cached_model_catalog().is_none());
+    });
+}
+
+#[test]
+fn load_replay_quiet_window_stops_on_cancellation() {
+    crate::test_block_on(async {
+        let (application, agent) = tokio::io::duplex(64 * 1024);
+        let (application_reader, application_writer) = tokio::io::split(application);
+        let (agent_reader, mut agent_writer) = tokio::io::split(agent);
+        let mut connection = AcpRpcConnection::from_test_io(application_reader, application_writer);
+        let mut reader = BufReader::new(agent_reader);
+        let mut inbound = AcpInboundQueue::new(connection.take_inbound().unwrap())
+            .with_replay_idle(Duration::from_secs(30));
+
+        let loading = context("cancelled-load");
+        let cancellation = loading.cancellation.clone();
+        let client = connection.client();
+        let load = tokio::spawn(async move {
+            inbound
+                .load_session(
+                    &client,
+                    "cursor-session-fixture",
+                    json!({ "sessionId": "cursor-session-fixture" }),
+                    &loading,
+                )
+                .await
+        });
+        let request = read_json_line(&mut reader).await;
+        assert_eq!(request["method"], "session/load");
+        write_json_line(
+            &mut agent_writer,
+            json!({ "jsonrpc": "2.0", "id": request["id"], "result": {} }),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!load.is_finished(), "the quiet window is still open");
+        let started = std::time::Instant::now();
+        cancellation.cancel();
+        let result = load.await.unwrap();
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert_eq!(result, Err(AcpRpcFailure::Cancelled));
+
+        connection
+            .stop(Duration::from_millis(20), Duration::from_millis(20))
+            .await
+            .unwrap();
     });
 }
 

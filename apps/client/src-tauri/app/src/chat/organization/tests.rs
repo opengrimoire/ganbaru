@@ -20,6 +20,7 @@ use serde_json::json;
 use sqlx::{Row, SqlitePool};
 
 mod review;
+mod routing;
 
 #[test]
 fn teammate_effort_accepts_every_catalog_reasoning_level() {
@@ -141,6 +142,7 @@ fn message(markdown: &str) -> PostChatMessageCommand {
         references: Vec::new(),
         execution_target: None,
         also_send_to_channel: false,
+        followup_routing: None,
     }
 }
 
@@ -2166,10 +2168,7 @@ fn restart_rehomes_review_replies_into_one_ordered_follow_up_assignment() {
             inputs[1].get::<String, _>("message_item_id"),
             "item:review-reply-2"
         );
-        assert_eq!(
-            inputs[1].get::<String, _>("routing_kind"),
-            "queued_continuation"
-        );
+        assert_eq!(inputs[1].get::<String, _>("routing_kind"), "steer");
         assert!(
             inputs
                 .iter()
@@ -3436,7 +3435,7 @@ async fn route_review_reply(
         &ChatReplyThreadId::new("reply-thread:review").unwrap(),
         &ChatConversationItemId::new("item:review-reply-1").unwrap(),
         Some(&invocation),
-        None,
+        super::workflow::PostRoutingChoices::default(),
         device,
         &now,
     )
@@ -4596,7 +4595,7 @@ fn a_local_post_carries_pending_review_replies_forward() {
             ["item:review-reply-1", "item:review-reply-2"]
         );
         assert!(inputs[1..].iter().all(|input| {
-            input.get::<String, _>("routing_kind") == "queued_continuation"
+            input.get::<String, _>("routing_kind") == "steer"
                 && input.get::<String, _>("delivery_state") == "pending"
         }));
     });

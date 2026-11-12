@@ -220,15 +220,16 @@ pub(super) async fn deliver_pending_assignment_inputs(
     Ok(())
 }
 
-/// Pending steer and queued continuation inputs of `assignment_id`, in posting order. These
-/// reach a run only while it works, unlike the trigger and follow-ups its package carries.
+/// Pending steer inputs of `assignment_id`, in posting order. These reach a run only while it
+/// works, unlike the trigger and follow-ups its package carries; a queued continuation waits
+/// for the turn to end, when follow-up recovery continues the work with it.
 async fn pending_live_input_ids(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
 ) -> ChatResult<Vec<ChatConversationItemId>> {
     sqlx::query_scalar::<_, String>(
         "SELECT message_item_id FROM chat_work_assignment_inputs
-         WHERE assignment_id = ? AND routing_kind IN ('steer', 'queued_continuation')
+         WHERE assignment_id = ? AND routing_kind = 'steer'
            AND delivery_state = 'pending'
          ORDER BY ordinal",
     )
@@ -1010,7 +1011,7 @@ struct PreparedAssignmentInput {
     delivered: DeliveredSource,
 }
 
-/// Reads the pending input `message_item_id` of `assignment_id` and frames it as a follow-up
+/// Reads the pending steer input `message_item_id` of `assignment_id` and frames it as a follow-up
 /// context record for the latest working run, while that run's authorization is allowed and the
 /// teammate may still participate in the conversation. Returns `None` when no working run can
 /// take it, so it stays pending.
@@ -1044,7 +1045,7 @@ async fn prepare_assignment_input(
     }
     let row = sqlx::query(
         "SELECT run.id AS run_id, run.provider_thread_id, run.scratch_generation_id,
-                run.authorization_revision_id, input.routing_kind, revision.id AS revision_id,
+                run.authorization_revision_id, revision.id AS revision_id,
                 revision.revision, revision.normalized_markdown
          FROM chat_agent_runs run
          JOIN chat_assignment_authorization_revisions authorization
@@ -1071,6 +1072,7 @@ async fn prepare_assignment_input(
            ON revision.id = message.current_revision_id
          WHERE run.assignment_id = ? AND input.message_item_id = ?
            AND run.state = 'working' AND input.delivery_state = 'pending'
+           AND input.routing_kind = 'steer'
            AND CASE
                  WHEN channel_access.participate_inherits_profile = 1
                    THEN profile_revision.default_participate
@@ -1110,7 +1112,6 @@ async fn prepare_assignment_input(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let routing_kind: String = row.try_get("routing_kind").map_err(persistence_error)?;
     let framed = super::context::follow_up_context_line(
         message_item_id.as_str(),
         u64_value(row.try_get("revision").map_err(persistence_error)?)?,
@@ -1125,19 +1126,9 @@ async fn prepare_assignment_input(
         delivered: DeliveredSource {
             source_id: message_item_id.as_str().to_string(),
             content_sha256: framed.content_sha256,
-            kind: live_input_delivery_kind(&routing_kind),
+            kind: DeliveryKind::Steer,
         },
     }))
-}
-
-/// How a live input reaches its run: a queued continuation as the next turn, and any other
-/// input steered into the running turn.
-fn live_input_delivery_kind(routing_kind: &str) -> DeliveryKind {
-    if routing_kind == "queued_continuation" {
-        DeliveryKind::QueuedContinuation
-    } else {
-        DeliveryKind::Steer
-    }
 }
 
 /// Marks the input `message_item_id` of `assignment_id` delivered after its steer reached the
@@ -2026,17 +2017,16 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_retried_assignment_frames_its_pending_continuation_for_the_working_run() {
+        async fn a_retried_assignment_frames_its_pending_steer_for_the_working_run() {
             let pool = starting_pool().await;
             seed_inputs_of_every_route(&pool).await;
+            let steer = ChatConversationItemId::new("item:steer").unwrap();
             let continuation = ChatConversationItemId::new("item:continuation").unwrap();
 
             assert_eq!(
                 pending_live_input_ids(&pool, &assignment()).await.unwrap(),
-                vec![
-                    ChatConversationItemId::new("item:steer").unwrap(),
-                    continuation.clone()
-                ]
+                vec![steer.clone()],
+                "a queued continuation waits for the turn to end"
             );
             for state in ["starting", "failed"] {
                 sqlx::query("UPDATE chat_agent_runs SET state = ? WHERE id = 'run:working'")
@@ -2044,7 +2034,7 @@ mod tests {
                     .execute(&pool)
                     .await
                     .unwrap();
-                let prepared = prepare_assignment_input(&pool, &assignment(), &continuation)
+                let prepared = prepare_assignment_input(&pool, &assignment(), &steer)
                     .await
                     .unwrap();
                 assert!(prepared.is_none(), "a {state} run takes no live input");
@@ -2054,25 +2044,32 @@ mod tests {
                 .execute(&pool)
                 .await
                 .unwrap();
-            let prepared = prepare_assignment_input(&pool, &assignment(), &continuation)
+            assert!(
+                prepare_assignment_input(&pool, &assignment(), &continuation)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "the working run never takes a queued continuation"
+            );
+            let prepared = prepare_assignment_input(&pool, &assignment(), &steer)
                 .await
                 .unwrap()
-                .expect("the working run takes the pending continuation");
+                .expect("the working run takes the pending steer");
             assert_eq!(prepared.thread_id.as_str(), "thread-1");
             assert_eq!(prepared.run_id.as_str(), "run:working");
             let framed = super::super::super::context::follow_up_context_line(
-                "item:continuation",
+                "item:steer",
                 1,
-                "Then update the docs".to_string(),
+                "Prefer the smaller fix".to_string(),
             )
             .unwrap();
             assert_eq!(prepared.prompt, framed.line);
             assert_eq!(
                 prepared.delivered,
                 DeliveredSource {
-                    source_id: "item:continuation".to_string(),
+                    source_id: "item:steer".to_string(),
                     content_sha256: framed.content_sha256,
-                    kind: DeliveryKind::QueuedContinuation,
+                    kind: DeliveryKind::Steer,
                 }
             );
         }

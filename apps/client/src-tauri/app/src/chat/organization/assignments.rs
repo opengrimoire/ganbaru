@@ -55,7 +55,7 @@ pub(super) async fn recover_assignment_dispatch_jobs(
          JOIN chat_agent_runs run ON run.assignment_id = assignment.id
          JOIN chat_work_assignment_inputs input ON input.assignment_id = assignment.id
          WHERE assignment.state = 'working' AND run.state = 'working'
-           AND input.routing_kind IN ('steer', 'queued_continuation')
+           AND input.routing_kind = 'steer'
            AND input.delivery_state = 'pending'
          ORDER BY assignment.updated_at, assignment.id LIMIT 32",
     )
@@ -408,14 +408,15 @@ async fn reroute_assignment(
     .fetch_all(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    move_pending_inputs(transaction, &pending_input_ids, &successor_id).await?;
+    move_pending_inputs(transaction, &pending_input_ids, &successor_id, None).await?;
     Ok(Some(successor_id))
 }
 
-/// Reads, past `after_id` and up to `limit`, the assignments with pending replies that arrived
-/// after they asked for review, which `device` executes, ran without an executing device, or
-/// takes over from an executing device that can no longer write Chat. `only` narrows the read
-/// to one assignment.
+/// Reads, past `after_id` and up to `limit`, the assignments with pending replies left when
+/// their turn ended, which `device` executes, ran without an executing device, or takes over
+/// from an executing device that can no longer write Chat. Those are work that asked for
+/// review, and work that completed by itself without a review or a follow-up, so a reply
+/// queued behind the turn continues it. `only` narrows the read to one assignment.
 async fn stranded_follow_up_ids(
     pool: &SqlitePool,
     device: PostingDevice<'_>,
@@ -427,7 +428,13 @@ async fn stranded_follow_up_ids(
         "SELECT DISTINCT assignment.id
          FROM chat_work_assignments assignment
          JOIN chat_work_assignment_inputs input ON input.assignment_id = assignment.id
-         WHERE assignment.state = 'ready_for_review'
+         WHERE (assignment.state = 'ready_for_review' OR (
+             assignment.state = 'completed' AND assignment.review_outcome IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM chat_work_assignments successor
+               WHERE successor.previous_assignment_id = assignment.id
+             )
+           ))
            AND (assignment.executing_device_id = ?1 OR (
              assignment.executing_device_id IS NULL AND EXISTS (
                SELECT 1 FROM chat_agent_runs run WHERE run.assignment_id = assignment.id
@@ -452,8 +459,8 @@ async fn stranded_follow_up_ids(
     .map_err(persistence_error)
 }
 
-/// Moves the pending inputs that reached an assignment after it asked for review onto a new
-/// follow-up assignment, for the assignments `device` executes, ran without an executing
+/// Moves the pending inputs left on an assignment when its turn ended onto a new follow-up
+/// assignment, for the assignments `device` executes, ran without an executing
 /// device, or takes over from an executing device that can no longer write Chat. The inputs
 /// keep their ids, which derive from their messages, so a device that routed them concurrently
 /// merges into the same rows. Only work whose current subject `scope` accepted continues; the
@@ -507,7 +514,10 @@ async fn recover_follow_up(
     now: &UtcTimestamp,
 ) -> ChatResult<Option<ChatWorkAssignmentId>> {
     let previous = read_assignment(pool, assignment_id).await?;
-    if previous.state != ChatWorkAssignmentState::ReadyForReview {
+    if !matches!(
+        previous.state,
+        ChatWorkAssignmentState::ReadyForReview | ChatWorkAssignmentState::Completed
+    ) {
         return Ok(None);
     }
     let reply_thread_id = previous.reply_thread_id.clone();
@@ -681,6 +691,7 @@ pub(super) async fn review_note_request(
         references: Vec::new(),
         execution_target: None,
         also_send_to_channel: false,
+        followup_routing: None,
     })
 }
 
@@ -1715,6 +1726,51 @@ pub(crate) fn start_synced_assignment_work(app: &tauri::AppHandle, work: SyncedA
             eprintln!("Synced Chat assignment work did not start: {error}");
         }
     });
+}
+
+/// Continues, once the organizational provider turn `turn_id` ended, the work of its run with
+/// the replies queued behind that turn: when the settled assignment holds pending replies of its
+/// reply thread and this device runs its follow-up, the follow-up takes them and dispatches.
+/// Call it after the turn's settlement committed.
+pub(crate) fn continue_queued_replies_after_turn(app: &tauri::AppHandle, turn_id: &ChatTurnId) {
+    let app = app.clone();
+    let turn_id = turn_id.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = continue_queued_replies(app, &turn_id).await {
+            eprintln!("Chat replies queued behind a turn did not continue: {error}");
+        }
+    });
+}
+
+async fn continue_queued_replies(app: tauri::AppHandle, turn_id: &ChatTurnId) -> ChatResult<()> {
+    let db_url = format!("sqlite:{}", crate::vault::APP_SQLITE_FILE);
+    let pool = chat_pool(app.clone(), db_url.clone()).await?;
+    let Some(assignment_id) = sqlx::query_scalar::<_, String>(
+        "SELECT assignment_id FROM chat_agent_runs WHERE provider_turn_id = ?",
+    )
+    .bind(turn_id.as_str())
+    .fetch_optional(&pool)
+    .await
+    .map_err(persistence_error)?
+    else {
+        return Ok(());
+    };
+    let assignment_id = ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
+    let device_id = this_device_id(&app)?;
+    let writers = chat_writers(&app, &pool).await?;
+    let device = PostingDevice::this_device(&device_id, &writers);
+    if stranded_follow_up_ids(&pool, device, Some(&assignment_id), "", 1)
+        .await?
+        .is_empty()
+    {
+        return Ok(());
+    }
+    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
+    let now = now_timestamp()?;
+    if let Some(follow_up) = recover_follow_up(&pool, &assignment_id, device, &scope, &now).await? {
+        dispatch_assignment_job(app, db_url, follow_up).await?;
+    }
+    Ok(())
 }
 
 /// Starts the assignment an unattended post created on this device. It takes the path of synced

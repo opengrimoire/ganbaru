@@ -33,6 +33,10 @@ import type { ModelOptionSelection } from "./provider";
 export const CHAT_PARTICIPANT_KINDS = ["local_user", "ai_teammate", "human"] as const;
 export type ChatParticipantKind = (typeof CHAT_PARTICIPANT_KINDS)[number];
 
+/** How a reply reaches active work: `steer` into the running turn, or `queue` after it ends. */
+export const CHAT_FOLLOWUP_ROUTINGS = ["steer", "queue"] as const;
+export type ChatFollowupRouting = (typeof CHAT_FOLLOWUP_ROUTINGS)[number];
+
 export const CHAT_TEAMMATE_CONFIGURATION_STATES = [
   "healthy",
   "needs_setup",
@@ -789,6 +793,8 @@ export interface PostChatMessageRequest {
   references: ChatMessageReference[];
   executionTarget: ChatExecutionTarget | null;
   alsoSendToChannel: boolean;
+  /** How a reply to a thread with active work reaches it; absent steers working work and queues anything else. Scheduled messages refuse it. */
+  followupRouting?: ChatFollowupRouting;
 }
 
 export interface PostChatMessageResult {
@@ -796,6 +802,8 @@ export interface PostChatMessageResult {
   replyThreadId: ChatReplyThreadId | null;
   assignment: ChatWorkAssignmentRead | null;
   assignmentInputQueued: boolean;
+  /** How the reply reached active work, when it became an input of it; a steer on work that is not working reports `queue`. */
+  routedAs: ChatFollowupRouting | null;
 }
 
 export const CHAT_SCHEDULED_MESSAGE_STATES = ["scheduled", "dispatching", "failed"] as const;

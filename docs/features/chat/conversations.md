@@ -38,7 +38,7 @@ Linked devices can all post and edit. A post written offline syncs when its devi
 
 The composer supports drafts, attachments, replies, explicit agent mentions, provider interactions, and scheduled sends. A message can be sent without invoking AI, and plain conversation never silently becomes an execution request.
 
-A reply sent to a thread with active work waits as a pending input of that work. Its author can edit or cancel it until a run receives it; the reply stays in the thread either way, and an edit or cancel that arrives after delivery is refused as already delivered.
+A reply sent to a thread with active work waits as a pending input of that work, sent with an explicit Steer now or Queue choice. Steer now reaches the teammate's current turn while it works; on work that is not working yet or waits for the user, it queues instead and the reply says so. Queue waits until the current turn ends, then the work continues with the queued replies in order; work that was cancelled or failed keeps them pending. A scheduled message cannot choose either. Its author can edit or cancel it until a run receives it; the reply stays in the thread either way, and an edit or cancel that arrives after delivery is refused as already delivered.
 
 Slash commands are discoverable actions, not an alternate security model. They can change presentation, select an interaction mode, or start a typed application action, but cannot bypass project, folder, provider, or confirmation boundaries. The composer lists workspace commands only from command folders that resolve inside the workspace, so a repository link cannot point the catalog at other folders; user-level command folders may link anywhere.
 

@@ -8,6 +8,7 @@ import {
   CHAT_ASSIGNMENT_TARGET_KINDS,
   CHAT_ASSIGNMENT_TARGET_LIFECYCLE_STATES,
   CHAT_FOLDER_CAPABILITIES,
+  CHAT_FOLLOWUP_ROUTINGS,
   CHAT_PARTICIPANT_KINDS,
   CHAT_RUNTIME_APPROVAL_POLICIES,
   CHAT_SCRATCH_CLEANUP_JOB_STATES,
@@ -1061,6 +1062,9 @@ export function parsePostChatMessageResult(
     replyThreadId: readNullable(record.replyThreadId, `${label}.replyThreadId`, readIdentifier),
     assignment: readNullable(record.assignment, `${label}.assignment`, parseChatWorkAssignment),
     assignmentInputQueued: readBoolean(record.assignmentInputQueued, `${label}.assignmentInputQueued`),
+    routedAs: readNullable(record.routedAs, `${label}.routedAs`, (entry, path) =>
+      readEnum(entry, CHAT_FOLLOWUP_ROUTINGS, path),
+    ),
   };
 }
 

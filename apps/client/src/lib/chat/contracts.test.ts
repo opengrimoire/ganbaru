@@ -173,7 +173,20 @@ describe("Chat provider contracts", () => {
       replyThreadId: null,
       assignment: null,
       assignmentInputQueued: false,
+      routedAs: null,
     }).replyThreadId).toBeNull();
+    const queuedResult = {
+      message: page.messages[0],
+      replyThreadId: null,
+      assignment: null,
+      assignmentInputQueued: true,
+      routedAs: "queue",
+    };
+    expect(parsePostChatMessageResult(queuedResult).routedAs).toBe("queue");
+    expect(() => parsePostChatMessageResult({ ...queuedResult, routedAs: "later" }))
+      .toThrow("routedAs");
+    expect(() => parsePostChatMessageResult({ ...queuedResult, routedAs: undefined }))
+      .toThrow("routedAs");
     expect(() => parseChatChannelPage({ ...page, revision: -1 }))
       .toThrow("revision must not be negative");
     for (const orderKey of ["", "c00:1", "c".repeat(129), 1]) {

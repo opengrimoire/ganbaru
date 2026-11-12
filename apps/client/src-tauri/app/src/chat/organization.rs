@@ -42,7 +42,7 @@ mod teammate_lifecycle;
 mod workflow;
 
 #[cfg(desktop)]
-pub(crate) use assignments::start_synced_assignment_work;
+pub(crate) use assignments::{continue_queued_replies_after_turn, start_synced_assignment_work};
 use common::{
     AttachmentSource, PageCursor, ScheduledPostTarget, chat_writers, conversation_item_id,
     has_thread_eligible_mention, map_command_receipt_error, message_revision_id,
@@ -71,7 +71,7 @@ use teammate_lifecycle::set_teammate_archived;
 #[cfg(desktop)]
 use workflow::insert_policy_revision;
 use workflow::{
-    AssignmentWrite, ChannelCopy, CommunicationMessageWrite, PostingDevice,
+    AssignmentWrite, ChannelCopy, CommunicationMessageWrite, PostRoutingChoices, PostingDevice,
     REVIEW_REFUSED_NO_EXECUTING_DEVICE, insert_channel_copy, insert_communication_message,
     next_item_order_key, persist_assignment_routing, read_post_receipt,
     require_continuation_scope_is_unchanged, require_reply_thread, require_reviewable_assignment,
@@ -86,6 +86,8 @@ enum StoredPostMessageReceipt {
         reply_thread_id: Option<ChatReplyThreadId>,
         assignment_id: Option<ChatWorkAssignmentId>,
         assignment_input_queued: bool,
+        #[serde(default)]
+        routed_as: Option<ChatFollowupRouting>,
     },
 }
 
@@ -372,7 +374,9 @@ pub(super) async fn post_message(
                     eprintln!("Chat follow-up of an unattended reply did not start: {error}");
                 }
             });
-        } else if posted.assignment_write.input_queued {
+        } else if posted.assignment_write.routed_as == Some(ChatFollowupRouting::Steer) {
+            // A queued reply waits for the current turn to end, when follow-up recovery
+            // continues the work with it.
             let input_message_id = posted.item_id.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = deliver_assignment_input(
@@ -410,6 +414,9 @@ async fn write_post(
         return Ok(PostOutcome::Refused(refusal));
     }
     validate_message_request(request)?;
+    if scheduled.is_some() {
+        scheduling::refuse_scheduled_followup_routing(request)?;
+    }
     persist_post_with(pool, request, scheduled, review, device)
         .await
         .map(PostOutcome::Posted)
@@ -654,7 +661,10 @@ async fn persist_post_with(
                 reply_thread_id,
                 &item_id,
                 resolved_invocation.as_ref(),
-                request.execution_target.as_ref(),
+                PostRoutingChoices {
+                    execution_target: request.execution_target.as_ref(),
+                    followup_routing: request.followup_routing,
+                },
                 device,
                 &now,
             )
@@ -720,6 +730,7 @@ async fn persist_post_with(
         reply_thread_id: target_reply_thread_id.clone(),
         assignment_id: assignment_write.assignment_id.clone(),
         assignment_input_queued: assignment_write.input_queued,
+        routed_as: assignment_write.routed_as,
     };
     sqlx::query(
         "UPDATE chat_organizational_command_receipts
@@ -748,6 +759,7 @@ async fn persist_post_with(
         reply_thread_id: target_reply_thread_id,
         assignment,
         assignment_input_queued: assignment_write.input_queued,
+        routed_as: assignment_write.routed_as,
     };
     let serialized = serde_json::to_string(&result).map_err(serialization_error)?;
     sqlx::query(

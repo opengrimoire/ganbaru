@@ -36,6 +36,20 @@ const MAX_SCHEDULE_DAYS: i64 = 366;
 const MAX_SCHEDULE_DISPATCH_ATTEMPTS: i64 = 3;
 const SCHEDULE_RETRY_SECONDS: i64 = 60;
 
+/// Refuses a scheduled `request` that chooses how its reply reaches active work: the send
+/// happens later, when the work it would steer or queue behind may have settled.
+pub(super) fn refuse_scheduled_followup_routing(
+    request: &PostChatMessageCommand,
+) -> ChatResult<()> {
+    if request.followup_routing.is_some() {
+        return Err(ChatError::validation(
+            "followupRouting",
+            "A scheduled message cannot choose Steer now or Queue",
+        ));
+    }
+    Ok(())
+}
+
 /// Schedules `request` for delivery. The scheduling device sends it: it records itself as the
 /// executing device, keeps the claim and retry state in its local dispatch row, and records its
 /// consent to exactly this request, so the send starts the work it routes.
@@ -45,6 +59,7 @@ pub(super) async fn schedule_message(
     request: ScheduleChatMessageCommand,
 ) -> ChatResult<ChatScheduledMessageRead> {
     validate_message_request(&request.message)?;
+    refuse_scheduled_followup_routing(&request.message)?;
     let now = now_timestamp()?;
     validate_scheduled_for(&request.scheduled_for, &now)?;
     let serialized = serde_json::to_string(&request.message).map_err(serialization_error)?;

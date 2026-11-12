@@ -38,6 +38,8 @@ pub(super) struct AssignmentWrite {
     pub(super) assignment_id: Option<ChatWorkAssignmentId>,
     /// Whether the post became an input of an active assignment.
     pub(super) input_queued: bool,
+    /// How the queued input reaches the active work, when the post became one.
+    pub(super) routed_as: Option<ChatFollowupRouting>,
     /// Whether this device executes the assignment, so it dispatches or delivers now. Only
     /// desktop executes assignments.
     #[cfg_attr(mobile, allow(dead_code))]
@@ -53,6 +55,7 @@ impl AssignmentWrite {
     pub(super) const NONE: Self = Self {
         assignment_id: None,
         input_queued: false,
+        routed_as: None,
         executes_here: false,
         awaits_acceptance: false,
     };
@@ -313,10 +316,23 @@ async fn append_assignment_input(
     Ok(())
 }
 
+/// What a post asked of the work it routes to.
+#[derive(Clone, Copy, Default)]
+pub(super) struct PostRoutingChoices<'a> {
+    /// The execution target the post chose for the work it starts.
+    pub(super) execution_target: Option<&'a ChatExecutionTarget>,
+    /// Whether the post steers or queues behind active work.
+    pub(super) followup_routing: Option<ChatFollowupRouting>,
+}
+
 /// Routes the post `message_item_id` to the assignment of the teammate it invokes: an input of
 /// the active assignment, else a new assignment that runs on the teammate's home device or the
 /// posting desktop. A post from a device that cannot execute, for a teammate without a home
 /// device, records the mention only.
+///
+/// An input of active work follows the `followup_routing` of `choices`: Steer reaches a working
+/// run's current turn and queues for any other state, Queue always waits for the current turn
+/// to end, and `None` steers working work and queues anything else.
 ///
 /// A post no one on this executing device consented to leaves existing work as it is. It
 /// records only the mention when the thread has active work. A reply to work that asked for
@@ -330,10 +346,14 @@ pub(super) async fn persist_assignment_routing(
     reply_thread_id: &ChatReplyThreadId,
     message_item_id: &ChatConversationItemId,
     invocation: Option<&ResolvedInvocation>,
-    execution_target: Option<&ChatExecutionTarget>,
+    choices: PostRoutingChoices<'_>,
     device: PostingDevice<'_>,
     now: &UtcTimestamp,
 ) -> ChatResult<AssignmentWrite> {
+    let PostRoutingChoices {
+        execution_target,
+        followup_routing,
+    } = choices;
     let Some(invocation) = invocation else {
         return Ok(AssignmentWrite::NONE);
     };
@@ -343,10 +363,10 @@ pub(super) async fn persist_assignment_routing(
             // steer a run no one here agreed to, and the user can repeat it themselves.
             return Ok(AssignmentWrite::NONE);
         }
-        let routing_kind = if active.state == ChatWorkAssignmentState::Working {
-            "steer"
-        } else {
-            "queued_continuation"
+        let routed_as = active_input_routing(active.state, followup_routing);
+        let routing_kind = match routed_as {
+            ChatFollowupRouting::Steer => "steer",
+            ChatFollowupRouting::Queue => "queued_continuation",
         };
         append_assignment_input(transaction, &active.id, message_item_id, routing_kind, now)
             .await?;
@@ -355,6 +375,7 @@ pub(super) async fn persist_assignment_routing(
         return Ok(AssignmentWrite {
             assignment_id: Some(active.id.clone()),
             input_queued: true,
+            routed_as: Some(routed_as),
             executes_here: device.executes(executing_device_id.as_deref()),
             awaits_acceptance: false,
         });
@@ -387,6 +408,7 @@ pub(super) async fn persist_assignment_routing(
         return Ok(AssignmentWrite {
             assignment_id: Some(reviewed.id.clone()),
             input_queued: true,
+            routed_as: Some(ChatFollowupRouting::Queue),
             executes_here,
             awaits_acceptance: executes_here,
         });
@@ -415,9 +437,23 @@ pub(super) async fn persist_assignment_routing(
     Ok(AssignmentWrite {
         assignment_id: Some(assignment_id),
         input_queued: false,
+        routed_as: None,
         executes_here,
         awaits_acceptance: executes_here && device.unattended,
     })
+}
+
+/// How a reply reaches active work in `state` when its post asked for `requested`: only a
+/// working run has a turn to steer, so a steer on work in any other state queues.
+pub(super) fn active_input_routing(
+    state: ChatWorkAssignmentState,
+    requested: Option<ChatFollowupRouting>,
+) -> ChatFollowupRouting {
+    match requested {
+        Some(ChatFollowupRouting::Queue) => ChatFollowupRouting::Queue,
+        _ if state == ChatWorkAssignmentState::Working => ChatFollowupRouting::Steer,
+        _ => ChatFollowupRouting::Queue,
+    }
 }
 
 /// An assignment a post or a Start action creates.
@@ -438,8 +474,9 @@ pub(super) struct NewAssignment<'a> {
 /// Writes the queued assignment `assignment` with its trigger input, settling a reviewed
 /// predecessor as completed with changes requested by the poster, since more work was asked
 /// for. A trigger message that is already an input moves to the new assignment, since
-/// its input id derives from the message, and the predecessor's other pending replies of the
-/// same reply thread follow it in order. The execution targets kept for the predecessor's
+/// its input id derives from the message, and the other pending replies of the same reply
+/// thread that a reviewed or completed predecessor holds follow it in order, steered into the
+/// first turn so they reach it together. The execution targets kept for the predecessor's
 /// pending replies go, since no reply waits on it anymore. When this device executes it and
 /// someone here consented to the post, the same transaction freezes its context and queues its
 /// dispatch; otherwise the executing device does both when the assignment passes its acceptance
@@ -514,14 +551,20 @@ pub(super) async fn create_assignment(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    if let Some(previous) = reviewed_previous {
+    let carrying_previous = assignment.latest_assignment.filter(|latest| {
+        matches!(
+            latest.state,
+            ChatWorkAssignmentState::ReadyForReview | ChatWorkAssignmentState::Completed
+        )
+    });
+    if let Some(previous) = carrying_previous {
         let carried = pending_thread_inputs(transaction, &previous.id, assignment.reply_thread_id)
             .await?
             .into_iter()
             .filter(|input| input.message_item_id != assignment.message_item_id.as_str())
             .map(|input| input.id)
             .collect::<Vec<_>>();
-        move_pending_inputs(transaction, &carried, &assignment_id).await?;
+        move_pending_inputs(transaction, &carried, &assignment_id, Some("steer")).await?;
         drop_input_requested_targets(transaction, &previous.id).await?;
         drop_input_requested_targets(transaction, &assignment_id).await?;
     }
@@ -592,11 +635,12 @@ pub(super) async fn pending_thread_inputs(
 }
 
 /// Moves the pending inputs `input_ids`, in order, behind the inputs `assignment_id` already
-/// holds, as queued continuations.
+/// holds, routed as `routing_kind`, or keeping their routing when it is `None`.
 pub(super) async fn move_pending_inputs(
     transaction: &mut Transaction<'_, Sqlite>,
     input_ids: &[String],
     assignment_id: &ChatWorkAssignmentId,
+    routing_kind: Option<&str>,
 ) -> ChatResult<()> {
     if input_ids.is_empty() {
         return Ok(());
@@ -622,11 +666,12 @@ pub(super) async fn move_pending_inputs(
             })?;
         sqlx::query(
             "UPDATE chat_work_assignment_inputs
-             SET assignment_id = ?, ordinal = ?, routing_kind = 'queued_continuation'
+             SET assignment_id = ?, ordinal = ?, routing_kind = coalesce(?, routing_kind)
              WHERE id = ? AND delivery_state = 'pending'",
         )
         .bind(assignment_id.as_str())
         .bind(ordinal)
+        .bind(routing_kind)
         .bind(input_id)
         .execute(&mut **transaction)
         .await
@@ -1730,6 +1775,7 @@ pub(super) async fn read_post_receipt(
         reply_thread_id,
         assignment_id,
         assignment_input_queued,
+        routed_as,
     } = locator;
     let message = read_message(pool, &message_item_id).await?;
     let assignment = match assignment_id.as_ref() {
@@ -1746,6 +1792,7 @@ pub(super) async fn read_post_receipt(
         reply_thread_id,
         assignment,
         assignment_input_queued,
+        routed_as,
     }))
 }
 

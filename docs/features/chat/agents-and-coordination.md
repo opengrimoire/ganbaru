@@ -57,6 +57,8 @@ Agents report material outcomes as typed updates (plan, replan, question, approv
 
 Each completed assignment that was reviewed records whether it was accepted or changes were requested, who reviewed it, and when. Review focuses on decisions and risk: what changed or was proposed, what could not be completed and why, which assumptions or approvals affected the outcome, what needs human judgment, and which checkpoint or files hold the result. Approval of one result does not grant standing approval for later work, and rejected or superseded proposals remain understandable in history.
 
+The review queue lists, across every channel of the vault, the assignments waiting for an answer or an approval, ready for review, or failed, in that order. A continued assignment leaves the queue, and a failure leaves it when retried, rerouted, or after a week, because failures have no review outcome and old failures should stop asking for attention. A capped queue says how many items it does not show. Batch accept accepts each selected review on its own against the revision the queue showed, so a partial batch is honest: work that changed meanwhile is reported as stale and stays in the queue.
+
 Proposals that would change Projects or Calendar remain drafts until accepted through the owning feature's typed command. See [Guided planning and review](../projects/guided-planning.md).
 
 ## Delegation
@@ -65,7 +67,7 @@ A teammate delegates through a host tool to another teammate in the channel. The
 
 ## Anti-burnout constraints
 
-Coordination should reduce work fragmentation, not create pressure to supervise agents continuously. Defaults favor bounded work, quiet progress, batch review, explicit deadlines, and visible budgets. The system must not manufacture urgency, shame inactivity, optimize for message volume, or treat agent activity as proof of human productivity. Repeating messages wait until the sending device's quiet period or Focus phase ends, while one-time messages keep their chosen time. Deferring non-urgent notifications is planned.
+Coordination should reduce work fragmentation, not create pressure to supervise agents continuously. Defaults favor bounded work, quiet progress, batch review, explicit deadlines, and visible budgets. The system must not manufacture urgency, shame inactivity, optimize for message volume, or treat agent activity as proof of human productivity. Repeating messages wait until the sending device's quiet period or Focus phase ends, while one-time messages keep their chosen time. Desktop Chat notifications cover only work waiting for the person (a question or an approval), work ready for review, and failures, each with its own switch; progress, queued work, and completed turns stay silent. A change waits five seconds before it notifies, so short-lived states pass silently, and it is skipped when its reply thread is open in the focused main window. During a Focus phase or a quiet period, notifications are held and delivered when it ends, as one summary when several changes waited. Only the device that executed the work notifies, so linked desktops do not repeat it; every device still shows the work in the review queue and announces it. Notifications name the teammate, channel, and kind; a failure reason appears only when the device allows notification content.
 
 ## Authority and safety
 

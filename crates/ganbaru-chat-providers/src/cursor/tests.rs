@@ -452,6 +452,60 @@ fn route_state_records_commands_and_reasoning_the_agent_sends() {
 }
 
 #[test]
+fn config_option_updates_replace_the_route_options() {
+    let normalizer = test_normalizer();
+    let mut state = test_route_state();
+    let events = normalizer
+        .normalize_session_update(
+            &mut state,
+            json!({
+                "sessionId": "provider-thread",
+                "update": { "sessionUpdate": "config_option_update", "configOptions": config_options() }
+            }),
+        )
+        .unwrap();
+    assert!(events.is_empty());
+    assert_eq!(
+        state
+            .config_options
+            .iter()
+            .map(|option| option.id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "model",
+            "reasoning",
+            "context_size",
+            "fast",
+            "thinking",
+            "mode"
+        ]
+    );
+}
+
+fn test_normalizer() -> CursorEventNormalizer {
+    CursorEventNormalizer::new_for_provider(
+        ProviderInstanceId::new("cursor-instance").unwrap(),
+        ChatThreadId::new("thread").unwrap(),
+        ProviderSessionId::new("session").unwrap(),
+        "cursor",
+        "Cursor",
+    )
+}
+
+fn test_route_state() -> CursorRouteState {
+    CursorRouteState::new(
+        "provider-thread".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+        None,
+        Vec::new(),
+        std::env::temp_dir(),
+    )
+}
+
+#[test]
 fn mcp_capabilities_parse_tolerantly() {
     for (agent_capabilities, http, sse) in [
         (json!({}), false, false),

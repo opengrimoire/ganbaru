@@ -123,7 +123,7 @@ impl CursorEventNormalizer {
             "tool_call" | "tool_call_update" => self.tool_update(state, update, update_type),
             "plan" => self.plan_update(state, update, "session/update"),
             "current_mode_update" => self.mode_update(state, update),
-            "config_options_update" => self.config_update(state, update),
+            "config_option_update" => self.config_update(state, update),
             "available_commands_update" => {
                 state.available_commands = parse_available_commands_update(update)?;
                 state.observed.slash_commands |= !state.available_commands.is_empty();

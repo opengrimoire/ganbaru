@@ -13,6 +13,7 @@ use crate::events::{CanonicalEvent, CanonicalRuntimeEvent};
 use crate::models::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use support::*;
@@ -869,6 +870,73 @@ fn session_start_auth_resume_and_configuration_rollback_are_bounded() {
             .await
             .unwrap();
     });
+}
+
+#[test]
+fn turn_end_closes_open_tool_items_so_none_reach_the_next_turn() {
+    let normalizer = CursorEventNormalizer::new_for_provider(
+        ProviderInstanceId::new("cursor-instance-1".to_string()).unwrap(),
+        ChatThreadId::new("thread-1".to_string()).unwrap(),
+        ProviderSessionId::new("session-1".to_string()).unwrap(),
+        "cursor",
+        "Cursor",
+    );
+    let mut state = CursorRouteState::new(
+        "cursor-session-fixture".to_string(),
+        modes(SafetyMode::AskForApproval, InteractionMode::Build),
+        None,
+        Vec::new(),
+        PathBuf::from("/fixture/workspace"),
+    );
+    let tool_call = |id: &str| {
+        json!({
+            "sessionId": "cursor-session-fixture",
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": id,
+                "title": "Run tests",
+                "kind": "execute",
+                "status": "in_progress"
+            }
+        })
+    };
+    let interrupted_items = |events: &[CanonicalRuntimeEvent]| {
+        events
+            .iter()
+            .filter_map(|event| match &event.event {
+                CanonicalEvent::ItemCompleted(item)
+                    if item.status == ActivityStatus::Interrupted =>
+                {
+                    Some(item.item_id.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    state.active_turn_id = Some(ChatTurnId::new("turn-1".to_string()).unwrap());
+    normalizer
+        .normalize_session_update(&mut state, tool_call("tool-b"))
+        .unwrap();
+    normalizer
+        .normalize_session_update(&mut state, tool_call("tool-a"))
+        .unwrap();
+    let completed = normalizer.finish_turn(&mut state, "end_turn").unwrap();
+    assert_eq!(interrupted_items(&completed), ["tool-a", "tool-b"]);
+    assert!(matches!(
+        completed.last().map(|event| &event.event),
+        Some(CanonicalEvent::TurnCompleted(_))
+    ));
+
+    state.active_turn_id = Some(ChatTurnId::new("turn-2".to_string()).unwrap());
+    let aborted = normalizer
+        .interrupted(&mut state, "transport closed")
+        .unwrap();
+    assert!(interrupted_items(&aborted).is_empty());
+    assert!(matches!(
+        aborted.last().map(|event| &event.event),
+        Some(CanonicalEvent::TurnAborted(_))
+    ));
 }
 
 #[test]

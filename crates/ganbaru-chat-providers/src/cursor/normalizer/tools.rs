@@ -68,7 +68,8 @@ impl CursorEventNormalizer {
         Ok(events)
     }
 
-    /// Completes every tool item still open as interrupted, in tool call ID order.
+    /// Completes every tool item still open as interrupted, in tool call ID order, so no tool
+    /// item outlives its turn.
     pub(super) fn interrupt_open_tools(
         &self,
         state: &mut CursorRouteState,

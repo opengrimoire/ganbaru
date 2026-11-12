@@ -1762,18 +1762,36 @@ async fn continue_queued_replies(app: tauri::AppHandle, turn_id: &ChatTurnId) ->
     let device_id = this_device_id(&app)?;
     let writers = chat_writers(&app, &pool).await?;
     let device = PostingDevice::this_device(&device_id, &writers);
-    if stranded_follow_up_ids(&pool, device, Some(&assignment_id), "", 1)
-        .await?
-        .is_empty()
-    {
-        return Ok(());
-    }
     let scope = read_active_device_scope(&app).map_err(device_state_error)?;
     let now = now_timestamp()?;
-    if let Some(follow_up) = recover_follow_up(&pool, &assignment_id, device, &scope, &now).await? {
+    if let Some(follow_up) =
+        continue_stranded_replies(&pool, &assignment_id, device, &scope, &now).await?
+    {
         dispatch_assignment_job(app, db_url, follow_up).await?;
     }
     Ok(())
+}
+
+/// Moves the replies left pending on `assignment_id` after its turn ended onto the follow-up
+/// `device` runs, and returns the follow-up to dispatch. Both the turn-end hook and sync, which
+/// may bring a queued reply after that hook ran, call it. The follow-up's id derives from its
+/// trigger and the settled assignment, so when both meet on one assignment only one follow-up
+/// is created: the later call finds nothing left to move, or its insert of the same id fails
+/// and rolls back.
+pub(super) async fn continue_stranded_replies(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    device: PostingDevice<'_>,
+    scope: &ChatDeviceScope,
+    now: &UtcTimestamp,
+) -> ChatResult<Option<ChatWorkAssignmentId>> {
+    if stranded_follow_up_ids(pool, device, Some(assignment_id), "", 1)
+        .await?
+        .is_empty()
+    {
+        return Ok(None);
+    }
+    recover_follow_up(pool, assignment_id, device, scope, now).await
 }
 
 /// Starts the assignment an unattended post created on this device. It takes the path of synced
@@ -1864,8 +1882,34 @@ async fn run_synced_assignment_work(
             dispatch_assignment_job(app.clone(), db_url.clone(), assignment_id).await?;
         }
     }
+    let writers = chat_writers(&app, &pool).await?;
+    let device = PostingDevice::this_device(&device_id, &writers);
     for assignment_id in work.routed {
         let assignment_id = ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
+        // A reply queued behind a turn that already ended continues the work here, since the
+        // turn-end hook ran before sync brought it.
+        let now = now_timestamp()?;
+        match continue_stranded_replies(&pool, &assignment_id, device, &scope, &now).await {
+            Ok(Some(follow_up)) => {
+                if let Err(error) =
+                    dispatch_assignment_job(app.clone(), db_url.clone(), follow_up).await
+                {
+                    eprintln!(
+                        "Follow-up of synced Chat assignment {} did not dispatch: {error}",
+                        assignment_id.as_str()
+                    );
+                }
+                continue;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!(
+                    "Synced replies of Chat assignment {} did not continue: {error}",
+                    assignment_id.as_str()
+                );
+                continue;
+            }
+        }
         if let Err(error) =
             deliver_pending_assignment_inputs(app.clone(), db_url.clone(), &pool, &assignment_id)
                 .await

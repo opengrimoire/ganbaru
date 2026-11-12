@@ -214,6 +214,42 @@ fn queued_input_waits_for_turn_end() {
 }
 
 #[test]
+fn a_queued_reply_synced_after_the_turn_ended_continues_the_work() {
+    tauri::async_runtime::block_on(async {
+        for state in ["ready_for_review", "completed"] {
+            let pool = review_work_in("working").await;
+            let posted = post_reply(&pool, "command:queue", Some(ChatFollowupRouting::Queue)).await;
+            // The turn-end hook ran before sync brought the reply, so only the synced work
+            // continues it.
+            set_review_state(&pool, state).await;
+            let scope = scope_accepting(&pool, ROUTED_ASSIGNMENT_ID).await;
+            let writers = chat_writers_of(&["device:desk"]);
+            let device = PostingDevice::this_device("device:desk", &writers);
+            let assignment_id = ChatWorkAssignmentId::new(ROUTED_ASSIGNMENT_ID).unwrap();
+            let now = UtcTimestamp::new(ROUTING_TIME).unwrap();
+
+            let follow_up =
+                assignments::continue_stranded_replies(&pool, &assignment_id, device, &scope, &now)
+                    .await
+                    .unwrap()
+                    .expect("the synced reply continues the work");
+
+            let (input_assignment, kind, delivery) = routed_input(&pool, &posted).await;
+            assert_eq!(input_assignment, follow_up.as_str(), "{state}");
+            assert_eq!(kind, "follow_up", "{state}");
+            assert_eq!(delivery, "pending", "{state}");
+            assert_eq!(
+                assignments::continue_stranded_replies(&pool, &assignment_id, device, &scope, &now)
+                    .await
+                    .unwrap(),
+                None,
+                "{state} work continues once"
+            );
+        }
+    });
+}
+
+#[test]
 fn later_queued_replies_reach_the_next_turn_together() {
     tauri::async_runtime::block_on(async {
         let pool = review_work_in("working").await;

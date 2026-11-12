@@ -28,3 +28,21 @@ impl<R: Runtime> ChatChangeEmitter for TauriChatChangeEmitter<R> {
         })
     }
 }
+
+/// Tells views that a committed write changed a thread's rows without an event. Delivery is best
+/// effort: the write already committed, and the next change or reload shows it.
+pub(crate) async fn notify_rows_changed<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &sqlx::SqlitePool,
+    thread_id: &ganbaru_chat_contracts::models::ChatThreadId,
+    keys: &[ganbaru_chat_contracts::models::ChatProjectionKey],
+) {
+    let notification =
+        ganbaru_chat::repository::reads::read_change_notification(pool, thread_id, keys.to_vec())
+            .await;
+    let delivered = notification
+        .and_then(|notification| TauriChatChangeEmitter::new(app.clone()).emit(&notification));
+    if let Err(error) = delivered {
+        eprintln!("Chat change notification failed with code {:?}", error.code);
+    }
+}

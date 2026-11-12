@@ -126,6 +126,7 @@ function exactTimelinePage(threadId: string, turnId: string, markdown: string): 
       activityId: `answer:${turnId}`,
       turnId,
       sequenceAnchor: 2,
+      changeSequence: 2,
       kind: "message",
       data: {
         schemaVersion: 1,
@@ -156,6 +157,7 @@ function exactTimelinePage(threadId: string, turnId: string, markdown: string): 
     previousCursor: null,
     nextCursor: null,
     threadRevision: 1,
+    changeCursor: 0,
   };
 }
 

@@ -34,6 +34,9 @@ pub(super) struct StoredSeries {
     pub(super) anchor_ms: i64,
     /// Stored due time of the pending occurrence.
     pub(super) next_occurrence_at: String,
+    /// When this device last held the pending occurrence for a quiet period to end, in Unix
+    /// milliseconds. The grace for a missed occurrence counts from it.
+    pub(super) deferred_until_ms: Option<i64>,
 }
 
 /// The occurrence of a series that a claimed send posts, with owned values for a
@@ -65,6 +68,30 @@ pub(super) enum OccurrenceDecision {
     Skip { due_at: String, next_at: String },
     /// The occurrence is not due yet, as when the dispatch row is older than the progress.
     Wait { due_at: String },
+    /// The device is quiet: hold the occurrence until `until_ms`, when the quiet period ends.
+    Defer { due_at: String, until_ms: i64 },
+}
+
+/// Whether this device holds repeating messages that defer for quiet periods, as one dispatch
+/// pass sees it.
+#[derive(Clone, Debug)]
+pub(super) enum QuietGate {
+    /// The device is not quiet.
+    Open,
+    /// The device is quiet until `until_ms`, or for one retry interval when the end is unknown.
+    Quiet { until_ms: i64 },
+    /// The quiet state could not be read, so a series that defers fails this attempt.
+    Unavailable(ChatError),
+}
+
+impl QuietGate {
+    /// When an occurrence that defers waits until, or `None` while the device is open.
+    pub(super) fn until_ms(&self) -> Option<i64> {
+        match self {
+            Self::Quiet { until_ms } => Some(*until_ms),
+            Self::Open | Self::Unavailable(_) => None,
+        }
+    }
 }
 
 /// What a claimed scheduled message posts.
@@ -77,9 +104,12 @@ pub(super) enum ClaimedSeries {
         occurrence: PendingOccurrence,
         spec: RecurrenceSpec,
     },
-    /// The claim was settled without a post: the occurrence was skipped, is not due yet, or the
-    /// rule cannot be resolved here, which fails the message until it is retried.
+    /// The claim was settled without a post: the occurrence was skipped, is not due yet, waits
+    /// for a quiet period to end, or the rule cannot be resolved here, which fails the message
+    /// until it is retried.
     Settled,
+    /// This attempt failed and retries like a failed send.
+    Failed(ChatError),
 }
 
 /// Milliseconds since the Unix epoch of the stored timestamp `value`.
@@ -125,13 +155,19 @@ pub(super) fn first_occurrence_at(
 }
 
 /// Decides what the series `series` of `scheduled_message_id` does with its pending occurrence
-/// at `now_ms`. An occurrence posts while it is at most [`MISSED_OCCURRENCE_GRACE_MINUTES`]
-/// late; the occurrence after a post or a skip is the first one after both the pending one and
-/// `now_ms`, so a late post never leaves an occurrence that is already due behind.
+/// at `now_ms` while the device is quiet until `quiet_until_ms`, or open when it is `None`.
+///
+/// An occurrence posts while it is at most [`MISSED_OCCURRENCE_GRACE_MINUTES`] late, counted
+/// from the end of the quiet period it was held for. A series that defers for quiet periods
+/// waits until the quiet period ends, and skips the occurrence instead when the following one
+/// is due by then. The occurrence after a post or a skip is the first one after both the
+/// pending one and `now_ms`, so a late post never leaves an occurrence that is already due
+/// behind.
 pub(super) fn decide_occurrence(
     scheduled_message_id: &str,
     series: &StoredSeries,
     now_ms: i64,
+    quiet_until_ms: Option<i64>,
 ) -> ChatResult<OccurrenceDecision> {
     let due_ms = timestamp_millis(&series.next_occurrence_at)?;
     if due_ms > now_ms {
@@ -140,10 +176,26 @@ pub(super) fn decide_occurrence(
         });
     }
     let next_at = timestamp_at_millis(next_occurrence(&series.spec, series.anchor_ms, now_ms)?)?;
-    if now_ms - due_ms > MISSED_OCCURRENCE_GRACE_MINUTES * MILLIS_PER_MINUTE {
+    let late_from_ms = series
+        .deferred_until_ms
+        .map_or(due_ms, |held| held.max(due_ms));
+    if now_ms - late_from_ms > MISSED_OCCURRENCE_GRACE_MINUTES * MILLIS_PER_MINUTE {
         return Ok(OccurrenceDecision::Skip {
             due_at: series.next_occurrence_at.clone(),
             next_at,
+        });
+    }
+    if let (QuietPolicy::Defer, Some(until_ms)) = (series.spec.quiet_policy, quiet_until_ms) {
+        let following_ms = next_occurrence(&series.spec, series.anchor_ms, due_ms)?;
+        if until_ms >= following_ms {
+            return Ok(OccurrenceDecision::Skip {
+                due_at: series.next_occurrence_at.clone(),
+                next_at,
+            });
+        }
+        return Ok(OccurrenceDecision::Defer {
+            due_at: series.next_occurrence_at.clone(),
+            until_ms,
         });
     }
     Ok(OccurrenceDecision::Post(PendingOccurrence {
@@ -220,9 +272,12 @@ where
 {
     // The fragment is a constant column list, so the query carries no external text.
     let row = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT {RECURRENCE_RULE_COLUMNS}, recurrence.next_occurrence_at, scheduled.scheduled_for
+        "SELECT {RECURRENCE_RULE_COLUMNS}, recurrence.next_occurrence_at, scheduled.scheduled_for,
+                dispatch.deferred_until
          FROM chat_scheduled_message_recurrences recurrence
          JOIN chat_scheduled_messages scheduled ON scheduled.id = recurrence.scheduled_message_id
+         LEFT JOIN chat_scheduled_message_dispatch dispatch
+           ON dispatch.scheduled_message_id = recurrence.scheduled_message_id
          WHERE recurrence.scheduled_message_id = ?"
     )))
     .bind(scheduled_message_id.as_str())
@@ -239,6 +294,12 @@ where
         next_occurrence_at: row
             .try_get("next_occurrence_at")
             .map_err(persistence_error)?,
+        deferred_until_ms: row
+            .try_get::<Option<String>, _>("deferred_until")
+            .map_err(persistence_error)?
+            .as_deref()
+            .map(timestamp_millis)
+            .transpose()?,
     }))
 }
 
@@ -494,15 +555,75 @@ async fn release_claim(
     Ok(())
 }
 
+/// Holds the occurrence claimed under `claim_token` until `until`, when the quiet period it
+/// waits for ends, and releases the claim with a fresh attempt count.
+async fn hold_for_quiet(
+    transaction: &mut Transaction<'_, Sqlite>,
+    scheduled_message_id: &ChatScheduledMessageId,
+    claim_token: &str,
+    until: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    sqlx::query(
+        "UPDATE chat_scheduled_message_dispatch
+         SET available_at = ?1, deferred_until = ?1, attempt_count = 0, claimed_at = NULL,
+             claim_token = NULL, updated_at = ?2
+         WHERE scheduled_message_id = ?3 AND claim_token = ?4",
+    )
+    .bind(until)
+    .bind(now.as_str())
+    .bind(scheduled_message_id.as_str())
+    .bind(claim_token)
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
+}
+
+/// Makes the occurrences this device holds for a quiet period due again when the quiet period
+/// `gate` describes ends sooner than they were held for, as when a Focus phase stops early.
+pub(super) async fn release_stale_quiet_holds(
+    pool: &SqlitePool,
+    gate: &QuietGate,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let bound = match gate {
+        QuietGate::Open => now.as_str().to_string(),
+        QuietGate::Quiet { until_ms } => timestamp_at_millis(*until_ms)?,
+        QuietGate::Unavailable(_) => return Ok(()),
+    };
+    sqlx::query(
+        "UPDATE chat_scheduled_message_dispatch
+         SET available_at = ?1, deferred_until = ?1, updated_at = ?2
+         WHERE claim_token IS NULL AND deferred_until IS NOT NULL AND available_at > ?1",
+    )
+    .bind(&bound)
+    .bind(now.as_str())
+    .execute(pool)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
+}
+
+/// How a claimed series settles a decision that posts nothing.
+enum SettleStep {
+    Skip { due_at: String, next_at: String },
+    Wait { due_at: String },
+    Defer { until: String },
+}
+
 /// Resolves what the due message `scheduled_message_id`, claimed by the dispatch under
-/// `claim_token`, posts at `now`. A missed occurrence is skipped and counted, an occurrence that
-/// is not due yet releases the claim until it is, and a rule this device cannot resolve fails
-/// the message until it is retried.
+/// `claim_token`, posts at `now` while this device's quiet state is `gate`. A missed occurrence
+/// is skipped and counted, an occurrence that is not due yet releases the claim until it is, an
+/// occurrence that defers for a quiet period is held until it ends, and a rule this device
+/// cannot resolve fails the message until it is retried. A series that defers fails this
+/// attempt when the quiet state could not be read.
 pub(super) async fn resolve_claimed_series(
     pool: &SqlitePool,
     scheduled_message_id: &ChatScheduledMessageId,
     claim_token: &str,
     now: &UtcTimestamp,
+    gate: &QuietGate,
 ) -> ChatResult<ClaimedSeries> {
     let Some(series) = read_series(pool, scheduled_message_id).await? else {
         return Ok(ClaimedSeries::OneTime);
@@ -511,6 +632,7 @@ pub(super) async fn resolve_claimed_series(
         scheduled_message_id.as_str(),
         &series,
         timestamp_millis(now.as_str())?,
+        gate.until_ms(),
     ) {
         Ok(decision) => decision,
         Err(error) => {
@@ -519,19 +641,27 @@ pub(super) async fn resolve_claimed_series(
             return Ok(ClaimedSeries::Settled);
         }
     };
-    let (due_at, skip_to) = match decision {
+    let step = match decision {
         OccurrenceDecision::Post(occurrence) => {
+            if let (QuietPolicy::Defer, QuietGate::Unavailable(error)) =
+                (series.spec.quiet_policy, gate)
+            {
+                return Ok(ClaimedSeries::Failed(error.clone()));
+            }
             return Ok(ClaimedSeries::Post {
                 occurrence,
                 spec: series.spec,
             });
         }
-        OccurrenceDecision::Skip { due_at, next_at } => (due_at, Some(next_at)),
-        OccurrenceDecision::Wait { due_at } => (due_at, None),
+        OccurrenceDecision::Skip { due_at, next_at } => SettleStep::Skip { due_at, next_at },
+        OccurrenceDecision::Wait { due_at } => SettleStep::Wait { due_at },
+        OccurrenceDecision::Defer { until_ms, .. } => SettleStep::Defer {
+            until: timestamp_at_millis(until_ms)?,
+        },
     };
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    match skip_to {
-        Some(next_at) => {
+    match step {
+        SettleStep::Skip { due_at, next_at } => {
             let skipped = move_series(
                 &mut transaction,
                 scheduled_message_id,
@@ -553,12 +683,22 @@ pub(super) async fn resolve_claimed_series(
                 .await?;
             }
         }
-        None => {
+        SettleStep::Wait { due_at } => {
             release_claim(
                 &mut transaction,
                 scheduled_message_id,
                 claim_token,
                 Some(&due_at),
+                now,
+            )
+            .await?;
+        }
+        SettleStep::Defer { until } => {
+            hold_for_quiet(
+                &mut transaction,
+                scheduled_message_id,
+                claim_token,
+                &until,
                 now,
             )
             .await?;

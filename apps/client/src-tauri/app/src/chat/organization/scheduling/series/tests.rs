@@ -30,6 +30,7 @@ fn series_due_at(next_occurrence_at: &str) -> StoredSeries {
         spec: hourly(),
         anchor_ms: millis(ANCHOR),
         next_occurrence_at: next_occurrence_at.to_owned(),
+        deferred_until_ms: None,
     }
 }
 
@@ -99,6 +100,7 @@ fn scheduled_occurrence_posts_within_the_grace_and_skips_after_it() {
         "scheduled:test",
         &series,
         millis("2026-08-04T01:10:00.000Z"),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -114,6 +116,7 @@ fn scheduled_occurrence_posts_within_the_grace_and_skips_after_it() {
         "scheduled:test",
         &series,
         millis("2026-08-04T01:10:00.001Z"),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -129,6 +132,7 @@ fn scheduled_occurrence_posts_within_the_grace_and_skips_after_it() {
         "scheduled:test",
         &series,
         millis("2026-08-04T03:30:00.000Z"),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -143,6 +147,7 @@ fn scheduled_occurrence_posts_within_the_grace_and_skips_after_it() {
         "scheduled:test",
         &series,
         millis("2026-08-04T00:59:59.999Z"),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -195,7 +200,7 @@ fn scheduled_series_posts_each_occurrence_once_and_advances() {
         let ClaimedSeries::Post {
             occurrence: first,
             spec,
-        } = resolve_claimed_series(&pool, &test_id(), "claim:first", &now)
+        } = resolve_claimed_series(&pool, &test_id(), "claim:first", &now, &QuietGate::Open)
             .await
             .unwrap()
         else {
@@ -328,9 +333,10 @@ fn scheduled_series_skips_a_missed_occurrence_without_posting() {
         let now = UtcTimestamp::new("2026-08-04T02:30:00.000Z").unwrap();
         claim(&pool, &now, "claim:late").await;
 
-        let resolved = resolve_claimed_series(&pool, &test_id(), "claim:late", &now)
-            .await
-            .unwrap();
+        let resolved =
+            resolve_claimed_series(&pool, &test_id(), "claim:late", &now, &QuietGate::Open)
+                .await
+                .unwrap();
 
         assert!(matches!(resolved, ClaimedSeries::Settled));
         assert_eq!(item_count(&pool).await, 0);
@@ -359,9 +365,10 @@ fn scheduled_series_waits_for_an_occurrence_that_is_not_due() {
         insert_test_series(&pool, &now).await;
         claim(&pool, &now, "claim:early").await;
 
-        let resolved = resolve_claimed_series(&pool, &test_id(), "claim:early", &now)
-            .await
-            .unwrap();
+        let resolved =
+            resolve_claimed_series(&pool, &test_id(), "claim:early", &now, &QuietGate::Open)
+                .await
+                .unwrap();
 
         assert!(matches!(resolved, ClaimedSeries::Settled));
         assert_eq!(progress(&pool).await, (ANCHOR.to_owned(), 0));
@@ -407,4 +414,229 @@ fn scheduled_series_are_limited_per_channel() {
             .unwrap_err();
         assert_eq!(error.field.as_deref(), Some("recurrence"));
     });
+}
+
+async fn deferred_until(pool: &SqlitePool) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT deferred_until FROM chat_scheduled_message_dispatch
+         WHERE scheduled_message_id = 'scheduled:test'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn scheduled_quiet_period_defers_or_skips_an_occurrence_by_policy() {
+    let series = series_due_at("2026-08-04T01:00:00.000Z");
+    let now = millis("2026-08-04T01:00:00.000Z");
+    assert_eq!(
+        decide_occurrence(
+            "scheduled:test",
+            &series,
+            now,
+            Some(millis("2026-08-04T01:40:00.000Z")),
+        )
+        .unwrap(),
+        OccurrenceDecision::Defer {
+            due_at: "2026-08-04T01:00:00.000Z".into(),
+            until_ms: millis("2026-08-04T01:40:00.000Z"),
+        }
+    );
+
+    // A quiet period lasting until the following occurrence skips this one and counts it.
+    assert_eq!(
+        decide_occurrence(
+            "scheduled:test",
+            &series,
+            now,
+            Some(millis("2026-08-04T02:00:00.000Z")),
+        )
+        .unwrap(),
+        OccurrenceDecision::Skip {
+            due_at: "2026-08-04T01:00:00.000Z".into(),
+            next_at: "2026-08-04T02:00:00.000Z".into(),
+        }
+    );
+
+    let ignoring = StoredSeries {
+        spec: RecurrenceSpec {
+            quiet_policy: QuietPolicy::Ignore,
+            ..hourly()
+        },
+        ..series.clone()
+    };
+    assert!(matches!(
+        decide_occurrence(
+            "scheduled:test",
+            &ignoring,
+            now,
+            Some(millis("2026-08-04T01:40:00.000Z")),
+        )
+        .unwrap(),
+        OccurrenceDecision::Post(_)
+    ));
+
+    // A held occurrence counts its grace from the end of the quiet period it waited for.
+    let held = StoredSeries {
+        deferred_until_ms: Some(millis("2026-08-04T01:40:00.000Z")),
+        ..series.clone()
+    };
+    assert!(matches!(
+        decide_occurrence(
+            "scheduled:test",
+            &held,
+            millis("2026-08-04T01:45:00.000Z"),
+            None,
+        )
+        .unwrap(),
+        OccurrenceDecision::Post(_)
+    ));
+    assert!(matches!(
+        decide_occurrence(
+            "scheduled:test",
+            &series,
+            millis("2026-08-04T01:45:00.000Z"),
+            None,
+        )
+        .unwrap(),
+        OccurrenceDecision::Skip { .. }
+    ));
+}
+
+#[test]
+fn scheduled_quiet_hold_posts_when_the_quiet_period_ends() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-04T00:01:00.000Z").unwrap();
+        insert_test_series(&pool, &now).await;
+        claim(&pool, &now, "claim:quiet").await;
+        let quiet = QuietGate::Quiet {
+            until_ms: millis("2026-08-04T00:40:00.000Z"),
+        };
+
+        let resolved = resolve_claimed_series(&pool, &test_id(), "claim:quiet", &now, &quiet)
+            .await
+            .unwrap();
+
+        assert!(matches!(resolved, ClaimedSeries::Settled));
+        assert_eq!(item_count(&pool).await, 0);
+        assert_eq!(progress(&pool).await, (ANCHOR.to_owned(), 0));
+        assert_eq!(
+            dispatch(&pool).await,
+            ("2026-08-04T00:40:00.000Z".to_owned(), 0, None, 0)
+        );
+        let recurrence = read_scheduled_message(&pool, &test_id())
+            .await
+            .unwrap()
+            .recurrence
+            .unwrap();
+        assert_eq!(
+            recurrence.deferred_until.unwrap().as_str(),
+            "2026-08-04T00:40:00.000Z"
+        );
+
+        // A quiet period that lasts longer leaves the hold as it is.
+        let later_quiet = QuietGate::Quiet {
+            until_ms: millis("2026-08-04T00:50:00.000Z"),
+        };
+        release_stale_quiet_holds(&pool, &later_quiet, &now)
+            .await
+            .unwrap();
+        assert_eq!(dispatch(&pool).await.0, "2026-08-04T00:40:00.000Z");
+
+        // The quiet period ended early, as when a Focus phase stops: the hold is due now.
+        let open_at = UtcTimestamp::new("2026-08-04T00:20:00.000Z").unwrap();
+        release_stale_quiet_holds(&pool, &QuietGate::Open, &open_at)
+            .await
+            .unwrap();
+        assert_eq!(dispatch(&pool).await.0, "2026-08-04T00:20:00.000Z");
+        assert_eq!(
+            deferred_until(&pool).await.as_deref(),
+            Some("2026-08-04T00:20:00.000Z")
+        );
+
+        // Past the grace from its due time, the held occurrence still posts.
+        let end = UtcTimestamp::new("2026-08-04T00:25:00.000Z").unwrap();
+        claim(&pool, &end, "claim:end").await;
+        let ClaimedSeries::Post { occurrence, .. } =
+            resolve_claimed_series(&pool, &test_id(), "claim:end", &end, &QuietGate::Open)
+                .await
+                .unwrap()
+        else {
+            panic!("the held occurrence posts once the quiet period ends");
+        };
+        assert_eq!(occurrence.due_at, ANCHOR);
+        assert_eq!(occurrence.next_at, "2026-08-04T01:00:00.000Z");
+    });
+}
+
+#[test]
+fn scheduled_quiet_state_unavailable_fails_only_a_deferring_attempt() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-04T00:01:00.000Z").unwrap();
+        insert_test_series(&pool, &now).await;
+        claim(&pool, &now, "claim:unavailable").await;
+        let gate = QuietGate::Unavailable(ChatError::new(
+            ChatErrorCode::Internal,
+            "no local time",
+            true,
+        ));
+
+        let resolved = resolve_claimed_series(&pool, &test_id(), "claim:unavailable", &now, &gate)
+            .await
+            .unwrap();
+
+        let ClaimedSeries::Failed(error) = resolved else {
+            panic!("a series that defers cannot post without the quiet state");
+        };
+        assert_eq!(error.message, "no local time");
+        assert_eq!(progress(&pool).await, (ANCHOR.to_owned(), 0));
+        assert_eq!(
+            dispatch(&pool).await.2.as_deref(),
+            Some("claim:unavailable")
+        );
+
+        sqlx::query(
+            "UPDATE chat_scheduled_message_recurrences SET quiet_policy = 'ignore'
+             WHERE scheduled_message_id = 'scheduled:test'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            resolve_claimed_series(&pool, &test_id(), "claim:unavailable", &now, &gate)
+                .await
+                .unwrap(),
+            ClaimedSeries::Post { .. }
+        ));
+    });
+}
+
+#[test]
+fn scheduled_quiet_period_without_a_known_end_holds_for_one_retry_interval() {
+    use crate::chat::quiet_periods::QuietReading;
+    use ganbaru_chat::scheduling::{QuietPeriodState, QuietReason};
+    let now = millis("2026-08-04T00:00:00.000Z");
+    let quiet = |ends_at_ms| QuietReading {
+        state: QuietPeriodState::Quiet {
+            reason: QuietReason::Focus,
+            ends_local: None,
+        },
+        ends_at_ms,
+    };
+    assert_eq!(
+        super::super::quiet_gate_of(quiet(None), now).until_ms(),
+        Some(now + super::super::SCHEDULE_RETRY_SECONDS * 1000)
+    );
+    assert_eq!(
+        super::super::quiet_gate_of(quiet(Some(now + 5_000)), now).until_ms(),
+        Some(now + 5_000)
+    );
+    let open = QuietReading {
+        state: QuietPeriodState::Open,
+        ends_at_ms: None,
+    };
+    assert_eq!(super::super::quiet_gate_of(open, now).until_ms(), None);
 }

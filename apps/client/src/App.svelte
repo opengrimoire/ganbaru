@@ -847,8 +847,12 @@
     },
   });
 
+  // Repeating messages wait for a Focus phase to end, so a phase change re-arms the dispatch.
+  const scheduledFocusPhaseKey = $derived(`${pomodoro.isActive}:${pomodoro.isRunning}:${pomodoro.phase}`);
+
   $effect(() => {
     const _version = chat.scheduledMessagesVersion;
+    const _focusPhase = scheduledFocusPhaseKey;
     const enabled = isMainWindow && chat.loaded;
     const wasEnabled = chatScheduledMessageScheduler.isEnabled();
     chatScheduledMessageScheduler.setEnabled(enabled);

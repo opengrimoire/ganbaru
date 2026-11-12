@@ -1,14 +1,13 @@
 //! Device-local Chat bindings and provider runtime metadata.
 
-#[cfg(desktop)]
 use crate::vault::{active_vault_id, ensure_device_id, read_app_state, update_app_state};
+use ganbaru_chat::scheduling::QuietPeriodPreferences;
 use ganbaru_chat_contracts::models::{
     ChatThreadId, ProjectWorkingFolderId, ProviderInstanceId, ProviderModelCatalog,
     ProviderProbeResult, UtcTimestamp,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(desktop)]
 use tauri::Runtime;
 
 pub const CHAT_DEVICE_STATE_SCHEMA_VERSION: u32 = 1;
@@ -85,6 +84,10 @@ pub struct ChatDeviceScope {
     /// config directory. Discarding the data replaces the token.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub preview_data_stores: BTreeMap<ProjectWorkingFolderId, String>,
+    /// Quiet windows during which this device holds repeating messages. They never sync:
+    /// quiet hours describe one device's place in a person's day.
+    #[serde(default)]
+    pub quiet_periods: QuietPeriodPreferences,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -103,7 +106,6 @@ impl Default for ChatDeviceState {
     }
 }
 
-#[cfg(desktop)]
 impl ChatDeviceState {
     pub fn scope(&self, vault_id: &str, device_id: &str) -> Option<&ChatDeviceScope> {
         self.vaults
@@ -253,7 +255,6 @@ pub fn forget_scheduled_message_consent(
     }
 }
 
-#[cfg(desktop)]
 pub fn read_active_device_scope<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<ChatDeviceScope, String> {
@@ -267,7 +268,6 @@ pub fn read_active_device_scope<R: Runtime>(
         .unwrap_or_default())
 }
 
-#[cfg(desktop)]
 pub fn update_active_device_scope<R: Runtime, T>(
     app: &tauri::AppHandle<R>,
     update: impl FnOnce(&mut ChatDeviceScope) -> Result<T, String>,

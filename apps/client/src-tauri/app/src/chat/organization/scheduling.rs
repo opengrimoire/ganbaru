@@ -31,12 +31,12 @@ use ganbaru_chat::coordination::acceptance::{
     scheduled_consent_digest, scheduled_series_consent_digest,
 };
 use ganbaru_chat::coordination::contracts::*;
-use ganbaru_chat::scheduling::{RecurrenceSpec, validate_recurrence};
+use ganbaru_chat::scheduling::{QuietPeriodState, RecurrenceSpec, validate_recurrence};
 use ganbaru_chat_contracts::models::*;
 use ganbaru_sync::domains::chat::{
     MAX_SCHEDULED_CONTENT_BYTES, MAX_SCHEDULED_REFERENCES, MAX_SCHEDULED_REQUEST_BYTES,
 };
-use series::{ClaimedSeries, PendingOccurrence, RECURRENCE_RULE_COLUMNS};
+use series::{ClaimedSeries, PendingOccurrence, QuietGate, RECURRENCE_RULE_COLUMNS};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::time::SystemTime;
 
@@ -1013,6 +1013,60 @@ async fn record_send_failure(
     transaction.commit().await.map_err(persistence_error)
 }
 
+/// Records the failed attempt `attempt_count` of the send claimed under `claim_token`: it
+/// retries after [`SCHEDULE_RETRY_SECONDS`] until [`MAX_SCHEDULE_DISPATCH_ATTEMPTS`], then
+/// fails the message until it is retried.
+async fn record_failed_attempt(
+    pool: &SqlitePool,
+    scheduled_message_id: &ChatScheduledMessageId,
+    claim_token: &str,
+    attempt_count: i64,
+    error: &ChatError,
+) -> ChatResult<()> {
+    let retry_at = (DateTime::<Utc>::from(SystemTime::now())
+        + Duration::seconds(SCHEDULE_RETRY_SECONDS))
+    .to_rfc3339_opts(SecondsFormat::Millis, true);
+    let retry_at = (attempt_count < MAX_SCHEDULE_DISPATCH_ATTEMPTS).then_some(retry_at);
+    record_send_failure(
+        pool,
+        scheduled_message_id,
+        claim_token,
+        error,
+        retry_at.as_deref(),
+    )
+    .await
+}
+
+/// This device's quiet state at `now` as repeating messages that defer see it. A quiet period
+/// with no known end, as a paused Focus phase, holds them for one retry interval at a time.
+async fn quiet_gate(app: &tauri::AppHandle, now: &UtcTimestamp) -> ChatResult<QuietGate> {
+    let now_ms = series::timestamp_millis(now.as_str())?;
+    Ok(
+        match crate::chat::quiet_periods::quiet_reading_at(app, now_ms).await {
+            Ok(reading) => quiet_gate_of(reading, now_ms),
+            Err(error) => {
+                eprintln!(
+                    "Quiet state is unavailable for scheduled messages: {}",
+                    error.message
+                );
+                QuietGate::Unavailable(error)
+            }
+        },
+    )
+}
+
+/// The gate of `reading` taken at `now_ms`.
+fn quiet_gate_of(reading: crate::chat::quiet_periods::QuietReading, now_ms: i64) -> QuietGate {
+    match reading.state {
+        QuietPeriodState::Open => QuietGate::Open,
+        QuietPeriodState::Quiet { .. } => QuietGate::Quiet {
+            until_ms: reading
+                .ends_at_ms
+                .unwrap_or_else(|| now_ms.saturating_add(SCHEDULE_RETRY_SECONDS * 1000)),
+        },
+    }
+}
+
 /// Sends the scheduled messages this device executes that are due, and reports when the next
 /// one is due here.
 pub(super) async fn dispatch_due_scheduled_messages(
@@ -1023,6 +1077,8 @@ pub(super) async fn dispatch_due_scheduled_messages(
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let now = now_timestamp()?;
     prepare_scheduled_dispatch(&pool, &device_id, &now).await?;
+    let quiet = quiet_gate(&app, &now).await?;
+    series::release_stale_quiet_holds(&pool, &quiet, &now).await?;
     #[cfg(desktop)]
     sweep_scheduled_consents(&app, &pool).await;
     let ids = sqlx::query_scalar::<_, String>(
@@ -1077,14 +1133,30 @@ pub(super) async fn dispatch_due_scheduled_messages(
         };
         let request_data: String = row.try_get("request_data").map_err(persistence_error)?;
         let attempt_count: i64 = row.try_get("attempt_count").map_err(persistence_error)?;
-        let (occurrence, spec) =
-            match series::resolve_claimed_series(&pool, &scheduled_message_id, &claim_token, &now)
-                .await?
-            {
-                ClaimedSeries::OneTime => (None, None),
-                ClaimedSeries::Post { occurrence, spec } => (Some(occurrence), Some(spec)),
-                ClaimedSeries::Settled => continue,
-            };
+        let (occurrence, spec) = match series::resolve_claimed_series(
+            &pool,
+            &scheduled_message_id,
+            &claim_token,
+            &now,
+            &quiet,
+        )
+        .await?
+        {
+            ClaimedSeries::OneTime => (None, None),
+            ClaimedSeries::Post { occurrence, spec } => (Some(occurrence), Some(spec)),
+            ClaimedSeries::Settled => continue,
+            ClaimedSeries::Failed(error) => {
+                record_failed_attempt(
+                    &pool,
+                    &scheduled_message_id,
+                    &claim_token,
+                    attempt_count,
+                    &error,
+                )
+                .await?;
+                continue;
+            }
+        };
         let message = serde_json::from_str::<PostChatMessageCommand>(&request_data)
             .map_err(serialization_error);
         let result = match message {
@@ -1120,16 +1192,12 @@ pub(super) async fn dispatch_due_scheduled_messages(
                 }
             }
             Err(error) => {
-                let retry_at = (DateTime::<Utc>::from(SystemTime::now())
-                    + Duration::seconds(SCHEDULE_RETRY_SECONDS))
-                .to_rfc3339_opts(SecondsFormat::Millis, true);
-                let retry_at = (attempt_count < MAX_SCHEDULE_DISPATCH_ATTEMPTS).then_some(retry_at);
-                record_send_failure(
+                record_failed_attempt(
                     &pool,
                     &scheduled_message_id,
                     &claim_token,
+                    attempt_count,
                     &error,
-                    retry_at.as_deref(),
                 )
                 .await?;
             }

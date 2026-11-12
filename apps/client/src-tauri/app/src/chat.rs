@@ -40,6 +40,7 @@ pub mod preview;
 pub mod provenance;
 #[cfg(desktop)]
 pub mod provider_files;
+pub mod quiet_periods;
 #[cfg(desktop)]
 pub mod restore_commands;
 #[cfg(desktop)]

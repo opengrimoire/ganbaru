@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessageRead } from "$lib/chat/contracts";
-import { buildChannelFeedRows, CHANNEL_FEED_UNREAD_ROW_ID, type ChannelFeedRow } from "./channel-feed-rows";
+import {
+  buildChannelFeedRows,
+  CHANNEL_FEED_UNREAD_ROW_ID,
+  channelFeedDateDividerRowId,
+  channelFeedMessageRowId,
+  type ChannelFeedRow,
+} from "./channel-feed-rows";
 import { unreadMessageStartIndex } from "./organizational-message-model";
 
 /** Builds an ISO timestamp from local wall time, so day boundaries hold in every test time zone. */
@@ -83,7 +89,23 @@ describe("channel feed rows", () => {
     expect(shape(buildChannelFeedRows(messages, 1, 0, "en"))).toEqual(["date first", "a", "b"]);
   });
 
-  it("keeps every existing row ID when older messages of the same day are prepended", () => {
+  it("keeps row IDs unique when order keys put one local day before and after another", () => {
+    const messages = [
+      message("a", "ana", localTime(11, 9)),
+      message("b", "ben", localTime(10, 22)),
+      message("c", "ana", localTime(11, 9, 1)),
+    ];
+
+    const rows = buildChannelFeedRows(messages, messages.length, 0, "en");
+
+    expect(shape(rows)).toEqual(["date first", "a", "date", "b", "date", "c"]);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(rows.length);
+    expect(rows.filter((row) => row.kind === "date-divider").map((row) => row.id)).toEqual(
+      ["a", "b", "c"].map(channelFeedDateDividerRowId),
+    );
+  });
+
+  it("keeps every message row ID when older messages of the same day are prepended", () => {
     const newer = [message("c", "ana", localTime(10, 12)), message("d", "ben", localTime(11, 8))];
     const older = [message("a", "ben", localTime(9, 20)), message("b", "ana", localTime(10, 7))];
 
@@ -91,10 +113,13 @@ describe("channel feed rows", () => {
     const after = buildChannelFeedRows([...older, ...newer], older.length + newer.length, 0, "en");
 
     const afterIds = new Set(after.map((row) => row.id));
-    for (const row of before) expect(afterIds.has(row.id)).toBe(true);
-    expect(before[0]?.kind === "date-divider" && before[0].first).toBe(true);
-    const sameDay = after.find((row) => row.id === before[0]?.id);
-    expect(sameDay?.kind === "date-divider" && sameDay.first).toBe(false);
+    for (const row of before) {
+      if (row.kind === "message") expect(afterIds.has(row.id)).toBe(true);
+    }
+    expect(shape(after)).toEqual(["date first", "a", "date", "b", "c", "date", "d"]);
+    expect(afterIds.has(channelFeedDateDividerRowId("c"))).toBe(false);
+    expect(after[2]?.id).toBe(channelFeedDateDividerRowId("b"));
+    expect(after.at(-1)?.id).toBe(channelFeedMessageRowId("d"));
   });
 
   it("returns no rows for an empty channel", () => {

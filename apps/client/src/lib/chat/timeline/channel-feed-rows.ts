@@ -38,6 +38,15 @@ export function channelFeedMessageRowId(messageItemId: string): string {
 }
 
 /**
+ * Returns the feed row ID of the date divider shown before a channel message. Messages follow their order keys, not
+ * their writer clocks, so one local day can start more than once in a feed; keying the divider by the message it
+ * precedes keeps every row ID unique.
+ */
+export function channelFeedDateDividerRowId(messageItemId: string): string {
+  return `date:${messageItemId}`;
+}
+
+/**
  * Builds the flat feed rows for loaded channel messages, computing dividers and grouping over the full list so a
  * virtual window never changes them.
  *
@@ -45,8 +54,7 @@ export function channelFeedMessageRowId(messageItemId: string): string {
  * @param unreadStart Index of the first unread message, or `messages.length` when none is unread.
  * @param unreadCount Unread count of the channel; the unread divider shows only when it is positive.
  * @param locale Locale used for the date divider labels.
- * @returns Rows in display order. Date divider IDs are keyed by the local day, so prepending older messages of the
- * same day keeps every existing row ID.
+ * @returns Rows in display order with unique row IDs. Prepending older messages keeps every message row ID.
  */
 export function buildChannelFeedRows(
   messages: readonly ChatMessageRead[],
@@ -66,7 +74,7 @@ export function buildChannelFeedRows(
     if (!previous || localDayKey(previous.createdAt) !== day) {
       rows.push({
         kind: "date-divider",
-        id: `date:${day}`,
+        id: channelFeedDateDividerRowId(message.itemId),
         label: formatDateTime(locale, Date.parse(message.createdAt), { dateStyle: "full" }),
         first: index === 0,
       });

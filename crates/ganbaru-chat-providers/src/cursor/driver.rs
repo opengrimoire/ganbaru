@@ -336,6 +336,33 @@ impl CursorProviderDriver {
         }
     }
 
+    /// Spawns the agent in a probe directory, sends only `initialize`, and stops it.
+    ///
+    /// No `authenticate`, session, or extension request reaches the agent, so a probe never
+    /// creates provider state.
+    pub(super) async fn probe_initialize(
+        &self,
+        context: &DriverOperationContext,
+    ) -> ChatResult<(AcpInitializeResponse, AcpProviderAbout)> {
+        let workspace = crate::probe_directory::ProbeDirectory::create()?;
+        let (mut connection, about) = self.open_connection(&workspace).await?;
+        // The receiver stays alive until the stop so agent notifications never fail a write.
+        let (inbound, result) = match connection.take_inbound() {
+            Ok(receiver) => (
+                Some(receiver),
+                negotiate_initialize(self.flavor, &connection.client(), context).await,
+            ),
+            Err(error) => (None, Err(error)),
+        };
+        let stop = connection
+            .stop(SESSION_GRACEFUL_STOP, SESSION_FORCE_STOP)
+            .await;
+        drop(inbound);
+        let initialize = result?;
+        stop?;
+        Ok((initialize, about))
+    }
+
     pub(super) async fn open_session(
         &mut self,
         input: CursorSessionInput,
@@ -424,7 +451,7 @@ impl CursorProviderDriver {
         let capabilities = negotiated_capabilities_for(
             self.flavor,
             &started.initialize,
-            &started.setup,
+            Some(&started.setup),
             self.observed,
         );
         let effective_model_id = input.model_id().cloned().or_else(|| {
@@ -551,7 +578,7 @@ impl CursorProviderDriver {
         })
     }
 
-    fn grok_uses_api_key(&self) -> bool {
+    pub(super) fn grok_uses_api_key(&self) -> bool {
         self.flavor == AcpProviderFlavor::Grok
             && self
                 .configuration

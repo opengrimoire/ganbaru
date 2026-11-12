@@ -5,7 +5,9 @@ use super::executable::*;
 use super::interactions::*;
 use super::normalizer::{CursorEventNormalizer, CursorRouteState};
 use super::protocol::*;
-use super::session::{AcpInboundQueue, initialize_session};
+use super::session::{
+    AcpInboundQueue, authentication_is_ready, initialize_session, preferred_auth_method,
+};
 use super::transport::AcpInboundMessage;
 use crate::events::{CanonicalEvent, CanonicalRuntimeEvent};
 use crate::models::*;
@@ -258,7 +260,7 @@ fn negotiated_capabilities_and_model_traits_are_truthful() {
     let capabilities = negotiated_capabilities_for(
         AcpProviderFlavor::Cursor,
         &initialize,
-        &setup,
+        Some(&setup),
         ObservedAcpCapabilities::default(),
     );
     for capability in [
@@ -294,20 +296,22 @@ fn negotiated_capabilities_and_model_traits_are_truthful() {
             }
         }))
         .unwrap(),
-        &parse_session_setup(
-            json!({
-                "sessionId": "limited",
-                "configOptions": [{
-                    "id": "thinking",
-                    "name": "Thinking",
-                    "type": "boolean",
-                    "currentValue": false,
-                    "options": []
-                }]
-            }),
-            true,
-        )
-        .unwrap(),
+        Some(
+            &parse_session_setup(
+                json!({
+                    "sessionId": "limited",
+                    "configOptions": [{
+                        "id": "thinking",
+                        "name": "Thinking",
+                        "type": "boolean",
+                        "currentValue": false,
+                        "options": []
+                    }]
+                }),
+                true,
+            )
+            .unwrap(),
+        ),
         ObservedAcpCapabilities::default(),
     );
     assert!(!disabled.supports(ProviderCapability::NativeResume));
@@ -329,7 +333,7 @@ fn every_acp_capability_has_a_source() {
         let capabilities = negotiated_capabilities_for(
             flavor,
             &initialize,
-            &setup,
+            Some(&setup),
             ObservedAcpCapabilities::default(),
         );
         for capability in [
@@ -378,8 +382,12 @@ fn observed_capabilities_turn_on_at_the_next_session_start() {
     });
     observed.merge(ObservedAcpCapabilities::default());
     assert!(observed.slash_commands);
-    let capabilities =
-        negotiated_capabilities_for(AcpProviderFlavor::Cursor, &initialize, &setup, observed);
+    let capabilities = negotiated_capabilities_for(
+        AcpProviderFlavor::Cursor,
+        &initialize,
+        Some(&setup),
+        observed,
+    );
     assert!(capabilities.supports(ProviderCapability::SlashCommands));
 }
 
@@ -1082,4 +1090,51 @@ fn cursor_versions_admit_against_the_tested_range() {
             ),
         }
     }
+}
+
+#[test]
+fn probe_readiness_follows_advertised_auth_methods() {
+    let none = minimal_initialize(json!({}));
+    assert!(authentication_is_ready(
+        &none,
+        preferred_auth_method(AcpProviderFlavor::Cursor, false)
+    ));
+    let cursor = parse_initialize(initialize_response(true)).unwrap();
+    assert!(authentication_is_ready(
+        &cursor,
+        preferred_auth_method(AcpProviderFlavor::Cursor, false)
+    ));
+    assert!(!authentication_is_ready(
+        &cursor,
+        preferred_auth_method(AcpProviderFlavor::Grok, true)
+    ));
+    let grok = parse_initialize(json!({
+        "protocolVersion": 1,
+        "agentCapabilities": {},
+        "authMethods": [{ "id": "cached_token", "name": "Cached token" }]
+    }))
+    .unwrap();
+    assert!(authentication_is_ready(
+        &grok,
+        preferred_auth_method(AcpProviderFlavor::Grok, false)
+    ));
+    assert!(!authentication_is_ready(
+        &grok,
+        preferred_auth_method(AcpProviderFlavor::Grok, true)
+    ));
+}
+
+#[test]
+fn probe_capabilities_keep_session_dependent_entries_potential() {
+    let initialize = minimal_initialize(json!({}));
+    let capabilities = negotiated_capabilities_for(
+        AcpProviderFlavor::Cursor,
+        &initialize,
+        None,
+        ObservedAcpCapabilities::default(),
+    );
+    assert!(capabilities.supports(ProviderCapability::NativePlan));
+    assert!(capabilities.supports(ProviderCapability::DynamicModelChange));
+    assert!(!capabilities.supports(ProviderCapability::NativeResume));
+    assert!(!capabilities.supports(ProviderCapability::Images));
 }

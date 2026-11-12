@@ -566,24 +566,27 @@ impl ObservedAcpCapabilities {
 /// Builds the capability set from what the agent negotiated and showed.
 ///
 /// No entry is true without a source: `initialize`, the session setup, the flavor's known
-/// extensions, or an observed update.
+/// extensions, or an observed update. Without a session setup, as in an `initialize`-only
+/// probe, Plan mode and dynamic models stay potential until a session confirms them.
 pub fn negotiated_capabilities_for(
     flavor: super::driver::AcpProviderFlavor,
     initialize: &AcpInitializeResponse,
-    setup: &AcpSessionSetup,
+    setup: Option<&AcpSessionSetup>,
     observed: ObservedAcpCapabilities,
 ) -> ProviderCapabilities {
     let provider_name = flavor.display_name();
-    let models_are_dynamic = match flavor {
+    let models_are_dynamic = setup.is_none_or(|setup| match flavor {
         super::driver::AcpProviderFlavor::Cursor => {
             model_config_option(&setup.config_options).is_some()
         }
         super::driver::AcpProviderFlavor::Grok => setup.models.is_some(),
-    };
-    let supports_plan = setup
-        .modes
-        .as_ref()
-        .is_some_and(|modes| find_mode(modes, InteractionMode::Plan).is_some());
+    });
+    let supports_plan = setup.is_none_or(|setup| {
+        setup
+            .modes
+            .as_ref()
+            .is_some_and(|modes| find_mode(modes, InteractionMode::Plan).is_some())
+    });
     let extensions = flavor.offers_structured_extensions();
     let entries = acp_capability_kinds(flavor)
         .into_iter()

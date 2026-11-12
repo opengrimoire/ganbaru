@@ -249,6 +249,34 @@ fn driver_fixture_covers_prompt_plan_cancel_and_cleanup() {
     });
 }
 
+#[test]
+fn probe_sends_only_initialize_and_stops_the_agent() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("probe");
+        let state = Arc::new(AcpFixtureState::default());
+        let factory_state = Arc::clone(&state);
+        let mut driver = CursorProviderDriver::new(configuration(workspace.path(), None)).unwrap();
+        driver.set_connection_factory(Arc::new(move |_workspace| {
+            Ok((
+                fixture_connection(FixtureScenario::Healthy, Arc::clone(&factory_state)),
+                about().into(),
+            ))
+        }));
+        let probe = driver.probe(&context("probe")).await.unwrap();
+        wait_for_closed(&state).await;
+        assert_eq!(request_methods(&state.received()), ["initialize"]);
+        assert_eq!(probe.state, ProbeState::Healthy);
+        assert_eq!(probe.negotiated_protocol_version.as_deref(), Some("1"));
+        assert!(
+            probe
+                .capabilities
+                .supports(ProviderCapability::NativeResume)
+        );
+        assert!(probe.capabilities.supports(ProviderCapability::NativePlan));
+        assert!(driver.cached_model_catalog().is_none());
+    });
+}
+
 async fn read_json_line<R>(reader: &mut BufReader<R>) -> Value
 where
     R: tokio::io::AsyncRead + Unpin,

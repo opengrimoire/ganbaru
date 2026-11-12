@@ -49,7 +49,8 @@ use callbacks::{callback_permission_error, require_acp_session};
 pub use configuration::initialize_session;
 pub use configuration::{
     AcpRequestedConfiguration, AcpSessionInitialization, apply_provider_configuration,
-    initialize_provider_session,
+    authentication_is_ready, initialize_provider_session, negotiate_initialize,
+    preferred_auth_method, unsupported_authentication,
 };
 pub use load_replay::AcpInboundQueue;
 pub use router::{restore_pending, spawn_cursor_router, take_pending};

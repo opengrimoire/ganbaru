@@ -66,49 +66,8 @@ pub async fn initialize_provider_session(
     } = initialization;
     let client = connection.client();
     let provider_name = flavor.display_name();
-    let filesystem = FileSystemCapabilities::new()
-        .read_text_file(true)
-        .write_text_file(true);
-    let capabilities = ClientCapabilities::new()
-        .fs(filesystem)
-        .terminal(true)
-        .meta(serde_json::Map::from_iter([(
-            "parameterizedModelPicker".to_string(),
-            Value::Bool(true),
-        )]));
-    let initialize_request = InitializeRequest::new(ProtocolVersion::V1)
-        .client_capabilities(capabilities)
-        .client_info(Implementation::new("ganbaru", env!("CARGO_PKG_VERSION")));
-    let initialize_request = serde_json::to_value(initialize_request)
-        .map_err(|_| protocol_error("ACP initialization request"))?;
-    let initialize_value = client
-        .request("initialize", initialize_request, context)
-        .await
-        .map_err(|error| error.to_chat_error("initialization"))?;
-    let negotiated: OfficialInitializeResponse =
-        serde_json::from_value(initialize_value.clone())
-            .map_err(|_| protocol_error("ACP initialization response"))?;
-    if negotiated.protocol_version != ProtocolVersion::V1 {
-        return Err(ChatError::new(
-            ChatErrorCode::UnsupportedVersion,
-            format!(
-                "{provider_name} negotiated unsupported ACP protocol version {}",
-                negotiated.protocol_version
-            ),
-            true,
-        ));
-    }
-    let initialize = parse_initialize(initialize_value)?;
-    let preferred_auth_method = match flavor {
-        AcpProviderFlavor::Cursor => CURSOR_AUTH_METHOD,
-        AcpProviderFlavor::Grok => {
-            if grok_uses_api_key {
-                "xai.api_key"
-            } else {
-                "cached_token"
-            }
-        }
-    };
+    let initialize = negotiate_initialize(flavor, &client, context).await?;
+    let preferred_auth_method = preferred_auth_method(flavor, grok_uses_api_key);
     if initialize
         .auth_methods
         .iter()
@@ -123,11 +82,7 @@ pub async fn initialize_provider_session(
             .await
             .map_err(|error| authentication_error(error, "authentication"))?;
     } else if !initialize.auth_methods.is_empty() {
-        return Err(ChatError::new(
-            ChatErrorCode::AuthenticationRequired,
-            format!("{provider_name} requires an authentication method Ganbaru does not support"),
-            true,
-        ));
+        return Err(unsupported_authentication(provider_name));
     }
     let accepts_http_mcp = initialize.agent_capabilities.accepts_http_mcp(flavor);
     let host_tools_omitted = internal_mcp.is_some() && !accepts_http_mcp;
@@ -185,6 +140,84 @@ pub async fn initialize_provider_session(
         models,
         host_tools_omitted,
     })
+}
+
+/// Sends `initialize` and checks the negotiated ACP protocol version.
+///
+/// This is the whole exchange an `initialize`-only probe makes: no authentication, session, or
+/// extension request follows it.
+pub async fn negotiate_initialize(
+    flavor: AcpProviderFlavor,
+    client: &AcpRpcClient,
+    context: &DriverOperationContext,
+) -> ChatResult<AcpInitializeResponse> {
+    let provider_name = flavor.display_name();
+    let filesystem = FileSystemCapabilities::new()
+        .read_text_file(true)
+        .write_text_file(true);
+    let capabilities = ClientCapabilities::new()
+        .fs(filesystem)
+        .terminal(true)
+        .meta(serde_json::Map::from_iter([(
+            "parameterizedModelPicker".to_string(),
+            Value::Bool(true),
+        )]));
+    let initialize_request = InitializeRequest::new(ProtocolVersion::V1)
+        .client_capabilities(capabilities)
+        .client_info(Implementation::new("ganbaru", env!("CARGO_PKG_VERSION")));
+    let initialize_request = serde_json::to_value(initialize_request)
+        .map_err(|_| protocol_error("ACP initialization request"))?;
+    let initialize_value = client
+        .request("initialize", initialize_request, context)
+        .await
+        .map_err(|error| error.to_chat_error("initialization"))?;
+    let negotiated: OfficialInitializeResponse =
+        serde_json::from_value(initialize_value.clone())
+            .map_err(|_| protocol_error("ACP initialization response"))?;
+    if negotiated.protocol_version != ProtocolVersion::V1 {
+        return Err(ChatError::new(
+            ChatErrorCode::UnsupportedVersion,
+            format!(
+                "{provider_name} negotiated unsupported ACP protocol version {}",
+                negotiated.protocol_version
+            ),
+            true,
+        ));
+    }
+    parse_initialize(initialize_value)
+}
+
+/// The authentication method Ganbaru selects for a flavor.
+pub fn preferred_auth_method(flavor: AcpProviderFlavor, grok_uses_api_key: bool) -> &'static str {
+    match flavor {
+        AcpProviderFlavor::Cursor => CURSOR_AUTH_METHOD,
+        AcpProviderFlavor::Grok => {
+            if grok_uses_api_key {
+                "xai.api_key"
+            } else {
+                "cached_token"
+            }
+        }
+    }
+}
+
+/// Whether the agent's advertised methods let Ganbaru authenticate: none are needed, or the
+/// selected method is among them.
+pub fn authentication_is_ready(initialize: &AcpInitializeResponse, method: &str) -> bool {
+    initialize.auth_methods.is_empty()
+        || initialize
+            .auth_methods
+            .iter()
+            .any(|advertised| advertised.id == method)
+}
+
+/// The error for an agent that requires authentication Ganbaru cannot perform.
+pub fn unsupported_authentication(provider_name: &str) -> ChatError {
+    ChatError::new(
+        ChatErrorCode::AuthenticationRequired,
+        format!("{provider_name} requires an authentication method Ganbaru does not support"),
+        true,
+    )
 }
 
 /// Builds the `mcpServers` list for `session/new` or `session/load`.

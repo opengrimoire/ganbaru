@@ -131,8 +131,19 @@ impl ProviderDriver for CursorProviderDriver {
     ) -> DriverFuture<'a, ProviderProbeResult> {
         Box::pin(async move {
             let checked_at = now_utc()?;
-            match self.probe_snapshot(context).await {
-                Ok((started, about)) => {
+            let auth_method = preferred_auth_method(self.flavor, self.grok_uses_api_key());
+            let outcome = self
+                .probe_initialize(context)
+                .await
+                .and_then(|(initialize, about)| {
+                    if authentication_is_ready(&initialize, auth_method) {
+                        Ok((initialize, about))
+                    } else {
+                        Err(unsupported_authentication(self.flavor.display_name()))
+                    }
+                });
+            match outcome {
+                Ok((initialize, about)) => {
                     let version_admission = match self.flavor {
                         AcpProviderFlavor::Cursor => Some(admit_version::<CursorVersion>(
                             &CURSOR_COMPATIBILITY,
@@ -140,33 +151,19 @@ impl ProviderDriver for CursorProviderDriver {
                         )?),
                         AcpProviderFlavor::Grok => None,
                     };
-                    let capabilities = negotiated_capabilities_for(
-                        self.flavor,
-                        &started.initialize,
-                        &started.setup,
-                        self.observed,
-                    );
+                    let capabilities =
+                        negotiated_capabilities_for(self.flavor, &initialize, None, self.observed);
                     let authority_support = ProviderAuthoritySupport {
-                        internal_host_tools: started
-                            .initialize
+                        internal_host_tools: initialize
                             .agent_capabilities
                             .accepts_http_mcp(self.flavor),
                         ..self.authority_support()
                     };
-                    self.cached_models = Some(ProviderModelCatalog {
-                        instance_id: self.configuration.instance_id.clone(),
-                        models: started.models,
-                        source: ModelCatalogSource::Provider,
-                        discovered_at: checked_at.clone(),
-                        stale: false,
-                    });
                     Ok(ProviderProbeResult {
                         instance_id: self.configuration.instance_id.clone(),
                         state: ProbeState::Healthy,
                         version: Some(about.version),
-                        negotiated_protocol_version: Some(
-                            started.initialize.protocol_version.to_string(),
-                        ),
+                        negotiated_protocol_version: Some(initialize.protocol_version.to_string()),
                         account_label: about.account_label,
                         capabilities,
                         authority_support,

@@ -1,11 +1,14 @@
 //! In-process replay: plays a transcript over a duplex pair while a script drives the driver.
 
+mod http;
+
 use super::diff::json_diff;
 use super::scripts::{ReplayScript, ReplayStep};
 use super::transcript::{
     ReplayAction, ReplayBindings, ReplayCursor, ReplayMask, Transcript, load_transcript,
     mask_for_provider,
 };
+use crate::cursor::AcpProviderFlavor;
 use crate::events::CanonicalRuntimeEvent;
 use crate::models::*;
 use crate::{
@@ -113,13 +116,20 @@ pub(crate) enum ReplayProvider {
     Claude,
     Codex,
     Cursor,
+    Grok,
+    /// A generic ACP agent with no vendor extension.
+    Acp,
+    OpenCode,
 }
 
 /// Every provider the harness drives, in scenario directory order.
-const REPLAY_PROVIDERS: [ReplayProvider; 3] = [
+const REPLAY_PROVIDERS: [ReplayProvider; 6] = [
     ReplayProvider::Claude,
     ReplayProvider::Codex,
     ReplayProvider::Cursor,
+    ReplayProvider::Grok,
+    ReplayProvider::Acp,
+    ReplayProvider::OpenCode,
 ];
 
 impl ReplayProvider {
@@ -129,7 +139,25 @@ impl ReplayProvider {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Cursor => "cursor",
+            Self::Grok => "grok",
+            Self::Acp => "acp",
+            Self::OpenCode => "opencode",
         }
+    }
+
+    /// The ACP driver flavor of an ACP provider.
+    fn acp_flavor(self) -> Option<AcpProviderFlavor> {
+        match self {
+            Self::Cursor => Some(AcpProviderFlavor::Cursor),
+            Self::Grok => Some(AcpProviderFlavor::Grok),
+            Self::Acp => Some(AcpProviderFlavor::Generic),
+            Self::Claude | Self::Codex | Self::OpenCode => None,
+        }
+    }
+
+    /// Whether the transcript is served over HTTP and server-sent events instead of stdio.
+    pub(super) fn serves_http(self) -> bool {
+        self == Self::OpenCode
     }
 
     /// The mask of this provider, after checking the transcript was recorded from it.
@@ -150,13 +178,19 @@ impl ReplayProvider {
         })
     }
 
-    /// The directory holding this provider's scenario transcripts.
+    /// The directory holding this provider's scenario transcripts. The ACP agents other than
+    /// Cursor share the Cursor driver, so their scenarios live beside Cursor's.
     pub(crate) fn scenario_directory(self) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src")
-            .join(self.name())
-            .join("fixtures")
-            .join("scenarios")
+        let fixtures = |module: &str| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src")
+                .join(module)
+                .join("fixtures")
+        };
+        match self {
+            Self::Grok | Self::Acp => fixtures("cursor").join(format!("{}-scenarios", self.name())),
+            _ => fixtures(self.name()).join("scenarios"),
+        }
     }
 
     fn driver(
@@ -164,10 +198,11 @@ impl ReplayProvider {
         setup: &ReplaySetup<'_>,
         connection: ReplayConnection,
     ) -> ChatResult<Box<dyn ProviderDriver>> {
-        match self {
-            Self::Claude => crate::claude::replay::replay_driver(setup, connection),
-            Self::Codex => crate::codex::replay::replay_driver(setup, connection),
-            Self::Cursor => crate::cursor::replay::replay_driver(setup, connection),
+        match (self, self.acp_flavor()) {
+            (_, Some(flavor)) => crate::cursor::replay::replay_driver(flavor, setup, connection),
+            (Self::Claude, _) => crate::claude::replay::replay_driver(setup, connection),
+            (Self::Codex, _) => crate::codex::replay::replay_driver(setup, connection),
+            _ => Err(unsupported_transport(self)),
         }
     }
 
@@ -176,7 +211,8 @@ impl ReplayProvider {
         match self {
             Self::Claude => "stream-json",
             Self::Codex => "app-server",
-            Self::Cursor => "acp",
+            Self::Cursor | Self::Grok | Self::Acp => "acp",
+            Self::OpenCode => "http",
         }
     }
 
@@ -194,12 +230,55 @@ impl ReplayProvider {
         executable: &Path,
         environment: std::collections::BTreeMap<String, String>,
     ) -> ChatResult<Box<dyn ProviderDriver>> {
-        match self {
-            Self::Claude => crate::claude::replay::recording_driver(setup, executable, environment),
-            Self::Codex => crate::codex::replay::recording_driver(setup, executable, environment),
-            Self::Cursor => crate::cursor::replay::recording_driver(setup, executable, environment),
+        match (self, self.acp_flavor()) {
+            (_, Some(flavor)) => {
+                crate::cursor::replay::recording_driver(flavor, setup, executable, environment)
+            }
+            (Self::Claude, _) => {
+                crate::claude::replay::recording_driver(setup, executable, environment)
+            }
+            (Self::Codex, _) => {
+                crate::codex::replay::recording_driver(setup, executable, environment)
+            }
+            _ => Err(unsupported_transport(self)),
         }
     }
+    /// A driver that reaches the replay server at `origin`, with `busy_stream_timeout` in place
+    /// of the default silence bound when the script sets one.
+    fn http_driver(
+        self,
+        setup: &ReplaySetup<'_>,
+        origin: &str,
+        busy_stream_timeout: Option<Duration>,
+    ) -> ChatResult<Box<dyn ProviderDriver>> {
+        match self {
+            Self::OpenCode => {
+                crate::opencode::replay::replay_driver(setup, origin, busy_stream_timeout)
+            }
+            _ => Err(unsupported_http(self)),
+        }
+    }
+}
+
+/// The error of an HTTP driver requested for a provider whose transcripts are stdio frames.
+fn unsupported_http(provider: ReplayProvider) -> ChatError {
+    ChatError::new(
+        ChatErrorCode::CapabilityUnsupported,
+        format!("{} transcripts are stdio frames, not HTTP", provider.name()),
+        false,
+    )
+}
+
+/// The error of a stdio driver requested for a provider whose transcripts are served over HTTP.
+fn unsupported_transport(provider: ReplayProvider) -> ChatError {
+    ChatError::new(
+        ChatErrorCode::CapabilityUnsupported,
+        format!(
+            "{} transcripts are served over HTTP, not a stdio connection",
+            provider.name()
+        ),
+        false,
+    )
 }
 
 /// What a passing replay produced.
@@ -207,6 +286,8 @@ impl ReplayProvider {
 pub(crate) struct ReplayReport {
     /// The calls and canonical events, in the snapshot shape.
     pub(crate) snapshot: Value,
+    /// The canonical events in full, for assertions on fields the snapshot leaves out.
+    pub(crate) events: Vec<CanonicalRuntimeEvent>,
 }
 
 /// Why a replay failed, naming the transcript line and frames involved.
@@ -302,7 +383,7 @@ pub(crate) fn replay(
     let directories = ReplayDirectories::new()?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .start_paused(true)
+        .start_paused(!script.real_time)
         .build()
         .expect("replay runtime must start")
         .block_on(replay_async(provider, transcript, script, &directories))
@@ -314,6 +395,9 @@ async fn replay_async(
     script: &ReplayScript,
     directories: &ReplayDirectories,
 ) -> Result<ReplayReport, ReplayFailure> {
+    if provider.serves_http() {
+        return http::replay_over_http(provider, transcript, script, directories).await;
+    }
     let workspace = directories.workspace.to_string_lossy().into_owned();
     let (driver_reader, process_writer) = tokio::io::duplex(DUPLEX_BYTES);
     let (process_reader, driver_writer) = tokio::io::duplex(DUPLEX_BYTES);
@@ -361,6 +445,17 @@ async fn replay_async(
         Err(_) => Ok(()),
     };
     outcome?;
+    report(calls, &unexpected, &sink, &workspace)
+}
+
+/// The report of a replay whose provider side finished: fails when the driver wrote after the
+/// transcript ended, and otherwise summarizes the calls and events.
+fn report(
+    calls: Result<Vec<Value>, ReplayFailure>,
+    unexpected: &Mutex<Vec<Value>>,
+    sink: &ReplaySink,
+    workspace: &str,
+) -> Result<ReplayReport, ReplayFailure> {
     if let Some(frame) = unexpected.lock().unwrap().first() {
         let mut failure = ReplayFailure::new(
             None,
@@ -371,13 +466,14 @@ async fn replay_async(
         return Err(failure);
     }
     let mut request_ids = Vec::new();
-    let events = sink
-        .events()
+    let events = sink.events();
+    let summaries = events
         .iter()
-        .map(|event| summarize(event, &workspace, &mut request_ids))
+        .map(|event| summarize(event, workspace, &mut request_ids))
         .collect::<Vec<_>>();
     Ok(ReplayReport {
-        snapshot: json!({ "calls": calls?, "events": events }),
+        snapshot: json!({ "calls": calls?, "events": summaries }),
+        events,
     })
 }
 
@@ -647,6 +743,10 @@ pub(super) async fn run_script(
             }
             ReplayStep::AwaitTranscript => {
                 await_transcript(&mut finished, index).await?;
+                continue;
+            }
+            ReplayStep::Elapse { seconds } => {
+                tokio::time::sleep(Duration::from_secs(*seconds)).await;
                 continue;
             }
             ReplayStep::Stop => {

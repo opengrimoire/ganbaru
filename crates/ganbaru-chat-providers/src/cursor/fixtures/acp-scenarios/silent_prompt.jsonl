@@ -1,0 +1,7 @@
+{"type":"transcript_start","provider":"acp","protocol":"acp","cli_version":"1.0.0","scenario":"silent_prompt","generated_by":"authored"}
+{"type":"expect_outbound","label":"initialize","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true},"clientInfo":{"name":"ganbaru","version":"<redacted>"}}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:initialize>","result":{"protocolVersion":1,"agentCapabilities":{"loadSession":false,"promptCapabilities":{"image":false,"audio":false,"embeddedContext":false}},"authMethods":[],"agentInfo":{"name":"fixture-agent","title":"Fixture agent","version":"1.0.0"}}}}
+{"type":"expect_outbound","label":"session-new","frame":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"<workspace>","mcpServers":[]}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:session-new>","result":{"sessionId":"acp-session-fixture"}}}
+{"type":"expect_outbound","label":"prompt-1","frame":{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"acp-session-fixture","prompt":[{"type":"text","text":"Run the long migration"}]}}}
+{"type":"emit_inbound","after_ms":900000,"frame":{"jsonrpc":"2.0","id":"<ref:prompt-1>","result":{"stopReason":"end_turn"}}}

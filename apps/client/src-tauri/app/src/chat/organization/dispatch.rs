@@ -1156,7 +1156,9 @@ async fn prepare_assignment_input(
 /// Marks the input `message_item_id` of `assignment_id` delivered after its steer reached the
 /// provider, and records the source on the run that took it in the same transaction, so a later
 /// continuation of the session does not send it again. An input another delivery already
-/// marked records nothing.
+/// marked records nothing. A cancel that landed after the steer was prepared, locally or by sync,
+/// loses to the delivery, as the sync priority of delivery states resolves it: the provider
+/// already read the text.
 async fn record_assignment_input_delivered(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
@@ -1168,7 +1170,8 @@ async fn record_assignment_input_delivered(
     let marked = sqlx::query(
         "UPDATE chat_work_assignment_inputs
          SET delivery_state = 'delivered', delivered_at = ?, delivered_revision_id = ?
-         WHERE assignment_id = ? AND message_item_id = ? AND delivery_state = 'pending'",
+         WHERE assignment_id = ? AND message_item_id = ?
+           AND delivery_state IN ('pending', 'ignored')",
     )
     .bind(now.as_str())
     .bind(&prepared.revision_id)
@@ -2348,6 +2351,49 @@ mod tests {
             );
             let states = delivery_states(&pool).await;
             assert!(states.contains(&("steer".to_string(), "delivered".to_string())));
+        }
+
+        #[tokio::test]
+        async fn a_steer_the_provider_read_stays_delivered_over_a_later_cancel() {
+            let pool = starting_pool().await;
+            seed_inputs_of_every_route(&pool).await;
+            sqlx::query("UPDATE chat_agent_runs SET state = 'working' WHERE id = 'run:working'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let steer = ChatConversationItemId::new("item:steer").unwrap();
+            let prepared = prepare_assignment_input(&pool, &assignment(), &steer)
+                .await
+                .unwrap()
+                .expect("the working run takes the pending steer");
+            sqlx::query(
+                "UPDATE chat_work_assignment_inputs SET delivery_state = 'ignored'
+                 WHERE message_item_id = 'item:steer'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            record_assignment_input_delivered(&pool, &assignment(), &steer, &prepared)
+                .await
+                .unwrap();
+
+            let (state, revision): (String, Option<String>) = sqlx::query_as(
+                "SELECT delivery_state, delivered_revision_id
+                 FROM chat_work_assignment_inputs WHERE message_item_id = 'item:steer'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(state, "delivered");
+            assert_eq!(revision.as_deref(), Some(prepared.revision_id.as_str()));
+            let sources: Vec<(String,)> = sqlx::query_as(
+                "SELECT source_id FROM chat_agent_run_delivered_sources WHERE run_id = 'run:working'",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(sources, vec![("item:steer".to_string(),)]);
         }
 
         async fn run_and_job(

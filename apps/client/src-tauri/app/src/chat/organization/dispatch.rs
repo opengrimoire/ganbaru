@@ -17,22 +17,40 @@ use ganbaru_chat::coordination::revocation::PARENT_AUTHORITY_REVOKED_REASON;
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, SqlitePool};
 
+/// Claims and runs the queued dispatch job of `assignment_id`. A dispatch that settled the
+/// assignment instead of starting it (a parent that lost its authority, a refused or failed
+/// launch) delivers its delegation outcome to a parent running here.
 pub(super) async fn dispatch_assignment_job(
     app: tauri::AppHandle,
     db_url: String,
     assignment_id: ChatWorkAssignmentId,
 ) -> ChatResult<()> {
-    let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
+    let result = claim_and_dispatch(app.clone(), db_url, &pool, &assignment_id).await;
+    super::assignments::deliver_delegation_outcomes_of_assignments(
+        &app,
+        &pool,
+        std::collections::BTreeSet::from([assignment_id.as_str().to_owned()]),
+    );
+    result
+}
+
+async fn claim_and_dispatch(
+    app: tauri::AppHandle,
+    db_url: String,
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<()> {
+    let device_id = this_device_id(&app)?;
     let now = now_timestamp()?;
-    let Some(claim) = claim_dispatch_job(&pool, &assignment_id, &device_id, &now).await? else {
+    let Some(claim) = claim_dispatch_job(pool, assignment_id, &device_id, &now).await? else {
         return Ok(());
     };
     let mut result = dispatch_claimed_assignment(
         app.clone(),
         db_url.clone(),
-        &pool,
-        &assignment_id,
+        pool,
+        assignment_id,
         &claim,
         false,
     )
@@ -46,8 +64,8 @@ pub(super) async fn dispatch_assignment_job(
         result = dispatch_claimed_assignment(
             app.clone(),
             db_url.clone(),
-            &pool,
-            &assignment_id,
+            pool,
+            assignment_id,
             &claim,
             true,
         )
@@ -56,16 +74,16 @@ pub(super) async fn dispatch_assignment_job(
     let launch = match result {
         Ok(launch) => launch,
         Err(error) => {
-            return match settle_dispatch_error(&pool, &assignment_id, &claim.token, &error).await? {
+            return match settle_dispatch_error(pool, assignment_id, &claim.token, &error).await? {
                 DispatchSettlement::Failed => Err(error),
                 DispatchSettlement::Waiting => Ok(()),
             };
         }
     };
-    if !mark_initial_assignment_input_delivered(&pool, &assignment_id, &launch).await? {
+    if !mark_initial_assignment_input_delivered(pool, assignment_id, &launch).await? {
         return Ok(());
     }
-    deliver_pending_assignment_inputs(app, db_url, &pool, &assignment_id).await
+    deliver_pending_assignment_inputs(app, db_url, pool, assignment_id).await
 }
 
 /// The run a dispatch launched and how its launch ended.

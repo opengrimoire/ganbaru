@@ -728,6 +728,13 @@ pub(super) async fn cancel_assignment(
         Some("Cancelled by the user"),
     )
     .await?;
+    let cancelled_descendants = cancel_delegated_work(&pool, &assignment_id).await?;
+    if !cancelled_descendants.is_empty() {
+        crate::chat::revocation::start_job_drain(&stop_app);
+    }
+    let mut settled = cancelled_descendants;
+    settled.insert(assignment_id.as_str().to_owned());
+    deliver_delegation_outcomes_of_assignments(&stop_app, &pool, settled);
     let provider_thread_id: Option<String> = sqlx::query_scalar(
         "SELECT provider_thread_id FROM chat_agent_runs
          WHERE assignment_id = ? AND provider_thread_id IS NOT NULL
@@ -1587,6 +1594,11 @@ pub(super) async fn accept_assignment_here(
             })?
     } else if executor.as_deref() == Some(device_id.as_str()) {
         if !adopt_synced_assignment(&pool, &assignment_id, &device_id, &scope).await? {
+            deliver_delegation_outcomes_of_assignments(
+                &app,
+                &pool,
+                BTreeSet::from([assignment_id.as_str().to_owned()]),
+            );
             return Ok(None);
         }
         assignment_id
@@ -1740,28 +1752,56 @@ pub(crate) fn deliver_delegation_outcomes_of_thread(
     let pool = pool.clone();
     let thread_id = thread_id.clone();
     tauri::async_runtime::spawn(async move {
-        match parents_with_pending_outcomes(&pool, &thread_id).await {
-            Ok(routed) if routed.is_empty() => {}
-            Ok(routed) => start_synced_assignment_work(
-                &app,
-                SyncedAssignmentWork {
-                    routed,
-                    ..SyncedAssignmentWork::default()
-                },
-            ),
-            Err(error) => eprintln!("Chat delegation outcomes were not delivered: {error}"),
-        }
+        let parents = match delegated_assignments_of_thread(&pool, &thread_id).await {
+            Ok(children) => parents_with_pending_outcomes(&pool, &children).await,
+            Err(error) => Err(error),
+        };
+        route_pending_outcomes(&app, parents);
     });
 }
 
-/// Reads the parents that hold a pending outcome input of a delegated assignment whose run used
-/// the provider thread `thread_id`.
-async fn parents_with_pending_outcomes(
+/// Delivers the delegation outcomes that settling the assignments `assignment_ids` queued for
+/// their parents, for every local settle point other than a run's turn or session end: a
+/// person's state change or cancel, a revocation, and a failed or refused dispatch. Ids of work
+/// that is not delegated, or whose outcome queued no input, deliver nothing.
+pub(crate) fn deliver_delegation_outcomes_of_assignments(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    assignment_ids: BTreeSet<String>,
+) {
+    if assignment_ids.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    let pool = pool.clone();
+    tauri::async_runtime::spawn(async move {
+        let parents = parents_with_pending_outcomes(&pool, &assignment_ids).await;
+        route_pending_outcomes(&app, parents);
+    });
+}
+
+/// Routes the pending inputs of `parents` to the work this device runs.
+fn route_pending_outcomes(app: &tauri::AppHandle, parents: ChatResult<BTreeSet<String>>) {
+    match parents {
+        Ok(routed) if routed.is_empty() => {}
+        Ok(routed) => start_synced_assignment_work(
+            app,
+            SyncedAssignmentWork {
+                routed,
+                ..SyncedAssignmentWork::default()
+            },
+        ),
+        Err(error) => eprintln!("Chat delegation outcomes were not delivered: {error}"),
+    }
+}
+
+/// Reads the delegated assignments whose runs used the provider thread `thread_id`.
+async fn delegated_assignments_of_thread(
     pool: &SqlitePool,
     thread_id: &ChatThreadId,
 ) -> ChatResult<BTreeSet<String>> {
-    let children = sqlx::query(
-        "SELECT DISTINCT child.id, child.parent_assignment_id
+    let children = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT child.id
          FROM chat_agent_runs run
          JOIN chat_work_assignments child ON child.id = run.assignment_id
          WHERE run.provider_thread_id = ? AND child.parent_assignment_id IS NOT NULL",
@@ -1770,28 +1810,65 @@ async fn parents_with_pending_outcomes(
     .fetch_all(pool)
     .await
     .map_err(persistence_error)?;
+    Ok(children.into_iter().collect())
+}
+
+/// Reads the parents that hold a pending outcome input of one of the delegated assignments
+/// `child_ids`. Ids of undelegated work are skipped.
+pub(super) async fn parents_with_pending_outcomes(
+    pool: &SqlitePool,
+    child_ids: &BTreeSet<String>,
+) -> ChatResult<BTreeSet<String>> {
     let mut parents = BTreeSet::new();
-    for child in children {
-        let child_id: String = child.try_get("id").map_err(persistence_error)?;
-        let parent_id: String = child
-            .try_get("parent_assignment_id")
-            .map_err(persistence_error)?;
-        let pending: bool = sqlx::query_scalar(
-            "SELECT EXISTS(
+    for child_id in child_ids {
+        let parent_id: Option<String> = sqlx::query_scalar(
+            "SELECT parent.id
+             FROM chat_work_assignments child
+             JOIN chat_work_assignments parent ON parent.id = child.parent_assignment_id
+             WHERE child.id = ?1 AND EXISTS(
                SELECT 1 FROM chat_work_assignment_inputs
-               WHERE assignment_id = ? AND message_item_id = ? AND delivery_state = 'pending'
+               WHERE assignment_id = parent.id AND message_item_id = ?2
+                 AND delivery_state = 'pending'
              )",
         )
-        .bind(&parent_id)
-        .bind(outcome_item_id(&child_id)?)
-        .fetch_one(pool)
+        .bind(child_id)
+        .bind(outcome_item_id(child_id)?)
+        .fetch_optional(pool)
         .await
         .map_err(persistence_error)?;
-        if pending {
-            parents.insert(parent_id);
-        }
+        parents.extend(parent_id);
     }
     Ok(parents)
+}
+
+/// Cancels the open work delegated from `assignment_id`, which a person just cancelled, and
+/// ends the dispatch it still holds here. Returns the cancelled ids. Their revoked
+/// authorizations queue revocation jobs, which stop the runs they hold on this device.
+pub(super) async fn cancel_delegated_work(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<BTreeSet<String>> {
+    let now = now_timestamp()?;
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let cancelled = ganbaru_chat::coordination::delegation::cancel_delegated_descendants(
+        &mut transaction,
+        assignment_id.as_str(),
+        now.as_str(),
+    )
+    .await?;
+    for descendant_id in &cancelled {
+        let descendant_id =
+            ChatWorkAssignmentId::new(descendant_id.clone()).map_err(identifier_error)?;
+        end_assignment_dispatch_jobs(
+            &mut transaction,
+            &descendant_id,
+            ChatWorkAssignmentState::Cancelled,
+            &now,
+        )
+        .await?;
+    }
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(cancelled.into_iter().collect())
 }
 
 /// Starts the assignment an unattended post created on this device. It takes the path of synced
@@ -1876,13 +1953,21 @@ async fn run_synced_assignment_work(
     if released {
         crate::chat::sync::RevocationWake::wake_revocation_drain(&app);
     }
+    let mut unadopted = BTreeSet::new();
     for assignment_id in work.queued {
         let assignment_id = ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
         if adopt_synced_assignment(&pool, &assignment_id, &device_id, &scope).await? {
             dispatch_assignment_job(app.clone(), db_url.clone(), assignment_id).await?;
+        } else {
+            unadopted.insert(assignment_id.as_str().to_owned());
         }
     }
     let mut routed = work.routed;
+    // Work that failed to adopt here settled with an outcome its parent is waiting on.
+    match parents_with_pending_outcomes(&pool, &unadopted).await {
+        Ok(parents) => routed.extend(parents),
+        Err(error) => eprintln!("Outcomes of unadopted Chat work were not routed: {error}"),
+    }
     for child_id in &work.delegated {
         match report_synced_delegation_outcome(&pool, child_id, &device_id).await {
             Ok(Some(parent_id)) => {

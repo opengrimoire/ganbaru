@@ -43,7 +43,10 @@ mod teammate_lifecycle;
 mod workflow;
 
 #[cfg(desktop)]
-pub(crate) use assignments::{deliver_delegation_outcomes_of_thread, start_synced_assignment_work};
+pub(crate) use assignments::{
+    deliver_delegation_outcomes_of_assignments, deliver_delegation_outcomes_of_thread,
+    start_synced_assignment_work,
+};
 use common::{
     AttachmentSource, PageCursor, ScheduledPostTarget, chat_writers, conversation_item_id,
     has_thread_eligible_mention, map_command_receipt_error, message_revision_id,

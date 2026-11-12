@@ -19,6 +19,10 @@ pub const MAX_REPORT_BODY_BYTES: usize = 16 * 1024;
 /// First id part of every row an outcome writes, followed by the child assignment id.
 const OUTCOME_ID_PART: &str = "delegation-outcome";
 
+/// Deepest delegation the schema allows, which bounds every walk down the delegated work of an
+/// assignment.
+const DELEGATION_DEPTH_LIMIT: i64 = 2;
+
 /// Child states that post an outcome.
 const OUTCOME_STATES: [&str; 4] = ["completed", "ready_for_review", "failed", "cancelled"];
 
@@ -187,6 +191,70 @@ pub async fn post_delegation_outcome(
         message_item_id: item_id,
         input_queued,
     }))
+}
+
+/// State reason of delegated work cancelled because a person cancelled an assignment it was
+/// delegated from.
+pub const PARENT_CANCELLED_REASON: &str = "parent_cancelled";
+
+/// Cancels the open work delegated from `assignment_id`, down to the delegation depth limit,
+/// after a person cancelled it, and returns the cancelled ids.
+///
+/// Each open descendant moves to `cancelled` with [`PARENT_CANCELLED_REASON`], its allowed
+/// authorizations are revoked with their access revocation jobs, as a revoked parent revokes
+/// them, and its outcome is posted in its own parent's reply thread. The outcomes are posted
+/// after every descendant settled, so a cancelled parent receives them without an input. The
+/// cancelled state replicates, so a descendant executing on another device stops there when
+/// sync applies it. Settled descendants keep their state, so repeating the call cancels
+/// nothing more.
+///
+/// # Errors
+///
+/// Returns a persistence error when a read or write fails.
+pub async fn cancel_delegated_descendants(
+    connection: &mut SqliteConnection,
+    assignment_id: &str,
+    now: &str,
+) -> ChatResult<Vec<String>> {
+    let open: Vec<String> = sqlx::query_scalar(
+        "WITH RECURSIVE descendants(id, depth) AS (
+           SELECT id, 1 FROM chat_work_assignments WHERE parent_assignment_id = ?1
+           UNION
+           SELECT child.id, descendants.depth + 1
+           FROM chat_work_assignments child
+           JOIN descendants ON child.parent_assignment_id = descendants.id
+           WHERE descendants.depth < ?2
+         )
+         SELECT assignment.id FROM chat_work_assignments assignment
+         JOIN descendants ON descendants.id = assignment.id
+         WHERE assignment.state NOT IN ('completed', 'ready_for_review', 'failed', 'cancelled')
+         ORDER BY descendants.depth, assignment.id",
+    )
+    .bind(assignment_id)
+    .bind(DELEGATION_DEPTH_LIMIT)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    for descendant_id in &open {
+        sqlx::query(
+            "UPDATE chat_work_assignments
+             SET state = 'cancelled', state_reason = ?, settled_at = ?,
+                 revision = revision + 1, updated_at = ?
+             WHERE id = ? AND state NOT IN ('completed', 'ready_for_review', 'failed', 'cancelled')",
+        )
+        .bind(PARENT_CANCELLED_REASON)
+        .bind(now)
+        .bind(now)
+        .bind(descendant_id)
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
+    }
+    super::revocation::revoke_delegated_authorizations(connection, assignment_id, now).await?;
+    for descendant_id in &open {
+        post_delegation_outcome(connection, descendant_id, now).await?;
+    }
+    Ok(open)
 }
 
 /// A settled delegated child and the parent thread its outcome goes to.

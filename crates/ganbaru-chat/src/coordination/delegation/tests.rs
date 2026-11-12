@@ -299,3 +299,120 @@ async fn unsettled_undelegated_and_moved_children_post_nothing() {
     assert_eq!(post(&pool).await, None);
     assert!(outcome_messages(&pool).await.is_empty());
 }
+
+/// Adds a queued grandchild that the child delegated to the lead in its own reply thread.
+async fn seed_grandchild(pool: &SqlitePool) {
+    let conversation = default_channel_ids(PROJECT_ID).unwrap().0;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
+         VALUES ('item:grandchild-root', '{conversation}', 'message', 'c003', '{NOW}');
+         INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
+         VALUES ('item:grandchild-root', '{CHILD_TEAMMATE}', '{NOW}');
+         INSERT INTO chat_communication_message_revisions
+            (id, message_item_id, normalized_markdown, created_at)
+         VALUES ('revision:grandchild-root', 'item:grandchild-root', '@Lead check notes', '{NOW}');
+         UPDATE chat_communication_messages SET current_revision_id = 'revision:grandchild-root'
+         WHERE item_id = 'item:grandchild-root';
+         INSERT INTO chat_reply_threads
+            (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
+         VALUES ('reply:grandchild', '{conversation}', 'item:grandchild-root', '{NOW}', '{NOW}',
+                 '{NOW}');
+         INSERT INTO chat_work_assignments
+            (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+             parent_assignment_id, delegation_depth, delegation_objective,
+             delegation_expected_result, delegation_folder_ceiling, created_at, updated_at)
+         VALUES ('assignment:delegation-grandchild', 'reply:grandchild', '{PARENT_TEAMMATE}',
+                 'item:grandchild-root', 'queued', '{CHILD}', 2, 'Check notes', 'A verdict',
+                 '[]', '{NOW}', '{NOW}');"
+    )))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn assignment_state(pool: &SqlitePool, id: &str) -> (String, Option<String>) {
+    sqlx::query_as("SELECT state, state_reason FROM chat_work_assignments WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn cancelling_a_parent_cancels_its_open_children_and_grandchildren() {
+    let pool = migrated_pool().await;
+    seed_delegation(&pool, "cancelled").await;
+    seed_grandchild(&pool).await;
+    let mut connection = pool.acquire().await.unwrap();
+    let cancelled = cancel_delegated_descendants(&mut connection, PARENT, LATER)
+        .await
+        .unwrap();
+    drop(connection);
+    assert_eq!(
+        cancelled,
+        vec![
+            CHILD.to_string(),
+            "assignment:delegation-grandchild".to_string()
+        ]
+    );
+    for id in [CHILD, "assignment:delegation-grandchild"] {
+        assert_eq!(
+            assignment_state(&pool, id).await,
+            (
+                "cancelled".to_string(),
+                Some(PARENT_CANCELLED_REASON.to_string())
+            )
+        );
+    }
+    // The child reports to the cancelled parent without an input, and the grandchild reports
+    // to the cancelled child the same way.
+    let messages = outcome_messages(&pool).await;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].0, CHILD_TEAMMATE);
+    assert_eq!(messages[0].1, PARENT_CANCELLED_REASON);
+    assert!(parent_inputs(&pool).await.is_empty());
+    let grandchild_outcomes: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chat_conversation_items item
+         JOIN chat_work_semantic_updates semantic ON semantic.item_id = item.id
+         WHERE item.reply_thread_id = 'reply:child' AND semantic.update_kind = 'delegation'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(grandchild_outcomes, 1);
+    let child_inputs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chat_work_assignment_inputs WHERE assignment_id = ?",
+    )
+    .bind(CHILD)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(child_inputs, 0);
+
+    let mut connection = pool.acquire().await.unwrap();
+    assert!(
+        cancel_delegated_descendants(&mut connection, PARENT, LATER)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn cancelling_a_parent_keeps_settled_children_as_they_ended() {
+    let pool = migrated_pool().await;
+    seed_delegation(&pool, "cancelled").await;
+    settle_child_with_update(&pool, "ready_for_review", "review", "Notes are drafted").await;
+    let mut connection = pool.acquire().await.unwrap();
+    assert!(
+        cancel_delegated_descendants(&mut connection, PARENT, LATER)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    drop(connection);
+    assert_eq!(
+        assignment_state(&pool, CHILD).await.0,
+        "ready_for_review".to_string()
+    );
+}

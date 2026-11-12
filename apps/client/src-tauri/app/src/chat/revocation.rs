@@ -521,7 +521,7 @@ async fn drain_claimed_job(
     let reason: String = row.try_get("reason").map_err(persistence_error)?;
     let runs = read_revoked_runs(pool, authorization_revision_id.as_deref()).await?;
 
-    persist_revocation_before_cleanup(
+    let settled_assignment = persist_revocation_before_cleanup(
         pool,
         job_id,
         claim_token,
@@ -530,6 +530,11 @@ async fn drain_claimed_job(
         &runs,
     )
     .await?;
+    super::organization::deliver_delegation_outcomes_of_assignments(
+        app,
+        pool,
+        settled_assignment.into_iter().collect(),
+    );
     let revoked_threads = runs
         .iter()
         .map(|run| &run.thread_id)
@@ -662,7 +667,7 @@ async fn persist_revocation_before_cleanup(
     authorization_revision_id: Option<&str>,
     reason: &str,
     runs: &[RevokedRun],
-) -> ChatResult<()> {
+) -> ChatResult<Option<String>> {
     let settled_at = now_timestamp();
     let turn_reason = reason.chars().take(1_000).collect::<String>();
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
@@ -680,6 +685,7 @@ async fn persist_revocation_before_cleanup(
     if !owned {
         return Err(revocation_error());
     }
+    let mut settled_assignment = None;
     if let Some(authorization_revision_id) = authorization_revision_id {
         let run_cancel = format!(
             "UPDATE chat_agent_runs
@@ -720,14 +726,15 @@ async fn persist_revocation_before_cleanup(
         .fetch_optional(&mut *transaction)
         .await
         .map_err(persistence_error)?;
-        if let Some(assignment_id) = assignment_id {
+        if let Some(assignment_id) = &assignment_id {
             ganbaru_chat::coordination::delegation::post_delegation_outcome(
                 &mut transaction,
-                &assignment_id,
+                assignment_id,
                 &settled_at,
             )
             .await?;
         }
+        settled_assignment = assignment_id;
         sqlx::query(
             "UPDATE chat_assignment_dispatch_jobs
              SET state = 'cancelled', last_error = ?, updated_at = ?
@@ -779,7 +786,8 @@ async fn persist_revocation_before_cleanup(
         .await
         .map_err(persistence_error)?;
     }
-    transaction.commit().await.map_err(persistence_error)
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(settled_assignment)
 }
 
 async fn mark_claim_completed(

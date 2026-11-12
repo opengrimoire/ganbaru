@@ -1,6 +1,7 @@
 use super::*;
 use crate::chat::revocation::tests::pool_with_folder_runs;
 use crate::chat::revocation::{ActiveRunSelector, revoke_active_run_authorizations};
+use std::collections::BTreeSet;
 
 const NOW: &str = "2026-10-20T12:00:00.000Z";
 const DEVICE: &str = "device:delegation";
@@ -807,4 +808,84 @@ async fn delegation_outcome_synced_in_is_written_only_by_the_parent_executing_de
     assert_eq!(outcome_rows(&pool, child).await, (1, 1));
     assert_eq!(report(&pool, child.as_str(), DEVICE).await.unwrap(), None);
     assert_eq!(outcome_rows(&pool, child).await, (1, 1));
+}
+
+#[tokio::test]
+async fn delegation_outcome_routing_names_the_parent_that_holds_a_pending_outcome() {
+    let pool = pool_with_helper().await;
+    let created = delegate(
+        &pool,
+        &Caller::root(),
+        HELPER,
+        &parent_folders(),
+        "request-1",
+    )
+    .await
+    .unwrap();
+    let child = created.child.assignment_id.as_str().to_owned();
+    let children = BTreeSet::from([child.clone()]);
+    assert!(
+        super::super::assignments::parents_with_pending_outcomes(&pool, &children)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    revoke_parent(&pool, "Access changed").await;
+    assert!(!claim(&pool, &created.child.assignment_id).await);
+    assert_eq!(
+        super::super::assignments::parents_with_pending_outcomes(&pool, &children)
+            .await
+            .unwrap(),
+        BTreeSet::from([PARENT.to_owned()])
+    );
+    let undelegated = BTreeSet::from([PARENT.to_owned()]);
+    assert!(
+        super::super::assignments::parents_with_pending_outcomes(&pool, &undelegated)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn delegation_cancel_of_the_parent_cancels_the_queued_child_and_its_dispatch() {
+    let pool = pool_with_helper().await;
+    let created = delegate(
+        &pool,
+        &Caller::root(),
+        HELPER,
+        &parent_folders(),
+        "request-1",
+    )
+    .await
+    .unwrap();
+    let child = &created.child.assignment_id;
+    let parent = ChatWorkAssignmentId::new(PARENT).unwrap();
+    let cancelled = super::super::assignments::cancel_delegated_work(&pool, &parent)
+        .await
+        .unwrap();
+    assert_eq!(cancelled, BTreeSet::from([child.as_str().to_owned()]));
+    assert_eq!(
+        assignment_state(&pool, child).await,
+        (
+            "cancelled".to_owned(),
+            ganbaru_chat::coordination::delegation::PARENT_CANCELLED_REASON.to_owned()
+        )
+    );
+    let open_jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chat_assignment_dispatch_jobs
+         WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
+    )
+    .bind(child.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(open_jobs, 0);
+    assert!(!claim(&pool, child).await);
+    assert!(
+        super::super::assignments::cancel_delegated_work(&pool, &parent)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

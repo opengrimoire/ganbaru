@@ -1834,3 +1834,60 @@ fn stored_relative_paths_reject_any_backslash_and_trailing_parent_segments() {
         assert!(error.to_string().contains(shape_error), "{error}");
     });
 }
+
+#[test]
+fn host_tool_invocations_record_only_known_tool_classes() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let request_hash = "a".repeat(64);
+        let record = |id: &str, tool_class: &str| {
+            sqlx::query(
+                "INSERT INTO chat_host_tool_invocations
+                    (id, authorization_revision_id, tool_name, tool_class, request_hash,
+                     decision_state, created_at)
+                 VALUES (?, 'authorization-1', 'chat_tool', ?, ?, 'allowed', ?)",
+            )
+            .bind(id.to_owned())
+            .bind(tool_class.to_owned())
+            .bind(request_hash.clone())
+            .bind(NOW)
+            .execute(&pool)
+        };
+        for tool_class in [
+            "read",
+            "edit",
+            "destructive",
+            "delegate",
+            "ask",
+            "report",
+            "secret",
+            "schedule",
+        ] {
+            record(&format!("invocation-{tool_class}"), tool_class)
+                .await
+                .unwrap();
+        }
+        assert!(record("invocation-unknown", "write").await.is_err());
+        assert!(record("invocation-upper", "Read").await.is_err());
+
+        sqlx::query(
+            "INSERT INTO chat_host_tool_invocations
+                (id, authorization_revision_id, tool_name, request_hash, decision_state,
+                 created_at)
+             VALUES ('invocation-default', 'authorization-1', 'chat_tool', ?, 'allowed', ?)",
+        )
+        .bind(&request_hash)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let defaulted: String = sqlx::query_scalar(
+            "SELECT tool_class FROM chat_host_tool_invocations WHERE id = 'invocation-default'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(defaulted, "read");
+    });
+}

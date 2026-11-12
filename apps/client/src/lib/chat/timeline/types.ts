@@ -58,6 +58,8 @@ export interface TimelineMessageRow {
   userContext: TimelineUserContext | null;
   metadata: TimelineAssistantMetadata | null;
   sourceThreadId?: ChatThreadId;
+  /** The thread change clock value of the row's last stored write; absent on rows built in the client. */
+  changeSequence?: number;
 }
 
 export interface TimelineActivityRow {
@@ -79,6 +81,8 @@ export interface TimelineActivityRow {
   updatedAt?: UtcTimestamp;
   metadata: VersionedJson | null;
   sourceThreadId?: ChatThreadId;
+  /** The thread change clock value of the row's last stored write; absent on rows built in the client. */
+  changeSequence?: number;
 }
 
 export interface TimelinePlanRow {
@@ -92,6 +96,8 @@ export interface TimelinePlanRow {
   steps: PlanStep[];
   state: "streaming" | "complete";
   sourceThreadId?: ChatThreadId;
+  /** The thread change clock value of the row's last stored write; absent on rows built in the client. */
+  changeSequence?: number;
 }
 
 export type TimelineRow = TimelineMessageRow | TimelineActivityRow | TimelinePlanRow;

@@ -17,6 +17,7 @@ import type {
 } from "$lib/chat/contracts";
 import { normalizeChangedFileSummaries } from "$lib/chat/review/changed-files";
 
+import { indexTimelineRowsByTurn } from "./row-index";
 import type {
   TimelineActivityGroupRow,
   TimelineActivityRow,
@@ -106,6 +107,10 @@ export function timelineModelGroupStartIds(
 
 /**
  * Converts validated paged SQLite projection DTOs into the shared timeline model.
+ *
+ * @param items Timeline items of the loaded window.
+ * @param turnReads Turn summaries of the loaded window.
+ * @returns Rows sorted by sequence and the turn summaries, with turn outcomes folded into assistant rows.
  */
 export function projectTimelineReadModel(
   items: readonly ChatTimelineItemRead[],
@@ -153,6 +158,7 @@ export function projectTimelineReadModel(
         userContext: role === "user" ? parseTimelineUserContext(data.metadata) : null,
         metadata: null,
         sourceThreadId: item.sourceThreadId,
+        changeSequence: latestChangeSequence(rows.get(item.activityId), item),
       });
       continue;
     }
@@ -184,6 +190,7 @@ export function projectTimelineReadModel(
           userContext: null,
           metadata: current?.kind === "message" ? current.metadata : null,
           sourceThreadId: item.sourceThreadId,
+          changeSequence: latestChangeSequence(current, item),
         });
         continue;
       }
@@ -199,6 +206,7 @@ export function projectTimelineReadModel(
         ...storedActivityDetail(data),
         metadata: data.metadata === undefined ? null : { schemaVersion: item.data.schemaVersion, value: data.metadata },
         sourceThreadId: item.sourceThreadId,
+        changeSequence: item.changeSequence,
       });
       continue;
     }
@@ -216,11 +224,13 @@ export function projectTimelineReadModel(
         steps: parseProjectedPlanSteps(data.steps),
         state: data.state === "proposed" ? "streaming" : "complete",
         sourceThreadId: item.sourceThreadId,
+        changeSequence: item.changeSequence,
       });
     }
   }
-  attachPendingTurnRows(rows, turns);
-  attachTerminalAssistantMetadata(rows, turns);
+  const rowsByTurn = indexTimelineRowsByTurn(rows.values());
+  attachPendingTurnRows(rows, turns, rowsByTurn);
+  attachTerminalAssistantMetadata(turns, rowsByTurn);
   return { rows: [...rows.values()].sort(compareRows), turns: [...turns.values()] };
 }
 
@@ -337,6 +347,106 @@ export function buildTimelineDisplayRows(
   return groupConsecutiveActivities(displayRows, expandedGroupIds);
 }
 
+/**
+ * Reuses the previous object of every row that did not change, so keyed rendering skips it.
+ *
+ * Run it on projected rows first and then on the display rows built from them: a fold or
+ * group row is reused only when its children are the same objects.
+ *
+ * @param previous Rows returned by the previous call.
+ * @param next Rows of the current projection.
+ * @returns `previous` itself when every row is reused in the same order, else the rows of
+ * `next` in its order with unchanged rows replaced by their previous objects.
+ */
+export function stabilizeTimelineRows<Row extends TimelineDisplayRow>(
+  previous: readonly Row[],
+  next: readonly Row[],
+): readonly Row[] {
+  const previousById = new Map<string, Row>();
+  for (const row of previous) previousById.set(row.id, row);
+  let reusedInOrder = previous.length === next.length;
+  const stable = next.map((row, index) => {
+    const candidate = previousById.get(row.id);
+    const reused = candidate !== undefined && isTimelineRowUnchanged(candidate, row) ? candidate : row;
+    if (reused !== previous[index]) reusedInOrder = false;
+    return reused;
+  });
+  return reusedInOrder ? previous : stable;
+}
+
+/**
+ * Returns whether a row can keep its previous object.
+ *
+ * Stored rows compare their change clock and the turn outcome folded into assistant rows.
+ * Rows built in the client compare their own fields. Folds and groups compare their
+ * children by reference.
+ */
+function isTimelineRowUnchanged(previous: TimelineDisplayRow, next: TimelineDisplayRow): boolean {
+  if (previous === next) return true;
+  if (previous.id !== next.id) return false;
+  if (previous.kind === "turn_fold" || next.kind === "turn_fold") {
+    return previous.kind === "turn_fold" && next.kind === "turn_fold" && isTurnFoldUnchanged(previous, next);
+  }
+  if (previous.kind === "activity_group" || next.kind === "activity_group") {
+    return previous.kind === "activity_group" && next.kind === "activity_group" && isActivityGroupUnchanged(previous, next);
+  }
+  return isProjectedRowUnchanged(previous, next);
+}
+
+function isProjectedRowUnchanged(previous: TimelineRow, next: TimelineRow): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.changeSequence === undefined || next.changeSequence === undefined) return haveSameFields(previous, next);
+  if (previous.changeSequence !== next.changeSequence || previous.sequence !== next.sequence) return false;
+  if (previous.kind !== "message" || next.kind !== "message") return true;
+  return previous.state === next.state && isSameJsonLike(previous.metadata, next.metadata);
+}
+
+function isTurnFoldUnchanged(previous: TimelineTurnFoldRow, next: TimelineTurnFoldRow): boolean {
+  return previous.state === next.state
+    && previous.durationMs === next.durationMs
+    && previous.expanded === next.expanded
+    && previous.sequence === next.sequence
+    && previous.createdAt === next.createdAt
+    && previous.sourceThreadId === next.sourceThreadId
+    && previous.hiddenRows.length === next.hiddenRows.length
+    && previous.hiddenRows.every((row, index) => {
+      const nextRow = next.hiddenRows[index];
+      if (row === nextRow) return true;
+      return row.kind === "activity_group" && nextRow?.kind === "activity_group" && row.id === nextRow.id
+        && isActivityGroupUnchanged(row, nextRow);
+    });
+}
+
+function isActivityGroupUnchanged(previous: TimelineActivityGroupRow, next: TimelineActivityGroupRow): boolean {
+  return previous.latest === next.latest
+    && previous.expanded === next.expanded
+    && previous.earlierRows.length === next.earlierRows.length
+    && previous.earlierRows.every((row, index) => row === next.earlierRows[index]);
+}
+
+/** Compares the own fields of two rows built in the client, by value for nested data. */
+function haveSameFields(previous: TimelineRow, next: TimelineRow): boolean {
+  const previousEntries = Object.entries(previous);
+  if (previousEntries.length !== Object.keys(next).length) return false;
+  const nextRecord: Record<string, unknown> = { ...next };
+  return previousEntries.every(([key, value]) => key in nextRecord && isSameJsonLike(value, nextRecord[key]));
+}
+
+/** Compares plain data built from JSON (primitives, arrays, and plain objects) by value. */
+function isSameJsonLike(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left)) {
+    return Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => isSameJsonLike(value, right[index]));
+  }
+  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null || Array.isArray(right)) return false;
+  const leftEntries = Object.entries(left);
+  if (leftEntries.length !== Object.keys(right).length) return false;
+  const rightRecord: Record<string, unknown> = { ...right };
+  return leftEntries.every(([key, value]) => key in rightRecord && isSameJsonLike(value, rightRecord[key]));
+}
+
 function isTransientThinkingActivity(row: TimelineActivityRow): boolean {
   return row.id.startsWith("turn-pending:")
     || row.activityKind === "reasoning"
@@ -384,13 +494,21 @@ function utf8ByteLength(value: string): number {
   return bytes;
 }
 
-function attachTerminalAssistantMetadata(rows: Map<string, TimelineRow>, turns: Map<ChatTurnId, TimelineTurn>): void {
+/** Folds each terminal turn's outcome into its final assistant row. */
+function attachTerminalAssistantMetadata(
+  turns: ReadonlyMap<ChatTurnId, TimelineTurn>,
+  rowsByTurn: ReadonlyMap<ChatTurnId, readonly TimelineRow[]>,
+): void {
   for (const turn of turns.values()) {
     if (!isTerminalTurn(turn.state)) continue;
-    const assistantRows = [...rows.values()].filter((row): row is TimelineMessageRow => row.kind === "message" && row.role === "assistant" && row.turnId === turn.id);
-    assistantRows.sort((left, right) => right.sequence - left.sequence);
-    const assistant = assistantRows.find((row) => row.phase === "final_answer")
-      ?? assistantRows[0];
+    let latestAssistant: TimelineMessageRow | null = null;
+    let latestFinalAnswer: TimelineMessageRow | null = null;
+    for (const row of rowsByTurn.get(turn.id) ?? []) {
+      if (row.kind !== "message" || row.role !== "assistant") continue;
+      if (!latestAssistant || row.sequence > latestAssistant.sequence) latestAssistant = row;
+      if (row.phase === "final_answer" && (!latestFinalAnswer || row.sequence > latestFinalAnswer.sequence)) latestFinalAnswer = row;
+    }
+    const assistant = latestFinalAnswer ?? latestAssistant;
     if (!assistant) continue;
     assistant.state = turn.state === "completed" ? "complete" : turn.state === "interrupted" ? "interrupted" : "failed";
     assistant.metadata = {
@@ -403,14 +521,22 @@ function attachTerminalAssistantMetadata(rows: Map<string, TimelineRow>, turns: 
   }
 }
 
-function attachPendingTurnRows(rows: Map<string, TimelineRow>, turns: Map<ChatTurnId, TimelineTurn>): void {
+/** Adds a working placeholder to each live turn that has no provider output yet. */
+function attachPendingTurnRows(
+  rows: Map<string, TimelineRow>,
+  turns: ReadonlyMap<ChatTurnId, TimelineTurn>,
+  rowsByTurn: ReadonlyMap<ChatTurnId, readonly TimelineRow[]>,
+): void {
   for (const turn of turns.values()) {
     if (turn.state !== "pending" && turn.state !== "dispatching" && turn.state !== "active") continue;
-    const turnRows = [...rows.values()].filter((row) => row.turnId === turn.id);
+    const turnRows = rowsByTurn.get(turn.id) ?? [];
     const hasProviderOutput = turnRows.some((row) => row.kind !== "message"
       || (row.role === "assistant" && row.markdown.trim().length > 0));
     if (hasProviderOutput) continue;
-    const latest = turnRows.sort((left, right) => right.sequence - left.sequence)[0];
+    let latest: TimelineRow | null = null;
+    for (const row of turnRows) {
+      if (!latest || row.sequence > latest.sequence) latest = row;
+    }
     rows.set(`turn-pending:${turn.id}`, {
       id: `turn-pending:${turn.id}`,
       kind: "activity",
@@ -424,6 +550,11 @@ function attachPendingTurnRows(rows: Map<string, TimelineRow>, turns: Map<ChatTu
       metadata: null,
     });
   }
+}
+
+/** Returns the newest change clock of a row merged from several stored items. */
+function latestChangeSequence(current: TimelineRow | undefined, item: ChatTimelineItemRead): number {
+  return Math.max(current?.changeSequence ?? 0, item.changeSequence);
 }
 
 function mergeChangedFiles(current: readonly ChangedFileSummary[], incoming: readonly ChangedFileSummary[]): ChangedFileSummary[] {

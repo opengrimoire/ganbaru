@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ChangedFileSummary, ChatTimelineItemRead, ChatTimelineTurnRead, ChatTurnState, JsonValue, ThreadUsageUpdatedEvent } from "$lib/chat/contracts";
-import { buildTimelineDisplayRows, includeOptimisticTimelineMessage, parseTimelineUserContext, projectTimelineReadModel, timelineActivityShowsLiveStatus, timelineActivitySupportsDisclosure, timelineModelGroupStartIds, timelineRowsForTurn } from "./model";
+import { buildTimelineDisplayRows, includeOptimisticTimelineMessage, parseTimelineUserContext, projectTimelineReadModel, stabilizeTimelineRows, timelineActivityShowsLiveStatus, timelineActivitySupportsDisclosure, timelineModelGroupStartIds, timelineRowsForTurn, type TimelineDisplayRow, type TimelineRow } from "./model";
+import { indexTimelineRowsByTurn } from "./row-index";
+
+vi.mock("./row-index", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./row-index")>();
+  return { ...actual, indexTimelineRowsByTurn: vi.fn(actual.indexTimelineRowsByTurn) };
+});
 
 const start = "2026-07-21T14:00:00.000Z";
 
@@ -566,5 +572,126 @@ describe("timeline read model projection", () => {
       terminalContext: ["old terminal", { label: "Old terminal selection" }],
       checkpointId: "old-checkpoint",
     })).toBeNull();
+  });
+});
+
+describe("timeline row stabilization", () => {
+  function stableDisplay(items: readonly ChatTimelineItemRead[], turns: readonly ChatTimelineTurnRead[], previousRows: readonly TimelineRow[], previousDisplay: readonly TimelineDisplayRow[], expandedTurns: ReadonlySet<string> = new Set()) {
+    const projection = projectTimelineReadModel(items, turns);
+    const rows = stabilizeTimelineRows(previousRows, projection.rows);
+    const display = stabilizeTimelineRows(previousDisplay, buildTimelineDisplayRows(rows, projection.turns, expandedTurns));
+    return { rows, display };
+  }
+
+  const settled = [
+    messageRead("message:user", 1, "Run the tests", { role: "user" }),
+    activityRead("activity:command", 2, "command_execution", "completed", "pnpm test", { detail: "Passed" }),
+    activityRead("activity:lint", 3, "command_execution", "completed", "pnpm lint", { detail: "Clean" }),
+    messageRead("message:answer", 4, "All checks passed."),
+  ];
+  const completed = [turnRead("completed", { completedAt: "2026-07-21T14:00:05.000Z" })];
+
+  it("returns the previous arrays when a refresh changes nothing", () => {
+    const first = stableDisplay(settled, completed, [], []);
+    const second = stableDisplay(settled, completed, first.rows, first.display);
+
+    expect(second.rows).toBe(first.rows);
+    expect(second.display).toBe(first.display);
+  });
+
+  it("replaces only the row whose change sequence advanced", () => {
+    const first = stableDisplay(settled, completed, [], []);
+    const edited = settled.map((item) => item.activityId === "message:answer"
+      ? { ...messageRead("message:answer", 4, "All checks passed again."), changeSequence: 9 }
+      : item);
+    const second = stableDisplay(edited, completed, first.rows, first.display);
+
+    expect(second.display).not.toBe(first.display);
+    expect(second.display[0]).toBe(first.display[0]);
+    expect(second.display[1]).toBe(first.display[1]);
+    expect(second.display[2]).not.toBe(first.display[2]);
+    expect(second.display[2]).toMatchObject({ id: "message:answer", markdown: "All checks passed again." });
+  });
+
+  it("returns reused rows in the new order when rows move", () => {
+    const first = stabilizeTimelineRows([], projectTimelineReadModel(settled, completed).rows);
+    const reordered = stabilizeTimelineRows(first, [...projectTimelineReadModel(settled, completed).rows].reverse());
+
+    expect(reordered).not.toBe(first);
+    expect(reordered.map((row) => row.id)).toEqual(first.map((row) => row.id).reverse());
+    reordered.forEach((row, index) => expect(row).toBe(first[first.length - 1 - index]));
+  });
+
+  it("replaces a group whose children changed and keeps its unchanged siblings", () => {
+    const active = [turnRead("active")];
+    const commentary = activityRead("message:commentary", 2, "assistant_message", "completed", "Assistant response", { detail: "Checking." });
+    const running = [commentary, activityRead("activity:command", 3, "command_execution", "active", "pnpm test")];
+    const first = stableDisplay(running, active, [], []);
+    const finished = stableDisplay(
+      [commentary, { ...activityRead("activity:command", 3, "command_execution", "completed", "pnpm test", { detail: "Passed" }), changeSequence: 8 }],
+      active,
+      first.rows,
+      first.display,
+    );
+    expect(finished.display[0]).toBe(first.display[0]);
+    expect(finished.display[1]).not.toBe(first.display[1]);
+    expect(finished.display[1]).toMatchObject({ kind: "activity_group", latest: { status: "completed" } });
+
+    const grown = stableDisplay(
+      [...running, activityRead("activity:lint", 4, "command_execution", "active", "pnpm lint")],
+      active,
+      first.rows,
+      first.display,
+    );
+    expect(grown.display[0]).toBe(first.display[0]);
+    expect(grown.display[1]).not.toBe(first.display[1]);
+    expect(grown.display[1]).toMatchObject({ kind: "activity_group", earlierRows: [{ id: "activity:command" }], latest: { id: "activity:lint" } });
+  });
+
+  it("gives the assistant answer a new object when its turn settles without an item change", () => {
+    const items = [messageRead("message:answer", 2, "Done.")];
+    const first = stableDisplay(items, [turnRead("active")], [], []);
+    const second = stableDisplay(items, completed, first.rows, first.display);
+
+    const firstAnswer = first.rows.find((row) => row.id === "message:answer");
+    const secondAnswer = second.rows.find((row) => row.id === "message:answer");
+    expect(secondAnswer).not.toBe(firstAnswer);
+    expect(secondAnswer).toMatchObject({ metadata: { durationMs: 5_000 } });
+  });
+
+  it("reuses an unchanged pending work row", () => {
+    const items = [messageRead("message:user", 1, "Start", { role: "user" })];
+    const first = stableDisplay(items, [turnRead("active")], [], []);
+    const second = stableDisplay(items, [turnRead("active")], first.rows, first.display);
+
+    expect(first.display.some((row) => row.id === "turn-pending:turn-1")).toBe(true);
+    expect(second.display).toBe(first.display);
+  });
+
+  it("replaces a turn fold when it expands and keeps its hidden rows", () => {
+    const first = stableDisplay(settled, completed, [], []);
+    const expanded = stableDisplay(settled, completed, first.rows, first.display, new Set(["turn-1"]));
+    const firstFold = first.display.find((row) => row.kind === "turn_fold");
+    const expandedFold = expanded.display.find((row) => row.kind === "turn_fold");
+
+    expect(expandedFold).not.toBe(firstFold);
+    expect(expandedFold).toMatchObject({ expanded: true });
+    expect(expanded.display.find((row) => row.id === "message:answer")).toBe(first.display.find((row) => row.id === "message:answer"));
+  });
+
+  it("indexes rows by turn once per projection", () => {
+    const turns = Array.from({ length: 200 }, (_, turnIndex) => turnRead("completed", { turnId: `turn-${turnIndex}` }));
+    const items = turns.flatMap((turn, turnIndex) => Array.from({ length: 25 }, (_, rowIndex) => {
+      const sequence = turnIndex * 25 + rowIndex + 1;
+      return rowIndex === 24
+        ? messageRead(`message:${sequence}`, sequence, "Answer", { turnId: turn.turnId })
+        : activityRead(`activity:${sequence}`, sequence, "command_execution", "completed", "pnpm test", { turnId: turn.turnId, detail: "Passed" });
+    }));
+    vi.mocked(indexTimelineRowsByTurn).mockClear();
+
+    const projection = projectTimelineReadModel(items, turns);
+
+    expect(projection.rows).toHaveLength(5_000);
+    expect(indexTimelineRowsByTurn).toHaveBeenCalledTimes(1);
   });
 });

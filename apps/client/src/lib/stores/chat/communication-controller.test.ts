@@ -71,6 +71,7 @@ function replyPage(previousCursor: string | null, replyPosition: number): ChatRe
     replies: [message(`reply:${replyPosition}`, replyPosition)],
     assignment: null,
     agentRuns: [],
+    delegatedChildren: [],
     previousCursor,
     revision: 1,
   };

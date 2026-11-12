@@ -478,6 +478,10 @@ const CLASSIFIED_TRIGGERS: &[(&str, TriggerClass)] = &[
     ("chat_teammate_policy_immutable_delete", IMMUTABLE_ROW),
     ("chat_teammate_policy_immutable_update", IMMUTABLE_ROW),
     (
+        "chat_work_assignment_delegation_insert",
+        TriggerClass::Net("a forged child can omit a delegation field or name itself as parent"),
+    ),
+    (
         "contact_card_prevent_delete",
         TriggerClass::Net("a forged change can delete the card"),
     ),

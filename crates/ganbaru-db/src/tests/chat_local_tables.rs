@@ -431,3 +431,50 @@ fn replicated_chat_deletes_never_stop_on_a_device_local_foreign_key() {
         );
     });
 }
+
+#[test]
+fn secret_requests_hold_no_value_and_follow_their_run() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let insert = |id: &str, state: &str, label: &str| {
+            sqlx::query(
+                "INSERT INTO chat_secret_requests
+                    (id, run_id, assignment_id, label, purpose, state, created_at, expires_at)
+                 VALUES (?, 'run-1', 'assignment-1', ?, 'Call the staging API', ?,
+                         '2026-10-23T00:00:00.000Z', '2026-10-23T00:30:00.000Z')",
+            )
+            .bind(id.to_owned())
+            .bind(label.to_owned())
+            .bind(state.to_owned())
+            .execute(&pool)
+        };
+        insert("request-1", "pending", "API key").await.unwrap();
+        assert!(insert("request-2", "revealed", "API key").await.is_err());
+        assert!(insert("request-3", "pending", "   ").await.is_err());
+        assert!(
+            insert("request-4", "pending", &"k".repeat(121))
+                .await
+                .is_err()
+        );
+
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('chat_secret_requests')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(
+            columns
+                .iter()
+                .all(|column| !column.contains("value") && !column.contains("secret")),
+            "{columns:?}"
+        );
+
+        sqlx::query("DELETE FROM chat_agent_runs WHERE id = 'run-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count_where(&pool, "chat_secret_requests", "1 = 1").await, 0);
+        assert_eq!(foreign_key_violations(&pool).await, 0);
+    });
+}

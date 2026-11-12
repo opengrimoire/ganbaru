@@ -29,6 +29,7 @@ import {
   type ChatAccessProfileRevision,
   type ChatAiTeammateRead,
   type ChatAssignmentAcceptanceFolderRead,
+  type ChatAssignmentDelegationRead,
   type ChatAssignmentAcceptanceOfferRead,
   type ChatAssignmentReview,
   type ChatAssignmentTargetRead,
@@ -37,6 +38,7 @@ import {
   type ChatChannelRosterAiSummary,
   type ChatChannelRosterRead,
   type ChatConversationMembershipRead,
+  type ChatDelegatedChildRead,
   type ChatFolderGrant,
   type ChatExecutionTarget,
   type ChatHistoryBoundary,
@@ -58,6 +60,7 @@ import {
   type ChatScratchPromotionResultRead,
   type ChatScratchScopeRead,
   type ChatScratchSourceSummaryRead,
+  type ChatSecretRequestRead,
   type ChatTeammatePolicyRead,
   type ChatTeammateAccessPreviewRead,
   type ChatTeammateAccessPreviewIssue,
@@ -941,6 +944,7 @@ export function parseChatWorkAssignment(
     updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
     review,
     localAcceptance: readNullable(record.localAcceptance, `${label}.localAcceptance`, parseAssignmentAcceptanceOffer),
+    delegation: readNullable(record.delegation, `${label}.delegation`, parseAssignmentDelegation),
     latestRunProviderThreadId: readNullable(
       record.latestRunProviderThreadId,
       `${label}.latestRunProviderThreadId`,
@@ -979,6 +983,60 @@ function parseAssignmentAcceptanceOffer(value: unknown, label: string): ChatAssi
       `${label}.scratchRuntimeApproval`,
     ),
   };
+}
+
+/** Deepest delegation chain the host accepts, matching the backend delegation limit. */
+const MAX_CHAT_DELEGATION_DEPTH = 2;
+
+function parseAssignmentDelegation(value: unknown, label: string): ChatAssignmentDelegationRead {
+  const record = readRecord(value, label);
+  const depth = readNonNegativeSafeInteger(record.depth, `${label}.depth`);
+  if (depth < 1 || depth > MAX_CHAT_DELEGATION_DEPTH) {
+    throw new Error(`${label}.depth must be between 1 and ${MAX_CHAT_DELEGATION_DEPTH}`);
+  }
+  return {
+    parentAssignmentId: readIdentifier(record.parentAssignmentId, `${label}.parentAssignmentId`),
+    parentReplyThreadId: readNullable(record.parentReplyThreadId, `${label}.parentReplyThreadId`, readIdentifier),
+    depth,
+    objective: readString(record.objective, `${label}.objective`),
+    expectedResult: readString(record.expectedResult, `${label}.expectedResult`),
+  };
+}
+
+function parseDelegatedChild(value: unknown, label: string): ChatDelegatedChildRead {
+  const record = readRecord(value, label);
+  return {
+    assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
+    parentAssignmentId: readIdentifier(record.parentAssignmentId, `${label}.parentAssignmentId`),
+    replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
+    teammate: parseChatParticipant(record.teammate, `${label}.teammate`),
+    objective: readString(record.objective, `${label}.objective`),
+    state: readEnum(record.state, CHAT_WORK_ASSIGNMENT_STATES, `${label}.state`),
+    stateReason: readNullable(record.stateReason, `${label}.stateReason`, readString),
+    createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
+  };
+}
+
+function parseSecretRequest(value: unknown, label: string): ChatSecretRequestRead {
+  const record = readRecord(value, label);
+  const createdAt = readUtcTimestamp(record.createdAt, `${label}.createdAt`);
+  const expiresAt = readUtcTimestamp(record.expiresAt, `${label}.expiresAt`);
+  if (Date.parse(expiresAt) <= Date.parse(createdAt)) {
+    throw new Error(`${label}.expiresAt must be after createdAt`);
+  }
+  return {
+    id: readIdentifier(record.id, `${label}.id`),
+    assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
+    label: readString(record.label, `${label}.label`),
+    purpose: readString(record.purpose, `${label}.purpose`),
+    createdAt,
+    expiresAt,
+  };
+}
+
+/** Validates the pending secret requests of one reply thread. */
+export function parseChatSecretRequests(value: unknown, label = "Chat secret requests"): ChatSecretRequestRead[] {
+  return readArray(value, label, parseSecretRequest);
 }
 
 function parseWaitingAssignment(value: unknown, label: string): ChatWaitingAssignmentRead {
@@ -1078,6 +1136,7 @@ export function parseChatReplyThreadPage(
     replies: readArray(record.replies, `${label}.replies`, parseChatMessage),
     assignment: readNullable(record.assignment, `${label}.assignment`, parseChatWorkAssignment),
     agentRuns: readArray(record.agentRuns, `${label}.agentRuns`, parseChatAgentRun),
+    delegatedChildren: readArray(record.delegatedChildren, `${label}.delegatedChildren`, parseDelegatedChild),
     previousCursor: readNullable(record.previousCursor, `${label}.previousCursor`, readString),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
   };

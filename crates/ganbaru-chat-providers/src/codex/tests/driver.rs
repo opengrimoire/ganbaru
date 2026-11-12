@@ -587,6 +587,7 @@ fn fixture_endpoint(token: &str) -> ProviderInternalMcpConfig {
         url: "http://127.0.0.1:41827/mcp".to_string(),
         bearer_token: token.to_string(),
         organizational_authority: false,
+        pre_approved_tools: Vec::new(),
     }
 }
 

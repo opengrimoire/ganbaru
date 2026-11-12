@@ -7,6 +7,8 @@ use super::support::{PROVIDER_START_TIMEOUT, now_timestamp, operation_context};
 use super::validation::validate_modes;
 use crate::chat::authority_epoch::current_authority_epoch;
 use crate::chat::ingestion::{ChatEventIngestor, TauriChatChangeEmitter, run_idle_flush};
+use crate::chat::internal_mcp::{InternalMcpEndpoint, InternalMcpRegistry};
+use crate::chat::internal_mcp_tools::pre_approved_tool_names;
 use crate::chat::send_commands::SendChatTurnCommand;
 use crate::chat::workspace::AuthorizedWorkingFolder;
 use ganbaru_chat::agent_runs::AgentRunBinding;
@@ -16,8 +18,9 @@ use ganbaru_chat_contracts::events::{CanonicalEvent, CanonicalRuntimeEvent, Chan
 use ganbaru_chat_contracts::models::{
     ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
     ChatTeammatePolicyRevisionId, ChatThreadId, ChatTurnId, ChatWorkAssignmentId,
-    ContinuationGroupId, ProviderInstanceConfig, ProviderSessionSnapshot, ProviderSessionState,
-    ResumeSessionRequest, StartSessionRequest, VerifiedWorkspaceContext,
+    ContinuationGroupId, ProviderInstanceConfig, ProviderInternalMcpConfig,
+    ProviderSessionSnapshot, ProviderSessionState, ResumeSessionRequest, StartSessionRequest,
+    VerifiedWorkspaceContext,
 };
 use ganbaru_chat_providers::{
     DriverFuture, ProviderDriver, ProviderDriverFactory, ProviderDriverRegistry, ProviderEventSink,
@@ -31,12 +34,57 @@ use tokio::sync::Mutex;
 const MAX_PROVIDER_CHANGED_FILES: usize = 512;
 const MAX_PROVIDER_CHANGED_FILE_PATH_BYTES: usize = 4_096;
 
+/// The server name providers list the internal host tools under.
+pub(super) const INTERNAL_MCP_SERVER_NAME: &str = "ganbaru-chat";
+
+/// A provider process this send starts reaches the thread's internal MCP endpoint.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct InternalMcpLaunch {
+    /// Whether the endpoint serves an organizational run rather than a direct thread.
+    pub(super) organizational_authority: bool,
+}
+
+impl InternalMcpLaunch {
+    /// The provider configuration for an endpoint token issued to the process about to start.
+    pub(super) fn config(self, endpoint: InternalMcpEndpoint) -> ProviderInternalMcpConfig {
+        ProviderInternalMcpConfig {
+            name: INTERNAL_MCP_SERVER_NAME.to_string(),
+            url: endpoint.url,
+            bearer_token: endpoint.bearer_token,
+            organizational_authority: self.organizational_authority,
+            pre_approved_tools: if self.organizational_authority {
+                pre_approved_tool_names(INTERNAL_MCP_SERVER_NAME)
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    /// Rotates the running endpoint's token for a process about to start, which ends access
+    /// for any earlier process of the thread.
+    pub(super) async fn rotated_config(
+        self,
+        app: &tauri::AppHandle,
+        thread_id: &ChatThreadId,
+    ) -> ChatResult<ProviderInternalMcpConfig> {
+        let endpoint = app
+            .state::<InternalMcpRegistry>()
+            .rotate_thread_token(thread_id)
+            .await?;
+        Ok(self.config(endpoint))
+    }
+}
+
 pub(super) struct EnsureSessionContext<'a> {
     pub(super) app: &'a tauri::AppHandle,
     pub(super) pool: &'a SqlitePool,
     pub(super) owner: &'a Arc<ThreadRuntimeOwner>,
     pub(super) new_driver: Option<Box<dyn ProviderDriver>>,
+    /// Its `internal_mcp` is set only when this send was issued a token; a process that starts
+    /// without one rotates the endpoint token through the `internal_mcp` launch.
     pub(super) configuration: ProviderInstanceConfig,
+    /// Set when the provider reaches the thread's internal MCP endpoint.
+    pub(super) internal_mcp: Option<InternalMcpLaunch>,
     pub(super) workspace: &'a AuthorizedWorkingFolder,
     pub(super) thread_id: &'a ChatThreadId,
     pub(super) existing: Option<&'a ThreadRuntimeData>,
@@ -58,6 +106,7 @@ pub(super) async fn ensure_session_with_executable_recovery(
         owner,
         new_driver,
         configuration,
+        internal_mcp,
         workspace,
         thread_id,
         existing,
@@ -67,13 +116,13 @@ pub(super) async fn ensure_session_with_executable_recovery(
         developer_instructions,
         developer_instructions_delivered,
     } = context;
-    let internal_mcp = configuration.internal_mcp.clone();
     let initial = ensure_session(EnsureSessionContext {
         app,
         pool,
         owner,
         new_driver,
         configuration,
+        internal_mcp,
         workspace,
         thread_id,
         existing,
@@ -103,13 +152,15 @@ pub(super) async fn ensure_session_with_executable_recovery(
         crate::chat::settings_commands::read_provider(app, &request.provider_instance_id)?;
     let mut repaired_configuration =
         crate::chat::settings::approved_runtime(app, &repaired_provider.configuration)?;
-    repaired_configuration.internal_mcp = internal_mcp;
+    // The repaired launch takes a rotated token in `ensure_session`.
+    repaired_configuration.internal_mcp = None;
     let retry = ensure_session(EnsureSessionContext {
         app,
         pool,
         owner,
         new_driver: None,
         configuration: repaired_configuration,
+        internal_mcp,
         workspace,
         thread_id,
         existing,
@@ -142,6 +193,7 @@ pub(super) async fn ensure_session(
         owner,
         new_driver,
         configuration,
+        internal_mcp,
         workspace,
         thread_id,
         existing,
@@ -174,7 +226,15 @@ pub(super) async fn ensure_session(
     }
     let driver = match new_driver {
         Some(driver) => driver,
-        None => ProviderDriverRegistry.create_driver(configuration)?,
+        None => {
+            let mut configuration = configuration;
+            if let Some(launch) = internal_mcp
+                && configuration.internal_mcp.is_none()
+            {
+                configuration.internal_mcp = Some(launch.rotated_config(app, thread_id).await?);
+            }
+            ProviderDriverRegistry.create_driver(configuration)?
+        }
     };
     validate_modes(&driver.capabilities(), request.modes)?;
     let verified = VerifiedWorkspaceContext {
@@ -362,7 +422,13 @@ impl DurableChatEventSink {
         native_workspace_authorized: bool,
         checkpoint_enabled: bool,
     ) -> Self {
-        let ingestor = Arc::new(Mutex::new(ChatEventIngestor::new(pool.clone(), emitter)));
+        let secrets = app
+            .state::<crate::chat::secrets::ChatSecretRegistry>()
+            .inner()
+            .clone();
+        let ingestor = Arc::new(Mutex::new(
+            ChatEventIngestor::new(pool.clone(), emitter).with_secret_redactor(Arc::new(secrets)),
+        ));
         let idle_flush = tauri::async_runtime::spawn(run_idle_flush(Arc::downgrade(&ingestor)));
         Self {
             app,
@@ -517,6 +583,21 @@ impl ProviderEventSink for DurableChatEventSink {
                     .await
             }
             .await;
+            let settled_thread = settled_turn
+                .as_ref()
+                .map(|(thread_id, _)| thread_id)
+                .or(stopped_thread.as_ref());
+            if let Some(thread_id) =
+                settled_thread.filter(|_| self.organizational && ingestion.is_ok())
+            {
+                crate::chat::organization::deliver_delegation_outcomes_of_thread(
+                    &self.app, &self.pool, thread_id,
+                );
+                crate::chat::organization::resume_answered_work_of_thread(
+                    &self.app, &self.pool, thread_id,
+                );
+                crate::chat::secrets::spawn_sweep(&self.app, &self.pool);
+            }
             if let Some((thread_id, turn_id)) = settled_turn {
                 self.app
                     .state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>()

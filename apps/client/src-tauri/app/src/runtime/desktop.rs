@@ -277,6 +277,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(chat::provider_files::ProviderFileState::default())
         .manage(chat::internal_mcp::InternalMcpRegistry::default())
         .manage(chat::authority_epoch::ChatAuthorityEpoch::default())
+        .manage(chat::secrets::ChatSecretRegistry::default())
         .manage(chat::preview::ChatBrowserManager::default())
         .manage(ganbaru_chat::runtime::ChatRuntimeRegistry::default())
         .manage(chat::review::engine::ChatReviewRegistry::default())
@@ -494,6 +495,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::drafts::chat_save_draft,
             chat::drafts::chat_read_draft,
             chat::drafts::chat_delete_draft,
+            chat::secrets::chat_provide_secret,
+            chat::secrets::chat_decline_secret,
+            chat::secrets::chat_list_secret_requests,
             chat::interaction_commands::chat_import_image,
             chat::interaction_commands::chat_pick_images,
             chat::interaction_commands::chat_attachment_data_url,

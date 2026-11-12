@@ -11,7 +11,7 @@ use super::common::{
 #[cfg(desktop)]
 use super::common::{wire_approval_policy, wire_work_state};
 #[cfg(desktop)]
-use super::context::freeze_context_package;
+use super::context::{FreezeOutcome, freeze_context_package};
 #[cfg(desktop)]
 use super::now_timestamp;
 use super::reads::{
@@ -254,7 +254,7 @@ impl<'a> PostingDevice<'a> {
 /// none, so the post records the mention only and a desktop starts the work later. A home
 /// device that a handoff turned into a replica, or that was unlinked, is passed over, since an
 /// assignment it executes would stay queued forever.
-async fn new_assignment_executing_device(
+pub(super) async fn new_assignment_executing_device(
     transaction: &mut Transaction<'_, Sqlite>,
     teammate_id: &ChatParticipantId,
     device: PostingDevice<'_>,
@@ -489,6 +489,7 @@ pub(super) async fn persist_assignment_routing(
             executing_device_id: &executing_device_id,
             execution_target,
             poster_participant_id: LOCAL_PARTICIPANT_ID,
+            delegation: None,
             model_override,
         },
         device,
@@ -531,9 +532,94 @@ pub(super) struct NewAssignment<'a> {
     /// Participant who posted the trigger, recorded as the reviewer when the new assignment
     /// follows reviewed work.
     pub(super) poster_participant_id: &'a str,
+    /// The delegation that creates it, when a teammate delegated it. Without one, a successor
+    /// of delegated work inherits its predecessor's delegation.
+    pub(super) delegation: Option<DelegationWrite<'a>>,
     /// The model the assignment runs with over the teammate's default; `None` keeps the
     /// override of the assignment it follows, if any.
     pub(super) model_override: Option<&'a ChatAssignmentModelOverride>,
+}
+
+/// The fixed delegation fields of an assignment a teammate delegated.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct DelegationWrite<'a> {
+    pub(super) parent_assignment_id: &'a ChatWorkAssignmentId,
+    /// Levels below work a person started: 1 or 2.
+    pub(super) depth: u8,
+    pub(super) objective: &'a str,
+    pub(super) expected_result: &'a str,
+    /// JSON array of `{workingFolderId, capability}`, the most the child may ever hold.
+    pub(super) folder_ceiling: &'a str,
+}
+
+/// The fixed delegation fields of a delegated assignment, owned for a successor to inherit.
+struct DelegationFields {
+    parent_assignment_id: ChatWorkAssignmentId,
+    depth: u8,
+    objective: String,
+    expected_result: String,
+    folder_ceiling: String,
+}
+
+impl DelegationFields {
+    fn write(&self) -> DelegationWrite<'_> {
+        DelegationWrite {
+            parent_assignment_id: &self.parent_assignment_id,
+            depth: self.depth,
+            objective: &self.objective,
+            expected_result: &self.expected_result,
+            folder_ceiling: &self.folder_ceiling,
+        }
+    }
+}
+
+/// Reads the delegation fields of `assignment_id`, or none when a person started it. A
+/// successor of delegated work inherits them, so it stays under the parent's ceiling.
+async fn read_delegation_fields(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<Option<DelegationFields>> {
+    let row = sqlx::query(
+        "SELECT parent_assignment_id, delegation_depth, delegation_objective,
+                delegation_expected_result, delegation_folder_ceiling
+         FROM chat_work_assignments WHERE id = ? AND parent_assignment_id IS NOT NULL",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let parent_assignment_id = ChatWorkAssignmentId::new(
+        row.try_get::<String, _>("parent_assignment_id")
+            .map_err(persistence_error)?,
+    )
+    .map_err(identifier_error)?;
+    let depth = u8::try_from(
+        row.try_get::<i64, _>("delegation_depth")
+            .map_err(persistence_error)?,
+    )
+    .map_err(|_| {
+        ChatError::new(
+            ChatErrorCode::Persistence,
+            "The delegated assignment has an invalid depth",
+            false,
+        )
+    })?;
+    Ok(Some(DelegationFields {
+        parent_assignment_id,
+        depth,
+        objective: row
+            .try_get("delegation_objective")
+            .map_err(persistence_error)?,
+        expected_result: row
+            .try_get("delegation_expected_result")
+            .map_err(persistence_error)?,
+        folder_ceiling: row
+            .try_get("delegation_folder_ceiling")
+            .map_err(persistence_error)?,
+    }))
 }
 
 /// Schema version of a stored model selection.
@@ -580,6 +666,9 @@ async fn new_assignment_model_override(
 /// someone here consented to the post, the same transaction freezes its context and queues its
 /// dispatch; otherwise the executing device does both when the assignment passes its acceptance
 /// check.
+///
+/// A successor of delegated work keeps its predecessor's delegation fields unless the caller
+/// names others, so rerouted and follow-up work stays under the parent's ceiling.
 pub(super) async fn create_assignment(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment: NewAssignment<'_>,
@@ -592,6 +681,13 @@ pub(super) async fn create_assignment(
         assignment.teammate_id,
         previous_id,
     )?;
+    let inherited = match (assignment.delegation, previous_id) {
+        (None, Some(previous_id)) => read_delegation_fields(transaction, previous_id).await?,
+        _ => None,
+    };
+    let delegation = assignment
+        .delegation
+        .or_else(|| inherited.as_ref().map(DelegationFields::write));
     let reviewed_previous = assignment
         .latest_assignment
         .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview);
@@ -625,8 +721,9 @@ pub(super) async fn create_assignment(
             (id, reply_thread_id, teammate_id, triggering_message_item_id,
              previous_assignment_id, executing_device_id, state,
              override_model_selection_schema_version, override_model_selection_data,
-             created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+             created_at, updated_at, parent_assignment_id, delegation_depth,
+             delegation_objective, delegation_expected_result, delegation_folder_ceiling)
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(assignment_id.as_str())
     .bind(assignment.reply_thread_id.as_str())
@@ -638,6 +735,13 @@ pub(super) async fn create_assignment(
     .bind(override_data)
     .bind(now.as_str())
     .bind(now.as_str())
+    .bind(delegation.map(|delegation| delegation.parent_assignment_id.as_str()))
+    .bind(i64::from(
+        delegation.map_or(0, |delegation| delegation.depth),
+    ))
+    .bind(delegation.map(|delegation| delegation.objective))
+    .bind(delegation.map(|delegation| delegation.expected_result))
+    .bind(delegation.map(|delegation| delegation.folder_ceiling))
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
@@ -900,7 +1004,8 @@ pub(super) async fn drop_input_requested_targets(
 }
 
 /// Freezes the context of assignment `assignment_id` and queues its dispatch on this device,
-/// with the job consenting to the subject the post or Start agreed to run.
+/// with the job consenting to the subject the post or Start agreed to run. Delegated work whose
+/// parent lost its authority is cancelled by the freeze instead, and queues nothing.
 #[cfg(desktop)]
 pub(super) async fn queue_assignment_dispatch(
     transaction: &mut Transaction<'_, Sqlite>,
@@ -911,7 +1016,7 @@ pub(super) async fn queue_assignment_dispatch(
     execution_target: Option<&ChatExecutionTarget>,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
-    freeze_context_package(
+    let outcome = freeze_context_package(
         transaction,
         assignment_id,
         reply_thread_id,
@@ -921,6 +1026,9 @@ pub(super) async fn queue_assignment_dispatch(
         now,
     )
     .await?;
+    if outcome == FreezeOutcome::ParentAuthorityRevoked {
+        return Ok(());
+    }
     let consented_digest = read_assignment_subject(transaction, assignment_id)
         .await?
         .digest();
@@ -941,7 +1049,27 @@ pub(super) async fn queue_assignment_dispatch(
     Ok(())
 }
 
+/// Who writes a communication message.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum MessageAuthor<'a> {
+    /// The person using this device.
+    LocalPerson,
+    /// A teammate, as when it delegates work in its channel.
+    #[cfg_attr(mobile, allow(dead_code))]
+    Teammate(&'a ChatParticipantId),
+}
+
+impl MessageAuthor<'_> {
+    fn participant_id(&self) -> &str {
+        match self {
+            Self::LocalPerson => LOCAL_PARTICIPANT_ID,
+            Self::Teammate(teammate_id) => teammate_id.as_str(),
+        }
+    }
+}
+
 pub(super) struct CommunicationMessageWrite<'a> {
+    pub(super) author: MessageAuthor<'a>,
     pub(super) item_id: &'a ChatConversationItemId,
     pub(super) revision_id: &'a ChatMessageRevisionId,
     pub(super) conversation_id: &'a ChatConversationId,
@@ -978,7 +1106,7 @@ pub(super) async fn insert_communication_message(
     )
     .bind(write.item_id.as_str())
     .bind(write.now.as_str())
-    .bind(LOCAL_PARTICIPANT_ID)
+    .bind(write.author.participant_id())
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
@@ -1506,6 +1634,7 @@ pub(super) async fn insert_channel_copy(
     insert_communication_message(
         transaction,
         CommunicationMessageWrite {
+            author: MessageAuthor::LocalPerson,
             item_id: &item_id,
             revision_id: &revision_id,
             conversation_id,
@@ -1575,11 +1704,14 @@ pub(super) async fn require_reply_thread(
     Ok(reply_thread_id.clone())
 }
 
-pub(super) async fn require_participating_teammate(
-    pool: &SqlitePool,
+pub(super) async fn require_participating_teammate<'e, E>(
+    executor: E,
     conversation_id: &ChatConversationId,
     teammate_id: &ChatParticipantId,
-) -> ChatResult<()> {
+) -> ChatResult<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let row = sqlx::query(
         "SELECT membership.removed_at, participant.archived_at,
                 policy.id AS policy_revision_id, ai_membership.participate,
@@ -1601,7 +1733,7 @@ pub(super) async fn require_participating_teammate(
     )
     .bind(conversation_id.as_str())
     .bind(teammate_id.as_str())
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(persistence_error)?
     .ok_or_else(|| {
@@ -2047,6 +2179,7 @@ pub(super) async fn complete_reviewed_assignment(
 
 /// Moves `assignment_id` to `state` when it is still at `expected_revision`. The write clears
 /// any review, since a review only judges completed work and this write replaces that state.
+/// Delegated work that reaches an outcome state reports it in its parent's reply thread.
 #[cfg(desktop)]
 pub(super) async fn set_assignment_state(
     pool: &SqlitePool,
@@ -2083,6 +2216,14 @@ pub(super) async fn set_assignment_state(
         let mut connection = pool.acquire().await.map_err(persistence_error)?;
         end_assignment_dispatch_jobs(&mut connection, assignment_id, state, &now).await?;
     }
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    ganbaru_chat::coordination::delegation::post_delegation_outcome(
+        &mut transaction,
+        assignment_id.as_str(),
+        now.as_str(),
+    )
+    .await?;
+    transaction.commit().await.map_err(persistence_error)?;
     read_assignment(pool, assignment_id).await
 }
 

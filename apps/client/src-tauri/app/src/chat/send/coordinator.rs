@@ -6,7 +6,9 @@ use super::persistence::{
     persist_fresh_session_handoff, persist_user_turn, read_attachment_references,
     read_thread_runtime_data, replay_send_receipt,
 };
-use super::session::{EnsureSessionContext, ensure_session_with_executable_recovery};
+use super::session::{
+    EnsureSessionContext, InternalMcpLaunch, ensure_session_with_executable_recovery,
+};
 use super::support::{
     PROVIDER_START_TIMEOUT, TURN_OPERATION_TIMEOUT, chat_pool, device_state_error, now_timestamp,
     operation_context, versioned_value,
@@ -16,6 +18,7 @@ use super::validation::{
     validate_provider_selection, validate_send_mentions,
 };
 use crate::chat::device_state::{full_access_is_trusted, read_active_device_scope};
+use crate::chat::internal_mcp::EndpointIssue;
 use crate::chat::send_commands::{SendChatTurnCommand, SendChatTurnResult};
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use crate::vault;
@@ -193,7 +196,7 @@ pub(crate) async fn send_turn(
     }
     let fresh_native_session = !matches!(snapshot.session_state, ProviderSessionState::Ready)
         || snapshot.session_id.is_none();
-    if authority_support.internal_host_tools {
+    let internal_mcp = if authority_support.internal_host_tools {
         if fresh_native_session {
             mcp_registry.stop_thread_endpoint(&thread_id).await;
         }
@@ -212,15 +215,23 @@ pub(crate) async fn send_turn(
                 origin.run().is_some(),
             )
             .await?;
-        configuration.internal_mcp = Some(ProviderInternalMcpConfig {
-            name: "ganbaru-chat".to_string(),
-            url: resource_endpoint.url,
-            bearer_token: resource_endpoint.bearer_token,
+        let launch = InternalMcpLaunch {
             organizational_authority: origin.run().is_some(),
-        });
+        };
+        configuration.internal_mcp = match resource_endpoint {
+            EndpointIssue::Created(endpoint) => Some(launch.config(endpoint)),
+            // Another send created the endpoint first. A fresh session starts a process, so it
+            // takes a rotated token now; a reused one keeps the token its process holds.
+            EndpointIssue::Running if fresh_native_session => {
+                Some(launch.rotated_config(&app, &thread_id).await?)
+            }
+            EndpointIssue::Running => None,
+        };
+        Some(launch)
     } else {
         configuration.internal_mcp = None;
-    }
+        None
+    };
     let mut new_driver = None;
     let continuation_group_id = if let Some(existing) = &existing {
         existing.continuation_group_id.clone()
@@ -302,6 +313,7 @@ pub(crate) async fn send_turn(
             owner: &owner,
             new_driver,
             configuration,
+            internal_mcp,
             workspace: &authorized,
             thread_id: &thread_id,
             existing: existing.as_ref(),
@@ -817,12 +829,25 @@ pub(super) async fn load_internal_mcp_scope(
     let row = sqlx::query(
         "SELECT authorization.destination_conversation_id,
                 authorization.resolved_runtime_approval_policy,
-                authorization.execution_environment_id, run.provider_turn_id
+                authorization.execution_environment_id, run.provider_turn_id,
+                assignment.delegation_depth,
+                EXISTS (
+                  SELECT 1 FROM chat_teammate_channel_memberships other
+                  JOIN chat_participants participant ON participant.id = other.teammate_id
+                  JOIN chat_conversation_memberships membership
+                    ON membership.conversation_id = other.conversation_id
+                   AND membership.participant_id = other.teammate_id
+                   AND membership.removed_at IS NULL
+                  WHERE other.conversation_id = authorization.destination_conversation_id
+                    AND other.teammate_id <> assignment.teammate_id
+                    AND other.removed_at IS NULL AND participant.archived_at IS NULL
+                ) AS delegation_target_available
          FROM chat_assignment_authorization_revisions authorization
          JOIN chat_agent_runs run
            ON run.authorization_revision_id = authorization.id
           AND run.assignment_id = authorization.assignment_id
           AND run.authorization_scope_digest = authorization.scope_digest
+         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
          WHERE authorization.id = ? AND authorization.assignment_id = ?
            AND authorization.scope_digest = ? AND run.id = ?
            AND run.provider_thread_id = ?
@@ -956,6 +981,15 @@ pub(super) async fn load_internal_mcp_scope(
                 })
             })
             .collect::<ChatResult<Vec<_>>>()?,
+        delegation_depth: row
+            .try_get::<i64, _>("delegation_depth")
+            .ok()
+            .and_then(|depth| u8::try_from(depth).ok())
+            .ok_or_else(|| provider_authority_error("Delegation authority is invalid"))?,
+        delegation_target_available: row
+            .try_get::<i64, _>("delegation_target_available")
+            .map_err(|_| provider_authority_error("Delegation authority is invalid"))?
+            != 0,
     })
 }
 

@@ -67,6 +67,10 @@ pub(crate) const CHAT_ASSIGNMENT_INPUT_TOPIC: &str = "chat-assignment-input";
 /// is the assignment id.
 pub(crate) const CHAT_ASSIGNMENT_STARTED_TOPIC: &str = "chat-assignment-started";
 
+/// Change notice topic of a delegated work assignment that arrived in a state its parent hears
+/// about; the key is the delegated assignment id.
+pub(crate) const CHAT_DELEGATION_SETTLED_TOPIC: &str = "chat-delegation-settled";
+
 /// Replicated tables whose applied rows feed device-local Chat state, each registered with
 /// [`ChatApplyHook`].
 const HOOKED_TABLES: [&TableSpec; 13] = [
@@ -120,6 +124,9 @@ fn report_effects(effects: ChatSyncEffects, changes: &mut dyn ChangeSink) {
     }
     for assignment_id in effects.routed_inputs {
         changes.report(CHAT_ASSIGNMENT_INPUT_TOPIC, assignment_id);
+    }
+    for assignment_id in effects.delegated_outcomes {
+        changes.report(CHAT_DELEGATION_SETTLED_TOPIC, assignment_id);
     }
 }
 
@@ -338,7 +345,7 @@ mod waker {
     use super::{
         CHAT_ACCESS_REVOKED_TOPIC, CHAT_ASSIGNMENT_INPUT_TOPIC, CHAT_ASSIGNMENT_QUEUED_TOPIC,
         CHAT_ASSIGNMENT_REMOVED_TOPIC, CHAT_ASSIGNMENT_STARTED_TOPIC,
-        CHAT_CONVERSATION_REMOVED_TOPIC,
+        CHAT_CONVERSATION_REMOVED_TOPIC, CHAT_DELEGATION_SETTLED_TOPIC,
     };
     use ganbaru_sync::ChangeNotice;
     use std::collections::BTreeSet;
@@ -355,6 +362,9 @@ mod waker {
         /// Assignments with inputs pending delivery to the work this device runs, or left
         /// pending when its turn ended, for a follow-up to continue.
         pub(crate) routed: BTreeSet<String>,
+        /// Delegated assignments whose outcome this device reports when it executes their
+        /// parent.
+        pub(crate) delegated: BTreeSet<String>,
     }
 
     /// The assignment work `notices` report.
@@ -367,6 +377,8 @@ mod waker {
                 work.started.insert(notice.key.clone());
             } else if notice.topic == CHAT_ASSIGNMENT_INPUT_TOPIC {
                 work.routed.insert(notice.key.clone());
+            } else if notice.topic == CHAT_DELEGATION_SETTLED_TOPIC {
+                work.delegated.insert(notice.key.clone());
             }
         }
         work
@@ -421,7 +433,7 @@ mod waker {
             super::RevocationWake::wake_revocation_drain(app);
         }
         let work = assignment_work(notices);
-        if work.queued.is_empty() && work.started.is_empty() && work.routed.is_empty() {
+        if work == SyncedAssignmentWork::default() {
             return;
         }
         if let Some(waker) = app.try_state::<AssignmentWaker>() {

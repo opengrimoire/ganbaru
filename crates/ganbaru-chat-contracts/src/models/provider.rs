@@ -17,6 +17,10 @@ pub struct ProviderInternalMcpConfig {
     /// The internal MCP endpoint also serves personal Chat resources, so its
     /// presence alone must never imply an organizational assignment.
     pub organizational_authority: bool,
+    /// Provider tool names of the internal tools an organizational run calls without an
+    /// approval prompt. Empty for a direct thread, and ignored by providers without a
+    /// verified per-tool approval setting.
+    pub pre_approved_tools: Vec<String>,
 }
 
 impl std::fmt::Debug for ProviderInternalMcpConfig {
@@ -27,6 +31,7 @@ impl std::fmt::Debug for ProviderInternalMcpConfig {
             .field("url", &self.url)
             .field("bearer_token", &"[REDACTED]")
             .field("organizational_authority", &self.organizational_authority)
+            .field("pre_approved_tools", &self.pre_approved_tools)
             .finish()
     }
 }

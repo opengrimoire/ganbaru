@@ -29,6 +29,7 @@ fn options(
         }),
         organizational: organizational.then_some(ClaudeOrganizationalLaunch {
             internal_server_name: SERVER_NAME,
+            pre_approved_tools: &[],
         }),
         system_prompt,
         cli_version: None,

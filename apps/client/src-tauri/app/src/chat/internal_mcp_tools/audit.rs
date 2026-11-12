@@ -1,6 +1,6 @@
 //! Durable invocation budgets and provenance accounting for host tools.
 
-use super::{generic_denial_error, persistence_error};
+use super::{HostToolClass, generic_denial_error, persistence_error};
 use crate::chat::internal_mcp::{
     InternalMcpChannelSource, InternalMcpRunScope, generate_opaque_handle,
 };
@@ -8,13 +8,16 @@ use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult};
 use serde_json::Value;
 use sqlx::SqlitePool;
 
-const MAX_TOOL_CALLS: u32 = 20;
 const MAX_SCOPE_RESPONSE_BYTES: usize = 1024 * 1024;
 
+/// Reserves an audit row for one call, denied as pending until the call completes. The row is
+/// inserted only while the authorization is allowed and unrevoked, the class still has calls
+/// left under [`HostToolClass::call_limit`], and the revision's response bytes fit.
 pub(super) async fn reserve_audit(
     pool: &SqlitePool,
     scope: &InternalMcpRunScope,
     tool_name: &str,
+    tool_class: HostToolClass,
     request_hash: &str,
     response_reservation: usize,
 ) -> ChatResult<String> {
@@ -22,9 +25,9 @@ pub(super) async fn reserve_audit(
     let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let inserted = sqlx::query(
         "INSERT INTO chat_host_tool_invocations
-            (id, authorization_revision_id, tool_name, request_hash,
+            (id, authorization_revision_id, tool_name, tool_class, request_hash,
              decision_state, denial_category, response_bytes, truncated, created_at)
-         SELECT ?, ?, ?, ?, 'denied', 'pending', ?, 0, ?
+         SELECT ?, ?, ?, ?, ?, 'denied', 'pending', ?, 0, ?
          WHERE EXISTS (
              SELECT 1 FROM chat_assignment_authorization_revisions authorization
              WHERE authorization.id = ?
@@ -34,6 +37,7 @@ pub(super) async fn reserve_audit(
            AND (
              SELECT count(*) FROM chat_host_tool_invocations invocation
              WHERE invocation.authorization_revision_id = ?
+               AND invocation.tool_class = ?
            ) < ?
            AND ? + coalesce((
              SELECT sum(invocation.response_bytes)
@@ -44,12 +48,14 @@ pub(super) async fn reserve_audit(
     .bind(&id)
     .bind(scope.authorization_revision_id.as_str())
     .bind(tool_name)
+    .bind(tool_class.wire())
     .bind(request_hash)
     .bind(i64::try_from(response_reservation).map_err(|_| generic_denial_error())?)
     .bind(created_at)
     .bind(scope.authorization_revision_id.as_str())
     .bind(scope.authorization_revision_id.as_str())
-    .bind(i64::from(MAX_TOOL_CALLS))
+    .bind(tool_class.wire())
+    .bind(i64::from(tool_class.call_limit()))
     .bind(i64::try_from(response_reservation).map_err(|_| generic_denial_error())?)
     .bind(scope.authorization_revision_id.as_str())
     .bind(i64::try_from(MAX_SCOPE_RESPONSE_BYTES).map_err(|_| generic_denial_error())?)

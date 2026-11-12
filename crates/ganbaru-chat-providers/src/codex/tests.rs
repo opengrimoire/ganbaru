@@ -193,6 +193,7 @@ fn fixture_driver_with(
             url: "http://127.0.0.1:41827/mcp".to_string(),
             bearer_token: "fixture-token".to_string(),
             organizational_authority: true,
+            pre_approved_tools: Vec::new(),
         });
     }
     let mut driver = CodexProviderDriver::new(config).unwrap();

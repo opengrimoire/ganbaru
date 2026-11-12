@@ -107,6 +107,7 @@ pub(crate) fn organizational_mcp() -> ProviderInternalMcpConfig {
         url: "http://127.0.0.1:41234/mcp".to_string(),
         bearer_token: "replay-token".to_string(),
         organizational_authority: true,
+        pre_approved_tools: Vec::new(),
     }
 }
 

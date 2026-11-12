@@ -4,6 +4,7 @@ import type {
   VersionedJson,
 } from "$lib/chat/contracts";
 import { compareOrderKeyThenId } from "$lib/utils/order-key";
+import { isHostToolUpdate } from "./agent-update";
 
 interface RichReply {
   richContent: VersionedJson;
@@ -98,12 +99,21 @@ export function repliesWithoutRenderedRunProjection<T extends RichReply>(
   return replies.filter((reply) => projectedAgentRunId(reply) !== renderedRunId);
 }
 
+/**
+ * Returns the provider run a reply is a projected copy of, or `null` when the reply stands on its own.
+ * Updates a host tool call posted carry their run but are not in the provider transcript, so they stay
+ * visible next to the run's exact turn.
+ */
 export function projectedAgentRunId(message: RichReply): string | null {
   const value = message.richContent.value;
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  return value.type === "agent_update" && typeof value.agentRunId === "string"
-    ? value.agentRunId
-    : null;
+  if (value.type !== "agent_update" || typeof value.agentRunId !== "string") return null;
+  return isHostToolUpdate(message.richContent) ? null : value.agentRunId;
+}
+
+function isAgentUpdate(message: RichReply): boolean {
+  const value = message.richContent.value;
+  return typeof value === "object" && value !== null && !Array.isArray(value) && value.type === "agent_update";
 }
 
 /** Groups same-author replies within five minutes, keeping agent updates separately attributable. */
@@ -112,7 +122,7 @@ export function shouldGroupReplyMessages(
   current: ChatMessageRead,
 ): boolean {
   if (!previous?.author || previous.author.id !== current.author?.id) return false;
-  if (projectedAgentRunId(previous) !== null || projectedAgentRunId(current) !== null) return false;
+  if (isAgentUpdate(previous) || isAgentUpdate(current)) return false;
   const elapsedMs = Date.parse(current.createdAt) - Date.parse(previous.createdAt);
   return elapsedMs >= 0 && elapsedMs <= 5 * 60 * 1_000;
 }

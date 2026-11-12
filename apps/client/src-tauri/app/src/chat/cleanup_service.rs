@@ -22,6 +22,8 @@ pub(crate) async fn run_due_chat_cleanup(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
 ) -> ChatResult<u64> {
+    // Secret files go first, so a failure in another cleanup never keeps them on disk.
+    crate::chat::secrets::sweep(app, pool).await;
     let now = now_timestamp()?;
     let checkpoint_refs = run_checkpoint_cleanup(app, pool, &now).await?;
     let attachment_files = match vault::active_writable_vault_path(app) {

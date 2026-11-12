@@ -62,6 +62,7 @@ mod tests {
             url: url.to_string(),
             bearer_token: token.to_string(),
             organizational_authority: false,
+            pre_approved_tools: Vec::new(),
         }
     }
 

@@ -1896,3 +1896,48 @@ async fn channel_access_profiles_read_effective_revisions_with_their_capability_
         )])
     );
 }
+
+#[tokio::test]
+async fn an_applied_delegated_child_in_an_outcome_state_is_reported_for_its_parent() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    let conversation = conversation_id();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO chat_reply_threads
+            (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
+         VALUES ('reply:sync-effects-child', '{conversation}', 'item:second', '{NOW}', '{NOW}',
+                 '{NOW}');
+         INSERT INTO chat_work_assignments
+            (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+             parent_assignment_id, delegation_depth, delegation_objective,
+             delegation_expected_result, delegation_folder_ceiling, created_at, updated_at)
+         VALUES ('assignment:sync-effects-child', 'reply:sync-effects-child', '{TEAMMATE_ID}',
+                 'item:second', 'working', 'assignment:sync-effects', 1, 'Draft notes',
+                 'A summary', '[]', '{NOW}', '{NOW}');"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let child = "assignment:sync-effects-child";
+
+    let working = run_hook(&pool, ASSIGNMENTS_TABLE, &[child]).await;
+    assert!(working.delegated_outcomes.is_empty());
+    for state in ["completed", "ready_for_review", "failed", "cancelled"] {
+        sqlx::query("UPDATE chat_work_assignments SET state = ? WHERE id = ?")
+            .bind(state)
+            .bind(child)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let settled = run_hook(&pool, ASSIGNMENTS_TABLE, &[child]).await;
+        assert_eq!(
+            settled.delegated_outcomes,
+            BTreeSet::from([child.to_string()]),
+            "{state}"
+        );
+    }
+
+    set_assignment_state(&pool, "completed").await;
+    let parent = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+    assert!(parent.delegated_outcomes.is_empty());
+}

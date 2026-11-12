@@ -618,6 +618,11 @@ export const chat = {
       attachmentUnavailable: "Text this long is attached as a file, which needs a project folder on this device",
       attachmentLimit: (limit: number) => `Remove an attachment first; a message holds up to ${limit}`,
     },
+    answerAttachments: {
+      attach: "Attach image",
+      unavailable: "Attaching to an answer needs a project folder on this device",
+      limit: (limit: number) => `Remove an attachment first; an answer holds up to ${limit}`,
+    },
     mentionSuggestion: {
       action: (name: string) => `Mention ${name}`,
       dismiss: "Dismiss the mention suggestion",

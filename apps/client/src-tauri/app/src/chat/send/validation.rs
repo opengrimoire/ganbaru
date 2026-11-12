@@ -1,6 +1,7 @@
 //! Bounded request, provider, model, and workspace validation.
 
 use super::support::{json_error, persistence_error};
+use crate::chat::interaction::MAX_IMAGE_COUNT;
 use crate::chat::send_commands::SendChatTurnCommand;
 use crate::chat::workspace::AuthorizedWorkingFolder;
 use ganbaru_chat_contracts::models::{
@@ -324,6 +325,12 @@ pub(super) fn validate_answers(answers: &[UserInputAnswer]) -> ChatResult<()> {
         || answers.iter().any(|answer| {
             answer.question_id.is_empty()
                 || answer.selected_option_ids.len() > 100
+                || answer.attachment_ids.len() > MAX_IMAGE_COUNT
+                || answer
+                    .attachment_ids
+                    .iter()
+                    .enumerate()
+                    .any(|(index, id)| answer.attachment_ids[..index].contains(id))
                 || answer
                     .free_form_text
                     .as_ref()

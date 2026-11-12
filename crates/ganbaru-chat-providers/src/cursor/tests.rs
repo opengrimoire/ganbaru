@@ -192,6 +192,7 @@ fn grok_acp_arguments_models_and_questions_preserve_provider_values() {
             question_id: "strategy".to_string(),
             selected_option_ids: vec!["focused".to_string()],
             free_form_text: None,
+            attachment_ids: Vec::new(),
         }],
     )
     .unwrap();
@@ -787,6 +788,7 @@ fn structured_questions_are_separate_and_validate_provider_choices() {
             question_id: "strategy".to_string(),
             selected_option_ids: vec!["focused".to_string()],
             free_form_text: None,
+            attachment_ids: Vec::new(),
         }],
     )
     .unwrap();
@@ -798,6 +800,7 @@ fn structured_questions_are_separate_and_validate_provider_choices() {
                 question_id: "strategy".to_string(),
                 selected_option_ids: vec!["invented".to_string()],
                 free_form_text: None,
+                attachment_ids: Vec::new(),
             }]
         )
         .is_err()

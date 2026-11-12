@@ -295,6 +295,7 @@ impl OpenCodeEventNormalizer {
                         question_id: format!("question-{index}"),
                         selected_option_ids: selected,
                         free_form_text: None,
+                        attachment_ids: Vec::new(),
                     })
                 })
                 .collect::<ChatResult<Vec<_>>>()?

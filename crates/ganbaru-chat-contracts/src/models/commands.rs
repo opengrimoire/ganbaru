@@ -264,6 +264,11 @@ pub struct UserInputAnswer {
     pub question_id: String,
     pub selected_option_ids: Vec<String>,
     pub free_form_text: Option<String>,
+    /// Managed attachments the user attached to this answer. The app resolves them into
+    /// `Attached:` lines in `free_form_text` and clears this list before the answer reaches a
+    /// provider, because provider answer channels carry text only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_ids: Vec<ChatAttachmentId>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

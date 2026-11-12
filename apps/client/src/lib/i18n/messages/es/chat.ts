@@ -621,6 +621,11 @@ export const chat = {
       attachmentUnavailable: "Un texto tan largo se adjunta como archivo, lo que requiere una carpeta del proyecto en este dispositivo",
       attachmentLimit: (limit: number) => `Quita primero un adjunto; un mensaje admite hasta ${limit}`,
     },
+    answerAttachments: {
+      attach: "Adjuntar imagen",
+      unavailable: "Adjuntar a una respuesta requiere una carpeta del proyecto en este dispositivo",
+      limit: (limit: number) => `Quita primero un adjunto; una respuesta admite hasta ${limit}`,
+    },
     mentionSuggestion: {
       action: (name: string) => `Mencionar a ${name}`,
       dismiss: "Descartar la sugerencia de mención",

@@ -1,3 +1,9 @@
+<!--
+  @component
+  The composer of a direct provider start: the shared composer frame with the working folder and
+  model controls, provider and app commands, the direct thread's queued follow-up, and the direct
+  send, steer, queue, and stop calls.
+-->
 <script module lang="ts">
   type ActiveProviderCommand = {
     boundaryKey: string;
@@ -58,14 +64,14 @@
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
-  import ChatAccessControl from "./ChatAccessControl.svelte";
-  import ChatComposerFrame from "./ChatComposerFrame.svelte";
-  import ChatComposerInfoPanel from "./ChatComposerInfoPanel.svelte";
-  import ChatComposerSuggestionMenu from "./ChatComposerSuggestionMenu.svelte";
-  import ChatWorkingFolderControl from "./ChatWorkingFolderControl.svelte";
+  import ChatAccessControl from "./composer/ChatAccessControl.svelte";
+  import ChatComposerFrame from "./composer/ChatComposerFrame.svelte";
+  import ChatComposerInfoPanel from "./composer/ChatComposerInfoPanel.svelte";
+  import ChatComposerSuggestionMenu from "./composer/ChatComposerSuggestionMenu.svelte";
+  import ChatWorkingFolderControl from "./composer/ChatWorkingFolderControl.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatImageGallery from "$lib/components/chat/timeline/ChatImageGallery.svelte";
-  import ChatModelControls from "./ChatModelControls.svelte";
+  import ChatModelControls from "./composer/ChatModelControls.svelte";
   import ChatRequestPanel from "$lib/components/chat/timeline/ChatRequestPanel.svelte";
   import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 

@@ -11,7 +11,7 @@
 import { DENSE_TIMED_POMODORO_CONFIG } from "./pomodoro-history";
 import {
   benchmarkDatasetId,
-  type BenchmarkDatasetProfile,
+  type DenseCalendarDatasetProfile,
   type BenchmarkEventDraft,
 } from "./types";
 import { PALETTE_SIZE } from "$lib/calendar/types";
@@ -151,7 +151,7 @@ function parseDate(value: string): DateParts {
 }
 
 export function denseCalendarDateRange(
-  dataset: BenchmarkDatasetProfile,
+  dataset: DenseCalendarDatasetProfile,
   anchor: Date,
 ): DenseCalendarDateRange {
   const anchorParts = partsFromDate(anchor);
@@ -165,17 +165,17 @@ export function denseCalendarDateRange(
 }
 
 export function countDenseCalendarEvents(
-  dataset: BenchmarkDatasetProfile,
+  dataset: DenseCalendarDatasetProfile,
   anchor: Date,
 ): number {
   return denseCalendarDateRange(dataset, anchor).days * eventsPerDay(dataset);
 }
 
-function timedEventsPerDay(dataset: BenchmarkDatasetProfile): number {
+function timedEventsPerDay(dataset: DenseCalendarDatasetProfile): number {
   return HOURS_PER_DAY * dataset.stackCount;
 }
 
-function eventsPerDay(dataset: BenchmarkDatasetProfile): number {
+function eventsPerDay(dataset: DenseCalendarDatasetProfile): number {
   return timedEventsPerDay(dataset) + ALL_DAY_EVENTS_PER_DAY;
 }
 
@@ -188,7 +188,7 @@ function projectFor(dayIndex: number, hour: number, stackIndex: number): string 
 }
 
 function sourceUidFor(
-  dataset: BenchmarkDatasetProfile,
+  dataset: DenseCalendarDatasetProfile,
   date: string,
   hour: number,
   stackIndex: number,
@@ -197,7 +197,7 @@ function sourceUidFor(
 }
 
 function allDaySourceUidFor(
-  dataset: BenchmarkDatasetProfile,
+  dataset: DenseCalendarDatasetProfile,
   date: string,
   allDayIndex: number,
 ): string {
@@ -233,7 +233,7 @@ function attendeesFor(date: string, hour: number, stackIndex: number) {
 }
 
 function buildDenseEvent(
-  dataset: BenchmarkDatasetProfile,
+  dataset: DenseCalendarDatasetProfile,
   date: string,
   dayIndex: number,
   hour: number,
@@ -296,7 +296,7 @@ function buildDenseEvent(
 }
 
 function buildDenseAllDayEvent(
-  dataset: BenchmarkDatasetProfile,
+  dataset: DenseCalendarDatasetProfile,
   date: string,
   dayIndex: number,
   allDayIndex: number,
@@ -342,7 +342,7 @@ function buildDenseAllDayEvent(
  * event in the browser at once.
  */
 export function generateDenseCalendarEvents(opts: {
-  dataset: BenchmarkDatasetProfile;
+  dataset: DenseCalendarDatasetProfile;
   anchor: Date;
   offset?: number;
   count?: number;

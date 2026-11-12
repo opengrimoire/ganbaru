@@ -38,6 +38,7 @@ const behavior: ChatBehaviorPreferences = {
   restoreLastSelectedThread: true,
   showReasoningSummaries: true,
   automaticallyFoldSettledWork: true,
+  timelineDensity: "comfortable",
   terminalScrollbackLines: 1000,
   idleSessionTimeoutSeconds: 600,
   confirmMultilineTerminalPaste: true,

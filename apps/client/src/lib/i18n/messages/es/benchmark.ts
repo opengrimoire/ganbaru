@@ -64,9 +64,13 @@ export const benchmark = {
       label: "Benchmarks de backend",
       description: "Latencia de importación de calendario respaldada por Rust.",
     },
+    chat: {
+      label: "Benchmarks de Chat",
+      description: "Desplazamiento de la línea de tiempo y transmisión en vivo de Chat.",
+    },
     all: {
       label: "Todos los benchmarks",
-      description: "Suite completa de benchmarks principales y de backend.",
+      description: "Suite completa de benchmarks principales, de backend y de Chat.",
     },
     fallbackPlural: "benchmarks",
   },
@@ -101,6 +105,18 @@ export const benchmark = {
       description:
         "Mide el comando Rust calendar_bulk_import para importaciones repetidas de 100 eventos y un pase de agregar/actualizar 1000 eventos.",
     },
+    chatTimelineScroll: {
+      label: "Desplazamiento de la línea de tiempo de Chat",
+      sectionTitle: "Desplazamiento de la línea de tiempo de Chat",
+      description:
+        "Abre un hilo de Chat sembrado con 5000 filas en su página más reciente y se desplaza hacia su inicio en cada fotograma, cargando páginas anteriores en el camino, y luego reporta los tiempos de fotograma y los fotogramas fuera de presupuesto.",
+    },
+    chatStreamFlood: {
+      label: "Avalancha de transmisión de Chat",
+      sectionTitle: "Avalancha de transmisión de Chat",
+      description:
+        "Reproduce una salida de comando de 2 MiB en deltas de 4 KiB y 2000 deltas de texto del asistente mediante el ingestor nativo en un hilo de Chat abierto, y luego reporta la tasa de notificaciones, el tamaño de las lecturas de actualización y los tiempos de fotograma.",
+    },
   },
   workload: {
     calendarStartupLaunchSamples: "muestras de inicio de calendario",
@@ -111,6 +127,9 @@ export const benchmark = {
       "acciones programadas de apertura del panel de calendario",
     scriptedCalendarBulkImportCommands:
       "comandos programados de importación masiva de calendario",
+    scriptedChatTimelineScroll:
+      "desplazamiento programado de la línea de tiempo de Chat hacia el inicio",
+    replayedChatStreamingTurn: "turno de transmisión de Chat reproducido",
   },
   step: {
     settingUp: "Configurando",

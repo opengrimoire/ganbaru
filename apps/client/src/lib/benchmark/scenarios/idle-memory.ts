@@ -39,7 +39,7 @@ export const idleMemoryScenario: BenchmarkScenario = {
     return seedCalendarDataset(dataset, context);
   },
 
-  async cleanup(_seedHandle: { calendarId: string }): Promise<void> {
+  async cleanup(_seedHandle: BenchmarkSeedHandle): Promise<void> {
     // The isolated benchmark DB is deleted after the run.
   },
 };

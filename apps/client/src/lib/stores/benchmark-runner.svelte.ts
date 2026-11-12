@@ -53,6 +53,7 @@ import {
   benchmarkDatasetId,
   type BootTimings,
   type BenchmarkDatasetProfile,
+  type DenseCalendarDatasetProfile,
   type BenchmarkResult,
   type BenchmarkSeedHandle,
   type BenchmarkSuiteState,
@@ -799,6 +800,8 @@ function localizedBenchmarkScenarioLabel(id: string, fallback: string): string {
     return t("benchmark.scenario.calendarPanelLatency.label");
   }
   if (id === "calendar-import-ops") return t("benchmark.scenario.calendarImportOps.label");
+  if (id === "chat-timeline-scroll") return t("benchmark.scenario.chatTimelineScroll.label");
+  if (id === "chat-stream-flood") return t("benchmark.scenario.chatStreamFlood.label");
   return fallback;
 }
 
@@ -854,14 +857,19 @@ function benchmarkDatasetsForScenario(scenario: BenchmarkScenarioMetadata): Benc
   for (const dataset of datasets) {
     byId.set(benchmarkDatasetId(dataset), dataset);
   }
-  const normalized = [...byId.values()]
-    .filter((dataset) =>
-      Number.isInteger(dataset.yearRadius)
+  const unique = [...byId.values()];
+  const dense = unique
+    .filter((dataset): dataset is DenseCalendarDatasetProfile =>
+      dataset.kind === "dense-calendar"
+      && Number.isInteger(dataset.yearRadius)
       && dataset.yearRadius > 0
       && Number.isInteger(dataset.stackCount)
       && dataset.stackCount > 0,
     )
     .sort((a, b) => a.yearRadius - b.yearRadius || a.stackCount - b.stackCount);
+  // Chat datasets keep their declared order; each one is a distinct shape, not a size step.
+  const chat = unique.filter((dataset) => dataset.kind === "chat-timeline");
+  const normalized: BenchmarkDatasetProfile[] = [...dense, ...chat];
   return normalized.length > 0 ? normalized : [scenario.defaultDataset];
 }
 

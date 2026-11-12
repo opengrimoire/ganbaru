@@ -575,7 +575,18 @@ describe("Chat configuration", () => {
     const defaults = defaultChatConfiguration();
     expect(defaults.panels).toEqual({ inspectorWidthPx: 520 });
     expect(defaults.behavior.sendKey).toBe("enter");
+    expect(defaults.behavior.timelineDensity).toBe("comfortable");
     expect(parseChatConfiguration(defaults)).toEqual(defaults);
+  });
+
+  it("refuses a timeline density outside the known choices", () => {
+    const defaults = defaultChatConfiguration();
+    for (const timelineDensity of ["dense", "Compact", 1]) {
+      expect(() => parseChatConfiguration({
+        ...defaults,
+        behavior: { ...defaults.behavior, timelineDensity },
+      }), String(timelineDensity)).toThrow("timelineDensity");
+    }
   });
 
   it("drops retired and unknown top-level fields from a read", () => {
@@ -620,6 +631,7 @@ describe("Chat configuration", () => {
         restoreLastSelectedThread: true,
         showReasoningSummaries: true,
         automaticallyFoldSettledWork: true,
+        timelineDensity: "compact",
         terminalScrollbackLines: 12_000,
         idleSessionTimeoutSeconds: 900,
         confirmMultilineTerminalPaste: true,

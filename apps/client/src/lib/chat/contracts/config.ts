@@ -13,6 +13,10 @@ import type { ModelOptionSelection } from "./provider";
 export const CHAT_SEND_KEYS = ["enter", "mod_enter"] as const;
 export type ChatSendKey = (typeof CHAT_SEND_KEYS)[number];
 
+/** How much vertical space the Chat timeline and channel feed give each row. */
+export const CHAT_TIMELINE_DENSITIES = ["comfortable", "compact"] as const;
+export type ChatTimelineDensity = (typeof CHAT_TIMELINE_DENSITIES)[number];
+
 export interface ChatPortableProviderConfig {
   schemaVersion: number;
   instanceId: ProviderInstanceId;
@@ -51,6 +55,7 @@ export interface ChatBehaviorPreferences {
   restoreLastSelectedThread: boolean;
   showReasoningSummaries: boolean;
   automaticallyFoldSettledWork: boolean;
+  timelineDensity: ChatTimelineDensity;
   terminalScrollbackLines: number;
   idleSessionTimeoutSeconds: number;
   confirmMultilineTerminalPaste: boolean;

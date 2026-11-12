@@ -60,9 +60,13 @@ export const benchmark = {
       label: "Backend benchmarks",
       description: "Rust-backed calendar import latency.",
     },
+    chat: {
+      label: "Chat benchmarks",
+      description: "Chat timeline scrolling and live streaming.",
+    },
     all: {
       label: "All benchmarks",
-      description: "Complete core and backend benchmark suite.",
+      description: "Complete core, backend, and Chat benchmark suite.",
     },
     fallbackPlural: "benchmarks",
   },
@@ -97,6 +101,18 @@ export const benchmark = {
       description:
         "Measures the Rust calendar_bulk_import command for repeated 100-event imports and one 1000-event add/update pass.",
     },
+    chatTimelineScroll: {
+      label: "Chat timeline scroll",
+      sectionTitle: "Chat timeline scroll",
+      description:
+        "Opens a seeded 5000-row Chat thread at its newest page and scrolls toward its start every frame, loading older pages on the way, then reports frame times and budget misses.",
+    },
+    chatStreamFlood: {
+      label: "Chat stream flood",
+      sectionTitle: "Chat stream flood",
+      description:
+        "Replays a 2 MiB command output in 4 KiB deltas and 2000 assistant text deltas through the native ingestor into an open Chat thread, then reports notification rate, refresh read size, and frame times.",
+    },
   },
   workload: {
     calendarStartupLaunchSamples: "calendar startup launch samples",
@@ -104,6 +120,8 @@ export const benchmark = {
     heldRightArrowWeekViewNavigation: "held right-arrow week-view navigation",
     scriptedCalendarPanelOpenActions: "scripted calendar panel open actions",
     scriptedCalendarBulkImportCommands: "scripted calendar bulk import commands",
+    scriptedChatTimelineScroll: "scripted Chat timeline scroll toward the start",
+    replayedChatStreamingTurn: "replayed Chat streaming turn",
   },
   step: {
     settingUp: "Setting up",

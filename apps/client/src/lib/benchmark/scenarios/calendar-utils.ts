@@ -16,7 +16,9 @@ import {
 } from "../pomodoro-history";
 import {
   benchmarkDatasetId,
+  requireDenseCalendarDataset,
   type BenchmarkDatasetProfile,
+  type DenseCalendarDatasetProfile,
   type BenchmarkEventDraft,
   type BenchmarkMetric,
   type BenchmarkSeedHandle,
@@ -26,7 +28,7 @@ import {
 const DENSE_SEED_CHUNK_SIZE = 1_000;
 
 /** Calendar grouping name template. Renaming requires bumping `DENSE_DATASET_VERSION`. */
-export function denseCalendarFilename(dataset: BenchmarkDatasetProfile): string {
+export function denseCalendarFilename(dataset: DenseCalendarDatasetProfile): string {
   return `benchmark-dense-${dataset.version}-s${dataset.stackCount}-${dataset.detailProfile}.ics`;
 }
 
@@ -152,14 +154,15 @@ export async function seedCalendarDataset(
   dataset: BenchmarkDatasetProfile,
   context: BenchmarkScenarioContext,
 ): Promise<BenchmarkSeedHandle> {
+  const denseDataset = requireDenseCalendarDataset(dataset);
   const calendarsStore = getCalendars();
-  const calendar = await calendarsStore.findOrCreateImported(denseCalendarFilename(dataset));
+  const calendar = await calendarsStore.findOrCreateImported(denseCalendarFilename(denseDataset));
   const anchor = parseCalendarBenchmarkAnchor(context.anchorDate);
-  const totalEvents = countDenseCalendarEvents(dataset, anchor);
+  const totalEvents = countDenseCalendarEvents(denseDataset, anchor);
 
   for (let offset = 0; offset < totalEvents; offset += DENSE_SEED_CHUNK_SIZE) {
     const drafts = generateDenseCalendarEvents({
-      dataset,
+      dataset: denseDataset,
       anchor,
       offset,
       count: DENSE_SEED_CHUNK_SIZE,

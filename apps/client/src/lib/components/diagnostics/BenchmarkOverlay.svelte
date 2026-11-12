@@ -90,6 +90,9 @@
     if (normalized === "backend" || normalized === "backend benchmarks") {
       return t("benchmark.suite.backend.label");
     }
+    if (normalized === "chat" || normalized === "chat benchmarks") {
+      return t("benchmark.suite.chat.label");
+    }
     if (normalized === "all" || normalized === "all benchmarks") {
       return t("benchmark.suite.all.label");
     }
@@ -104,6 +107,8 @@
       return t("benchmark.scenario.calendarPanelLatency.label");
     }
     if (id === "calendar-import-ops") return t("benchmark.scenario.calendarImportOps.label");
+    if (id === "chat-timeline-scroll") return t("benchmark.scenario.chatTimelineScroll.label");
+    if (id === "chat-stream-flood") return t("benchmark.scenario.chatStreamFlood.label");
     return fallback;
   }
 
@@ -115,6 +120,8 @@
       return t("benchmark.scenario.calendarPanelLatency.sectionTitle");
     }
     if (id === "calendar-import-ops") return t("benchmark.scenario.calendarImportOps.sectionTitle");
+    if (id === "chat-timeline-scroll") return t("benchmark.scenario.chatTimelineScroll.sectionTitle");
+    if (id === "chat-stream-flood") return t("benchmark.scenario.chatStreamFlood.sectionTitle");
     return fallback;
   }
 
@@ -133,6 +140,12 @@
     }
     if (label === "scripted calendar bulk import commands") {
       return t("benchmark.workload.scriptedCalendarBulkImportCommands");
+    }
+    if (label === "scripted Chat timeline scroll toward the start") {
+      return t("benchmark.workload.scriptedChatTimelineScroll");
+    }
+    if (label === "replayed Chat streaming turn") {
+      return t("benchmark.workload.replayedChatStreamingTurn");
     }
     return label;
   }

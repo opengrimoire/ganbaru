@@ -8,11 +8,9 @@ import type {
   ContentStreamKind,
   ModelId,
   PlanStep,
-  RequestResolutionState,
   ThreadUsageUpdatedEvent,
   TurnModeSnapshot,
   UtcTimestamp,
-  UserInputQuestion,
   VersionedJson,
 } from "$lib/chat/contracts";
 
@@ -60,6 +58,8 @@ export interface TimelineMessageRow {
   userContext: TimelineUserContext | null;
   metadata: TimelineAssistantMetadata | null;
   sourceThreadId?: ChatThreadId;
+  /** The thread change clock value of the row's last stored write; absent on rows built in the client. */
+  changeSequence?: number;
 }
 
 export interface TimelineActivityRow {
@@ -81,6 +81,8 @@ export interface TimelineActivityRow {
   updatedAt?: UtcTimestamp;
   metadata: VersionedJson | null;
   sourceThreadId?: ChatThreadId;
+  /** The thread change clock value of the row's last stored write; absent on rows built in the client. */
+  changeSequence?: number;
 }
 
 export interface TimelinePlanRow {
@@ -94,21 +96,11 @@ export interface TimelinePlanRow {
   steps: PlanStep[];
   state: "streaming" | "complete";
   sourceThreadId?: ChatThreadId;
+  /** The thread change clock value of the row's last stored write; absent on rows built in the client. */
+  changeSequence?: number;
 }
 
 export type TimelineRow = TimelineMessageRow | TimelineActivityRow | TimelinePlanRow;
-
-export interface TimelinePendingRequest {
-  id: string;
-  turnId: ChatTurnId | null;
-  sequence: number;
-  createdAt: UtcTimestamp;
-  kind: "approval" | "user_input";
-  title: string;
-  detail: string | null;
-  questions: UserInputQuestion[];
-  state: RequestResolutionState;
-}
 
 export interface TimelineTurn {
   id: ChatTurnId;
@@ -126,12 +118,10 @@ export interface TimelineTurn {
   recoverable: boolean;
 }
 
+/** Timeline rows and turn summaries projected from one window of native reads. */
 export interface TimelineProjection {
   rows: TimelineRow[];
   turns: TimelineTurn[];
-  pendingRequests: TimelinePendingRequest[];
-  threadUsage: ThreadUsageUpdatedEvent | null;
-  ignoredDuplicateEventIds: string[];
 }
 
 export interface TimelineActivityGroupRow {

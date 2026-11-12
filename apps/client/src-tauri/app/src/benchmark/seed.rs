@@ -2,6 +2,11 @@ use serde::Deserialize;
 use sqlx::{Row, Sqlite, Transaction};
 use tauri::{AppHandle, Runtime};
 
+use super::chat_timeline::{
+    ChatStreamReplaySummary, ChatTimelineDatasetShape, ChatTimelineSeedSummary,
+    benchmark_thread_id, replay_chat_stream_with_idle_flush, seed_chat_timeline,
+};
+use crate::chat::ingestion::TauriChatChangeEmitter;
 use crate::db::connect_benchmark_database;
 use ganbaru_music_library::fixtures::{DenseMusicFixtureSummary, seed_dense_music_fixture};
 
@@ -458,4 +463,35 @@ fn validate_status(status: &str) -> Result<(), String> {
         "completed" | "interrupted" | "active" => Ok(()),
         _ => Err(format!("invalid pomodoro segment status: {status}")),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkChatTimelineSeedRequest {
+    thread_id: String,
+    shape: ChatTimelineDatasetShape,
+}
+
+/// Seeds one Chat timeline dataset into the benchmark database.
+#[tauri::command]
+pub async fn benchmark_seed_chat_timeline<R: Runtime>(
+    app: AppHandle<R>,
+    request: BenchmarkChatTimelineSeedRequest,
+) -> Result<ChatTimelineSeedSummary, String> {
+    let thread_id = benchmark_thread_id(&request.thread_id)?;
+    let pool = connect_benchmark_database(app).await?;
+    seed_chat_timeline(&pool, &thread_id, request.shape).await
+}
+
+/// Replays the Chat stream flood into a seeded benchmark thread through the production event
+/// ingestor, announcing each stored change to the webviews as a provider session does.
+#[tauri::command]
+pub async fn benchmark_replay_chat_stream<R: Runtime>(
+    app: AppHandle<R>,
+    thread_id: String,
+) -> Result<ChatStreamReplaySummary, String> {
+    let thread_id = benchmark_thread_id(&thread_id)?;
+    let pool = connect_benchmark_database(app.clone()).await?;
+    let emitter = std::sync::Arc::new(TauriChatChangeEmitter::new(app));
+    replay_chat_stream_with_idle_flush(pool, emitter, &thread_id).await
 }

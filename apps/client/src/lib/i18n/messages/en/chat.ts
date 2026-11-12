@@ -611,6 +611,11 @@ export const chat = {
       modelOverrideWithoutTeammate: "Mention a teammate to choose the model of the work",
       modelOverrideNeedsMention: "Mention the teammate to keep the chosen model for this work",
     },
+    taskProgress: {
+      label: "Task progress",
+      title: (completed: number, total: number) => `Tasks ${completed} of ${total}`,
+      failed: (count: number) => `${count} ${count === 1 ? "task" : "tasks"} did not finish`,
+    },
     pendingInputs: {
       title: "Waiting replies",
       steer: "Steers the current turn",

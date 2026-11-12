@@ -614,6 +614,11 @@ export const chat = {
       modelOverrideWithoutTeammate: "Menciona a un compañero para elegir el modelo del trabajo",
       modelOverrideNeedsMention: "Menciona al compañero para conservar el modelo elegido para este trabajo",
     },
+    taskProgress: {
+      label: "Progreso de tareas",
+      title: (completed: number, total: number) => `Tareas: ${completed} de ${total}`,
+      failed: (count: number) => `${count} ${count === 1 ? "tarea no terminó" : "tareas no terminaron"}`,
+    },
     pendingInputs: {
       title: "Respuestas en espera",
       steer: "Redirige el turno actual",

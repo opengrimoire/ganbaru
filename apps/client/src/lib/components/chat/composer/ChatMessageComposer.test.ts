@@ -342,6 +342,37 @@ describe("ChatMessageComposer", () => {
     await vi.waitFor(() => expect(imageTool()?.disabled).toBe(false));
   });
 
+  it("summarizes the running work's latest plan above the composer until every step is done", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
+    const page = workingReplyThread();
+    const planReply = (itemId: string, statuses: string[]) => ({
+      ...page.rootMessage,
+      itemId,
+      replyThreadId: page.thread.id,
+      richContent: { schemaVersion: 1, value: {
+        type: "agent_update",
+        updateKind: "plan",
+        assignmentId: "assignment:working",
+        agentRunId: "run:1",
+        payload: { steps: statuses.map((status, index) => ({ id: `step-${index}`, text: `Step ${index + 1}`, status })) },
+      } },
+    });
+    const root = mountActiveWork({ ...page, replies: [planReply("item:plan-1", ["active", "pending", "pending"]), planReply("item:plan-2", ["completed", "active", "pending"])] });
+    await tick();
+
+    const card = root.querySelector("[data-chat-task-progress]");
+    expect(card?.textContent).toContain("Tasks 1 of 3");
+    expect(card?.querySelector("[data-chat-task-active-step]")?.textContent).toBe("Step 2");
+    expect(card?.querySelectorAll(".task-progress-segment")).toHaveLength(3);
+    card?.querySelector<HTMLButtonElement>("button[aria-expanded]")?.click();
+    await tick();
+    expect(card?.querySelector("[data-chat-task-active-step]")).toBeNull();
+
+    chat.replyThread = { ...page, replies: [planReply("item:plan-3", ["completed", "completed", "completed"])] };
+    await tick();
+    expect(root.querySelector("[data-chat-task-progress]")).toBeNull();
+  });
+
   it("explains a waiting reply that reached the teammate before the edit was saved", async () => {
     const page = workingReplyThread();
     const reply = { ...page.rootMessage, itemId: "item:reply", replyThreadId: page.thread.id, normalizedMarkdown: "Use the staging bucket" };

@@ -42,6 +42,7 @@
   import { composerMeterRead, type ComposerStatusRead } from "$lib/chat/composer/composer-meter";
   import { CHAT_IMAGE_LIMIT, composerTokenTrigger, validateImageFiles } from "$lib/chat/composer/model";
   import { defaultFollowupRouting, pendingInputRows, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
+  import { latestStructuredPlanSteps, summarizePlanProgress } from "$lib/chat/composer/plan-progress";
   import {
     chatComposerDocumentFromText,
     chatComposerDocumentVersioned,
@@ -80,6 +81,7 @@
   import ChatComposerSuggestionMenu from "./ChatComposerSuggestionMenu.svelte";
   import ChatModelOverrideControl from "./ChatModelOverrideControl.svelte";
   import ChatPendingInputs from "./ChatPendingInputs.svelte";
+  import ChatTaskProgressCard from "./ChatTaskProgressCard.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { isAppFloatingSurfaceTarget } from "$lib/utils";
   import { cloneData } from "$lib/utils/clone";
@@ -394,6 +396,12 @@
       ? t("chat.composer.modelOverride.scheduled")
       : null);
   const pendingRows = $derived(pendingInputRows(assignmentInputs));
+  /** The latest structured plan of the running work, while some of its steps are still to do. */
+  const taskProgress = $derived.by(() => {
+    if (!activeAssignment) return null;
+    const summary = summarizePlanProgress(latestStructuredPlanSteps(chat.replyThread?.replies ?? [], activeAssignment.id) ?? []);
+    return summary && summary.completed < summary.total ? summary : null;
+  });
   const sendBlocked = $derived(Boolean(validation || disclosureBlocker || providerBlockers.length || messageTooLarge));
 
   onMount(() => {
@@ -1910,6 +1918,8 @@
       {/if}
     </section>
   {/if}
+
+  {#if taskProgress}<ChatTaskProgressCard summary={taskProgress} />{/if}
 
   {#if pendingRows.length > 0}
     <ChatPendingInputs rows={pendingRows} editingInputId={editingInput?.inputId ?? null} busyInputId={inputBusyId} canEdit={canEditInput} onEdit={startInputEdit} onCancel={(row) => { void cancelInput(row); }} onSave={() => { void saveInputEdit(); }} onDiscard={discardInputEdit} />

@@ -273,6 +273,7 @@ export const chat = {
       confirm: "Review and schedule",
       chooseTime: "Choose a new time",
       dismiss: "Dismiss",
+      dismissConfirm: "Dismiss this proposed schedule on this device?",
       confirmed: "Scheduled",
       expired: "The proposed time has passed.",
     },

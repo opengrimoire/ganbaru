@@ -10,6 +10,7 @@
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { chatRecurrenceSummary } from "$lib/chat/composer/recurrence-presentation";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { localTimezone } from "$lib/stores/calendar/event-payloads";
@@ -96,6 +97,11 @@
 
   async function dismiss(): Promise<void> {
     if (pending) return;
+    const confirmed = await requestConfirmation({
+      message: t("chat.organization.proposal.dismissConfirm"),
+      confirmLabel: t("chat.organization.proposal.dismiss"),
+    });
+    if (!confirmed || pending) return;
     pending = true;
     error = null;
     try {

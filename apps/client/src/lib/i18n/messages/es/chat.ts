@@ -276,6 +276,7 @@ export const chat = {
       confirm: "Revisar y programar",
       chooseTime: "Elegir otra hora",
       dismiss: "Descartar",
+      dismissConfirm: "¿Descartar este horario propuesto en este dispositivo?",
       confirmed: "Programado",
       expired: "La hora propuesta ya pasó.",
     },

@@ -536,6 +536,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::send_commands::chat_resolve_user_input,
             notifications::desktop::show_event_notification,
             notifications::desktop::show_notes_notification,
+            notifications::desktop::show_chat_notification,
             notifications::desktop::show_project_task_notification,
             notifications::desktop::show_benchmark_notification,
             pomodoro::overlay::dismiss_pomodoro_completion,

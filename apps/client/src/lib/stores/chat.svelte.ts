@@ -954,7 +954,9 @@ export class ChatStore {
   }
 
   /** Opens the reply thread of a review queue item, where its question, approval, review, or failure lives. */
-  async openReviewItem(item: ChatReviewQueueItemRead): Promise<void> {
+  async openReviewItem(
+    item: Pick<ChatReviewQueueItemRead, "projectId" | "channelId" | "replyThreadId">,
+  ): Promise<void> {
     await this.openAssignmentReplyThread(item);
   }
 

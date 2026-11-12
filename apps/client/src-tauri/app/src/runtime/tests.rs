@@ -171,6 +171,7 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "distractions::catalog::",
         "distractions::android::distractions_mobile_sync_events",
         "distractions::android::distractions_mobile_list_usage_samples",
+        "notifications::desktop::show_chat_notification",
         "notifications::desktop::show_event_notification",
         "notifications::desktop::show_project_task_notification",
         "projects::task_commands::projects_list_upcoming_task_reminders",

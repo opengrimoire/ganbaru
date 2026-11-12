@@ -672,6 +672,7 @@ commands.allow = [
   "reveal_main_window",
   "select_database_target",
   "show_benchmark_notification",
+  "show_chat_notification",
   "show_event_notification",
   "show_notes_notification",
   "show_project_task_notification",

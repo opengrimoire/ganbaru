@@ -836,6 +836,111 @@ async fn working_run_binding(pool: &sqlx::SqlitePool) -> ganbaru_chat::agent_run
     }
 }
 
+/// The launch of a folder run under the claim `starting_folder_run` records.
+fn folder_launch() -> ganbaru_chat::agent_runs::RunLaunch {
+    use ganbaru_chat::agent_runs::{
+        AttemptReason, ContextDelivery, HandoffReason, RunAttempt, RunLaunch,
+    };
+    RunLaunch {
+        claim_token: "claim:folders".to_string(),
+        attempt: RunAttempt {
+            reason: AttemptReason::Handoff(HandoffReason::KeyChanged),
+            instructions_sha256: Some("c".repeat(64)),
+            model_selection_sha256: Some("d".repeat(64)),
+            context_delivery: ContextDelivery::Full,
+            delivered_context_bytes: 512,
+            delivered_sources: Vec::new(),
+        },
+    }
+}
+
+/// Inserts the starting run `run_id` of the folder assignment under `launch`.
+async fn insert_folder_run(
+    pool: &sqlx::SqlitePool,
+    run_id: &str,
+    launch: &ganbaru_chat::agent_runs::RunLaunch,
+) -> ChatResult<()> {
+    let binding = ganbaru_chat::agent_runs::AgentRunBinding {
+        run_id: ChatAgentRunId::new(run_id).unwrap(),
+        run_ordinal: 3,
+        ..working_run_binding(pool).await
+    };
+    let turn_id = format!("turn:{run_id}");
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO chat_turns
+            (id, thread_id, ordinal, state, safety_mode, interaction_mode, created_at, updated_at)
+         SELECT ?, 'thread-1', max(ordinal) + 1, 'pending', 'ask_for_approval', 'build',
+                '2026-10-20T12:02:00.000Z', '2026-10-20T12:02:00.000Z'
+         FROM chat_turns WHERE thread_id = 'thread-1'",
+    )
+    .bind(&turn_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    ganbaru_chat::agent_runs::insert_starting_run(
+        &mut transaction,
+        ganbaru_chat::agent_runs::StartingAgentRun {
+            binding: &binding,
+            launch,
+            provider_turn_id: &ChatTurnId::new(turn_id.clone()).unwrap(),
+            provider_thread_id: &ChatThreadId::new("thread-1").unwrap(),
+            now: &UtcTimestamp::new("2026-10-20T12:02:00.000Z".to_string()).unwrap(),
+        },
+    )
+    .await?;
+    transaction.commit().await.unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_starting_run_records_its_attempt_under_the_claim_that_launches_it() {
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    starting_folder_run(&pool).await;
+    sqlx::query("UPDATE chat_agent_runs SET state = 'failed' WHERE id = 'run:working'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    insert_folder_run(&pool, "run:handoff", &folder_launch())
+        .await
+        .unwrap();
+
+    let stored: (String, String, String, String, String, i64) = sqlx::query_as(
+        "SELECT attempt_reason, handoff_reason, instructions_sha256, model_selection_sha256,
+                context_delivery, delivered_context_bytes
+         FROM chat_agent_runs WHERE id = 'run:handoff'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        stored,
+        (
+            "handoff".to_string(),
+            "key_changed".to_string(),
+            "c".repeat(64),
+            "d".repeat(64),
+            "full".to_string(),
+            512
+        )
+    );
+
+    let stale = ganbaru_chat::agent_runs::RunLaunch {
+        claim_token: "claim:stale".to_string(),
+        ..folder_launch()
+    };
+    let refused = insert_folder_run(&pool, "run:stale", &stale)
+        .await
+        .expect_err("a lost claim starts no run");
+    assert_eq!(refused.code, ChatErrorCode::Conflict);
+    let runs: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM chat_agent_runs WHERE id = 'run:stale'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(runs, 0);
+}
+
 async fn cancel_folder_assignment(pool: &sqlx::SqlitePool) {
     sqlx::query(
         "UPDATE chat_work_assignments
@@ -890,6 +995,7 @@ async fn a_launch_aborts_when_its_assignment_settled_before_the_run_started() {
         &mut transaction,
         ganbaru_chat::agent_runs::StartingAgentRun {
             binding: &binding,
+            launch: &folder_launch(),
             provider_turn_id: &ChatTurnId::new("turn:queued").unwrap(),
             provider_thread_id: &ChatThreadId::new("thread-1").unwrap(),
             now: &UtcTimestamp::new("2026-10-20T12:02:00.000Z".to_string()).unwrap(),
@@ -919,7 +1025,9 @@ async fn a_launch_that_settles_after_a_remote_cancel_keeps_the_assignment_cancel
         cancel_folder_assignment(&pool).await;
         let binding = working_run_binding(&pool).await;
 
-        let settlement = settle_launch(&pool, &binding, error, &now).await.unwrap();
+        let settlement = settle_launch(&pool, &binding, &folder_launch(), error, &now)
+            .await
+            .unwrap();
 
         assert_eq!(settlement, LaunchSettlement::Superseded);
         assert_eq!(
@@ -942,7 +1050,9 @@ async fn a_launch_that_settles_after_a_remote_cancel_keeps_the_assignment_cancel
     let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
     starting_folder_run(&pool).await;
     let binding = working_run_binding(&pool).await;
-    let settlement = settle_launch(&pool, &binding, None, &now).await.unwrap();
+    let settlement = settle_launch(&pool, &binding, &folder_launch(), None, &now)
+        .await
+        .unwrap();
     assert_eq!(settlement, LaunchSettlement::Recorded);
     assert_eq!(
         folder_assignment_and_run(&pool).await,
@@ -978,7 +1088,9 @@ async fn a_launch_cannot_rewrite_a_run_that_revocation_already_cancelled() {
         .await
         .unwrap();
 
-        let settlement = settle_launch(&pool, &binding, error, &now).await.unwrap();
+        let settlement = settle_launch(&pool, &binding, &folder_launch(), error, &now)
+            .await
+            .unwrap();
 
         assert_eq!(settlement, LaunchSettlement::RunSettled);
         let rows: (String, i64, String, Option<String>, String, Option<String>) = sqlx::query_as(
@@ -1020,9 +1132,10 @@ async fn a_launch_of_a_missing_run_stops_the_session_and_writes_nothing() {
     };
     let now = UtcTimestamp::new("2026-10-20T12:02:00.000Z".to_string()).unwrap();
 
-    let settlement = ganbaru_chat::agent_runs::settle_launch(&pool, &binding, None, &now)
-        .await
-        .unwrap();
+    let settlement =
+        ganbaru_chat::agent_runs::settle_launch(&pool, &binding, &folder_launch(), None, &now)
+            .await
+            .unwrap();
 
     assert_eq!(
         settlement,

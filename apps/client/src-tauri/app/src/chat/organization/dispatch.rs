@@ -6,6 +6,9 @@ use super::common::{
 };
 use super::reads::read_policy;
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
+use ganbaru_chat::agent_runs::{
+    AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind, RunAttempt, RunLaunch,
+};
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, SqlitePool};
 
@@ -214,6 +217,7 @@ async fn dispatch_claimed_assignment(
             assignment.teammate_id,
             assignment.triggering_message_item_id,
             assignment.state,
+            context.id AS context_package_id,
             context.serialized_text,
             authorization.id AS authorization_revision_id,
             authorization.teammate_policy_revision_id,
@@ -574,6 +578,28 @@ async fn dispatch_claimed_assignment(
         attachment_ids,
         mentions,
     };
+    let context_package_id: String = row
+        .try_get("context_package_id")
+        .map_err(persistence_error)?;
+    let reason = if continuation.is_some() {
+        AttemptReason::Continuation
+    } else if run_ordinal > 1 {
+        AttemptReason::Retry
+    } else {
+        AttemptReason::Fresh
+    };
+    let launch = RunLaunch {
+        claim_token: claim.token.clone(),
+        attempt: RunAttempt {
+            reason,
+            instructions_sha256: None,
+            model_selection_sha256: None,
+            context_delivery: ContextDelivery::Full,
+            delivered_context_bytes: u64::try_from(request.prompt.len())
+                .map_err(|_| ChatError::validation("prompt", "Assignment context is too large"))?,
+            delivered_sources: package_sources(pool, &context_package_id).await?,
+        },
+    };
     let run_id = ChatAgentRunId::new(new_id("agent-run")?).map_err(identifier_error)?;
     let sent = super::super::turns::send_turn(
         app,
@@ -596,6 +622,7 @@ async fn dispatch_claimed_assignment(
                     execution_environment_id,
                     run_ordinal: u64_value(run_ordinal)?,
                 }),
+                launch: Box::new(launch),
             },
         },
     )
@@ -603,6 +630,31 @@ async fn dispatch_claimed_assignment(
     Ok(AssignmentLaunch {
         run_id,
         launch_error: sent.launch_error,
+    })
+}
+
+/// The sources of the frozen context package `context_package_id`, in package order, as
+/// sources a launch delivers.
+async fn package_sources(
+    pool: &SqlitePool,
+    context_package_id: &str,
+) -> ChatResult<Vec<DeliveredSource>> {
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT source_id, content_sha256 FROM chat_assignment_context_sources
+         WHERE context_package_id = ? ORDER BY ordinal",
+    )
+    .bind(context_package_id)
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)
+    .map(|rows| {
+        rows.into_iter()
+            .map(|(source_id, content_sha256)| DeliveredSource {
+                source_id,
+                content_sha256,
+                kind: DeliveryKind::Package,
+            })
+            .collect()
     })
 }
 
@@ -1116,8 +1168,9 @@ mod tests {
         };
         use crate::chat::organization::assignments::reclaim_stale_dispatch_claims;
         use ganbaru_chat::agent_runs::{
-            AgentRunBinding, LaunchAttempt, LaunchSettlement, insert_assignment_failure_message,
-            settle_launch,
+            AgentRunBinding, AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind,
+            LaunchAttempt, LaunchSettlement, RunAttempt, RunLaunch,
+            insert_assignment_failure_message, settle_launch,
         };
         use ganbaru_chat_contracts::models::*;
         use sqlx::SqlitePool;
@@ -1177,6 +1230,42 @@ mod tests {
                 execution_environment_id: Some(execution_environment_id),
                 run_ordinal: 1,
             }
+        }
+
+        fn delivered(source_id: &str, digit: char) -> DeliveredSource {
+            DeliveredSource {
+                source_id: source_id.to_string(),
+                content_sha256: digit.to_string().repeat(64),
+                kind: DeliveryKind::Package,
+            }
+        }
+
+        /// The launch of the fixture run under the fixture claim, delivering two sources.
+        fn folder_launch() -> RunLaunch {
+            RunLaunch {
+                claim_token: "claim:folders".to_string(),
+                attempt: RunAttempt {
+                    reason: AttemptReason::Fresh,
+                    instructions_sha256: None,
+                    model_selection_sha256: None,
+                    context_delivery: ContextDelivery::Full,
+                    delivered_context_bytes: 42,
+                    delivered_sources: vec![
+                        delivered("item:root", 'a'),
+                        delivered("item:folders", 'b'),
+                    ],
+                },
+            }
+        }
+
+        async fn delivered_sources(pool: &SqlitePool) -> Vec<(String, String)> {
+            sqlx::query_as(
+                "SELECT source_id, delivery_kind FROM chat_agent_run_delivered_sources
+                 WHERE run_id = 'run:working' ORDER BY source_id",
+            )
+            .fetch_all(pool)
+            .await
+            .unwrap()
         }
 
         /// Posts a message by the local owner in the assignment's reply thread and records it
@@ -1306,9 +1395,15 @@ mod tests {
             let binding = working_binding(&pool).await;
             let error = launch_error();
 
-            let settlement = settle_launch(&pool, &binding, Some(&error), &at(CLAIMED_AT))
-                .await
-                .unwrap();
+            let settlement = settle_launch(
+                &pool,
+                &binding,
+                &folder_launch(),
+                Some(&error),
+                &at(CLAIMED_AT),
+            )
+            .await
+            .unwrap();
             assert_eq!(settlement, LaunchSettlement::Recorded);
             assert_eq!(failure_messages(&pool).await, 1);
             assert_eq!(assignment_and_job(&pool).await, pair("failed", "failed"));
@@ -1351,6 +1446,119 @@ mod tests {
             assert!(claim, "a claim attempt is keyed apart from the run attempt");
             assert_eq!(failure_messages(&pool).await, 2);
             assert_ne!(thread_and_conversation_revisions(&pool).await, revisions);
+        }
+
+        #[tokio::test]
+        async fn only_a_launch_that_starts_its_run_records_delivered_sources() {
+            let error = launch_error();
+            let pool = starting_pool().await;
+            let binding = working_binding(&pool).await;
+            settle_launch(
+                &pool,
+                &binding,
+                &folder_launch(),
+                Some(&error),
+                &at(CLAIMED_AT),
+            )
+            .await
+            .unwrap();
+            assert!(delivered_sources(&pool).await.is_empty(), "failed launch");
+
+            let pool = starting_pool().await;
+            let binding = working_binding(&pool).await;
+            sqlx::query(
+                "UPDATE chat_work_assignments SET state = 'cancelled',
+                     settled_at = '2026-10-20T12:01:00.000Z'
+                 WHERE id = 'assignment:folders'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let superseded =
+                settle_launch(&pool, &binding, &folder_launch(), None, &at(CLAIMED_AT))
+                    .await
+                    .unwrap();
+            assert_eq!(superseded, LaunchSettlement::Superseded);
+            assert!(
+                delivered_sources(&pool).await.is_empty(),
+                "superseded launch"
+            );
+
+            let pool = starting_pool().await;
+            let binding = working_binding(&pool).await;
+            sqlx::query("UPDATE chat_agent_runs SET state = 'failed' WHERE id = 'run:working'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let settled = settle_launch(&pool, &binding, &folder_launch(), None, &at(CLAIMED_AT))
+                .await
+                .unwrap();
+            assert_eq!(settled, LaunchSettlement::RunSettled);
+            assert!(delivered_sources(&pool).await.is_empty(), "settled run");
+
+            let pool = starting_pool().await;
+            let binding = working_binding(&pool).await;
+            let recorded = settle_launch(&pool, &binding, &folder_launch(), None, &at(CLAIMED_AT))
+                .await
+                .unwrap();
+            assert_eq!(recorded, LaunchSettlement::Recorded);
+            let expected = vec![
+                pair("item:folders", "package"),
+                pair("item:root", "package"),
+            ];
+            assert_eq!(delivered_sources(&pool).await, expected);
+
+            let mut connection = pool.acquire().await.unwrap();
+            ganbaru_chat::agent_runs::insert_delivered_sources(
+                &mut connection,
+                &binding.run_id,
+                &folder_launch().attempt.delivered_sources,
+                &at("2026-10-20T12:01:00.000Z"),
+            )
+            .await
+            .expect("a replayed delivery keeps its first record");
+            drop(connection);
+            assert_eq!(delivered_sources(&pool).await, expected);
+        }
+
+        #[tokio::test]
+        async fn a_launch_whose_claim_was_lost_settles_only_its_run() {
+            for error in [None, Some(launch_error())] {
+                let pool = starting_pool().await;
+                sqlx::query(
+                    "UPDATE chat_assignment_dispatch_jobs
+                     SET claim_token = 'claim:newer' WHERE assignment_id = 'assignment:folders'",
+                )
+                .execute(&pool)
+                .await
+                .unwrap();
+                let binding = working_binding(&pool).await;
+
+                let settlement = settle_launch(
+                    &pool,
+                    &binding,
+                    &folder_launch(),
+                    error.as_ref(),
+                    &at("2026-10-20T12:01:00.000Z"),
+                )
+                .await
+                .unwrap();
+
+                assert_eq!(settlement, LaunchSettlement::ClaimLost);
+                assert!(settlement.stops_session());
+                assert_eq!(
+                    run_and_job(&pool).await,
+                    (
+                        "cancelled".to_string(),
+                        Some("2026-10-20T12:01:00.000Z".to_string()),
+                        "claimed".to_string(),
+                        None
+                    )
+                );
+                assert_eq!(assignment_and_job(&pool).await, pair("queued", "claimed"));
+                assert_eq!(failure_messages(&pool).await, 0);
+                assert!(delivered_sources(&pool).await.is_empty());
+            }
         }
 
         #[tokio::test]
@@ -1430,7 +1638,7 @@ mod tests {
             );
 
             let binding = working_binding(&pool).await;
-            settle_launch(&pool, &binding, None, &at(CLAIMED_AT))
+            settle_launch(&pool, &binding, &folder_launch(), None, &at(CLAIMED_AT))
                 .await
                 .unwrap();
             assert!(
@@ -1519,9 +1727,15 @@ mod tests {
                 )
             );
             let binding = working_binding(&pool).await;
-            let late = settle_launch(&pool, &binding, None, &at("2026-10-20T12:07:00.000Z"))
-                .await
-                .unwrap();
+            let late = settle_launch(
+                &pool,
+                &binding,
+                &folder_launch(),
+                None,
+                &at("2026-10-20T12:07:00.000Z"),
+            )
+            .await
+            .unwrap();
             assert_eq!(late, LaunchSettlement::RunSettled);
             assert_eq!(run_and_job(&pool).await.0, "failed");
             assert_eq!(assignment_and_job(&pool).await, pair("queued", "queued"));

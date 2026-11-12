@@ -1725,9 +1725,11 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     local: &[
         device("chat_access_revocation_jobs", &[]),
         device("chat_activities", &[]),
+        device("chat_agent_run_delivered_sources", &[]),
         device(
             "chat_agent_runs",
             &[
+                applier_visible("chat_agent_run_attempt_immutable"),
                 applier_visible("chat_agent_run_authority_immutable"),
                 gated("chat_agent_run_authorization_insert"),
                 gated("chat_agent_run_authorization_target_insert"),

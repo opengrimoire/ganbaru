@@ -402,11 +402,12 @@ pub(super) async fn persist_user_turn(context: PersistUserTurnContext<'_>) -> Ch
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    if let Some(binding) = origin.run() {
+    if let Some((binding, launch)) = origin.assignment_run() {
         ganbaru_chat::agent_runs::insert_starting_run(
             &mut transaction,
             StartingAgentRun {
                 binding,
+                launch,
                 provider_turn_id: &request.turn_id,
                 provider_thread_id: thread_id,
                 now,

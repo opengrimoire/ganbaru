@@ -307,10 +307,11 @@ pub(crate) async fn send_turn(
             (None, Some(error), marked)
         }
     };
-    if let Some(binding) = origin.run() {
+    if let Some((binding, launch)) = origin.assignment_run() {
         let settlement = ganbaru_chat::agent_runs::settle_launch(
             &pool,
             binding,
+            launch,
             launch_error.as_ref(),
             &now_timestamp()?,
         )

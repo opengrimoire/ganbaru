@@ -196,6 +196,8 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_assignment_context_packages",
             "chat_assignment_context_sources",
             "chat_agent_runs",
+            "chat_agent_run_delivered_sources",
+            "chat_agent_run_attempt_immutable",
             "chat_assignment_dispatch_jobs",
             "chat_assignment_requested_targets",
             "chat_assignment_input_requested_targets",
@@ -1398,6 +1400,135 @@ fn assignment_review_columns_accept_only_known_outcomes_and_full_timestamps() {
                 "participant:local-owner".to_owned()
             )
         );
+    });
+}
+
+#[test]
+fn run_attempts_are_fixed_once_the_run_leaves_starting() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let stored: (String, Option<String>, String, i64) = sqlx::query_as(
+            "SELECT attempt_reason, handoff_reason, context_delivery, delivered_context_bytes
+             FROM chat_agent_runs WHERE id = 'run-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, ("fresh".to_owned(), None, "full".to_owned(), 0));
+
+        let digest = "a".repeat(64);
+        for (column, value) in [
+            ("attempt_reason", "'continuation'".to_owned()),
+            ("handoff_reason", "'key_changed'".to_owned()),
+            ("instructions_sha256", format!("'{digest}'")),
+            ("model_selection_sha256", format!("'{digest}'")),
+            ("context_delivery", "'delta'".to_owned()),
+            ("delivered_context_bytes", "12".to_owned()),
+        ] {
+            let error = sqlx::query(AssertSqlSafe(format!(
+                "UPDATE chat_agent_runs SET {column} = {value} WHERE id = 'run-1'"
+            )))
+            .execute(&pool)
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("Agent run attempt is immutable"),
+                "{column}: {error}"
+            );
+        }
+
+        sqlx::query("UPDATE chat_agent_runs SET state = 'starting' WHERE id = 'run-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE chat_agent_runs
+             SET attempt_reason = 'handoff', handoff_reason = 'native_session_lost',
+                 delivered_context_bytes = 131072
+             WHERE id = 'run-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for invalid in [
+            "attempt_reason = 'resumed'",
+            "handoff_reason = 'expired'",
+            "instructions_sha256 = 'short'",
+            "model_selection_sha256 = 'short'",
+            "context_delivery = 'partial'",
+            "delivered_context_bytes = 131073",
+            "delivered_context_bytes = -1",
+        ] {
+            assert!(
+                sqlx::query(AssertSqlSafe(format!(
+                    "UPDATE chat_agent_runs SET {invalid} WHERE id = 'run-1'"
+                )))
+                .execute(&pool)
+                .await
+                .is_err(),
+                "{invalid}"
+            );
+        }
+    });
+}
+
+#[test]
+fn delivered_sources_follow_their_run_and_accept_only_known_kinds() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let digest = "b".repeat(64);
+        let deliver = |source_id: &str, content_sha256: &str, kind: &str, at: &str| {
+            sqlx::query(
+                "INSERT INTO chat_agent_run_delivered_sources
+                    (run_id, source_id, content_sha256, delivery_kind, delivered_at)
+                 VALUES ('run-1', ?, ?, ?, ?)",
+            )
+            .bind(source_id.to_owned())
+            .bind(content_sha256.to_owned())
+            .bind(kind.to_owned())
+            .bind(at.to_owned())
+            .execute(&pool)
+        };
+        for kind in [
+            "package",
+            "pointer",
+            "steer",
+            "queued_continuation",
+            "removal",
+        ] {
+            deliver(&format!("source-{kind}"), &digest, kind, NOW)
+                .await
+                .unwrap();
+        }
+        assert!(
+            deliver("source-package", &digest, "steer", NOW)
+                .await
+                .is_err()
+        );
+        deliver("source-package", &"c".repeat(64), "package", NOW)
+            .await
+            .unwrap();
+        assert!(deliver("source-x", &digest, "summary", NOW).await.is_err());
+        assert!(deliver("source-x", "short", "package", NOW).await.is_err());
+        assert!(deliver("", &digest, "package", NOW).await.is_err());
+        assert!(
+            deliver("source-x", &digest, "package", "2026-07-20")
+                .await
+                .is_err()
+        );
+
+        sqlx::query("DELETE FROM chat_agent_runs WHERE id = 'run-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_agent_run_delivered_sources")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, 0);
     });
 }
 

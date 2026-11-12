@@ -3,6 +3,7 @@
 use super::executable::*;
 use super::interactions::PendingCursorRequests;
 use super::normalizer::{CursorEventNormalizer, CursorRouteState};
+use super::operations::InstructionsDigest;
 use super::protocol::*;
 use super::session::*;
 use super::transport::AcpRpcConnection;
@@ -104,6 +105,9 @@ pub(super) struct CursorLiveSession {
     pub expected_shutdown: Arc<AtomicBool>,
     pub terminal_error: Arc<Mutex<Option<ChatError>>>,
     pub session_id: ProviderSessionId,
+    /// Instructions the agent accepted in a prompt of this live session; a later turn with the
+    /// same instructions omits them.
+    pub delivered_instructions: Arc<Mutex<Option<InstructionsDigest>>>,
 }
 
 impl Drop for CursorLiveSession {
@@ -565,6 +569,7 @@ impl CursorProviderDriver {
             expected_shutdown,
             terminal_error,
             session_id: local_session_id.clone(),
+            delivered_instructions: Arc::new(Mutex::new(None)),
         });
         Ok(ProviderSessionSnapshot {
             session_id: local_session_id,

@@ -130,21 +130,48 @@ impl CursorEventNormalizer {
                 Ok(Vec::new())
             }
             "user_message_chunk" | "session_info_update" => Ok(Vec::new()),
-            unknown => Ok(vec![self.event(
-                state,
-                "session/update",
-                None,
-                None,
-                CanonicalEvent::Unknown(UnknownEvent {
-                    source_type: format!("acp/session_update/{unknown}"),
-                    summary: format!(
-                        "{} emitted an unsupported ACP session update",
-                        self.provider_display_name
-                    ),
-                    safe_payload: Some(safe_shape(&params)),
-                }),
-            )?]),
+            "usage_update" => match usage_update(update) {
+                Some(usage) => {
+                    state.observed.usage = true;
+                    state.observed.cost |= usage.cost.is_some();
+                    Ok(vec![self.event(
+                        state,
+                        "session/update/usage",
+                        None,
+                        None,
+                        CanonicalEvent::ThreadUsageUpdated(usage),
+                    )?])
+                }
+                None => Ok(vec![self.unsupported_update(
+                    state,
+                    update_type,
+                    &params,
+                )?]),
+            },
+            unknown => Ok(vec![self.unsupported_update(state, unknown, &params)?]),
         }
+    }
+
+    fn unsupported_update(
+        &self,
+        state: &CursorRouteState,
+        update_type: &str,
+        params: &Value,
+    ) -> ChatResult<CanonicalRuntimeEvent> {
+        self.event(
+            state,
+            "session/update",
+            None,
+            None,
+            CanonicalEvent::Unknown(UnknownEvent {
+                source_type: format!("acp/session_update/{update_type}"),
+                summary: format!(
+                    "{} emitted an unsupported ACP session update",
+                    self.provider_display_name
+                ),
+                safe_payload: Some(safe_shape(params)),
+            }),
+        )
     }
 
     pub fn normalize_create_plan(
@@ -640,6 +667,49 @@ fn plan_event(steps: Vec<PlanStep>) -> PlanUpdatedEvent {
         .collect::<Vec<_>>()
         .join("\n");
     PlanUpdatedEvent { markdown, steps }
+}
+
+/// Longest currency code a usage cost may carry; ISO 4217 codes have three letters.
+const MAX_COST_CURRENCY_BYTES: usize = 16;
+
+/// Reads an ACP `usage_update` as context fill and the agent's cumulative session cost.
+///
+/// `used` and `size` are required; without either the update is not usage. A malformed cost is
+/// dropped and the context fill kept, as the ACP schema reads it. Token counts the update does
+/// not carry stay unset.
+fn usage_update(update: &Map<String, Value>) -> Option<ThreadUsageUpdatedEvent> {
+    let used = update.get("used").and_then(Value::as_u64)?;
+    let size = update.get("size").and_then(Value::as_u64)?;
+    let cost = update
+        .get("cost")
+        .and_then(Value::as_object)
+        .and_then(|cost| {
+            let amount = cost
+                .get("amount")
+                .and_then(Value::as_f64)
+                .filter(|amount| amount.is_finite() && *amount >= 0.0)?;
+            let currency = text(cost, "currency").filter(|currency| {
+                !currency.is_empty()
+                    && currency.len() <= MAX_COST_CURRENCY_BYTES
+                    && currency
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric())
+            })?;
+            Some(ProviderAttributedCost {
+                amount,
+                currency: currency.to_string(),
+                provider_reported: true,
+            })
+        });
+    Some(ThreadUsageUpdatedEvent {
+        input_tokens: None,
+        output_tokens: None,
+        cached_input_tokens: None,
+        cache_write_input_tokens: None,
+        context_tokens: Some(used),
+        context_limit: Some(size),
+        cost,
+    })
 }
 
 fn text<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {

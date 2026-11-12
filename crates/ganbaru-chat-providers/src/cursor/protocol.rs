@@ -534,6 +534,8 @@ pub fn acp_capability_kinds(_flavor: super::driver::AcpProviderFlavor) -> Vec<Pr
         Some(ProviderCapability::StructuredPlans),
         Some(ProviderCapability::ProviderDiffs),
         Some(ProviderCapability::SlashCommands),
+        Some(ProviderCapability::ContextUsage),
+        Some(ProviderCapability::CostReporting),
     ]
     .into_iter()
     .flatten()
@@ -552,6 +554,8 @@ pub struct ObservedAcpCapabilities {
     pub reasoning: bool,
     /// A `usage_update` arrived.
     pub usage: bool,
+    /// A `usage_update` carried a session cost.
+    pub cost: bool,
 }
 
 impl ObservedAcpCapabilities {
@@ -560,6 +564,7 @@ impl ObservedAcpCapabilities {
         self.slash_commands |= other.slash_commands;
         self.reasoning |= other.reasoning;
         self.usage |= other.usage;
+        self.cost |= other.cost;
     }
 }
 
@@ -609,6 +614,7 @@ pub fn negotiated_capabilities_for(
                 }
                 ProviderCapability::SlashCommands => observed.slash_commands,
                 ProviderCapability::ContextUsage => observed.usage,
+                ProviderCapability::CostReporting => observed.cost,
                 _ => false,
             };
             ProviderCapabilitySupport {
@@ -640,6 +646,9 @@ pub fn negotiated_capabilities_for(
                     }
                     ProviderCapability::ContextUsage => {
                         format!("{provider_name} has not reported context usage")
+                    }
+                    ProviderCapability::CostReporting => {
+                        format!("{provider_name} has not reported a session cost")
                     }
                     _ => format!("{provider_name} did not advertise this ACP capability"),
                 }),

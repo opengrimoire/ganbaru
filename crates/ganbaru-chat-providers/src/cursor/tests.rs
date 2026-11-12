@@ -482,6 +482,79 @@ fn config_option_updates_replace_the_route_options() {
     );
 }
 
+#[test]
+fn usage_updates_map_context_and_keep_only_valid_costs() {
+    let normalizer = test_normalizer();
+    let mut state = test_route_state();
+    let usage = |update: Value, state: &mut CursorRouteState| {
+        normalizer
+            .normalize_session_update(
+                state,
+                json!({ "sessionId": "provider-thread", "update": update }),
+            )
+            .unwrap()
+    };
+
+    let events = usage(
+        json!({ "sessionUpdate": "usage_update", "used": 42, "size": 1000 }),
+        &mut state,
+    );
+    let [event] = events.as_slice() else {
+        panic!("one usage event");
+    };
+    let CanonicalEvent::ThreadUsageUpdated(update) = &event.event else {
+        panic!("usage event");
+    };
+    assert_eq!(update.context_tokens, Some(42));
+    assert_eq!(update.context_limit, Some(1000));
+    assert!(update.cost.is_none());
+    assert!(state.observed.usage);
+    assert!(
+        !state.observed.cost,
+        "a usage update without a cost reports no cost"
+    );
+
+    for invalid_cost in [
+        json!({ "amount": -1.0, "currency": "USD" }),
+        json!({ "amount": 1.0, "currency": "" }),
+        json!({ "amount": 1.0, "currency": "U$D" }),
+        json!("free"),
+    ] {
+        let events = usage(
+            json!({ "sessionUpdate": "usage_update", "used": 1, "size": 2, "cost": invalid_cost }),
+            &mut state,
+        );
+        let CanonicalEvent::ThreadUsageUpdated(update) = &events[0].event else {
+            panic!("usage event");
+        };
+        assert!(update.cost.is_none());
+    }
+    assert!(!state.observed.cost);
+
+    let events = usage(
+        json!({ "sessionUpdate": "usage_update", "used": 7, "size": 9, "cost": { "amount": 0.5, "currency": "EUR" } }),
+        &mut state,
+    );
+    let CanonicalEvent::ThreadUsageUpdated(update) = &events[0].event else {
+        panic!("usage event");
+    };
+    let cost = update.cost.as_ref().unwrap();
+    assert_eq!((cost.amount, cost.currency.as_str()), (0.5, "EUR"));
+    assert!(state.observed.cost);
+
+    for malformed in [
+        json!({ "sessionUpdate": "usage_update", "used": "many", "size": 2 }),
+        json!({ "sessionUpdate": "usage_update", "used": 1 }),
+        json!({ "sessionUpdate": "usage_update", "used": -1, "size": 2 }),
+    ] {
+        let events = usage(malformed, &mut state);
+        assert!(
+            matches!(events.as_slice(), [event] if matches!(event.event, CanonicalEvent::Unknown(_))),
+            "a malformed usage update stays visible as an unknown event"
+        );
+    }
+}
+
 fn test_normalizer() -> CursorEventNormalizer {
     CursorEventNormalizer::new_for_provider(
         ProviderInstanceId::new("cursor-instance").unwrap(),

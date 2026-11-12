@@ -217,7 +217,14 @@ pub enum FixtureScenario {
     /// `session/load` replays history, a command list, mode and configuration updates, and a
     /// permission request before and after its response.
     ReplayOnLoad,
+    /// Every `session/prompt` reports usage with a cost and ends its turn at once.
+    CompletePrompts,
 }
+
+/// Context tokens the `CompletePrompts` fixture reports in use.
+pub const FIXTURE_USAGE_USED: u64 = 1_200;
+/// Context window the `CompletePrompts` fixture reports.
+pub const FIXTURE_USAGE_SIZE: u64 = 200_000;
 
 /// Replayed updates the `ReplayOnLoad` fixture sends, more than the inbound channel holds.
 pub const LOAD_REPLAY_UPDATES: usize = 300;
@@ -387,6 +394,19 @@ async fn run_fixture<R, W>(
             "session/set_mode" => write_result(&mut writer, id, json!({})).await,
             "cursor/list_available_models" => {
                 write_result(&mut writer, id, models_response()).await;
+            }
+            "session/prompt" if scenario == FixtureScenario::CompletePrompts => {
+                write_message(
+                    &mut writer,
+                    session_update(json!({
+                        "sessionUpdate": "usage_update",
+                        "used": FIXTURE_USAGE_USED,
+                        "size": FIXTURE_USAGE_SIZE,
+                        "cost": { "amount": 0.25, "currency": "USD" }
+                    })),
+                )
+                .await;
+                write_result(&mut writer, id, json!({ "stopReason": "end_turn" })).await;
             }
             "session/prompt" => {
                 pending_prompt = id;

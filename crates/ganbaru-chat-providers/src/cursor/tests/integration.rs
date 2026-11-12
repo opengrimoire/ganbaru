@@ -465,3 +465,158 @@ fn pending_requests_wake_on_cancellation_and_deadline() {
             .unwrap();
     });
 }
+
+#[test]
+fn instructions_reach_each_live_session_once_and_usage_reports_cost() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("instructions");
+        let state = Arc::new(AcpFixtureState::default());
+        let factory_state = Arc::clone(&state);
+        let mut driver = CursorProviderDriver::new(configuration(workspace.path(), None)).unwrap();
+        driver.set_connection_factory(Arc::new(move |_workspace| {
+            Ok((
+                fixture_connection(FixtureScenario::CompletePrompts, Arc::clone(&factory_state)),
+                about().into(),
+            ))
+        }));
+        let sink = Arc::new(RecordingSink::default());
+
+        let first = start_completing_session(&mut driver, &sink, workspace.path()).await;
+        assert!(
+            !first
+                .capabilities
+                .supports(ProviderCapability::CostReporting)
+        );
+        let rules = "Follow repository rules";
+        complete_turn(&mut driver, &sink, &first.session_id, "turn-1", rules).await;
+        complete_turn(
+            &mut driver,
+            &sink,
+            &first.session_id,
+            "turn-2",
+            "Follow repository rules\r\n",
+        )
+        .await;
+        complete_turn(
+            &mut driver,
+            &sink,
+            &first.session_id,
+            "turn-3",
+            "Ask before deleting files",
+        )
+        .await;
+        complete_turn(
+            &mut driver,
+            &sink,
+            &first.session_id,
+            "turn-4",
+            "Ask before deleting files",
+        )
+        .await;
+        assert_eq!(
+            prompt_instruction_flags(&state),
+            [true, false, true, false],
+            "unchanged instructions stay out of later prompts in the same live session"
+        );
+        assert!(sink.events().iter().any(|event| matches!(
+            &event.event,
+            CanonicalEvent::ThreadUsageUpdated(usage)
+                if usage.context_tokens == Some(FIXTURE_USAGE_USED)
+                    && usage.context_limit == Some(FIXTURE_USAGE_SIZE)
+                    && usage.cost.as_ref().is_some_and(|cost| cost.currency == "USD")
+        )));
+        driver
+            .stop_session(
+                StopSessionRequest {
+                    session_id: first.session_id,
+                    force: false,
+                },
+                &context("stop-first"),
+            )
+            .await
+            .unwrap();
+
+        let second = start_completing_session(&mut driver, &sink, workspace.path()).await;
+        assert!(
+            second
+                .capabilities
+                .supports(ProviderCapability::CostReporting),
+            "an observed session cost is reported for the next session"
+        );
+        assert!(
+            second
+                .capabilities
+                .supports(ProviderCapability::ContextUsage)
+        );
+        complete_turn(
+            &mut driver,
+            &sink,
+            &second.session_id,
+            "turn-5",
+            "Ask before deleting files",
+        )
+        .await;
+        assert_eq!(
+            prompt_instruction_flags(&state),
+            [true, false, true, false, true],
+            "a new live session receives the instructions again"
+        );
+    });
+}
+
+async fn start_completing_session(
+    driver: &mut CursorProviderDriver,
+    sink: &Arc<RecordingSink>,
+    workspace: &std::path::Path,
+) -> ProviderSessionSnapshot {
+    let sink_trait: Arc<dyn ProviderEventSink> = sink.clone();
+    driver
+        .start_session(start_request(workspace), sink_trait, &context("start"))
+        .await
+        .unwrap()
+}
+
+async fn complete_turn(
+    driver: &mut CursorProviderDriver,
+    sink: &RecordingSink,
+    session_id: &ProviderSessionId,
+    turn_id: &str,
+    instructions: &str,
+) {
+    let completed_before = completed_turns(sink);
+    let mut request = send_request(session_id);
+    request.turn_id = serde_json::from_value(json!(turn_id)).unwrap();
+    request.developer_instructions = Some(instructions.to_string());
+    driver.send_turn(request, &context(turn_id)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while completed_turns(sink) == completed_before {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+fn completed_turns(sink: &RecordingSink) -> usize {
+    sink.events()
+        .iter()
+        .filter(|event| matches!(event.event, CanonicalEvent::TurnCompleted(_)))
+        .count()
+}
+
+/// Whether each `session/prompt` the fixture received carried the instructions block.
+fn prompt_instruction_flags(state: &AcpFixtureState) -> Vec<bool> {
+    state
+        .received()
+        .iter()
+        .filter(|message| message["method"] == "session/prompt")
+        .map(|message| {
+            message["params"]["prompt"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|block| block["text"].as_str())
+                .any(|text| text.contains("Additional Ganbaru instructions"))
+        })
+        .collect()
+}

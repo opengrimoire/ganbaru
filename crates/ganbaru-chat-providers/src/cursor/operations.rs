@@ -16,6 +16,7 @@ use crate::{
 };
 use base64::{Engine as _, engine::general_purpose};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::{Arc, atomic::Ordering};
 use std::time::{Duration, Instant};
@@ -268,7 +269,15 @@ impl ProviderDriver for CursorProviderDriver {
         Box::pin(async move {
             let flavor = self.flavor;
             let provider_name = flavor.display_name();
-            let prompt = build_prompt(&request, flavor).await?;
+            let delivered = *self
+                .live_mut(&request.session_id)?
+                .delivered_instructions
+                .lock()
+                .map_err(|_| driver_state_error())?;
+            let AcpPrompt {
+                content: prompt,
+                instructions: sent_instructions,
+            } = build_prompt(&request, flavor, delivered).await?;
             let live = self.live_mut(&request.session_id)?;
             if live
                 .prompt_task
@@ -355,6 +364,7 @@ impl ProviderDriver for CursorProviderDriver {
             let sink = Arc::clone(&live.sink);
             let terminal_error = Arc::clone(&live.terminal_error);
             let prompt_completions = Arc::clone(&live.prompt_completions);
+            let delivered_instructions = Arc::clone(&live.delivered_instructions);
             let prompt_context = DriverOperationContext {
                 operation_id: context.operation_id.clone(),
                 deadline: Instant::now() + PROMPT_TIMEOUT,
@@ -407,6 +417,13 @@ impl ProviderDriver for CursorProviderDriver {
                 };
                 let events = match response {
                     Ok(response) => {
+                        // The agent answered the prompt, so its context holds the instructions
+                        // whatever the stop reason.
+                        if let (Some(digest), Ok(mut delivered)) =
+                            (sent_instructions, delivered_instructions.lock())
+                        {
+                            *delivered = Some(digest);
+                        }
                         let stop_reason = response
                             .get("stopReason")
                             .and_then(Value::as_str)
@@ -733,10 +750,41 @@ impl ProviderDriver for CursorProviderDriver {
     }
 }
 
-async fn build_prompt(
+/// SHA-256 of normalized developer instructions, naming what a live session already received.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct InstructionsDigest([u8; 32]);
+
+impl InstructionsDigest {
+    fn of(normalized: &str) -> Self {
+        Self(Sha256::digest(normalized.as_bytes()).into())
+    }
+}
+
+/// Developer instructions with line endings unified and outer whitespace removed, or `None`
+/// when nothing is left.
+fn normalized_instructions(instructions: &str) -> Option<String> {
+    let normalized = instructions.replace("\r\n", "\n");
+    let trimmed = normalized.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// One `session/prompt` content list and the instructions it delivers.
+pub(super) struct AcpPrompt {
+    pub content: Vec<Value>,
+    /// Digest of the instructions this prompt carries, recorded once the agent answers it.
+    pub instructions: Option<InstructionsDigest>,
+}
+
+/// Builds the prompt content for one turn.
+///
+/// ACP has no session instruction field the current agents advertise, so developer instructions
+/// ride in the prompt text, once per live session: they are omitted when `delivered` already
+/// names the same normalized text, and sent again when they change or the session is new.
+pub(super) async fn build_prompt(
     request: &SendTurnRequest,
     flavor: AcpProviderFlavor,
-) -> ChatResult<Vec<Value>> {
+    delivered: Option<InstructionsDigest>,
+) -> ChatResult<AcpPrompt> {
     let provider_name = flavor.display_name();
     if request.prompt.len() > MAX_PROMPT_BYTES || request.prompt.contains('\0') {
         return Err(ChatError::validation(
@@ -756,6 +804,7 @@ async fn build_prompt(
                 .join("\n"),
         );
     }
+    let mut sent_instructions = None;
     if let Some(instructions) = request.developer_instructions.as_deref() {
         if instructions.len() > MAX_TEXT_ATTACHMENT_BYTES || instructions.contains('\0') {
             return Err(ChatError::validation(
@@ -763,8 +812,14 @@ async fn build_prompt(
                 format!("{provider_name} developer instructions exceed the supported limit"),
             ));
         }
-        text.push_str("\n\nAdditional Ganbaru instructions:\n");
-        text.push_str(instructions);
+        if let Some(normalized) = normalized_instructions(instructions) {
+            let digest = InstructionsDigest::of(&normalized);
+            if delivered != Some(digest) {
+                text.push_str("\n\nAdditional Ganbaru instructions:\n");
+                text.push_str(&normalized);
+                sent_instructions = Some(digest);
+            }
+        }
     }
     let mut content = Vec::new();
     if !text.trim().is_empty() {
@@ -801,7 +856,10 @@ async fn build_prompt(
             format!("{provider_name} turn requires text or an image"),
         ));
     }
-    Ok(content)
+    Ok(AcpPrompt {
+        content,
+        instructions: sent_instructions,
+    })
 }
 
 async fn image_content(

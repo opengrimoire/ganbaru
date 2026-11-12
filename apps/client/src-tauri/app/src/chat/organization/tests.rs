@@ -33,7 +33,7 @@ fn teammate_effort_accepts_every_catalog_reasoning_level() {
     assert!(!is_valid_teammate_effort("automatic"));
 }
 
-async fn migrated_pool() -> SqlitePool {
+pub(super) async fn migrated_pool() -> SqlitePool {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -129,7 +129,7 @@ fn archived_ai_teammate_names_remain_reserved_case_insensitively() {
     });
 }
 
-fn message(markdown: &str) -> PostChatMessageCommand {
+pub(super) fn message(markdown: &str) -> PostChatMessageCommand {
     PostChatMessageCommand {
         client_command_id: ChatCommandId::new("command:test").unwrap(),
         channel_id: ChatChannelId::new("channel:test").unwrap(),
@@ -447,16 +447,16 @@ fn scheduled_delivery_requires_a_near_future_time_within_one_year() {
 }
 
 /// Device that scheduled the test messages.
-const SCHEDULING_DEVICE: &str = "device:scheduling";
+pub(super) const SCHEDULING_DEVICE: &str = "device:scheduling";
 
 /// The Chat writers `device_ids`.
-fn chat_writers_of(device_ids: &[&str]) -> super::workflow::ChatWriters {
+pub(super) fn chat_writers_of(device_ids: &[&str]) -> super::workflow::ChatWriters {
     super::workflow::ChatWriters::new(device_ids.iter().map(|id| (*id).to_owned()))
 }
 
 /// Stores `request_data` as the scheduled message `scheduled:test` executed by `executing`,
 /// with the local dispatch row the scheduling device keeps when `dispatches_here`.
-async fn insert_test_scheduled_message(
+pub(super) async fn insert_test_scheduled_message(
     pool: &SqlitePool,
     request_data: &str,
     executing: Option<&str>,
@@ -675,6 +675,7 @@ fn scheduled_send_posts_stored_attachment_values_under_derived_ids() {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
             consent: ScheduledConsent::Local,
+            occurrence: None,
         };
         let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
         let device = PostingDevice::this_device(SCHEDULING_DEVICE, &writers);
@@ -686,6 +687,7 @@ fn scheduled_send_posts_stored_attachment_values_under_derived_ids() {
         let expected = super::common::scheduled_post_ids(
             "scheduled:test",
             super::common::ScheduledPostTarget::Message,
+            None,
         )
         .unwrap();
         assert_eq!(posted.item_id, expected.item_id);
@@ -764,6 +766,7 @@ fn scheduled_send_rejects_a_claim_that_changed() {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:stale",
             consent: ScheduledConsent::Local,
+            occurrence: None,
         };
 
         let Err(error) = persist_post(
@@ -822,6 +825,7 @@ fn scheduled_request_mismatch_refuses_foreign_channel() {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
             consent: ScheduledConsent::Local,
+            occurrence: None,
         };
         let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
         let device = PostingDevice::this_device(SCHEDULING_DEVICE, &writers);
@@ -880,6 +884,7 @@ fn scheduled_write_post_sends_a_matching_request() {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
             consent: ScheduledConsent::Local,
+            occurrence: None,
         };
         let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
         let device = PostingDevice::this_device(SCHEDULING_DEVICE, &writers);
@@ -1064,6 +1069,7 @@ fn scheduled_request_mismatch_passes_a_row_with_its_stored_references() {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
             consent: ScheduledConsent::Local,
+            occurrence: None,
         };
 
         let refusal = refuse_mismatched_request(&pool, send, &request)
@@ -1088,7 +1094,7 @@ fn scheduled_consent_covers_only_the_request_it_was_given_for() {
     let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
     let mut scope = ChatDeviceScope::default();
     assert_eq!(
-        scheduled_consent_in(&scope, &id, "request"),
+        scheduled_consent_in(&scope, &id, "request", None),
         ScheduledConsent::Unattended
     );
 
@@ -1100,7 +1106,7 @@ fn scheduled_consent_covers_only_the_request_it_was_given_for() {
     );
 
     assert_eq!(
-        scheduled_consent_in(&scope, &id, "request"),
+        scheduled_consent_in(&scope, &id, "request", None),
         ScheduledConsent::Local
     );
     assert!(
@@ -1108,12 +1114,12 @@ fn scheduled_consent_covers_only_the_request_it_was_given_for() {
         "a scheduled consent took an assignment acceptance slot"
     );
     assert_eq!(
-        scheduled_consent_in(&scope, &id, "rewritten request"),
+        scheduled_consent_in(&scope, &id, "rewritten request", None),
         ScheduledConsent::Unattended,
         "a request rewritten on a peer kept the consent"
     );
     assert_eq!(
-        scheduled_consent_in(&scope, &other, "request"),
+        scheduled_consent_in(&scope, &other, "request", None),
         ScheduledConsent::Unattended,
         "the consent reached another message"
     );
@@ -1124,7 +1130,7 @@ fn scheduled_consent_covers_only_the_request_it_was_given_for() {
         &scheduled_consent_digest(id.as_str(), "rewritten request"),
     );
     assert_eq!(
-        scheduled_consent_in(&scope, &id, "request"),
+        scheduled_consent_in(&scope, &id, "request", None),
         ScheduledConsent::Local,
         "forgetting another request dropped the consent"
     );
@@ -1135,7 +1141,7 @@ fn scheduled_consent_covers_only_the_request_it_was_given_for() {
     );
 
     assert_eq!(
-        scheduled_consent_in(&scope, &id, "request"),
+        scheduled_consent_in(&scope, &id, "request", None),
         ScheduledConsent::Unattended
     );
 }
@@ -1182,6 +1188,7 @@ fn consented_scheduled_post_queues_its_dispatch() {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
             consent: ScheduledConsent::Local,
+            occurrence: None,
         };
         let writers = chat_writers_of(&["device:desk"]);
         let device = PostingDevice::this_device("device:desk", &writers);
@@ -1206,6 +1213,7 @@ fn unattended_scheduled_post_leaves_assignment_queued() {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
             consent: ScheduledConsent::Unattended,
+            occurrence: None,
         };
         let writers = chat_writers_of(&["device:desk"]);
         let device = PostingDevice::this_device("device:desk", &writers);
@@ -1268,6 +1276,7 @@ fn recovery_after_a_stop_starts_accepted_unattended_work_and_leaves_the_rest_at_
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
             consent: ScheduledConsent::Unattended,
+            occurrence: None,
         };
         let writers = chat_writers_of(&["device:desk"]);
         let device = PostingDevice::this_device("device:desk", &writers);
@@ -1364,6 +1373,7 @@ fn unattended_work_keeps_the_execution_target_its_request_chose() {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
             consent: ScheduledConsent::Unattended,
+            occurrence: None,
         };
         let writers = chat_writers_of(&["device:desk"]);
         let device = PostingDevice::this_device("device:desk", &writers);
@@ -1408,6 +1418,7 @@ async fn post_unattended_work_on_second_folder(pool: &SqlitePool) -> ChatWorkAss
         scheduled_message_id: &scheduled_message_id,
         claim_token: "claim:a",
         consent: ScheduledConsent::Unattended,
+        occurrence: None,
     };
     let writers = chat_writers_of(&["device:desk"]);
     let device = PostingDevice::this_device("device:desk", &writers);
@@ -1521,6 +1532,7 @@ fn consented_scheduled_send_accepts_the_work_it_dispatches() {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
             consent: ScheduledConsent::Local,
+            occurrence: None,
         };
         let writers = chat_writers_of(&["device:desk"]);
         let device = PostingDevice::this_device("device:desk", &writers);
@@ -1551,6 +1563,7 @@ fn unattended_scheduled_send_accepts_nothing() {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
             consent: ScheduledConsent::Unattended,
+            occurrence: None,
         };
         let writers = chat_writers_of(&["device:desk"]);
         let device = PostingDevice::this_device("device:desk", &writers);
@@ -1628,6 +1641,7 @@ async fn send_scheduled_review_reply(
         scheduled_message_id,
         claim_token: "claim:a",
         consent,
+        occurrence: None,
     };
     let writers = chat_writers_of(&["device:desk"]);
     persist_post(
@@ -2004,7 +2018,7 @@ fn a_user_post_accepts_the_work_it_dispatches() {
     });
 }
 
-async fn seed_test_channel(pool: &SqlitePool, now: &UtcTimestamp) {
+pub(super) async fn seed_test_channel(pool: &SqlitePool, now: &UtcTimestamp) {
     sqlx::query(
         "INSERT INTO project_groups (id, name, order_key) VALUES ('group:test', 'Test', 'a1')",
     )

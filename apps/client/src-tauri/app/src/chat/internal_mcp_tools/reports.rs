@@ -102,7 +102,11 @@ pub(super) async fn report(
     Ok(json!({ "status": "posted", "kind": kind.as_str() }))
 }
 
-fn host_call<'a>(context: &'a HostToolContext<'_>, client_request_id: &'a str) -> HostCall<'a> {
+/// The host call of this run for the request `client_request_id`.
+pub(super) fn host_call<'a>(
+    context: &'a HostToolContext<'_>,
+    client_request_id: &'a str,
+) -> HostCall<'a> {
     HostCall {
         run_id: context.scope.run_id.as_str(),
         assignment_id: context.scope.assignment_id.as_str(),
@@ -154,7 +158,8 @@ fn parse_choices(arguments: &Map<String, Value>) -> ChatResult<Vec<String>> {
     Ok(choices)
 }
 
-fn client_request_id(arguments: &Map<String, Value>) -> ChatResult<&str> {
+/// The bounded, non-blank client request id that keeps a call idempotent.
+pub(super) fn client_request_id(arguments: &Map<String, Value>) -> ChatResult<&str> {
     let client_request_id = required_string(
         arguments,
         "clientRequestId",

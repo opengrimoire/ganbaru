@@ -588,26 +588,27 @@ pub(super) enum ScheduledPostTarget {
     ChannelCopy,
 }
 
-/// Returns the derived ids of a scheduled send's message or channel copy.
+/// Returns the derived ids of a scheduled send's message or channel copy. A repeating message
+/// passes the key of the occurrence it posts, so each occurrence names its own rows; a one-time
+/// message passes `None`.
 pub(super) fn scheduled_post_ids(
     scheduled_message_id: &str,
     target: ScheduledPostTarget,
+    occurrence_key: Option<&str>,
 ) -> ChatResult<ScheduledPostIds> {
     let role = match target {
         ScheduledPostTarget::Message => "scheduled",
         ScheduledPostTarget::ChannelCopy => "scheduled-channel-copy",
     };
+    let parts: &[&str] = match occurrence_key {
+        Some(occurrence_key) => &[role, scheduled_message_id, occurrence_key],
+        None => &[role, scheduled_message_id],
+    };
     Ok(ScheduledPostIds {
-        item_id: ChatConversationItemId::new(derived_id(
-            "conversation-item",
-            &[role, scheduled_message_id],
-        )?)
-        .map_err(identifier_error)?,
-        revision_id: ChatMessageRevisionId::new(derived_id(
-            "message-revision",
-            &[role, scheduled_message_id],
-        )?)
-        .map_err(identifier_error)?,
+        item_id: ChatConversationItemId::new(derived_id("conversation-item", parts)?)
+            .map_err(identifier_error)?,
+        revision_id: ChatMessageRevisionId::new(derived_id("message-revision", parts)?)
+            .map_err(identifier_error)?,
     })
 }
 

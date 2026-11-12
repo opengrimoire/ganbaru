@@ -751,6 +751,16 @@ table 390 chat_scheduled_messages replicated key id rule any redirects
   group 2 register failed_at:optional_timestamp last_error:optional_text(..=4000)
   group 3 max updated_at:timestamp
   unique client_command_id binary
+table 401 chat_scheduled_message_recurrences replicated key id rule any
+  derived key exists 5 inputs scheduled_message_id prefix scheduled-recurrence
+  group 0 immutable scheduled_message_id:row_key->390:cascade
+  group 1 register created_at:timestamp
+  group 2 register rule_kind:text(..=32) interval_minutes:optional_integer(60..=43200) local_minute:optional_integer(0..=1439) weekdays_mask:optional_integer(1..=127) time_zone:trimmed_text(1..=255) quiet_policy:text(..=32)
+  group 3 register next_occurrence_at:timestamp fired_count:integer(0..=9223372036854775807)
+  group 4 max updated_at:timestamp
+  group 5 register
+  check rule_kind,interval_minutes within 2
+  check rule_kind,local_minute,weekdays_mask within 2
 table 395 chat_work_assignments replicated key id rule any
   group 0 immutable reply_thread_id:row_key->370:cascade teammate_id:row_key->353:cascade triggering_message_item_id:row_key->372:cascade executing_device_id:optional_text(..=160) created_at:timestamp override_model_selection_schema_version:optional_integer(1..=9223372036854775807) override_model_selection_data:optional_text(..=16384)
   group 1 register previous_assignment_id:optional_row_key->395:set_null

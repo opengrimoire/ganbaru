@@ -24,6 +24,7 @@
 
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
 use ganbaru_sync_contracts::builtin_profiles::{BUILTIN_ACCESS_PROFILES, builtin_profile_key};
+use ganbaru_sync_contracts::chat_recurrence;
 use ganbaru_sync_contracts::{Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
 use ganbaru_working_folders::UtcTimestamp;
 
@@ -37,13 +38,13 @@ use crate::manifest::vault::chat::{
     CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE, FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE,
     INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE, MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE,
     PARTICIPANTS_TABLE, PATH_TARGETS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE,
-    PROFILES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
-    SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
-    TEAMMATES_TABLE, assignment_group, channel_group, channel_membership_group, conversation_group,
-    folder_grant_group, input_group, item_group, membership_group, message_group,
-    participant_group, policy_revision_group, profile_group, profile_revision_group,
-    read_cursor_group, reply_thread_group, scheduled_group, semantic_update_group, teammate_group,
-    timeline_group,
+    PROFILES_TABLE, RECURRENCES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE,
+    REVISIONS_TABLE, SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE,
+    SEMANTIC_UPDATES_TABLE, TEAMMATES_TABLE, assignment_group, channel_group,
+    channel_membership_group, conversation_group, folder_grant_group, input_group, item_group,
+    membership_group, message_group, participant_group, policy_revision_group, profile_group,
+    profile_revision_group, read_cursor_group, recurrence_group, reply_thread_group,
+    scheduled_group, semantic_update_group, teammate_group, timeline_group,
 };
 
 /// Characters of a display name after trimming.
@@ -1015,6 +1016,85 @@ fn validate_scheduled(group: GroupId, fields: &[Field]) -> Result<(), AdapterErr
     }
 }
 
+/// A recurrence rule: an interval rule names only its interval, and a fixed-time rule only its
+/// local minute and a non-empty weekday mask, each within the shared bounds. The zone is checked
+/// for length only: whether it resolves depends on the device's zone database, so only the
+/// executing device decides that, at dispatch.
+fn recurrence_rule(
+    kind: &Field,
+    interval: &Field,
+    local_minute: &Field,
+    weekdays: &Field,
+    time_zone: &Field,
+    quiet_policy: &Field,
+) -> Result<(), AdapterError> {
+    one_of(kind, &chat_recurrence::RULE_KINDS, "chat recurrence kind")?;
+    let set = |field: &Field| !matches!(field, Field::Null);
+    let interval_rule = text(kind)? == chat_recurrence::INTERVAL_RULE;
+    if set(interval) != interval_rule
+        || set(local_minute) == interval_rule
+        || set(weekdays) == interval_rule
+    {
+        return Err(AdapterError("chat recurrence shape"));
+    }
+    let within = |field: &Field, min: i64, max: i64| match field {
+        Field::Null => Ok(()),
+        field if (min..=max).contains(&integer(field)?) => Ok(()),
+        _ => Err(AdapterError("chat recurrence bound")),
+    };
+    within(
+        interval,
+        i64::from(chat_recurrence::MIN_INTERVAL_MINUTES),
+        i64::from(chat_recurrence::MAX_INTERVAL_MINUTES),
+    )?;
+    within(
+        local_minute,
+        0,
+        i64::from(chat_recurrence::LAST_LOCAL_MINUTE),
+    )?;
+    within(weekdays, 1, i64::from(chat_recurrence::ALL_WEEKDAYS_MASK))?;
+    trimmed(
+        time_zone,
+        chat_recurrence::MAX_TIME_ZONE_CHARS,
+        "chat recurrence time zone",
+    )?;
+    one_of(
+        quiet_policy,
+        &chat_recurrence::QUIET_POLICIES,
+        "chat recurrence quiet policy",
+    )
+}
+
+fn validate_recurrence(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (recurrence_group::IDENTITY, [_]) | (recurrence_group::EXISTS, []) => Ok(()),
+        (recurrence_group::CREATED | recurrence_group::UPDATED, [at]) => timestamp(at),
+        (
+            recurrence_group::RULE,
+            [
+                kind,
+                interval,
+                local_minute,
+                weekdays,
+                time_zone,
+                quiet_policy,
+            ],
+        ) => recurrence_rule(
+            kind,
+            interval,
+            local_minute,
+            weekdays,
+            time_zone,
+            quiet_policy,
+        ),
+        (recurrence_group::PROGRESS, [next_at, fired]) => {
+            timestamp(next_at)?;
+            at_least(fired, 0, "chat recurrence fired count").map(|_| ())
+        }
+        _ => Err(AdapterError("chat scheduled recurrence value")),
+    }
+}
+
 /// The mention references of a scheduled message: well-formed spans, distinct per message, each
 /// naming exactly the target its kind needs.
 fn scheduled_references(bytes: &[u8]) -> Result<(), AdapterError> {
@@ -1579,6 +1659,8 @@ impl DomainAdapter for ChatAdapter {
             validate_read_cursor(group, fields)
         } else if table == SCHEDULED_TABLE {
             validate_scheduled(group, fields)
+        } else if table == RECURRENCES_TABLE {
+            validate_recurrence(group, fields)
         } else if table == ASSIGNMENTS_TABLE {
             validate_assignment(group, fields)
         } else if table == INPUTS_TABLE {
@@ -2457,6 +2539,76 @@ mod tests {
                 )
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn chat_recurrence_rules_set_exactly_the_fields_their_kind_needs() {
+        let adapter = ChatAdapter;
+        let rule =
+            |fields| adapter.validate(RECURRENCES_TABLE, recurrence_group::RULE, &value(fields));
+        let interval = |minutes: i64| {
+            vec![
+                t("interval"),
+                Field::Integer(minutes),
+                Field::Null,
+                Field::Null,
+                t("America/Mexico_City"),
+                t("defer"),
+            ]
+        };
+        let fixed = |minute: i64, mask: i64, zone: &str, policy: &str| {
+            vec![
+                t("fixed_time"),
+                Field::Null,
+                Field::Integer(minute),
+                Field::Integer(mask),
+                t(zone),
+                t(policy),
+            ]
+        };
+
+        assert!(rule(interval(60)).is_ok());
+        assert!(rule(interval(43_200)).is_ok());
+        assert!(
+            rule(interval(59)).is_err(),
+            "intervals are at least an hour"
+        );
+        assert!(
+            rule(interval(43_201)).is_err(),
+            "intervals are at most 30 days"
+        );
+        assert!(rule(fixed(0, 1, "Europe/Madrid", "ignore")).is_ok());
+        assert!(rule(fixed(1439, 127, "Europe/Madrid", "defer")).is_ok());
+        assert!(rule(fixed(1440, 127, "Europe/Madrid", "defer")).is_err());
+        assert!(
+            rule(fixed(540, 0, "Europe/Madrid", "defer")).is_err(),
+            "no weekday"
+        );
+        assert!(rule(fixed(540, 128, "Europe/Madrid", "defer")).is_err());
+        assert!(rule(fixed(540, 127, "  ", "defer")).is_err(), "blank zone");
+        assert!(rule(fixed(540, 127, &"z".repeat(256), "defer")).is_err());
+        assert!(rule(fixed(540, 127, "Europe/Madrid", "skip")).is_err());
+
+        let mut mixed = interval(60);
+        mixed[2] = Field::Integer(540);
+        assert!(rule(mixed).is_err(), "an interval rule sets no local time");
+        let mut mixed = fixed(540, 127, "Europe/Madrid", "defer");
+        mixed[1] = Field::Integer(60);
+        assert!(rule(mixed).is_err(), "a fixed time rule sets no interval");
+        let mut unknown = interval(60);
+        unknown[0] = t("cron");
+        assert!(rule(unknown).is_err());
+
+        let progress = |fields| {
+            adapter.validate(
+                RECURRENCES_TABLE,
+                recurrence_group::PROGRESS,
+                &value(fields),
+            )
+        };
+        assert!(progress(vec![t(AT), Field::Integer(0)]).is_ok());
+        assert!(progress(vec![t(AT), Field::Integer(-1)]).is_err());
+        assert!(progress(vec![t("tomorrow"), Field::Integer(3)]).is_err());
     }
 
     #[test]

@@ -8,6 +8,7 @@ export * from "./organizational";
 export * from "./provider";
 export * from "./workspace";
 export * from "./workspace-tools";
+export * from "./scheduling";
 export * from "./settings";
 export * from "./reads";
 export * from "./readers";

@@ -554,13 +554,13 @@ fn question_markdown(question: &str, choices: &[String]) -> String {
 }
 
 /// The item and revision ids of a host update, derived from the call.
-struct HostUpdateIds {
-    item_id: String,
-    revision_id: String,
+pub(super) struct HostUpdateIds {
+    pub(super) item_id: String,
+    pub(super) revision_id: String,
 }
 
 impl HostUpdateIds {
-    fn derive(part: &str, call: HostCall<'_>) -> ChatResult<Self> {
+    pub(super) fn derive(part: &str, call: HostCall<'_>) -> ChatResult<Self> {
         let parts = [part, call.run_id, call.client_request_id];
         Ok(Self {
             item_id: derived_id("conversation-item", &parts)?,
@@ -571,7 +571,7 @@ impl HostUpdateIds {
 
 /// The outcome of a call whose update `item_id` exists: a replay when its kind and payload
 /// match, else a conflict. `None` when no such update exists.
-async fn replayed(
+pub(super) async fn replayed(
     connection: &mut SqliteConnection,
     item_id: &str,
     update_kind: &str,
@@ -643,14 +643,14 @@ async fn stored_update(
 }
 
 /// The reply thread and teammate of a call's run.
-struct ActiveTarget {
-    reply_thread_id: String,
-    teammate_id: String,
+pub(super) struct ActiveTarget {
+    pub(super) reply_thread_id: String,
+    pub(super) teammate_id: String,
 }
 
 /// Reads the reply thread and teammate of `call` when its run belongs to its assignment and has
 /// not ended, and the assignment is in one of `assignment_states`.
-async fn read_active_target(
+pub(super) async fn read_active_target(
     connection: &mut SqliteConnection,
     call: HostCall<'_>,
     assignment_states: &[&str],
@@ -830,4 +830,4 @@ fn serialization_error() -> ChatError {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

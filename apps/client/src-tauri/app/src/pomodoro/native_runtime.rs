@@ -509,6 +509,53 @@ pub(crate) async fn focus_snapshot(
         .map(|reply| reply.projection)
 }
 
+/// A Focus phase in progress on this device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FocusPhaseActivity {
+    /// Unix milliseconds the phase ends while its timer runs, or `None` while it is paused,
+    /// suspended, or waiting for the person to return.
+    pub(crate) deadline_ms: Option<i64>,
+}
+
+/// The Focus phase in progress in `snapshot`, if any. Breaks, a stopped or expired run, and an
+/// idle failure are not a Focus phase in progress.
+pub(crate) fn focus_phase_activity_of(
+    snapshot: Option<&FocusExecutionSnapshot>,
+) -> Option<FocusPhaseActivity> {
+    let snapshot = snapshot?;
+    if snapshot.segment.as_ref()?.phase != FocusPhase::Focus {
+        return None;
+    }
+    match snapshot.mode {
+        FocusMode::Running => Some(FocusPhaseActivity {
+            deadline_ms: snapshot.phase_deadline_ms,
+        }),
+        FocusMode::ManualPause
+        | FocusMode::IdlePause
+        | FocusMode::Suspended
+        | FocusMode::ReturnWait => Some(FocusPhaseActivity { deadline_ms: None }),
+        FocusMode::Stopped | FocusMode::IdleFailed | FocusMode::Expired => None,
+    }
+}
+
+/// The Focus phase in progress on this device, read from the native Focus owner. A device whose
+/// Focus owner is not running, as before a vault opens, has none.
+pub(crate) async fn focus_phase_activity<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<FocusPhaseActivity> {
+    app.try_state::<FocusRuntimeState>()?;
+    match request(app, Request::Snapshot).await {
+        Ok(reply) => focus_phase_activity_of(reply.projection.snapshot.as_ref()),
+        Err(error) => {
+            eprintln!(
+                "Focus state is unavailable for quiet periods: {}",
+                error.message
+            );
+            None
+        }
+    }
+}
+
 /// The native overlay and its main-window fallback can report a painted warning.
 #[cfg(desktop)]
 #[tauri::command]

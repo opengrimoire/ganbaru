@@ -78,6 +78,8 @@ use reads::{
     read_teammate,
 };
 #[cfg(desktop)]
+pub(crate) use scheduling::validate_proposed_schedule;
+#[cfg(desktop)]
 use teammate_lifecycle::set_teammate_archived;
 #[cfg(desktop)]
 use workflow::insert_policy_revision;
@@ -317,6 +319,37 @@ pub(super) struct ScheduledSend<'a> {
     pub(super) claim_token: &'a str,
     /// Consent behind this send, which decides whether its work starts by itself.
     pub(super) consent: ScheduledConsent,
+    /// Occurrence a repeating message posts, or `None` for a one-time message.
+    pub(super) occurrence: Option<ScheduledOccurrence<'a>>,
+}
+
+/// The occurrence of a repeating scheduled message a send posts. The post advances the series
+/// instead of deleting the message.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ScheduledOccurrence<'a> {
+    /// Occurrence key that the post ids and the command receipt derive from.
+    pub(super) key: &'a str,
+    /// Due time of the occurrence as stored when the send claimed it; the series advances only
+    /// while it still names this occurrence.
+    pub(super) due_at: &'a str,
+    /// Due time of the occurrence after it.
+    pub(super) next_at: &'a str,
+}
+
+impl ScheduledSend<'_> {
+    /// Command id the post of this send records its receipt under: the stored request's id for
+    /// a one-time message, and one derived from it and the occurrence for a repeating message,
+    /// so each occurrence posts once.
+    fn receipt_command_id(&self, request: &PostChatMessageCommand) -> ChatResult<ChatCommandId> {
+        match self.occurrence {
+            None => Ok(request.client_command_id.clone()),
+            Some(occurrence) => ChatCommandId::new(ganbaru_chat::ids::derived_id(
+                ganbaru_chat::ids::SCHEDULED_OCCURRENCE_COMMAND_ID_PREFIX,
+                &[request.client_command_id.as_str(), occurrence.key],
+            )?)
+            .map_err(identifier_error),
+        }
+    }
 }
 
 /// Ready-for-review work a post asks changes on. The post checks it in its own transaction and
@@ -499,8 +532,9 @@ async fn persist_post(
 }
 
 /// Writes the post of `request` from `device` in one transaction. A scheduled send posts under
-/// ids derived from the scheduled message, copies its stored attachment values, and deletes the
-/// scheduled message in the same transaction, so it posts once even when the device stops
+/// ids derived from the scheduled message and its occurrence, copies its stored attachment
+/// values, and in the same transaction deletes a one-time scheduled message or advances a
+/// repeating one past the occurrence, so each occurrence posts once even when the device stops
 /// between steps. An unattended send still posts, but queues no dispatch for the work it creates
 /// and leaves existing work as it is. With `review`, the same transaction refuses the post
 /// unless that work is still the latest of the reply thread, ready for review, and at the
@@ -520,14 +554,35 @@ async fn persist_post_with(
         }) => device.unattended(),
         _ => device,
     };
-    if let Some(result) = read_post_receipt(pool, &request.client_command_id).await? {
-        if let Some(scheduled) = scheduled {
-            sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)
-                .bind(scheduled.scheduled_message_id.as_str())
-                .bind(scheduled.claim_token)
-                .execute(pool)
-                .await
-                .map_err(persistence_error)?;
+    let receipt_command_id = match scheduled {
+        Some(scheduled) => scheduled.receipt_command_id(request)?,
+        None => request.client_command_id.clone(),
+    };
+    if let Some(result) = read_post_receipt(pool, &receipt_command_id).await? {
+        match scheduled {
+            Some(ScheduledSend {
+                occurrence: Some(occurrence),
+                scheduled_message_id,
+                claim_token,
+                ..
+            }) => {
+                scheduling::finish_posted_occurrence(
+                    pool,
+                    scheduled_message_id,
+                    claim_token,
+                    occurrence,
+                )
+                .await?;
+            }
+            Some(scheduled) => {
+                sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)
+                    .bind(scheduled.scheduled_message_id.as_str())
+                    .bind(scheduled.claim_token)
+                    .execute(pool)
+                    .await
+                    .map_err(persistence_error)?;
+            }
+            None => {}
         }
         return Ok(PersistedPost {
             item_id: result.message.item_id.clone(),
@@ -572,6 +627,7 @@ async fn persist_post_with(
             let ids = scheduled_post_ids(
                 scheduled.scheduled_message_id.as_str(),
                 ScheduledPostTarget::Message,
+                scheduled.occurrence.map(|occurrence| occurrence.key),
             )?;
             (ids.item_id, ids.revision_id)
         }
@@ -603,7 +659,7 @@ async fn persist_post_with(
             (client_command_id, command_kind, state, created_at, updated_at)
          VALUES (?, 'post_message', 'accepted', ?, ?)",
     )
-    .bind(request.client_command_id.as_str())
+    .bind(receipt_command_id.as_str())
     .bind(now.as_str())
     .bind(now.as_str())
     .execute(&mut *transaction)
@@ -725,6 +781,7 @@ async fn persist_post_with(
                         scheduled_post_ids(
                             scheduled.scheduled_message_id.as_str(),
                             ScheduledPostTarget::ChannelCopy,
+                            scheduled.occurrence.map(|occurrence| occurrence.key),
                         )
                     })
                     .transpose()?,
@@ -738,13 +795,29 @@ async fn persist_post_with(
         .await?;
     }
     if let Some(scheduled) = scheduled {
-        let deleted = sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)
-            .bind(scheduled.scheduled_message_id.as_str())
-            .bind(scheduled.claim_token)
-            .execute(&mut *transaction)
-            .await
-            .map_err(persistence_error)?;
-        if deleted.rows_affected() != 1 {
+        let finished = match scheduled.occurrence {
+            Some(occurrence) => {
+                scheduling::advance_claimed_series(
+                    &mut transaction,
+                    scheduled.scheduled_message_id,
+                    scheduled.claim_token,
+                    occurrence,
+                    &now,
+                )
+                .await?
+            }
+            None => {
+                sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)
+                    .bind(scheduled.scheduled_message_id.as_str())
+                    .bind(scheduled.claim_token)
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(persistence_error)?
+                    .rows_affected()
+                    == 1
+            }
+        };
+        if !finished {
             return Err(ChatError::new(
                 ChatErrorCode::Conflict,
                 "The scheduled message changed before it was sent",
@@ -766,7 +839,7 @@ async fn persist_post_with(
     )
     .bind(serde_json::to_string(&receipt_locator).map_err(serialization_error)?)
     .bind(now.as_str())
-    .bind(request.client_command_id.as_str())
+    .bind(receipt_command_id.as_str())
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
@@ -796,7 +869,7 @@ async fn persist_post_with(
     )
     .bind(serialized)
     .bind(now_timestamp()?.as_str())
-    .bind(request.client_command_id.as_str())
+    .bind(receipt_command_id.as_str())
     .execute(pool)
     .await
     .map_err(persistence_error)?;
@@ -814,6 +887,35 @@ pub async fn chat_schedule_message(
     request: ScheduleChatMessageCommand,
 ) -> ChatResult<ChatScheduledMessageRead> {
     scheduling::schedule_message(app, db_url, request).await
+}
+
+/// Schedules the message a person confirmed from a teammate's schedule proposal.
+#[tauri::command]
+pub async fn chat_confirm_schedule_proposal(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: ConfirmScheduleProposalCommand,
+) -> ChatResult<ChatScheduledMessageRead> {
+    scheduling::confirm_schedule_proposal(app, db_url, request).await
+}
+
+/// Hides a teammate's schedule proposal on this device. The dismissal never syncs.
+#[tauri::command]
+pub fn chat_dismiss_schedule_proposal(
+    app: tauri::AppHandle,
+    proposal_item_id: ChatConversationItemId,
+) -> ChatResult<()> {
+    scheduling::dismiss_schedule_proposal(&app, &proposal_item_id)
+}
+
+/// Reads whether each schedule proposal is pending, confirmed, or dismissed on this device.
+#[tauri::command]
+pub async fn chat_read_schedule_proposal_states(
+    app: tauri::AppHandle,
+    db_url: String,
+    proposal_item_ids: Vec<ChatConversationItemId>,
+) -> ChatResult<Vec<ChatScheduleProposalStateRead>> {
+    scheduling::read_schedule_proposal_states(app, db_url, proposal_item_ids).await
 }
 
 #[tauri::command]

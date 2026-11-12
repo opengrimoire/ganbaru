@@ -2,6 +2,7 @@
 
 use super::internal_mcp::{InternalMcpRunScope, generate_opaque_handle};
 use ganbaru_chat::coordination::reports::HostReportRefusal;
+use ganbaru_chat::coordination::schedule_proposals::ScheduleProposalRefusal;
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatFolderCapability, ChatResult};
 use rmcp::model::{Tool, ToolAnnotations};
 use serde_json::{Map, Value, json};
@@ -17,6 +18,7 @@ pub(super) mod delegation;
 mod pointers;
 mod registry;
 mod reports;
+mod schedule;
 mod secrets;
 mod workspace;
 
@@ -229,6 +231,12 @@ fn definition(tool: HostTool) -> Option<Tool> {
             secrets::status_properties(),
             false,
         ),
+        HostTool::ProposeSchedule => mutating_tool(
+            name,
+            "Propose a message to send in this reply thread later, once or on a repeat rule; nothing is scheduled until the person confirms it",
+            schedule::properties(),
+            false,
+        ),
     };
     Some(definition)
 }
@@ -348,6 +356,12 @@ fn typed_refusal(tool: Option<HostTool>, error: &ChatError) -> Option<(&'static 
             .map(|refusal| (refusal.code(), refusal.into_error())),
         HostTool::RequestSecret => secrets::SecretToolRefusal::from_error(error)
             .map(|refusal| (refusal.code(), refusal.into_error())),
+        HostTool::ProposeSchedule => ScheduleProposalRefusal::from_error(error)
+            .map(|refusal| (refusal.code(), refusal.into_error()))
+            .or_else(|| {
+                HostReportRefusal::from_error(error)
+                    .map(|refusal| (refusal.code(), refusal.into_error()))
+            }),
         _ => None,
     }
 }
@@ -394,6 +408,7 @@ async fn dispatch(
         HostTool::ReadReplyPointer => pointers::read_reply_pointer(context, arguments).await,
         HostTool::RequestSecret => secrets::request_secret(context, arguments).await,
         HostTool::SecretStatus => secrets::secret_status(context, arguments).await,
+        HostTool::ProposeSchedule => schedule::propose(context, arguments).await,
     }
 }
 
@@ -503,7 +518,12 @@ fn configured_tool(
     let properties = properties.as_object().cloned().unwrap_or_default();
     let required = properties
         .keys()
-        .filter(|key| !matches!(key.as_str(), "cursor" | "limit" | "folders" | "choices"))
+        .filter(|key| {
+            !matches!(
+                key.as_str(),
+                "cursor" | "limit" | "folders" | "choices" | "recurrence"
+            )
+        })
         .cloned()
         .map(Value::String)
         .collect::<Vec<_>>();
@@ -785,6 +805,7 @@ mod tests {
                         | HostToolClass::Ask
                         | HostToolClass::Report
                         | HostToolClass::Secret
+                        | HostToolClass::Schedule
                 )
             })
         }));
@@ -792,10 +813,11 @@ mod tests {
         assert!(listed.contains(&"chat_report".to_owned()));
         assert!(listed.contains(&"chat_request_secret".to_owned()));
         assert!(listed.contains(&"chat_secret_status".to_owned()));
+        assert!(listed.contains(&"chat_propose_schedule".to_owned()));
     }
 
     #[test]
-    fn ask_and_report_require_all_but_the_choices() {
+    fn host_tools_require_all_but_their_optional_inputs() {
         let required = |tool: HostTool| -> Vec<String> {
             let definition = definition(tool).expect("implemented");
             let mut names: Vec<String> = definition.input_schema["required"]
@@ -811,6 +833,10 @@ mod tests {
         assert_eq!(
             required(HostTool::Report),
             ["body", "clientRequestId", "kind"]
+        );
+        assert_eq!(
+            required(HostTool::ProposeSchedule),
+            ["clientRequestId", "firstAt", "message", "reason"]
         );
     }
 
@@ -833,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn only_offered_read_ask_and_report_tools_are_pre_approved() {
+    fn only_offered_read_ask_report_and_schedule_tools_are_pre_approved() {
         let names = pre_approved_tool_names("ganbaru-chat");
         let expected: Vec<String> = HostTool::ALL
             .into_iter()
@@ -841,13 +867,17 @@ mod tests {
             .filter(|tool| {
                 matches!(
                     tool.class(),
-                    HostToolClass::Read | HostToolClass::Ask | HostToolClass::Report
+                    HostToolClass::Read
+                        | HostToolClass::Ask
+                        | HostToolClass::Report
+                        | HostToolClass::Schedule
                 )
             })
             .map(|tool| format!("mcp__ganbaru-chat__{}", tool.name()))
             .collect();
         assert_eq!(names, expected);
         assert!(names.contains(&"mcp__ganbaru-chat__chat_read_workspace_file".to_string()));
+        assert!(names.contains(&"mcp__ganbaru-chat__chat_propose_schedule".to_string()));
         for tool in HostTool::ALL {
             let listed = names.contains(&format!("mcp__ganbaru-chat__{}", tool.name()));
             if listed {
@@ -858,7 +888,10 @@ mod tests {
             }
             if !matches!(
                 tool.class(),
-                HostToolClass::Read | HostToolClass::Ask | HostToolClass::Report
+                HostToolClass::Read
+                    | HostToolClass::Ask
+                    | HostToolClass::Report
+                    | HostToolClass::Schedule
             ) {
                 assert!(!listed, "{tool:?} keeps its provider approval");
             }
@@ -977,6 +1010,30 @@ mod tests {
         )
         .await
         .unwrap();
+        // A third proposal in one revision is refused by the schedule class limit.
+        for _ in 0..HostToolClass::Schedule.call_limit() {
+            reserve_audit(
+                &pool,
+                &scope,
+                "chat_propose_schedule",
+                HostToolClass::Schedule,
+                &hash,
+                1,
+            )
+            .await
+            .unwrap();
+        }
+        let refused = reserve_audit(
+            &pool,
+            &scope,
+            "chat_propose_schedule",
+            HostToolClass::Schedule,
+            &hash,
+            1,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.message, GENERIC_DENIAL);
         let counted: Vec<(String, i64)> = sqlx::query_as(
             "SELECT tool_class, count(*) FROM chat_host_tool_invocations
              GROUP BY tool_class ORDER BY tool_class",
@@ -993,6 +1050,10 @@ mod tests {
                 ),
                 ("read".to_string(), i64::from(read_limit)),
                 ("report".to_string(), 1),
+                (
+                    "schedule".to_string(),
+                    i64::from(HostToolClass::Schedule.call_limit())
+                ),
             ]
         );
     }

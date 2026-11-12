@@ -15,7 +15,8 @@ Chat is Ganbaru's project communication and coding-work surface. It combines dur
 | AI agents with per-channel access profiles, folder grants, and frozen context packages | Implemented |
 | Private scratch execution with explicit promotion and cleanup | Implemented |
 | Structured delegation | Implemented |
-| Budgets, quiet periods, and task-linked assignments | Planned |
+| Repeating schedules and quiet periods | Implemented |
+| Budgets and task-linked assignments | Planned |
 | Direct messages and task discussions | Planned; the schema reserves these conversation kinds |
 | Human members, invitations, and encrypted sync | Planned; the experience is designed in [Contacts and invitations](../collaboration/README.md) |
 

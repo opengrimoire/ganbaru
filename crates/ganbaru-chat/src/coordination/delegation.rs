@@ -216,6 +216,40 @@ pub async fn cancel_delegated_descendants(
     assignment_id: &str,
     now: &str,
 ) -> ChatResult<Vec<String>> {
+    cancel_open_descendants(connection, assignment_id, PARENT_CANCELLED_REASON, now).await
+}
+
+/// Cancels the open work delegated from `assignment_id`, down to the delegation depth limit,
+/// after the assignment lost the authority it delegated, and returns the cancelled ids.
+///
+/// It settles descendants as [`cancel_delegated_descendants`] does, with
+/// [`PARENT_AUTHORITY_REVOKED_REASON`](super::revocation::PARENT_AUTHORITY_REVOKED_REASON).
+/// Authorizations replicate nowhere, so this replicated state is what stops a descendant that
+/// executes on another device. It writes replicated rows, so it runs outside a sync apply.
+///
+/// # Errors
+///
+/// Returns a persistence error when a read or write fails.
+pub async fn cancel_descendants_of_revoked_parent(
+    connection: &mut SqliteConnection,
+    assignment_id: &str,
+    now: &str,
+) -> ChatResult<Vec<String>> {
+    cancel_open_descendants(
+        connection,
+        assignment_id,
+        super::revocation::PARENT_AUTHORITY_REVOKED_REASON,
+        now,
+    )
+    .await
+}
+
+async fn cancel_open_descendants(
+    connection: &mut SqliteConnection,
+    assignment_id: &str,
+    reason: &str,
+    now: &str,
+) -> ChatResult<Vec<String>> {
     let open: Vec<String> = sqlx::query_scalar(
         "WITH RECURSIVE descendants(id, depth) AS (
            SELECT id, 1 FROM chat_work_assignments WHERE parent_assignment_id = ?1
@@ -242,7 +276,7 @@ pub async fn cancel_delegated_descendants(
                  revision = revision + 1, updated_at = ?
              WHERE id = ? AND state NOT IN ('completed', 'ready_for_review', 'failed', 'cancelled')",
         )
-        .bind(PARENT_CANCELLED_REASON)
+        .bind(reason)
         .bind(now)
         .bind(now)
         .bind(descendant_id)

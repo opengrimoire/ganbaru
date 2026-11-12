@@ -623,6 +623,160 @@ async fn revocation_of_the_parent_run_cascades_to_its_child_and_grandchild() {
     }
 }
 
+/// The decision of the latest authorization of `assignment` and whether an open revocation job
+/// covers it.
+async fn child_authorization(
+    pool: &SqlitePool,
+    assignment: &ChatWorkAssignmentId,
+) -> (String, bool) {
+    sqlx::query_as(
+        "SELECT authorization.decision_state, EXISTS(
+           SELECT 1 FROM chat_access_revocation_jobs job
+           WHERE job.authorization_revision_id = authorization.id AND job.state = 'queued'
+         )
+         FROM chat_assignment_authorization_revisions authorization
+         WHERE authorization.assignment_id = ?
+         ORDER BY authorization.revision DESC LIMIT 1",
+    )
+    .bind(assignment.as_str())
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Copies the state of `assignment` on `from` onto `to` as a sync apply writes it, and runs the
+/// apply hook on it.
+async fn apply_assignment_state(from: &SqlitePool, to: &SqlitePool, assignment: &str) {
+    let (state, reason, settled_at): (String, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT state, state_reason, settled_at FROM chat_work_assignments WHERE id = ?",
+    )
+    .bind(assignment)
+    .fetch_one(from)
+    .await
+    .unwrap();
+    let mut connection = to.acquire().await.unwrap();
+    sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE chat_work_assignments SET state = ?, state_reason = ?, settled_at = ?
+         WHERE id = ?",
+    )
+    .bind(&state)
+    .bind(&reason)
+    .bind(&settled_at)
+    .bind(assignment)
+    .execute(&mut *connection)
+    .await
+    .unwrap();
+    ganbaru_chat::sync_effects::after_materialize(
+        &mut connection,
+        ganbaru_chat::sync_effects::ASSIGNMENTS_TABLE,
+        &[assignment.to_owned()],
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+}
+
+/// The parent runs on one device and its child on another, which alone holds the child's
+/// authorization. Revoking the parent's authority on the parent's device cancels the child
+/// there, and applying that state on the child's device revokes the child's run, while applying
+/// only the parent's cancelled state would leave it authorized.
+#[tokio::test]
+async fn revocation_of_the_parent_cancels_a_child_running_on_another_device() {
+    let parent_device = pool_with_helper().await;
+    let child_device = pool_with_helper().await;
+    let mut children = Vec::new();
+    for pool in [&parent_device, &child_device] {
+        let created = delegate(
+            pool,
+            &Caller::root(),
+            HELPER,
+            &parent_folders(),
+            "request-1",
+        )
+        .await
+        .unwrap();
+        start_working(pool, &created.child.assignment_id).await;
+        children.push(created.child.assignment_id);
+    }
+    assert_eq!(
+        children[0], children[1],
+        "the child id derives from its request"
+    );
+    let child = &children[0];
+    // The parent's device holds no live authorization of the child, as when the child executes
+    // elsewhere, so its local revocation cascade has nothing to revoke.
+    sqlx::query(
+        "UPDATE chat_assignment_authorization_revisions
+         SET decision_state = 'revoked', reason = ?, revoked_at = ?
+         WHERE assignment_id = ?",
+    )
+    .bind(super::super::assignments::MOVED_EXECUTOR_REASON)
+    .bind(NOW)
+    .bind(child.as_str())
+    .execute(&parent_device)
+    .await
+    .unwrap();
+
+    let folder = ProjectWorkingFolderId::new("workspace-2").unwrap();
+    let reason = "The working folder was unbound";
+    assert!(
+        revoke_active_run_authorizations(
+            &parent_device,
+            ActiveRunSelector::WorkingFolder(&folder),
+            reason,
+        )
+        .await
+        .unwrap()
+    );
+    let job: String = sqlx::query_scalar(
+        "UPDATE chat_access_revocation_jobs SET state = 'claimed', claim_token = 'claim'
+         WHERE authorization_revision_id = 'authorization:working' RETURNING id",
+    )
+    .fetch_one(&parent_device)
+    .await
+    .unwrap();
+    crate::chat::revocation::persist_revocation_before_cleanup(
+        &parent_device,
+        &job,
+        "claim",
+        Some("authorization:working"),
+        reason,
+        &[],
+    )
+    .await
+    .unwrap();
+    let parent = ChatWorkAssignmentId::new(PARENT).unwrap();
+    assert_eq!(
+        assignment_state(&parent_device, &parent).await.0,
+        "cancelled"
+    );
+    assert_eq!(
+        assignment_state(&parent_device, child).await,
+        (
+            "cancelled".to_owned(),
+            PARENT_AUTHORITY_REVOKED_REASON.to_owned()
+        )
+    );
+
+    apply_assignment_state(&parent_device, &child_device, PARENT).await;
+    assert_eq!(
+        child_authorization(&child_device, child).await,
+        ("allowed".to_owned(), false)
+    );
+    apply_assignment_state(&parent_device, &child_device, child.as_str()).await;
+    assert_eq!(
+        child_authorization(&child_device, child).await,
+        ("revoked".to_owned(), true)
+    );
+}
+
 #[tokio::test]
 async fn delegation_bound_narrows_a_broader_frozen_child_at_claim() {
     let pool = pool_with_helper().await;

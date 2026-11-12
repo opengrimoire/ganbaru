@@ -66,7 +66,9 @@ use common::{
     validate_profile_text, validate_teammate_role,
 };
 #[cfg(desktop)]
-pub(crate) use delegation::{DelegatedFolder, DelegationRequest, delegate_assignment};
+pub(crate) use delegation::{
+    DelegatedFolder, DelegationRequest, delegate_assignment, is_lifecycle_revocation,
+};
 #[cfg(desktop)]
 use dispatch::{deliver_assignment_input, dispatch_assignment_job};
 pub(crate) use reads::read_memberships_for_conversation;

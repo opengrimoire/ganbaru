@@ -770,7 +770,7 @@ struct AncestorAuthorization {
 }
 
 /// Reasons that end a run's authorization without taking back the authority it delegated.
-fn is_lifecycle_revocation(reason: &str) -> bool {
+pub(crate) fn is_lifecycle_revocation(reason: &str) -> bool {
     reason == ganbaru_chat::sync_effects::ASSIGNMENT_SETTLED_REASON
         || reason == super::assignments::MOVED_EXECUTOR_REASON
 }

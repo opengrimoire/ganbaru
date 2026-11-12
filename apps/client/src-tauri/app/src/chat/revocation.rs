@@ -1,6 +1,7 @@
 //! Immediate runtime cleanup for durable organizational access revocations.
 
 use super::internal_mcp::{InternalMcpRunScope, generate_opaque_handle};
+use ganbaru_chat::coordination::revocation::PARENT_AUTHORITY_REVOKED_REASON;
 use ganbaru_chat::runtime::ChatRuntimeRegistry;
 use ganbaru_chat_contracts::models::{
     ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatProjectionKey,
@@ -20,7 +21,7 @@ const REVOCATION_RETRY_POLL: Duration = Duration::from_secs(5);
 const REVOCATION_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
-struct RevokedRun {
+pub(super) struct RevokedRun {
     thread_id: ChatThreadId,
     run_id: ChatAgentRunId,
     turn_id: ChatTurnId,
@@ -663,7 +664,11 @@ async fn read_revoked_runs(
         .collect()
 }
 
-async fn persist_revocation_before_cleanup(
+/// Settles the claimed job `job_id` before its runs are stopped: cancels the runs and the
+/// assignment its authorization granted, cancels the work delegated from that assignment unless
+/// the revocation is a lifecycle one, and interrupts the turns of `runs`. Returns the settled
+/// assignment.
+pub(super) async fn persist_revocation_before_cleanup(
     pool: &SqlitePool,
     job_id: &str,
     claim_token: &str,
@@ -730,6 +735,30 @@ async fn persist_revocation_before_cleanup(
         .await
         .map_err(persistence_error)?;
         if let Some(assignment_id) = &assignment_id {
+            // Descendants on other devices hold no authorization here, so their replicated
+            // state is what takes back the authority this revocation removed.
+            if !crate::chat::organization::is_lifecycle_revocation(reason) {
+                let cancelled =
+                    ganbaru_chat::coordination::delegation::cancel_descendants_of_revoked_parent(
+                        &mut transaction,
+                        assignment_id,
+                        &settled_at,
+                    )
+                    .await?;
+                for descendant_id in &cancelled {
+                    sqlx::query(
+                        "UPDATE chat_assignment_dispatch_jobs
+                         SET state = 'cancelled', last_error = ?, updated_at = ?
+                         WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
+                    )
+                    .bind(PARENT_AUTHORITY_REVOKED_REASON)
+                    .bind(&settled_at)
+                    .bind(descendant_id)
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(persistence_error)?;
+                }
+            }
             ganbaru_chat::coordination::delegation::post_delegation_outcome(
                 &mut transaction,
                 assignment_id,

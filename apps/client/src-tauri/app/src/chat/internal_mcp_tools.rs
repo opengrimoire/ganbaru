@@ -17,6 +17,7 @@ pub(super) mod delegation;
 mod pointers;
 mod registry;
 mod reports;
+mod secrets;
 mod workspace;
 
 use audit::{
@@ -216,9 +217,18 @@ fn definition(tool: HostTool) -> Option<Tool> {
             "Read the whole text of an earlier reply that a pointer record shortened",
             pointers::properties(),
         ),
-        HostTool::RequestSecret | HostTool::SecretStatus => {
-            return None;
-        }
+        HostTool::RequestSecret => mutating_tool(
+            name,
+            "Ask the person who assigned this work for a secret value; once provided it is in the private file at the returned path, so check that file before asking for the status",
+            secrets::request_properties(),
+            false,
+        ),
+        HostTool::SecretStatus => mutating_tool(
+            name,
+            "Check whether a secret request was provided, declined, or expired",
+            secrets::status_properties(),
+            false,
+        ),
     };
     Some(definition)
 }
@@ -228,6 +238,12 @@ pub(crate) async fn call(
     name: &str,
     arguments: &Map<String, Value>,
 ) -> ChatResult<Value> {
+    // A provided secret never reaches the audit hash, a replicated row, or a workspace file
+    // through a host tool; a teammate that must write one uses its own shell.
+    let redacted =
+        tauri::Manager::try_state::<crate::chat::secrets::ChatSecretRegistry>(context.app)
+            .and_then(|registry| registry.redact_arguments(context.thread_id, arguments));
+    let arguments = redacted.as_ref().unwrap_or(arguments);
     let request_hash = request_hash(name, arguments)?;
     let tool = HostTool::from_name(name);
     // An unknown name spends the read budget, so probing for tools is never free.
@@ -330,6 +346,8 @@ fn typed_refusal(tool: Option<HostTool>, error: &ChatError) -> Option<(&'static 
             .map(|refusal| (refusal.code(), refusal.into_error())),
         HostTool::Ask | HostTool::Report => HostReportRefusal::from_error(error)
             .map(|refusal| (refusal.code(), refusal.into_error())),
+        HostTool::RequestSecret => secrets::SecretToolRefusal::from_error(error)
+            .map(|refusal| (refusal.code(), refusal.into_error())),
         _ => None,
     }
 }
@@ -374,7 +392,8 @@ async fn dispatch(
         HostTool::Ask => reports::ask(context, arguments).await,
         HostTool::Report => reports::report(context, arguments).await,
         HostTool::ReadReplyPointer => pointers::read_reply_pointer(context, arguments).await,
-        HostTool::RequestSecret | HostTool::SecretStatus => Err(generic_denial_error()),
+        HostTool::RequestSecret => secrets::request_secret(context, arguments).await,
+        HostTool::SecretStatus => secrets::secret_status(context, arguments).await,
     }
 }
 
@@ -765,11 +784,14 @@ mod tests {
                         | HostToolClass::Delegate
                         | HostToolClass::Ask
                         | HostToolClass::Report
+                        | HostToolClass::Secret
                 )
             })
         }));
         assert!(listed.contains(&"chat_ask".to_owned()));
         assert!(listed.contains(&"chat_report".to_owned()));
+        assert!(listed.contains(&"chat_request_secret".to_owned()));
+        assert!(listed.contains(&"chat_secret_status".to_owned()));
     }
 
     #[test]
@@ -844,7 +866,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_unimplemented_and_unoffered_tools_are_denied_like_a_stale_scope() {
+    async fn unknown_and_unoffered_tools_are_denied_like_a_stale_scope() {
         let pool = pool_with_folder_runs().await;
         let thread_id = ChatThreadId::new("thread-1").unwrap();
         let reading = working_scope(ChatFolderCapability::Read);
@@ -861,8 +883,8 @@ mod tests {
         );
         for tool in [
             None,
-            Some(HostTool::RequestSecret),
             Some(HostTool::WriteWorkspaceFile),
+            Some(HostTool::DeleteWorkspaceFile),
         ] {
             let error = authorize_call(&pool, &thread_id, &reading, tool)
                 .await
@@ -973,5 +995,66 @@ mod tests {
                 ("report".to_string(), 1),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_secret_request_names_its_private_file_and_reports_only_its_state() {
+        let pool = pool_with_folder_runs().await;
+        let scope = working_scope(ChatFolderCapability::Read);
+        let root = std::env::temp_dir().join("ganbaru-secret-tool-root");
+        let now = chrono::Utc::now();
+        let arguments = |label: &str| {
+            json!({ "label": label, "purpose": "Publish the preview build" })
+                .as_object()
+                .unwrap()
+                .clone()
+        };
+        let opened = secrets::request_secret_in(&pool, &root, &scope, &arguments("Token"), now)
+            .await
+            .unwrap();
+        let request_id = opened["requestId"].as_str().unwrap();
+        assert_eq!(opened["state"], "pending");
+        assert_eq!(
+            opened["path"].as_str().unwrap(),
+            crate::chat::secrets::secret_file_path(&root, "run:working", request_id)
+                .to_string_lossy()
+        );
+        let status_arguments = json!({ "requestId": request_id })
+            .as_object()
+            .unwrap()
+            .clone();
+        let status = secrets::secret_status_in(&pool, &scope, &status_arguments, now)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            json!({ "requestId": request_id, "state": "pending" })
+        );
+
+        let mut other_run = scope.clone();
+        other_run.run_id = ChatAgentRunId::new("run:queued").unwrap();
+        let hidden = secrets::secret_status_in(&pool, &other_run, &status_arguments, now)
+            .await
+            .unwrap_err();
+        assert_eq!(hidden.message, GENERIC_DENIAL);
+        for label in ["", "two\nlines"] {
+            let refused = secrets::request_secret_in(&pool, &root, &scope, &arguments(label), now)
+                .await
+                .unwrap_err();
+            assert_eq!(refused.message, GENERIC_DENIAL, "{label:?}");
+        }
+
+        for _ in 1..crate::chat::secrets::MAX_OPEN_SECRET_REQUESTS_PER_RUN {
+            secrets::request_secret_in(&pool, &root, &scope, &arguments("Token"), now)
+                .await
+                .unwrap();
+        }
+        let limited = secrets::request_secret_in(&pool, &root, &scope, &arguments("Token"), now)
+            .await
+            .unwrap_err();
+        let (code, refusal) = typed_refusal(Some(HostTool::RequestSecret), &limited).unwrap();
+        assert_eq!(code, "secret_request_limit");
+        assert_eq!(refusal.message, "secret_request_limit");
+        assert!(typed_refusal(Some(HostTool::SecretStatus), &limited).is_none());
     }
 }

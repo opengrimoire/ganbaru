@@ -1903,6 +1903,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
                 applier_visible("chat_scratch_promotion_terminal_immutable"),
             ],
         ),
+        device("chat_secret_requests", &[]),
         device(
             "chat_teammate_access_state",
             &[applier_visible("chat_teammate_access_revision_monotonic")],

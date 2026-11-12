@@ -422,7 +422,13 @@ impl DurableChatEventSink {
         native_workspace_authorized: bool,
         checkpoint_enabled: bool,
     ) -> Self {
-        let ingestor = Arc::new(Mutex::new(ChatEventIngestor::new(pool.clone(), emitter)));
+        let secrets = app
+            .state::<crate::chat::secrets::ChatSecretRegistry>()
+            .inner()
+            .clone();
+        let ingestor = Arc::new(Mutex::new(
+            ChatEventIngestor::new(pool.clone(), emitter).with_secret_redactor(Arc::new(secrets)),
+        ));
         let idle_flush = tauri::async_runtime::spawn(run_idle_flush(Arc::downgrade(&ingestor)));
         Self {
             app,
@@ -586,6 +592,7 @@ impl ProviderEventSink for DurableChatEventSink {
                 crate::chat::organization::resume_answered_work_of_thread(
                     &self.app, &self.pool, thread_id,
                 );
+                crate::chat::secrets::spawn_sweep(&self.app, &self.pool);
             }
             if let Some((thread_id, turn_id)) = settled_turn {
                 self.app

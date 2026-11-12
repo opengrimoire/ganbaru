@@ -112,8 +112,9 @@ impl HostTool {
             | Self::DelegateAssignment
             | Self::Ask
             | Self::Report
-            | Self::ReadReplyPointer => true,
-            Self::RequestSecret | Self::SecretStatus => false,
+            | Self::ReadReplyPointer
+            | Self::RequestSecret
+            | Self::SecretStatus => true,
         }
     }
 
@@ -219,10 +220,12 @@ impl HostToolClass {
 
     /// Whether the run's tool list carries tools of this class. Edit and destructive tools need
     /// a folder authorized at edit rank or higher. Delegation needs a run below the depth limit
-    /// in a channel with another participating teammate. No schedule tool is offered.
+    /// in a channel with another participating teammate. Secret tools need a host that can keep a
+    /// file private to the current user. No schedule tool is offered.
     fn offered(self, scope: &InternalMcpRunScope) -> bool {
         match self {
-            Self::Read | Self::Ask | Self::Report | Self::Secret => true,
+            Self::Read | Self::Ask | Self::Report => true,
+            Self::Secret => crate::chat::secrets::secret_files_supported(),
             Self::Edit | Self::Destructive => scope
                 .folder_sources
                 .iter()

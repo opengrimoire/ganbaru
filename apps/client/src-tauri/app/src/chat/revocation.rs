@@ -530,6 +530,9 @@ async fn drain_claimed_job(
         &runs,
     )
     .await?;
+    if !runs.is_empty() {
+        super::secrets::spawn_sweep(app, pool);
+    }
     super::organization::deliver_delegation_outcomes_of_assignments(
         app,
         pool,

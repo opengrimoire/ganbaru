@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ChatAssignmentInputRead,
   ChatFollowupRouting,
+  ChatMessageReference,
   ChatParticipantRead,
   ChatReplyThreadPageRead,
   PostChatMessageResult,
@@ -300,6 +301,45 @@ describe("ChatMessageComposer", () => {
     await vi.waitFor(() => expect(editor?.textContent).toBe("My unsent draft"));
     expect(post).not.toHaveBeenCalled();
     expect(inputs.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("keeps a waiting reply edit to its text so no attachment or reference is dropped on save", async () => {
+    const page = workingReplyThread();
+    const mention: ChatMessageReference = {
+      kind: "participant",
+      participantId: teammate.id,
+      participantKind: "ai_teammate",
+      metadata: { referenceId: "reference:atlas", labelSnapshot: "Atlas", startOffset: 0, endOffset: 6, plainTextProjection: "@Atlas" },
+    };
+    const reply = { ...page.rootMessage, itemId: "item:reply", replyThreadId: page.thread.id, normalizedMarkdown: "@Atlas use staging", references: [mention] };
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput()]);
+    const pick = vi.spyOn(chatApi, "pickChatImages").mockResolvedValue([]);
+    const edit = vi.spyOn(chatApi, "editChatAssignmentInput").mockResolvedValue(waitingInput({ currentRevisionId: "revision:edited" }));
+    vi.spyOn(chat, "loadReplyThread").mockResolvedValue();
+    const root = mountActiveWork({ ...page, replies: [reply] });
+
+    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="edit"]')).not.toBeNull());
+    const imageTool = () => root.querySelector<HTMLButtonElement>('button[aria-label="Attach images"]');
+    expect(imageTool()?.disabled).toBe(false);
+    root.querySelector<HTMLButtonElement>('[data-pending-action="edit"]')?.click();
+    await tick();
+
+    expect(root.querySelector(".chat-reference-atom")).toBeNull();
+    expect(imageTool()?.disabled).toBe(true);
+    expect(imageTool()?.title).toBe("Only the text of a waiting reply can be edited");
+    expect(root.querySelector<HTMLButtonElement>('button[aria-label="Schedule message"]')?.disabled).toBe(true);
+    expect(root.querySelector("[data-chat-followup-routing]")).toBeNull();
+    imageTool()?.click();
+    await typeReply(root, "@At");
+    await tick();
+    expect(root.querySelector("#chat-reference-picker")).toBeNull();
+    expect(pick).not.toHaveBeenCalled();
+
+    await typeReply(root, "Atlas use production");
+    root.querySelector<HTMLButtonElement>('[data-pending-action="save"]')?.click();
+    await vi.waitFor(() => expect(edit).toHaveBeenCalledOnce());
+    expect(edit.mock.calls[0]?.[1].normalizedMarkdown).toBe("Atlas use production");
+    await vi.waitFor(() => expect(imageTool()?.disabled).toBe(false));
   });
 
   it("explains a waiting reply that reached the teammate before the edit was saved", async () => {

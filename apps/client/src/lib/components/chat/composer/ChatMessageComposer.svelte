@@ -253,6 +253,8 @@
   /** The waiting reply the editor holds; the destination draft stays in the store until the edit ends. */
   let editingInput = $state<ChatAssignmentInputRead | null>(null);
   let inputBusyId = $state<string | null>(null);
+  /** Why every tool beyond text is off: an edit replaces only the text of a waiting reply. */
+  const editLockReason = $derived(editingInput ? t("chat.composer.pendingInputs.textOnly") : null);
 
   const participantReferences = $derived(editorReferences.filter((reference) => (
     reference.kind === "participant"
@@ -576,6 +578,11 @@
     selection: ChatComposerSelection,
     references: readonly ChatMessageReference[],
   ): void {
+    if (editingInput) {
+      closePicker();
+      closePromptMenu();
+      return;
+    }
     if (chatReferenceTriggerAtCaret(text, selection, references)) {
       closePromptMenu();
       void updateReferencePicker(text, selection, references);
@@ -659,7 +666,7 @@
 
   /** Pastes a copied slice that carries references; the frame pastes images and plain text. */
   function handlePaste(event: ClipboardEvent): boolean {
-    if (!event.clipboardData || !editorController) return false;
+    if (!event.clipboardData || !editorController || editingInput) return false;
     const plainText = event.clipboardData.getData("text/plain").replace(/\r\n?/gu, "\n");
     const semantic = parseReferenceClipboardSlice(
       event.clipboardData.getData(REFERENCE_CLIPBOARD_TYPE),
@@ -1120,7 +1127,8 @@
     closePromptMenu();
     error = null;
     editingInput = row.input;
-    loadEditorContent(parseChatComposerDocument(reply.richContent, reply.normalizedMarkdown), reply.references, []);
+    // The saved revision carries no references, so the editor shows their text as plain text.
+    loadEditorContent(parseChatComposerDocument(reply.richContent, reply.normalizedMarkdown), [], []);
   }
 
   function restoreDraftAfterEdit(): void {
@@ -1196,8 +1204,12 @@
 
   /** Imports images pasted or dropped into the composer into the folder the image picker uses. */
   async function importFiles(files: File[]): Promise<void> {
+    if (editLockReason) {
+      error = editLockReason;
+      return;
+    }
     const workingFolderId = composerWorkingFolderId();
-    if (!localExecutionAvailable || !workingFolderId || editingInput) return;
+    if (!localExecutionAvailable || !workingFolderId) return;
     const invalid = validateImageFiles(files, attachmentIds.length);
     if (invalid) {
       error = invalid;
@@ -1342,7 +1354,7 @@
 
   async function pickImages(): Promise<void> {
     const workingFolderId = composerWorkingFolderId();
-    if (!workingFolderId) return;
+    if (!workingFolderId || editLockReason) return;
     const available = Math.max(0, CHAT_IMAGE_LIMIT - attachmentIds.length);
     if (available === 0) return;
     const imported = await chatApi.pickChatImages(
@@ -1971,11 +1983,11 @@
         {/if}
       {/snippet}
       {#snippet leading()}
-        {#if localExecutionAvailable}<button type="button" class="tool-button" aria-label={t("chat.composer.attachImages")} title={t("chat.composer.attachImages")} onclick={() => void pickImages()}><Plus size={16} /></button>{/if}
+        {#if localExecutionAvailable}<button type="button" class="tool-button" disabled={editLockReason !== null} aria-label={t("chat.composer.attachImages")} title={editLockReason ?? t("chat.composer.attachImages")} onclick={() => void pickImages()}><Plus size={16} /></button>{/if}
         <button type="button" class="tool-button" class:active={isBoldActive} aria-label={t("chat.organization.bold")} aria-pressed={isBoldActive} onclick={() => editorController?.toggleMark("bold")}><Bold size={15} /></button>
         <button type="button" class="tool-button" class:active={isItalicActive} aria-label={t("chat.organization.italic")} aria-pressed={isItalicActive} onclick={() => editorController?.toggleMark("italic")}><Italic size={15} /></button>
         <div bind:this={scheduleMenuAnchor} class="menu-anchor">
-          <button type="button" class="tool-button" class:active={scheduleMenuOpen || Boolean(scheduledFor)} aria-label={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} aria-haspopup="dialog" aria-expanded={scheduleMenuOpen} aria-pressed={Boolean(scheduledFor)} title={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} onpointerenter={() => { void loadScheduleMenu(); }} onfocus={() => { void loadScheduleMenu(); }} onclick={toggleScheduleMenu}><Clock3 size={15} /></button>
+          <button type="button" class="tool-button" class:active={scheduleMenuOpen || Boolean(scheduledFor)} aria-label={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} aria-haspopup="dialog" aria-expanded={scheduleMenuOpen} disabled={editLockReason !== null} aria-pressed={Boolean(scheduledFor)} title={editLockReason ?? (scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage"))} onpointerenter={() => { void loadScheduleMenu(); }} onfocus={() => { void loadScheduleMenu(); }} onclick={toggleScheduleMenu}><Clock3 size={15} /></button>
           {#if scheduleMenuOpen}
             {#if ScheduleMenu}
               {@const LoadedScheduleMenu = ScheduleMenu}
@@ -1983,13 +1995,13 @@
             {:else}<div class="composer-menu schedule-loading surface-floating surface-floating-body"><Loading layout="fill" /></div>{/if}
           {/if}
         </div>
-        {#if threadComposer}<button type="button" class="tool-button" class:active={alsoSendToChannel} aria-label={t("chat.organization.shareReplyToChannel", channelName)} aria-pressed={alsoSendToChannel} title={t("chat.organization.shareReplyToChannel", channelName)} onclick={() => { alsoSendToChannel = !alsoSendToChannel; }}><MessageSquareShare size={15} /></button>{/if}
+        {#if threadComposer}<button type="button" class="tool-button" class:active={alsoSendToChannel} aria-label={t("chat.organization.shareReplyToChannel", channelName)} disabled={editLockReason !== null} aria-pressed={alsoSendToChannel} title={editLockReason ?? t("chat.organization.shareReplyToChannel", channelName)} onclick={() => { alsoSendToChannel = !alsoSendToChannel; }}><MessageSquareShare size={15} /></button>{/if}
       {/snippet}
       {#snippet trailing()}
         {#if targetTeammate?.latestPolicy}
           <ChatModelOverrideControl provider={targetProvider} policy={targetTeammate.latestPolicy} modelId={modelOverrideId} disabledReason={modelOverrideDisabledReason} onChange={(modelId) => { modelOverrideId = modelId; }} />
         {/if}
-        {#if followupRouting && !scheduledFor}
+        {#if followupRouting && !scheduledFor && !editingInput}
           <span class="routing-select" data-chat-followup-routing>
             <Select inline appearance="quiet" class="routing-select-control" ariaLabel={t("chat.composer.routing.label")} value={followupRouting} options={routingOptions} onChange={(value) => { if (value === "steer" || value === "queue") chat.setOrganizationalFollowupRouting(destination, value); }} />
           </span>
@@ -2043,7 +2055,7 @@
   .candidate-copy { display:grid; min-width:0; flex:1 1 0%; }
   .reference-picker strong,.reference-picker small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.reference-picker strong { font-weight:500; }.reference-picker small { color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
   .context-chips { display:flex; flex-wrap:wrap; gap:0.3rem; padding:0.65rem 0.5rem 0; }.context-chips button { display:flex; max-width:14rem; align-items:center; gap:0.25rem; border-radius:999px; background:var(--accent); padding:0.22rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); }.context-chips button span { color:var(--muted-foreground); }
-  .tool-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); place-items:center; border-radius:0.5rem; color:var(--muted-foreground); }.tool-button:hover,.tool-button.active { background:var(--accent); color:var(--foreground); }
+  .tool-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); place-items:center; border-radius:0.5rem; color:var(--muted-foreground); }.tool-button:hover:not(:disabled),.tool-button.active { background:var(--accent); color:var(--foreground); }.tool-button:disabled { opacity:0.45; }
   .send-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); flex:0 0 auto; place-items:center; border-radius:999px; background:color-mix(in srgb,var(--primary) 92%,transparent); color:var(--primary-foreground); box-shadow:0 2px 7px color-mix(in srgb,var(--primary) 22%,transparent); transition:transform 120ms ease,filter 120ms ease; }.send-button:hover:not(:disabled) { filter:brightness(1.04); transform:scale(1.04); }.send-button:disabled,.send-button[aria-disabled="true"] { opacity:0.45; }
   .stop-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); flex:0 0 auto; place-items:center; border-radius:999px; background:var(--accent); color:var(--foreground); }.stop-button:hover:not(:disabled) { background:color-mix(in srgb,var(--destructive) 14%,var(--accent)); color:var(--destructive); }.stop-button:disabled { opacity:0.45; }
   .routing-select { display:inline-flex; min-width:0; }.routing-select :global(.routing-select-control) { width:auto; max-width:8rem; }

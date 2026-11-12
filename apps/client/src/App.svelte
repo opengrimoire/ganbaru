@@ -16,7 +16,7 @@
   import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
   import { getChat, getChatStore, resetChatForVault } from "$lib/stores/chat.svelte";
   import { showChatNotification } from "$lib/api/chat/notifications";
-  import { defaultChatConfiguration, parseChatChangeNotification } from "$lib/chat/validation";
+  import { parseChatChangeNotification } from "$lib/chat/validation";
   import type { ChatBehaviorPreferences } from "$lib/chat/contracts";
   import {
     createChatNotificationCoordinator,
@@ -27,7 +27,7 @@
     parseChatNotificationTarget,
     type ChatNotificationTarget,
   } from "$lib/chat/notifications/delivery";
-  import type { ChatAttentionKind, ChatNotificationDelivery } from "$lib/chat/notifications/gate";
+  import type { ChatNotificationDelivery } from "$lib/chat/notifications/gate";
   import { formatList } from "$lib/i18n/formatters";
   import { getZoom } from "$lib/stores/zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -431,12 +431,15 @@
         .catch((e) => console.error("Failed to listen for distraction limit settings opens:", e));
       chatNotifications = createChatNotificationCoordinator({
         isThreadVisible: chatReplyThreadVisible,
-        isKindEnabled: chatNotificationKindEnabled,
+        behavior: chatBehavior,
+        loadReviewQueue: () => chat.reloadReviewQueue(),
+        loadSettings: () => chat.refreshSettings(),
         deliver: (delivery) => {
           void deliverChatNotification(delivery)
             .catch((e) => console.error("[chat notifications] failed:", e));
         },
       });
+      if (activeVaultIdentity() !== null) chatNotifications.loadInputs();
       listen<unknown>("chat-notification-open", (event) => {
         if (disposed) return;
         let target: ChatNotificationTarget;
@@ -482,6 +485,7 @@
           syncQuickNotesTrashPurge();
           projectTaskReminderScheduler.invalidate();
           if (!nextVaultId) return;
+          chatNotifications?.loadInputs();
           const projectsRequest = previousVaultId ? projects.load() : projects.ensureLoaded();
           void projectsRequest.then(() => Promise.all([
             previousVaultId ? notes.load() : notes.ensureLoaded(),
@@ -930,8 +934,9 @@
   // Chat notifications
   let chatNotifications = $state.raw<ChatNotificationCoordinator | null>(null);
 
-  function chatBehavior(): ChatBehaviorPreferences {
-    return chat.settings?.configuration.behavior ?? defaultChatConfiguration().behavior;
+  /** The Chat behavior preferences, or `null` while the settings of the current vault are not read. */
+  function chatBehavior(): ChatBehaviorPreferences | null {
+    return chat.settings?.configuration.behavior ?? null;
   }
 
   /** Whether the person is looking at the reply thread now, in either pane of the focused main window. */
@@ -940,15 +945,9 @@
     return chat.openReplyThreadId === replyThreadId || secondaryChat.openReplyThreadId === replyThreadId;
   }
 
-  function chatNotificationKindEnabled(kind: ChatAttentionKind): boolean {
-    const behavior = chatBehavior();
-    if (kind === "review") return behavior.notifyReviewReady;
-    if (kind === "failure") return behavior.notifyFailures;
-    return behavior.notifyWaitingForYou;
-  }
-
   async function deliverChatNotification(delivery: ChatNotificationDelivery): Promise<void> {
-    const text = chatNotificationText(delivery, chatBehavior().notificationIncludeContent, {
+    // The gate holds delivery while the settings are unknown; content stays out if they were cleared since.
+    const text = chatNotificationText(delivery, chatBehavior()?.notificationIncludeContent ?? false, {
       title: (kind, teammate) => t(`chat.notifications.titles.${kind}`, teammate),
       body: (channel) => t("chat.notifications.body", channel),
       bodyWithReason: (channel, reason) => t("chat.notifications.bodyWithReason", channel, reason),
@@ -974,14 +973,20 @@
   /** Rereads the review queue when a native Chat change may have moved work into or out of it. */
   function handleChatChangeForNotifications(payload: unknown): void {
     const change = parseChatChangeNotification(payload);
-    const keys = new Set(change.changedProjectionKeys);
-    if (keys.has("organizational") || keys.has("unknown")) void chat.reloadReviewQueue();
+    chatNotifications?.handleChange(change.changedProjectionKeys);
   }
 
   $effect(() => {
     const queue = chat.reviewQueue;
     if (!queue || !chatNotifications) return;
     untrack(() => chatNotifications?.observe(queue));
+  });
+
+  // Settings read by a Chat pane, or changed in Settings, release what waited for them.
+  $effect(() => {
+    const settings = chat.settings;
+    if (!settings || !chatNotifications) return;
+    untrack(() => chatNotifications?.reevaluate());
   });
 
   $effect(() => {

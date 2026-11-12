@@ -476,7 +476,7 @@
   /** Speaks the background change the tracker picks after a completed quiet read. */
   function announceBackgroundWork(): void {
     const signal = backgroundAnnouncements.decide({
-      quiet: quietStatus.state.quiet,
+      quiet: quietStatus.state?.quiet ?? true,
       enabled: (chat.settings?.configuration.behavior ?? defaultChatConfiguration().behavior).announceBackgroundWork,
       selectedReplyThreadId: chat.openReplyThreadId,
     });

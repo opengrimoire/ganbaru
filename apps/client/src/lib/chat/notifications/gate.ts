@@ -52,9 +52,11 @@ export interface ChatNotificationGateDependencies<TimerId> {
   now(): number;
   setTimer(callback: () => void, timeoutMs: number): TimerId;
   clearTimer(id: TimerId): void;
-  quietState(): ChatQuietState;
+  /** The current quiet state, or `null` while it is unknown, which holds delivery as quiet does. */
+  quietState(): ChatQuietState | null;
   isThreadVisible(replyThreadId: ChatReplyThreadId): boolean;
-  isKindEnabled(kind: ChatAttentionKind): boolean;
+  /** Whether the person keeps this kind on, or `null` while the Chat settings are unknown, which holds delivery. */
+  isKindEnabled(kind: ChatAttentionKind): boolean | null;
   deliver(delivery: ChatNotificationDelivery): void;
 }
 
@@ -62,7 +64,7 @@ export interface ChatNotificationGateDependencies<TimerId> {
 export interface ChatNotificationGate {
   /** Takes the latest queue snapshot; the first one after creation or `reset` is a silent baseline. */
   observe(snapshot: ChatAttentionSnapshot): void;
-  /** Releases overdue keys and, when no longer quiet, delivers what was deferred. Call after Focus or quiet changes. */
+  /** Releases overdue keys and delivers what was deferred once quiet ends. Call after Focus, quiet, or settings changes. */
   reevaluate(): void;
   /** Forgets every key, so the next snapshot is a silent baseline again, as after a vault switch. */
   reset(): void;
@@ -111,8 +113,8 @@ function emptyCounts(): Record<ChatAttentionKind, number> {
 /**
  * Creates the notification gate. A new key waits {@link CHAT_NOTIFICATION_GRACE_MS}, then is skipped when its
  * reply thread is visible or its kind is turned off, marked handled without delivery when another device executed
- * it, deferred while quiet, and delivered otherwise. Deferred keys still in the queue are delivered together once
- * quiet ends.
+ * it, deferred while quiet or while the quiet state or kind preference is unknown, and delivered otherwise. Deferred
+ * keys still in the queue are delivered together once quiet ends and both are known.
  *
  * @param dependencies Clocks, state reads, and delivery.
  */
@@ -139,15 +141,12 @@ export function createChatNotificationGate<TimerId>(
     pending.delete(key);
     const signal = present.get(key);
     if (!signal) return;
-    if (dependencies.isThreadVisible(signal.replyThreadId) || !dependencies.isKindEnabled(signal.kind)) {
+    const enabled = dependencies.isKindEnabled(signal.kind);
+    if (dependencies.isThreadVisible(signal.replyThreadId) || enabled === false || !signal.executedHere) {
       handled.set(key, signal.assignmentId);
       return;
     }
-    if (!signal.executedHere) {
-      handled.set(key, signal.assignmentId);
-      return;
-    }
-    if (dependencies.quietState().quiet) {
+    if (enabled === null || quietOrUnknown()) {
       deferred.set(key, signal);
       return;
     }
@@ -155,16 +154,20 @@ export function createChatNotificationGate<TimerId>(
     dependencies.deliver({ kind: "single", signal });
   }
 
+  function quietOrUnknown(): boolean {
+    return dependencies.quietState()?.quiet ?? true;
+  }
+
   function flushDeferred(): void {
-    if (deferred.size === 0 || dependencies.quietState().quiet) return;
+    if (deferred.size === 0 || quietOrUnknown()) return;
     const signals: ChatAttentionSignal[] = [];
-    for (const [key, signal] of deferred) {
+    for (const [key, signal] of [...deferred]) {
+      const enabled = dependencies.isKindEnabled(signal.kind);
+      if (enabled === null) continue;
+      deferred.delete(key);
       handled.set(key, signal.assignmentId);
-      if (!dependencies.isThreadVisible(signal.replyThreadId) && dependencies.isKindEnabled(signal.kind)) {
-        signals.push(signal);
-      }
+      if (enabled && !dependencies.isThreadVisible(signal.replyThreadId)) signals.push(signal);
     }
-    deferred.clear();
     if (signals.length === 0) return;
     if (signals.length === 1) {
       dependencies.deliver({ kind: "single", signal: signals[0] });

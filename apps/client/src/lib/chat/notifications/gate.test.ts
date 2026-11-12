@@ -36,9 +36,11 @@ function snapshot(signals: ChatAttentionSignal[], truncated = false): ChatAttent
 interface Harness {
   gate: ChatNotificationGate;
   delivered: ChatNotificationDelivery[];
-  quiet: ChatQuietState;
+  quiet: ChatQuietState | null;
   visible: Set<string>;
   disabled: Set<ChatAttentionKind>;
+  /** Whether the Chat settings are unknown, so every kind preference reads as `null`. */
+  settingsUnknown: boolean;
 }
 
 function harness(): Harness {
@@ -47,6 +49,7 @@ function harness(): Harness {
     quiet: { quiet: false, endsAtMs: null },
     visible: new Set(),
     disabled: new Set(),
+    settingsUnknown: false,
   };
   const gate = createChatNotificationGate<ReturnType<typeof setTimeout>>({
     now: () => Date.now(),
@@ -54,7 +57,7 @@ function harness(): Harness {
     clearTimer: (id) => clearTimeout(id),
     quietState: () => state.quiet,
     isThreadVisible: (replyThreadId) => state.visible.has(replyThreadId),
-    isKindEnabled: (kind) => !state.disabled.has(kind),
+    isKindEnabled: (kind) => (state.settingsUnknown ? null : !state.disabled.has(kind)),
     deliver: (delivery) => state.delivered.push(delivery),
   });
   return Object.assign(state, { gate });
@@ -208,6 +211,62 @@ describe("Chat notification gate", () => {
     vi.advanceTimersByTime(CHAT_NOTIFICATION_GRACE_MS - 1);
     test.quiet = { quiet: true, endsAtMs: null };
     vi.advanceTimersByTime(1);
+
+    expect(test.delivered).toEqual([]);
+  });
+
+  it("holds keys while the quiet state is unknown and delivers them once a read says not quiet", () => {
+    const test = harness();
+    test.quiet = null;
+    test.gate.observe(snapshot([]));
+    test.gate.observe(snapshot([signal("a")]));
+    vi.advanceTimersByTime(CHAT_NOTIFICATION_GRACE_MS);
+    test.gate.reevaluate();
+    expect(test.delivered).toEqual([]);
+
+    test.quiet = { quiet: false, endsAtMs: null };
+    test.gate.reevaluate();
+
+    expect(test.delivered).toEqual([{ kind: "single", signal: signal("a") }]);
+  });
+
+  it("keeps holding when the quiet state becomes known as quiet", () => {
+    const test = harness();
+    test.quiet = null;
+    test.gate.observe(snapshot([]));
+    test.gate.observe(snapshot([signal("a")]));
+    vi.advanceTimersByTime(CHAT_NOTIFICATION_GRACE_MS);
+    test.quiet = { quiet: true, endsAtMs: null };
+    test.gate.reevaluate();
+
+    expect(test.delivered).toEqual([]);
+  });
+
+  it("holds keys while the settings are unknown, then skips a kind they turn off", () => {
+    const test = harness();
+    test.settingsUnknown = true;
+    test.gate.observe(snapshot([]));
+    test.gate.observe(snapshot([signal("a", { kind: "failure" }), signal("b")]));
+    vi.advanceTimersByTime(CHAT_NOTIFICATION_GRACE_MS);
+    test.gate.reevaluate();
+    expect(test.delivered).toEqual([]);
+
+    test.settingsUnknown = false;
+    test.disabled.add("failure");
+    test.gate.reevaluate();
+    test.gate.reevaluate();
+
+    expect(test.delivered).toEqual([{ kind: "single", signal: signal("b") }]);
+  });
+
+  it("still marks work another device executed as handled while the settings are unknown", () => {
+    const test = harness();
+    test.settingsUnknown = true;
+    test.gate.observe(snapshot([]));
+    test.gate.observe(snapshot([signal("a", { executedHere: false })]));
+    vi.advanceTimersByTime(CHAT_NOTIFICATION_GRACE_MS);
+    test.settingsUnknown = false;
+    test.gate.reevaluate();
 
     expect(test.delivered).toEqual([]);
   });

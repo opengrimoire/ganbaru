@@ -934,33 +934,31 @@ fn session_load_drains_replayed_history_and_keeps_live_updates() {
             AcpInboundMessage::Notification { params, .. }
                 if params["update"]["sessionUpdate"] == "available_commands_update"
         ));
-        let modes_routed: Vec<&str> = routed
-            .iter()
-            .filter_map(|message| match message {
+        assert!(
+            routed.iter().all(|message| !matches!(
+                message,
                 AcpInboundMessage::Notification { params, .. }
-                    if params["update"]["sessionUpdate"] == "current_mode_update" =>
-                {
-                    params["update"]["currentModeId"].as_str()
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            modes_routed,
-            [LATE_MODE_ID],
-            "only the latest mode after the response reaches the router"
+                    if matches!(
+                        params["update"]["sessionUpdate"].as_str(),
+                        Some("current_mode_update" | "config_option_update")
+                    )
+            )),
+            "late mode and configuration updates are folded into the setup: {routed:?}"
         );
-        let config_updates = routed
-            .iter()
+        let mode_requests = state
+            .received()
+            .into_iter()
             .filter(|message| {
-                matches!(
-                    message,
-                    AcpInboundMessage::Notification { params, .. }
-                        if params["update"]["sessionUpdate"] == "config_option_update"
-                )
+                message["method"] == "session/set_config_option"
+                    && message["params"]["configId"] == "mode"
             })
-            .count();
-        assert_eq!(config_updates, 1, "the late configuration update is kept");
+            .map(|message| message["params"]["value"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mode_requests,
+            [json!("code")],
+            "the requested Build mode is applied over the late {LATE_MODE_ID} mode"
+        );
         prompt.abort();
         connection
             .stop(Duration::ZERO, Duration::from_millis(20))

@@ -354,8 +354,6 @@ async fn run_fixture<R, W>(
                 write_result(&mut writer, id, session_setup(None, options.clone())).await;
                 tokio::time::sleep(LATE_REPLAY_DELAY).await;
                 write_message(&mut writer, replayed_text_update()).await;
-                write_message(&mut writer, mode_update(REPLAYED_MODE_ID)).await;
-                write_message(&mut writer, mode_update(LATE_MODE_ID)).await;
                 write_message(
                     &mut writer,
                     session_update(json!({
@@ -364,6 +362,8 @@ async fn run_fixture<R, W>(
                     })),
                 )
                 .await;
+                write_message(&mut writer, mode_update(REPLAYED_MODE_ID)).await;
+                write_message(&mut writer, mode_update(LATE_MODE_ID)).await;
             }
             "session/load" => {
                 write_result(&mut writer, id, session_setup(None, options.clone())).await;

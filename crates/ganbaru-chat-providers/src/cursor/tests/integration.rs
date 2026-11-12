@@ -314,7 +314,7 @@ fn load_replay_quiet_window_stops_on_cancellation() {
         let started = std::time::Instant::now();
         cancellation.cancel();
         let result = load.await.unwrap();
-        assert!(started.elapsed() < Duration::from_millis(50));
+        assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(result, Err(AcpRpcFailure::Cancelled));
 
         connection

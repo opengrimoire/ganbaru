@@ -161,12 +161,15 @@ describe("ChatTimeline", () => {
 
     chat.timelineItems = [
       chat.timelineItems[0] as ChatTimelineItemRead,
-      activity("read", "turn-1", "dynamic_tool_call", "Read", {
-        sequence: 3,
-        status: "completed",
-        detail: null,
-        metadata: { toolInput: { file_path: "ChatTimeline.svelte" } },
-      }),
+      {
+        ...activity("read", "turn-1", "dynamic_tool_call", "Read", {
+          sequence: 3,
+          status: "completed",
+          detail: null,
+          metadata: { toolInput: { file_path: "ChatTimeline.svelte" } },
+        }),
+        changeSequence: 5,
+      },
       message("commentary", "turn-1", "assistant", "I finished checking the file", 4),
     ];
     await tick();

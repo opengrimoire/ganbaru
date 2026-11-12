@@ -53,6 +53,21 @@ export const CHAT_WORK_ASSIGNMENT_STATES = [
 ] as const;
 export type ChatWorkAssignmentState = (typeof CHAT_WORK_ASSIGNMENT_STATES)[number];
 
+export const CHAT_ASSIGNMENT_REVIEW_OUTCOMES = ["accepted", "changes_requested"] as const;
+export type ChatAssignmentReviewOutcome = (typeof CHAT_ASSIGNMENT_REVIEW_OUTCOMES)[number];
+
+/** How a person ended ready-for-review work, recorded only on completed assignments. */
+export interface ChatAssignmentReview {
+  outcome: ChatAssignmentReviewOutcome;
+  reviewedAt: UtcTimestamp;
+  reviewedByParticipantId: ChatParticipantId;
+}
+
+/** A review of ready-for-review work: Accept completes it, Request changes posts the note as a follow-up reply. */
+export type ChatAssignmentReviewRequest =
+  | { kind: "accept" }
+  | { kind: "requestChanges"; note: string };
+
 export const CHAT_FOLDER_CAPABILITIES = ["none", "read", "edit", "execute", "publish"] as const;
 export type ChatFolderCapability = (typeof CHAT_FOLDER_CAPABILITIES)[number];
 
@@ -643,6 +658,8 @@ export interface ChatWorkAssignmentRead {
   settledAt: UtcTimestamp | null;
   createdAt: UtcTimestamp;
   updatedAt: UtcTimestamp;
+  /** How a person ended the work, present only when it is completed after review. */
+  review: ChatAssignmentReview | null;
   /** What starting this work here would run, present while it waits for a local action on the reading device. */
   localAcceptance: ChatAssignmentAcceptanceOfferRead | null;
 }

@@ -7,6 +7,7 @@ import type {
   ChatParticipantId,
   ChatReplyThreadId,
   ChatWorkAssignmentId,
+  ChatAssignmentReviewRequest,
   ChatAiTeammateRead,
   ChatAccessProfileRead,
   ChatAccessProfileImpactPreviewRead,
@@ -413,6 +414,17 @@ export async function cancelChatAssignment(
 ): Promise<import("$lib/chat/contracts").ChatWorkAssignmentRead> {
   return parseChatWorkAssignment(await invoke<unknown>("chat_cancel_assignment", {
     dbUrl: await ensureDbUrl(), assignmentId, expectedRevision,
+  }));
+}
+
+/** Accepts ready-for-review work, or posts a note that continues it in a follow-up assignment. */
+export async function reviewChatAssignment(
+  assignmentId: ChatWorkAssignmentId,
+  expectedRevision: number,
+  review: ChatAssignmentReviewRequest,
+): Promise<import("$lib/chat/contracts").ChatWorkAssignmentRead> {
+  return parseChatWorkAssignment(await invoke<unknown>("chat_review_assignment", {
+    dbUrl: await ensureDbUrl(), assignmentId, expectedRevision, review,
   }));
 }
 

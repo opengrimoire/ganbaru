@@ -693,7 +693,7 @@ pub(super) async fn send_scheduled_message_now(
         consent: ScheduledConsent::Local,
     };
     let result = match serde_json::from_str::<PostChatMessageCommand>(&request_data) {
-        Ok(request) => match post_message(app.clone(), db_url, &request, Some(send)).await {
+        Ok(request) => match post_message(app.clone(), db_url, &request, Some(send), None).await {
             Ok(PostOutcome::Posted(result)) => Ok(result),
             Ok(PostOutcome::Refused(refusal)) => return Err(refusal),
             Err(error) => Err(error),
@@ -953,7 +953,7 @@ pub(super) async fn dispatch_due_scheduled_messages(
                     claim_token: &claim_token,
                     consent: read_scheduled_consent(&app, &scheduled_message_id, &request_data),
                 };
-                match post_message(app.clone(), db_url.clone(), &message, Some(send)).await {
+                match post_message(app.clone(), db_url.clone(), &message, Some(send), None).await {
                     Ok(PostOutcome::Posted(_)) => Ok(message.channel_id.clone()),
                     Ok(PostOutcome::Refused(_)) => continue,
                     Err(error) => Err(error),

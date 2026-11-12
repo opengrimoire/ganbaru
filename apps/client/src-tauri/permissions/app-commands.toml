@@ -164,6 +164,7 @@ commands.allow = [
   "chat_restore_thread",
   "chat_retry_assignment",
   "chat_retry_scheduled_message",
+  "chat_review_assignment",
   "chat_run_checkpoint_cleanup",
   "chat_save_draft",
   "chat_save_provider",

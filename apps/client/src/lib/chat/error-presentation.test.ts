@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatErrorCode, chatErrorField, chatErrorMessage } from "./error-presentation";
+import { chatErrorCode, chatErrorField, chatErrorMessage, chatErrorReason } from "./error-presentation";
 
 describe("chatErrorMessage", () => {
   it("reads typed Tauri Chat errors without object stringification", () => {
@@ -27,5 +27,14 @@ describe("chatErrorMessage", () => {
     expect(chatErrorCode({ cause: { code: "permission" } })).toBe("permission");
     expect(chatErrorCode({ code: "invented" })).toBeNull();
     expect(chatErrorCode("stale_revision")).toBeNull();
+  });
+
+  it("reads the detail reason from direct and nested errors and ignores malformed details", () => {
+    expect(chatErrorReason({ code: "conflict", details: { reason: "pending_replies" } })).toBe("pending_replies");
+    expect(chatErrorReason({ error: { details: { reason: "no_executing_device" } } })).toBe("no_executing_device");
+    expect(chatErrorReason({ code: "conflict", details: null })).toBeNull();
+    expect(chatErrorReason({ details: { reason: 3 } })).toBeNull();
+    expect(chatErrorReason({ details: ["pending_replies"] })).toBeNull();
+    expect(chatErrorReason("pending_replies")).toBeNull();
   });
 });

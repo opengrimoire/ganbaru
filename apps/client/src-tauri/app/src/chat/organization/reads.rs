@@ -3,7 +3,8 @@
 use super::common::{
     ACTIVE_FOLDER_GRANTS_SQL, PageCursor, parse_access_profile_builtin_key, parse_approval_policy,
     parse_folder_capability, parse_history_boundary, parse_json, parse_participant_kind,
-    parse_runtime_approval_policy, parse_work_state, u32_value,
+    parse_review_outcome, parse_runtime_approval_policy, parse_work_state, stored_value_error,
+    u32_value,
 };
 use super::workflow::{parse_model_selection, read_message_references};
 use super::{
@@ -737,7 +738,7 @@ pub(super) async fn read_assignment(
     let row = sqlx::query(
         "SELECT reply_thread_id, teammate_id, triggering_message_item_id,
                 previous_assignment_id, state, state_reason, revision, settled_at,
-                created_at, updated_at
+                review_outcome, reviewed_at, reviewed_by_participant_id, created_at, updated_at
          FROM chat_work_assignments WHERE id = ?",
     )
     .bind(assignment_id.as_str())
@@ -784,8 +785,30 @@ pub(super) async fn read_assignment(
         settled_at: optional_timestamp(row.try_get("settled_at").map_err(persistence_error)?)?,
         created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
         updated_at: timestamp(row.try_get("updated_at").map_err(persistence_error)?)?,
+        review: read_assignment_review(&row)?,
         local_acceptance: None,
     })
+}
+
+/// The review stored on an assignment row: all three review columns, or none.
+fn read_assignment_review(
+    row: &sqlx::sqlite::SqliteRow,
+) -> ChatResult<Option<ChatAssignmentReviewRead>> {
+    let outcome: Option<String> = row.try_get("review_outcome").map_err(persistence_error)?;
+    let reviewed_at: Option<String> = row.try_get("reviewed_at").map_err(persistence_error)?;
+    let reviewer: Option<String> = row
+        .try_get("reviewed_by_participant_id")
+        .map_err(persistence_error)?;
+    match (outcome, reviewed_at, reviewer) {
+        (None, None, None) => Ok(None),
+        (Some(outcome), Some(reviewed_at), Some(reviewer)) => Ok(Some(ChatAssignmentReviewRead {
+            outcome: parse_review_outcome(&outcome)?,
+            reviewed_at: timestamp(reviewed_at)?,
+            reviewed_by_participant_id: ChatParticipantId::new(reviewer)
+                .map_err(identifier_error)?,
+        })),
+        _ => Err(stored_value_error("assignment review")),
+    }
 }
 
 pub(super) async fn read_active_or_latest_assignment(

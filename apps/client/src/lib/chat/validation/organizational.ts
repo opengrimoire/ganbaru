@@ -1,6 +1,7 @@
 import {
   CHAT_ACCESS_ISSUE_CODES,
   CHAT_ACCESS_PROFILE_BUILTIN_KEYS,
+  CHAT_ASSIGNMENT_REVIEW_OUTCOMES,
   CHAT_ASSIGNMENT_TARGET_BINDING_STATES,
   CHAT_ASSIGNMENT_TARGET_KINDS,
   CHAT_ASSIGNMENT_TARGET_LIFECYCLE_STATES,
@@ -23,6 +24,7 @@ import {
   type ChatAiTeammateRead,
   type ChatAssignmentAcceptanceFolderRead,
   type ChatAssignmentAcceptanceOfferRead,
+  type ChatAssignmentReview,
   type ChatAssignmentTargetRead,
   type ChatChannelPageRead,
   type ChatChannelMembershipRemovalPreview,
@@ -914,19 +916,34 @@ export function parseChatWorkAssignment(
   label = "Chat work assignment",
 ): ChatWorkAssignmentRead {
   const record = readRecord(value, label);
+  const state = readEnum(record.state, CHAT_WORK_ASSIGNMENT_STATES, `${label}.state`);
+  const review = readNullable(record.review, `${label}.review`, parseAssignmentReview);
+  if (review && state !== "completed") {
+    throw new Error(`${label}.review is only valid on completed work`);
+  }
   return {
     id: readIdentifier(record.id, `${label}.id`),
     replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
     teammate: parseChatParticipant(record.teammate, `${label}.teammate`),
     triggeringMessageItemId: readIdentifier(record.triggeringMessageItemId, `${label}.triggeringMessageItemId`),
     previousAssignmentId: readNullable(record.previousAssignmentId, `${label}.previousAssignmentId`, readIdentifier),
-    state: readEnum(record.state, CHAT_WORK_ASSIGNMENT_STATES, `${label}.state`),
+    state,
     stateReason: readNullable(record.stateReason, `${label}.stateReason`, readString),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
     settledAt: readNullable(record.settledAt, `${label}.settledAt`, readUtcTimestamp),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
     updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
+    review,
     localAcceptance: readNullable(record.localAcceptance, `${label}.localAcceptance`, parseAssignmentAcceptanceOffer),
+  };
+}
+
+function parseAssignmentReview(value: unknown, label: string): ChatAssignmentReview {
+  const record = readRecord(value, label);
+  return {
+    outcome: readEnum(record.outcome, CHAT_ASSIGNMENT_REVIEW_OUTCOMES, `${label}.outcome`),
+    reviewedAt: readUtcTimestamp(record.reviewedAt, `${label}.reviewedAt`),
+    reviewedByParticipantId: readIdentifier(record.reviewedByParticipantId, `${label}.reviewedByParticipantId`),
   };
 }
 

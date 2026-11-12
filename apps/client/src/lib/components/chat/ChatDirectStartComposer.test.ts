@@ -733,6 +733,62 @@ describe("ChatDirectStartComposer", () => {
     expect(target.querySelector('[role="alert"]')?.textContent).toContain("Image signature is invalid");
   });
 
+
+  function textPaste(text: string): ClipboardEvent {
+    const paste = new Event("paste", { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(paste, "clipboardData", {
+      configurable: true,
+      value: { files: [], items: [], types: ["text/plain"], getData: () => text },
+    });
+    return paste;
+  }
+
+  it("strips hidden characters from pasted text and tells the user how many were removed", async () => {
+    const chat = getChat();
+    const setRichContent = vi.spyOn(chat, "setComposerRichContent").mockImplementation((text, richContent) => {
+      chat.composer = { ...chat.composer, text, richContent };
+    });
+    const { target, editor } = setup(false);
+    await tick();
+    editor.focus();
+    const paste = textPaste("approve \u{202E}nimda\u{202C} now\u{200B}");
+    editor.dispatchEvent(paste);
+    await tick();
+
+    expect(paste.defaultPrevented).toBe(true);
+    expect(setRichContent).toHaveBeenCalled();
+    expect(chat.composer.text).toContain("approve nimda now");
+    expect(chat.composer.text).not.toMatch(/[\u{200B}\u{202C}\u{202E}]/u);
+    expect(target.querySelector('[role="status"]')?.textContent).toContain("3");
+  });
+
+  it("attaches a large paste as a text attachment instead of inserting it", async () => {
+    const chat = getChat();
+    const importSnippet = vi.spyOn(chat, "importComposerTextSnippet").mockResolvedValue();
+    const setRichContent = vi.spyOn(chat, "setComposerRichContent");
+    const { editor } = setup(false);
+    await tick();
+    editor.focus();
+    const text = `${"x".repeat(40 * 1024)}\nsecond line\n`;
+    editor.dispatchEvent(textPaste(text));
+    await tick();
+
+    expect(importSnippet).toHaveBeenCalledWith(text, "Pasted text (2 lines)");
+    expect(setRichContent).not.toHaveBeenCalled();
+  });
+
+  it("refuses a paste above the text attachment bound and names the limit", async () => {
+    const chat = getChat();
+    const importSnippet = vi.spyOn(chat, "importComposerTextSnippet").mockResolvedValue();
+    const { target, editor } = setup(false);
+    await tick();
+    editor.focus();
+    editor.dispatchEvent(textPaste("x".repeat(1024 * 1024 + 1)));
+    await tick();
+
+    expect(importSnippet).not.toHaveBeenCalled();
+    expect(target.querySelector('[role="alert"]')?.textContent).toMatch(/1\s?MB/u);
+  });
   it("leaves unsupported clipboard payloads to the editor without requesting platform permission", async () => {
     const { target, editor } = setup(false);
     await tick();

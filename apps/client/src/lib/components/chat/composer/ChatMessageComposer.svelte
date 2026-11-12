@@ -6,6 +6,7 @@
   import CircleAlert from "@lucide/svelte/icons/circle-alert";
   import Clock3 from "@lucide/svelte/icons/clock-3";
   import FileIcon from "@lucide/svelte/icons/file";
+  import FileText from "@lucide/svelte/icons/file-text";
   import Folder from "@lucide/svelte/icons/folder";
   import GitBranch from "@lucide/svelte/icons/git-branch";
   import Hash from "@lucide/svelte/icons/hash";
@@ -13,10 +14,13 @@
   import Italic from "@lucide/svelte/icons/italic";
   import MessageSquareShare from "@lucide/svelte/icons/message-square-share";
   import Plus from "@lucide/svelte/icons/plus";
+  import AtSign from "@lucide/svelte/icons/at-sign";
   import Square from "@lucide/svelte/icons/square";
+  import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import type {
     ChatAiTeammateRead,
+    ChatAttachmentRead,
     ChatAssignmentInputRead,
     ChatAssignmentModelOverride,
     ChatAssignmentReviewRequest,
@@ -29,6 +33,7 @@
     ChatInteractionStateRead,
     ChatMessageRead,
     ChatMessageReference,
+    ChatParticipantId,
     ChatParticipantRead,
     ChatPromptCatalogEntry,
     ChatScheduledMessageRead,
@@ -43,6 +48,8 @@
   import { CHAT_IMAGE_LIMIT, composerTokenTrigger, validateImageFiles } from "$lib/chat/composer/model";
   import { defaultFollowupRouting, pendingInputRows, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
   import { latestStructuredPlanSteps, summarizePlanProgress } from "$lib/chat/composer/plan-progress";
+  import { suggestTeammateMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
+  import { pastedTextLineCount } from "$lib/chat/composer/paste";
   import {
     chatComposerDocumentFromText,
     chatComposerDocumentVersioned,
@@ -229,6 +236,11 @@
   let disclosureBlocker = $state<DisclosureBlocker | null>(null);
   let blockerElement = $state<HTMLDivElement | null>(null);
   let announcement = $state("");
+  /** Attachment reads the chips label from, by attachment id. */
+  let attachmentReads = $state<Record<string, ChatAttachmentRead>>({});
+  const draftPlainText = $derived(chatComposerPlainText(editorDocument));
+  /** Teammates whose mention suggestion was dismissed for this draft. */
+  let dismissedMentionSuggestions = $state<ChatParticipantId[]>([]);
   let teammateAccess = $state<ChatTeammateAccessRead | null>(null);
   let assignmentTargets = $state<ChatAssignmentTargetRead[]>([]);
   let assignmentPreviewLoading = $state(false);
@@ -403,6 +415,21 @@
     return summary && summary.completed < summary.total ? summary : null;
   });
   const sendBlocked = $derived(Boolean(validation || disclosureBlocker || providerBlockers.length || messageTooLarge));
+  /** Channel teammates that can take work, for the mention suggestion. */
+  const mentionRoster = $derived((chat.selectedChannel?.memberships ?? []).flatMap((membership) => (
+    membership.removedAt === null
+      && membership.participant.archivedAt === null
+      && membership.participant.kind === "ai_teammate"
+      && membership.aiAccess?.capabilities.participate === true
+      ? [{ id: membership.participant.id, displayName: membership.participant.displayName }]
+      : []
+  )));
+  /** A teammate the draft names without mentioning, offered as a local chip; never while editing a waiting reply. */
+  const mentionSuggestion = $derived.by((): MentionSuggestion | null => {
+    if (editingInput || pickerOpen) return null;
+    const roster = mentionRoster.filter((candidate) => !dismissedMentionSuggestions.includes(candidate.id));
+    return suggestTeammateMention(draftPlainText, editorReferences, roster);
+  });
 
   onMount(() => {
     if (!editorRoot) return;
@@ -415,6 +442,7 @@
       },
       editorReferences,
     );
+    void loadAttachmentReads(attachmentIds);
     const stop = () => { void stopAssignment(); };
     paneEvents.addEventListener("ganbaru:chat-stop-requested", stop);
     if (focusEditorOnMount) {
@@ -1231,11 +1259,82 @@
         file.name,
         [...new Uint8Array(await file.arrayBuffer())],
       )));
+      rememberAttachments(imported);
       attachmentIds = [...attachmentIds, ...imported.map((attachment) => attachment.id)];
       persist();
     } catch (cause: unknown) {
       error = chatErrorMessage(cause);
     }
+  }
+
+  /** Attaches pasted or dropped text too large to read inline as a text attachment. */
+  async function importLargeText(text: string): Promise<void> {
+    if (editLockReason) {
+      error = editLockReason;
+      return;
+    }
+    const workingFolderId = composerWorkingFolderId();
+    if (!localExecutionAvailable || !workingFolderId) {
+      error = t("chat.composer.paste.attachmentUnavailable");
+      return;
+    }
+    if (attachmentIds.length >= CHAT_IMAGE_LIMIT) {
+      error = t("chat.composer.paste.attachmentLimit", CHAT_IMAGE_LIMIT);
+      return;
+    }
+    error = null;
+    try {
+      const attachment = await chatApi.importChatTextSnippet(
+        workingFolderId,
+        crypto.randomUUID(),
+        t("chat.composer.paste.snippetName", pastedTextLineCount(text)),
+        text,
+      );
+      rememberAttachments([attachment]);
+      attachmentIds = [...attachmentIds, attachment.id];
+      persist();
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause);
+    }
+  }
+
+  function rememberAttachments(attachments: readonly ChatAttachmentRead[]): void {
+    attachmentReads = { ...attachmentReads, ...Object.fromEntries(attachments.map((attachment) => [attachment.id, attachment])) };
+  }
+
+  /** Reads the draft's attachments so their chips show names; on failure the chips keep generic labels and the error shows. */
+  async function loadAttachmentReads(ids: readonly string[]): Promise<void> {
+    const workingFolderId = composerWorkingFolderId();
+    if (ids.length === 0 || !workingFolderId) return;
+    try {
+      rememberAttachments(await chatApi.readChatAttachments(workingFolderId, [...ids]));
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause);
+    }
+  }
+
+  function attachmentChipLabel(id: string): string {
+    const read = attachmentReads[id];
+    if (read?.kind === "text_snippet") return read.originalDisplayName;
+    const imageIndex = attachmentIds.filter((entry) => attachmentReads[entry]?.kind !== "text_snippet").indexOf(id);
+    return t("chat.organization.imageNumber", imageIndex + 1);
+  }
+
+  /** Turns the suggested teammate's name into a mention reference; nothing is posted. */
+  function applyMentionSuggestion(suggestion: MentionSuggestion): void {
+    if (!editorController) return;
+    const participant = mentionRoster.find((candidate) => candidate.id === suggestion.participantId);
+    if (!participant) return;
+    const label = participant.displayName;
+    const inserted = editorController.insertReference(suggestion.start, suggestion.end, {
+      kind: "participant",
+      participantId: participant.id,
+      participantKind: "ai_teammate",
+      metadata: { referenceId: crypto.randomUUID(), labelSnapshot: label, startOffset: 0, endOffset: 0, plainTextProjection: `@${label}` },
+    });
+    announcement = inserted
+      ? t("chat.organization.referenceInserted", label)
+      : t("chat.organization.duplicateReference", label);
   }
 
   async function loadAssignmentPreview(
@@ -1370,6 +1469,7 @@
       Array.from({ length: available }, () => crypto.randomUUID()),
       t("chat.composer.attachImages"),
     );
+    rememberAttachments(imported);
     attachmentIds = [...attachmentIds, ...imported.map((attachment) => attachment.id)];
     persist();
   }
@@ -1388,6 +1488,7 @@
     assignmentTargets = [];
     modelOverrideId = null;
     disclosureBlocker = null;
+    dismissedMentionSuggestions = [];
     editorController?.setDocument(editorDocument, []);
     persist();
   }
@@ -1944,6 +2045,7 @@
       {meterNote}
       onKeydown={handleKeydown}
       onFiles={(files) => { void importFiles(files); }}
+      onLargeText={(text) => { void importLargeText(text); }}
       onPaste={handlePaste}
       onCopy={handleCopy}
       onCompositionChange={(value) => { composing = value; }}
@@ -1954,7 +2056,17 @@
         {/if}
         {#if attachmentIds.length > 0}
           <div class="context-chips">
-            {#each attachmentIds as id, index (id)}<button type="button" onclick={() => { attachmentIds = attachmentIds.filter((entry) => entry !== id); persist(); }}><Image size={12} />{t("chat.organization.imageNumber", index + 1)}<span>×</span></button>{/each}
+            {#each attachmentIds as id (id)}
+              {@const chipLabel = attachmentChipLabel(id)}
+              <button type="button" aria-label={t("chat.composer.removeAttachment", chipLabel)} onclick={() => { attachmentIds = attachmentIds.filter((entry) => entry !== id); persist(); }}>{#if attachmentReads[id]?.kind === "text_snippet"}<FileText size={12} />{:else}<Image size={12} />{/if}<span class="chip-label">{chipLabel}</span><span aria-hidden="true">×</span></button>
+            {/each}
+          </div>
+        {/if}
+        {#if mentionSuggestion}
+          {@const suggestion = mentionSuggestion}
+          <div class="mention-suggestion" data-chat-mention-suggestion>
+            <button type="button" class="mention-suggestion-action" onpointerdown={(event) => event.preventDefault()} onclick={() => applyMentionSuggestion(suggestion)}><AtSign size={12} />{t("chat.composer.mentionSuggestion.action", suggestion.displayName)}</button>
+            <button type="button" class="mention-suggestion-dismiss" aria-label={t("chat.composer.mentionSuggestion.dismiss")} onclick={() => { dismissedMentionSuggestions = [...dismissedMentionSuggestions, suggestion.participantId]; }}><X size={11} /></button>
           </div>
         {/if}
       {/snippet}
@@ -2064,7 +2176,8 @@
   .candidate-icon { display:grid; width:2rem; flex:0 0 auto; place-items:center; color:var(--muted-foreground); }
   .candidate-copy { display:grid; min-width:0; flex:1 1 0%; }
   .reference-picker strong,.reference-picker small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.reference-picker strong { font-weight:500; }.reference-picker small { color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
-  .context-chips { display:flex; flex-wrap:wrap; gap:0.3rem; padding:0.65rem 0.5rem 0; }.context-chips button { display:flex; max-width:14rem; align-items:center; gap:0.25rem; border-radius:999px; background:var(--accent); padding:0.22rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); }.context-chips button span { color:var(--muted-foreground); }
+  .context-chips { display:flex; flex-wrap:wrap; gap:0.3rem; padding:0.65rem 0.5rem 0; }.context-chips button { display:flex; max-width:14rem; align-items:center; gap:0.25rem; border-radius:999px; background:var(--accent); padding:0.22rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); }.context-chips button span { color:var(--muted-foreground); }.context-chips .chip-label { overflow:hidden; color:inherit; text-overflow:ellipsis; white-space:nowrap; }
+  .mention-suggestion { display:flex; width:fit-content; align-items:center; gap:0.1rem; margin-top:0.45rem; border-radius:999px; background:color-mix(in srgb,var(--primary) 10%,transparent); padding:0.1rem 0.15rem 0.1rem 0.45rem; color:color-mix(in srgb,var(--primary) 78%,var(--foreground)); font-size:calc(0.68rem * var(--type-scale)); }.mention-suggestion-action { display:flex; align-items:center; gap:0.25rem; }.mention-suggestion-dismiss { display:grid; width:1.25rem; height:1.25rem; place-items:center; border-radius:999px; color:var(--muted-foreground); }.mention-suggestion-dismiss:hover { background:var(--accent); color:var(--foreground); }
   .tool-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); place-items:center; border-radius:0.5rem; color:var(--muted-foreground); }.tool-button:hover:not(:disabled),.tool-button.active { background:var(--accent); color:var(--foreground); }.tool-button:disabled { opacity:0.45; }
   .send-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); flex:0 0 auto; place-items:center; border-radius:999px; background:color-mix(in srgb,var(--primary) 92%,transparent); color:var(--primary-foreground); box-shadow:0 2px 7px color-mix(in srgb,var(--primary) 22%,transparent); transition:transform 120ms ease,filter 120ms ease; }.send-button:hover:not(:disabled) { filter:brightness(1.04); transform:scale(1.04); }.send-button:disabled,.send-button[aria-disabled="true"] { opacity:0.45; }
   .stop-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); flex:0 0 auto; place-items:center; border-radius:999px; background:var(--accent); color:var(--foreground); }.stop-button:hover:not(:disabled) { background:color-mix(in srgb,var(--destructive) 14%,var(--accent)); color:var(--destructive); }.stop-button:disabled { opacity:0.45; }

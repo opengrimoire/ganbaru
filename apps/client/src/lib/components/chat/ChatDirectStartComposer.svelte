@@ -22,6 +22,7 @@
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import AtSign from "@lucide/svelte/icons/at-sign";
   import Bold from "@lucide/svelte/icons/bold";
+  import FileText from "@lucide/svelte/icons/file-text";
   import FolderX from "@lucide/svelte/icons/folder-x";
   import ImagePlus from "@lucide/svelte/icons/image-plus";
   import Italic from "@lucide/svelte/icons/italic";
@@ -37,6 +38,7 @@
   import { ChatComposerEditor, type ChatComposerEditorChange } from "$lib/chat/composer/editor";
   import { parseChatComposerDocument, type ChatComposerMark, type ChatComposerSelection } from "$lib/chat/composer/rich-text";
   import {
+    CHAT_IMAGE_LIMIT,
     composerActionState,
     composerModeCommand,
     composerTokenTrigger,
@@ -59,6 +61,7 @@
     type ProviderDirectAction,
   } from "$lib/chat/composer/command-model";
   import { composerMeterRead, type ComposerStatusRead } from "$lib/chat/composer/composer-meter";
+  import { pastedTextLineCount } from "$lib/chat/composer/paste";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
@@ -112,6 +115,8 @@
   const provider = $derived(chat.settings?.providerInstances.find((entry) => entry.configuration.instanceId === chat.composer.providerInstanceId) ?? null);
   const capabilities = $derived<ProviderCapabilities>(chat.interaction?.capabilities ?? provider?.lastProbe?.capabilities ?? { entries: [] });
   const pending = $derived(chat.interaction?.pendingRequest ?? null);
+  const composerImages = $derived(chat.composerAttachments.filter((attachment) => attachment.kind === "image"));
+  const composerSnippets = $derived(chat.composerAttachments.filter((attachment) => attachment.kind === "text_snippet"));
   const hasDraft = $derived(Boolean(chat.composer.text.trim()) || chat.composer.attachmentIds.length > 0 || chat.composer.mentions.length > 0);
   const visibleComposerMode = $derived(activeProviderCommand
     ? { kind: "provider" as const, label: promptEntryDisplayLabel(activeProviderCommand.entry) }
@@ -560,7 +565,7 @@
       ? validateModelOptions(provider.modelCatalog?.models.find((entry) => entry.id === modelId)?.options ?? [], readComposerOptions())
       : [];
     const selectedModel = provider?.modelCatalog?.models.find((entry) => entry.id === modelId) ?? null;
-    if (chat.composerAttachments.length > 0 && !supportsImagePrompt(
+    if (chat.composerAttachments.some((attachment) => attachment.kind === "image") && !supportsImagePrompt(
       provider?.configuration.familyId ?? null,
       selectedModel,
       capabilities,
@@ -790,6 +795,17 @@
     finally { importing = false; }
   }
 
+  /** Attaches pasted or dropped text too large to read inline as a text attachment. */
+  async function importLargeText(text: string): Promise<void> {
+    if (!chat.composer.workingFolderId) { operationError = t("chat.composer.paste.attachmentUnavailable"); return; }
+    if (chat.composerAttachments.length >= CHAT_IMAGE_LIMIT) { operationError = t("chat.composer.paste.attachmentLimit", CHAT_IMAGE_LIMIT); return; }
+    importing = true;
+    operationError = null;
+    try { await chat.importComposerTextSnippet(text, t("chat.composer.paste.snippetName", pastedTextLineCount(text))); }
+    catch (cause: unknown) { operationError = chatErrorMessage(cause); }
+    finally { importing = false; }
+  }
+
   function matchesBroadPermissionMode(mode: SafetyMode | null): boolean {
     return mode === "full_access" || mode === "custom";
   }
@@ -826,6 +842,7 @@
   compactionReported={chat.interaction?.automaticCompactionReported ?? false}
   onKeydown={handleKeydown}
   onFiles={(files) => void importFiles(files)}
+  onLargeText={(text) => void importLargeText(text)}
   onFocusChange={(focused) => { editorFocused = focused; restoreComposerFocus = focused; }}
 >
   {#snippet above()}
@@ -847,7 +864,8 @@
         onClose={closeComposerPanel}
       />
     {/if}
-    {#if chat.composerAttachments.length > 0}<ChatImageGallery images={chat.composerAttachments.map((attachment) => ({ id: attachment.id, displayName: attachment.originalDisplayName, byteSize: attachment.byteSize }))} variant="composer" onRemove={(id) => chat.removeComposerAttachment(id)} />{/if}
+    {#if composerImages.length > 0}<ChatImageGallery images={composerImages.map((attachment) => ({ id: attachment.id, displayName: attachment.originalDisplayName, byteSize: attachment.byteSize }))} variant="composer" onRemove={(id) => chat.removeComposerAttachment(id)} />{/if}
+    {#if composerSnippets.length > 0}<div class="mention-chips" data-chat-text-attachments>{#each composerSnippets as snippet (snippet.id)}<span title={snippet.originalDisplayName}><FileText size={11} />{snippet.originalDisplayName}<button type="button" aria-label={t("chat.composer.removeAttachment", snippet.originalDisplayName)} onclick={() => chat.removeComposerAttachment(snippet.id)}><X size={10} /></button></span>{/each}</div>{/if}
     {#if chat.composer.mentions.length > 0}<div class="mention-chips">{#each chat.composer.mentions as mention}<span title={mention.relativePath}><AtSign size={11} />{mention.relativePath}{#if mention.ignored}<small>{t("chat.composer.ignored")}</small>{/if}<button type="button" aria-label={t("chat.composer.removeAttachment", mention.relativePath)} onclick={() => chat.setComposerMentions(chat.composer.mentions.filter((entry) => entry.relativePath !== mention.relativePath))}><X size={10} /></button></span>{/each}</div>{/if}
   {/snippet}
   {#snippet menu()}

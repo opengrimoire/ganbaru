@@ -1165,6 +1165,7 @@ export class ChatStore {
   resolveUserInput(answers: UserInputAnswer[]): Promise<void> { return this.composerRuntimeController.resolveUserInput(answers); }
   importComposerImages(files: File[]): Promise<void> { return this.composerRuntimeController.importImages(files); }
   pickComposerImages(title: string): Promise<void> { return this.composerRuntimeController.pickImages(title); }
+  importComposerTextSnippet(text: string, displayName: string): Promise<void> { return this.composerRuntimeController.importTextSnippet(text, displayName); }
   removeComposerAttachment(attachmentId: string): void { this.composerRuntimeController.removeAttachment(attachmentId); }
 
   /**

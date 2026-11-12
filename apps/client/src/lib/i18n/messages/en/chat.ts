@@ -611,6 +611,17 @@ export const chat = {
       modelOverrideWithoutTeammate: "Mention a teammate to choose the model of the work",
       modelOverrideNeedsMention: "Mention the teammate to keep the chosen model for this work",
     },
+    paste: {
+      hiddenRemoved: (count: number) => `Removed ${count} hidden ${count === 1 ? "character" : "characters"} from the pasted text`,
+      tooLarge: (limit: string) => `The pasted text is larger than ${limit}, so it was not attached`,
+      snippetName: (lines: number) => `Pasted text (${lines} ${lines === 1 ? "line" : "lines"})`,
+      attachmentUnavailable: "Text this long is attached as a file, which needs a project folder on this device",
+      attachmentLimit: (limit: number) => `Remove an attachment first; a message holds up to ${limit}`,
+    },
+    mentionSuggestion: {
+      action: (name: string) => `Mention ${name}`,
+      dismiss: "Dismiss the mention suggestion",
+    },
     taskProgress: {
       label: "Task progress",
       title: (completed: number, total: number) => `Tasks ${completed} of ${total}`,

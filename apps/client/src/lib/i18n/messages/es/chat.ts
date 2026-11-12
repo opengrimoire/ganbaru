@@ -614,6 +614,17 @@ export const chat = {
       modelOverrideWithoutTeammate: "Menciona a un compañero para elegir el modelo del trabajo",
       modelOverrideNeedsMention: "Menciona al compañero para conservar el modelo elegido para este trabajo",
     },
+    paste: {
+      hiddenRemoved: (count: number) => `Se ${count === 1 ? "quitó" : "quitaron"} ${count} ${count === 1 ? "carácter oculto" : "caracteres ocultos"} del texto pegado`,
+      tooLarge: (limit: string) => `El texto pegado supera ${limit}, así que no se adjuntó`,
+      snippetName: (lines: number) => `Texto pegado (${lines} ${lines === 1 ? "línea" : "líneas"})`,
+      attachmentUnavailable: "Un texto tan largo se adjunta como archivo, lo que requiere una carpeta del proyecto en este dispositivo",
+      attachmentLimit: (limit: number) => `Quita primero un adjunto; un mensaje admite hasta ${limit}`,
+    },
+    mentionSuggestion: {
+      action: (name: string) => `Mencionar a ${name}`,
+      dismiss: "Descartar la sugerencia de mención",
+    },
     taskProgress: {
       label: "Progreso de tareas",
       title: (completed: number, total: number) => `Tareas: ${completed} de ${total}`,

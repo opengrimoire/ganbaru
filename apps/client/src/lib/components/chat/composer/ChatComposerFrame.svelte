@@ -8,10 +8,13 @@
 <script lang="ts">
   import { onMount, tick, type Snippet } from "svelte";
   import type { ChatComposerEditor } from "$lib/chat/composer/editor";
+  import { sanitizeComposerText } from "$lib/chat/composer/hidden-characters";
   import { clipboardImageFiles, type ContextMeterRead } from "$lib/chat/composer/model";
+  import { MAX_TEXT_SNIPPET_BYTES, classifyPastedText } from "$lib/chat/composer/paste";
   import { revealContenteditableComposerCaret } from "$lib/chat/composer/scroll";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     editorRoot = $bindable(),
@@ -30,6 +33,7 @@
     meterNote = null,
     onKeydown,
     onFiles,
+    onLargeText,
     onFocusChange,
     onPaste,
     onCopy,
@@ -71,6 +75,11 @@
     onKeydown: (event: KeyboardEvent) => void;
     /** Receives images pasted or dropped into the composer. */
     onFiles: (files: File[]) => void;
+    /**
+     * Receives pasted or dropped text of at least `LARGE_PASTE_ATTACHMENT_BYTES`, with hidden
+     * characters removed, to attach as a text attachment. Without it all text is inserted inline.
+     */
+    onLargeText?: (text: string) => void;
     onFocusChange?: (focused: boolean) => void;
     /**
      * Runs before the frame's own paste handling; returning `true` means the caller handled the
@@ -99,6 +108,8 @@
   const { t } = localization;
   let meterOpen = $state(false);
   let meterElement: HTMLElement | undefined = $state();
+  let removedHiddenCharacters = $state(0);
+  let pasteRefusal = $state<string | null>(null);
 
   onMount(() => {
     const selectionChanged = () => {
@@ -122,6 +133,28 @@
     });
   }
 
+  /**
+   * Places text arriving from outside the editor: hidden characters are removed with a notice,
+   * large text goes to `onLargeText`, and text over the attachment bound is refused visibly.
+   */
+  function receiveText(raw: string): void {
+    const { text, hiddenCharacters } = sanitizeComposerText(raw);
+    removedHiddenCharacters = hiddenCharacters;
+    pasteRefusal = null;
+    if (!text) return;
+    const placement = onLargeText ? classifyPastedText(text) : "inline";
+    if (placement === "too_large") {
+      pasteRefusal = t(
+        "chat.composer.paste.tooLarge",
+        formatNumber(localization.locale, MAX_TEXT_SNIPPET_BYTES / (1024 * 1024), { style: "unit", unit: "megabyte" }),
+      );
+    } else if (placement === "attachment") {
+      onLargeText?.(text);
+    } else {
+      insertText(text);
+    }
+  }
+
   function handlePaste(event: ClipboardEvent): void {
     if (onPaste?.(event)) return;
     const files = clipboardImageFiles(event.clipboardData);
@@ -132,7 +165,7 @@
     }
     if ([...(event.clipboardData?.types ?? [])].includes("text/plain")) {
       event.preventDefault();
-      insertText(event.clipboardData?.getData("text/plain") ?? "");
+      receiveText(event.clipboardData?.getData("text/plain") ?? "");
     }
   }
 
@@ -144,7 +177,7 @@
       return;
     }
     const text = event.dataTransfer?.getData("text/plain");
-    if (text) insertText(text);
+    if (text) receiveText(text);
   }
 
   function contextLabel(): string {
@@ -162,6 +195,12 @@
 
 <section class:hero class="chat-composer" data-chat-composer-container role="group" ondragover={(event) => event.preventDefault()} ondrop={handleDrop}>
   {@render above?.()}
+  {#if removedHiddenCharacters > 0}
+    <Notice class="composer-notice" tone="warning" role="status" message={t("chat.composer.paste.hiddenRemoved", removedHiddenCharacters)} onDismiss={() => { removedHiddenCharacters = 0; }} />
+  {/if}
+  {#if pasteRefusal}
+    <Notice class="composer-notice" message={pasteRefusal} onDismiss={() => { pasteRefusal = null; }} />
+  {/if}
   <div class="editor-shell">
     <div class="composer-editor-frame">
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->

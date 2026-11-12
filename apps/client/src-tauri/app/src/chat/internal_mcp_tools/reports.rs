@@ -1,5 +1,5 @@
 //! The ask and report host tools: a teammate asks the person who assigned the work, or posts a
-//! plan, replan, or result in the reply thread.
+//! plan, replan, result, or channel note proposal in the reply thread.
 //!
 //! Both write in one transaction through the organizational coordination services, which keep
 //! the call idempotent by its client request id and refuse a run whose work already ended.
@@ -73,7 +73,7 @@ pub(super) async fn ask(
     Ok(json!({ "status": "waiting" }))
 }
 
-/// Posts a plan, replan, or result report in the reply thread.
+/// Posts a plan, replan, result, or channel note proposal in the reply thread.
 pub(super) async fn report(
     context: &HostToolContext<'_>,
     arguments: &Map<String, Value>,
@@ -82,7 +82,7 @@ pub(super) async fn report(
         .ok()
         .and_then(ReportKind::from_name)
         .ok_or_else(|| HostReportRefusal::UnknownKind.into_error())?;
-    let body = report_body(arguments)?;
+    let body = report_body(kind, arguments)?;
     let client_request_id = client_request_id(arguments)?;
     let now = now_timestamp()?;
     let mut transaction = context
@@ -114,14 +114,14 @@ pub(super) fn host_call<'a>(
     }
 }
 
-/// The trimmed report body. An empty or oversized body is a typed refusal, so the teammate can
+/// The trimmed body of a `kind` report. An empty or oversized body is a typed refusal, so the teammate can
 /// shorten it; any other malformed body is denied generically.
-fn report_body(arguments: &Map<String, Value>) -> ChatResult<String> {
+fn report_body(kind: ReportKind, arguments: &Map<String, Value>) -> ChatResult<String> {
     let body = arguments
         .get("body")
         .and_then(Value::as_str)
         .ok_or_else(generic_denial_error)?;
-    let body = validate_report_body(body).map_err(HostReportRefusal::into_error)?;
+    let body = validate_report_body(kind, body).map_err(HostReportRefusal::into_error)?;
     if body
         .chars()
         .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
@@ -184,6 +184,7 @@ fn persistence_error(_error: sqlx::Error) -> ChatError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ganbaru_sync_contracts::chat_channel_notes::MAX_CHANNEL_NOTE_CHARS;
 
     fn arguments(value: Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap()
@@ -214,11 +215,17 @@ mod tests {
     #[test]
     fn report_bodies_refuse_empty_and_oversized_text_with_their_codes() {
         assert_eq!(
-            report_body(&arguments(json!({ "body": " Plan\n1. Read " }))).unwrap(),
+            report_body(
+                ReportKind::Plan,
+                &arguments(json!({ "body": " Plan\n1. Read " }))
+            )
+            .unwrap(),
             "Plan\n1. Read"
         );
         let refusal = |value: Value| {
-            HostReportRefusal::from_error(&report_body(&arguments(value)).unwrap_err())
+            HostReportRefusal::from_error(
+                &report_body(ReportKind::Plan, &arguments(value)).unwrap_err(),
+            )
         };
         assert_eq!(
             refusal(json!({ "body": "  " })),
@@ -230,6 +237,35 @@ mod tests {
         );
         assert_eq!(refusal(json!({ "body": "bell\u{7}" })), None);
         assert_eq!(refusal(json!({})), None);
+    }
+
+    #[test]
+    fn note_proposal_bodies_refuse_empty_oversized_and_control_text() {
+        let note = |value: Value| report_body(ReportKind::NoteProposal, &arguments(value));
+        assert_eq!(
+            note(json!({ "body": " Reply in English\n" })).unwrap(),
+            "Reply in English"
+        );
+        let limit = "n".repeat(MAX_CHANNEL_NOTE_CHARS);
+        assert_eq!(note(json!({ "body": limit })).unwrap(), limit);
+        let refusal = |value: Value| HostReportRefusal::from_error(&note(value).unwrap_err());
+        assert_eq!(
+            refusal(json!({ "body": " \n " })),
+            Some(HostReportRefusal::EmptyBody)
+        );
+        assert_eq!(
+            refusal(json!({ "body": "n".repeat(MAX_CHANNEL_NOTE_CHARS + 1) })),
+            Some(HostReportRefusal::BodyTooLarge)
+        );
+        assert_eq!(refusal(json!({ "body": "bell\u{7}" })), None);
+    }
+
+    #[test]
+    fn the_report_tool_lists_the_note_proposal_kind() {
+        let properties = report_properties();
+        let kinds = properties["kind"]["enum"].as_array().unwrap();
+        assert!(kinds.contains(&json!("note_proposal")));
+        assert_eq!(kinds.len(), ReportKind::ALL.len());
     }
 
     #[test]

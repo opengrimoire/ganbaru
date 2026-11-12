@@ -210,7 +210,7 @@ fn definition(tool: HostTool) -> Option<Tool> {
         ),
         HostTool::Report => mutating_tool(
             name,
-            "Post a plan, a revised plan, or the result of this work in the reply thread",
+            "Post a plan, a revised plan, the result of this work, or a short fact to suggest as a channel note in the reply thread",
             reports::report_properties(),
             false,
         ),

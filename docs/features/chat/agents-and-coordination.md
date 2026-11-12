@@ -53,7 +53,7 @@ Context assembly follows participant access and the execution target. It never s
 
 ## Results and review
 
-Agents report material outcomes as typed updates (plan, replan, question, approval, failure, result, review) rather than narrating every tool call into a shared channel. Detailed execution stays in the run timeline. Teammates post plan, replan, and result reports and ask questions of the person who assigned the work through host tools; a question offers answer choices, and a reported result moves the assignment to review.
+Agents report material outcomes as typed updates (plan, replan, question, approval, failure, result, review) rather than narrating every tool call into a shared channel. Detailed execution stays in the run timeline. Teammates post plan, replan, and result reports, suggest channel notes for a person to save or dismiss, and ask questions of the person who assigned the work through host tools; a question offers answer choices, and a reported result moves the assignment to review.
 
 Each completed assignment that was reviewed records whether it was accepted or changes were requested, who reviewed it, and when. Review focuses on decisions and risk: what changed or was proposed, what could not be completed and why, which assumptions or approvals affected the outcome, what needs human judgment, and which checkpoint or files hold the result. Approval of one result does not grant standing approval for later work, and rejected or superseded proposals remain understandable in history.
 

@@ -101,6 +101,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_create_channel_note,
             chat::organization::chat_update_channel_note,
             chat::organization::chat_delete_channel_note,
+            chat::organization::chat_accept_note_proposal,
+            chat::organization::chat_dismiss_note_proposal,
             chat::organization::chat_list_scheduled_messages,
             chat::organization::chat_cancel_scheduled_message,
             chat::organization::chat_retry_scheduled_message,

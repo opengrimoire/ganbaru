@@ -1,17 +1,22 @@
 //! Questions and reports a teammate posts through its host tools.
 //!
 //! A host question moves working work to `waiting_for_answer` until the person who assigned it
-//! replies, and a host report posts a plan, replan, or result in the reply thread. Both are
-//! teammate messages with a semantic update whose payload carries [`HOST_TOOL_SOURCE`], so the
-//! provider event projection can tell what the teammate reported from what it would infer. Their
-//! ids derive from the run and the client request id, so a repeated call writes nothing new.
+//! replies, and a host report posts a plan, replan, result, or channel note proposal in the reply
+//! thread. Both are teammate messages with a semantic update whose payload carries
+//! [`HOST_TOOL_SOURCE`], so the provider event projection can tell what the teammate reported
+//! from what it would infer. Their ids derive from the run and the client request id, so a
+//! repeated call writes nothing new.
 
 use super::delegation::MAX_REPORT_BODY_BYTES;
 use crate::ids::derived_id;
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use crate::timeline::{bounded_projected_revision, next_order_key};
+use ganbaru_sync_contracts::chat_channel_notes::MAX_CHANNEL_NOTE_CHARS;
 use serde_json::{Value, json};
 use sqlx::SqliteConnection;
+
+/// Most channel note proposals one run may post, so a teammate cannot flood the channel.
+pub const MAX_NOTE_PROPOSALS_PER_RUN: i64 = 3;
 
 /// Longest question a teammate may ask, in characters.
 pub const MAX_QUESTION_CHARS: usize = 4000;
@@ -33,11 +38,13 @@ pub enum ReportKind {
     Plan,
     Replan,
     Result,
+    /// A fact the teammate suggests saving as a channel note, which only a person can accept.
+    NoteProposal,
 }
 
 impl ReportKind {
     /// Every report kind.
-    pub const ALL: [Self; 3] = [Self::Plan, Self::Replan, Self::Result];
+    pub const ALL: [Self; 4] = [Self::Plan, Self::Replan, Self::Result, Self::NoteProposal];
 
     /// The wire name of the kind, equal to its semantic update kind.
     pub const fn as_str(self) -> &'static str {
@@ -45,6 +52,7 @@ impl ReportKind {
             Self::Plan => "plan",
             Self::Replan => "replan",
             Self::Result => "result",
+            Self::NoteProposal => "note_proposal",
         }
     }
 
@@ -60,7 +68,8 @@ impl ReportKind {
 pub enum HostReportRefusal {
     /// The report body is empty once trimmed.
     EmptyBody,
-    /// The report body exceeds [`MAX_REPORT_BODY_BYTES`].
+    /// The report body exceeds [`MAX_REPORT_BODY_BYTES`], or a note proposal exceeds
+    /// [`MAX_CHANNEL_NOTE_CHARS`] characters.
     BodyTooLarge,
     /// The report kind is not a [`ReportKind`].
     UnknownKind,
@@ -68,15 +77,18 @@ pub enum HostReportRefusal {
     RequestConflict,
     /// The assignment is not working, so it cannot ask, or its run already ended.
     AssignmentInactive,
+    /// The run already posted [`MAX_NOTE_PROPOSALS_PER_RUN`] note proposals.
+    TooManyNoteProposals,
 }
 
 impl HostReportRefusal {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::EmptyBody,
         Self::BodyTooLarge,
         Self::UnknownKind,
         Self::RequestConflict,
         Self::AssignmentInactive,
+        Self::TooManyNoteProposals,
     ];
 
     /// The stable tool error code.
@@ -87,6 +99,7 @@ impl HostReportRefusal {
             Self::UnknownKind => "report_unknown_kind",
             Self::RequestConflict => "host_request_conflict",
             Self::AssignmentInactive => "assignment_not_working",
+            Self::TooManyNoteProposals => "note_proposal_limit_reached",
         }
     }
 
@@ -106,18 +119,25 @@ impl HostReportRefusal {
     }
 }
 
-/// Returns the trimmed report body, or the refusal for an empty body or one over
-/// [`MAX_REPORT_BODY_BYTES`].
+/// Returns the trimmed body of a `kind` report, or the refusal for an empty body, one over
+/// [`MAX_REPORT_BODY_BYTES`], or a note proposal over [`MAX_CHANNEL_NOTE_CHARS`] characters, the
+/// bound of the note a person would save from it.
 ///
 /// # Errors
 ///
 /// Returns [`HostReportRefusal::EmptyBody`] or [`HostReportRefusal::BodyTooLarge`].
-pub fn validate_report_body(body: &str) -> Result<&str, HostReportRefusal> {
+pub fn validate_report_body(kind: ReportKind, body: &str) -> Result<&str, HostReportRefusal> {
     let body = body.trim();
     if body.is_empty() {
         return Err(HostReportRefusal::EmptyBody);
     }
-    if body.len() > MAX_REPORT_BODY_BYTES {
+    let too_large = match kind {
+        ReportKind::NoteProposal => body.chars().count() > MAX_CHANNEL_NOTE_CHARS,
+        ReportKind::Plan | ReportKind::Replan | ReportKind::Result => {
+            body.len() > MAX_REPORT_BODY_BYTES
+        }
+    };
+    if too_large {
         return Err(HostReportRefusal::BodyTooLarge);
     }
     Ok(body)
@@ -197,12 +217,14 @@ pub async fn record_host_question(
 }
 
 /// Records the host report of `kind` with the validated `body` that `call` posts in the reply
-/// thread, while its assignment works or waits for an answer.
+/// thread, while its assignment works or waits for an answer. A run posts at most
+/// [`MAX_NOTE_PROPOSALS_PER_RUN`] note proposals.
 ///
 /// # Errors
 ///
 /// Returns [`HostReportRefusal::RequestConflict`] when the request id was used with another
-/// report, [`HostReportRefusal::AssignmentInactive`] when the assignment or run ended, both as
+/// report, [`HostReportRefusal::AssignmentInactive`] when the assignment or run ended,
+/// [`HostReportRefusal::TooManyNoteProposals`] for a note proposal past the run's limit, all as
 /// errors from [`HostReportRefusal::into_error`], and a persistence error when a read or write
 /// fails.
 pub async fn record_host_report(
@@ -218,6 +240,11 @@ pub async fn record_host_report(
         return outcome;
     }
     let target = read_active_target(connection, call, &["working", "waiting_for_answer"]).await?;
+    if kind == ReportKind::NoteProposal
+        && run_note_proposals(connection, call.run_id).await? >= MAX_NOTE_PROPOSALS_PER_RUN
+    {
+        return Err(HostReportRefusal::TooManyNoteProposals.into_error());
+    }
     insert_teammate_update(
         connection,
         &TeammateUpdate {
@@ -235,6 +262,22 @@ pub async fn record_host_report(
     )
     .await?;
     Ok(HostCallOutcome::Posted)
+}
+
+/// How many note proposals the run `run_id` posted through the report tool.
+async fn run_note_proposals(connection: &mut SqliteConnection, run_id: &str) -> ChatResult<i64> {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM chat_work_semantic_updates
+         WHERE update_kind = ?
+           AND json_extract(payload_data, '$.agentRunId') = ?
+           AND json_extract(payload_data, '$.payload.source') = ?",
+    )
+    .bind(ReportKind::NoteProposal.as_str())
+    .bind(run_id)
+    .bind(HOST_TOOL_SOURCE)
+    .fetch_one(connection)
+    .await
+    .map_err(persistence_error)
 }
 
 /// Whether the run `run_id` posted a host question.

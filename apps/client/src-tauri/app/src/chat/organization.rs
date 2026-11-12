@@ -7,7 +7,8 @@ use super::channels::{
     timestamp, u64_value,
 };
 pub use channel_notes::{
-    CreateChatChannelNoteCommand, DeleteChatChannelNoteCommand, UpdateChatChannelNoteCommand,
+    AcceptChatNoteProposalCommand, CreateChatChannelNoteCommand, DeleteChatChannelNoteCommand,
+    DismissChatNoteProposalCommand, UpdateChatChannelNoteCommand,
 };
 pub use ganbaru_chat::coordination::contracts::*;
 use ganbaru_chat_contracts::models::*;
@@ -959,6 +960,26 @@ pub async fn chat_delete_channel_note(
     request: DeleteChatChannelNoteCommand,
 ) -> ChatResult<()> {
     channel_notes::delete_channel_note(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Saves a teammate's note proposal as a channel note, as suggested or with the person's text.
+#[tauri::command]
+pub async fn chat_accept_note_proposal(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: AcceptChatNoteProposalCommand,
+) -> ChatResult<ChatChannelNoteRead> {
+    channel_notes::accept_note_proposal(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Dismisses a teammate's note proposal so no device saves it.
+#[tauri::command]
+pub async fn chat_dismiss_note_proposal(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: DismissChatNoteProposalCommand,
+) -> ChatResult<()> {
+    channel_notes::dismiss_note_proposal(&chat_pool(app, db_url).await?, &request).await
 }
 
 #[tauri::command]

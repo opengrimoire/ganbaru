@@ -1,6 +1,7 @@
 //! Channel notes: short facts a person saves in a channel for the people and teammates in it.
 //!
-//! Only a person writes a note, and only a current member of the channel's conversation. Every
+//! Only a person writes a note, and only a current member of the channel's conversation; a
+//! teammate can only propose one for a person to settle. Every
 //! write records an organizational command receipt keyed by its client command id in the same
 //! transaction, so repeating a command returns its first result instead of writing again.
 
@@ -17,6 +18,11 @@ use ganbaru_chat_contracts::models::{
 use ganbaru_sync_contracts::chat_channel_notes::MAX_CHANNEL_NOTE_CHARS;
 use serde::{Deserialize, Serialize};
 use sqlx::{AssertSqlSafe, Row, SqliteConnection, SqlitePool};
+
+mod proposals;
+
+pub use proposals::{AcceptChatNoteProposalCommand, DismissChatNoteProposalCommand};
+pub(super) use proposals::{accept_note_proposal, dismiss_note_proposal};
 
 /// Most live notes a person may keep in one channel. Merges from other devices may exceed it.
 pub const MAX_ACTIVE_CHANNEL_NOTES: i64 = 50;
@@ -65,6 +71,8 @@ pub(super) enum NoteAction {
     Create,
     Update,
     Delete,
+    Accept,
+    Dismiss,
 }
 
 /// The stored result of a channel note command.

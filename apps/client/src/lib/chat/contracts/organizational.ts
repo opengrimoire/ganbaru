@@ -2,6 +2,7 @@ import type {
   ChatAgentRunId,
   ChatAccessProfileId,
   ChatAccessProfileRevisionId,
+  ChatAssignmentInputId,
   ChatAttachmentId,
   ChatChannelId,
   ChatCommandId,
@@ -32,6 +33,10 @@ import type { ModelOptionSelection } from "./provider";
 
 export const CHAT_PARTICIPANT_KINDS = ["local_user", "ai_teammate", "human"] as const;
 export type ChatParticipantKind = (typeof CHAT_PARTICIPANT_KINDS)[number];
+
+/** How a reply reaches active work: `steer` into the running turn, or `queue` after it ends. */
+export const CHAT_FOLLOWUP_ROUTINGS = ["steer", "queue"] as const;
+export type ChatFollowupRouting = (typeof CHAT_FOLLOWUP_ROUTINGS)[number];
 
 export const CHAT_TEAMMATE_CONFIGURATION_STATES = [
   "healthy",
@@ -674,6 +679,8 @@ export interface ChatWorkAssignmentRead {
   review: ChatAssignmentReview | null;
   /** What starting this work here would run, present while it waits for a local action on the reading device. */
   localAcceptance: ChatAssignmentAcceptanceOfferRead | null;
+  /** Chat thread of the newest run of this reply thread on the reading device, used to show its usage; null when none ran here. */
+  latestRunProviderThreadId: ChatThreadId | null;
 }
 
 /** Where delegated work came from and what it was asked to return. */
@@ -734,6 +741,36 @@ export interface ChatWaitingAssignmentRead {
   replyThreadId: ChatReplyThreadId;
   teammateDisplayName: string;
   createdAt: UtcTimestamp;
+}
+
+export const CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS = ["steer", "queued_continuation", "follow_up"] as const;
+/** How a reply reaches running or finished work: into the current turn, after it, or as new work. */
+export type ChatAssignmentInputRoutingKind = (typeof CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS)[number];
+
+export const CHAT_ASSIGNMENT_INPUT_DELIVERY_STATES = ["pending", "delivered", "failed", "ignored"] as const;
+export type ChatAssignmentInputDeliveryState = (typeof CHAT_ASSIGNMENT_INPUT_DELIVERY_STATES)[number];
+
+/** A reply addressed to running work, editable and cancellable while it is pending. */
+export interface ChatAssignmentInputRead {
+  inputId: ChatAssignmentInputId;
+  messageItemId: ChatConversationItemId;
+  ordinal: number;
+  routingKind: ChatAssignmentInputRoutingKind;
+  deliveryState: ChatAssignmentInputDeliveryState;
+  deliveredAt: UtcTimestamp | null;
+  /** The message revision the run received, present once the input is delivered. */
+  deliveredRevisionId: ChatMessageRevisionId | null;
+  currentRevisionId: ChatMessageRevisionId | null;
+  preview: string;
+  /** Whether the message continues past the preview. */
+  previewTruncated: boolean;
+  authorParticipantId: ChatParticipantId | null;
+}
+
+/** New text for a pending assignment input, which replaces its message's current revision. */
+export interface ChatAssignmentInputEditRequest {
+  normalizedMarkdown: string;
+  richContent: VersionedJson;
 }
 
 export interface ChatAgentRunRead {
@@ -826,6 +863,17 @@ export interface PostChatMessageRequest {
   references: ChatMessageReference[];
   executionTarget: ChatExecutionTarget | null;
   alsoSendToChannel: boolean;
+  /** How a reply to a thread with active work reaches it; absent steers working work and queues anything else. Scheduled messages refuse it. */
+  followupRouting?: ChatFollowupRouting;
+  /** Model for the new work this post starts, over the teammate's default. A post that reaches active work, or a scheduled message, refuses it. */
+  modelOverride?: ChatAssignmentModelOverride;
+}
+
+/** Model selection one assignment runs with instead of its teammate's default; effort is one of the model options. */
+export interface ChatAssignmentModelOverride {
+  providerManagedModel: boolean;
+  modelId: ModelId | null;
+  modelOptions: ModelOptionSelection[];
 }
 
 export interface PostChatMessageResult {
@@ -833,6 +881,8 @@ export interface PostChatMessageResult {
   replyThreadId: ChatReplyThreadId | null;
   assignment: ChatWorkAssignmentRead | null;
   assignmentInputQueued: boolean;
+  /** How the reply reached active work, when it became an input of it; a steer on work that is not working reports `queue`. */
+  routedAs: ChatFollowupRouting | null;
 }
 
 export const CHAT_SCHEDULED_MESSAGE_STATES = ["scheduled", "dispatching", "failed"] as const;

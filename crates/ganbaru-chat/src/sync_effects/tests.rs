@@ -1743,6 +1743,74 @@ async fn queued_assignments_and_pending_inputs_are_reported_for_their_executing_
     );
 }
 
+/// A reply that syncs in after the turn ended is reported while its work still continues with
+/// it: on work ready for review, and on work that completed by itself with no follow-up yet.
+#[tokio::test]
+async fn a_pending_input_on_work_whose_turn_ended_is_reported_until_a_follow_up_takes_it() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    sqlx::query(
+        "INSERT INTO chat_work_assignment_inputs
+            (id, assignment_id, message_item_id, ordinal, routing_kind, delivery_state,
+             created_at)
+         VALUES ('input:second', 'assignment:sync-effects', 'item:second', 2,
+                 'queued_continuation', 'pending', ?)",
+    )
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let reported = BTreeSet::from(["assignment:sync-effects".to_string()]);
+    async fn routed(pool: &SqlitePool) -> BTreeSet<String> {
+        run_hook(pool, ASSIGNMENT_INPUTS_TABLE, &["input:second"])
+            .await
+            .routed_inputs
+    }
+
+    for state in ["ready_for_review", "completed"] {
+        set_assignment_state(&pool, state).await;
+        assert_eq!(routed(&pool).await, reported, "{state}");
+    }
+    for state in ["failed", "cancelled"] {
+        set_assignment_state(&pool, state).await;
+        assert!(routed(&pool).await.is_empty(), "{state}");
+    }
+
+    sqlx::query(
+        "UPDATE chat_work_assignments
+         SET state = 'completed', review_outcome = 'accepted', reviewed_at = ?,
+             reviewed_by_participant_id = 'participant:local'
+         WHERE id = 'assignment:sync-effects'",
+    )
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(routed(&pool).await.is_empty(), "reviewed");
+
+    sqlx::query(
+        "UPDATE chat_work_assignments
+         SET review_outcome = NULL, reviewed_at = NULL, reviewed_by_participant_id = NULL
+         WHERE id = 'assignment:sync-effects'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_work_assignments
+            (id, reply_thread_id, teammate_id, triggering_message_item_id,
+             previous_assignment_id, state, created_at, updated_at)
+         VALUES ('assignment:successor', 'reply:sync-effects', ?1, 'item:second',
+                 'assignment:sync-effects', 'queued', ?2, ?2)",
+    )
+    .bind(TEAMMATE_ID)
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(routed(&pool).await.is_empty(), "followed");
+}
+
 async fn settled(
     pool: &SqlitePool,
     winner: Option<&str>,

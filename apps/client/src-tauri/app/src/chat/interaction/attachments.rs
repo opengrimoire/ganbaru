@@ -17,6 +17,9 @@ use tauri_plugin_dialog::{DialogExt, FilePath};
 
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 pub(crate) const MAX_IMAGE_COUNT: usize = 8;
+/// The largest text attachment in bytes, so a pasted log fits while staying far below
+/// `MAX_ATTACHMENT_BYTES`. The composer mirrors it as `MAX_TEXT_SNIPPET_BYTES` in `composer/paste.ts`.
+const MAX_TEXT_SNIPPET_BYTES: usize = 1024 * 1024;
 
 pub(crate) async fn import_image(
     app: tauri::AppHandle,
@@ -215,17 +218,24 @@ pub(crate) async fn read_attachments(
     Ok(result)
 }
 
+/// Refuses text attachment content that is empty, larger than `MAX_TEXT_SNIPPET_BYTES`, or holds a
+/// NUL character. Oversized text is refused whole, never truncated.
+fn validate_text_snippet(text: &str) -> ChatResult<()> {
+    if text.is_empty() || text.len() > MAX_TEXT_SNIPPET_BYTES || text.contains('\0') {
+        return Err(ChatError::validation(
+            "text",
+            "Chat text context must be between 1 byte and 1 MiB",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn import_text_snippet(
     app: tauri::AppHandle,
     db_url: String,
     request: ImportChatTextSnippetRequest,
 ) -> ChatResult<attachments::ChatAttachmentRead> {
-    if request.text.is_empty() || request.text.len() > 128 * 1024 || request.text.contains('\0') {
-        return Err(ChatError::validation(
-            "text",
-            "Chat text context must be between 1 byte and 128 KiB",
-        ));
-    }
+    validate_text_snippet(&request.text)?;
     let pool = chat_pool(app.clone(), db_url).await?;
     require_workspace(
         &app,
@@ -288,4 +298,22 @@ fn attachment_io_error<T>(_error: T) -> ChatError {
         "Chat image could not be read",
         true,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_snippet_bound_is_named_and_refuses_over_limit() {
+        assert!(validate_text_snippet(&"a".repeat(MAX_TEXT_SNIPPET_BYTES)).is_ok());
+        let multibyte = "\u{E9}".repeat(MAX_TEXT_SNIPPET_BYTES / 2);
+        assert!(validate_text_snippet(&multibyte).is_ok());
+        let over = validate_text_snippet(&"a".repeat(MAX_TEXT_SNIPPET_BYTES + 1))
+            .expect_err("text over the bound is refused");
+        assert_eq!(over.code, ChatErrorCode::Validation);
+        assert!(validate_text_snippet(&format!("{multibyte}a")).is_err());
+        assert!(validate_text_snippet("").is_err());
+        assert!(validate_text_snippet("log\0line").is_err());
+    }
 }

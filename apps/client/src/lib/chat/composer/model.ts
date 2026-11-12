@@ -605,6 +605,16 @@ export function supportsImagePrompt(
   return supports(capabilities, "images");
 }
 
+/**
+ * Lists the questions whose answers are incomplete or invalid.
+ *
+ * Attachments count as a free-form answer: they are allowed only where free-form text is, at
+ * most `CHAT_IMAGE_LIMIT` per answer, and they complete a required question.
+ *
+ * @param questions The questions the provider asked.
+ * @param answers The answers the user gave.
+ * @returns The ids of the questions to fix, in question order.
+ */
 export function validateUserInputAnswers(
   questions: UserInputQuestion[],
   answers: import("$lib/chat/contracts").UserInputAnswer[],
@@ -615,11 +625,14 @@ export function validateUserInputAnswers(
     const answer = byQuestion.get(question.id);
     const selected = answer?.selectedOptionIds ?? [];
     const freeForm = answer?.freeFormText?.trim() ?? "";
+    const attachments = answer?.attachmentIds ?? [];
     const optionIds = new Set(question.options.map((option) => option.id));
     const validSelection = selected.every((optionId) => optionIds.has(optionId))
       && (question.multiple || selected.length <= 1);
-    const validFreeForm = question.freeFormAllowed || freeForm.length === 0;
-    const complete = !question.required || selected.length > 0 || freeForm.length > 0;
+    const validFreeForm = question.freeFormAllowed
+      ? attachments.length <= CHAT_IMAGE_LIMIT
+      : freeForm.length === 0 && attachments.length === 0;
+    const complete = !question.required || selected.length > 0 || freeForm.length > 0 || attachments.length > 0;
     if (!validSelection || !validFreeForm || !complete) invalid.push(question.id);
   }
   return invalid;

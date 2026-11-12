@@ -772,6 +772,7 @@ async fn exercise_interactions(
                     question_id: "question-0".to_string(),
                     selected_option_ids: vec!["option-1".to_string()],
                     free_form_text: Some("Custom answer".to_string()),
+                    attachment_ids: Vec::new(),
                 }],
             },
             &context("question"),

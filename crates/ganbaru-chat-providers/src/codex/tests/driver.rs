@@ -449,6 +449,7 @@ fn driver_fixture_routes_native_approval_and_structured_question() {
                                     question_id: "strategy".to_string(),
                                     selected_option_ids: vec!["q0-option-0".to_string()],
                                     free_form_text: None,
+                                    attachment_ids: Vec::new(),
                                 }],
                             },
                             &context("answer"),

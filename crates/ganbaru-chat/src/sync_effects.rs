@@ -99,7 +99,8 @@ pub struct ChatSyncEffects {
     /// Settled assignments whose local dispatch jobs ended or whose active authorizations were
     /// revoked, so the runs they granted stop.
     pub settled_assignments: BTreeSet<String>,
-    /// Assignments with an arrived input still pending delivery to their running work.
+    /// Assignments with an arrived input still pending, for running work to receive or for work
+    /// whose turn ended to continue with in a follow-up.
     pub routed_inputs: BTreeSet<String>,
     /// Assignments the apply deleted. The delete cascades away their runs and authorizations,
     /// so the caller stops running work whose authorization no longer exists.
@@ -324,7 +325,13 @@ pub async fn after_materialize(
                      JOIN chat_work_assignments assignment
                        ON assignment.id = input.assignment_id
                      WHERE input.id = ? AND input.delivery_state = 'pending'
-                       AND assignment.state NOT IN ('completed', 'failed', 'cancelled')",
+                       AND (assignment.state NOT IN ('completed', 'failed', 'cancelled') OR (
+                         assignment.state = 'completed' AND assignment.review_outcome IS NULL
+                         AND NOT EXISTS (
+                           SELECT 1 FROM chat_work_assignments successor
+                           WHERE successor.previous_assignment_id = assignment.id
+                         )
+                       ))",
                 )
                 .bind(key)
                 .fetch_optional(&mut *connection)

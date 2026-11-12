@@ -758,13 +758,16 @@ pub(super) async fn read_assignment(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
+    let reply_thread_id = ChatReplyThreadId::new(
+        row.try_get::<String, _>("reply_thread_id")
+            .map_err(persistence_error)?,
+    )
+    .map_err(identifier_error)?;
     Ok(ChatWorkAssignmentRead {
         id: assignment_id.clone(),
-        reply_thread_id: ChatReplyThreadId::new(
-            row.try_get::<String, _>("reply_thread_id")
-                .map_err(persistence_error)?,
-        )
-        .map_err(identifier_error)?,
+        latest_run_provider_thread_id: latest_run_provider_thread_id(pool, &reply_thread_id)
+            .await?,
+        reply_thread_id,
         teammate: read_participant(pool, &teammate_id).await?,
         triggering_message_item_id: ChatConversationItemId::new(
             row.try_get::<String, _>("triggering_message_item_id")
@@ -790,6 +793,31 @@ pub(super) async fn read_assignment(
         review: read_assignment_review(&row)?,
         local_acceptance: None,
     })
+}
+
+/// The provider thread of the newest run in a reply thread that executed on this device.
+///
+/// Runs are device-local, so a reply thread whose work ran elsewhere has none and the composer
+/// shows no usage instead of inventing it.
+async fn latest_run_provider_thread_id(
+    pool: &SqlitePool,
+    reply_thread_id: &ChatReplyThreadId,
+) -> ChatResult<Option<ChatThreadId>> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT run.provider_thread_id
+         FROM chat_agent_runs run
+         JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
+         WHERE assignment.reply_thread_id = ? AND run.provider_thread_id IS NOT NULL
+         ORDER BY assignment.created_at DESC, assignment.id DESC, run.run_ordinal DESC
+         LIMIT 1",
+    )
+    .bind(reply_thread_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?
+    .map(ChatThreadId::new)
+    .transpose()
+    .map_err(identifier_error)
 }
 
 /// The review stored on an assignment row: all three review columns, or none.

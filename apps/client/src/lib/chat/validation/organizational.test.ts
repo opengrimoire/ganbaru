@@ -27,6 +27,7 @@ function assignmentWire(overrides: Record<string, unknown>): Record<string, unkn
     review: null,
     localAcceptance: null,
     delegation: null,
+    latestRunProviderThreadId: null,
     ...overrides,
   };
 }

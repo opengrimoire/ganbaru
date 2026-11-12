@@ -411,6 +411,7 @@ fn question_resolution_maps_stable_option_ids_to_exact_provider_labels() {
                 question_id: "question-0".to_string(),
                 selected_option_ids: vec!["option-0-1".to_string()],
                 free_form_text: None,
+                attachment_ids: Vec::new(),
             }],
         };
         resolve_user_input(&connection.client(), &pending, &request)

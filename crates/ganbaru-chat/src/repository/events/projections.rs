@@ -552,9 +552,55 @@ pub(in crate::repository) async fn apply_projection(
             .map_err(persistence_error)?;
             changed.extend([ChatProjectionKey::Thread, ChatProjectionKey::Activities]);
         }
+        CanonicalEvent::RuntimeWarning(notice)
+        | CanonicalEvent::ConfigurationWarning(notice)
+        | CanonicalEvent::DeprecationNotice(notice) => {
+            insert_notice_activity(transaction, sequence, runtime, notice).await?;
+            changed.push(ChatProjectionKey::Activities);
+        }
         _ => {}
     }
     Ok(changed)
+}
+
+/// Longest provider title a notice row keeps, matching the `chat_activities.title` bound.
+const NOTICE_TITLE_LIMIT: usize = 2000;
+
+/// Records one provider warning or notice as a completed `notice` activity keyed by its event.
+///
+/// The row keeps the provider code in its safe metadata so the timeline can localize known codes,
+/// and the provider title as the fallback for codes without a catalog entry. The turn link is kept
+/// only when the turn row exists, because a notice can arrive outside or after a turn.
+async fn insert_notice_activity(
+    transaction: &mut Transaction<'_, Sqlite>,
+    sequence: i64,
+    runtime: &CanonicalRuntimeEvent,
+    notice: &ganbaru_chat_contracts::events::NotificationEvent,
+) -> ChatResult<()> {
+    let title: String = notice.title.chars().take(NOTICE_TITLE_LIMIT).collect();
+    sqlx::query(
+        "INSERT INTO chat_activities
+            (id, thread_id, turn_id, sequence_anchor, item_kind, status, title, detail,
+             safe_metadata_data, source_event_type, completed_at, created_at, updated_at)
+         VALUES (?, ?, (SELECT id FROM chat_turns WHERE id = ?), ?, 'notice', 'completed', ?, ?,
+                 ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO NOTHING",
+    )
+    .bind(format!("activity:{}", runtime.event_id.as_str()))
+    .bind(runtime.thread_id.as_str())
+    .bind(runtime.turn_id.as_ref().map(|value| value.as_str()))
+    .bind(sequence)
+    .bind(title)
+    .bind(notice.detail.as_deref())
+    .bind(serde_json::to_string(&json!({ "code": notice.code })).map_err(serialization_error)?)
+    .bind(event_type(&runtime.event)?)
+    .bind(runtime.created_at.as_str())
+    .bind(runtime.created_at.as_str())
+    .bind(runtime.created_at.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
 }
 
 async fn upsert_activity_detail(

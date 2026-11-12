@@ -1003,6 +1003,7 @@ fn redacted_answers(
             } else {
                 answer.free_form_text.clone()
             },
+            attachment_ids: answer.attachment_ids.clone(),
         })
         .collect()
 }

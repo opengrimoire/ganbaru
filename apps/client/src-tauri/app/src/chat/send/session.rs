@@ -563,6 +563,10 @@ impl ProviderEventSink for DurableChatEventSink {
             }
             let stopped_thread = matches!(&event.event, CanonicalEvent::SessionExited(_))
                 .then(|| event.thread_id.clone());
+            let completed_organizational_turn = (self.organizational
+                && matches!(&event.event, CanonicalEvent::TurnCompleted(_)))
+            .then(|| event.turn_id.clone())
+            .flatten();
             let ingestion: ChatResult<()> = async {
                 let diagnostic_expires_at =
                     crate::chat::diagnostics_commands::attach_opt_in_diagnostic(
@@ -603,6 +607,11 @@ impl ProviderEventSink for DurableChatEventSink {
                 self.app
                     .state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>()
                     .finish_thread(&thread_id);
+            }
+            if let Some(turn_id) = completed_organizational_turn.filter(|_| ingestion.is_ok()) {
+                // The ingested completion settled the assignment, so replies queued behind the
+                // turn can continue it now.
+                crate::chat::organization::continue_queued_replies_after_turn(&self.app, &turn_id);
             }
             ingestion
         })

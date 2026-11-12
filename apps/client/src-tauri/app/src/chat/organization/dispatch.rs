@@ -220,8 +220,10 @@ async fn delegated_authority_lost(
 /// and the answers the first turn carried, delivered once `launch` started its run. Returns
 /// whether the run started.
 ///
-/// A failed launch, or a run that settled before it started, delivered nothing, so its inputs
-/// stay pending for Retry.
+/// The delivered revision is the one the package froze, not the message's current revision, so
+/// a reply edited after the freeze reads as edited after delivery; an input the package does not
+/// carry records no revision. A failed launch, or a run that settled before it started,
+/// delivered nothing, so its inputs stay pending for Retry.
 async fn mark_initial_assignment_input_delivered(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
@@ -245,7 +247,22 @@ async fn mark_initial_assignment_input_delivered(
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     sqlx::query(
         "UPDATE chat_work_assignment_inputs
-         SET delivery_state = 'delivered', delivered_at = ?
+         SET delivery_state = 'delivered', delivered_at = ?,
+             delivered_revision_id = (
+               SELECT revision.id
+               FROM chat_assignment_context_packages package
+               JOIN chat_assignment_context_sources source
+                 ON source.context_package_id = package.id
+                AND source.source_id = chat_work_assignment_inputs.message_item_id
+                AND source.source_kind IN ('trigger', 'thread_reply')
+               JOIN chat_communication_message_revisions_numbered revision
+                 ON revision.message_item_id = source.source_id
+                AND revision.revision = source.source_revision
+               WHERE package.assignment_id = chat_work_assignment_inputs.assignment_id
+                 AND package.revision = 1
+               ORDER BY source.source_kind = 'trigger' DESC
+               LIMIT 1
+             )
          WHERE assignment_id = ? AND routing_kind IN ('trigger', 'follow_up')
            AND delivery_state = 'pending'",
     )
@@ -291,15 +308,16 @@ pub(super) async fn deliver_pending_assignment_inputs(
     Ok(())
 }
 
-/// Pending steer and queued continuation inputs of `assignment_id`, in posting order. These
-/// reach a run only while it works, unlike the trigger and follow-ups its package carries.
+/// Pending steer inputs of `assignment_id`, in posting order. These reach a run only while it
+/// works, unlike the trigger and follow-ups its package carries; a queued continuation waits
+/// for the turn to end, when follow-up recovery continues the work with it.
 async fn pending_live_input_ids(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
 ) -> ChatResult<Vec<ChatConversationItemId>> {
     sqlx::query_scalar::<_, String>(
         "SELECT message_item_id FROM chat_work_assignment_inputs
-         WHERE assignment_id = ? AND routing_kind IN ('steer', 'queued_continuation')
+         WHERE assignment_id = ? AND routing_kind = 'steer'
            AND delivery_state = 'pending'
          ORDER BY ordinal",
     )
@@ -326,6 +344,7 @@ async fn dispatch_claimed_assignment(
             assignment.teammate_id,
             assignment.triggering_message_item_id,
             assignment.state,
+            assignment.override_model_selection_data,
             context.id AS context_package_id,
             context.serialized_text,
             authorization.id AS authorization_revision_id,
@@ -461,7 +480,15 @@ async fn dispatch_claimed_assignment(
     let policy_revision_id: String = row
         .try_get("teammate_policy_revision_id")
         .map_err(persistence_error)?;
-    let policy = read_policy(pool, &teammate_id, &policy_revision_id).await?;
+    let mut policy = read_policy(pool, &teammate_id, &policy_revision_id).await?;
+    let override_data: Option<String> = row
+        .try_get("override_model_selection_data")
+        .map_err(persistence_error)?;
+    if apply_model_override(&mut policy, override_data)? {
+        let provider =
+            crate::chat::settings_commands::read_provider(&app, &policy.provider_instance_id)?;
+        require_override_model_available(provider.model_catalog.as_ref(), &policy)?;
+    }
     let frozen_runtime_approval: String = row
         .try_get("resolved_runtime_approval_policy")
         .map_err(persistence_error)?;
@@ -1186,7 +1213,7 @@ async fn fail_assignment_dispatch(
              revision = revision + 1, updated_at = ?
          WHERE id = ? AND state = 'queued'",
     )
-    .bind(&error.message)
+    .bind(dispatch_failure_reason(error))
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(assignment_id.as_str())
@@ -1223,11 +1250,13 @@ struct PreparedAssignmentInput {
     /// The working run the input steers into.
     run_id: ChatAgentRunId,
     prompt: String,
+    /// The message revision the prompt frames, recorded as what the run received.
+    revision_id: String,
     /// The source the run receives once the steer reaches the provider.
     delivered: DeliveredSource,
 }
 
-/// Reads the pending input `message_item_id` of `assignment_id` and frames it as a follow-up
+/// Reads the pending steer input `message_item_id` of `assignment_id` and frames it as a follow-up
 /// context record for the latest working run, while that run's authorization is allowed and the
 /// teammate may still participate in the conversation. Returns `None` when no working run can
 /// take it, so it stays pending.
@@ -1261,8 +1290,8 @@ async fn prepare_assignment_input(
     }
     let row = sqlx::query(
         "SELECT run.id AS run_id, run.provider_thread_id, run.scratch_generation_id,
-                run.authorization_revision_id, input.routing_kind, revision.revision,
-                revision.normalized_markdown
+                run.authorization_revision_id, revision.id AS revision_id,
+                revision.revision, revision.normalized_markdown
          FROM chat_agent_runs run
          JOIN chat_assignment_authorization_revisions authorization
            ON authorization.id = run.authorization_revision_id
@@ -1288,6 +1317,7 @@ async fn prepare_assignment_input(
            ON revision.id = message.current_revision_id
          WHERE run.assignment_id = ? AND input.message_item_id = ?
            AND run.state = 'working' AND input.delivery_state = 'pending'
+           AND input.routing_kind = 'steer'
            AND CASE
                  WHEN channel_access.participate_inherits_profile = 1
                    THEN profile_revision.default_participate
@@ -1327,7 +1357,6 @@ async fn prepare_assignment_input(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let routing_kind: String = row.try_get("routing_kind").map_err(persistence_error)?;
     let framed = super::context::follow_up_context_line(
         message_item_id.as_str(),
         u64_value(row.try_get("revision").map_err(persistence_error)?)?,
@@ -1339,28 +1368,21 @@ async fn prepare_assignment_input(
         thread_id,
         run_id,
         prompt: framed.line,
+        revision_id: row.try_get("revision_id").map_err(persistence_error)?,
         delivered: DeliveredSource {
             source_id: message_item_id.as_str().to_string(),
             content_sha256: framed.content_sha256,
-            kind: live_input_delivery_kind(&routing_kind),
+            kind: DeliveryKind::Steer,
         },
     }))
-}
-
-/// How a live input reaches its run: a queued continuation as the next turn, and any other
-/// input steered into the running turn.
-fn live_input_delivery_kind(routing_kind: &str) -> DeliveryKind {
-    if routing_kind == "queued_continuation" {
-        DeliveryKind::QueuedContinuation
-    } else {
-        DeliveryKind::Steer
-    }
 }
 
 /// Marks the input `message_item_id` of `assignment_id` delivered after its steer reached the
 /// provider, and records the source on the run that took it in the same transaction, so a later
 /// continuation of the session does not send it again. An input another delivery already
-/// marked records nothing.
+/// marked records nothing. A cancel that landed after the steer was prepared, locally or by sync,
+/// loses to the delivery, as the sync priority of delivery states resolves it: the provider
+/// already read the text.
 async fn record_assignment_input_delivered(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
@@ -1370,10 +1392,13 @@ async fn record_assignment_input_delivered(
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let marked = sqlx::query(
-        "UPDATE chat_work_assignment_inputs SET delivery_state = 'delivered', delivered_at = ?
-         WHERE assignment_id = ? AND message_item_id = ? AND delivery_state = 'pending'",
+        "UPDATE chat_work_assignment_inputs
+         SET delivery_state = 'delivered', delivered_at = ?, delivered_revision_id = ?
+         WHERE assignment_id = ? AND message_item_id = ?
+           AND delivery_state IN ('pending', 'ignored')",
     )
     .bind(now.as_str())
+    .bind(&prepared.revision_id)
     .bind(assignment_id.as_str())
     .bind(message_item_id.as_str())
     .execute(&mut *transaction)
@@ -1457,12 +1482,164 @@ fn assignment_turn_modes(
     }
 }
 
+/// Failure reason of work whose model override names a model this device cannot run.
+const MODEL_UNAVAILABLE_REASON: &str = "model_unavailable";
+
+/// Replaces the model selection of `policy` with the assignment's stored override
+/// `override_data`, and reports whether it had one. The provider instance stays the
+/// teammate's.
+fn apply_model_override(
+    policy: &mut ChatTeammatePolicyRead,
+    override_data: Option<String>,
+) -> ChatResult<bool> {
+    let Some(data) = override_data else {
+        return Ok(false);
+    };
+    let selection = super::workflow::parse_model_selection(data)?;
+    policy.provider_managed_model = selection.provider_managed_model;
+    policy.model_id = selection.model_id;
+    policy.model_options = selection.model_options;
+    Ok(true)
+}
+
+/// Refuses an overridden `policy` whose explicit model is missing from, or unavailable in,
+/// this device's provider `catalog`, so the work fails instead of running another model.
+fn require_override_model_available(
+    catalog: Option<&ProviderModelCatalog>,
+    policy: &ChatTeammatePolicyRead,
+) -> ChatResult<()> {
+    let Some(model_id) = policy.model_id.as_ref() else {
+        return Ok(());
+    };
+    let available = catalog
+        .and_then(|catalog| catalog.models.iter().find(|model| &model.id == model_id))
+        .is_some_and(|model| {
+            matches!(
+                model.availability,
+                ModelAvailability::Available | ModelAvailability::Stale
+            )
+        });
+    if available {
+        return Ok(());
+    }
+    let mut error = ChatError::validation(
+        "modelOverride",
+        "The model chosen for this work is unavailable on this device",
+    );
+    error.details = Some(Box::new(
+        serde_json::json!({ "reason": MODEL_UNAVAILABLE_REASON }),
+    ));
+    Err(error)
+}
+
+/// The `state_reason` work failed by `error` records: the typed reason of an unavailable
+/// override model, else the error message.
+fn dispatch_failure_reason(error: &ChatError) -> &str {
+    let typed = error
+        .details
+        .as_deref()
+        .and_then(|details| details.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|reason| *reason == MODEL_UNAVAILABLE_REASON);
+    typed.unwrap_or(&error.message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ChatApprovalPolicy, ChatRuntimeApprovalPolicy, InteractionMode, SafetyMode,
-        assignment_turn_modes,
+        apply_model_override, assignment_turn_modes, dispatch_failure_reason,
+        require_override_model_available,
     };
+    use ganbaru_chat_contracts::models::*;
+
+    fn default_policy() -> ChatTeammatePolicyRead {
+        ChatTeammatePolicyRead {
+            id: ChatTeammatePolicyRevisionId::new("teammate-policy:a").unwrap(),
+            teammate_id: ChatParticipantId::new("participant:agent").unwrap(),
+            revision: 1,
+            provider_instance_id: ProviderInstanceId::new("provider:codex").unwrap(),
+            safety_mode: ChatApprovalPolicy::AskForApproval,
+            provider_managed_model: false,
+            model_id: Some(ModelId::new("model:default").unwrap()),
+            model_options: Vec::new(),
+            effort: None,
+            speed: None,
+            provider_options: VersionedJson {
+                schema_version: 1,
+                value: serde_json::json!({}),
+            },
+            created_at: UtcTimestamp::new("2026-11-12T00:00:00.000Z").unwrap(),
+        }
+    }
+
+    fn catalog_with(model_id: &str, availability: ModelAvailability) -> ProviderModelCatalog {
+        ProviderModelCatalog {
+            instance_id: ProviderInstanceId::new("provider:codex").unwrap(),
+            models: vec![ProviderModel {
+                id: ModelId::new(model_id).unwrap(),
+                display_name: model_id.to_owned(),
+                description: None,
+                context_limit: None,
+                availability,
+                capabilities: Vec::new(),
+                options: Vec::new(),
+                custom: false,
+            }],
+            source: ModelCatalogSource::Provider,
+            discovered_at: UtcTimestamp::new("2026-11-12T00:00:00.000Z").unwrap(),
+            stale: false,
+        }
+    }
+
+    #[test]
+    fn dispatch_uses_model_override_over_policy() {
+        let mut policy = default_policy();
+        assert!(!apply_model_override(&mut policy, None).unwrap());
+        assert_eq!(policy.model_id.as_ref().unwrap().as_str(), "model:default");
+
+        let stored = serde_json::json!({
+            "providerManagedModel": false,
+            "modelId": "model:chosen",
+            "modelOptions": [{ "key": "reasoningEffort", "value": { "kind": "choice", "value": "high" } }],
+        })
+        .to_string();
+        assert!(apply_model_override(&mut policy, Some(stored)).unwrap());
+
+        assert_eq!(policy.model_id.as_ref().unwrap().as_str(), "model:chosen");
+        assert_eq!(policy.model_options.len(), 1);
+        assert_eq!(policy.provider_instance_id.as_str(), "provider:codex");
+        let managed = serde_json::json!({ "providerManagedModel": true, "modelOptions": [] });
+        assert!(apply_model_override(&mut policy, Some(managed.to_string())).unwrap());
+        assert!(policy.provider_managed_model);
+        assert_eq!(policy.model_id, None);
+    }
+
+    #[test]
+    fn a_model_override_the_device_cannot_run_fails_as_model_unavailable() {
+        let mut policy = default_policy();
+        policy.model_id = Some(ModelId::new("model:chosen").unwrap());
+        let available = catalog_with("model:chosen", ModelAvailability::Available);
+        assert!(require_override_model_available(Some(&available), &policy).is_ok());
+        let stale = catalog_with("model:chosen", ModelAvailability::Stale);
+        assert!(require_override_model_available(Some(&stale), &policy).is_ok());
+
+        let missing = catalog_with("model:other", ModelAvailability::Available);
+        let retired = catalog_with("model:chosen", ModelAvailability::Unavailable);
+        for catalog in [None, Some(&missing), Some(&retired)] {
+            let error = require_override_model_available(catalog, &policy).unwrap_err();
+            assert_eq!(dispatch_failure_reason(&error), "model_unavailable");
+        }
+
+        policy.provider_managed_model = true;
+        policy.model_id = None;
+        assert!(require_override_model_available(None, &policy).is_ok());
+        let other = ChatError::validation("prompt", "Assignment context is too large");
+        assert_eq!(
+            dispatch_failure_reason(&other),
+            "Assignment context is too large"
+        );
+    }
 
     #[test]
     fn targetless_assignments_use_a_narrow_conversation_mode() {
@@ -2252,17 +2429,79 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_retried_assignment_frames_its_pending_continuation_for_the_working_run() {
+        async fn a_package_input_records_the_revision_its_package_froze() {
             let pool = starting_pool().await;
             seed_inputs_of_every_route(&pool).await;
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO chat_assignment_context_packages
+                    (id, assignment_id, revision, triggering_message_item_id, serialized_text,
+                     serialized_bytes, sha256, created_at)
+                 VALUES ('context:folders', 'assignment:folders', 1, 'item:follow-up', 'frozen',
+                         6, '{sha}', '{CLAIMED_AT}');
+                 INSERT INTO chat_assignment_context_sources
+                    (context_package_id, source_kind, source_id, source_revision,
+                     content_sha256, ordinal)
+                 VALUES ('context:folders', 'trigger', 'item:follow-up', 1, '{sha}', 0);
+                 INSERT INTO chat_communication_message_revisions
+                    (id, message_item_id, normalized_markdown, created_at)
+                 VALUES ('revision:item:follow-up:edited', 'item:follow-up',
+                         'Check the logs and the metrics', '2026-10-20T12:01:00.000Z');
+                 UPDATE chat_communication_messages
+                 SET current_revision_id = 'revision:item:follow-up:edited'
+                 WHERE item_id = 'item:follow-up';",
+                sha = "c".repeat(64),
+            )))
+            .execute(&pool)
+            .await
+            .unwrap();
+            let binding = working_binding(&pool).await;
+            settle_launch(&pool, &binding, &folder_launch(), None, &at(CLAIMED_AT))
+                .await
+                .unwrap();
+            let launch = AssignmentLaunch {
+                run_id: ChatAgentRunId::new("run:working").unwrap(),
+                launch_error: None,
+                settlement: None,
+                answered_input_ids: Vec::new(),
+            };
+
+            assert!(
+                mark_initial_assignment_input_delivered(&pool, &assignment(), &launch)
+                    .await
+                    .unwrap()
+            );
+
+            let revisions: Vec<(String, Option<String>)> = sqlx::query_as(
+                "SELECT routing_kind, delivered_revision_id FROM chat_work_assignment_inputs
+                 WHERE routing_kind IN ('trigger', 'follow_up') ORDER BY ordinal",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                revisions,
+                vec![
+                    ("trigger".to_string(), None),
+                    (
+                        "follow_up".to_string(),
+                        Some("revision:item:follow-up".to_string())
+                    ),
+                ],
+                "the edit after the freeze never reached the run"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_retried_assignment_frames_its_pending_steer_for_the_working_run() {
+            let pool = starting_pool().await;
+            seed_inputs_of_every_route(&pool).await;
+            let steer = ChatConversationItemId::new("item:steer").unwrap();
             let continuation = ChatConversationItemId::new("item:continuation").unwrap();
 
             assert_eq!(
                 pending_live_input_ids(&pool, &assignment()).await.unwrap(),
-                vec![
-                    ChatConversationItemId::new("item:steer").unwrap(),
-                    continuation.clone()
-                ]
+                vec![steer.clone()],
+                "a queued continuation waits for the turn to end"
             );
             for state in ["starting", "failed"] {
                 sqlx::query("UPDATE chat_agent_runs SET state = ? WHERE id = 'run:working'")
@@ -2270,7 +2509,7 @@ mod tests {
                     .execute(&pool)
                     .await
                     .unwrap();
-                let prepared = prepare_assignment_input(&pool, &assignment(), &continuation)
+                let prepared = prepare_assignment_input(&pool, &assignment(), &steer)
                     .await
                     .unwrap();
                 assert!(prepared.is_none(), "a {state} run takes no live input");
@@ -2280,16 +2519,23 @@ mod tests {
                 .execute(&pool)
                 .await
                 .unwrap();
-            let prepared = prepare_assignment_input(&pool, &assignment(), &continuation)
+            assert!(
+                prepare_assignment_input(&pool, &assignment(), &continuation)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "the working run never takes a queued continuation"
+            );
+            let prepared = prepare_assignment_input(&pool, &assignment(), &steer)
                 .await
                 .unwrap()
-                .expect("the working run takes the pending continuation");
+                .expect("the working run takes the pending steer");
             assert_eq!(prepared.thread_id.as_str(), "thread-1");
             assert_eq!(prepared.run_id.as_str(), "run:working");
             let framed = super::super::super::context::follow_up_context_line(
-                "item:continuation",
+                "item:steer",
                 1,
-                "Then update the docs".to_string(),
+                "Prefer the smaller fix".to_string(),
                 false,
             )
             .unwrap();
@@ -2297,9 +2543,9 @@ mod tests {
             assert_eq!(
                 prepared.delivered,
                 DeliveredSource {
-                    source_id: "item:continuation".to_string(),
+                    source_id: "item:steer".to_string(),
                     content_sha256: framed.content_sha256,
-                    kind: DeliveryKind::QueuedContinuation,
+                    kind: DeliveryKind::Steer,
                 }
             );
         }
@@ -2342,6 +2588,49 @@ mod tests {
             );
             let states = delivery_states(&pool).await;
             assert!(states.contains(&("steer".to_string(), "delivered".to_string())));
+        }
+
+        #[tokio::test]
+        async fn a_steer_the_provider_read_stays_delivered_over_a_later_cancel() {
+            let pool = starting_pool().await;
+            seed_inputs_of_every_route(&pool).await;
+            sqlx::query("UPDATE chat_agent_runs SET state = 'working' WHERE id = 'run:working'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let steer = ChatConversationItemId::new("item:steer").unwrap();
+            let prepared = prepare_assignment_input(&pool, &assignment(), &steer)
+                .await
+                .unwrap()
+                .expect("the working run takes the pending steer");
+            sqlx::query(
+                "UPDATE chat_work_assignment_inputs SET delivery_state = 'ignored'
+                 WHERE message_item_id = 'item:steer'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            record_assignment_input_delivered(&pool, &assignment(), &steer, &prepared)
+                .await
+                .unwrap();
+
+            let (state, revision): (String, Option<String>) = sqlx::query_as(
+                "SELECT delivery_state, delivered_revision_id
+                 FROM chat_work_assignment_inputs WHERE message_item_id = 'item:steer'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(state, "delivered");
+            assert_eq!(revision.as_deref(), Some(prepared.revision_id.as_str()));
+            let sources: Vec<(String,)> = sqlx::query_as(
+                "SELECT source_id FROM chat_agent_run_delivered_sources WHERE run_id = 'run:working'",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(sources, vec![("item:steer".to_string(),)]);
         }
 
         async fn run_and_job(

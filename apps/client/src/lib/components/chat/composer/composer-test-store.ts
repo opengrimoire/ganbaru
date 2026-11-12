@@ -1,4 +1,8 @@
-import { mount, tick, unmount } from "svelte";
+/**
+ * Chat store fixtures shared by composer and identity component tests: a reset store with one
+ * available working folder, provider settings, interaction state, and editor helpers.
+ */
+import { tick } from "svelte";
 import { vi } from "vitest";
 import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
 import type {
@@ -8,7 +12,6 @@ import type {
   ChatThreadShellRead,
 } from "$lib/chat/contracts";
 import { getChat } from "$lib/stores/chat.svelte";
-import ChatComposer from "$lib/components/chat/composer/ChatComposer.svelte";
 
 class ResizeObserverMock implements ResizeObserver {
   constructor(_callback: ResizeObserverCallback) {}
@@ -16,36 +19,6 @@ class ResizeObserverMock implements ResizeObserver {
   observe(): void {}
   unobserve(): void {}
   disconnect(): void {}
-}
-
-export interface ChatComposerHarness {
-  mounted: { target: HTMLDivElement; component: ReturnType<typeof mount> }[];
-  setup: (hero?: boolean) => { target: HTMLDivElement; editor: HTMLDivElement };
-  cleanup: () => Promise<void>;
-}
-
-export function createChatComposerHarness(): ChatComposerHarness {
-  const mounted: ChatComposerHarness["mounted"] = [];
-  return {
-    mounted,
-    setup(hero = false) {
-      const target = document.createElement("div");
-      document.body.append(target);
-      const component = mount(ChatComposer, { target, props: { hero } });
-      mounted.push({ target, component });
-      const editor = target.querySelector("div[data-chat-composer]");
-      if (!(editor instanceof HTMLDivElement)) throw new Error("Chat composer did not render");
-      return { target, editor };
-    },
-    async cleanup() {
-      while (mounted.length > 0) {
-        const entry = mounted.pop();
-        if (!entry) continue;
-        await unmount(entry.component);
-        entry.target.remove();
-      }
-    },
-  };
 }
 
 export function resetChatComposerTestStore(): void {

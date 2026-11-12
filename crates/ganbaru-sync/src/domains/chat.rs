@@ -189,6 +189,8 @@ pub const ASSIGNMENT_REVIEW_OUTCOMES: [&str; 2] = ["accepted", "changes_requeste
 pub const ROUTING_KINDS: [&str; 4] = ["trigger", "steer", "queued_continuation", "follow_up"];
 /// Delivery states of an assignment input.
 pub const DELIVERY_STATES: [&str; 4] = ["pending", "delivered", "failed", "ignored"];
+/// Delivery state of an input that reached a run, the only one that names a delivered revision.
+pub const DELIVERED_STATE: &str = "delivered";
 /// Kinds of semantic work updates.
 pub const SEMANTIC_UPDATE_KINDS: [&str; 10] = [
     "plan",
@@ -898,11 +900,12 @@ fn validate_target(table: TableId, group: GroupId, fields: &[Field]) -> Result<(
             MAX_ENVIRONMENT_ID_CHARS,
             "chat environment reference",
         ),
-        (timeline_group::CREATED, [_target])
-            if table == PARTICIPANT_TARGETS_TABLE || table == FOLDER_TARGETS_TABLE =>
+        (timeline_group::CREATED, [_participant, override_version, override_data])
+            if table == PARTICIPANT_TARGETS_TABLE =>
         {
-            Ok(())
+            model_override(override_version, override_data)
         }
+        (timeline_group::CREATED, [_folder]) if table == FOLDER_TARGETS_TABLE => Ok(()),
         (timeline_group::CREATED, [_folder, kind, path]) if table == PATH_TARGETS_TABLE => {
             one_of(kind, &PATH_KINDS, "chat workspace path kind")?;
             relative_path(path)
@@ -1087,9 +1090,21 @@ fn scheduled_references(bytes: &[u8]) -> Result<(), AdapterError> {
 
 fn validate_assignment(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
-        (assignment_group::CREATED, [_thread, _teammate, _trigger, device, created_at]) => {
+        (
+            assignment_group::CREATED,
+            [
+                _thread,
+                _teammate,
+                _trigger,
+                device,
+                created_at,
+                override_version,
+                override_data,
+            ],
+        ) => {
             executing_device(device)?;
-            timestamp(created_at)
+            timestamp(created_at)?;
+            model_override(override_version, override_data)
         }
         (assignment_group::PREVIOUS, [_previous]) => Ok(()),
         (assignment_group::STATE, [state, reason, settled_at, outcome, reviewed_at, reviewer]) => {
@@ -1143,6 +1158,21 @@ fn assignment_delegation(
                 "chat assignment delegation expected result",
             )?;
             delegation_folder_ceiling(folder_ceiling)
+        }
+    }
+}
+
+/// A model override, of an assignment or of the mention that asked for it, is its schema
+/// version and selection together, or neither when the work runs with its teammate's model.
+fn model_override(version: &Field, data: &Field) -> Result<(), AdapterError> {
+    match (version, data) {
+        (Field::Null, Field::Null) => Ok(()),
+        (Field::Null, _) | (_, Field::Null) => {
+            Err(AdapterError("chat model override is incomplete"))
+        }
+        _ => {
+            schema_version(version)?;
+            json_object(data, "chat model override")
         }
     }
 }
@@ -1217,9 +1247,15 @@ fn validate_input(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> 
             at_least(ordinal, 1, "chat assignment input ordinal")?;
             one_of(kind, &ROUTING_KINDS, "chat assignment input routing")
         }
-        (input_group::DELIVERY, [state, delivered_at]) => {
+        (input_group::DELIVERY, [state, delivered_at, delivered_revision]) => {
             one_of(state, &DELIVERY_STATES, "chat assignment input delivery")?;
-            optional_timestamp(delivered_at)
+            optional_timestamp(delivered_at)?;
+            if !matches!(delivered_revision, Field::Null) && text(state)? != DELIVERED_STATE {
+                return Err(AdapterError(
+                    "chat assignment input revision needs a delivered input",
+                ));
+            }
+            Ok(())
         }
         _ => Err(AdapterError("chat assignment input value")),
     }
@@ -1265,6 +1301,27 @@ fn assignment_priority(fields: &[Field]) -> u8 {
         .iter()
         .find(|(candidate, _)| candidate == state)
         .map_or(ACTIVE_ASSIGNMENT_PRIORITY, |(_, priority)| *priority)
+}
+
+/// Input delivery states by merge priority, the furthest along first.
+const INPUT_DELIVERY_PRIORITIES: [(&str, u8); 4] = [
+    ("delivered", 4),
+    ("failed", 3),
+    ("ignored", 2),
+    ("pending", 1),
+];
+
+/// What happened to an input outranks a wish about it: a delivery beats a concurrent cancel,
+/// since the run already read the message, and every ending beats pending. No writer returns an
+/// input to pending, so the ladder only moves forward.
+fn input_delivery_priority(fields: &[Field]) -> u8 {
+    let Some(Field::Text(state)) = fields.first() else {
+        return 0;
+    };
+    INPUT_DELIVERY_PRIORITIES
+        .iter()
+        .find(|(candidate, _)| candidate == state)
+        .map_or(0, |(_, priority)| *priority)
 }
 
 /// Priority of an ended row: a removal or revocation outranks every live value.
@@ -1456,6 +1513,8 @@ impl DomainAdapter for ChatAdapter {
             lifecycle_priority(value.fields())
         } else if table == ASSIGNMENTS_TABLE && group == assignment_group::STATE {
             assignment_priority(value.fields())
+        } else if table == INPUTS_TABLE && group == input_group::DELIVERY {
+            input_delivery_priority(value.fields())
         } else {
             0
         }
@@ -2207,6 +2266,19 @@ mod tests {
         ]
     }
 
+    /// An assignment CREATED value carrying the model override `version` and `data`.
+    fn assignment_created(version: Field, data: Field) -> Vec<Field> {
+        vec![
+            t("thread-1"),
+            t("teammate-1"),
+            t("item-1"),
+            Field::Null,
+            t(AT),
+            version,
+            data,
+        ]
+    }
+
     #[test]
     fn chat_assignment_delegation_is_complete_bounded_and_ceiling_checked() {
         let adapter = ChatAdapter;
@@ -2292,6 +2364,34 @@ mod tests {
     }
 
     #[test]
+    fn chat_assignment_model_override_is_whole_or_absent() {
+        let adapter = ChatAdapter;
+        let check =
+            |fields| adapter.validate(ASSIGNMENTS_TABLE, assignment_group::CREATED, &value(fields));
+        let selection = r#"{"modelId":"gpt-5","modelOptions":{"effort":"high"}}"#;
+
+        assert!(check(assignment_created(Field::Null, Field::Null)).is_ok());
+        assert!(check(assignment_created(Field::Integer(1), t(selection))).is_ok());
+        assert!(
+            check(assignment_created(Field::Integer(1), Field::Null)).is_err(),
+            "a version without a selection"
+        );
+        assert!(
+            check(assignment_created(Field::Null, t(selection))).is_err(),
+            "a selection without a version"
+        );
+        assert!(check(assignment_created(Field::Integer(0), t(selection))).is_err());
+        assert!(check(assignment_created(Field::Integer(1), t("[]"))).is_err());
+        assert!(check(assignment_created(Field::Integer(1), t("not json"))).is_err());
+        let mut short = assignment_created(Field::Null, Field::Null);
+        short.truncate(5);
+        assert!(
+            check(short).is_err(),
+            "the created group carries the override"
+        );
+    }
+
+    #[test]
     fn chat_semantic_updates_accept_the_delegation_and_proposal_kinds() {
         let adapter = ChatAdapter;
         let update = |kind: &str| {
@@ -2325,6 +2425,85 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn chat_mention_model_override_is_whole_or_absent() {
+        let adapter = ChatAdapter;
+        let check = |fields| {
+            adapter.validate(
+                PARTICIPANT_TARGETS_TABLE,
+                timeline_group::CREATED,
+                &value(fields),
+            )
+        };
+        let selection = r#"{"providerManagedModel":true,"modelOptions":[]}"#;
+
+        assert!(check(vec![t("teammate-1"), Field::Null, Field::Null]).is_ok());
+        assert!(check(vec![t("teammate-1"), Field::Integer(1), t(selection)]).is_ok());
+        assert!(check(vec![t("teammate-1"), Field::Integer(1), Field::Null]).is_err());
+        assert!(check(vec![t("teammate-1"), Field::Null, t(selection)]).is_err());
+        assert!(check(vec![t("teammate-1"), Field::Integer(1), t("[]")]).is_err());
+        assert!(
+            check(vec![t("teammate-1")]).is_err(),
+            "the created group carries the override"
+        );
+        assert!(
+            adapter
+                .validate(
+                    FOLDER_TARGETS_TABLE,
+                    timeline_group::CREATED,
+                    &value(vec![t("folder-1")]),
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn chat_input_delivery_prefers_what_happened_over_a_cancel() {
+        let adapter = ChatAdapter;
+        let delivery = |state: &str, revision: Option<&str>| {
+            let delivered_at = (state == DELIVERED_STATE).then_some(AT);
+            value(vec![t(state), optional(delivered_at), optional(revision)])
+        };
+        let priority = |state: &Value| adapter.priority(INPUTS_TABLE, input_group::DELIVERY, state);
+        let ladder = [
+            priority(&delivery("delivered", Some("revision-1"))),
+            priority(&delivery("failed", None)),
+            priority(&delivery("ignored", None)),
+            priority(&delivery("pending", None)),
+        ];
+        assert!(
+            ladder.windows(2).all(|pair| pair[0] > pair[1]),
+            "{ladder:?}"
+        );
+        assert!(ladder[0] < ENDED);
+        assert_eq!(priority(&delivery("unknown", None)), 0);
+    }
+
+    #[test]
+    fn chat_input_delivered_revision_needs_a_delivered_input() {
+        let adapter = ChatAdapter;
+        let check = |fields| adapter.validate(INPUTS_TABLE, input_group::DELIVERY, &value(fields));
+
+        assert!(check(vec![t("delivered"), t(AT), t("revision-1")]).is_ok());
+        assert!(
+            check(vec![t("delivered"), t(AT), Field::Null]).is_ok(),
+            "a delivery need not name a revision"
+        );
+        for state in DELIVERY_STATES {
+            assert!(
+                check(vec![t(state), Field::Null, Field::Null]).is_ok(),
+                "{state}"
+            );
+            if state != DELIVERED_STATE {
+                assert!(
+                    check(vec![t(state), Field::Null, t("revision-1")]).is_err(),
+                    "revision on {state}"
+                );
+            }
+        }
+        assert!(check(vec![t("delivered"), t(AT)]).is_err());
     }
 
     #[test]

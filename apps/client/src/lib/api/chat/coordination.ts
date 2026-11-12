@@ -7,6 +7,9 @@ import type {
   ChatParticipantId,
   ChatReplyThreadId,
   ChatWorkAssignmentId,
+  ChatAssignmentInputEditRequest,
+  ChatAssignmentInputId,
+  ChatAssignmentInputRead,
   ChatAssignmentReviewRequest,
   ChatAiTeammateRead,
   ChatAccessProfileRead,
@@ -78,6 +81,8 @@ import {
   parseChatScheduledMessageDispatch,
   parseChatScheduledMessages,
   parseChatWorkAssignment,
+  parseChatAssignmentInput,
+  parseChatAssignmentInputs,
 } from "$lib/chat/validation";
 
 const localExecutionAvailable = platformHasCapability(
@@ -502,4 +507,28 @@ function requireLocalSecretRequests(): void {
   if (!localExecutionAvailable) {
     throw new Error("Chat secret requests need local execution on this device");
   }
+}
+
+/** Lists the replies addressed to one assignment, in delivery order. */
+export async function listChatAssignmentInputs(assignmentId: ChatWorkAssignmentId): Promise<ChatAssignmentInputRead[]> {
+  return parseChatAssignmentInputs(await invoke<unknown>("chat_list_assignment_inputs", {
+    dbUrl: await ensureDbUrl(), assignmentId,
+  }));
+}
+
+/** Replaces the text of a reply that has not reached the teammate yet. */
+export async function editChatAssignmentInput(
+  inputId: ChatAssignmentInputId,
+  edit: ChatAssignmentInputEditRequest,
+): Promise<ChatAssignmentInputRead> {
+  return parseChatAssignmentInput(await invoke<unknown>("chat_edit_assignment_input", {
+    dbUrl: await ensureDbUrl(), inputId, edit,
+  }));
+}
+
+/** Cancels a reply that has not reached the teammate yet, keeping it in the thread. */
+export async function cancelChatAssignmentInput(inputId: ChatAssignmentInputId): Promise<ChatAssignmentInputRead> {
+  return parseChatAssignmentInput(await invoke<unknown>("chat_cancel_assignment_input", {
+    dbUrl: await ensureDbUrl(), inputId,
+  }));
 }

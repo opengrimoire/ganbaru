@@ -1559,6 +1559,51 @@ fn delegated_assignments_sit_one_level_below_a_bounded_parent() {
 }
 
 #[test]
+fn assignment_model_override_schema_keeps_version_and_selection_together() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let insert = |id: &str, version: Option<i64>, data: Option<&str>| {
+            sqlx::query(
+                "INSERT INTO chat_work_assignments
+                    (id, reply_thread_id, teammate_id, triggering_message_item_id,
+                     previous_assignment_id, state, created_at, updated_at,
+                     override_model_selection_schema_version, override_model_selection_data)
+                 VALUES (?, 'reply-thread', 'participant-teammate', 'item-root',
+                         'assignment-1', 'queued', ?, ?, ?, ?)",
+            )
+            .bind(id.to_owned())
+            .bind(NOW)
+            .bind(NOW)
+            .bind(version)
+            .bind(data.map(str::to_owned))
+            .execute(&pool)
+        };
+        let selection = r#"{"modelId":"gpt-5","modelOptions":[]}"#;
+
+        insert("assignment-default", None, None).await.unwrap();
+        insert("assignment-override", Some(1), Some(selection))
+            .await
+            .unwrap();
+        for (id, version, data) in [
+            ("assignment-version-only", Some(1), None),
+            ("assignment-data-only", None, Some(selection)),
+            ("assignment-version-zero", Some(0), Some(selection)),
+            ("assignment-array", Some(1), Some("[]")),
+            ("assignment-text", Some(1), Some("model")),
+        ] {
+            assert!(insert(id, version, data).await.is_err(), "{id}");
+        }
+        let oversized = format!(r#"{{"modelId":"{}"}}"#, "m".repeat(16_384));
+        assert!(
+            insert("assignment-oversized", Some(1), Some(&oversized))
+                .await
+                .is_err()
+        );
+    });
+}
+
+#[test]
 fn semantic_updates_accept_the_delegation_and_proposal_kinds() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
@@ -1601,6 +1646,32 @@ fn semantic_updates_accept_the_delegation_and_proposal_kinds() {
                 .unwrap();
         }
         assert!(insert("item-summary", "summary", "c109").await.is_err());
+    });
+}
+
+#[test]
+fn assignment_input_schema_bounds_the_delivered_revision() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let insert = |id: &str, revision: &str| {
+            sqlx::query(
+                "INSERT INTO chat_work_assignment_inputs
+                    (id, assignment_id, message_item_id, ordinal, routing_kind, delivery_state,
+                     delivered_at, delivered_revision_id, created_at)
+                 VALUES (?, 'assignment-1', 'item-root', ?, 'trigger', 'delivered', ?, ?, ?)",
+            )
+            .bind(id.to_owned())
+            .bind(if id == "input-long" { 1_i64 } else { 2_i64 })
+            .bind(NOW)
+            .bind(revision.to_owned())
+            .bind(NOW)
+            .execute(&pool)
+        };
+
+        assert!(insert("input-empty", "").await.is_err());
+        assert!(insert("input-oversized", &"r".repeat(1025)).await.is_err());
+        insert("input-long", &"r".repeat(128)).await.unwrap();
     });
 }
 

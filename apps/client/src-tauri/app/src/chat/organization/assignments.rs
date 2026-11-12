@@ -2,7 +2,7 @@
 
 use super::common::{
     MAX_MESSAGE_BYTES, chat_writers, new_id, parse_folder_capability,
-    parse_runtime_approval_policy, this_device_id, wire_work_state,
+    parse_runtime_approval_policy, serialization_error, this_device_id, wire_work_state,
 };
 use super::context::{FreezeOutcome, GrantedAccess, freeze_context_package, read_granted_access};
 use super::dispatch::{deliver_pending_assignment_inputs, dispatch_assignment_job};
@@ -25,7 +25,7 @@ use crate::chat::device_state::{
 use crate::chat::settings::device_state_error;
 use crate::chat::sync::SyncedAssignmentWork;
 use ganbaru_chat::coordination::acceptance::{AcceptanceSubject, acceptance_digest};
-use ganbaru_chat::coordination::contracts::PostChatMessageCommand;
+use ganbaru_chat::coordination::contracts::{ChatAssignmentModelOverride, PostChatMessageCommand};
 use ganbaru_chat::coordination::delegation::{outcome_item_id, post_delegation_outcome};
 use ganbaru_chat::coordination::reports::requeue_answered_assignment;
 use ganbaru_chat_contracts::models::*;
@@ -60,7 +60,7 @@ pub(super) async fn recover_assignment_dispatch_jobs(
          JOIN chat_agent_runs run ON run.assignment_id = assignment.id
          JOIN chat_work_assignment_inputs input ON input.assignment_id = assignment.id
          WHERE assignment.state = 'working' AND run.state = 'working'
-           AND input.routing_kind IN ('steer', 'queued_continuation')
+           AND input.routing_kind = 'steer'
            AND input.delivery_state = 'pending'
          ORDER BY assignment.updated_at, assignment.id LIMIT 32",
     )
@@ -404,6 +404,7 @@ pub(super) async fn reroute_assignment(
             execution_target: None,
             poster_participant_id: LOCAL_PARTICIPANT_ID,
             delegation: None,
+            model_override: None,
         },
         device,
         now,
@@ -418,14 +419,15 @@ pub(super) async fn reroute_assignment(
     .fetch_all(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    move_pending_inputs(transaction, &pending_input_ids, &successor_id).await?;
+    move_pending_inputs(transaction, &pending_input_ids, &successor_id, None).await?;
     Ok(Some(successor_id))
 }
 
-/// Reads, past `after_id` and up to `limit`, the assignments with pending replies that arrived
-/// after they asked for review, which `device` executes, ran without an executing device, or
-/// takes over from an executing device that can no longer write Chat. `only` narrows the read
-/// to one assignment.
+/// Reads, past `after_id` and up to `limit`, the assignments with pending replies left when
+/// their turn ended, which `device` executes, ran without an executing device, or takes over
+/// from an executing device that can no longer write Chat. Those are work that asked for
+/// review, and work that completed by itself without a review or a follow-up, so a reply
+/// queued behind the turn continues it. `only` narrows the read to one assignment.
 async fn stranded_follow_up_ids(
     pool: &SqlitePool,
     device: PostingDevice<'_>,
@@ -437,7 +439,13 @@ async fn stranded_follow_up_ids(
         "SELECT DISTINCT assignment.id
          FROM chat_work_assignments assignment
          JOIN chat_work_assignment_inputs input ON input.assignment_id = assignment.id
-         WHERE assignment.state = 'ready_for_review'
+         WHERE (assignment.state = 'ready_for_review' OR (
+             assignment.state = 'completed' AND assignment.review_outcome IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM chat_work_assignments successor
+               WHERE successor.previous_assignment_id = assignment.id
+             )
+           ))
            AND (assignment.executing_device_id = ?1 OR (
              assignment.executing_device_id IS NULL AND EXISTS (
                SELECT 1 FROM chat_agent_runs run WHERE run.assignment_id = assignment.id
@@ -462,8 +470,8 @@ async fn stranded_follow_up_ids(
     .map_err(persistence_error)
 }
 
-/// Moves the pending inputs that reached an assignment after it asked for review onto a new
-/// follow-up assignment, for the assignments `device` executes, ran without an executing
+/// Moves the pending inputs left on an assignment when its turn ended onto a new follow-up
+/// assignment, for the assignments `device` executes, ran without an executing
 /// device, or takes over from an executing device that can no longer write Chat. The inputs
 /// keep their ids, which derive from their messages, so a device that routed them concurrently
 /// merges into the same rows. Only work whose current subject `scope` accepted continues; the
@@ -517,7 +525,10 @@ async fn recover_follow_up(
     now: &UtcTimestamp,
 ) -> ChatResult<Option<ChatWorkAssignmentId>> {
     let previous = read_assignment(pool, assignment_id).await?;
-    if previous.state != ChatWorkAssignmentState::ReadyForReview {
+    if !matches!(
+        previous.state,
+        ChatWorkAssignmentState::ReadyForReview | ChatWorkAssignmentState::Completed
+    ) {
         return Ok(None);
     }
     let reply_thread_id = previous.reply_thread_id.clone();
@@ -548,6 +559,7 @@ async fn recover_follow_up(
             execution_target: requested_target.as_ref(),
             poster_participant_id: LOCAL_PARTICIPANT_ID,
             delegation: None,
+            model_override: None,
         },
         device,
         now,
@@ -692,6 +704,8 @@ pub(super) async fn review_note_request(
         references: Vec::new(),
         execution_target: None,
         also_send_to_channel: false,
+        followup_routing: None,
+        model_override: None,
     })
 }
 
@@ -1833,6 +1847,20 @@ pub(crate) fn resume_answered_work_of_thread(
     });
 }
 
+/// Continues, once the organizational provider turn `turn_id` ended, the work of its run with
+/// the replies queued behind that turn: when the settled assignment holds pending replies of its
+/// reply thread and this device runs its follow-up, the follow-up takes them and dispatches.
+/// Call it after the turn's settlement committed.
+pub(crate) fn continue_queued_replies_after_turn(app: &tauri::AppHandle, turn_id: &ChatTurnId) {
+    let app = app.clone();
+    let turn_id = turn_id.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = continue_queued_replies(app, &turn_id).await {
+            eprintln!("Chat replies queued behind a turn did not continue: {error}");
+        }
+    });
+}
+
 /// Starts a new run for each of `assignment_ids` that this device runs and that waits for an
 /// answer a person posted after its asking run ended. Other work is left as it is.
 pub(super) async fn resume_answered_assignments(
@@ -1855,6 +1883,33 @@ pub(super) async fn resume_answered_assignments(
                 assignment_id.as_str()
             );
         }
+    }
+    Ok(())
+}
+
+async fn continue_queued_replies(app: tauri::AppHandle, turn_id: &ChatTurnId) -> ChatResult<()> {
+    let db_url = format!("sqlite:{}", crate::vault::APP_SQLITE_FILE);
+    let pool = chat_pool(app.clone(), db_url.clone()).await?;
+    let Some(assignment_id) = sqlx::query_scalar::<_, String>(
+        "SELECT assignment_id FROM chat_agent_runs WHERE provider_turn_id = ?",
+    )
+    .bind(turn_id.as_str())
+    .fetch_optional(&pool)
+    .await
+    .map_err(persistence_error)?
+    else {
+        return Ok(());
+    };
+    let assignment_id = ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
+    let device_id = this_device_id(&app)?;
+    let writers = chat_writers(&app, &pool).await?;
+    let device = PostingDevice::this_device(&device_id, &writers);
+    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
+    let now = now_timestamp()?;
+    if let Some(follow_up) =
+        continue_stranded_replies(&pool, &assignment_id, device, &scope, &now).await?
+    {
+        dispatch_assignment_job(app, db_url, follow_up).await?;
     }
     Ok(())
 }
@@ -1991,6 +2046,28 @@ pub(super) async fn cancel_delegated_work(
     Ok(cancelled.into_iter().collect())
 }
 
+/// Moves the replies left pending on `assignment_id` after its turn ended onto the follow-up
+/// `device` runs, and returns the follow-up to dispatch. Both the turn-end hook and sync, which
+/// may bring a queued reply after that hook ran, call it. The follow-up's id derives from its
+/// trigger and the settled assignment, so when both meet on one assignment only one follow-up
+/// is created: the later call finds nothing left to move, or its insert of the same id fails
+/// and rolls back.
+pub(super) async fn continue_stranded_replies(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    device: PostingDevice<'_>,
+    scope: &ChatDeviceScope,
+    now: &UtcTimestamp,
+) -> ChatResult<Option<ChatWorkAssignmentId>> {
+    if stranded_follow_up_ids(pool, device, Some(assignment_id), "", 1)
+        .await?
+        .is_empty()
+    {
+        return Ok(None);
+    }
+    recover_follow_up(pool, assignment_id, device, scope, now).await
+}
+
 /// Starts the assignment an unattended post created on this device. It takes the path of synced
 /// work, so it dispatches only when its teammate already holds a local acceptance.
 pub(super) fn start_unattended_assignment(
@@ -2099,9 +2176,35 @@ async fn run_synced_assignment_work(
             ),
         }
     }
+    let writers = chat_writers(&app, &pool).await?;
+    let device = PostingDevice::this_device(&device_id, &writers);
     for assignment_id in &routed {
         let assignment_id =
             ChatWorkAssignmentId::new(assignment_id.clone()).map_err(identifier_error)?;
+        // A reply queued behind a turn that already ended continues the work here, since the
+        // turn-end hook ran before sync brought it.
+        let now = now_timestamp()?;
+        match continue_stranded_replies(&pool, &assignment_id, device, &scope, &now).await {
+            Ok(Some(follow_up)) => {
+                if let Err(error) =
+                    dispatch_assignment_job(app.clone(), db_url.clone(), follow_up).await
+                {
+                    eprintln!(
+                        "Follow-up of synced Chat assignment {} did not dispatch: {error}",
+                        assignment_id.as_str()
+                    );
+                }
+                continue;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!(
+                    "Synced replies of Chat assignment {} did not continue: {error}",
+                    assignment_id.as_str()
+                );
+                continue;
+            }
+        }
         if let Err(error) =
             deliver_pending_assignment_inputs(app.clone(), db_url.clone(), &pool, &assignment_id)
                 .await
@@ -2208,11 +2311,23 @@ pub(super) async fn persist_started_assignment(
                   WHERE message.item_id = item.id AND target.participant_id = ?
                 ) AS mentions_teammate,
                 (
+                  SELECT target.override_model_selection_data
+                  FROM chat_communication_messages message
+                  JOIN chat_message_references reference
+                    ON reference.message_revision_id = message.current_revision_id
+                  JOIN chat_participant_reference_targets target
+                    ON target.reference_id = reference.id
+                  WHERE message.item_id = item.id AND target.participant_id = ?
+                    AND target.override_model_selection_data IS NOT NULL
+                  ORDER BY reference.ordinal LIMIT 1
+                ) AS requested_model_override,
+                (
                   SELECT input.assignment_id FROM chat_work_assignment_inputs input
                   WHERE input.message_item_id = item.id
                 ) AS routed_assignment_id
          FROM chat_conversation_items item WHERE item.id = ?",
     )
+    .bind(teammate_id.as_str())
     .bind(teammate_id.as_str())
     .bind(message_item_id.as_str())
     .fetch_optional(pool)
@@ -2234,6 +2349,12 @@ pub(super) async fn persist_started_assignment(
     let routed_assignment_id: Option<String> = row
         .try_get("routed_assignment_id")
         .map_err(persistence_error)?;
+    let requested_model_override = row
+        .try_get::<Option<String>, _>("requested_model_override")
+        .map_err(persistence_error)?
+        .map(|data| serde_json::from_str::<ChatAssignmentModelOverride>(&data))
+        .transpose()
+        .map_err(serialization_error)?;
     let reply_thread_id = ChatReplyThreadId::new(reply_thread_id).map_err(identifier_error)?;
     let conversation_id = ChatConversationId::new(
         row.try_get::<String, _>("conversation_id")
@@ -2277,6 +2398,7 @@ pub(super) async fn persist_started_assignment(
             execution_target: None,
             poster_participant_id: LOCAL_PARTICIPANT_ID,
             delegation: None,
+            model_override: requested_model_override.as_ref(),
         },
         device,
         now,

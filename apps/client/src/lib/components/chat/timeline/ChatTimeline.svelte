@@ -19,6 +19,7 @@
   import Wrench from "@lucide/svelte/icons/wrench";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import { executionMessageActionTarget } from "$lib/chat/timeline/message-action-target";
+  import { noticeCode, resolveNoticeTitle } from "$lib/chat/timeline/notice-title";
   import { chatScrollBehavior } from "$lib/chat/responsive-layout";
   import type { ChatParticipantRead, ChatThreadShellRead, ChatTimelinePageRead, ChatTurnId, ProviderInstanceId, ProviderProbeResult } from "$lib/chat/contracts";
   import { activityFilePath, fileChangePresentation, fileReadActivityPresentation, fileSearchActivityPresentation, isFileReadActivity, isFileSearchActivity, isImageViewActivity, summarizeActivityKinds, transientActivitySummary, type ActivitySummaryCount } from "$lib/chat/timeline/activity-presentation";
@@ -537,6 +538,8 @@
     if (activity.activityKind === "channel_session_boundary") return t("chat.timeline.sessionBoundary", activity.title);
     if (activityIsThinking(activity)) return transientActivitySummary(activity) ?? t("chat.timeline.thinking");
     if (activity.title === "thread_reverted") return t("chat.timeline.threadRestored");
+    const code = activity.activityKind === "notice" ? noticeCode(activity.metadata?.value) : null;
+    if (code) return resolveNoticeTitle(code, activity.title, t);
     const active = activity.status === "pending" || activity.status === "active" || activity.status === "waiting";
     if (activity.activityKind === "file_change" || activity.activityKind === "file_change_output") {
       const path = activityFilePath(activity);

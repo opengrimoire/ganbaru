@@ -332,3 +332,80 @@ fn activity_projection_keeps_public_reasoning_summary_separate_from_raw_reasonin
         );
     });
 }
+
+#[test]
+fn provider_warnings_and_notices_project_as_notice_activities_with_their_code() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        append_canonical_event(
+            &pool,
+            canonical_request(
+                "event-warning",
+                Some("turn-missing"),
+                CanonicalEvent::RuntimeWarning(ganbaru_chat_contracts::events::NotificationEvent {
+                    code: "claude_api_retry".to_string(),
+                    title: "Claude is retrying the API request".to_string(),
+                    detail: Some("Attempt 2 of 5".to_string()),
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        append_canonical_event(
+            &pool,
+            canonical_request(
+                "event-deprecation",
+                None,
+                CanonicalEvent::DeprecationNotice(
+                    ganbaru_chat_contracts::events::NotificationEvent {
+                        code: "codex_deprecation".to_string(),
+                        title: "A setting is deprecated".to_string(),
+                        detail: None,
+                    },
+                ),
+            ),
+        )
+        .await
+        .unwrap();
+
+        let rows = sqlx::query(
+            "SELECT id, turn_id, item_kind, status, title, detail, source_event_type,
+                    json_extract(safe_metadata_data, '$.code') AS code
+             FROM chat_activities ORDER BY sequence_anchor",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        let warning = &rows[0];
+        assert_eq!(warning.get::<String, _>("id"), "activity:event-warning");
+        assert_eq!(warning.get::<Option<String>, _>("turn_id"), None);
+        assert_eq!(warning.get::<String, _>("item_kind"), "notice");
+        assert_eq!(warning.get::<String, _>("status"), "completed");
+        assert_eq!(
+            warning.get::<String, _>("title"),
+            "Claude is retrying the API request"
+        );
+        assert_eq!(
+            warning.get::<Option<String>, _>("detail").as_deref(),
+            Some("Attempt 2 of 5")
+        );
+        assert_eq!(warning.get::<String, _>("code"), "claude_api_retry");
+        let notice = &rows[1];
+        assert_eq!(notice.get::<String, _>("code"), "codex_deprecation");
+        assert_ne!(
+            warning.get::<String, _>("source_event_type"),
+            notice.get::<String, _>("source_event_type")
+        );
+
+        rebuild_thread_projections(&pool, &ChatThreadId::new("thread-1").unwrap())
+            .await
+            .unwrap();
+        let rebuilt: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chat_activities WHERE item_kind = 'notice'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rebuilt, 2);
+    });
+}

@@ -466,6 +466,7 @@ describe("ChatReplyThreadPanel", () => {
       updatedAt: "2026-08-04T17:01:00.000Z",
       review: null,
       localAcceptance: null,
+      latestRunProviderThreadId: null,
       delegation: {
         parentAssignmentId: "assignment:parent",
         parentReplyThreadId: "reply-thread:parent",

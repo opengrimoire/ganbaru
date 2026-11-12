@@ -6,6 +6,9 @@ use super::channels::{
     chat_pool, i64_value, identifier_error, now_timestamp, optional_timestamp, persistence_error,
     timestamp, u64_value,
 };
+pub use channel_notes::{
+    CreateChatChannelNoteCommand, DeleteChatChannelNoteCommand, UpdateChatChannelNoteCommand,
+};
 pub use ganbaru_chat::coordination::contracts::*;
 use ganbaru_chat_contracts::models::*;
 use serde::{Deserialize, Serialize};
@@ -26,6 +29,7 @@ const MAX_SEARCH_RESULTS: u32 = 100;
 pub mod access;
 #[cfg(desktop)]
 mod assignments;
+mod channel_notes;
 mod common;
 #[cfg(desktop)]
 mod context;
@@ -915,6 +919,46 @@ pub async fn chat_read_schedule_proposal_states(
     proposal_item_ids: Vec<ChatConversationItemId>,
 ) -> ChatResult<Vec<ChatScheduleProposalStateRead>> {
     scheduling::read_schedule_proposal_states(app, db_url, proposal_item_ids).await
+}
+
+/// Lists the live notes of a channel the local person belongs to, newest updated first.
+#[tauri::command]
+pub async fn chat_list_channel_notes(
+    app: tauri::AppHandle,
+    db_url: String,
+    channel_id: ChatChannelId,
+) -> ChatResult<Vec<ChatChannelNoteRead>> {
+    channel_notes::list_channel_notes(&chat_pool(app, db_url).await?, &channel_id).await
+}
+
+/// Saves a note a person wrote in a channel.
+#[tauri::command]
+pub async fn chat_create_channel_note(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: CreateChatChannelNoteCommand,
+) -> ChatResult<ChatChannelNoteRead> {
+    channel_notes::create_channel_note(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Rewords a channel note at the revision the person saw.
+#[tauri::command]
+pub async fn chat_update_channel_note(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: UpdateChatChannelNoteCommand,
+) -> ChatResult<ChatChannelNoteRead> {
+    channel_notes::update_channel_note(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Deletes a channel note at the revision the person saw.
+#[tauri::command]
+pub async fn chat_delete_channel_note(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: DeleteChatChannelNoteCommand,
+) -> ChatResult<()> {
+    channel_notes::delete_channel_note(&chat_pool(app, db_url).await?, &request).await
 }
 
 #[tauri::command]

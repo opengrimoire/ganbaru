@@ -1316,6 +1316,7 @@ fn session_open_input<'a>(
         existing,
         continuation_group_id,
         developer_instructions,
+        developer_instructions_delivered: false,
     }
 }
 
@@ -1669,4 +1670,80 @@ fn generic_acp_agents_accept_only_ask_and_full_access() {
         "codex",
         SafetyMode::ApproveForMe
     ));
+}
+
+#[tokio::test]
+async fn only_a_continuation_resumes_with_its_instructions_delivered() {
+    use ganbaru_chat::agent_runs::{AttemptReason, HandoffReason, RunAttempt, RunLaunch};
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    starting_folder_run(&pool).await;
+    let binding = working_run_binding(&pool).await;
+    let with_reason = |reason| {
+        let launch = folder_launch();
+        assignment_origin(
+            RunLaunch {
+                attempt: RunAttempt {
+                    reason,
+                    ..launch.attempt
+                },
+                ..launch
+            },
+            binding.clone(),
+        )
+    };
+
+    assert!(
+        assignment_origin(continuation_folder_launch(None), binding.clone())
+            .instructions_delivered_to_native_session()
+    );
+    for reason in [
+        AttemptReason::Fresh,
+        AttemptReason::Retry,
+        AttemptReason::Handoff(HandoffReason::KeyChanged),
+        AttemptReason::Handoff(HandoffReason::AuthorityRevoked),
+        AttemptReason::Handoff(HandoffReason::NativeSessionLost),
+    ] {
+        assert!(
+            !with_reason(reason).instructions_delivered_to_native_session(),
+            "{reason:?} opens a native session that has not received the instructions"
+        );
+    }
+    assert!(!TurnOrigin::Direct.instructions_delivered_to_native_session());
+}
+
+#[test]
+fn a_continuation_resume_reports_its_instructions_delivered() {
+    let command = session_open_command();
+    let group = ContinuationGroupId::new("group-1").unwrap();
+    let resumable = session_open_runtime_data(
+        Some("provider-thread-1"),
+        Some(VersionedJson {
+            schema_version: 1,
+            value: serde_json::json!({ "cursor": 1 }),
+        }),
+    );
+    let instructions = Some("Review the plan before editing.");
+    let SessionOpenRequest::Resume(continued) = session_open_request(SessionOpenRequestInput {
+        developer_instructions_delivered: true,
+        ..session_open_input(&command, Some(&resumable), &group, instructions)
+    })
+    .unwrap() else {
+        panic!("a thread with continuation data resumes");
+    };
+    assert!(continued.developer_instructions_delivered);
+    assert_eq!(
+        continued.developer_instructions.as_deref(),
+        instructions,
+        "the instructions still travel so a provider can tell a change apart"
+    );
+    let SessionOpenRequest::Resume(other) = session_open_request(session_open_input(
+        &command,
+        Some(&resumable),
+        &group,
+        instructions,
+    ))
+    .unwrap() else {
+        panic!("a thread with continuation data resumes");
+    };
+    assert!(!other.developer_instructions_delivered);
 }

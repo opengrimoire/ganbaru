@@ -45,6 +45,8 @@ pub(super) struct EnsureSessionContext<'a> {
     pub(super) authorization: Option<&'a AgentRunBinding>,
     /// Instructions the provider places at system level when the session opens.
     pub(super) developer_instructions: Option<&'a str>,
+    /// Whether a resumed native session already received `developer_instructions`.
+    pub(super) developer_instructions_delivered: bool,
 }
 
 pub(super) async fn ensure_session_with_executable_recovery(
@@ -63,6 +65,7 @@ pub(super) async fn ensure_session_with_executable_recovery(
         request,
         authorization,
         developer_instructions,
+        developer_instructions_delivered,
     } = context;
     let internal_mcp = configuration.internal_mcp.clone();
     let initial = ensure_session(EnsureSessionContext {
@@ -78,6 +81,7 @@ pub(super) async fn ensure_session_with_executable_recovery(
         request,
         authorization,
         developer_instructions,
+        developer_instructions_delivered,
     })
     .await;
     let error = match initial {
@@ -113,6 +117,7 @@ pub(super) async fn ensure_session_with_executable_recovery(
         request,
         authorization,
         developer_instructions,
+        developer_instructions_delivered,
     })
     .await;
     if retry
@@ -144,6 +149,7 @@ pub(super) async fn ensure_session(
         request,
         authorization,
         developer_instructions,
+        developer_instructions_delivered,
     } = context;
     let snapshot = owner.snapshot()?;
     if reuse_existing_session(snapshot.session_id.is_some(), snapshot.session_state)? {
@@ -202,6 +208,7 @@ pub(super) async fn ensure_session(
         existing,
         continuation_group_id,
         developer_instructions,
+        developer_instructions_delivered,
     })? {
         SessionOpenRequest::Resume(resume) => {
             owner
@@ -234,6 +241,8 @@ pub(super) struct SessionOpenRequestInput<'a> {
     pub(super) existing: Option<&'a ThreadRuntimeData>,
     pub(super) continuation_group_id: &'a ContinuationGroupId,
     pub(super) developer_instructions: Option<&'a str>,
+    /// Whether a resumed native session already received `developer_instructions`.
+    pub(super) developer_instructions_delivered: bool,
 }
 
 /// The provider request that opens a session, a resume or a fresh start.
@@ -263,6 +272,7 @@ pub(super) fn session_open_request(
         existing,
         continuation_group_id,
         developer_instructions,
+        developer_instructions_delivered,
     } = input;
     let developer_instructions = developer_instructions.map(str::to_string);
     if let Some(existing) = existing {
@@ -279,6 +289,7 @@ pub(super) fn session_open_request(
                 resume_cursor,
                 modes: request.modes,
                 developer_instructions,
+                developer_instructions_delivered,
             }));
         }
         if existing.provider_thread_id.is_some() {

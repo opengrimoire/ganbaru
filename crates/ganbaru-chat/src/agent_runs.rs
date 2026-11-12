@@ -257,6 +257,15 @@ impl TurnOrigin {
         }
     }
 
+    /// Whether the native session this turn resumes already received its developer
+    /// instructions. A continuation reuses a session only under an unchanged continuation key,
+    /// whose instructions digest covers the same text, so its session got them on an earlier
+    /// turn. Every other run opens a new native session.
+    pub fn instructions_delivered_to_native_session(&self) -> bool {
+        self.launch()
+            .is_some_and(|launch| launch.attempt.reason == AttemptReason::Continuation)
+    }
+
     /// The run binding and launch data of an assignment run.
     pub fn assignment_run(&self) -> Option<(&AgentRunBinding, &RunLaunch)> {
         match self {

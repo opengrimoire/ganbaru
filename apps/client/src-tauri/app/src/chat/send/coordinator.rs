@@ -309,6 +309,7 @@ pub(crate) async fn send_turn(
             request: &request,
             authorization: origin.run(),
             developer_instructions: origin.developer_instructions(),
+            developer_instructions_delivered: origin.instructions_delivered_to_native_session(),
         })
         .await?;
         let prompt = match hand_off_on_fresh_session(

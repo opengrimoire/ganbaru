@@ -182,6 +182,11 @@ pub struct ResumeSessionRequest {
     /// Instructions of the resumed session, placed at system level like on start.
     #[serde(default)]
     pub developer_instructions: Option<String>,
+    /// Whether the native session already received `developer_instructions` on an earlier
+    /// turn. Providers that deliver instructions in prompt text then omit them from the
+    /// resumed session's turns; providers that set them at system level ignore it.
+    #[serde(default)]
+    pub developer_instructions_delivered: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

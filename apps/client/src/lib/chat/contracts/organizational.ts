@@ -783,6 +783,13 @@ export interface ChatWaitingAssignmentRead {
   createdAt: UtcTimestamp;
 }
 
+/** The waiting list, capped, with how much waits in all. */
+export interface ChatWaitingAssignmentsRead {
+  items: ChatWaitingAssignmentRead[];
+  /** Every waiting assignment, including those past the cap. */
+  total: number;
+}
+
 export const CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS = ["steer", "queued_continuation", "follow_up"] as const;
 /** How a reply reaches running or finished work: into the current turn, after it, or as new work. */
 export type ChatAssignmentInputRoutingKind = (typeof CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS)[number];

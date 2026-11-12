@@ -70,6 +70,7 @@ import {
   type ChatTeammateAccessRead,
   type ChatTeammateChannelAccess,
   type ChatWaitingAssignmentRead,
+  type ChatWaitingAssignmentsRead,
   type ChatWorkAssignmentRead,
   type PostChatMessageResult,
 } from "../contracts";
@@ -1099,11 +1100,16 @@ function parseWaitingAssignment(value: unknown, label: string): ChatWaitingAssig
   };
 }
 
+/** Validates the capped waiting list and its total, which never counts fewer than the items. */
 export function parseChatWaitingAssignments(
   value: unknown,
   label = "Chat waiting assignments",
-): ChatWaitingAssignmentRead[] {
-  return readArray(value, label, parseWaitingAssignment);
+): ChatWaitingAssignmentsRead {
+  const record = readRecord(value, label);
+  const items = readArray(record.items, `${label}.items`, parseWaitingAssignment);
+  const total = readNonNegativeSafeInteger(record.total, `${label}.total`);
+  if (total < items.length) throw new Error(`${label}.total is below the item count`);
+  return { items, total };
 }
 
 /** Validates one assignment input read. */

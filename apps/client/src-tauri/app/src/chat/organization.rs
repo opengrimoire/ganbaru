@@ -39,6 +39,7 @@ mod inputs;
 #[cfg(desktop)]
 mod primary_folder;
 mod reads;
+pub(crate) mod review_queue;
 mod scheduling;
 mod teammate_lifecycle;
 mod workflow;
@@ -1120,8 +1121,19 @@ pub async fn chat_accept_assignment_here(
 pub async fn chat_list_waiting_assignments(
     app: tauri::AppHandle,
     db_url: String,
-) -> ChatResult<Vec<ChatWaitingAssignmentRead>> {
+) -> ChatResult<ChatWaitingAssignmentsRead> {
     assignments::list_waiting_assignments(app, db_url).await
+}
+
+/// Lists the assignments that wait for the person in every channel, or in one project's
+/// channels, by priority and recency, with how many match in all.
+#[tauri::command]
+pub async fn chat_list_review_queue(
+    app: tauri::AppHandle,
+    db_url: String,
+    project_id: Option<String>,
+) -> ChatResult<ChatReviewQueueRead> {
+    review_queue::list_review_queue(app, db_url, project_id).await
 }
 
 /// Lists the replies routed to an assignment after the message that started it, with their

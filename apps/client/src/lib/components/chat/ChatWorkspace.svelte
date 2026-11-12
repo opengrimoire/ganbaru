@@ -81,6 +81,10 @@
     chat.waitingAssignments.filter((waiting) => waiting.replyThreadId !== chat.openReplyThreadId),
   );
   const latestWaitingAssignment = $derived(waitingAssignments[0] ?? null);
+  // The total also counts work past the list cap; only the listed rows can be the open thread.
+  const waitingAssignmentCount = $derived(
+    chat.waitingAssignmentTotal - (chat.waitingAssignments.length - waitingAssignments.length),
+  );
   const paneEvents = useChatPaneEvents();
   const preferences = getPreferences();
   const projects = useProjects();
@@ -1071,7 +1075,7 @@
   {/if}
   <main class="main-shell relative flex min-w-0 flex-col">
         {#if latestWaitingAssignment}
-          <Notice class="waiting-work-notice" role="status" message={t("chat.organization.waitingWork", waitingAssignments.length, latestWaitingAssignment.teammateDisplayName, latestWaitingAssignment.channelName)} copy={false}>
+          <Notice class="waiting-work-notice" role="status" message={t("chat.organization.waitingWork", waitingAssignmentCount, latestWaitingAssignment.teammateDisplayName, latestWaitingAssignment.channelName)} copy={false}>
             {#snippet actions()}
               <button type="button" class="notice-action-text" onclick={() => { void chat.openWaitingAssignment(latestWaitingAssignment); }}>{t("chat.organization.openWaitingWork")}</button>
             {/snippet}

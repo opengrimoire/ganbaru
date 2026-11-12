@@ -441,6 +441,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_accept_assignment_here,
             chat::organization::chat_list_waiting_assignments,
             chat::organization::chat_list_assignment_inputs,
+            chat::organization::chat_list_review_queue,
             chat::organization::chat_edit_assignment_input,
             chat::organization::chat_cancel_assignment_input,
             chat::organization::chat_review_assignment,

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseChatReplyThreadPage, parseChatSecretRequests, parseChatWorkAssignment } from "./organizational";
+import {
+  parseChatReplyThreadPage,
+  parseChatSecretRequests,
+  parseChatWaitingAssignments,
+  parseChatWorkAssignment,
+} from "./organizational";
 
 const TIMESTAMP = "2026-08-05T16:00:00.000Z";
 const REVIEW_TIME = "2026-08-05T17:30:00.000Z";
@@ -173,5 +178,28 @@ describe("parseChatSecretRequests", () => {
     expect(() => parseChatSecretRequests([{ ...request, expiresAt: TIMESTAMP }]))
       .toThrow("Chat secret requests[0].expiresAt must be after createdAt");
     expect(() => parseChatSecretRequests([{ ...request, label: 7 }])).toThrow("Chat secret requests[0].label");
+  });
+});
+
+describe("parseChatWaitingAssignments", () => {
+  const waiting = {
+    assignmentId: "assignment:waiting",
+    projectId: "project:alpha",
+    channelId: "channel:general",
+    channelName: "general",
+    replyThreadId: "reply-thread:waiting",
+    teammateDisplayName: "Atlas",
+    createdAt: TIMESTAMP,
+  };
+
+  it("reads the capped list with a total past the cap", () => {
+    expect(parseChatWaitingAssignments({ items: [waiting], total: 40 })).toEqual({ items: [waiting], total: 40 });
+  });
+
+  it("refuses a missing or negative total, or one below the item count", () => {
+    expect(() => parseChatWaitingAssignments({ items: [waiting] })).toThrow();
+    expect(() => parseChatWaitingAssignments({ items: [], total: -1 })).toThrow();
+    expect(() => parseChatWaitingAssignments({ items: [waiting, waiting], total: 1 })).toThrow();
+    expect(() => parseChatWaitingAssignments([waiting])).toThrow();
   });
 });

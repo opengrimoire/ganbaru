@@ -140,8 +140,10 @@ export class ChatStore {
   selectedWorkingFolderId = $state<ProjectWorkingFolderId | null>(null);
   /** The primary working folder of the selected channel's project. */
   primaryWorkingFolder = $state<ChatProjectPrimaryWorkingFolderRead | null>(null);
-  /** Work that waits for a local action on this device across the vault, newest first. */
+  /** Work that waits for a local action on this device across the vault, newest first and capped. */
   waitingAssignments = $state<ChatWaitingAssignmentRead[]>([]);
+  /** How much work waits here in all, including what the cap leaves out of `waitingAssignments`. */
+  waitingAssignmentTotal = $state(0);
   selectedThreadId = $state<ChatThreadId | null>(null);
   selectedExecutionEnvironmentId = $state<string | null>(null);
   railOpen = $state(true);
@@ -444,6 +446,7 @@ export class ChatStore {
     this.channelSelectionRequest += 1;
     this.loaded = false;
     this.waitingAssignments = [];
+    this.waitingAssignmentTotal = 0;
     this.communicationController.reset();
     this.channelNavigationController.reset();
     this.organizationalController.reset();
@@ -926,7 +929,9 @@ export class ChatStore {
     if (!localExecutionAvailable) return;
     const vaultGeneration = this.vaultGeneration;
     void chatApi.listChatWaitingAssignments().then((waiting) => {
-      if (vaultGeneration === this.vaultGeneration) this.waitingAssignments = waiting;
+      if (vaultGeneration !== this.vaultGeneration) return;
+      this.waitingAssignments = waiting.items;
+      this.waitingAssignmentTotal = waiting.total;
     }).catch((error: unknown) => {
       console.error("Chat waiting work could not be read", error);
     });

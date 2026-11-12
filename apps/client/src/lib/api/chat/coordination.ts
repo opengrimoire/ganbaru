@@ -47,7 +47,7 @@ import type {
   ChatScheduledMessageDispatchRead,
   ChatScheduledMessageId,
   ChatScheduledMessageRead,
-  ChatWaitingAssignmentRead,
+  ChatWaitingAssignmentsRead,
   ChatSecretRequestRead,
   CreateChatChannelRequest,
   UpdateChatChannelDetailsRequest,
@@ -471,8 +471,8 @@ export async function acceptChatAssignmentHere(
   return started === null ? null : parseChatWorkAssignment(started);
 }
 
-/** Lists the work that waits for a local action on this device across the vault, newest first. */
-export async function listChatWaitingAssignments(): Promise<ChatWaitingAssignmentRead[]> {
+/** Lists the work that waits for a local action on this device across the vault, newest first, capped, with the total. */
+export async function listChatWaitingAssignments(): Promise<ChatWaitingAssignmentsRead> {
   return parseChatWaitingAssignments(await invoke<unknown>("chat_list_waiting_assignments", {
     dbUrl: await ensureDbUrl(),
   }));

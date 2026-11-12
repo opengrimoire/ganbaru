@@ -106,6 +106,7 @@ commands.allow = [
   "chat_list_processes",
   "chat_list_prompt_catalog",
   "chat_list_review_comments",
+  "chat_list_review_queue",
   "chat_list_scheduled_messages",
   "chat_list_scratch_scopes",
   "chat_list_secret_requests",

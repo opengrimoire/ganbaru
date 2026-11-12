@@ -76,3 +76,38 @@ fn hot_domain_queries_use_expected_indexes() {
         }
     });
 }
+
+#[test]
+fn assignment_attention_indexes_serve_the_review_queue_and_successor_probe() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        for index in [
+            "idx_chat_work_assignments_attention",
+            "idx_chat_work_assignments_previous",
+        ] {
+            let exists: Option<i64> =
+                sqlx::query_scalar("SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ?")
+                    .bind(index)
+                    .fetch_optional(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(exists, Some(1), "{index} is missing");
+        }
+
+        let queue = query_plan(
+            &pool,
+            "SELECT id FROM chat_work_assignments
+             WHERE state IN ('waiting_for_answer', 'waiting_for_approval', 'ready_for_review', 'failed')
+             ORDER BY state, updated_at DESC, id",
+        )
+        .await;
+        assert_plan_uses(&queue, "idx_chat_work_assignments_attention");
+
+        let successor = query_plan(
+            &pool,
+            "SELECT 1 FROM chat_work_assignments WHERE previous_assignment_id = 'assignment:a'",
+        )
+        .await;
+        assert_plan_uses(&successor, "idx_chat_work_assignments_previous");
+    });
+}

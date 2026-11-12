@@ -42,6 +42,11 @@ const DEFAULT_BEHAVIOR: ChatBehaviorPreferences = {
   terminalScrollbackLines: 10_000,
   idleSessionTimeoutSeconds: 900,
   confirmMultilineTerminalPaste: true,
+  notifyWaitingForYou: true,
+  notifyReviewReady: true,
+  notifyFailures: true,
+  announceBackgroundWork: true,
+  notificationIncludeContent: false,
 };
 
 export function defaultChatConfiguration(): ChatConfiguration {
@@ -169,6 +174,11 @@ function parseBehavior(value: unknown, label: string): ChatBehaviorPreferences {
       record.confirmMultilineTerminalPaste,
       `${label}.confirmMultilineTerminalPaste`,
     ),
+    notifyWaitingForYou: readBoolean(record.notifyWaitingForYou, `${label}.notifyWaitingForYou`),
+    notifyReviewReady: readBoolean(record.notifyReviewReady, `${label}.notifyReviewReady`),
+    notifyFailures: readBoolean(record.notifyFailures, `${label}.notifyFailures`),
+    announceBackgroundWork: readBoolean(record.announceBackgroundWork, `${label}.announceBackgroundWork`),
+    notificationIncludeContent: readBoolean(record.notificationIncludeContent, `${label}.notificationIncludeContent`),
   };
 }
 

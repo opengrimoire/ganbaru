@@ -227,6 +227,11 @@ export function modelSettings(): ChatSettingsRead {
         terminalScrollbackLines: 10_000,
         idleSessionTimeoutSeconds: 1_800,
         confirmMultilineTerminalPaste: true,
+        notifyWaitingForYou: true,
+        notifyReviewReady: true,
+        notifyFailures: true,
+        announceBackgroundWork: true,
+        notificationIncludeContent: false,
       },
     },
     providerFamilies: [{

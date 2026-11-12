@@ -15,6 +15,20 @@
   import { getProjects, getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
   import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
   import { getChat, getChatStore, resetChatForVault } from "$lib/stores/chat.svelte";
+  import { showChatNotification } from "$lib/api/chat/notifications";
+  import { parseChatChangeNotification } from "$lib/chat/validation";
+  import type { ChatBehaviorPreferences } from "$lib/chat/contracts";
+  import {
+    createChatNotificationCoordinator,
+    type ChatNotificationCoordinator,
+  } from "$lib/chat/notifications/desktop-coordinator";
+  import {
+    chatNotificationText,
+    parseChatNotificationTarget,
+    type ChatNotificationTarget,
+  } from "$lib/chat/notifications/delivery";
+  import type { ChatNotificationDelivery } from "$lib/chat/notifications/gate";
+  import { formatList } from "$lib/i18n/formatters";
   import { getZoom } from "$lib/stores/zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
@@ -82,7 +96,7 @@
     createNotesNotificationScheduler,
     createProjectTaskReminderScheduler,
   } from "$lib/scheduling/notification-schedulers";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { getNotesProjectHistoryScheduler } from "$lib/notes/history/project-history-scheduler";
   import { activeVaultIdentity, onActiveVaultIdentityChange } from "$lib/vault/active-vault";
   import { listenForNotesDatabaseChanges } from "$lib/notes/database/window-sync";
@@ -172,6 +186,8 @@
   let unlistenProjectTaskNotificationOpen: UnlistenFn | null = null;
   let unlistenDistractionsDesktopSettingsOpen: UnlistenFn | null = null;
   let unlistenDistractionsLimitsSettingsOpen: UnlistenFn | null = null;
+  let unlistenChatNotificationOpen: UnlistenFn | null = null;
+  let unlistenChatChangeForNotifications: UnlistenFn | null = null;
   const NOTES_NOTIFICATION_BODY_MAX_CHARS = 180;
   const AUTOMATIC_UPDATE_CHECK_DELAY_MS = 3_000;
   const FOCUS_NOTIFICATION_COPY_RETRY_MS = 1_000;
@@ -413,14 +429,63 @@
           unlistenDistractionsLimitsSettingsOpen = unlisten;
         })
         .catch((e) => console.error("Failed to listen for distraction limit settings opens:", e));
+      chatNotifications = createChatNotificationCoordinator({
+        isThreadVisible: chatReplyThreadVisible,
+        behavior: chatBehavior,
+        loadReviewQueue: () => chat.reloadReviewQueue(),
+        loadSettings: () => chat.refreshSettings(),
+        deliver: (delivery) => {
+          void deliverChatNotification(delivery)
+            .catch((e) => console.error("[chat notifications] failed:", e));
+        },
+      });
+      if (activeVaultIdentity() !== null) chatNotifications.loadInputs();
+      listen<unknown>("chat-notification-open", (event) => {
+        if (disposed) return;
+        let target: ChatNotificationTarget;
+        try {
+          target = parseChatNotificationTarget(event.payload);
+        } catch (e) {
+          console.error("Ignored an invalid Chat notification target:", e);
+          return;
+        }
+        void openChatNotification(target)
+          .catch((e) => console.error("Failed to open a Chat notification:", e));
+      })
+        .then((unlisten) => {
+          if (disposed) {
+            unlisten();
+            return;
+          }
+          unlistenChatNotificationOpen = unlisten;
+        })
+        .catch((e) => console.error("Failed to listen for Chat notification opens:", e));
+      listen<unknown>("chat://change", (event) => {
+        if (disposed) return;
+        try {
+          handleChatChangeForNotifications(event.payload);
+        } catch (e) {
+          console.error("Ignored an invalid Chat change notification:", e);
+        }
+      })
+        .then((unlisten) => {
+          if (disposed) {
+            unlisten();
+            return;
+          }
+          unlistenChatChangeForNotifications = unlisten;
+        })
+        .catch((e) => console.error("Failed to listen for Chat changes:", e));
     }
     const unsubscribeHistoryVault = isMainWindow
       ? onActiveVaultIdentityChange((previousVaultId, nextVaultId) => {
           notesProjectHistoryScheduler.switchVault();
           resetChatForVault();
+          chatNotifications?.reset();
           syncQuickNotesTrashPurge();
           projectTaskReminderScheduler.invalidate();
           if (!nextVaultId) return;
+          chatNotifications?.loadInputs();
           const projectsRequest = previousVaultId ? projects.load() : projects.ensureLoaded();
           void projectsRequest.then(() => Promise.all([
             previousVaultId ? notes.load() : notes.ensureLoaded(),
@@ -529,6 +594,12 @@
       unlistenDistractionsDesktopSettingsOpen = null;
       unlistenDistractionsLimitsSettingsOpen?.();
       unlistenDistractionsLimitsSettingsOpen = null;
+      unlistenChatNotificationOpen?.();
+      unlistenChatNotificationOpen = null;
+      unlistenChatChangeForNotifications?.();
+      unlistenChatChangeForNotifications = null;
+      chatNotifications?.dispose();
+      chatNotifications = null;
       document.removeEventListener("wheel", blockNativeWheelScale, { capture: true });
       document.removeEventListener("contextmenu", blockNativeContextMenu, { capture: true });
       document.removeEventListener("pointerdown", markPointerFocus, { capture: true });
@@ -858,6 +929,69 @@
     const wasEnabled = chatScheduledMessageScheduler.isEnabled();
     chatScheduledMessageScheduler.setEnabled(enabled);
     if (enabled && wasEnabled) chatScheduledMessageScheduler.invalidate();
+  });
+
+  // Chat notifications
+  let chatNotifications = $state.raw<ChatNotificationCoordinator | null>(null);
+
+  /** The Chat behavior preferences, or `null` while the settings of the current vault are not read. */
+  function chatBehavior(): ChatBehaviorPreferences | null {
+    return chat.settings?.configuration.behavior ?? null;
+  }
+
+  /** Whether the person is looking at the reply thread now, in either pane of the focused main window. */
+  function chatReplyThreadVisible(replyThreadId: string): boolean {
+    if (!document.hasFocus() || !shownKinds.includes("chat")) return false;
+    return chat.openReplyThreadId === replyThreadId || secondaryChat.openReplyThreadId === replyThreadId;
+  }
+
+  async function deliverChatNotification(delivery: ChatNotificationDelivery): Promise<void> {
+    // The gate holds delivery while the settings are unknown; content stays out if they were cleared since.
+    const text = chatNotificationText(delivery, chatBehavior()?.notificationIncludeContent ?? false, {
+      title: (kind, teammate) => t(`chat.notifications.titles.${kind}`, teammate),
+      body: (channel) => t("chat.notifications.body", channel),
+      bodyWithReason: (channel, reason) => t("chat.notifications.bodyWithReason", channel, reason),
+      summaryTitle: (count) => t("chat.notifications.summaryTitle", count),
+      summaryCount: (kind, count) => t(`chat.notifications.summaryCounts.${kind}`, count),
+      list: (values) => formatList(locale, values),
+      openThread: t("chat.notifications.openThread"),
+      openList: t("chat.notifications.openList"),
+    });
+    await showChatNotification({ ...text, playSound: true });
+  }
+
+  /** Opens the reply thread or the review queue a Chat notification names, in the pane Chat shows in. */
+  async function openChatNotification(target: ChatNotificationTarget): Promise<void> {
+    const projectId = target.kind === "assignment" ? target.projectId : projects.selectedProjectId;
+    const scope = workspaceTabs.navigationScope({ kind: "chat", projectId, item: null });
+    const store = scope === "secondary" ? secondaryChat : chat;
+    await store.ensureLoaded();
+    if (target.kind === "assignment") await store.openReviewItem(target);
+    workspaceTabs.navigateIn("chat", scope);
+  }
+
+  /** Rereads the review queue when a native Chat change may have moved work into or out of it. */
+  function handleChatChangeForNotifications(payload: unknown): void {
+    const change = parseChatChangeNotification(payload);
+    chatNotifications?.handleChange(change.changedProjectionKeys);
+  }
+
+  $effect(() => {
+    const queue = chat.reviewQueue;
+    if (!queue || !chatNotifications) return;
+    untrack(() => chatNotifications?.observe(queue));
+  });
+
+  // Settings read by a Chat pane, or changed in Settings, release what waited for them.
+  $effect(() => {
+    const settings = chat.settings;
+    if (!settings || !chatNotifications) return;
+    untrack(() => chatNotifications?.reevaluate());
+  });
+
+  $effect(() => {
+    const _focusPhase = scheduledFocusPhaseKey;
+    untrack(() => chatNotifications?.refreshQuiet());
   });
 
   // Event notifications

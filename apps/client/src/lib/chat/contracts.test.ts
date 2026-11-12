@@ -672,10 +672,31 @@ describe("Chat configuration", () => {
         terminalScrollbackLines: 12_000,
         idleSessionTimeoutSeconds: 900,
         confirmMultilineTerminalPaste: true,
+        notifyWaitingForYou: true,
+        notifyReviewReady: false,
+        notifyFailures: true,
+        announceBackgroundWork: false,
+        notificationIncludeContent: true,
       },
     };
 
     expect(parseChatConfiguration(fixture)).toEqual(fixture);
+  });
+
+  it("defaults notification preferences to notify without content and refuses other shapes", () => {
+    const configuration = defaultChatConfiguration();
+
+    expect(configuration.behavior).toMatchObject({
+      notifyWaitingForYou: true,
+      notifyReviewReady: true,
+      notifyFailures: true,
+      announceBackgroundWork: true,
+      notificationIncludeContent: false,
+    });
+    expect(() => parseChatConfiguration({
+      ...configuration,
+      behavior: { ...configuration.behavior, notifyFailures: "false" },
+    })).toThrow("notifyFailures");
   });
 
   it("requires every current field inside an existing Chat branch", () => {

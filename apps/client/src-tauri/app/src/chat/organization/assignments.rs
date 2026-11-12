@@ -1384,14 +1384,18 @@ async fn append_waiting_rows(
 }
 
 /// Reads the work that waits for a local action on `device`, across every reply thread and
-/// newest first, so it reaches the user without opening each thread.
+/// newest first, so it reaches the user without opening each thread. The list is capped at
+/// [`WAITING_ASSIGNMENT_LIMIT`] and `total` counts every waiting assignment.
 pub(super) async fn waiting_assignments(
     pool: &SqlitePool,
     device: PostingDevice<'_>,
     scope: &ChatDeviceScope,
-) -> ChatResult<Vec<ChatWaitingAssignmentRead>> {
+) -> ChatResult<ChatWaitingAssignmentsRead> {
     if !device.runs_new_work() {
-        return Ok(Vec::new());
+        return Ok(ChatWaitingAssignmentsRead {
+            items: Vec::new(),
+            total: 0,
+        });
     }
     let mut waiting = Vec::new();
     let mut after_id = String::new();
@@ -1431,15 +1435,19 @@ pub(super) async fn waiting_assignments(
                     .cmp(right.assignment_id.as_str())
             })
     });
+    let total = u32::try_from(waiting.len()).unwrap_or(u32::MAX);
     waiting.truncate(WAITING_ASSIGNMENT_LIMIT);
-    Ok(waiting)
+    Ok(ChatWaitingAssignmentsRead {
+        items: waiting,
+        total,
+    })
 }
 
 /// Reads the work that waits for a local action on this device.
 pub(super) async fn list_waiting_assignments(
     app: tauri::AppHandle,
     db_url: String,
-) -> ChatResult<Vec<ChatWaitingAssignmentRead>> {
+) -> ChatResult<ChatWaitingAssignmentsRead> {
     let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url).await?;
     let writers = chat_writers(&app, &pool).await?;

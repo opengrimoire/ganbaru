@@ -7,14 +7,16 @@ use super::super::models::{
 };
 use super::super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation};
 use super::ReviewWorkspaceAuthorizer;
+use super::assignment::{assignment_checkpoint_pair, verify_assignment_checkpoint_pair};
+use super::authored::{ProviderReportScope, apply_authored_flags};
 use super::authorization::authorize_review_request;
 use super::contracts::*;
 use super::material::{
     add_too_large_files, enrich_working_tree_files, git_files, working_tree_material,
 };
 use super::registry::{
-    ChatReviewRegistry, ReviewFileInternal, ReviewSnapshot, file_id, review_revision, snapshot_id,
-    snapshot_read,
+    ChatReviewRegistry, ReviewFileInternal, ReviewSnapshot, file_id, review_revision_in_scope,
+    snapshot_id, snapshot_read, thread_revision_scope,
 };
 use super::validation::{thread_required_error, validate_path, validate_reference};
 use super::{corrupt_data_error, empty_tree, git_text, persistence_error, review_error};
@@ -24,14 +26,22 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-#[derive(serde::Serialize)]
+/// Stable reason a review source is missing, serialized into the error details as `reason`.
+#[derive(Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-enum MissingReviewSource {
+pub(super) enum MissingReviewSource {
     CheckpointPair,
     ProviderTurn,
+    /// The assignment exists but has no runs on this device. Panels show the reason instead
+    /// of falling back to another source.
+    ExecutedElsewhere,
+    /// Local runs lack a pre or a post checkpoint.
+    AssignmentCheckpoints,
+    /// The assignment's runs span repository identities.
+    AssignmentRepositoryChanged,
 }
 
-fn missing_review_source_error(reason: MissingReviewSource, message: &str) -> ChatError {
+pub(super) fn missing_review_source_error(reason: MissingReviewSource, message: &str) -> ChatError {
     let mut error = ChatError::new(ChatErrorCode::NotFound, message, true);
     error.details = Some(Box::new(serde_json::json!({ "reason": reason })));
     error
@@ -51,7 +61,8 @@ pub async fn open_review(
         WorkingFolderAuthorizationOperation::Diff,
     )
     .await?;
-    let (before_oid, after_oid, label, files, provider_patches, object_store) =
+    let mut revision_scope = None;
+    let (before_oid, after_oid, label, files, provider_patches, object_store, authored_paths) =
         match &request.source {
             ReviewDiffSource::WorkingTree { mode } => {
                 let material = working_tree_material(authorized.git_folder(), *mode).await?;
@@ -78,6 +89,7 @@ pub async fn open_review(
                     files,
                     HashMap::new(),
                     material.object_store,
+                    ReviewAuthoredPathsStatus::NotNeeded,
                 )
             }
             ReviewDiffSource::Checkpoint { range, turn_id } => {
@@ -96,13 +108,29 @@ pub async fn open_review(
                 let pre = read_stored_checkpoint(pool, &pre).await?;
                 let post = read_stored_checkpoint(pool, &post).await?;
                 verify_checkpoint_pair(&authorized, thread_id, &pre, &post).await?;
-                let files = git_files(
+                let mut files = git_files(
                     authorized.git_folder(),
                     &pre.git_object_id,
                     &post.git_object_id,
                     &request.source,
                     request.ignore_whitespace,
                     None,
+                )
+                .await?;
+                let scope = match range {
+                    ReviewCheckpointRange::Turn => ProviderReportScope::Turn {
+                        thread_id,
+                        turn_id: turn_id.as_ref(),
+                    },
+                    ReviewCheckpointRange::Thread => ProviderReportScope::Thread(thread_id),
+                };
+                let authored_paths = apply_authored_flags(
+                    pool,
+                    authorized.git_folder(),
+                    &mut files,
+                    &pre,
+                    &post,
+                    scope,
                 )
                 .await?;
                 (
@@ -116,6 +144,39 @@ pub async fn open_review(
                     files,
                     HashMap::new(),
                     None,
+                    authored_paths,
+                )
+            }
+            ReviewDiffSource::Assignment { assignment_id } => {
+                let pair = assignment_checkpoint_pair(pool, assignment_id).await?;
+                verify_assignment_checkpoint_pair(&authorized, &working_folder_id, &pair).await?;
+                let mut files = git_files(
+                    authorized.git_folder(),
+                    &pair.pre.git_object_id,
+                    &pair.post.git_object_id,
+                    &request.source,
+                    request.ignore_whitespace,
+                    None,
+                )
+                .await?;
+                let authored_paths = apply_authored_flags(
+                    pool,
+                    authorized.git_folder(),
+                    &mut files,
+                    &pair.pre,
+                    &pair.post,
+                    ProviderReportScope::Assignment(assignment_id),
+                )
+                .await?;
+                revision_scope = Some(pair.revision_scope(assignment_id));
+                (
+                    Some(pair.pre.git_object_id),
+                    Some(pair.post.git_object_id),
+                    "Assignment".to_string(),
+                    files,
+                    HashMap::new(),
+                    None,
+                    authored_paths,
                 )
             }
             ReviewDiffSource::Commit { revision } => {
@@ -153,6 +214,7 @@ pub async fn open_review(
                     files,
                     HashMap::new(),
                     None,
+                    ReviewAuthoredPathsStatus::NotNeeded,
                 )
             }
             ReviewDiffSource::Branch {
@@ -196,6 +258,7 @@ pub async fn open_review(
                     files,
                     HashMap::new(),
                     None,
+                    ReviewAuthoredPathsStatus::NotNeeded,
                 )
             }
             ReviewDiffSource::ProviderTurn { turn_id } => {
@@ -239,6 +302,7 @@ pub async fn open_review(
                     files,
                     provider_patches,
                     None,
+                    ReviewAuthoredPathsStatus::NotNeeded,
                 )
             }
             ReviewDiffSource::ChangeRequest { .. } => {
@@ -247,25 +311,20 @@ pub async fn open_review(
                 ));
             }
         };
+    let revision_scope = revision_scope
+        .as_deref()
+        .unwrap_or_else(|| thread_revision_scope(request.thread_id.as_ref()));
     let revision = if let (Some(before), Some(after)) = (&before_oid, &after_oid) {
-        review_revision(
-            request.thread_id.as_ref(),
+        review_revision_in_scope(
+            revision_scope,
             &environment_id,
             &request.source,
             before,
             after,
-            request.ignore_whitespace,
-            request.context_lines,
         )?
     } else {
         let mut hasher = Sha256::new();
-        hasher.update(
-            request
-                .thread_id
-                .as_ref()
-                .map(ChatThreadId::as_str)
-                .unwrap_or("workspace-draft"),
-        );
+        hasher.update(revision_scope);
         hasher.update([0]);
         hasher.update(environment_id.as_bytes());
         hasher.update([0]);
@@ -336,6 +395,7 @@ pub async fn open_review(
         root: authorized.canonical_path,
         source: request.source,
         source_label: label,
+        authored_paths,
         before_oid,
         after_oid,
         context_lines: request.context_lines,
@@ -588,6 +648,7 @@ pub fn file_contract(
             provider_reported: read_only && matches!(source, ReviewDiffSource::ProviderTurn { .. }),
             git_observed: !matches!(source, ReviewDiffSource::ProviderTurn { .. }),
             read_only,
+            authored: true,
         },
         capabilities,
         reasons,
@@ -665,6 +726,15 @@ mod source_error_tests {
         for (reason, expected) in [
             (MissingReviewSource::CheckpointPair, "checkpoint_pair"),
             (MissingReviewSource::ProviderTurn, "provider_turn"),
+            (MissingReviewSource::ExecutedElsewhere, "executed_elsewhere"),
+            (
+                MissingReviewSource::AssignmentCheckpoints,
+                "assignment_checkpoints",
+            ),
+            (
+                MissingReviewSource::AssignmentRepositoryChanged,
+                "assignment_repository_changed",
+            ),
         ] {
             let value =
                 serde_json::to_value(missing_review_source_error(reason, "Changed diagnostic"))

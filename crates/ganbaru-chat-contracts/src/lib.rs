@@ -130,4 +130,27 @@ mod tests {
             assert!(serde_json::from_value::<ChatBehaviorPreferences>(behavior).is_err());
         }
     }
+
+    #[test]
+    fn chat_behavior_notification_fields_default_when_missing() {
+        use crate::config::ChatBehaviorPreferences;
+
+        let missing: ChatBehaviorPreferences = serde_json::from_value(json!({})).unwrap();
+        assert!(missing.notify_waiting_for_you);
+        assert!(missing.notify_review_ready);
+        assert!(missing.notify_failures);
+        assert!(missing.announce_background_work);
+        assert!(!missing.notification_include_content);
+
+        let chosen: ChatBehaviorPreferences = serde_json::from_value(json!({
+            "notifyReviewReady": false,
+            "notificationIncludeContent": true,
+        }))
+        .unwrap();
+        assert!(!chosen.notify_review_ready && chosen.notify_waiting_for_you);
+        assert!(chosen.notification_include_content);
+        let round_trip: ChatBehaviorPreferences =
+            serde_json::from_value(serde_json::to_value(&chosen).unwrap()).unwrap();
+        assert_eq!(round_trip, chosen);
+    }
 }

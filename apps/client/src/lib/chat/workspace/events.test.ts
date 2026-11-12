@@ -17,6 +17,15 @@ describe("Chat workspace event routing", () => {
     });
   });
 
+  it("routes assignment reviews and rejects ones without an assignment", () => {
+    const detail = { source: { kind: "assignment", assignmentId: "assignment-1" }, relativePath: null };
+    expect(chatWorkspaceRequest("ganbaru:chat-open-review", detail)).toEqual({ source: "review", detail });
+    expect(chatWorkspaceRequest("ganbaru:chat-open-review", {
+      source: { kind: "assignment", assignmentId: "" },
+      relativePath: null,
+    })).toBeNull();
+  });
+
   it("rejects unknown or malformed internal requests", () => {
     expect(chatWorkspaceRequest("ganbaru:unknown", {})).toBeNull();
     expect(isChatWorkspaceRequest({ source: "panel", detail: null })).toBe(false);

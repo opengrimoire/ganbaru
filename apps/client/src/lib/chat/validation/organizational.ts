@@ -19,6 +19,7 @@ import {
   CHAT_SCRATCH_GENERATION_LIFECYCLE_STATES,
   CHAT_SCRATCH_RECLAIM_REASONS,
   CHAT_SCRATCH_SCOPE_LIFECYCLE_STATES,
+  CHAT_REVIEW_QUEUE_KINDS,
   CHAT_SCHEDULED_MESSAGE_STATES,
   CHAT_TEAMMATE_CONFIGURATION_STATES,
   CHAT_WORK_ASSIGNMENT_STATES,
@@ -50,6 +51,8 @@ import {
   type ChatProjectPrimaryWorkingFolderRead,
   type ChatReplyThreadPageRead,
   type ChatReplyThreadSummaryRead,
+  type ChatReviewQueueItemRead,
+  type ChatReviewQueueRead,
   type ChatScheduledMessageDispatchRead,
   type ChatScheduledMessageRead,
   type ChatScratchCleanupPreviewRead,
@@ -70,6 +73,7 @@ import {
   type ChatTeammateAccessRead,
   type ChatTeammateChannelAccess,
   type ChatWaitingAssignmentRead,
+  type ChatWaitingAssignmentsRead,
   type ChatWorkAssignmentRead,
   type PostChatMessageResult,
 } from "../contracts";
@@ -1100,11 +1104,50 @@ function parseWaitingAssignment(value: unknown, label: string): ChatWaitingAssig
   };
 }
 
+/** Validates the capped waiting list and its total, which never counts fewer than the items. */
 export function parseChatWaitingAssignments(
   value: unknown,
   label = "Chat waiting assignments",
-): ChatWaitingAssignmentRead[] {
-  return readArray(value, label, parseWaitingAssignment);
+): ChatWaitingAssignmentsRead {
+  const record = readRecord(value, label);
+  const items = readArray(record.items, `${label}.items`, parseWaitingAssignment);
+  const total = readNonNegativeSafeInteger(record.total, `${label}.total`);
+  if (total < items.length) throw new Error(`${label}.total is below the item count`);
+  return { items, total };
+}
+
+function parseReviewQueueItem(value: unknown, label: string): ChatReviewQueueItemRead {
+  const record = readRecord(value, label);
+  return {
+    assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
+    revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
+    kind: readEnum(record.kind, CHAT_REVIEW_QUEUE_KINDS, `${label}.kind`),
+    projectId: readIdentifier(record.projectId, `${label}.projectId`),
+    projectName: readString(record.projectName, `${label}.projectName`),
+    channelId: readIdentifier(record.channelId, `${label}.channelId`),
+    channelName: readString(record.channelName, `${label}.channelName`),
+    replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
+    teammateParticipantId: readIdentifier(record.teammateParticipantId, `${label}.teammateParticipantId`),
+    teammateDisplayName: readString(record.teammateDisplayName, `${label}.teammateDisplayName`),
+    stateReason: readNullable(record.stateReason, `${label}.stateReason`, readString),
+    changedFileCount: readNonNegativeSafeInteger(record.changedFileCount, `${label}.changedFileCount`),
+    executedHere: readBoolean(record.executedHere, `${label}.executedHere`),
+    updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
+  };
+}
+
+/**
+ * Validates the capped review queue. The total never counts fewer than the items, and `truncated` must agree with
+ * whether it counts more.
+ */
+export function parseChatReviewQueue(value: unknown, label = "Chat review queue"): ChatReviewQueueRead {
+  const record = readRecord(value, label);
+  const items = readArray(record.items, `${label}.items`, parseReviewQueueItem);
+  const total = readNonNegativeSafeInteger(record.total, `${label}.total`);
+  const truncated = readBoolean(record.truncated, `${label}.truncated`);
+  if (total < items.length) throw new Error(`${label}.total is below the item count`);
+  if (truncated !== total > items.length) throw new Error(`${label}.truncated disagrees with the total`);
+  return { items, total, truncated };
 }
 
 /** Validates one assignment input read. */

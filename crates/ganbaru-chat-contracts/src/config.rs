@@ -135,6 +135,16 @@ pub struct ChatBehaviorPreferences {
     pub idle_session_timeout_seconds: u32,
     /// Stored per device, so a linked device cannot remove this safety prompt.
     pub confirm_multiline_terminal_paste: bool,
+    /// Sends a system notification when work waits for an answer or an approval.
+    pub notify_waiting_for_you: bool,
+    /// Sends a system notification when work is ready for review.
+    pub notify_review_ready: bool,
+    /// Sends a system notification when work fails.
+    pub notify_failures: bool,
+    /// Announces attention changes of reply threads that are not selected to screen readers.
+    pub announce_background_work: bool,
+    /// Stored per device, because what a lock screen may show depends on the device.
+    pub notification_include_content: bool,
 }
 
 impl Default for ChatBehaviorPreferences {
@@ -148,6 +158,11 @@ impl Default for ChatBehaviorPreferences {
             terminal_scrollback_lines: default_terminal_scrollback_lines(),
             idle_session_timeout_seconds: default_idle_session_timeout_seconds(),
             confirm_multiline_terminal_paste: true,
+            notify_waiting_for_you: true,
+            notify_review_ready: true,
+            notify_failures: true,
+            announce_background_work: true,
+            notification_include_content: false,
         }
     }
 }

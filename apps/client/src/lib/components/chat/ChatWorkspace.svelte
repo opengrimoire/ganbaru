@@ -28,7 +28,7 @@
     type ChatLayoutDecision,
   } from "$lib/chat/responsive-layout";
   import type { ChatPanelPreferences, ChatRestorePreviewRead } from "$lib/chat/contracts";
-  import { parseChatChangeNotification } from "$lib/chat/validation";
+  import { defaultChatConfiguration, parseChatChangeNotification } from "$lib/chat/validation";
   import { hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import { firstFocusable, trapTabFocus } from "$lib/chat/focus-navigation";
   import {
@@ -56,6 +56,11 @@
   import ChatRestoreDialog from "$lib/components/chat/review/ChatRestoreDialog.svelte";
   import { isTextEntryElement, OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
+  import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
+  import { createBackgroundAnnouncementTracker } from "$lib/chat/notifications/announcements";
+  import { getPomodoro } from "$lib/stores/pomodoro.svelte";
+  import { attentionSignals, type ChatAttentionSignal } from "$lib/chat/notifications/gate";
+  import { getChatQuietStatus } from "$lib/chat/notifications/quiet-status.svelte";
 
   let {
     projectSidebar = undefined,
@@ -81,6 +86,10 @@
     chat.waitingAssignments.filter((waiting) => waiting.replyThreadId !== chat.openReplyThreadId),
   );
   const latestWaitingAssignment = $derived(waitingAssignments[0] ?? null);
+  // The total also counts work past the list cap; only the listed rows can be the open thread.
+  const waitingAssignmentCount = $derived(
+    chat.waitingAssignmentTotal - (chat.waitingAssignments.length - waitingAssignments.length),
+  );
   const paneEvents = useChatPaneEvents();
   const preferences = getPreferences();
   const projects = useProjects();
@@ -446,6 +455,59 @@
     else if (state === "completed") politeAnnouncement = t("chat.accessibility.responseCompleted");
     else if (state === "interrupted") politeAnnouncement = t("chat.accessibility.turnInterrupted");
     else if (state === "failed") politeAnnouncement = t("chat.accessibility.turnFailed");
+  });
+
+  // One pane speaks background work, so a split of two Chat tabs announces each change once.
+  const announcesBackgroundWork = getWorkspacePaneScope() === "primary";
+  const quietStatus = getChatQuietStatus();
+  const pomodoro = getPomodoro();
+  const backgroundAnnouncements = createBackgroundAnnouncementTracker();
+  const focusPhaseKey = $derived(`${pomodoro.isActive}:${pomodoro.isRunning}:${pomodoro.phase}`);
+
+  function backgroundAnnouncementText(signal: ChatAttentionSignal): string {
+    if (signal.kind === "answer") return t("chat.accessibility.backgroundAnswer", signal.teammateName, signal.channelName);
+    if (signal.kind === "approval") {
+      return t("chat.accessibility.backgroundApproval", signal.teammateName, signal.channelName);
+    }
+    if (signal.kind === "review") return t("chat.accessibility.backgroundReview", signal.teammateName, signal.channelName);
+    return t("chat.accessibility.backgroundFailure", signal.teammateName, signal.channelName);
+  }
+
+  /** Speaks the background change the tracker picks after a completed quiet read. */
+  function announceBackgroundWork(): void {
+    const signal = backgroundAnnouncements.decide({
+      quiet: quietStatus.state?.quiet ?? true,
+      enabled: (chat.settings?.configuration.behavior ?? defaultChatConfiguration().behavior).announceBackgroundWork,
+      selectedReplyThreadId: chat.openReplyThreadId,
+    });
+    if (!signal) return;
+    // Clearing first lets the live region repeat text identical to the previous announcement.
+    politeAnnouncement = "";
+    const text = backgroundAnnouncementText(signal);
+    void tick().then(() => {
+      politeAnnouncement = text;
+    });
+  }
+
+  $effect(() => {
+    if (!announcesBackgroundWork) return;
+    return quietStatus.use(announceBackgroundWork);
+  });
+
+  // A queue change rereads the quiet state first, and the completed read decides whether to speak.
+  $effect(() => {
+    if (!announcesBackgroundWork) return;
+    const queue = chat.reviewQueue;
+    untrack(() => {
+      if (backgroundAnnouncements.observe(queue ? attentionSignals(queue).signals : null)) quietStatus.refresh();
+    });
+  });
+
+  // A Focus phase change can end quiet, which releases a held announcement.
+  $effect(() => {
+    if (!announcesBackgroundWork) return;
+    const _focusPhase = focusPhaseKey;
+    untrack(() => quietStatus.refresh());
   });
 
   $effect(() => {
@@ -1071,7 +1133,7 @@
   {/if}
   <main class="main-shell relative flex min-w-0 flex-col">
         {#if latestWaitingAssignment}
-          <Notice class="waiting-work-notice" role="status" message={t("chat.organization.waitingWork", waitingAssignments.length, latestWaitingAssignment.teammateDisplayName, latestWaitingAssignment.channelName)} copy={false}>
+          <Notice class="waiting-work-notice" role="status" message={t("chat.organization.waitingWork", waitingAssignmentCount, latestWaitingAssignment.teammateDisplayName, latestWaitingAssignment.channelName)} copy={false}>
             {#snippet actions()}
               <button type="button" class="notice-action-text" onclick={() => { void chat.openWaitingAssignment(latestWaitingAssignment); }}>{t("chat.organization.openWaitingWork")}</button>
             {/snippet}

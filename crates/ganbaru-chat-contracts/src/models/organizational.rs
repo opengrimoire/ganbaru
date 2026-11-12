@@ -597,10 +597,83 @@ mod tests {
     use super::{
         ChatAssignmentReviewOutcome, ChatAssignmentReviewRead, ChatAssignmentReviewRequest,
         ChatAttachmentId, ChatChannelId, ChatExecutionTarget, ChatHistoryBoundary,
-        ChatMessageReference, ChatParticipantId, ChatScratchPromotionDestinationRead,
-        ChatWorkAssignmentState, UtcTimestamp,
+        ChatMessageReference, ChatParticipantId, ChatReviewQueueKind, ChatReviewQueueRead,
+        ChatScratchPromotionDestinationRead, ChatWorkAssignmentState, UtcTimestamp,
     };
     use serde_json::json;
+
+    #[test]
+    fn review_queue_round_trips_with_camel_case_fields_and_snake_case_kinds() {
+        let wire = json!({
+            "items": [{
+                "assignmentId": "assignment:review",
+                "revision": 3,
+                "kind": "review",
+                "projectId": "project:alpha",
+                "projectName": "Alpha",
+                "channelId": "channel:general",
+                "channelName": "general",
+                "replyThreadId": "reply-thread:review",
+                "teammateParticipantId": "participant:reviewer",
+                "teammateDisplayName": "Reviewer",
+                "stateReason": null,
+                "changedFileCount": 2,
+                "executedHere": true,
+                "updatedAt": "2026-11-12T10:00:00.000Z"
+            }],
+            "total": 201,
+            "truncated": true
+        });
+
+        let queue = serde_json::from_value::<ChatReviewQueueRead>(wire.clone()).unwrap();
+
+        assert_eq!(queue.items[0].kind, ChatReviewQueueKind::Review);
+        assert_eq!(serde_json::to_value(&queue).unwrap(), wire);
+        let mut unknown_kind = wire;
+        unknown_kind["items"][0]["kind"] = json!("ready_for_review");
+        assert!(serde_json::from_value::<ChatReviewQueueRead>(unknown_kind).is_err());
+    }
+
+    #[test]
+    fn review_queue_kinds_map_only_the_states_that_wait_for_the_person() {
+        let kinds = [
+            (ChatReviewQueueKind::Answer, "answer"),
+            (ChatReviewQueueKind::Approval, "approval"),
+            (ChatReviewQueueKind::Review, "review"),
+            (ChatReviewQueueKind::Failure, "failure"),
+        ];
+        for (kind, wire) in kinds {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(wire));
+            assert_eq!(
+                serde_json::from_value::<ChatReviewQueueKind>(json!(wire)).unwrap(),
+                kind
+            );
+        }
+        assert_eq!(
+            ChatReviewQueueKind::from_state(ChatWorkAssignmentState::WaitingForAnswer),
+            Some(ChatReviewQueueKind::Answer)
+        );
+        assert_eq!(
+            ChatReviewQueueKind::from_state(ChatWorkAssignmentState::WaitingForApproval),
+            Some(ChatReviewQueueKind::Approval)
+        );
+        assert_eq!(
+            ChatReviewQueueKind::from_state(ChatWorkAssignmentState::ReadyForReview),
+            Some(ChatReviewQueueKind::Review)
+        );
+        assert_eq!(
+            ChatReviewQueueKind::from_state(ChatWorkAssignmentState::Failed),
+            Some(ChatReviewQueueKind::Failure)
+        );
+        for state in [
+            ChatWorkAssignmentState::Queued,
+            ChatWorkAssignmentState::Working,
+            ChatWorkAssignmentState::Completed,
+            ChatWorkAssignmentState::Cancelled,
+        ] {
+            assert_eq!(ChatReviewQueueKind::from_state(state), None);
+        }
+    }
 
     #[test]
     fn assignment_review_requests_round_trip_with_a_kind_tag() {
@@ -1047,6 +1120,78 @@ pub struct ChatWaitingAssignmentRead {
     pub reply_thread_id: ChatReplyThreadId,
     pub teammate_display_name: String,
     pub created_at: UtcTimestamp,
+}
+
+/// Work that waits for a local action on the reading device, with how much waits in all. The
+/// list is capped, so `total` can exceed the number of items.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatWaitingAssignmentsRead {
+    pub items: Vec<ChatWaitingAssignmentRead>,
+    pub total: u32,
+}
+
+/// What a review queue item asks of the person, from the assignment state that put it there.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatReviewQueueKind {
+    /// The teammate waits for an answer to a question (`waiting_for_answer`).
+    Answer,
+    /// The teammate waits for an approval (`waiting_for_approval`).
+    Approval,
+    /// Finished work waits for review (`ready_for_review`).
+    Review,
+    /// The work failed recently and nothing continues it (`failed`).
+    Failure,
+}
+
+impl ChatReviewQueueKind {
+    /// The queue kind of an assignment in `state`, or `None` when that state needs nothing
+    /// from the person.
+    #[must_use]
+    pub fn from_state(state: ChatWorkAssignmentState) -> Option<Self> {
+        match state {
+            ChatWorkAssignmentState::WaitingForAnswer => Some(Self::Answer),
+            ChatWorkAssignmentState::WaitingForApproval => Some(Self::Approval),
+            ChatWorkAssignmentState::ReadyForReview => Some(Self::Review),
+            ChatWorkAssignmentState::Failed => Some(Self::Failure),
+            _ => None,
+        }
+    }
+}
+
+/// One assignment that waits for the person, in any channel of any project.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatReviewQueueItemRead {
+    pub assignment_id: ChatWorkAssignmentId,
+    /// The assignment revision the item was read at, for stale checks on accept.
+    pub revision: u64,
+    pub kind: ChatReviewQueueKind,
+    pub project_id: String,
+    pub project_name: String,
+    pub channel_id: ChatChannelId,
+    pub channel_name: String,
+    pub reply_thread_id: ChatReplyThreadId,
+    pub teammate_participant_id: ChatParticipantId,
+    pub teammate_display_name: String,
+    /// The assignment state reason, clipped for display.
+    pub state_reason: Option<String>,
+    /// Distinct files the assignment's review updates report as changed.
+    pub changed_file_count: u32,
+    /// Whether this installation executed the assignment.
+    pub executed_here: bool,
+    pub updated_at: UtcTimestamp,
+}
+
+/// The review queue: the first items by priority and recency, with how many match in all.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatReviewQueueRead {
+    pub items: Vec<ChatReviewQueueItemRead>,
+    pub total: u32,
+    /// Whether `total` exceeds the items read.
+    pub truncated: bool,
 }
 
 /// A reply routed to an assignment after the message that started it, with where its delivery

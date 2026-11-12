@@ -197,6 +197,15 @@
       <SwitchField label={t("settings.chat.behavior.foldWork")} description={t("settings.chat.behavior.foldWorkDescription")} checked={behavior.automaticallyFoldSettledWork} disabled={saving} onChange={(value) => void update({ automaticallyFoldSettledWork: value })} />
       <SwitchField label={t("settings.chat.behavior.confirmPaste")} description={t("settings.chat.behavior.confirmPasteDescription")} checked={behavior.confirmMultilineTerminalPaste} disabled={saving} onChange={(value) => void update({ confirmMultilineTerminalPaste: value })} />
     </div>
+    <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+    <div class="flex flex-col gap-3" role="group" aria-labelledby="chat-behavior-notifications-heading">
+      <h3 id="chat-behavior-notifications-heading" class="px-1 text-[0.866667rem] text-foreground">{t("settings.chat.behavior.notificationsHeading")}</h3>
+      <SwitchField label={t("settings.chat.behavior.notifyWaiting")} description={t("settings.chat.behavior.notifyWaitingDescription")} checked={behavior.notifyWaitingForYou} disabled={saving} onChange={(value) => void update({ notifyWaitingForYou: value })} />
+      <SwitchField label={t("settings.chat.behavior.notifyReview")} description={t("settings.chat.behavior.notifyReviewDescription")} checked={behavior.notifyReviewReady} disabled={saving} onChange={(value) => void update({ notifyReviewReady: value })} />
+      <SwitchField label={t("settings.chat.behavior.notifyFailures")} description={t("settings.chat.behavior.notifyFailuresDescription")} checked={behavior.notifyFailures} disabled={saving} onChange={(value) => void update({ notifyFailures: value })} />
+      <SwitchField label={t("settings.chat.behavior.notificationContent")} description={t("settings.chat.behavior.notificationContentDescription")} checked={behavior.notificationIncludeContent} disabled={saving} onChange={(value) => void update({ notificationIncludeContent: value })} />
+      <SwitchField label={t("settings.chat.behavior.announceBackground")} description={t("settings.chat.behavior.announceBackgroundDescription")} checked={behavior.announceBackgroundWork} disabled={saving} onChange={(value) => void update({ announceBackgroundWork: value })} />
+    </div>
   {/if}
   {#if diagnostics}
     <div class="border-y border-border">

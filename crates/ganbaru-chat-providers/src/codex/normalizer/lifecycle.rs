@@ -162,9 +162,6 @@ impl CodexEventNormalizer {
             .and_then(Value::as_object)
             .ok_or_else(|| protocol_error("turn/started.turn"))?;
         let provider_turn_id = required_text(turn, "id")?.to_string();
-        if state.is_abandoned(&provider_turn_id) {
-            return Ok(Vec::new());
-        }
         if state.retry_request_in_flight && state.active_chat_turn_id.is_none() {
             // The retry's chat turn settled while its request was in flight, and no new turn
             // starts until it resolves, so this turn has no owner.

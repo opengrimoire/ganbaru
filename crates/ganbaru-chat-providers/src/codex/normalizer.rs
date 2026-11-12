@@ -186,6 +186,9 @@ impl CodexEventNormalizer {
                 return Ok(Vec::new());
             }
         }
+        if notification_turn_id(&params).is_some_and(|turn_id| state.is_abandoned(turn_id)) {
+            return Ok(Vec::new());
+        }
         if !CODEX_NOTIFICATION_METHODS.contains(&method) {
             return self.unknown_notification(state, method, &params);
         }
@@ -452,4 +455,12 @@ impl CodexEventNormalizer {
             self.next_fallback_id.fetch_add(1, Ordering::Relaxed)
         )
     }
+}
+
+/// The provider turn a notification names, from `turnId` or the `turn.id` of lifecycle events.
+fn notification_turn_id(params: &Value) -> Option<&str> {
+    params
+        .get("turnId")
+        .or_else(|| params.get("turn").and_then(|turn| turn.get("id")))
+        .and_then(Value::as_str)
 }

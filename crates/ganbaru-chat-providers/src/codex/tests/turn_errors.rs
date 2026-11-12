@@ -308,13 +308,23 @@ fn an_orphaned_retry_turn_never_touches_the_next_chat_turn() {
             .events()
             .into_iter()
             .filter(|event| {
-                matches!(event.event, CanonicalEvent::TurnCompleted(_))
-                    && event.turn_id.as_ref().map(ChatTurnId::as_str) == Some("chat-turn-next")
+                matches!(
+                    event.event,
+                    CanonicalEvent::TurnCompleted(_) | CanonicalEvent::RuntimeError(_)
+                ) && event.turn_id.as_ref().map(ChatTurnId::as_str) == Some("chat-turn-next")
             })
             .count();
         assert_eq!(
             next_terminals, 0,
-            "orphan notifications never settle the next turn"
+            "orphan notifications never fail or settle the next turn"
+        );
+        assert!(
+            !sink.events().iter().any(|event| {
+                matches!(event.event, CanonicalEvent::RuntimeError(_))
+                    && event.provider_turn_id.as_ref().map(ProviderTurnId::as_str)
+                        == Some("fixture-provider-turn-2")
+            }),
+            "the orphan's error is dropped instead of failing the session"
         );
         driver
             .interrupt_turn(

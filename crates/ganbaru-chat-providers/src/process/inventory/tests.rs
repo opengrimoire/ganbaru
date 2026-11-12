@@ -53,6 +53,7 @@ mod linux_tests {
             Path::new("/bin/sleep"),
             Some("Codex"),
             ChatProcessPurpose::Session,
+            Some(ResourceScope::Scoped),
         );
         let record = list_processes()
             .roots
@@ -62,6 +63,7 @@ mod linux_tests {
         assert_eq!(record.executable_name, "sleep");
         assert_eq!(record.provider_instance_label.as_deref(), Some("Codex"));
         assert!(record.stoppable);
+        assert_eq!(record.resource_scope, Some(ResourceScope::Scoped));
         let start_time = record.start_time.expect("Linux reports a start time");
         crate::test_block_on(stop_process(pid, start_time)).expect("registered process stops");
         child.wait().expect("sleep is reaped");
@@ -84,6 +86,7 @@ mod linux_tests {
             Path::new("/bin/sleep"),
             None,
             ChatProcessPurpose::Terminal,
+            None,
         );
         let other = ProcessStartTime(fresh.0 + 1);
         let mismatch = crate::test_block_on(stop_process(pid, other))

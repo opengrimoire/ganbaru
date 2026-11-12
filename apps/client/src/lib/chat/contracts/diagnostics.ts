@@ -47,6 +47,11 @@ export const CHAT_PROCESS_PURPOSES = ["session", "probe", "local_server", "termi
 /** Why a listed Chat process runs. */
 export type ChatProcessPurpose = (typeof CHAT_PROCESS_PURPOSES)[number];
 
+/** Whether a Chat process runs in a Linux user resource scope with CPU, IO, task, and memory ceilings. */
+export const CHAT_PROCESS_RESOURCE_SCOPES = ["scoped", "unavailable"] as const;
+
+export type ChatProcessResourceScope = (typeof CHAT_PROCESS_RESOURCE_SCOPES)[number];
+
 /** One process Chat started. */
 export interface ChatProcessRecord {
   pid: number;
@@ -58,6 +63,8 @@ export interface ChatProcessRecord {
   startedAt: string;
   /** Whether this platform can stop the process individually. */
   stoppable: boolean;
+  /** Resource scope of the process; null for processes that are never scoped, such as terminals and probes. */
+  resourceScope: ChatProcessResourceScope | null;
 }
 
 /** A process started by a listed Chat process or one of its descendants. */

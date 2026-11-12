@@ -22,6 +22,7 @@ const NOTICE_TITLE_KEYS: Readonly<Record<string, NoticeTitleKey>> = {
   streamed_text_limit: "chat.timeline.noticeTitles.streamedTextLimit",
   provider_interrupt_unconfirmed: "chat.timeline.noticeTitles.providerInterruptUnconfirmed",
   late_provider_event: "chat.timeline.noticeTitles.lateProviderEvent",
+  provider_memory_limit: "chat.timeline.noticeTitles.providerMemoryLimit",
 };
 
 /**

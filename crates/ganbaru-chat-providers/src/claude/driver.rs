@@ -373,6 +373,7 @@ impl ClaudeProviderDriver {
             expected_shutdown: Arc::clone(&expected_shutdown),
             terminal_error: Arc::clone(&terminal_error),
             organizational: organizational_route,
+            memory_limit: connection.memory_limit_watch(),
         });
         let capabilities = claude_capabilities();
         let started_at = now_utc()?;

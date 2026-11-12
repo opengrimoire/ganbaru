@@ -100,7 +100,7 @@
             <div class="flex min-w-0 items-center gap-2">
               <div class="min-w-0 flex-1">
                 <p class="truncate text-sm">{record.executableName}</p>
-                <p class="truncate text-xs text-muted-foreground">{[t(PURPOSE_LABELS[record.purpose]), record.providerInstanceLabel, t("settings.chat.behavior.processPid", pidLabel(record.pid)), t("settings.chat.behavior.processStartedAt", startedLabel(record))].filter(Boolean).join(" · ")}</p>
+                <p class="truncate text-xs text-muted-foreground">{[t(PURPOSE_LABELS[record.purpose]), record.providerInstanceLabel, t("settings.chat.behavior.processPid", pidLabel(record.pid)), t("settings.chat.behavior.processStartedAt", startedLabel(record)), record.resourceScope === "scoped" ? t("settings.chat.behavior.processResourceScoped") : null].filter(Boolean).join(" · ")}</p>
               </div>
               {#if record.stoppable}
                 <button type="button" class="process-action shrink-0" disabled={busy} aria-label={t("settings.chat.behavior.stopProcessLabel", record.executableName, pidLabel(record.pid))} onclick={() => void stop(record)}>{t("settings.chat.behavior.stopProcess")}</button>

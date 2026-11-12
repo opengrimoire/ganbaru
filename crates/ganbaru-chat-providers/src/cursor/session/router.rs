@@ -28,6 +28,23 @@ async fn route_inbound(mut resources: CursorRouterResources) {
     }
     resources.terminal_callbacks.shutdown();
     if !resources.expected_shutdown.load(Ordering::Acquire) {
+        if reached_memory_limit(resources.memory_limit.as_ref()).await {
+            let warning = resources
+                .route
+                .lock()
+                .map_err(|_| driver_state_error())
+                .and_then(|state| {
+                    resources.normalizer.external_event(
+                        &state,
+                        "transport/memory_limit",
+                        None,
+                        CanonicalEvent::RuntimeWarning(memory_limit_warning()),
+                    )
+                });
+            if let Ok(warning) = warning {
+                emit_all(&resources.sink, vec![warning]).await;
+            }
+        }
         let provider_name = resources.flavor.display_name();
         let events = resources
             .route

@@ -1091,6 +1091,7 @@ export const chat = {
       streamedTextLimit: "Se recortó el texto del proveedor",
       providerInterruptUnconfirmed: "El proveedor no confirmó la detención",
       lateProviderEvent: "Se ignoró un evento tardío del proveedor",
+      providerMemoryLimit: "El proveedor alcanzó su límite de memoria",
     },
     activityStatus: {
       pending: "Pendiente",

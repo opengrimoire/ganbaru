@@ -16,6 +16,8 @@ A later assignment of the same teammate in the same reply thread and execution t
 
 Cancellation targets the active run and its owned process tree. It never deletes prior events or cancels unrelated parallel work. Stop settles the turn as interrupted within a few seconds even when the provider does not confirm it, and the provider session restarts for the next turn.
 
+On Linux, provider sessions and local provider servers run inside a user systemd resource scope with low CPU and IO weight, a task ceiling, and memory ceilings that leave the desktop headroom, so a runaway provider slows or stops itself instead of the desktop. When the scope stops a provider for memory, the conversation shows a notice before the session failure. Where user systemd is unavailable, such as inside Flatpak, or a scoped launch fails, providers start directly for the rest of the app run, because the scope must never block a provider. Chat terminals and short provider probes are never scoped.
+
 A run executes on one device, and its process, approvals, questions, terminal, and execution state stay there. Other linked devices see its messages and can complete or cancel its assignment, which stops the run on the executing device.
 
 ## Interactive requests and approvals

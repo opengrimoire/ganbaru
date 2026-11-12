@@ -8,7 +8,7 @@ import type {
   ChatRebuildResult,
   ChatStopAllResult,
 } from "../contracts";
-import { CHAT_PROCESS_PURPOSES } from "../contracts";
+import { CHAT_PROCESS_PURPOSES, CHAT_PROCESS_RESOURCE_SCOPES } from "../contracts";
 import {
   readArray,
   readBoolean,
@@ -98,6 +98,7 @@ function parseChatProcessRecord(value: unknown, label: string): ChatProcessRecor
     purpose: readEnum(record.purpose, CHAT_PROCESS_PURPOSES, `${label}.purpose`),
     startedAt: readUtcTimestamp(record.startedAt, `${label}.startedAt`),
     stoppable: readBoolean(record.stoppable, `${label}.stoppable`),
+    resourceScope: readNullable(record.resourceScope, `${label}.resourceScope`, (value, path) => readEnum(value, CHAT_PROCESS_RESOURCE_SCOPES, path)),
   };
 }
 

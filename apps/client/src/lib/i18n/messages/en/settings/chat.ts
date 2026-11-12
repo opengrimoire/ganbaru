@@ -534,6 +534,7 @@ export const chatSettings = {
     processPurposeProbe: "Provider check",
     processPurposeLocalServer: "Local provider server",
     processPurposeTerminal: "Chat terminal",
+    processResourceScoped: "Resource limited",
     processDescendantsOmitted: (count: string) => `${count} more child processes are not shown.`,
   },
   setup: {

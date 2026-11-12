@@ -537,6 +537,7 @@ export const chatSettings = {
     processPurposeProbe: "Comprobación de proveedor",
     processPurposeLocalServer: "Servidor local del proveedor",
     processPurposeTerminal: "Terminal de Chat",
+    processResourceScoped: "Recursos limitados",
     processDescendantsOmitted: (count: string) => `No se muestran ${count} procesos hijos más.`,
   },
   setup: {

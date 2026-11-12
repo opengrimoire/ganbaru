@@ -862,6 +862,7 @@ fn spawn_session(
             Path::new(&shell),
             None,
             process_inventory::ChatProcessPurpose::Terminal,
+            None,
         )
     });
     let killer = child.clone_killer();

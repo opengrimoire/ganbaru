@@ -23,8 +23,10 @@ const MAX_ENVIRONMENT_ENTRIES: usize = 128;
 const MAX_ENVIRONMENT_VALUE_BYTES: usize = 32 * 1024;
 
 pub mod inventory;
+pub mod systemd_scope;
 
 pub use inventory::{ProcessRegistration, ProviderProcessPurpose};
+pub use systemd_scope::{ResourceScope, probe_resource_scope};
 
 #[derive(Clone, Debug)]
 pub struct ProviderProcessConfig {
@@ -59,11 +61,26 @@ pub struct ProviderProcessHandle {
     stopped: bool,
     /// Keeps the process in the Chat process list until it is stopped or the handle drops.
     registration: Option<ProcessRegistration>,
+    /// Whether the process runs in a resource scope; `None` for purposes that are never scoped.
+    resource_scope: Option<ResourceScope>,
+    /// Reports a memory ceiling kill of a scoped process.
+    memory_limit: Option<systemd_scope::MemoryLimitWatch>,
 }
 
 impl ProviderProcessHandle {
     pub fn process_id(&self) -> Option<u32> {
         self.child.id()
+    }
+
+    /// Whether the process runs in a resource scope; `None` for purposes that are never scoped.
+    pub fn resource_scope(&self) -> Option<ResourceScope> {
+        self.resource_scope
+    }
+
+    /// Watch that tells whether the resource scope's memory ceiling stopped the process; `None`
+    /// when the process is not scoped.
+    pub fn memory_limit_watch(&self) -> Option<systemd_scope::MemoryLimitWatch> {
+        self.memory_limit.clone()
     }
 
     pub fn take_stdout(&mut self) -> ChatResult<ChildStdout> {
@@ -223,20 +240,15 @@ fn guarded_environment(environment: &BTreeMap<String, String>) -> BTreeMap<&str,
     guarded
 }
 
+/// Starts a provider process with a cleared, guarded environment in its own process tree.
+///
+/// Sessions and local servers start inside a resource scope when [`probe_resource_scope`] found
+/// one on this device. A scoped launch that does not reach the provider is stopped and retried
+/// directly, and scoping stays off for the rest of the app run, so the scope never blocks a
+/// provider.
 pub fn spawn_provider_process(config: ProviderProcessConfig) -> ChatResult<ProviderProcessHandle> {
     validate_config(&config)?;
-    let mut command = Command::new(&config.executable);
-    command
-        .args(&config.arguments)
-        .current_dir(&config.working_directory)
-        .env_clear()
-        .envs(guarded_environment(&config.environment))
-        .kill_on_drop(true)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    configure_process_tree(&mut command);
-    let mut child = command.spawn().map_err(spawn_error)?;
+    let (mut child, resource_scope) = spawn_provider_child(&config)?;
     #[cfg(unix)]
     let process_group_id = child
         .id()
@@ -251,8 +263,10 @@ pub fn spawn_provider_process(config: ProviderProcessConfig) -> ChatResult<Provi
             &config.executable,
             config.provider_instance_label.as_deref(),
             config.purpose.into(),
+            resource_scope,
         )
     });
+    let memory_limit = scoped_memory_limit_watch(&child, resource_scope);
     let stdin = child.stdin.take().ok_or_else(process_state_error)?;
     let stdout = child.stdout.take().ok_or_else(process_state_error)?;
     let mut stderr_reader = child.stderr.take().ok_or_else(process_state_error)?;
@@ -294,7 +308,109 @@ pub fn spawn_provider_process(config: ProviderProcessConfig) -> ChatResult<Provi
         stderr_task: Some(stderr_task),
         stopped: false,
         registration,
+        resource_scope,
+        memory_limit,
     })
+}
+
+fn direct_provider_command(config: &ProviderProcessConfig) -> Command {
+    let mut command = Command::new(&config.executable);
+    command
+        .args(&config.arguments)
+        .env_clear()
+        .envs(guarded_environment(&config.environment));
+    command
+}
+
+fn spawn_configured(mut command: Command, working_directory: &Path) -> std::io::Result<Child> {
+    command
+        .current_dir(working_directory)
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    configure_process_tree(&mut command);
+    command.spawn()
+}
+
+/// Starts the provider child, in a resource scope when one applies, and reports which.
+fn spawn_provider_child(
+    config: &ProviderProcessConfig,
+) -> ChatResult<(Child, Option<ResourceScope>)> {
+    let scoped = matches!(
+        config.purpose,
+        ProviderProcessPurpose::Session | ProviderProcessPurpose::LocalServer
+    );
+    if !scoped {
+        let child = spawn_configured(direct_provider_command(config), &config.working_directory)
+            .map_err(spawn_error)?;
+        return Ok((child, None));
+    }
+    if let Some(child) = spawn_scoped_child(config) {
+        return Ok((child, Some(ResourceScope::Scoped)));
+    }
+    let child = spawn_configured(direct_provider_command(config), &config.working_directory)
+        .map_err(spawn_error)?;
+    Ok((child, Some(ResourceScope::Unavailable)))
+}
+
+/// Starts the provider through the cached scope launcher; `None` when no launcher applies or the
+/// launch did not reach the provider, in which case scoping is turned off for this app run.
+#[cfg(target_os = "linux")]
+fn spawn_scoped_child(config: &ProviderProcessConfig) -> Option<Child> {
+    let launcher = systemd_scope::scope_launcher()?;
+    if !systemd_scope::launchable_through_env(&config.executable) {
+        return None;
+    }
+    let mut command = Command::new(&launcher.runner);
+    command
+        .env_clear()
+        .args(systemd_scope::scope_arguments(
+            systemd_scope::device_memory_ceilings(),
+            &launcher.env,
+            &systemd_scope::wrapper_only_variables(&config.environment),
+            &config.executable,
+            &config.arguments,
+        ))
+        .envs(guarded_environment(&systemd_scope::wrapper_environment(
+            &config.environment,
+        )));
+    let Ok(mut child) = spawn_configured(command, &config.working_directory) else {
+        systemd_scope::disable_resource_scope();
+        return None;
+    };
+    if systemd_scope::confirm_scope_entry(&mut child, &launcher.runner) {
+        return Some(child);
+    }
+    systemd_scope::disable_resource_scope();
+    if let Some(pid) = child.id().and_then(|id| libc::pid_t::try_from(id).ok()) {
+        let _ = signal_process_group(pid, libc::SIGKILL);
+    }
+    let _ = child.start_kill();
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn spawn_scoped_child(_config: &ProviderProcessConfig) -> Option<Child> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn scoped_memory_limit_watch(
+    child: &Child,
+    resource_scope: Option<ResourceScope>,
+) -> Option<systemd_scope::MemoryLimitWatch> {
+    (resource_scope == Some(ResourceScope::Scoped))
+        .then(|| systemd_scope::watch_memory_limit(child))
+        .flatten()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn scoped_memory_limit_watch(
+    _child: &Child,
+    _resource_scope: Option<ResourceScope>,
+) -> Option<systemd_scope::MemoryLimitWatch> {
+    None
 }
 
 fn validate_config(config: &ProviderProcessConfig) -> ChatResult<()> {

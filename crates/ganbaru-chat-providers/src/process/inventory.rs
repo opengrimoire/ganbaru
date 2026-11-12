@@ -5,6 +5,7 @@
 //! group of a registered root only after a fresh read confirms that the process ID still names
 //! the process that was registered, so a reused process ID is never signaled.
 
+use super::systemd_scope::ResourceScope;
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -78,6 +79,8 @@ pub struct ChatProcessRecord {
     pub started_at: String,
     /// Whether [`stop_process`] can stop this process on this platform.
     pub stoppable: bool,
+    /// Whether the process runs in a resource scope; absent for processes that are never scoped.
+    pub resource_scope: Option<ResourceScope>,
 }
 
 /// A process started by a listed root or by one of its descendants.
@@ -125,11 +128,14 @@ impl Drop for ProcessRegistration {
 /// - `executable`: Executable path; only its file name is kept.
 /// - `provider_instance_label`: Label of the provider instance that started it, if any.
 /// - `purpose`: Why the process runs.
+/// - `resource_scope`: Whether the process runs in a resource scope, or `None` when its purpose is
+///   never scoped.
 pub fn register_process(
     pid: u32,
     executable: &Path,
     provider_instance_label: Option<&str>,
     purpose: ChatProcessPurpose,
+    resource_scope: Option<ResourceScope>,
 ) -> ProcessRegistration {
     let start_time = current_start_time(pid);
     let record = ChatProcessRecord {
@@ -148,6 +154,7 @@ pub fn register_process(
         started_at: chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now())
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         stoppable: cfg!(target_os = "linux") && start_time.is_some(),
+        resource_scope,
     };
     let id = NEXT_REGISTRATION.fetch_add(1, Ordering::Relaxed);
     inventory().insert(id, record);

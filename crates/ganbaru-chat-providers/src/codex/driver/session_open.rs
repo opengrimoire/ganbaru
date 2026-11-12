@@ -297,6 +297,7 @@ impl CodexProviderDriver {
             expected_shutdown: Arc::clone(&expected_shutdown),
             terminal_error: Arc::clone(&terminal_error),
             organizational,
+            memory_limit: connection.memory_limit_watch(),
         });
 
         let developer_instructions = input.developer_instructions();

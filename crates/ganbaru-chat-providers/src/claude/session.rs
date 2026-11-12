@@ -12,6 +12,7 @@ use super::protocol::{
 use super::transport::{ClaudeInboundMessage, ClaudeJsonlClient};
 use crate::events::*;
 use crate::models::*;
+use crate::process::systemd_scope::{memory_limit_warning, reached_memory_limit};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::{
@@ -66,6 +67,8 @@ pub struct ClaudeRouterResources {
     pub terminal_error: Arc<Mutex<Option<ChatError>>>,
     /// Present for organizational sessions, whose tool surface is verified before routing.
     pub organizational: Option<ClaudeOrganizationalRoute>,
+    /// Tells whether the resource scope's memory ceiling stopped the provider; `None` when unscoped.
+    pub memory_limit: Option<crate::process::systemd_scope::MemoryLimitWatch>,
 }
 
 pub fn spawn_claude_router(resources: ClaudeRouterResources) -> JoinHandle<()> {
@@ -347,6 +350,23 @@ async fn route_malformed(
 
 async fn route_closed(resources: &ClaudeRouterResources) {
     let expected = resources.expected_shutdown.load(Ordering::Acquire);
+    if !expected && reached_memory_limit(resources.memory_limit.as_ref()).await {
+        let warning = resources
+            .route
+            .lock()
+            .map_err(|_| state_error())
+            .and_then(|state| {
+                resources.normalizer.external_event(
+                    &state,
+                    "transport/memory_limit",
+                    None,
+                    CanonicalEvent::RuntimeWarning(memory_limit_warning()),
+                )
+            });
+        if let Ok(warning) = warning {
+            let _ = emit_events(&resources.sink, vec![warning]).await;
+        }
+    }
     let event = resources
         .route
         .lock()

@@ -1,13 +1,27 @@
+<script module lang="ts">
+  import type { RenderedMarkdownBlock } from "$lib/chat/timeline/markdown";
+
+  /** Whole renders of finished messages kept across mounts, oldest evicted first. */
+  const MAX_FINISHED_MARKDOWN_RENDERS = 200;
+  const finishedRenders = new Map<string, { markdown: string; blocks: RenderedMarkdownBlock[] }>();
+</script>
+
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { openChatExternalUrl } from "$lib/api/chat";
-  import { renderChatMarkdown } from "$lib/chat/timeline/markdown";
+  import { renderChatMarkdownBlocks } from "$lib/chat/timeline/markdown";
   import { getLocalization } from "$lib/i18n/translator.svelte";
 
-  let { markdown, onError = () => {} }: { markdown: string; onError?: (message: string) => void } = $props();
+  let { markdown, renderKey, onError = () => {} }: {
+    markdown: string;
+    /** Identifies a finished text (for example a row id and its change sequence) so its render is reused; omit while it streams. */
+    renderKey?: string;
+    onError?: (message: string) => void;
+  } = $props();
   const { t } = getLocalization();
   let root: HTMLDivElement | undefined = $state();
-  const safeHtml = $derived(renderChatMarkdown(markdown));
+  const blockCache = new Map<string, string>();
+  const blocks = $derived(renderBlocks(markdown, renderKey));
 
   onMount(() => {
     root?.addEventListener("click", handleClick);
@@ -15,9 +29,23 @@
   });
 
   $effect(() => {
-    safeHtml;
+    blocks;
     void tick().then(enhanceCodeBlocks);
   });
+
+  function renderBlocks(text: string, key: string | undefined): RenderedMarkdownBlock[] {
+    if (key === undefined) return renderChatMarkdownBlocks(text, blockCache);
+    const cached = finishedRenders.get(key);
+    if (cached?.markdown === text) return cached.blocks;
+    const rendered = renderChatMarkdownBlocks(text, blockCache);
+    finishedRenders.delete(key);
+    finishedRenders.set(key, { markdown: text, blocks: rendered });
+    if (finishedRenders.size > MAX_FINISHED_MARKDOWN_RENDERS) {
+      const oldest = finishedRenders.keys().next().value;
+      if (oldest !== undefined) finishedRenders.delete(oldest);
+    }
+    return rendered;
+  }
 
   function enhanceCodeBlocks(): void {
     for (const pre of root?.querySelectorAll("pre") ?? []) {
@@ -55,7 +83,7 @@
   }
 </script>
 
-<div bind:this={root} class="chat-markdown" data-selectable-content>{@html safeHtml}</div>
+<div bind:this={root} class="chat-markdown" data-selectable-content>{#each blocks as block (block.key)}{@html block.html}{/each}</div>
 
 <style>
   .chat-markdown { overflow-wrap:anywhere; line-height:inherit; }

@@ -24,7 +24,7 @@
   import { activityFilePath, fileChangePresentation, fileReadActivityPresentation, fileSearchActivityPresentation, isFileReadActivity, isFileSearchActivity, isImageViewActivity, summarizeActivityKinds, transientActivitySummary, type ActivitySummaryCount } from "$lib/chat/timeline/activity-presentation";
   import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
   import { chatModelParticipant, type ChatModelParticipant } from "$lib/chat/teammates/participant-identity";
-  import { buildTimelineDisplayRows, includeOptimisticTimelineMessage, projectTimelineReadModel, stabilizeTimelineRows, timelineActivityShowsLiveStatus, timelineActivitySupportsDisclosure, timelineModelGroupStartIds, timelineRowsForTurn, type TimelineActivityGroupRow, type TimelineActivityRow, type TimelineDisplayRow, type TimelineMessageRow, type TimelinePlanRow, type TimelineRow, type TimelineTurnFoldRow } from "$lib/chat/timeline/model";
+  import { buildTimelineDisplayRows, includeOptimisticTimelineMessage, projectTimelineReadModel, stabilizeTimelineRows, timelineActivityShowsLiveStatus, timelineActivitySupportsDisclosure, timelineFinishedRenderKey, timelineModelGroupStartIds, timelineRowsForTurn, type TimelineActivityGroupRow, type TimelineActivityRow, type TimelineDisplayRow, type TimelineMessageRow, type TimelinePlanRow, type TimelineRow, type TimelineTurnFoldRow } from "$lib/chat/timeline/model";
   import { computeTimelineVirtualWindow, nextTimelineUnreadCount, scrollTopForPreservedAnchor, timelineMinimapRows, timelineScrollbarThumbGeometry, timelineScrollIntent, type TimelineScrollbarThumbGeometry, type TimelineScrollIntent } from "$lib/chat/timeline/virtualization";
   import { formatDateTime, formatList, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -837,7 +837,7 @@
         ?? (sourceThreadId === selectedThread?.id ? selectedThread.workingFolderId : null)
       : null}
     <article class="chat-assistant-message">
-      <ChatMarkdown markdown={message.markdown} onError={reportError} />
+      <ChatMarkdown markdown={message.markdown} renderKey={timelineFinishedRenderKey(message)} onError={reportError} />
       {#if message.turnId && message.metadata?.changedFiles.length}
         <ChatChangedFilesSummary
           turnId={message.turnId}
@@ -895,7 +895,7 @@
     {@const plan = row as TimelinePlanRow}
     <article class="chat-plan">
       <h3><ListChecks size={16} />{t("chat.timeline.plan")}</h3>
-      <ChatMarkdown markdown={plan.markdown} onError={reportError} />
+      <ChatMarkdown markdown={plan.markdown} renderKey={timelineFinishedRenderKey(plan)} onError={reportError} />
       {#if plan.steps.length > 0}<ol>{#each plan.steps as step}<li><span>{step.text}</span><small>{statusLabel(step.status)}</small></li>{/each}</ol>{/if}
       <div class="chat-plan-actions"><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-continue-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.continuePlanning")}</button><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-implement-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.implementPlan")}</button><button type="button" onclick={() => { dismissedPlans = [...dismissedPlans, plan.id]; }}>{t("chat.timeline.dismiss")}</button></div>
     </article>

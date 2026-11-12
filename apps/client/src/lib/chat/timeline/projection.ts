@@ -27,6 +27,7 @@ import type {
   TimelineMessagePhase,
   TimelineMessageRow,
   TimelineMessageState,
+  TimelinePlanRow,
   TimelineProjection,
   TimelineRow,
   TimelineTurn,
@@ -740,4 +741,15 @@ function groupConsecutiveActivities(
   }
   flush();
   return result;
+}
+
+/**
+ * Names the stored text of a finished message or plan so its Markdown render can be reused.
+ *
+ * @returns The row id and change sequence, or `undefined` while the text can still grow or
+ * when the row was built in the client.
+ */
+export function timelineFinishedRenderKey(row: TimelineMessageRow | TimelinePlanRow): string | undefined {
+  if (row.changeSequence === undefined || row.state === "streaming" || row.state === "pending") return undefined;
+  return `${row.id}:${row.changeSequence}`;
 }

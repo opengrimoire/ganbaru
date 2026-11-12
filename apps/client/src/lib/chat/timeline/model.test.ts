@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ChangedFileSummary, ChatTimelineItemRead, ChatTimelineTurnRead, ChatTurnState, JsonValue, ThreadUsageUpdatedEvent } from "$lib/chat/contracts";
-import { buildTimelineDisplayRows, includeOptimisticTimelineMessage, parseTimelineUserContext, projectTimelineReadModel, stabilizeTimelineRows, timelineActivityShowsLiveStatus, timelineActivitySupportsDisclosure, timelineModelGroupStartIds, timelineRowsForTurn, type TimelineDisplayRow, type TimelineRow } from "./model";
+import { buildTimelineDisplayRows, includeOptimisticTimelineMessage, parseTimelineUserContext, projectTimelineReadModel, stabilizeTimelineRows, timelineActivityShowsLiveStatus, timelineActivitySupportsDisclosure, timelineFinishedRenderKey, timelineModelGroupStartIds, timelineRowsForTurn, type TimelineDisplayRow, type TimelineRow } from "./model";
 import { indexTimelineRowsByTurn } from "./row-index";
 
 vi.mock("./row-index", async (importOriginal) => {
@@ -693,5 +693,18 @@ describe("timeline row stabilization", () => {
 
     expect(projection.rows).toHaveLength(5_000);
     expect(indexTimelineRowsByTurn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("finished Markdown render keys", () => {
+  it("names only stored text that can no longer grow", () => {
+    const [message] = projectTimelineReadModel([messageRead("message:answer", 4, "Done")], [turnRead("completed")]).rows;
+    const [streaming] = projectTimelineReadModel([messageRead("message:answer", 4, "Do", { streamingState: "streaming" })], [turnRead("active")]).rows;
+    const [plan] = projectTimelineReadModel([planRead("plan:one", 5, "1. Step", "complete")], [turnRead("completed")]).rows;
+
+    expect(message?.kind === "message" && timelineFinishedRenderKey(message)).toBe("message:answer:4");
+    expect(streaming?.kind === "message" && timelineFinishedRenderKey(streaming)).toBeUndefined();
+    expect(plan?.kind === "plan" && timelineFinishedRenderKey(plan)).toBe("plan:one:5");
+    if (message?.kind === "message") expect(timelineFinishedRenderKey({ ...message, changeSequence: undefined })).toBeUndefined();
   });
 });

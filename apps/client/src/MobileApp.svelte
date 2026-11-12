@@ -6,6 +6,7 @@
   import MobileNavigation from "$lib/components/mobile/MobileNavigation.svelte";
   import MobileTopBar from "$lib/components/mobile/MobileTopBar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import ConfirmationHost from "$lib/components/ui/ConfirmationHost.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { ensureDbUrl } from "$lib/api/db";
   import { setSyncForeground } from "$lib/api/sync";
@@ -1165,4 +1166,5 @@
       <NotesHeldEditToast />
     {/await}
   {/if}
+  <ConfirmationHost />
 </div>

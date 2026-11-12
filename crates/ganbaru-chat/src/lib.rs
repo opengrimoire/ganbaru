@@ -27,6 +27,7 @@ pub mod repository;
 pub mod review_engine;
 #[cfg(feature = "native-runtime")]
 pub mod runtime;
+pub mod scheduling;
 #[cfg(feature = "native-runtime")]
 pub mod source_control;
 #[cfg(feature = "native-runtime")]

@@ -3,19 +3,19 @@ use crate::models::UtcTimestamp;
 use crate::project_defaults::{default_channel_ids, ensure_project_chat_defaults};
 use sqlx::SqlitePool;
 
-const NOW: &str = "2026-11-12T09:00:00.000Z";
+pub(crate) const NOW: &str = "2026-11-12T09:00:00.000Z";
 const LATER: &str = "2026-11-12T09:05:00.000Z";
-const PROJECT_ID: &str = "project-host-reports";
-const TEAMMATE: &str = "participant:reports-helper";
+pub(crate) const PROJECT_ID: &str = "project-host-reports";
+pub(crate) const TEAMMATE: &str = "participant:reports-helper";
 const OWNER: &str = "participant:local-owner";
-const ASSIGNMENT: &str = "assignment:reports";
-const RUN: &str = "run:reports-1";
+pub(crate) const ASSIGNMENT: &str = "assignment:reports";
+pub(crate) const RUN: &str = "run:reports-1";
 const TURN: &str = "turn:reports-1";
-const THREAD: &str = "reply:reports";
+pub(crate) const THREAD: &str = "reply:reports";
 
 /// A migrated in-memory pool. Foreign keys stay off, and the run is seeded as a sync apply, so
 /// a run needs none of the policy, authorization, and provider rows its dispatch would create.
-async fn migrated_pool() -> SqlitePool {
+pub(crate) async fn migrated_pool() -> SqlitePool {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -32,7 +32,7 @@ async fn migrated_pool() -> SqlitePool {
 }
 
 /// Seeds an assignment of the helper in `assignment_state` whose run is in `run_state`.
-async fn seed(pool: &SqlitePool, assignment_state: &str, run_state: &str) {
+pub(crate) async fn seed(pool: &SqlitePool, assignment_state: &str, run_state: &str) {
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO project_groups (id, name, order_key) VALUES ('group-reports', 'R', 'a0');
          INSERT INTO projects (id, group_id, name, order_key)
@@ -119,7 +119,7 @@ async fn post_input(pool: &SqlitePool, item_id: &str, author: &str, routing_kind
     .unwrap();
 }
 
-fn call(client_request_id: &str) -> HostCall<'_> {
+pub(crate) fn call(client_request_id: &str) -> HostCall<'_> {
     HostCall {
         run_id: RUN,
         assignment_id: ASSIGNMENT,

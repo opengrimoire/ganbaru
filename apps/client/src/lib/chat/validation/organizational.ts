@@ -89,6 +89,7 @@ import {
   readVersionedJson,
 } from "./readers";
 import { compareCodeUnits } from "$lib/utils/order-key";
+import { parseChatScheduledRecurrence } from "./scheduling";
 
 const AGENT_RUN_STATES = [
   "queued", "starting", "working", "waiting", "completed", "failed", "cancelled",
@@ -1228,6 +1229,7 @@ export function parseChatScheduledMessage(
     scheduledFor: readUtcTimestamp(record.scheduledFor, `${label}.scheduledFor`),
     lastError: readNullable(record.lastError, `${label}.lastError`, readString),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
+    recurrence: readNullable(record.recurrence, `${label}.recurrence`, parseChatScheduledRecurrence),
   };
 }
 

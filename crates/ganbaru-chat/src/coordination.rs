@@ -10,3 +10,4 @@ pub mod projection;
 pub mod reductions;
 pub mod reports;
 pub mod revocation;
+pub mod schedule_proposals;

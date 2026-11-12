@@ -11,4 +11,5 @@ export * from "./provider";
 export * from "./workspace";
 export * from "./workspace-tools";
 export * from "./reads";
+export * from "./scheduling";
 export * from "./settings";

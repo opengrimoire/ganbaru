@@ -2,7 +2,18 @@
 //!
 //! A scheduled message replicates, but only its executing device sends it, retries it, or sends
 //! it at once; that device keeps the claim, attempt count, and retry time in its local dispatch
-//! row. Any device may cancel a scheduled message.
+//! row. Any device may cancel a scheduled message. A repeating message stays scheduled and posts
+//! once per occurrence.
+
+mod proposals;
+mod series;
+
+#[cfg(desktop)]
+pub(crate) use proposals::validate_proposed_schedule;
+pub(super) use proposals::{
+    confirm_schedule_proposal, dismiss_schedule_proposal, read_schedule_proposal_states,
+};
+pub(super) use series::{advance_claimed_series, finish_posted_occurrence};
 
 use super::common::{
     AttachmentReferenceOwner, insert_attachment_references, new_id, serialization_error,
@@ -22,12 +33,16 @@ use crate::chat::device_state::{
 use crate::chat::settings::device_state_error;
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 #[cfg(desktop)]
-use ganbaru_chat::coordination::acceptance::scheduled_consent_digest;
+use ganbaru_chat::coordination::acceptance::{
+    scheduled_consent_digest, scheduled_series_consent_digest,
+};
 use ganbaru_chat::coordination::contracts::*;
+use ganbaru_chat::scheduling::{QuietPeriodState, RecurrenceSpec, validate_recurrence};
 use ganbaru_chat_contracts::models::*;
 use ganbaru_sync::domains::chat::{
     MAX_SCHEDULED_CONTENT_BYTES, MAX_SCHEDULED_REFERENCES, MAX_SCHEDULED_REQUEST_BYTES,
 };
+use series::{ClaimedSeries, PendingOccurrence, QuietGate, RECURRENCE_RULE_COLUMNS};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::time::SystemTime;
 
@@ -67,6 +82,13 @@ pub(super) async fn schedule_message(
     refuse_scheduled_post_choices(&request.message)?;
     let now = now_timestamp()?;
     validate_scheduled_for(&request.scheduled_for, &now)?;
+    let first_occurrence_at = match request.recurrence.as_ref() {
+        Some(spec) => {
+            validate_recurrence(spec)?;
+            Some(series::first_occurrence_at(spec, &request.scheduled_for)?)
+        }
+        None => None,
+    };
     let serialized = serde_json::to_string(&request.message).map_err(serialization_error)?;
     validate_scheduled_content(&serialized, &request.message.references)?;
     let device_id = this_device_id(&app)?;
@@ -110,7 +132,13 @@ pub(super) async fn schedule_message(
         let existing_schedule: String = existing
             .try_get("scheduled_for")
             .map_err(persistence_error)?;
-        if existing_request == serialized && existing_schedule == request.scheduled_for.as_str() {
+        let existing_recurrence = series::read_series(&pool, &request.scheduled_message_id)
+            .await?
+            .map(|series| series.spec);
+        if existing_request == serialized
+            && existing_schedule == request.scheduled_for.as_str()
+            && existing_recurrence == request.recurrence
+        {
             return read_scheduled_message(&pool, &request.scheduled_message_id).await;
         }
         return Err(ChatError::new(
@@ -120,6 +148,9 @@ pub(super) async fn schedule_message(
         ));
     }
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    if request.recurrence.is_some() {
+        series::require_series_room(&mut transaction, &request.message.channel_id).await?;
+    }
     sqlx::query(
         "INSERT INTO chat_scheduled_messages
             (id, client_command_id, channel_id, reply_thread_id, executing_device_id,
@@ -150,11 +181,25 @@ pub(super) async fn schedule_message(
          VALUES (?, 0, ?, ?)",
     )
     .bind(request.scheduled_message_id.as_str())
-    .bind(request.scheduled_for.as_str())
+    .bind(
+        first_occurrence_at
+            .as_deref()
+            .unwrap_or(request.scheduled_for.as_str()),
+    )
     .bind(now.as_str())
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
+    if let (Some(spec), Some(first_at)) = (request.recurrence.as_ref(), &first_occurrence_at) {
+        series::insert_series(
+            &mut transaction,
+            &request.scheduled_message_id,
+            spec,
+            first_at,
+            &now,
+        )
+        .await?;
+    }
     insert_attachment_references(
         &mut transaction,
         AttachmentReferenceOwner::ScheduledMessage,
@@ -175,19 +220,42 @@ pub(super) async fn schedule_message(
     // Recorded once the row exists, so a sweep of consents without a message cannot drop it. The
     // message is due no sooner than the minimum lead, so its dispatch sees the consent.
     #[cfg(desktop)]
-    record_scheduled_consent(&app, &request.scheduled_message_id, &serialized);
+    record_scheduled_consent(
+        &app,
+        &request.scheduled_message_id,
+        &serialized,
+        request.recurrence.as_ref(),
+    );
     read_scheduled_message(&pool, &request.scheduled_message_id).await
 }
 
-/// Records this device's consent to `request_data` as the request of `scheduled_message_id`. The
-/// message is already scheduled, so a failure only makes its work ask for local acceptance.
+/// Digest of the consent to `request_data` as the request of `scheduled_message_id`, sent once
+/// or on the repeat rule `spec`.
+#[cfg(desktop)]
+fn consent_digest(
+    scheduled_message_id: &ChatScheduledMessageId,
+    request_data: &str,
+    spec: Option<&RecurrenceSpec>,
+) -> String {
+    match spec {
+        Some(spec) => {
+            scheduled_series_consent_digest(scheduled_message_id.as_str(), request_data, spec)
+        }
+        None => scheduled_consent_digest(scheduled_message_id.as_str(), request_data),
+    }
+}
+
+/// Records this device's consent to `request_data` as the request of `scheduled_message_id`, on
+/// the repeat rule `spec` when it repeats. The message is already scheduled, so a failure only
+/// makes its work ask for local acceptance.
 #[cfg(desktop)]
 fn record_scheduled_consent(
     app: &tauri::AppHandle,
     scheduled_message_id: &ChatScheduledMessageId,
     request_data: &str,
+    spec: Option<&RecurrenceSpec>,
 ) {
-    let digest = scheduled_consent_digest(scheduled_message_id.as_str(), request_data);
+    let digest = consent_digest(scheduled_message_id, request_data, spec);
     let recorded = now_timestamp().and_then(|now| {
         update_active_device_scope(app, |scope| {
             record_scheduled_message_consent(
@@ -208,15 +276,17 @@ fn record_scheduled_consent(
     }
 }
 
-/// Drops the consent to `request_data` once `scheduled_message_id` posted or was cancelled here.
-/// A failure leaves an entry that the next sweep of consents without a message drops.
+/// Drops the consent to `request_data` on the repeat rule `spec` once `scheduled_message_id`
+/// posted for the last time or was cancelled here. A failure leaves an entry that the next sweep
+/// of consents without a message drops.
 #[cfg(desktop)]
 fn forget_scheduled_consent(
     app: &tauri::AppHandle,
     scheduled_message_id: &ChatScheduledMessageId,
     request_data: &str,
+    spec: Option<&RecurrenceSpec>,
 ) {
-    let digest = scheduled_consent_digest(scheduled_message_id.as_str(), request_data);
+    let digest = consent_digest(scheduled_message_id, request_data, spec);
     let forgotten = update_active_device_scope(app, |scope| {
         forget_scheduled_message_consent(scope, scheduled_message_id.as_str(), &digest);
         Ok(())
@@ -229,15 +299,17 @@ fn forget_scheduled_consent(
     }
 }
 
-/// The consent `scope` holds for `request_data` as the request of `scheduled_message_id`. A
-/// request changed after it was scheduled has another digest, so it counts as unattended.
+/// The consent `scope` holds for `request_data` as the request of `scheduled_message_id` on the
+/// repeat rule `spec`. A request or rule changed after it was scheduled has another digest, so
+/// it counts as unattended.
 #[cfg(desktop)]
 pub(super) fn scheduled_consent_in(
     scope: &ChatDeviceScope,
     scheduled_message_id: &ChatScheduledMessageId,
     request_data: &str,
+    spec: Option<&RecurrenceSpec>,
 ) -> ScheduledConsent {
-    let digest = scheduled_consent_digest(scheduled_message_id.as_str(), request_data);
+    let digest = consent_digest(scheduled_message_id, request_data, spec);
     if scheduled_message_is_consented(scope, scheduled_message_id.as_str(), &digest) {
         ScheduledConsent::Local
     } else {
@@ -251,9 +323,10 @@ fn read_scheduled_consent(
     app: &tauri::AppHandle,
     scheduled_message_id: &ChatScheduledMessageId,
     request_data: &str,
+    spec: Option<&RecurrenceSpec>,
 ) -> ScheduledConsent {
     match read_active_device_scope(app) {
-        Ok(scope) => scheduled_consent_in(&scope, scheduled_message_id, request_data),
+        Ok(scope) => scheduled_consent_in(&scope, scheduled_message_id, request_data, spec),
         Err(error) => {
             eprintln!(
                 "Consent to scheduled message {} could not be read: {error}",
@@ -326,6 +399,7 @@ fn read_scheduled_consent(
     _app: &tauri::AppHandle,
     _scheduled_message_id: &ChatScheduledMessageId,
     _request_data: &str,
+    _spec: Option<&RecurrenceSpec>,
 ) -> ScheduledConsent {
     ScheduledConsent::Unattended
 }
@@ -497,10 +571,15 @@ pub(super) async fn list_scheduled_messages(
     let pool = chat_pool(app, db_url).await?;
     super::super::channels::read_channel(&pool, &channel_id).await?;
     let ids = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM chat_scheduled_messages
-         WHERE channel_id = ?
-           AND ((? IS NULL AND reply_thread_id IS NULL) OR reply_thread_id = ?)
-         ORDER BY scheduled_for, created_at, id LIMIT 100",
+        "SELECT scheduled.id FROM chat_scheduled_messages scheduled
+         LEFT JOIN chat_scheduled_message_recurrences recurrence
+           ON recurrence.scheduled_message_id = scheduled.id
+         WHERE scheduled.channel_id = ?
+           AND ((? IS NULL AND scheduled.reply_thread_id IS NULL)
+             OR scheduled.reply_thread_id = ?)
+         ORDER BY coalesce(recurrence.next_occurrence_at, scheduled.scheduled_for),
+                  scheduled.created_at, scheduled.id
+         LIMIT 100",
     )
     .bind(channel_id.as_str())
     .bind(reply_thread_id.as_ref().map(ChatReplyThreadId::as_str))
@@ -547,6 +626,9 @@ pub(super) async fn cancel_scheduled_message(
     let pool = chat_pool(app.clone(), db_url).await?;
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let deleted_spec = series::read_series(&mut *transaction, &scheduled_message_id)
+        .await?
+        .map(|series| series.spec);
     let attachment_ids = sqlx::query_scalar::<_, String>(
         "SELECT attachment_id FROM chat_scheduled_message_attachment_references
          WHERE scheduled_message_id = ?",
@@ -585,9 +667,14 @@ pub(super) async fn cancel_scheduled_message(
     }
     transaction.commit().await.map_err(persistence_error)?;
     #[cfg(desktop)]
-    forget_scheduled_consent(&app, &scheduled_message_id, &deleted_request);
+    forget_scheduled_consent(
+        &app,
+        &scheduled_message_id,
+        &deleted_request,
+        deleted_spec.as_ref(),
+    );
     #[cfg(mobile)]
-    let _ = (app, deleted_request);
+    let _ = (app, deleted_request, deleted_spec);
     Ok(())
 }
 
@@ -683,13 +770,17 @@ pub(super) async fn retry_scheduled_message(
                 .fetch_one(&mut *transaction)
                 .await
                 .map_err(persistence_error)?;
-        record_scheduled_consent(&app, &scheduled_message_id, &request_data);
+        let spec = series::read_series(&mut *transaction, &scheduled_message_id)
+            .await?
+            .map(|series| series.spec);
+        record_scheduled_consent(&app, &scheduled_message_id, &request_data, spec.as_ref());
     }
     transaction.commit().await.map_err(persistence_error)?;
     read_scheduled_message(&pool, &scheduled_message_id).await
 }
 
-/// Sends the scheduled message `scheduled_message_id` at once from its executing device.
+/// Sends the scheduled message `scheduled_message_id` at once from its executing device. A
+/// repeating message posts its pending occurrence now and stays scheduled for the next one.
 pub(super) async fn send_scheduled_message_now(
     app: tauri::AppHandle,
     db_url: String,
@@ -707,10 +798,18 @@ pub(super) async fn send_scheduled_message_now(
         &claim_token,
     )
     .await?;
+    let occurrence = match pending_occurrence_sent_now(&pool, &scheduled_message_id, &now).await {
+        Ok(occurrence) => occurrence,
+        Err(error) => {
+            record_send_failure(&pool, &scheduled_message_id, &claim_token, &error, None).await?;
+            return Err(error);
+        }
+    };
     let send = ScheduledSend {
         scheduled_message_id: &scheduled_message_id,
         claim_token: &claim_token,
         consent: ScheduledConsent::Local,
+        occurrence: occurrence.as_ref().map(PendingOccurrence::as_send),
     };
     let result = match serde_json::from_str::<PostChatMessageCommand>(&request_data) {
         Ok(request) => match post_message(app.clone(), db_url, &request, Some(send), None).await {
@@ -723,7 +822,9 @@ pub(super) async fn send_scheduled_message_now(
     match result {
         Ok(result) => {
             #[cfg(desktop)]
-            forget_scheduled_consent(&app, &scheduled_message_id, &request_data);
+            if occurrence.is_none() {
+                forget_scheduled_consent(&app, &scheduled_message_id, &request_data, None);
+            }
             Ok(result)
         }
         Err(error) => {
@@ -731,6 +832,24 @@ pub(super) async fn send_scheduled_message_now(
             Err(error)
         }
     }
+}
+
+/// The pending occurrence Send now posts at `now` for a repeating `scheduled_message_id`, or
+/// `None` for a one-time message.
+async fn pending_occurrence_sent_now(
+    pool: &SqlitePool,
+    scheduled_message_id: &ChatScheduledMessageId,
+    now: &UtcTimestamp,
+) -> ChatResult<Option<PendingOccurrence>> {
+    let Some(series) = series::read_series(pool, scheduled_message_id).await? else {
+        return Ok(None);
+    };
+    series::occurrence_sent_now(
+        scheduled_message_id.as_str(),
+        &series,
+        series::timestamp_millis(now.as_str())?,
+    )
+    .map(Some)
 }
 
 /// Reason a scheduled message records when its stored request does not match its row.
@@ -900,6 +1019,60 @@ async fn record_send_failure(
     transaction.commit().await.map_err(persistence_error)
 }
 
+/// Records the failed attempt `attempt_count` of the send claimed under `claim_token`: it
+/// retries after [`SCHEDULE_RETRY_SECONDS`] until [`MAX_SCHEDULE_DISPATCH_ATTEMPTS`], then
+/// fails the message until it is retried.
+async fn record_failed_attempt(
+    pool: &SqlitePool,
+    scheduled_message_id: &ChatScheduledMessageId,
+    claim_token: &str,
+    attempt_count: i64,
+    error: &ChatError,
+) -> ChatResult<()> {
+    let retry_at = (DateTime::<Utc>::from(SystemTime::now())
+        + Duration::seconds(SCHEDULE_RETRY_SECONDS))
+    .to_rfc3339_opts(SecondsFormat::Millis, true);
+    let retry_at = (attempt_count < MAX_SCHEDULE_DISPATCH_ATTEMPTS).then_some(retry_at);
+    record_send_failure(
+        pool,
+        scheduled_message_id,
+        claim_token,
+        error,
+        retry_at.as_deref(),
+    )
+    .await
+}
+
+/// This device's quiet state at `now` as repeating messages that defer see it. A quiet period
+/// with no known end, as a paused Focus phase, holds them for one retry interval at a time.
+async fn quiet_gate(app: &tauri::AppHandle, now: &UtcTimestamp) -> ChatResult<QuietGate> {
+    let now_ms = series::timestamp_millis(now.as_str())?;
+    Ok(
+        match crate::chat::quiet_periods::quiet_reading_at(app, now_ms).await {
+            Ok(reading) => quiet_gate_of(reading, now_ms),
+            Err(error) => {
+                eprintln!(
+                    "Quiet state is unavailable for scheduled messages: {}",
+                    error.message
+                );
+                QuietGate::Unavailable(error)
+            }
+        },
+    )
+}
+
+/// The gate of `reading` taken at `now_ms`.
+fn quiet_gate_of(reading: crate::chat::quiet_periods::QuietReading, now_ms: i64) -> QuietGate {
+    match reading.state {
+        QuietPeriodState::Open => QuietGate::Open,
+        QuietPeriodState::Quiet { .. } => QuietGate::Quiet {
+            until_ms: reading
+                .ends_at_ms
+                .unwrap_or_else(|| now_ms.saturating_add(SCHEDULE_RETRY_SECONDS * 1000)),
+        },
+    }
+}
+
 /// Sends the scheduled messages this device executes that are due, and reports when the next
 /// one is due here.
 pub(super) async fn dispatch_due_scheduled_messages(
@@ -910,6 +1083,8 @@ pub(super) async fn dispatch_due_scheduled_messages(
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let now = now_timestamp()?;
     prepare_scheduled_dispatch(&pool, &device_id, &now).await?;
+    let quiet = quiet_gate(&app, &now).await?;
+    series::release_stale_quiet_holds(&pool, &quiet, &now).await?;
     #[cfg(desktop)]
     sweep_scheduled_consents(&app, &pool).await;
     let ids = sqlx::query_scalar::<_, String>(
@@ -919,7 +1094,7 @@ pub(super) async fn dispatch_due_scheduled_messages(
          WHERE dispatch.claim_token IS NULL AND dispatch.available_at <= ?1
            AND scheduled.failed_at IS NULL
            AND coalesce(scheduled.executing_device_id, ?2) = ?2
-         ORDER BY dispatch.available_at, scheduled.scheduled_for, scheduled.id LIMIT 32",
+         ORDER BY dispatch.available_at, scheduled.id LIMIT 32",
     )
     .bind(now.as_str())
     .bind(&device_id)
@@ -964,6 +1139,30 @@ pub(super) async fn dispatch_due_scheduled_messages(
         };
         let request_data: String = row.try_get("request_data").map_err(persistence_error)?;
         let attempt_count: i64 = row.try_get("attempt_count").map_err(persistence_error)?;
+        let (occurrence, spec) = match series::resolve_claimed_series(
+            &pool,
+            &scheduled_message_id,
+            &claim_token,
+            &now,
+            &quiet,
+        )
+        .await?
+        {
+            ClaimedSeries::OneTime => (None, None),
+            ClaimedSeries::Post { occurrence, spec } => (Some(occurrence), Some(spec)),
+            ClaimedSeries::Settled => continue,
+            ClaimedSeries::Failed(error) => {
+                record_failed_attempt(
+                    &pool,
+                    &scheduled_message_id,
+                    &claim_token,
+                    attempt_count,
+                    &error,
+                )
+                .await?;
+                continue;
+            }
+        };
         let message = serde_json::from_str::<PostChatMessageCommand>(&request_data)
             .map_err(serialization_error);
         let result = match message {
@@ -971,7 +1170,13 @@ pub(super) async fn dispatch_due_scheduled_messages(
                 let send = ScheduledSend {
                     scheduled_message_id: &scheduled_message_id,
                     claim_token: &claim_token,
-                    consent: read_scheduled_consent(&app, &scheduled_message_id, &request_data),
+                    consent: read_scheduled_consent(
+                        &app,
+                        &scheduled_message_id,
+                        &request_data,
+                        spec.as_ref(),
+                    ),
+                    occurrence: occurrence.as_ref().map(PendingOccurrence::as_send),
                 };
                 match post_message(app.clone(), db_url.clone(), &message, Some(send), None).await {
                     Ok(PostOutcome::Posted(_)) => Ok(message.channel_id.clone()),
@@ -984,23 +1189,21 @@ pub(super) async fn dispatch_due_scheduled_messages(
         match result {
             Ok(channel_id) => {
                 #[cfg(desktop)]
-                forget_scheduled_consent(&app, &scheduled_message_id, &request_data);
+                if occurrence.is_none() {
+                    forget_scheduled_consent(&app, &scheduled_message_id, &request_data, None);
+                }
                 dispatched_count = dispatched_count.saturating_add(1);
                 if !dispatched_channel_ids.contains(&channel_id) {
                     dispatched_channel_ids.push(channel_id);
                 }
             }
             Err(error) => {
-                let retry_at = (DateTime::<Utc>::from(SystemTime::now())
-                    + Duration::seconds(SCHEDULE_RETRY_SECONDS))
-                .to_rfc3339_opts(SecondsFormat::Millis, true);
-                let retry_at = (attempt_count < MAX_SCHEDULE_DISPATCH_ATTEMPTS).then_some(retry_at);
-                record_send_failure(
+                record_failed_attempt(
                     &pool,
                     &scheduled_message_id,
                     &claim_token,
+                    attempt_count,
                     &error,
-                    retry_at.as_deref(),
                 )
                 .await?;
             }
@@ -1030,7 +1233,8 @@ pub(super) async fn dispatch_due_scheduled_messages(
 }
 
 /// Releases claims a stopped send left behind and gives every scheduled message this device
-/// executes a dispatch row, such as one that reached this device's restored vault.
+/// executes a dispatch row, such as one that reached this device's restored vault. A repeating
+/// message is due at its pending occurrence.
 pub(super) async fn prepare_scheduled_dispatch(
     pool: &SqlitePool,
     device_id: &str,
@@ -1049,8 +1253,11 @@ pub(super) async fn prepare_scheduled_dispatch(
     sqlx::query(
         "INSERT INTO chat_scheduled_message_dispatch
             (scheduled_message_id, attempt_count, available_at, updated_at)
-         SELECT scheduled.id, 0, scheduled.scheduled_for, ?1
+         SELECT scheduled.id, 0,
+                coalesce(recurrence.next_occurrence_at, scheduled.scheduled_for), ?1
          FROM chat_scheduled_messages scheduled
+         LEFT JOIN chat_scheduled_message_recurrences recurrence
+           ON recurrence.scheduled_message_id = scheduled.id
          WHERE scheduled.executing_device_id = ?2
          ON CONFLICT(scheduled_message_id) DO NOTHING",
     )
@@ -1170,26 +1377,31 @@ async fn read_scheduled_message(
     pool: &SqlitePool,
     scheduled_message_id: &ChatScheduledMessageId,
 ) -> ChatResult<ChatScheduledMessageRead> {
-    let row = sqlx::query(
+    let query = format!(
         "SELECT scheduled.id, scheduled.channel_id, scheduled.reply_thread_id,
                 scheduled.request_data, scheduled.scheduled_for, scheduled.last_error,
                 scheduled.created_at,
                 CASE
-                  WHEN EXISTS (
-                    SELECT 1 FROM chat_scheduled_message_dispatch dispatch
-                    WHERE dispatch.scheduled_message_id = scheduled.id
-                      AND dispatch.claim_token IS NOT NULL
-                  ) THEN 'dispatching'
+                  WHEN dispatch.claim_token IS NOT NULL THEN 'dispatching'
                   WHEN scheduled.failed_at IS NOT NULL THEN 'failed'
                   ELSE 'scheduled'
-                END AS state
-         FROM chat_scheduled_messages scheduled WHERE scheduled.id = ?",
-    )
-    .bind(scheduled_message_id.as_str())
-    .fetch_optional(pool)
-    .await
-    .map_err(persistence_error)?
-    .ok_or_else(scheduled_not_found)?;
+                END AS state,
+                {RECURRENCE_RULE_COLUMNS}, recurrence.next_occurrence_at, recurrence.fired_count,
+                dispatch.skipped_occurrences, dispatch.deferred_until
+         FROM chat_scheduled_messages scheduled
+         LEFT JOIN chat_scheduled_message_dispatch dispatch
+           ON dispatch.scheduled_message_id = scheduled.id
+         LEFT JOIN chat_scheduled_message_recurrences recurrence
+           ON recurrence.scheduled_message_id = scheduled.id
+         WHERE scheduled.id = ?"
+    );
+    // The fragment is a constant column list, so the query carries no external text.
+    let row = sqlx::query(sqlx::AssertSqlSafe(query))
+        .bind(scheduled_message_id.as_str())
+        .fetch_optional(pool)
+        .await
+        .map_err(persistence_error)?
+        .ok_or_else(scheduled_not_found)?;
     let request = serde_json::from_str::<PostChatMessageCommand>(
         &row.try_get::<String, _>("request_data")
             .map_err(persistence_error)?,
@@ -1226,6 +1438,7 @@ async fn read_scheduled_message(
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?,
+        recurrence: series::recurrence_read_from_row(&row)?,
     })
 }
 

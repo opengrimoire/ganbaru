@@ -370,6 +370,7 @@ fn a_scheduled_message_cannot_choose_its_routing() {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
             consent: ScheduledConsent::Local,
+            occurrence: None,
         };
         let Err(error) = write_post(
             &pool,

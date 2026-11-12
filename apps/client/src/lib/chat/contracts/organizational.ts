@@ -30,6 +30,7 @@ import type {
   VersionedJson,
 } from "./common";
 import type { ModelOptionSelection } from "./provider";
+import type { ChatRecurrenceSpec, ChatScheduledRecurrenceRead } from "./scheduling";
 
 export const CHAT_PARTICIPANT_KINDS = ["local_user", "ai_teammate", "human"] as const;
 export type ChatParticipantKind = (typeof CHAT_PARTICIPANT_KINDS)[number];
@@ -932,6 +933,8 @@ export interface ScheduleChatMessageRequest {
   scheduledMessageId: ChatScheduledMessageId;
   scheduledFor: UtcTimestamp;
   message: PostChatMessageRequest;
+  /** Repeat rule anchored at `scheduledFor`; `null` sends the message once. */
+  recurrence: ChatRecurrenceSpec | null;
 }
 
 export interface ChatScheduledMessageRead {
@@ -947,6 +950,8 @@ export interface ChatScheduledMessageRead {
   scheduledFor: UtcTimestamp;
   lastError: string | null;
   createdAt: UtcTimestamp;
+  /** Repeat rule and progress, or `null` for a one-time message. */
+  recurrence: ChatScheduledRecurrenceRead | null;
 }
 
 export interface ChatScheduledMessageDispatchRead {

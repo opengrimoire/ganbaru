@@ -286,6 +286,7 @@ export const database = {
   databaseTemplatesDelete: "Eliminar plantilla",
   databaseButtonConfirm: (property: string, title: string) =>
     `¿Ejecutar ${property} en ${title}?`,
+  databaseButtonConfirmAction: "Ejecutar",
   databaseRelationAdd: "Agregar relación",
   databaseRelationLoading: "Cargando filas",
   databaseRelationConfigureTarget: "Elige una fuente de datos destino en la propiedad.",

@@ -283,6 +283,7 @@ export const database = {
   databaseTemplatesDelete: "Delete template",
   databaseButtonConfirm: (property: string, title: string) =>
     `Run ${property} on ${title}?`,
+  databaseButtonConfirmAction: "Run",
   databaseRelationAdd: "Add relation",
   databaseRelationLoading: "Loading rows",
   databaseRelationConfigureTarget: "Choose a target data source in property settings.",

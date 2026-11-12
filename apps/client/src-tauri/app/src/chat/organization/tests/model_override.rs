@@ -187,3 +187,109 @@ fn a_scheduled_message_cannot_choose_a_model_override() {
     assert_eq!(error.code, ChatErrorCode::Validation);
     assert_eq!(error.field.as_deref(), Some("modelOverride"));
 }
+
+#[test]
+fn a_model_override_without_a_teammate_is_refused() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_work_in("completed").await;
+        let mut request = message("Plain channel note");
+        request.client_command_id = ChatCommandId::new("command:no-teammate").unwrap();
+        request.channel_id = ChatChannelId::new("channel:review").unwrap();
+        request.model_override = Some(explicit_model("model:other"));
+
+        let Err(error) = post_request(&pool, &request).await else {
+            panic!("a model override reached no teammate and posted");
+        };
+
+        assert_eq!(error.code, ChatErrorCode::Validation);
+        assert_eq!(error.field.as_deref(), Some("modelOverride"));
+        assert_eq!(
+            error.details.as_deref(),
+            Some(&json!({ "reason": "model_override_without_teammate" }))
+        );
+        let receipts: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_organizational_command_receipts
+             WHERE client_command_id = 'command:no-teammate'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(receipts, 0, "the refused post leaves nothing behind");
+    });
+}
+
+#[test]
+fn a_mention_that_records_no_work_keeps_its_model_override_for_start() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_work_in("completed").await;
+        set_review_agent_home_device(&pool, None).await;
+        let desk_writers = chat_writers_of(&["device:desk"]);
+        let mut request = reply_request("command:mention-only", None);
+        let chosen = explicit_model("model:other");
+        request.model_override = Some(chosen.clone());
+
+        let posted = persist_post(
+            &pool,
+            &request,
+            None,
+            PostingDevice::this_device("device:phone", &desk_writers),
+        )
+        .await
+        .unwrap();
+
+        let assignments: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_work_assignments")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            assignments, 1,
+            "a device that cannot run the teammate records the mention only"
+        );
+        let started = assignments::persist_started_assignment(
+            &pool,
+            &posted.item_id,
+            &ChatParticipantId::new("participant:review-agent").unwrap(),
+            PostingDevice::this_device("device:desk", &desk_writers),
+            &UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap(),
+        )
+        .await
+        .unwrap();
+        let (version, data) = stored_override(&pool, started.as_str()).await;
+        assert_eq!(version, Some(1));
+        let stored: ChatAssignmentModelOverride =
+            serde_json::from_str(&data.expect("Start applies the mention's override")).unwrap();
+        assert_eq!(stored, chosen);
+    });
+}
+
+#[test]
+fn a_reply_without_a_mention_that_records_no_work_refuses_its_model_override() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_work_in("completed").await;
+        set_review_agent_home_device(&pool, None).await;
+        let desk_writers = chat_writers_of(&["device:desk"]);
+        let mut request = message("continue");
+        request.client_command_id = ChatCommandId::new("command:implicit").unwrap();
+        request.channel_id = ChatChannelId::new("channel:review").unwrap();
+        request.reply_thread_id = Some(ChatReplyThreadId::new("reply-thread:review").unwrap());
+        request.model_override = Some(explicit_model("model:other"));
+
+        let Err(error) = persist_post(
+            &pool,
+            &request,
+            None,
+            PostingDevice::this_device("device:phone", &desk_writers),
+        )
+        .await
+        else {
+            panic!("an implicit continuation dropped its model override and posted");
+        };
+
+        assert_eq!(error.code, ChatErrorCode::Validation);
+        assert_eq!(error.field.as_deref(), Some("modelOverride"));
+        assert_eq!(
+            error.details.as_deref(),
+            Some(&json!({ "reason": "model_override_needs_mention" }))
+        );
+    });
+}

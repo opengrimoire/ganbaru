@@ -1363,14 +1363,27 @@ pub const ENVIRONMENT_TARGETS: TableSpec = TableSpec {
     ..TARGET
 };
 
-/// `chat_participant_reference_targets`.
+/// `chat_participant_reference_targets`. A mention of the teammate a post invokes carries the
+/// model override the post asked for, so a later Start of a mention that recorded no work
+/// runs with it.
 pub const PARTICIPANT_TARGETS: TableSpec = TableSpec {
     id: PARTICIPANT_TARGETS_TABLE,
     name: "chat_participant_reference_targets",
     groups: &[immutable(
         timeline_group::CREATED,
-        &[row_key("participant_id")],
+        &[
+            row_key("participant_id"),
+            optional_version("override_model_selection_schema_version"),
+            optional_text("override_model_selection_data", MAX_JSON_CHARS),
+        ],
         &[],
+    )],
+    resolutions: &[within(
+        &[
+            "override_model_selection_schema_version",
+            "override_model_selection_data",
+        ],
+        timeline_group::CREATED,
     )],
     ..TARGET
 };

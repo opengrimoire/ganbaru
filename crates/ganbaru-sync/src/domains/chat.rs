@@ -881,11 +881,12 @@ fn validate_target(table: TableId, group: GroupId, fields: &[Field]) -> Result<(
             MAX_ENVIRONMENT_ID_CHARS,
             "chat environment reference",
         ),
-        (timeline_group::CREATED, [_target])
-            if table == PARTICIPANT_TARGETS_TABLE || table == FOLDER_TARGETS_TABLE =>
+        (timeline_group::CREATED, [_participant, override_version, override_data])
+            if table == PARTICIPANT_TARGETS_TABLE =>
         {
-            Ok(())
+            model_override(override_version, override_data)
         }
+        (timeline_group::CREATED, [_folder]) if table == FOLDER_TARGETS_TABLE => Ok(()),
         (timeline_group::CREATED, [_folder, kind, path]) if table == PATH_TARGETS_TABLE => {
             one_of(kind, &PATH_KINDS, "chat workspace path kind")?;
             relative_path(path)
@@ -1098,17 +1099,17 @@ fn validate_assignment(group: GroupId, fields: &[Field]) -> Result<(), AdapterEr
     }
 }
 
-/// A model override is its schema version and selection together, or neither when the
-/// assignment runs with its teammate's model.
+/// A model override, of an assignment or of the mention that asked for it, is its schema
+/// version and selection together, or neither when the work runs with its teammate's model.
 fn model_override(version: &Field, data: &Field) -> Result<(), AdapterError> {
     match (version, data) {
         (Field::Null, Field::Null) => Ok(()),
         (Field::Null, _) | (_, Field::Null) => {
-            Err(AdapterError("chat assignment model override is incomplete"))
+            Err(AdapterError("chat model override is incomplete"))
         }
         _ => {
             schema_version(version)?;
-            json_object(data, "chat assignment model override")
+            json_object(data, "chat model override")
         }
     }
 }
@@ -2196,6 +2197,38 @@ mod tests {
         assert!(
             check(short).is_err(),
             "the created group carries the override"
+        );
+    }
+
+    #[test]
+    fn chat_mention_model_override_is_whole_or_absent() {
+        let adapter = ChatAdapter;
+        let check = |fields| {
+            adapter.validate(
+                PARTICIPANT_TARGETS_TABLE,
+                timeline_group::CREATED,
+                &value(fields),
+            )
+        };
+        let selection = r#"{"providerManagedModel":true,"modelOptions":[]}"#;
+
+        assert!(check(vec![t("teammate-1"), Field::Null, Field::Null]).is_ok());
+        assert!(check(vec![t("teammate-1"), Field::Integer(1), t(selection)]).is_ok());
+        assert!(check(vec![t("teammate-1"), Field::Integer(1), Field::Null]).is_err());
+        assert!(check(vec![t("teammate-1"), Field::Null, t(selection)]).is_err());
+        assert!(check(vec![t("teammate-1"), Field::Integer(1), t("[]")]).is_err());
+        assert!(
+            check(vec![t("teammate-1")]).is_err(),
+            "the created group carries the override"
+        );
+        assert!(
+            adapter
+                .validate(
+                    FOLDER_TARGETS_TABLE,
+                    timeline_group::CREATED,
+                    &value(vec![t("folder-1")]),
+                )
+                .is_ok()
         );
     }
 

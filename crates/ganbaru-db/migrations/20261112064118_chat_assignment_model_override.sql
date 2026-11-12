@@ -20,7 +20,29 @@ ALTER TABLE chat_work_assignments ADD COLUMN override_model_selection_data TEXT 
 ALTER TABLE chat_work_assignment_inputs ADD COLUMN delivered_revision_id TEXT CHECK (
     delivered_revision_id IS NULL OR length(delivered_revision_id) BETWEEN 1 AND 1024
 );
+-- The mention of the teammate a post invokes keeps the override the post asked for, so a Start
+-- of a mention that recorded no work, on a device other than the poster, runs with it.
+ALTER TABLE chat_participant_reference_targets ADD COLUMN override_model_selection_schema_version INTEGER CHECK (
+    override_model_selection_schema_version IS NULL OR override_model_selection_schema_version >= 1
+);
+ALTER TABLE chat_participant_reference_targets ADD COLUMN override_model_selection_data TEXT CHECK (
+    (override_model_selection_data IS NULL) = (override_model_selection_schema_version IS NULL)
+    AND (
+        override_model_selection_data IS NULL OR (
+            length(override_model_selection_data) <= 16384
+            AND json_valid(override_model_selection_data)
+            AND json_type(override_model_selection_data) = 'object'
+        )
+    )
+);
 
+DROP TRIGGER sync_values_chat_participant_reference_targets_insert;
+DROP TRIGGER sync_values_chat_participant_reference_targets_update;
+DROP TRIGGER sync_immutable_chat_participant_reference_targets;
+DROP TRIGGER sync_recreate_chat_participant_reference_targets;
+DROP TRIGGER sync_capture_chat_participant_reference_targets_insert;
+DROP TRIGGER sync_capture_chat_participant_reference_targets_update;
+DROP TRIGGER sync_capture_chat_participant_reference_targets_delete;
 DROP TRIGGER sync_values_chat_work_assignments_insert;
 DROP TRIGGER sync_values_chat_work_assignments_update;
 DROP TRIGGER sync_immutable_chat_work_assignments;
@@ -209,5 +231,75 @@ WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
 BEGIN
     INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
     VALUES (396, OLD.id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
+END;
+
+CREATE TRIGGER sync_values_chat_participant_reference_targets_insert
+BEFORE INSERT ON chat_participant_reference_targets
+WHEN ((typeof(NEW.reference_id) = 'text' AND instr(CAST(NEW.reference_id AS BLOB), x'00') = 0 AND trim(NEW.reference_id) <> '' AND length(CAST(NEW.reference_id AS BLOB)) <= 128)
+    AND (NEW.participant_id IS NULL OR (typeof(NEW.participant_id) = 'text' AND instr(CAST(NEW.participant_id AS BLOB), x'00') = 0 AND trim(NEW.participant_id) <> '' AND length(CAST(NEW.participant_id AS BLOB)) <= 128))
+    AND (NEW.override_model_selection_schema_version IS NULL OR (typeof(NEW.override_model_selection_schema_version) = 'integer' AND NEW.override_model_selection_schema_version BETWEEN 1 AND 9223372036854775807))
+    AND (NEW.override_model_selection_data IS NULL OR (typeof(NEW.override_model_selection_data) = 'text' AND instr(CAST(NEW.override_model_selection_data AS BLOB), x'00') = 0 AND length(NEW.override_model_selection_data) <= 16384 AND length(CAST(NEW.override_model_selection_data AS BLOB)) <= 262144))) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_values_chat_participant_reference_targets_update
+BEFORE UPDATE OF participant_id, override_model_selection_schema_version, override_model_selection_data ON chat_participant_reference_targets
+WHEN ((NEW.participant_id IS NULL OR (typeof(NEW.participant_id) = 'text' AND instr(CAST(NEW.participant_id AS BLOB), x'00') = 0 AND trim(NEW.participant_id) <> '' AND length(CAST(NEW.participant_id AS BLOB)) <= 128))
+    AND (NEW.override_model_selection_schema_version IS NULL OR (typeof(NEW.override_model_selection_schema_version) = 'integer' AND NEW.override_model_selection_schema_version BETWEEN 1 AND 9223372036854775807))
+    AND (NEW.override_model_selection_data IS NULL OR (typeof(NEW.override_model_selection_data) = 'text' AND instr(CAST(NEW.override_model_selection_data AS BLOB), x'00') = 0 AND length(NEW.override_model_selection_data) <= 16384 AND length(CAST(NEW.override_model_selection_data AS BLOB)) <= 262144))) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_immutable_chat_participant_reference_targets
+BEFORE UPDATE OF reference_id, participant_id, override_model_selection_schema_version, override_model_selection_data ON chat_participant_reference_targets
+WHEN OLD.reference_id IS NOT NEW.reference_id COLLATE BINARY
+    OR ((OLD.participant_id IS NOT NEW.participant_id COLLATE BINARY OR OLD.override_model_selection_schema_version IS NOT NEW.override_model_selection_schema_version OR OLD.override_model_selection_data IS NOT NEW.override_model_selection_data COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
+END;
+
+CREATE TRIGGER sync_recreate_chat_participant_reference_targets
+BEFORE INSERT ON chat_participant_reference_targets
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = 377 AND row_key = NEW.reference_id)
+    AND NOT EXISTS (SELECT 1 FROM chat_participant_reference_targets WHERE reference_id = NEW.reference_id)
+BEGIN
+    SELECT RAISE(ABORT, 'A published row key cannot be created again');
+END;
+
+CREATE TRIGGER sync_capture_chat_participant_reference_targets_insert
+AFTER INSERT ON chat_participant_reference_targets
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (377, NEW.reference_id, 1, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET
+        mask = mask | excluded.mask, created = 1, deleted = 0;
+END;
+
+CREATE TRIGGER sync_capture_chat_participant_reference_targets_update
+AFTER UPDATE ON chat_participant_reference_targets
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    SELECT 377, NEW.reference_id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
+    FROM (
+        SELECT
+            0
+            AS mask
+    ) AS changed
+    WHERE changed.mask <> 0
+    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
+END;
+
+CREATE TRIGGER sync_capture_chat_participant_reference_targets_delete
+AFTER DELETE ON chat_participant_reference_targets
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (377, OLD.reference_id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
     ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
 END;

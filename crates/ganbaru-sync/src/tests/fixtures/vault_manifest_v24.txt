@@ -723,7 +723,8 @@ table 376 chat_execution_environment_reference_targets replicated key reference_
   group 0 immutable execution_environment_id:text(..=2048)
 table 377 chat_participant_reference_targets replicated key reference_id rule any
   key parent 374
-  group 0 immutable participant_id:row_key
+  group 0 immutable participant_id:row_key override_model_selection_schema_version:optional_integer(1..=9223372036854775807) override_model_selection_data:optional_text(..=16384)
+  check override_model_selection_schema_version,override_model_selection_data within 0
 table 378 chat_working_folder_reference_targets replicated key reference_id rule any
   key parent 374
   group 0 immutable working_folder_id:row_key

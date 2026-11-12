@@ -2,7 +2,7 @@
 
 use super::common::{
     MAX_MESSAGE_BYTES, chat_writers, new_id, parse_folder_capability,
-    parse_runtime_approval_policy, this_device_id, wire_work_state,
+    parse_runtime_approval_policy, serialization_error, this_device_id, wire_work_state,
 };
 use super::context::{GrantedAccess, freeze_context_package, read_granted_access};
 use super::dispatch::{deliver_pending_assignment_inputs, dispatch_assignment_job};
@@ -25,7 +25,7 @@ use crate::chat::device_state::{
 use crate::chat::settings::device_state_error;
 use crate::chat::sync::SyncedAssignmentWork;
 use ganbaru_chat::coordination::acceptance::{AcceptanceSubject, acceptance_digest};
-use ganbaru_chat::coordination::contracts::PostChatMessageCommand;
+use ganbaru_chat::coordination::contracts::{ChatAssignmentModelOverride, PostChatMessageCommand};
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeSet;
@@ -1937,11 +1937,23 @@ pub(super) async fn persist_started_assignment(
                   WHERE message.item_id = item.id AND target.participant_id = ?
                 ) AS mentions_teammate,
                 (
+                  SELECT target.override_model_selection_data
+                  FROM chat_communication_messages message
+                  JOIN chat_message_references reference
+                    ON reference.message_revision_id = message.current_revision_id
+                  JOIN chat_participant_reference_targets target
+                    ON target.reference_id = reference.id
+                  WHERE message.item_id = item.id AND target.participant_id = ?
+                    AND target.override_model_selection_data IS NOT NULL
+                  ORDER BY reference.ordinal LIMIT 1
+                ) AS requested_model_override,
+                (
                   SELECT input.assignment_id FROM chat_work_assignment_inputs input
                   WHERE input.message_item_id = item.id
                 ) AS routed_assignment_id
          FROM chat_conversation_items item WHERE item.id = ?",
     )
+    .bind(teammate_id.as_str())
     .bind(teammate_id.as_str())
     .bind(message_item_id.as_str())
     .fetch_optional(pool)
@@ -1963,6 +1975,12 @@ pub(super) async fn persist_started_assignment(
     let routed_assignment_id: Option<String> = row
         .try_get("routed_assignment_id")
         .map_err(persistence_error)?;
+    let requested_model_override = row
+        .try_get::<Option<String>, _>("requested_model_override")
+        .map_err(persistence_error)?
+        .map(|data| serde_json::from_str::<ChatAssignmentModelOverride>(&data))
+        .transpose()
+        .map_err(serialization_error)?;
     let reply_thread_id = ChatReplyThreadId::new(reply_thread_id).map_err(identifier_error)?;
     let conversation_id = ChatConversationId::new(
         row.try_get::<String, _>("conversation_id")
@@ -2005,7 +2023,7 @@ pub(super) async fn persist_started_assignment(
             executing_device_id: device.id,
             execution_target: None,
             poster_participant_id: LOCAL_PARTICIPANT_ID,
-            model_override: None,
+            model_override: requested_model_override.as_ref(),
         },
         device,
         now,

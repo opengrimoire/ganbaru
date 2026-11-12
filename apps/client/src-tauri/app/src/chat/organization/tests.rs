@@ -3429,6 +3429,7 @@ async fn route_review_reply(
         teammate_id: ChatParticipantId::new("participant:review-agent").unwrap(),
         active_assignment: None,
         latest_assignment: None,
+        mentioned: true,
     };
     let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
     let mut transaction = pool.begin().await.unwrap();

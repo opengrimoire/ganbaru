@@ -31,6 +31,9 @@ pub(super) struct ResolvedInvocation {
     pub(super) teammate_id: ChatParticipantId,
     pub(super) active_assignment: Option<ChatWorkAssignmentRead>,
     pub(super) latest_assignment: Option<ChatWorkAssignmentRead>,
+    /// Whether the post mentions the teammate, rather than reaching it as the latest work of
+    /// its reply thread. Only a mention stores a model override for a later Start.
+    pub(super) mentioned: bool,
 }
 
 /// Where a post routed its invocation.
@@ -139,6 +142,7 @@ pub(super) async fn resolve_invoked_teammate(
         .as_ref()
         .filter(|assignment| assignment.state.accepts_continuation())
         .cloned();
+    let mentioned = !ai_mentions.is_empty();
     let teammate_id = ai_mentions.into_iter().next().or_else(|| {
         latest_assignment
             .as_ref()
@@ -161,6 +165,7 @@ pub(super) async fn resolve_invoked_teammate(
         teammate_id,
         active_assignment,
         latest_assignment,
+        mentioned,
     }))
 }
 
@@ -340,10 +345,38 @@ pub(super) fn model_override_on_active_work() -> ChatError {
     error
 }
 
+/// Refuses a model override on a post that invokes no teammate, since no work would ever run
+/// with it.
+pub(super) fn model_override_without_teammate() -> ChatError {
+    let mut error = ChatError::validation(
+        "modelOverride",
+        "A model can be chosen only for a message that asks a teammate for work",
+    );
+    error.details = Some(Box::new(
+        serde_json::json!({ "reason": "model_override_without_teammate" }),
+    ));
+    error
+}
+
+/// Refuses a model override on a reply without a mention that records no work, since only a
+/// mention keeps the override for a later Start.
+pub(super) fn model_override_needs_mention() -> ChatError {
+    let mut error = ChatError::validation(
+        "modelOverride",
+        "Mention the teammate to choose a model for work another device starts",
+    );
+    error.details = Some(Box::new(
+        serde_json::json!({ "reason": "model_override_needs_mention" }),
+    ));
+    error
+}
+
 /// Routes the post `message_item_id` to the assignment of the teammate it invokes: an input of
 /// the active assignment, else a new assignment that runs on the teammate's home device or the
 /// posting desktop. A post from a device that cannot execute, for a teammate without a home
-/// device, records the mention only.
+/// device, records the mention only, whose target keeps the model override the post asked for
+/// until a Start applies it. A model override on a post that invokes no teammate, or on a reply
+/// without a mention that records no work, is refused.
 ///
 /// An input of active work follows the `followup_routing` of `choices`: Steer reaches a working
 /// run's current turn and queues for any other state, Queue always waits for the current turn
@@ -371,6 +404,9 @@ pub(super) async fn persist_assignment_routing(
         model_override,
     } = choices;
     let Some(invocation) = invocation else {
+        if model_override.is_some() {
+            return Err(model_override_without_teammate());
+        }
         return Ok(AssignmentWrite::NONE);
     };
     if let Some(active) = &invocation.active_assignment {
@@ -438,6 +474,9 @@ pub(super) async fn persist_assignment_routing(
     let Some(executing_device_id) =
         new_assignment_executing_device(transaction, &invocation.teammate_id, device).await?
     else {
+        if model_override.is_some() && !invocation.mentioned {
+            return Err(model_override_needs_mention());
+        }
         return Ok(AssignmentWrite::NONE);
     };
     let assignment_id = create_assignment(
@@ -959,16 +998,7 @@ pub(super) async fn insert_communication_message(
     .await
     .map_err(persistence_error)?;
     for (index, reference) in write.request.references.iter().enumerate() {
-        insert_message_reference(
-            transaction,
-            write.revision_id,
-            write.conversation_id,
-            reference,
-            write.invoked_teammate_id,
-            index,
-            write.now,
-        )
-        .await?;
+        insert_message_reference(transaction, &write, reference, index).await?;
     }
     insert_revision_attachments(transaction, write.revision_id.as_str(), write.attachments).await?;
     sqlx::query("UPDATE chat_communication_messages SET current_revision_id = ? WHERE item_id = ?")
@@ -980,15 +1010,20 @@ pub(super) async fn insert_communication_message(
     Ok(())
 }
 
+/// Writes `reference` of the message `write` posts at `ordinal`. A mention of the teammate the
+/// post invokes keeps the model override the post asked for, so a later Start of a mention
+/// that recorded no work runs with it.
 async fn insert_message_reference(
     transaction: &mut Transaction<'_, Sqlite>,
-    revision_id: &ChatMessageRevisionId,
-    destination_conversation_id: &ChatConversationId,
+    write: &CommunicationMessageWrite<'_>,
     reference: &ChatMessageReference,
-    invoked_teammate_id: Option<&ChatParticipantId>,
     ordinal: usize,
-    now: &UtcTimestamp,
 ) -> ChatResult<()> {
+    let revision_id = write.revision_id;
+    let destination_conversation_id = write.conversation_id;
+    let invoked_teammate_id = write.invoked_teammate_id;
+    let model_override = write.request.model_override.as_ref();
+    let now = write.now;
     let metadata = reference.metadata();
     let reference_kind = match reference {
         ChatMessageReference::Participant { .. } => "participant",
@@ -1038,12 +1073,24 @@ async fn insert_message_reference(
                     "Referenced participant identity is stale",
                 ));
             }
+            let (override_schema_version, override_data) =
+                match model_override.filter(|_| invoked_teammate_id == Some(participant_id)) {
+                    Some(model_override) => (
+                        Some(MODEL_SELECTION_SCHEMA_VERSION),
+                        Some(serialize_model_override(model_override)?),
+                    ),
+                    None => (None, None),
+                };
             sqlx::query(
-                "INSERT INTO chat_participant_reference_targets (reference_id, participant_id)
-                 VALUES (?, ?)",
+                "INSERT INTO chat_participant_reference_targets
+                    (reference_id, participant_id,
+                     override_model_selection_schema_version, override_model_selection_data)
+                 VALUES (?, ?, ?, ?)",
             )
             .bind(metadata.reference_id.as_str())
             .bind(participant_id.as_str())
+            .bind(override_schema_version)
+            .bind(override_data)
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
@@ -1450,6 +1497,8 @@ pub(super) async fn insert_channel_copy(
     };
     let order_key = next_item_order_key(transaction, conversation_id, None).await?;
     let mut copied_request = request.clone();
+    // The thread reply keeps the model the post asked for; its channel copy only shows it.
+    copied_request.model_override = None;
     for reference in &mut copied_request.references {
         reference.metadata_mut().reference_id =
             ChatMessageReferenceId::new(new_id("message-reference")?).map_err(identifier_error)?;

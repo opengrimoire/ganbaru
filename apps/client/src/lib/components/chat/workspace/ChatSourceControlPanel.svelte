@@ -15,6 +15,7 @@
   import { subscribeChatWorkspaceChanges } from "$lib/chat/workspace/observer-client";
   import { COMMIT_MESSAGE_MAX_BYTES, commitMessageTooLong } from "$lib/chat/workspace/commit-message";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -398,7 +399,13 @@
   async function removeWorktree(environment: ChatExecutionEnvironmentRead): Promise<void> {
     const workingFolderId = workspace;
     const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
-    if (!workingFolderId || operation || !window.confirm(t("chat.sourceControl.confirmRemoveWorktree", environment.displayName))) return;
+    if (!workingFolderId || operation) return;
+    const confirmed = await requestConfirmation({
+      message: t("chat.sourceControl.confirmRemoveWorktree", environment.displayName),
+      confirmLabel: t("chat.sourceControl.removeWorktreeConfirm"),
+      danger: true,
+    });
+    if (!confirmed || operation || !scopeMatches(workingFolderId, executionEnvironmentId)) return;
     const request = ++operationRequest;
     operation = "remove-worktree";
     error = null;
@@ -479,7 +486,11 @@
   }
 
   async function discard(file: GitChangedPathRead): Promise<void> {
-    const confirmed = window.confirm(t("chat.sourceControl.confirmDiscard", file.relativePath));
+    const confirmed = await requestConfirmation({
+      message: t("chat.sourceControl.confirmDiscard", file.relativePath),
+      confirmLabel: t("chat.sourceControl.discardConfirm"),
+      danger: true,
+    });
     if (!confirmed) return;
     await run("discard", (workspaceId, environmentId) => chatApi.discardGitPaths(
       workspaceId,

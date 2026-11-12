@@ -18,6 +18,7 @@
   import * as chatApi from "$lib/api/chat";
   import type { BrowserTabBounds, BrowserTabRead } from "$lib/chat/contracts";
   import { urlReach } from "$lib/chat/workspace/loopback";
+  import { requestConfirmation, type ConfirmationRequest } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -43,6 +44,7 @@
   let preset: ViewportPreset = $state("responsive");
   let resizeObserver: ResizeObserver | null = null;
   let resizeFrame: number | null = null;
+  let destroyed = false;
   const threadId = $derived(chat.selectedThreadId ?? chat.draftThreadId);
   const currentOrigin = $derived(externalOrigin(browserTab));
   const modelAllowed = $derived(currentOrigin !== null && modelOrigins.includes(currentOrigin));
@@ -156,7 +158,27 @@
     void loadStoredBrowserTab(selectedThreadId);
   });
 
+  /**
+   * Asks in the shared dialog with the native preview hidden, because the preview webview draws above the app and
+   * would cover the dialog. The preview shows again afterwards when the same tab is still selected.
+   */
+  async function confirmWithPreviewHidden(request: ConfirmationRequest): Promise<boolean> {
+    const hiddenThread = browserTab?.visible ? threadId : null;
+    const hiddenTab = browserTab?.visible ? tabId : null;
+    if (hiddenThread && hiddenTab) await chatApi.setBrowserTabVisible(hiddenThread, hiddenTab, false).catch(() => undefined);
+    try {
+      return await requestConfirmation(request);
+    } finally {
+      if (hiddenThread && hiddenTab && !destroyed && threadId === hiddenThread && tabId === hiddenTab && browserTab?.visible) {
+        await chatApi.setBrowserTabVisible(hiddenThread, hiddenTab, true)
+          .then((shown) => { if (threadId === hiddenThread && tabId === hiddenTab) browserTab = shown; })
+          .catch(() => undefined);
+      }
+    }
+  }
+
   onDestroy(() => {
+    destroyed = true;
     resizeObserver?.disconnect();
     if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
     if (threadId && tabId && browserTab?.visible) {
@@ -250,9 +272,13 @@
   async function navigate(): Promise<void> {
     if (!threadId || !tabId || !url.trim() || loading) return;
     const destination = normalizedUrl(url);
-    const externalConfirmed = !isExternal(destination)
-      || window.confirm(t("chat.browser.confirmExternal", destination));
-    if (!externalConfirmed) return;
+    const selectedThread = threadId;
+    const selectedTab = tabId;
+    const externalConfirmed = !isExternal(destination) || await confirmWithPreviewHidden({
+      message: t("chat.browser.confirmExternal", destination),
+      confirmLabel: t("chat.browser.confirmExternalAllow"),
+    });
+    if (!externalConfirmed || threadId !== selectedThread || tabId !== selectedTab || loading) return;
     loading = true;
     error = null;
     try {
@@ -401,7 +427,13 @@
     if (!threadId || !tabId || !browserTab?.visible || loading) return;
     const selectedThread = threadId;
     const selectedTab = tabId;
-    if (!recording && !window.confirm(t("chat.browser.recordingConfirm"))) return;
+    if (!recording) {
+      const confirmed = await confirmWithPreviewHidden({
+        message: t("chat.browser.recordingConfirm"),
+        confirmLabel: t("chat.browser.recordingStart"),
+      });
+      if (!confirmed || threadId !== selectedThread || tabId !== selectedTab || !browserTab?.visible || loading) return;
+    }
     loading = true;
     error = null;
     try {

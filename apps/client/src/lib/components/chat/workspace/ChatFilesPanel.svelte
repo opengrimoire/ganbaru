@@ -108,9 +108,9 @@
     setSelectedPath: (path) => onStateChange({ selectedPath: path }),
     refreshParentDirectory: (path) => refreshParentDirectory(path),
     onReviewCreated: () => onReviewCreated(),
-    discardUnsavedMessage: () => t("chat.inspector.discardUnsaved"),
-    confirmOverwriteMessage: () => t("chat.inspector.confirmOverwriteFile"),
-    confirmRecreateMessage: () => t("chat.inspector.confirmRecreateFile"),
+    discardUnsavedConfirmation: () => ({ message: t("chat.inspector.discardUnsaved"), confirmLabel: t("chat.inspector.discardUnsavedConfirm"), danger: true }),
+    overwriteConfirmation: () => ({ message: t("chat.inspector.confirmOverwriteFile"), confirmLabel: t("chat.inspector.overwriteFile"), danger: true }),
+    recreateConfirmation: () => ({ message: t("chat.inspector.confirmRecreateFile"), confirmLabel: t("chat.inspector.recreateFile") }),
     previewUnavailableMessage: () => t("chat.inspector.previewUnavailable"),
   });
   const workingFolderId = $derived(chat.selectedWorkingFolderId);
@@ -671,7 +671,7 @@
       {:else if editorSession.saveConflict}
         <div role="alert" class="save-conflict">
           <span>{t("chat.inspector.saveConflict")}</span>
-          <div><button type="button" onclick={() => void editorSession.compareConflict()}>{t("chat.inspector.compareFile")}</button><button type="button" onclick={() => editorSession.reloadSelectedFile()}>{t("chat.inspector.reloadFile")}</button><button type="button" onclick={() => void editorSession.overwriteExternalFile()}>{t("chat.inspector.overwriteFile")}</button></div>
+          <div><button type="button" onclick={() => void editorSession.compareConflict()}>{t("chat.inspector.compareFile")}</button><button type="button" onclick={() => void editorSession.reloadSelectedFile()}>{t("chat.inspector.reloadFile")}</button><button type="button" onclick={() => void editorSession.overwriteExternalFile()}>{t("chat.inspector.overwriteFile")}</button></div>
           <form onsubmit={(event) => { event.preventDefault(); void editorSession.saveConflictCopy(); }}><input class="field" bind:value={editorSession.saveCopyPath} aria-label={t("chat.inspector.saveCopyPath")} /><button type="submit" disabled={!editorSession.saveCopyPath.trim() || editorSession.saving}>{t("chat.inspector.saveCopy")}</button></form>
         </div>
       {/if}

@@ -224,10 +224,20 @@ impl OpenCodeRouteState {
             .collect()
     }
 
+    /// Whether `value` is new to this route. A repeated record envelope is a redelivery and is
+    /// dropped; a transition or increment repeats legitimately with identical bytes, such as the
+    /// busy and idle status of every turn or the same delta twice, so it is never dropped.
     fn observe(&mut self, value: &Value) -> ChatResult<bool> {
         let encoded = serde_json::to_vec(value).map_err(|_| protocol_error("event envelope"))?;
         if encoded.len() > MAX_EVENT_DATA_BYTES {
             return Err(protocol_error("event envelope size"));
+        }
+        if value
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(repeats_legitimately)
+        {
+            return Ok(true);
         }
         let fingerprint = format!("{:x}", Sha256::digest(encoded));
         if self.deduplication_set.contains(&fingerprint) {
@@ -242,6 +252,18 @@ impl OpenCodeRouteState {
         }
         Ok(true)
     }
+}
+
+/// Whether events of `event_type` are transitions or increments that may repeat byte for byte.
+fn repeats_legitimately(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "session.status"
+            | "session.error"
+            | "message.part.delta"
+            | "server.connected"
+            | "server.heartbeat"
+    )
 }
 
 /// Whether an event names a session other than `session_id`. Events carry the session at the

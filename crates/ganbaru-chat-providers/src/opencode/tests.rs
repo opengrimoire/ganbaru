@@ -957,6 +957,62 @@ fn event_fixture_normalizes_core_activity_and_deduplicates_replay() {
     );
 }
 
+/// Status transitions and deltas repeat with identical bytes, so redelivery deduplication keeps
+/// them: every turn settles on the same idle envelope and a repeated delta stays in the text.
+#[test]
+fn identical_status_and_delta_envelopes_are_not_deduplicated() {
+    let normalizer = OpenCodeEventNormalizer::new(
+        ProviderInstanceId::new("opencode-instance").unwrap(),
+        ChatThreadId::new("thread-fixture").unwrap(),
+        ProviderSessionId::new("local-session-fixture").unwrap(),
+    );
+    let mut state = OpenCodeRouteState::new(
+        "ses_fixture".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    );
+    let fixture = include_str!("fixtures/events.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let envelope = |kind: &str| {
+        fixture
+            .iter()
+            .find(|envelope| envelope.to_string().contains(kind))
+            .cloned()
+            .unwrap()
+    };
+    let (busy, idle) = (envelope(r#""type":"busy""#), envelope(r#""type":"idle""#));
+    let mut events = Vec::new();
+    for turn in ["turn-one", "turn-two"] {
+        state.active_turn_id = Some(ChatTurnId::new(turn).unwrap());
+        events.extend(normalizer.normalize(&mut state, busy.clone()).unwrap());
+        if turn == "turn-one" {
+            for envelope in [&fixture[2], &fixture[3], &fixture[4], &fixture[4]] {
+                events.extend(normalizer.normalize(&mut state, envelope.clone()).unwrap());
+            }
+        }
+        events.extend(normalizer.normalize(&mut state, idle.clone()).unwrap());
+    }
+    let count = |kind: fn(&CanonicalEvent) -> bool| {
+        events.iter().filter(|event| kind(&event.event)).count()
+    };
+    assert_eq!(
+        count(|event| matches!(event, CanonicalEvent::TurnCompleted(_))),
+        2
+    );
+    let text = events
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::ContentDelta(delta) => Some(delta.delta.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    assert_eq!(text, "Hello world world");
+}
+
 #[test]
 fn permission_session_option_is_withheld_when_its_grants_cannot_be_listed() {
     let normalizer = OpenCodeEventNormalizer::new(

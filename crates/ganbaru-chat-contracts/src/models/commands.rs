@@ -182,6 +182,11 @@ pub struct ResumeSessionRequest {
     /// Instructions of the resumed session, placed at system level like on start.
     #[serde(default)]
     pub developer_instructions: Option<String>,
+    /// Whether the native session already received `developer_instructions` on an earlier
+    /// turn. Providers that deliver instructions in prompt text then omit them from the
+    /// resumed session's turns; providers that set them at system level ignore it.
+    #[serde(default)]
+    pub developer_instructions_delivered: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -359,11 +364,13 @@ mod tests {
 
         let mut resume = resume_json();
         resume["developerInstructions"] = json!("Review the plan first.");
+        resume["developerInstructionsDelivered"] = json!(true);
         let parsed: ResumeSessionRequest = serde_json::from_value(resume.clone()).unwrap();
         assert_eq!(
             parsed.developer_instructions.as_deref(),
             Some("Review the plan first.")
         );
+        assert!(parsed.developer_instructions_delivered);
         assert_eq!(serde_json::to_value(&parsed).unwrap(), resume);
     }
 
@@ -377,6 +384,10 @@ mod tests {
         );
         let resume: ResumeSessionRequest = serde_json::from_value(resume_json()).unwrap();
         assert_eq!(resume.developer_instructions, None);
+        assert!(
+            !resume.developer_instructions_delivered,
+            "a resume that does not say otherwise has not received the instructions"
+        );
         assert_eq!(
             serde_json::to_value(&resume).unwrap()["developerInstructions"],
             Value::Null

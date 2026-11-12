@@ -46,13 +46,13 @@ use callbacks::{
     verified_write_path,
 };
 use callbacks::{callback_permission_error, require_acp_session};
-#[cfg(test)]
-pub use configuration::initialize_session;
 pub use configuration::{
     AcpAuthPreference, AcpRequestedConfiguration, AcpSessionInitialization,
     apply_provider_configuration, auth_preference, initialize_provider_session,
     negotiate_initialize, select_auth_method,
 };
+#[cfg(test)]
+pub use configuration::{initialize_session, require_session_loading};
 pub use load_replay::AcpInboundQueue;
 pub use router::{restore_pending, spawn_cursor_router, take_pending};
 

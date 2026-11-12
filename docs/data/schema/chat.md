@@ -71,7 +71,7 @@ Thread and channel mutations carry revision checks. After one succeeds, the wind
 
 Message, scheduled message, draft, and queued reference rows control attachment retention. Chat never deletes attachment files: deferred cleanup removes a `chat_attachments` row only when no reference names its digest, and the sync asset sweep removes a file once no replicated reference and no device-local attachment row names it. Browser artifact cleanup still removes its files, rechecking current references first, treating an already missing file as a recoverable result, and recording bounded retry state.
 
-Context packages, mentions, workspace file references, channel references, and selected Notes or tasks store identity and provenance. Resolving them repeats current authorization. Materialized provider context records enough scope and revision to support revocation and continuation disposal.
+Context packages, mentions, workspace file references, channel references, and selected Notes or tasks store identity and provenance. Resolving them repeats current authorization. Materialized provider context records enough scope and revision to support revocation and continuation disposal. Each agent run records when it is inserted why it started (fresh, continuation, handoff with its reason, or retry), the instruction and model selection digests it was launched under, whether it received the full context or a delta of only the sources its continued session had not received, and the bytes sent, and these values are fixed once the run leaves starting (a continuation whose provider opens a new native session records a handoff with the full context before that); `chat_agent_run_delivered_sources` lists each context source and content digest a run that started received.
 
 ## Checkpoints, review, and restore
 
@@ -111,7 +111,7 @@ Revocation cleanup has priority over convenience retention. A continuation that 
 
 ## Device-local boundary
 
-The active vault database may store provider-native continuation IDs, organizational identities, and portable execution history. It does not store secret values, provider homes, executable paths, probe process state, external absolute folder bindings, native terminal handles, or ephemeral loopback credentials.
+The active vault database may store provider-native continuation IDs, organizational identities, and portable execution history. It does not store secret values, provider homes, executable paths, probe process state, external absolute folder bindings, native terminal handles, or ephemeral loopback credentials. Agent run attempt columns and `chat_agent_run_delivered_sources` are device-local execution evidence: they describe what this device sent to its native sessions and never replicate.
 
 The platform app config directory stores device-local bindings and nonsecret runtime bootstrap data. Provider configuration, credential references, remembered composer selections, working folder provider preferences, and panel sizes live in the `chat` entry of the device preference file there, while Chat behavior (send key, reasoning summaries, folding, timeline density, terminal scrollback, idle timeout, thread restore) is portable `chat.behavior.*` vault preferences that replicate. The multiline terminal paste confirmation shares that path but is a device preference, because a safety prompt must not follow a peer. Secrets are resolved from the operating-system credential store only at the native boundary that needs them.
 

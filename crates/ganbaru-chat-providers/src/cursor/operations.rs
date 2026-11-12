@@ -773,6 +773,12 @@ impl InstructionsDigest {
     fn of(normalized: &str) -> Self {
         Self(Sha256::digest(normalized.as_bytes()).into())
     }
+
+    /// Digest of `instructions` as `build_prompt` would send them, or `None` when they
+    /// normalize to nothing.
+    pub(super) fn of_instructions(instructions: &str) -> Option<Self> {
+        normalized_instructions(instructions).map(|normalized| Self::of(&normalized))
+    }
 }
 
 /// Developer instructions with line endings unified and outer whitespace removed, or `None`
@@ -793,8 +799,10 @@ pub(super) struct AcpPrompt {
 /// Builds the prompt content for one turn.
 ///
 /// ACP has no session instruction field the current agents advertise, so developer instructions
-/// ride in the prompt text, once per live session: they are omitted when `delivered` already
-/// names the same normalized text, and sent again when they change or the session is new.
+/// ride in the prompt text, once per native session: they are omitted when `delivered` already
+/// names the same normalized text, and sent again when they change or the session is new. A
+/// session loaded for resume starts with `delivered` set when the caller reports that the
+/// native session already received the same instructions.
 ///
 /// Cursor and Grok read `@path` mentions in the text. A generic agent gets each mention as a
 /// `resource_link` block under `workspace`, which every ACP agent must accept.

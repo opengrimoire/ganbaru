@@ -72,6 +72,8 @@ export interface ResumeSessionRequest {
   modes: TurnModeSnapshot;
   /** Instructions the provider places at system level when the session resumes. */
   developerInstructions: string | null;
+  /** Whether the native session already received `developerInstructions` on an earlier turn. */
+  developerInstructionsDelivered: boolean;
 }
 
 export interface SendTurnRequest {

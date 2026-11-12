@@ -77,11 +77,7 @@ pub async fn initialize_provider_session(
     let host_tools_omitted = internal_mcp.is_some() && !accepts_http_mcp;
     let mcp_servers = acp_mcp_servers(provider_name, accepts_http_mcp, internal_mcp)?;
     let (mut setup, session_id) = if let Some(session_id) = resume_session_id {
-        if !initialize.agent_capabilities.load_session {
-            return Err(ChatError::unsupported(format!(
-                "{provider_name} did not advertise ACP session loading"
-            )));
-        }
+        require_session_loading(&initialize, provider_name)?;
         let result = inbound
             .load_session(
                 &client,
@@ -518,6 +514,22 @@ fn config_request(session_id: &str, config_id: &str, value: &Value) -> Value {
             "value": value,
         }),
     }
+}
+
+/// Refuses to resume with an agent that cannot load an earlier session. The earlier session is
+/// unreachable, so the error reports it as not found and callers start a new session.
+pub fn require_session_loading(
+    initialize: &AcpInitializeResponse,
+    provider_name: &str,
+) -> ChatResult<()> {
+    if initialize.agent_capabilities.load_session {
+        return Ok(());
+    }
+    Err(ChatError::new(
+        ChatErrorCode::ResumeNotFound,
+        format!("{provider_name} did not advertise ACP session loading"),
+        true,
+    ))
 }
 
 fn session_load_error(error: AcpRpcFailure, session_id: &str) -> ChatError {

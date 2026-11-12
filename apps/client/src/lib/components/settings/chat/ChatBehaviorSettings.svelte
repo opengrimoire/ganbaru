@@ -19,6 +19,7 @@
   import Select from "$lib/components/ui/Select.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
   import ChatProcessList from "./ChatProcessList.svelte";
+  import ChatScratchReclaimReport from "./ChatScratchReclaimReport.svelte";
 
   const localization = getLocalization();
   const { t } = localization;
@@ -242,6 +243,7 @@
         </div>
       {/if}
       <ChatProcessList refreshKey={processRefreshKey} />
+      <ChatScratchReclaimReport />
     </div>
       </div>
       {/if}

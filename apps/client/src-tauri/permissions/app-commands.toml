@@ -141,6 +141,7 @@ commands.allow = [
   "chat_read_project_primary_working_folder",
   "chat_read_provider_files",
   "chat_read_reply_thread_page",
+  "chat_read_scratch_reclaim_report",
   "chat_read_review_patches",
   "chat_read_settings",
   "chat_read_teammate",

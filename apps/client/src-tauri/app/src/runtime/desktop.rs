@@ -423,6 +423,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::scratch::commands::chat_promote_scratch_file,
             chat::scratch::commands::chat_preview_scratch_cleanup,
             chat::scratch::commands::chat_cleanup_scratch,
+            chat::scratch::commands::chat_read_scratch_reclaim_report,
             chat::organization::chat_read_project_primary_working_folder,
             chat::organization::chat_set_project_primary_working_folder,
             chat::organization::chat_post_message,

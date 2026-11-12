@@ -462,6 +462,46 @@ export interface ChatScratchCleanupResultRead {
   completedAt: UtcTimestamp | null;
 }
 
+/** Why a scratch generation is safe to reclaim, in reporting priority order. */
+export const CHAT_SCRATCH_RECLAIM_REASONS = [
+  "scopeArchived",
+  "scopeCleanupFailed",
+  "generationCleanupFailed",
+  "generationQuarantined",
+  "idle",
+] as const;
+export type ChatScratchReclaimReason = (typeof CHAT_SCRATCH_RECLAIM_REASONS)[number];
+
+/** One scratch generation that the existing confirmed cleanup can remove. */
+export interface ChatScratchReclaimRow {
+  scratchScopeId: ChatScratchScopeId;
+  scratchGenerationId: ChatScratchGenerationId;
+  replyThreadId: ChatReplyThreadId;
+  generation: number;
+  teammateName: string;
+  channelName: string;
+  projectName: string;
+  groupName: string | null;
+  reason: ChatScratchReclaimReason;
+  /** Bounded size on this device, or the stored size when unavailable here. */
+  byteSize: number;
+  sizeTruncated: boolean;
+  deviceAvailability: ChatScratchDeviceAvailability;
+  lastActivityAt: UtcTimestamp;
+}
+
+/** Largest reclaimable scratch generations with totals over every qualifying generation. */
+export interface ChatScratchReclaimReportRead {
+  rows: ChatScratchReclaimRow[];
+  /** Sum of the sizes available on this device across every qualifying generation. */
+  totalBytes: number;
+  totalTruncated: boolean;
+  /** Qualifying generations left out of `rows` by the row limit. */
+  omitted: number;
+  /** Days without activity after which active scratch counts as idle. */
+  idleDays: number;
+}
+
 export interface BrowseChatScratchGenerationRequest {
   scratchGenerationId: ChatScratchGenerationId;
   relativePath: string;

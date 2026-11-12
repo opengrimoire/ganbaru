@@ -18,7 +18,7 @@ const MAX_DIRECTORY_PAGE_SIZE: u32 = 50;
 const MAX_PROMOTION_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_PAGE_REVISION_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SIZE_ENTRIES: u64 = 10_000;
-const MAX_SIZE_BYTES: u64 = 1024 * 1024 * 1024;
+pub(super) const MAX_SIZE_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[tauri::command]
 pub async fn chat_list_scratch_scopes(

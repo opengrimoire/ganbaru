@@ -1,17 +1,8 @@
 {
   "absent": [
-    { "scenario": "turn_interrupt", "reason": "Not authored yet at the 0.167.1 pin." },
-    { "scenario": "turn_interrupt_mid_tool", "reason": "Not authored yet at the 0.167.1 pin." },
-    { "scenario": "queued_turn", "reason": "Not authored yet at the 0.167.1 pin." },
-    { "scenario": "message_steering", "reason": "Not authored yet at the 0.167.1 pin." },
-    { "scenario": "compaction", "reason": "Not authored yet at the 0.167.1 pin." },
-    { "scenario": "usage_limit", "reason": "Owned by step 9, which checks that resets_at survives the sparse snapshot merge." },
-    { "scenario": "exit_before_first_frame", "reason": "Not authored yet at the 0.167.1 pin." },
-    { "scenario": "malformed_frame", "reason": "Not authored yet at the 0.167.1 pin." },
-    { "scenario": "elicitation_decline", "reason": "Needs the step 7 elicitation decline in the driver." },
-    { "scenario": "capacity_retry", "reason": "Needs the step 7 capacity retry in the driver." },
-    { "scenario": "oversized_message", "reason": "Not authored yet at the 0.167.1 pin." },
-    { "scenario": "rollback", "reason": "Authored after the step 5 pin bump; the restore saga is checked in step 8." },
-    { "scenario": "reasoning_then_tool", "reason": "Owned by step 9, which checks that the tool item renders before the summary completes." }
+    {
+      "scenario": "oversized_message",
+      "reason": "A Codex line must pass the 4 MiB JSONL limit to count as oversized, which exceeds the 1 MiB replay transcript and pipe bounds; the transport test oversized_message_fails_pending_requests covers the limit."
+    }
   ]
 }

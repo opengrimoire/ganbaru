@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Retries of one turn after a capacity failure. t3code allows 5; 3 bounds the spend.
+/// Retries of one turn after a capacity failure; three bound the spend on an overloaded model.
 pub(super) const CODEX_CAPACITY_MAX_RETRIES: u32 = 3;
 /// Wait before the first retry; each later retry doubles it.
 const FIRST_RETRY_BACKOFF: Duration = Duration::from_secs(2);

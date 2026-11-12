@@ -22,11 +22,89 @@ pub(super) fn script(scenario: &str) -> Option<ReplayScript> {
             },
             settled(1),
         ]),
+        "turn_interrupt" => direct(vec![
+            START,
+            send("turn-1", "Count slowly"),
+            awaited("content_delta", 1),
+            ReplayStep::Interrupt { turn: "turn-1" },
+            settled(1),
+        ]),
+        "turn_interrupt_mid_tool" => direct(vec![
+            START,
+            send("turn-1", "Run the tests"),
+            awaited("item_started", 1),
+            ReplayStep::Interrupt { turn: "turn-1" },
+            settled(1),
+        ]),
+        // A turn sent while one runs is refused as busy, and goes through once the first settles.
+        "queued_turn" => direct(vec![
+            START,
+            send("turn-1", "List the files"),
+            awaited("content_delta", 1),
+            send("turn-2", "Read it"),
+            settled(1),
+            send("turn-2", "Read it"),
+            settled(2),
+        ]),
+        "message_steering" => direct(vec![
+            START,
+            send("turn-1", "Write a poem"),
+            awaited("content_delta", 1),
+            ReplayStep::Steer {
+                turn: "turn-1",
+                prompt: "Make it short",
+            },
+            settled(1),
+        ]),
+        "compaction" => direct(vec![
+            START,
+            send("turn-1", "Summarize the project"),
+            settled(1),
+        ]),
+        // The limit reset survives a later sparse update that leaves the exhausted window out.
+        "usage_limit" => direct(vec![START, send("turn-1", "Keep going"), settled(1)]),
+        // A CLI that exits before its first frame fails the start with a typed error.
+        "exit_before_first_frame" => direct(vec![START]),
+        "malformed_frame" => direct(vec![START, send("turn-1", "Say hello"), settled(1)]),
+        // An MCP elicitation is declined without asking, and the turn runs on.
+        "elicitation_decline" => direct(vec![START, send("turn-1", "Check the docs"), settled(1)]),
+        // An overloaded model is retried on the same turn after a backoff.
+        "capacity_retry" => direct(vec![START, send("turn-1", "Say hello"), settled(1)]),
+        // A checkpoint restore to the first turn reverts the native thread before the second.
+        "rollback" => direct(vec![
+            START,
+            send("turn-1", "Say hello"),
+            settled(1),
+            send("turn-2", "Now say goodbye"),
+            settled(2),
+            ReplayStep::Rollback {
+                provider_turn: "provider-turn-1",
+            },
+            ReplayStep::AwaitTranscript,
+        ]),
+        // A tool that starts while reasoning streams shows before the reasoning completes.
+        "reasoning_then_tool" => direct(vec![START, send("turn-1", "Fix the test"), settled(1)]),
         _ => return None,
     })
 }
 
-replay_scenarios!(Codex: simple, multi_turn, approval_request);
+replay_scenarios!(
+    Codex: simple,
+    multi_turn,
+    approval_request,
+    turn_interrupt,
+    turn_interrupt_mid_tool,
+    queued_turn,
+    message_steering,
+    compaction,
+    usage_limit,
+    exit_before_first_frame,
+    malformed_frame,
+    elicitation_decline,
+    capacity_retry,
+    rollback,
+    reasoning_then_tool,
+);
 
 #[cfg(test)]
 mod schema {

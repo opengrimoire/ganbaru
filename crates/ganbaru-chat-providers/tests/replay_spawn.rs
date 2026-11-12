@@ -89,6 +89,7 @@ fn claude_configuration(
         "environment": {
             "GANBARU_REPLAY_TRANSCRIPT": transcript(transcript_name),
             "GANBARU_REPLAY_WORKSPACE": directories.workspace,
+            "GANBARU_REPLAY_HOME": directories.home,
             "GANBARU_REPLAY_FAILURE_LOG": directories.failure_log(),
         },
         "credentialReferences": {},

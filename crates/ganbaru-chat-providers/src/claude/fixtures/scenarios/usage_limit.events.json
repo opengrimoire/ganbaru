@@ -32,7 +32,9 @@
     },
     {
       "type": "rate_limit_status",
-      "turn": "turn-1"
+      "turn": "turn-1",
+      "limited": true,
+      "resetsAt": "2030-01-01T00:00:00Z"
     },
     {
       "type": "item_started",

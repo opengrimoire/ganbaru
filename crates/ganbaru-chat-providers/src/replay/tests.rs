@@ -102,10 +102,10 @@ fn the_loader_enforces_the_byte_and_entry_bounds() {
 #[test]
 fn the_loader_rejects_unknown_placeholders_and_forward_references() {
     assert_eq!(
-        load_error(&[json!({ "type": "emit_inbound", "frame": { "path": "<home>/x" } })]),
+        load_error(&[json!({ "type": "emit_inbound", "frame": { "path": "<cache>/x" } })]),
         ReplayError::UnknownPlaceholder {
             line: 2,
-            placeholder: "<home>".to_string()
+            placeholder: "<cache>".to_string()
         }
     );
     assert_eq!(
@@ -171,6 +171,21 @@ fn placeholders_bind_the_workspace_session_and_redacted_values() {
     assert_eq!(
         bindings.resolve(&json!({ "resume": "<session>", "path": "<workspace>" })),
         Ok(json!({ "resume": "abc-123", "path": "/work" }))
+    );
+}
+
+#[test]
+fn the_home_placeholder_resolves_only_when_a_provider_home_is_bound() {
+    let bindings = ReplayBindings::new("/work", None).with_home("/replay/home");
+    assert_eq!(
+        bindings.resolve(&json!({ "codexHome": "<home>", "log": "<home>/log" })),
+        Ok(json!({ "codexHome": "/replay/home", "log": "/replay/home/log" }))
+    );
+    assert!(
+        ReplayBindings::new("/work", None)
+            .resolve(&json!("<home>"))
+            .is_err(),
+        "an unbound home never resolves to a guessed path"
     );
 }
 

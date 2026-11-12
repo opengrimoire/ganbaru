@@ -666,6 +666,14 @@ impl ProviderDriver for CodexProviderDriver {
             let network_access = sandbox_network_access(&params);
             {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                // A second turn/start would replace the running turn's route and its armed retry.
+                if state.active_chat_turn_id.is_some() {
+                    return Err(ChatError::new(
+                        ChatErrorCode::Busy,
+                        "Codex already has an active turn",
+                        true,
+                    ));
+                }
                 state.active_chat_turn_id = Some(request.turn_id.clone());
                 state.active_provider_turn_id = None;
                 if let Some(previous) = state

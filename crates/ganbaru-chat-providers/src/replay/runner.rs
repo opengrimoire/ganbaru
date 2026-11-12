@@ -43,7 +43,12 @@ const SNAPSHOT_FIELDS: &[&str] = &[
     "code",
     "requestId",
     "decision",
+    "limited",
+    "resetsAt",
 ];
+
+/// The provider reference schema of the rollback cursor a `Rollback` step sends.
+const ROLLBACK_CURSOR_SCHEMA_VERSION: u32 = 1;
 
 static NEXT_REPLAY_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 
@@ -332,7 +337,8 @@ async fn replay_async(
     let cursor = ReplayCursor::new(
         transcript,
         mask,
-        ReplayBindings::new(workspace.clone(), None),
+        ReplayBindings::new(workspace.clone(), None)
+            .with_home(directories.home.to_string_lossy().into_owned()),
     );
     let (finished_sender, finished) = watch::channel(false);
     let unexpected = Arc::new(Mutex::new(Vec::new()));
@@ -569,6 +575,28 @@ pub(super) async fn run_script(
                             command: command_context,
                             session_id,
                             turn_id: turn_id(turn),
+                        },
+                        &context,
+                    )
+                    .await
+                    .map(|_| ())
+            }
+            ReplayStep::Rollback { provider_turn } => {
+                let session_id = require_session(&session, index)?;
+                driver
+                    .rollback(
+                        RollbackRequest {
+                            command: command_context,
+                            session_id,
+                            checkpoint_id: None,
+                            provider_cursor: Some(VersionedJson {
+                                schema_version: ROLLBACK_CURSOR_SCHEMA_VERSION,
+                                value: json!({
+                                    "method": "turn/completed",
+                                    "turnId": provider_turn,
+                                }),
+                            }),
+                            target_turn_id: None,
                         },
                         &context,
                     )

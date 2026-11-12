@@ -66,6 +66,7 @@ pub(super) const CODEX_NOTIFICATION_METHODS: &[&str] = &[
     "thread/archived",
     "thread/unarchived",
     "thread/deleted",
+    "thread/reverted",
     "item/reasoning/summaryPartAdded",
     "item/commandExecution/terminalInteraction",
     "item/autoApprovalReview/started",
@@ -236,6 +237,7 @@ impl CodexEventNormalizer {
             | "thread/archived"
             | "thread/unarchived"
             | "thread/deleted"
+            | "thread/reverted"
             | "item/reasoning/summaryPartAdded"
             | "item/commandExecution/terminalInteraction"
             | "item/autoApprovalReview/started"

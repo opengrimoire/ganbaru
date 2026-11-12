@@ -14,6 +14,7 @@ pub const MAX_TRANSCRIPT_BYTES: usize = 1024 * 1024;
 pub const MAX_TRANSCRIPT_ENTRIES: usize = 2_000;
 
 const WORKSPACE_PLACEHOLDER: &str = "workspace";
+const HOME_PLACEHOLDER: &str = "home";
 const SESSION_PLACEHOLDER: &str = "session";
 /// The session `<session>` stands for when no launch argument or outbound frame bound one
 /// before it is first used, so a provider can announce the session inbound.
@@ -219,7 +220,10 @@ fn check_placeholders(
                 None => {
                     matches!(
                         token,
-                        WORKSPACE_PLACEHOLDER | SESSION_PLACEHOLDER | REDACTED_PLACEHOLDER
+                        WORKSPACE_PLACEHOLDER
+                            | HOME_PLACEHOLDER
+                            | SESSION_PLACEHOLDER
+                            | REDACTED_PLACEHOLDER
                     ) || PROVIDER_LITERALS.contains(&token)
                 }
             };
@@ -309,6 +313,8 @@ impl ReplayMask {
 #[derive(Clone, Debug, Default)]
 pub struct ReplayBindings {
     pub workspace: String,
+    /// The provider home `<home>` stands for, when the replay has one.
+    pub home: Option<String>,
     pub session: Option<String>,
     references: BTreeMap<String, Value>,
 }
@@ -319,9 +325,16 @@ impl ReplayBindings {
     pub fn new(workspace: impl Into<String>, session: Option<String>) -> Self {
         Self {
             workspace: workspace.into(),
+            home: None,
             session,
             references: BTreeMap::new(),
         }
+    }
+
+    /// These bindings with `<home>` standing for the provider home `home`.
+    pub fn with_home(mut self, home: impl Into<String>) -> Self {
+        self.home = Some(home.into());
+        self
     }
 
     /// Records the request id an outbound frame labeled `label` carries.
@@ -389,6 +402,10 @@ impl ReplayBindings {
             },
             None => match token {
                 WORKSPACE_PLACEHOLDER => Ok(self.workspace.clone()),
+                HOME_PLACEHOLDER => self
+                    .home
+                    .clone()
+                    .ok_or_else(|| "no provider home is bound to <home>".to_string()),
                 SESSION_PLACEHOLDER => Ok(self
                     .session
                     .clone()

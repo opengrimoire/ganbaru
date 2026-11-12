@@ -1,7 +1,8 @@
 //! Fake provider CLI that replays one transcript over stdio for spawn-path tests.
 //!
 //! `GANBARU_REPLAY_TRANSCRIPT` names the transcript and `GANBARU_REPLAY_WORKSPACE` the path
-//! `<workspace>` stands for (the working directory when unset). `--version` prints the
+//! `<workspace>` stands for (the working directory when unset), and `GANBARU_REPLAY_HOME` the
+//! provider home `<home>` stands for. `--version` prints the
 //! transcript's CLI version in the provider's format. Any other invocation checks argv against
 //! `launch_arguments` when the header has them, then plays the transcript: each driver line on
 //! stdin must match the next expected frame, and inbound frames go to stdout. The process exits
@@ -96,6 +97,9 @@ fn run() -> Result<ExitCode, (u8, String)> {
             .into_owned(),
     };
     let mut bindings = ReplayBindings::new(workspace, None);
+    if let Ok(home) = std::env::var("GANBARU_REPLAY_HOME") {
+        bindings = bindings.with_home(home);
+    }
     if let Some(expected) = &transcript.header.launch_arguments {
         check_arguments(expected, &arguments, &mut bindings)?;
     }

@@ -25,6 +25,9 @@ pub(crate) enum ReplayStep {
     },
     /// Interrupts the running turn.
     Interrupt { turn: &'static str },
+    /// Rewinds the native thread so `provider_turn` is its newest turn, as a checkpoint
+    /// restore does with the cursor of that turn.
+    Rollback { provider_turn: &'static str },
     /// Answers the most recently opened request.
     Resolve { decision: ApprovalDecisionKind },
     /// Waits until the driver emitted `count` events of `kind` in total.
@@ -43,6 +46,7 @@ impl ReplayStep {
             Self::Send { .. } => "send_turn",
             Self::Steer { .. } => "steer_turn",
             Self::Interrupt { .. } => "interrupt_turn",
+            Self::Rollback { .. } => "rollback",
             Self::Resolve { .. } => "resolve_approval",
             Self::AwaitEvent { .. } => "await_event",
             Self::AwaitTranscript => "await_transcript",

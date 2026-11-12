@@ -1,6 +1,6 @@
 {"type":"transcript_start","provider":"codex","protocol":"app-server","cli_version":"0.167.1","scenario":"multi_turn","generated_by":"authored"}
 {"type":"expect_outbound","label":"initialize","frame":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"ganbaru_desktop","title":"Ganbaru","version":"<redacted>"},"capabilities":{"experimentalApi":true}}}}
-{"type":"emit_inbound","frame":{"id":"<ref:initialize>","result":{"userAgent":"codex-cli/0.167.1","codexHome":"<workspace>/../home","platformFamily":"unix","platformOs":"linux"}}}
+{"type":"emit_inbound","frame":{"id":"<ref:initialize>","result":{"userAgent":"codex-cli/0.167.1","codexHome":"<home>","platformFamily":"unix","platformOs":"linux"}}}
 {"type":"expect_outbound","frame":{"method":"initialized","params":{}}}
 {"type":"expect_outbound","label":"thread-start","frame":{"id":2,"method":"thread/start","params":{"cwd":"<workspace>","approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":"workspace-write"}}}
 {"type":"emit_inbound","frame":{"id":"<ref:thread-start>","result":{"thread":{"id":"provider-thread-1"},"model":"gpt-5.4","approvalPolicy":"on-request","approvalsReviewer":"user","activePermissionProfile":null,"runtimeWorkspaceRoots":[],"sandbox":{"type":"workspaceWrite"}}}}

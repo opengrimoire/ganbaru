@@ -12,7 +12,7 @@
 //! ```
 //!
 //! The transcript lands in the provider's scenario directory. Redaction replaces the workspace,
-//! the session from `--session-id`, provider home paths, email addresses, bearer tokens, and
+//! the session from `--session-id`, the provider home (as `<home>`), the user home, email addresses, bearer tokens, and
 //! secret-named string fields, and turns inbound echoes of outbound request ids into references.
 //! A home path inside a longer outbound string cannot match on replay and needs a hand edit, as
 //! does recorded text that happens to look like a placeholder.
@@ -44,13 +44,17 @@ const SECRET_FIELDS: &[&str] = &[
 ];
 /// The replacement for redacted text.
 const REDACTED: &str = "<redacted>";
+/// The replacement for the provider home path.
+const HOME: &str = "<home>";
 
 /// What redaction replaces in one recording.
 #[derive(Debug)]
 pub(super) struct RedactionContext {
     /// The canonical workspace path, replaced by `<workspace>`.
     pub(super) workspace: String,
-    /// Home and provider home paths, replaced by `<redacted>`.
+    /// The provider home the recording ran with, replaced by `<home>`.
+    pub(super) home: String,
+    /// Other private paths such as the user home, replaced by `<redacted>`.
     pub(super) private_paths: Vec<String>,
 }
 
@@ -126,10 +130,14 @@ fn record_scenario(request: &str) -> Result<PathBuf, String> {
         .map_err(|failure| failure.to_string())?;
     let raw = std::fs::read_to_string(&raw_path)
         .map_err(|error| format!("the fake CLI wrote no recording ({error}); calls: {calls:?}"))?;
-    let mut private_paths = vec![path_string(&home)];
-    private_paths.extend(std::env::var("HOME").ok().filter(|home| !home.is_empty()));
+    let private_paths = std::env::var("HOME")
+        .ok()
+        .filter(|home| !home.is_empty())
+        .into_iter()
+        .collect();
     let context = RedactionContext {
         workspace: path_string(&directories.workspace),
+        home: path_string(&home),
         private_paths,
     };
     let transcript = redact_recording(&raw, &context, &source_revision())?;
@@ -338,21 +346,24 @@ impl Redactor<'_> {
         }
     }
 
-    /// Replaces the workspace, session, private paths, bearer tokens, and email addresses.
+    /// Replaces the workspace, session, provider home, private paths, bearer tokens, and email
+    /// addresses. Longer paths go first, so a provider home inside the user home keeps `<home>`.
     fn text(&self, text: &str) -> String {
         let mut output = text.replace(&self.context.workspace, "<workspace>");
         if let Some(session) = self.session {
             output = output.replace(session, "<session>");
         }
-        let mut private_paths: Vec<&String> = self
+        let mut private_paths: Vec<(&String, &str)> = self
             .context
             .private_paths
             .iter()
-            .filter(|path| !path.is_empty())
+            .map(|path| (path, REDACTED))
+            .chain(std::iter::once((&self.context.home, HOME)))
+            .filter(|(path, _)| !path.is_empty())
             .collect();
-        private_paths.sort_by_key(|path| std::cmp::Reverse(path.len()));
-        for path in private_paths {
-            output = output.replace(path.as_str(), REDACTED);
+        private_paths.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
+        for (path, replacement) in private_paths {
+            output = output.replace(path.as_str(), replacement);
         }
         redact_emails(&redact_bearer_tokens(&output))
     }
@@ -440,6 +451,7 @@ mod tests {
     fn context() -> RedactionContext {
         RedactionContext {
             workspace: "/tmp/ganbaru-replay-1/workspace".to_string(),
+            home: "/home/person/.ganbaru-home".to_string(),
             private_paths: vec![
                 "/home/person".to_string(),
                 "/home/person/.claude".to_string(),
@@ -517,6 +529,7 @@ mod tests {
                 "apiKeySource": "/home/person/.claude/key",
                 "note": "Signed in as person@example.com.",
                 "header": "Bearer sk-live-123 rest",
+                "codexHome": "/home/person/.ganbaru-home/sessions",
                 "usage": {"input_tokens": 12}
             }}),
             json!({"type": "runtime_exit", "status": 1, "stderr": "cannot read /home/person/.config\n"}),
@@ -537,6 +550,10 @@ mod tests {
         assert_eq!(
             frame["apiKeySource"], "<redacted>",
             "the longest private path wins"
+        );
+        assert_eq!(
+            frame["codexHome"], "<home>/sessions",
+            "the provider home inside the user home keeps its placeholder"
         );
         assert_eq!(frame["note"], "Signed in as <redacted>.");
         assert_eq!(frame["header"], "Bearer <redacted> rest");

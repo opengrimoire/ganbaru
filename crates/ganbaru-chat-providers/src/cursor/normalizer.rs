@@ -221,6 +221,9 @@ impl CursorEventNormalizer {
         stop_reason: &str,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
         let mut events = self.close_text_items(state)?;
+        if stop_reason == "cancelled" {
+            events.extend(self.interrupt_open_tools(state)?);
+        }
         let turn_id = state.active_turn_id.take().ok_or_else(|| {
             ChatError::invalid_transition(format!(
                 "{} has no active turn",
@@ -262,6 +265,7 @@ impl CursorEventNormalizer {
             return Ok(Vec::new());
         }
         let mut events = self.close_text_items(state)?;
+        events.extend(self.interrupt_open_tools(state)?);
         let turn_id = state.active_turn_id.take().expect("turn checked above");
         state.session_state = ProviderSessionState::Ready;
         events.push(self.event(

@@ -51,6 +51,12 @@
       "status": "active"
     },
     {
+      "type": "item_completed",
+      "turn": "turn-1",
+      "kind": "file_change",
+      "status": "interrupted"
+    },
+    {
       "type": "turn_aborted",
       "turn": "turn-1",
       "state": "interrupted",

@@ -28,6 +28,7 @@
     ChatReviewCommentRead,
     ChatReviewFileRead,
     ChatReviewPatchRead,
+    ChatWorkAssignmentId,
     ReviewDiffSource,
   } from "$lib/chat/contracts";
   import {
@@ -156,7 +157,8 @@
     const assignment = chat.openReplyThreadId ? chat.replyThread?.assignment : null;
     return assignment ? { id: assignment.id, state: assignment.state } : null;
   });
-  const effectiveSource = $derived.by<ReviewDiffSource>(() => source ?? defaultReviewSource(threadId, replyAssignment));
+  // An assignment review needs the working folder its execution used, which only the workspace open request resolves.
+  const effectiveSource = $derived.by<ReviewDiffSource>(() => source ?? defaultReviewSource(threadId, null));
   const reviewSourceOptions = $derived(buildReviewSourceOptions({
     current: effectiveSource,
     threadId,
@@ -450,7 +452,18 @@
    */
   function chooseSourceKey(value: string): void {
     const next = parseReviewSourceKey(value);
-    if (next) chooseSource(next);
+    if (next?.kind === "assignment") void openAssignmentSource(next.assignmentId);
+    else if (next) chooseSource(next);
+  }
+
+  /** Reopens the review on an assignment through the workspace, which resolves the folder its execution used. */
+  async function openAssignmentSource(assignmentId: ChatWorkAssignmentId): Promise<void> {
+    try {
+      const detail = await chat.assignmentReviewDetail(assignmentId);
+      if (!destroyed) paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-review", { detail }));
+    } catch (reason: unknown) {
+      if (!destroyed) error = message(reason);
+    }
   }
 
   /**

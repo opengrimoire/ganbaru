@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import FileDiff from "@lucide/svelte/icons/file-diff";
   import RotateCw from "@lucide/svelte/icons/rotate-cw";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
@@ -74,6 +75,7 @@
     try {
       await chat.openReviewItem(item);
       const detail = await chat.assignmentReviewDetail(item.assignmentId);
+      await tick();
       paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-review", { detail }));
       onOpened?.();
     } catch (error: unknown) {

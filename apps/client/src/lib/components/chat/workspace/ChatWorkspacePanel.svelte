@@ -39,7 +39,7 @@
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import { defaultReviewSource, type ReviewSourceAssignment } from "$lib/chat/review/model";
-  import type { ChatInspectorTab, ChatTerminalRead, ReviewDiffSource } from "$lib/chat/contracts";
+  import type { ChatInspectorTab, ChatTerminalRead, ChatWorkAssignmentId, ReviewDiffSource } from "$lib/chat/contracts";
   import {
     CHAT_WORKSPACE_PANEL_TAB_NAME_MAX_LENGTH,
     closeInspectorTab,
@@ -205,10 +205,15 @@
 
   function openReview(detail: ChatOpenReviewDetail | null): void {
     if (!detail) {
+      const defaultSource = defaultReviewSource(chat.selectedThreadId, replyAssignment());
+      if (defaultSource.kind === "assignment") {
+        void openAssignmentReview(defaultSource.assignmentId);
+        return;
+      }
       reviewOpenRequest += 1;
       openPanel("review");
       update({
-        reviewSource: defaultReviewSource(chat.selectedThreadId, replyAssignment()),
+        reviewSource: defaultSource,
         selectedFile: null,
         reviewThreadId: null,
         reviewWorkingFolderId: null,
@@ -233,6 +238,17 @@
       reviewWorkingFolderId: null,
       reviewExecutionEnvironmentId: null,
     });
+  }
+
+  /** Opens an assignment review in the working folder its execution used, which the request resolves. */
+  async function openAssignmentReview(assignmentId: ChatWorkAssignmentId): Promise<void> {
+    const request = ++reviewOpenRequest;
+    try {
+      const detail = await chat.assignmentReviewDetail(assignmentId);
+      if (request === reviewOpenRequest && !destroyed) openReview(detail);
+    } catch (reason: unknown) {
+      if (request === reviewOpenRequest && !destroyed) error = message(reason);
+    }
   }
 
   function openFile(detail: ChatOpenFileDetail): void {

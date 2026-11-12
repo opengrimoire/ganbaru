@@ -277,6 +277,118 @@ fn released_terminal_stops_background_descendants() {
 }
 
 #[cfg(unix)]
+async fn reported_exit(
+    terminal: &super::AcpTerminal,
+) -> agent_client_protocol::schema::v1::TerminalExitStatus {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let notified = terminal.completed.notified();
+            if let Some(status) = terminal.state.lock().unwrap().exit_status.clone() {
+                break status;
+            }
+            notified.await;
+        }
+    })
+    .await
+    .expect("exit should be reported")
+}
+
+#[cfg(unix)]
+async fn wait_until_gone(process_id: u32) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while process_exists(process_id) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("process should be reaped");
+}
+
+#[cfg(unix)]
+#[test]
+fn exited_terminal_keeps_its_group_reserved_until_release() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new();
+        let callbacks = AcpTerminalCallbacks::new(workspace.0.clone(), "session-a".into());
+        for (script, kill_first, exit_code) in [
+            ("echo $$; exit 3", false, Some(3)),
+            ("echo $$; kill -TERM $$", false, None),
+            ("echo $$; exit 0", true, Some(0)),
+        ] {
+            let id = create_acp_terminal(&callbacks, terminal_request("sh", &["-c", script], &[]))
+                .await
+                .expect("terminal should start");
+            let terminal = callbacks.terminal(&id).unwrap();
+            let status = reported_exit(&terminal).await;
+            assert_eq!(status.exit_code, exit_code);
+            assert_eq!(status.signal.is_some(), exit_code.is_none());
+            let leader = String::from_utf8_lossy(&terminal.state.lock().unwrap().output)
+                .trim()
+                .parse::<u32>()
+                .expect("leader process ID should be printed");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(
+                process_exists(leader),
+                "an exited command must stay unreaped while the terminal is held"
+            );
+            assert!(!terminal.tree.is_retired());
+            if kill_first {
+                terminal.terminate();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            callbacks
+                .terminals
+                .lock()
+                .unwrap()
+                .remove(&id)
+                .expect("terminal should be registered")
+                .terminate();
+            wait_until_gone(leader).await;
+            assert!(
+                terminal.tree.is_retired(),
+                "a reaped command's group must never be signaled again"
+            );
+        }
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn killed_running_terminal_is_reaped_and_retired() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new();
+        let callbacks = AcpTerminalCallbacks::new(workspace.0.clone(), "session-a".into());
+        let id = create_acp_terminal(
+            &callbacks,
+            terminal_request("sh", &["-c", "echo $$; exec sleep 30"], &[]),
+        )
+        .await
+        .expect("terminal should start");
+        let terminal = callbacks.terminal(&id).unwrap();
+        let leader = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let output = String::from_utf8_lossy(&terminal.state.lock().unwrap().output)
+                    .trim()
+                    .to_string();
+                if let Ok(pid) = output.parse::<u32>() {
+                    break pid;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("leader process ID should be printed");
+        terminal.terminate();
+        let status = reported_exit(&terminal).await;
+        assert_eq!(status.exit_code, None);
+        assert!(status.signal.is_some());
+        wait_until_gone(leader).await;
+        assert!(terminal.tree.is_retired());
+        callbacks.shutdown();
+    });
+}
+
+#[cfg(unix)]
 fn process_exists(process_id: u32) -> bool {
     std::process::Command::new("kill")
         .args(["-0", &process_id.to_string()])

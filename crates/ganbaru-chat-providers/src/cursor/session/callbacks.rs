@@ -295,7 +295,7 @@ pub(super) async fn create_acp_terminal(
         exit_status: None,
     }));
     let completed = Arc::new(Notify::new());
-    let (kill, mut kill_receiver) = mpsc::channel(1);
+    let (kill, kill_receiver) = mpsc::channel(1);
     let terminal = AcpTerminal {
         state: Arc::clone(&state),
         kill,
@@ -311,33 +311,117 @@ pub(super) async fn create_acp_terminal(
             return Err(driver_state_error());
         }
     }
-    let stdout_task = tokio::spawn(capture_terminal_output(stdout, Arc::clone(&state)));
-    let stderr_task = tokio::spawn(capture_terminal_output(stderr, Arc::clone(&state)));
-    tokio::spawn(async move {
-        let status = tokio::select! {
-            status = child.wait() => status.ok(),
-            _ = kill_receiver.recv() => {
-                tree.terminate();
-                let _ = child.kill().await;
-                child.wait().await.ok()
-            }
-        };
-        // Background descendants can hold the pipes open after the command exits, so the
-        // exit status is recorded without waiting for them to close.
-        let _ = tokio::time::timeout(ACP_TERMINAL_OUTPUT_DRAIN, async {
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
-        })
-        .await;
-        if let Ok(mut state) = state.lock() {
-            state.exit_status = Some(match status.and_then(|status| status.code()) {
-                Some(code) if code >= 0 => TerminalExitStatus::new().exit_code(code as u32),
-                _ => TerminalExitStatus::new().signal("terminated".to_string()),
-            });
-        }
-        completed.notify_waiters();
-    });
+    let output_tasks = [
+        tokio::spawn(capture_terminal_output(stdout, Arc::clone(&state))),
+        tokio::spawn(capture_terminal_output(stderr, Arc::clone(&state))),
+    ];
+    tokio::spawn(supervise_terminal(
+        child,
+        tree,
+        kill_receiver,
+        output_tasks,
+        state,
+        completed,
+    ));
     Ok(terminal_id)
+}
+
+/// Records the exit of a terminal command, then holds its process tree until the terminal is
+/// killed or released or its session stops.
+///
+/// On Unix the command stays unreaped until then, so its process group ID cannot be reused
+/// while kill, release, or session stop may still signal the group to stop background
+/// descendants. The tree is retired before the reap, so no signal follows it.
+async fn supervise_terminal(
+    mut child: tokio::process::Child,
+    tree: Arc<crate::process::ProcessTree>,
+    mut kill: mpsc::Receiver<()>,
+    output_tasks: [JoinHandle<()>; 2],
+    state: Arc<Mutex<AcpTerminalState>>,
+    completed: Arc<Notify>,
+) {
+    let (exit_code, kill_requested) = wait_terminal_exit(&mut child, &tree, &mut kill).await;
+    // Background descendants can hold the pipes open after the command exits, so the exit
+    // status is recorded without waiting for them to close.
+    let _ = tokio::time::timeout(ACP_TERMINAL_OUTPUT_DRAIN, async {
+        for task in output_tasks {
+            let _ = task.await;
+        }
+    })
+    .await;
+    if let Ok(mut state) = state.lock() {
+        state.exit_status = Some(match exit_code.and_then(|code| u32::try_from(code).ok()) {
+            Some(code) => TerminalExitStatus::new().exit_code(code),
+            None => TerminalExitStatus::new().signal("terminated".to_string()),
+        });
+    }
+    completed.notify_waiters();
+    if !kill_requested {
+        let _ = kill.recv().await;
+    }
+    tree.terminate();
+    tree.retire();
+    let _ = child.wait().await;
+}
+
+/// Waits for the command to exit without reaping it, stopping its tree first when the
+/// terminal is killed. Returns the exit code, if any, and whether a kill arrived.
+#[cfg(unix)]
+async fn wait_terminal_exit(
+    child: &mut tokio::process::Child,
+    tree: &crate::process::ProcessTree,
+    kill: &mut mpsc::Receiver<()>,
+) -> (Option<i32>, bool) {
+    let mut exit = match crate::process::watch_exit_unreaped(child) {
+        Ok(exit) => exit,
+        Err(_) => {
+            tree.retire();
+            return wait_terminal_exit_reaped(child, tree, kill).await;
+        }
+    };
+    let mut kill_requested = false;
+    let result = tokio::select! {
+        result = &mut exit => result,
+        _ = kill.recv() => {
+            kill_requested = true;
+            tree.terminate();
+            let _ = child.start_kill();
+            (&mut exit).await
+        }
+    };
+    match result {
+        Ok(Ok(code)) => (code, kill_requested),
+        // The command may already be reaped, so its group ID is no longer reserved.
+        Ok(Err(_)) | Err(_) => {
+            tree.retire();
+            (None, kill_requested)
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_terminal_exit(
+    child: &mut tokio::process::Child,
+    tree: &crate::process::ProcessTree,
+    kill: &mut mpsc::Receiver<()>,
+) -> (Option<i32>, bool) {
+    wait_terminal_exit_reaped(child, tree, kill).await
+}
+
+/// Waits for the command to exit and reaps it. On Unix the tree must be retired first.
+async fn wait_terminal_exit_reaped(
+    child: &mut tokio::process::Child,
+    tree: &crate::process::ProcessTree,
+    kill: &mut mpsc::Receiver<()>,
+) -> (Option<i32>, bool) {
+    tokio::select! {
+        status = child.wait() => (status.ok().and_then(|status| status.code()), false),
+        _ = kill.recv() => {
+            tree.terminate();
+            let _ = child.kill().await;
+            (child.wait().await.ok().and_then(|status| status.code()), true)
+        }
+    }
 }
 
 pub(super) async fn capture_terminal_output<R: tokio::io::AsyncRead + Unpin>(

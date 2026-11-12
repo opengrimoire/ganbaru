@@ -112,7 +112,9 @@ struct AcpTerminal {
 }
 
 impl AcpTerminal {
-    /// Stops every process of the terminal, even after the command itself exited.
+    /// Stops every process of the terminal, even after the command itself exited. The group
+    /// is signaled only while the command is unreaped, so its ID cannot belong to another
+    /// process group.
     fn terminate(&self) {
         self.tree.terminate();
         let _ = self.kill.try_send(());

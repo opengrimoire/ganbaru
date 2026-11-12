@@ -313,6 +313,10 @@ fn validate_config(config: &ProviderProcessConfig) -> ChatResult<()> {
 pub struct ProcessTree {
     #[cfg(unix)]
     process_group_id: libc::pid_t,
+    /// Set by [`ProcessTree::retire`] before the leader is reaped. The lock is held across
+    /// every signal, so no signal can reach the group ID after it may have been reused.
+    #[cfg(unix)]
+    retired: Mutex<bool>,
     #[cfg(windows)]
     process_job: std::os::windows::io::OwnedHandle,
 }
@@ -330,7 +334,10 @@ impl ProcessTree {
                     let _ = child.kill();
                     process_state_error()
                 })?;
-            Ok(Self { process_group_id })
+            Ok(Self {
+                process_group_id,
+                retired: Mutex::new(false),
+            })
         }
         #[cfg(windows)]
         {
@@ -364,7 +371,10 @@ impl ProcessTree {
                     let _ = child.start_kill();
                     process_state_error()
                 })?;
-            Ok(Self { process_group_id })
+            Ok(Self {
+                process_group_id,
+                retired: Mutex::new(false),
+            })
         }
         #[cfg(windows)]
         {
@@ -387,11 +397,15 @@ impl ProcessTree {
         }
     }
 
-    /// Forcefully stops every process in the tree. Already stopped trees are
-    /// not an error.
+    /// Forcefully stops every process in the tree. Already stopped and retired
+    /// trees are not an error.
     pub fn terminate(&self) {
         #[cfg(unix)]
-        let _ = signal_process_group(self.process_group_id, libc::SIGKILL);
+        if let Ok(retired) = self.retired.lock()
+            && !*retired
+        {
+            let _ = signal_process_group(self.process_group_id, libc::SIGKILL);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle;
@@ -404,6 +418,92 @@ impl ProcessTree {
                 let _ = TerminateJobObject(HANDLE(self.process_job.as_raw_handle()), 1);
             }
         }
+    }
+
+    /// Stops all later signaling of the tree. On Unix the caller retires the tree before it
+    /// reaps the leader, because a reaped leader whose group has emptied frees the group ID for
+    /// an unrelated process. A Windows job handle pins its processes, so retiring changes
+    /// nothing there.
+    pub(crate) fn retire(&self) {
+        #[cfg(unix)]
+        match self.retired.lock() {
+            Ok(mut retired) => *retired = true,
+            Err(poisoned) => *poisoned.into_inner() = true,
+        }
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn is_retired(&self) -> bool {
+        self.retired.lock().map_or(true, |retired| *retired)
+    }
+}
+
+/// Starts a blocking wait for a child to exit that leaves it unreaped, so its process ID and
+/// process group ID stay reserved until the caller reaps it with [`Child::wait`].
+///
+/// The result is the exit code, or `None` when a signal stopped the child.
+#[cfg(unix)]
+pub(crate) fn watch_exit_unreaped(
+    child: &Child,
+) -> std::io::Result<JoinHandle<std::io::Result<Option<i32>>>> {
+    let process_id = child
+        .id()
+        .and_then(|id| libc::pid_t::try_from(id).ok())
+        .filter(|id| *id > 1)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "provider process ID is unavailable",
+            )
+        })?;
+    Ok(tokio::task::spawn_blocking(move || {
+        wait_exit_unreaped(process_id)
+    }))
+}
+
+#[cfg(unix)]
+fn wait_exit_unreaped(process_id: libc::pid_t) -> std::io::Result<Option<i32>> {
+    let id = libc::id_t::try_from(process_id).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "provider process ID is invalid",
+        )
+    })?;
+    loop {
+        // SAFETY: `siginfo_t` is a plain C structure of integers, pointers, and padding, so
+        // the all-zero bit pattern is a valid value.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a live, exclusively borrowed `siginfo_t` that outlives the call and
+        // is not retained by it. `P_PID` with an ID greater than one selects only that child,
+        // and `WNOWAIT` leaves it waitable, so nothing is reaped here.
+        let result =
+            unsafe { libc::waitid(libc::P_PID, id, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        if result == 0 {
+            return unreaped_exit_code(&info);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn unreaped_exit_code(info: &libc::siginfo_t) -> std::io::Result<Option<i32>> {
+    match info.si_code {
+        libc::CLD_EXITED => {
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            // SAFETY: `waitid` succeeded with `WEXITED` and reported `CLD_EXITED`, so the
+            // kernel filled the child status member of the union that `si_status` reads.
+            let status = unsafe { info.si_status() };
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            let status = info.si_status;
+            Ok(Some(status))
+        }
+        libc::CLD_KILLED | libc::CLD_DUMPED => Ok(None),
+        _ => Err(std::io::Error::other(
+            "provider process exit is not recognized",
+        )),
     }
 }
 
@@ -731,6 +831,48 @@ mod tests {
             let error =
                 signal_process_group(1, signal).expect_err("unapproved signals must be rejected");
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn retired_trees_are_never_signaled() {
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        super::configure_std_process_tree(&mut command);
+        let mut child = command.spawn().expect("sleep should start");
+        let tree = super::ProcessTree::claim_std(&mut child).expect("tree should be claimed");
+        tree.retire();
+        tree.terminate();
+        std::thread::sleep(Duration::from_millis(100));
+        let still_running = child
+            .try_wait()
+            .expect("child should be waitable")
+            .is_none();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(still_running, "a retired tree must not be signaled");
+    }
+
+    #[tokio::test]
+    async fn unreaped_exits_keep_the_child_waitable() {
+        for (script, expected) in [("exit 7", Some(7)), ("kill -TERM $$", None)] {
+            let mut command = tokio::process::Command::new("/bin/sh");
+            command.args(["-c", script]);
+            let mut child = command.spawn().expect("shell should start");
+            let process_id = child.id().expect("child should have an ID");
+            let code = super::watch_exit_unreaped(&child)
+                .expect("watch should start")
+                .await
+                .expect("watch should finish")
+                .expect("exit should be observed");
+            assert_eq!(code, expected);
+            assert!(
+                std::path::Path::new(&format!("/proc/{process_id}")).exists()
+                    || cfg!(not(target_os = "linux")),
+                "the exited child must stay unreaped"
+            );
+            let status = child.wait().await.expect("child should be reaped");
+            assert_eq!(status.code(), expected);
         }
     }
 

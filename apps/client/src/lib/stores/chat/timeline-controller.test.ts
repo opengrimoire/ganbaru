@@ -250,6 +250,32 @@ describe("ChatTimelineController live refresh", () => {
     expect(sequences(timeline.items)).toEqual([5, 6, 7, 8, 9, 10, 11]);
   });
 
+  it("rereads older-page changes after a prepend lowers the cursor during a since-read", async () => {
+    const timeline = controller();
+    await timeline.load("thread-1");
+    const older = deferred<ChatTimelinePageRead>();
+    api.readPage.mockReturnValueOnce(older.promise);
+    const loadingOlder = timeline.loadOlder();
+    const olderPage = thread.page("7");
+    thread.edit(5, "edited");
+    await timeline.refreshLatest("thread-1");
+    thread.append(11);
+    const pending = deferred<ChatTimelineDeltaRead>();
+    api.readSince.mockReturnValueOnce(pending.promise);
+
+    const refresh = timeline.refreshLatest("thread-1");
+    older.resolve(olderPage);
+    await loadingOlder;
+    pending.resolve(thread.since(thread.clock - 1));
+    await refresh;
+
+    expect(sequences(timeline.items)).toEqual([5, 6, 7, 8, 9, 10, 11]);
+    expect(timeline.items[0]?.data.value).toEqual({ markdown: "edited" });
+    thread.append(12);
+    await timeline.refreshLatest("thread-1");
+    expect(api.readSince).toHaveBeenLastCalledWith("thread-1", thread.clock - 1);
+  });
+
   it("loads the newest page when nothing is loaded yet", async () => {
     const timeline = controller();
 

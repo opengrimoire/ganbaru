@@ -12,6 +12,7 @@ pub mod bounds;
 pub mod builtin_profiles;
 pub mod certificate;
 pub mod charter;
+pub mod chat_channel_notes;
 pub mod chat_recurrence;
 pub mod codec;
 pub mod crypto;

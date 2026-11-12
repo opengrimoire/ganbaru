@@ -32,6 +32,8 @@ Messages are durable participant-authored records. They can include text, valida
 
 Reply threads keep detailed work from overwhelming the main channel. A provider run started from a reply posts concise state and results to the main timeline; detailed execution stays inspectable in the linked run.
 
+Channel notes are short facts a channel keeps about how its work goes, such as a style rule or a decision. Any person in the channel can add, edit, or delete one; AI teammates cannot write notes. When one device deletes a note while another edits it, the deletion wins.
+
 Linked devices can all post and edit. A post written offline syncs when its device reconnects and takes its place after the messages that device had seen, so it can land above messages another device already read. Two devices can create channels with the same name at once; both channels stay, and either can be renamed. When two devices edit one message, the name or topic of one channel, or one teammate's profile at once, one version shows and Settings > Chat lists the conflict so either version can be kept.
 
 ## Composer

@@ -12,6 +12,8 @@ Projects and working folders replicate between devices, so Chat creates a projec
 
 Organizational ids are a kind prefix and 128 random bits, or derive from their inputs when devices must agree: a reply thread's id derives from its root message and a work assignment input's id from its message. They fit the 128-byte sync row key bound. Ordinary commands archive or end organizational rows instead of deleting them: agents are archived, and an agent's channel membership ends with a removal timestamp that every reader filters. Device-local rows that reference organizational rows cascade when that row is deleted.
 
+A channel note is a short fact about how work goes in one channel, up to 1000 characters, stored in `chat_channel_notes` as replicated organizational content and deleted with its channel. Only a person writes a note: a trigger refuses a note whose editor is not the local person or a human participant, outside the sync applier. A teammate may propose a note; a person accepts it into a row whose id derives from the proposal, so two devices that accept one proposal write one note, or dismisses it as a deleted row with the same id.
+
 Membership records participant identity, capability, history boundary, defaults, and current authorization revision. Personal navigation sections and last-selected channel are device-local presentation state rather than shared organization membership.
 
 Canonical messages and coordination events retain channel identity, author or actor identity, sequence, reply or reference provenance, and delivery state. A provider transcript is not a replacement for this history.

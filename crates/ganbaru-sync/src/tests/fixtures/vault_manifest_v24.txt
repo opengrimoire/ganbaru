@@ -701,6 +701,12 @@ table 370 chat_reply_threads replicated key id rule any
   group 4 register
 table 371 chat_conversation_items replicated key id rule any
   group 0 immutable conversation_id:row_key->360:cascade reply_thread_id:optional_row_key->370:cascade item_kind:text(..=32) order_key:order_key created_at:timestamp
+table 400 chat_channel_notes replicated key id rule any
+  group 0 immutable channel_id:row_key->364:cascade created_at:timestamp
+  group 1 register source_item_id:optional_row_key->371:set_null proposed_by_participant_id:optional_row_key->352:set_null
+  group 2 register surfaced recoverable body:trimmed_text(1..=1000) edited_by_participant_id:optional_row_key->352:set_null
+  group 3 coupled deleted_at:optional_timestamp
+  group 4 max updated_at:timestamp
 table 372 chat_communication_messages replicated key item_id rule any
   key parent 371
   group 0 immutable author_label_snapshot:trimmed_text(1..=160) created_at:timestamp

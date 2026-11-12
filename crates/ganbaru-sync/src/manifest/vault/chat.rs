@@ -355,7 +355,8 @@ pub mod assignment_group {
     use super::{GroupId, group_id};
 
     /// `reply_thread_id`, `teammate_id`, `triggering_message_item_id`, `executing_device_id`,
-    /// and `created_at`.
+    /// `created_at`, `override_model_selection_schema_version`, and
+    /// `override_model_selection_data`, so the model asked for is fixed with the request.
     pub const CREATED: GroupId = group_id(0);
     /// `previous_assignment_id`.
     pub const PREVIOUS: GroupId = group_id(1);
@@ -376,7 +377,7 @@ pub mod input_group {
     pub const CREATED: GroupId = group_id(1);
     /// `assignment_id`, `ordinal`, and `routing_kind`.
     pub const ROUTING: GroupId = group_id(2);
-    /// `delivery_state` and `delivered_at`.
+    /// `delivery_state`, `delivered_at`, and `delivered_revision_id`.
     pub const DELIVERY: GroupId = group_id(3);
     /// Whether the row exists.
     pub const EXISTS: GroupId = group_id(4);
@@ -539,6 +540,17 @@ const fn version(name: &'static str) -> ColumnSpec {
     ColumnSpec {
         name,
         ty: ColumnType::Integer {
+            min: 1,
+            max: i64::MAX,
+        },
+    }
+}
+
+/// Null or a positive schema version.
+const fn optional_version(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
+        ty: ColumnType::OptionalInteger {
             min: 1,
             max: i64::MAX,
         },
@@ -1580,6 +1592,8 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
                 row_key("triggering_message_item_id"),
                 optional_text("executing_device_id", MAX_DEVICE_ID_BYTES),
                 timestamp("created_at"),
+                optional_version("override_model_selection_schema_version"),
+                optional_text("override_model_selection_data", MAX_JSON_CHARS),
             ],
             &[
                 cascade("reply_thread_id", REPLY_THREADS_TABLE),
@@ -1611,6 +1625,13 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
     ],
     local_columns: &[REVISION],
     revision_column: Some("revision"),
+    resolutions: &[within(
+        &[
+            "override_model_selection_schema_version",
+            "override_model_selection_data",
+        ],
+        assignment_group::CREATED,
+    )],
     ..BASE
 };
 
@@ -1638,12 +1659,13 @@ pub const INPUTS: TableSpec = TableSpec {
             ),
             &[cascade("assignment_id", ASSIGNMENTS_TABLE)],
         ),
-        register(
+        coupled(
             input_group::DELIVERY,
             "delivery",
             &[
                 text("delivery_state", MAX_ENUM_CHARS),
                 optional_timestamp("delivered_at"),
+                optional_row_key("delivered_revision_id"),
             ],
         ),
         exists(input_group::EXISTS),

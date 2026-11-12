@@ -31,6 +31,7 @@ mod common;
 mod context;
 #[cfg(desktop)]
 mod dispatch;
+mod inputs;
 #[cfg(desktop)]
 mod primary_folder;
 mod reads;
@@ -1081,6 +1082,38 @@ pub async fn chat_list_waiting_assignments(
     db_url: String,
 ) -> ChatResult<Vec<ChatWaitingAssignmentRead>> {
     assignments::list_waiting_assignments(app, db_url).await
+}
+
+/// Lists the replies routed to an assignment after the message that started it, with their
+/// delivery state.
+#[tauri::command]
+pub async fn chat_list_assignment_inputs(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+) -> ChatResult<Vec<ChatAssignmentInputRead>> {
+    inputs::list_assignment_inputs_command(app, db_url, assignment_id).await
+}
+
+/// Replaces the text of a reply that has not reached the teammate yet.
+#[tauri::command]
+pub async fn chat_edit_assignment_input(
+    app: tauri::AppHandle,
+    db_url: String,
+    input_id: ChatAssignmentInputId,
+    edit: ChatAssignmentInputEditRequest,
+) -> ChatResult<ChatAssignmentInputRead> {
+    inputs::edit_assignment_input_command(app, db_url, input_id, edit).await
+}
+
+/// Cancels a reply that has not reached the teammate yet, keeping it in the thread.
+#[tauri::command]
+pub async fn chat_cancel_assignment_input(
+    app: tauri::AppHandle,
+    db_url: String,
+    input_id: ChatAssignmentInputId,
+) -> ChatResult<ChatAssignmentInputRead> {
+    inputs::cancel_assignment_input_command(app, db_url, input_id).await
 }
 
 /// Starts the work of a mention whose post recorded no assignment, running it on this device.

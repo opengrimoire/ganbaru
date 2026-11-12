@@ -120,6 +120,11 @@ chat_identifier!(
     "Chat work assignment ID",
     MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
 );
+chat_identifier!(
+    ChatAssignmentInputId,
+    "Chat assignment input ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
 chat_identifier!(ChatAgentRunId, "Chat agent run ID");
 chat_identifier!(ChatThreadId, "Chat thread ID");
 chat_identifier!(ChatTurnId, "Chat turn ID");

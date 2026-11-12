@@ -143,6 +143,31 @@ pub(super) async fn insert_revision_attachments(
     }
 }
 
+/// Gives the message revision `revision_id` the attachments of `previous_revision_id`, in the
+/// same order, so an edit of the text keeps what the message attached.
+pub(super) async fn insert_revision_copied_attachments(
+    connection: &mut sqlx::SqliteConnection,
+    previous_revision_id: &str,
+    revision_id: &str,
+) -> ChatResult<()> {
+    sqlx::query(
+        "INSERT INTO chat_communication_attachment_references
+             (message_revision_id, ordinal, attachment_id, working_folder_id, kind,
+              original_display_name, mime_type, byte_size, sha256)
+         SELECT ?, ordinal, attachment_id, working_folder_id, kind,
+                original_display_name, mime_type, byte_size, sha256
+         FROM chat_communication_attachment_references
+         WHERE message_revision_id = ?
+         ORDER BY ordinal",
+    )
+    .bind(revision_id)
+    .bind(previous_revision_id)
+    .execute(connection)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
+}
+
 /// Active folder grants of one AI channel membership, bound to the conversation and teammate.
 ///
 /// Concurrent edits on two devices can each leave a default grant after sync merges them, so

@@ -150,7 +150,11 @@ async fn mark_initial_assignment_input_delivered(
     let now = now_timestamp()?;
     sqlx::query(
         "UPDATE chat_work_assignment_inputs
-         SET delivery_state = 'delivered', delivered_at = ?
+         SET delivery_state = 'delivered', delivered_at = ?,
+             delivered_revision_id = (
+               SELECT message.current_revision_id FROM chat_communication_messages message
+               WHERE message.item_id = chat_work_assignment_inputs.message_item_id
+             )
          WHERE assignment_id = ? AND routing_kind IN ('trigger', 'follow_up')
            AND delivery_state = 'pending'",
     )
@@ -782,6 +786,8 @@ async fn fail_assignment_dispatch(
 struct PreparedAssignmentInput {
     thread_id: ChatThreadId,
     prompt: String,
+    /// The message revision the prompt frames, recorded as what the run received.
+    revision_id: String,
 }
 
 /// Reads the pending input `message_item_id` of `assignment_id` and frames it as a follow-up
@@ -818,8 +824,8 @@ async fn prepare_assignment_input(
     }
     let row = sqlx::query(
         "SELECT run.provider_thread_id, run.scratch_generation_id,
-                run.authorization_revision_id, revision.revision,
-                revision.normalized_markdown
+                run.authorization_revision_id, revision.id AS revision_id,
+                revision.revision, revision.normalized_markdown
          FROM chat_agent_runs run
          JOIN chat_assignment_authorization_revisions authorization
            ON authorization.id = run.authorization_revision_id
@@ -885,7 +891,12 @@ async fn prepare_assignment_input(
         row.try_get("normalized_markdown")
             .map_err(persistence_error)?,
     )?;
-    Ok(Some(PreparedAssignmentInput { thread_id, prompt }))
+    let revision_id = row.try_get("revision_id").map_err(persistence_error)?;
+    Ok(Some(PreparedAssignmentInput {
+        thread_id,
+        prompt,
+        revision_id,
+    }))
 }
 
 pub(super) async fn deliver_assignment_input(
@@ -895,8 +906,11 @@ pub(super) async fn deliver_assignment_input(
     message_item_id: ChatConversationItemId,
 ) -> ChatResult<()> {
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
-    let Some(PreparedAssignmentInput { thread_id, prompt }) =
-        prepare_assignment_input(&pool, &assignment_id, &message_item_id).await?
+    let Some(PreparedAssignmentInput {
+        thread_id,
+        prompt,
+        revision_id,
+    }) = prepare_assignment_input(&pool, &assignment_id, &message_item_id).await?
     else {
         return Ok(());
     };
@@ -921,10 +935,12 @@ pub(super) async fn deliver_assignment_input(
     )
     .await?;
     sqlx::query(
-        "UPDATE chat_work_assignment_inputs SET delivery_state = 'delivered', delivered_at = ?
+        "UPDATE chat_work_assignment_inputs
+         SET delivery_state = 'delivered', delivered_at = ?, delivered_revision_id = ?
          WHERE assignment_id = ? AND message_item_id = ? AND delivery_state = 'pending'",
     )
     .bind(now_timestamp()?.as_str())
+    .bind(&revision_id)
     .bind(assignment_id.as_str())
     .bind(message_item_id.as_str())
     .execute(&pool)

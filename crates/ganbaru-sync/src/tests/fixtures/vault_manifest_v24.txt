@@ -751,16 +751,17 @@ table 390 chat_scheduled_messages replicated key id rule any redirects
   group 3 max updated_at:timestamp
   unique client_command_id binary
 table 395 chat_work_assignments replicated key id rule any
-  group 0 immutable reply_thread_id:row_key->370:cascade teammate_id:row_key->353:cascade triggering_message_item_id:row_key->372:cascade executing_device_id:optional_text(..=160) created_at:timestamp
+  group 0 immutable reply_thread_id:row_key->370:cascade teammate_id:row_key->353:cascade triggering_message_item_id:row_key->372:cascade executing_device_id:optional_text(..=160) created_at:timestamp override_model_selection_schema_version:optional_integer(1..=9223372036854775807) override_model_selection_data:optional_text(..=16384)
   group 1 register previous_assignment_id:optional_row_key->395:set_null
   group 2 coupled state:text(..=32) state_reason:optional_text(..=4000) settled_at:optional_timestamp review_outcome:optional_text(..=32) reviewed_at:optional_timestamp reviewed_by_participant_id:optional_row_key
   group 3 max updated_at:timestamp
+  check override_model_selection_schema_version,override_model_selection_data within 0
 table 396 chat_work_assignment_inputs replicated key id rule any
   derived key exists 4 inputs message_item_id prefix assignment-input
   group 0 immutable message_item_id:row_key->372:cascade
   group 1 register created_at:timestamp
   group 2 register assignment_id:row_key->395:cascade ordinal:integer(1..=9223372036854775807) routing_kind:text(..=32)
-  group 3 register delivery_state:text(..=32) delivered_at:optional_timestamp
+  group 3 coupled delivery_state:text(..=32) delivered_at:optional_timestamp delivered_revision_id:optional_row_key
   group 4 register
 table 397 chat_work_semantic_updates replicated key item_id rule any
   key parent 371

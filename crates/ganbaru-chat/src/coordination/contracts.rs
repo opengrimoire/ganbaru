@@ -238,6 +238,22 @@ pub struct PostChatMessageCommand {
     /// work and queues anything else. A scheduled post refuses it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub followup_routing: Option<ChatFollowupRouting>,
+    /// Model for the new assignment this post starts, over the teammate's default. A post
+    /// that reaches active work, or a scheduled post, refuses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<ChatAssignmentModelOverride>,
+}
+
+/// Model selection one assignment runs with instead of its teammate's default. Effort is one
+/// of the model options; the provider instance stays the teammate's.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentModelOverride {
+    pub provider_managed_model: bool,
+    #[serde(default)]
+    pub model_id: Option<ModelId>,
+    #[serde(default)]
+    pub model_options: Vec<ModelOptionSelection>,
 }
 
 /// How a reply reaches the active work of its thread.

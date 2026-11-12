@@ -5,8 +5,8 @@ use super::assignments::read_assignment_subject;
 use super::common::{
     AttachmentSource, ScheduledPostIds, assignment_input_id, conversation_item_id,
     has_thread_eligible_mention, insert_revision_attachments, json_object, message_revision_id,
-    new_id, parse_participant_kind, reply_thread_id, serialization_error, wire_participant_kind,
-    wire_review_outcome, work_assignment_id,
+    new_id, parse_participant_kind, reply_thread_id, serialization_error, serialize_model_override,
+    wire_participant_kind, wire_review_outcome, work_assignment_id,
 };
 #[cfg(desktop)]
 use super::common::{wire_approval_policy, wire_work_state};
@@ -323,6 +323,21 @@ pub(super) struct PostRoutingChoices<'a> {
     pub(super) execution_target: Option<&'a ChatExecutionTarget>,
     /// Whether the post steers or queues behind active work.
     pub(super) followup_routing: Option<ChatFollowupRouting>,
+    /// The model the new assignment the post starts runs with, over the teammate's default.
+    pub(super) model_override: Option<&'a ChatAssignmentModelOverride>,
+}
+
+/// Refuses a model override on a post that reaches work already under way, whose model was
+/// chosen when it started, so the choice is never silently dropped.
+pub(super) fn model_override_on_active_work() -> ChatError {
+    let mut error = ChatError::validation(
+        "modelOverride",
+        "A model can be chosen only for new work, not for work already under way",
+    );
+    error.details = Some(Box::new(
+        serde_json::json!({ "reason": "model_override_on_active_work" }),
+    ));
+    error
 }
 
 /// Routes the post `message_item_id` to the assignment of the teammate it invokes: an input of
@@ -353,11 +368,15 @@ pub(super) async fn persist_assignment_routing(
     let PostRoutingChoices {
         execution_target,
         followup_routing,
+        model_override,
     } = choices;
     let Some(invocation) = invocation else {
         return Ok(AssignmentWrite::NONE);
     };
     if let Some(active) = &invocation.active_assignment {
+        if model_override.is_some() {
+            return Err(model_override_on_active_work());
+        }
         if device.leaves_existing_work() {
             // By design an unattended reply on active work stays a plain message: it would
             // steer a run no one here agreed to, and the user can repeat it themselves.
@@ -390,6 +409,9 @@ pub(super) async fn persist_assignment_routing(
         latest_assignment = None;
     }
     if let Some(reviewed) = reviewed.filter(|_| latest_assignment.is_some()) {
+        if model_override.is_some() {
+            return Err(model_override_on_active_work());
+        }
         append_assignment_input(
             transaction,
             &reviewed.id,
@@ -428,6 +450,7 @@ pub(super) async fn persist_assignment_routing(
             executing_device_id: &executing_device_id,
             execution_target,
             poster_participant_id: LOCAL_PARTICIPANT_ID,
+            model_override,
         },
         device,
         now,
@@ -469,6 +492,43 @@ pub(super) struct NewAssignment<'a> {
     /// Participant who posted the trigger, recorded as the reviewer when the new assignment
     /// follows reviewed work.
     pub(super) poster_participant_id: &'a str,
+    /// The model the assignment runs with over the teammate's default; `None` keeps the
+    /// override of the assignment it follows, if any.
+    pub(super) model_override: Option<&'a ChatAssignmentModelOverride>,
+}
+
+/// Schema version of a stored model selection.
+const MODEL_SELECTION_SCHEMA_VERSION: i64 = 1;
+
+/// The stored override columns, schema version and selection JSON, of an assignment created
+/// with `model_override` for `teammate_id` after `previous_id`: the chosen override, else the
+/// one the previous assignment of the same teammate ran with, so a continuation keeps the model
+/// its work was asked with.
+async fn new_assignment_model_override(
+    transaction: &mut Transaction<'_, Sqlite>,
+    model_override: Option<&ChatAssignmentModelOverride>,
+    teammate_id: &ChatParticipantId,
+    previous_id: Option<&ChatWorkAssignmentId>,
+) -> ChatResult<(Option<i64>, Option<String>)> {
+    if let Some(model_override) = model_override {
+        return Ok((
+            Some(MODEL_SELECTION_SCHEMA_VERSION),
+            Some(serialize_model_override(model_override)?),
+        ));
+    }
+    let Some(previous_id) = previous_id else {
+        return Ok((None, None));
+    };
+    let copied = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+        "SELECT override_model_selection_schema_version, override_model_selection_data
+         FROM chat_work_assignments WHERE id = ? AND teammate_id = ?",
+    )
+    .bind(previous_id.as_str())
+    .bind(teammate_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(copied.unwrap_or((None, None)))
 }
 
 /// Writes the queued assignment `assignment` with its trigger input, settling a reviewed
@@ -514,11 +574,20 @@ pub(super) async fn create_assignment(
             ));
         }
     }
+    let (override_schema_version, override_data) = new_assignment_model_override(
+        transaction,
+        assignment.model_override,
+        assignment.teammate_id,
+        previous_id,
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO chat_work_assignments
             (id, reply_thread_id, teammate_id, triggering_message_item_id,
-             previous_assignment_id, executing_device_id, state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+             previous_assignment_id, executing_device_id, state,
+             override_model_selection_schema_version, override_model_selection_data,
+             created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
     )
     .bind(assignment_id.as_str())
     .bind(assignment.reply_thread_id.as_str())
@@ -526,6 +595,8 @@ pub(super) async fn create_assignment(
     .bind(assignment.message_item_id.as_str())
     .bind(previous_id.map(ChatWorkAssignmentId::as_str))
     .bind(assignment.executing_device_id)
+    .bind(override_schema_version)
+    .bind(override_data)
     .bind(now.as_str())
     .bind(now.as_str())
     .execute(&mut **transaction)

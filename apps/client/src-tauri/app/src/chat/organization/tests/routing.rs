@@ -2,12 +2,12 @@
 
 use super::*;
 
-const ROUTED_ASSIGNMENT_ID: &str = "assignment:review";
+pub(super) const ROUTED_ASSIGNMENT_ID: &str = "assignment:review";
 const ROUTING_TIME: &str = "2026-08-04T17:03:00.000Z";
 
 /// The seeded review work with its stranded replies removed, so only the reply under test
 /// routes to it, in `state`.
-async fn review_work_in(state: &str) -> SqlitePool {
+pub(super) async fn review_work_in(state: &str) -> SqlitePool {
     let pool = migrated_pool().await;
     seed_review_assignment_with_stranded_replies(&pool).await;
     sqlx::query(
@@ -22,7 +22,7 @@ async fn review_work_in(state: &str) -> SqlitePool {
     pool
 }
 
-async fn set_review_state(pool: &SqlitePool, state: &str) {
+pub(super) async fn set_review_state(pool: &SqlitePool, state: &str) {
     sqlx::query("UPDATE chat_work_assignments SET state = ?1 WHERE id = ?2")
         .bind(state)
         .bind(ROUTED_ASSIGNMENT_ID)
@@ -31,12 +31,12 @@ async fn set_review_state(pool: &SqlitePool, state: &str) {
         .unwrap();
 }
 
-/// Posts a reply mentioning the review agent from `device:desk`, asking for `routing`.
-async fn post_reply(
-    pool: &SqlitePool,
+/// A reply mentioning the review agent, under its own command and reference ids, asking for
+/// `routing`.
+pub(super) fn reply_request(
     command_id: &str,
     routing: Option<ChatFollowupRouting>,
-) -> super::super::PersistedPost {
+) -> PostChatMessageCommand {
     let mut request = review_reply_mention(command_id);
     request.followup_routing = routing;
     for reference in &mut request.references {
@@ -45,19 +45,37 @@ async fn post_reply(
                 ChatMessageReferenceId::new(format!("reference:{command_id}")).unwrap();
         }
     }
+    request
+}
+
+/// Posts `request` from `device:desk`.
+pub(super) async fn post_request(
+    pool: &SqlitePool,
+    request: &PostChatMessageCommand,
+) -> ChatResult<super::super::PersistedPost> {
     let writers = chat_writers_of(&["device:desk"]);
     persist_post(
         pool,
-        &request,
+        request,
         None,
         PostingDevice::this_device("device:desk", &writers),
     )
     .await
-    .unwrap()
+}
+
+/// Posts a reply mentioning the review agent from `device:desk`, asking for `routing`.
+async fn post_reply(
+    pool: &SqlitePool,
+    command_id: &str,
+    routing: Option<ChatFollowupRouting>,
+) -> super::super::PersistedPost {
+    post_request(pool, &reply_request(command_id, routing))
+        .await
+        .unwrap()
 }
 
 /// Routing kind and delivery state of the input the post `posted` became.
-async fn routed_input(
+pub(super) async fn routed_input(
     pool: &SqlitePool,
     posted: &super::super::PersistedPost,
 ) -> (String, String, String) {
@@ -72,7 +90,7 @@ async fn routed_input(
 }
 
 /// Follow-ups recovery creates on `device:desk` with the review work accepted.
-async fn recover_on_desk(pool: &SqlitePool) -> u32 {
+pub(super) async fn recover_on_desk(pool: &SqlitePool) -> u32 {
     let scope = scope_accepting(pool, ROUTED_ASSIGNMENT_ID).await;
     let writers = chat_writers_of(&["device:desk"]);
     assignments::recover_stranded_follow_up_assignments(
@@ -295,10 +313,9 @@ fn a_replayed_post_reports_its_routing() {
 fn a_scheduled_message_cannot_choose_its_routing() {
     tauri::async_runtime::block_on(async {
         let mut request = message("Later");
-        assert!(super::super::scheduling::refuse_scheduled_followup_routing(&request).is_ok());
+        assert!(super::super::scheduling::refuse_scheduled_post_choices(&request).is_ok());
         request.followup_routing = Some(ChatFollowupRouting::Queue);
-        let error =
-            super::super::scheduling::refuse_scheduled_followup_routing(&request).unwrap_err();
+        let error = super::super::scheduling::refuse_scheduled_post_choices(&request).unwrap_err();
         assert_eq!(error.code, ChatErrorCode::Validation);
         assert_eq!(error.field.as_deref(), Some("followupRouting"));
 

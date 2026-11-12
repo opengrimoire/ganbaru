@@ -795,6 +795,15 @@ export interface PostChatMessageRequest {
   alsoSendToChannel: boolean;
   /** How a reply to a thread with active work reaches it; absent steers working work and queues anything else. Scheduled messages refuse it. */
   followupRouting?: ChatFollowupRouting;
+  /** Model for the new work this post starts, over the teammate's default. A post that reaches active work, or a scheduled message, refuses it. */
+  modelOverride?: ChatAssignmentModelOverride;
+}
+
+/** Model selection one assignment runs with instead of its teammate's default; effort is one of the model options. */
+export interface ChatAssignmentModelOverride {
+  providerManagedModel: boolean;
+  modelId: ModelId | null;
+  modelOptions: ModelOptionSelection[];
 }
 
 export interface PostChatMessageResult {

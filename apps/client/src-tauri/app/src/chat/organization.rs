@@ -415,7 +415,7 @@ async fn write_post(
     }
     validate_message_request(request)?;
     if scheduled.is_some() {
-        scheduling::refuse_scheduled_followup_routing(request)?;
+        scheduling::refuse_scheduled_post_choices(request)?;
     }
     persist_post_with(pool, request, scheduled, review, device)
         .await
@@ -664,6 +664,7 @@ async fn persist_post_with(
                 PostRoutingChoices {
                     execution_target: request.execution_target.as_ref(),
                     followup_routing: request.followup_routing,
+                    model_override: request.model_override.as_ref(),
                 },
                 device,
                 &now,

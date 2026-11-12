@@ -19,6 +19,7 @@ use ganbaru_chat::coordination::acceptance::scheduled_consent_digest;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
 
+mod model_override;
 mod review;
 mod routing;
 
@@ -143,6 +144,7 @@ fn message(markdown: &str) -> PostChatMessageCommand {
         execution_target: None,
         also_send_to_channel: false,
         followup_routing: None,
+        model_override: None,
     }
 }
 

@@ -21,8 +21,12 @@ use sqlx::{AssertSqlSafe, Row, SqliteConnection, SqlitePool};
 
 mod proposals;
 
-pub use proposals::{AcceptChatNoteProposalCommand, DismissChatNoteProposalCommand};
-pub(super) use proposals::{accept_note_proposal, dismiss_note_proposal};
+pub use proposals::{
+    AcceptChatNoteProposalCommand, ChatNoteProposalStateRead, DismissChatNoteProposalCommand,
+};
+pub(super) use proposals::{
+    accept_note_proposal, dismiss_note_proposal, read_note_proposal_states,
+};
 
 /// Most live notes a person may keep in one channel. Merges from other devices may exceed it.
 pub const MAX_ACTIVE_CHANNEL_NOTES: i64 = 50;

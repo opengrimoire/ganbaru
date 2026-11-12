@@ -5,6 +5,9 @@ import {
   parseChatAgentRun,
   parseChatChannel,
   parseChatChannelPage,
+  parseChatChannelNote,
+  parseChatChannelNotes,
+  parseChatNoteProposalStates,
   parsePostChatMessageResult,
   parseChatMessageSearchResults,
   parseChatScheduledMessage,
@@ -1140,5 +1143,45 @@ describe("chat scheduling contracts", () => {
     const states = [{ proposalItemId: "item:a", state: "pending" }, { proposalItemId: "item:b", state: "dismissed" }];
     expect(parseChatScheduleProposalStates(states)).toEqual(states);
     expect(() => parseChatScheduleProposalStates([{ proposalItemId: "item:a", state: "expired" }])).toThrow("state");
+  });
+});
+
+describe("chat channel note contracts", () => {
+  const note = {
+    id: "note:1",
+    channelId: "channel:general",
+    body: "Reply in English",
+    sourceItemId: "item:proposal",
+    proposedBy: "participant:atlas",
+    editedBy: null,
+    revision: 2,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+
+  it("parses a note with and without provenance", () => {
+    expect(parseChatChannelNote(note)).toEqual(note);
+    const written = { ...note, sourceItemId: null, proposedBy: null, editedBy: "participant:local-owner" };
+    expect(parseChatChannelNotes([written, note])).toEqual([written, note]);
+    expect(parseChatChannelNote({ ...note, body: "é".repeat(1_000) }).body).toHaveLength(1_000);
+  });
+
+  it("rejects an oversize or blank body, unknown fields, and malformed provenance", () => {
+    expect(() => parseChatChannelNote({ ...note, body: "é".repeat(1_001) })).toThrow("body");
+    expect(() => parseChatChannelNote({ ...note, body: " \n " })).toThrow("body");
+    expect(() => parseChatChannelNote({ ...note, deletedAt: null })).toThrow("deletedAt");
+    expect(() => parseChatChannelNote({ ...note, proposedBy: undefined })).toThrow("proposedBy");
+    expect(() => parseChatChannelNote({ ...note, revision: -1 })).toThrow("revision");
+    expect(() => parseChatChannelNote({ ...note, updatedAt: "today" })).toThrow("updatedAt");
+  });
+
+  it("parses note proposal states", () => {
+    const states = [
+      { proposalItemId: "item:a", state: "pending" },
+      { proposalItemId: "item:b", state: "saved" },
+      { proposalItemId: "item:c", state: "dismissed" },
+    ];
+    expect(parseChatNoteProposalStates(states)).toEqual(states);
+    expect(() => parseChatNoteProposalStates([{ proposalItemId: "item:a", state: "confirmed" }])).toThrow("state");
   });
 });

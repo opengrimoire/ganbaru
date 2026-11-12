@@ -7,8 +7,8 @@ use super::channels::{
     timestamp, u64_value,
 };
 pub use channel_notes::{
-    AcceptChatNoteProposalCommand, CreateChatChannelNoteCommand, DeleteChatChannelNoteCommand,
-    DismissChatNoteProposalCommand, UpdateChatChannelNoteCommand,
+    AcceptChatNoteProposalCommand, ChatNoteProposalStateRead, CreateChatChannelNoteCommand,
+    DeleteChatChannelNoteCommand, DismissChatNoteProposalCommand, UpdateChatChannelNoteCommand,
 };
 pub use ganbaru_chat::coordination::contracts::*;
 use ganbaru_chat_contracts::models::*;
@@ -980,6 +980,17 @@ pub async fn chat_dismiss_note_proposal(
     request: DismissChatNoteProposalCommand,
 ) -> ChatResult<()> {
     channel_notes::dismiss_note_proposal(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Reads whether each note proposal is pending, saved, or dismissed on every linked device.
+#[tauri::command]
+pub async fn chat_read_note_proposal_states(
+    app: tauri::AppHandle,
+    db_url: String,
+    proposal_item_ids: Vec<ChatConversationItemId>,
+) -> ChatResult<Vec<ChatNoteProposalStateRead>> {
+    channel_notes::read_note_proposal_states(&chat_pool(app, db_url).await?, proposal_item_ids)
+        .await
 }
 
 #[tauri::command]

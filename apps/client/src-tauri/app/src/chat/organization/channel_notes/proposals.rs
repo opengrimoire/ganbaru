@@ -19,7 +19,7 @@ use ganbaru_chat_contracts::models::{
 use ganbaru_sync_contracts::chat_channel_notes::{
     CHANNEL_NOTE_PROPOSAL_KEY_PREFIX, MAX_CHANNEL_NOTE_CHARS,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
 
 /// Semantic update kind of a teammate's note proposal.
@@ -180,6 +180,61 @@ pub(in crate::chat::organization) async fn dismiss_note_proposal(
     transaction.commit().await.map_err(persistence_error)
 }
 
+/// Most note proposals one state read may name.
+pub(in crate::chat::organization) const MAX_NOTE_PROPOSAL_STATE_READS: usize = 200;
+
+/// Where a teammate's note proposal stands on every linked device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatNoteProposalState {
+    /// Nobody saved or dismissed it.
+    Pending,
+    /// A person saved it, and the note is live.
+    Saved,
+    /// A person dismissed it, or deleted the note it became.
+    Dismissed,
+}
+
+/// The state of one note proposal.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatNoteProposalStateRead {
+    pub proposal_item_id: ChatConversationItemId,
+    pub state: ChatNoteProposalState,
+}
+
+/// Reads where each proposal in `proposal_item_ids` stands, from the note row its id derives.
+///
+/// # Errors
+///
+/// Returns a validation error on `proposalItemIds` when more than
+/// [`MAX_NOTE_PROPOSAL_STATE_READS`] are named, and a persistence error when a read fails.
+pub(in crate::chat::organization) async fn read_note_proposal_states(
+    pool: &SqlitePool,
+    proposal_item_ids: Vec<ChatConversationItemId>,
+) -> ChatResult<Vec<ChatNoteProposalStateRead>> {
+    if proposal_item_ids.len() > MAX_NOTE_PROPOSAL_STATE_READS {
+        return Err(ChatError::validation(
+            "proposalItemIds",
+            format!("Read at most {MAX_NOTE_PROPOSAL_STATE_READS} suggested notes at once"),
+        ));
+    }
+    let mut connection = pool.acquire().await.map_err(persistence_error)?;
+    let mut states = Vec::with_capacity(proposal_item_ids.len());
+    for proposal_item_id in proposal_item_ids {
+        let note_id = proposal_note_id(&proposal_item_id)?;
+        let state = match settled_note(&mut connection, &note_id).await? {
+            SettledNote::Absent => ChatNoteProposalState::Pending,
+            SettledNote::Saved => ChatNoteProposalState::Saved,
+            SettledNote::Deleted => ChatNoteProposalState::Dismissed,
+        };
+        states.push(ChatNoteProposalStateRead {
+            proposal_item_id,
+            state,
+        });
+    }
+    Ok(states)
+}
 /// The id of the note that settles the proposal `item_id`.
 ///
 /// # Errors

@@ -1,5 +1,6 @@
 use super::super::{
-    CreateChatChannelNoteCommand, MAX_ACTIVE_CHANNEL_NOTES, create_channel_note, list_channel_notes,
+    CreateChatChannelNoteCommand, DeleteChatChannelNoteCommand, MAX_ACTIVE_CHANNEL_NOTES,
+    create_channel_note, delete_channel_note, list_channel_notes,
 };
 use super::*;
 use ganbaru_chat::coordination::reports::{HostCall, ReportKind, record_host_report};
@@ -252,5 +253,89 @@ fn only_members_settle_proposals() {
             assert_eq!(error.code, ChatErrorCode::Permission, "{error:?}");
         }
         assert_eq!(note_rows(&pool).await, 0);
+    });
+}
+
+#[test]
+fn proposal_states_follow_the_note_each_proposal_settles_into() {
+    tauri::async_runtime::block_on(async {
+        let (pool, items) =
+            pool_with_proposals(&["Reply in English", "Use pnpm", "Ship on Tuesdays"]).await;
+        let states = |pool: SqlitePool, items: Vec<ChatConversationItemId>| async move {
+            read_note_proposal_states(&pool, items)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|read| read.state)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            states(pool.clone(), items.clone()).await,
+            [ChatNoteProposalState::Pending; 3]
+        );
+
+        accept_note_proposal(&pool, &accept("accept-1", &items[0], None))
+            .await
+            .unwrap();
+        let deleted = accept_note_proposal(&pool, &accept("accept-2", &items[1], None))
+            .await
+            .unwrap();
+        delete_channel_note(
+            &pool,
+            &DeleteChatChannelNoteCommand {
+                client_command_id: ChatCommandId::new("delete-1").unwrap(),
+                note_id: deleted.id,
+                expected_revision: deleted.revision,
+            },
+        )
+        .await
+        .unwrap();
+        dismiss_note_proposal(&pool, &dismiss("dismiss-1", &items[2]))
+            .await
+            .unwrap();
+        let reads = read_note_proposal_states(&pool, items.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            reads
+                .iter()
+                .map(|read| read.proposal_item_id.clone())
+                .collect::<Vec<_>>(),
+            items,
+            "states keep the order they were asked in"
+        );
+        assert_eq!(
+            states(pool.clone(), items).await,
+            [
+                ChatNoteProposalState::Saved,
+                ChatNoteProposalState::Dismissed,
+                ChatNoteProposalState::Dismissed,
+            ]
+        );
+    });
+}
+
+#[test]
+fn proposal_state_reads_are_bounded() {
+    tauri::async_runtime::block_on(async {
+        let (pool, items) = pool_with_proposals(&["Reply in English"]).await;
+        let at_limit = vec![items[0].clone(); MAX_NOTE_PROPOSAL_STATE_READS];
+        assert_eq!(
+            read_note_proposal_states(&pool, at_limit)
+                .await
+                .unwrap()
+                .len(),
+            MAX_NOTE_PROPOSAL_STATE_READS
+        );
+        let over = vec![items[0].clone(); MAX_NOTE_PROPOSAL_STATE_READS + 1];
+        let error = read_note_proposal_states(&pool, over).await.unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation);
+        assert_eq!(error.field.as_deref(), Some("proposalItemIds"));
+        assert!(
+            read_note_proposal_states(&pool, Vec::new())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     });
 }

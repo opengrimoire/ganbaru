@@ -512,3 +512,127 @@ fn colliding_provider_item_ids_never_change_another_threads_projections() {
         assert_ne!(foreign_preview.as_deref(), Some("Private reply"));
     });
 }
+
+#[test]
+fn projections_skip_user_echoes_resolve_requests_and_reject_duplicate_events() {
+    use ganbaru_chat_contracts::events::RequestResolvedEvent;
+    use ganbaru_chat_contracts::models::RequestResolutionState;
+
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        append_canonical_event(
+            &pool,
+            canonical_request(
+                "event-turn-start",
+                Some("turn-1"),
+                CanonicalEvent::TurnStarted(TurnStartedEvent {
+                    provider_turn_id: None,
+                    state: ChatTurnState::Active,
+                    modes: TurnModeSnapshot {
+                        safety_mode: SafetyMode::AskForApproval,
+                        interaction_mode: InteractionMode::Build,
+                    },
+                    model_id: None,
+                    model_options: Vec::new(),
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        append_canonical_event(
+            &pool,
+            canonical_request(
+                "event-user-echo",
+                Some("turn-1"),
+                CanonicalEvent::ItemCompleted(ItemLifecycleEvent {
+                    item_id: "provider-user".to_string(),
+                    kind: CanonicalItemKind::UserMessage,
+                    status: ActivityStatus::Completed,
+                    title: None,
+                    detail: Some("Please continue".to_string()),
+                    safe_metadata: None,
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        append_canonical_event(
+            &pool,
+            canonical_request(
+                "event-request-open",
+                Some("turn-1"),
+                CanonicalEvent::RequestOpened(RequestOpenedEvent {
+                    request_id: ProviderRequestId::new("request-1").unwrap(),
+                    kind: CanonicalRequestKind::CommandExecution,
+                    title: "Approve command".to_string(),
+                    detail: None,
+                    allowed_decisions: Vec::new(),
+                    safe_payload: VersionedJson {
+                        schema_version: 1,
+                        value: serde_json::json!({}),
+                    },
+                    subject: None,
+                    session_grants: Vec::new(),
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        append_canonical_event(
+            &pool,
+            canonical_request(
+                "event-request-resolve",
+                Some("turn-1"),
+                CanonicalEvent::RequestResolved(RequestResolvedEvent {
+                    request_id: ProviderRequestId::new("request-1").unwrap(),
+                    state: RequestResolutionState::Resolved,
+                    decision: None,
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        append_canonical_event(&pool, content_event("event-text", "Once"))
+            .await
+            .unwrap();
+        assert!(
+            append_canonical_event(&pool, content_event("event-text", " again"))
+                .await
+                .is_err()
+        );
+
+        let echoes: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chat_activities WHERE id = 'provider-user'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let user_messages: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE id = 'provider-user'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((echoes, user_messages), (0, 0));
+        let request: (String, bool) = sqlx::query_as(
+            "SELECT resolution_state, resolved_at IS NOT NULL
+             FROM chat_pending_requests WHERE id = 'request-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(request, ("resolved".to_string(), true));
+        let text: String = sqlx::query_scalar(
+            "SELECT normalized_markdown FROM chat_messages WHERE id = 'assistant-message-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(text, "Once");
+        let last_sequence: i64 = sqlx::query_scalar(
+            "SELECT last_event_sequence FROM chat_threads WHERE id = 'thread-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(last_sequence, 5);
+    });
+}

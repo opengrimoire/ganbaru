@@ -8,11 +8,9 @@ import type {
   ContentStreamKind,
   ModelId,
   PlanStep,
-  RequestResolutionState,
   ThreadUsageUpdatedEvent,
   TurnModeSnapshot,
   UtcTimestamp,
-  UserInputQuestion,
   VersionedJson,
 } from "$lib/chat/contracts";
 
@@ -98,18 +96,6 @@ export interface TimelinePlanRow {
 
 export type TimelineRow = TimelineMessageRow | TimelineActivityRow | TimelinePlanRow;
 
-export interface TimelinePendingRequest {
-  id: string;
-  turnId: ChatTurnId | null;
-  sequence: number;
-  createdAt: UtcTimestamp;
-  kind: "approval" | "user_input";
-  title: string;
-  detail: string | null;
-  questions: UserInputQuestion[];
-  state: RequestResolutionState;
-}
-
 export interface TimelineTurn {
   id: ChatTurnId;
   state: ChatTurnState;
@@ -126,12 +112,10 @@ export interface TimelineTurn {
   recoverable: boolean;
 }
 
+/** Timeline rows and turn summaries projected from one window of native reads. */
 export interface TimelineProjection {
   rows: TimelineRow[];
   turns: TimelineTurn[];
-  pendingRequests: TimelinePendingRequest[];
-  threadUsage: ThreadUsageUpdatedEvent | null;
-  ignoredDuplicateEventIds: string[];
 }
 
 export interface TimelineActivityGroupRow {

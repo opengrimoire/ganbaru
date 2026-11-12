@@ -6,20 +6,12 @@ import {
 } from "$lib/chat/contracts";
 import type {
   ActivityStatus,
-  CanonicalItemKind,
-  CanonicalStoredEvent,
   ChangedFileSummary,
   ChatTimelineItemRead,
   ChatTimelineTurnRead,
   ChatTurnId,
   ChatTurnState,
-  ContentDeltaEvent,
-  ContentStreamKind,
-  ItemLifecycleEvent,
   PlanStep,
-  ProposedPlanDeltaEvent,
-  ThreadUsageUpdatedEvent,
-  TurnModeSnapshot,
   UtcTimestamp,
   VersionedJson,
 } from "$lib/chat/contracts";
@@ -34,8 +26,6 @@ import type {
   TimelineMessagePhase,
   TimelineMessageRow,
   TimelineMessageState,
-  TimelinePendingRequest,
-  TimelinePlanRow,
   TimelineProjection,
   TimelineRow,
   TimelineTurn,
@@ -114,235 +104,13 @@ export function timelineModelGroupStartIds(
   return startIds;
 }
 
-interface MutableStreamRow {
-  row: TimelineMessageRow | TimelineActivityRow | TimelinePlanRow;
-  parts: Map<number, string>;
-}
-
-const DEFAULT_MODES: TurnModeSnapshot = {
-  safetyMode: "ask_for_approval",
-  interactionMode: "build",
-};
-
-/**
- * Projects validated canonical events into stable, provider-neutral timeline state.
- *
- * @param events Canonical events from one thread, in any sequence order.
- * @returns Stable timeline rows, turn summaries, and unresolved requests.
- */
-export function projectCanonicalTimeline(events: readonly CanonicalStoredEvent[]): TimelineProjection {
-  const rows = new Map<string, TimelineRow>();
-  const streams = new Map<string, MutableStreamRow>();
-  const turns = new Map<ChatTurnId, TimelineTurn>();
-  const requests = new Map<string, TimelinePendingRequest>();
-  const seenEventIds = new Set<string>();
-  const ignoredDuplicateEventIds: string[] = [];
-  let threadUsage: ThreadUsageUpdatedEvent | null = null;
-
-  const orderedEvents = [...events].sort((left, right) => left.sequence - right.sequence);
-  for (const event of orderedEvents) {
-    if (seenEventIds.has(event.eventId)) {
-      ignoredDuplicateEventIds.push(event.eventId);
-      continue;
-    }
-    seenEventIds.add(event.eventId);
-
-    switch (event.event.type) {
-      case "turn_started": {
-        if (!event.turnId) break;
-        turns.set(event.turnId, {
-          id: event.turnId,
-          state: event.event.payload.state,
-          startedAt: event.createdAt,
-          completedAt: null,
-          durationMs: null,
-          modes: event.event.payload.modes,
-          modelId: event.event.payload.modelId,
-          effectiveModelId: event.event.payload.modelId,
-          usage: null,
-          changedFiles: [],
-          diffSources: [],
-          stopReason: null,
-          recoverable: false,
-        });
-        break;
-      }
-      case "turn_completed": {
-        const turn = ensureTurn(turns, event);
-        if (!turn) break;
-        turn.state = event.event.payload.state;
-        turn.completedAt = event.createdAt;
-        turn.durationMs = elapsedMilliseconds(turn.startedAt, event.createdAt);
-        turn.usage = event.event.payload.usage;
-        turn.changedFiles = mergeChangedFiles(turn.changedFiles, event.event.payload.changedFiles);
-        turn.stopReason = event.event.payload.stopReason;
-        break;
-      }
-      case "turn_aborted": {
-        const turn = ensureTurn(turns, event);
-        if (!turn) break;
-        turn.state = event.event.payload.state;
-        turn.completedAt = event.createdAt;
-        turn.durationMs = elapsedMilliseconds(turn.startedAt, event.createdAt);
-        turn.stopReason = event.event.payload.reason;
-        turn.recoverable = event.event.payload.recoverable;
-        break;
-      }
-      case "thread_usage_updated":
-        threadUsage = event.event.payload;
-        break;
-      case "thread_reverted":
-        upsertActivity(
-          rows,
-          event,
-          `activity:restore:${event.eventId}`,
-          "notice",
-          "completed",
-          "thread_reverted",
-          null,
-          {
-            schemaVersion: 1,
-            value: {
-              checkpointId: event.event.payload.checkpointId,
-              revertedTurnIds: [...event.event.payload.revertedTurnIds],
-              providerHistoryAction: event.event.payload.providerHistoryAction,
-            },
-          },
-        );
-        break;
-      case "model_rerouted": {
-        const turn = ensureTurn(turns, event);
-        if (turn) turn.effectiveModelId = event.event.payload.effectiveModelId;
-        upsertActivity(rows, event, `model:${event.sequence}`, "notice", "completed", "Model rerouted", event.event.payload.reason, null);
-        break;
-      }
-      case "diff_updated": {
-        const turn = ensureTurn(turns, event);
-        if (!turn) break;
-        turn.changedFiles = mergeChangedFiles(turn.changedFiles, event.event.payload.files);
-        if (!turn.diffSources.includes(event.event.payload.source)) turn.diffSources.push(event.event.payload.source);
-        break;
-      }
-      case "content_delta":
-        appendContentDelta(rows, streams, event, event.event.payload);
-        break;
-      case "item_started":
-      case "item_updated":
-      case "item_completed":
-        upsertLifecycleItem(rows, event, event.event.payload);
-        break;
-      case "plan_updated":
-        rows.set(`plan:structured:${event.turnId ?? "thread"}`, {
-          id: `plan:structured:${event.turnId ?? "thread"}`,
-          kind: "plan",
-          turnId: event.turnId,
-          sequence: event.sequence,
-          createdAt: event.createdAt,
-          planKind: "structured",
-          markdown: event.event.payload.markdown,
-          steps: event.event.payload.steps,
-          state: "complete",
-        });
-        break;
-      case "proposed_plan_delta":
-        appendPlanDelta(rows, streams, event, event.event.payload);
-        break;
-      case "proposed_plan_completed": {
-        const id = `plan:proposed:${event.event.payload.planId}`;
-        rows.set(id, {
-          id,
-          kind: "plan",
-          turnId: event.turnId,
-          sequence: rows.get(id)?.sequence ?? event.sequence,
-          createdAt: rows.get(id)?.createdAt ?? event.createdAt,
-          planKind: "proposed",
-          markdown: event.event.payload.markdown,
-          steps: [],
-          state: "complete",
-        });
-        break;
-      }
-      case "request_opened":
-        requests.set(event.event.payload.requestId, {
-          id: event.event.payload.requestId,
-          turnId: event.turnId,
-          sequence: event.sequence,
-          createdAt: event.createdAt,
-          kind: "approval",
-          title: event.event.payload.title,
-          detail: event.event.payload.detail,
-          questions: [],
-          state: "open",
-        });
-        break;
-      case "user_input_requested":
-        requests.set(event.event.payload.requestId, {
-          id: event.event.payload.requestId,
-          turnId: event.turnId,
-          sequence: event.sequence,
-          createdAt: event.createdAt,
-          kind: "user_input",
-          title: event.event.payload.questions[0]?.question ?? "Provider question",
-          detail: null,
-          questions: event.event.payload.questions,
-          state: "open",
-        });
-        break;
-      case "request_resolved":
-      case "user_input_resolved": {
-        const request = requests.get(event.event.payload.requestId);
-        if (request) request.state = event.event.payload.state;
-        break;
-      }
-      case "task_lifecycle":
-        upsertActivity(rows, event, `task:${event.event.payload.taskId}`, "task", event.event.payload.status, event.event.payload.title, event.event.payload.detail, event.event.payload.safeMetadata);
-        break;
-      case "hook_lifecycle":
-        upsertActivity(rows, event, `hook:${event.event.payload.hookId}`, "hook", event.event.payload.status, event.event.payload.title, event.event.payload.detail, null);
-        break;
-      case "tool_progress":
-        upsertActivity(rows, event, `tool:${event.event.payload.toolId}`, "tool", event.event.payload.status, event.event.payload.title, event.event.payload.summary, null);
-        break;
-      case "mcp_status":
-        upsertActivity(rows, event, `mcp:${event.event.payload.serverId}`, "mcp", event.event.payload.status, event.event.payload.serverId, event.event.payload.detail, null);
-        break;
-      case "mcp_oauth_completed":
-        upsertActivity(rows, event, `mcp-oauth:${event.event.payload.serverId}:${event.sequence}`, "mcp", event.event.payload.successful ? "completed" : "failed", event.event.payload.serverId, event.event.payload.detail, null);
-        break;
-      case "configuration_warning":
-      case "deprecation_notice":
-      case "runtime_warning":
-        upsertActivity(rows, event, `notice:${event.eventId}`, "notice", "unknown", event.event.payload.title, event.event.payload.detail, null);
-        break;
-      case "runtime_error":
-        upsertActivity(rows, event, `error:${event.eventId}`, "error", "failed", event.event.payload.message, event.event.payload.code, event.event.payload.safeDetails);
-        break;
-      case "unknown":
-        upsertActivity(rows, event, `unknown:${event.eventId}`, "unknown", "unknown", event.event.payload.summary, event.event.payload.sourceType, event.event.payload.safePayload);
-        break;
-      default:
-        break;
-    }
-  }
-
-  attachPendingTurnRows(rows, turns);
-  attachTerminalAssistantMetadata(rows, turns);
-  return {
-    rows: [...rows.values()].sort(compareRows),
-    turns: [...turns.values()].sort((left, right) => left.startedAt.localeCompare(right.startedAt)),
-    pendingRequests: [...requests.values()].sort((left, right) => left.sequence - right.sequence),
-    threadUsage,
-    ignoredDuplicateEventIds,
-  };
-}
-
 /**
  * Converts validated paged SQLite projection DTOs into the shared timeline model.
  */
 export function projectTimelineReadModel(
   items: readonly ChatTimelineItemRead[],
   turnReads: readonly ChatTimelineTurnRead[],
-): Pick<TimelineProjection, "rows" | "turns"> {
+): TimelineProjection {
   const turns = new Map<ChatTurnId, TimelineTurn>();
   for (const turn of turnReads) {
     turns.set(turn.turnId, {
@@ -576,161 +344,11 @@ function isTransientThinkingActivity(row: TimelineActivityRow): boolean {
     || row.activityKind === "reasoning_summary";
 }
 
-function ensureTurn(turns: Map<ChatTurnId, TimelineTurn>, event: CanonicalStoredEvent): TimelineTurn | null {
-  if (!event.turnId) return null;
-  const existing = turns.get(event.turnId);
-  if (existing) return existing;
-  const turn: TimelineTurn = {
-    id: event.turnId,
-    state: "active",
-    startedAt: event.createdAt,
-    completedAt: null,
-    durationMs: null,
-    modes: DEFAULT_MODES,
-    modelId: null,
-    effectiveModelId: null,
-    usage: null,
-    changedFiles: [],
-    diffSources: [],
-    stopReason: null,
-    recoverable: false,
-  };
-  turns.set(event.turnId, turn);
-  return turn;
-}
-
-function appendContentDelta(
-  rows: Map<string, TimelineRow>,
-  streams: Map<string, MutableStreamRow>,
-  event: CanonicalStoredEvent,
-  payload: ContentDeltaEvent,
-): void {
-  const assistant = payload.streamKind === "assistant_text";
-  const id = assistant ? `message:${payload.itemId}` : `activity:${payload.itemId}`;
-  if (payload.streamKind === "reasoning_text") {
-    if (!rows.has(id)) {
-      rows.set(id, {
-        id,
-        kind: "activity",
-        turnId: event.turnId,
-        sequence: event.sequence,
-        createdAt: event.createdAt,
-        activityKind: "reasoning_text",
-        status: "active",
-        title: activityTitle(payload.streamKind),
-        ...wholeActivityDetail(null),
-        metadata: null,
-      });
-    }
-    return;
-  }
-  let stream = streams.get(id);
-  if (!stream) {
-    const row: TimelineMessageRow | TimelineActivityRow = assistant
-      ? { id, kind: "message", role: "assistant", turnId: event.turnId, sequence: event.sequence, createdAt: event.createdAt, markdown: "", state: "streaming", phase: null, userContext: null, metadata: null }
-      : { id, kind: "activity", turnId: event.turnId, sequence: event.sequence, createdAt: event.createdAt, activityKind: payload.streamKind, status: "active", title: activityTitle(payload.streamKind), ...wholeActivityDetail(null), metadata: null };
-    stream = { row, parts: new Map() };
-    streams.set(id, stream);
-    rows.set(id, row);
-  }
-  stream.parts.set(payload.contentIndex, `${stream.parts.get(payload.contentIndex) ?? ""}${payload.delta}`);
-  const content = [...stream.parts.entries()].sort(([left], [right]) => left - right).map(([, value]) => value).join("");
-  if (stream.row.kind === "message") stream.row.markdown = content;
-  else if (stream.row.kind === "activity") {
-    stream.row.activityKind = payload.streamKind;
-    Object.assign(stream.row, wholeActivityDetail(content));
-  }
-}
-
-function appendPlanDelta(
-  rows: Map<string, TimelineRow>,
-  streams: Map<string, MutableStreamRow>,
-  event: CanonicalStoredEvent,
-  payload: ProposedPlanDeltaEvent,
-): void {
-  const id = `plan:proposed:${payload.planId}`;
-  let stream = streams.get(id);
-  if (!stream) {
-    const row: TimelinePlanRow = { id, kind: "plan", turnId: event.turnId, sequence: event.sequence, createdAt: event.createdAt, planKind: "proposed", markdown: "", steps: [], state: "streaming" };
-    stream = { row, parts: new Map() };
-    streams.set(id, stream);
-    rows.set(id, row);
-  }
-  stream.parts.set(payload.contentIndex, `${stream.parts.get(payload.contentIndex) ?? ""}${payload.delta}`);
-  if (stream.row.kind === "plan") {
-    stream.row.markdown = [...stream.parts.entries()].sort(([left], [right]) => left - right).map(([, value]) => value).join("");
-  }
-}
-
-function upsertLifecycleItem(
-  rows: Map<string, TimelineRow>,
-  event: CanonicalStoredEvent,
-  payload: ItemLifecycleEvent,
-): void {
-  if (payload.kind === "user_message") return;
-  if (payload.kind === "assistant_message") {
-    const id = `message:${payload.itemId}`;
-    const current = rows.get(id);
-    rows.set(id, {
-      id,
-      kind: "message",
-      role: "assistant",
-      turnId: event.turnId,
-      sequence: current?.sequence ?? event.sequence,
-      createdAt: current?.createdAt ?? event.createdAt,
-      markdown: current?.kind === "message" && current.markdown ? current.markdown : payload.detail ?? "",
-      state: messageState(payload.status),
-      phase: parseMessagePhase(payload.safeMetadata?.value),
-      userContext: null,
-      metadata: current?.kind === "message" ? current.metadata : null,
-    });
-    return;
-  }
-  upsertActivity(rows, event, `activity:${payload.itemId}`, payload.kind, payload.status, payload.title ?? activityTitle(payload.kind), payload.detail, payload.safeMetadata);
-}
-
-function upsertActivity(
-  rows: Map<string, TimelineRow>,
-  event: CanonicalStoredEvent,
-  id: string,
-  activityKind: TimelineActivityRow["activityKind"],
-  status: ActivityStatus,
-  title: string,
-  detail: string | null,
-  metadata: VersionedJson | null,
-): void {
-  const current = rows.get(id);
-  const resolvedActivityKind = activityKind === "reasoning"
-    && current?.kind === "activity"
-    && (current.activityKind === "reasoning_summary" || current.activityKind === "reasoning_text")
-    ? current.activityKind
-    : activityKind;
-  rows.set(id, {
-    id,
-    kind: "activity",
-    turnId: event.turnId,
-    sequence: current?.sequence ?? event.sequence,
-    createdAt: current?.createdAt ?? event.createdAt,
-    activityKind: resolvedActivityKind,
-    status,
-    title,
-    ...(detail && detail.length > 0
-      ? wholeActivityDetail(detail)
-      : current?.kind === "activity" ? heldActivityDetail(current) : wholeActivityDetail(null)),
-    metadata,
-  });
-}
-
 type ActivityDetailFields = Pick<TimelineActivityRow, "detailPreview" | "detailBytes" | "detailTruncated" | "updatedAt">;
 
-/** Describes detail text a live event carries in full. */
+/** Describes detail text a row holds in full. */
 function wholeActivityDetail(detail: string | null): ActivityDetailFields {
   return { detailPreview: detail, detailBytes: detail === null ? 0 : utf8ByteLength(detail), detailTruncated: false };
-}
-
-/** Keeps the detail a row already holds, including a stored preview and its version. */
-function heldActivityDetail(row: TimelineActivityRow): ActivityDetailFields {
-  return { detailPreview: row.detailPreview, detailBytes: row.detailBytes, detailTruncated: row.detailTruncated, updatedAt: row.updatedAt };
 }
 
 /** Reads the shortened detail a native timeline read stores on an activity row. */
@@ -826,10 +444,6 @@ function messageState(status: ActivityStatus): TimelineMessageState {
 
 function isTerminalTurn(state: ChatTurnState): state is TimelineTurnFoldRow["state"] {
   return state === "completed" || state === "interrupted" || state === "failed";
-}
-
-function activityTitle(kind: CanonicalItemKind | ContentStreamKind): string {
-  return kind.replaceAll("_", " ");
 }
 
 function compareRows(left: TimelineRow, right: TimelineRow): number {

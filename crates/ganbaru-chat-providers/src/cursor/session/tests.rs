@@ -389,6 +389,24 @@ fn killed_running_terminal_is_reaped_and_retired() {
 }
 
 #[cfg(unix)]
+#[test]
+fn dropped_terminal_supervisor_retires_the_tree() {
+    let workspace = TestDirectory::new();
+    let callbacks = AcpTerminalCallbacks::new(workspace.0.clone(), "session-a".into());
+    let terminal = crate::test_block_on(async {
+        let id = create_acp_terminal(&callbacks, terminal_request("sleep", &["30"], &[]))
+            .await
+            .expect("terminal should start");
+        callbacks.terminal(&id).unwrap()
+    });
+    assert!(
+        terminal.tree.is_retired(),
+        "a tree whose command the runtime reaps must never be signaled again"
+    );
+    callbacks.shutdown();
+}
+
+#[cfg(unix)]
 fn process_exists(process_id: u32) -> bool {
     std::process::Command::new("kill")
         .args(["-0", &process_id.to_string()])

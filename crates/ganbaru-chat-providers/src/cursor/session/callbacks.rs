@@ -316,8 +316,7 @@ pub(super) async fn create_acp_terminal(
         tokio::spawn(capture_terminal_output(stderr, Arc::clone(&state))),
     ];
     tokio::spawn(supervise_terminal(
-        child,
-        tree,
+        TerminalCommand { child, tree },
         kill_receiver,
         output_tasks,
         state,
@@ -333,14 +332,14 @@ pub(super) async fn create_acp_terminal(
 /// while kill, release, or session stop may still signal the group to stop background
 /// descendants. The tree is retired before the reap, so no signal follows it.
 async fn supervise_terminal(
-    mut child: tokio::process::Child,
-    tree: Arc<crate::process::ProcessTree>,
+    mut command: TerminalCommand,
     mut kill: mpsc::Receiver<()>,
     output_tasks: [JoinHandle<()>; 2],
     state: Arc<Mutex<AcpTerminalState>>,
     completed: Arc<Notify>,
 ) {
-    let (exit_code, kill_requested) = wait_terminal_exit(&mut child, &tree, &mut kill).await;
+    let (exit_code, kill_requested) =
+        wait_terminal_exit(&mut command.child, &command.tree, &mut kill).await;
     // Background descendants can hold the pipes open after the command exits, so the exit
     // status is recorded without waiting for them to close.
     let _ = tokio::time::timeout(ACP_TERMINAL_OUTPUT_DRAIN, async {
@@ -359,9 +358,24 @@ async fn supervise_terminal(
     if !kill_requested {
         let _ = kill.recv().await;
     }
-    tree.terminate();
-    tree.retire();
-    let _ = child.wait().await;
+    command.tree.terminate();
+    command.tree.retire();
+    let _ = command.child.wait().await;
+}
+
+/// A terminal command and its process tree.
+///
+/// Dropping it retires the tree before the child field drops, so a task the runtime drops
+/// cannot leave an armed tree whose command Tokio then reaps in the background.
+struct TerminalCommand {
+    child: tokio::process::Child,
+    tree: Arc<crate::process::ProcessTree>,
+}
+
+impl Drop for TerminalCommand {
+    fn drop(&mut self) {
+        self.tree.retire();
+    }
 }
 
 /// Waits for the command to exit without reaping it, stopping its tree first when the

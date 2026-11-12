@@ -15,6 +15,14 @@ use std::collections::BTreeSet;
 
 pub const ACP_PROTOCOL_VERSION: u32 = 1;
 pub const MINIMUM_CURSOR_VERSION: &str = "2026.04.08";
+/// Cursor Agent builds with the ACP surface the Cursor driver needs, up to the build the Cursor
+/// replay scenarios record. Date versions have no major line, so there is no ceiling.
+pub const CURSOR_COMPATIBILITY: crate::registry::ProviderCompatibilityRange =
+    crate::registry::ProviderCompatibilityRange {
+        minimum: MINIMUM_CURSOR_VERSION,
+        maximum_tested: "2026.04.08",
+        ceiling_exclusive: None,
+    };
 pub const CURSOR_AUTH_METHOD: &str = "cursor_login";
 pub const MAX_PROTOCOL_TEXT_BYTES: usize = 64 * 1024;
 const MAX_MODELS: usize = 256;

@@ -5,6 +5,7 @@ import {
   PROVIDER_IMPLEMENTATION_STATUSES,
   PROVIDER_MATURITIES,
   PROBE_STATES,
+  PROVIDER_VERSION_ADMISSIONS,
   type ModelChoiceOption,
   type ModelOptionDefinition,
   type ModelOptionSelection,
@@ -74,6 +75,7 @@ export function parseProviderFamilyMetadata(value: unknown, label = "provider me
     configurationSchemaVersion: readNonNegativeSafeInteger(record.configurationSchemaVersion, `${label}.configurationSchemaVersion`),
     supportedPlatforms: readStringArray(record.supportedPlatforms, `${label}.supportedPlatforms`),
     minimumTestedCliVersion: readNullable(record.minimumTestedCliVersion, `${label}.minimumTestedCliVersion`, readString),
+    maximumTestedCliVersion: readNullable(record.maximumTestedCliVersion, `${label}.maximumTestedCliVersion`, readString),
     defaultExecutableCandidates: readStringArray(record.defaultExecutableCandidates, `${label}.defaultExecutableCandidates`),
     implementationStatus: readEnum(record.implementationStatus, PROVIDER_IMPLEMENTATION_STATUSES, `${label}.implementationStatus`),
     maturity: readEnum(record.maturity, PROVIDER_MATURITIES, `${label}.maturity`),
@@ -122,6 +124,9 @@ export function parseProviderProbeResult(value: unknown, label = "provider probe
     ),
     checkedAt: readUtcTimestamp(record.checkedAt, `${label}.checkedAt`),
     detail: readNullable(record.detail, `${label}.detail`, readString),
+    versionAdmission: readNullable(record.versionAdmission, `${label}.versionAdmission`, (entry, entryLabel) =>
+      readEnum(entry, PROVIDER_VERSION_ADMISSIONS, entryLabel),
+    ),
   };
 }
 

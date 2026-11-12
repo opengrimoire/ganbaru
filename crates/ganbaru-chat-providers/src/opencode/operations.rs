@@ -1,11 +1,13 @@
 //! OpenCode implementation of the provider-neutral driver operations.
 
+use super::cli::{OPENCODE_COMPATIBILITY, OpenCodeVersion};
 use super::driver::*;
 use super::permissions::permission_reply;
 use super::protocol::parse_rollback_cursor;
 use super::support::*;
 use crate::events::*;
 use crate::models::*;
+use crate::registry::{admit_version, refused_version};
 use crate::{
     DriverFuture, DriverOperationContext, ProviderAuthoritySupport, ProviderDriver,
     ProviderEventSink,
@@ -89,6 +91,13 @@ impl ProviderDriver for OpenCodeProviderDriver {
             match self.catalog_snapshot(&workspace).await {
                 Ok(snapshot) => {
                     let negotiated_protocol_version = snapshot.version.clone();
+                    let version_admission = snapshot
+                        .version
+                        .as_deref()
+                        .map(|version| {
+                            admit_version::<OpenCodeVersion>(&OPENCODE_COMPATIBILITY, version)
+                        })
+                        .transpose()?;
                     self.cached_commands = snapshot.commands.clone();
                     self.cached_models = Some(ProviderModelCatalog {
                         instance_id: self.configuration.instance_id.clone(),
@@ -107,20 +116,25 @@ impl ProviderDriver for OpenCodeProviderDriver {
                         authority_support: self.authority_support(),
                         checked_at,
                         detail: Some(snapshot.toolchain_detail),
+                        version_admission,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
-                Err(error) => Ok(ProviderProbeResult {
-                    instance_id: self.configuration.instance_id.clone(),
-                    state: probe_state(error.code),
-                    version: None,
-                    negotiated_protocol_version: None,
-                    account_label: None,
-                    capabilities: capabilities(),
-                    authority_support: self.authority_support(),
-                    checked_at,
-                    detail: Some(probe_detail(error.code).to_string()),
-                }),
+                Err(error) => {
+                    let refusal = refused_version(&error);
+                    Ok(ProviderProbeResult {
+                        instance_id: self.configuration.instance_id.clone(),
+                        state: probe_state(error.code),
+                        version: refusal.as_ref().map(|(_, version)| version.clone()),
+                        negotiated_protocol_version: None,
+                        account_label: None,
+                        capabilities: capabilities(),
+                        authority_support: self.authority_support(),
+                        checked_at,
+                        detail: Some(probe_detail(error.code).to_string()),
+                        version_admission: refusal.map(|(admission, _)| admission),
+                    })
+                }
             }
         })
     }

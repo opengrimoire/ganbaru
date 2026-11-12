@@ -21,6 +21,7 @@ import {
   parseProviderInstanceConfig,
   parseProviderInstanceRead,
   parseProviderModelCatalog,
+  parseProviderProbeResult,
   parseProviderRefreshResult,
   parseProviderFiles,
 } from "./validation";
@@ -34,6 +35,7 @@ function metadataFixture(): Record<string, unknown> {
     configurationSchemaVersion: 1,
     supportedPlatforms: ["linux", "windows", "macos"],
     minimumTestedCliVersion: null,
+    maximumTestedCliVersion: null,
     defaultExecutableCandidates: ["codex"],
     implementationStatus: "metadata_only",
     maturity: "experimental",
@@ -500,6 +502,41 @@ describe("Chat provider contracts", () => {
       ...provider,
       runtimeReview: [{ label: 3, widensPermissions: true }],
     })).toThrow();
+  });
+
+  it("parses a probe's version admission and refuses unknown admissions", () => {
+    const probe = {
+      instanceId: "claude",
+      state: "healthy",
+      version: "2.1.400",
+      negotiatedProtocolVersion: "stream-json",
+      accountLabel: null,
+      capabilities: { entries: [] },
+      authoritySupport: {
+        isolatedConversation: true,
+        internalHostTools: true,
+        denyShell: false,
+        readOnlyRoot: false,
+        writableRoot: false,
+        confinedCommands: false,
+        networkBoundary: false,
+        classifiedPublish: false,
+      },
+      checkedAt: timestamp,
+      detail: "Newer than the tested version 2.1.322",
+      versionAdmission: "untested_newer",
+    };
+    expect(parseProviderProbeResult(probe)).toEqual(probe);
+    expect(parseProviderProbeResult({ ...probe, versionAdmission: null }).versionAdmission).toBeNull();
+    expect(() => parseProviderProbeResult({ ...probe, versionAdmission: "too_new" }))
+      .toThrow("versionAdmission has an unsupported value");
+  });
+
+  it("reads the newest tested CLI version from provider metadata", () => {
+    expect(parseProviderFamilyMetadata({ ...metadataFixture(), maximumTestedCliVersion: "0.147.0" }).maximumTestedCliVersion)
+      .toBe("0.147.0");
+    expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), maximumTestedCliVersion: 147 }))
+      .toThrow("maximumTestedCliVersion must be a string");
   });
 
   it("rejects partial metadata and unsupported capability values", () => {

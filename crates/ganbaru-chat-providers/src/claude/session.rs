@@ -206,6 +206,9 @@ async fn route_message(resources: &ClaudeRouterResources, value: Value) -> ChatR
     if value.get("type").and_then(Value::as_str) == Some("control_request") {
         return route_provider_request(resources, &value).await;
     }
+    if value.get("type").and_then(Value::as_str) == Some("control_cancel_request") {
+        return route_withdrawn_request(resources, &value).await;
+    }
     let events = {
         let mut state = resources.route.lock().map_err(|_| state_error())?;
         resources.normalizer.normalize_message(&mut state, value)?
@@ -265,6 +268,57 @@ async fn route_provider_request(
             "control/can_use_tool",
             provider_request_id,
             routed.event,
+        )?
+    };
+    resources.sink.emit(event).await
+}
+
+/// Closes the request a `control_cancel_request` withdraws, so its card does not stay open
+/// after the CLI stopped waiting for it. A request already answered or never opened is ignored.
+async fn route_withdrawn_request(
+    resources: &ClaudeRouterResources,
+    value: &Value,
+) -> ChatResult<()> {
+    let Some(control_request_id) = value.get("request_id").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let Ok(provider_request_id) = ProviderRequestId::new(control_request_id.to_string()) else {
+        return Ok(());
+    };
+    let withdrawn = resources
+        .pending_requests
+        .lock()
+        .map_err(|_| state_error())?
+        .remove(&provider_request_id);
+    let Some(withdrawn) = withdrawn else {
+        return Ok(());
+    };
+    let event = match withdrawn.kind {
+        PendingClaudeRequestKind::Approval { .. } => {
+            CanonicalEvent::RequestResolved(RequestResolvedEvent {
+                request_id: provider_request_id.clone(),
+                state: RequestResolutionState::Interrupted,
+                decision: None,
+            })
+        }
+        PendingClaudeRequestKind::UserInput { .. } => {
+            CanonicalEvent::UserInputResolved(UserInputResolvedEvent {
+                request_id: provider_request_id.clone(),
+                state: RequestResolutionState::Interrupted,
+                answers: Vec::new(),
+            })
+        }
+    };
+    let event = {
+        let mut state = resources.route.lock().map_err(|_| state_error())?;
+        if state.active_chat_turn_id.is_some() {
+            state.session_state = ProviderSessionState::Active;
+        }
+        resources.normalizer.external_event(
+            &state,
+            "control/cancel_request",
+            Some(provider_request_id),
+            event,
         )?
     };
     resources.sink.emit(event).await

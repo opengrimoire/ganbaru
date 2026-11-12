@@ -163,13 +163,24 @@ impl ClaudeUsageTracker {
 
     /// The `contextWindow` of the main model's `modelUsage` entry, or the largest window when the
     /// main model has no entry.
+    ///
+    /// Claude keys `modelUsage` by the requested model, which may carry a context suffix such as
+    /// `[1m]` that response models omit, so an exact miss retries with the suffix ignored.
     fn context_limit(&self, object: &Map<String, Value>, route_model: Option<&str>) -> Option<u64> {
         let models = object.get("modelUsage")?.as_object()?;
         let window = |entry: &Value| entry.get("contextWindow").and_then(Value::as_u64);
         self.main_model
             .as_deref()
             .or(route_model)
-            .and_then(|model| models.get(model))
+            .and_then(|model| {
+                models.get(model).or_else(|| {
+                    let base = without_context_suffix(model);
+                    models
+                        .iter()
+                        .find(|(key, _)| without_context_suffix(key) == base)
+                        .map(|(_, entry)| entry)
+                })
+            })
             .and_then(window)
             .or_else(|| models.values().filter_map(window).max())
     }
@@ -179,4 +190,12 @@ impl ClaudeUsageTracker {
             self.main_model = Some(bounded_text(model, MAX_MODEL_ID_BYTES));
         }
     }
+}
+
+/// A model id without a trailing bracketed context suffix such as `[1m]`.
+fn without_context_suffix(model: &str) -> &str {
+    model
+        .strip_suffix(']')
+        .and_then(|rest| rest.rfind('[').map(|start| &model[..start]))
+        .unwrap_or(model)
 }

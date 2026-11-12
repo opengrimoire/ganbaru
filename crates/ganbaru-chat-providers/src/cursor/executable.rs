@@ -1,11 +1,14 @@
 //! Cursor executable, probe, launch, environment, and continuation identity.
 
-use super::protocol::{CursorProviderSettings, MINIMUM_CURSOR_VERSION, protocol_error};
+use super::protocol::{
+    CURSOR_COMPATIBILITY, CursorProviderSettings, MINIMUM_CURSOR_VERSION, protocol_error,
+};
 use crate::models::*;
 use crate::process::{
     BoundedCommand, BoundedCommandFailure, ProviderProcessConfig, run_bounded_command,
     spawn_provider_process,
 };
+use crate::registry::{VersionOrder, admit_version, version_refusal};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
@@ -273,17 +276,27 @@ pub fn parse_about(stdout: &[u8], stderr: &[u8], success: bool) -> ChatResult<Cu
     })
 }
 
-pub fn ensure_supported_version(version: CursorVersion) -> ChatResult<()> {
-    if version < parse_version(MINIMUM_CURSOR_VERSION)? {
-        return Err(ChatError::new(
-            ChatErrorCode::UnsupportedVersion,
+impl VersionOrder for CursorVersion {
+    fn parse_version(value: &str) -> ChatResult<Self> {
+        parse_version(value)
+    }
+}
+
+/// Where `version` falls in `CURSOR_COMPATIBILITY`, refusing a build older than the minimum.
+pub fn ensure_supported_version(version: CursorVersion) -> ChatResult<ProviderVersionAdmission> {
+    let text = version.to_string();
+    let admission = admit_version::<CursorVersion>(&CURSOR_COMPATIBILITY, &text)?;
+    if admission == ProviderVersionAdmission::BelowMinimum {
+        return Err(version_refusal(
+            admission,
+            &text,
             format!(
                 "Cursor Agent {version} is unsupported; version {MINIMUM_CURSOR_VERSION} or newer is required"
             ),
             false,
         ));
     }
-    Ok(())
+    Ok(admission)
 }
 
 pub fn parse_version(value: &str) -> ChatResult<CursorVersion> {

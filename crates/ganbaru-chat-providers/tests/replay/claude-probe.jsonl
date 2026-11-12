@@ -1,0 +1,3 @@
+{"type":"transcript_start","provider":"claude","protocol":"stream-json","cli_version":"2.1.322","scenario":"probe","generated_by":"authored"}
+{"type":"expect_outbound","label":"initialize","frame":{"type":"control_request","request_id":"<redacted>","request":{"subtype":"initialize","supportedDialogKinds":[]}}}
+{"type":"emit_inbound","frame":{"type":"control_response","response":{"subtype":"success","request_id":"<ref:initialize>","response":{"commands":[],"models":[],"account":null}}}}

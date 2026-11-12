@@ -15,6 +15,8 @@ mod cursor;
 mod driver;
 mod opencode;
 mod registry;
+#[cfg(test)]
+mod replay;
 pub mod runtime_review;
 mod unsupported;
 

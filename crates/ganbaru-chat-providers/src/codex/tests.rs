@@ -1,7 +1,7 @@
 use super::driver::{
     CodexNativeCommand, CodexProviderDriver, append_project_configuration_arguments,
-    codex_native_command, confirmed_resume_not_found, goal_request, parse_mcp_status_page,
-    validated_app_server_arguments,
+    codex_native_command, confirmed_resume_not_found, ensure_supported_user_agent, goal_request,
+    parse_mcp_status_page, validated_app_server_arguments,
 };
 use super::home::*;
 use super::normalizer::{CodexEventNormalizer, CodexRouteState};
@@ -11,7 +11,9 @@ use super::session::{
     CodexApprovalResponse, PendingCodexRequest, PendingCodexRequestKind, PendingCodexRequests,
     approval_display, provider_request_id, resolve_codex_approval, resolve_codex_user_input,
 };
-use super::transport::{CodexInboundMessage, CodexRpcConnection, CodexRpcFailure};
+use super::transport::{
+    CodexInboundMessage, CodexRpcConnection, CodexRpcFailure, MAX_JSONL_MESSAGE_BYTES,
+};
 use crate::events::{
     ApprovalSubjectKind, CanonicalEvent, CanonicalRuntimeEvent, SessionPermissionGrant,
 };
@@ -36,7 +38,10 @@ mod home;
 mod interactions;
 mod models;
 mod normalizer;
+mod protocol_coverage;
+mod rollback;
 mod transport;
+mod turn_errors;
 mod usage;
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -97,7 +102,10 @@ fn identifier<T>(value: &str, constructor: impl FnOnce(String) -> Result<T, Stri
     constructor(value.to_string()).unwrap()
 }
 
-fn configuration(shared_home: &Path, shadow_home: Option<&Path>) -> ProviderInstanceConfig {
+pub(super) fn configuration(
+    shared_home: &Path,
+    shadow_home: Option<&Path>,
+) -> ProviderInstanceConfig {
     serde_json::from_value(json!({
         "schemaVersion": 1,
         "instanceId": "codex-instance-1",
@@ -143,6 +151,11 @@ enum FixtureScenario {
     CommandApproval,
     StructuredQuestion,
     TurnNotInProgress,
+    CapacityFailure,
+    CapacityRetryInFlight,
+    UsageLimit,
+    Elicitation,
+    RepeatedTurnCursor,
 }
 
 #[derive(Default)]
@@ -162,7 +175,17 @@ fn fixture_driver(
     workspace: &Path,
     scenario: FixtureScenario,
 ) -> (CodexProviderDriver, Arc<AppServerFixtureState>) {
+    fixture_driver_with(workspace, scenario, |_| {})
+}
+
+/// A fixture driver whose configuration `adjust` edits before the driver is built.
+fn fixture_driver_with(
+    workspace: &Path,
+    scenario: FixtureScenario,
+    adjust: impl FnOnce(&mut ProviderInstanceConfig),
+) -> (CodexProviderDriver, Arc<AppServerFixtureState>) {
     let mut config = configuration(workspace, None);
+    adjust(&mut config);
     if scenario == FixtureScenario::Organizational {
         config.internal_mcp = Some(ProviderInternalMcpConfig {
             name: "ganbaru-chat".to_string(),
@@ -222,6 +245,7 @@ async fn run_app_server_fixture<R, W>(
 {
     let mut reader = BufReader::new(reader);
     let mut resume_failed = false;
+    let mut turn_starts = 0_u32;
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line).await {
@@ -250,7 +274,7 @@ async fn run_app_server_fixture<R, W>(
                     json!({
                         "id": id,
                         "result": {
-                            "userAgent": "codex-cli/0.144.6",
+                            "userAgent": "codex-cli/0.167.1",
                             "codexHome": home,
                             "platformFamily": "unix",
                             "platformOs": "linux"
@@ -499,6 +523,61 @@ async fn run_app_server_fixture<R, W>(
             "config/mcpServer/reload" => {
                 write_fixture_message(&mut writer, json!({ "id": id, "result": {} })).await;
             }
+            "turn/start"
+                if matches!(
+                    scenario,
+                    FixtureScenario::CapacityFailure
+                        | FixtureScenario::CapacityRetryInFlight
+                        | FixtureScenario::UsageLimit
+                ) =>
+            {
+                turn_starts += 1;
+                let turn_id = format!("fixture-provider-turn-{turn_starts}");
+                let thread_id = message["params"]["threadId"].clone();
+                let error = if scenario == FixtureScenario::UsageLimit {
+                    json!({ "message": "Fixture failure", "codexErrorInfo": "usageLimitExceeded" })
+                } else {
+                    json!({ "message": "Fixture failure", "codexErrorInfo": "serverOverloaded" })
+                };
+                let held = scenario == FixtureScenario::CapacityRetryInFlight && turn_starts > 1;
+                if held {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                }
+                let mut frames = vec![
+                    json!({
+                        "id": id,
+                        "result": { "turn": { "id": turn_id, "status": "inProgress" } }
+                    }),
+                    json!({
+                        "method": "turn/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turn": { "id": turn_id, "status": "inProgress" }
+                        }
+                    }),
+                ];
+                if !held {
+                    frames.push(json!({
+                        "method": "error",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "error": error,
+                            "willRetry": false
+                        }
+                    }));
+                    frames.push(json!({
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "turn": { "id": turn_id, "status": "failed", "items": [], "error": error }
+                        }
+                    }));
+                }
+                for frame in frames {
+                    write_fixture_message(&mut writer, frame).await;
+                }
+            }
             "turn/start" if scenario == FixtureScenario::TurnNotInProgress => {
                 write_fixture_message(
                     &mut writer,
@@ -541,6 +620,24 @@ async fn run_app_server_fixture<R, W>(
                                 "itemId": "fixture-command-item",
                                 "command": "pnpm test",
                                 "reason": "Run focused tests"
+                            }
+                        }),
+                    )
+                    .await;
+                }
+                if scenario == FixtureScenario::Elicitation {
+                    write_fixture_message(
+                        &mut writer,
+                        json!({
+                            "id": "fixture-elicitation",
+                            "method": "mcpServer/elicitation/request",
+                            "params": {
+                                "threadId": message["params"]["threadId"],
+                                "turnId": "fixture-provider-turn",
+                                "serverName": "fixture-docs",
+                                "mode": "form",
+                                "message": "Sign in to continue",
+                                "requestedSchema": { "type": "object", "properties": {} }
                             }
                         }),
                     )
@@ -610,12 +707,60 @@ async fn run_app_server_fixture<R, W>(
                 )
                 .await;
             }
+            "thread/turns/list" => {
+                let page = fixture_turn_page(scenario, message["params"]["cursor"].as_str());
+                write_fixture_message(&mut writer, json!({ "id": id, "result": page })).await;
+            }
+            "thread/revert" => {
+                write_fixture_message(
+                    &mut writer,
+                    json!({
+                        "id": id,
+                        "result": {
+                            "thread": { "id": message["params"]["threadId"], "turns": [] },
+                            "turnsBackwardsCursor": null
+                        }
+                    }),
+                )
+                .await;
+            }
             _ => {
                 write_fixture_message(&mut writer, json!({ "id": id, "result": {} })).await;
             }
         }
     }
     state.closed.store(true, Ordering::Release);
+}
+
+/// Native thread turns, newest first, that `thread/turns/list` pages two at a time.
+const FIXTURE_THREAD_TURNS: [&str; 5] = [
+    "codex-turn-5",
+    "codex-turn-4",
+    "codex-turn-3",
+    "codex-turn-2",
+    "codex-turn-1",
+];
+
+/// One descending `thread/turns/list` page. `RepeatedTurnCursor` always points at page 2.
+fn fixture_turn_page(scenario: FixtureScenario, cursor: Option<&str>) -> Value {
+    const PAGE_SIZE: usize = 2;
+    let page = cursor
+        .and_then(|cursor| cursor.strip_prefix("page-"))
+        .and_then(|page| page.parse::<usize>().ok())
+        .unwrap_or(1);
+    let start = (page - 1) * PAGE_SIZE;
+    let data = FIXTURE_THREAD_TURNS
+        .iter()
+        .skip(start)
+        .take(PAGE_SIZE)
+        .map(|turn_id| json!({ "id": turn_id, "items": [], "status": "completed" }))
+        .collect::<Vec<_>>();
+    let next_cursor = if scenario == FixtureScenario::RepeatedTurnCursor {
+        Some("page-2".to_string())
+    } else {
+        (start + PAGE_SIZE < FIXTURE_THREAD_TURNS.len()).then(|| format!("page-{}", page + 1))
+    };
+    json!({ "data": data, "nextCursor": next_cursor })
 }
 
 fn start_request(workspace: &Path) -> StartSessionRequest {
@@ -678,4 +823,46 @@ async fn wait_for_fixture_message(
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     panic!("fixture message was not received");
+}
+
+#[test]
+fn codex_user_agents_admit_against_the_tested_range() {
+    use crate::registry::refused_version;
+    for (user_agent, admission) in [
+        ("codex-cli/0.155.9", ProviderVersionAdmission::BelowMinimum),
+        (
+            "codex-cli/1.0.0",
+            ProviderVersionAdmission::AtOrAboveCeiling,
+        ),
+    ] {
+        let error = ensure_supported_user_agent(user_agent).unwrap_err();
+        assert_eq!(
+            error.code,
+            ChatErrorCode::UnsupportedVersion,
+            "{user_agent}"
+        );
+        assert!(error.recoverable, "{user_agent}");
+        let (refused, version) = refused_version(&error).unwrap();
+        assert_eq!(refused, admission, "{user_agent}");
+        assert_eq!(
+            Some(version),
+            user_agent.split_once('/').map(|(_, v)| v.to_string())
+        );
+    }
+    for (user_agent, admission) in [
+        ("codex-cli/0.156.0", ProviderVersionAdmission::Supported),
+        ("codex-cli/0.167.1", ProviderVersionAdmission::Supported),
+        (
+            "codex-cli/0.168.0-alpha.2 (Linux; x86_64)",
+            ProviderVersionAdmission::UntestedNewer,
+        ),
+        ("codex-cli", ProviderVersionAdmission::Unreadable),
+        ("codex-cli/nightly", ProviderVersionAdmission::Unreadable),
+    ] {
+        assert_eq!(
+            ensure_supported_user_agent(user_agent).unwrap(),
+            admission,
+            "{user_agent}"
+        );
+    }
 }

@@ -222,7 +222,7 @@
     const unlisten = listenForChatChanges((payload) => {
       try {
         const change = parseChatChangeNotification(payload);
-        void chat.handleNativeChange(change.threadId).catch(() => undefined);
+        void chat.handleNativeChange(change.threadId, change).catch(() => undefined);
       } catch (error: unknown) {
         console.error("Invalid Chat change notification", error);
       }

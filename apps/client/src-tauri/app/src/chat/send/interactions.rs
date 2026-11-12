@@ -57,6 +57,13 @@ pub(crate) async fn steer_turn(
     if let Err(error) = persist_steer_message(&pool, &request, &turn_id, &now_timestamp()?).await {
         return complete_driver_operation(&pool, &command_id, Err(error)).await;
     }
+    crate::chat::ingestion::notify_rows_changed(
+        &app,
+        &pool,
+        &request.thread_id,
+        &[ChatProjectionKey::Thread, ChatProjectionKey::Messages],
+    )
+    .await;
     let result = owner
         .steer_turn(
             SteerTurnRequest {

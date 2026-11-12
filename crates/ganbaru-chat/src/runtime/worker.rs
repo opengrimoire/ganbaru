@@ -9,6 +9,9 @@ struct RuntimeWorker {
     session: Option<ProviderSessionSnapshot>,
     snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
     generation: Arc<AtomicU64>,
+    interrupt_confirmation_timeout: Duration,
+    /// The turn an accepted interrupt is waiting on, and when the runtime stops waiting.
+    interrupt_deadline: Option<(ChatTurnId, Instant)>,
 }
 
 impl RuntimeWorker {
@@ -16,6 +19,7 @@ impl RuntimeWorker {
         thread_id: ChatThreadId,
         snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
         generation: Arc<AtomicU64>,
+        interrupt_confirmation_timeout: Duration,
     ) -> Self {
         Self {
             thread_id,
@@ -24,6 +28,8 @@ impl RuntimeWorker {
             session: None,
             snapshot,
             generation,
+            interrupt_confirmation_timeout,
+            interrupt_deadline: None,
         }
     }
 
@@ -358,6 +364,7 @@ impl RuntimeWorker {
                     return false;
                 }
                 let previous_state = self.session_state();
+                let turn_id = request.turn_id.clone();
                 self.update(|state| state.session_state = ProviderSessionState::Stopping);
                 let result = match self.driver.as_mut() {
                     Some(driver) => {
@@ -368,6 +375,11 @@ impl RuntimeWorker {
                 };
                 if result.is_err() {
                     self.update(|state| state.session_state = previous_state);
+                } else {
+                    self.interrupt_deadline = Some((
+                        turn_id,
+                        Instant::now() + self.interrupt_confirmation_timeout,
+                    ));
                 }
                 let _ = response.send(result);
             }
@@ -504,6 +516,78 @@ impl RuntimeWorker {
             .await;
     }
 
+    /// The earlier of the idle deadline and a pending interrupt deadline.
+    fn next_deadline(&self, idle_timeout: Duration) -> Option<Instant> {
+        let interrupt = self
+            .interrupt_deadline
+            .as_ref()
+            .map(|(_, deadline)| *deadline);
+        match (self.idle_deadline(idle_timeout), interrupt) {
+            (Some(idle), Some(interrupt)) => Some(idle.min(interrupt)),
+            (idle, interrupt) => idle.or(interrupt),
+        }
+    }
+
+    /// Whether a pending interrupt deadline has passed.
+    fn interrupt_expired(&self, now: Instant) -> bool {
+        self.interrupt_deadline
+            .as_ref()
+            .is_some_and(|(_, deadline)| *deadline <= now)
+    }
+
+    /// Settles a turn whose provider accepted an interrupt but never confirmed it: records a
+    /// warning and an interrupted abort with an id derived from the thread and turn, then stops
+    /// the provider so the next turn starts a fresh session. Events the provider sends later
+    /// belong to a retired generation and are ignored as late. Does nothing when the turn
+    /// already settled.
+    async fn expire_interrupt(&mut self) {
+        let Some((turn_id, _)) = self.interrupt_deadline.take() else {
+            return;
+        };
+        if self.active_turn_id().as_ref() != Some(&turn_id) {
+            return;
+        }
+        let provider = self.driver.as_ref().map(|driver| {
+            let configuration = driver.instance_configuration();
+            (
+                configuration.family_id.clone(),
+                configuration.instance_id.clone(),
+            )
+        });
+        if let (Some(sink), Some((family_id, instance_id))) = (self.event_sink.clone(), provider) {
+            match unconfirmed_interrupt_events(&self.thread_id, &turn_id, &family_id, &instance_id)
+            {
+                Ok(events) => {
+                    for event in events {
+                        if let Err(error) = sink.emit(event).await {
+                            eprintln!(
+                                "Chat could not record an unconfirmed interrupt, code {:?}",
+                                error.code
+                            );
+                        }
+                    }
+                }
+                Err(error) => eprintln!(
+                    "Chat could not build an unconfirmed interrupt event, code {:?}",
+                    error.code
+                ),
+            }
+        }
+        let deadline = Instant::now() + DEFAULT_STOP_TIMEOUT;
+        if let Err(error) = self
+            .stop_driver(
+                false,
+                operation_context("runtime-interrupt-timeout", deadline),
+            )
+            .await
+        {
+            eprintln!(
+                "Chat could not stop a provider that ignored Stop, code {:?}",
+                error.code
+            );
+        }
+    }
+
     fn can_idle_stop(&self, idle_timeout: Duration) -> bool {
         self.driver.is_some()
             && self
@@ -563,10 +647,20 @@ pub(super) async fn run_thread_runtime(
     snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
     generation: Arc<AtomicU64>,
     idle_timeout: Duration,
+    interrupt_confirmation_timeout: Duration,
 ) {
-    let mut worker = RuntimeWorker::new(thread_id, snapshot, generation);
+    let mut worker = RuntimeWorker::new(
+        thread_id,
+        snapshot,
+        generation,
+        interrupt_confirmation_timeout,
+    );
     loop {
-        let command = match worker.idle_deadline(idle_timeout) {
+        // Checked before waiting too, so steady commands never postpone an expired interrupt.
+        if worker.interrupt_expired(Instant::now()) {
+            worker.expire_interrupt().await;
+        }
+        let command = match worker.next_deadline(idle_timeout) {
             Some(deadline) => match tokio::time::timeout_at(
                 tokio::time::Instant::from_std(deadline),
                 receiver.recv(),
@@ -575,7 +669,9 @@ pub(super) async fn run_thread_runtime(
             {
                 Ok(command) => command,
                 Err(_) => {
-                    if worker.can_idle_stop(idle_timeout) {
+                    if !worker.interrupt_expired(Instant::now())
+                        && worker.can_idle_stop(idle_timeout)
+                    {
                         worker.idle_stop().await;
                     }
                     continue;

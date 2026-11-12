@@ -1,4 +1,5 @@
 use super::*;
+use crate::registry::{CoreVersion, admit_version, admits_sessions, version_refusal};
 
 pub(crate) fn validated_app_server_arguments(arguments: &[String]) -> ChatResult<Vec<String>> {
     let mut output = Vec::new();
@@ -78,11 +79,32 @@ pub(crate) fn append_project_configuration_arguments(
     Ok(())
 }
 
+/// Interrupts the running turn. A turn waiting out a capacity retry has no provider turn to
+/// interrupt, so the retry is cancelled and the chat turn settles as interrupted here.
 pub(super) async fn interrupt_live_turn(
     live: &mut CodexLiveSession,
     context: &DriverOperationContext,
 ) -> ChatResult<()> {
-    let state = live.route.lock().map_err(|_| driver_state_error())?.clone();
+    let (state, waiting_retry) = {
+        let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+        let retry = state.capacity_retry.take();
+        let waiting_retry = retry.as_ref().is_some_and(CodexCapacityRetry::retrying);
+        if let Some(retry) = retry {
+            retry.cancel();
+        }
+        (state.clone(), waiting_retry)
+    };
+    if waiting_retry
+        && state.active_provider_turn_id.is_none()
+        && state.active_chat_turn_id.is_some()
+    {
+        let event = {
+            let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+            live.normalizer
+                .settled_turn(&mut state, None, ChatTurnState::Interrupted, None)?
+        };
+        return live.sink.emit(event).await;
+    }
     let (Some(provider_thread_id), Some(provider_turn_id)) =
         (state.provider_thread_id, state.active_provider_turn_id)
     else {
@@ -324,6 +346,30 @@ pub(super) fn now_utc() -> ChatResult<UtcTimestamp> {
 pub(super) fn parse_user_agent_version(user_agent: &str) -> Option<String> {
     let (_, suffix) = user_agent.split_once('/')?;
     suffix.split_whitespace().next().map(str::to_string)
+}
+
+/// Where the Codex version in `user_agent` falls in `CODEX_COMPATIBILITY`, refusing one below the
+/// minimum or at or above the ceiling. A user agent without a readable version is `Unreadable`
+/// and still starts.
+pub(in crate::codex) fn ensure_supported_user_agent(
+    user_agent: &str,
+) -> ChatResult<ProviderVersionAdmission> {
+    let Some(version) = parse_user_agent_version(user_agent) else {
+        return Ok(ProviderVersionAdmission::Unreadable);
+    };
+    let admission = admit_version::<CoreVersion>(&CODEX_COMPATIBILITY, &version)?;
+    if admits_sessions(admission) {
+        return Ok(admission);
+    }
+    Err(version_refusal(
+        admission,
+        &version,
+        format!(
+            "Codex {version} is unsupported; Ganbaru supports versions from {MINIMUM_CODEX_VERSION} and below {}",
+            CODEX_COMPATIBILITY.ceiling_exclusive.unwrap_or_default()
+        ),
+        true,
+    ))
 }
 
 pub(super) fn probe_state_for_error(code: ChatErrorCode) -> ProbeState {

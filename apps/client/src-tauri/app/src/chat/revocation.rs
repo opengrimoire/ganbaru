@@ -3,8 +3,8 @@
 use super::internal_mcp::{InternalMcpRunScope, generate_opaque_handle};
 use ganbaru_chat::runtime::ChatRuntimeRegistry;
 use ganbaru_chat_contracts::models::{
-    ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
-    ChatThreadId, ChatTurnId, ProjectWorkingFolderId,
+    ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatProjectionKey,
+    ChatResult, ChatThreadId, ChatTurnId, ProjectWorkingFolderId,
 };
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeSet;
@@ -142,7 +142,11 @@ pub(crate) async fn drain_access_revocation_jobs(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
 ) -> ChatResult<u64> {
+    // Callers drain after committing a revocation, and the pass settles runs, so live checks that
+    // passed before either must run again.
+    crate::chat::authority_epoch::bump_authority_epoch(app);
     let pass = run_drain_pass(app, pool).await;
+    crate::chat::authority_epoch::bump_authority_epoch(app);
     if pass.retry {
         let retry_app = app.clone();
         let retry_pool = pool.clone();
@@ -518,6 +522,19 @@ async fn drain_claimed_job(
         &runs,
     )
     .await?;
+    let revoked_threads = runs
+        .iter()
+        .map(|run| &run.thread_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    for thread_id in revoked_threads {
+        super::ingestion::notify_rows_changed(
+            app,
+            pool,
+            thread_id,
+            &[ChatProjectionKey::Thread, ChatProjectionKey::Turns],
+        )
+        .await;
+    }
 
     let mcp = app.state::<super::internal_mcp::InternalMcpRegistry>();
     let runtime = app.state::<ChatRuntimeRegistry>();

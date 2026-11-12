@@ -276,6 +276,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(chat::settings_commands::ChatSettingsState::default())
         .manage(chat::provider_files::ProviderFileState::default())
         .manage(chat::internal_mcp::InternalMcpRegistry::default())
+        .manage(chat::authority_epoch::ChatAuthorityEpoch::default())
         .manage(chat::preview::ChatBrowserManager::default())
         .manage(ganbaru_chat::runtime::ChatRuntimeRegistry::default())
         .manage(chat::review::engine::ChatReviewRegistry::default())
@@ -443,6 +444,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::threads::chat_read_thread_shell,
             chat::threads::chat_read_timeline_page,
             chat::threads::chat_read_timeline_turn,
+            chat::threads::chat_read_timeline_since,
+            chat::threads::chat_read_activity_detail,
             chat::threads::chat_fork_thread,
             chat::threads::chat_open_external_url,
             chat::threads::chat_rename_thread,

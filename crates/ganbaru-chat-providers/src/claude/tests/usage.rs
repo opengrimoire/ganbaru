@@ -122,6 +122,29 @@ fn the_route_model_or_the_largest_window_applies_when_no_request_named_a_model()
 }
 
 #[test]
+fn a_context_suffix_on_the_usage_key_still_selects_the_main_model_window() {
+    let mut state = active_state();
+    let events = run(
+        &mut state,
+        vec![
+            root_start(
+                "msg_1",
+                "claude-opus-4-1",
+                json!({ "input_tokens": 4, "output_tokens": 1 }),
+            ),
+            result(json!({
+                "claude-opus-4-1[1m]": { "contextWindow": 1000000 },
+                "claude-sonnet-4-5[2m]": { "contextWindow": 2000000 }
+            })),
+        ],
+    );
+    assert_eq!(
+        usage_events(&events)[0].context_limit,
+        Some(1_000_000),
+        "the suffixed main model entry wins over the larger subagent window"
+    );
+}
+#[test]
 fn an_unstreamed_root_assistant_message_supplies_the_request_usage() {
     let mut state = active_state();
     let events = run(

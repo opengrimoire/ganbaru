@@ -10,6 +10,9 @@ mod session;
 mod transport;
 
 #[cfg(test)]
+pub(crate) mod replay;
+
+#[cfg(test)]
 mod tests;
 
 pub use driver::CursorProviderDriver;

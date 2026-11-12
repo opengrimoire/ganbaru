@@ -667,3 +667,169 @@ fn ready_session_stops_lazily_and_hung_shutdown_stays_bounded() {
         assert!(!owner.snapshot().unwrap().accepting_commands);
     });
 }
+
+fn interrupt_request(turn_id: &str) -> ganbaru_chat_contracts::models::InterruptTurnRequest {
+    ganbaru_chat_contracts::models::InterruptTurnRequest {
+        command: ChatCommandContext {
+            client_command_id: ChatCommandId::new(format!("interrupt-{turn_id}")).unwrap(),
+            expected_thread_revision: None,
+        },
+        session_id: ganbaru_chat_contracts::models::ProviderSessionId::new("fake-session").unwrap(),
+        turn_id: ganbaru_chat_contracts::models::ChatTurnId::new(turn_id).unwrap(),
+    }
+}
+
+/// Counts the recorded terminal events of `turn_id`.
+fn terminal_events(control: &FakeDriverControl, turn_id: &str) -> usize {
+    control
+        .events()
+        .iter()
+        .filter(|event| {
+            event.turn_id.as_ref().map(|turn| turn.as_str()) == Some(turn_id)
+                && matches!(
+                    &event.event,
+                    CanonicalEvent::TurnCompleted(_) | CanonicalEvent::TurnAborted(_)
+                )
+        })
+        .count()
+}
+
+#[test]
+fn an_unconfirmed_interrupt_settles_the_turn_and_stops_the_provider() {
+    tauri::async_runtime::block_on(async {
+        let timeout = Duration::from_millis(100);
+        let registry = ChatRuntimeRegistry::with_interrupt_confirmation_timeout_for_test(timeout);
+        let owner = registry
+            .owner(ChatThreadId::new("thread-1").unwrap())
+            .unwrap();
+        let control = Arc::new(FakeDriverControl::default());
+        let sink: Arc<dyn ProviderEventSink> =
+            Arc::new(RecordingEventSink::new(Arc::clone(&control)));
+        owner
+            .start_session(
+                fake_driver(Arc::clone(&control)),
+                start_request(),
+                sink,
+                operation_context("start", Duration::from_secs(1)),
+            )
+            .await
+            .unwrap();
+        owner
+            .send_turn(
+                send_request("ignored-stop"),
+                turn_reservation("thread-1", "ignored-stop"),
+                operation_context("send", Duration::from_secs(1)),
+            )
+            .await
+            .unwrap();
+        owner
+            .interrupt_turn(
+                interrupt_request("ignored-stop"),
+                operation_context("interrupt", Duration::from_secs(1)),
+            )
+            .await
+            .unwrap();
+        assert!(owner.snapshot().unwrap().turn_active);
+        assert_eq!(terminal_events(&control, "ignored-stop"), 0);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // The fake keeps streaming during the stop, which reports the stop as failed; either way
+        // the provider session is gone.
+        while !matches!(
+            owner.snapshot().unwrap().session_state,
+            ProviderSessionState::Stopped | ProviderSessionState::Failed
+        ) {
+            assert!(Instant::now() < deadline, "the interrupt never settled");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(owner.snapshot().unwrap().session_id, None);
+        let events = control.events();
+        assert!(events.iter().any(|event| {
+            matches!(&event.event, CanonicalEvent::RuntimeWarning(warning) if warning.code == "provider_interrupt_unconfirmed")
+        }));
+        let abort = events
+            .iter()
+            .find(|event| matches!(&event.event, CanonicalEvent::TurnAborted(_)))
+            .unwrap();
+        assert_eq!(
+            abort.event_id.as_str(),
+            "interrupt-timeout:thread-1:ignored-stop"
+        );
+        assert!(matches!(
+            &abort.event,
+            CanonicalEvent::TurnAborted(aborted)
+                if aborted.state == ganbaru_chat_contracts::models::ChatTurnState::Interrupted
+                    && aborted.recoverable
+        ));
+        let snapshot = owner.snapshot().unwrap();
+        assert!(!snapshot.turn_active);
+        assert_eq!(snapshot.active_turn_id, None);
+
+        let late = control.emit_late_abort("ignored-stop").await.unwrap_err();
+        assert_eq!(late.code, ChatErrorCode::Conflict);
+        assert_eq!(terminal_events(&control, "ignored-stop"), 1);
+
+        let next = Arc::new(FakeDriverControl::default());
+        let next_sink: Arc<dyn ProviderEventSink> =
+            Arc::new(RecordingEventSink::new(Arc::clone(&next)));
+        owner
+            .start_session(
+                fake_driver(Arc::clone(&next)),
+                start_request(),
+                next_sink,
+                operation_context("restart", Duration::from_secs(1)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            owner.snapshot().unwrap().session_state,
+            ProviderSessionState::Ready
+        );
+    });
+}
+
+#[test]
+fn a_confirmed_interrupt_settles_once_without_the_watchdog() {
+    tauri::async_runtime::block_on(async {
+        let timeout = Duration::from_millis(100);
+        let registry = ChatRuntimeRegistry::with_interrupt_confirmation_timeout_for_test(timeout);
+        let owner = registry
+            .owner(ChatThreadId::new("thread-1").unwrap())
+            .unwrap();
+        let control = Arc::new(FakeDriverControl::default());
+        let sink: Arc<dyn ProviderEventSink> =
+            Arc::new(RecordingEventSink::new(Arc::clone(&control)));
+        owner
+            .start_session(
+                fake_driver(Arc::clone(&control)),
+                start_request(),
+                sink,
+                operation_context("start", Duration::from_secs(1)),
+            )
+            .await
+            .unwrap();
+        owner
+            .send_turn(
+                send_request("confirmed-stop"),
+                turn_reservation("thread-1", "confirmed-stop"),
+                operation_context("send", Duration::from_secs(1)),
+            )
+            .await
+            .unwrap();
+        owner
+            .interrupt_turn(
+                interrupt_request("confirmed-stop"),
+                operation_context("interrupt", Duration::from_secs(1)),
+            )
+            .await
+            .unwrap();
+        control.emit_late_abort("confirmed-stop").await.unwrap();
+        tokio::time::sleep(timeout * 3).await;
+        let snapshot = owner.snapshot().unwrap();
+        assert_eq!(snapshot.session_state, ProviderSessionState::Ready);
+        assert_eq!(terminal_events(&control, "confirmed-stop"), 1);
+        assert!(!control.events().iter().any(|event| {
+            matches!(&event.event, CanonicalEvent::RuntimeWarning(warning) if warning.code == "provider_interrupt_unconfirmed")
+        }));
+    });
+}

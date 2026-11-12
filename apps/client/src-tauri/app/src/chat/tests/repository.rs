@@ -15,12 +15,15 @@ use ganbaru_chat::repository::lifecycle::{
     permanently_delete_thread, resolve_project_deletion, set_thread_archived, set_thread_read,
 };
 use ganbaru_chat::repository::reads::{
-    parse_timeline_cursor, read_project_shells, read_thread_shell, read_thread_shell_window,
-    read_thread_shells, read_timeline_page, read_timeline_turn, search_thread_titles,
+    ACTIVITY_DETAIL_PREVIEW_BYTES, parse_timeline_cursor, prune_timeline_removals,
+    read_activity_detail, read_project_shells, read_thread_shell, read_thread_shell_window,
+    read_thread_shells, read_timeline_page, read_timeline_since, read_timeline_turn,
+    search_thread_titles,
 };
 use ganbaru_chat::repository::rebuild::rebuild_thread_projections;
 use ganbaru_chat::repository::receipts::{
     CommandReceiptClaim, CommandReceiptState, claim_command_receipt, complete_command_receipt,
+    prune_command_receipts,
 };
 use ganbaru_chat::repository::recovery::recover_orphaned_turns;
 use ganbaru_chat::repository::resources::{
@@ -35,9 +38,9 @@ use ganbaru_chat_contracts::events::{
     UserInputRequestedEvent,
 };
 use ganbaru_chat_contracts::models::{
-    ActivityStatus, CanonicalItemKind, CanonicalRequestKind, ChatAttachmentId, ChatCheckpointId,
-    ChatCommandId, ChatErrorCode, ChatEventId, ChatThreadId, ChatTurnId, ChatTurnState,
-    ContentStreamKind, InteractionMode, ProjectWorkingFolderId, ProviderFamilyId,
+    ActivityStatus, CanonicalItemKind, CanonicalRequestKind, ChatActivityId, ChatAttachmentId,
+    ChatCheckpointId, ChatCommandId, ChatErrorCode, ChatEventId, ChatThreadId, ChatTurnId,
+    ChatTurnState, ContentStreamKind, InteractionMode, ProjectWorkingFolderId, ProviderFamilyId,
     ProviderInstanceId, ProviderRequestId, ProviderSessionId, SafetyMode, TurnModeSnapshot,
     UtcTimestamp, VersionedJson,
 };

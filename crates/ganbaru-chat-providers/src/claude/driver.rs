@@ -77,6 +77,8 @@ impl Drop for ClaudeLiveSession {
 
 pub(super) struct ClaudeProbeSnapshot {
     pub(super) version: ClaudeVersion,
+    /// The config directory the probed CLI ran with.
+    pub(super) home: ClaudeHome,
     pub(super) initialize: ClaudeInitializeResponse,
     pub(super) models: Vec<ProviderModel>,
 }
@@ -118,6 +120,7 @@ impl ClaudeProviderDriver {
                 "macos".to_string(),
             ],
             minimum_tested_cli_version: Some(MINIMUM_CLAUDE_VERSION.to_string()),
+            maximum_tested_cli_version: Some(CLAUDE_COMPATIBILITY.maximum_tested.to_string()),
             default_executable_candidates: vec!["claude".to_string()],
             implementation_status: ProviderImplementationStatus::Available,
             maturity: ProviderMaturity::Stable,
@@ -133,7 +136,7 @@ impl ClaudeProviderDriver {
     ) -> ChatResult<ClaudeProbeSnapshot> {
         let workspace = crate::probe_directory::ProbeDirectory::create()?;
         let session_uuid = new_uuid(&self.configuration.instance_id);
-        let (mut connection, _, version) = self
+        let (mut connection, home, version) = self
             .open_connection(
                 &workspace,
                 ClaudeLaunchOptions {
@@ -168,6 +171,7 @@ impl ClaudeProviderDriver {
             )?;
             Ok(ClaudeProbeSnapshot {
                 version,
+                home,
                 initialize,
                 models,
             })
@@ -201,6 +205,9 @@ impl ClaudeProviderDriver {
             cached_probe_version(&executable, working_directory, environment.clone()).await?;
         ensure_supported_version(version)?;
         let server = self.configuration.internal_mcp.as_ref();
+        if server.is_some_and(|server| server.organizational_authority) {
+            ensure_organizational_version(version)?;
+        }
         if let Some(server) = server {
             environment.insert(
                 INTERNAL_MCP_TOKEN_ENVIRONMENT.to_string(),

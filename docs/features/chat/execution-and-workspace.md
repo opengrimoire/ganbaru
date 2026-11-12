@@ -14,7 +14,7 @@ A run links one organizational request to one provider session and its canonical
 
 A later assignment of the same teammate in the same reply thread and execution target continues the earlier native session only when its continuation key is unchanged: the authorization scope, the provider instance, the model selection, and the system-level instructions (the teammate framing with its name and role, the context package format, and the teammate's own instructions). A changed key or an authorization that is no longer allowed starts a new session with the full context package, and a retry of the same assignment always starts a new session, because a failed run may have left native state half applied. Each run records why it started (fresh, continuation, handoff, or retry) and the digests of its key.
 
-Cancellation targets the active run and its owned process tree. It never deletes prior events or cancels unrelated parallel work.
+Cancellation targets the active run and its owned process tree. It never deletes prior events or cancels unrelated parallel work. Stop settles the turn as interrupted within a few seconds even when the provider does not confirm it, and the provider session restarts for the next turn.
 
 A run executes on one device, and its process, approvals, questions, terminal, and execution state stay there. Other linked devices see its messages and can complete or cancel its assignment, which stops the run on the executing device.
 

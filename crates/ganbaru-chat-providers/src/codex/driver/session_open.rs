@@ -149,6 +149,7 @@ impl CodexProviderDriver {
                 decode_response(initialize, "organizational initialize response")
                     .map_err(|error| error.to_chat_error("organizational initialize"))?;
             verify_reported_home(&layout, &initialize.codex_home)?;
+            ensure_supported_user_agent(&initialize.user_agent)?;
             inspection_client
                 .notify("initialized", json!({}))
                 .await
@@ -224,6 +225,7 @@ impl CodexProviderDriver {
         let initialize: InitializeResponse = decode_response(initialize, "initialize response")
             .map_err(|error| error.to_chat_error("initialize"))?;
         verify_reported_home(&layout, &initialize.codex_home)?;
+        ensure_supported_user_agent(&initialize.user_agent)?;
         client
             .notify("initialized", json!({}))
             .await
@@ -296,6 +298,7 @@ impl CodexProviderDriver {
         });
 
         let developer_instructions = input.developer_instructions();
+        let open_instructions = developer_instructions.map(str::to_owned);
         let start_params = thread_open_params(
             None,
             &workspace,
@@ -457,13 +460,16 @@ impl CodexProviderDriver {
             session_id: session_id.clone(),
             workspace,
             effective_model: effective_model.as_str().to_string(),
-            refresh_mcp_before_turn: self.settings.refresh_mcp_before_turn
-                || self.configuration.internal_mcp.is_some()
-                || self
-                    .configuration
-                    .launch_arguments
-                    .iter()
-                    .any(|argument| argument.contains("mcp_servers.")),
+            mcp_reload: CodexMcpReloadState::at_open(
+                self.configuration.internal_mcp.as_ref(),
+                self.settings.refresh_mcp_before_turn
+                    || self
+                        .configuration
+                        .launch_arguments
+                        .iter()
+                        .any(|argument| argument.contains("mcp_servers.")),
+            ),
+            open_instructions,
             organizational,
             internal_mcp_name: self
                 .configuration
@@ -526,7 +532,10 @@ impl SessionOpenInput {
     }
 
     fn developer_instructions(&self) -> Option<&str> {
-        None
+        match self {
+            Self::Fresh(request) => request.developer_instructions.as_deref(),
+            Self::Resume(request) => request.developer_instructions.as_deref(),
+        }
     }
 
     fn resume_provider_thread_id(&self) -> Option<&str> {

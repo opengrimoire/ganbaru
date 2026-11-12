@@ -102,12 +102,32 @@ pub struct ProviderFamilyMetadataRead {
     pub configuration_schema_version: u32,
     pub supported_platforms: Vec<String>,
     pub minimum_tested_cli_version: Option<String>,
+    /// The newest CLI version the replay transcripts and focused tests cover.
+    #[serde(default)]
+    pub maximum_tested_cli_version: Option<String>,
     pub default_executable_candidates: Vec<String>,
     pub implementation_status: ProviderImplementationStatus,
     pub maturity: ProviderMaturity,
     pub protocol_name: String,
     pub potential_capabilities: Vec<ProviderCapability>,
     pub unavailable_reason: Option<String>,
+}
+
+/// Where a probed CLI version falls against the provider family's compatibility range.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderVersionAdmission {
+    /// At or above the minimum and at or below the newest tested version.
+    Supported,
+    /// Newer than the newest tested version and below any ceiling; sessions still start.
+    UntestedNewer,
+    /// Below the minimum; sessions are refused.
+    BelowMinimum,
+    /// At or above the ceiling of a protocol line Ganbaru has no runtime for; sessions are
+    /// refused.
+    AtOrAboveCeiling,
+    /// The version output could not be read.
+    Unreadable,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -122,6 +142,10 @@ pub struct ProviderProbeResult {
     pub authority_support: ProviderAuthoritySupport,
     pub checked_at: UtcTimestamp,
     pub detail: Option<String>,
+    /// The probed version against the family's compatibility range; `None` for families
+    /// without a range or when no version was read.
+    #[serde(default)]
+    pub version_admission: Option<ProviderVersionAdmission>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

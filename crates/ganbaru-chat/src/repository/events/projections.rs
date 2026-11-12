@@ -5,14 +5,14 @@ pub(in crate::repository) async fn apply_projection(
     transaction: &mut Transaction<'_, Sqlite>,
     sequence: u64,
     runtime: &CanonicalRuntimeEvent,
-) -> ChatResult<Vec<String>> {
+) -> ChatResult<Vec<ChatProjectionKey>> {
     let sequence = i64_value(sequence)?;
     let thread_id = runtime.thread_id.as_str();
     let mut changed = Vec::new();
     match &runtime.event {
         CanonicalEvent::SessionExited(_) => {
             if expire_open_requests_for_thread(transaction, runtime, "interrupted").await? {
-                changed.push("pending_requests".to_string());
+                changed.push(ChatProjectionKey::PendingRequests);
             }
         }
         CanonicalEvent::ThreadStarted(event) => {
@@ -29,7 +29,7 @@ pub(in crate::repository) async fn apply_projection(
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            changed.push("thread".to_string());
+            changed.push(ChatProjectionKey::Thread);
         }
         CanonicalEvent::ThreadStateChanged(event) => {
             sqlx::query("UPDATE chat_threads SET state = ? WHERE id = ?")
@@ -38,7 +38,7 @@ pub(in crate::repository) async fn apply_projection(
                 .execute(&mut **transaction)
                 .await
                 .map_err(persistence_error)?;
-            changed.push("thread".to_string());
+            changed.push(ChatProjectionKey::Thread);
         }
         CanonicalEvent::ThreadMetadataUpdated(event) => {
             let resume = versioned_parts(event.resume_cursor.as_ref())?;
@@ -65,7 +65,7 @@ pub(in crate::repository) async fn apply_projection(
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            changed.push("thread".to_string());
+            changed.push(ChatProjectionKey::Thread);
         }
         CanonicalEvent::TurnStarted(event) => {
             let turn_id = required_turn_id(runtime)?;
@@ -118,7 +118,7 @@ pub(in crate::repository) async fn apply_projection(
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            changed.extend(["turns".to_string(), "thread".to_string()]);
+            changed.extend([ChatProjectionKey::Turns, ChatProjectionKey::Thread]);
         }
         CanonicalEvent::TurnCompleted(event) => {
             let turn_id = required_turn_id(runtime)?;
@@ -179,9 +179,9 @@ pub(in crate::repository) async fn apply_projection(
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            changed.extend(["turns".to_string(), "thread".to_string()]);
+            changed.extend([ChatProjectionKey::Turns, ChatProjectionKey::Thread]);
             if expire_open_requests_for_turn(transaction, runtime, "stale").await? {
-                changed.push("pending_requests".to_string());
+                changed.push(ChatProjectionKey::PendingRequests);
             }
         }
         CanonicalEvent::TurnAborted(event) => {
@@ -213,9 +213,9 @@ pub(in crate::repository) async fn apply_projection(
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            changed.extend(["turns".to_string(), "thread".to_string()]);
+            changed.extend([ChatProjectionKey::Turns, ChatProjectionKey::Thread]);
             if expire_open_requests_for_turn(transaction, runtime, "interrupted").await? {
-                changed.push("pending_requests".to_string());
+                changed.push(ChatProjectionKey::PendingRequests);
             }
         }
         CanonicalEvent::DiffUpdated(event) => {
@@ -249,20 +249,24 @@ pub(in crate::repository) async fn apply_projection(
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            changed.push("turns".to_string());
+            changed.push(ChatProjectionKey::Turns);
         }
         CanonicalEvent::ContentDelta(event) => {
             let item_id = &event.item_id;
             let stream_kind = wire_literal(&event.stream_kind)?;
             if stream_kind == "assistant_text" {
+                // Stamping the row here lets the change clock triggers skip a second write of a
+                // large streaming message.
+                let change = next_timeline_change(transaction, thread_id).await?;
                 sqlx::query(
                     "INSERT INTO chat_messages
                         (id, thread_id, turn_id, sequence_anchor, role, normalized_markdown,
-                         streaming_state, provider_item_id, created_at, updated_at)
-                     VALUES (?, ?, ?, ?, 'assistant', ?, 'streaming', ?, ?, ?)
+                         streaming_state, provider_item_id, created_at, updated_at, change_sequence)
+                     VALUES (?, ?, ?, ?, 'assistant', ?, 'streaming', ?, ?, ?, ?)
                      ON CONFLICT(id) DO UPDATE SET
                         normalized_markdown = chat_messages.normalized_markdown || excluded.normalized_markdown,
-                        updated_at = excluded.updated_at
+                        updated_at = excluded.updated_at,
+                        change_sequence = excluded.change_sequence
                      WHERE chat_messages.thread_id = excluded.thread_id",
                 )
                 .bind(item_id)
@@ -273,6 +277,7 @@ pub(in crate::repository) async fn apply_projection(
                 .bind(item_id)
                 .bind(runtime.created_at.as_str())
                 .bind(runtime.created_at.as_str())
+                .bind(change)
                 .execute(&mut **transaction)
                 .await
                 .map_err(persistence_error)?;
@@ -298,7 +303,7 @@ pub(in crate::repository) async fn apply_projection(
                 .execute(&mut **transaction)
                 .await
                 .map_err(persistence_error)?;
-                changed.extend(["messages".to_string(), "thread".to_string()]);
+                changed.extend([ChatProjectionKey::Messages, ChatProjectionKey::Thread]);
             } else {
                 upsert_activity_detail(
                     transaction,
@@ -309,7 +314,7 @@ pub(in crate::repository) async fn apply_projection(
                     &event.delta,
                 )
                 .await?;
-                changed.push("activities".to_string());
+                changed.push(ChatProjectionKey::Activities);
             }
         }
         CanonicalEvent::ItemStarted(event)
@@ -359,7 +364,7 @@ pub(in crate::repository) async fn apply_projection(
                     .execute(&mut **transaction)
                     .await
                     .map_err(persistence_error)?;
-                changed.push("messages".to_string());
+                changed.push(ChatProjectionKey::Messages);
             } else if item_kind != "user_message" {
                 sqlx::query(
                     "INSERT INTO chat_activities
@@ -391,7 +396,7 @@ pub(in crate::repository) async fn apply_projection(
                 .execute(&mut **transaction)
                 .await
                 .map_err(persistence_error)?;
-                changed.push("activities".to_string());
+                changed.push(ChatProjectionKey::Activities);
             }
         }
         CanonicalEvent::RequestOpened(event) => {
@@ -425,7 +430,7 @@ pub(in crate::repository) async fn apply_projection(
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            changed.push("pending_requests".to_string());
+            changed.push(ChatProjectionKey::PendingRequests);
         }
         CanonicalEvent::UserInputRequested(event) => {
             sqlx::query(
@@ -444,7 +449,7 @@ pub(in crate::repository) async fn apply_projection(
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            changed.push("pending_requests".to_string());
+            changed.push(ChatProjectionKey::PendingRequests);
         }
         CanonicalEvent::RequestResolved(event) => {
             resolve_request(
@@ -455,7 +460,7 @@ pub(in crate::repository) async fn apply_projection(
                 &event.decision,
             )
             .await?;
-            changed.push("pending_requests".to_string());
+            changed.push(ChatProjectionKey::PendingRequests);
         }
         CanonicalEvent::UserInputResolved(event) => {
             resolve_request(
@@ -466,7 +471,7 @@ pub(in crate::repository) async fn apply_projection(
                 &event.answers,
             )
             .await?;
-            changed.push("pending_requests".to_string());
+            changed.push(ChatProjectionKey::PendingRequests);
         }
         CanonicalEvent::ProposedPlanDelta(event) => {
             sqlx::query(
@@ -488,7 +493,7 @@ pub(in crate::repository) async fn apply_projection(
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            changed.push("plans".to_string());
+            changed.push(ChatProjectionKey::Plans);
         }
         CanonicalEvent::ProposedPlanCompleted(event) => {
             sqlx::query(
@@ -502,7 +507,7 @@ pub(in crate::repository) async fn apply_projection(
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            changed.push("plans".to_string());
+            changed.push(ChatProjectionKey::Plans);
         }
         CanonicalEvent::ThreadReverted(event) => {
             if event.provider_history_action == "fork_required" {
@@ -545,7 +550,7 @@ pub(in crate::repository) async fn apply_projection(
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            changed.extend(["thread".to_string(), "activities".to_string()]);
+            changed.extend([ChatProjectionKey::Thread, ChatProjectionKey::Activities]);
         }
         _ => {}
     }
@@ -695,4 +700,21 @@ async fn expire_open_requests_for_thread(
     .await
     .map_err(persistence_error)?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Advances the thread's timeline change clock and returns the new value, for a writer that stamps
+/// its row itself.
+async fn next_timeline_change(
+    transaction: &mut Transaction<'_, Sqlite>,
+    thread_id: &str,
+) -> ChatResult<i64> {
+    sqlx::query_scalar(
+        "INSERT INTO chat_timeline_change_clocks (thread_id, last_change) VALUES (?, 1)
+         ON CONFLICT(thread_id) DO UPDATE SET last_change = last_change + 1
+         RETURNING last_change",
+    )
+    .bind(thread_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(persistence_error)
 }

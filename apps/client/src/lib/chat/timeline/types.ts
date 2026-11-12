@@ -71,7 +71,14 @@ export interface TimelineActivityRow {
   activityKind: CanonicalItemKind | ContentStreamKind | "task" | "hook" | "tool" | "mcp" | "notice" | "channel_session_boundary";
   status: ActivityStatus;
   title: string;
-  detail: string | null;
+  /** The detail text this window holds: the whole detail, or a shortened preview when `detailTruncated`. */
+  detailPreview: string | null;
+  /** The UTF-8 length of the whole detail. */
+  detailBytes: number;
+  /** Whether `detailPreview` is shorter than the detail, so the whole detail loads when it is opened. */
+  detailTruncated: boolean;
+  /** When the stored activity last changed, for rows read from the projection. */
+  updatedAt?: UtcTimestamp;
   metadata: VersionedJson | null;
   sourceThreadId?: ChatThreadId;
 }

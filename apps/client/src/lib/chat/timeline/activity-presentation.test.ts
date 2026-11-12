@@ -20,7 +20,9 @@ function activity(overrides: Partial<TimelineActivityRow> = {}): TimelineActivit
     activityKind: "command_execution",
     status: "completed",
     title: "/usr/bin/bash -lc 'printf 4'",
-    detail: "4\n",
+    detailPreview: "4\n",
+    detailBytes: 2,
+    detailTruncated: false,
     metadata: {
       schemaVersion: 1,
       value: { cwd: "/workspace", exitCode: 0, durationMs: 18 },
@@ -35,6 +37,7 @@ describe("command activity presentation", () => {
       command: "/usr/bin/bash -lc 'printf 4'",
       cwd: "/workspace",
       output: "4",
+      outputTruncated: false,
       exitCode: 0,
       durationMs: 18,
       running: false,
@@ -42,9 +45,16 @@ describe("command activity presentation", () => {
   });
 
   it("represents an active command without fabricating output", () => {
-    expect(commandActivityPresentation(activity({ status: "active", detail: null }))).toMatchObject({
+    expect(commandActivityPresentation(activity({ status: "active", detailPreview: null, detailBytes: 0 }))).toMatchObject({
       output: null,
       running: true,
+    });
+  });
+
+  it("marks output that is a shortened preview of a longer command output", () => {
+    expect(commandActivityPresentation(activity({ detailPreview: "tail\n", detailBytes: 9_000, detailTruncated: true }))).toMatchObject({
+      output: "tail",
+      outputTruncated: true,
     });
   });
 });
@@ -195,15 +205,15 @@ describe("activity summaries", () => {
   it("shows only provider-designated reasoning summaries as bounded live status", () => {
     expect(transientActivitySummary(activity({
       activityKind: "reasoning_summary",
-      detail: "Inspecting the current timeline\n\nRefining the attachment preview",
+      detailPreview: "Inspecting the current timeline\n\nRefining the attachment preview",
     }))).toBe("Refining the attachment preview");
     expect(transientActivitySummary(activity({
       activityKind: "reasoning_text",
-      detail: "Private provider reasoning",
+      detailPreview: "Private provider reasoning",
     }))).toBeNull();
     expect(transientActivitySummary(activity({
       activityKind: "reasoning_summary",
-      detail: "x".repeat(200),
+      detailPreview: "x".repeat(200),
     }))).toHaveLength(160);
   });
 });

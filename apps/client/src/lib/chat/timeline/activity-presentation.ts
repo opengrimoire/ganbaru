@@ -4,6 +4,8 @@ export interface CommandActivityPresentation {
   command: string | null;
   cwd: string | null;
   output: string | null;
+  /** Whether `output` is a shortened preview of the whole command output. */
+  outputTruncated: boolean;
   exitCode: number | null;
   durationMs: number | null;
   running: boolean;
@@ -133,7 +135,7 @@ export function summarizeActivityKinds(
 /** Returns a bounded provider-designated summary suitable for a temporary live status row. */
 export function transientActivitySummary(activity: TimelineActivityRow): string | null {
   if (activity.activityKind !== "reasoning_summary") return null;
-  const lines = activity.detail
+  const lines = activity.detailPreview
     ?.split(/\r?\n/u)
     .map((line) => line.trim().replace(/^(?:#{1,6}|>|\*|-)\s+/u, ""))
     .filter(Boolean);
@@ -154,11 +156,12 @@ export function commandActivityPresentation(
     && rawCommand !== "command output"
     ? rawCommand
     : null;
-  const output = activity.detail?.trim() || null;
+  const output = activity.detailPreview?.trim() || null;
   return {
     command,
     cwd: stringValue(metadata?.cwd),
     output,
+    outputTruncated: activity.detailTruncated,
     exitCode: integerValue(metadata?.exitCode),
     durationMs: nonNegativeNumber(metadata?.durationMs),
     running: activity.status === "pending"

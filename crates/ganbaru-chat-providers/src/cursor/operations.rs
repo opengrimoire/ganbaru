@@ -1,7 +1,7 @@
 //! Cursor provider driver operations.
 
 use super::driver::*;
-use super::executable::acp_continuation_group;
+use super::executable::{CursorVersion, acp_continuation_group};
 use super::interactions::{
     PendingCursorRequestKind, resolve_approval_result, resolve_question_result,
 };
@@ -9,6 +9,7 @@ use super::protocol::*;
 use super::session::*;
 use crate::events::*;
 use crate::models::*;
+use crate::registry::{admit_version, refused_version};
 use crate::{
     DriverCancellation, DriverFuture, DriverOperationContext, ProviderAuthoritySupport,
     ProviderDriver, ProviderEventSink,
@@ -130,6 +131,13 @@ impl ProviderDriver for CursorProviderDriver {
             let checked_at = now_utc()?;
             match self.probe_snapshot(context).await {
                 Ok((started, about)) => {
+                    let version_admission = match self.flavor {
+                        AcpProviderFlavor::Cursor => Some(admit_version::<CursorVersion>(
+                            &CURSOR_COMPATIBILITY,
+                            &about.version,
+                        )?),
+                        AcpProviderFlavor::Grok => None,
+                    };
                     let capabilities = negotiated_capabilities_for(
                         self.flavor,
                         &started.initialize,
@@ -153,21 +161,28 @@ impl ProviderDriver for CursorProviderDriver {
                         capabilities,
                         authority_support: self.authority_support(),
                         checked_at,
-                        detail: None,
+                        detail: (version_admission
+                            == Some(ProviderVersionAdmission::UntestedNewer))
+                        .then(|| CURSOR_COMPATIBILITY.untested_newer_detail()),
+                        version_admission,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
-                Err(error) => Ok(ProviderProbeResult {
-                    instance_id: self.configuration.instance_id.clone(),
-                    state: probe_state(error.code),
-                    version: None,
-                    negotiated_protocol_version: None,
-                    account_label: None,
-                    capabilities: potential_capabilities_for(self.flavor),
-                    authority_support: self.authority_support(),
-                    checked_at,
-                    detail: Some(probe_detail(self.flavor, error.code)),
-                }),
+                Err(error) => {
+                    let refusal = refused_version(&error);
+                    Ok(ProviderProbeResult {
+                        instance_id: self.configuration.instance_id.clone(),
+                        state: probe_state(error.code),
+                        version: refusal.as_ref().map(|(_, version)| version.clone()),
+                        negotiated_protocol_version: None,
+                        account_label: None,
+                        capabilities: potential_capabilities_for(self.flavor),
+                        authority_support: self.authority_support(),
+                        checked_at,
+                        detail: Some(probe_detail(self.flavor, error.code)),
+                        version_admission: refusal.map(|(admission, _)| admission),
+                    })
+                }
             }
         })
     }

@@ -9,6 +9,7 @@ use super::session::*;
 use super::support::*;
 use crate::events::*;
 use crate::models::*;
+use crate::registry::{admit_version, refused_version};
 use crate::{
     DriverFuture, DriverOperationContext, ProviderAuthoritySupport, ProviderDriver,
     ProviderEventSink,
@@ -74,6 +75,10 @@ impl ProviderDriver for ClaudeProviderDriver {
             let checked_at = now_utc()?;
             match self.probe_snapshot(context).await {
                 Ok(snapshot) => {
+                    let version_admission = Some(admit_version::<ClaudeVersion>(
+                        &CLAUDE_COMPATIBILITY,
+                        &snapshot.version.to_string(),
+                    )?);
                     self.cached_commands = snapshot.initialize.commands.clone();
                     let authenticated = snapshot.initialize.account.is_some()
                         || self
@@ -105,22 +110,31 @@ impl ProviderDriver for ClaudeProviderDriver {
                         capabilities: claude_capabilities(),
                         authority_support: self.authority_support(),
                         checked_at,
-                        detail: (!authenticated)
-                            .then_some("Claude authentication is required".to_string()),
+                        detail: if authenticated {
+                            (version_admission == Some(ProviderVersionAdmission::UntestedNewer))
+                                .then(|| CLAUDE_COMPATIBILITY.untested_newer_detail())
+                        } else {
+                            Some(snapshot.home.authentication_hint())
+                        },
+                        version_admission,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
-                Err(error) => Ok(ProviderProbeResult {
-                    instance_id: self.configuration.instance_id.clone(),
-                    state: probe_state_for_error(error.code),
-                    version: None,
-                    negotiated_protocol_version: None,
-                    account_label: None,
-                    capabilities: claude_capabilities(),
-                    authority_support: self.authority_support(),
-                    checked_at,
-                    detail: Some(probe_detail(error.code).to_string()),
-                }),
+                Err(error) => {
+                    let refusal = refused_version(&error);
+                    Ok(ProviderProbeResult {
+                        instance_id: self.configuration.instance_id.clone(),
+                        state: probe_state_for_error(error.code),
+                        version: refusal.as_ref().map(|(_, version)| version.clone()),
+                        negotiated_protocol_version: None,
+                        account_label: None,
+                        capabilities: claude_capabilities(),
+                        authority_support: self.authority_support(),
+                        checked_at,
+                        detail: Some(probe_detail(error.code).to_string()),
+                        version_admission: refusal.map(|(admission, _)| admission),
+                    })
+                }
             }
         })
     }

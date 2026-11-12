@@ -14,11 +14,58 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The oldest Codex app server that has every method Ganbaru sends, including `thread/revert`
+/// and `thread/turns/list`, which replaced `thread/rollback`.
+pub const MINIMUM_CODEX_VERSION: &str = "0.156.0";
+/// Codex app servers from the minimum to the version the vendored schema and the Codex replay
+/// scenarios were taken from, below the first major line Ganbaru has no runtime for.
+pub const CODEX_COMPATIBILITY: crate::registry::ProviderCompatibilityRange =
+    crate::registry::ProviderCompatibilityRange {
+        minimum: MINIMUM_CODEX_VERSION,
+        maximum_tested: "0.167.1",
+        ceiling_exclusive: Some("1.0.0"),
+    };
+
+/// Every client request and notification method Ganbaru sends to Codex. The protocol coverage
+/// test checks each entry against the vendored schema and every method literal the driver sends
+/// against this list.
+#[cfg(test)]
+pub(super) const CODEX_CLIENT_REQUEST_METHODS: &[&str] = &[
+    "initialize",
+    "initialized",
+    "account/read",
+    "config/read",
+    "config/mcpServer/reload",
+    "mcpServerStatus/list",
+    "model/list",
+    "permissionProfile/list",
+    "review/start",
+    "thread/start",
+    "thread/resume",
+    "thread/read",
+    "thread/turns/list",
+    "thread/revert",
+    "thread/fork",
+    "thread/name/set",
+    "thread/archive",
+    "thread/delete",
+    "thread/unsubscribe",
+    "thread/compact/start",
+    "thread/goal/get",
+    "thread/goal/set",
+    "thread/goal/clear",
+    "turn/start",
+    "turn/steer",
+    "turn/interrupt",
+];
+
 const MAX_PROMPT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_MODEL_OPTIONS: usize = 32;
 const STANDARD_SERVICE_TIER: &str = "standard";
+/// The `ReasoningSummary` value each turn requests, so reasoning models stream full summaries.
+const REASONING_SUMMARY: &str = "detailed";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -401,6 +448,12 @@ pub fn preset_network_access(mode: SafetyMode) -> Option<bool> {
     safety_settings(mode).map(|settings| settings.turn_sandbox_type == "dangerFullAccess")
 }
 
+/// The `turn/start` parameters for `request`.
+///
+/// `instructions_at_open` reports that the live thread received these same developer
+/// instructions through `thread/start` or `thread/resume`. The collaboration settings then omit
+/// them, so the per-turn copy is only the fallback for a thread opened without them or with
+/// different ones.
 pub fn turn_start_params(
     provider_thread_id: &str,
     workspace: &Path,
@@ -408,6 +461,7 @@ pub fn turn_start_params(
     request: &SendTurnRequest,
     custom_safety: Option<&CodexCustomSafetySettings>,
     organizational: bool,
+    instructions_at_open: bool,
 ) -> ChatResult<Value> {
     if request.prompt.len() > MAX_PROMPT_BYTES || request.prompt.contains('\0') {
         return Err(ChatError::validation(
@@ -568,6 +622,12 @@ pub fn turn_start_params(
     if let Some(service_tier) = service_tier.filter(|tier| tier != STANDARD_SERVICE_TIER) {
         params.insert("serviceTier".to_string(), Value::String(service_tier));
     }
+    // The Codex model list has no per-model summary field, and every Codex model advertises
+    // reasoning summaries, so each turn asks for the detailed stream.
+    params.insert(
+        "summary".to_string(),
+        Value::String(REASONING_SUMMARY.to_string()),
+    );
     let collaboration_model = request
         .model_id
         .as_ref()
@@ -581,7 +641,11 @@ pub fn turn_start_params(
     if let Some(effort) = effort {
         collaboration_settings.insert("reasoning_effort".to_string(), Value::String(effort));
     }
-    if let Some(instructions) = request.developer_instructions.as_ref() {
+    if let Some(instructions) = request
+        .developer_instructions
+        .as_ref()
+        .filter(|_| !instructions_at_open)
+    {
         collaboration_settings.insert(
             "developer_instructions".to_string(),
             Value::String(instructions.clone()),

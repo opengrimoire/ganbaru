@@ -1,7 +1,10 @@
 //! Live Codex session routing, approvals, and structured input.
 
+use super::capacity_retry::{CodexRetryResources, begin_capacity_retry};
 use super::normalizer::{CodexEventNormalizer, CodexRouteState};
-use super::transport::{CodexInboundMessage, CodexRpcClient};
+use super::transport::{
+    CodexInboundMessage, CodexRpcClient, CodexRpcFailure, OVERSIZED_MESSAGE_ERROR,
+};
 use crate::events::*;
 use crate::models::*;
 use crate::{DriverOperationContext, ProviderEventSink};
@@ -21,6 +24,10 @@ const MAX_OPTIONS_PER_QUESTION: usize = 32;
 /// Largest write root an approval shows as a session grant. Allow for session is withheld for
 /// longer roots, because the grant could not be shown in full.
 const MAX_GRANT_ROOT_BYTES: usize = 4 * 1024;
+/// The Codex server request that relays an MCP elicitation.
+pub(super) const ELICITATION_REQUEST_METHOD: &str = "mcpServer/elicitation/request";
+/// Byte limit of the MCP server name a declined elicitation warning shows.
+const MAX_ELICITATION_SERVER_BYTES: usize = 256;
 
 #[derive(Clone, Debug)]
 pub enum PendingCodexRequestKind {
@@ -72,6 +79,28 @@ pub struct CodexRouterResources {
     pub organizational: bool,
 }
 
+impl CodexRouterResources {
+    fn retry_resources(&self) -> CodexRetryResources {
+        CodexRetryResources {
+            client: self.client.clone(),
+            route: Arc::clone(&self.route),
+            normalizer: Arc::clone(&self.normalizer),
+            sink: Arc::clone(&self.sink),
+            expected_shutdown: Arc::clone(&self.expected_shutdown),
+        }
+    }
+}
+
+/// Cancels the armed capacity retry when the session ends, so no retry starts on a closed
+/// connection.
+fn cancel_capacity_retry(resources: &CodexRouterResources) {
+    if let Ok(mut state) = resources.route.lock() {
+        if let Some(retry) = state.capacity_retry.take() {
+            retry.cancel();
+        }
+    }
+}
+
 pub fn spawn_codex_router(resources: CodexRouterResources) -> JoinHandle<()> {
     tokio::spawn(run_codex_router(resources))
 }
@@ -100,6 +129,10 @@ async fn run_codex_router(mut resources: CodexRouterResources) {
                     });
                 emit_events(&resources.sink, event.map(|event| vec![event])).await
             }
+            CodexInboundMessage::Oversized { byte_length } => {
+                route_oversized(&resources, byte_length).await;
+                return;
+            }
             CodexInboundMessage::Closed => {
                 route_closed(&resources).await;
                 return;
@@ -122,6 +155,11 @@ async fn route_notification(
 ) -> ChatResult<()> {
     if method == "serverRequest/resolved" {
         resolve_provider_cleared_request(resources, &params).await?;
+    }
+    if method == "turn/completed"
+        && begin_capacity_retry(&resources.retry_resources(), &params).await?
+    {
+        return Ok(());
     }
     let (events, provider_thread) = {
         let mut state = resources.route.lock().map_err(|_| router_state_error())?;
@@ -170,6 +208,17 @@ async fn route_server_request(
         .await?
     {
         return Ok(());
+    }
+    if method == ELICITATION_REQUEST_METHOD {
+        return decline_elicitation(
+            resources,
+            rpc_id,
+            object,
+            &route,
+            provider_request_id,
+            provenance,
+        )
+        .await;
     }
     let (pending_kind, event) = match method {
         "item/commandExecution/requestApproval" => {
@@ -282,6 +331,42 @@ async fn route_server_request(
         };
     }
     Ok(())
+}
+
+/// Declines an MCP elicitation and records a warning, so the MCP server continues without the
+/// answer instead of waiting. Ganbaru has no elicitation form, and an explicit decline tells the
+/// server that no user input will arrive.
+async fn decline_elicitation(
+    resources: &CodexRouterResources,
+    rpc_id: Value,
+    object: &Map<String, Value>,
+    route: &CodexRouteState,
+    provider_request_id: ProviderRequestId,
+    provenance: CodexRequestProvenance,
+) -> ChatResult<()> {
+    resources
+        .client
+        .respond(rpc_id, json!({ "action": "decline" }))
+        .await
+        .map_err(|error| error.to_chat_error("elicitation response"))?;
+    let server = text(object, "serverName")
+        .map(|value| bounded_text(value, MAX_ELICITATION_SERVER_BYTES))
+        .unwrap_or_else(|| "An MCP server".to_string());
+    let warning = resources.normalizer.request_event(
+        route,
+        provider_request_id,
+        provenance.provider_turn_id,
+        None,
+        provenance.chat_turn_id,
+        CanonicalEvent::RuntimeWarning(NotificationEvent {
+            code: "codex_elicitation_declined".to_string(),
+            title: "MCP input request declined".to_string(),
+            detail: Some(format!(
+                "{server} asked for input that Ganbaru cannot collect, so the request was declined"
+            )),
+        }),
+    )?;
+    resources.sink.emit(warning).await
 }
 
 async fn deny_organizational_authority_escalation(
@@ -742,6 +827,7 @@ async fn resolve_provider_cleared_request(
 }
 
 async fn route_closed(resources: &CodexRouterResources) {
+    cancel_capacity_retry(resources);
     let expected = resources.expected_shutdown.load(Ordering::Acquire);
     let event = resources
         .route
@@ -784,6 +870,41 @@ async fn route_closed(resources: &CodexRouterResources) {
         if let Ok(mut terminal) = resources.terminal_error.lock() {
             *terminal = Some(error);
         }
+    }
+}
+
+/// Ends the session after Codex sent a line over the byte bound: records the protocol error,
+/// marks the session failed, and keeps that error as the terminal error so later commands
+/// report it instead of a generic transport loss.
+async fn route_oversized(resources: &CodexRouterResources, byte_length: usize) {
+    cancel_capacity_retry(resources);
+    let error = CodexRpcFailure::Oversized.to_chat_error("message");
+    let events = resources
+        .route
+        .lock()
+        .map_err(|_| router_state_error())
+        .and_then(|mut state| {
+            let malformed = resources.normalizer.oversized_event(&state, byte_length)?;
+            let previous = state.session_state;
+            state.session_state = ProviderSessionState::Failed;
+            let closed = resources.normalizer.event(
+                &state,
+                "transport/closed",
+                None,
+                None,
+                None,
+                CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
+                    session_id: resources.normalizer.session_id(),
+                    previous_state: previous,
+                    state: ProviderSessionState::Failed,
+                    reason: Some(OVERSIZED_MESSAGE_ERROR.to_string()),
+                }),
+            )?;
+            Ok(vec![malformed, closed])
+        });
+    let result = emit_events(&resources.sink, events).await;
+    if let Ok(mut terminal) = resources.terminal_error.lock() {
+        *terminal = Some(result.err().unwrap_or(error));
     }
 }
 

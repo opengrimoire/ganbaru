@@ -1,0 +1,59 @@
+{
+  "calls": [
+    {
+      "call": "start_session",
+      "result": "ok"
+    },
+    {
+      "call": "send_turn",
+      "result": "ok"
+    },
+    {
+      "call": "interrupt_turn",
+      "result": "ok"
+    }
+  ],
+  "events": [
+    {
+      "type": "thread_started"
+    },
+    {
+      "type": "thread_metadata_updated"
+    },
+    {
+      "type": "session_started",
+      "state": "ready"
+    },
+    {
+      "type": "session_configured"
+    },
+    {
+      "type": "turn_started",
+      "turn": "turn-1",
+      "state": "active"
+    },
+    {
+      "type": "item_started",
+      "turn": "turn-1",
+      "kind": "assistant_message",
+      "status": "active"
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "One"
+    },
+    {
+      "type": "item_completed",
+      "turn": "turn-1",
+      "kind": "assistant_message",
+      "status": "completed"
+    },
+    {
+      "type": "turn_completed",
+      "turn": "turn-1",
+      "state": "interrupted"
+    }
+  ]
+}

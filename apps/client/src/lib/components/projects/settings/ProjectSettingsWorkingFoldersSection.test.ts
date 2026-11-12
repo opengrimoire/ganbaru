@@ -119,7 +119,7 @@ function folder(id: string, kind: "managed" | "external"): ProjectWorkingFolderR
 function family(familyId: string, displayName: string): ProviderFamilyMetadataRead {
   return {
     familyId, displayName, configurationSchemaVersion: 1, supportedPlatforms: ["linux"],
-    minimumTestedCliVersion: null, defaultExecutableCandidates: [],
+    minimumTestedCliVersion: null, maximumTestedCliVersion: null, defaultExecutableCandidates: [],
     implementationStatus: "available", maturity: "experimental", protocolName: "test",
     potentialCapabilities: [], unavailableReason: null,
   };

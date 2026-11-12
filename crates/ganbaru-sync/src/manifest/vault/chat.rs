@@ -1724,7 +1724,14 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     derived: &["chat_communication_search_fts"],
     local: &[
         device("chat_access_revocation_jobs", &[]),
-        device("chat_activities", &[]),
+        device(
+            "chat_activities",
+            &[
+                gated("chat_activities_timeline_change_insert"),
+                gated("chat_activities_timeline_change_update"),
+                gated("chat_activities_timeline_change_delete"),
+            ],
+        ),
         device("chat_agent_run_delivered_sources", &[]),
         device(
             "chat_agent_runs",
@@ -1807,7 +1814,14 @@ pub const DOMAIN: DomainManifest = DomainManifest {
             ],
         ),
         device("chat_organizational_command_receipts", &[]),
-        device("chat_plans", &[]),
+        device(
+            "chat_plans",
+            &[
+                gated("chat_plans_timeline_change_insert"),
+                gated("chat_plans_timeline_change_update"),
+                gated("chat_plans_timeline_change_delete"),
+            ],
+        ),
         device("chat_preview_tabs", &[]),
         device("chat_preview_tool_invocations", &[]),
         device("chat_provider_cleanup_jobs", &[]),
@@ -1821,7 +1835,14 @@ pub const DOMAIN: DomainManifest = DomainManifest {
                 applier_visible("chat_resources_managed_relative_path_shape_update"),
             ],
         ),
-        device("chat_messages", &[]),
+        device(
+            "chat_messages",
+            &[
+                gated("chat_messages_timeline_change_insert"),
+                gated("chat_messages_timeline_change_update"),
+                gated("chat_messages_timeline_change_delete"),
+            ],
+        ),
         device("chat_restore_operations", &[]),
         device("chat_restore_previews", &[]),
         device(
@@ -1858,11 +1879,19 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("chat_terminal_attachment_contexts", &[]),
         device("chat_terminal_layouts", &[]),
         device("chat_thread_relations", &[]),
+        device("chat_timeline_change_clocks", &[]),
+        device("chat_timeline_removals", &[]),
         device("chat_user_input_drafts", &[]),
         device("chat_pending_requests", &[]),
         device("chat_worktrees", &[]),
         device("chat_checkpoints", &[]),
-        device("chat_turns", &[]),
+        device(
+            "chat_turns",
+            &[
+                gated("chat_turns_timeline_change_insert"),
+                gated("chat_turns_timeline_change_update"),
+            ],
+        ),
         device(
             "chat_threads",
             &[

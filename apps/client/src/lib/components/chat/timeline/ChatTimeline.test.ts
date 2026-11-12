@@ -242,6 +242,7 @@ function message(
     activityId,
     turnId,
     sequenceAnchor: sequence,
+    changeSequence: sequence,
     kind: "message",
     data: {
       schemaVersion: 1,
@@ -274,6 +275,7 @@ function activity(
     activityId,
     turnId,
     sequenceAnchor: options.sequence ?? 2,
+    changeSequence: options.sequence ?? 2,
     kind: "activity",
     data: {
       schemaVersion: 1,
@@ -281,7 +283,9 @@ function activity(
         activityKind,
         status: options.status ?? "completed",
         title,
-        detail: options.detail === undefined ? "Passed" : options.detail,
+        detailPreview: options.detail === undefined ? "Passed" : options.detail,
+        detailBytes: new TextEncoder().encode(options.detail === undefined ? "Passed" : options.detail ?? "").byteLength,
+        detailTruncated: false,
         providerItemId: activityId,
         metadata: options.metadata ?? {},
         createdAt: timestamp,
@@ -310,5 +314,6 @@ function timelinePage(state: "active" | "completed" = "completed"): ChatTimeline
     previousCursor: null,
     nextCursor: null,
     threadRevision: 1,
+    changeCursor: 0,
   };
 }

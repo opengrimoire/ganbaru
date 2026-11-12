@@ -596,7 +596,9 @@ fn rpc_id_key(id: &Value) -> Result<String, AcpRpcFailure> {
         .map_err(|_| AcpRpcFailure::Malformed("request id is invalid".to_string()))
 }
 
-async fn read_bounded_line<R>(reader: &mut BufReader<R>) -> Result<Option<Vec<u8>>, usize>
+pub(super) async fn read_bounded_line<R>(
+    reader: &mut BufReader<R>,
+) -> Result<Option<Vec<u8>>, usize>
 where
     R: AsyncRead + Unpin,
 {

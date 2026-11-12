@@ -58,4 +58,56 @@ mod tests {
         assert_eq!(read.cache_write_input_tokens, None);
         assert_eq!(read.context_tokens, Some(23));
     }
+
+    #[test]
+    fn provider_version_admission_round_trips_in_snake_case() {
+        use crate::models::ProviderVersionAdmission;
+        let cases = [
+            (ProviderVersionAdmission::Supported, "supported"),
+            (ProviderVersionAdmission::UntestedNewer, "untested_newer"),
+            (ProviderVersionAdmission::BelowMinimum, "below_minimum"),
+            (
+                ProviderVersionAdmission::AtOrAboveCeiling,
+                "at_or_above_ceiling",
+            ),
+            (ProviderVersionAdmission::Unreadable, "unreadable"),
+        ];
+        for (admission, wire) in cases {
+            assert_eq!(serde_json::to_value(admission).unwrap(), json!(wire));
+            assert_eq!(
+                serde_json::from_value::<ProviderVersionAdmission>(json!(wire)).unwrap(),
+                admission
+            );
+        }
+        assert!(serde_json::from_value::<ProviderVersionAdmission>(json!("newer")).is_err());
+    }
+
+    #[test]
+    fn provider_probe_without_an_admission_reads_as_none() {
+        use crate::models::{ProviderProbeResult, ProviderVersionAdmission};
+        let stored = json!({
+            "instanceId": "claude",
+            "state": "healthy",
+            "version": "2.1.322",
+            "negotiatedProtocolVersion": "stream-json",
+            "accountLabel": null,
+            "capabilities": { "entries": [] },
+            "authoritySupport": crate::models::ProviderAuthoritySupport::default(),
+            "checkedAt": "2026-11-11T03:18:50.240Z",
+            "detail": null
+        });
+        let probe = serde_json::from_value::<ProviderProbeResult>(stored).unwrap();
+        assert_eq!(probe.version_admission, None);
+
+        let admitted = ProviderProbeResult {
+            version_admission: Some(ProviderVersionAdmission::UntestedNewer),
+            ..probe
+        };
+        let value = serde_json::to_value(&admitted).unwrap();
+        assert_eq!(value["versionAdmission"], json!("untested_newer"));
+        assert_eq!(
+            serde_json::from_value::<ProviderProbeResult>(value).unwrap(),
+            admitted
+        );
+    }
 }

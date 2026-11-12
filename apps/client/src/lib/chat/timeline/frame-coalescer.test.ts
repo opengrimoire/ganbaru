@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AsyncFrameCoalescer, type FrameScheduler } from "./frame-coalescer";
+import { AsyncFrameKeyedCoalescer, type FrameScheduler } from "./frame-coalescer";
 
 function controlledFrames(): { schedule: FrameScheduler; runNext: () => void; queued: () => number } {
   const callbacks: Array<() => void> = [];
@@ -18,54 +18,95 @@ function controlledFrames(): { schedule: FrameScheduler; runNext: () => void; qu
   };
 }
 
-describe("AsyncFrameCoalescer", () => {
-  it("keeps the latest value and resolves every caller in one frame", async () => {
-    const frames = controlledFrames();
-    const values: number[] = [];
-    const coalescer = new AsyncFrameCoalescer<number>(async (value) => {
-      values.push(value);
-    }, frames.schedule);
+function unionCoalescer(
+  frames: ReturnType<typeof controlledFrames>,
+  consume: (key: string, value: string[]) => Promise<void>,
+): AsyncFrameKeyedCoalescer<string, string[]> {
+  return new AsyncFrameKeyedCoalescer<string, string[]>(
+    consume,
+    (current, next) => [...new Set([...current, ...next])],
+    frames.schedule,
+  );
+}
 
-    const first = coalescer.push(1);
-    const second = coalescer.push(2);
-    const third = coalescer.push(3);
+describe("AsyncFrameKeyedCoalescer", () => {
+  it("runs every key pushed in one frame, in arrival order", async () => {
+    const frames = controlledFrames();
+    const keys: string[] = [];
+    const coalescer = unionCoalescer(frames, async (key) => {
+      keys.push(key);
+    });
+
+    const first = coalescer.push("thread-a", []);
+    const second = coalescer.push("thread-b", []);
     expect(frames.queued()).toBe(1);
     frames.runNext();
-    await Promise.all([first, second, third]);
-    expect(values).toEqual([3]);
+    await Promise.all([first, second]);
+
+    expect(keys).toEqual(["thread-a", "thread-b"]);
   });
 
-  it("queues one later frame while an async refresh is running", async () => {
+  it("runs a repeated key once with its values merged and resolves every caller", async () => {
+    const frames = controlledFrames();
+    const calls: Array<[string, string[]]> = [];
+    const coalescer = unionCoalescer(frames, async (key, value) => {
+      calls.push([key, value]);
+    });
+
+    const first = coalescer.push("thread-a", ["messages"]);
+    const second = coalescer.push("thread-b", ["thread"]);
+    const third = coalescer.push("thread-a", ["turns", "messages"]);
+    frames.runNext();
+    await Promise.all([first, second, third]);
+
+    expect(calls).toEqual([
+      ["thread-a", ["messages", "turns"]],
+      ["thread-b", ["thread"]],
+    ]);
+  });
+
+  it("rejects only the failing key's callers", async () => {
+    const frames = controlledFrames();
+    const keys: string[] = [];
+    const coalescer = unionCoalescer(frames, async (key) => {
+      if (key === "thread-a") throw new Error("refresh failed");
+      keys.push(key);
+    });
+
+    const failing = coalescer.push("thread-a", []);
+    const repeated = coalescer.push("thread-a", []);
+    const passing = coalescer.push("thread-b", []);
+    frames.runNext();
+
+    await expect(failing).rejects.toThrow("refresh failed");
+    await expect(repeated).rejects.toThrow("refresh failed");
+    await expect(passing).resolves.toBeUndefined();
+    expect(keys).toEqual(["thread-b"]);
+  });
+
+  it("runs a key pushed while a frame is running in the next frame", async () => {
     const frames = controlledFrames();
     let release: (() => void) | undefined;
-    const values: string[] = [];
-    const coalescer = new AsyncFrameCoalescer<string>(async (value) => {
-      values.push(value);
-      if (value === "first") await new Promise<void>((resolve) => { release = resolve; });
-    }, frames.schedule);
+    const calls: Array<[string, string[]]> = [];
+    const coalescer = unionCoalescer(frames, async (key, value) => {
+      calls.push([key, value]);
+      if (calls.length === 1) await new Promise<void>((resolve) => { release = resolve; });
+    });
 
-    const first = coalescer.push("first");
+    const first = coalescer.push("thread-a", ["messages"]);
     frames.runNext();
-    const second = coalescer.push("second");
-    const third = coalescer.push("latest");
+    const second = coalescer.push("thread-a", ["turns"]);
+    const third = coalescer.push("thread-a", ["plans"]);
     expect(frames.queued()).toBe(0);
     release?.();
     await first;
     expect(frames.queued()).toBe(1);
     frames.runNext();
     await Promise.all([second, third]);
-    expect(values).toEqual(["first", "latest"]);
-  });
 
-  it("rejects every caller when the refresh fails", async () => {
-    const frames = controlledFrames();
-    const coalescer = new AsyncFrameCoalescer<number>(async () => {
-      throw new Error("refresh failed");
-    }, frames.schedule);
-    const first = coalescer.push(1);
-    const second = coalescer.push(2);
-    frames.runNext();
-    await expect(first).rejects.toThrow("refresh failed");
-    await expect(second).rejects.toThrow("refresh failed");
+    expect(calls).toEqual([
+      ["thread-a", ["messages"]],
+      ["thread-a", ["turns", "plans"]],
+    ]);
   });
 });

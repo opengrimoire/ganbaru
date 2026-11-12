@@ -83,6 +83,7 @@ fn organizational_launch_uses_strict_mcp_and_denies_tools() {
             "high",
             "--settings",
             r#"{"fastMode":false}"#,
+            "--restricted",
             "--setting-sources",
             "",
             "--strict-mcp-config",
@@ -131,7 +132,7 @@ fn direct_launch_keeps_accept_edits() {
     assert!(!direct.iter().any(|argument| {
         matches!(
             argument.as_str(),
-            "--strict-mcp-config" | "--tools" | "--disallowed-tools"
+            "--restricted" | "--strict-mcp-config" | "--tools" | "--disallowed-tools"
         )
     }));
 }
@@ -478,5 +479,30 @@ fn organizational_init_report_requires_both_lists() {
     assert_eq!(
         parse_init_report(&numeric_tool).unwrap_err(),
         organizational_permission_error()
+    );
+}
+
+#[test]
+fn organizational_launch_requires_the_teammate_floor() {
+    let refused = ensure_organizational_version(parse_version("2.1.304").unwrap()).unwrap_err();
+    assert_eq!(refused.code, ChatErrorCode::UnsupportedVersion);
+    assert!(refused.recoverable);
+    assert!(refused.message.contains("2.1.305"), "{}", refused.message);
+    assert_eq!(
+        crate::registry::refused_version(&refused),
+        Some((
+            ProviderVersionAdmission::BelowMinimum,
+            "2.1.304".to_string()
+        ))
+    );
+    for admitted in ["2.1.305", "2.1.322", "2.2.0"] {
+        assert!(
+            ensure_organizational_version(parse_version(admitted).unwrap()).is_ok(),
+            "{admitted}"
+        );
+    }
+    assert!(
+        ensure_supported_version(parse_version("2.1.304").unwrap()).is_ok(),
+        "direct threads keep the family minimum"
     );
 }

@@ -1,0 +1,8 @@
+{
+  "absent": [
+    {
+      "scenario": "oversized_message",
+      "reason": "A Codex line must pass the 4 MiB JSONL limit to count as oversized, which exceeds the 1 MiB replay transcript and pipe bounds; the transport test oversized_message_fails_pending_requests covers the limit."
+    }
+  ]
+}

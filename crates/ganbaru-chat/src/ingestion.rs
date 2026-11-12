@@ -8,7 +8,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::collections::{HashMap, hash_map::Entry};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
+use tokio::time::MissedTickBehavior;
 
 const MAX_CANONICAL_EVENT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_DELTA_BATCH_BYTES: usize = 64 * 1024;
@@ -25,15 +28,25 @@ const STREAMED_BATCH_OVERHEAD_BYTES: usize = 256;
 const ITEM_TEXT_TRUNCATION_NOTICE: &str = "\n\n[Text truncated at the 8 MiB Chat message limit]\n";
 const TURN_TEXT_TRUNCATION_NOTICE: &str = "\n\n[Text truncated at the 32 MiB Chat turn limit]\n";
 pub const CHAT_CHANGE_EVENT: &str = "chat://change";
+/// Longest time a held text delta waits for adjacent deltas before it is stored and announced.
+/// Inside the 50 to 100 ms band, about 13 refreshes a second, which keeps streaming readable
+/// without a refresh per token.
+pub const LIVE_DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(75);
 
 pub trait ChatChangeEmitter: Send + Sync {
     fn emit(&self, notification: &ChatChangeNotification) -> ChatResult<()>;
 }
 
+/// Source of the time the idle flush measures held deltas against; tests inject a manual one.
+pub type IngestionClock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
 pub struct ChatEventIngestor {
     pool: SqlitePool,
     emitter: Arc<dyn ChatChangeEmitter>,
     pending_delta: Option<AppendCanonicalEventRequest>,
+    /// When the held delta started waiting; merges into it keep the first time.
+    pending_since: Option<Instant>,
+    clock: IngestionClock,
     output_bytes: HashMap<String, usize>,
     text_budgets: HashMap<String, TurnTextBudget>,
 }
@@ -60,9 +73,17 @@ impl ChatEventIngestor {
             pool,
             emitter,
             pending_delta: None,
+            pending_since: None,
+            clock: Arc::new(Instant::now),
             output_bytes: HashMap::new(),
             text_budgets: HashMap::new(),
         }
+    }
+
+    /// Replaces the clock the idle flush reads, so tests control when a held delta is idle.
+    pub fn with_clock(mut self, clock: IngestionClock) -> Self {
+        self.clock = clock;
+        self
     }
 
     pub async fn ingest(&mut self, mut request: AppendCanonicalEventRequest) -> ChatResult<()> {
@@ -84,13 +105,16 @@ impl ChatEventIngestor {
             request.runtime.event,
             CanonicalEvent::ContentDelta(_) | CanonicalEvent::ProposedPlanDelta(_)
         ) {
-            if let Some(pending) = self.pending_delta.as_mut() {
-                if merge_adjacent_delta(pending, &request) {
-                    return Ok(());
+            if !self.pending_is_idle() {
+                if let Some(pending) = self.pending_delta.as_mut() {
+                    if merge_adjacent_delta(pending, &request) {
+                        return Ok(());
+                    }
                 }
             }
             self.flush().await?;
             self.pending_delta = Some(request);
+            self.pending_since = Some((self.clock)());
             return Ok(());
         }
         self.flush().await?;
@@ -207,10 +231,14 @@ impl ChatEventIngestor {
         TextAdmission::Truncated
     }
 
+    /// Stores and announces the held delta, if any. A failed append keeps the delta held.
     pub async fn flush(&mut self) -> ChatResult<()> {
         if let Some(request) = self.pending_delta.take() {
             match append_canonical_event(&self.pool, request.clone()).await {
-                Ok(result) => self.emitter.emit(&result.notification)?,
+                Ok(result) => {
+                    self.pending_since = None;
+                    self.emitter.emit(&result.notification)?
+                }
                 Err(error) => {
                     self.pending_delta = Some(request);
                     return Err(error);
@@ -220,9 +248,42 @@ impl ChatEventIngestor {
         Ok(())
     }
 
+    /// Flushes the held delta once it has waited [`LIVE_DELTA_FLUSH_INTERVAL`], so a slow stream
+    /// still reaches readers on that cadence. Returns whether a delta was stored.
+    pub async fn flush_if_idle(&mut self) -> ChatResult<bool> {
+        if !self.pending_is_idle() {
+            return Ok(false);
+        }
+        self.flush().await?;
+        Ok(true)
+    }
+
+    fn pending_is_idle(&self) -> bool {
+        self.pending_delta.is_some()
+            && self.pending_since.is_some_and(|since| {
+                (self.clock)().saturating_duration_since(since) >= LIVE_DELTA_FLUSH_INTERVAL
+            })
+    }
+
     async fn append_and_notify(&self, request: AppendCanonicalEventRequest) -> ChatResult<()> {
         let result = append_canonical_event(&self.pool, request).await?;
         self.emitter.emit(&result.notification)
+    }
+}
+
+/// Calls [`ChatEventIngestor::flush_if_idle`] every [`LIVE_DELTA_FLUSH_INTERVAL`] until the
+/// ingestor is dropped. A failed flush keeps the delta held for the next tick or event.
+pub async fn run_idle_flush(ingestor: Weak<Mutex<ChatEventIngestor>>) {
+    let mut ticks = tokio::time::interval(LIVE_DELTA_FLUSH_INTERVAL);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        ticks.tick().await;
+        let Some(ingestor) = ingestor.upgrade() else {
+            return;
+        };
+        if let Err(error) = ingestor.lock().await.flush_if_idle().await {
+            eprintln!("Chat idle delta flush failed with code {:?}", error.code);
+        }
     }
 }
 

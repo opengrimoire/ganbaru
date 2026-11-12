@@ -20,9 +20,34 @@ pub struct FakeDriverControl {
     sends_in_flight: AtomicUsize,
     maximum_sends_in_flight: AtomicUsize,
     opened_instructions: Mutex<Vec<Option<String>>>,
+    native_rollback: AtomicBool,
+    rollback_requests: Mutex<Vec<RollbackRequest>>,
 }
 
 impl FakeDriverControl {
+    /// Makes later sessions advertise native rollback and accept rollback requests.
+    pub fn enable_native_rollback(&self) {
+        self.native_rollback.store(true, Ordering::Release);
+    }
+
+    /// Every rollback request the driver accepted, in order.
+    pub fn rollback_requests(&self) -> Vec<RollbackRequest> {
+        self.rollback_requests.lock().unwrap().clone()
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        if !self.native_rollback.load(Ordering::Acquire) {
+            return ProviderCapabilities::default();
+        }
+        ProviderCapabilities {
+            entries: vec![ProviderCapabilitySupport {
+                capability: ProviderCapability::NativeRollback,
+                supported: true,
+                explanation: None,
+            }],
+        }
+    }
+
     pub fn crash_next_send(&self) {
         self.crash_next_send.store(true, Ordering::Release);
     }
@@ -67,6 +92,22 @@ impl FakeDriverControl {
         let sink = self.sink.lock().unwrap().clone().unwrap();
         sink.emit(content_event("late-content", turn_id, "Late content"))
             .await
+    }
+
+    /// Emits the provider's own interrupted abort of `turn_id`, as a provider that confirms Stop
+    /// late would.
+    pub async fn emit_late_abort(&self, turn_id: &str) -> ChatResult<()> {
+        let sink = self.sink.lock().unwrap().clone().unwrap();
+        sink.emit(event(
+            "late-abort",
+            Some(turn_id),
+            CanonicalEvent::TurnAborted(ganbaru_chat_contracts::events::TurnAbortedEvent {
+                state: ganbaru_chat_contracts::models::ChatTurnState::Interrupted,
+                reason: "Interrupted".to_string(),
+                recoverable: true,
+            }),
+        ))
+        .await
     }
 
     pub async fn emit_cross_thread(&self) -> ChatResult<()> {
@@ -189,7 +230,7 @@ impl ProviderDriver for FakeProviderDriver {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::default()
+        self.control.capabilities()
     }
 
     fn probe<'a>(
@@ -240,7 +281,9 @@ impl ProviderDriver for FakeProviderDriver {
                 .unwrap(),
             ))
             .await?;
-            Ok(session_snapshot())
+            let mut snapshot = session_snapshot();
+            snapshot.capabilities = self.control.capabilities();
+            Ok(snapshot)
         })
     }
 
@@ -395,10 +438,14 @@ impl ProviderDriver for FakeProviderDriver {
 
     fn rollback<'a>(
         &'a mut self,
-        _request: RollbackRequest,
-        _context: &'a DriverOperationContext,
+        request: RollbackRequest,
+        context: &'a DriverOperationContext,
     ) -> DriverFuture<'a, DriverOperationReceipt> {
-        self.unavailable()
+        if !self.control.native_rollback.load(Ordering::Acquire) {
+            return self.unavailable();
+        }
+        self.control.rollback_requests.lock().unwrap().push(request);
+        Box::pin(async move { Ok(operation_receipt(&context.operation_id)) })
     }
 
     fn read_history<'a>(

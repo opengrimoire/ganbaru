@@ -30,6 +30,13 @@ use sqlx::{Row, SqlitePool};
 use std::collections::BTreeMap;
 use tauri::Manager;
 
+/// Projections a persisted or failed user turn changes without an event.
+const SENT_TURN_KEYS: &[ChatProjectionKey] = &[
+    ChatProjectionKey::Thread,
+    ChatProjectionKey::Turns,
+    ChatProjectionKey::Messages,
+];
+
 pub(crate) async fn send_turn(
     app: tauri::AppHandle,
     db_url: String,
@@ -213,6 +220,7 @@ pub(crate) async fn send_turn(
     })
     .await;
     persistence?;
+    crate::chat::ingestion::notify_rows_changed(&app, &pool, &thread_id, SENT_TURN_KEYS).await;
 
     // Every step after persistence runs here, so any failure reaches the turn failure mark and
     // the launch settlement below and a persisted run never stays starting.
@@ -307,6 +315,9 @@ pub(crate) async fn send_turn(
             (None, Some(error), marked)
         }
     };
+    if turn_failure_marked.is_ok() && launch_error.is_some() {
+        crate::chat::ingestion::notify_rows_changed(&app, &pool, &thread_id, SENT_TURN_KEYS).await;
+    }
     if let Some((binding, launch)) = origin.assignment_run() {
         let settlement = ganbaru_chat::agent_runs::settle_launch(
             &pool,
@@ -316,6 +327,7 @@ pub(crate) async fn send_turn(
             &now_timestamp()?,
         )
         .await?;
+        crate::chat::authority_epoch::bump_authority_epoch(&app);
         if settlement.stops_session() {
             mcp_registry.revoke_run_scope(&thread_id).await;
             if let Err(error) = owner

@@ -87,6 +87,7 @@ fn organizational_requests_use_permission_profiles_without_legacy_sandbox_fields
         &request,
         None,
         true,
+        false,
     )
     .unwrap();
 
@@ -313,6 +314,7 @@ fn turn_builder_preserves_model_traits_modes_and_verified_images() {
         &request,
         None,
         false,
+        false,
     )
     .unwrap();
 
@@ -349,6 +351,7 @@ fn turn_builder_preserves_model_traits_modes_and_verified_images() {
         &standard_request,
         None,
         false,
+        false,
     )
     .unwrap();
     assert!(standard_params.get("serviceTier").is_none());
@@ -369,6 +372,7 @@ fn turn_builder_preserves_model_traits_modes_and_verified_images() {
         &custom_request,
         Some(&custom_safety),
         false,
+        false,
     )
     .unwrap();
     assert_eq!(custom_params["permissions"], "project-edit");
@@ -383,6 +387,7 @@ fn turn_builder_preserves_model_traits_modes_and_verified_images() {
             "fallback-model",
             &escaping,
             None,
+            false,
             false,
         )
         .is_err()

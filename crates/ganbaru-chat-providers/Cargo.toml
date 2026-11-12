@@ -34,3 +34,10 @@ windows = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+
+# Fake provider CLI for spawn-path replay tests. It is a test tool and is never bundled.
+[[bin]]
+name = "ganbaru-provider-replay"
+path = "src/bin/provider_replay.rs"
+test = false
+doc = false

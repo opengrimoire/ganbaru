@@ -1,6 +1,7 @@
 //! Chat command adapters. Desktop hosts native provider execution and workspace integrations;
 //! mobile exposes provider-free channels, coordination, and preferences.
 
+pub(crate) mod authority_epoch;
 pub mod channels;
 #[cfg(desktop)]
 pub mod checkpoint_commands;

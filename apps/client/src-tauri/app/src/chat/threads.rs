@@ -86,6 +86,34 @@ pub async fn chat_read_timeline_page(
     .await
 }
 
+/// Reads the timeline rows of a thread that changed after the change clock value `after_change`.
+#[tauri::command]
+pub async fn chat_read_timeline_since(
+    app: tauri::AppHandle,
+    db_url: String,
+    thread_id: ChatThreadId,
+    after_change: u64,
+    limit: u32,
+) -> ChatResult<ganbaru_chat_contracts::models::ChatTimelineDeltaRead> {
+    reads::read_timeline_since(
+        &chat_pool(app, db_url).await?,
+        &thread_id,
+        after_change,
+        limit,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_read_activity_detail(
+    app: tauri::AppHandle,
+    db_url: String,
+    thread_id: ChatThreadId,
+    activity_id: ganbaru_chat_contracts::models::ChatActivityId,
+) -> ChatResult<ganbaru_chat_contracts::models::ChatActivityDetailRead> {
+    reads::read_activity_detail(&chat_pool(app, db_url).await?, &thread_id, &activity_id).await
+}
+
 #[tauri::command]
 pub async fn chat_read_timeline_turn(
     app: tauri::AppHandle,

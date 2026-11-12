@@ -37,6 +37,10 @@ const DEFAULT_COMMAND_CAPACITY: usize = 32;
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_FLUSH_INTERVAL: Duration = Duration::from_millis(32);
+/// How long an accepted interrupt may wait for the provider to settle the turn before the
+/// runtime settles it as interrupted and stops the provider. Reason: a provider that ignored an
+/// interrupt is not trusted with the next turn.
+pub const INTERRUPT_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub enum ThreadRuntimeCommand {
     SessionState(ProviderSessionState),
@@ -459,6 +463,7 @@ impl ThreadRuntimeOwner {
 pub struct ChatRuntimeRegistry {
     owners: Mutex<HashMap<ChatThreadId, Arc<ThreadRuntimeOwner>>>,
     idle_timeout: Duration,
+    interrupt_confirmation_timeout: Duration,
 }
 
 impl Default for ChatRuntimeRegistry {
@@ -466,6 +471,7 @@ impl Default for ChatRuntimeRegistry {
         Self {
             owners: Mutex::new(HashMap::new()),
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            interrupt_confirmation_timeout: INTERRUPT_CONFIRMATION_TIMEOUT,
         }
     }
 }
@@ -524,6 +530,7 @@ impl ChatRuntimeRegistry {
         let worker_thread_id = thread_id.clone();
         let worker_snapshot = Arc::clone(&snapshot);
         let idle_timeout = self.idle_timeout;
+        let interrupt_confirmation_timeout = self.interrupt_confirmation_timeout;
         let worker = tokio::spawn(async move {
             if let Some(start_gate) = start_gate {
                 let _ = start_gate.await;
@@ -534,6 +541,7 @@ impl ChatRuntimeRegistry {
                 worker_snapshot,
                 generation,
                 idle_timeout,
+                interrupt_confirmation_timeout,
             )
             .await;
         });
@@ -749,6 +757,16 @@ impl ChatRuntimeRegistry {
         Self {
             owners: Mutex::new(HashMap::new()),
             idle_timeout,
+            interrupt_confirmation_timeout: INTERRUPT_CONFIRMATION_TIMEOUT,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_interrupt_confirmation_timeout_for_test(timeout: Duration) -> Self {
+        Self {
+            owners: Mutex::new(HashMap::new()),
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            interrupt_confirmation_timeout: timeout,
         }
     }
 }

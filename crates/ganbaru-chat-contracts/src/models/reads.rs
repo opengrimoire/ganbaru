@@ -134,9 +134,27 @@ pub struct ChatThreadShellRead {
 #[serde(rename_all = "camelCase")]
 pub struct ChatChangeNotification {
     pub thread_id: ChatThreadId,
+    /// The newest event sequence the notification covers, or the thread's last event sequence
+    /// when a writer changed rows without an event.
     pub sequence: u64,
+    /// The first event sequence the notification covers; equal to `sequence` for one event or
+    /// for a change without an event.
+    pub since_sequence: u64,
     pub revision: u64,
-    pub changed_projection_keys: Vec<String>,
+    pub changed_projection_keys: Vec<ChatProjectionKey>,
+}
+
+/// A projection a change notification touched, so a reader rereads only what changed.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatProjectionKey {
+    Thread,
+    Turns,
+    Messages,
+    Activities,
+    Plans,
+    PendingRequests,
+    Organizational,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -145,6 +163,8 @@ pub struct ChatTimelineItemRead {
     pub activity_id: ChatActivityId,
     pub turn_id: Option<ChatTurnId>,
     pub sequence_anchor: u64,
+    /// The thread change clock value of the row's last write.
+    pub change_sequence: u64,
     pub kind: String,
     pub data: VersionedJson,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -175,4 +195,35 @@ pub struct ChatTimelinePageRead {
     pub previous_cursor: Option<String>,
     pub next_cursor: Option<String>,
     pub thread_revision: u64,
+    /// The thread change clock the rows were read at; a since-read after it returns later changes.
+    pub change_cursor: u64,
+}
+
+/// Timeline rows that changed after a change clock value.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatTimelineDeltaRead {
+    pub thread_id: ChatThreadId,
+    /// Visible rows written after the cursor, ordered by change.
+    pub items: Vec<ChatTimelineItemRead>,
+    /// Visible turns written after the cursor and the turns of the returned rows.
+    pub turns: Vec<ChatTimelineTurnRead>,
+    /// Rows deleted or hidden by an invalidated turn after the cursor and not visible again.
+    pub removed_item_ids: Vec<ChatActivityId>,
+    pub change_cursor: u64,
+    /// More changes follow `change_cursor` than one read returns.
+    pub has_more: bool,
+    /// Removals after the cursor were pruned, so the reader must reload the timeline.
+    pub reset_required: bool,
+    pub thread_revision: u64,
+}
+
+/// The whole detail of one activity, read when its disclosure opens because timeline reads carry
+/// only a shortened preview.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatActivityDetailRead {
+    pub activity_id: ChatActivityId,
+    pub detail: Option<String>,
+    pub updated_at: UtcTimestamp,
 }

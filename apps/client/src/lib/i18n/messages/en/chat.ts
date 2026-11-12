@@ -975,6 +975,8 @@ export const chat = {
     commandFailedWithCode: (code: string) => `Failed with exit code ${code}`,
     commandDuration: (duration: string) => `${duration} ms`,
     noCommandOutput: "No output",
+    detailShowingLast: (size: string) => `Showing the last ${size} KB`,
+    detailShowingFirst: (size: string) => `Showing the first ${size} KB`,
     threadRestored: "Conversation restored",
     threadRestoredDetail: (count: string, action: string) => `${count} later turns were invalidated. ${action}`,
     providerHistoryRolledBack: "Provider history was rolled back.",

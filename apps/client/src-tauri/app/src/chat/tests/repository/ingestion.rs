@@ -308,3 +308,168 @@ fn ingestion_batches_and_caps_proposed_plan_deltas() {
         assert_eq!(text_limit_warnings(&pool).await, 1);
     });
 }
+
+/// A clock the test advances by hand, so idle flush timing does not depend on the machine.
+#[derive(Clone)]
+struct ManualClock {
+    start: std::time::Instant,
+    offset: Arc<Mutex<std::time::Duration>>,
+}
+
+impl ManualClock {
+    fn new() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            offset: Arc::new(Mutex::new(std::time::Duration::ZERO)),
+        }
+    }
+
+    fn advance(&self, by: std::time::Duration) {
+        *self.offset.lock().unwrap() += by;
+    }
+
+    fn source(&self) -> crate::chat::ingestion::IngestionClock {
+        let clock = self.clone();
+        Arc::new(move || clock.start + *clock.offset.lock().unwrap())
+    }
+}
+
+async fn stored_events(pool: &sqlx::SqlitePool) -> i64 {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chat_events")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn ingestion_flushes_a_held_delta_only_after_the_idle_interval() {
+    use crate::chat::ingestion::LIVE_DELTA_FLUSH_INTERVAL;
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let emitter = Arc::new(RecordingEmitter::default());
+        let clock = ManualClock::new();
+        let mut ingestor =
+            ChatEventIngestor::new(pool.clone(), emitter.clone()).with_clock(clock.source());
+        ingestor
+            .ingest(content_event("event-idle-1", "Hello "))
+            .await
+            .unwrap();
+        clock.advance(LIVE_DELTA_FLUSH_INTERVAL / 2);
+        ingestor
+            .ingest(content_event("event-idle-2", "world"))
+            .await
+            .unwrap();
+        clock.advance(LIVE_DELTA_FLUSH_INTERVAL / 2 - std::time::Duration::from_millis(1));
+        assert!(!ingestor.flush_if_idle().await.unwrap());
+        assert_eq!(stored_events(&pool).await, 0);
+        assert!(emitter.0.lock().unwrap().is_empty());
+
+        clock.advance(std::time::Duration::from_millis(1));
+        assert!(ingestor.flush_if_idle().await.unwrap());
+        assert_eq!(stored_events(&pool).await, 1);
+        {
+            let notifications = emitter.0.lock().unwrap();
+            assert_eq!(notifications.len(), 1);
+            assert_eq!(notifications[0].since_sequence, 1);
+            assert_eq!(notifications[0].sequence, 1);
+        }
+        assert!(!ingestor.flush_if_idle().await.unwrap());
+        let text: String = sqlx::query_scalar(
+            "SELECT normalized_markdown FROM chat_messages WHERE id = 'assistant-message-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(text, "Hello world");
+    });
+}
+
+#[test]
+fn ingestion_stores_an_idle_delta_before_merging_the_next_one() {
+    use crate::chat::ingestion::LIVE_DELTA_FLUSH_INTERVAL;
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let emitter = Arc::new(RecordingEmitter::default());
+        let clock = ManualClock::new();
+        let mut ingestor =
+            ChatEventIngestor::new(pool.clone(), emitter.clone()).with_clock(clock.source());
+        ingestor
+            .ingest(content_event("event-late-1", "first "))
+            .await
+            .unwrap();
+        clock.advance(LIVE_DELTA_FLUSH_INTERVAL);
+        ingestor
+            .ingest(content_event("event-late-2", "second"))
+            .await
+            .unwrap();
+        assert_eq!(stored_events(&pool).await, 1);
+        assert!(!ingestor.flush_if_idle().await.unwrap());
+        ingestor.flush().await.unwrap();
+        let notifications = emitter.0.lock().unwrap();
+        assert_eq!(
+            notifications
+                .iter()
+                .map(|notification| (notification.since_sequence, notification.sequence))
+                .collect::<Vec<_>>(),
+            vec![(1, 1), (2, 2)]
+        );
+    });
+}
+
+#[test]
+fn ingestion_flushes_a_held_delta_at_once_for_an_event_it_cannot_merge() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let emitter = Arc::new(RecordingEmitter::default());
+        let clock = ManualClock::new();
+        let mut ingestor =
+            ChatEventIngestor::new(pool.clone(), emitter.clone()).with_clock(clock.source());
+        ingestor
+            .ingest(content_event("event-split-1", "message"))
+            .await
+            .unwrap();
+        let mut reasoning = content_event("event-split-2", "thinking");
+        if let CanonicalEvent::ContentDelta(delta) = &mut reasoning.runtime.event {
+            delta.item_id = "reasoning-1".to_string();
+            delta.stream_kind = ContentStreamKind::ReasoningText;
+        }
+        ingestor.ingest(reasoning).await.unwrap();
+        assert_eq!(stored_events(&pool).await, 1);
+        assert_eq!(emitter.0.lock().unwrap().len(), 1);
+    });
+}
+
+#[test]
+fn idle_flush_ticker_stores_a_held_delta_and_stops_with_the_ingestor() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let emitter = Arc::new(RecordingEmitter::default());
+        let ingestor = Arc::new(tokio::sync::Mutex::new(ChatEventIngestor::new(
+            pool.clone(),
+            emitter.clone(),
+        )));
+        ingestor
+            .lock()
+            .await
+            .ingest(content_event("event-ticker", "streamed"))
+            .await
+            .unwrap();
+        let ticker = tokio::spawn(crate::chat::ingestion::run_idle_flush(Arc::downgrade(
+            &ingestor,
+        )));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while emitter.0.lock().unwrap().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the ticker never flushed"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(stored_events(&pool).await, 1);
+        drop(ingestor);
+        tokio::time::timeout(std::time::Duration::from_secs(10), ticker)
+            .await
+            .expect("the ticker stops once the ingestor is dropped")
+            .unwrap();
+    });
+}

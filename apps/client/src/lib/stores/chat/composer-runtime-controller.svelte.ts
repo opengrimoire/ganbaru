@@ -43,7 +43,7 @@ export interface ChatComposerRuntimeControllerOptions {
   selectedExecutionEnvironmentId: () => string | null;
   setSelectedThreadId: (threadId: ChatThreadId | null) => void;
   upsertThread: (thread: ChatThreadShellRead) => void;
-  loadTimeline: (threadId: ChatThreadId) => Promise<void>;
+  refreshTimeline: (threadId: ChatThreadId) => Promise<void>;
   clearTimeline: () => void;
   setSettings: (settings: ChatSettingsRead) => void;
   onComposerChanged: () => void;
@@ -288,7 +288,7 @@ export class ChatComposerRuntimeController {
     this.sendError = result.launchError?.message ?? null;
     this.failedSendOptions = result.launchError ? { ...options } : null;
     try {
-      await this.options.loadTimeline(result.thread.id);
+      await this.options.refreshTimeline(result.thread.id);
     } finally {
       this.pendingUserMessage = null;
     }
@@ -349,7 +349,7 @@ export class ChatComposerRuntimeController {
     });
     this.composerController.markSent();
     await this.composerController.flush();
-    await this.options.loadTimeline(thread.id);
+    await this.options.refreshTimeline(thread.id);
   }
 
   async queue(): Promise<void> {
@@ -526,7 +526,7 @@ export class ChatComposerRuntimeController {
       await chatApi.markChatQueuedFollowupDispatched(thread.id, queued.id);
       this.options.upsertThread(result.thread);
       this.sendError = result.launchError?.message ?? null;
-      await this.options.loadTimeline(thread.id);
+      await this.options.refreshTimeline(thread.id);
       await this.refreshInteraction(thread.id);
     } finally {
       this.queuedDispatches.delete(queued.id);

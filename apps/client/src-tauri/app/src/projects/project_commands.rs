@@ -31,7 +31,10 @@ pub async fn projects_update_project<R: Runtime>(
 ) -> Result<ProjectsMutationRows, String> {
     let pool = connect_sqlite(app.clone(), db_url).await?;
     let vault_root = vault::active_writable_vault_path(&app)?;
-    project_commands::update_project(&pool, &vault_root, project).await
+    let mutation = project_commands::update_project(&pool, &vault_root, project).await?;
+    // An update may archive the project, which ends the live authority of its Chat runs.
+    crate::chat::authority_epoch::bump_authority_epoch(&app);
+    Ok(mutation)
 }
 
 #[tauri::command]

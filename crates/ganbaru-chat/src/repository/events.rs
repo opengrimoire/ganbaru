@@ -3,8 +3,8 @@ use crate::events::{
     ChangedFileSummary,
 };
 use crate::models::{
-    ActivityStatus, ChatChangeNotification, ChatError, ChatErrorCode, ChatResult, ChatThreadId,
-    UtcTimestamp, VersionedJson,
+    ActivityStatus, ChatChangeNotification, ChatError, ChatErrorCode, ChatProjectionKey,
+    ChatResult, ChatThreadId, UtcTimestamp, VersionedJson,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -171,7 +171,7 @@ pub async fn append_canonical_event(
     )
     .await?
     {
-        changed_projection_keys.push("organizational".to_string());
+        changed_projection_keys.push(ChatProjectionKey::Organizational);
     }
     transaction.commit().await.map_err(persistence_error)?;
     let notification_thread_id = request.runtime.thread_id.clone();
@@ -185,6 +185,7 @@ pub async fn append_canonical_event(
         notification: ChatChangeNotification {
             thread_id: notification_thread_id,
             sequence,
+            since_sequence: sequence,
             revision: next_revision,
             changed_projection_keys,
         },

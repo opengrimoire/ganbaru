@@ -41,9 +41,32 @@ pub async fn claim_command_receipt(
     now: &UtcTimestamp,
 ) -> ChatResult<CommandReceiptClaim> {
     validate_command_kind(command_kind)?;
-    let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    if let Some(existing) = read_receipt_from_executor(&mut *transaction, client_command_id).await?
-    {
+    let submitted = submitted_revision.map(i64_value).transpose()?;
+    // One statement claims the ID and checks the revision atomically, so two concurrent
+    // duplicates resolve to one claim and one replay instead of a constraint failure.
+    let inserted = sqlx::query(
+        "INSERT INTO chat_command_receipts
+            (client_command_id, thread_id, command_kind, submitted_revision,
+             state, created_at, updated_at)
+         SELECT ?1, ?2, ?3, ?4, 'accepted', ?5, ?5
+         WHERE ?4 IS NULL OR (SELECT revision FROM chat_threads WHERE id = ?2) = ?4
+         ON CONFLICT(client_command_id) DO NOTHING",
+    )
+    .bind(client_command_id.as_str())
+    .bind(thread_id.as_str())
+    .bind(command_kind)
+    .bind(submitted)
+    .bind(now.as_str())
+    .execute(pool)
+    .await
+    .map_err(persistence_error)?;
+    let existing = read_command_receipt(pool, client_command_id).await?;
+    if inserted.rows_affected() == 1 {
+        return existing
+            .map(CommandReceiptClaim::Claimed)
+            .ok_or_else(corrupt_data_error);
+    }
+    if let Some(existing) = existing {
         if existing.thread_id != *thread_id
             || existing.command_kind != command_kind
             || existing.submitted_revision != submitted_revision
@@ -54,45 +77,51 @@ pub async fn claim_command_receipt(
                 false,
             ));
         }
-        transaction.commit().await.map_err(persistence_error)?;
         return Ok(CommandReceiptClaim::Replay(existing));
     }
-    if let Some(expected_revision) = submitted_revision {
-        let current_revision: Option<i64> =
-            sqlx::query_scalar("SELECT revision FROM chat_threads WHERE id = ?")
-                .bind(thread_id.as_str())
-                .fetch_optional(&mut *transaction)
-                .await
-                .map_err(persistence_error)?;
-        let current_revision = current_revision.ok_or_else(not_found_error)?;
-        if u64::try_from(current_revision).map_err(|_| corrupt_data_error())? != expected_revision {
-            return Err(ChatError::new(
-                ChatErrorCode::StaleRevision,
-                "Chat thread revision is stale",
-                true,
-            ));
-        }
+    let current_revision: Option<i64> =
+        sqlx::query_scalar("SELECT revision FROM chat_threads WHERE id = ?")
+            .bind(thread_id.as_str())
+            .fetch_optional(pool)
+            .await
+            .map_err(persistence_error)?;
+    if current_revision.is_none() {
+        return Err(not_found_error());
     }
-    sqlx::query(
-        "INSERT INTO chat_command_receipts
-            (client_command_id, thread_id, command_kind, submitted_revision,
-             state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'accepted', ?, ?)",
-    )
-    .bind(client_command_id.as_str())
-    .bind(thread_id.as_str())
-    .bind(command_kind)
-    .bind(submitted_revision.map(i64_value).transpose()?)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
-    let receipt = read_receipt_from_executor(&mut *transaction, client_command_id)
-        .await?
-        .ok_or_else(corrupt_data_error)?;
-    transaction.commit().await.map_err(persistence_error)?;
-    Ok(CommandReceiptClaim::Claimed(receipt))
+    Err(ChatError::new(
+        ChatErrorCode::StaleRevision,
+        "Chat thread revision is stale",
+        true,
+    ))
+}
+
+/// How long a settled command receipt stays replayable. Clients retry a command within seconds,
+/// so a week leaves wide room while keeping the device-local receipt tables bounded.
+pub const COMMAND_RECEIPT_RETENTION: std::time::Duration =
+    std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Deletes completed and failed thread and organizational command receipts last updated before
+/// `older_than`, returning how many were removed. Accepted receipts stay, because their command
+/// may still be running.
+pub async fn prune_command_receipts(
+    pool: &SqlitePool,
+    older_than: &UtcTimestamp,
+) -> ChatResult<u64> {
+    let mut removed = 0;
+    for statement in [
+        "DELETE FROM chat_command_receipts
+         WHERE state IN ('completed', 'failed') AND updated_at < ?",
+        "DELETE FROM chat_organizational_command_receipts
+         WHERE state IN ('completed', 'failed') AND updated_at < ?",
+    ] {
+        removed += sqlx::query(statement)
+            .bind(older_than.as_str())
+            .execute(pool)
+            .await
+            .map_err(persistence_error)?
+            .rows_affected();
+    }
+    Ok(removed)
 }
 
 pub async fn complete_command_receipt(

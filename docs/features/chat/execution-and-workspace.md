@@ -12,7 +12,7 @@ Scratch output stays private until the user explicitly promotes it into a projec
 
 A run links one organizational request to one provider session and its canonical events. A conversation can contain many runs, and a run can hand off to a new provider session when continuation is unavailable or inappropriate. Hidden session handoffs preserve the human conversation without pretending different providers share native thread state.
 
-Cancellation targets the active run and its owned process tree. It never deletes prior events or cancels unrelated parallel work.
+Cancellation targets the active run and its owned process tree. It never deletes prior events or cancels unrelated parallel work. Stop settles the turn as interrupted within a few seconds even when the provider does not confirm it, and the provider session restarts for the next turn.
 
 A run executes on one device, and its process, approvals, questions, terminal, and execution state stay there. Other linked devices see its messages and can complete or cancel its assignment, which stops the run on the executing device.
 

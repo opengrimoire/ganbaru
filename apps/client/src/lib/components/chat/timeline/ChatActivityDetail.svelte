@@ -1,3 +1,12 @@
+<script lang="ts" module>
+  import { readChatActivityDetail } from "$lib/api/chat/session";
+  import { ActivityDetailCache } from "$lib/chat/timeline/activity-detail";
+
+  /** Whole details opened in any timeline, shared so reopening a disclosure does not read again. */
+  const wholeDetails = new ActivityDetailCache(async (threadId, activityId) =>
+    (await readChatActivityDetail(threadId, activityId)).detail);
+</script>
+
 <script lang="ts">
   import Check from "@lucide/svelte/icons/check";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
@@ -10,15 +19,60 @@
     isCommandActivity,
     isFileChangeActivity,
   } from "$lib/chat/timeline/activity-presentation";
+  import { untrack } from "svelte";
+  import type { ChatThreadId } from "$lib/chat/contracts";
+  import { ACTIVITY_DETAIL_PREVIEW_BYTES, activityDetailPreviewKeepsTail } from "$lib/chat/timeline/activity-detail";
   import type { TimelineActivityRow } from "$lib/chat/timeline/model";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
 
   const localization = getLocalization();
   const { t } = localization;
-  let { activity, detail }: { activity: TimelineActivityRow; detail: string | null } = $props();
-  const command = $derived(commandActivityPresentation(activity));
-  const changes = $derived(fileChangePresentation(activity));
+  let {
+    activity,
+    detail,
+    threadId = null,
+    expanded = false,
+  }: {
+    activity: TimelineActivityRow;
+    detail: string | null;
+    /** The thread that owns the activity, so a shortened detail can load in full. */
+    threadId?: ChatThreadId | null;
+    /** Whether the disclosure is open; a shortened detail loads in full only once it is. */
+    expanded?: boolean;
+  } = $props();
+  const versionKey = $derived(`${activity.id}\u0000${activity.updatedAt ?? ""}`);
+  let wholeDetail = $state<{ activityId: string; key: string; detail: string | null } | null>(null);
+  // The last whole detail of the same activity stays shown while a newer version loads, so an
+  // open disclosure on running output does not fall back to the preview on every change.
+  const loaded = $derived(activity.detailTruncated && wholeDetail?.activityId === activity.id ? wholeDetail : null);
+  const shown = $derived<TimelineActivityRow>(loaded
+    ? { ...activity, detailPreview: loaded.detail, detailTruncated: false }
+    : activity);
+  const shownDetail = $derived(loaded ? loaded.detail : detail);
+  const truncationNotice = $derived.by(() => {
+    if (!shown.detailTruncated) return null;
+    const size = formatNumber(localization.locale, ACTIVITY_DETAIL_PREVIEW_BYTES / 1024);
+    return activityDetailPreviewKeepsTail(activity)
+      ? t("chat.timeline.detailShowingLast", size)
+      : t("chat.timeline.detailShowingFirst", size);
+  });
+  const command = $derived(commandActivityPresentation(shown));
+  const changes = $derived(fileChangePresentation(shown));
+
+  $effect(() => {
+    if (!expanded || !activity.detailTruncated || !threadId) return;
+    const key = versionKey;
+    const activityId = activity.id;
+    if (untrack(() => wholeDetail?.key === key)) return;
+    let current = true;
+    wholeDetails.load(threadId, activity).then(
+      (whole) => { if (current) wholeDetail = { activityId, key, detail: whole }; },
+      // A failed read keeps what is shown: the preview with its notice, or the last whole detail.
+      () => undefined,
+    );
+    return () => { current = false; };
+  });
   let expandedChanges = $state<string[]>([]);
 
   function commandStatus(): string {
@@ -47,6 +101,7 @@
     </header>
     <pre class="command-line"><span aria-hidden="true">$ </span>{command.command ?? t("chat.timeline.command")}</pre>
     {#if command.output}
+      {#if truncationNotice}<p class="detail-notice">{truncationNotice}</p>{/if}
       <pre class="command-output">{command.output}</pre>
     {:else if command.running}
       <p class="command-empty">{t("chat.timeline.commandRunning")}</p>
@@ -87,8 +142,9 @@
       </div>
     {/each}
   </div>
-{:else if detail}
-  <pre class="generic-detail">{detail}</pre>
+{:else if shownDetail}
+  {#if truncationNotice}<p class="detail-notice">{truncationNotice}</p>{/if}
+  <pre class="generic-detail">{shownDetail}</pre>
 {/if}
 
 <style>
@@ -101,6 +157,8 @@
   .command-line span { color: var(--muted-foreground); user-select: none; }
   .command-output { max-height: 18rem; padding: 0.35rem 0.75rem 0.75rem; color: var(--muted-foreground); }
   .command-empty { margin: 0; padding: 0.35rem 0.75rem 0.75rem; color: var(--muted-foreground); }
+  .detail-notice { margin: 0 0 0.25rem; color: var(--muted-foreground); font-size: calc(0.6875rem * var(--type-scale)); }
+  .command-card .detail-notice { margin: 0; padding: 0.35rem 0.75rem 0; }
   .command-card footer { display: flex; align-items: center; justify-content: flex-end; gap: 0.35rem; border-top: 1px solid var(--border); padding: 0.4rem 0.65rem; color: var(--muted-foreground); }
   .command-card footer.failed { color: var(--destructive); }
   .command-card footer small { margin-left: 0.25rem; color: var(--muted-foreground); }

@@ -250,6 +250,7 @@ export function modelSettings(): ChatSettingsRead {
         restoreLastSelectedThread: true,
         showReasoningSummaries: true,
         automaticallyFoldSettledWork: true,
+        timelineDensity: "comfortable",
         terminalScrollbackLines: 10_000,
         idleSessionTimeoutSeconds: 1_800,
         confirmMultilineTerminalPaste: true,

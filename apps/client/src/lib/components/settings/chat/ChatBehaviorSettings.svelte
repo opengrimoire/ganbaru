@@ -3,6 +3,7 @@
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import * as chatApi from "$lib/api/chat";
   import type { ChatDiagnosticsRead } from "$lib/chat/contracts";
+  import { readTimelineDensity, timelineDensityOptions } from "$lib/chat/timeline/density";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
@@ -37,6 +38,7 @@
     { value: "enter", label: t("settings.chat.behavior.enter") },
     { value: "mod_enter", label: t("settings.chat.behavior.modEnter") },
   ]);
+  const densityOptions = $derived(timelineDensityOptions(t));
   const scrollbackOptions = $derived([1_000, 5_000, 10_000, 25_000, 50_000, 100_000].map((value) => ({
     value: String(value),
     label: formatNumber(localization.locale, value),
@@ -172,6 +174,14 @@
         value={behavior.sendKey}
         options={sendKeyOptions}
         onChange={(value) => void update({ sendKey: value === "mod_enter" ? "mod_enter" : "enter" })}
+        disabled={saving}
+      />
+      <Select
+        label={t("settings.chat.behavior.timelineDensity")}
+        description={t("settings.chat.behavior.timelineDensityDescription")}
+        value={behavior.timelineDensity}
+        options={densityOptions}
+        onChange={(value) => void update({ timelineDensity: readTimelineDensity(value) })}
         disabled={saving}
       />
       <Select label={t("settings.chat.behavior.terminalScrollback")} description={t("settings.chat.behavior.terminalScrollbackDescription")} value={String(behavior.terminalScrollbackLines)} options={scrollbackOptions} onChange={(value) => void update({ terminalScrollbackLines: Number(value) })} disabled={saving} />

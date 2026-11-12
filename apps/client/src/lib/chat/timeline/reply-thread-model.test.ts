@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { ChatAgentRunRead, ChatMessageRead, VersionedJson } from "$lib/chat/contracts";
 import {
   agentRunRestart,
+  exactExecutionReadKey,
+  exactExecutionRuns,
   exactRunPresentationsReady,
   latestRenderableAgentRun,
+  planExactExecutionReads,
   replyThreadRenderEntries,
   repliesWithoutRenderedRunProjection,
   shouldGroupReplyMessages,
@@ -211,5 +214,59 @@ describe("reply thread run restarts", () => {
     expect(agentRunRestart({
       ...run, attemptReason: "handoff", handoffReason: "native_session_lost",
     })).toBe("handoff");
+  });
+});
+
+describe("reply thread exact execution reads", () => {
+  function settledRun(id: string, updatedAt: string): ChatAgentRunRead {
+    return { ...agentRun(id, "thread-1"), state: "completed", updatedAt };
+  }
+
+  it("reads only settled or scratch runs that have a provider thread", () => {
+    const runs = [
+      agentRun("working", "thread-1"),
+      { ...agentRun("scratch", "thread-1"), scratchGenerationId: "scratch-1" },
+      { ...agentRun("unstarted", null), state: "completed" as const },
+      settledRun("done", "2026-08-02T08:00:05Z"),
+      { ...agentRun("failed", "thread-1"), state: "failed" as const },
+    ];
+
+    expect(exactExecutionRuns(runs).map((run) => run.id)).toEqual(["scratch", "done", "failed"]);
+  });
+
+  it("rereads only runs that are new or whose revision changed", () => {
+    const first = settledRun("first", "2026-08-02T08:00:05Z");
+    const second = settledRun("second", "2026-08-02T08:00:06Z");
+    const cache = new Map([
+      ["first", { updatedAt: first.updatedAt, read: "first read" }],
+      ["second", { updatedAt: "2026-08-02T08:00:02Z", read: "old second read" }],
+      ["gone", { updatedAt: first.updatedAt, read: "gone read" }],
+    ]);
+    const third = settledRun("third", "2026-08-02T08:00:07Z");
+
+    const plan = planExactExecutionReads([first, second, third], cache, new Set());
+
+    expect(plan.toRead.map((run) => run.id)).toEqual(["second", "third"]);
+    expect(plan.visible).toEqual({ first: "first read", second: "old second read" });
+    expect([...plan.cache.keys()]).toEqual(["first", "second"]);
+  });
+
+  it("returns nothing to read when every run is cached at its revision", () => {
+    const run = settledRun("first", "2026-08-02T08:00:05Z");
+    const cache = new Map([["first", { updatedAt: run.updatedAt, read: 1 }]]);
+
+    const plan = planExactExecutionReads([run], cache, new Set());
+
+    expect(plan.toRead).toEqual([]);
+    expect(plan.visible).toEqual({ first: 1 });
+  });
+
+  it("does not start a second read of a run revision already in flight", () => {
+    const run = settledRun("first", "2026-08-02T08:00:05Z");
+
+    const plan = planExactExecutionReads([run], new Map(), new Set([exactExecutionReadKey(run)]));
+
+    expect(plan.toRead).toEqual([]);
+    expect(plan.visible).toEqual({});
   });
 });

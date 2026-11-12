@@ -1,5 +1,6 @@
 import {
   CHAT_SEND_KEYS,
+  CHAT_TIMELINE_DENSITIES,
   INTERACTION_MODES,
   SAFETY_MODES,
   type ChatBehaviorPreferences,
@@ -37,6 +38,7 @@ const DEFAULT_BEHAVIOR: ChatBehaviorPreferences = {
   restoreLastSelectedThread: true,
   showReasoningSummaries: true,
   automaticallyFoldSettledWork: true,
+  timelineDensity: "comfortable",
   terminalScrollbackLines: 10_000,
   idleSessionTimeoutSeconds: 900,
   confirmMultilineTerminalPaste: true,
@@ -160,6 +162,7 @@ function parseBehavior(value: unknown, label: string): ChatBehaviorPreferences {
       record.automaticallyFoldSettledWork,
       `${label}.automaticallyFoldSettledWork`,
     ),
+    timelineDensity: readEnum(record.timelineDensity, CHAT_TIMELINE_DENSITIES, `${label}.timelineDensity`),
     terminalScrollbackLines,
     idleSessionTimeoutSeconds,
     confirmMultilineTerminalPaste: readBoolean(

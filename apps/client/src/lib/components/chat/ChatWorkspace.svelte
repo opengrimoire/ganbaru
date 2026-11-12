@@ -155,6 +155,7 @@
     bottomPanelOpen && layout.variant !== "minimum_recovery",
   );
   const auxiliaryPairOpen = $derived(chat.openReplyThreadId !== null && chat.inspectorOpen);
+  const timelineDensity = $derived(chat.settings?.configuration.behavior.timelineDensity ?? "comfortable");
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
   const projectHosted = $derived(projectSidebar !== undefined && !mobileShell);
   const visibleRailOpen = $derived(
@@ -1010,7 +1011,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;${canvasEdgeWidth === null ? "" : `--chat-canvas-edge-width:${canvasEdgeWidth}px;`}`}>
+<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-density={timelineDensity} data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;${canvasEdgeWidth === null ? "" : `--chat-canvas-edge-width:${canvasEdgeWidth}px;`}`}>
   <div class="chat-canvas" aria-hidden="true"></div>
 {#if WorkspaceObserver}<WorkspaceObserver />{/if}
   <div class="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div>
@@ -1135,6 +1136,7 @@
     --chat-conversation-max-width: 60rem;
     --chat-conversation-gutter: 1rem;
     --chat-conversation-entry-space: 0.45rem;
+    --chat-participant-start-space: 1.1rem;
     --chat-reply-thread-column-width: 0px;
     --chat-inspector-column-width: 0px;
     --chat-global-actions-width: 6.5rem;
@@ -1144,6 +1146,13 @@
   .chat-workspace :global(svg.lucide:not(.explorer-sidebar *)) { stroke-width: var(--chat-icon-stroke-width); }
   .chat-workspace :global(svg.lucide[stroke-width="1"]:not(.explorer-sidebar *)) { stroke-width: 1; }
   .chat-workspace :global(svg.lucide[stroke-width="1.5"]:not(.explorer-sidebar *)) { stroke-width: var(--chat-compact-icon-stroke-width); }
+  /* Compact density tightens the spacing between timeline and channel rows; text size stays with the type scale. */
+  .chat-workspace[data-density="compact"] {
+    --chat-conversation-flow-space: 0.35rem;
+    --chat-conversation-block-space: 0.45rem;
+    --chat-conversation-entry-space: 0.2rem;
+    --chat-participant-start-space: 0.55rem;
+  }
   /* A column rail sizes its own track, so it shares the docked explorer collapse motion with Projects and Notes. */
   .chat-workspace[data-rail-presentation="column"] { --chat-rail-column-width: auto; }
   .chat-workspace[data-rail-presentation="sheet"] { --chat-rail-column-width: 0px; }

@@ -24,7 +24,7 @@
   import { activityFilePath, fileChangePresentation, fileReadActivityPresentation, fileSearchActivityPresentation, isFileReadActivity, isFileSearchActivity, isImageViewActivity, summarizeActivityKinds, transientActivitySummary, type ActivitySummaryCount } from "$lib/chat/timeline/activity-presentation";
   import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
   import { chatModelParticipant, type ChatModelParticipant } from "$lib/chat/teammates/participant-identity";
-  import { buildTimelineDisplayRows, includeOptimisticTimelineMessage, projectTimelineReadModel, timelineActivityShowsLiveStatus, timelineActivitySupportsDisclosure, timelineModelGroupStartIds, timelineRowsForTurn, type TimelineActivityGroupRow, type TimelineActivityRow, type TimelineDisplayRow, type TimelineMessageRow, type TimelinePlanRow, type TimelineTurnFoldRow } from "$lib/chat/timeline/model";
+  import { buildTimelineDisplayRows, includeOptimisticTimelineMessage, projectTimelineReadModel, stabilizeTimelineRows, timelineActivityShowsLiveStatus, timelineActivitySupportsDisclosure, timelineFinishedRenderKey, timelineModelGroupStartIds, timelineRowsForTurn, type TimelineActivityGroupRow, type TimelineActivityRow, type TimelineDisplayRow, type TimelineMessageRow, type TimelinePlanRow, type TimelineRow, type TimelineTurnFoldRow } from "$lib/chat/timeline/model";
   import { computeTimelineVirtualWindow, nextTimelineUnreadCount, scrollTopForPreservedAnchor, timelineMinimapRows, timelineScrollbarThumbGeometry, timelineScrollIntent, type TimelineScrollbarThumbGeometry, type TimelineScrollIntent } from "$lib/chat/timeline/virtualization";
   import { formatDateTime, formatList, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -127,12 +127,22 @@
     turnId,
   )
     .filter((row) => !hideUserMessages || row.kind !== "message" || row.role !== "user"));
-  const displayRows = $derived(buildTimelineDisplayRows(timelineRows.filter((row) => row.kind !== "plan" || !dismissedPlans.includes(row.id)), projection.turns, new Set(expandedTurns), new Set(expandedGroups)));
+  let lastStableRows: readonly TimelineRow[] = [];
+  let lastStableDisplayRows: readonly TimelineDisplayRow[] = [];
+  const stableRows = $derived.by(() => {
+    lastStableRows = stabilizeTimelineRows(lastStableRows, timelineRows);
+    return lastStableRows;
+  });
+  const displayRows = $derived(buildTimelineDisplayRows(stableRows.filter((row) => row.kind !== "plan" || !dismissedPlans.includes(row.id)), projection.turns, new Set(expandedTurns), new Set(expandedGroups)));
+  const stableDisplayRows = $derived.by(() => {
+    lastStableDisplayRows = stabilizeTimelineRows(lastStableDisplayRows, displayRows);
+    return lastStableDisplayRows;
+  });
   const turnsById = $derived(new Map(projection.turns.map((turn) => [turn.id, turn])));
-  const modelGroupStartIds = $derived(timelineModelGroupStartIds(displayRows));
+  const modelGroupStartIds = $derived(timelineModelGroupStartIds(stableDisplayRows));
   const assistantActionMessages = $derived.by(() => {
     const messages = new Map<ChatTurnId, TimelineMessageRow>();
-    for (const row of displayRows) {
+    for (const row of stableDisplayRows) {
       if (row.kind !== "message" || row.role !== "assistant" || row.state !== "complete" || !row.turnId) continue;
       const current = messages.get(row.turnId);
       const replacesCurrent = !current
@@ -144,9 +154,9 @@
     }
     return messages;
   });
-  const virtualWindow = $derived(computeTimelineVirtualWindow(displayRows, measuredHeights, scrollTop, viewportHeight));
+  const virtualWindow = $derived(computeTimelineVirtualWindow(stableDisplayRows, measuredHeights, scrollTop, viewportHeight));
   const renderedRows = $derived(embedded
-    ? displayRows.map((row, index) => ({ row, index }))
+    ? stableDisplayRows.map((row, index) => ({ row, index }))
     : virtualWindow.items);
   const selectedWorkingFolder = $derived(executionThread
     ? chat.workingFolders.find((entry) => entry.workingFolder.id === executionThread.workingFolderId) ?? null
@@ -160,8 +170,8 @@
     revision: 0,
     archivedAt: null,
   });
-  const minimapRows = $derived(timelineMinimapRows(displayRows));
-  const showMinimap = $derived(!embedded && displayRows.length >= 80 && viewportWidth >= 900 && minimapRows.length > 0);
+  const minimapRows = $derived(timelineMinimapRows(stableDisplayRows));
+  const showMinimap = $derived(!embedded && stableDisplayRows.length >= 80 && viewportWidth >= 900 && minimapRows.length > 0);
   const latestTimelinePage = $derived(timelinePages.at(-1));
   const timelineRevision = $derived(`${latestTimelinePage
     ? "revision" in latestTimelinePage
@@ -172,12 +182,12 @@
     + (bottomInsetPx > 0 ? bottomInsetPx + COMPOSER_READING_GAP_PX : TIMELINE_EDGE_PADDING_PX));
 
   $effect(() => {
-    if (!timelineLoading || displayRows.length > 0) {
+    if (!timelineLoading || stableDisplayRows.length > 0) {
       initialTimelineLoadingVisible = false;
       return;
     }
     const timer = window.setTimeout(() => {
-      if (timelineLoading && displayRows.length === 0) {
+      if (timelineLoading && stableDisplayRows.length === 0) {
         initialTimelineLoadingVisible = true;
       }
     }, 180);
@@ -511,11 +521,11 @@
 
   function scrollToMinimapRow(rowId: string): void {
     if (!scroller) return;
-    const index = displayRows.findIndex((row) => row.id === rowId);
+    const index = stableDisplayRows.findIndex((row) => row.id === rowId);
     if (index < 0) return;
-    const denominator = Math.max(1, displayRows.length - 1);
+    const denominator = Math.max(1, stableDisplayRows.length - 1);
     scroller.scrollTo({ top: (index / denominator) * Math.max(0, scroller.scrollHeight - scroller.clientHeight), behavior: chatScrollBehavior(reducedMotion) });
-    intent = index === displayRows.length - 1 ? "following" : "anchored";
+    intent = index === stableDisplayRows.length - 1 ? "following" : "anchored";
   }
 
   function minimapLabel(row: TimelineMessageRow | TimelineActivityRow): string {
@@ -827,7 +837,7 @@
         ?? (sourceThreadId === selectedThread?.id ? selectedThread.workingFolderId : null)
       : null}
     <article class="chat-assistant-message">
-      <ChatMarkdown markdown={message.markdown} onError={reportError} />
+      <ChatMarkdown markdown={message.markdown} renderKey={timelineFinishedRenderKey(message)} onError={reportError} />
       {#if message.turnId && message.metadata?.changedFiles.length}
         <ChatChangedFilesSummary
           turnId={message.turnId}
@@ -885,7 +895,7 @@
     {@const plan = row as TimelinePlanRow}
     <article class="chat-plan">
       <h3><ListChecks size={16} />{t("chat.timeline.plan")}</h3>
-      <ChatMarkdown markdown={plan.markdown} onError={reportError} />
+      <ChatMarkdown markdown={plan.markdown} renderKey={timelineFinishedRenderKey(plan)} onError={reportError} />
       {#if plan.steps.length > 0}<ol>{#each plan.steps as step}<li><span>{step.text}</span><small>{statusLabel(step.status)}</small></li>{/each}</ol>{/if}
       <div class="chat-plan-actions"><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-continue-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.continuePlanning")}</button><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-implement-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.implementPlan")}</button><button type="button" onclick={() => { dismissedPlans = [...dismissedPlans, plan.id]; }}>{t("chat.timeline.dismiss")}</button></div>
     </article>
@@ -964,7 +974,7 @@
           role="article"
           aria-label={rowAriaLabel(row)}
           aria-posinset={virtual.index + 1}
-          aria-setsize={displayRows.length}
+          aria-setsize={stableDisplayRows.length}
           tabindex="-1"
           use:messageTouchActions={touchActionsKey(row)}
           data-message-touch-actions={touchActionsKey(row) === null ? undefined : ""}
@@ -1080,7 +1090,7 @@
   .chat-timeline-scrollbar-thumb:hover, .chat-timeline-scrollbar-thumb.dragging { background-color: var(--app-scrollbar-thumb-hover); }
   .chat-timeline-row { --chat-participant-gap: 0.75rem; border-radius: 0.4rem; }
   .chat-timeline-row.optimistic { animation: chat-message-in 140ms ease-out; }
-  .chat-timeline-row.participant-start { margin-top: 1.1rem; }
+  .chat-timeline-row.participant-start { margin-top: var(--chat-participant-start-space, 1.1rem); }
   .chat-timeline-row:first-child { margin-top: 0; }
   .chat-participant-row { display: grid; min-width: 0; grid-template-columns: 36px minmax(0, 1fr); align-items: start; gap: var(--chat-participant-gap); }
   .chat-participant-content { --chat-message-action-anchor-bottom:1.25rem; position:relative; min-width:0; transform:translateY(-4px); }

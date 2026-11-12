@@ -91,6 +91,28 @@ describe("ChatChannelFeed", () => {
     return mounted;
   }
 
+  it("mounts only the messages near the viewport in a long channel", async () => {
+    const start = Date.parse(message.createdAt);
+    chat.channelMessages = Array.from({ length: 2_000 }, (_, index) => ({
+      ...message,
+      itemId: `message:${index}`,
+      revisionId: `revision:${index}`,
+      normalizedMarkdown: `Message ${index}`,
+      orderKey: `c${String(index).padStart(5, "0")}`,
+      createdAt: new Date(start + index * 60_000).toISOString(),
+    }));
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatChannelFeed, { target });
+    await tick();
+
+    const rendered = target.querySelectorAll("[data-message-item-id]").length;
+    expect(rendered).toBeGreaterThan(0);
+    expect(rendered).toBeLessThan(100);
+    const rows = target.querySelector<HTMLElement>(".feed-rows");
+    expect(Number.parseFloat(rows?.style.paddingBottom ?? "0")).toBeGreaterThan(0);
+  });
+
   it("shows a failed Sent from lookup outside the scrolled messages", async () => {
     const mounted = await failLookup();
 

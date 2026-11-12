@@ -110,4 +110,24 @@ mod tests {
             admitted
         );
     }
+
+    #[test]
+    fn chat_behavior_timeline_density_reads_known_values_and_refuses_others() {
+        use crate::config::{
+            CHAT_TIMELINE_DENSITY_VALUES, ChatBehaviorPreferences, ChatTimelineDensity,
+        };
+
+        let compact: ChatBehaviorPreferences =
+            serde_json::from_value(json!({ "timelineDensity": "compact" })).unwrap();
+        assert_eq!(compact.timeline_density, ChatTimelineDensity::Compact);
+        let missing: ChatBehaviorPreferences = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(missing.timeline_density, ChatTimelineDensity::Comfortable);
+        for value in CHAT_TIMELINE_DENSITY_VALUES {
+            assert!(serde_json::from_value::<ChatTimelineDensity>(json!(value)).is_ok());
+        }
+        for refused in [json!("dense"), json!("Compact"), json!(1)] {
+            let behavior = json!({ "timelineDensity": refused });
+            assert!(serde_json::from_value::<ChatBehaviorPreferences>(behavior).is_err());
+        }
+    }
 }

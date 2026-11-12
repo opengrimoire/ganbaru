@@ -36,6 +36,8 @@ pub const MIN_IDLE_SESSION_TIMEOUT_SECONDS: u32 = 60;
 pub const MAX_IDLE_SESSION_TIMEOUT_SECONDS: u32 = 7_200;
 /// Every serialized [`ChatSendKey`] value.
 pub const CHAT_SEND_KEY_VALUES: &[&str] = &["enter", "mod_enter"];
+/// Every serialized [`ChatTimelineDensity`] value.
+pub const CHAT_TIMELINE_DENSITY_VALUES: &[&str] = &["comfortable", "compact"];
 
 fn default_inspector_width_px() -> u32 {
     520
@@ -55,6 +57,15 @@ pub enum ChatSendKey {
     #[default]
     Enter,
     ModEnter,
+}
+
+/// How much vertical space the Chat timeline and channel feed give each row.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatTimelineDensity {
+    #[default]
+    Comfortable,
+    Compact,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -119,6 +130,7 @@ pub struct ChatBehaviorPreferences {
     pub restore_last_selected_thread: bool,
     pub show_reasoning_summaries: bool,
     pub automatically_fold_settled_work: bool,
+    pub timeline_density: ChatTimelineDensity,
     pub terminal_scrollback_lines: u32,
     pub idle_session_timeout_seconds: u32,
     /// Stored per device, so a linked device cannot remove this safety prompt.
@@ -132,6 +144,7 @@ impl Default for ChatBehaviorPreferences {
             restore_last_selected_thread: true,
             show_reasoning_summaries: true,
             automatically_fold_settled_work: true,
+            timeline_density: ChatTimelineDensity::default(),
             terminal_scrollback_lines: default_terminal_scrollback_lines(),
             idle_session_timeout_seconds: default_idle_session_timeout_seconds(),
             confirm_multiline_terminal_paste: true,

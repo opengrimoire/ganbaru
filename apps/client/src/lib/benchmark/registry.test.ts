@@ -6,6 +6,8 @@ import {
   loadScenarioById,
 } from "./registry";
 import {
+  CHAT_LONG_THREAD_DATASET,
+  CHAT_STREAM_FLOOD_DATASET,
   CORE_BENCHMARK_DATASETS,
   DEFAULT_BENCHMARK_DATASET,
 } from "./types";
@@ -72,6 +74,20 @@ describe("benchmark registry", () => {
       expect(metadata.runMode).toBe("dense-only");
       expect(metadata.benchmarkDatasets ?? [metadata.defaultDataset])
         .toEqual([DEFAULT_BENCHMARK_DATASET]);
+    }
+  });
+
+  it("runs Chat benchmarks once against their own Chat datasets", () => {
+    expect(BENCHMARK_SUITES.find((suite) => suite.id === "chat")?.scenarioIds)
+      .toEqual(["chat-timeline-scroll", "chat-stream-flood"]);
+    for (const [id, dataset] of [
+      ["chat-timeline-scroll", CHAT_LONG_THREAD_DATASET],
+      ["chat-stream-flood", CHAT_STREAM_FLOOD_DATASET],
+    ] as const) {
+      const metadata = getScenarioMetadataById(id);
+      expect(metadata?.runMode).toBe("dense-only");
+      expect(metadata?.defaultDataset).toEqual(dataset);
+      expect(metadata?.benchmarkDatasets).toEqual([dataset]);
     }
   });
 });

@@ -4,7 +4,7 @@ The benchmark harness is a dev-visible mechanism inside the desktop app for taki
 
 Harness v1 (`HARNESS_VERSION = "1"`, dense dataset `v1`) is the current recorded baseline since the 2026-05-12 reset. It runs scenarios against an isolated benchmark database, records only the measurement each scenario needs, shows readable summary tables, and copies normalized Markdown for [performance records](results.md). Startup and idle memory run both dense datasets, `dense-v1-r1y-s1-d1` and `dense-v1-r10y-s1-d1`. Practical user-window scenarios run only `dense-v1-r1y-s1-d1`.
 
-Harness and dataset versions are tied to recorded rows, not local iteration. Do not bump `HARNESS_VERSION`, `DENSE_DATASET_VERSION`, or dense detail profile names until the current version has at least one recorded run. While tuning an unrecorded benchmark shape, edit the current version in place.
+Harness and dataset versions are tied to recorded rows, not local iteration. Do not bump `HARNESS_VERSION`, `DENSE_DATASET_VERSION`, `CHAT_TIMELINE_DATASET_VERSION`, or dense detail profile names until the current version has at least one recorded run. While tuning an unrecorded benchmark shape, edit the current version in place.
 
 ## User flow
 
@@ -45,6 +45,8 @@ Result tables use compact dataset ids, never prose labels:
 |---|---|
 | `base-N` | The benchmark database after scenario setup and before dense seeding, with `N` calendar events at measurement start. |
 | `dense-vX-rYy-sZ-dP` | Dense dataset version `vX`, `Y` years before and after the run anchor date, `Z` overlapping timed events at each hourly start, and detail profile `dP`. |
+| `chat-vX-tN` | Chat timeline dataset version `vX` with one settled thread of `N` timeline rows: 40 percent assistant messages with mixed Markdown, 50 percent tool activities, and 10 percent plans. |
+| `chat-vX-flood` | Chat timeline dataset version `vX` with one empty thread that the stream flood replay fills with a 2 MiB command output in 4 KiB deltas plus 2000 assistant text deltas. |
 
 ## Boot path and anchor date
 
@@ -128,7 +130,8 @@ Each scenario has dependency-light metadata in `registry.ts` and one executable 
 |---|---|---|
 | Core benchmarks | `startup-boot`, `idle-memory`, `calendar-nav`, `calendar-panel-latency` | User-perceived startup, memory, and interaction latency |
 | Backend benchmarks | `calendar-import-ops` | Rust-backed calendar import latency |
-| All benchmarks | Core plus backend | Complete release baseline or broad refactor validation |
+| Chat benchmarks | `chat-timeline-scroll`, `chat-stream-flood` | Chat timeline scrolling and live streaming |
+| All benchmarks | Core, backend, and Chat | Complete release baseline or broad refactor validation |
 
 | Scenario | Datasets | Primary measurement |
 |---|---|---|
@@ -137,8 +140,12 @@ Each scenario has dependency-light metadata in `registry.ts` and one executable 
 | `calendar-nav` | Practical dense only | Memory after a real 3-second held right-arrow navigation in week view |
 | `calendar-panel-latency` | Practical dense only | Panel open latency for existing-event and create actions |
 | `calendar-import-ops` | Practical dense only | Rust-backed 1000-event import add and update latency |
+| `chat-timeline-scroll` | `chat-v1-t5000` only | Frame time median and P95 plus frames over the 16.7 ms and 8.3 ms budgets while scrolling from the newest row toward the start |
+| `chat-stream-flood` | `chat-v1-flood` only | Change notifications per second, mean and maximum bytes per refresh read, total replay time, and frame time during the replay |
 
 `calendar-nav` dispatches real `ArrowRight` key events so the benchmark follows the same held-navigation controller and readiness gate as a physical key hold. `calendar-panel-latency` runs 50 samples per action and opens many different visible events, so a warmed detail cache is not measured as the normal case.
+
+The Chat scenarios mount the direct thread timeline alone in a fixed-size host over the app and open the seeded thread through the Chat store, because the Chat workspace reaches a direct thread only through provider sessions the harness cannot start. `chat-timeline-scroll` scrolls a fixed distance toward the start every frame, so older pages load inside the measured window, and stops at the start or at the workload window. `chat-stream-flood` runs `benchmark_replay_chat_stream`, which feeds the flood through the production `ChatEventIngestor`, Tauri emitter, and idle flush driver at a fixed pace; the scenario forwards each `chat://change` notification to the store as the workspace does and measures refresh read sizes through the timeline read observer, since the perf log ring buffer is too short for a flood.
 
 ## Dense calendar dataset
 
@@ -178,7 +185,8 @@ Diagnostics such as move counts, skipped ticks, raw averages, and smaller import
 - `apps/client/src/lib/calendar/nav-handle.svelte.ts`: headless calendar driver for scenarios.
 - `apps/client/src/lib/api/db.ts`: benchmark database selection through `vaultMode`.
 - `apps/client/src-tauri/app/src/benchmark.rs` and `benchmark/memory.rs`: benchmark state commands, database prepare and teardown, and memory report. Restart and startup timing stay in `runtime/desktop.rs`.
-- `apps/client/src-tauri/app/src/benchmark/seed.rs`: native Pomodoro history seeding and a dense Music library fixture command that no registered scenario uses yet.
+- `apps/client/src-tauri/app/src/benchmark/seed.rs`: native Pomodoro history seeding, the Chat timeline seed and stream replay commands, and a dense Music library fixture command that no registered scenario uses yet.
+- `apps/client/src-tauri/app/src/benchmark/chat_timeline.rs`: deterministic Chat timeline datasets and the paced stream flood replay.
 
 ## Constraints
 

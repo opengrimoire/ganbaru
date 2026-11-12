@@ -8,6 +8,9 @@
  * pasted suite output is easy to place in docs/performance/results.md.
  */
 import {
+  CHAT_LONG_THREAD_DATASET,
+  CHAT_STREAM_FLOOD_DATASET,
+  CHAT_TIMELINE_SCROLL_DURATION_MS,
   CORE_BENCHMARK_DATASETS,
   DEFAULT_BENCHMARK_DATASET,
   HELD_NAVIGATION_DURATION_MS,
@@ -18,7 +21,7 @@ import {
 type BenchmarkScenarioLoader = () => Promise<BenchmarkScenario>;
 
 export interface BenchmarkSuiteMetadata {
-  id: "core" | "backend" | "all";
+  id: "core" | "backend" | "chat" | "all";
   label: string;
   description: string;
   scenarioIds: string[];
@@ -32,6 +35,8 @@ const CORE_BENCHMARK_SCENARIO_IDS = [
 ];
 
 const BACKEND_BENCHMARK_SCENARIO_IDS = ["calendar-import-ops"];
+
+const CHAT_BENCHMARK_SCENARIO_IDS = ["chat-timeline-scroll", "chat-stream-flood"];
 
 export const BENCHMARK_SCENARIOS: BenchmarkScenarioMetadata[] = [
   {
@@ -109,6 +114,38 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenarioMetadata[] = [
     defaultDataset: DEFAULT_BENCHMARK_DATASET,
     runMode: "dense-only",
   },
+  {
+    id: "chat-timeline-scroll",
+    label: "Chat timeline scroll",
+    description:
+      "Opens a seeded 5000-row Chat thread at its newest page and scrolls toward its start every frame, loading older pages on the way, then reports frame times and budget misses.",
+    workload: {
+      kind: "interaction-latency",
+      question: "How smoothly does a long Chat timeline scroll?",
+      label: "scripted Chat timeline scroll toward the start",
+      durationMs: CHAT_TIMELINE_SCROLL_DURATION_MS,
+      memoryMode: "none",
+    },
+    defaultDataset: CHAT_LONG_THREAD_DATASET,
+    benchmarkDatasets: [CHAT_LONG_THREAD_DATASET],
+    runMode: "dense-only",
+  },
+  {
+    id: "chat-stream-flood",
+    label: "Chat stream flood",
+    description:
+      "Replays a 2 MiB command output in 4 KiB deltas and 2000 assistant text deltas through the native ingestor into an open Chat thread, then reports notification rate, refresh read size, and frame times.",
+    workload: {
+      kind: "operation-latency",
+      question: "How well does an open Chat timeline keep up with a streaming flood?",
+      label: "replayed Chat streaming turn",
+      durationMs: 0,
+      memoryMode: "none",
+    },
+    defaultDataset: CHAT_STREAM_FLOOD_DATASET,
+    benchmarkDatasets: [CHAT_STREAM_FLOOD_DATASET],
+    runMode: "dense-only",
+  },
 ];
 
 export const BENCHMARK_SUITES: BenchmarkSuiteMetadata[] = [
@@ -125,10 +162,20 @@ export const BENCHMARK_SUITES: BenchmarkSuiteMetadata[] = [
     scenarioIds: BACKEND_BENCHMARK_SCENARIO_IDS,
   },
   {
+    id: "chat",
+    label: "Chat benchmarks",
+    description: "Chat timeline scrolling and live streaming.",
+    scenarioIds: CHAT_BENCHMARK_SCENARIO_IDS,
+  },
+  {
     id: "all",
     label: "All benchmarks",
-    description: "Complete core and backend benchmark suite.",
-    scenarioIds: [...CORE_BENCHMARK_SCENARIO_IDS, ...BACKEND_BENCHMARK_SCENARIO_IDS],
+    description: "Complete core, backend, and Chat benchmark suite.",
+    scenarioIds: [
+      ...CORE_BENCHMARK_SCENARIO_IDS,
+      ...BACKEND_BENCHMARK_SCENARIO_IDS,
+      ...CHAT_BENCHMARK_SCENARIO_IDS,
+    ],
   },
 ];
 
@@ -140,6 +187,10 @@ const SCENARIO_LOADERS: Record<string, BenchmarkScenarioLoader> = {
     .then((module) => module.calendarPanelLatencyScenario),
   "calendar-import-ops": () => import("./scenarios/calendar-import-ops")
     .then((module) => module.calendarImportOpsScenario),
+  "chat-timeline-scroll": () => import("./scenarios/chat-timeline-scroll")
+    .then((module) => module.chatTimelineScrollScenario),
+  "chat-stream-flood": () => import("./scenarios/chat-stream-flood")
+    .then((module) => module.chatStreamFloodScenario),
 };
 
 export function getScenarioMetadataById(id: string): BenchmarkScenarioMetadata | undefined {

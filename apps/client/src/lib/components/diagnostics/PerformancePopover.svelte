@@ -274,6 +274,7 @@
   function localizedBenchmarkSuiteLabel(id: string, fallback?: string): string {
     if (id === "core") return t("benchmark.suite.core.label");
     if (id === "backend") return t("benchmark.suite.backend.label");
+    if (id === "chat") return t("benchmark.suite.chat.label");
     if (id === "all") return t("benchmark.suite.all.label");
     return fallback ?? id;
   }
@@ -281,6 +282,7 @@
   function localizedBenchmarkSuiteDescription(id: string, fallback: string): string {
     if (id === "core") return t("benchmark.suite.core.description");
     if (id === "backend") return t("benchmark.suite.backend.description");
+    if (id === "chat") return t("benchmark.suite.chat.description");
     if (id === "all") return t("benchmark.suite.all.description");
     return fallback;
   }
@@ -293,6 +295,8 @@
       return t("benchmark.scenario.calendarPanelLatency.label");
     }
     if (id === "calendar-import-ops") return t("benchmark.scenario.calendarImportOps.label");
+    if (id === "chat-timeline-scroll") return t("benchmark.scenario.chatTimelineScroll.label");
+    if (id === "chat-stream-flood") return t("benchmark.scenario.chatStreamFlood.label");
     return fallback;
   }
 
@@ -306,6 +310,8 @@
     if (id === "calendar-import-ops") {
       return t("benchmark.scenario.calendarImportOps.description");
     }
+    if (id === "chat-timeline-scroll") return t("benchmark.scenario.chatTimelineScroll.description");
+    if (id === "chat-stream-flood") return t("benchmark.scenario.chatStreamFlood.description");
     return fallback;
   }
 

@@ -30,6 +30,65 @@ export function exactRunPresentationsReady(
   ));
 }
 
+/** Run states after which a provider run's exact turn no longer changes. */
+const SETTLED_RUN_STATES: ReadonlySet<ChatAgentRunRead["state"]> = new Set(["completed", "failed", "cancelled"]);
+
+/** Returns the runs whose exact provider turn the reply thread reads directly: settled runs and scratch runs. */
+export function exactExecutionRuns(runs: readonly ChatAgentRunRead[]): ChatAgentRunRead[] {
+  return runs.filter((run) => (
+    run.providerExecutionThreadId !== null
+    && (run.scratchGenerationId !== null || SETTLED_RUN_STATES.has(run.state))
+  ));
+}
+
+/** One exact execution read and the run revision it was read at. */
+export interface CachedExactExecution<Read> {
+  updatedAt: string;
+  read: Read;
+}
+
+/** What to show and what to read for the exact runs of a reply thread. */
+export interface ExactExecutionReadPlan<Read> {
+  /** Cache pruned to the current runs. */
+  cache: Map<string, CachedExactExecution<Read>>;
+  /** Reads to show by run ID, including a previous read while its run is read again. */
+  visible: Record<string, Read>;
+  /** Runs that are new or whose `updatedAt` changed since their cached read, minus reads already in flight. */
+  toRead: ChatAgentRunRead[];
+}
+
+/** Returns the key that identifies one read of a run at one revision. */
+export function exactExecutionReadKey(run: Pick<ChatAgentRunRead, "id" | "updatedAt">): string {
+  return `${run.id}:${run.updatedAt}`;
+}
+
+/**
+ * Plans exact execution reads so a refresh rereads only runs that changed. A cached read whose run changed stays
+ * visible until its new read lands.
+ *
+ * @param runs Current exact runs of the reply thread.
+ * @param cache Reads kept from earlier refreshes, keyed by run ID.
+ * @param inFlight Read keys (see {@link exactExecutionReadKey}) that are already being read.
+ */
+export function planExactExecutionReads<Read>(
+  runs: readonly ChatAgentRunRead[],
+  cache: ReadonlyMap<string, CachedExactExecution<Read>>,
+  inFlight: ReadonlySet<string>,
+): ExactExecutionReadPlan<Read> {
+  const kept = new Map<string, CachedExactExecution<Read>>();
+  const visible: Record<string, Read> = {};
+  const toRead: ChatAgentRunRead[] = [];
+  for (const run of runs) {
+    const cached = cache.get(run.id);
+    if (cached) {
+      kept.set(run.id, cached);
+      visible[run.id] = cached.read;
+    }
+    if (cached?.updatedAt !== run.updatedAt && !inFlight.has(exactExecutionReadKey(run))) toRead.push(run);
+  }
+  return { cache: kept, visible, toRead };
+}
+
 /** Removes only the projected copies owned by the provider run rendered in the thread. */
 export function repliesWithoutRenderedRunProjection<T extends RichReply>(
   replies: readonly T[],

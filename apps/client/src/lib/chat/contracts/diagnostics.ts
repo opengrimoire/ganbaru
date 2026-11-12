@@ -42,3 +42,35 @@ export interface ChatStopAllResult {
 export interface ChatRebuildResult {
   rebuiltThreads: number;
 }
+
+export const CHAT_PROCESS_PURPOSES = ["session", "probe", "local_server", "terminal"] as const;
+/** Why a listed Chat process runs. */
+export type ChatProcessPurpose = (typeof CHAT_PROCESS_PURPOSES)[number];
+
+/** One process Chat started. */
+export interface ChatProcessRecord {
+  pid: number;
+  /** Kernel start time that tells this process apart from a later one with the same ID; null where unsupported. */
+  startTime: number | null;
+  executableName: string;
+  providerInstanceLabel: string | null;
+  purpose: ChatProcessPurpose;
+  startedAt: string;
+  /** Whether this platform can stop the process individually. */
+  stoppable: boolean;
+}
+
+/** A process started by a listed Chat process or one of its descendants. */
+export interface ChatProcessDescendantRead {
+  pid: number;
+  parentPid: number;
+  rootPid: number;
+  executableName: string;
+}
+
+/** Running Chat processes, their bounded descendants, and how many descendants were left out. */
+export interface ChatProcessListRead {
+  roots: ChatProcessRecord[];
+  descendants: ChatProcessDescendantRead[];
+  omitted: number;
+}

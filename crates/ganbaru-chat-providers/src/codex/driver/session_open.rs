@@ -97,6 +97,8 @@ impl CodexProviderDriver {
             working_directory: working_directory.to_path_buf(),
             environment,
             stderr_limit_bytes: CODEX_STDERR_LIMIT_BYTES,
+            purpose: crate::process::ProviderProcessPurpose::Session,
+            provider_instance_label: Some(self.configuration.label.clone()),
         })?;
         Ok((CodexRpcConnection::from_process(process)?, layout))
     }

@@ -18,6 +18,7 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
+  import ChatProcessList from "./ChatProcessList.svelte";
 
   const localization = getLocalization();
   const { t } = localization;
@@ -33,6 +34,7 @@
   let maintenance = $state<"stop" | "rebuild" | null>(null);
   let confirmation = $state("");
   let advancedOpen = $state(false);
+  let processRefreshKey = $state(0);
   const behavior = $derived(chat.settings?.configuration.behavior ?? null);
   const sendKeyOptions = $derived([
     { value: "enter", label: t("settings.chat.behavior.enter") },
@@ -236,9 +238,10 @@
         <div class="space-y-2 border-l-2 border-status-tentative pl-3">
           <p class="text-xs">{maintenance === "stop" ? t("settings.chat.behavior.stopImpact") : t("settings.chat.behavior.rebuildImpact")}</p>
           <label class="setup-field"><span>{t("settings.chat.behavior.typeConfirmation", expectedConfirmation())}</span><input bind:value={confirmation} autocomplete="off" spellcheck="false" /></label>
-          <div class="flex gap-2"><button type="button" class="chat-settings-action" disabled={saving || confirmation !== expectedConfirmation()} onclick={() => void run(async () => { if (maintenance === "stop") { const result = await chatApi.stopAllChatProcesses(confirmation); cancelMaintenance(); return t("settings.chat.behavior.stopped", formatNumber(localization.locale, result.providerProcessesStopped), formatNumber(localization.locale, result.terminalsStopped)); } const result = await chatApi.rebuildChatProjections(confirmation); cancelMaintenance(); return t("settings.chat.behavior.rebuilt", formatNumber(localization.locale, result.rebuiltThreads)); })}>{t("settings.chat.behavior.confirm")}</button><button type="button" class="chat-settings-action" disabled={saving} onclick={cancelMaintenance}>{t("common.cancel")}</button></div>
+          <div class="flex gap-2"><button type="button" class="chat-settings-action" disabled={saving || confirmation !== expectedConfirmation()} onclick={() => void run(async () => { if (maintenance === "stop") { const result = await chatApi.stopAllChatProcesses(confirmation); cancelMaintenance(); processRefreshKey += 1; return t("settings.chat.behavior.stopped", formatNumber(localization.locale, result.providerProcessesStopped), formatNumber(localization.locale, result.terminalsStopped)); } const result = await chatApi.rebuildChatProjections(confirmation); cancelMaintenance(); return t("settings.chat.behavior.rebuilt", formatNumber(localization.locale, result.rebuiltThreads)); })}>{t("settings.chat.behavior.confirm")}</button><button type="button" class="chat-settings-action" disabled={saving} onclick={cancelMaintenance}>{t("common.cancel")}</button></div>
         </div>
       {/if}
+      <ChatProcessList refreshKey={processRefreshKey} />
     </div>
       </div>
       {/if}

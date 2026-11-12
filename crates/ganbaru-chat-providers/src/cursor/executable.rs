@@ -363,6 +363,8 @@ pub fn spawn_connection_process(
         working_directory: working_directory.to_path_buf(),
         environment,
         stderr_limit_bytes: CURSOR_STDERR_LIMIT_BYTES,
+        purpose: crate::process::ProviderProcessPurpose::Session,
+        provider_instance_label: Some(configuration.label.clone()),
     })
 }
 
@@ -388,6 +390,8 @@ pub fn spawn_acp_connection_process(
                 working_directory: working_directory.to_path_buf(),
                 environment,
                 stderr_limit_bytes: CURSOR_STDERR_LIMIT_BYTES,
+                purpose: crate::process::ProviderProcessPurpose::Session,
+                provider_instance_label: Some(configuration.label.clone()),
             })
         }
         super::driver::AcpProviderFlavor::Generic => {
@@ -400,6 +404,8 @@ pub fn spawn_acp_connection_process(
                 working_directory: working_directory.to_path_buf(),
                 environment,
                 stderr_limit_bytes: CURSOR_STDERR_LIMIT_BYTES,
+                purpose: crate::process::ProviderProcessPurpose::Session,
+                provider_instance_label: Some(configuration.label.clone()),
             })
         }
     }

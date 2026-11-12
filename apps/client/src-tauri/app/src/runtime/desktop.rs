@@ -364,6 +364,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::diagnostics_commands::chat_delete_diagnostics,
             chat::diagnostics_commands::chat_export_redacted_diagnostics,
             chat::diagnostics_commands::chat_stop_all_processes,
+            chat::diagnostics_commands::chat_list_processes,
+            chat::diagnostics_commands::chat_stop_process,
             chat::diagnostics_commands::chat_rebuild_projections,
             chat::restore_commands::chat_preview_checkpoint_restore,
             chat::restore_commands::chat_execute_checkpoint_restore,

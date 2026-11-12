@@ -22,6 +22,10 @@ const MAX_ARGUMENT_BYTES: usize = 32 * 1024;
 const MAX_ENVIRONMENT_ENTRIES: usize = 128;
 const MAX_ENVIRONMENT_VALUE_BYTES: usize = 32 * 1024;
 
+pub mod inventory;
+
+pub use inventory::{ProcessRegistration, ProviderProcessPurpose};
+
 #[derive(Clone, Debug)]
 pub struct ProviderProcessConfig {
     pub executable: PathBuf,
@@ -29,6 +33,10 @@ pub struct ProviderProcessConfig {
     pub working_directory: PathBuf,
     pub environment: BTreeMap<String, String>,
     pub stderr_limit_bytes: usize,
+    /// Why the process runs, as the process list reports it.
+    pub purpose: ProviderProcessPurpose,
+    /// Label of the provider instance that starts the process, as the process list reports it.
+    pub provider_instance_label: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +57,8 @@ pub struct ProviderProcessHandle {
     stderr_truncated: Arc<AtomicBool>,
     stderr_task: Option<JoinHandle<()>>,
     stopped: bool,
+    /// Keeps the process in the Chat process list until it is stopped or the handle drops.
+    registration: Option<ProcessRegistration>,
 }
 
 impl ProviderProcessHandle {
@@ -133,6 +143,7 @@ impl ProviderProcessHandle {
 
     async fn finish_stop(&mut self) -> ChatResult<()> {
         self.stopped = true;
+        self.registration = None;
         if let Some(task) = self.stderr_task.take() {
             task.await.map_err(|_| process_state_error())?;
         }
@@ -234,6 +245,14 @@ pub fn spawn_provider_process(config: ProviderProcessConfig) -> ChatResult<Provi
         .ok_or_else(process_state_error)?;
     #[cfg(windows)]
     let process_job = claim_windows_process_tree(&mut child)?;
+    let registration = child.id().map(|pid| {
+        inventory::register_process(
+            pid,
+            &config.executable,
+            config.provider_instance_label.as_deref(),
+            config.purpose.into(),
+        )
+    });
     let stdin = child.stdin.take().ok_or_else(process_state_error)?;
     let stdout = child.stdout.take().ok_or_else(process_state_error)?;
     let mut stderr_reader = child.stderr.take().ok_or_else(process_state_error)?;
@@ -274,6 +293,7 @@ pub fn spawn_provider_process(config: ProviderProcessConfig) -> ChatResult<Provi
         stderr_truncated,
         stderr_task: Some(stderr_task),
         stopped: false,
+        registration,
     })
 }
 

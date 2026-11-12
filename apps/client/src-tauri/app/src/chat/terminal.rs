@@ -8,6 +8,7 @@ use base64::{Engine as _, engine::general_purpose};
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId,
 };
+use ganbaru_chat_providers::process::inventory as process_inventory;
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -854,6 +855,15 @@ fn spawn_session(
         .slave
         .spawn_command(command)
         .map_err(terminal_io_error)?;
+    let shell = default_shell_label();
+    let registration = child.process_id().map(|pid| {
+        process_inventory::register_process(
+            pid,
+            Path::new(&shell),
+            None,
+            process_inventory::ChatProcessPurpose::Terminal,
+        )
+    });
     let killer = child.clone_killer();
     let reader = pair.master.try_clone_reader().map_err(terminal_io_error)?;
     let writer = pair.master.take_writer().map_err(terminal_io_error)?;
@@ -864,7 +874,7 @@ fn spawn_session(
         environment_id: spec.environment_id,
         state: Mutex::new(TerminalState {
             name: spec.name,
-            shell: default_shell_label(),
+            shell,
             columns: spec.columns,
             rows: spec.rows,
             running: true,
@@ -889,6 +899,7 @@ fn spawn_session(
                 .wait()
                 .map(|status| status.exit_code() as i32)
                 .unwrap_or(1);
+            drop(registration);
             if wait_session
                 .mark_exited(spec.generation, exit_code)
                 .unwrap_or(false)

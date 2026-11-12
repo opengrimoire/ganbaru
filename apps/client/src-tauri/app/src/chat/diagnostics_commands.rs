@@ -14,6 +14,9 @@ use ganbaru_chat::runtime::ChatRuntimeRegistry;
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProbeState, VersionedJson,
 };
+use ganbaru_chat_providers::process::inventory::{
+    self as process_inventory, ChatProcessListRead, ProcessStartTime,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Row, SqlitePool};
@@ -26,6 +29,7 @@ use tauri_plugin_dialog::{DialogExt, FilePath};
 
 const STOP_CONFIRMATION: &str = "STOP ALL CHAT PROCESSES";
 const REBUILD_CONFIRMATION: &str = "REBUILD CHAT PROJECTIONS";
+const STOP_PROCESS_CONFIRMATION: &str = "STOP CHAT PROCESS";
 const MAINTENANCE_TIMEOUT: Duration = Duration::from_secs(8);
 const DIAGNOSTIC_SCHEMA_VERSION: u32 = 1;
 const MAX_PROTOCOL_LABEL_BYTES: usize = 128;
@@ -172,6 +176,31 @@ pub async fn chat_stop_all_processes(
         provider_processes_stopped,
         terminals_stopped,
     })
+}
+
+/// Request to stop one listed Chat process.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatStopProcessRequest {
+    pub pid: u32,
+    /// Start time the list reported, which must still match the running process.
+    pub start_time: ProcessStartTime,
+    pub confirmation: String,
+}
+
+/// Lists the provider sessions, local servers, and terminals Chat started, with their
+/// descendants on Linux.
+#[tauri::command]
+pub fn chat_list_processes() -> ChatProcessListRead {
+    process_inventory::list_processes()
+}
+
+/// Stops one listed Chat process and its process group after confirming that its process ID
+/// still names the listed process.
+#[tauri::command]
+pub async fn chat_stop_process(request: ChatStopProcessRequest) -> ChatResult<()> {
+    require_confirmation(&request.confirmation, STOP_PROCESS_CONFIRMATION)?;
+    process_inventory::stop_process(request.pid, request.start_time).await
 }
 
 #[tauri::command]

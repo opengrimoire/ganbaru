@@ -246,6 +246,8 @@ pub(super) async fn probe_version(
         working_directory: working_directory.to_path_buf(),
         environment,
         stderr_limit_bytes: CLAUDE_STDERR_LIMIT_BYTES,
+        purpose: crate::process::ProviderProcessPurpose::Probe,
+        provider_instance_label: None,
     })?;
     let mut stdout = process.take_stdout()?.take(VERSION_OUTPUT_LIMIT_BYTES);
     let mut output = Vec::new();

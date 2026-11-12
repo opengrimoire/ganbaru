@@ -237,6 +237,8 @@ impl ClaudeProviderDriver {
             working_directory: working_directory.to_path_buf(),
             environment,
             stderr_limit_bytes: CLAUDE_STDERR_LIMIT_BYTES,
+            purpose: crate::process::ProviderProcessPurpose::Session,
+            provider_instance_label: Some(self.configuration.label.clone()),
         })?;
         Ok((ClaudeJsonlConnection::from_process(process)?, home, version))
     }

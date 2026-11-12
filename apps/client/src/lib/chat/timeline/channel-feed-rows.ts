@@ -1,6 +1,7 @@
 import type { ChatMessageRead } from "$lib/chat/contracts";
 import { formatDateTime } from "$lib/i18n/formatters";
 import type { AppLocale } from "$lib/i18n/locales";
+import type { TimelineVirtualItem } from "./virtualization";
 
 /** Longest gap between two messages of one author that still renders them as one group. */
 export const CHANNEL_MESSAGE_GROUP_WINDOW_MS = 5 * 60_000;
@@ -44,6 +45,21 @@ export function channelFeedMessageRowId(messageItemId: string): string {
  */
 export function channelFeedDateDividerRowId(messageItemId: string): string {
   return `date:${messageItemId}`;
+}
+
+/**
+ * Returns the row that keeps its place on screen when older messages are prepended: the first message row that reaches
+ * below the viewport top. Dividers are skipped because a prepend can move, remove, or replace them.
+ *
+ * @param items Rows of the current virtual window, in display order.
+ * @param viewportTop Scroll offset of the viewport top within the row list.
+ * @returns The message row ID, or `null` when the window holds no message row below the viewport top.
+ */
+export function channelFeedScrollAnchorRowId(
+  items: readonly TimelineVirtualItem<ChannelFeedRow>[],
+  viewportTop: number,
+): string | null {
+  return items.find((item) => item.row.kind === "message" && item.top + item.height > viewportTop)?.row.id ?? null;
 }
 
 /**

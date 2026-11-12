@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
-  import { buildChannelFeedRows, channelFeedMessageRowId } from "$lib/chat/timeline/channel-feed-rows";
+  import { buildChannelFeedRows, channelFeedMessageRowId, channelFeedScrollAnchorRowId } from "$lib/chat/timeline/channel-feed-rows";
   import { unreadMessageStartIndex } from "$lib/chat/timeline/organizational-message-model";
   import { organizationalScrollFollowsEnd } from "$lib/chat/timeline/organizational-scroll";
   import { computeTimelineVirtualWindow, scrollTopForPreservedAnchor, virtualRowTop } from "$lib/chat/timeline/virtualization";
@@ -147,17 +147,15 @@
     return { destroy: () => rowObserver?.unobserve(node) };
   }
 
-  /** Returns the ID of the first row that reaches into the viewport. */
-  function firstVisibleRowId(): string | null {
-    const top = scrollTop - rowListOffset;
-    return virtualWindow.items.find((item) => item.top + item.height > top)?.row.id ?? null;
-  }
-
   async function loadOlderMessages(): Promise<void> {
     const element = feed;
     const key = destination;
-    const anchorId = firstVisibleRowId();
-    const anchorTopBefore = anchorId ? virtualRowTop(rows, anchorId, measuredHeights, MESSAGE_ROW_ESTIMATE_PX) : null;
+    const anchorId = channelFeedScrollAnchorRowId(virtualWindow.items, scrollTop - rowListOffset);
+    const anchorRowTopBefore = anchorId ? virtualRowTop(rows, anchorId, measuredHeights, MESSAGE_ROW_ESTIMATE_PX) : null;
+    // The load older button sits above the row list and disappears with the last page, so the anchor is measured from
+    // the feed top, including the row list offset.
+    const anchorTopBefore = anchorRowTopBefore === null ? null : rowListOffset + anchorRowTopBefore;
+    const scrollTopBefore = element?.scrollTop ?? 0;
     try {
       await chat.loadOlderChannelMessages();
     } catch {
@@ -166,10 +164,15 @@
     }
     await tick();
     if (!element || element !== feed || key !== destination || !anchorId || anchorTopBefore === null) return;
-    const anchorTopAfter = virtualRowTop(rows, anchorId, measuredHeights, MESSAGE_ROW_ESTIMATE_PX);
-    if (anchorTopAfter === null) return;
+    syncViewport(element);
+    const anchorRowTopAfter = virtualRowTop(rows, anchorId, measuredHeights, MESSAGE_ROW_ESTIMATE_PX);
+    if (anchorRowTopAfter === null) return;
     followingEnd = false;
-    setFeedScrollTop(element, key, scrollTopForPreservedAnchor(element.scrollTop, anchorTopBefore, anchorTopAfter));
+    setFeedScrollTop(
+      element,
+      key,
+      scrollTopForPreservedAnchor(scrollTopBefore, anchorTopBefore, rowListOffset + anchorRowTopAfter),
+    );
   }
 
   $effect(() => {

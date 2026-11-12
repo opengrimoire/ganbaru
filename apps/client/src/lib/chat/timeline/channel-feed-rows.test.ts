@@ -5,9 +5,14 @@ import {
   CHANNEL_FEED_UNREAD_ROW_ID,
   channelFeedDateDividerRowId,
   channelFeedMessageRowId,
+  channelFeedScrollAnchorRowId,
   type ChannelFeedRow,
 } from "./channel-feed-rows";
 import { unreadMessageStartIndex } from "./organizational-message-model";
+import { computeTimelineVirtualWindow, scrollTopForPreservedAnchor, virtualRowTop } from "./virtualization";
+
+const ROW_ESTIMATE_PX = 72;
+const OVERSCAN_PX = 600;
 
 /** Builds an ISO timestamp from local wall time, so day boundaries hold in every test time zone. */
 function localTime(day: number, hour: number, minute = 0): string {
@@ -120,6 +125,42 @@ describe("channel feed rows", () => {
     expect(afterIds.has(channelFeedDateDividerRowId("c"))).toBe(false);
     expect(after[2]?.id).toBe(channelFeedDateDividerRowId("b"));
     expect(after.at(-1)?.id).toBe(channelFeedMessageRowId("d"));
+  });
+
+  it("anchors a load older on the first message row below the viewport top, skipping dividers", () => {
+    const messages = [message("a", "ana", localTime(10, 9)), message("b", "ben", localTime(10, 10))];
+    const rows = buildChannelFeedRows(messages, 1, 1, "en");
+    const window = computeTimelineVirtualWindow(rows, new Map(), 0, 400, ROW_ESTIMATE_PX, OVERSCAN_PX);
+
+    expect(shape(rows)).toEqual(["date first", "a", "unread", "b"]);
+    expect(channelFeedScrollAnchorRowId(window.items, -40)).toBe(channelFeedMessageRowId("a"));
+    expect(channelFeedScrollAnchorRowId(window.items, ROW_ESTIMATE_PX * 2)).toBe(channelFeedMessageRowId("b"));
+    expect(channelFeedScrollAnchorRowId(window.items, ROW_ESTIMATE_PX * 4)).toBeNull();
+    expect(channelFeedScrollAnchorRowId([], 0)).toBeNull();
+  });
+
+  it("keeps the anchored message at its offset when a same-day older page is prepended", () => {
+    const newer = [message("c", "ana", localTime(10, 12)), message("d", "ben", localTime(10, 13))];
+    const older = [message("a", "ben", localTime(10, 8)), message("b", "ana", localTime(10, 9))];
+    const heights = new Map([[channelFeedDateDividerRowId("c"), 30], [channelFeedMessageRowId("c"), 90]]);
+    const buttonOffset = 40;
+    const scrollTop = 0;
+    const before = buildChannelFeedRows(newer, newer.length, 0, "en");
+    const window = computeTimelineVirtualWindow(before, heights, scrollTop - buttonOffset, 400, ROW_ESTIMATE_PX, OVERSCAN_PX);
+
+    const anchorId = channelFeedScrollAnchorRowId(window.items, scrollTop - buttonOffset);
+    expect(anchorId).toBe(channelFeedMessageRowId("c"));
+    if (!anchorId) return;
+    const anchorTopBefore = buttonOffset + (virtualRowTop(before, anchorId, heights, ROW_ESTIMATE_PX) ?? Number.NaN);
+
+    const after = buildChannelFeedRows([...older, ...newer], older.length + newer.length, 0, "en");
+    const buttonOffsetAfter = 0;
+    const anchorTopAfter = buttonOffsetAfter + (virtualRowTop(after, anchorId, heights, ROW_ESTIMATE_PX) ?? Number.NaN);
+    const scrollTopAfter = scrollTopForPreservedAnchor(scrollTop, anchorTopBefore, anchorTopAfter);
+
+    expect(shape(after)).toEqual(["date first", "a", "b", "c", "d"]);
+    expect(scrollTopAfter).toBe(ROW_ESTIMATE_PX * 3 - buttonOffset - 30);
+    expect(anchorTopAfter - scrollTopAfter).toBe(anchorTopBefore - scrollTop);
   });
 
   it("returns no rows for an empty channel", () => {

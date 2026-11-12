@@ -58,13 +58,14 @@
       "turn": "turn-1"
     },
     {
+      "type": "thread_usage_updated",
+      "turn": "turn-1"
+    },
+    {
       "type": "turn_completed",
       "turn": "turn-1",
       "state": "completed",
       "stopReason": "end_turn"
-    },
-    {
-      "type": "thread_usage_updated"
     },
     {
       "type": "thread_metadata_updated"

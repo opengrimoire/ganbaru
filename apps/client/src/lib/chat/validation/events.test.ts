@@ -15,6 +15,7 @@ describe("parseThreadUsage", () => {
     expect(parseThreadUsage({ ...storedUsage, cacheWriteInputTokens: 210 }, "usage")).toEqual({
       ...storedUsage,
       cacheWriteInputTokens: 210,
+      countScope: null,
     });
   });
 
@@ -26,5 +27,20 @@ describe("parseThreadUsage", () => {
   it("rejects negative or fractional cache writes", () => {
     expect(() => parseThreadUsage({ ...storedUsage, cacheWriteInputTokens: -1 }, "usage")).toThrow("usage.cacheWriteInputTokens");
     expect(() => parseThreadUsage({ ...storedUsage, cacheWriteInputTokens: 1.5 }, "usage")).toThrow("usage.cacheWriteInputTokens");
+  });
+
+  it("reads each documented count scope", () => {
+    for (const countScope of ["request", "turn", "thread_cumulative"] as const) {
+      expect(parseThreadUsage({ ...storedUsage, countScope }, "usage").countScope).toBe(countScope);
+    }
+  });
+
+  it("reads null and absent count scopes as undocumented", () => {
+    expect(parseThreadUsage({ ...storedUsage, countScope: null }, "usage").countScope).toBeNull();
+    expect(parseThreadUsage(storedUsage, "usage").countScope).toBeNull();
+  });
+
+  it("rejects an unknown count scope", () => {
+    expect(() => parseThreadUsage({ ...storedUsage, countScope: "session" }, "usage")).toThrow("usage.countScope");
   });
 });

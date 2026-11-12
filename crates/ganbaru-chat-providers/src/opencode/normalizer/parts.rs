@@ -293,17 +293,25 @@ impl OpenCodeEventNormalizer {
         let cache = tokens
             .and_then(|tokens| tokens.get("cache"))
             .and_then(Value::as_object);
+        let count = |key: &str| {
+            tokens
+                .and_then(|tokens| tokens.get(key))
+                .and_then(Value::as_u64)
+        };
+        // A step is one model request; OpenCode reports reasoning apart from output.
+        let output_tokens = match (count("output"), count("reasoning")) {
+            (Some(output), reasoning) => Some(output.saturating_add(reasoning.unwrap_or(0))),
+            (None, reasoning) => reasoning,
+        };
         let usage = ThreadUsageUpdatedEvent {
-            input_tokens: tokens
-                .and_then(|tokens| tokens.get("input"))
-                .and_then(Value::as_u64),
-            output_tokens: tokens
-                .and_then(|tokens| tokens.get("output"))
-                .and_then(Value::as_u64),
+            input_tokens: count("input"),
+            output_tokens,
             cached_input_tokens: cache
                 .and_then(|cache| cache.get("read"))
                 .and_then(Value::as_u64),
-            cache_write_input_tokens: None,
+            cache_write_input_tokens: cache
+                .and_then(|cache| cache.get("write"))
+                .and_then(Value::as_u64),
             context_tokens: tokens
                 .and_then(|tokens| tokens.get("total"))
                 .and_then(Value::as_u64),
@@ -316,6 +324,7 @@ impl OpenCodeEventNormalizer {
                     currency: "USD".to_string(),
                     provider_reported: true,
                 }),
+            count_scope: Some(UsageCountScope::Request),
         };
         Ok(vec![self.event(
             state,

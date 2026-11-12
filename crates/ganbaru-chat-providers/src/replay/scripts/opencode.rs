@@ -129,7 +129,7 @@ fn stalled(timeout_ms: u64, steps: Vec<ReplayStep>) -> ReplayScript {
 /// Rows whose fixes live in fields the snapshot leaves out, so their full events are checked too.
 #[cfg(test)]
 mod event_fields {
-    use crate::events::CanonicalEvent;
+    use crate::events::{CanonicalEvent, UsageCountScope};
     use crate::replay::runner::{ReplayProvider, ReplayReport, run_scenario};
 
     fn replay(scenario: &str) -> ReplayReport {
@@ -179,8 +179,14 @@ mod event_fields {
             .collect::<Vec<_>>();
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].input_tokens, Some(100));
-        assert_eq!(usage[0].output_tokens, Some(50));
+        assert_eq!(
+            usage[0].output_tokens,
+            Some(60),
+            "reasoning counts as output"
+        );
         assert_eq!(usage[0].cached_input_tokens, Some(20));
+        assert_eq!(usage[0].cache_write_input_tokens, Some(0));
+        assert_eq!(usage[0].count_scope, Some(UsageCountScope::Request));
         assert_eq!(usage[0].context_tokens, Some(150));
         let cost = usage[0].cost.as_ref().expect("the cost should be reported");
         assert_eq!(cost.amount, 0.0125);

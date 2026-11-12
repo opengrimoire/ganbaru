@@ -225,6 +225,26 @@ impl OpenCodeEventNormalizer {
         }
         let request_id = ProviderRequestId::new(id.to_string())
             .map_err(|_| protocol_error("question request ID"))?;
+        if state.active_turn_id.is_none() {
+            // OpenCode woke itself up: no user turn owns the question, so it is shown as a
+            // notice and rejected rather than opened as a request that starts work.
+            state.unprompted_question_ids.insert(id.to_string());
+            state.unprompted_questions.push(request_id);
+            let detail = normalized_questions
+                .first()
+                .map(|question| question.question.clone());
+            return Ok(vec![self.event(
+                state,
+                "question.asked",
+                None,
+                None,
+                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                    code: "opencode_question_outside_turn".to_string(),
+                    title: "OpenCode asked a question while no turn was running".to_string(),
+                    detail,
+                }),
+            )?]);
+        }
         state.pending_questions.insert(id.to_string(), mappings);
         Ok(vec![self.event_with_request(
             state,
@@ -246,6 +266,9 @@ impl OpenCodeEventNormalizer {
         rejected: bool,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
         let id = identifier(properties, "requestID", "question reply ID")?;
+        if state.unprompted_question_ids.remove(id) {
+            return Ok(Vec::new());
+        }
         state.pending_questions.remove(id);
         let answers = if rejected {
             Vec::new()

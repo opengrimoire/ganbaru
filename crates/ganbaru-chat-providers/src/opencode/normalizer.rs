@@ -51,6 +51,10 @@ pub struct OpenCodeRouteState {
     /// Requests the user allowed for the session; OpenCode echoes their reply as `once`.
     session_approved_permissions: HashSet<String>,
     pending_questions: HashMap<String, Vec<OpenCodeQuestionMapping>>,
+    /// Questions OpenCode asked while no turn ran, waiting for their rejection to be sent.
+    unprompted_questions: Vec<ProviderRequestId>,
+    /// Questions asked outside a turn; their `question.rejected` echo is dropped.
+    unprompted_question_ids: HashSet<String>,
     deduplication_order: VecDeque<String>,
     deduplication_set: HashSet<String>,
 }
@@ -88,6 +92,8 @@ impl OpenCodeRouteState {
             auto_answer_queue: Vec::new(),
             session_approved_permissions: HashSet::new(),
             pending_questions: HashMap::new(),
+            unprompted_questions: Vec::new(),
+            unprompted_question_ids: HashSet::new(),
             deduplication_order: VecDeque::new(),
             deduplication_set: HashSet::new(),
         }
@@ -122,6 +128,12 @@ impl OpenCodeRouteState {
         }
         self.interrupt_requested = None;
         self.active_turn_id.take()
+    }
+
+    /// Questions asked outside a turn during the last normalization, in arrival order, which the
+    /// driver rejects at OpenCode.
+    pub fn take_unprompted_questions(&mut self) -> Vec<ProviderRequestId> {
+        std::mem::take(&mut self.unprompted_questions)
     }
 
     /// Session rules an allow-for-session answer to a pending request would grant.

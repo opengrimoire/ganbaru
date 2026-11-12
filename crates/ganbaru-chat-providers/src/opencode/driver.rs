@@ -691,7 +691,10 @@ fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
                         .map_err(|_| driver_state_error())
                         .and_then(|mut state| resources.normalizer.normalize(&mut state, envelope));
                     let events = match events {
-                        Ok(events) => Ok(answer_from_session_rules(&resources, events).await),
+                        Ok(events) => {
+                            let events = answer_from_session_rules(&resources, events).await;
+                            reject_unprompted_questions(&resources, events).await
+                        }
                         Err(error) => Err(error),
                     };
                     if emit_events(&resources.sink, events).await.is_err() {
@@ -732,6 +735,36 @@ fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
             }
         }
     })
+}
+
+/// Rejects at OpenCode the questions it asked while no turn ran, so its run does not wait on an
+/// answer no one was asked for.
+///
+/// A rejection OpenCode refuses adds a warning, because the question then stays pending there.
+async fn reject_unprompted_questions(
+    resources: &EventPumpResources,
+    mut events: Vec<CanonicalRuntimeEvent>,
+) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+    let questions = resources
+        .route
+        .lock()
+        .map_err(|_| driver_state_error())?
+        .take_unprompted_questions();
+    for request_id in questions {
+        if let Err(error) = resources.client.reject_question(request_id.as_str()).await {
+            let state = resources.route.lock().map_err(|_| driver_state_error())?;
+            events.push(resources.normalizer.external_event(
+                &state,
+                "question/reject",
+                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                    code: "opencode_question_reject_failed".to_string(),
+                    title: "OpenCode kept a question asked outside a turn".to_string(),
+                    detail: Some(error.message),
+                }),
+            )?);
+        }
+    }
+    Ok(events)
 }
 
 /// Sends the `once` reply for requests a session rule covered.

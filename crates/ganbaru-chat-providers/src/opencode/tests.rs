@@ -1640,3 +1640,50 @@ fn covered_permission_requests_open_and_resolve_and_drop_the_reply_echo() {
     assert_eq!(uncovered.len(), 1);
     assert!(state.take_auto_answers().is_empty());
 }
+
+/// OpenCode can ask a question with no turn running. It becomes a notice rather than an open
+/// request, the driver is handed its ID to reject, and the rejection echo adds nothing.
+#[test]
+fn a_question_asked_outside_a_turn_is_a_notice_queued_for_rejection() {
+    let normalizer = OpenCodeEventNormalizer::new(
+        ProviderInstanceId::new("opencode-instance").unwrap(),
+        ChatThreadId::new("thread-fixture").unwrap(),
+        ProviderSessionId::new("local-session-fixture").unwrap(),
+    );
+    let mut state = OpenCodeRouteState::new(
+        "ses_fixture".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    );
+    let question = include_str!("fixtures/events.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|envelope| envelope["type"] == "question.asked")
+        .unwrap();
+    let events = normalizer.normalize(&mut state, question).unwrap();
+    assert_eq!(events.len(), 1);
+    match &events[0].event {
+        CanonicalEvent::RuntimeWarning(notice) => {
+            assert_eq!(notice.code, "opencode_question_outside_turn");
+            assert_eq!(
+                notice.detail.as_deref(),
+                Some("Which scope should be changed?")
+            );
+        }
+        other => panic!("expected a notice, got {other:?}"),
+    }
+    assert_eq!(events[0].turn_id, None);
+    assert!(!state.awaiting_user());
+    assert_eq!(
+        state.take_unprompted_questions(),
+        vec![ProviderRequestId::new("question_fixture").unwrap()]
+    );
+    assert!(state.take_unprompted_questions().is_empty());
+    let echo = json!({
+        "type": "question.rejected",
+        "properties": { "sessionID": "ses_fixture", "requestID": "question_fixture" }
+    });
+    assert!(normalizer.normalize(&mut state, echo).unwrap().is_empty());
+}

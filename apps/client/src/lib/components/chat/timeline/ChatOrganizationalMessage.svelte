@@ -5,7 +5,7 @@
   import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
   import { getAllContexts, mount, unmount, untrack } from "svelte";
   import { openChatExternalUrl } from "$lib/api/chat";
-  import { ORGANIZATIONAL_REFERENCE_SLOT_ATTRIBUTE, renderOrganizationalMarkdown } from "$lib/chat/timeline/organizational-markdown";
+  import { ORGANIZATIONAL_REFERENCE_SLOT_ATTRIBUTE, renderOrganizationalMarkdown, type RenderedOrganizationalMarkdown } from "$lib/chat/timeline/organizational-markdown";
   import { isTruncatedChatMessage } from "$lib/chat/timeline/organizational-message-model";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -51,7 +51,15 @@
   const actionTarget = $derived(organizationalMessageActionTarget(message));
   const contexts = getAllContexts();
   let copy: HTMLDivElement | undefined = $state();
-  const renderedCopy = $derived(renderOrganizationalMarkdown(message.normalizedMarkdown, message.references));
+  let previousRender: { key: string; value: RenderedOrganizationalMarkdown } | undefined;
+  /** Reuses the previous render while the text and references are unchanged, so a refresh keeps mounted references. */
+  const renderedCopy = $derived.by(() => {
+    const key = JSON.stringify([message.normalizedMarkdown, message.references]);
+    if (previousRender?.key === key) return previousRender.value;
+    const value = renderOrganizationalMarkdown(message.normalizedMarkdown, message.references);
+    previousRender = { key, value };
+    return value;
+  });
   const truncated = $derived(isTruncatedChatMessage(message));
 
   function participantForReference(reference: Extract<ChatMessageReference, { kind: "participant" }>): ChatParticipantRead {
@@ -99,10 +107,13 @@
     const { slots } = renderedCopy;
     if (!root) return;
     const mounted: ReturnType<typeof mount>[] = [];
+    const filled: HTMLElement[] = [];
     untrack(() => {
       for (const slot of slots) {
         const target = root.querySelector(`[${ORGANIZATIONAL_REFERENCE_SLOT_ATTRIBUTE}="${slot.index}"]`);
         if (!(target instanceof HTMLElement)) continue;
+        target.replaceChildren();
+        filled.push(target);
         const reference = slot.reference;
         if (reference.kind === "participant") {
           mounted.push(mount(ChatIdentityButton, {
@@ -122,6 +133,7 @@
     });
     return () => {
       for (const component of mounted) void unmount(component);
+      for (const target of filled) target.replaceChildren();
     };
   });
 

@@ -103,4 +103,39 @@ describe("ChatOrganizationalMessage", () => {
     expect(copy?.querySelector("li .mention-trigger")?.textContent).toBe("@Atlas");
     expect(copy?.querySelectorAll(".mention-trigger")).toHaveLength(1);
   });
+
+  it("keeps one control per reference when the message refreshes with the same text", async () => {
+    const text = "See #general and @Atlas";
+    const channelStart = text.indexOf("#general");
+    const mentionStart = text.indexOf("@Atlas");
+    const atlas = message.references[0];
+    if (atlas?.kind !== "participant") throw new Error("The fixture needs a participant reference.");
+    const original: ChatMessageRead = {
+      ...message,
+      normalizedMarkdown: text,
+      references: [
+        {
+          kind: "channel",
+          channelId: "conversation:general",
+          metadata: { referenceId: "reference:general", labelSnapshot: "general", startOffset: channelStart, endOffset: channelStart + 8, plainTextProjection: "#general" },
+        },
+        { ...atlas, metadata: { ...atlas.metadata, startOffset: mentionStart, endOffset: mentionStart + 6 } },
+      ],
+    };
+    const props = $state({ message: original });
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatOrganizationalMessage, { target, props });
+    await tick();
+
+    props.message = structuredClone(original);
+    await tick();
+    props.message = { ...structuredClone(original), normalizedMarkdown: `${text}!` };
+    await tick();
+
+    const copy = target.querySelector<HTMLElement>(".message-copy");
+    expect(copy?.querySelectorAll(".inline-reference")).toHaveLength(1);
+    expect(copy?.querySelectorAll(".mention-trigger")).toHaveLength(1);
+    expect(copy?.querySelector("p")?.textContent).toBe("See #general and @Atlas!");
+  });
 });

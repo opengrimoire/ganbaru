@@ -22,8 +22,8 @@ export interface RenderedOrganizationalMarkdown {
 
 const SLOT_START = "\uE000";
 const SLOT_END = "\uE001";
-const PRIVATE_USE = /[\uE000-\uF8FF]/gu;
-const HAS_PRIVATE_USE = /[\uE000-\uF8FF]/u;
+const SENTINEL_CHARACTER = /[\uE000\uE001]/gu;
+const HAS_SENTINEL_CHARACTER = /[\uE000\uE001]/u;
 const SENTINEL = /\uE000(\d+)\uE001/gu;
 const STRAY_SENTINEL = /\uE000\d*\uE001?/gu;
 const LITERAL_TEXT_CONTAINERS = "a, code, pre";
@@ -32,10 +32,11 @@ const LITERAL_TEXT_CONTAINERS = "a, code, pre";
  * Renders a channel message as sanitized Markdown with a slot for each reference.
  *
  * Each validated reference range is replaced by a private use sentinel before parsing; the
- * author's own private use characters are removed first, so a sentinel cannot be forged.
+ * author's own sentinel characters are removed first, so a sentinel cannot be forged.
+ * Other private use characters, such as icon font glyphs, stay as typed.
  * Sentinels in a link destination or title become the reference text before the destination
  * is validated. After sanitizing, sentinels in text become empty slot elements, or the
- * reference text inside links and code, and any leftover private use character is removed.
+ * reference text inside links and code, and any leftover sentinel character is removed.
  * The stored text is never changed.
  *
  * @param text The message's normalized Markdown.
@@ -50,11 +51,11 @@ export function renderOrganizationalMarkdown(
   let source = "";
   for (const segment of chatReferenceTextSegments(text, references)) {
     if (segment.kind === "text") {
-      source += stripPrivateUse(segment.text);
+      source += stripSentinelCharacters(segment.text);
       continue;
     }
     const index = candidates.length;
-    candidates.push({ index, reference: segment.reference, text: stripPrivateUse(segment.text) });
+    candidates.push({ index, reference: segment.reference, text: stripSentinelCharacters(segment.text) });
     source += `${SLOT_START}${index}${SLOT_END}`;
   }
   const html = renderOrganizationalChatMarkdown(source, (value) => resolveSentinels(value, candidates));
@@ -81,7 +82,7 @@ function placeReferenceSlots(html: string, candidates: readonly OrganizationalRe
 
 function replaceSentinels(node: Text, candidates: readonly OrganizationalReferenceSlot[], placed: Set<number>): void {
   const value = node.data;
-  if (!HAS_PRIVATE_USE.test(value)) return;
+  if (!HAS_SENTINEL_CHARACTER.test(value)) return;
   const literal = (node.parentElement?.closest(LITERAL_TEXT_CONTAINERS) ?? null) !== null;
   const document = node.ownerDocument;
   const fragment = document.createDocumentFragment();
@@ -105,7 +106,7 @@ function replaceSentinels(node: Text, candidates: readonly OrganizationalReferen
   node.replaceWith(fragment);
 }
 
-/** Removes private use characters from attributes and drops a link whose destination is no longer safe. */
+/** Removes sentinel characters from attributes and drops a link whose destination is no longer safe. */
 function stripAttributes(element: Element): void {
   for (const attribute of [...element.attributes]) {
     const value = stripStraySentinels(attribute.value);
@@ -119,12 +120,12 @@ function resolveSentinels(value: string, candidates: readonly OrganizationalRefe
   return stripStraySentinels(value.replace(SENTINEL, (_, index: string) => candidates[Number(index)]?.text ?? ""));
 }
 
-/** Removes every private use character, including any the author typed. */
-function stripPrivateUse(value: string): string {
-  return value.replace(PRIVATE_USE, "");
+/** Removes the two sentinel characters, including any the author typed. */
+function stripSentinelCharacters(value: string): string {
+  return value.replace(SENTINEL_CHARACTER, "");
 }
 
-/** Removes sentinel pieces the parser or the bounds split, then any other private use character. */
+/** Removes sentinel pieces the parser or the bounds split, then any lone sentinel character. */
 function stripStraySentinels(value: string): string {
-  return stripPrivateUse(value.replace(STRAY_SENTINEL, ""));
+  return stripSentinelCharacters(value.replace(STRAY_SENTINEL, ""));
 }

@@ -87,14 +87,14 @@ describe("renderOrganizationalMarkdown", () => {
     expect(rendered.html).not.toContain("javascript:");
   });
 
-  it("removes forged private use sentinels from the source", () => {
+  it("removes forged sentinels and keeps other private use characters", () => {
     const text = "fake \uE0000\uE001 slot\uE000 and \uF8FF";
     const rendered = renderOrganizationalMarkdown(text, []);
 
     expect(rendered.slots).toEqual([]);
-    expect(rendered.html).not.toMatch(/[\uE000-\uF8FF]/u);
+    expect(rendered.html).not.toMatch(/[\uE000\uE001]/u);
     expect(rendered.html).not.toContain("data-chat-reference-slot");
-    expect(fragment(rendered.html).querySelector("p")?.textContent).toBe("fake 0 slot and ");
+    expect(fragment(rendered.html).querySelector("p")?.textContent).toBe("fake 0 slot and \uF8FF");
   });
 
   it("maps a reference after multibyte characters to its slot", () => {

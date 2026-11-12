@@ -5214,14 +5214,19 @@ fn a_local_start_claims_without_a_recorded_acceptance() {
             .unwrap()
             .expect("the post itself is the consent");
 
-        let instructions: String = sqlx::query_scalar(
-            "SELECT instructions FROM chat_teammates
-             WHERE participant_id = 'participant:review-agent'",
+        let (display_name, role, instructions): (String, String, String) = sqlx::query_as(
+            "SELECT participant.display_name, teammate.role, teammate.instructions
+             FROM chat_teammates teammate
+             JOIN chat_participants participant ON participant.id = teammate.participant_id
+             WHERE teammate.participant_id = 'participant:review-agent'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(claim.instructions, instructions);
+        assert_eq!(
+            claim.instructions,
+            super::continuation::compose_system_instructions(&display_name, &role, &instructions)
+        );
     });
 }
 

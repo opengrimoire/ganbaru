@@ -966,6 +966,8 @@ pub(super) const ADOPTION_FAILED_REASON: &str = "The work could not start on its
 /// What `assignment_id` would run on this device, read from current rows.
 pub(super) struct AssignmentSubject {
     teammate_id: ChatParticipantId,
+    pub(super) display_name: String,
+    pub(super) role: String,
     pub(super) instructions: String,
     provider_instance_id: String,
     access: GrantedAccess,
@@ -990,10 +992,12 @@ pub(super) async fn read_assignment_subject(
 ) -> ChatResult<AssignmentSubject> {
     let row = sqlx::query(
         "SELECT assignment.teammate_id, assignment.triggering_message_item_id,
-                thread.conversation_id, teammate.instructions
+                thread.conversation_id, teammate.instructions, teammate.role,
+                participant.display_name
          FROM chat_work_assignments assignment
          JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
          JOIN chat_teammates teammate ON teammate.participant_id = assignment.teammate_id
+         JOIN chat_participants participant ON participant.id = assignment.teammate_id
          WHERE assignment.id = ?",
     )
     .bind(assignment_id.as_str())
@@ -1038,6 +1042,8 @@ pub(super) async fn read_assignment_subject(
     .map_err(persistence_error)?;
     Ok(AssignmentSubject {
         teammate_id,
+        display_name: row.try_get("display_name").map_err(persistence_error)?,
+        role: row.try_get("role").map_err(persistence_error)?,
         instructions: row.try_get("instructions").map_err(persistence_error)?,
         provider_instance_id,
         access,

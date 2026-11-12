@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderCapabilities, ProviderInstanceRead, ProviderModel } from "$lib/chat/contracts";
 import {
+  CHAT_IMAGE_LIMIT,
   clipboardImageFiles,
   composerActionState,
   composerRateLimitWindows,
@@ -289,6 +290,17 @@ describe("Chat composer model", () => {
     expect(validateUserInputAnswers(questions, [{ questionId: "q1", selectedOptionIds: [], freeFormText: null }])).toEqual(["q1"]);
     expect(validateUserInputAnswers(questions, [{ questionId: "q1", selectedOptionIds: ["a"], freeFormText: null }])).toEqual([]);
     expect(validateUserInputAnswers(questions, [{ questionId: "q1", selectedOptionIds: ["missing"], freeFormText: null }])).toEqual(["q1"]);
+    expect(validateUserInputAnswers(questions, [{ questionId: "q1", selectedOptionIds: ["a"], freeFormText: null, attachmentIds: ["image-1"] }])).toEqual(["q1"]);
+  });
+
+  it("accepts answer attachments only where free-form text is allowed and up to the limit", () => {
+    const questions = parseUserInputQuestions({
+      schemaVersion: 1,
+      value: [{ id: "q1", question: "Describe", options: [], multiple: false, freeFormAllowed: true, required: true }],
+    });
+    expect(validateUserInputAnswers(questions, [{ questionId: "q1", selectedOptionIds: [], freeFormText: null, attachmentIds: ["image-1"] }])).toEqual([]);
+    const tooMany = Array.from({ length: CHAT_IMAGE_LIMIT + 1 }, (_, index) => `image-${index}`);
+    expect(validateUserInputAnswers(questions, [{ questionId: "q1", selectedOptionIds: [], freeFormText: "See", attachmentIds: tooMany }])).toEqual(["q1"]);
   });
 
   it("shows only provider-reported context facts and caps visual ratios", () => {

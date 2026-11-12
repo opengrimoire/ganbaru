@@ -454,6 +454,21 @@ export class ChatComposerRuntimeController {
     }
   }
 
+  /**
+   * Attaches pasted text too large to read inline as a text attachment.
+   *
+   * @param text The pasted text, with hidden characters removed.
+   * @param displayName The attachment name shown on its chip and to the provider.
+   */
+  async importTextSnippet(text: string, displayName: string): Promise<void> {
+    const workingFolderId = this.composer.workingFolderId;
+    if (!workingFolderId) throw new Error("Choose a project working folder before attaching pasted text");
+    if (this.attachments.length >= CHAT_IMAGE_LIMIT) throw new Error(`Attach up to ${CHAT_IMAGE_LIMIT} Chat attachments`);
+    const attachment = await chatApi.importChatTextSnippet(workingFolderId, crypto.randomUUID(), displayName, text);
+    this.attachments = [...this.attachments, attachment];
+    this.composerController.setAttachments(this.attachments.map((entry) => entry.id));
+  }
+
   async pickImages(title: string): Promise<void> {
     const workingFolderId = this.composer.workingFolderId;
     if (!workingFolderId) throw new Error("Choose a project working folder before attaching images");

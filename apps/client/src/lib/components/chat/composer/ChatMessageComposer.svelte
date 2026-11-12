@@ -5,7 +5,8 @@
   import Bot from "@lucide/svelte/icons/bot";
   import CircleAlert from "@lucide/svelte/icons/circle-alert";
   import Clock3 from "@lucide/svelte/icons/clock-3";
-  import File from "@lucide/svelte/icons/file";
+  import FileIcon from "@lucide/svelte/icons/file";
+  import FileText from "@lucide/svelte/icons/file-text";
   import Folder from "@lucide/svelte/icons/folder";
   import GitBranch from "@lucide/svelte/icons/git-branch";
   import Hash from "@lucide/svelte/icons/hash";
@@ -13,18 +14,28 @@
   import Italic from "@lucide/svelte/icons/italic";
   import MessageSquareShare from "@lucide/svelte/icons/message-square-share";
   import Plus from "@lucide/svelte/icons/plus";
+  import AtSign from "@lucide/svelte/icons/at-sign";
   import Square from "@lucide/svelte/icons/square";
+  import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import type {
     ChatAiTeammateRead,
+    ChatAttachmentRead,
+    ChatAssignmentInputRead,
+    ChatAssignmentModelOverride,
     ChatAssignmentReviewRequest,
     ChatAssignmentTargetRead,
     ChatChannelRead,
     ChatChannelRosterRead,
     ChatExecutionTarget,
     ChatFolderCapability,
+    ChatFollowupRouting,
+    ChatInteractionStateRead,
+    ChatMessageRead,
     ChatMessageReference,
+    ChatParticipantId,
     ChatParticipantRead,
+    ChatPromptCatalogEntry,
     ChatScheduledMessageRead,
     ChatTeammateAccessRead,
     ChatWorkAssignmentId,
@@ -32,7 +43,13 @@
     ProjectWorkingFolderPathRead,
   } from "$lib/chat/contracts";
   import { ChatComposerEditor, type ChatComposerEditorChange } from "$lib/chat/composer/editor";
-  import { CHAT_IMAGE_LIMIT } from "$lib/chat/composer/model";
+  import { mergePromptCatalog } from "$lib/chat/composer/command-model";
+  import { composerMeterRead, type ComposerStatusRead } from "$lib/chat/composer/composer-meter";
+  import { CHAT_IMAGE_LIMIT, composerTokenTrigger, validateImageFiles } from "$lib/chat/composer/model";
+  import { defaultFollowupRouting, pendingInputRows, pendingInputStartsWork, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
+  import { latestStructuredPlanSteps, summarizePlanProgress } from "$lib/chat/composer/plan-progress";
+  import { suggestTeammateMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
+  import { pastedTextLineCount } from "$lib/chat/composer/paste";
   import {
     chatComposerDocumentFromText,
     chatComposerDocumentVersioned,
@@ -66,6 +83,12 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatAssignmentReviewCard from "./ChatAssignmentReviewCard.svelte";
+  import ChatComposerFrame from "./ChatComposerFrame.svelte";
+  import ChatComposerInfoPanel from "./ChatComposerInfoPanel.svelte";
+  import ChatComposerSuggestionMenu from "./ChatComposerSuggestionMenu.svelte";
+  import ChatModelOverrideControl from "./ChatModelOverrideControl.svelte";
+  import ChatPendingInputs from "./ChatPendingInputs.svelte";
+  import ChatTaskProgressCard from "./ChatTaskProgressCard.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { isAppFloatingSurfaceTarget } from "$lib/utils";
   import { cloneData } from "$lib/utils/clone";
@@ -167,7 +190,7 @@
     initialDraft.normalizedMarkdown,
   );
 
-  let editorRoot = $state<HTMLDivElement | null>(null);
+  let editorRoot = $state<HTMLDivElement | undefined>();
   let editorController: ChatComposerEditor | null = null;
   let editorDocument = $state<ChatComposerDocument>(initialDocument);
   let normalizedMarkdown = $state(chatComposerMarkdown(initialDocument));
@@ -213,12 +236,39 @@
   let disclosureBlocker = $state<DisclosureBlocker | null>(null);
   let blockerElement = $state<HTMLDivElement | null>(null);
   let announcement = $state("");
+  /** Attachment reads the chips label from, by attachment id. */
+  let attachmentReads = $state<Record<string, ChatAttachmentRead>>({});
+  const draftPlainText = $derived(chatComposerPlainText(editorDocument));
+  /** Teammates whose mention suggestion was dismissed for this draft. */
+  let dismissedMentionSuggestions = $state<ChatParticipantId[]>([]);
   let teammateAccess = $state<ChatTeammateAccessRead | null>(null);
   let assignmentTargets = $state<ChatAssignmentTargetRead[]>([]);
   let assignmentPreviewLoading = $state(false);
   let assignmentPreviewRequest = 0;
   let navigationChannels = $state<ChatChannelRead[]>([]);
   let navigationChannelsLoaded = false;
+  let promptMenuKind = $state<"skill" | "command" | null>(null);
+  let promptMenuEntries = $state<ChatPromptCatalogEntry[]>([]);
+  let promptMenuIndex = $state(0);
+  let promptMenuLoading = $state(false);
+  let promptMenuRequest = 0;
+  let promptMenuRoot = $state<HTMLDivElement | undefined>();
+  let promptMenuIncludeIgnored = $state(false);
+  let promptCatalogCache: { key: string; entries: ChatPromptCatalogEntry[] } | null = null;
+  let statusPanelOpen = $state(false);
+  let interactionState = $state<ChatInteractionStateRead | null>(null);
+  let interactionRequest = 0;
+  let routingNotice = $state<string | null>(null);
+  let modelOverrideId = $state<string | null>(null);
+  /** The teammate the chosen model belongs to, so a model never carries over to another teammate. */
+  let modelOverrideTeammateId: string | null = null;
+  let assignmentInputs = $state<ChatAssignmentInputRead[]>([]);
+  let assignmentInputsRequest = 0;
+  /** The waiting reply the editor holds; the destination draft stays in the store until the edit ends. */
+  let editingInput = $state<ChatAssignmentInputRead | null>(null);
+  let inputBusyId = $state<string | null>(null);
+  /** Why every tool beyond text is off: an edit replaces only the text of a waiting reply. */
+  const editLockReason = $derived(editingInput ? t("chat.composer.pendingInputs.textOnly") : null);
 
   const participantReferences = $derived(editorReferences.filter((reference) => (
     reference.kind === "participant"
@@ -308,6 +358,80 @@
     scheduledMessages.find((message) => message.state !== "failed") ?? scheduledMessages[0] ?? null,
   );
   const stopShortcut = formatShortcut("Mod + .");
+  const threadAssignment = $derived(threadComposer ? chat.replyThread?.assignment ?? null : null);
+  /** The teammate a post starts or continues work for: the mentioned one, else the thread's. */
+  const targetTeammateId = $derived(mentionedTeammateId ?? threadAssignment?.teammate.id ?? null);
+  const targetTeammate = $derived(chat.teammates.find((candidate) => (
+    candidate.participant.id === targetTeammateId
+  )) ?? null);
+  const targetProvider = $derived(chat.settings?.providerInstances.find((entry) => (
+    entry.configuration.instanceId === targetTeammate?.latestPolicy?.providerInstanceId
+  )) ?? null);
+  const catalogWorkingFolderId = $derived.by(() => {
+    const available = (id: string) => chat.workingFolders.some((folder) => (
+      folder.workingFolder.id === id
+        && folder.workingFolder.archivedAt === null
+        && folder.bindingStatus === "available"
+    ));
+    const targetFolderId = inferredTarget?.executionTarget?.kind === "workingFolder"
+      ? inferredTarget.executionTarget.workingFolderId
+      : null;
+    if (targetFolderId && available(targetFolderId)) return targetFolderId;
+    return chat.workingFolders.find((folder) => (
+      folder.workingFolder.projectId === chat.selectedChannel?.projectId
+        && available(folder.workingFolder.id)
+    ))?.workingFolder.id ?? null;
+  });
+  const promptCatalogKey = $derived([
+    catalogWorkingFolderId ?? "",
+    targetTeammate?.latestPolicy?.providerInstanceId ?? "",
+    threadAssignment?.latestRunProviderThreadId ?? "",
+  ].join("\u0000"));
+  const showMeter = $derived(threadAssignment !== null);
+  const meterRead = $derived(composerMeterRead(
+    interactionState?.usage ?? null,
+    interactionState?.rateLimitStatus ?? null,
+  ));
+  const meterNote = $derived(threadAssignment && !threadAssignment.latestRunProviderThreadId
+    ? t("chat.composer.usageOnRunningDevice")
+    : null);
+  const followupRouting = $derived(activeAssignment
+    ? defaultFollowupRouting(chat.organizationalFollowupRouting(destination), activeAssignment.state)
+    : null);
+  const routingOptions = $derived([
+    { value: "steer", label: t("chat.composer.routing.steer") },
+    { value: "queue", label: t("chat.composer.routing.queue") },
+  ]);
+  const modelOverrideDisabledReason = $derived(activeAssignment
+    ? t("chat.composer.modelOverride.activeWork")
+    : scheduledFor
+      ? t("chat.composer.modelOverride.scheduled")
+      : null);
+  // A reply that started work which can no longer be stopped is that work's settled trigger, not a waiting reply.
+  const pendingRows = $derived(pendingInputRows(assignmentInputs)
+    .filter((row) => activeAssignment !== null || !pendingInputStartsWork(row.input)));
+  /** The latest structured plan of the running work, while some of its steps are still to do. */
+  const taskProgress = $derived.by(() => {
+    if (!activeAssignment) return null;
+    const summary = summarizePlanProgress(latestStructuredPlanSteps(chat.replyThread?.replies ?? [], activeAssignment.id) ?? []);
+    return summary && summary.completed < summary.total ? summary : null;
+  });
+  const sendBlocked = $derived(Boolean(validation || disclosureBlocker || providerBlockers.length || messageTooLarge));
+  /** Channel teammates that can take work, for the mention suggestion. */
+  const mentionRoster = $derived((chat.selectedChannel?.memberships ?? []).flatMap((membership) => (
+    membership.removedAt === null
+      && membership.participant.archivedAt === null
+      && membership.participant.kind === "ai_teammate"
+      && membership.aiAccess?.capabilities.participate === true
+      ? [{ id: membership.participant.id, displayName: membership.participant.displayName }]
+      : []
+  )));
+  /** A teammate the draft names without mentioning, offered as a local chip; never while editing a waiting reply. */
+  const mentionSuggestion = $derived.by((): MentionSuggestion | null => {
+    if (editingInput || pickerOpen) return null;
+    const roster = mentionRoster.filter((candidate) => !dismissedMentionSuggestions.includes(candidate.id));
+    return suggestTeammateMention(draftPlainText, editorReferences, roster);
+  });
 
   onMount(() => {
     if (!editorRoot) return;
@@ -320,21 +444,74 @@
       },
       editorReferences,
     );
-    const selectionChanged = () => {
-      if (document.activeElement === editorRoot) editorController?.handleSelectionChange();
-    };
+    void loadAttachmentReads(attachmentIds);
     const stop = () => { void stopAssignment(); };
-    document.addEventListener("selectionchange", selectionChanged);
     paneEvents.addEventListener("ganbaru:chat-stop-requested", stop);
     if (focusEditorOnMount) {
       editorController.focus({ start: selectionStart, end: selectionEnd });
     }
     return () => {
-      document.removeEventListener("selectionchange", selectionChanged);
       paneEvents.removeEventListener("ganbaru:chat-stop-requested", stop);
+      // The destination draft stayed in the store while a waiting reply was edited, so the next mount restores it.
+      editingInput = null;
       releaseReviewNote();
       editorController = null;
     };
+  });
+
+  $effect(() => {
+    const teammateId = targetTeammateId;
+    untrack(() => {
+      if (teammateId === modelOverrideTeammateId) return;
+      modelOverrideTeammateId = teammateId;
+      modelOverrideId = null;
+    });
+  });
+
+  $effect(() => {
+    const threadId = threadAssignment?.latestRunProviderThreadId ?? null;
+    const _revision = threadAssignment?.revision;
+    const _state = threadAssignment?.state;
+    const request = ++interactionRequest;
+    if (!threadId) {
+      interactionState = null;
+      return;
+    }
+    chatApi.readChatInteractionState(threadId)
+      .then((read) => { if (request === interactionRequest) interactionState = read; })
+      .catch(() => {
+        // The meter keeps its last reading; usage is advisory and a failed read must not block replies.
+      });
+  });
+
+  $effect(() => {
+    const assignmentId = threadAssignment?.id ?? null;
+    const _revision = threadAssignment?.revision;
+    const _state = threadAssignment?.state;
+    const _threadRevision = chat.replyThread?.revision;
+    const _replies = chat.replyThread?.replies.length;
+    void loadAssignmentInputs(assignmentId);
+  });
+
+  $effect(() => {
+    const key = promptCatalogKey;
+    untrack(() => {
+      if (promptCatalogCache && promptCatalogCache.key !== key) promptCatalogCache = null;
+    });
+  });
+
+  $effect(() => {
+    if (!promptMenuKind || !promptMenuRoot) return;
+    const selectedIndex = promptMenuIndex;
+    void tick().then(() => {
+      const menu = promptMenuRoot;
+      const selected = menu?.querySelector<HTMLElement>(`[data-menu-index="${selectedIndex}"]`);
+      if (!menu || !selected) return;
+      const top = selected.offsetTop;
+      const bottom = top + selected.offsetHeight;
+      if (top < menu.scrollTop) menu.scrollTop = top;
+      else if (bottom > menu.scrollTop + menu.clientHeight) menu.scrollTop = Math.max(0, bottom - menu.clientHeight);
+    });
   });
 
   $effect(() => {
@@ -381,19 +558,21 @@
   });
 
   $effect(() => {
-    if (!scheduleMenuOpen && !scheduledMessagesOpen && !pickerOpen) return;
+    if (!scheduleMenuOpen && !scheduledMessagesOpen && !pickerOpen && !promptMenuKind) return;
     const closeMenusFromOutside = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node) || isAppFloatingSurfaceTarget(target)) return;
       if (scheduleMenuOpen && !scheduleMenuAnchor?.contains(target)) scheduleMenuOpen = false;
       if (scheduledMessagesOpen && !scheduledMessagesAnchor?.contains(target)) scheduledMessagesOpen = false;
       if (pickerOpen && !editorRoot?.contains(target) && !pickerRoot?.contains(target)) closePicker();
+      if (promptMenuKind && !editorRoot?.contains(target) && !promptMenuRoot?.contains(target)) closePromptMenu();
     };
     window.addEventListener("pointerdown", closeMenusFromOutside, true);
     return () => window.removeEventListener("pointerdown", closeMenusFromOutside, true);
   });
 
   function persist(): void {
+    if (editingInput) return;
     const references = chatReferencesForMarkdown(editorDocument, editorReferences);
     const draft: ChatOrganizationalDraft = {
       normalizedMarkdown,
@@ -413,9 +592,10 @@
     normalizedMarkdown = change.markdown;
     editorReferences = change.references;
     disclosureBlocker = null;
+    routingNotice = null;
     persist();
     const end = change.plainText.length;
-    void updateReferencePicker(change.plainText, editorController?.selection() ?? { start: end, end }, change.references);
+    updateTokenMenus(change.plainText, editorController?.selection() ?? { start: end, end }, change.references);
   }
 
   function handleEditorSelectionChange(selection: ChatComposerSelection, marks: ChatComposerMark[]): void {
@@ -424,29 +604,54 @@
     isBoldActive = marks.includes("bold");
     isItalicActive = marks.includes("italic");
     persist();
-    void updateReferencePicker(editorController?.plainText() ?? "", selection, editorController?.messageReferences() ?? editorReferences);
+    updateTokenMenus(editorController?.plainText() ?? "", selection, editorController?.messageReferences() ?? editorReferences);
   }
 
-  function handleBeforeInput(event: InputEvent): void {
-    editorController?.handleBeforeInput(event);
-  }
-
-  function handleInput(): void {
-    editorController?.handleInput();
-  }
-
-  function handleCompositionStart(): void {
-    composing = true;
-    editorController?.handleCompositionStart();
-  }
-
-  function handleCompositionEnd(): void {
-    composing = false;
-    editorController?.handleCompositionEnd();
+  /**
+   * Opens the one token menu the caret calls for: the reference picker for `@` and `#`, which owns
+   * those triggers, otherwise the skill or command menu for `$` and a line-start `/`.
+   */
+  function updateTokenMenus(
+    text: string,
+    selection: ChatComposerSelection,
+    references: readonly ChatMessageReference[],
+  ): void {
+    if (editingInput) {
+      closePicker();
+      closePromptMenu();
+      return;
+    }
+    if (chatReferenceTriggerAtCaret(text, selection, references)) {
+      closePromptMenu();
+      void updateReferencePicker(text, selection, references);
+      return;
+    }
+    closePicker();
+    const trigger = selection.start === selection.end ? composerTokenTrigger(text, selection.start) : null;
+    if (trigger?.kind === "skill" || trigger?.kind === "command") void updatePromptMenu(trigger.kind, trigger.query);
+    else closePromptMenu();
   }
 
   function handleKeydown(event: KeyboardEvent): void {
     if (composing || event.isComposing || event.keyCode === 229) return;
+    if (promptMenuKind && promptMenuEntries.length > 0) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const direction = event.key === "ArrowDown" ? 1 : -1;
+        promptMenuIndex = (promptMenuIndex + direction + promptMenuEntries.length) % promptMenuEntries.length;
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        void choosePromptEntry(promptMenuIndex);
+        return;
+      }
+    }
+    if (promptMenuKind && event.key === "Escape") {
+      event.preventDefault();
+      closePromptMenu();
+      return;
+    }
     if (pickerOpen) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
@@ -497,20 +702,19 @@
     }
   }
 
-  function handlePaste(event: ClipboardEvent): void {
-    if (!event.clipboardData || !editorController) return;
-    event.preventDefault();
+  /** Pastes a copied slice that carries references; the frame pastes images and plain text. */
+  function handlePaste(event: ClipboardEvent): boolean {
+    if (!event.clipboardData || !editorController || editingInput) return false;
     const plainText = event.clipboardData.getData("text/plain").replace(/\r\n?/gu, "\n");
     const semantic = parseReferenceClipboardSlice(
       event.clipboardData.getData(REFERENCE_CLIPBOARD_TYPE),
       plainText,
     );
-    if (semantic) {
-      editorController.pasteReferenceSlice(semantic);
-      announcement = t("chat.organization.referencesPasted", semantic.references.length);
-    } else {
-      editorController.insertPlainText(plainText);
-    }
+    if (!semantic) return false;
+    event.preventDefault();
+    editorController.pasteReferenceSlice(semantic);
+    announcement = t("chat.organization.referencesPasted", semantic.references.length);
+    return true;
   }
 
   function parseReferenceClipboardSlice(
@@ -796,6 +1000,365 @@
     pickerIndex = 0;
   }
 
+  /**
+   * Opens the skill or command menu for the typed query. App commands show at once; the provider
+   * catalog of the teammate's working folder follows when the teammate's provider can run here.
+   */
+  async function updatePromptMenu(kind: "skill" | "command", query: string): Promise<void> {
+    const request = ++promptMenuRequest;
+    const appEntries = kind === "command" ? teammateCommandCatalog() : [];
+    const providerInstanceId = targetTeammate?.latestPolicy?.providerInstanceId ?? null;
+    const workingFolderId = catalogWorkingFolderId;
+    const canReadProvider = localExecutionAvailable && providerInstanceId !== null && workingFolderId !== null;
+    if (!canReadProvider && kind === "skill") {
+      closePromptMenu();
+      return;
+    }
+    promptMenuKind = kind;
+    const cached = promptCatalogCache?.key === promptCatalogKey ? promptCatalogCache.entries : null;
+    promptMenuEntries = mergePromptCatalog(appEntries, cached ?? [], kind, query);
+    promptMenuIndex = Math.min(promptMenuIndex, Math.max(0, promptMenuEntries.length - 1));
+    if (!canReadProvider || cached) {
+      promptMenuLoading = false;
+      return;
+    }
+    promptMenuLoading = true;
+    const key = promptCatalogKey;
+    try {
+      const entries = await chatApi.listChatPromptCatalog(
+        workingFolderId,
+        providerInstanceId,
+        threadAssignment?.latestRunProviderThreadId ?? null,
+      );
+      if (key === promptCatalogKey) promptCatalogCache = { key, entries };
+      if (request !== promptMenuRequest) return;
+      promptMenuEntries = mergePromptCatalog(teammateCommandCatalog(), entries, kind, query);
+      promptMenuIndex = Math.min(promptMenuIndex, Math.max(0, promptMenuEntries.length - 1));
+    } catch {
+      // App commands stay available when the provider catalog cannot be read on this device.
+      if (request === promptMenuRequest) {
+        promptMenuEntries = mergePromptCatalog(teammateCommandCatalog(), [], kind, query);
+      }
+    } finally {
+      if (request === promptMenuRequest) promptMenuLoading = false;
+    }
+  }
+
+  function closePromptMenu(): void {
+    promptMenuRequest += 1;
+    promptMenuKind = null;
+    promptMenuEntries = [];
+    promptMenuIndex = 0;
+    promptMenuLoading = false;
+  }
+
+  /**
+   * Applies the chosen menu entry at the typed token: an app command runs and removes the token,
+   * while a skill or provider command replaces the token with its text.
+   */
+  async function choosePromptEntry(index: number): Promise<void> {
+    const entry = promptMenuEntries[index];
+    if (!entry || !editorController) return;
+    const selection = editorController.selection();
+    const trigger = composerTokenTrigger(editorController.plainText(), selection.start);
+    closePromptMenu();
+    if (!trigger || trigger.kind === "mention") return;
+    if (entry.source === "app") {
+      editorController.replaceRange(trigger.start, trigger.end, "");
+      await runTeammateCommand(entry.value);
+      return;
+    }
+    editorController.replaceRange(trigger.start, trigger.end, `${entry.value} `);
+  }
+
+  async function runTeammateCommand(value: string): Promise<void> {
+    switch (value) {
+      case "/schedule": toggleScheduleMenu(); return;
+      case "/attach": await pickImages(); return;
+      case "/stop": await stopAssignment(); return;
+      case "/status": statusPanelOpen = true; return;
+    }
+  }
+
+  /** The app commands a teammate conversation offers; provider direct actions never show here. */
+  function teammateCommandCatalog(): ChatPromptCatalogEntry[] {
+    return [
+      appCommand("/schedule", t("chat.composer.teammateCommands.schedule"), t("chat.composer.teammateCommands.scheduleDescription")),
+      ...(localExecutionAvailable
+        ? [appCommand("/attach", t("chat.composer.teammateCommands.attach"), t("chat.composer.teammateCommands.attachDescription"))]
+        : []),
+      ...(activeAssignment
+        ? [appCommand("/stop", t("chat.composer.teammateCommands.stop"), t("chat.composer.teammateCommands.stopDescription"))]
+        : []),
+      ...(showMeter
+        ? [appCommand("/status", t("chat.composer.teammateCommands.status"), t("chat.composer.teammateCommands.statusDescription"))]
+        : []),
+    ];
+  }
+
+  function appCommand(value: string, label: string, description: string): ChatPromptCatalogEntry {
+    return { value, label, description, argumentHint: null, kind: "command", source: "app", stale: false };
+  }
+
+  /** What the status panel shows about the provider session of the thread's latest run. */
+  function teammateComposerStatus(): ComposerStatusRead {
+    const policy = targetTeammate?.latestPolicy ?? null;
+    const modelId = modelOverrideId ?? policy?.modelId ?? null;
+    return {
+      providerLabel: targetProvider?.configuration.label ?? null,
+      sessionId: interactionState?.sessionId ?? null,
+      sessionState: interactionState?.sessionState ?? "stopped",
+      modelLabel: policy?.providerManagedModel && !modelOverrideId
+        ? null
+        : targetProvider?.modelCatalog?.models.find((entry) => entry.id === modelId)?.displayName ?? null,
+      accountLabel: interactionState?.accountStatus?.accountLabel ?? null,
+      planLabel: interactionState?.accountStatus?.planLabel ?? null,
+      usage: meterRead,
+    };
+  }
+
+  async function loadAssignmentInputs(assignmentId: ChatWorkAssignmentId | null): Promise<void> {
+    const request = ++assignmentInputsRequest;
+    if (!assignmentId) {
+      assignmentInputs = [];
+      return;
+    }
+    try {
+      const inputs = await chatApi.listChatAssignmentInputs(assignmentId);
+      if (request === assignmentInputsRequest) assignmentInputs = inputs;
+    } catch {
+      // The list keeps its last reading; the thread timeline still shows every reply.
+    }
+  }
+
+  function replyForInput(input: ChatAssignmentInputRead): ChatMessageRead | null {
+    return chat.replyThread?.replies.find((reply) => reply.itemId === input.messageItemId) ?? null;
+  }
+
+  function canEditInput(row: PendingInputRow): boolean {
+    return !pendingInputStartsWork(row.input) && replyForInput(row.input) !== null;
+  }
+
+  /** Replaces the editor content without the store draft, as loading a waiting reply or restoring the draft does. */
+  function loadEditorContent(
+    document: ChatComposerDocument,
+    references: readonly ChatMessageReference[],
+    attachments: readonly string[],
+    selection?: ChatComposerSelection,
+  ): void {
+    editorDocument = document;
+    normalizedMarkdown = chatComposerMarkdown(document);
+    editorReferences = chatReferencesForEditor(document, references);
+    attachmentIds = [...attachments];
+    const end = chatComposerPlainText(document).length;
+    selectionStart = Math.min(selection?.start ?? end, end);
+    selectionEnd = Math.min(selection?.end ?? end, end);
+    editorController?.setDocument(document, editorReferences);
+    editorController?.focus({ start: selectionStart, end: selectionEnd });
+  }
+
+  function startInputEdit(row: PendingInputRow): void {
+    const reply = replyForInput(row.input);
+    if (!reply || editingInput) return;
+    persist();
+    closePicker();
+    closePromptMenu();
+    error = null;
+    editingInput = row.input;
+    // The saved revision carries no references, so the editor shows their text as plain text.
+    loadEditorContent(parseChatComposerDocument(reply.richContent, reply.normalizedMarkdown), [], []);
+  }
+
+  function restoreDraftAfterEdit(): void {
+    editingInput = null;
+    const draft = chat.organizationalDraft(destination);
+    loadEditorContent(parseChatComposerDocument(draft.richContent, draft.normalizedMarkdown), draft.references, draft.attachmentIds, {
+      start: draft.selectionStart,
+      end: draft.selectionEnd,
+    });
+  }
+
+  function discardInputEdit(): void {
+    if (!editingInput || inputBusyId) return;
+    restoreDraftAfterEdit();
+  }
+
+  /**
+   * The explanation of an edit or cancel refused because the reply already left the list's view of
+   * it, as when it reached the teammate or started its own work after the list loaded, or null for
+   * any other failure.
+   *
+   * @param cause The failure of the edit or cancel.
+   */
+  function settledInputMessage(cause: unknown): string | null {
+    switch (chatErrorReason(cause)) {
+      case "input_already_delivered": return t("chat.composer.pendingInputs.alreadyDelivered");
+      case "input_starts_work": return t("chat.composer.pendingInputs.startsWork");
+      default: return null;
+    }
+  }
+
+  async function refreshAfterInputChange(): Promise<void> {
+    const replyThreadId = destinationReplyThreadId(destination);
+    await Promise.all([
+      replyThreadId ? chat.loadReplyThread(replyThreadId, true) : Promise.resolve(),
+      loadAssignmentInputs(threadAssignment?.id ?? null),
+    ]);
+  }
+
+  async function saveInputEdit(): Promise<void> {
+    const input = editingInput;
+    if (!input || inputBusyId || !normalizedMarkdown.trim()) return;
+    inputBusyId = input.inputId;
+    error = null;
+    try {
+      await chatApi.editChatAssignmentInput(input.inputId, {
+        normalizedMarkdown,
+        richContent: chatComposerDocumentVersioned(editorDocument),
+      });
+      restoreDraftAfterEdit();
+      await refreshAfterInputChange();
+    } catch (cause: unknown) {
+      const settled = settledInputMessage(cause);
+      if (settled) {
+        error = settled;
+        restoreDraftAfterEdit();
+        await refreshAfterInputChange().catch(() => undefined);
+      } else {
+        error = chatErrorMessage(cause);
+      }
+    } finally {
+      inputBusyId = null;
+    }
+  }
+
+  async function cancelInput(row: PendingInputRow): Promise<void> {
+    if (inputBusyId || editingInput) return;
+    if (pendingInputStartsWork(row.input)) {
+      await stopAssignment();
+      await refreshAfterInputChange().catch(() => undefined);
+      return;
+    }
+    inputBusyId = row.input.inputId;
+    error = null;
+    try {
+      await chatApi.cancelChatAssignmentInput(row.input.inputId);
+      await refreshAfterInputChange();
+    } catch (cause: unknown) {
+      const settled = settledInputMessage(cause);
+      error = settled ?? chatErrorMessage(cause);
+      if (settled) await refreshAfterInputChange().catch(() => undefined);
+    } finally {
+      inputBusyId = null;
+    }
+  }
+
+  function composerWorkingFolderId(): string | null {
+    return chat.selectedWorkingFolderId
+      ?? chat.workingFolders.find((folder) => folder.workingFolder.projectId === chat.selectedChannel?.projectId)
+        ?.workingFolder.id
+      ?? null;
+  }
+
+  /** Imports images pasted or dropped into the composer into the folder the image picker uses. */
+  async function importFiles(files: File[]): Promise<void> {
+    if (editLockReason) {
+      error = editLockReason;
+      return;
+    }
+    const workingFolderId = composerWorkingFolderId();
+    if (!localExecutionAvailable || !workingFolderId) return;
+    const invalid = validateImageFiles(files, attachmentIds.length);
+    if (invalid) {
+      error = invalid;
+      return;
+    }
+    error = null;
+    try {
+      const imported = await Promise.all(files.map(async (file) => chatApi.importChatImage(
+        workingFolderId,
+        crypto.randomUUID(),
+        file.name,
+        [...new Uint8Array(await file.arrayBuffer())],
+      )));
+      rememberAttachments(imported);
+      attachmentIds = [...attachmentIds, ...imported.map((attachment) => attachment.id)];
+      persist();
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause);
+    }
+  }
+
+  /** Attaches pasted or dropped text too large to read inline as a text attachment. */
+  async function importLargeText(text: string): Promise<void> {
+    if (editLockReason) {
+      error = editLockReason;
+      return;
+    }
+    const workingFolderId = composerWorkingFolderId();
+    if (!localExecutionAvailable || !workingFolderId) {
+      error = t("chat.composer.paste.attachmentUnavailable");
+      return;
+    }
+    if (attachmentIds.length >= CHAT_IMAGE_LIMIT) {
+      error = t("chat.composer.paste.attachmentLimit", CHAT_IMAGE_LIMIT);
+      return;
+    }
+    error = null;
+    try {
+      const attachment = await chatApi.importChatTextSnippet(
+        workingFolderId,
+        crypto.randomUUID(),
+        t("chat.composer.paste.snippetName", pastedTextLineCount(text)),
+        text,
+      );
+      rememberAttachments([attachment]);
+      attachmentIds = [...attachmentIds, attachment.id];
+      persist();
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause);
+    }
+  }
+
+  function rememberAttachments(attachments: readonly ChatAttachmentRead[]): void {
+    attachmentReads = { ...attachmentReads, ...Object.fromEntries(attachments.map((attachment) => [attachment.id, attachment])) };
+  }
+
+  /** Reads the draft's attachments so their chips show names; on failure the chips keep generic labels and the error shows. */
+  async function loadAttachmentReads(ids: readonly string[]): Promise<void> {
+    const workingFolderId = composerWorkingFolderId();
+    if (ids.length === 0 || !workingFolderId) return;
+    try {
+      rememberAttachments(await chatApi.readChatAttachments(workingFolderId, [...ids]));
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause);
+    }
+  }
+
+  function attachmentChipLabel(id: string): string {
+    const read = attachmentReads[id];
+    if (read?.kind === "text_snippet") return read.originalDisplayName;
+    const imageIndex = attachmentIds.filter((entry) => attachmentReads[entry]?.kind !== "text_snippet").indexOf(id);
+    return t("chat.organization.imageNumber", imageIndex + 1);
+  }
+
+  /** Turns the suggested teammate's name into a mention reference; nothing is posted. */
+  function applyMentionSuggestion(suggestion: MentionSuggestion): void {
+    if (!editorController) return;
+    const participant = mentionRoster.find((candidate) => candidate.id === suggestion.participantId);
+    if (!participant) return;
+    const label = participant.displayName;
+    const inserted = editorController.insertReference(suggestion.start, suggestion.end, {
+      kind: "participant",
+      participantId: participant.id,
+      participantKind: "ai_teammate",
+      metadata: { referenceId: crypto.randomUUID(), labelSnapshot: label, startOffset: 0, endOffset: 0, plainTextProjection: `@${label}` },
+    });
+    announcement = inserted
+      ? t("chat.organization.referenceInserted", label)
+      : t("chat.organization.duplicateReference", label);
+  }
+
   async function loadAssignmentPreview(
     teammateId: string,
     channelId: string,
@@ -919,10 +1482,8 @@
   }
 
   async function pickImages(): Promise<void> {
-    const workingFolderId = chat.selectedWorkingFolderId
-      ?? chat.workingFolders.find((folder) => folder.workingFolder.projectId === chat.selectedChannel?.projectId)
-        ?.workingFolder.id;
-    if (!workingFolderId) return;
+    const workingFolderId = composerWorkingFolderId();
+    if (!workingFolderId || editLockReason) return;
     const available = Math.max(0, CHAT_IMAGE_LIMIT - attachmentIds.length);
     if (available === 0) return;
     const imported = await chatApi.pickChatImages(
@@ -930,6 +1491,7 @@
       Array.from({ length: available }, () => crypto.randomUUID()),
       t("chat.composer.attachImages"),
     );
+    rememberAttachments(imported);
     attachmentIds = [...attachmentIds, ...imported.map((attachment) => attachment.id)];
     persist();
   }
@@ -946,13 +1508,19 @@
     scheduledFor = null;
     teammateAccess = null;
     assignmentTargets = [];
+    modelOverrideId = null;
     disclosureBlocker = null;
+    dismissedMentionSuggestions = [];
     editorController?.setDocument(editorDocument, []);
     persist();
   }
 
   async function post(): Promise<void> {
-    if (activeAssignment || sending || !hasMessageContent) return;
+    if (editingInput) {
+      await saveInputEdit();
+      return;
+    }
+    if (sending || !hasMessageContent) return;
     if (validation || providerBlockers.length > 0 || messageTooLarge) {
       await focusBlocker();
       return;
@@ -979,16 +1547,39 @@
         scheduledMessages = [...scheduledMessages.filter((message) => message.id !== scheduled.id), scheduled]
           .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor));
       } else {
-        await chat.postOrganizationalMessage(destination, {
+        const routing = activeAssignment ? followupRouting : null;
+        const modelOverride = postModelOverride();
+        const result = await chat.postOrganizationalMessage(destination, {
           alsoSendToChannel: threadComposer && alsoSendToChannel,
+          ...(routing ? { followupRouting: routing } : {}),
+          ...(modelOverride ? { modelOverride } : {}),
         });
+        routingNotice = routing === "steer" && result.routedAs === "queue"
+          ? t("chat.composer.routing.downgraded")
+          : null;
         onRequestScrollToBottom();
       }
       clearComposerAfterDelivery();
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = postRefusalMessage(cause);
     } finally {
       sending = false;
+    }
+  }
+
+  /** The model a post asks its new work to run with, when the user chose one and the post can carry it. */
+  function postModelOverride(): ChatAssignmentModelOverride | null {
+    if (modelOverrideDisabledReason || !modelOverrideId || !targetTeammateId) return null;
+    return { providerManagedModel: false, modelId: modelOverrideId, modelOptions: [] };
+  }
+
+  /** The localized reason a post was refused, or the failure message when the refusal names no known reason. */
+  function postRefusalMessage(cause: unknown): string {
+    switch (chatErrorReason(cause)) {
+      case "model_override_on_active_work": return t("chat.composer.postRefusals.modelOverrideOnActiveWork");
+      case "model_override_without_teammate": return t("chat.composer.postRefusals.modelOverrideWithoutTeammate");
+      case "model_override_needs_mention": return t("chat.composer.postRefusals.modelOverrideNeedsMention");
+      default: return chatErrorMessage(cause);
     }
   }
 
@@ -1107,11 +1698,6 @@
     const reviewed = await reviewWork({ kind: "requestChanges", note });
     if (reviewed) onRequestScrollToBottom();
     return reviewed;
-  }
-
-  function performPrimaryAction(): void {
-    if (activeAssignment) void stopAssignment();
-    else void post();
   }
 
   function formatScheduledInstant(value: string): string {
@@ -1456,77 +2042,96 @@
     </section>
   {/if}
 
+  {#if taskProgress}<ChatTaskProgressCard summary={taskProgress} />{/if}
+
+  {#if pendingRows.length > 0}
+    <ChatPendingInputs rows={pendingRows} editingInputId={editingInput?.inputId ?? null} busyInputId={inputBusyId} canEdit={canEditInput} onEdit={startInputEdit} onCancel={(row) => { void cancelInput(row); }} onSave={() => { void saveInputEdit(); }} onDiscard={discardInputEdit} />
+  {/if}
+
   <div bind:this={composerRoot} class="organizational-composer" data-organizational-composer>
-    <div class="editor-frame">
-      <div
-        bind:this={editorRoot}
-        class="organizational-editor"
-        class:empty={!chatComposerPlainText(editorDocument)}
-        contenteditable="true"
-        role="combobox"
-        tabindex="0"
-        aria-label={placeholder}
-        aria-autocomplete="list"
-        aria-haspopup="listbox"
-        aria-expanded={pickerOpen}
-        aria-controls={pickerOpen ? "chat-reference-picker" : undefined}
-        aria-activedescendant={pickerOpen && pickerEntries[pickerIndex] ? `chat-reference-${pickerIndex}` : undefined}
-        data-placeholder={placeholder}
-        data-chat-composer
-        onbeforeinput={handleBeforeInput}
-        oninput={handleInput}
-        onkeydown={handleKeydown}
-        oncopy={handleCopy}
-        onpaste={handlePaste}
-        oncompositionstart={handleCompositionStart}
-        oncompositionend={handleCompositionEnd}
-      ></div>
-    </div>
-
-    {#if pickerOpen}
-      <div bind:this={pickerRoot} use:chatReferencePickerPosition={{ composer: composerRoot, scrollArea: () => pickerScroll, contentKey: [pickerLoading, pickerEntries] }} id="chat-reference-picker" class="reference-picker surface-floating" data-app-floating-surface role="listbox" aria-label={pickerTrigger?.kind === "channel" ? t("chat.organization.referenceChannel") : t("chat.organization.referencePeopleAndResources")}>
-        <div bind:this={pickerScroll} class="reference-picker-scroll surface-floating-body" use:scrollEdgeFadeAction>
-          {#if pickerLoading}<Loading layout="rows" rows={3} />
-          {:else if pickerEntries.length === 0}<p>{t("chat.organization.noReferenceResults")}</p>
-          {:else}
-            {#each pickerGroups as group, groupIndex (group.label)}
-              <div role="group" aria-labelledby={`chat-reference-group-${groupIndex}`}>
-                <div id={`chat-reference-group-${groupIndex}`} class="picker-group menu-label">{group.label}</div>
-                {#each group.entries as entry (entry.candidate.key)}
-                  {@const candidate = entry.candidate}
-                  {@const index = entry.index}
-                  <button id={`chat-reference-${index}`} data-reference-index={index} type="button" role="option" tabindex="-1" aria-selected={pickerIndex === index} disabled={candidateIsDisabled(candidate)} class="menu-item" data-highlighted={pickerIndex === index ? "" : undefined} onpointerenter={() => { if (!candidateIsDisabled(candidate)) pickerIndex = index; }} onpointerdown={(event) => event.preventDefault()} onclick={() => void chooseReferenceCandidate(candidate)}>
-                    <span class="candidate-icon">
-                      {#if candidate.kind === "participant"}<ChatParticipantAvatar participant={candidate.participant} teammate={candidate.teammate ?? undefined} size={28} />
-                      {:else if candidate.kind === "channel"}<Hash size={15} />
-                      {:else if candidate.kind === "workingFolder"}<Folder size={15} />
-                      {:else if candidate.kind === "workspacePath"}{#if candidate.path.kind === "directory"}<Folder size={15} />{:else}<File size={15} />{/if}
-                      {:else}<GitBranch size={15} />{/if}
-                    </span>
-                    <span class="candidate-copy"><strong>{candidate.label}</strong><small>{candidate.description}</small></span>
-                    {#if candidate.kind === "participant" && candidate.needsMembership}<Plus size={13} />{/if}
-                  </button>
-                {/each}
-              </div>
+    <ChatComposerFrame
+      bind:editorRoot
+      editor={() => editorController ?? undefined}
+      disabled={false}
+      label={placeholder}
+      {placeholder}
+      role="combobox"
+      menuOpen={pickerOpen || promptMenuKind !== null}
+      menuId={pickerOpen ? "chat-reference-picker" : "chat-composer-menu"}
+      activeOptionId={pickerOpen
+        ? pickerEntries[pickerIndex] ? `chat-reference-${pickerIndex}` : undefined
+        : promptMenuEntries[promptMenuIndex] ? `chat-composer-option-${promptMenuIndex}` : undefined}
+      {showMeter}
+      meter={meterRead.meter}
+      compactionReported={interactionState?.automaticCompactionReported ?? false}
+      {meterNote}
+      onKeydown={handleKeydown}
+      onFiles={(files) => { void importFiles(files); }}
+      onLargeText={(text) => { void importLargeText(text); }}
+      onPaste={handlePaste}
+      onCopy={handleCopy}
+      onCompositionChange={(value) => { composing = value; }}
+    >
+      {#snippet above()}
+        {#if statusPanelOpen}
+          <ChatComposerInfoPanel panel="status" status={teammateComposerStatus()} mcpStatus={null} loading={false} error={null} onClose={() => { statusPanelOpen = false; }} />
+        {/if}
+        {#if attachmentIds.length > 0}
+          <div class="context-chips">
+            {#each attachmentIds as id (id)}
+              {@const chipLabel = attachmentChipLabel(id)}
+              <button type="button" aria-label={t("chat.composer.removeAttachment", chipLabel)} onclick={() => { attachmentIds = attachmentIds.filter((entry) => entry !== id); persist(); }}>{#if attachmentReads[id]?.kind === "text_snippet"}<FileText size={12} />{:else}<Image size={12} />{/if}<span class="chip-label">{chipLabel}</span><span aria-hidden="true">×</span></button>
             {/each}
-          {/if}
-        </div>
-      </div>
-    {/if}
-
-    {#if attachmentIds.length > 0}
-      <div class="context-chips">
-        {#each attachmentIds as id, index (id)}<button type="button" onclick={() => { attachmentIds = attachmentIds.filter((entry) => entry !== id); persist(); }}><Image size={12} />{t("chat.organization.imageNumber", index + 1)}<span>×</span></button>{/each}
-      </div>
-    {/if}
-
-    <div class="composer-footer">
-      <div class="composer-tools">
-        {#if localExecutionAvailable}<button type="button" class="tool-button" aria-label={t("chat.composer.attachImages")} title={t("chat.composer.attachImages")} onclick={() => void pickImages()}><Plus size={16} /></button>{/if}
+          </div>
+        {/if}
+        {#if mentionSuggestion}
+          {@const suggestion = mentionSuggestion}
+          <div class="mention-suggestion" data-chat-mention-suggestion>
+            <button type="button" class="mention-suggestion-action" onpointerdown={(event) => event.preventDefault()} onclick={() => applyMentionSuggestion(suggestion)}><AtSign size={12} />{t("chat.composer.mentionSuggestion.action", suggestion.displayName)}</button>
+            <button type="button" class="mention-suggestion-dismiss" aria-label={t("chat.composer.mentionSuggestion.dismiss")} onclick={() => { dismissedMentionSuggestions = [...dismissedMentionSuggestions, suggestion.participantId]; }}><X size={11} /></button>
+          </div>
+        {/if}
+      {/snippet}
+      {#snippet menu()}
+        {#if pickerOpen}
+          <div bind:this={pickerRoot} use:chatReferencePickerPosition={{ composer: composerRoot, scrollArea: () => pickerScroll, contentKey: [pickerLoading, pickerEntries] }} id="chat-reference-picker" class="reference-picker surface-floating" data-app-floating-surface role="listbox" aria-label={pickerTrigger?.kind === "channel" ? t("chat.organization.referenceChannel") : t("chat.organization.referencePeopleAndResources")}>
+            <div bind:this={pickerScroll} class="reference-picker-scroll surface-floating-body" use:scrollEdgeFadeAction>
+              {#if pickerLoading}<Loading layout="rows" rows={3} />
+              {:else if pickerEntries.length === 0}<p>{t("chat.organization.noReferenceResults")}</p>
+              {:else}
+                {#each pickerGroups as group, groupIndex (group.label)}
+                  <div role="group" aria-labelledby={`chat-reference-group-${groupIndex}`}>
+                    <div id={`chat-reference-group-${groupIndex}`} class="picker-group menu-label">{group.label}</div>
+                    {#each group.entries as entry (entry.candidate.key)}
+                      {@const candidate = entry.candidate}
+                      {@const index = entry.index}
+                      <button id={`chat-reference-${index}`} data-reference-index={index} type="button" role="option" tabindex="-1" aria-selected={pickerIndex === index} disabled={candidateIsDisabled(candidate)} class="menu-item" data-highlighted={pickerIndex === index ? "" : undefined} onpointerenter={() => { if (!candidateIsDisabled(candidate)) pickerIndex = index; }} onpointerdown={(event) => event.preventDefault()} onclick={() => void chooseReferenceCandidate(candidate)}>
+                        <span class="candidate-icon">
+                          {#if candidate.kind === "participant"}<ChatParticipantAvatar participant={candidate.participant} teammate={candidate.teammate ?? undefined} size={28} />
+                          {:else if candidate.kind === "channel"}<Hash size={15} />
+                          {:else if candidate.kind === "workingFolder"}<Folder size={15} />
+                          {:else if candidate.kind === "workspacePath"}{#if candidate.path.kind === "directory"}<Folder size={15} />{:else}<FileIcon size={15} />{/if}
+                          {:else}<GitBranch size={15} />{/if}
+                        </span>
+                        <span class="candidate-copy"><strong>{candidate.label}</strong><small>{candidate.description}</small></span>
+                        {#if candidate.kind === "participant" && candidate.needsMembership}<Plus size={13} />{/if}
+                      </button>
+                    {/each}
+                  </div>
+                {/each}
+              {/if}
+            </div>
+          </div>
+        {:else if promptMenuKind}
+          <ChatComposerSuggestionMenu bind:element={promptMenuRoot} bind:includeIgnored={promptMenuIncludeIgnored} kind={promptMenuKind} entries={promptMenuEntries} selectedIndex={promptMenuIndex} loading={promptMenuLoading} hasMore={false} onRefreshMentions={() => undefined} onChoose={(index) => { void choosePromptEntry(index); }} onLoadMore={() => undefined} />
+        {/if}
+      {/snippet}
+      {#snippet leading()}
+        {#if localExecutionAvailable}<button type="button" class="tool-button" disabled={editLockReason !== null} aria-label={t("chat.composer.attachImages")} title={editLockReason ?? t("chat.composer.attachImages")} onclick={() => void pickImages()}><Plus size={16} /></button>{/if}
         <button type="button" class="tool-button" class:active={isBoldActive} aria-label={t("chat.organization.bold")} aria-pressed={isBoldActive} onclick={() => editorController?.toggleMark("bold")}><Bold size={15} /></button>
         <button type="button" class="tool-button" class:active={isItalicActive} aria-label={t("chat.organization.italic")} aria-pressed={isItalicActive} onclick={() => editorController?.toggleMark("italic")}><Italic size={15} /></button>
         <div bind:this={scheduleMenuAnchor} class="menu-anchor">
-          <button type="button" class="tool-button" class:active={scheduleMenuOpen || Boolean(scheduledFor)} aria-label={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} aria-haspopup="dialog" aria-expanded={scheduleMenuOpen} aria-pressed={Boolean(scheduledFor)} title={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} onpointerenter={() => { void loadScheduleMenu(); }} onfocus={() => { void loadScheduleMenu(); }} onclick={toggleScheduleMenu}><Clock3 size={15} /></button>
+          <button type="button" class="tool-button" class:active={scheduleMenuOpen || Boolean(scheduledFor)} aria-label={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} aria-haspopup="dialog" aria-expanded={scheduleMenuOpen} disabled={editLockReason !== null} aria-pressed={Boolean(scheduledFor)} title={editLockReason ?? (scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage"))} onpointerenter={() => { void loadScheduleMenu(); }} onfocus={() => { void loadScheduleMenu(); }} onclick={toggleScheduleMenu}><Clock3 size={15} /></button>
           {#if scheduleMenuOpen}
             {#if ScheduleMenu}
               {@const LoadedScheduleMenu = ScheduleMenu}
@@ -1534,23 +2139,40 @@
             {:else}<div class="composer-menu schedule-loading surface-floating surface-floating-body"><Loading layout="fill" /></div>{/if}
           {/if}
         </div>
-        {#if threadComposer}<button type="button" class="tool-button" class:active={alsoSendToChannel} aria-label={t("chat.organization.shareReplyToChannel", channelName)} aria-pressed={alsoSendToChannel} title={t("chat.organization.shareReplyToChannel", channelName)} onclick={() => { alsoSendToChannel = !alsoSendToChannel; }}><MessageSquareShare size={15} /></button>{/if}
-      </div>
-      <button type="button" class="send-button" data-action={activeAssignment ? "stop" : "send"} disabled={sending || (!activeAssignment && !hasMessageContent)} aria-disabled={!activeAssignment && Boolean(validation || disclosureBlocker || providerBlockers.length || messageTooLarge)} aria-label={activeAssignment ? t("chat.organization.stopWorkShortcut", stopShortcut) : scheduledFor ? t("chat.organization.scheduleMessage") : t("chat.composer.send")} aria-busy={stopping || undefined} title={activeAssignment ? t("chat.organization.stopWorkShortcut", stopShortcut) : undefined} onclick={performPrimaryAction}>{#if activeAssignment}<Square size={13} />{:else}<ArrowUp size={16} />{/if}</button>
-    </div>
-
-    {#if validation || disclosureBlocker || providerBlockers.length || messageTooLarge}
-      <div bind:this={blockerElement} class="composer-blocker" tabindex="-1" role="alert">
-        <CircleAlert size={13} />
-        <div>
-          {#if validation}<p>{validation}</p>{/if}
-          {#if disclosureBlocker}<p>{disclosureBlocker.message}</p><span><button type="button" onclick={removeBlockedReference}>{t("chat.organization.removeReference")}</button><button type="button" onclick={manageBlockedSourceAccess}>{t("chat.organization.manageSourceAccess")}</button></span>{/if}
-          {#each providerBlockers as blocker}<p>{blocker}</p>{/each}
-          {#if messageTooLarge}<p>{t("chat.organization.messageTooLarge")}</p>{/if}
-        </div>
-      </div>
-    {/if}
-    {#if error}<Notice class="composer-error" message={error} />{/if}
+        {#if threadComposer}<button type="button" class="tool-button" class:active={alsoSendToChannel} aria-label={t("chat.organization.shareReplyToChannel", channelName)} disabled={editLockReason !== null} aria-pressed={alsoSendToChannel} title={editLockReason ?? t("chat.organization.shareReplyToChannel", channelName)} onclick={() => { alsoSendToChannel = !alsoSendToChannel; }}><MessageSquareShare size={15} /></button>{/if}
+      {/snippet}
+      {#snippet trailing()}
+        {#if targetTeammate?.latestPolicy}
+          <ChatModelOverrideControl provider={targetProvider} policy={targetTeammate.latestPolicy} modelId={modelOverrideId} disabledReason={modelOverrideDisabledReason} onChange={(modelId) => { modelOverrideId = modelId; }} />
+        {/if}
+        {#if followupRouting && !scheduledFor && !editingInput}
+          <span class="routing-select" data-chat-followup-routing>
+            <Select inline appearance="quiet" class="routing-select-control" ariaLabel={t("chat.composer.routing.label")} value={followupRouting} options={routingOptions} onChange={(value) => { if (value === "steer" || value === "queue") chat.setOrganizationalFollowupRouting(destination, value); }} />
+          </span>
+        {/if}
+      {/snippet}
+      {#snippet actions()}
+        {#if activeAssignment}
+          <button type="button" class="stop-button" data-action="stop" disabled={stopping} aria-label={t("chat.organization.stopWorkShortcut", stopShortcut)} aria-busy={stopping || undefined} title={t("chat.organization.stopWorkShortcut", stopShortcut)} onclick={() => { void stopAssignment(); }}><Square size={13} /></button>
+        {/if}
+        <button type="button" class="send-button" data-action={editingInput ? "save" : "send"} disabled={sending || inputBusyId !== null || !hasMessageContent} aria-disabled={sendBlocked} aria-label={editingInput ? t("chat.composer.pendingInputs.save") : scheduledFor ? t("chat.organization.scheduleMessage") : t("chat.composer.send")} onclick={() => { void post(); }}><ArrowUp size={16} /></button>
+      {/snippet}
+      {#snippet below()}
+        {#if validation || disclosureBlocker || providerBlockers.length || messageTooLarge}
+          <div bind:this={blockerElement} class="composer-blocker" tabindex="-1" role="alert">
+            <CircleAlert size={13} />
+            <div>
+              {#if validation}<p>{validation}</p>{/if}
+              {#if disclosureBlocker}<p>{disclosureBlocker.message}</p><span><button type="button" onclick={removeBlockedReference}>{t("chat.organization.removeReference")}</button><button type="button" onclick={manageBlockedSourceAccess}>{t("chat.organization.manageSourceAccess")}</button></span>{/if}
+              {#each providerBlockers as blocker}<p>{blocker}</p>{/each}
+              {#if messageTooLarge}<p>{t("chat.organization.messageTooLarge")}</p>{/if}
+            </div>
+          </div>
+        {/if}
+        {#if error}<Notice class="composer-error" message={error} />{/if}
+        {#if routingNotice && !error}<Notice class="composer-error" role="status" tone="neutral" message={routingNotice} copy={false} />{/if}
+      {/snippet}
+    </ChatComposerFrame>
   </div>
 </div>
 
@@ -1568,11 +2190,7 @@
   .assignment-preview strong { color:var(--foreground); font-size:calc(0.68rem * var(--type-scale)); }.assignment-preview span { font-size:calc(0.6rem * var(--type-scale)); }
   .assignment-preview :global(.assignment-target-select) { width:auto; max-width:12rem; }
   .approval-pill { border-radius:999px; background:var(--accent); padding:0.18rem 0.4rem; color:var(--foreground); }
-  .organizational-composer { position:relative; width:100%; border:1px solid color-mix(in srgb,var(--border) 88%,transparent); border-radius:1.3rem; background:var(--card); box-shadow:0 8px 22px -18px rgb(0 0 0 / 0.24),0 1px 4px -3px rgb(0 0 0 / 0.16); }
-  .editor-frame { max-height:8.2rem; overflow-y:auto; padding:1rem 1.25rem 0.4rem; }
-  .organizational-editor { position:relative; min-height:2.625rem; outline:none; white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--chat-conversation-font-size,calc(0.875rem * var(--type-scale))); line-height:var(--chat-conversation-line-height,calc(1.3125rem * var(--type-scale))); }
-  .organizational-editor.empty::before { position:absolute; inset-inline:0; pointer-events:none; content:attr(data-placeholder); color:color-mix(in srgb,var(--muted-foreground) 52%,transparent); }
-  .organizational-editor :global(.chat-reference-atom) { display:inline-block; border-radius:0.3rem; background:color-mix(in srgb,var(--primary) 13%,transparent); padding-inline:0.12rem; color:color-mix(in srgb,var(--primary) 78%,var(--foreground)); box-decoration-break:clone; cursor:default; user-select:all; }
+  .organizational-composer { --composer-button-size:1.9rem; position:relative; width:100%; }
   .reference-picker { z-index:100; display:flex; flex-direction:column; overflow:hidden; }
   .reference-picker-scroll { min-height:0; flex:1 1 auto; overflow-y:auto; }
   .reference-picker-scroll > p { padding:0.5rem; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
@@ -1580,16 +2198,17 @@
   .candidate-icon { display:grid; width:2rem; flex:0 0 auto; place-items:center; color:var(--muted-foreground); }
   .candidate-copy { display:grid; min-width:0; flex:1 1 0%; }
   .reference-picker strong,.reference-picker small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.reference-picker strong { font-weight:500; }.reference-picker small { color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
-  .context-chips { display:flex; flex-wrap:wrap; gap:0.3rem; padding:0 0.75rem 0.35rem; }.context-chips button { display:flex; max-width:14rem; align-items:center; gap:0.25rem; border-radius:999px; background:var(--accent); padding:0.22rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); }.context-chips button span { color:var(--muted-foreground); }
-  .composer-footer { --composer-button-size:1.9rem; display:flex; min-height:2.6rem; align-items:center; justify-content:space-between; gap:0.5rem; padding:0 0.75rem 0.5rem; }.composer-tools { display:flex; align-items:center; gap:0.3rem; }
-  .tool-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); place-items:center; border-radius:0.5rem; color:var(--muted-foreground); }.tool-button:hover,.tool-button.active { background:var(--accent); color:var(--foreground); }
+  .context-chips { display:flex; flex-wrap:wrap; gap:0.3rem; padding:0.65rem 0.5rem 0; }.context-chips button { display:flex; max-width:14rem; align-items:center; gap:0.25rem; border-radius:999px; background:var(--accent); padding:0.22rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); }.context-chips button span { color:var(--muted-foreground); }.context-chips .chip-label { overflow:hidden; color:inherit; text-overflow:ellipsis; white-space:nowrap; }
+  .mention-suggestion { display:flex; width:fit-content; align-items:center; gap:0.1rem; margin-top:0.45rem; border-radius:999px; background:color-mix(in srgb,var(--primary) 10%,transparent); padding:0.1rem 0.15rem 0.1rem 0.45rem; color:color-mix(in srgb,var(--primary) 78%,var(--foreground)); font-size:calc(0.68rem * var(--type-scale)); }.mention-suggestion-action { display:flex; align-items:center; gap:0.25rem; }.mention-suggestion-dismiss { display:grid; width:1.25rem; height:1.25rem; place-items:center; border-radius:999px; color:var(--muted-foreground); }.mention-suggestion-dismiss:hover { background:var(--accent); color:var(--foreground); }
+  .tool-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); place-items:center; border-radius:0.5rem; color:var(--muted-foreground); }.tool-button:hover:not(:disabled),.tool-button.active { background:var(--accent); color:var(--foreground); }.tool-button:disabled { opacity:0.45; }
   .send-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); flex:0 0 auto; place-items:center; border-radius:999px; background:color-mix(in srgb,var(--primary) 92%,transparent); color:var(--primary-foreground); box-shadow:0 2px 7px color-mix(in srgb,var(--primary) 22%,transparent); transition:transform 120ms ease,filter 120ms ease; }.send-button:hover:not(:disabled) { filter:brightness(1.04); transform:scale(1.04); }.send-button:disabled,.send-button[aria-disabled="true"] { opacity:0.45; }
+  .stop-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); flex:0 0 auto; place-items:center; border-radius:999px; background:var(--accent); color:var(--foreground); }.stop-button:hover:not(:disabled) { background:color-mix(in srgb,var(--destructive) 14%,var(--accent)); color:var(--destructive); }.stop-button:disabled { opacity:0.45; }
+  .routing-select { display:inline-flex; min-width:0; }.routing-select :global(.routing-select-control) { width:auto; max-width:8rem; }
   .composer-menu { position:absolute; z-index:110; max-width:calc(100vw - 1rem); }.schedule-loading { bottom:calc(100% + 0.35rem); left:0; }.schedule-loading.align-right { right:0; left:auto; }
   .composer-blocker { display:flex; gap:0.45rem; margin:0 0.65rem 0.5rem; border-radius:0.5rem; background:color-mix(in srgb,var(--destructive) 8%,transparent); padding:0.45rem 0.55rem; color:var(--destructive); outline:none; }.composer-blocker:focus-visible { outline:2px solid var(--ring); }.composer-blocker > div { display:grid; gap:0.2rem; }.composer-blocker p { font-size:calc(0.68rem * var(--type-scale)); }.composer-blocker span { display:flex; flex-wrap:wrap; gap:0.25rem; }.composer-blocker button { min-height:1.75rem; border-radius:0.35rem; padding:0.2rem 0.4rem; font-size:calc(0.62rem * var(--type-scale)); font-weight:600; }.composer-blocker button:hover { background:color-mix(in srgb,var(--destructive) 10%,transparent); }
-  .composer-stack :global(.composer-error) { padding:0 0.75rem 0.5rem; font-size:calc(0.7rem * var(--type-scale)); }
+  .composer-stack :global(.composer-error) { padding:0 0.5rem 0.5rem; font-size:calc(0.7rem * var(--type-scale)); }
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
-  @media (max-width:42rem) { .assignment-preview { grid-template-columns:auto minmax(0,1fr); }.assignment-preview :global(.assignment-target-select),.approval-pill { grid-column:2; }.composer-tools { gap:0.05rem; } }
-  @media (pointer:coarse) { .tool-button,.send-button { min-width:2.75rem; min-height:2.75rem; } }
+  @media (max-width:42rem) { .assignment-preview { grid-template-columns:auto minmax(0,1fr); }.assignment-preview :global(.assignment-target-select),.approval-pill { grid-column:2; }}
+  @media (pointer:coarse) { .tool-button,.send-button,.stop-button { min-width:2.75rem; min-height:2.75rem; } }
   @media (prefers-reduced-motion:reduce) { .send-button { transition:none; } }
-  @media (forced-colors:active) { .organizational-composer { border:1px solid CanvasText; } }
 </style>

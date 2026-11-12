@@ -3,6 +3,9 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
+  ChatAssignmentInputRead,
+  ChatFollowupRouting,
+  ChatMessageReference,
   ChatParticipantRead,
   ChatReplyThreadPageRead,
   PostChatMessageResult,
@@ -10,6 +13,7 @@ import type {
 import * as chatApi from "$lib/api/chat";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatMessageComposer from "./ChatMessageComposer.svelte";
+import { openSlashMenu } from "./composer-test-store";
 
 const teammate: ChatParticipantRead = {
   id: "participant:atlas",
@@ -63,6 +67,7 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       updatedAt: timestamp,
       review: null,
       localAcceptance: null,
+      latestRunProviderThreadId: null,
     },
     agentRuns: [],
     previousCursor: null,
@@ -136,31 +141,332 @@ describe("ChatMessageComposer", () => {
     });
   });
 
-  it("keeps the primary action bound to active work cancellation", async () => {
-    const page = workingReplyThread();
+  /** A post result for a reply that became an input of active work. */
+  function routedResult(page: ChatReplyThreadPageRead, routedAs: ChatFollowupRouting | null): PostChatMessageResult {
+    return {
+      message: { ...page.rootMessage, itemId: "item:reply", replyThreadId: page.thread.id },
+      replyThreadId: page.thread.id,
+      assignment: page.assignment,
+      assignmentInputQueued: routedAs !== null,
+      routedAs,
+    };
+  }
+
+  function waitingInput(overrides: Partial<ChatAssignmentInputRead> = {}): ChatAssignmentInputRead {
+    return {
+      inputId: "input:1",
+      messageItemId: "item:reply",
+      ordinal: 1,
+      routingKind: "queued_continuation",
+      deliveryState: "pending",
+      deliveredAt: null,
+      deliveredRevisionId: null,
+      currentRevisionId: "revision:reply",
+      preview: "Use the staging bucket",
+      previewTruncated: false,
+      authorParticipantId: null,
+      ...overrides,
+    };
+  }
+
+  /** Mounts the reply composer of a thread whose work is running, with a unique draft. */
+  function mountActiveWork(page: ChatReplyThreadPageRead = workingReplyThread()): HTMLDivElement {
     chat.replyThread = page;
     vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
-    const cancel = vi.spyOn(chat, "cancelAssignment").mockResolvedValue();
-    const post = vi.spyOn(chat, "postOrganizationalMessage").mockResolvedValue(
-      undefined as unknown as PostChatMessageResult,
-    );
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatMessageComposer, {
       target,
       props: {
-        destination: `reply-thread:${page.thread.id}`,
+        destination: `reply-thread:${crypto.randomUUID()}`,
         placeholder: "Reply",
         threadComposer: true,
       },
     });
+    return target;
+  }
 
-    const primary = target.querySelector<HTMLButtonElement>('.send-button[data-action="stop"]');
-    expect(primary?.disabled).toBe(false);
-    primary?.click();
+  async function typeReply(root: HTMLElement, text: string): Promise<void> {
+    const editor = root.querySelector<HTMLDivElement>("[data-chat-composer]");
+    const line = editor?.querySelector<HTMLElement>("[data-chat-composer-line]");
+    if (!editor || !line) throw new Error("Expected a rich composer line");
+    line.textContent = text;
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    await tick();
+  }
 
+  it("stops active work from its own control and keeps Send for replies", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
+    const page = workingReplyThread();
+    const cancel = vi.spyOn(chat, "cancelAssignment").mockResolvedValue();
+    const post = vi.spyOn(chat, "postOrganizationalMessage").mockResolvedValue(routedResult(page, "steer"));
+    const root = mountActiveWork(page);
+    await tick();
+
+    root.querySelector<HTMLButtonElement>('.stop-button[data-action="stop"]')?.click();
     await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith(page.assignment?.id));
     expect(post).not.toHaveBeenCalled();
+
+    await typeReply(root, "Use the staging bucket");
+    const send = root.querySelector<HTMLButtonElement>('.send-button[data-action="send"]');
+    expect(send?.disabled).toBe(false);
+    send?.click();
+    await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
+    expect(post.mock.calls[0]?.[1]).toMatchObject({ followupRouting: "steer" });
+    expect(post.mock.calls[0]?.[1]).not.toHaveProperty("modelOverride");
+  });
+
+  it("queues a reply when the user chose Queue and explains a steer the work queued", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
+    const page = workingReplyThread();
+    const post = vi.spyOn(chat, "postOrganizationalMessage").mockResolvedValue(routedResult(page, "queue"));
+    const root = mountActiveWork(page);
+    await tick();
+
+    await typeReply(root, "Then update the docs");
+    root.querySelector<HTMLButtonElement>(".send-button")?.click();
+    await vi.waitFor(() => expect(root.textContent).toContain("Queued, because the teammate was not in the middle of a turn"));
+    expect(post.mock.calls[0]?.[1]).toMatchObject({ followupRouting: "steer" });
+
+    const destination = post.mock.calls[0]?.[0];
+    if (!destination) throw new Error("The post named no destination");
+    chat.setOrganizationalFollowupRouting(destination, "queue");
+    await typeReply(root, "And the changelog");
+    root.querySelector<HTMLButtonElement>(".send-button")?.click();
+    await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    expect(post.mock.calls[1]?.[1]).toMatchObject({ followupRouting: "queue" });
+    expect(root.textContent).not.toContain("Queued, because the teammate");
+  });
+
+  it("disables the model choice while the thread's work is active", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
+    const initialTeammates = chat.teammates;
+    chat.teammates = [{
+      participant: teammate,
+      role: "Coding teammate",
+      instructions: "",
+      configurationState: "healthy",
+      latestPolicy: {
+        id: "policy:atlas:1",
+        teammateId: teammate.id,
+        revision: 1,
+        providerInstanceId: "codex-local",
+        safetyMode: "ask_for_approval",
+        providerManagedModel: false,
+        modelId: "gpt-5.6-terra",
+        modelOptions: [],
+        effort: null,
+        speed: null,
+        providerOptions: { schemaVersion: 1, value: {} },
+        createdAt: "2026-08-16T12:00:00.000Z",
+      },
+      channelCount: 1,
+      activeAssignmentCount: 1,
+    }];
+    try {
+      const root = mountActiveWork();
+      await tick();
+
+      const control = root.querySelector<HTMLElement>("[data-chat-model-override]");
+      expect(control?.getAttribute("title")).toBe("Stop the current work to choose another model");
+      expect(control?.querySelector("button")?.disabled).toBe(true);
+    } finally {
+      chat.teammates = initialTeammates;
+    }
+  });
+
+  it("edits a waiting reply in the composer and restores the draft after saving", async () => {
+    const page = workingReplyThread();
+    const reply = { ...page.rootMessage, itemId: "item:reply", replyThreadId: page.thread.id, normalizedMarkdown: "Use the staging bucket", richContent: { schemaVersion: 1, value: {} } };
+    const inputs = vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput()]);
+    const edit = vi.spyOn(chatApi, "editChatAssignmentInput").mockResolvedValue(waitingInput({ currentRevisionId: "revision:edited" }));
+    vi.spyOn(chat, "loadReplyThread").mockResolvedValue();
+    const post = vi.spyOn(chat, "postOrganizationalMessage");
+    const root = mountActiveWork({ ...page, replies: [reply] });
+    await tick();
+    await typeReply(root, "My unsent draft");
+
+    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="edit"]')).not.toBeNull());
+    root.querySelector<HTMLButtonElement>('[data-pending-action="edit"]')?.click();
+    await tick();
+    const editor = root.querySelector<HTMLDivElement>("[data-chat-composer]");
+    expect(editor?.textContent).toBe("Use the staging bucket");
+    expect(root.querySelector('.send-button[data-action="save"]')).not.toBeNull();
+
+    await typeReply(root, "Use the production bucket");
+    root.querySelector<HTMLButtonElement>('[data-pending-action="save"]')?.click();
+    await vi.waitFor(() => expect(edit).toHaveBeenCalledOnce());
+    expect(edit.mock.calls[0]?.[0]).toBe("input:1");
+    expect(edit.mock.calls[0]?.[1].normalizedMarkdown).toBe("Use the production bucket");
+    await vi.waitFor(() => expect(editor?.textContent).toBe("My unsent draft"));
+    expect(post).not.toHaveBeenCalled();
+    expect(inputs.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("keeps a waiting reply edit to its text so no attachment or reference is dropped on save", async () => {
+    const page = workingReplyThread();
+    const mention: ChatMessageReference = {
+      kind: "participant",
+      participantId: teammate.id,
+      participantKind: "ai_teammate",
+      metadata: { referenceId: "reference:atlas", labelSnapshot: "Atlas", startOffset: 0, endOffset: 6, plainTextProjection: "@Atlas" },
+    };
+    const reply = { ...page.rootMessage, itemId: "item:reply", replyThreadId: page.thread.id, normalizedMarkdown: "@Atlas use staging", references: [mention] };
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput()]);
+    const pick = vi.spyOn(chatApi, "pickChatImages").mockResolvedValue([]);
+    const edit = vi.spyOn(chatApi, "editChatAssignmentInput").mockResolvedValue(waitingInput({ currentRevisionId: "revision:edited" }));
+    vi.spyOn(chat, "loadReplyThread").mockResolvedValue();
+    const root = mountActiveWork({ ...page, replies: [reply] });
+
+    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="edit"]')).not.toBeNull());
+    const imageTool = () => root.querySelector<HTMLButtonElement>('button[aria-label="Attach images"]');
+    expect(imageTool()?.disabled).toBe(false);
+    root.querySelector<HTMLButtonElement>('[data-pending-action="edit"]')?.click();
+    await tick();
+
+    expect(root.querySelector(".chat-reference-atom")).toBeNull();
+    expect(imageTool()?.disabled).toBe(true);
+    expect(imageTool()?.title).toBe("Only the text of a waiting reply can be edited");
+    expect(root.querySelector<HTMLButtonElement>('button[aria-label="Schedule message"]')?.disabled).toBe(true);
+    expect(root.querySelector("[data-chat-followup-routing]")).toBeNull();
+    imageTool()?.click();
+    await typeReply(root, "@At");
+    await tick();
+    expect(root.querySelector("#chat-reference-picker")).toBeNull();
+    expect(pick).not.toHaveBeenCalled();
+
+    await typeReply(root, "Atlas use production");
+    root.querySelector<HTMLButtonElement>('[data-pending-action="save"]')?.click();
+    await vi.waitFor(() => expect(edit).toHaveBeenCalledOnce());
+    expect(edit.mock.calls[0]?.[1].normalizedMarkdown).toBe("Atlas use production");
+    await vi.waitFor(() => expect(imageTool()?.disabled).toBe(false));
+  });
+
+  it("summarizes the running work's latest plan above the composer until every step is done", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
+    const page = workingReplyThread();
+    const planReply = (itemId: string, statuses: string[]) => ({
+      ...page.rootMessage,
+      itemId,
+      replyThreadId: page.thread.id,
+      richContent: { schemaVersion: 1, value: {
+        type: "agent_update",
+        updateKind: "plan",
+        assignmentId: "assignment:working",
+        agentRunId: "run:1",
+        payload: { steps: statuses.map((status, index) => ({ id: `step-${index}`, text: `Step ${index + 1}`, status })) },
+      } },
+    });
+    const root = mountActiveWork({ ...page, replies: [planReply("item:plan-1", ["active", "pending", "pending"]), planReply("item:plan-2", ["completed", "active", "pending"])] });
+    await tick();
+
+    const card = root.querySelector("[data-chat-task-progress]");
+    expect(card?.textContent).toContain("Tasks 1 of 3");
+    expect(card?.querySelector("[data-chat-task-active-step]")?.textContent).toBe("Step 2");
+    expect(card?.querySelectorAll(".task-progress-segment")).toHaveLength(3);
+    card?.querySelector<HTMLButtonElement>("button[aria-expanded]")?.click();
+    await tick();
+    expect(card?.querySelector("[data-chat-task-active-step]")).toBeNull();
+
+    chat.replyThread = { ...page, replies: [planReply("item:plan-3", ["completed", "completed", "completed"])] };
+    await tick();
+    expect(root.querySelector("[data-chat-task-progress]")).toBeNull();
+  });
+
+  it("explains a waiting reply that reached the teammate before the edit was saved", async () => {
+    const page = workingReplyThread();
+    const reply = { ...page.rootMessage, itemId: "item:reply", replyThreadId: page.thread.id, normalizedMarkdown: "Use the staging bucket" };
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput()]);
+    vi.spyOn(chatApi, "editChatAssignmentInput").mockRejectedValue({ code: "conflict", message: "This reply was already delivered", recoverable: true, details: { reason: "input_already_delivered" } });
+    vi.spyOn(chat, "loadReplyThread").mockResolvedValue();
+    const root = mountActiveWork({ ...page, replies: [reply] });
+
+    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="edit"]')).not.toBeNull());
+    root.querySelector<HTMLButtonElement>('[data-pending-action="edit"]')?.click();
+    await tick();
+    root.querySelector<HTMLButtonElement>('[data-pending-action="save"]')?.click();
+
+    await vi.waitFor(() => expect(root.textContent).toContain("This reply already reached the teammate"));
+    expect(root.querySelector('.send-button[data-action="send"]')).not.toBeNull();
+  });
+
+  it("offers the teammate commands on a line-start slash and runs the chosen one", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
+    const root = mountActiveWork();
+    const editor = root.querySelector<HTMLDivElement>("[data-chat-composer]");
+    if (!editor) throw new Error("The composer did not render");
+    await openSlashMenu(editor);
+
+    const options = [...root.querySelectorAll<HTMLButtonElement>("#chat-composer-menu [role=option]")];
+    expect(options.map((option) => option.textContent)).toEqual(expect.arrayContaining([
+      expect.stringContaining("Schedule"),
+      expect.stringContaining("Stop work"),
+      expect.stringContaining("Status"),
+    ]));
+    expect(editor.getAttribute("aria-controls")).toBe("chat-composer-menu");
+    options.find((option) => option.textContent?.includes("Status"))?.click();
+
+    await vi.waitFor(() => expect(root.querySelector("#chat-composer-menu")).toBeNull());
+    expect(editor.textContent?.replace(/\u200b/gu, "")).toBe("");
+    expect(root.querySelector(".composer-info-panel")?.getAttribute("aria-label")).toBe("Status");
+  });
+
+  it("cancels a waiting reply and offers no edit before its text is loaded", async () => {
+    const inputs = vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput()]);
+    const cancel = vi.spyOn(chatApi, "cancelChatAssignmentInput").mockResolvedValue(waitingInput({ deliveryState: "ignored" }));
+    vi.spyOn(chat, "loadReplyThread").mockResolvedValue();
+    const root = mountActiveWork();
+
+    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="cancel"]')).not.toBeNull());
+    expect(root.querySelector<HTMLButtonElement>('[data-pending-action="edit"]')?.disabled).toBe(true);
+    expect(root.textContent).toContain("Load this reply in the thread to edit it");
+    inputs.mockResolvedValue([]);
+    root.querySelector<HTMLButtonElement>('[data-pending-action="cancel"]')?.click();
+
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith("input:1"));
+    await vi.waitFor(() => expect(root.querySelector("[data-chat-pending-inputs]")).toBeNull());
+  });
+
+  it("stops the work a reply started instead of editing or cancelling the reply", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput({ routingKind: "follow_up" })]);
+    const cancelInput = vi.spyOn(chatApi, "cancelChatAssignmentInput");
+    const stop = vi.spyOn(chat, "cancelAssignment").mockResolvedValue();
+    const page = workingReplyThread();
+    const root = mountActiveWork(page);
+
+    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="cancel"]')).not.toBeNull());
+    expect(root.querySelector('[data-pending-action="edit"]')).toBeNull();
+    expect(root.textContent).not.toContain("Load this reply in the thread to edit it");
+    root.querySelector<HTMLButtonElement>('[data-pending-action="cancel"]')?.click();
+
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledWith(page.assignment?.id));
+    expect(cancelInput).not.toHaveBeenCalled();
+  });
+
+  it("explains and rereads a waiting reply that started its own work after the list loaded", async () => {
+    const inputs = vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput()]);
+    vi.spyOn(chatApi, "cancelChatAssignmentInput").mockRejectedValue({ code: "conflict", message: "This reply started its own work; stop that work instead", recoverable: true, details: { reason: "input_starts_work" } });
+    vi.spyOn(chat, "loadReplyThread").mockResolvedValue();
+    const root = mountActiveWork();
+
+    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="cancel"]')).not.toBeNull());
+    const loads = inputs.mock.calls.length;
+    root.querySelector<HTMLButtonElement>('[data-pending-action="cancel"]')?.click();
+
+    await vi.waitFor(() => expect(root.textContent).toContain("This reply started its own work, so stop that work to cancel it"));
+    expect(inputs.mock.calls.length).toBeGreaterThan(loads);
+  });
+
+  it("hides a reply that started work which can no longer stop", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput({ routingKind: "follow_up" })]);
+    const page = workingReplyThread();
+    if (!page.assignment) throw new Error("The fixture holds an assignment");
+    const root = mountActiveWork({ ...page, assignment: { ...page.assignment, state: "cancelled" } });
+
+    await tick();
+    await vi.waitFor(() => expect(chatApi.listChatAssignmentInputs).toHaveBeenCalled());
+    await tick();
+    expect(root.querySelector("[data-chat-pending-inputs]")).toBeNull();
   });
 
   function mountWaitingWork(): { notice: HTMLElement; startHere: HTMLButtonElement } {

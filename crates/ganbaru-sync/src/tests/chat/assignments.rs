@@ -2,8 +2,10 @@
 //! scheduled messages with their owned references arrive whole, a crash while sealing or
 //! applying them leaves nothing partial, rerouting an input updates its row in place, a no-op
 //! write captures nothing, concurrent creates of one derived assignment merge, a settle on any
-//! device outranks progress the executing device reports concurrently, and a review travels
-//! whole with the completion it judges while a concurrent cancel outranks it.
+//! device outranks progress the executing device reports concurrently, a review travels
+//! whole with the completion it judges while a concurrent cancel outranks it, a delivery of an
+//! input outranks a concurrent cancel of it, and concurrent creates with model overrides keep
+//! one whole override.
 
 use super::*;
 use crate::manifest::vault::chat::{
@@ -627,5 +629,155 @@ fn chat_simulated_accept_against_follow_up_completion_converges_completed() {
                 assert_eq!(follow_up.as_deref(), Some(ASSIGNMENT), "seed {seed}");
             }
         }
+    });
+}
+
+/// Reply queued on [`ASSIGNMENT`] in the delivery scenarios.
+const QUEUED_REPLY: &str = "item:queued-reply";
+
+/// SQL delivering [`QUEUED_REPLY`] at `at`, naming the revision the run received.
+fn delivery_sql(at: &str) -> String {
+    format!(
+        "UPDATE chat_work_assignment_inputs
+         SET delivery_state = 'delivered', delivered_at = {at},
+             delivered_revision_id = {revision}
+         WHERE id = {input} AND delivery_state = 'pending';",
+        at = quoted(at),
+        revision = quoted(&format!("{QUEUED_REPLY}:0")),
+        input = quoted(&input_id(QUEUED_REPLY)),
+    )
+}
+
+/// SQL cancelling [`QUEUED_REPLY`] while it is pending.
+fn input_cancel_sql() -> String {
+    format!(
+        "UPDATE chat_work_assignment_inputs SET delivery_state = 'ignored'
+         WHERE id = {input} AND delivery_state = 'pending';",
+        input = quoted(&input_id(QUEUED_REPLY)),
+    )
+}
+
+/// [`QUEUED_REPLY`]'s delivery state, delivery time, and delivered revision.
+async fn queued_reply_delivery(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT delivery_state || ' ' || coalesce(delivered_at, '-') || ' '
+                    || coalesce(delivered_revision_id, '-')
+             FROM chat_work_assignment_inputs WHERE message_item_id = 'item:queued-reply'",
+        )
+        .await
+        .expect("the input arrived")
+}
+
+/// The executing device delivers a queued reply while another device cancels it; whatever the
+/// exchange order, every device shows it delivered with the revision the run received, since
+/// the run already read it.
+#[test]
+fn chat_simulated_delivery_against_input_cancel_keeps_the_delivery() {
+    block_on(async {
+        for seed in 0..PROGRESS_SEEDS {
+            let mut rng = Rng(seed ^ 0xde11);
+            let mut replicas = conversation_replicas(3).await;
+            replicas[0]
+                .exec(&format!(
+                    "{}{}{}",
+                    coordination_sql(),
+                    message_sql(
+                        QUEUED_REPLY,
+                        Some(&thread()),
+                        "c003",
+                        "Then update the docs"
+                    ),
+                    input_sql(QUEUED_REPLY, ASSIGNMENT, 2, "queued_continuation"),
+                ))
+                .await;
+            converge(&mut replicas).await;
+            let delivered_at = at(2, rng.below(60));
+            replicas[0].exec(&delivery_sql(&delivered_at)).await;
+            replicas[1 + rng.below(2)].exec(&input_cancel_sql()).await;
+            pull_at_random(&mut replicas, &mut rng).await;
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            for replica in &mut replicas {
+                assert_eq!(
+                    queued_reply_delivery(replica).await,
+                    format!("delivered {delivered_at} {QUEUED_REPLY}:0"),
+                    "seed {seed} replica {}",
+                    replica.index
+                );
+            }
+        }
+    });
+}
+
+/// SQL creating [`ASSIGNMENT`] on `executor` with the model override `model`.
+fn overridden_assignment_sql(executor: &str, model: &str) -> String {
+    format!(
+        "INSERT INTO chat_work_assignments
+            (id, reply_thread_id, teammate_id, triggering_message_item_id, executing_device_id,
+             override_model_selection_schema_version, override_model_selection_data, state,
+             created_at, updated_at)
+         VALUES ({id}, {thread}, {teammate}, {mention}, {executor}, 1, {data}, 'queued',
+                 {created}, {created});",
+        id = quoted(ASSIGNMENT),
+        thread = quoted(&thread()),
+        teammate = quoted(TEAMMATE),
+        mention = quoted(MENTION),
+        executor = quoted(executor),
+        data = quoted(&format!(
+            "{{\"providerManagedModel\":false,\"modelId\":\"{model}\",\"modelOptions\":[]}}"
+        )),
+        created = quoted(CREATED),
+    )
+}
+
+/// Two devices Start one mention concurrently with different model overrides; the created group
+/// is fixed with the request, so every device keeps one whole override from one of the creates,
+/// beside that create's executing device.
+#[test]
+fn chat_concurrent_overridden_starts_keep_one_whole_override() {
+    block_on(async {
+        let mut replicas = conversation_replicas(3).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}",
+                message_sql(ROOT, None, "c001", "Root"),
+                thread_sql(),
+                message_sql(MENTION, Some(&thread()), "c001", "@Reviewer please check"),
+            ))
+            .await;
+        converge(&mut replicas).await;
+
+        for (index, executor, model) in [(0, "device-0", "model-a"), (1, "device-1", "model-b")] {
+            replicas[index]
+                .exec(&overridden_assignment_sql(executor, model))
+                .await;
+        }
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+
+        let mut created = Vec::new();
+        for replica in &mut replicas {
+            created.push(
+                replica
+                    .scalar_text(
+                        "SELECT executing_device_id || ' '
+                                || override_model_selection_schema_version || ' '
+                                || json_extract(override_model_selection_data, '$.modelId')
+                         FROM chat_work_assignments",
+                    )
+                    .await
+                    .expect("the assignment arrived"),
+            );
+        }
+        assert!(
+            ["device-0 1 model-a", "device-1 1 model-b"].contains(&created[0].as_str()),
+            "the override stays with its own create: {}",
+            created[0]
+        );
+        assert!(
+            created.iter().all(|row| *row == created[0]),
+            "every device agrees on the override: {created:?}"
+        );
     });
 }

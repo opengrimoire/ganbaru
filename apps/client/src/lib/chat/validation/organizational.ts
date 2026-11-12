@@ -3,11 +3,14 @@ import {
   CHAT_ACCESS_PROFILE_BUILTIN_KEYS,
   CHAT_AGENT_RUN_ATTEMPT_REASONS,
   CHAT_AGENT_RUN_HANDOFF_REASONS,
+  CHAT_ASSIGNMENT_INPUT_DELIVERY_STATES,
+  CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS,
   CHAT_ASSIGNMENT_REVIEW_OUTCOMES,
   CHAT_ASSIGNMENT_TARGET_BINDING_STATES,
   CHAT_ASSIGNMENT_TARGET_KINDS,
   CHAT_ASSIGNMENT_TARGET_LIFECYCLE_STATES,
   CHAT_FOLDER_CAPABILITIES,
+  CHAT_FOLLOWUP_ROUTINGS,
   CHAT_PARTICIPANT_KINDS,
   CHAT_RUNTIME_APPROVAL_POLICIES,
   CHAT_SCRATCH_CLEANUP_JOB_STATES,
@@ -20,6 +23,7 @@ import {
   CHAT_WORK_ASSIGNMENT_STATES,
   SAFETY_MODES,
   type ChatAgentRunRead,
+  type ChatAssignmentInputRead,
   type ChatAccessProfileRead,
   type ChatAccessProfileImpactPreviewRead,
   type ChatAccessProfileRevision,
@@ -937,6 +941,11 @@ export function parseChatWorkAssignment(
     updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
     review,
     localAcceptance: readNullable(record.localAcceptance, `${label}.localAcceptance`, parseAssignmentAcceptanceOffer),
+    latestRunProviderThreadId: readNullable(
+      record.latestRunProviderThreadId,
+      `${label}.latestRunProviderThreadId`,
+      readIdentifier,
+    ),
   };
 }
 
@@ -990,6 +999,29 @@ export function parseChatWaitingAssignments(
   label = "Chat waiting assignments",
 ): ChatWaitingAssignmentRead[] {
   return readArray(value, label, parseWaitingAssignment);
+}
+
+/** Validates one assignment input read. */
+export function parseChatAssignmentInput(value: unknown, label = "Chat assignment input"): ChatAssignmentInputRead {
+  const record = readRecord(value, label);
+  return {
+    inputId: readIdentifier(record.inputId, `${label}.inputId`),
+    messageItemId: readIdentifier(record.messageItemId, `${label}.messageItemId`),
+    ordinal: readNonNegativeSafeInteger(record.ordinal, `${label}.ordinal`),
+    routingKind: readEnum(record.routingKind, CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS, `${label}.routingKind`),
+    deliveryState: readEnum(record.deliveryState, CHAT_ASSIGNMENT_INPUT_DELIVERY_STATES, `${label}.deliveryState`),
+    deliveredAt: readNullable(record.deliveredAt, `${label}.deliveredAt`, readUtcTimestamp),
+    deliveredRevisionId: readNullable(record.deliveredRevisionId, `${label}.deliveredRevisionId`, readIdentifier),
+    currentRevisionId: readNullable(record.currentRevisionId, `${label}.currentRevisionId`, readIdentifier),
+    preview: readString(record.preview, `${label}.preview`),
+    previewTruncated: readBoolean(record.previewTruncated, `${label}.previewTruncated`),
+    authorParticipantId: readNullable(record.authorParticipantId, `${label}.authorParticipantId`, readIdentifier),
+  };
+}
+
+/** Validates the inputs of one assignment, in delivery order. */
+export function parseChatAssignmentInputs(value: unknown, label = "Chat assignment inputs"): ChatAssignmentInputRead[] {
+  return readArray(value, label, parseChatAssignmentInput);
 }
 
 /** Validates an agent run read, whose handoff reason is set exactly when it started as a handoff. */
@@ -1061,6 +1093,9 @@ export function parsePostChatMessageResult(
     replyThreadId: readNullable(record.replyThreadId, `${label}.replyThreadId`, readIdentifier),
     assignment: readNullable(record.assignment, `${label}.assignment`, parseChatWorkAssignment),
     assignmentInputQueued: readBoolean(record.assignmentInputQueued, `${label}.assignmentInputQueued`),
+    routedAs: readNullable(record.routedAs, `${label}.routedAs`, (entry, path) =>
+      readEnum(entry, CHAT_FOLLOWUP_ROUTINGS, path),
+    ),
   };
 }
 

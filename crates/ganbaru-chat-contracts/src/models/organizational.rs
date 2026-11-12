@@ -1,8 +1,8 @@
 use super::{
-    ChatAccessProfileId, ChatAccessProfileRevisionId, ChatAgentRunId, ChatAttachmentId,
-    ChatChannelId, ChatConversationId, ChatConversationItemId, ChatExecutionEnvironmentId,
-    ChatMessageReferenceId, ChatMessageRevisionId, ChatParticipantId, ChatReplyThreadId,
-    ChatScheduledMessageId, ChatScratchCleanupJobId, ChatScratchGenerationId,
+    ChatAccessProfileId, ChatAccessProfileRevisionId, ChatAgentRunId, ChatAssignmentInputId,
+    ChatAttachmentId, ChatChannelId, ChatConversationId, ChatConversationItemId,
+    ChatExecutionEnvironmentId, ChatMessageReferenceId, ChatMessageRevisionId, ChatParticipantId,
+    ChatReplyThreadId, ChatScheduledMessageId, ChatScratchCleanupJobId, ChatScratchGenerationId,
     ChatScratchPromotionId, ChatScratchScopeId, ChatTeammatePolicyRevisionId, ChatThreadId,
     ChatTurnId, ChatWorkAssignmentId, ModelId, ModelOptionSelection, ProjectWorkingFolderId,
     ProviderInstanceId, UtcTimestamp, VersionedJson,
@@ -943,6 +943,10 @@ pub struct ChatWorkAssignmentRead {
     /// What the reading device would accept by starting this work, present when it waits for a
     /// local action there. Computed on read and never persisted.
     pub local_acceptance: Option<ChatAssignmentAcceptanceOfferRead>,
+    /// Provider thread of the newest run of this reply thread that ran on the reading device, so
+    /// the composer can show its usage; absent when no run of the thread executed here. Computed
+    /// on read from device-local runs and never persisted.
+    pub latest_run_provider_thread_id: Option<ChatThreadId>,
 }
 
 /// One folder a waiting assignment would run in, with the access it would hold there.
@@ -976,6 +980,36 @@ pub struct ChatWaitingAssignmentRead {
     pub reply_thread_id: ChatReplyThreadId,
     pub teammate_display_name: String,
     pub created_at: UtcTimestamp,
+}
+
+/// A reply routed to an assignment after the message that started it, with where its delivery
+/// stands. The preview is the start of the message's current revision.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentInputRead {
+    pub input_id: ChatAssignmentInputId,
+    pub message_item_id: ChatConversationItemId,
+    pub ordinal: u64,
+    /// `steer`, `queued_continuation`, or `follow_up`.
+    pub routing_kind: String,
+    /// `pending`, `delivered`, `failed`, or `ignored`.
+    pub delivery_state: String,
+    pub delivered_at: Option<UtcTimestamp>,
+    /// The message revision the run received, present once the input is delivered.
+    pub delivered_revision_id: Option<ChatMessageRevisionId>,
+    pub current_revision_id: Option<ChatMessageRevisionId>,
+    pub preview: String,
+    /// Whether the message continues past the preview.
+    pub preview_truncated: bool,
+    pub author_participant_id: Option<ChatParticipantId>,
+}
+
+/// New text for a pending assignment input, which replaces its message's current revision.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentInputEditRequest {
+    pub normalized_markdown: String,
+    pub rich_content: VersionedJson,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

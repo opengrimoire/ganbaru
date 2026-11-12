@@ -19,6 +19,7 @@ export type ChatScratchGenerationId = string;
 export type ChatScratchPromotionId = string;
 export type ChatScratchCleanupJobId = string;
 export type ChatWorkAssignmentId = string;
+export type ChatAssignmentInputId = string;
 export type ChatAgentRunId = string;
 export type ChatThreadId = string;
 export type ChatTurnId = string;

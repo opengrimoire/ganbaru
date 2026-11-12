@@ -42,6 +42,7 @@ export function timelineActivitySupportsDisclosure(activity: TimelineActivityRow
     || activity.activityKind === "reasoning_text"
     || activity.activityKind === "reasoning_summary"
     || activity.title === "thread_reverted") return false;
+  if (activity.activityKind === "notice") return activity.detailBytes > 0;
   if (activity.activityKind === "command_execution"
     || activity.activityKind === "command_output"
     || activity.activityKind === "file_change"
@@ -168,7 +169,7 @@ export function projectTimelineReadModel(
       const status = jsonString(data.status);
       const title = jsonString(data.title);
       if (!activityKind || !status || title === null || !isKnownValue(ACTIVITY_STATUSES, status)) continue;
-      const knownKind = activityKind === "channel_session_boundary"
+      const knownKind = activityKind === "channel_session_boundary" || activityKind === "notice"
         ? activityKind
         : isKnownValue(CANONICAL_ITEM_KINDS, activityKind) || isKnownValue(CONTENT_STREAM_KINDS, activityKind)
         ? activityKind

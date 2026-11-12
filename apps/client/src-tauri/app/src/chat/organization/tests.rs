@@ -19,7 +19,9 @@ use ganbaru_chat::coordination::acceptance::scheduled_consent_digest;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
 
+mod model_override;
 mod review;
+mod routing;
 
 #[test]
 fn teammate_effort_accepts_every_catalog_reasoning_level() {
@@ -141,6 +143,8 @@ fn message(markdown: &str) -> PostChatMessageCommand {
         references: Vec::new(),
         execution_target: None,
         also_send_to_channel: false,
+        followup_routing: None,
+        model_override: None,
     }
 }
 
@@ -2166,10 +2170,7 @@ fn restart_rehomes_review_replies_into_one_ordered_follow_up_assignment() {
             inputs[1].get::<String, _>("message_item_id"),
             "item:review-reply-2"
         );
-        assert_eq!(
-            inputs[1].get::<String, _>("routing_kind"),
-            "queued_continuation"
-        );
+        assert_eq!(inputs[1].get::<String, _>("routing_kind"), "steer");
         assert!(
             inputs
                 .iter()
@@ -3428,6 +3429,7 @@ async fn route_review_reply(
         teammate_id: ChatParticipantId::new("participant:review-agent").unwrap(),
         active_assignment: None,
         latest_assignment: None,
+        mentioned: true,
     };
     let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
     let mut transaction = pool.begin().await.unwrap();
@@ -3436,7 +3438,7 @@ async fn route_review_reply(
         &ChatReplyThreadId::new("reply-thread:review").unwrap(),
         &ChatConversationItemId::new("item:review-reply-1").unwrap(),
         Some(&invocation),
-        None,
+        super::workflow::PostRoutingChoices::default(),
         device,
         &now,
     )
@@ -4596,7 +4598,7 @@ fn a_local_post_carries_pending_review_replies_forward() {
             ["item:review-reply-1", "item:review-reply-2"]
         );
         assert!(inputs[1..].iter().all(|input| {
-            input.get::<String, _>("routing_kind") == "queued_continuation"
+            input.get::<String, _>("routing_kind") == "steer"
                 && input.get::<String, _>("delivery_state") == "pending"
         }));
     });
@@ -6002,4 +6004,25 @@ fn start_creates_the_assignment_of_an_unrouted_mention_on_this_device() {
         .unwrap_err();
         assert_eq!(again.code, ChatErrorCode::Conflict);
     });
+}
+
+#[tokio::test]
+async fn an_assignment_read_names_the_newest_local_run_thread_and_none_without_local_runs() {
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    let assignment_id = ChatWorkAssignmentId::new("assignment:folders").unwrap();
+
+    let read = read_assignment(&pool, &assignment_id).await.unwrap();
+    assert_eq!(
+        read.latest_run_provider_thread_id
+            .as_ref()
+            .map(ChatThreadId::as_str),
+        Some("thread-1")
+    );
+
+    sqlx::query("DELETE FROM chat_agent_runs")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let elsewhere = read_assignment(&pool, &assignment_id).await.unwrap();
+    assert_eq!(elsewhere.latest_run_provider_thread_id, None);
 }

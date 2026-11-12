@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatPendingRequestRead, ChatUserInputDraftRead, JsonValue, UserInputAnswer, VersionedJson } from "$lib/chat/contracts";
+import type { ChatAttachmentRead, ChatPendingRequestRead, ChatThreadShellRead, ChatUserInputDraftRead, JsonValue, UserInputAnswer, VersionedJson } from "$lib/chat/contracts";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatRequestPanel from "./ChatRequestPanel.svelte";
 
@@ -13,12 +13,18 @@ const api = vi.hoisted(() => ({
     answers,
     updatedAt: "2026-07-21T12:00:00.000Z",
   })),
+  readAttachments: vi.fn<(folder: string, ids: string[]) => Promise<ChatAttachmentRead[]>>(async () => []),
+  pickImages: vi.fn<(folder: string, ids: string[], title: string) => Promise<ChatAttachmentRead[]>>(async () => []),
+  importSnippet: vi.fn<(folder: string, id: string, name: string, text: string) => Promise<ChatAttachmentRead>>(),
 }));
 
 vi.mock("$lib/api/chat", async (importOriginal) => ({
   ...await importOriginal<typeof import("$lib/api/chat")>(),
   readChatUserInputDraft: api.readDraft,
   saveChatUserInputDraft: api.saveDraft,
+  readChatAttachments: api.readAttachments,
+  pickChatImages: api.pickImages,
+  importChatTextSnippet: api.importSnippet,
 }));
 
 describe("ChatRequestPanel", () => {
@@ -28,6 +34,9 @@ describe("ChatRequestPanel", () => {
   beforeEach(() => {
     api.readDraft.mockClear();
     api.saveDraft.mockClear();
+    api.readAttachments.mockClear();
+    api.pickImages.mockClear();
+    api.importSnippet.mockReset();
   });
 
   afterEach(async () => {
@@ -171,9 +180,70 @@ describe("ChatRequestPanel", () => {
     body.querySelector<HTMLButtonElement>(".request-actions button:last-child")?.click();
     await tick();
     expect(submitted[0]).toEqual([
-      { questionId: "scope", selectedOptionIds: ["tests"], freeFormText: null },
-      { questionId: "detail", selectedOptionIds: ["edge"], freeFormText: "Include edge cases" },
+      { questionId: "scope", selectedOptionIds: ["tests"], freeFormText: null, attachmentIds: [] },
+      { questionId: "detail", selectedOptionIds: ["edge"], freeFormText: "Include edge cases", attachmentIds: [] },
     ]);
+  });
+
+  it("attaches images and long pasted text to an answer, keeps them in the draft, and sends their ids", async () => {
+    vi.useFakeTimers();
+    const chat = getChat();
+    vi.spyOn(chat, "selectedThread", "get").mockReturnValue({ workingFolderId: "workspace-1" } as ChatThreadShellRead);
+    api.readDraft.mockResolvedValueOnce({
+      requestId: "request-question",
+      answers: {
+        schemaVersion: 1,
+        value: [
+          { questionId: "scope", selectedOptionIds: ["tests"], freeFormText: null },
+          { questionId: "detail", selectedOptionIds: [], freeFormText: null, attachmentIds: ["image-saved", "image-gone"] },
+        ],
+      },
+      updatedAt: "2026-07-21T12:00:00.000Z",
+    });
+    api.readAttachments.mockResolvedValueOnce([attachment("image-saved", "image", "saved.png")]);
+    api.pickImages.mockResolvedValueOnce([attachment("image-picked", "image", "picked.png")]);
+    api.importSnippet.mockImplementation(async (_folder, id, name) => attachment(id, "text_snippet", name));
+    const submitted: UserInputAnswer[][] = [];
+    vi.spyOn(chat, "resolveUserInput").mockImplementation(async (answers) => { submitted.push(answers); });
+    const body = setup(question());
+    await vi.advanceTimersByTimeAsync(0);
+    await tick();
+    expect(api.readAttachments).toHaveBeenCalledWith("workspace-1", ["image-saved", "image-gone"]);
+    body.querySelector<HTMLButtonElement>(".request-actions button:last-child")?.click();
+    await tick();
+
+    const chips = () => [...body.querySelectorAll<HTMLButtonElement>(".answer-attachment")].map((chip) => chip.getAttribute("aria-label"));
+    expect(chips()).toEqual(["Remove saved.png"]);
+    body.querySelector<HTMLButtonElement>(".attach-answer")?.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.pickImages.mock.calls[0]?.[0]).toBe("workspace-1");
+    expect(api.pickImages.mock.calls[0]?.[1]).toHaveLength(7);
+
+    const paste = new Event("paste", { bubbles: true, cancelable: true }) as ClipboardEvent;
+    const log = `${"line\n".repeat(7000)}`;
+    Object.defineProperty(paste, "clipboardData", {
+      configurable: true,
+      value: { files: [], items: [], types: ["text/plain"], getData: () => log },
+    });
+    body.querySelector<HTMLTextAreaElement>(".free-form textarea")?.dispatchEvent(paste);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(paste.defaultPrevented).toBe(true);
+    expect(api.importSnippet.mock.calls[0]?.[2]).toBe("Pasted text (7000 lines)");
+    expect(body.querySelector<HTMLTextAreaElement>(".free-form textarea")?.value).toBe("");
+    expect(chips()).toEqual(["Remove saved.png", "Remove picked.png", "Remove Pasted text (7000 lines)"]);
+    const saved = api.saveDraft.mock.calls.at(-1)?.[1].value;
+    expect(Array.isArray(saved) ? saved[1] : null).toMatchObject({ questionId: "detail", attachmentIds: ["image-saved", "image-picked", expect.any(String)] });
+
+    body.querySelector<HTMLButtonElement>(".answer-attachment")?.click();
+    await tick();
+    body.querySelector<HTMLButtonElement>(".request-actions button:last-child")?.click();
+    await tick();
+    expect(submitted[0]?.[1]).toEqual({
+      questionId: "detail",
+      selectedOptionIds: [],
+      freeFormText: null,
+      attachmentIds: ["image-picked", api.importSnippet.mock.calls[0]?.[1]],
+    });
   });
 });
 
@@ -234,5 +304,20 @@ function question(): ChatPendingRequestRead {
     },
     allowedDecisions: { schemaVersion: 1, value: [] },
     openedAt: "2026-07-21T12:00:00.000Z",
+  };
+}
+
+function attachment(id: string, kind: ChatAttachmentRead["kind"], originalDisplayName: string): ChatAttachmentRead {
+  return {
+    id,
+    workingFolderId: "workspace-1",
+    kind,
+    originalDisplayName,
+    mimeType: kind === "image" ? "image/png" : "text/plain",
+    byteSize: 14,
+    sha256: "0".repeat(64),
+    managedRelativePath: `assets/chat/attachments/${id}`,
+    signatureKind: kind === "image" ? "png" : "text",
+    createdAt: "2026-07-21T12:00:00.000Z",
   };
 }

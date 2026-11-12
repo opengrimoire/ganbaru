@@ -120,6 +120,8 @@ export interface UserInputAnswer {
   questionId: string;
   selectedOptionIds: string[];
   freeFormText: string | null;
+  /** Managed attachments for the answer; the app passes them to the provider as `Attached:` lines. */
+  attachmentIds?: ChatAttachmentId[];
 }
 
 export interface ResolveUserInputRequest {

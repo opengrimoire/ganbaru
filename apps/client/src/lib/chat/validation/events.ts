@@ -90,6 +90,7 @@ function parseUserInputAnswer(value: unknown, label: string): UserInputAnswer {
     questionId: readString(record.questionId, `${label}.questionId`),
     selectedOptionIds: readStringArray(record.selectedOptionIds, `${label}.selectedOptionIds`),
     freeFormText: readNullable(record.freeFormText, `${label}.freeFormText`, readString),
+    ...(record.attachmentIds === undefined ? {} : { attachmentIds: readStringArray(record.attachmentIds, `${label}.attachmentIds`) }),
   };
 }
 

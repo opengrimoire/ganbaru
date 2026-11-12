@@ -13,7 +13,7 @@
   import { getNavigation } from "$lib/stores/navigation.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
-  import ChatComposer from "$lib/components/chat/composer/ChatComposer.svelte";
+  import ChatDirectStartComposer from "$lib/components/chat/ChatDirectStartComposer.svelte";
   import ChatTimeline from "$lib/components/chat/timeline/ChatTimeline.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
@@ -78,7 +78,7 @@
             {#if workspace.currentBranch}<span title={t("chat.header.branch", workspace.currentBranch)}><GitBranch size={15} /><span>{workspace.currentBranch}</span></span>{/if}
           </div>
         {/if}
-        <div class:pending-composer-dock={chat.pendingUserMessage !== null}><ChatComposer hero={chat.pendingUserMessage === null} /></div>
+        <div class:pending-composer-dock={chat.pendingUserMessage !== null}><ChatDirectStartComposer hero={chat.pendingUserMessage === null} /></div>
       </div>
     {:else}
       <h2 class="text-lg font-semibold">{firstUse.thread.title}</h2>

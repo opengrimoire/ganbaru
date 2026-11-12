@@ -516,6 +516,60 @@ pub struct ChatScratchCleanupResultRead {
     pub completed_at: Option<UtcTimestamp>,
 }
 
+/// Why a scratch generation is safe to reclaim, in reporting priority order.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatScratchReclaimReason {
+    /// The scope's reply thread work is archived.
+    ScopeArchived,
+    /// An earlier cleanup of the scope failed and can be retried.
+    ScopeCleanupFailed,
+    /// An earlier cleanup of the generation failed and can be retried.
+    GenerationCleanupFailed,
+    /// The generation was quarantined after its authority narrowed.
+    GenerationQuarantined,
+    /// No run or generation change happened within the idle period.
+    Idle,
+}
+
+/// One scratch generation that the existing confirmed cleanup can remove.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatScratchReclaimRow {
+    pub scratch_scope_id: ChatScratchScopeId,
+    pub scratch_generation_id: ChatScratchGenerationId,
+    /// Reply thread that owns the scope, used to open its scratch manager.
+    pub reply_thread_id: ChatReplyThreadId,
+    pub generation: u64,
+    pub teammate_name: String,
+    pub channel_name: String,
+    pub project_name: String,
+    pub group_name: Option<String>,
+    pub reason: ChatScratchReclaimReason,
+    /// Bounded size on this device, or the stored size when the generation is unavailable here.
+    pub byte_size: u64,
+    pub size_truncated: bool,
+    pub device_availability: ChatScratchDeviceAvailability,
+    /// Latest generation change or run update.
+    pub last_activity_at: UtcTimestamp,
+}
+
+/// Largest reclaimable scratch generations with totals over every qualifying generation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatScratchReclaimReportRead {
+    /// Rows sorted by size, largest first, capped by the report row limit.
+    pub rows: Vec<ChatScratchReclaimRow>,
+    /// Sum of the sizes available on this device across every qualifying generation.
+    pub total_bytes: u64,
+    /// Whether any counted size hit its measurement bound.
+    pub total_truncated: bool,
+    /// Qualifying generations left out of `rows` by the row limit.
+    pub omitted: u64,
+    /// Days without activity after which active scratch counts as idle.
+    pub idle_days: u64,
+}
+
 impl ChatWorkAssignmentState {
     /// Returns whether the assignment still occupies the thread's active work slot.
     pub fn is_active(self) -> bool {

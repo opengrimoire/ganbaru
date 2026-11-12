@@ -85,6 +85,7 @@ import {
   ChatComposerRuntimeController,
   composerSeedForThread,
   type ChatComposerSendOptions,
+  type ChatThreadTurnRef,
 } from "$lib/stores/chat/composer-runtime-controller.svelte";
 
 export type { ChatOrganizationalDraft, ChatOrganizationalPostOptions } from "$lib/stores/chat/organizational-controller.svelte";
@@ -93,7 +94,7 @@ const localExecutionAvailable = platformHasCapability(
   BUILD_PLATFORM_PROFILE,
   "chat.local-execution",
 );
-export type { ChatComposerSendOptions } from "$lib/stores/chat/composer-runtime-controller.svelte";
+export type { ChatComposerSendOptions, ChatThreadTurnRef } from "$lib/stores/chat/composer-runtime-controller.svelte";
 
 const paneStores = new ChatPaneStores<ChatStore>();
 
@@ -1162,6 +1163,8 @@ export class ChatStore {
   flushComposer(): Promise<void> { return this.composerRuntimeController.flush(); }
   refreshInteraction(threadId = this.selectedThreadId): Promise<void> { return this.composerRuntimeController.refreshInteraction(threadId); }
   sendComposer(options: ChatComposerSendOptions = {}): Promise<void> { return this.composerRuntimeController.send(options); }
+  /** Sends a turn in the selected thread with its own configuration, leaving the composer untouched. */
+  sendThreadTurn(prompt: string): Promise<ChatThreadTurnRef> { return this.composerRuntimeController.sendThreadTurn(prompt); }
   retryFailedSend(): Promise<void> { return this.composerRuntimeController.retryFailedSend(); }
   editFailedSend(): Promise<void> { return this.composerRuntimeController.editFailedSend(); }
   changeProviderAfterFailure(): Promise<void> { return this.composerRuntimeController.changeProviderAfterFailure(); }

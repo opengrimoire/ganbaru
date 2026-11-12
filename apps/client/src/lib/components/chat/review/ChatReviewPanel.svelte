@@ -60,6 +60,7 @@
   import { subscribeChatWorkspaceChanges } from "$lib/chat/workspace/observer-client";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
@@ -490,10 +491,12 @@
     const folder = workingFolderId;
     if (!currentSnapshot || !folder || busyAction || !actionsReady) return;
     const scope = reviewScopeToken();
-    const confirmed = operation !== "discard" || window.confirm(
-      file ? t("chat.sourceControl.confirmDiscard", file.relativePath) : t("chat.review.confirmDiscardAll"),
-    );
-    if (!confirmed) return;
+    const confirmed = operation !== "discard" || await requestConfirmation({
+      message: file ? t("chat.sourceControl.confirmDiscard", file.relativePath) : t("chat.review.confirmDiscardAll"),
+      confirmLabel: t("chat.sourceControl.discardConfirm"),
+      danger: true,
+    });
+    if (!confirmed || busyAction || snapshot !== currentSnapshot || !reviewScopeMatches(scope)) return;
     const actionId = `${operation}:${file?.fileId ?? "all"}:${crypto.randomUUID()}`;
     busyAction = actionId;
     error = null;

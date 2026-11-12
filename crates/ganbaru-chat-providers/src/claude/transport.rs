@@ -182,6 +182,16 @@ impl ClaudeConnectionKill {
 }
 
 impl ClaudeJsonlConnection {
+    /// Watch that tells whether the resource scope's memory ceiling stopped the provider; `None`
+    /// when the provider is not scoped or was already stopped.
+    pub fn memory_limit_watch(&self) -> Option<crate::process::systemd_scope::MemoryLimitWatch> {
+        self.process
+            .lock()
+            .ok()?
+            .as_ref()
+            .and_then(ProviderProcessHandle::memory_limit_watch)
+    }
+
     pub fn from_process(mut process: ProviderProcessHandle) -> ChatResult<Self> {
         let stdout = process.take_stdout()?;
         let stdin = process.take_stdin()?;

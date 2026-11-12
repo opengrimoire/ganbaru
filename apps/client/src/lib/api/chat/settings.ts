@@ -6,6 +6,7 @@ import type {
   ChatDiagnosticPreferences,
   ChatDiagnosticsRead,
   ChatStopAllResult,
+  ChatProcessListRead,
   ChatRebuildResult,
   ChatPanelPreferences,
   ChatSettingsRead,
@@ -28,6 +29,7 @@ import {
   parseChatDiagnosticPreferences,
   parseChatDiagnosticsRead,
   parseChatStopAllResult,
+  parseChatProcessList,
   parseChatRebuildResult,
   parseChatSettingsRead,
   parseChatConfiguration,
@@ -88,6 +90,26 @@ export async function exportRedactedChatDiagnostics(pickerTitle: string): Promis
 
 export async function stopAllChatProcesses(confirmation: string): Promise<ChatStopAllResult> {
   return parseChatStopAllResult(await invoke<unknown>("chat_stop_all_processes", { request: { confirmation } }));
+}
+
+/** Confirmation phrase the native stop command requires after the user confirms in the dialog. */
+const STOP_CHAT_PROCESS_CONFIRMATION = "STOP CHAT PROCESS";
+
+/** Lists the running Chat provider and terminal processes with their bounded descendants. */
+export async function listChatProcesses(): Promise<ChatProcessListRead> {
+  return parseChatProcessList(await invoke<unknown>("chat_list_processes"));
+}
+
+/**
+ * Stops one listed Chat process group.
+ *
+ * @param pid Process ID from the list.
+ * @param startTime Start time from the same list row; the native side refuses a reused process ID.
+ */
+export async function stopChatProcess(pid: number, startTime: number): Promise<void> {
+  await invoke<unknown>("chat_stop_process", {
+    request: { pid, startTime, confirmation: STOP_CHAT_PROCESS_CONFIRMATION },
+  });
 }
 
 export async function rebuildChatProjections(confirmation: string): Promise<ChatRebuildResult> {

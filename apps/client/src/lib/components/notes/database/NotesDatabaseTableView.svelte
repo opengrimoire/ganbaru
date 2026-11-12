@@ -66,6 +66,7 @@
     updateNotesDataSourceRowParent,
     updateNotesDataSourceTableView,
   } from "$lib/api/notes";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { formatList, formatNumber } from "$lib/i18n/formatters";
@@ -842,10 +843,15 @@
 
   async function runButton(row: NotesPage, column: NotesDatabaseTableColumn): Promise<void> {
     const title = rowTitle(row);
+    const sourceId = dataSourceId;
     const confirmed = column.buttonRequiresConfirmation
-      ? window.confirm(t("notes.databaseButtonConfirm", column.name, title))
+      ? await requestConfirmation({
+        message: t("notes.databaseButtonConfirm", column.name, title),
+        confirmLabel: t("notes.databaseButtonConfirmAction"),
+      })
       : false;
     if (column.buttonRequiresConfirmation && !confirmed) return;
+    if (sourceId !== dataSourceId) return;
     mutating = true;
     error = null;
     try {

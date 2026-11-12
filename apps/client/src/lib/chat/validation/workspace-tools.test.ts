@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseChatReviewPatchPage,
+  parseChatRestorePreview,
   parseChatWorkspaceChangeBatch,
   parseProjectWorkingFolderDirectory,
 } from "./workspace-tools";
@@ -39,5 +40,21 @@ describe("Chat workspace response validation", () => {
         continuationCursor: null,
       }),
     ).toThrow("reviewPatchPage.patches must contain at most 64 entries");
+  });
+
+  it("accepts typed restore warnings and rejects untyped warning text", () => {
+    const preview = {
+      previewId: "preview-1",
+      checkpointId: "checkpoint-1",
+      expiresAt: "2026-11-12T10:15:00.000Z",
+      files: [],
+      stagedChanges: true,
+      providerRollback: "unsupported",
+      warnings: ["staging_restored", "provider_fork_required"],
+    };
+    expect(parseChatRestorePreview(preview).warnings).toEqual(["staging_restored", "provider_fork_required"]);
+    expect(() =>
+      parseChatRestorePreview({ ...preview, warnings: ["The real staging state will be restored to the checkpoint."] }),
+    ).toThrow("restorePreview.warnings");
   });
 });

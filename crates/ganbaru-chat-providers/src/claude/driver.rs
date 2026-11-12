@@ -238,6 +238,8 @@ impl ClaudeProviderDriver {
             working_directory: working_directory.to_path_buf(),
             environment,
             stderr_limit_bytes: CLAUDE_STDERR_LIMIT_BYTES,
+            purpose: crate::process::ProviderProcessPurpose::Session,
+            provider_instance_label: Some(self.configuration.label.clone()),
         })?;
         Ok((ClaudeJsonlConnection::from_process(process)?, home, version))
     }
@@ -372,6 +374,7 @@ impl ClaudeProviderDriver {
             expected_shutdown: Arc::clone(&expected_shutdown),
             terminal_error: Arc::clone(&terminal_error),
             organizational: organizational_route,
+            memory_limit: connection.memory_limit_watch(),
         });
         let capabilities = claude_capabilities();
         let started_at = now_utc()?;

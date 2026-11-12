@@ -21,5 +21,6 @@ export const workingMarkdown = {
     reloadRemote: "Recargar archivo",
     copyLocal: "Copiar texto local",
     discardConfirm: "¿Descartar los cambios sin guardar de este archivo Markdown?",
+    discardConfirmAction: "Descartar",
   },
 } as const satisfies MessageShape<typeof enWorkingMarkdown>;

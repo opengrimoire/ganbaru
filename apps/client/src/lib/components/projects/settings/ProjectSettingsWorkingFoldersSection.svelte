@@ -13,6 +13,7 @@
   import Unplug from "@lucide/svelte/icons/unplug";
   import WandSparkles from "@lucide/svelte/icons/wand-sparkles";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { ProjectWorkingFolderRead } from "$lib/chat/contracts";
   import { providerFamilyDisplayName } from "$lib/chat/provider-setup";
@@ -246,8 +247,14 @@
   }
 
   /** Confirm removal of the project association while keeping files on disk. */
-  function remove(folder: ProjectWorkingFolderRead): void {
-    if (!window.confirm(t("projects.settings.workingFolders.removeConfirm", folder.workingFolder.displayName))) return;
+  async function remove(folder: ProjectWorkingFolderRead): Promise<void> {
+    const generation = operationGeneration;
+    const confirmed = await requestConfirmation({
+      message: t("projects.settings.workingFolders.removeConfirm", folder.workingFolder.displayName),
+      confirmLabel: t("projects.settings.workingFolders.remove"),
+      danger: true,
+    });
+    if (!confirmed || generation !== operationGeneration) return;
     draft.remove(folder);
   }
 

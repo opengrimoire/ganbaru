@@ -1,5 +1,6 @@
 <script lang="ts">
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
   import ChatControlMenu from "./ChatControlMenu.svelte";
@@ -30,8 +31,13 @@
   async function selectFolder(workingFolderId: string): Promise<void> {
     if (!channel || saving || busy || workingFolderId === chat.composer.workingFolderId) return;
     if (chat.composer.attachmentIds.length > 0 || chat.composer.mentions.length > 0) {
-      const confirmed = window.confirm(t("chat.channels.changeFolderDraftWarning"));
-      if (!confirmed) return;
+      const draftChannelId = channel.id;
+      const confirmed = await requestConfirmation({
+        message: t("chat.channels.changeFolderDraftWarning"),
+        confirmLabel: t("chat.channels.changeFolderConfirm"),
+        danger: true,
+      });
+      if (!confirmed || channel?.id !== draftChannelId || saving || busy || workingFolderId === chat.composer.workingFolderId) return;
       chat.setComposerAttachments([]);
       chat.setComposerMentions([]);
     }

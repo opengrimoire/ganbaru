@@ -62,6 +62,7 @@
   import { workspaceShownPanes } from "$lib/workspace-tabs/shown-panes";
   import type { WorkspaceSplitArea } from "$lib/workspace-tabs/split-layout";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import ConfirmationHost from "$lib/components/ui/ConfirmationHost.svelte";
   import TooltipHost from "$lib/components/ui/TooltipHost.svelte";
   import UpdateNotificationToast from "$lib/components/updates/UpdateNotificationToast.svelte";
   import { formatEventNotificationBody } from "$lib/calendar/event-notifications";
@@ -1054,6 +1055,7 @@
       <NotesHeldEditToast />
     {/await}
   {/if}
+  <ConfirmationHost />
   <TooltipHost />
   <WindowResizeHandles disabled={isMaximized || !!idleInfo} />
 </div>

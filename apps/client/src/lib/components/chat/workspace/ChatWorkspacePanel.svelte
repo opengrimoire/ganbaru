@@ -68,6 +68,7 @@
   } from "$lib/utils/select-popover-position";
   import { safeViewportRect } from "$lib/utils/keep-in-viewport";
   import { formatNumber } from "$lib/i18n/formatters";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
@@ -542,7 +543,12 @@
     let result = await chatApi.closeChatTerminal(terminal.id, thread, workspace, false);
     if (destroyed || terminalScopeKey !== scopeKey) return;
     if (result.confirmationRequired) {
-      if (!window.confirm(t("chat.inspector.confirmCloseTerminal"))) return;
+      const confirmed = await requestConfirmation({
+        message: t("chat.inspector.confirmCloseTerminal"),
+        confirmLabel: t("chat.inspector.closeTerminal"),
+        danger: true,
+      });
+      if (!confirmed || destroyed || terminalScopeKey !== scopeKey) return;
       result = await chatApi.closeChatTerminal(terminal.id, thread, workspace, true);
       if (destroyed || terminalScopeKey !== scopeKey) return;
     }

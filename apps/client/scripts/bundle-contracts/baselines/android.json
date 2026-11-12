@@ -8,7 +8,7 @@
         "src/main-mobile.ts",
         "src/MobileApp.svelte"
       ],
-      "maxSourceModules": 161
+      "maxSourceModules": 163
     },
     {
       "name": "calendar",
@@ -30,7 +30,7 @@
       "roots": [
         "src/lib/components/notes/NotesView.svelte"
       ],
-      "maxSourceModules": 457
+      "maxSourceModules": 458
     },
     {
       "name": "quick-notes",
@@ -52,10 +52,10 @@
       "roots": [
         "src/lib/components/chat/ChatWorkspace.svelte"
       ],
-      "maxSourceModules": 366
+      "maxSourceModules": 369
     }
   ],
-  "maxTotalSourceModules": 1483,
+  "maxTotalSourceModules": 1487,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",

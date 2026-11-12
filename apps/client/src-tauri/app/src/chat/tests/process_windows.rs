@@ -55,6 +55,8 @@ fn config(mode: &str, working_directory: &Path) -> ProviderProcessConfig {
         working_directory: working_directory.to_path_buf(),
         environment,
         stderr_limit_bytes: 128,
+        purpose: ganbaru_chat_providers::process::ProviderProcessPurpose::Session,
+        provider_instance_label: None,
     }
 }
 

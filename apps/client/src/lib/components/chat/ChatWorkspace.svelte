@@ -27,7 +27,7 @@
     panelWidthFromKey,
     type ChatLayoutDecision,
   } from "$lib/chat/responsive-layout";
-  import type { ChatPanelPreferences } from "$lib/chat/contracts";
+  import type { ChatPanelPreferences, ChatRestorePreviewRead } from "$lib/chat/contracts";
   import { parseChatChangeNotification } from "$lib/chat/validation";
   import { hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import { firstFocusable, trapTabFocus } from "$lib/chat/focus-navigation";
@@ -53,6 +53,7 @@
   import ChatChannelArchive from "$lib/components/chat/channels/ChatChannelArchive.svelte";
   import ChatChannelFeed from "$lib/components/chat/channels/ChatChannelFeed.svelte";
   import ChatReplyThreadPanel from "$lib/components/chat/timeline/ChatReplyThreadPanel.svelte";
+  import ChatRestoreDialog from "$lib/components/chat/review/ChatRestoreDialog.svelte";
   import { isTextEntryElement, OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
 
@@ -283,6 +284,7 @@
     paneEvents.addEventListener("ganbaru:chat-configure-teammate", openTeammates);
     paneEvents.addEventListener("ganbaru:chat-manage-members", manageMembers);
     return () => {
+      answerRestoreDialog(false);
       observer.disconnect();
       headerGeometryObserver.disconnect();
       if (inspectorResizeFrame !== null) window.cancelAnimationFrame(inspectorResizeFrame);
@@ -978,6 +980,35 @@
     }
   }
 
+  /** The open checkpoint restore confirmation and the answer it is waiting for. */
+  interface RestoreDialogState {
+    preview: ChatRestorePreviewRead;
+    threadId: string;
+    checkpointId: string;
+    resolve: (confirmed: boolean) => void;
+  }
+
+  let restoreDialog = $state<RestoreDialogState | null>(null);
+
+  function confirmRestorePreview(threadId: string, checkpointId: string, preview: ChatRestorePreviewRead): Promise<boolean> {
+    restoreDialog?.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      restoreDialog = { preview, threadId, checkpointId, resolve };
+    });
+  }
+
+  function answerRestoreDialog(confirmed: boolean): RestoreDialogState | null {
+    const open = restoreDialog;
+    restoreDialog = null;
+    open?.resolve(confirmed);
+    return open;
+  }
+
+  function refreshRestorePreview(): void {
+    const open = answerRestoreDialog(false);
+    if (open) void restoreMessageCheckpoint(open.threadId, open.checkpointId);
+  }
+
   async function restoreMessageCheckpoint(threadId: string, checkpointId: string): Promise<void> {
     const thread = chat.selectedThread;
     if (!thread || thread.id !== threadId) return;
@@ -986,11 +1017,7 @@
       await restoreChatCheckpoint({
         thread,
         checkpointId,
-        confirm: (preview) => window.confirm([
-          t("chat.timeline.revert"),
-          preview.files.map((file) => file.relativePath).join("\n"),
-          ...preview.warnings,
-        ].filter(Boolean).join("\n\n")),
+        confirm: (preview) => confirmRestorePreview(threadId, checkpointId, preview),
         onRestored: (restoredThreadId) => chat.handleNativeChange(restoredThreadId),
       });
     } catch (error: unknown) {
@@ -1115,6 +1142,14 @@
   {/if}
   {#if !mobileShell}
     <div bind:this={canvasEdgeElement} class="chat-canvas-edge surface-content-edge" aria-hidden="true"></div>
+  {/if}
+  {#if restoreDialog}
+    <ChatRestoreDialog
+      preview={restoreDialog.preview}
+      onRestore={() => answerRestoreDialog(true)}
+      onCancel={() => answerRestoreDialog(false)}
+      onRefresh={refreshRestorePreview}
+    />
   {/if}
 </div>
 

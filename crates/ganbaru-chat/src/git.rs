@@ -1,6 +1,12 @@
 //! Bounded Git process execution and typed porcelain parsing.
 
+mod draft_context;
 pub mod hardened;
+
+pub use draft_context::{
+    COMMIT_DRAFT_MAX_FILES, COMMIT_DRAFT_MAX_PATCH_BYTES, COMMIT_DRAFT_RECENT_SUBJECTS,
+    ChatCommitDraftContextRead, change_request_draft_context, commit_draft_context,
+};
 
 use super::models::{ChatError, ChatErrorCode, ChatResult};
 use hardened::{GIT_NETWORK_DEADLINE, GIT_READ_DEADLINE, GitFolderTrust, GitPolicy, OwnedGitRun};
@@ -737,7 +743,7 @@ async fn run_bounded_with_storage(
     stdout_file: Option<&Path>,
     storage: GitStorage<'_>,
 ) -> ChatResult<GitOutput> {
-    let output = hardened::run(OwnedGitRun {
+    let run = OwnedGitRun {
         root: folder.root.to_path_buf(),
         arguments: arguments.iter().map(OsString::from).collect(),
         policy: call.policy(folder.trust),
@@ -746,8 +752,37 @@ async fn run_bounded_with_storage(
         maximum_output_bytes,
         stdout_file: stdout_file.map(Path::to_path_buf),
         environment: storage_environment(storage)?,
-    })
-    .await?;
+    };
+    successful_output(hardened::run(run).await?)
+}
+
+/// Runs an internal read that keeps its output in memory and reports output past
+/// `maximum_output_bytes` as `None` instead of an error, so a caller can degrade.
+async fn run_unless_too_large(
+    folder: GitFolder<'_>,
+    arguments: &[&str],
+    maximum_output_bytes: usize,
+) -> ChatResult<Option<GitOutput>> {
+    let call = GitCall::Internal;
+    let run = OwnedGitRun {
+        root: folder.root.to_path_buf(),
+        arguments: arguments.iter().map(OsString::from).collect(),
+        policy: call.policy(folder.trust),
+        deadline: call.deadline(),
+        input: None,
+        maximum_output_bytes,
+        stdout_file: None,
+        environment: Vec::new(),
+    };
+    match hardened::run(run).await {
+        Ok(output) => successful_output(output).map(Some),
+        Err(hardened::GitRunError::OutputTooLarge) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Maps a finished Git run to its output, or to a safe conflict error when Git failed.
+fn successful_output(output: hardened::GitRunOutput) -> ChatResult<GitOutput> {
     if !output.status.success() {
         let detail = diagnostic_text(&output.stderr);
         return Err(ChatError {

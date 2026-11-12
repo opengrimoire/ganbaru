@@ -107,7 +107,8 @@
     onCreationFolderChange: (folderId: string | null) => void;
     selectedWorkingMarkdownFile?: NotesWorkingMarkdownFileRef | null;
     onSelectWorkingMarkdownFile: (file: NotesWorkingMarkdownFileRef) => void;
-    onBeforeDocumentNavigation: () => boolean;
+    /** Confirms leaving the open document; resolves false to stay. */
+    onBeforeDocumentNavigation: () => Promise<boolean>;
   } = $props();
 
   const notes = useNotesWorkspace();
@@ -893,8 +894,8 @@
     if (pendingArchivePage || pendingTrashPage || pendingDeleteFolder) requestConfirmDialog();
   });
 
-  function createPage(folderId: string | null = creationFolderId): void {
-    if (!onBeforeDocumentNavigation()) return;
+  async function createPage(folderId: string | null = creationFolderId): Promise<void> {
+    if (!(await onBeforeDocumentNavigation())) return;
     if (folderId) notes.setFolderCollapsed(folderId, false);
     if (notes.viewMode === "archive") notes.closeArchive();
     if (notes.viewMode === "trash") notes.closeTrash();
@@ -902,8 +903,8 @@
     closePanel();
   }
 
-  function createSubpage(parentPageId: string): void {
-    if (!onBeforeDocumentNavigation()) return;
+  async function createSubpage(parentPageId: string): Promise<void> {
+    if (!(await onBeforeDocumentNavigation())) return;
     void notes.createSubpage(parentPageId, "", { openMode: "full" });
     closePanel();
   }
@@ -923,8 +924,8 @@
     }
   }
 
-  function selectPrimaryPage(pageId: string): void {
-    if (!onBeforeDocumentNavigation()) return;
+  async function selectPrimaryPage(pageId: string): Promise<void> {
+    if (!(await onBeforeDocumentNavigation())) return;
     if (notes.viewMode === "archive") notes.closeArchive();
     if (notes.viewMode === "trash") notes.closeTrash();
     void notes.selectPage(pageId, { openMode: "full" }).catch((error) => {
@@ -1425,7 +1426,7 @@
             navigationDragging={draggingNavigationItem?.kind === "page" && draggingNavigationItem.id === item.page.id}
             onSelect={() => {
               onCreationFolderChange(notesPageContainingFolderId(item.page.id, projectPages));
-              selectPrimaryPage(item.page.id);
+              void selectPrimaryPage(item.page.id);
             }}
             onOpenInNewTab={canOpenPageTabs ? (intent) => openPageInNewTab(item.page.id, intent) : undefined}
             onRename={(title) => {
@@ -1435,7 +1436,7 @@
               notes.setPageFavorited(item.page.id, favorited);
             }}
             onCreateChild={() => {
-              createSubpage(item.page.id);
+              void createSubpage(item.page.id);
             }}
             onDuplicate={() => {
               duplicatePage(item.page);

@@ -86,6 +86,8 @@ impl ProviderDriver for CursorProviderDriver {
         potential_capabilities_for(self.flavor)
     }
 
+    /// Boundaries any ACP agent of this flavor can hold; a probe narrows `internal_host_tools` to
+    /// the agent's HTTP MCP support.
     fn authority_support(&self) -> ProviderAuthoritySupport {
         ProviderAuthoritySupport {
             isolated_conversation: true,
@@ -142,7 +144,15 @@ impl ProviderDriver for CursorProviderDriver {
                         self.flavor,
                         &started.initialize,
                         &started.setup,
+                        self.observed,
                     );
+                    let authority_support = ProviderAuthoritySupport {
+                        internal_host_tools: started
+                            .initialize
+                            .agent_capabilities
+                            .accepts_http_mcp(self.flavor),
+                        ..self.authority_support()
+                    };
                     self.cached_models = Some(ProviderModelCatalog {
                         instance_id: self.configuration.instance_id.clone(),
                         models: started.models,
@@ -159,7 +169,7 @@ impl ProviderDriver for CursorProviderDriver {
                         ),
                         account_label: about.account_label,
                         capabilities,
-                        authority_support: self.authority_support(),
+                        authority_support,
                         checked_at,
                         detail: (version_admission
                             == Some(ProviderVersionAdmission::UntestedNewer))
@@ -674,6 +684,9 @@ impl ProviderDriver for CursorProviderDriver {
                 .map_err(|_| driver_state_error())?
                 .provider_thread_id
                 .clone();
+            if let Ok(state) = live.route.lock() {
+                self.observed.merge(state.observed);
+            }
             let _ = live
                 .connection
                 .client()

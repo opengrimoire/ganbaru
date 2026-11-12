@@ -85,7 +85,44 @@ pub struct AcpInitializeResponse {
 pub struct AcpAgentCapabilities {
     pub load_session: bool,
     pub prompt_capabilities: AcpPromptCapabilities,
+    #[serde(deserialize_with = "tolerant_mcp_capabilities")]
+    pub mcp_capabilities: AcpMcpCapabilities,
     pub session_capabilities: Value,
+}
+
+impl AcpAgentCapabilities {
+    /// Whether the agent takes Ganbaru's internal HTTP MCP server, by advertisement or flavor.
+    pub fn accepts_http_mcp(&self, flavor: super::driver::AcpProviderFlavor) -> bool {
+        self.mcp_capabilities.http || flavor.accepts_http_mcp_by_flavor()
+    }
+}
+
+/// MCP transports the agent advertised; both default to false when absent or malformed.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AcpMcpCapabilities {
+    pub http: bool,
+    /// Parsed for completeness; the internal endpoint serves HTTP only.
+    pub sse: bool,
+}
+
+/// Reads `mcpCapabilities` without failing `initialize` when an agent sends an odd shape.
+fn tolerant_mcp_capabilities<'de, D>(deserializer: D) -> Result<AcpMcpCapabilities, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    let object = value.as_object();
+    let flag = |name: &str| {
+        object
+            .and_then(|object| object.get(name))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
+    Ok(AcpMcpCapabilities {
+        http: flag("http"),
+        sse: flag("sse"),
+    })
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -503,10 +540,38 @@ pub fn acp_capability_kinds(_flavor: super::driver::AcpProviderFlavor) -> Vec<Pr
     .collect()
 }
 
+/// Capabilities an ACP agent showed by sending their data during a live session.
+///
+/// `initialize` cannot announce these, so they start false and turn true when the matching
+/// update arrives; they reach `capability_overrides` of the next `SessionStarted`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ObservedAcpCapabilities {
+    /// An `available_commands_update` listed at least one command.
+    pub slash_commands: bool,
+    /// An `agent_thought_chunk` arrived.
+    pub reasoning: bool,
+    /// A `usage_update` arrived.
+    pub usage: bool,
+}
+
+impl ObservedAcpCapabilities {
+    /// Keeps every capability either set observed.
+    pub fn merge(&mut self, other: Self) {
+        self.slash_commands |= other.slash_commands;
+        self.reasoning |= other.reasoning;
+        self.usage |= other.usage;
+    }
+}
+
+/// Builds the capability set from what the agent negotiated and showed.
+///
+/// No entry is true without a source: `initialize`, the session setup, the flavor's known
+/// extensions, or an observed update.
 pub fn negotiated_capabilities_for(
     flavor: super::driver::AcpProviderFlavor,
     initialize: &AcpInitializeResponse,
     setup: &AcpSessionSetup,
+    observed: ObservedAcpCapabilities,
 ) -> ProviderCapabilities {
     let provider_name = flavor.display_name();
     let models_are_dynamic = match flavor {
@@ -519,6 +584,7 @@ pub fn negotiated_capabilities_for(
         .modes
         .as_ref()
         .is_some_and(|modes| find_mode(modes, InteractionMode::Plan).is_some());
+    let extensions = flavor.offers_structured_extensions();
     let entries = acp_capability_kinds(flavor)
         .into_iter()
         .map(|capability| {
@@ -529,13 +595,17 @@ pub fn negotiated_capabilities_for(
                     initialize.agent_capabilities.prompt_capabilities.image
                 }
                 ProviderCapability::DynamicModelChange => models_are_dynamic,
-                ProviderCapability::Approvals
-                | ProviderCapability::FileReferences
-                | ProviderCapability::StructuredQuestions
+                // Every ACP agent may ask `session/request_permission`, and every agent must
+                // accept `resource_link` prompt blocks.
+                ProviderCapability::Approvals | ProviderCapability::FileReferences => true,
+                ProviderCapability::StructuredQuestions
                 | ProviderCapability::StructuredPlans
-                | ProviderCapability::ProviderDiffs
-                | ProviderCapability::ReasoningSummaries => true,
-                ProviderCapability::SlashCommands => true,
+                | ProviderCapability::ProviderDiffs => extensions,
+                ProviderCapability::ReasoningSummaries => {
+                    flavor.streams_reasoning() || observed.reasoning
+                }
+                ProviderCapability::SlashCommands => observed.slash_commands,
+                ProviderCapability::ContextUsage => observed.usage,
                 _ => false,
             };
             ProviderCapabilitySupport {
@@ -553,6 +623,20 @@ pub fn negotiated_capabilities_for(
                     }
                     ProviderCapability::DynamicModelChange => {
                         format!("{provider_name} did not advertise dynamic models")
+                    }
+                    ProviderCapability::StructuredQuestions
+                    | ProviderCapability::StructuredPlans
+                    | ProviderCapability::ProviderDiffs => {
+                        format!("{provider_name} has no ACP extension for this capability")
+                    }
+                    ProviderCapability::ReasoningSummaries => {
+                        format!("{provider_name} has not streamed reasoning")
+                    }
+                    ProviderCapability::SlashCommands => {
+                        format!("{provider_name} has not listed slash commands")
+                    }
+                    ProviderCapability::ContextUsage => {
+                        format!("{provider_name} has not reported context usage")
                     }
                     _ => format!("{provider_name} did not advertise this ACP capability"),
                 }),

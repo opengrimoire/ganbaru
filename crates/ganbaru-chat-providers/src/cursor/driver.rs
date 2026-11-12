@@ -53,6 +53,25 @@ impl AcpProviderFlavor {
     pub fn turn_prefix(self) -> &'static str {
         self.family_id()
     }
+
+    /// Whether the agent serves Ganbaru's structured extensions: question and plan requests,
+    /// todo updates, and edit diffs on tool calls.
+    pub fn offers_structured_extensions(self) -> bool {
+        matches!(self, Self::Cursor | Self::Grok)
+    }
+
+    /// Whether the agent streams reasoning as `agent_thought_chunk` from its first turn.
+    pub fn streams_reasoning(self) -> bool {
+        matches!(self, Self::Cursor | Self::Grok)
+    }
+
+    /// Whether the agent takes HTTP MCP servers without advertising `mcpCapabilities.http`.
+    ///
+    /// Cursor and Grok accept the internal HTTP server and no recorded `initialize` shows whether
+    /// they advertise it, so both keep it by flavor; any other agent needs the advertisement.
+    pub fn accepts_http_mcp_by_flavor(self) -> bool {
+        matches!(self, Self::Cursor | Self::Grok)
+    }
 }
 
 pub struct CursorProviderDriver {
@@ -61,6 +80,8 @@ pub struct CursorProviderDriver {
     pub(super) flavor: AcpProviderFlavor,
     pub(super) live: Option<CursorLiveSession>,
     pub(super) cached_models: Option<ProviderModelCatalog>,
+    /// Capabilities earlier sessions of this driver showed, reported when the next one starts.
+    pub(super) observed: ObservedAcpCapabilities,
     #[cfg(test)]
     connection_factory: Option<TestConnectionFactory>,
 }
@@ -192,6 +213,7 @@ impl CursorProviderDriver {
             flavor,
             live: None,
             cached_models: None,
+            observed: ObservedAcpCapabilities::default(),
             #[cfg(test)]
             connection_factory: None,
         })
@@ -399,8 +421,12 @@ impl CursorProviderDriver {
         let local_session_id = new_session_id_for(self.flavor, &self.configuration.instance_id)?;
         let provider_thread_id = ProviderThreadId::new(started.session_id.clone())
             .map_err(|_| protocol_error("session ID"))?;
-        let capabilities =
-            negotiated_capabilities_for(self.flavor, &started.initialize, &started.setup);
+        let capabilities = negotiated_capabilities_for(
+            self.flavor,
+            &started.initialize,
+            &started.setup,
+            self.observed,
+        );
         let effective_model_id = input.model_id().cloned().or_else(|| {
             started
                 .setup
@@ -474,6 +500,22 @@ impl CursorProviderDriver {
             }),
         )?)
         .await?;
+        if started.host_tools_omitted {
+            sink.emit(normalizer.external_event(
+                &state,
+                "session/mcp",
+                None,
+                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                    code: "acp_host_tools_unavailable".to_string(),
+                    title: format!(
+                        "{} runs without Ganbaru host tools",
+                        self.flavor.display_name()
+                    ),
+                    detail: Some("The agent did not advertise HTTP MCP servers".to_string()),
+                }),
+            )?)
+            .await?;
+        }
         self.cached_models = Some(ProviderModelCatalog {
             instance_id: self.configuration.instance_id.clone(),
             models: started.models,

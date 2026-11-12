@@ -3,9 +3,9 @@
 mod tools;
 
 use super::protocol::{
-    AcpAvailableCommand, AcpConfigOption, MAX_PROTOCOL_TEXT_BYTES, bounded_text,
-    is_valid_identifier, object, parse_available_commands_update, parse_config_options_update,
-    protocol_error, safe_shape,
+    AcpAvailableCommand, AcpConfigOption, MAX_PROTOCOL_TEXT_BYTES, ObservedAcpCapabilities,
+    bounded_text, is_valid_identifier, object, parse_available_commands_update,
+    parse_config_options_update, protocol_error, safe_shape,
 };
 use crate::events::*;
 use crate::models::*;
@@ -38,6 +38,8 @@ pub struct CursorRouteState {
     pub config_options: Vec<AcpConfigOption>,
     pub available_commands: Vec<AcpAvailableCommand>,
     pub workspace: PathBuf,
+    /// Capabilities the agent showed during this session.
+    pub observed: ObservedAcpCapabilities,
     assistant_item_id: Option<String>,
     reasoning_item_id: Option<String>,
     tools: HashMap<String, ToolState>,
@@ -60,6 +62,7 @@ impl CursorRouteState {
             config_options,
             available_commands: Vec::new(),
             workspace,
+            observed: ObservedAcpCapabilities::default(),
             assistant_item_id: None,
             reasoning_item_id: None,
             tools: HashMap::new(),
@@ -113,13 +116,17 @@ impl CursorEventNormalizer {
             text(update, "sessionUpdate").ok_or_else(|| protocol_error("session update type"))?;
         match update_type {
             "agent_message_chunk" => self.content_chunk(state, update, false),
-            "agent_thought_chunk" => self.content_chunk(state, update, true),
+            "agent_thought_chunk" => {
+                state.observed.reasoning = true;
+                self.content_chunk(state, update, true)
+            }
             "tool_call" | "tool_call_update" => self.tool_update(state, update, update_type),
             "plan" => self.plan_update(state, update, "session/update"),
             "current_mode_update" => self.mode_update(state, update),
             "config_options_update" => self.config_update(state, update),
             "available_commands_update" => {
                 state.available_commands = parse_available_commands_update(update)?;
+                state.observed.slash_commands |= !state.available_commands.is_empty();
                 Ok(Vec::new())
             }
             "user_message_chunk" | "session_info_update" => Ok(Vec::new()),

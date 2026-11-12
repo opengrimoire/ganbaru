@@ -255,7 +255,12 @@ fn negotiated_capabilities_and_model_traits_are_truthful() {
         true,
     )
     .unwrap();
-    let capabilities = negotiated_capabilities_for(AcpProviderFlavor::Cursor, &initialize, &setup);
+    let capabilities = negotiated_capabilities_for(
+        AcpProviderFlavor::Cursor,
+        &initialize,
+        &setup,
+        ObservedAcpCapabilities::default(),
+    );
     for capability in [
         ProviderCapability::NativeResume,
         ProviderCapability::NativePlan,
@@ -303,11 +308,178 @@ fn negotiated_capabilities_and_model_traits_are_truthful() {
             true,
         )
         .unwrap(),
+        ObservedAcpCapabilities::default(),
     );
     assert!(!disabled.supports(ProviderCapability::NativeResume));
     assert!(!disabled.supports(ProviderCapability::NativePlan));
     assert!(!disabled.supports(ProviderCapability::DynamicModelChange));
     assert!(!disabled.supports(ProviderCapability::Images));
+}
+
+fn minimal_initialize(agent_capabilities: Value) -> AcpInitializeResponse {
+    parse_initialize(json!({ "protocolVersion": 1, "agentCapabilities": agent_capabilities }))
+        .unwrap()
+}
+
+#[test]
+fn every_acp_capability_has_a_source() {
+    let initialize = minimal_initialize(json!({}));
+    let setup = parse_session_setup(json!({ "sessionId": "minimal" }), true).unwrap();
+    for flavor in [AcpProviderFlavor::Cursor, AcpProviderFlavor::Grok] {
+        let capabilities = negotiated_capabilities_for(
+            flavor,
+            &initialize,
+            &setup,
+            ObservedAcpCapabilities::default(),
+        );
+        for capability in [
+            ProviderCapability::Approvals,
+            ProviderCapability::FileReferences,
+            ProviderCapability::StructuredQuestions,
+            ProviderCapability::StructuredPlans,
+            ProviderCapability::ProviderDiffs,
+            ProviderCapability::ReasoningSummaries,
+        ] {
+            assert!(
+                capabilities.supports(capability),
+                "{flavor:?} {capability:?}"
+            );
+        }
+        for capability in [
+            ProviderCapability::NativeResume,
+            ProviderCapability::NativePlan,
+            ProviderCapability::Images,
+            ProviderCapability::DynamicModelChange,
+            ProviderCapability::SlashCommands,
+        ] {
+            assert!(
+                !capabilities.supports(capability),
+                "{flavor:?} {capability:?}"
+            );
+        }
+        assert!(
+            capabilities
+                .entries
+                .iter()
+                .filter(|entry| !entry.supported)
+                .all(|entry| entry.explanation.is_some())
+        );
+    }
+}
+
+#[test]
+fn observed_capabilities_turn_on_at_the_next_session_start() {
+    let initialize = minimal_initialize(json!({}));
+    let setup = parse_session_setup(json!({ "sessionId": "observed" }), true).unwrap();
+    let mut observed = ObservedAcpCapabilities::default();
+    observed.merge(ObservedAcpCapabilities {
+        slash_commands: true,
+        ..ObservedAcpCapabilities::default()
+    });
+    observed.merge(ObservedAcpCapabilities::default());
+    assert!(observed.slash_commands);
+    let capabilities =
+        negotiated_capabilities_for(AcpProviderFlavor::Cursor, &initialize, &setup, observed);
+    assert!(capabilities.supports(ProviderCapability::SlashCommands));
+}
+
+#[test]
+fn route_state_records_commands_and_reasoning_the_agent_sends() {
+    let normalizer = CursorEventNormalizer::new_for_provider(
+        ProviderInstanceId::new("cursor-instance").unwrap(),
+        ChatThreadId::new("thread").unwrap(),
+        ProviderSessionId::new("session").unwrap(),
+        "cursor",
+        "Cursor",
+    );
+    let mut state = CursorRouteState::new(
+        "provider-thread".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+        None,
+        Vec::new(),
+        std::env::temp_dir(),
+    );
+    let update = |update: Value| json!({ "sessionId": "provider-thread", "update": update });
+    normalizer
+        .normalize_session_update(
+            &mut state,
+            update(
+                json!({ "sessionUpdate": "available_commands_update", "availableCommands": [] }),
+            ),
+        )
+        .unwrap();
+    assert!(!state.observed.slash_commands);
+    normalizer
+        .normalize_session_update(
+            &mut state,
+            update(json!({
+                "sessionUpdate": "available_commands_update",
+                "availableCommands": [{ "name": "review", "description": "Review changes" }]
+            })),
+        )
+        .unwrap();
+    assert!(state.observed.slash_commands);
+    normalizer
+        .normalize_session_update(
+            &mut state,
+            update(
+                json!({ "sessionUpdate": "available_commands_update", "availableCommands": [] }),
+            ),
+        )
+        .unwrap();
+    assert!(state.observed.slash_commands);
+    assert!(!state.observed.reasoning);
+    let _ = normalizer.normalize_session_update(
+        &mut state,
+        update(json!({
+            "sessionUpdate": "agent_thought_chunk",
+            "content": { "type": "text", "text": "Thinking" }
+        })),
+    );
+    assert!(state.observed.reasoning);
+}
+
+#[test]
+fn mcp_capabilities_parse_tolerantly() {
+    for (agent_capabilities, http, sse) in [
+        (json!({}), false, false),
+        (
+            json!({ "mcpCapabilities": { "http": false } }),
+            false,
+            false,
+        ),
+        (json!({ "mcpCapabilities": { "http": true } }), true, false),
+        (
+            json!({ "mcpCapabilities": { "http": true, "sse": true } }),
+            true,
+            true,
+        ),
+        (
+            json!({ "mcpCapabilities": { "http": "yes" } }),
+            false,
+            false,
+        ),
+        (json!({ "mcpCapabilities": "http" }), false, false),
+        (json!({ "mcpCapabilities": null }), false, false),
+    ] {
+        let parsed = minimal_initialize(agent_capabilities.clone());
+        assert_eq!(
+            parsed.agent_capabilities.mcp_capabilities,
+            AcpMcpCapabilities { http, sse },
+            "{agent_capabilities}"
+        );
+    }
+}
+
+#[test]
+fn cursor_and_grok_keep_http_mcp_by_flavor() {
+    let silent = minimal_initialize(json!({}));
+    for flavor in [AcpProviderFlavor::Cursor, AcpProviderFlavor::Grok] {
+        assert!(silent.agent_capabilities.accepts_http_mcp(flavor));
+    }
 }
 
 #[test]

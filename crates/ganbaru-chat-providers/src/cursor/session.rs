@@ -67,6 +67,8 @@ pub struct AcpStartedSession {
     pub setup: AcpSessionSetup,
     pub session_id: String,
     pub models: Vec<ProviderModel>,
+    /// The internal MCP server was left out because the agent takes no HTTP MCP servers.
+    pub host_tools_omitted: bool,
 }
 
 pub struct CursorRouterResources {

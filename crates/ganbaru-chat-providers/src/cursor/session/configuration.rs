@@ -129,7 +129,9 @@ pub async fn initialize_provider_session(
             true,
         ));
     }
-    let mcp_servers = acp_mcp_servers(internal_mcp)?;
+    let accepts_http_mcp = initialize.agent_capabilities.accepts_http_mcp(flavor);
+    let host_tools_omitted = internal_mcp.is_some() && !accepts_http_mcp;
+    let mcp_servers = acp_mcp_servers(provider_name, accepts_http_mcp, internal_mcp)?;
     let (mut setup, session_id) = if let Some(session_id) = resume_session_id {
         if !initialize.agent_capabilities.load_session {
             return Err(ChatError::unsupported(format!(
@@ -181,19 +183,33 @@ pub async fn initialize_provider_session(
         setup,
         session_id,
         models,
+        host_tools_omitted,
     })
 }
 
-fn acp_mcp_servers(config: Option<&ProviderInternalMcpConfig>) -> ChatResult<Value> {
-    let servers = config
-        .map(|server| {
-            vec![McpServer::Http(
-                McpServerHttp::new(server.name.clone(), server.url.clone()).headers(vec![
-                    HttpHeader::new("Authorization", format!("Bearer {}", server.bearer_token)),
-                ]),
-            )]
-        })
-        .unwrap_or_default();
+/// Builds the `mcpServers` list for `session/new` or `session/load`.
+///
+/// The internal server goes only to an agent that takes HTTP MCP servers. Without that support
+/// an organizational session fails closed, because its host tools carry the assignment's
+/// authority, and a direct thread runs without host tools.
+pub(super) fn acp_mcp_servers(
+    provider_name: &str,
+    accepts_http_mcp: bool,
+    config: Option<&ProviderInternalMcpConfig>,
+) -> ChatResult<Value> {
+    let servers = match config {
+        Some(server) if accepts_http_mcp => vec![McpServer::Http(
+            McpServerHttp::new(server.name.clone(), server.url.clone()).headers(vec![
+                HttpHeader::new("Authorization", format!("Bearer {}", server.bearer_token)),
+            ]),
+        )],
+        Some(server) if server.organizational_authority => {
+            return Err(ChatError::unsupported(format!(
+                "{provider_name} did not advertise HTTP MCP servers, so it cannot use the assignment's host tools"
+            )));
+        }
+        Some(_) | None => Vec::new(),
+    };
     serde_json::to_value(servers)
         .map_err(|_| ChatError::validation("internalMcp", "ACP MCP server is invalid"))
 }

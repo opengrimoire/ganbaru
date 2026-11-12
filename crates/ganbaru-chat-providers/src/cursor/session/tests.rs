@@ -75,3 +75,44 @@ fn terminal_callbacks_bound_output_and_session_ownership() {
     assert_eq!(state.output, b"cdef");
     assert!(state.truncated);
 }
+
+fn internal_mcp(organizational_authority: bool) -> crate::models::ProviderInternalMcpConfig {
+    crate::models::ProviderInternalMcpConfig {
+        name: "ganbaru-chat".to_string(),
+        url: "http://127.0.0.1:41234/mcp".to_string(),
+        bearer_token: "test-token".to_string(),
+        organizational_authority,
+    }
+}
+
+#[test]
+fn internal_mcp_server_goes_only_to_agents_that_take_http_mcp() {
+    let direct = internal_mcp(false);
+    let servers = super::configuration::acp_mcp_servers("Agent", true, Some(&direct)).unwrap();
+    assert_eq!(servers[0]["type"], "http");
+    assert_eq!(servers[0]["url"], "http://127.0.0.1:41234/mcp");
+    assert_eq!(servers[0]["headers"][0]["value"], "Bearer test-token");
+
+    let omitted = super::configuration::acp_mcp_servers("Agent", false, Some(&direct)).unwrap();
+    assert_eq!(omitted, serde_json::json!([]));
+    let none = super::configuration::acp_mcp_servers("Agent", false, None).unwrap();
+    assert_eq!(none, serde_json::json!([]));
+}
+
+#[test]
+fn organizational_session_without_http_mcp_fails_closed() {
+    let organizational = internal_mcp(true);
+    let error =
+        super::configuration::acp_mcp_servers("Agent", false, Some(&organizational)).unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::models::ChatErrorCode::CapabilityUnsupported
+    );
+    assert!(error.message.contains("host tools"));
+    assert!(
+        super::configuration::acp_mcp_servers("Agent", true, Some(&organizational))
+            .unwrap()
+            .as_array()
+            .is_some_and(|servers| servers.len() == 1)
+    );
+}

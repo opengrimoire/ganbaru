@@ -6,7 +6,7 @@ Each adapter normalizes provider-native events into stable Ganbaru contracts whi
 
 ## Shared contract
 
-Each adapter supports exactly the capabilities its metadata advertises; anything else stays absent or disabled. Ganbaru never simulates approval, continuation, cancellation, interactive input, model selection, or reasoning controls that the provider cannot truthfully perform.
+Each adapter supports exactly the capabilities its metadata advertises; anything else stays absent or disabled. Ganbaru never simulates approval, continuation, cancellation, interactive input, model selection, or reasoning controls that the provider cannot truthfully perform. Organizational runs treat a provider that silently starts a fresh session in place of the one they continue as a lost session and resend the full context package.
 
 All transports apply bounded parsing, payload limits, timeouts, cancellation, process-tree cleanup, redaction, and stable error categories. Short probes (version, account, and catalog queries) read each output stream only up to a fixed limit and stop the whole process tree once a stream exceeds it or the probe times out. Provider output is untrusted input: unknown events may be kept for diagnostics but never become typed application state without validation.
 

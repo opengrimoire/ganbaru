@@ -38,6 +38,10 @@ pub struct SendChatTurnResult {
     pub thread: ganbaru_chat_contracts::models::ChatThreadShellRead,
     pub dispatch: Option<TurnDispatchReceipt>,
     pub launch_error: Option<ChatError>,
+    /// How the launch of an assignment run ended for its assignment. It stays in the backend
+    /// and is absent from a replayed receipt.
+    #[serde(skip)]
+    pub launch_settlement: Option<ganbaru_chat::agent_runs::LaunchSettlement>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

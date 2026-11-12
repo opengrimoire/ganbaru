@@ -45,12 +45,12 @@ use callbacks::{
     append_terminal_bytes, atomic_write_text, verified_existing_file, verified_write_path,
 };
 use callbacks::{callback_permission_error, require_acp_session};
-#[cfg(test)]
-pub use configuration::initialize_session;
 pub use configuration::{
     AcpRequestedConfiguration, AcpSessionInitialization, apply_provider_configuration,
     initialize_provider_session,
 };
+#[cfg(test)]
+pub use configuration::{initialize_session, require_session_loading};
 pub use load_replay::AcpInboundQueue;
 pub use router::{restore_pending, spawn_cursor_router, take_pending};
 

@@ -160,6 +160,14 @@ pub struct RunAttempt {
     pub delivered_sources: Vec<DeliveredSource>,
 }
 
+/// The whole context package of a run and the sources it delivers, sent in place of a delta
+/// when the native session a continuation expected turns out to be new.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FullPackage {
+    pub prompt: String,
+    pub delivered_sources: Vec<DeliveredSource>,
+}
+
 /// Launch data of an assignment run that is not part of its stored authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunLaunch {
@@ -167,6 +175,49 @@ pub struct RunLaunch {
     /// writes no assignment or dispatch state.
     pub claim_token: String,
     pub attempt: RunAttempt,
+    /// The full package a continuation sends instead of its delta when the provider opens a
+    /// fresh native session without reporting that the earlier one was lost.
+    pub full_prompt_on_fresh_session: Option<FullPackage>,
+}
+
+impl RunLaunch {
+    /// The prompt and launch of this run once the native session it meant to continue turned
+    /// out to be new: a handoff for a lost session that sends the full package. `None` when
+    /// the run is not a continuation or has no full package to send.
+    pub fn handed_off_to_fresh_session(&self) -> Option<(String, RunLaunch)> {
+        if self.attempt.reason != AttemptReason::Continuation {
+            return None;
+        }
+        let full = self.full_prompt_on_fresh_session.as_ref()?;
+        let launch = RunLaunch {
+            claim_token: self.claim_token.clone(),
+            attempt: RunAttempt {
+                reason: AttemptReason::Handoff(HandoffReason::NativeSessionLost),
+                instructions_sha256: self.attempt.instructions_sha256.clone(),
+                model_selection_sha256: self.attempt.model_selection_sha256.clone(),
+                context_delivery: ContextDelivery::Full,
+                delivered_context_bytes: u64::try_from(full.prompt.len()).ok()?,
+                delivered_sources: full.delivered_sources.clone(),
+            },
+            full_prompt_on_fresh_session: None,
+        };
+        Some((full.prompt.clone(), launch))
+    }
+}
+
+/// Whether the native session a provider opened is not the one a continuation asked for.
+///
+/// Some providers start a new native session when the one they were asked to resume is gone
+/// and report no error, so the provider thread they open differs from the stored one. A
+/// continuation that asked for no provider thread opens a new session by definition.
+pub fn opened_fresh_native_session<T: PartialEq>(
+    requested: Option<&T>,
+    opened: Option<&T>,
+) -> bool {
+    match (requested, opened) {
+        (Some(requested), Some(opened)) => requested != opened,
+        _ => true,
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -238,12 +289,19 @@ pub enum LaunchSettlement {
     /// cancelled, the assignment and job were left to the new owner, and the caller must stop
     /// the provider session it started.
     ClaimLost,
+    /// The provider could not resume the native session a continuation expected, so the run
+    /// failed while the assignment stays queued and its dispatch job stays claimed, and the
+    /// caller must launch a new run with the full package in a new session.
+    HandoffRequired,
 }
 
 impl LaunchSettlement {
     /// Whether the caller must stop the provider session the launch started.
     pub fn stops_session(self) -> bool {
-        matches!(self, Self::Superseded | Self::RunSettled | Self::ClaimLost)
+        matches!(
+            self,
+            Self::Superseded | Self::RunSettled | Self::ClaimLost | Self::HandoffRequired
+        )
     }
 }
 
@@ -352,6 +410,11 @@ pub async fn insert_starting_run(
 /// assignment, thread, or turn, is never rewritten: the transaction rolls back, leaving the
 /// assignment, dispatch job, and messages as they were, and the result reports the run as
 /// settled so the caller stops the provider session.
+///
+/// A continuation whose provider reports that the native session cannot be resumed fails only
+/// its run: the assignment stays queued, the dispatch job stays claimed, no failure message is
+/// posted, approvals still open on the lost session are interrupted, and the result asks the
+/// caller to hand off to a new session.
 pub async fn settle_launch(
     pool: &sqlx::SqlitePool,
     binding: &AgentRunBinding,
@@ -373,6 +436,17 @@ pub async fn settle_launch(
         }
         transaction.commit().await.map_err(persistence_error)?;
         return Ok(LaunchSettlement::ClaimLost);
+    }
+    if requires_handoff(launch, launch_error)
+        && assignment_unsettled(&mut transaction, binding).await?
+    {
+        if !settle_run_state(&mut transaction, binding, "failed", now).await? {
+            transaction.rollback().await.map_err(persistence_error)?;
+            return Ok(LaunchSettlement::RunSettled);
+        }
+        interrupt_open_requests_of_run_thread(&mut transaction, &binding.run_id, now).await?;
+        transaction.commit().await.map_err(persistence_error)?;
+        return Ok(LaunchSettlement::HandoffRequired);
     }
     let assignment_updated = match launch_error {
         Some(error) => sqlx::query(
@@ -442,6 +516,84 @@ pub async fn settle_launch(
     }
     transaction.commit().await.map_err(persistence_error)?;
     Ok(settlement)
+}
+
+/// Whether a launch that ended with `launch_error` lost the native session it continued.
+fn requires_handoff(launch: &RunLaunch, launch_error: Option<&ChatError>) -> bool {
+    launch.attempt.reason == AttemptReason::Continuation
+        && launch_error.is_some_and(|error| error.code == ChatErrorCode::ResumeNotFound)
+}
+
+async fn assignment_unsettled(
+    connection: &mut SqliteConnection,
+    binding: &AgentRunBinding,
+) -> ChatResult<bool> {
+    let settled: Option<bool> = sqlx::query_scalar(
+        "SELECT state IN ('completed', 'failed', 'cancelled')
+         FROM chat_work_assignments WHERE id = ?",
+    )
+    .bind(binding.assignment_id.as_str())
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    Ok(settled == Some(false))
+}
+
+/// Closes the requests still open on the provider thread of `run_id` as interrupted, since the
+/// native session that raised them is gone and can no longer receive an answer.
+async fn interrupt_open_requests_of_run_thread(
+    connection: &mut SqliteConnection,
+    run_id: &ChatAgentRunId,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    sqlx::query(
+        "UPDATE chat_pending_requests
+         SET resolution_state = 'interrupted', resolved_at = ?
+         WHERE resolution_state = 'open'
+           AND thread_id = (SELECT provider_thread_id FROM chat_agent_runs WHERE id = ?)",
+    )
+    .bind(now.as_str())
+    .bind(run_id.as_str())
+    .execute(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
+}
+
+/// Records that the starting run of `binding` found a fresh native session in place of the one
+/// it meant to continue, storing `attempt` as its attempt and interrupting the requests still
+/// open from the lost session. Fails when the run is no longer starting, since its attempt is
+/// then fixed.
+pub async fn record_fresh_session_handoff(
+    connection: &mut SqliteConnection,
+    binding: &AgentRunBinding,
+    attempt: &RunAttempt,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let updated = sqlx::query(
+        "UPDATE chat_agent_runs
+         SET attempt_reason = ?, handoff_reason = ?, context_delivery = ?,
+             delivered_context_bytes = ?, updated_at = ?
+         WHERE id = ? AND state = 'starting'",
+    )
+    .bind(attempt.reason.as_str())
+    .bind(attempt.reason.handoff_reason().map(HandoffReason::as_str))
+    .bind(attempt.context_delivery.as_str())
+    .bind(i64_value(attempt.delivered_context_bytes)?)
+    .bind(now.as_str())
+    .bind(binding.run_id.as_str())
+    .execute(&mut *connection)
+    .await
+    .map_err(persistence_error)?
+    .rows_affected();
+    if updated != 1 {
+        return Err(ChatError::new(
+            ChatErrorCode::Conflict,
+            "The agent run settled before its launch could hand off to a new session",
+            true,
+        ));
+    }
+    interrupt_open_requests_of_run_thread(connection, &binding.run_id, now).await
 }
 
 /// Moves the unsettled run of `binding` to `state`, stamping its start or settle time. Returns
@@ -680,8 +832,9 @@ fn serialization_error<T>(_error: T) -> ChatError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AttemptReason, ContextDelivery, DeliveryKind, HandoffReason, LaunchSettlement,
-        SETTLED_RUN_STATES, unsettled_run_state_sql,
+        AttemptReason, ChatError, ChatErrorCode, ContextDelivery, DeliveredSource, DeliveryKind,
+        FullPackage, HandoffReason, LaunchSettlement, RunAttempt, RunLaunch, SETTLED_RUN_STATES,
+        opened_fresh_native_session, requires_handoff, unsettled_run_state_sql,
     };
 
     #[tokio::test]
@@ -716,6 +869,108 @@ mod tests {
         assert!(LaunchSettlement::Superseded.stops_session());
         assert!(LaunchSettlement::RunSettled.stops_session());
         assert!(LaunchSettlement::ClaimLost.stops_session());
+        assert!(LaunchSettlement::HandoffRequired.stops_session());
+    }
+
+    #[test]
+    fn a_provider_thread_other_than_the_requested_one_is_a_fresh_session() {
+        let stored = "thread:stored".to_string();
+        let other = "thread:other".to_string();
+        assert!(!opened_fresh_native_session(Some(&stored), Some(&stored)));
+        assert!(opened_fresh_native_session(Some(&stored), Some(&other)));
+        assert!(opened_fresh_native_session(Some(&stored), None));
+        assert!(opened_fresh_native_session(None, Some(&other)));
+        assert!(opened_fresh_native_session::<String>(None, None));
+    }
+
+    fn continuation_launch(full: Option<FullPackage>) -> RunLaunch {
+        RunLaunch {
+            claim_token: "claim:continued".to_string(),
+            attempt: RunAttempt {
+                reason: AttemptReason::Continuation,
+                instructions_sha256: Some("a".repeat(64)),
+                model_selection_sha256: Some("b".repeat(64)),
+                context_delivery: ContextDelivery::Delta,
+                delivered_context_bytes: 12,
+                delivered_sources: vec![DeliveredSource {
+                    source_id: "item:trigger".to_string(),
+                    content_sha256: "c".repeat(64),
+                    kind: DeliveryKind::Package,
+                }],
+            },
+            full_prompt_on_fresh_session: full,
+        }
+    }
+
+    #[test]
+    fn a_continuation_that_finds_a_fresh_session_hands_off_with_the_full_package() {
+        let full = FullPackage {
+            prompt: "{\"kind\":\"root\"}\n{\"kind\":\"trigger\"}\n".to_string(),
+            delivered_sources: vec![
+                DeliveredSource {
+                    source_id: "item:root".to_string(),
+                    content_sha256: "d".repeat(64),
+                    kind: DeliveryKind::Package,
+                },
+                DeliveredSource {
+                    source_id: "item:trigger".to_string(),
+                    content_sha256: "c".repeat(64),
+                    kind: DeliveryKind::Package,
+                },
+            ],
+        };
+        let launch = continuation_launch(Some(full.clone()));
+
+        let (prompt, handed_off) = launch.handed_off_to_fresh_session().unwrap();
+
+        assert_eq!(prompt, full.prompt);
+        assert_eq!(handed_off.claim_token, launch.claim_token);
+        assert_eq!(
+            handed_off.attempt,
+            RunAttempt {
+                reason: AttemptReason::Handoff(HandoffReason::NativeSessionLost),
+                instructions_sha256: launch.attempt.instructions_sha256.clone(),
+                model_selection_sha256: launch.attempt.model_selection_sha256.clone(),
+                context_delivery: ContextDelivery::Full,
+                delivered_context_bytes: full.prompt.len() as u64,
+                delivered_sources: full.delivered_sources,
+            }
+        );
+        assert_eq!(
+            handed_off.handed_off_to_fresh_session(),
+            None,
+            "a handoff never hands off again"
+        );
+        assert_eq!(
+            continuation_launch(None).handed_off_to_fresh_session(),
+            None
+        );
+        let fresh = RunLaunch {
+            attempt: RunAttempt {
+                reason: AttemptReason::Fresh,
+                ..launch.attempt.clone()
+            },
+            ..launch
+        };
+        assert_eq!(fresh.handed_off_to_fresh_session(), None);
+    }
+
+    #[test]
+    fn only_a_continuation_that_lost_its_session_requires_a_handoff() {
+        let lost = ChatError::new(ChatErrorCode::ResumeNotFound, "Session not found", true);
+        let other = ChatError::new(ChatErrorCode::DriverUnavailable, "Provider exited", true);
+        let continuation = continuation_launch(None);
+        assert!(requires_handoff(&continuation, Some(&lost)));
+        assert!(!requires_handoff(&continuation, Some(&other)));
+        assert!(!requires_handoff(&continuation, None));
+        let retry = RunLaunch {
+            attempt: RunAttempt {
+                reason: AttemptReason::Retry,
+                ..continuation.attempt.clone()
+            },
+            ..continuation
+        };
+        assert!(!requires_handoff(&retry, Some(&lost)));
     }
 
     #[test]

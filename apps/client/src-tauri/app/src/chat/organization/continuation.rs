@@ -417,39 +417,54 @@ fn package_mismatch_error() -> ChatError {
     )
 }
 
-/// Reads what the native session of `provider_thread_id` has received: the sources delivered
-/// by its runs that reached the provider, and the items those runs posted.
+/// SQL condition that holds when `run`, a run on the provider thread bound to `?1`, started no
+/// earlier than the newest run there that did not continue an earlier session, which opened
+/// the current native session. Older runs delivered to a session that no longer exists.
+const SINCE_SESSION_OPENED_SQL: &str = "run.created_at >= (
+             SELECT max(opener.created_at) FROM chat_agent_runs opener
+             WHERE opener.provider_thread_id = ?1 AND opener.attempt_reason <> 'continuation'
+         )";
+
+/// Reads what the current native session of `provider_thread_id` has received: the sources
+/// delivered by its runs that reached the provider, and the items those runs posted. Runs from
+/// before the session last opened fresh, for example after a provider lost the earlier one,
+/// count for nothing.
 async fn read_session_history(
     pool: &SqlitePool,
     provider_thread_id: &str,
 ) -> ChatResult<SessionHistory> {
-    let delivered = sqlx::query_as::<_, (String, String)>(
+    let delivered_sql = format!(
         "SELECT delivered.source_id, delivered.content_sha256
          FROM chat_agent_run_delivered_sources delivered
          JOIN chat_agent_runs run ON run.id = delivered.run_id
-         WHERE run.provider_thread_id = ?
-           AND run.state IN ('working', 'waiting', 'completed')",
-    )
-    .bind(provider_thread_id)
-    .fetch_all(pool)
-    .await
-    .map_err(persistence_error)?
-    .into_iter()
-    .collect();
-    let own_items = sqlx::query_scalar::<_, String>(
+         WHERE run.provider_thread_id = ?1
+           AND run.state IN ('working', 'waiting', 'completed')
+           AND {SINCE_SESSION_OPENED_SQL}"
+    );
+    let delivered =
+        sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(delivered_sql.as_str()))
+            .bind(provider_thread_id)
+            .fetch_all(pool)
+            .await
+            .map_err(persistence_error)?
+            .into_iter()
+            .collect();
+    let own_items_sql = format!(
         "SELECT semantic.item_id
          FROM chat_work_semantic_updates semantic
          JOIN chat_agent_runs run
            ON run.id = json_extract(semantic.payload_data, '$.agentRunId')
           AND run.assignment_id = semantic.assignment_id
-         WHERE run.provider_thread_id = ?",
-    )
-    .bind(provider_thread_id)
-    .fetch_all(pool)
-    .await
-    .map_err(persistence_error)?
-    .into_iter()
-    .collect();
+         WHERE run.provider_thread_id = ?1
+           AND {SINCE_SESSION_OPENED_SQL}"
+    );
+    let own_items = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(own_items_sql.as_str()))
+        .bind(provider_thread_id)
+        .fetch_all(pool)
+        .await
+        .map_err(persistence_error)?
+        .into_iter()
+        .collect();
     Ok(SessionHistory {
         delivered,
         own_items,
@@ -561,6 +576,25 @@ mod tests {
             decide(false, Some(candidate(Some(changed), false)), false),
             new_session(AttemptReason::Handoff(HandoffReason::AuthorityRevoked)),
             "a revoked authorization beats a changed key"
+        );
+    }
+
+    #[test]
+    fn a_provider_switch_on_a_started_run_never_resumes_its_session() {
+        let switched = ContinuationKey {
+            provider_instance_id: "claude".to_string(),
+            ..key()
+        };
+        let handoff = decide(false, Some(candidate(Some(switched.clone()), true)), false);
+        assert_eq!(
+            handoff,
+            new_session(AttemptReason::Handoff(HandoffReason::KeyChanged))
+        );
+        assert_eq!(handoff.reuse_thread, None);
+        assert_eq!(
+            decide(true, Some(candidate(Some(switched), true)), false),
+            new_session(AttemptReason::Retry),
+            "a later run of the same assignment retries in a new session"
         );
     }
 
@@ -1090,6 +1124,79 @@ mod tests {
             .unwrap()
             .unwrap();
             assert_eq!(ids(&other_thread.text).len(), 5);
+        }
+
+        #[tokio::test]
+        async fn a_session_that_opened_fresh_receives_again_what_the_lost_session_had() {
+            let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+            let package = test_package_records(
+                ("item:trigger", "Now update the docs"),
+                Some(("item:root", "Plan the release")),
+                &[("item:human", "Looks good")],
+                0,
+            );
+            let serialized = store_package(&pool, &package).await;
+            let sha = |id: &str| {
+                package
+                    .iter()
+                    .filter_map(|(_, source)| source.as_ref())
+                    .find(|(source_id, _, _)| source_id == id)
+                    .map(|(_, _, sha)| sha.clone())
+                    .unwrap()
+            };
+            // The earlier session received the root and the human reply. The provider then
+            // opened a fresh session for the next run, which received only the trigger of an
+            // earlier package.
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "UPDATE chat_agent_runs SET state = 'completed' WHERE id = 'run:working';
+                 UPDATE chat_agent_runs SET state = 'failed' WHERE id = 'run:queued';
+                 INSERT INTO chat_turns
+                    (id, thread_id, ordinal, state, safety_mode, interaction_mode, created_at,
+                     updated_at)
+                 VALUES ('turn:later', 'thread-1', 3, 'active', 'ask_for_approval', 'build',
+                         '2026-10-20T12:30:00.000Z', '2026-10-20T12:30:00.000Z');
+                 INSERT INTO chat_agent_runs
+                    (id, assignment_id, project_id, working_folder_id, execution_environment_id,
+                     teammate_policy_revision_id, authorization_revision_id,
+                     authorization_scope_digest, provider_turn_id, provider_thread_id, state,
+                     run_ordinal, attempt_reason, handoff_reason, created_at, updated_at)
+                 SELECT 'run:later', assignment_id, project_id, working_folder_id,
+                        execution_environment_id, teammate_policy_revision_id,
+                        authorization_revision_id, authorization_scope_digest, 'turn:later',
+                        provider_thread_id, 'working', 3, 'handoff', 'native_session_lost',
+                        '2026-10-20T12:30:00.000Z', '2026-10-20T12:30:00.000Z'
+                 FROM chat_agent_runs WHERE id = 'run:working';
+                 INSERT INTO chat_agent_run_delivered_sources
+                    (run_id, source_id, content_sha256, delivery_kind, delivered_at)
+                 VALUES
+                    ('run:working', 'item:root', '{root}', 'package', '2026-10-20T12:00:00.000Z'),
+                    ('run:working', 'item:human', '{human}', 'package',
+                     '2026-10-20T12:00:00.000Z'),
+                    ('run:later', 'item:human', '{human}', 'package',
+                     '2026-10-20T12:30:00.000Z');",
+                root = sha("item:root"),
+                human = sha("item:human"),
+            )))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let delta = build_delta_package(
+                &pool,
+                &assignment(),
+                "context:later",
+                &serialized,
+                "thread-1",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            assert_eq!(
+                ids(&delta.text),
+                vec!["item:root", "item:trigger"],
+                "only what the current session received is skipped"
+            );
         }
     }
 }

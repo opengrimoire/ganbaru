@@ -8,7 +8,8 @@ use super::continuation::{self, CandidateRun, ContinuationKey, TransitionInput};
 use super::reads::read_policy;
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
 use ganbaru_chat::agent_runs::{
-    AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind, RunAttempt, RunLaunch,
+    AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind, FullPackage, LaunchSettlement,
+    RunAttempt, RunLaunch,
 };
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, SqlitePool};
@@ -24,9 +25,31 @@ pub(super) async fn dispatch_assignment_job(
     let Some(claim) = claim_dispatch_job(&pool, &assignment_id, &device_id, &now).await? else {
         return Ok(());
     };
-    let result =
-        dispatch_claimed_assignment(app.clone(), db_url.clone(), &pool, &assignment_id, &claim)
-            .await;
+    let mut result = dispatch_claimed_assignment(
+        app.clone(),
+        db_url.clone(),
+        &pool,
+        &assignment_id,
+        &claim,
+        false,
+    )
+    .await;
+    if result
+        .as_ref()
+        .is_ok_and(|launch| launch.settlement == Some(LaunchSettlement::HandoffRequired))
+    {
+        // The continued native session was lost, so the next run opens a new session with the
+        // full package. That run is a handoff, which never requires another one.
+        result = dispatch_claimed_assignment(
+            app.clone(),
+            db_url.clone(),
+            &pool,
+            &assignment_id,
+            &claim,
+            true,
+        )
+        .await;
+    }
     let launch = match result {
         Ok(launch) => launch,
         Err(error) => {
@@ -46,9 +69,11 @@ pub(super) async fn dispatch_assignment_job(
 #[derive(Debug)]
 pub(super) struct AssignmentLaunch {
     pub(super) run_id: ChatAgentRunId,
-    /// Set when the provider refused or never received the turn. The launch settlement already
-    /// failed the assignment and posted its failure message.
+    /// Set when the provider refused or never received the turn. Unless the settlement asks for
+    /// a handoff, it already failed the assignment and posted its failure message.
     pub(super) launch_error: Option<ChatError>,
+    /// How the launch settled for the assignment, absent when the send replayed a receipt.
+    pub(super) settlement: Option<LaunchSettlement>,
 }
 
 /// A claimed dispatch job and the system-level instructions its run sends, composed from the
@@ -217,6 +242,7 @@ async fn dispatch_claimed_assignment(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
     claim: &ClaimedDispatch,
+    native_session_lost: bool,
 ) -> ChatResult<AssignmentLaunch> {
     let row = sqlx::query(
         "SELECT
@@ -475,7 +501,7 @@ async fn dispatch_claimed_assignment(
         key: &key,
         earlier_run_of_assignment: run_ordinal > 1,
         candidate: candidate.as_ref().map(StoredCandidate::as_candidate),
-        native_session_lost: false,
+        native_session_lost,
     });
     let (existing_thread_id, expected_thread_revision) = match (decision.reuse_thread, candidate) {
         (Some(thread_id), Some(candidate)) => (
@@ -553,14 +579,14 @@ async fn dispatch_claimed_assignment(
         }
         _ => None,
     };
-    let (prompt, context_delivery, delivered_sources) = match delta {
-        Some(delta) => (delta.text, ContextDelivery::Delta, delta.sources),
-        None => (
-            full_package,
-            ContextDelivery::Full,
-            package_sources(pool, &context_package_id).await?,
-        ),
-    };
+    let delivery = choose_context_delivery(
+        decision.reason,
+        delta,
+        FullPackage {
+            prompt: full_package,
+            delivered_sources: package_sources(pool, &context_package_id).await?,
+        },
+    );
     let request = super::super::send_commands::SendChatTurnCommand {
         command: ChatCommandContext {
             client_command_id: ChatCommandId::new(format!(
@@ -587,7 +613,7 @@ async fn dispatch_claimed_assignment(
             resolved_runtime_approval,
             has_native_target,
         ),
-        prompt,
+        prompt: delivery.prompt,
         attachment_ids,
         mentions,
     };
@@ -597,11 +623,12 @@ async fn dispatch_claimed_assignment(
             reason: decision.reason,
             instructions_sha256: Some(key.instructions_sha256),
             model_selection_sha256: Some(key.model_selection_sha256),
-            context_delivery,
+            context_delivery: delivery.context_delivery,
             delivered_context_bytes: u64::try_from(request.prompt.len())
                 .map_err(|_| ChatError::validation("prompt", "Assignment context is too large"))?,
-            delivered_sources,
+            delivered_sources: delivery.delivered_sources,
         },
+        full_prompt_on_fresh_session: delivery.full_prompt_on_fresh_session,
     };
     let run_id = ChatAgentRunId::new(new_id("agent-run")?).map_err(identifier_error)?;
     let sent = super::super::turns::send_turn(
@@ -633,7 +660,45 @@ async fn dispatch_claimed_assignment(
     Ok(AssignmentLaunch {
         run_id,
         launch_error: sent.launch_error,
+        settlement: sent.launch_settlement,
     })
+}
+
+/// What the first turn of a run sends and records as delivered.
+#[derive(Debug, Eq, PartialEq)]
+struct PlannedDelivery {
+    prompt: String,
+    context_delivery: ContextDelivery,
+    delivered_sources: Vec<DeliveredSource>,
+    /// The full package a continuation sends instead when its session turns out to be new.
+    full_prompt_on_fresh_session: Option<FullPackage>,
+}
+
+/// Chooses between the delta and the full package. A continuation with a delta sends it, and
+/// every other run, or a continuation whose delta did not fit, sends the full package. A
+/// continuation keeps the full package for a session the provider opens fresh, so that run
+/// records a handoff instead of failing.
+fn choose_context_delivery(
+    reason: AttemptReason,
+    delta: Option<continuation::DeltaPackage>,
+    full: FullPackage,
+) -> PlannedDelivery {
+    let full_prompt_on_fresh_session =
+        (reason == AttemptReason::Continuation).then(|| full.clone());
+    match (reason, delta) {
+        (AttemptReason::Continuation, Some(delta)) => PlannedDelivery {
+            prompt: delta.text,
+            context_delivery: ContextDelivery::Delta,
+            delivered_sources: delta.sources,
+            full_prompt_on_fresh_session,
+        },
+        _ => PlannedDelivery {
+            prompt: full.prompt,
+            context_delivery: ContextDelivery::Full,
+            delivered_sources: full.delivered_sources,
+            full_prompt_on_fresh_session,
+        },
+    }
 }
 
 /// The sources of the frozen context package `context_package_id`, in package order, as
@@ -1233,6 +1298,89 @@ mod tests {
     }
 
     /// Which earlier run a later assignment of the fixture's reply thread could continue.
+    mod context_delivery {
+        use super::super::{PlannedDelivery, choose_context_delivery};
+        use crate::chat::organization::continuation::DeltaPackage;
+        use ganbaru_chat::agent_runs::{
+            AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind, FullPackage,
+            HandoffReason,
+        };
+
+        fn source(source_id: &str, digit: char) -> DeliveredSource {
+            DeliveredSource {
+                source_id: source_id.to_string(),
+                content_sha256: digit.to_string().repeat(64),
+                kind: DeliveryKind::Package,
+            }
+        }
+
+        fn full() -> FullPackage {
+            FullPackage {
+                prompt: "header\nroot\nearlier\ntrigger".to_string(),
+                delivered_sources: vec![
+                    source("item:root", 'a'),
+                    source("item:earlier", 'b'),
+                    source("item:trigger", 'c'),
+                ],
+            }
+        }
+
+        fn delta() -> DeltaPackage {
+            DeltaPackage {
+                text: "continuation header\ntrigger".to_string(),
+                sources: vec![source("item:trigger", 'c')],
+            }
+        }
+
+        #[test]
+        fn a_continuation_sends_its_delta_and_keeps_the_full_package_for_a_fresh_session() {
+            assert_eq!(
+                choose_context_delivery(AttemptReason::Continuation, Some(delta()), full()),
+                PlannedDelivery {
+                    prompt: "continuation header\ntrigger".to_string(),
+                    context_delivery: ContextDelivery::Delta,
+                    delivered_sources: vec![source("item:trigger", 'c')],
+                    full_prompt_on_fresh_session: Some(full()),
+                }
+            );
+        }
+
+        #[test]
+        fn a_continuation_whose_delta_did_not_fit_sends_the_full_package() {
+            assert_eq!(
+                choose_context_delivery(AttemptReason::Continuation, None, full()),
+                PlannedDelivery {
+                    prompt: full().prompt,
+                    context_delivery: ContextDelivery::Full,
+                    delivered_sources: full().delivered_sources,
+                    full_prompt_on_fresh_session: Some(full()),
+                }
+            );
+        }
+
+        #[test]
+        fn every_run_in_a_new_session_sends_the_full_package_without_a_fallback() {
+            for reason in [
+                AttemptReason::Fresh,
+                AttemptReason::Retry,
+                AttemptReason::Handoff(HandoffReason::NativeSessionLost),
+                AttemptReason::Handoff(HandoffReason::KeyChanged),
+                AttemptReason::Handoff(HandoffReason::AuthorityRevoked),
+            ] {
+                assert_eq!(
+                    choose_context_delivery(reason, Some(delta()), full()),
+                    PlannedDelivery {
+                        prompt: full().prompt,
+                        context_delivery: ContextDelivery::Full,
+                        delivered_sources: full().delivered_sources,
+                        full_prompt_on_fresh_session: None,
+                    },
+                    "{reason:?}"
+                );
+            }
+        }
+    }
+
     mod continuation_candidate {
         use super::super::{CandidateScope, StoredCandidate, read_continuation_candidate};
         use crate::chat::organization::continuation::ContinuationKey;
@@ -1379,9 +1527,12 @@ mod tests {
             pending_live_input_ids, prepare_assignment_input, record_assignment_input_delivered,
         };
         use crate::chat::organization::assignments::reclaim_stale_dispatch_claims;
+        use crate::chat::organization::continuation::{
+            self, CandidateRun, ContinuationKey, TransitionInput,
+        };
         use ganbaru_chat::agent_runs::{
             AgentRunBinding, AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind,
-            LaunchAttempt, LaunchSettlement, RunAttempt, RunLaunch,
+            HandoffReason, LaunchAttempt, LaunchSettlement, RunAttempt, RunLaunch,
             insert_assignment_failure_message, settle_launch,
         };
         use ganbaru_chat_contracts::models::*;
@@ -1467,6 +1618,7 @@ mod tests {
                         delivered("item:folders", 'b'),
                     ],
                 },
+                full_prompt_on_fresh_session: None,
             }
         }
 
@@ -1820,6 +1972,7 @@ mod tests {
             let failed = AssignmentLaunch {
                 run_id: run_id.clone(),
                 launch_error: Some(launch_error()),
+                settlement: None,
             };
             assert!(
                 !mark_initial_assignment_input_delivered(&pool, &assignment(), &failed)
@@ -1831,6 +1984,7 @@ mod tests {
             let unstarted = AssignmentLaunch {
                 run_id: run_id.clone(),
                 launch_error: None,
+                settlement: None,
             };
             assert!(
                 !mark_initial_assignment_input_delivered(&pool, &assignment(), &unstarted)
@@ -1842,6 +1996,7 @@ mod tests {
             let missing = AssignmentLaunch {
                 run_id: ChatAgentRunId::new("run:missing").unwrap(),
                 launch_error: None,
+                settlement: None,
             };
             assert!(
                 !mark_initial_assignment_input_delivered(&pool, &assignment(), &missing)
@@ -1998,6 +2153,190 @@ mod tests {
             assert_eq!(late, LaunchSettlement::RunSettled);
             assert_eq!(run_and_job(&pool).await.0, "failed");
             assert_eq!(assignment_and_job(&pool).await, pair("queued", "queued"));
+        }
+
+        /// The fixture launch as a continuation of an earlier native session.
+        fn continuation_launch(reason: AttemptReason) -> RunLaunch {
+            let launch = folder_launch();
+            RunLaunch {
+                attempt: RunAttempt {
+                    reason,
+                    context_delivery: ContextDelivery::Delta,
+                    ..launch.attempt
+                },
+                ..launch
+            }
+        }
+
+        fn session_lost() -> ChatError {
+            ChatError::new(
+                ChatErrorCode::ResumeNotFound,
+                "The provider session was not found",
+                true,
+            )
+        }
+
+        /// Opens an approval on the fixture provider thread, as a session that is later lost
+        /// leaves it.
+        async fn open_approval(pool: &SqlitePool) {
+            sqlx::query(
+                "INSERT INTO chat_pending_requests
+                    (id, thread_id, turn_id, provider_request_id, request_kind,
+                     safe_display_data, allowed_decisions_data, opened_sequence, opened_at)
+                 VALUES ('request:detached', 'thread-1', 'turn:working', 'native-request',
+                         'approval', '{}', '[]', 1, ?)",
+            )
+            .bind(CLAIMED_AT)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        async fn approval_state(pool: &SqlitePool) -> (String, Option<String>) {
+            sqlx::query_as(
+                "SELECT resolution_state, resolved_at FROM chat_pending_requests
+                 WHERE id = 'request:detached'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_continuation_that_lost_its_session_fails_only_its_run_and_asks_for_a_handoff() {
+            let pool = starting_pool().await;
+            open_approval(&pool).await;
+            let binding = working_binding(&pool).await;
+            let now = "2026-10-20T12:01:00.000Z";
+
+            let settlement = settle_launch(
+                &pool,
+                &binding,
+                &continuation_launch(AttemptReason::Continuation),
+                Some(&session_lost()),
+                &at(now),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(settlement, LaunchSettlement::HandoffRequired);
+            assert!(settlement.stops_session());
+            assert_eq!(
+                run_and_job(&pool).await,
+                (
+                    "failed".to_string(),
+                    Some(now.to_string()),
+                    "claimed".to_string(),
+                    None
+                )
+            );
+            assert_eq!(assignment_and_job(&pool).await, pair("queued", "claimed"));
+            assert_eq!(failure_messages(&pool).await, 0);
+            assert!(delivered_sources(&pool).await.is_empty());
+            assert_eq!(
+                approval_state(&pool).await,
+                ("interrupted".to_string(), Some(now.to_string())),
+                "an approval of the lost session is closed, never left open"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_lost_session_fails_the_assignment_once_the_run_is_no_longer_a_continuation() {
+            for reason in [
+                AttemptReason::Handoff(HandoffReason::NativeSessionLost),
+                AttemptReason::Retry,
+                AttemptReason::Fresh,
+            ] {
+                let pool = starting_pool().await;
+                let binding = working_binding(&pool).await;
+
+                let settlement = settle_launch(
+                    &pool,
+                    &binding,
+                    &continuation_launch(reason),
+                    Some(&session_lost()),
+                    &at("2026-10-20T12:01:00.000Z"),
+                )
+                .await
+                .unwrap();
+
+                assert_eq!(settlement, LaunchSettlement::Recorded, "{reason:?}");
+                assert_eq!(assignment_and_job(&pool).await, pair("failed", "failed"));
+                assert_eq!(failure_messages(&pool).await, 1);
+            }
+
+            let pool = starting_pool().await;
+            sqlx::query(
+                "UPDATE chat_work_assignments SET state = 'cancelled',
+                     settled_at = '2026-10-20T12:00:30.000Z'
+                 WHERE id = 'assignment:folders'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let binding = working_binding(&pool).await;
+            let settlement = settle_launch(
+                &pool,
+                &binding,
+                &continuation_launch(AttemptReason::Continuation),
+                Some(&session_lost()),
+                &at("2026-10-20T12:01:00.000Z"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                settlement,
+                LaunchSettlement::Superseded,
+                "a settled assignment never hands off"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_restart_that_missed_the_handoff_retries_the_assignment_in_a_new_session() {
+            let pool = starting_pool().await;
+            let binding = working_binding(&pool).await;
+            settle_launch(
+                &pool,
+                &binding,
+                &continuation_launch(AttemptReason::Continuation),
+                Some(&session_lost()),
+                &at("2026-10-20T12:01:00.000Z"),
+            )
+            .await
+            .unwrap();
+
+            // The application stops before the handoff run starts, so the claimed job is
+            // requeued once it is stale.
+            reclaim_stale_dispatch_claims(&pool, &at("2026-10-20T12:06:00.000Z"))
+                .await
+                .unwrap();
+            assert_eq!(assignment_and_job(&pool).await, pair("queued", "queued"));
+            let earlier_runs: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM chat_agent_runs WHERE assignment_id = 'assignment:folders'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(earlier_runs > 0);
+
+            let key = ContinuationKey {
+                authorization_scope_digest: format!("{:064}", 0),
+                provider_instance_id: "fake-instance".to_string(),
+                model_selection_sha256: "d".repeat(64),
+                instructions_sha256: "c".repeat(64),
+            };
+            let decision = continuation::decide_session_transition(&TransitionInput {
+                key: &key,
+                earlier_run_of_assignment: earlier_runs > 0,
+                candidate: Some(CandidateRun {
+                    thread_id: "thread-1",
+                    key: Some(key.clone()),
+                    authorization_valid: true,
+                }),
+                native_session_lost: false,
+            });
+            assert_eq!(decision.reason, AttemptReason::Retry);
+            assert_eq!(decision.reuse_thread, None);
         }
 
         #[tokio::test]

@@ -38,7 +38,8 @@ function settings(sendKey: "enter" | "mod_enter" = "enter"): ChatSettingsRead {
       behavior: {
         sendKey, restoreLastSelectedThread: true, showReasoningSummaries: true,
         automaticallyFoldSettledWork: true, timelineDensity: "comfortable", terminalScrollbackLines: 1_000,
-        idleSessionTimeoutSeconds: 600, confirmMultilineTerminalPaste: true,
+        idleSessionTimeoutSeconds: 600, confirmMultilineTerminalPaste: true, notifyWaitingForYou: true,
+        notifyReviewReady: true, notifyFailures: true, announceBackgroundWork: true, notificationIncludeContent: false,
       },
     },
     providerFamilies: [], providerInstances: [], credentialStoreAvailability: "available",
@@ -84,6 +85,7 @@ beforeEach(() => {
   vi.spyOn(chatApi, "listChatNavigationChannels").mockResolvedValue([channel(), channel("other")]);
   vi.spyOn(chatApi, "listChatTeammates").mockResolvedValue([]);
   vi.spyOn(chatApi, "listChatWaitingAssignments").mockResolvedValue({ items: [], total: 0 });
+  vi.spyOn(chatApi, "listChatReviewQueue").mockResolvedValue({ items: [], total: 0, truncated: false });
   vi.spyOn(chatApi, "readChatProjectPrimaryWorkingFolder").mockRejectedValue(new Error("no working folder"));
   vi.spyOn(chatApi, "readChatChannelPage").mockImplementation(async (channelId) => ({
     channelId, messages: [message(channelId)], previousCursor: null, revision: 1,

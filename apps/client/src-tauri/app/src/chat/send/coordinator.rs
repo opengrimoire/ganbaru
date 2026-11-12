@@ -6,7 +6,9 @@ use super::persistence::{
     persist_fresh_session_handoff, persist_user_turn, read_attachment_references,
     read_thread_runtime_data, replay_send_receipt,
 };
-use super::session::{EnsureSessionContext, ensure_session_with_executable_recovery};
+use super::session::{
+    EnsureSessionContext, InternalMcpLaunch, ensure_session_with_executable_recovery,
+};
 use super::support::{
     PROVIDER_START_TIMEOUT, TURN_OPERATION_TIMEOUT, chat_pool, device_state_error, now_timestamp,
     operation_context, versioned_value,
@@ -16,6 +18,7 @@ use super::validation::{
     validate_provider_selection, validate_send_mentions,
 };
 use crate::chat::device_state::{full_access_is_trusted, read_active_device_scope};
+use crate::chat::internal_mcp::EndpointIssue;
 use crate::chat::send_commands::{SendChatTurnCommand, SendChatTurnResult};
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use crate::vault;
@@ -193,7 +196,7 @@ pub(crate) async fn send_turn(
     }
     let fresh_native_session = !matches!(snapshot.session_state, ProviderSessionState::Ready)
         || snapshot.session_id.is_none();
-    if authority_support.internal_host_tools {
+    let internal_mcp = if authority_support.internal_host_tools {
         if fresh_native_session {
             mcp_registry.stop_thread_endpoint(&thread_id).await;
         }
@@ -212,15 +215,23 @@ pub(crate) async fn send_turn(
                 origin.run().is_some(),
             )
             .await?;
-        configuration.internal_mcp = Some(ProviderInternalMcpConfig {
-            name: "ganbaru-chat".to_string(),
-            url: resource_endpoint.url,
-            bearer_token: resource_endpoint.bearer_token,
+        let launch = InternalMcpLaunch {
             organizational_authority: origin.run().is_some(),
-        });
+        };
+        configuration.internal_mcp = match resource_endpoint {
+            EndpointIssue::Created(endpoint) => Some(launch.config(endpoint)),
+            // Another send created the endpoint first. A fresh session starts a process, so it
+            // takes a rotated token now; a reused one keeps the token its process holds.
+            EndpointIssue::Running if fresh_native_session => {
+                Some(launch.rotated_config(&app, &thread_id).await?)
+            }
+            EndpointIssue::Running => None,
+        };
+        Some(launch)
     } else {
         configuration.internal_mcp = None;
-    }
+        None
+    };
     let mut new_driver = None;
     let continuation_group_id = if let Some(existing) = &existing {
         existing.continuation_group_id.clone()
@@ -302,6 +313,7 @@ pub(crate) async fn send_turn(
             owner: &owner,
             new_driver,
             configuration,
+            internal_mcp,
             workspace: &authorized,
             thread_id: &thread_id,
             existing: existing.as_ref(),

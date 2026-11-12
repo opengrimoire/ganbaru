@@ -21,6 +21,7 @@ use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use rmcp::{ErrorData as McpError, ServerHandler};
+use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::future::Future;
@@ -238,6 +239,8 @@ impl EndpointState {
     }
 }
 
+/// The plaintext token a provider process authenticates with, returned only when the endpoint
+/// is created or its token rotates. The registry keeps only its digest.
 #[derive(Clone, Eq, PartialEq)]
 pub struct InternalMcpEndpoint {
     pub url: String,
@@ -254,8 +257,21 @@ impl std::fmt::Debug for InternalMcpEndpoint {
     }
 }
 
+/// What [`InternalMcpRegistry::ensure_thread_endpoint`] found. Only a newly created endpoint
+/// carries a plaintext token; a running one rotates its token before another provider
+/// process can authenticate.
+#[derive(Debug)]
+pub enum EndpointIssue {
+    Created(InternalMcpEndpoint),
+    Running,
+}
+
+/// SHA-256 digest of the token an endpoint accepts, shared with its request authorization.
+type TokenDigest = Arc<RwLock<[u8; 32]>>;
+
 struct RunningEndpoint {
-    descriptor: InternalMcpEndpoint,
+    url: String,
+    token_digest: TokenDigest,
     state: Arc<EndpointState>,
     shutdown: oneshot::Sender<()>,
 }
@@ -273,11 +289,12 @@ impl InternalMcpRegistry {
         vault_root: PathBuf,
         thread_id: ChatThreadId,
         organizational_pending: bool,
-    ) -> ChatResult<InternalMcpEndpoint> {
-        if let Some(endpoint) = self.endpoints.lock().await.get(&thread_id) {
-            return Ok(endpoint.descriptor.clone());
+    ) -> ChatResult<EndpointIssue> {
+        if self.endpoints.lock().await.contains_key(&thread_id) {
+            return Ok(EndpointIssue::Running);
         }
         let token = generate_bearer_token()?;
+        let token_digest = Arc::new(RwLock::new(bearer_token_digest(&token)));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(endpoint_error)?;
@@ -290,7 +307,7 @@ impl InternalMcpRegistry {
             thread_id: thread_id.clone(),
             state: Arc::clone(&state),
         };
-        let router = endpoint_router(handler, token.clone());
+        let router = endpoint_router(handler, Arc::clone(&token_digest));
         let (shutdown, shutdown_receiver) = oneshot::channel();
         tauri::async_runtime::spawn(serve_endpoint(
             listener,
@@ -298,24 +315,46 @@ impl InternalMcpRegistry {
             EndpointConnectionLimits::default(),
             shutdown_receiver,
         ));
-        let descriptor = InternalMcpEndpoint {
-            url: format!("http://{address}/mcp"),
-            bearer_token: token,
-        };
+        let url = format!("http://{address}/mcp");
         let mut endpoints = self.endpoints.lock().await;
-        if let Some(existing) = endpoints.get(&thread_id) {
+        if endpoints.contains_key(&thread_id) {
             let _ = shutdown.send(());
-            return Ok(existing.descriptor.clone());
+            return Ok(EndpointIssue::Running);
         }
         endpoints.insert(
             thread_id,
             RunningEndpoint {
-                descriptor: descriptor.clone(),
+                url: url.clone(),
+                token_digest,
                 state,
                 shutdown,
             },
         );
-        Ok(descriptor)
+        Ok(EndpointIssue::Created(InternalMcpEndpoint {
+            url,
+            bearer_token: token,
+        }))
+    }
+
+    /// Replaces the token of the thread's running endpoint and returns the new plaintext for a
+    /// provider process about to start. Requests with the previous token fail from this point.
+    pub async fn rotate_thread_token(
+        &self,
+        thread_id: &ChatThreadId,
+    ) -> ChatResult<InternalMcpEndpoint> {
+        let endpoints = self.endpoints.lock().await;
+        let endpoint = endpoints.get(thread_id).ok_or_else(|| {
+            ChatError::new(
+                ChatErrorCode::TransportUnavailable,
+                "The Chat host tool endpoint is not running",
+                true,
+            )
+        })?;
+        let bearer_token = replace_bearer_token(&endpoint.token_digest).await?;
+        Ok(InternalMcpEndpoint {
+            url: endpoint.url.clone(),
+            bearer_token,
+        })
     }
 
     pub async fn activate_run_scope(
@@ -1039,7 +1078,7 @@ fn preview_tool_error(operation: &str) -> ChatError {
 
 /// Builds the authenticated `/mcp` route for one endpoint. rmcp reads request bodies itself,
 /// so the body cap is set on its service rather than as an axum layer.
-fn endpoint_router<H>(handler: H, token: String) -> Router
+fn endpoint_router<H>(handler: H, token_digest: TokenDigest) -> Router
 where
     H: ServerHandler + Clone + Send + Sync + 'static,
 {
@@ -1059,7 +1098,7 @@ where
             authorize_request(
                 request,
                 next,
-                token.clone(),
+                Arc::clone(&token_digest),
                 semaphore.clone(),
                 Arc::clone(&sessions),
             )
@@ -1149,18 +1188,21 @@ fn admits_session_request(
 async fn authorize_request(
     request: Request<Body>,
     next: Next,
-    expected_token: String,
+    token_digest: TokenDigest,
     semaphore: Arc<Semaphore>,
     sessions: Arc<LocalSessionManager>,
 ) -> Response {
-    if !request_targets_loopback(&request)
-        || !request
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .is_some_and(|value| constant_time_equal(value.as_bytes(), expected_token.as_bytes()))
-    {
+    let presented_digest = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(bearer_token_digest);
+    let authorized = match presented_digest {
+        Some(presented) => constant_time_equal(&presented, &*token_digest.read().await),
+        None => false,
+    };
+    if !request_targets_loopback(&request) || !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let open_sessions = sessions.sessions.read().await.len();
@@ -1208,6 +1250,19 @@ fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
 
 fn generate_bearer_token() -> ChatResult<String> {
     secure_random_hex(32)
+}
+
+/// The SHA-256 digest an endpoint keeps in place of its token. Comparing digests of equal
+/// length keeps the check constant time whatever length a caller presents.
+fn bearer_token_digest(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
+}
+
+/// Generates a token, stores its digest in `token_digest`, and returns the plaintext.
+async fn replace_bearer_token(token_digest: &RwLock<[u8; 32]>) -> ChatResult<String> {
+    let token = generate_bearer_token()?;
+    *token_digest.write().await = bearer_token_digest(&token);
+    Ok(token)
 }
 
 pub(crate) fn generate_opaque_handle(prefix: &str) -> ChatResult<String> {
@@ -1337,7 +1392,10 @@ mod tests {
     #[tokio::test]
     async fn endpoint_refuses_request_bodies_over_the_declared_limit() {
         let token = generate_bearer_token().expect("token");
-        let router = endpoint_router(EmptyHandler, token.clone());
+        let router = endpoint_router(
+            EmptyHandler,
+            Arc::new(RwLock::new(bearer_token_digest(&token))),
+        );
         let (address, _shutdown, _server) = test_endpoint(router, MAX_MCP_CONNECTIONS).await;
         let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
         let body = vec![b' '; MAX_MCP_REQUEST_BYTES + 1];
@@ -1492,6 +1550,52 @@ mod tests {
                 "{output}"
             );
         }
+    }
+
+    /// The status line an authenticated `/mcp` request with `token` gets.
+    async fn mcp_status(address: std::net::SocketAddr, token: &str) -> String {
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let head = format!(
+            "POST /mcp HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        );
+        client.write_all(head.as_bytes()).await.unwrap();
+        let response = read_until_closed(&mut client).await;
+        response.lines().next().unwrap_or_default().to_string()
+    }
+
+    #[tokio::test]
+    async fn rotated_tokens_replace_the_previous_one_and_only_exact_tokens_pass() {
+        let first = generate_bearer_token().expect("token");
+        let token_digest = Arc::new(RwLock::new(bearer_token_digest(&first)));
+        let router = endpoint_router(EmptyHandler, Arc::clone(&token_digest));
+        let (address, _shutdown, _server) = test_endpoint(router, MAX_MCP_CONNECTIONS).await;
+        let unauthorized = "HTTP/1.1 401 Unauthorized";
+        assert_ne!(mcp_status(address, &first).await, unauthorized);
+        for wrong in [&first[..63], &format!("{first}0"), ""] {
+            assert_eq!(mcp_status(address, wrong).await, unauthorized, "{wrong}");
+        }
+
+        let second = replace_bearer_token(&token_digest).await.expect("rotate");
+        assert_ne!(second, first);
+        assert_eq!(mcp_status(address, &first).await, unauthorized);
+        assert_ne!(mcp_status(address, &second).await, unauthorized);
+    }
+
+    /// The registry keeps a digest whose bytes do not contain the token in any encoding.
+    #[tokio::test]
+    async fn endpoints_keep_only_a_digest_of_their_token() {
+        let token_digest = RwLock::new([0; 32]);
+        let token = replace_bearer_token(&token_digest).await.expect("token");
+        let stored = *token_digest.read().await;
+        assert_eq!(stored, bearer_token_digest(&token));
+        let stored_hex: String = stored.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_ne!(stored_hex, token);
+        assert!(!token.contains(&stored_hex[..16]));
+        let created = EndpointIssue::Created(InternalMcpEndpoint {
+            url: "http://127.0.0.1:41000/mcp".to_string(),
+            bearer_token: token.clone(),
+        });
+        assert!(!format!("{created:?}").contains(&token));
     }
 
     #[test]

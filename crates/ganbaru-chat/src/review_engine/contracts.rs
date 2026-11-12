@@ -1,6 +1,8 @@
 //! Stable wire contracts for Chat review snapshots and actions.
 
-use super::super::models::{ChatThreadId, ChatTurnId, ProjectWorkingFolderId};
+use super::super::models::{
+    ChatThreadId, ChatTurnId, ChatWorkAssignmentId, ProjectWorkingFolderId,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -55,6 +57,11 @@ pub enum ReviewDiffSource {
     ProviderTurn {
         turn_id: ChatTurnId,
     },
+    /// Every run of one work assignment, from the first run's pre checkpoint to the last
+    /// settled post checkpoint, across provider threads changed by handoffs.
+    Assignment {
+        assignment_id: ChatWorkAssignmentId,
+    },
 }
 
 impl ReviewDiffSource {
@@ -66,7 +73,14 @@ impl ReviewDiffSource {
             Self::Branch { .. } => "branch",
             Self::ChangeRequest { .. } => "change_request",
             Self::ProviderTurn { .. } => "provider_turn",
+            Self::Assignment { .. } => "assignment",
         }
+    }
+
+    /// Whether files in this source can include changes Git operations brought in during
+    /// the reviewed runs, so the authored path filter applies.
+    pub fn filters_authored_paths(&self) -> bool {
+        matches!(self, Self::Checkpoint { .. } | Self::Assignment { .. })
     }
 }
 
@@ -137,6 +151,21 @@ pub struct ReviewFileFlagsRead {
     pub provider_reported: bool,
     pub git_observed: bool,
     pub read_only: bool,
+    /// The reviewed work changed this file, rather than a pull, merge, or other Git operation
+    /// that ran during it. True whenever the authored path filter is not needed or could not run.
+    pub authored: bool,
+}
+
+/// Whether the authored path filter ran for a review snapshot.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewAuthoredPathsStatus {
+    /// HEAD did not move during the reviewed work, or the source has no Git history to filter.
+    NotNeeded,
+    /// Files brought in by Git operations are marked as not authored.
+    Computed,
+    /// The filter could not run, so every file is marked as authored.
+    Unavailable,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -204,6 +233,7 @@ pub struct ChatReviewOpenRead {
     pub totals: ReviewTotalsRead,
     pub preferred_patch: Option<ReviewFilePatchRead>,
     pub freshness: ReviewFreshness,
+    pub authored_paths: ReviewAuthoredPathsStatus,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

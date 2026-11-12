@@ -1,0 +1,149 @@
+{
+  "calls": [
+    {
+      "call": "start_session",
+      "result": "ok"
+    },
+    {
+      "call": "send_turn",
+      "result": "ok"
+    },
+    {
+      "call": "resolve_approval",
+      "result": "ok"
+    }
+  ],
+  "events": [
+    {
+      "type": "session_started",
+      "state": "ready"
+    },
+    {
+      "type": "session_configured"
+    },
+    {
+      "type": "turn_started",
+      "turn": "turn-1",
+      "state": "active"
+    },
+    {
+      "type": "thread_started",
+      "turn": "turn-1"
+    },
+    {
+      "type": "thread_metadata_updated",
+      "turn": "turn-1"
+    },
+    {
+      "type": "item_started",
+      "turn": "turn-1",
+      "kind": "assistant_message",
+      "status": "active"
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "Root "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "text"
+    },
+    {
+      "type": "item_completed",
+      "turn": "turn-1",
+      "kind": "assistant_message",
+      "status": "completed"
+    },
+    {
+      "type": "item_started",
+      "turn": "turn-1",
+      "kind": "collaboration_task",
+      "status": "active"
+    },
+    {
+      "type": "thread_metadata_updated",
+      "turn": "turn-1"
+    },
+    {
+      "type": "request_opened",
+      "turn": "turn-1",
+      "kind": "command_execution",
+      "requestId": "request-1"
+    },
+    {
+      "type": "request_resolved",
+      "turn": "turn-1",
+      "state": "resolved",
+      "requestId": "request-1",
+      "decision": "allow_once"
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "command_output",
+      "delta": "Subagent finished"
+    },
+    {
+      "type": "item_completed",
+      "turn": "turn-1",
+      "kind": "collaboration_task",
+      "status": "completed"
+    },
+    {
+      "type": "item_started",
+      "turn": "turn-1",
+      "kind": "assistant_message",
+      "status": "active"
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "Unfinished"
+    },
+    {
+      "type": "item_completed",
+      "turn": "turn-1",
+      "kind": "assistant_message",
+      "status": "completed"
+    },
+    {
+      "type": "item_started",
+      "turn": "turn-1",
+      "kind": "assistant_message",
+      "status": "active"
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "Final answer"
+    },
+    {
+      "type": "item_completed",
+      "turn": "turn-1",
+      "kind": "assistant_message",
+      "status": "completed"
+    },
+    {
+      "type": "thread_metadata_updated",
+      "turn": "turn-1"
+    },
+    {
+      "type": "turn_completed",
+      "turn": "turn-1",
+      "state": "completed",
+      "stopReason": "end_turn"
+    },
+    {
+      "type": "thread_usage_updated"
+    },
+    {
+      "type": "thread_metadata_updated"
+    }
+  ]
+}

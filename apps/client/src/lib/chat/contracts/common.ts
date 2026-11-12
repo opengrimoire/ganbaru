@@ -154,6 +154,16 @@ export const PROBE_STATES = [
 ] as const;
 export type ProbeState = (typeof PROBE_STATES)[number];
 
+export const PROVIDER_VERSION_ADMISSIONS = [
+  "supported",
+  "untested_newer",
+  "below_minimum",
+  "at_or_above_ceiling",
+  "unreadable",
+] as const;
+/** Where a probed CLI version falls against the provider's compatibility range. */
+export type ProviderVersionAdmission = (typeof PROVIDER_VERSION_ADMISSIONS)[number];
+
 export const MODEL_AVAILABILITIES = ["available", "unavailable", "deprecated", "stale", "unknown"] as const;
 export type ModelAvailability = (typeof MODEL_AVAILABILITIES)[number];
 

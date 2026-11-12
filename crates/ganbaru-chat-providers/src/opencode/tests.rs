@@ -452,9 +452,17 @@ fn semantic_version_range_is_explicit() {
             .code,
         ChatErrorCode::UnsupportedVersion
     );
-    ensure_supported_version(parse_version("1.14.19").unwrap()).unwrap();
-    ensure_supported_version(parse_version("1.15.0-beta.1").unwrap()).unwrap();
-    ensure_supported_version(parse_version("1.99.0").unwrap()).unwrap();
+    for (admitted, admission) in [
+        ("1.14.19", ProviderVersionAdmission::Supported),
+        ("1.15.0-beta.1", ProviderVersionAdmission::UntestedNewer),
+        ("1.99.0", ProviderVersionAdmission::UntestedNewer),
+    ] {
+        assert_eq!(
+            ensure_supported_version(parse_version(admitted).unwrap()).unwrap(),
+            admission,
+            "{admitted}"
+        );
+    }
     for unsupported in ["2.0.0-beta", "2.0.18", "v3.1.0"] {
         let error = ensure_supported_version(parse_version(unsupported).unwrap()).unwrap_err();
         assert_eq!(
@@ -466,6 +474,11 @@ fn semantic_version_range_is_explicit() {
             error.message.contains("from 1.14.19 and below 2.0"),
             "{}",
             error.message
+        );
+        assert_eq!(
+            crate::registry::refused_version(&error).map(|(admission, _)| admission),
+            Some(ProviderVersionAdmission::AtOrAboveCeiling),
+            "{unsupported}"
         );
     }
     assert!(parse_version("OpenCode development").is_err());

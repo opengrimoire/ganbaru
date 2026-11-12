@@ -333,7 +333,11 @@
 
   function providerStateLabel(provider: ProviderInstanceRead): string {
     if (!provider.configuration.enabled) return t("settings.chat.providers.disabled");
-    if (provider.lastProbe?.state === "healthy") return t("settings.chat.providers.healthy");
+    if (provider.lastProbe?.state === "healthy") {
+      return provider.lastProbe.versionAdmission === "untested_newer"
+        ? t("settings.chat.providers.untestedNewer")
+        : t("settings.chat.providers.healthy");
+    }
     if (provider.lastProbe?.state === "authentication_required") {
       return t("settings.chat.providers.authenticationRequired");
     }

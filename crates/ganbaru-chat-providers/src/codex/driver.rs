@@ -1,5 +1,6 @@
 //! Codex provider driver over app-server stdio.
 
+use super::capacity_retry::CodexCapacityRetry;
 use super::home::*;
 use super::normalizer::{CodexEventNormalizer, CodexRouteState};
 use super::organizational::*;
@@ -27,6 +28,8 @@ use tokio::task::JoinHandle;
 
 mod commands;
 mod discovery;
+mod mcp_reload;
+mod rollback;
 mod session_open;
 mod support;
 
@@ -34,12 +37,13 @@ pub(super) use commands::codex_native_command;
 #[cfg(test)]
 pub(super) use commands::{CodexNativeCommand, goal_request, parse_mcp_status_page};
 use commands::{clear_codex_command_route, dispatch_codex_command};
+use mcp_reload::CodexMcpReloadState;
 use session_open::SessionOpenInput;
 use support::*;
 #[cfg(test)]
 pub(super) use support::{
     append_project_configuration_arguments, confirmed_resume_not_found,
-    validated_app_server_arguments,
+    ensure_supported_user_agent, validated_app_server_arguments,
 };
 
 const CODEX_STDERR_LIMIT_BYTES: usize = 256 * 1024;
@@ -78,7 +82,9 @@ struct CodexLiveSession {
     session_id: ProviderSessionId,
     workspace: PathBuf,
     effective_model: String,
-    refresh_mcp_before_turn: bool,
+    mcp_reload: CodexMcpReloadState,
+    /// The developer instructions `thread/start` or `thread/resume` carried, if any.
+    open_instructions: Option<String>,
     organizational: bool,
     internal_mcp_name: Option<String>,
 }
@@ -86,6 +92,11 @@ struct CodexLiveSession {
 impl Drop for CodexLiveSession {
     fn drop(&mut self) {
         self.expected_shutdown.store(true, Ordering::Release);
+        if let Ok(mut state) = self.route.lock()
+            && let Some(retry) = state.capacity_retry.take()
+        {
+            retry.cancel();
+        }
         self.router_task.abort();
     }
 }
@@ -121,6 +132,13 @@ impl CodexProviderDriver {
         self.connection_factory = Some(factory);
     }
 
+    /// Replaces the internal MCP endpoint of a driver whose session is already open, which no
+    /// host path does today; the reload digest is what notices it.
+    #[cfg(test)]
+    pub(super) fn replace_internal_mcp(&mut self, endpoint: Option<ProviderInternalMcpConfig>) {
+        self.configuration.internal_mcp = endpoint;
+    }
+
     pub fn metadata_read() -> ProviderFamilyMetadataRead {
         ProviderFamilyMetadataRead {
             family_id: ProviderFamilyId::new("codex")
@@ -132,7 +150,8 @@ impl CodexProviderDriver {
                 "windows".to_string(),
                 "macos".to_string(),
             ],
-            minimum_tested_cli_version: None,
+            minimum_tested_cli_version: Some(MINIMUM_CODEX_VERSION.to_string()),
+            maximum_tested_cli_version: Some(CODEX_COMPATIBILITY.maximum_tested.to_string()),
             default_executable_candidates: vec!["codex".to_string()],
             implementation_status: ProviderImplementationStatus::Available,
             maturity: ProviderMaturity::Stable,
@@ -249,7 +268,7 @@ impl ProviderDriver for CodexProviderDriver {
             let workspace = canonical_verified_workspace(&request.workspace)?;
             let response = self
                 .execute_thread_request(
-                    &workspace,
+                    Some(&workspace),
                     request.workspace.project_configuration,
                     "thread/fork",
                     json!({
@@ -279,7 +298,7 @@ impl ProviderDriver for CodexProviderDriver {
                 ChatError::validation("title", "A provider thread title is required")
             })?;
             self.execute_thread_request(
-                &crate::probe_directory::ProbeDirectory::create()?,
+                None,
                 ProjectConfigurationAccess::Restricted,
                 "thread/name/set",
                 json!({ "threadId": request.provider_thread_id.as_str(), "name": title }),
@@ -297,7 +316,7 @@ impl ProviderDriver for CodexProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             self.execute_thread_request(
-                &crate::probe_directory::ProbeDirectory::create()?,
+                None,
                 ProjectConfigurationAccess::Restricted,
                 "thread/archive",
                 json!({ "threadId": request.provider_thread_id.as_str() }),
@@ -315,7 +334,7 @@ impl ProviderDriver for CodexProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             self.execute_thread_request(
-                &crate::probe_directory::ProbeDirectory::create()?,
+                None,
                 ProjectConfigurationAccess::Restricted,
                 "thread/delete",
                 json!({ "threadId": request.provider_thread_id.as_str() }),
@@ -333,7 +352,7 @@ impl ProviderDriver for CodexProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             self.execute_thread_request(
-                &crate::probe_directory::ProbeDirectory::create()?,
+                None,
                 ProjectConfigurationAccess::Restricted,
                 "thread/unsubscribe",
                 json!({ "threadId": request.provider_thread_id.as_str() }),
@@ -438,6 +457,9 @@ impl ProviderDriver for CodexProviderDriver {
                 Ok(snapshot) => {
                     let authenticated = snapshot.account.account.is_some()
                         || !snapshot.account.requires_openai_auth;
+                    let version_admission = Some(ensure_supported_user_agent(
+                        &snapshot.initialize.user_agent,
+                    )?);
                     let state = if authenticated {
                         ProbeState::Healthy
                     } else {
@@ -465,22 +487,31 @@ impl ProviderDriver for CodexProviderDriver {
                         capabilities: codex_capabilities(),
                         authority_support: snapshot.authority_support,
                         checked_at,
-                        detail: (!authenticated)
-                            .then_some("Codex requires authentication".to_string()),
+                        detail: if authenticated {
+                            (version_admission == Some(ProviderVersionAdmission::UntestedNewer))
+                                .then(|| CODEX_COMPATIBILITY.untested_newer_detail())
+                        } else {
+                            Some("Codex requires authentication".to_string())
+                        },
+                        version_admission,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
-                Err(error) => Ok(ProviderProbeResult {
-                    instance_id: self.configuration.instance_id.clone(),
-                    state: probe_state_for_error(error.code),
-                    version: None,
-                    negotiated_protocol_version: None,
-                    account_label: None,
-                    capabilities: codex_capabilities(),
-                    authority_support: ProviderAuthoritySupport::default(),
-                    checked_at,
-                    detail: Some(probe_detail(error.code).to_string()),
-                }),
+                Err(error) => {
+                    let refusal = crate::registry::refused_version(&error);
+                    Ok(ProviderProbeResult {
+                        instance_id: self.configuration.instance_id.clone(),
+                        state: probe_state_for_error(error.code),
+                        version: refusal.as_ref().map(|(_, version)| version.clone()),
+                        negotiated_protocol_version: None,
+                        account_label: None,
+                        capabilities: codex_capabilities(),
+                        authority_support: ProviderAuthoritySupport::default(),
+                        checked_at,
+                        detail: Some(probe_detail(error.code).to_string()),
+                        version_admission: refusal.map(|(admission, _)| admission),
+                    })
+                }
             }
         })
     }
@@ -571,6 +602,7 @@ impl ProviderDriver for CodexProviderDriver {
         context: &'a DriverOperationContext,
     ) -> DriverFuture<'a, TurnDispatchReceipt> {
         Box::pin(async move {
+            let endpoint = self.configuration.internal_mcp.clone();
             let live = self.live_mut(&request.session_id)?;
             let client = live.connection.client();
             let command = if live.organizational {
@@ -578,7 +610,7 @@ impl ProviderDriver for CodexProviderDriver {
             } else {
                 codex_native_command(&request)
             };
-            if live.refresh_mcp_before_turn {
+            if live.mcp_reload.take_reload(endpoint.as_ref()) {
                 client
                     .request("config/mcpServer/reload", json!({}), context)
                     .await
@@ -628,12 +660,28 @@ impl ProviderDriver for CodexProviderDriver {
                 &request,
                 custom_safety.as_ref(),
                 live.organizational,
+                live.open_instructions.is_some()
+                    && live.open_instructions == request.developer_instructions,
             )?;
             let network_access = sandbox_network_access(&params);
             {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                // A second turn/start would replace the running turn's route and its armed retry.
+                if state.active_chat_turn_id.is_some() {
+                    return Err(ChatError::new(
+                        ChatErrorCode::Busy,
+                        "Codex already has an active turn",
+                        true,
+                    ));
+                }
                 state.active_chat_turn_id = Some(request.turn_id.clone());
                 state.active_provider_turn_id = None;
+                if let Some(previous) = state
+                    .capacity_retry
+                    .replace(CodexCapacityRetry::arm(&params))
+                {
+                    previous.cancel();
+                }
                 state.modes = request.modes;
                 if let Some(model) = request.model_id.clone() {
                     state.effective_model_id = Some(model);
@@ -675,7 +723,14 @@ impl ProviderDriver for CodexProviderDriver {
                     .active_provider_turn_id
                     .as_deref()
                     .is_some_and(|observed| observed != provider_turn_id.as_str());
-                if !mismatch {
+                // The router may already have settled the turn or started a capacity retry; the
+                // response must not revive the provider turn that ended.
+                let ended = state.active_chat_turn_id.as_ref() != Some(&request.turn_id)
+                    || state
+                        .capacity_retry
+                        .as_ref()
+                        .is_some_and(CodexCapacityRetry::retrying);
+                if !mismatch && !ended {
                     state.active_provider_turn_id = Some(provider_turn_id.as_str().to_string());
                     state.session_state = ProviderSessionState::Active;
                 }
@@ -803,13 +858,33 @@ impl ProviderDriver for CodexProviderDriver {
 
     fn rollback<'a>(
         &'a mut self,
-        _request: RollbackRequest,
-        _context: &'a DriverOperationContext,
+        request: RollbackRequest,
+        context: &'a DriverOperationContext,
     ) -> DriverFuture<'a, DriverOperationReceipt> {
-        Box::pin(async {
-            Err(ChatError::unsupported(
-                "Codex native rollback is not supported",
-            ))
+        Box::pin(async move {
+            let kept_turn_id = rollback::rollback_turn_id(request.provider_cursor.as_ref())?;
+            let live = self.live_mut(&request.session_id)?;
+            let provider_thread_id = {
+                let route = live.route.lock().map_err(|_| driver_state_error())?;
+                if route.active_chat_turn_id.is_some() || route.active_provider_turn_id.is_some() {
+                    return Err(ChatError::new(
+                        ChatErrorCode::Busy,
+                        "Codex cannot rewind the thread while a turn is running",
+                        true,
+                    ));
+                }
+                route
+                    .provider_thread_id
+                    .clone()
+                    .ok_or_else(|| protocol_identifier_error("provider thread"))?
+            };
+            let client = live.connection.client();
+            let plan =
+                rollback::plan_codex_rewind(&client, &provider_thread_id, &kept_turn_id, context)
+                    .await?;
+            let detail =
+                rollback::apply_codex_rewind(&client, &provider_thread_id, &plan, context).await?;
+            Ok(operation_receipt(context, detail))
         })
     }
 
@@ -908,6 +983,7 @@ impl ProviderDriver for CodexProviderDriver {
 fn codex_capability_kinds() -> Vec<ProviderCapability> {
     vec![
         ProviderCapability::NativeResume,
+        ProviderCapability::NativeRollback,
         ProviderCapability::NativePlan,
         ProviderCapability::Steering,
         ProviderCapability::DynamicModelChange,

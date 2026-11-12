@@ -19,24 +19,39 @@ pub(super) async fn target_turn_id(
         .map_err(|_| corrupt_data_error())
 }
 
+/// The provider families whose drivers rewind native history, each with the JSON path of the
+/// native identifier its event provider references carry and its rollback cursor names.
+const ROLLBACK_CURSOR_PATHS: [(&str, &str); 2] =
+    [("opencode", "$.messageId"), ("codex", "$.turnId")];
+
+/// The provider reference of the latest valid event in `turn_id` that names a native rewind
+/// point, which the provider's rollback takes as its cursor.
 pub(super) async fn stored_provider_rollback_cursor(
     pool: &SqlitePool,
     thread_id: &ChatThreadId,
     turn_id: &ChatTurnId,
 ) -> ChatResult<Option<VersionedJson>> {
+    let [(first_family, first_path), (second_family, second_path)] = ROLLBACK_CURSOR_PATHS;
     let row = sqlx::query(
         "SELECT provider_reference_schema_version, provider_reference_data
          FROM chat_events
-         WHERE thread_id = ? AND turn_id = ? AND provider_family_id = 'opencode'
+         WHERE thread_id = ? AND turn_id = ?
            AND invalidated_at IS NULL
            AND provider_reference_schema_version IS NOT NULL
            AND provider_reference_data IS NOT NULL
            AND length(CAST(provider_reference_data AS BLOB)) <= 8192
-           AND json_type(provider_reference_data, '$.messageId') = 'text'
+           AND (
+               (provider_family_id = ? AND json_type(provider_reference_data, ?) = 'text')
+               OR (provider_family_id = ? AND json_type(provider_reference_data, ?) = 'text')
+           )
          ORDER BY sequence DESC, id DESC LIMIT 1",
     )
     .bind(thread_id.as_str())
     .bind(turn_id.as_str())
+    .bind(first_family)
+    .bind(first_path)
+    .bind(second_family)
+    .bind(second_path)
     .fetch_optional(pool)
     .await
     .map_err(persistence_error)?;
@@ -77,5 +92,17 @@ mod tests {
         assert_eq!(cursor.schema_version, 1);
         assert_eq!(cursor.value["messageId"], "message-7");
         assert_eq!(cursor.value["partId"], "part-2");
+    }
+
+    #[test]
+    fn stored_codex_cursor_preserves_the_native_turn_id() {
+        let cursor = stored_rollback_cursor(
+            Some(1),
+            Some(r#"{"method":"turn/completed","turnId":"codex-turn-7"}"#),
+        )
+        .expect("stored cursor should parse");
+
+        assert_eq!(cursor.schema_version, 1);
+        assert_eq!(cursor.value["turnId"], "codex-turn-7");
     }
 }

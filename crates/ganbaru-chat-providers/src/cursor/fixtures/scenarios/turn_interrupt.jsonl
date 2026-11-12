@@ -1,0 +1,13 @@
+{"type":"transcript_start","provider":"cursor","protocol":"acp","cli_version":"2026.04.08","scenario":"turn_interrupt","generated_by":"authored"}
+{"type":"expect_outbound","label":"initialize","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true,"_meta":{"parameterizedModelPicker":true}},"clientInfo":{"name":"ganbaru","version":"<redacted>"}}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:initialize>","result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":true,"audio":false,"embeddedContext":false},"sessionCapabilities":{}},"authMethods":[{"id":"cursor_login","name":"Cursor login"}],"agentInfo":{"name":"cursor-agent","title":"Cursor Agent","version":"2026.04.08"}}}}
+{"type":"expect_outbound","label":"authenticate","frame":{"jsonrpc":"2.0","id":2,"method":"authenticate","params":{"methodId":"cursor_login"}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:authenticate>","result":{}}}
+{"type":"expect_outbound","label":"session-new","frame":{"jsonrpc":"2.0","id":3,"method":"session/new","params":{"cwd":"<workspace>","mcpServers":[]}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:session-new>","result":{"sessionId":"cursor-session-fixture","configOptions":[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"cursor-small","options":[{"value":"cursor-small","name":"Cursor Small"},{"value":"cursor-large","name":"Cursor Large"}]},{"id":"mode","name":"Mode","category":"mode","type":"select","currentValue":"code","options":[{"value":"code","name":"Code"},{"value":"plan","name":"Plan"}]}]}}}
+{"type":"expect_outbound","label":"models","frame":{"jsonrpc":"2.0","id":4,"method":"cursor/list_available_models","params":{}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:models>","result":{"models":[{"value":"cursor-small","name":"Cursor Small","configOptions":[]},{"value":"cursor-large","name":"Cursor Large","configOptions":[]}]}}}
+{"type":"expect_outbound","label":"prompt","frame":{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"cursor-session-fixture","prompt":[{"type":"text","text":"Count slowly"}]}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"cursor-session-fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"One"}}}}}
+{"type":"expect_outbound","label":"cancel","frame":{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"cursor-session-fixture"}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:prompt>","result":{"stopReason":"cancelled"}}}

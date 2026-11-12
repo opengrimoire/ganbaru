@@ -138,3 +138,42 @@ fn transport_honors_cancellation_while_waiting_for_response() {
         assert_eq!(request.await.unwrap(), Err(CodexRpcFailure::Cancelled));
     });
 }
+
+#[test]
+fn oversized_message_fails_pending_requests() {
+    crate::test_block_on(async {
+        let (client_reader, mut server_writer) = tokio::io::duplex(64 * 1024);
+        let (server_reader, client_writer) = tokio::io::duplex(64 * 1024);
+        let mut connection = CodexRpcConnection::from_test_io(client_reader, client_writer);
+        let client = connection.client();
+        let mut inbound = connection.take_inbound().unwrap();
+        let mut requests = BufReader::new(server_reader);
+        let request_context = context("pending");
+        let pending = tokio::spawn(async move {
+            client
+                .request("test/pending", json!({}), &request_context)
+                .await
+        });
+        let mut line = String::new();
+        requests.read_line(&mut line).await.unwrap();
+        let writer = tokio::spawn(async move {
+            let chunk = vec![b'x'; 64 * 1024];
+            let mut written = 0;
+            while written <= MAX_JSONL_MESSAGE_BYTES {
+                if server_writer.write_all(&chunk).await.is_err() {
+                    break;
+                }
+                written += chunk.len();
+            }
+            server_writer
+        });
+
+        assert_eq!(pending.await.unwrap(), Err(CodexRpcFailure::Oversized));
+        assert!(matches!(
+            inbound.recv().await.unwrap(),
+            CodexInboundMessage::Oversized { byte_length } if byte_length > MAX_JSONL_MESSAGE_BYTES
+        ));
+        assert_eq!(inbound.recv().await.unwrap(), CodexInboundMessage::Closed);
+        drop(writer.await.unwrap());
+    });
+}

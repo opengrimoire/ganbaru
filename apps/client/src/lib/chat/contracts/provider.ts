@@ -10,6 +10,7 @@ import type {
   ProviderMaturity,
   ProviderInstanceId,
   ProbeState,
+  ProviderVersionAdmission,
   UtcTimestamp,
   VersionedJson,
 } from "./common";
@@ -58,6 +59,7 @@ export interface ProviderFamilyMetadataRead {
   configurationSchemaVersion: number;
   supportedPlatforms: string[];
   minimumTestedCliVersion: string | null;
+  maximumTestedCliVersion: string | null;
   defaultExecutableCandidates: string[];
   implementationStatus: ProviderImplementationStatus;
   maturity: ProviderMaturity;
@@ -76,6 +78,7 @@ export interface ProviderProbeResult {
   authoritySupport: ProviderAuthoritySupport;
   checkedAt: UtcTimestamp;
   detail: string | null;
+  versionAdmission: ProviderVersionAdmission | null;
 }
 
 export interface ModelChoiceOption {

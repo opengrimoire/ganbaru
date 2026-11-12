@@ -2,6 +2,7 @@
 
 use super::instructions::session_instructions;
 use crate::models::*;
+use crate::registry::{ProviderCompatibilityRange, VersionOrder, admit_version, version_refusal};
 use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -166,12 +167,60 @@ pub fn parse_version(value: &str) -> ChatResult<ClaudeVersion> {
     Ok(ClaudeVersion::new(major, minor, patch))
 }
 
-pub fn ensure_supported_version(value: ClaudeVersion) -> ChatResult<()> {
-    if value < MINIMUM_CLAUDE_VERSION {
-        return Err(ChatError::new(
-            ChatErrorCode::UnsupportedVersion,
+/// Claude Code versions with the complete interactive SDK protocol, up to the version the
+/// Claude replay scenarios record, below the next major line.
+pub const CLAUDE_COMPATIBILITY: ProviderCompatibilityRange = ProviderCompatibilityRange {
+    minimum: "2.1.170",
+    maximum_tested: "2.1.322",
+    ceiling_exclusive: Some("3.0.0"),
+};
+
+/// Teammate launches need `--restricted` (2.1.248), its messaging socket fix (2.1.290), and
+/// the late-registered tool fix (2.1.295).
+pub const MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 305);
+
+impl VersionOrder for ClaudeVersion {
+    fn parse_version(value: &str) -> ChatResult<Self> {
+        parse_version(value)
+    }
+}
+
+/// Where `value` falls in `CLAUDE_COMPATIBILITY`, refusing a version below the minimum or at
+/// or above the ceiling.
+pub fn ensure_supported_version(value: ClaudeVersion) -> ChatResult<ProviderVersionAdmission> {
+    let text = value.to_string();
+    let admission = admit_version::<ClaudeVersion>(&CLAUDE_COMPATIBILITY, &text)?;
+    match admission {
+        ProviderVersionAdmission::BelowMinimum => Err(version_refusal(
+            admission,
+            &text,
             format!(
                 "Claude Code {value} lacks the complete interactive SDK protocol; version {MINIMUM_CLAUDE_VERSION} or newer is required"
+            ),
+            true,
+        )),
+        ProviderVersionAdmission::AtOrAboveCeiling => Err(version_refusal(
+            admission,
+            &text,
+            format!(
+                "Claude Code {value} is unsupported; Ganbaru supports versions below {}",
+                CLAUDE_COMPATIBILITY.ceiling_exclusive.unwrap_or_default()
+            ),
+            true,
+        )),
+        _ => Ok(admission),
+    }
+}
+
+/// Refuses a teammate launch on a Claude Code version below
+/// `MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION`; direct threads keep the family minimum.
+pub fn ensure_organizational_version(value: ClaudeVersion) -> ChatResult<()> {
+    if value < MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION {
+        return Err(version_refusal(
+            ProviderVersionAdmission::BelowMinimum,
+            &value.to_string(),
+            format!(
+                "Claude Code {value} cannot run teammates; version {MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION} or newer is required"
             ),
             true,
         ));
@@ -344,6 +393,7 @@ pub fn launch_arguments(
         // Configured arguments never reach an organizational launch, so nothing follows the
         // variadic deny list.
         arguments.extend([
+            "--restricted".to_string(),
             "--setting-sources".to_string(),
             ORGANIZATIONAL_SETTING_SOURCES.to_string(),
             "--strict-mcp-config".to_string(),

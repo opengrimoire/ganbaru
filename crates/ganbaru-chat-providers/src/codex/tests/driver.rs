@@ -579,3 +579,148 @@ fn provider_path_skips_programs_in_folders_any_user_can_write() {
     assert_eq!(resolved.executable, private.join("codex"));
     fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
 }
+
+fn fixture_endpoint(token: &str) -> ProviderInternalMcpConfig {
+    ProviderInternalMcpConfig {
+        name: "ganbaru-chat".to_string(),
+        url: "http://127.0.0.1:41827/mcp".to_string(),
+        bearer_token: token.to_string(),
+        organizational_authority: false,
+    }
+}
+
+fn reload_count(fixture: &AppServerFixtureState) -> usize {
+    fixture
+        .received()
+        .iter()
+        .filter(|message| message["method"] == "config/mcpServer/reload")
+        .count()
+}
+
+async fn start_default_reload_session(
+    workspace: &Path,
+    endpoint: Option<ProviderInternalMcpConfig>,
+) -> (
+    CodexProviderDriver,
+    Arc<AppServerFixtureState>,
+    ProviderSessionSnapshot,
+) {
+    let (mut driver, fixture) =
+        fixture_driver_with(workspace, FixtureScenario::Healthy, |config| {
+            config.provider_config.value["refreshMcpBeforeTurn"] = Value::Bool(false);
+            config.internal_mcp = endpoint;
+        });
+    let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+    let snapshot = driver
+        .start_session(start_request(workspace), sink, &context("start"))
+        .await
+        .unwrap();
+    (driver, fixture, snapshot)
+}
+
+#[test]
+fn turn_start_sends_detailed_summary() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-summary");
+        let (mut driver, fixture, snapshot) =
+            start_default_reload_session(workspace.path(), None).await;
+        driver
+            .send_turn(
+                fixture_turn(&snapshot.session_id, "build"),
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        let turn =
+            wait_for_fixture_message(&fixture, |message| message["method"] == "turn/start").await;
+        assert_eq!(turn["params"]["summary"], "detailed");
+    });
+}
+
+#[test]
+fn mcp_reload_skipped_when_endpoint_unchanged() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-reload-skip");
+        let (mut driver, fixture, snapshot) =
+            start_default_reload_session(workspace.path(), Some(fixture_endpoint("token-a"))).await;
+        driver
+            .send_turn(
+                fixture_turn(&snapshot.session_id, "build"),
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        wait_for_fixture_message(&fixture, |message| message["method"] == "turn/start").await;
+        assert_eq!(reload_count(&fixture), 0);
+    });
+}
+
+#[test]
+fn mcp_reload_runs_when_token_changes() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-reload-rotate");
+        let (mut driver, fixture, snapshot) =
+            start_default_reload_session(workspace.path(), Some(fixture_endpoint("token-a"))).await;
+        driver.replace_internal_mcp(Some(fixture_endpoint("token-b")));
+        driver
+            .send_turn(
+                fixture_turn(&snapshot.session_id, "build"),
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        wait_for_fixture_message(&fixture, |message| message["method"] == "turn/start").await;
+        assert_eq!(reload_count(&fixture), 1);
+        let received = fixture.received();
+        let reload = received
+            .iter()
+            .position(|message| message["method"] == "config/mcpServer/reload")
+            .unwrap();
+        let turn = received
+            .iter()
+            .position(|message| message["method"] == "turn/start")
+            .unwrap();
+        assert!(reload < turn, "the reload precedes the turn it serves");
+    });
+}
+
+#[test]
+fn thread_admin_reuses_live_connection() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-admin-live");
+        let (mut driver, fixture, _snapshot) =
+            start_default_reload_session(workspace.path(), None).await;
+        let opened = fixture.connections.load(Ordering::Acquire);
+        driver
+            .rename_thread(
+                ProviderThreadLifecycleRequest {
+                    provider_thread_id: identifier("fixture-thread-other", ProviderThreadId::new),
+                    title: Some("Renamed".to_string()),
+                },
+                &context("rename"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fixture.connections.load(Ordering::Acquire), opened);
+        let rename =
+            wait_for_fixture_message(&fixture, |message| message["method"] == "thread/name/set")
+                .await;
+        assert_eq!(rename["params"]["threadId"], "fixture-thread-other");
+
+        driver
+            .unsubscribe_thread(
+                ProviderThreadLifecycleRequest {
+                    provider_thread_id: identifier("fixture-thread-new", ProviderThreadId::new),
+                    title: None,
+                },
+                &context("unsubscribe-own"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.connections.load(Ordering::Acquire),
+            opened + 1,
+            "unsubscribing the live thread uses its own connection"
+        );
+    });
+}

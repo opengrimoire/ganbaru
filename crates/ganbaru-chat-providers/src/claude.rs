@@ -12,6 +12,9 @@ mod session;
 mod support;
 mod transport;
 
+#[cfg(test)]
+pub(crate) mod replay;
+
 pub use driver::ClaudeProviderDriver;
 
 #[cfg(test)]

@@ -27,6 +27,7 @@ Test count and coverage percentage are not quality targets. Coverage follows pro
 
 - **Frontend tests:** Vitest tests next to source, using Node by default and jsdom only for real DOM behavior. Release and validation scripts under `apps/client/scripts/` keep their `.test.mjs` files beside them in the same suite.
 - **Rust tests:** domain, persistence, provider, platform, migration, transaction, recovery, and command-boundary tests in the owning crate.
+- **Provider replay transcripts:** recorded and authored provider protocol transcripts that run against the real Chat drivers as part of the normal Rust tests. Recording a new transcript is a manual developer step that needs a real provider CLI and never runs in CI.
 - **Static checks:** Svelte Check, TypeScript, Rust formatting, Clippy, provider protocol snapshots, and Tailwind diagnostics.
 - **Production bundle contracts:** real Vite builds that verify route closures, source-module ceilings, platform composition, and forbidden eager imports.
 - **Android project and build contracts:** generated-project policy, isolated Android frontend graph, and an independent ARM64 pull request build.

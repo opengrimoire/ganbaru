@@ -186,27 +186,34 @@ impl CodexEventNormalizer {
         let message = error
             .and_then(|value| text(value, "message"))
             .unwrap_or("Codex turn failed");
-        Ok(vec![
-            self.event(
-                state,
-                "error",
-                route_turn(state, Some(object)),
-                provider_turn_from(object),
-                None,
-                CanonicalEvent::RuntimeError(RuntimeErrorEvent {
-                    code: "codex_runtime_error".to_string(),
-                    message: bounded_text(message, MAX_PROVIDER_TEXT_BYTES),
-                    recoverable: object
-                        .get("willRetry")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                    safe_details: error.map(|value| VersionedJson {
-                        schema_version: 1,
-                        value: json!({ "keys": bounded_keys(value) }),
-                    }),
+        // A capacity error the session retries itself is recoverable even when Codex will not
+        // retry it.
+        let session_retries = error.is_some_and(CodexStopReason::is_capacity)
+            && state
+                .capacity_retry
+                .as_ref()
+                .is_some_and(|retry| retry.available());
+        let recoverable = session_retries
+            || object
+                .get("willRetry")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        Ok(vec![self.event(
+            state,
+            "error",
+            route_turn(state, Some(object)),
+            provider_turn_from(object),
+            None,
+            CanonicalEvent::RuntimeError(RuntimeErrorEvent {
+                code: "codex_runtime_error".to_string(),
+                message: bounded_text(message, MAX_PROVIDER_TEXT_BYTES),
+                recoverable,
+                safe_details: error.map(|value| VersionedJson {
+                    schema_version: 1,
+                    value: json!({ "keys": bounded_keys(value) }),
                 }),
-            )?,
-        ])
+            }),
+        )?])
     }
 
     pub(super) fn session_closed(

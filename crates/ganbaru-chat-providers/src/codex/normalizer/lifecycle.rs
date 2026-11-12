@@ -202,18 +202,54 @@ impl CodexEventNormalizer {
             "interrupted" => ChatTurnState::Interrupted,
             _ => ChatTurnState::Failed,
         };
-        let stop_reason = turn
-            .get("error")
-            .and_then(Value::as_object)
+        let error = turn.get("error").and_then(Value::as_object);
+        let rate_limits = state.rate_limits.projection();
+        let classified = error.and_then(|error| {
+            CodexStopReason::from_turn_error(error, rate_limits.resets_at.clone())
+        });
+        let stop_reason = error
             .and_then(|error| text(error, "message"))
-            .map(|value| bounded_text(value, MAX_PROVIDER_TEXT_BYTES));
+            .map(|value| bounded_text(value, MAX_PROVIDER_TEXT_BYTES))
+            .or_else(|| classified.as_ref().map(CodexStopReason::fallback_message));
+        let mut events = Vec::new();
+        if let Some(CodexStopReason::UsageLimit { resets_at }) = classified {
+            events.push(self.event(
+                state,
+                "turn/completed",
+                None,
+                None,
+                None,
+                CanonicalEvent::RateLimitStatus(RateLimitStatusEvent {
+                    limited: true,
+                    resets_at,
+                    detail: stop_reason.clone(),
+                    provider_data: Some(rate_limits.provider_data),
+                }),
+            )?);
+        }
+        events.push(self.settled_turn(state, provider_turn, turn_state, stop_reason)?);
+        Ok(events)
+    }
+
+    /// The terminal event of the active chat turn, clearing the turn route and any armed
+    /// capacity retry.
+    pub(in crate::codex) fn settled_turn(
+        &self,
+        state: &mut CodexRouteState,
+        provider_turn: Option<ProviderTurnId>,
+        turn_state: ChatTurnState,
+        stop_reason: Option<String>,
+    ) -> ChatResult<CanonicalRuntimeEvent> {
         let chat_turn = state.active_chat_turn_id.clone();
         state.session_state = ProviderSessionState::Ready;
         state.active_chat_turn_id = None;
         state.active_provider_turn_id = None;
         state.stream_indexes.clear();
+        if let Some(retry) = state.capacity_retry.take() {
+            retry.cancel();
+        }
         let changed_files = std::mem::take(&mut state.changed_files);
-        Ok(vec![self.event(
+        self.event(
             state,
             "turn/completed",
             chat_turn,
@@ -225,6 +261,6 @@ impl CodexEventNormalizer {
                 usage: None,
                 changed_files,
             }),
-        )?])
+        )
     }
 }

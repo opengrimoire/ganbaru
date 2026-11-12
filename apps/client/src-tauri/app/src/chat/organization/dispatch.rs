@@ -162,8 +162,10 @@ pub(super) async fn claim_dispatch_job(
 /// Marks the trigger and follow-up inputs of `assignment_id`, which its context package
 /// carries, delivered once `launch` started its run. Returns whether the run started.
 ///
-/// A failed launch, or a run that settled before it started, delivered nothing, so its inputs
-/// stay pending for Retry.
+/// The delivered revision is the one the package froze, not the message's current revision, so
+/// a reply edited after the freeze reads as edited after delivery; an input the package does not
+/// carry records no revision. A failed launch, or a run that settled before it started,
+/// delivered nothing, so its inputs stay pending for Retry.
 async fn mark_initial_assignment_input_delivered(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
@@ -188,8 +190,19 @@ async fn mark_initial_assignment_input_delivered(
         "UPDATE chat_work_assignment_inputs
          SET delivery_state = 'delivered', delivered_at = ?,
              delivered_revision_id = (
-               SELECT message.current_revision_id FROM chat_communication_messages message
-               WHERE message.item_id = chat_work_assignment_inputs.message_item_id
+               SELECT revision.id
+               FROM chat_assignment_context_packages package
+               JOIN chat_assignment_context_sources source
+                 ON source.context_package_id = package.id
+                AND source.source_id = chat_work_assignment_inputs.message_item_id
+                AND source.source_kind IN ('trigger', 'thread_reply')
+               JOIN chat_communication_message_revisions_numbered revision
+                 ON revision.message_item_id = source.source_id
+                AND revision.revision = source.source_revision
+               WHERE package.assignment_id = chat_work_assignment_inputs.assignment_id
+                 AND package.revision = 1
+               ORDER BY source.source_kind = 'trigger' DESC
+               LIMIT 1
              )
          WHERE assignment_id = ? AND routing_kind IN ('trigger', 'follow_up')
            AND delivery_state = 'pending'",
@@ -2175,6 +2188,68 @@ mod tests {
                     .unwrap()
             );
             assert_eq!(delivery_states(&pool).await, states("delivered"));
+        }
+
+        #[tokio::test]
+        async fn a_package_input_records_the_revision_its_package_froze() {
+            let pool = starting_pool().await;
+            seed_inputs_of_every_route(&pool).await;
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO chat_assignment_context_packages
+                    (id, assignment_id, revision, triggering_message_item_id, serialized_text,
+                     serialized_bytes, sha256, created_at)
+                 VALUES ('context:folders', 'assignment:folders', 1, 'item:follow-up', 'frozen',
+                         6, '{sha}', '{CLAIMED_AT}');
+                 INSERT INTO chat_assignment_context_sources
+                    (context_package_id, source_kind, source_id, source_revision,
+                     content_sha256, ordinal)
+                 VALUES ('context:folders', 'trigger', 'item:follow-up', 1, '{sha}', 0);
+                 INSERT INTO chat_communication_message_revisions
+                    (id, message_item_id, normalized_markdown, created_at)
+                 VALUES ('revision:item:follow-up:edited', 'item:follow-up',
+                         'Check the logs and the metrics', '2026-10-20T12:01:00.000Z');
+                 UPDATE chat_communication_messages
+                 SET current_revision_id = 'revision:item:follow-up:edited'
+                 WHERE item_id = 'item:follow-up';",
+                sha = "c".repeat(64),
+            )))
+            .execute(&pool)
+            .await
+            .unwrap();
+            let binding = working_binding(&pool).await;
+            settle_launch(&pool, &binding, &folder_launch(), None, &at(CLAIMED_AT))
+                .await
+                .unwrap();
+            let launch = AssignmentLaunch {
+                run_id: ChatAgentRunId::new("run:working").unwrap(),
+                launch_error: None,
+                settlement: None,
+            };
+
+            assert!(
+                mark_initial_assignment_input_delivered(&pool, &assignment(), &launch)
+                    .await
+                    .unwrap()
+            );
+
+            let revisions: Vec<(String, Option<String>)> = sqlx::query_as(
+                "SELECT routing_kind, delivered_revision_id FROM chat_work_assignment_inputs
+                 WHERE routing_kind IN ('trigger', 'follow_up') ORDER BY ordinal",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                revisions,
+                vec![
+                    ("trigger".to_string(), None),
+                    (
+                        "follow_up".to_string(),
+                        Some("revision:item:follow-up".to_string())
+                    ),
+                ],
+                "the edit after the freeze never reached the run"
+            );
         }
 
         #[tokio::test]

@@ -652,6 +652,7 @@ export const chat = {
       fullTextUnavailable: "Carga esta respuesta en el hilo para editarla",
       editReply: (preview: string) => `Editar respuesta: ${preview}`,
       cancelReply: (preview: string) => `Cancelar respuesta: ${preview}`,
+      cancelWork: (preview: string) => `Detener el trabajo que inició esta respuesta: ${preview}`,
     },
   },
   inspector: {

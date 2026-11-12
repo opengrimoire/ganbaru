@@ -46,7 +46,7 @@
   import { mergePromptCatalog } from "$lib/chat/composer/command-model";
   import { composerMeterRead, type ComposerStatusRead } from "$lib/chat/composer/composer-meter";
   import { CHAT_IMAGE_LIMIT, composerTokenTrigger, validateImageFiles } from "$lib/chat/composer/model";
-  import { defaultFollowupRouting, pendingInputRows, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
+  import { defaultFollowupRouting, pendingInputRows, pendingInputStartsWork, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
   import { latestStructuredPlanSteps, summarizePlanProgress } from "$lib/chat/composer/plan-progress";
   import { suggestTeammateMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
   import { pastedTextLineCount } from "$lib/chat/composer/paste";
@@ -1134,7 +1134,7 @@
   }
 
   function canEditInput(row: PendingInputRow): boolean {
-    return replyForInput(row.input) !== null;
+    return !pendingInputStartsWork(row.input) && replyForInput(row.input) !== null;
   }
 
   /** Replaces the editor content without the store draft, as loading a waiting reply or restoring the draft does. */
@@ -1216,6 +1216,10 @@
 
   async function cancelInput(row: PendingInputRow): Promise<void> {
     if (inputBusyId || editingInput) return;
+    if (pendingInputStartsWork(row.input)) {
+      await stopAssignment();
+      return;
+    }
     inputBusyId = row.input.inputId;
     error = null;
     try {
@@ -2023,7 +2027,7 @@
   {#if taskProgress}<ChatTaskProgressCard summary={taskProgress} />{/if}
 
   {#if pendingRows.length > 0}
-    <ChatPendingInputs rows={pendingRows} editingInputId={editingInput?.inputId ?? null} busyInputId={inputBusyId} canEdit={canEditInput} onEdit={startInputEdit} onCancel={(row) => { void cancelInput(row); }} onSave={() => { void saveInputEdit(); }} onDiscard={discardInputEdit} />
+    <ChatPendingInputs rows={pendingRows} editingInputId={editingInput?.inputId ?? null} busyInputId={inputBusyId} canEdit={canEditInput} canStopWork={activeAssignment !== null} onEdit={startInputEdit} onCancel={(row) => { void cancelInput(row); }} onSave={() => { void saveInputEdit(); }} onDiscard={discardInputEdit} />
   {/if}
 
   <div bind:this={composerRoot} class="organizational-composer" data-organizational-composer>

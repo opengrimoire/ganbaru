@@ -61,3 +61,13 @@ export function defaultFollowupRouting(
 ): ChatFollowupRouting {
   return chosen ?? (state === "working" ? "steer" : "queue");
 }
+
+/**
+ * Whether a reply started its own work, whose context already carries its text: it cannot be edited,
+ * and cancelling it stops that work.
+ *
+ * @param input The reply addressed to the work.
+ */
+export function pendingInputStartsWork(input: ChatAssignmentInputRead): boolean {
+  return input.routingKind === "follow_up";
+}

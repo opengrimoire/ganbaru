@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatAssignmentInputRead } from "$lib/chat/contracts";
-import { defaultFollowupRouting, pendingInputRows, pendingInputStatus } from "./pending-inputs";
+import { defaultFollowupRouting, pendingInputRows, pendingInputStartsWork, pendingInputStatus } from "./pending-inputs";
 
 function input(overrides: Partial<ChatAssignmentInputRead> = {}): ChatAssignmentInputRead {
   return {
@@ -72,5 +72,13 @@ describe("defaultFollowupRouting", () => {
   it("keeps the choice the user made for the destination", () => {
     expect(defaultFollowupRouting("queue", "working")).toBe("queue");
     expect(defaultFollowupRouting("steer", "waiting_for_answer")).toBe("steer");
+  });
+});
+
+describe("pendingInputStartsWork", () => {
+  it("marks only the reply that started its own work", () => {
+    expect(pendingInputStartsWork(input({ routingKind: "follow_up" }))).toBe(true);
+    expect(pendingInputStartsWork(input({ routingKind: "steer" }))).toBe(false);
+    expect(pendingInputStartsWork(input({ routingKind: "queued_continuation" }))).toBe(false);
   });
 });

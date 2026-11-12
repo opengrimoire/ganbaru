@@ -427,6 +427,22 @@ describe("ChatMessageComposer", () => {
     await vi.waitFor(() => expect(root.querySelector("[data-chat-pending-inputs]")).toBeNull());
   });
 
+  it("stops the work a reply started instead of editing or cancelling the reply", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput({ routingKind: "follow_up" })]);
+    const cancelInput = vi.spyOn(chatApi, "cancelChatAssignmentInput");
+    const stop = vi.spyOn(chat, "cancelAssignment").mockResolvedValue();
+    const page = workingReplyThread();
+    const root = mountActiveWork(page);
+
+    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="cancel"]')).not.toBeNull());
+    expect(root.querySelector('[data-pending-action="edit"]')).toBeNull();
+    expect(root.textContent).not.toContain("Load this reply in the thread to edit it");
+    root.querySelector<HTMLButtonElement>('[data-pending-action="cancel"]')?.click();
+
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledWith(page.assignment?.id));
+    expect(cancelInput).not.toHaveBeenCalled();
+  });
+
   function mountWaitingWork(): { notice: HTMLElement; startHere: HTMLButtonElement } {
     const page = workingReplyThread();
     if (!page.assignment) throw new Error("The fixture holds an assignment");

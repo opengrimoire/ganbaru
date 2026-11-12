@@ -1,5 +1,10 @@
 //! Replies routed to an assignment after the message that started it: listing them with their
 //! delivery, editing one before delivery, and cancelling one that has not reached a run.
+//!
+//! A `follow_up` input is the reply that started a follow-up assignment. The executing device
+//! freezes its text into that assignment's context package, so another device cannot tell
+//! whether an edit would still reach the run: it is listed but never edited or cancelled here,
+//! and stopping the assignment it started is what keeps it from running.
 
 use super::common::{insert_revision_copied_attachments, json_object, message_revision_id};
 use super::{
@@ -18,6 +23,13 @@ pub(super) const INPUT_PREVIEW_CHARS: usize = 280;
 
 /// Error detail reason of an edit or cancel refused because the input already left pending.
 pub(super) const INPUT_ALREADY_DELIVERED: &str = "input_already_delivered";
+
+/// Error detail reason of an edit or cancel refused because the input started its own work,
+/// whose context package carries its text.
+pub(super) const INPUT_STARTS_WORK: &str = "input_starts_work";
+
+/// Routing kind of the reply that started a follow-up assignment.
+const FOLLOW_UP_ROUTING_KIND: &str = "follow_up";
 
 /// Columns of one input row with its message's current revision, shared by every read here.
 const INPUT_ROW_SELECT: &str = "SELECT input.id, input.message_item_id, input.ordinal,
@@ -51,8 +63,9 @@ pub(super) async fn list_assignment_inputs(
 
 /// Replaces the text of the pending input `input_id` with a new revision of its message, so the
 /// run receives the edit when the input is delivered. Only the local person's own replies can
-/// be edited. The new revision keeps the message's attachments and carries no references: a
-/// reference names a range of the old text.
+/// be edited, and never a `follow_up` input, whose text its assignment's package carries. The
+/// new revision keeps the message's attachments and carries no references: a reference names a
+/// range of the old text.
 pub(super) async fn edit_assignment_input(
     pool: &SqlitePool,
     input_id: &ChatAssignmentInputId,
@@ -72,7 +85,8 @@ pub(super) async fn edit_assignment_input(
     }
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let row = sqlx::query(
-        "SELECT input.message_item_id, input.delivery_state, message.author_participant_id,
+        "SELECT input.message_item_id, input.routing_kind, input.delivery_state,
+                message.author_participant_id,
                 message.current_revision_id,
                 (SELECT count(*) FROM chat_communication_attachment_references attachment
                  WHERE attachment.message_revision_id = message.current_revision_id)
@@ -87,6 +101,7 @@ pub(super) async fn edit_assignment_input(
     .map_err(persistence_error)?
     .ok_or_else(input_not_found)?;
     let message_item_id: String = row.try_get("message_item_id").map_err(persistence_error)?;
+    let routing_kind: String = row.try_get("routing_kind").map_err(persistence_error)?;
     let delivery_state: String = row.try_get("delivery_state").map_err(persistence_error)?;
     let author: Option<String> = row
         .try_get("author_participant_id")
@@ -104,6 +119,9 @@ pub(super) async fn edit_assignment_input(
     }
     if delivery_state != "pending" {
         return Err(already_delivered());
+    }
+    if routing_kind == FOLLOW_UP_ROUTING_KIND {
+        return Err(starts_work());
     }
     if markdown.is_empty() && attachment_count == 0 {
         return Err(ChatError::validation(
@@ -151,7 +169,8 @@ pub(super) async fn edit_assignment_input(
 }
 
 /// Cancels the pending input `input_id` so no run receives it. Its reply stays in the thread.
-/// An input that already reached a run, failed, or was cancelled is refused.
+/// An input that already reached a run, failed, or was cancelled is refused, and so is a
+/// `follow_up` input, which only stopping the work it started keeps from the run.
 pub(super) async fn cancel_assignment_input(
     pool: &SqlitePool,
     input_id: &ChatAssignmentInputId,
@@ -159,16 +178,23 @@ pub(super) async fn cancel_assignment_input(
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let cancelled = sqlx::query(
         "UPDATE chat_work_assignment_inputs SET delivery_state = 'ignored'
-         WHERE id = ? AND routing_kind <> 'trigger' AND delivery_state = 'pending'",
+         WHERE id = ? AND routing_kind NOT IN ('trigger', ?) AND delivery_state = 'pending'",
     )
     .bind(input_id.as_str())
+    .bind(FOLLOW_UP_ROUTING_KIND)
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?
     .rows_affected();
     let read = read_input(&mut transaction, input_id).await?;
     if cancelled == 0 {
-        return Err(already_delivered());
+        return Err(
+            if read.routing_kind == FOLLOW_UP_ROUTING_KIND && read.delivery_state == "pending" {
+                starts_work()
+            } else {
+                already_delivered()
+            },
+        );
     }
     transaction.commit().await.map_err(persistence_error)?;
     Ok(read)
@@ -285,6 +311,18 @@ fn already_delivered() -> ChatError {
     error.details = Some(Box::new(
         serde_json::json!({ "reason": INPUT_ALREADY_DELIVERED }),
     ));
+    error
+}
+
+/// A `Conflict` for a `follow_up` input, whose text the work it started already carries, so
+/// the client stops that work instead.
+fn starts_work() -> ChatError {
+    let mut error = ChatError::new(
+        ChatErrorCode::Conflict,
+        "This reply started its own work; stop that work instead",
+        false,
+    );
+    error.details = Some(Box::new(serde_json::json!({ "reason": INPUT_STARTS_WORK })));
     error
 }
 

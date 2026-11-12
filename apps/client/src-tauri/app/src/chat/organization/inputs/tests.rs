@@ -328,6 +328,56 @@ async fn cancel_assignment_input_sets_ignored_once() {
     assert_eq!(states, ["ignored", "delivered"]);
 }
 
+#[tokio::test]
+async fn a_follow_up_that_started_work_is_listed_but_never_edited_or_cancelled() {
+    let pool = pool().await;
+    seed_reply(
+        &pool,
+        "item:follow-up",
+        2,
+        "follow_up",
+        LOCAL_PARTICIPANT_ID,
+        "Also check the logs",
+    )
+    .await;
+
+    let listed = list_assignment_inputs(&pool, &assignment()).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].routing_kind, "follow_up");
+
+    let edited = edit_assignment_input(&pool, &input("item:follow-up"), &edit("Changed"), &now())
+        .await
+        .unwrap_err();
+    assert_eq!(edited.code, ChatErrorCode::Conflict);
+    assert_eq!(conflict_reason(&edited), Some(INPUT_STARTS_WORK));
+    let cancelled = cancel_assignment_input(&pool, &input("item:follow-up"))
+        .await
+        .unwrap_err();
+    assert_eq!(cancelled.code, ChatErrorCode::Conflict);
+    assert_eq!(conflict_reason(&cancelled), Some(INPUT_STARTS_WORK));
+
+    let (state, revisions): (String, i64) = sqlx::query_as(
+        "SELECT input.delivery_state,
+                (SELECT count(*) FROM chat_communication_message_revisions
+                 WHERE message_item_id = input.message_item_id)
+         FROM chat_work_assignment_inputs input WHERE input.id = 'input:item:follow-up'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (state.as_str(), revisions),
+        ("pending", 1),
+        "the frozen text and its delivery stay as the package holds them"
+    );
+
+    deliver(&pool, "item:follow-up").await;
+    let late = cancel_assignment_input(&pool, &input("item:follow-up"))
+        .await
+        .unwrap_err();
+    assert_eq!(conflict_reason(&late), Some(INPUT_ALREADY_DELIVERED));
+}
+
 #[test]
 fn preview_cuts_at_a_character_boundary() {
     let text = format!("{}tail", "€".repeat(INPUT_PREVIEW_CHARS));

@@ -649,6 +649,7 @@ export const chat = {
       fullTextUnavailable: "Load this reply in the thread to edit it",
       editReply: (preview: string) => `Edit reply: ${preview}`,
       cancelReply: (preview: string) => `Cancel reply: ${preview}`,
+      cancelWork: (preview: string) => `Stop the work this reply started: ${preview}`,
     },
   },
   inspector: {

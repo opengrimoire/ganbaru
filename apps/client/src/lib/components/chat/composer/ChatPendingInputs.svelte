@@ -2,11 +2,12 @@
   @component
   The replies addressed to a thread's work that wait for the run, failed to reach it, or changed
   after it received them. A waiting reply can be edited in the composer or cancelled; while one is
-  edited, the list offers Save and Discard for it.
+  edited, the list offers Save and Discard for it. A reply that started its own work is only
+  listed: its work already holds its text, so cancelling it stops that work.
 -->
 <script lang="ts">
   import type { ChatAssignmentInputId, ChatAssignmentInputRoutingKind } from "$lib/chat/contracts";
-  import type { PendingInputRow, PendingInputStatus } from "$lib/chat/composer/pending-inputs";
+  import { pendingInputStartsWork, type PendingInputRow, type PendingInputStatus } from "$lib/chat/composer/pending-inputs";
   import { getLocalization } from "$lib/i18n/translator.svelte";
 
   let {
@@ -14,6 +15,7 @@
     editingInputId,
     busyInputId,
     canEdit,
+    canStopWork,
     onEdit,
     onCancel,
     onSave,
@@ -26,6 +28,8 @@
     busyInputId: ChatAssignmentInputId | null;
     /** Whether the full text of a reply is loaded, so the composer can edit it. */
     canEdit: (row: PendingInputRow) => boolean;
+    /** Whether the work a reply started can still be stopped, which is how such a reply is cancelled. */
+    canStopWork: boolean;
     onEdit: (row: PendingInputRow) => void;
     onCancel: (row: PendingInputRow) => void;
     onSave: () => void;
@@ -62,13 +66,20 @@
     {#each rows as row (row.input.inputId)}
       {@const editing = editingInputId === row.input.inputId}
       {@const busy = busyInputId === row.input.inputId}
+      {@const startsWork = pendingInputStartsWork(row.input)}
       <li class:editing data-input-status={row.status}>
         <span class="pending-copy">
           <small>{editing ? t("chat.composer.pendingInputs.editing") : statusLabel(row)}</small>
           <span class="pending-preview">{previewText(row)}</span>
-          {#if row.status === "pending" && !editing && !canEdit(row)}<small>{t("chat.composer.pendingInputs.fullTextUnavailable")}</small>{/if}
+          {#if row.status === "pending" && !startsWork && !editing && !canEdit(row)}<small>{t("chat.composer.pendingInputs.fullTextUnavailable")}</small>{/if}
         </span>
-        {#if row.status === "pending"}
+        {#if row.status === "pending" && startsWork}
+          {#if canStopWork}
+            <span class="pending-actions">
+              <button type="button" data-pending-action="cancel" disabled={busy || editingInputId !== null} aria-label={t("chat.composer.pendingInputs.cancelWork", row.input.preview)} onclick={() => onCancel(row)}>{t("chat.composer.pendingInputs.cancel")}</button>
+            </span>
+          {/if}
+        {:else if row.status === "pending"}
           <span class="pending-actions">
             {#if editing}
               <button type="button" data-pending-action="save" disabled={busy} onclick={onSave}>{t("chat.composer.pendingInputs.save")}</button>

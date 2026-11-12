@@ -303,6 +303,7 @@ fn only_revocations_removals_and_assignment_work_are_reported() {
             settled_assignments: BTreeSet::from(["assignment:settled".to_string()]),
             routed_inputs: BTreeSet::from(["assignment:routed".to_string()]),
             removed_assignments: BTreeSet::from(["assignment:removed".to_string()]),
+            delegated_outcomes: BTreeSet::from(["assignment:delegated".to_string()]),
         },
         &mut sink,
     );
@@ -321,6 +322,7 @@ fn only_revocations_removals_and_assignment_work_are_reported() {
             (CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
             (CHAT_ASSIGNMENT_STARTED_TOPIC, "assignment:started"),
             (CHAT_ASSIGNMENT_INPUT_TOPIC, "assignment:routed"),
+            (CHAT_DELEGATION_SETTLED_TOPIC, "assignment:delegated"),
         ]
     );
 }
@@ -364,6 +366,7 @@ fn assignment_notices_hand_queued_and_started_work_and_pending_inputs_to_dispatc
     let work = waker::assignment_work(&[
         notice(CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
         notice(CHAT_ASSIGNMENT_INPUT_TOPIC, "assignment:routed"),
+        notice(CHAT_DELEGATION_SETTLED_TOPIC, "assignment:delegated"),
         notice(CHAT_ASSIGNMENT_STARTED_TOPIC, "assignment:started"),
         notice(CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
         notice(CHAT_ACCESS_REVOKED_TOPIC, TEAMMATE_ID),
@@ -374,6 +377,7 @@ fn assignment_notices_hand_queued_and_started_work_and_pending_inputs_to_dispatc
             queued: BTreeSet::from(["assignment:queued".to_string()]),
             started: BTreeSet::from(["assignment:started".to_string()]),
             routed: BTreeSet::from(["assignment:routed".to_string()]),
+            delegated: BTreeSet::from(["assignment:delegated".to_string()]),
         }
     );
     assert_eq!(

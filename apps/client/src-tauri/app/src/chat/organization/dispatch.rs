@@ -1024,6 +1024,12 @@ async fn fail_assignment_dispatch(
             &now,
         )
         .await?;
+        ganbaru_chat::coordination::delegation::post_delegation_outcome(
+            &mut transaction,
+            assignment_id.as_str(),
+            now.as_str(),
+        )
+        .await?;
     }
     transaction.commit().await.map_err(persistence_error)
 }

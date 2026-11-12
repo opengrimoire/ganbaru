@@ -713,6 +713,21 @@ async fn persist_revocation_before_cleanup(
         .execute(&mut *transaction)
         .await
         .map_err(persistence_error)?;
+        let assignment_id: Option<String> = sqlx::query_scalar(
+            "SELECT assignment_id FROM chat_assignment_authorization_revisions WHERE id = ?",
+        )
+        .bind(authorization_revision_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
+        if let Some(assignment_id) = assignment_id {
+            ganbaru_chat::coordination::delegation::post_delegation_outcome(
+                &mut transaction,
+                &assignment_id,
+                &settled_at,
+            )
+            .await?;
+        }
         sqlx::query(
             "UPDATE chat_assignment_dispatch_jobs
              SET state = 'cancelled', last_error = ?, updated_at = ?

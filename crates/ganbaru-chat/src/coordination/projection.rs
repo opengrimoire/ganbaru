@@ -289,7 +289,26 @@ pub async fn project_provider_event_in_transaction(
         }
         _ => false,
     };
+    if settles_assignment(&runtime.event) {
+        // Reached only when the event settled the assignment, after its result or failure
+        // message, so a delegated child reports that body to its parent.
+        super::delegation::post_delegation_outcome(
+            transaction,
+            assignment_id.as_str(),
+            runtime.created_at.as_str(),
+        )
+        .await?;
+    }
     Ok(projected)
+}
+
+/// Whether `event` settles the assignment its run belongs to when it applies.
+fn settles_assignment(event: &CanonicalEvent) -> bool {
+    match event {
+        CanonicalEvent::TurnCompleted(_) | CanonicalEvent::TurnAborted(_) => true,
+        CanonicalEvent::RuntimeError(event) => !event.recoverable,
+        _ => false,
+    }
 }
 
 struct ProjectionTarget<'a> {

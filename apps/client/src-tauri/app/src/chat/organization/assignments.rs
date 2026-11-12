@@ -26,6 +26,7 @@ use crate::chat::settings::device_state_error;
 use crate::chat::sync::SyncedAssignmentWork;
 use ganbaru_chat::coordination::acceptance::{AcceptanceSubject, acceptance_digest};
 use ganbaru_chat::coordination::contracts::PostChatMessageCommand;
+use ganbaru_chat::coordination::delegation::{outcome_item_id, post_delegation_outcome};
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeSet;
@@ -303,14 +304,18 @@ async fn take_over_stranded_assignment(
             .await?
             .is_some()
     } else {
-        settle_stranded_assignment(
+        let failed = settle_stranded_assignment(
             &mut transaction,
             &assignment,
             ChatWorkAssignmentState::Failed,
             STRANDED_REASON,
             now,
         )
-        .await?
+        .await?;
+        if failed {
+            post_delegation_outcome(&mut transaction, assignment_id.as_str(), now.as_str()).await?;
+        }
+        failed
     };
     transaction.commit().await.map_err(persistence_error)?;
     Ok(moved)
@@ -353,7 +358,7 @@ async fn settle_stranded_assignment(
 /// names it as its predecessor, so its id derives from `assignment` alone and every device
 /// and path that moves the same work merges into one successor. Returns the successor, or
 /// none when `assignment` changed since it was read or already has a successor.
-async fn reroute_assignment(
+pub(super) async fn reroute_assignment(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment: &ChatWorkAssignmentRead,
     device: PostingDevice<'_>,
@@ -1702,6 +1707,7 @@ pub(super) async fn adopt_synced_assignment(
             // A chosen target that no longer resolves would fail every Retry, so Retry
             // resolves the target again from the current grants.
             take_requested_target(&mut transaction, assignment_id).await?;
+            post_delegation_outcome(&mut transaction, assignment_id.as_str(), now.as_str()).await?;
             transaction.commit().await.map_err(persistence_error)?;
             Ok(false)
         }
@@ -1720,6 +1726,72 @@ pub(crate) fn start_synced_assignment_work(app: &tauri::AppHandle, work: SyncedA
             eprintln!("Synced Chat assignment work did not start: {error}");
         }
     });
+}
+
+/// Delivers the delegation outcomes that settling the run on `thread_id` queued for parent
+/// assignments, so a parent running here receives its child's result without waiting for the
+/// next recovery pass. Delivery skips parents this device does not execute.
+pub(crate) fn deliver_delegation_outcomes_of_thread(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+) {
+    let app = app.clone();
+    let pool = pool.clone();
+    let thread_id = thread_id.clone();
+    tauri::async_runtime::spawn(async move {
+        match parents_with_pending_outcomes(&pool, &thread_id).await {
+            Ok(routed) if routed.is_empty() => {}
+            Ok(routed) => start_synced_assignment_work(
+                &app,
+                SyncedAssignmentWork {
+                    routed,
+                    ..SyncedAssignmentWork::default()
+                },
+            ),
+            Err(error) => eprintln!("Chat delegation outcomes were not delivered: {error}"),
+        }
+    });
+}
+
+/// Reads the parents that hold a pending outcome input of a delegated assignment whose run used
+/// the provider thread `thread_id`.
+async fn parents_with_pending_outcomes(
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+) -> ChatResult<BTreeSet<String>> {
+    let children = sqlx::query(
+        "SELECT DISTINCT child.id, child.parent_assignment_id
+         FROM chat_agent_runs run
+         JOIN chat_work_assignments child ON child.id = run.assignment_id
+         WHERE run.provider_thread_id = ? AND child.parent_assignment_id IS NOT NULL",
+    )
+    .bind(thread_id.as_str())
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)?;
+    let mut parents = BTreeSet::new();
+    for child in children {
+        let child_id: String = child.try_get("id").map_err(persistence_error)?;
+        let parent_id: String = child
+            .try_get("parent_assignment_id")
+            .map_err(persistence_error)?;
+        let pending: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM chat_work_assignment_inputs
+               WHERE assignment_id = ? AND message_item_id = ? AND delivery_state = 'pending'
+             )",
+        )
+        .bind(&parent_id)
+        .bind(outcome_item_id(&child_id)?)
+        .fetch_one(pool)
+        .await
+        .map_err(persistence_error)?;
+        if pending {
+            parents.insert(parent_id);
+        }
+    }
+    Ok(parents)
 }
 
 /// Starts the assignment an unattended post created on this device. It takes the path of synced
@@ -1810,7 +1882,19 @@ async fn run_synced_assignment_work(
             dispatch_assignment_job(app.clone(), db_url.clone(), assignment_id).await?;
         }
     }
-    for assignment_id in work.routed {
+    let mut routed = work.routed;
+    for child_id in &work.delegated {
+        match report_synced_delegation_outcome(&pool, child_id, &device_id).await {
+            Ok(Some(parent_id)) => {
+                routed.insert(parent_id.as_str().to_owned());
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!(
+                "The outcome of delegated Chat assignment {child_id} was not reported: {error}"
+            ),
+        }
+    }
+    for assignment_id in routed {
         let assignment_id = ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
         if let Err(error) =
             deliver_pending_assignment_inputs(app.clone(), db_url.clone(), &pool, &assignment_id)
@@ -1823,6 +1907,40 @@ async fn run_synced_assignment_work(
         }
     }
     Ok(())
+}
+
+/// Reports the outcome of the delegated `child_id` that settled on another device when this
+/// device executes its parent, returning the parent when its outcome queued an input. Writing it
+/// here after the apply lets it replicate, and its ids derive from the child, so a copy another
+/// device wrote merges into one.
+pub(super) async fn report_synced_delegation_outcome(
+    pool: &SqlitePool,
+    child_id: &str,
+    device_id: &str,
+) -> ChatResult<Option<ChatWorkAssignmentId>> {
+    let now = now_timestamp()?;
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let parent_executes_here: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM chat_work_assignments child
+           JOIN chat_work_assignments parent ON parent.id = child.parent_assignment_id
+           WHERE child.id = ? AND parent.executing_device_id = ?
+         )",
+    )
+    .bind(child_id)
+    .bind(device_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    if !parent_executes_here {
+        transaction.rollback().await.map_err(persistence_error)?;
+        return Ok(None);
+    }
+    let outcome = post_delegation_outcome(&mut transaction, child_id, now.as_str()).await?;
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(outcome
+        .filter(|outcome| outcome.input_queued)
+        .map(|outcome| outcome.parent_assignment_id))
 }
 
 /// Starts the work of the mention `message_item_id` of `teammate_id` on this device: the Start

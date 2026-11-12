@@ -850,7 +850,8 @@ pub(super) fn clamp_approval(policy: &str, bound_rank: u8) -> &'static str {
     }
 }
 
-/// Cancels delegated work whose parent lost its authority, before it starts.
+/// Cancels delegated work whose parent lost its authority, before it starts, and reports the
+/// cancellation in the parent's reply thread.
 pub(super) async fn cancel_for_revoked_parent(
     connection: &mut SqliteConnection,
     assignment_id: &str,
@@ -869,6 +870,12 @@ pub(super) async fn cancel_for_revoked_parent(
     .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
+    ganbaru_chat::coordination::delegation::post_delegation_outcome(
+        connection,
+        assignment_id,
+        now.as_str(),
+    )
+    .await?;
     Ok(())
 }
 

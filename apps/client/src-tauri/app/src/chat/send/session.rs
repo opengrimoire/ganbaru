@@ -573,6 +573,17 @@ impl ProviderEventSink for DurableChatEventSink {
                     .await
             }
             .await;
+            let settled_thread = settled_turn
+                .as_ref()
+                .map(|(thread_id, _)| thread_id)
+                .or(stopped_thread.as_ref());
+            if let Some(thread_id) =
+                settled_thread.filter(|_| self.organizational && ingestion.is_ok())
+            {
+                crate::chat::organization::deliver_delegation_outcomes_of_thread(
+                    &self.app, &self.pool, thread_id,
+                );
+            }
             if let Some((thread_id, turn_id)) = settled_turn {
                 self.app
                     .state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>()

@@ -104,6 +104,9 @@ pub struct ChatSyncEffects {
     /// Assignments the apply deleted. The delete cascades away their runs and authorizations,
     /// so the caller stops running work whose authorization no longer exists.
     pub removed_assignments: BTreeSet<String>,
+    /// Delegated children that arrived or changed in a state that reports an outcome, which
+    /// the parent's executing device posts in the parent's reply thread.
+    pub delegated_outcomes: BTreeSet<String>,
 }
 
 impl ChatSyncEffects {
@@ -122,6 +125,7 @@ impl ChatSyncEffects {
             && self.settled_assignments.is_empty()
             && self.routed_inputs.is_empty()
             && self.removed_assignments.is_empty()
+            && self.delegated_outcomes.is_empty()
     }
 }
 
@@ -598,21 +602,26 @@ async fn sweep_uncovered_authorizations(
 /// device that runs it without being its executing device stops its run. A settled assignment
 /// ends the device's queued or claimed dispatch job, drops the execution targets kept for its
 /// start and its pending replies, and revokes its active authorizations with their revocation
-/// jobs, so a run this device executes stops when another device settled the work. A deleted assignment, whose cascade removed its local runs and authorizations, is
-/// reported so the caller stops the work those runs still execute. Other states change nothing.
+/// jobs, so a run this device executes stops when another device settled the work. A delegated
+/// child that completed, asked for review, failed, or was cancelled is reported so its parent's
+/// executing device posts its outcome. A deleted assignment, whose cascade removed its local
+/// runs and authorizations, is reported so the caller stops the work those runs still execute.
+/// Other states change nothing.
 /// Repeating it for a settled assignment revokes nothing more.
 async fn follow_assignment_state(
     connection: &mut SqliteConnection,
     assignment_id: &str,
     effects: &mut ChatSyncEffects,
 ) -> ChatResult<()> {
-    let row: Option<(String, String)> =
-        sqlx::query_as("SELECT state, teammate_id FROM chat_work_assignments WHERE id = ?")
-            .bind(assignment_id)
-            .fetch_optional(&mut *connection)
-            .await
-            .map_err(persistence_error)?;
-    let Some((state, teammate_id)) = row else {
+    let row: Option<(String, String, bool)> = sqlx::query_as(
+        "SELECT state, teammate_id, parent_assignment_id IS NOT NULL
+         FROM chat_work_assignments WHERE id = ?",
+    )
+    .bind(assignment_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    let Some((state, teammate_id, delegated)) = row else {
         // The delete cascaded away the assignment's runs and authorizations, so no revocation
         // job can name them; the report wakes the sweep that stops running work whose
         // authorization no longer exists.
@@ -621,6 +630,14 @@ async fn follow_assignment_state(
             .insert(assignment_id.to_string());
         return Ok(());
     };
+    if delegated
+        && matches!(
+            state.as_str(),
+            "completed" | "ready_for_review" | "failed" | "cancelled"
+        )
+    {
+        effects.delegated_outcomes.insert(assignment_id.to_string());
+    }
     match state.as_str() {
         "queued" => {
             effects.queued_assignments.insert(assignment_id.to_string());

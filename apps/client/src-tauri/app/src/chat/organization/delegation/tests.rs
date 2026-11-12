@@ -645,3 +645,166 @@ fn delegation_ceiling_is_stored_sorted_and_parses_back() {
     );
     assert!(parse_folder_ceiling(r#"[{"workingFolderId":"a","capability":"admin"}]"#).is_err());
 }
+
+/// The delegation columns of `assignment_id`.
+async fn delegation_columns(
+    pool: &SqlitePool,
+    assignment_id: &str,
+) -> (
+    Option<String>,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
+    sqlx::query_as(
+        "SELECT parent_assignment_id, delegation_depth, delegation_objective,
+                delegation_expected_result, delegation_folder_ceiling
+         FROM chat_work_assignments WHERE id = ?",
+    )
+    .bind(assignment_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// The outcome messages of `child` in the parent's reply thread, with the parent inputs that
+/// deliver them.
+async fn outcome_rows(pool: &SqlitePool, child: &ChatWorkAssignmentId) -> (i64, i64) {
+    let item_id = ganbaru_chat::coordination::delegation::outcome_item_id(child.as_str()).unwrap();
+    let messages: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chat_conversation_items
+         WHERE id = ? AND reply_thread_id = 'reply:folders'",
+    )
+    .bind(item_id.as_str())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let inputs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chat_work_assignment_inputs
+         WHERE message_item_id = ? AND assignment_id = ? AND routing_kind = 'queued_continuation'
+           AND delivery_state = 'pending'",
+    )
+    .bind(item_id.as_str())
+    .bind(PARENT)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    (messages, inputs)
+}
+
+#[tokio::test]
+async fn delegation_outcome_of_a_child_cancelled_at_claim_reaches_the_working_parent() {
+    let pool = pool_with_helper().await;
+    let created = delegate(
+        &pool,
+        &Caller::root(),
+        HELPER,
+        &parent_folders(),
+        "request-1",
+    )
+    .await
+    .unwrap();
+    let child = &created.child.assignment_id;
+    revoke_parent(&pool, "Access changed").await;
+    assert!(!claim(&pool, child).await);
+    assert_eq!(outcome_rows(&pool, child).await, (1, 1));
+}
+
+#[tokio::test]
+async fn delegation_survives_a_reroute_so_the_successor_stays_under_the_parent_ceiling() {
+    let pool = pool_with_helper().await;
+    let created = delegate(
+        &pool,
+        &Caller::root(),
+        HELPER,
+        &parent_folders(),
+        "request-1",
+    )
+    .await
+    .unwrap();
+    let child = &created.child.assignment_id;
+    let original = delegation_columns(&pool, child.as_str()).await;
+    let assignment = super::super::reads::read_assignment(&pool, child)
+        .await
+        .unwrap();
+    let writers = ChatWriters::new([DEVICE.to_owned()]);
+    let mut transaction = pool.begin().await.unwrap();
+    let successor = super::super::assignments::reroute_assignment(
+        &mut transaction,
+        &assignment,
+        super::super::workflow::PostingDevice::this_device(DEVICE, &writers),
+        &UtcTimestamp::new(NOW).unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    transaction.commit().await.unwrap();
+
+    assert_eq!(original.0.as_deref(), Some(PARENT));
+    assert_eq!(
+        delegation_columns(&pool, successor.as_str()).await,
+        original
+    );
+    assert_eq!(assignment_state(&pool, child).await.0, "cancelled");
+    let mut connection = pool.acquire().await.unwrap();
+    let moved = ganbaru_chat::coordination::delegation::post_delegation_outcome(
+        &mut connection,
+        child.as_str(),
+        NOW,
+    )
+    .await
+    .unwrap();
+    assert!(
+        moved.is_none(),
+        "a rerouted child reports through its successor"
+    );
+    drop(connection);
+    assert_eq!(outcome_rows(&pool, child).await, (0, 0));
+}
+
+#[tokio::test]
+async fn delegation_outcome_synced_in_is_written_only_by_the_parent_executing_device() {
+    let pool = pool_with_helper().await;
+    let created = delegate(
+        &pool,
+        &Caller::root(),
+        HELPER,
+        &parent_folders(),
+        "request-1",
+    )
+    .await
+    .unwrap();
+    let child = &created.child.assignment_id;
+    // The executing device is immutable outside an apply, so the parent arrives as synced.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+         UPDATE chat_work_assignments SET executing_device_id = '{DEVICE}' WHERE id = '{PARENT}';
+         UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE chat_work_assignments SET state = 'completed', settled_at = ? WHERE id = ?",
+    )
+    .bind(NOW)
+    .bind(child.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let report = super::super::assignments::report_synced_delegation_outcome;
+
+    assert_eq!(
+        report(&pool, child.as_str(), "device:other").await.unwrap(),
+        None
+    );
+    assert_eq!(outcome_rows(&pool, child).await, (0, 0));
+    assert_eq!(
+        report(&pool, child.as_str(), DEVICE).await.unwrap(),
+        Some(ChatWorkAssignmentId::new(PARENT).unwrap())
+    );
+    assert_eq!(outcome_rows(&pool, child).await, (1, 1));
+    assert_eq!(report(&pool, child.as_str(), DEVICE).await.unwrap(), None);
+    assert_eq!(outcome_rows(&pool, child).await, (1, 1));
+}

@@ -7,6 +7,7 @@
   import { openChatExternalUrl } from "$lib/api/chat";
   import { ORGANIZATIONAL_REFERENCE_SLOT_ATTRIBUTE, renderOrganizationalMarkdown, type RenderedOrganizationalMarkdown } from "$lib/chat/timeline/organizational-markdown";
   import { isTruncatedChatMessage } from "$lib/chat/timeline/organizational-message-model";
+  import { chatAgentUpdatePresentation } from "$lib/chat/timeline/agent-update";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
@@ -26,6 +27,8 @@
     currentResponseSettings = false,
     onOpenThread = () => undefined,
     onActionError,
+    answerChoices = [],
+    onChooseAnswer,
   }: {
     message: ChatMessageRead;
     grouped?: boolean;
@@ -34,6 +37,10 @@
     onOpenThread?: (trigger: HTMLElement) => void;
     /** Shows a failed message action, such as a Sent from lookup, in the surrounding view. */
     onActionError?: (error: unknown) => void;
+    /** Suggested answers offered as chips, for a question that still waits for an answer. */
+    answerChoices?: readonly string[];
+    /** Puts the chosen answer in the composer. */
+    onChooseAnswer?: (choice: string) => void;
   } = $props();
 
   const localization = getLocalization();
@@ -49,6 +56,7 @@
     t("chat.timeline.you"),
   ) : ""));
   const actionTarget = $derived(organizationalMessageActionTarget(message));
+  const agentUpdate = $derived(chatAgentUpdatePresentation(message.richContent));
   const contexts = getAllContexts();
   let copy: HTMLDivElement | undefined = $state();
   let previousRender: { key: string; value: RenderedOrganizationalMarkdown } | undefined;
@@ -197,6 +205,16 @@
         {#if message.attachmentIds.length > 0}<span>{t("chat.organization.images", message.attachmentIds.length)}</span>{/if}
       </div>
     {/if}
+    {#if agentUpdate?.kind === "delegation_outcome"}
+      <div class="message-context" data-delegation-outcome><span>{t(`chat.delegation.states.${agentUpdate.state}`)}</span></div>
+    {/if}
+    {#if onChooseAnswer && answerChoices.length > 0}
+      <div class="answer-choices" role="group" aria-label={t("chat.questions.choices")} data-answer-choices>
+        {#each answerChoices as choice (choice)}
+          <button type="button" class="answer-choice" aria-label={t("chat.questions.useChoice", choice)} onclick={() => onChooseAnswer(choice)}>{choice}</button>
+        {/each}
+      </div>
+    {/if}
     {#if showReplyStrip && message.replyThread}
       <button type="button" class="reply-strip" data-reply-thread-id={message.replyThread.id} onclick={(event) => onOpenThread(event.currentTarget)}>
         <span class="reply-avatars">
@@ -236,4 +254,8 @@
   .reply-strip:hover,.reply-strip:focus-visible { background:color-mix(in srgb,var(--accent) 45%,transparent); }
   .reply-avatars { display:flex; align-items:center; gap:0.25rem; padding-left:0.2rem; }
   .unread-dot { width:0.42rem; height:0.42rem; flex:0 0 auto; border-radius:999px; background:var(--primary); }
+  .answer-choices { display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.4rem; }
+  .answer-choice { min-height:1.75rem; max-width:100%; overflow:hidden; border:1px solid var(--border); border-radius:999px; padding:0.15rem 0.6rem; color:var(--foreground); font-size: calc(0.72rem * var(--type-scale)); text-overflow:ellipsis; white-space:nowrap; }
+  .answer-choice:hover,.answer-choice:focus-visible { background:var(--accent); }
+  @media (pointer:coarse) { .answer-choice { min-height:2.75rem; } }
 </style>

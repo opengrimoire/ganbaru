@@ -4,13 +4,14 @@
 
 use super::delegation::required_text;
 use super::{HostToolContext, generic_denial_error};
+use crate::chat::ingestion::notify_rows_changed;
 use crate::chat::internal_mcp::InternalMcpRunScope;
 use crate::chat::secrets::{
     MAX_SECRET_LABEL_CHARS, MAX_SECRET_PURPOSE_CHARS, open_request, request_state,
     secret_file_path, secret_root,
 };
 use chrono::{DateTime, Utc};
-use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult};
+use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatProjectionKey, ChatResult};
 use serde_json::{Map, Value, json};
 use sqlx::SqlitePool;
 use std::path::Path;
@@ -63,13 +64,23 @@ pub(super) fn status_properties() -> Value {
     })
 }
 
-/// Opens a secret request for the calling run.
+/// Opens a secret request for the calling run and tells its reply thread to show it.
 pub(super) async fn request_secret(
     context: &HostToolContext<'_>,
     arguments: &Map<String, Value>,
 ) -> ChatResult<Value> {
     let root = secret_root(context.app)?;
-    request_secret_in(context.pool, &root, context.scope, arguments, Utc::now()).await
+    let opened = request_secret_in(context.pool, &root, context.scope, arguments, Utc::now()).await;
+    if opened.is_ok() {
+        notify_rows_changed(
+            context.app,
+            context.pool,
+            context.thread_id,
+            &[ChatProjectionKey::Organizational],
+        )
+        .await;
+    }
+    opened
 }
 
 /// Reports the state of one of the calling run's secret requests.

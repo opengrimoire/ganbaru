@@ -909,7 +909,8 @@ mod tests {
                 &[("item:steer", steer_text)],
                 0,
             );
-            let steered = follow_up_context_line("item:steer", 1, steer_text.to_string()).unwrap();
+            let steered =
+                follow_up_context_line("item:steer", 1, steer_text.to_string(), false).unwrap();
             let history = SessionHistory {
                 delivered: HashSet::from([
                     ("item:steer".to_string(), steered.content_sha256),

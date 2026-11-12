@@ -63,8 +63,10 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       updatedAt: timestamp,
       review: null,
       localAcceptance: null,
+      delegation: null,
     },
     agentRuns: [],
+    delegatedChildren: [],
     previousCursor: null,
     revision: 1,
   };

@@ -889,3 +889,52 @@ async fn delegation_cancel_of_the_parent_cancels_the_queued_child_and_its_dispat
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn delegation_reads_show_the_child_origin_and_the_parent_delegated_work() {
+    let pool = pool_with_helper().await;
+    let created = delegate(
+        &pool,
+        &Caller::root(),
+        HELPER,
+        &parent_folders(),
+        "request-1",
+    )
+    .await
+    .unwrap();
+    let child = &created.child.assignment_id;
+    let parent_thread: String =
+        sqlx::query_scalar("SELECT reply_thread_id FROM chat_work_assignments WHERE id = ?")
+            .bind(PARENT)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let origin = super::super::reads::read_assignment(&pool, child)
+        .await
+        .unwrap()
+        .delegation
+        .expect("a delegated child reads its origin");
+    assert_eq!(origin.parent_assignment_id.as_str(), PARENT);
+    assert_eq!(
+        origin.parent_reply_thread_id.as_ref().map(|id| id.as_str()),
+        Some(parent_thread.as_str())
+    );
+    assert_eq!(origin.depth, 1);
+    assert_eq!(origin.objective, "Check the build");
+    assert_eq!(origin.expected_result, "A short report");
+
+    let parent_thread_id = ChatReplyThreadId::new(parent_thread).unwrap();
+    let children = super::super::reads::read_delegated_children(&pool, &parent_thread_id)
+        .await
+        .unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].assignment_id, *child);
+    assert_eq!(children[0].teammate.id.as_str(), HELPER);
+    assert_eq!(children[0].objective, "Check the build");
+    assert_eq!(children[0].reply_thread_id, created.child.reply_thread_id);
+    let none = super::super::reads::read_delegated_children(&pool, &created.child.reply_thread_id)
+        .await
+        .unwrap();
+    assert!(none.is_empty(), "a child thread lists no work of its own");
+}

@@ -817,6 +817,7 @@ fn frame_answered_question(answered: &AnsweredQuestion) -> ChatResult<FramedAnsw
             &answer.item_id,
             answer.revision,
             answer.markdown.clone(),
+            false,
         )?;
         answers.push_str(&framed.line);
         sources.push(DeliveredSource {
@@ -1332,6 +1333,7 @@ async fn prepare_assignment_input(
         u64_value(row.try_get("revision").map_err(persistence_error)?)?,
         row.try_get("normalized_markdown")
             .map_err(persistence_error)?,
+        super::context::message_teammate_authored(pool, message_item_id.as_str()).await?,
     )?;
     Ok(Some(PreparedAssignmentInput {
         thread_id,
@@ -2288,6 +2290,7 @@ mod tests {
                 "item:continuation",
                 1,
                 "Then update the docs".to_string(),
+                false,
             )
             .unwrap();
             assert_eq!(prepared.prompt, framed.line);

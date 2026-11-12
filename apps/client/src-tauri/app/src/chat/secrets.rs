@@ -19,7 +19,7 @@ use ganbaru_chat::agent_runs::{SETTLED_RUN_STATES, unsettled_run_state_sql};
 use ganbaru_chat::credentials::SecretValue;
 use ganbaru_chat::ingestion::{RegisteredSecret, SecretRedactor, longest_first, redact_json};
 use ganbaru_chat_contracts::models::{
-    ChatError, ChatErrorCode, ChatReplyThreadId, ChatResult, ChatThreadId,
+    ChatError, ChatErrorCode, ChatProjectionKey, ChatReplyThreadId, ChatResult, ChatThreadId,
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -653,6 +653,41 @@ pub(crate) fn spawn_sweep(app: &tauri::AppHandle, pool: &SqlitePool) {
     tauri::async_runtime::spawn(async move { sweep(&app, &pool).await });
 }
 
+/// Tells open Chat views that the secret request `request_id` changed, so its reply thread
+/// rereads the request card instead of waiting for a manual reload.
+///
+/// Requests live in device-local rows that no projection covers, so the organizational key
+/// stands for them. A run without a provider thread has no view to tell.
+async fn notify_request_changed(app: &tauri::AppHandle, pool: &SqlitePool, request_id: &str) {
+    let thread = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT run.provider_thread_id
+         FROM chat_secret_requests request
+         JOIN chat_agent_runs run ON run.id = request.run_id
+         WHERE request.id = ?",
+    )
+    .bind(request_id)
+    .fetch_optional(pool)
+    .await;
+    let thread_id = match thread {
+        Ok(Some(Some(thread_id))) => thread_id,
+        Ok(_) => return,
+        Err(_) => {
+            eprintln!("Chat secret request notification lookup failed");
+            return;
+        }
+    };
+    let Ok(thread_id) = ChatThreadId::new(thread_id) else {
+        return;
+    };
+    crate::chat::ingestion::notify_rows_changed(
+        app,
+        pool,
+        &thread_id,
+        &[ChatProjectionKey::Organizational],
+    )
+    .await;
+}
+
 struct AnswerableRequest {
     run_id: String,
     provider_thread_id: String,
@@ -792,7 +827,9 @@ pub async fn chat_provide_secret(
     let pool = chat_pool(app.clone(), db_url).await?;
     let registry = app.state::<ChatSecretRegistry>();
     let root = secret_root(&app)?;
-    provide_secret(&registry, &pool, &root, &request_id, value, Utc::now()).await
+    let result = provide_secret(&registry, &pool, &root, &request_id, value, Utc::now()).await;
+    notify_request_changed(&app, &pool, &request_id).await;
+    result
 }
 
 /// Declines an open secret request.
@@ -802,8 +839,10 @@ pub async fn chat_decline_secret(
     db_url: String,
     request_id: String,
 ) -> ChatResult<()> {
-    let pool = chat_pool(app, db_url).await?;
-    decline_secret(&pool, &request_id, Utc::now()).await
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let result = decline_secret(&pool, &request_id, Utc::now()).await;
+    notify_request_changed(&app, &pool, &request_id).await;
+    result
 }
 
 /// Lists the open secret requests of the work in one reply thread.

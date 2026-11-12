@@ -664,6 +664,8 @@ export interface ChatWorkAssignmentRead {
   previousAssignmentId: ChatWorkAssignmentId | null;
   state: ChatWorkAssignmentState;
   stateReason: string | null;
+  /** Where this work came from when another teammate delegated it; null for work a person started. */
+  delegation: ChatAssignmentDelegationRead | null;
   revision: number;
   settledAt: UtcTimestamp | null;
   createdAt: UtcTimestamp;
@@ -672,6 +674,39 @@ export interface ChatWorkAssignmentRead {
   review: ChatAssignmentReview | null;
   /** What starting this work here would run, present while it waits for a local action on the reading device. */
   localAcceptance: ChatAssignmentAcceptanceOfferRead | null;
+}
+
+/** Where delegated work came from and what it was asked to return. */
+export interface ChatAssignmentDelegationRead {
+  parentAssignmentId: ChatWorkAssignmentId;
+  /** Reply thread of the parent work; null while the parent has not reached this device. */
+  parentReplyThreadId: ChatReplyThreadId | null;
+  /** How many delegations separate this work from work a person started, from 1. */
+  depth: number;
+  objective: string;
+  expectedResult: string;
+}
+
+/** Work a teammate delegated from an assignment, with its live state. */
+export interface ChatDelegatedChildRead {
+  assignmentId: ChatWorkAssignmentId;
+  parentAssignmentId: ChatWorkAssignmentId;
+  replyThreadId: ChatReplyThreadId;
+  teammate: ChatParticipantRead;
+  objective: string;
+  state: ChatWorkAssignmentState;
+  stateReason: string | null;
+  createdAt: UtcTimestamp;
+}
+
+/** A secret value a running teammate asked for, open until a person provides or declines it or it expires. */
+export interface ChatSecretRequestRead {
+  id: string;
+  assignmentId: ChatWorkAssignmentId;
+  label: string;
+  purpose: string;
+  createdAt: UtcTimestamp;
+  expiresAt: UtcTimestamp;
 }
 
 /** A folder an assignment waiting for local acceptance would run in. */
@@ -727,6 +762,8 @@ export interface ChatReplyThreadPageRead {
   replies: ChatMessageRead[];
   assignment: ChatWorkAssignmentRead | null;
   agentRuns: ChatAgentRunRead[];
+  /** Work delegated from this reply thread's assignments, oldest first, with its live state. */
+  delegatedChildren: ChatDelegatedChildRead[];
   previousCursor: string | null;
   revision: number;
 }

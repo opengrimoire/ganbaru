@@ -677,6 +677,7 @@ pub(super) async fn read_reply_thread_page(
         replies,
         assignment: read_active_or_latest_assignment(pool, reply_thread_id).await?,
         agent_runs: runs,
+        delegated_children: read_delegated_children(pool, reply_thread_id).await?,
         previous_cursor,
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
     })
@@ -781,6 +782,7 @@ pub(super) async fn read_assignment(
                 .map_err(persistence_error)?,
         )?,
         state_reason: row.try_get("state_reason").map_err(persistence_error)?,
+        delegation: read_assignment_delegation(pool, assignment_id).await?,
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
         settled_at: optional_timestamp(row.try_get("settled_at").map_err(persistence_error)?)?,
         created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
@@ -809,6 +811,108 @@ fn read_assignment_review(
         })),
         _ => Err(stored_value_error("assignment review")),
     }
+}
+
+/// Where an assignment came from when a teammate delegated it, or none for work a person started.
+async fn read_assignment_delegation(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<Option<ChatAssignmentDelegationRead>> {
+    let row = sqlx::query(
+        "SELECT child.parent_assignment_id, child.delegation_depth, child.delegation_objective,
+                child.delegation_expected_result, parent.reply_thread_id AS parent_reply_thread_id
+         FROM chat_work_assignments child
+         LEFT JOIN chat_work_assignments parent ON parent.id = child.parent_assignment_id
+         WHERE child.id = ? AND child.parent_assignment_id IS NOT NULL",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let depth: i64 = row.try_get("delegation_depth").map_err(persistence_error)?;
+    let objective: Option<String> = row
+        .try_get("delegation_objective")
+        .map_err(persistence_error)?;
+    let expected_result: Option<String> = row
+        .try_get("delegation_expected_result")
+        .map_err(persistence_error)?;
+    let (Some(objective), Some(expected_result)) = (objective, expected_result) else {
+        return Err(stored_value_error("assignment delegation"));
+    };
+    Ok(Some(ChatAssignmentDelegationRead {
+        parent_assignment_id: ChatWorkAssignmentId::new(
+            row.try_get::<String, _>("parent_assignment_id")
+                .map_err(persistence_error)?,
+        )
+        .map_err(identifier_error)?,
+        parent_reply_thread_id: row
+            .try_get::<Option<String>, _>("parent_reply_thread_id")
+            .map_err(persistence_error)?
+            .map(ChatReplyThreadId::new)
+            .transpose()
+            .map_err(identifier_error)?,
+        depth: u8::try_from(depth).map_err(|_| stored_value_error("delegation depth"))?,
+        objective,
+        expected_result,
+    }))
+}
+
+/// Work delegated from any assignment of a reply thread, oldest first, with its live state.
+pub(super) async fn read_delegated_children(
+    pool: &SqlitePool,
+    reply_thread_id: &ChatReplyThreadId,
+) -> ChatResult<Vec<ChatDelegatedChildRead>> {
+    let rows = sqlx::query(
+        "SELECT child.id, child.parent_assignment_id, child.reply_thread_id, child.teammate_id,
+                child.delegation_objective, child.state, child.state_reason, child.created_at
+         FROM chat_work_assignments child
+         JOIN chat_work_assignments parent ON parent.id = child.parent_assignment_id
+         WHERE parent.reply_thread_id = ?
+         ORDER BY child.created_at, child.id",
+    )
+    .bind(reply_thread_id.as_str())
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)?;
+    let mut children = Vec::with_capacity(rows.len());
+    for row in rows {
+        let teammate_id = ChatParticipantId::new(
+            row.try_get::<String, _>("teammate_id")
+                .map_err(persistence_error)?,
+        )
+        .map_err(identifier_error)?;
+        children.push(ChatDelegatedChildRead {
+            assignment_id: ChatWorkAssignmentId::new(
+                row.try_get::<String, _>("id").map_err(persistence_error)?,
+            )
+            .map_err(identifier_error)?,
+            parent_assignment_id: ChatWorkAssignmentId::new(
+                row.try_get::<String, _>("parent_assignment_id")
+                    .map_err(persistence_error)?,
+            )
+            .map_err(identifier_error)?,
+            reply_thread_id: ChatReplyThreadId::new(
+                row.try_get::<String, _>("reply_thread_id")
+                    .map_err(persistence_error)?,
+            )
+            .map_err(identifier_error)?,
+            teammate: read_participant(pool, &teammate_id).await?,
+            objective: row
+                .try_get::<Option<String>, _>("delegation_objective")
+                .map_err(persistence_error)?
+                .ok_or_else(|| stored_value_error("assignment delegation"))?,
+            state: parse_work_state(
+                &row.try_get::<String, _>("state")
+                    .map_err(persistence_error)?,
+            )?,
+            state_reason: row.try_get("state_reason").map_err(persistence_error)?,
+            created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
+        });
+    }
+    Ok(children)
 }
 
 pub(super) async fn read_active_or_latest_assignment(

@@ -4,7 +4,7 @@ import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelOptionSelection } from "$lib/chat/contracts";
 import { getChat } from "$lib/stores/chat.svelte";
-import { modelSettings, resetChatComposerTestStore } from "$lib/components/chat/ChatComposer.test-support";
+import { modelSettings, resetChatComposerTestStore } from "$lib/components/chat/composer/composer-test-store";
 import ChatModelControls from "./ChatModelControls.svelte";
 
 interface ControlledSelection {

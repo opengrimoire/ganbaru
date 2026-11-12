@@ -12,7 +12,7 @@ import type { ChatModelParticipant } from "$lib/chat/teammates/participant-ident
 import { getChat } from "$lib/stores/chat.svelte";
 import { getPreferences } from "$lib/stores/preferences.svelte";
 import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
-import { modelSettings } from "$lib/components/chat/ChatComposer.test-support";
+import { modelSettings } from "$lib/components/chat/composer/composer-test-store";
 import ChatIdentityButton from "./ChatIdentityButton.svelte";
 
 const localParticipant: ChatParticipantRead = {

@@ -524,7 +524,7 @@ describe("ChatComposer", () => {
     expect(safetyTrigger?.hasAttribute("title")).toBe(false);
     expect(safetyTrigger?.dataset.appTooltipDisabled).toBe("true");
     expect(target.querySelector('[data-chat-field="interaction"]')).toBeNull();
-    expect(target.querySelector(".context-ring svg")?.getAttribute("role")).toBe("img");
+    expect(target.querySelector("button.context-ring")?.getAttribute("aria-label")).toMatch(/context/i);
     expect(target.querySelector("select")).toBeNull();
     expect(target.querySelector(".attachment-menu summary")?.getAttribute("aria-label")).toBe("Attach images");
     expect(target.querySelector("button.primary-action")?.getAttribute("aria-label")).toBe("Send");

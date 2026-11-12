@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatAiTeammateRead, ChatParticipantRead } from "$lib/chat/contracts";
 import { getChat } from "$lib/stores/chat.svelte";
 import { getPreferences } from "$lib/stores/preferences.svelte";
-import { modelSettings } from "$lib/components/chat/ChatComposer.test-support";
+import { modelSettings } from "$lib/components/chat/composer/composer-test-store";
 import ChatParticipantAvatar from "./ChatParticipantAvatar.svelte";
 
 const profileImage = vi.hoisted(() => ({

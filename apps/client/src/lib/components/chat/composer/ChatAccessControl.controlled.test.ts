@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as chatApi from "$lib/api/chat";
 import type { SafetyMode } from "$lib/chat/contracts";
 import { getChat } from "$lib/stores/chat.svelte";
-import { modelSettings, resetChatComposerTestStore } from "$lib/components/chat/ChatComposer.test-support";
+import { modelSettings, resetChatComposerTestStore } from "$lib/components/chat/composer/composer-test-store";
 import ChatAccessControl from "./ChatAccessControl.svelte";
 
 describe("ChatAccessControl controlled mode", () => {

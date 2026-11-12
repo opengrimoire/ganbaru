@@ -971,3 +971,74 @@ async fn wait_for_event(sink: &RecordingSink, predicate: impl Fn(&CanonicalRunti
     .await
     .unwrap();
 }
+
+#[test]
+fn a_silent_stream_during_a_turn_reconnects_then_fails_while_an_idle_one_is_kept() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("external-silent-stream");
+        let server = OpenCodeServerFixture::start(workspace.path(), None, false).await;
+        let busy_stream_timeout = Duration::from_millis(150);
+        let mut driver = OpenCodeProviderDriver::new(external_configuration(&server.origin, true))
+            .unwrap()
+            .with_busy_stream_timeout(busy_stream_timeout);
+        let sink = Arc::new(RecordingSink::default());
+        let snapshot = driver
+            .start_session(
+                start_request(workspace.path()),
+                sink.clone(),
+                &context("start"),
+            )
+            .await
+            .unwrap();
+        server.wait_for_request("GET /event?").await;
+        tokio::time::sleep(busy_stream_timeout * 4).await;
+        assert_eq!(
+            server.state.event_connections.load(Ordering::Acquire),
+            1,
+            "an idle stream is kept"
+        );
+
+        driver
+            .send_turn(
+                SendTurnRequest {
+                    command: command("send"),
+                    session_id: snapshot.session_id.clone(),
+                    turn_id: ChatTurnId::new("turn-silent").unwrap(),
+                    prompt: "Wait for the provider".to_string(),
+                    attachments: vec![],
+                    mentions: vec![],
+                    model_id: None,
+                    model_options: vec![],
+                    modes: modes(),
+                    developer_instructions: None,
+                },
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        let silent = |event: &CanonicalRuntimeEvent| {
+            matches!(&event.event, CanonicalEvent::RuntimeError(error)
+                if error.code == "opencode_event_stream_silent")
+        };
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !sink.events().iter().any(silent) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(server.state.event_connections.load(Ordering::Acquire) > 1);
+        assert!(
+            server
+                .requests()
+                .iter()
+                .any(|request| request.starts_with("GET /session/ses_new/message")),
+            "each reconnect reconciles history"
+        );
+        assert_eq!(
+            sink.events().iter().filter(|event| silent(event)).count(),
+            1
+        );
+        server.shutdown().await;
+    });
+}

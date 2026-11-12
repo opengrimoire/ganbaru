@@ -446,6 +446,17 @@ fn semantic_version_range_is_explicit() {
         parse_version("opencode 1.14.19\n").unwrap().to_string(),
         "1.14.19"
     );
+    for build in [
+        "1.14.20+build.7",
+        "opencode v1.14.20+abc123\n",
+        "1.14.20-beta.1+sha.5",
+    ] {
+        assert_eq!(
+            parse_version(build).unwrap().to_string(),
+            "1.14.20",
+            "{build}"
+        );
+    }
     assert_eq!(
         ensure_supported_version(parse_version("v1.14.18").unwrap())
             .unwrap_err()

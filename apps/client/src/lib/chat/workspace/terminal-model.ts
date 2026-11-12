@@ -11,6 +11,21 @@ export type TerminalOutputDecision =
   | { kind: "duplicate"; state: TerminalOutputState }
   | { kind: "gap"; state: TerminalOutputState; expectedSequence: number };
 
+/**
+ * Returns the output state a view starts from before writing a snapshot's scrollback. Bounded replay drops its
+ * oldest chunks, so the first retained chunk sets the expected sequence instead of sequence one.
+ *
+ * @param generation The terminal generation the snapshot describes.
+ * @param scrollback The snapshot's replay chunks in order.
+ */
+export function replayStartState(
+  generation: number,
+  scrollback: readonly ChatTerminalOutputChunk[],
+): TerminalOutputState {
+  const first = scrollback.find((chunk) => chunk.generation === generation);
+  return { generation, lastSequence: first ? Math.max(0, first.sequence - 1) : 0 };
+}
+
 export function applyTerminalOutput(
   state: TerminalOutputState,
   chunk: ChatTerminalOutputChunk,

@@ -11,6 +11,7 @@
   import { parseChatTerminal, parseChatTerminalOutput } from "$lib/chat/validation";
   import {
     applyTerminalOutput,
+    replayStartState,
     TerminalOutputAcknowledger,
     terminalOutputByteLength,
     terminalErrorMessage,
@@ -125,7 +126,7 @@
       terminal.loadAddon(fit);
       terminal.open(host);
       xterm = terminal;
-      outputState = { generation: snapshot.terminal.generation, lastSequence: 0 };
+      outputState = replayStartState(snapshot.terminal.generation, snapshot.scrollback);
       for (const chunk of snapshot.scrollback) applyChunk(chunk);
       flushLiveOutput();
       terminal.onData((data) => {
@@ -264,7 +265,7 @@
         terminalIdentity.workingFolderId,
       );
       xterm?.reset();
-      outputState = { generation: snapshot.terminal.generation, lastSequence: 0 };
+      outputState = replayStartState(snapshot.terminal.generation, snapshot.scrollback);
       for (const chunk of snapshot.scrollback) applyChunk(chunk);
       notifyState(snapshot.terminal);
     } finally {

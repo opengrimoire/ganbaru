@@ -1,4 +1,8 @@
 //! Runtime-only pseudoterminal sessions with bounded replay.
+//!
+//! Terminal output lives only in memory for the session's lifetime and is never persisted. A shell inherits
+//! the user's launch environment without multiplexer, port, and packaging variables, and every replay starts by
+//! resetting the terminal modes a client may hold from earlier output.
 
 use base64::{Engine as _, engine::general_purpose};
 use ganbaru_chat_contracts::models::{
@@ -21,6 +25,11 @@ pub const CHAT_TERMINAL_STATE_EVENT: &str = "chat://terminal-state";
 const MAX_TERMINALS_PER_THREAD: usize = 8;
 const MAX_TERMINALS_PER_APP: usize = 32;
 const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
+/// Written before replayed output so a reattached view drops modes left from earlier output: leaves the alternate
+/// screen, pops the kitty keyboard stack and clears its flags, resets cursor key, mouse, focus, and bracketed paste
+/// modes, shows the cursor, resets modifyOtherKeys, and resets attributes. A program that is still running
+/// reapplies its own modes from the replayed bytes.
+pub(crate) const TERMINAL_REPLAY_RESET_PREFIX: &str = "\x1b[?1049l\x1b[<100u\x1b[=0;1u\x1b[?1;9;66;67;1000;1002;1003;1004;1005;1006;1015;2004l\x1b[?25h\x1b[>4m\x1b[0m";
 const MAX_OUTPUT_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 /// Output bytes a view may leave unacknowledged before live delivery to it pauses.
@@ -315,12 +324,24 @@ impl TerminalSession {
         let scrollback = state
             .replay
             .iter()
-            .map(|chunk| ChatTerminalOutputChunk {
-                terminal_id: self.id.clone(),
-                generation: chunk.generation,
-                sequence: chunk.sequence,
-                data_base64: general_purpose::STANDARD.encode(&chunk.bytes),
-                replay: true,
+            .enumerate()
+            .map(|(index, chunk)| {
+                let data_base64 = if index == 0 {
+                    let mut bytes =
+                        Vec::with_capacity(TERMINAL_REPLAY_RESET_PREFIX.len() + chunk.bytes.len());
+                    bytes.extend_from_slice(TERMINAL_REPLAY_RESET_PREFIX.as_bytes());
+                    bytes.extend_from_slice(&chunk.bytes);
+                    general_purpose::STANDARD.encode(bytes)
+                } else {
+                    general_purpose::STANDARD.encode(&chunk.bytes)
+                };
+                ChatTerminalOutputChunk {
+                    terminal_id: self.id.clone(),
+                    generation: chunk.generation,
+                    sequence: chunk.sequence,
+                    data_base64,
+                    replay: true,
+                }
             })
             .collect();
         Ok(ChatTerminalSnapshotRead {
@@ -979,12 +1000,103 @@ pub(crate) fn capture_launch_environment() {
     let _ = LAUNCH_ENVIRONMENT.set(std::env::vars_os().collect());
 }
 
-/// Returns the environment a terminal shell should inherit: the launch environment without the variables the
-/// AppImage runtime and its bundled library hooks inject.
+/// Variables that describe a terminal multiplexer session or a port the launcher chose. A Chat terminal is not
+/// inside the user's multiplexer, and an inherited `PORT` misleads development servers started in it.
+const TERMINAL_ENVIRONMENT_BLOCKLIST: &[&str] = &["TMUX", "TMUX_PANE", "STY", "WINDOW", "PORT"];
+
+/// Name prefixes of multiplexer variables dropped from the terminal environment.
+const TERMINAL_ENVIRONMENT_BLOCKLIST_PREFIXES: &[&str] = &["ZELLIJ"];
+
+/// The fish variable that toggles optional features at startup. Other shells ignore it.
+const FISH_FEATURES_VARIABLE: &str = "fish_features";
+
+/// Feature fish 4.1 and later read to start without waiting for a terminal query reply.
+const FISH_NO_QUERY_TERM_FEATURE: &str = "no-query-term";
+
+/// Feature name the user sets, with or without the `no-` prefix, to choose the query behavior themselves.
+const FISH_QUERY_TERM_FEATURE: &str = "query-term";
+
+/// Returns the environment a terminal shell should inherit: the launch environment without multiplexer and port
+/// variables or the variables the AppImage runtime and its bundled library hooks inject, with fish told not to
+/// wait for a terminal query reply unless the user chose that behavior.
 fn terminal_environment(launch: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    let launch = without_blocklisted_variables(launch);
     #[cfg(target_os = "linux")]
     let launch = without_appimage_variables(launch);
-    launch
+    with_fish_query_term_disabled(launch)
+}
+
+/// Compares an environment key with a variable name, ignoring case on Windows where keys are case-insensitive.
+fn environment_key_is(key: &OsStr, name: &str) -> bool {
+    #[cfg(windows)]
+    return key.eq_ignore_ascii_case(name);
+    #[cfg(not(windows))]
+    return key == name;
+}
+
+/// Reports whether an environment key starts with `prefix`, ignoring case on Windows.
+fn environment_key_starts_with(key: &OsStr, prefix: &str) -> bool {
+    let key = key.as_encoded_bytes();
+    let prefix = prefix.as_bytes();
+    if key.len() < prefix.len() {
+        return false;
+    }
+    #[cfg(windows)]
+    return key[..prefix.len()].eq_ignore_ascii_case(prefix);
+    #[cfg(not(windows))]
+    return &key[..prefix.len()] == prefix;
+}
+
+/// Drops the multiplexer and port variables named by the terminal blocklists.
+fn without_blocklisted_variables(
+    environment: Vec<(OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    environment
+        .into_iter()
+        .filter(|(key, _)| {
+            !TERMINAL_ENVIRONMENT_BLOCKLIST
+                .iter()
+                .any(|name| environment_key_is(key, name))
+                && !TERMINAL_ENVIRONMENT_BLOCKLIST_PREFIXES
+                    .iter()
+                    .any(|prefix| environment_key_starts_with(key, prefix))
+        })
+        .collect()
+}
+
+/// Adds the fish `no-query-term` feature, appending it to inherited comma or space separated features, unless
+/// they already name `query-term` in either form.
+fn with_fish_query_term_disabled(
+    mut environment: Vec<(OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    let existing = environment
+        .iter_mut()
+        .find(|(key, _)| environment_key_is(key, FISH_FEATURES_VARIABLE));
+    match existing {
+        Some((_, value)) => {
+            let names_query_term = value
+                .to_string_lossy()
+                .split(|separator: char| separator == ',' || separator.is_whitespace())
+                .map(str::trim)
+                .any(|feature| {
+                    feature.strip_prefix("no-").unwrap_or(feature) == FISH_QUERY_TERM_FEATURE
+                });
+            if names_query_term {
+                return environment;
+            }
+            if value.to_string_lossy().trim().is_empty() {
+                *value = OsString::from(FISH_NO_QUERY_TERM_FEATURE);
+            } else {
+                value.push(",");
+                value.push(FISH_NO_QUERY_TERM_FEATURE);
+            }
+        }
+        None => environment.push((
+            OsString::from(FISH_FEATURES_VARIABLE),
+            OsString::from(FISH_NO_QUERY_TERM_FEATURE),
+        )),
+    }
+    environment
 }
 
 /// Removes the AppImage runtime variables and every path entry inside the mounted image. Environments that were
@@ -1316,6 +1428,63 @@ mod tests {
         );
     }
 
+    fn decoded(chunk: &ChatTerminalOutputChunk) -> Vec<u8> {
+        general_purpose::STANDARD
+            .decode(&chunk.data_base64)
+            .expect("chunk data should decode")
+    }
+
+    #[test]
+    fn replay_starts_with_the_mode_reset_and_live_output_does_not() {
+        let session = session(true);
+        assert!(
+            session
+                .snapshot()
+                .expect("empty snapshot should read")
+                .scrollback
+                .is_empty()
+        );
+        let live = session
+            .record_output(1, b"\x1b[?1049hvim".to_vec())
+            .expect("output should record")
+            .expect("current generation should emit");
+        assert_eq!(decoded(&live), b"\x1b[?1049hvim");
+        session
+            .record_output(1, b"second".to_vec())
+            .expect("output should record");
+
+        let snapshot = session.snapshot().expect("snapshot should read");
+        assert_eq!(snapshot.scrollback.len(), 2);
+        assert_eq!(snapshot.scrollback[0].sequence, 1);
+        let mut expected = TERMINAL_REPLAY_RESET_PREFIX.as_bytes().to_vec();
+        expected.extend_from_slice(b"\x1b[?1049hvim");
+        assert_eq!(decoded(&snapshot.scrollback[0]), expected);
+        assert_eq!(decoded(&snapshot.scrollback[1]), b"second");
+        assert!(TERMINAL_REPLAY_RESET_PREFIX.starts_with("\x1b[?1049l"));
+        assert!(TERMINAL_REPLAY_RESET_PREFIX.ends_with("\x1b[0m"));
+
+        for byte in [1_u8, 2, 3] {
+            session
+                .record_output(1, vec![byte; MAX_REPLAY_BYTES / 2])
+                .expect("output should record");
+        }
+        let trimmed = session.snapshot().expect("snapshot should read");
+        let first = decoded(&trimmed.scrollback[0]);
+        assert!(first.starts_with(TERMINAL_REPLAY_RESET_PREFIX.as_bytes()));
+        assert_eq!(
+            first.len(),
+            TERMINAL_REPLAY_RESET_PREFIX.len() + MAX_REPLAY_BYTES / 2
+        );
+        assert!(
+            session
+                .state
+                .lock()
+                .expect("terminal state should lock")
+                .replay_bytes
+                <= MAX_REPLAY_BYTES
+        );
+    }
+
     #[test]
     fn running_terminal_close_requires_confirmation_and_removes_exact_session() {
         let registry = ChatTerminalRegistry::default();
@@ -1623,6 +1792,19 @@ mod tests {
         let command = shell_command(&workspace);
         assert_eq!(command.get_cwd().map(PathBuf::from), Some(workspace));
         assert_eq!(command.get_env("COLORTERM"), Some("truecolor".as_ref()));
+        if std::env::var_os(FISH_FEATURES_VARIABLE).is_none() {
+            assert_eq!(
+                command.get_env(FISH_FEATURES_VARIABLE),
+                Some(FISH_NO_QUERY_TERM_FEATURE.as_ref())
+            );
+        }
+        for name in TERMINAL_ENVIRONMENT_BLOCKLIST {
+            assert_eq!(
+                command.get_env(name),
+                None,
+                "{name} should not be inherited"
+            );
+        }
         #[cfg(not(windows))]
         assert_eq!(command.get_env("TERM"), Some("xterm-256color".as_ref()));
         #[cfg(windows)]
@@ -1688,6 +1870,66 @@ mod tests {
         );
     }
 
+    #[test]
+    fn terminals_drop_multiplexer_and_port_variables_and_keep_the_rest() {
+        let launch = environment(&[
+            ("TMUX", "/tmp/tmux-1000/default,1234,0"),
+            ("TMUX_PANE", "%3"),
+            ("STY", "1234.pts-0.host"),
+            ("WINDOW", "0"),
+            ("PORT", "5173"),
+            ("ZELLIJ", "0"),
+            ("ZELLIJ_SESSION_NAME", "work"),
+            ("EDITOR", "nvim"),
+            ("PATH", "/usr/bin"),
+            ("TMUXINATOR_CONFIG", "/home/user/.tmuxinator"),
+            ("REPORT", "weekly"),
+        ]);
+        assert_eq!(
+            without_blocklisted_variables(launch),
+            environment(&[
+                ("EDITOR", "nvim"),
+                ("PATH", "/usr/bin"),
+                ("TMUXINATOR_CONFIG", "/home/user/.tmuxinator"),
+                ("REPORT", "weekly"),
+            ])
+        );
+    }
+
+    #[test]
+    fn fish_skips_the_terminal_query_unless_the_user_chose_its_behavior() {
+        let fish_features = |launch: &[(&str, &str)]| {
+            terminal_environment(environment(launch))
+                .into_iter()
+                .find(|(key, _)| key == FISH_FEATURES_VARIABLE)
+                .map(|(_, value)| value)
+        };
+        assert_eq!(
+            fish_features(&[("EDITOR", "nvim")]),
+            Some("no-query-term".into())
+        );
+        assert_eq!(
+            fish_features(&[("fish_features", "")]),
+            Some("no-query-term".into())
+        );
+        assert_eq!(
+            fish_features(&[("fish_features", "qmark-noglob")]),
+            Some("qmark-noglob,no-query-term".into())
+        );
+        for chosen in [
+            "query-term",
+            "no-query-term",
+            "qmark-noglob,query-term",
+            "qmark-noglob no-query-term",
+        ] {
+            assert_eq!(
+                fish_features(&[("fish_features", chosen)]),
+                Some(chosen.into()),
+                "{chosen} is the user's choice"
+            );
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn terminals_drop_only_what_the_appimage_runtime_injects() {
@@ -1696,7 +1938,10 @@ mod tests {
             ("GTK_PATH", "/tmp/.mount_gan/usr/lib/gtk-3.0"),
             ("EDITOR", "nvim"),
         ]);
-        assert_eq!(terminal_environment(user.clone()), user);
+        assert_eq!(
+            terminal_environment(user.clone()),
+            with_fish_query_term_disabled(user)
+        );
 
         let packaged = environment(&[
             ("APPIMAGE", "/home/user/Ganbaru.AppImage"),
@@ -1713,17 +1958,18 @@ mod tests {
             ),
             ("PROJECTS", "/tmp/.mount_ganbaru/work"),
             ("SSH_AUTH_SOCK", "/run/user/1000/agent"),
+            ("TMUX", "/tmp/tmux-1000/default,1234,0"),
             ("EDITOR", "nvim"),
         ]);
         assert_eq!(
             terminal_environment(packaged),
-            environment(&[
+            with_fish_query_term_disabled(environment(&[
                 ("PATH", "/usr/local/bin:/usr/bin"),
                 ("XDG_DATA_DIRS", "/usr/share:"),
                 ("PROJECTS", "/tmp/.mount_ganbaru/work"),
                 ("SSH_AUTH_SOCK", "/run/user/1000/agent"),
                 ("EDITOR", "nvim"),
-            ])
+            ]))
         );
 
         let unsafe_appdir = environment(&[
@@ -1731,7 +1977,10 @@ mod tests {
             ("APPDIR", "/"),
             ("PATH", "/usr/bin"),
         ]);
-        assert_eq!(terminal_environment(unsafe_appdir.clone()), unsafe_appdir);
+        assert_eq!(
+            terminal_environment(unsafe_appdir.clone()),
+            with_fish_query_term_disabled(unsafe_appdir)
+        );
     }
 
     #[test]

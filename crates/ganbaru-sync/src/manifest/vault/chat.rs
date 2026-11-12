@@ -45,6 +45,7 @@ use crate::assets::{AssetClass, LocalAssetColumn, LocalDigest};
 use crate::domains::chat::{
     MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_ID_CHARS, MAX_ATTACHMENT_MIME_CHARS,
     MAX_ATTACHMENT_NAME_CHARS, MAX_CHANNEL_NAME_CHARS, MAX_CHANNEL_TOPIC_CHARS,
+    MAX_DELEGATION_DEPTH, MAX_DELEGATION_EXPECTED_RESULT_CHARS, MAX_DELEGATION_OBJECTIVE_CHARS,
     MAX_DISPLAY_NAME_CHARS, MAX_ENUM_CHARS, MAX_ENVIRONMENT_ID_CHARS, MAX_ID_CHARS,
     MAX_INSTRUCTIONS_CHARS, MAX_JSON_CHARS, MAX_LABEL_CHARS, MAX_MESSAGE_ATTACHMENTS,
     MAX_MESSAGE_MARKDOWN_BYTES, MAX_PROVIDER_INSTANCE_CHARS, MAX_REASON_CHARS,
@@ -364,6 +365,10 @@ pub mod assignment_group {
     pub const STATE: GroupId = group_id(2);
     /// `updated_at`.
     pub const UPDATED: GroupId = group_id(3);
+    /// `parent_assignment_id`, `delegation_depth`, `delegation_objective`,
+    /// `delegation_expected_result`, and `delegation_folder_ceiling`, fixed when a teammate
+    /// delegates the assignment and null with depth 0 otherwise.
+    pub const DELEGATION: GroupId = group_id(4);
 }
 
 /// Assignment input field groups.
@@ -1567,7 +1572,8 @@ pub const SCHEDULED: TableSpec = TableSpec {
 /// `chat_work_assignments`. Only the executing device dispatches an assignment and writes its
 /// active states; any device may settle it. Concurrent states resolve to the most restrictive
 /// ending: cancelled, then failed, then completed, then a review request, then the other active
-/// states.
+/// states. A delegated child names its parent and is deleted with it; an applier-visible
+/// trigger keeps the child exactly one level deeper than its parent.
 pub const ASSIGNMENTS: TableSpec = TableSpec {
     id: ASSIGNMENTS_TABLE,
     name: "chat_work_assignments",
@@ -1608,7 +1614,32 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
             ],
         )),
         updated(assignment_group::UPDATED),
+        GroupSpec {
+            references: &[cascade("parent_assignment_id", ASSIGNMENTS_TABLE)],
+            ..group(
+                assignment_group::DELEGATION,
+                "delegation",
+                MergeKind::Immutable,
+                &[
+                    optional_row_key("parent_assignment_id"),
+                    ColumnSpec {
+                        name: "delegation_depth",
+                        ty: ColumnType::Integer {
+                            min: 0,
+                            max: MAX_DELEGATION_DEPTH,
+                        },
+                    },
+                    optional_text("delegation_objective", MAX_DELEGATION_OBJECTIVE_CHARS),
+                    optional_text(
+                        "delegation_expected_result",
+                        MAX_DELEGATION_EXPECTED_RESULT_CHARS,
+                    ),
+                    optional_text("delegation_folder_ceiling", MAX_JSON_CHARS),
+                ],
+            )
+        },
     ],
+    triggers: &[applier_visible("chat_work_assignment_delegation_insert")],
     local_columns: &[REVISION],
     revision_column: Some("revision"),
     ..BASE

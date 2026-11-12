@@ -190,9 +190,28 @@ pub const ROUTING_KINDS: [&str; 4] = ["trigger", "steer", "queued_continuation",
 /// Delivery states of an assignment input.
 pub const DELIVERY_STATES: [&str; 4] = ["pending", "delivered", "failed", "ignored"];
 /// Kinds of semantic work updates.
-pub const SEMANTIC_UPDATE_KINDS: [&str; 7] = [
-    "plan", "replan", "question", "approval", "failure", "result", "review",
+pub const SEMANTIC_UPDATE_KINDS: [&str; 10] = [
+    "plan",
+    "replan",
+    "question",
+    "approval",
+    "failure",
+    "result",
+    "review",
+    "delegation",
+    "schedule_proposal",
+    "note_proposal",
 ];
+/// Deepest delegation: a teammate's own assignment is depth 0, and its children and
+/// grandchildren are depths 1 and 2.
+pub const MAX_DELEGATION_DEPTH: i64 = 2;
+/// Characters of a delegated assignment's objective.
+pub const MAX_DELEGATION_OBJECTIVE_CHARS: usize = 4000;
+/// Characters of a delegated assignment's expected result.
+pub const MAX_DELEGATION_EXPECTED_RESULT_CHARS: usize = 2000;
+/// Folder capabilities a delegation ceiling may name: a folder the child may not use at all is
+/// left out of the ceiling instead.
+pub const DELEGATION_CEILING_CAPABILITIES: [&str; 4] = ["publish", "execute", "edit", "read"];
 /// Rank of no approval override, the least restrictive.
 const INHERITED_APPROVAL_RANK: u8 = 1;
 
@@ -1080,8 +1099,86 @@ fn validate_assignment(group: GroupId, fields: &[Field]) -> Result<(), AdapterEr
             assignment_review(state, outcome, reviewed_at, reviewer)
         }
         (assignment_group::UPDATED, [at]) => timestamp(at),
+        (
+            assignment_group::DELEGATION,
+            [parent, depth, objective, expected_result, folder_ceiling],
+        ) => assignment_delegation(parent, depth, objective, expected_result, folder_ceiling),
         _ => Err(AdapterError("chat assignment value")),
     }
+}
+
+/// A teammate's own assignment has depth 0 and no delegation fields. A delegated child has a
+/// depth of 1 to [`MAX_DELEGATION_DEPTH`], its parent, a non-blank objective and expected
+/// result, and the folder ceiling resolved when it was delegated, so no later widening of the
+/// parent can widen the child. Depth against the parent's depth is checked by the table, which
+/// sees the parent row.
+fn assignment_delegation(
+    parent: &Field,
+    depth: &Field,
+    objective: &Field,
+    expected_result: &Field,
+    folder_ceiling: &Field,
+) -> Result<(), AdapterError> {
+    let depth = integer(depth)?;
+    let fields = [parent, objective, expected_result, folder_ceiling];
+    let set = fields
+        .iter()
+        .filter(|field| !matches!(field, Field::Null))
+        .count();
+    match set {
+        0 if depth == 0 => Ok(()),
+        _ if set < fields.len() => Err(AdapterError("chat assignment delegation is incomplete")),
+        _ if !(1..=MAX_DELEGATION_DEPTH).contains(&depth) => {
+            Err(AdapterError("chat assignment delegation depth"))
+        }
+        _ => {
+            trimmed(
+                objective,
+                MAX_DELEGATION_OBJECTIVE_CHARS,
+                "chat assignment delegation objective",
+            )?;
+            trimmed(
+                expected_result,
+                MAX_DELEGATION_EXPECTED_RESULT_CHARS,
+                "chat assignment delegation expected result",
+            )?;
+            delegation_folder_ceiling(folder_ceiling)
+        }
+    }
+}
+
+/// One folder of a delegation ceiling.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CeilingFolder {
+    working_folder_id: String,
+    capability: String,
+}
+
+/// A JSON array within [`MAX_JSON_CHARS`] of folders, each named once with a capability from
+/// [`DELEGATION_CEILING_CAPABILITIES`]. An empty array delegates work without folder access.
+fn delegation_folder_ceiling(field: &Field) -> Result<(), AdapterError> {
+    const WHAT: &str = "chat assignment delegation folder ceiling";
+    let json = text(field)?;
+    if json.chars().count() > MAX_JSON_CHARS {
+        return Err(AdapterError(WHAT));
+    }
+    let folders =
+        serde_json::from_str::<Vec<CeilingFolder>>(json).map_err(|_| AdapterError(WHAT))?;
+    let mut seen = std::collections::BTreeSet::new();
+    for folder in &folders {
+        let id = folder.working_folder_id.as_str();
+        let valid_id = !id.trim().is_empty()
+            && id.chars().count() <= MAX_ID_CHARS
+            && !id.chars().any(char::is_control);
+        if !valid_id
+            || !DELEGATION_CEILING_CAPABILITIES.contains(&folder.capability.as_str())
+            || !seen.insert(id)
+        {
+            return Err(AdapterError(WHAT));
+        }
+    }
+    Ok(())
 }
 
 /// A review is all three fields or none, and only on completed work: the review judges a
@@ -2097,6 +2194,136 @@ mod tests {
         assert!(
             check(short).is_err(),
             "the state group carries its review fields"
+        );
+    }
+
+    fn delegation(depth: i64, ceiling: &str) -> Vec<Field> {
+        vec![
+            t("assignment-parent"),
+            Field::Integer(depth),
+            t("Summarize the failing tests"),
+            t("A list of failing tests with causes"),
+            t(ceiling),
+        ]
+    }
+
+    #[test]
+    fn chat_assignment_delegation_is_complete_bounded_and_ceiling_checked() {
+        let adapter = ChatAdapter;
+        let check = |fields| {
+            adapter.validate(
+                ASSIGNMENTS_TABLE,
+                assignment_group::DELEGATION,
+                &value(fields),
+            )
+        };
+        let ceiling = r#"[{"workingFolderId":"folder-1","capability":"edit"},{"workingFolderId":"folder-2","capability":"read"}]"#;
+
+        let undelegated = vec![
+            Field::Null,
+            Field::Integer(0),
+            Field::Null,
+            Field::Null,
+            Field::Null,
+        ];
+        assert!(check(undelegated).is_ok());
+        for depth in 1..=MAX_DELEGATION_DEPTH {
+            assert!(check(delegation(depth, ceiling)).is_ok(), "depth {depth}");
+        }
+        assert!(
+            check(delegation(1, "[]")).is_ok(),
+            "an empty ceiling grants no folder"
+        );
+        for capability in DELEGATION_CEILING_CAPABILITIES {
+            let single =
+                format!(r#"[{{"workingFolderId":"folder-1","capability":"{capability}"}}]"#);
+            assert!(check(delegation(1, &single)).is_ok(), "{capability}");
+        }
+
+        for depth in [0, MAX_DELEGATION_DEPTH + 1, -1] {
+            assert!(check(delegation(depth, ceiling)).is_err(), "depth {depth}");
+        }
+        let complete = delegation(1, ceiling);
+        for missing in [0, 2, 3, 4] {
+            let mut partial = complete.clone();
+            partial[missing] = Field::Null;
+            assert!(
+                check(partial).is_err(),
+                "delegation without field {missing}"
+            );
+            let mut stray = vec![
+                Field::Null,
+                Field::Integer(0),
+                Field::Null,
+                Field::Null,
+                Field::Null,
+            ];
+            stray[missing] = complete[missing].clone();
+            assert!(check(stray).is_err(), "undelegated with field {missing}");
+        }
+        let mut blank = complete.clone();
+        blank[2] = t("  ");
+        assert!(check(blank).is_err());
+        let mut long_objective = complete.clone();
+        long_objective[2] = t(&"o".repeat(MAX_DELEGATION_OBJECTIVE_CHARS + 1));
+        assert!(check(long_objective).is_err());
+        let mut long_result = complete.clone();
+        long_result[3] = t(&"r".repeat(MAX_DELEGATION_EXPECTED_RESULT_CHARS + 1));
+        assert!(check(long_result).is_err());
+
+        for invalid in [
+            "{}",
+            "not json",
+            r#"[{"workingFolderId":"folder-1","capability":"admin"}]"#,
+            r#"[{"workingFolderId":"","capability":"read"}]"#,
+            r#"[{"workingFolderId":"folder\n1","capability":"read"}]"#,
+            r#"[{"workingFolderId":"folder-1"}]"#,
+            r#"[{"workingFolderId":"folder-1","capability":"read","extra":true}]"#,
+            r#"[{"workingFolderId":"folder-1","capability":"read"},{"workingFolderId":"folder-1","capability":"edit"}]"#,
+        ] {
+            assert!(check(delegation(1, invalid)).is_err(), "{invalid}");
+        }
+        let mut short = complete;
+        short.truncate(4);
+        assert!(
+            check(short).is_err(),
+            "the delegation group carries five fields"
+        );
+    }
+
+    #[test]
+    fn chat_semantic_updates_accept_the_delegation_and_proposal_kinds() {
+        let adapter = ChatAdapter;
+        let update = |kind: &str| {
+            value(vec![
+                t("assignment-1"),
+                t(kind),
+                Field::Integer(1),
+                t("{}"),
+                t(AT),
+            ])
+        };
+        for kind in ["delegation", "schedule_proposal", "note_proposal"] {
+            assert!(SEMANTIC_UPDATE_KINDS.contains(&kind));
+            assert!(
+                adapter
+                    .validate(
+                        SEMANTIC_UPDATES_TABLE,
+                        semantic_update_group::CREATED,
+                        &update(kind)
+                    )
+                    .is_ok(),
+                "{kind}"
+            );
+        }
+        assert!(
+            adapter
+                .validate(
+                    SEMANTIC_UPDATES_TABLE,
+                    semantic_update_group::CREATED,
+                    &update("summary")
+                )
+                .is_err()
         );
     }
 

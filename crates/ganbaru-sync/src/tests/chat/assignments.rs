@@ -3,7 +3,8 @@
 //! applying them leaves nothing partial, rerouting an input updates its row in place, a no-op
 //! write captures nothing, concurrent creates of one derived assignment merge, a settle on any
 //! device outranks progress the executing device reports concurrently, and a review travels
-//! whole with the completion it judges while a concurrent cancel outranks it.
+//! whole with the completion it judges while a concurrent cancel outranks it, and a concurrent
+//! narrowing of a parent grant cancels a child delegated against the old authority.
 
 use super::*;
 use crate::manifest::vault::chat::{
@@ -628,4 +629,174 @@ fn chat_simulated_accept_against_follow_up_completion_converges_completed() {
             }
         }
     });
+}
+
+/// The child [`ASSIGNMENT`] delegates in the delegation scenario.
+const CHILD: &str = "assignment:delegated";
+
+/// Seeds of the delegation against a narrowed parent grant scenario.
+const DELEGATION_SEEDS: u64 = 8;
+
+/// State reason of a child cancelled because its parent's authority narrowed.
+const PARENT_AUTHORITY_REVOKED: &str = "parent_authority_revoked";
+
+/// SQL delegating [`CHILD`] from [`ASSIGNMENT`] with an `edit` ceiling on [`FOLDER`].
+fn delegated_sql() -> String {
+    format!(
+        "INSERT INTO chat_work_assignments
+            (id, reply_thread_id, teammate_id, triggering_message_item_id, executing_device_id,
+             state, parent_assignment_id, delegation_depth, delegation_objective,
+             delegation_expected_result, delegation_folder_ceiling, created_at, updated_at)
+         VALUES ({child}, {thread}, {teammate}, {mention}, {executor}, 'queued', {parent}, 1,
+                 'Read the failing tests', 'The causes', {ceiling}, {created}, {created});",
+        child = quoted(CHILD),
+        thread = quoted(&thread()),
+        teammate = quoted(TEAMMATE),
+        mention = quoted(MENTION),
+        executor = quoted(EXECUTOR),
+        parent = quoted(ASSIGNMENT),
+        ceiling = quoted(&format!(
+            r#"[{{"workingFolderId":"{FOLDER}","capability":"edit"}}]"#
+        )),
+        created = quoted(CREATED),
+    )
+}
+
+/// SQL moving [`CHILD`] to `state` with `reason`, settling it when the state is final.
+fn child_state_sql(state: &str, reason: Option<&str>, updated_at: &str) -> String {
+    let settled = matches!(state, "completed" | "failed" | "cancelled");
+    format!(
+        "UPDATE chat_work_assignments
+         SET state = {state}, state_reason = {reason}, settled_at = {settled_at},
+             revision = revision + 1, updated_at = {updated_at}
+         WHERE id = {child};",
+        state = quoted(state),
+        reason = optional(reason),
+        settled_at = if settled {
+            quoted(updated_at)
+        } else {
+            "NULL".to_owned()
+        },
+        updated_at = quoted(updated_at),
+        child = quoted(CHILD),
+    )
+}
+
+/// Whether `replica` holds [`CHILD`] and the narrowed `read` grant, so it would refuse to run
+/// the child.
+async fn sees_narrowed_parent(replica: &mut Replica) -> bool {
+    replica
+        .scalar_text(
+            "SELECT grant_row.capability FROM chat_teammate_working_folder_grants grant_row
+             WHERE EXISTS (SELECT 1 FROM chat_work_assignments WHERE id = 'assignment:delegated')",
+        )
+        .await
+        .is_some_and(|capability| capability == "read")
+}
+
+/// [`CHILD`]'s state, reason, and delegation fields.
+async fn child_summary(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT state || ' ' || coalesce(state_reason, '-') || ' ' || parent_assignment_id
+                    || ' ' || delegation_depth || ' ' || delegation_folder_ceiling
+             FROM chat_work_assignments WHERE id = 'assignment:delegated'",
+        )
+        .await
+        .expect("the delegated assignment arrived")
+}
+
+/// One device delegates a child under the parent's `edit` grant while another narrows that
+/// grant to `read`. The executing device reports progress until it sees the narrowing, and any
+/// device that holds both rows cancels the child with `parent_authority_revoked`; whatever the
+/// exchange order, every device ends with the narrowed grant and the cancelled child, so a
+/// concurrent narrowing always wins over a child created against the old authority.
+#[test]
+fn chat_simulated_delegation_against_a_narrowed_parent_grant_cancels_the_child() {
+    block_on(async {
+        for seed in 0..DELEGATION_SEEDS {
+            let mut rng = Rng(seed ^ 0xde1e);
+            let mut replicas = conversation_replicas(3).await;
+            replicas[0].exec(&coordination_sql()).await;
+            converge(&mut replicas).await;
+
+            replicas[0].exec(&delegated_sql()).await;
+            replicas[1].exec(&grant_sql("read", None, None)).await;
+            for round in 0..PROGRESS_ROUNDS {
+                pull_at_random(&mut replicas, &mut rng).await;
+                let updated_at = at(round + 1, rng.below(60));
+                if sees_narrowed_parent(&mut replicas[0]).await {
+                    if !child_settled(&mut replicas[0]).await {
+                        replicas[0]
+                            .exec(&child_state_sql(
+                                "cancelled",
+                                Some(PARENT_AUTHORITY_REVOKED),
+                                &updated_at,
+                            ))
+                            .await;
+                    }
+                } else if !child_settled(&mut replicas[0]).await {
+                    replicas[0]
+                        .exec(&child_state_sql("working", None, &updated_at))
+                        .await;
+                }
+                let detector = 1 + rng.below(replicas.len() - 1);
+                if sees_narrowed_parent(&mut replicas[detector]).await
+                    && !child_settled(&mut replicas[detector]).await
+                {
+                    replicas[detector]
+                        .exec(&child_state_sql(
+                            "cancelled",
+                            Some(PARENT_AUTHORITY_REVOKED),
+                            &updated_at,
+                        ))
+                        .await;
+                }
+            }
+            converge(&mut replicas).await;
+            if !child_settled(&mut replicas[2]).await {
+                replicas[2]
+                    .exec(&child_state_sql(
+                        "cancelled",
+                        Some(PARENT_AUTHORITY_REVOKED),
+                        &at(PROGRESS_ROUNDS + 1, 0),
+                    ))
+                    .await;
+                converge(&mut replicas).await;
+            }
+            assert_converged(&mut replicas).await;
+            let expected = format!(
+                "cancelled {PARENT_AUTHORITY_REVOKED} {ASSIGNMENT} 1 \
+                 [{{\"workingFolderId\":\"{FOLDER}\",\"capability\":\"edit\"}}]"
+            );
+            for replica in &mut replicas {
+                assert_eq!(
+                    child_summary(replica).await,
+                    expected,
+                    "seed {seed} replica {}",
+                    replica.index
+                );
+                assert_eq!(
+                    replica
+                        .scalar_text("SELECT capability FROM chat_teammate_working_folder_grants")
+                        .await
+                        .as_deref(),
+                    Some("read"),
+                    "seed {seed} replica {}",
+                    replica.index
+                );
+            }
+        }
+    });
+}
+
+/// Whether [`CHILD`] is settled on `replica`; false while it has not arrived.
+async fn child_settled(replica: &mut Replica) -> bool {
+    replica
+        .scalar_text(
+            "SELECT state FROM chat_work_assignments
+             WHERE id = 'assignment:delegated' AND settled_at IS NOT NULL",
+        )
+        .await
+        .is_some()
 }

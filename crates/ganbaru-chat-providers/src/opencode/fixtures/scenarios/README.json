@@ -1,0 +1,20 @@
+{
+  "absent": [
+    {
+      "scenario": "turn_interrupt_mid_tool",
+      "reason": "mid_run_stop replays an abort while a tool runs; an interrupt settles the turn through the same abort and idle path."
+    },
+    {
+      "scenario": "queued_turn",
+      "reason": "The driver refuses a second prompt while a turn is active before it sends any request, so no server frame takes part."
+    },
+    {
+      "scenario": "malformed_frame",
+      "reason": "The normalizer test malformed_and_cross_session_events_are_bounded and the event stream decoder test cover malformed and oversized events without a server."
+    },
+    {
+      "scenario": "message_steering",
+      "reason": "Steering sends one more prompt_async request during the turn, which the driver test external_session_lifecycle_never_stops_the_external_server covers."
+    }
+  ]
+}

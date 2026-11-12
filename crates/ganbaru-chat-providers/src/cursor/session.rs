@@ -42,14 +42,16 @@ mod router;
 
 #[cfg(test)]
 use callbacks::{
-    append_terminal_bytes, atomic_write_text, verified_existing_file, verified_write_path,
+    TerminalStreamDecoder, append_terminal_bytes, atomic_write_text, verified_existing_file,
+    verified_write_path,
 };
 use callbacks::{callback_permission_error, require_acp_session};
 #[cfg(test)]
 pub use configuration::initialize_session;
 pub use configuration::{
-    AcpRequestedConfiguration, AcpSessionInitialization, apply_provider_configuration,
-    initialize_provider_session,
+    AcpAuthPreference, AcpRequestedConfiguration, AcpSessionInitialization,
+    apply_provider_configuration, auth_preference, initialize_provider_session,
+    negotiate_initialize, select_auth_method,
 };
 pub use load_replay::AcpInboundQueue;
 pub use router::{restore_pending, spawn_cursor_router, take_pending};
@@ -58,6 +60,13 @@ const MAX_ACP_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_ACP_FILE_LINES: u32 = 100_000;
 const DEFAULT_ACP_TERMINAL_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_ACP_TERMINAL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+/// How long a terminal waits for its output pipes to close after the command exits.
+const ACP_TERMINAL_OUTPUT_DRAIN: std::time::Duration = std::time::Duration::from_millis(250);
+/// Loader variables an agent may not set on a terminal, since they inject code into every
+/// process the command starts.
+const ACP_TERMINAL_ENVIRONMENT_DENYLIST: &[&str] = &["LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH"];
+/// Loader variable prefixes an agent may not set on a terminal.
+const ACP_TERMINAL_ENVIRONMENT_DENYLIST_PREFIXES: &[&str] = &["DYLD_"];
 static NEXT_ACP_FILE_WRITE: AtomicU64 = AtomicU64::new(1);
 static NEXT_ACP_TERMINAL: AtomicU64 = AtomicU64::new(1);
 
@@ -67,6 +76,8 @@ pub struct AcpStartedSession {
     pub setup: AcpSessionSetup,
     pub session_id: String,
     pub models: Vec<ProviderModel>,
+    /// The internal MCP server was left out because the agent takes no HTTP MCP servers.
+    pub host_tools_omitted: bool,
 }
 
 pub struct CursorRouterResources {
@@ -95,6 +106,19 @@ struct AcpTerminal {
     state: Arc<Mutex<AcpTerminalState>>,
     kill: mpsc::Sender<()>,
     completed: Arc<Notify>,
+    /// Process group or job of the command, signaled on kill, release, and session stop so
+    /// background descendants never outlive the terminal.
+    tree: Arc<crate::process::ProcessTree>,
+}
+
+impl AcpTerminal {
+    /// Stops every process of the terminal, even after the command itself exited. The group
+    /// is signaled only while the command is unreaped, so its ID cannot belong to another
+    /// process group.
+    fn terminate(&self) {
+        self.tree.terminate();
+        let _ = self.kill.try_send(());
+    }
 }
 
 #[derive(Clone, Default)]
@@ -130,7 +154,7 @@ impl AcpTerminalCallbacks {
     fn shutdown(&self) {
         if let Ok(mut terminals) = self.terminals.lock() {
             for terminal in terminals.values() {
-                let _ = terminal.kill.try_send(());
+                terminal.terminate();
             }
             terminals.clear();
         }

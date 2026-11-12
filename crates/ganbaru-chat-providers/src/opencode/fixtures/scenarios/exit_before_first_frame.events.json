@@ -1,0 +1,10 @@
+{
+  "calls": [
+    {
+      "call": "start_session",
+      "result": "error",
+      "code": "transport_unavailable"
+    }
+  ],
+  "events": []
+}

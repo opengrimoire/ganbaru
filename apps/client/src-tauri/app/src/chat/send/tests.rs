@@ -10,7 +10,8 @@ use super::session::{
 #[cfg(unix)]
 use super::validation::validate_send_mentions;
 use super::validation::{
-    validate_approval_decision, validate_mentions, validate_model_options, validate_pending_request,
+    family_supports_safety_mode, validate_approval_decision, validate_mentions,
+    validate_model_options, validate_pending_request,
 };
 use crate::chat::send_commands::SendChatTurnCommand;
 use crate::chat::tests::repository::pool_with_thread;
@@ -1289,4 +1290,23 @@ fn session_open_request_refuses_a_provider_thread_without_its_resume_cursor() {
     ))
     .unwrap_err();
     assert_eq!(error.code, ChatErrorCode::ResumeNotFound);
+}
+
+#[test]
+fn generic_acp_agents_accept_only_ask_and_full_access() {
+    assert!(family_supports_safety_mode(
+        "acp",
+        SafetyMode::AskForApproval
+    ));
+    assert!(family_supports_safety_mode("acp", SafetyMode::FullAccess));
+    assert!(!family_supports_safety_mode(
+        "acp",
+        SafetyMode::ApproveForMe
+    ));
+    assert!(!family_supports_safety_mode("acp", SafetyMode::Custom));
+    assert!(family_supports_safety_mode("cursor", SafetyMode::Custom));
+    assert!(family_supports_safety_mode(
+        "codex",
+        SafetyMode::ApproveForMe
+    ));
 }

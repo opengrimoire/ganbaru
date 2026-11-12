@@ -165,6 +165,9 @@ async fn handle_connection(
 }
 
 fn route_response(method: &str, path: &str, state: &OpenCodeServerState) -> String {
+    if method == "POST" && path.starts_with("/permission/") && path.ends_with("/reply") {
+        return json_response(json!(true));
+    }
     match (method, path) {
         ("GET", "/global/health") => json_response(json!({
             "healthy": true,
@@ -192,7 +195,6 @@ fn route_response(method: &str, path: &str, state: &OpenCodeServerState) -> Stri
         ("POST", "/session/ses_new/abort")
         | ("POST", "/session/ses_resume/abort")
         | ("POST", "/session/ses_fork/abort")
-        | ("POST", "/permission/perm_one/reply")
         | ("POST", "/question/question_one/reply")
         | ("POST", "/question/question_one/reject") => json_response(json!(true)),
         ("POST", "/session/ses_new/revert") => session_response("ses_new", &state.workspace),
@@ -425,7 +427,7 @@ fn external_session_lifecycle_never_stops_the_external_server() {
         }));
         assert!(requests.iter().any(|request| {
             request.starts_with("POST /permission/perm_one/reply?")
-                && request.contains("\"reply\":\"always\"")
+                && request.contains("\"reply\":\"once\"")
         }));
         assert!(requests.iter().any(|request| {
             request.starts_with("POST /question/question_one/reply?")
@@ -686,6 +688,48 @@ async fn exercise_interactions(
         )
         .await
         .unwrap();
+    send_event(
+        server,
+        json!({
+            "type": "permission.replied",
+            "properties": { "sessionID": "ses_new", "requestID": "perm_one", "reply": "once" }
+        }),
+    );
+    wait_for_event(sink, |event| resolved_request(event, "perm_one").is_some()).await;
+    assert_eq!(
+        sink.events()
+            .iter()
+            .find_map(|event| resolved_request(event, "perm_one"))
+            .map(|decision| decision.kind),
+        Some(ApprovalDecisionKind::AllowSession),
+        "the once echo keeps the session decision"
+    );
+    send_permission_request(server, "perm_two", "bash", &["pnpm test"], None);
+    wait_for_event(sink, |event| resolved_request(event, "perm_two").is_some()).await;
+    server
+        .wait_for_request("POST /permission/perm_two/reply?")
+        .await;
+    assert!(server.requests().iter().any(|request| {
+        request.starts_with("POST /permission/perm_two/reply?")
+            && request.contains("\"reply\":\"once\"")
+    }));
+    let events = sink.events();
+    let decision = events
+        .iter()
+        .find_map(|event| resolved_request(event, "perm_two"))
+        .unwrap();
+    assert_eq!(decision.kind, ApprovalDecisionKind::AllowOnce);
+    assert_eq!(
+        decision.provider_option_id.as_deref(),
+        Some(crate::opencode::normalizer::SESSION_RULE_OPTION_ID)
+    );
+    send_event(
+        server,
+        json!({
+            "type": "permission.replied",
+            "properties": { "sessionID": "ses_new", "requestID": "perm_two", "reply": "once" }
+        }),
+    );
 
     server
         .state
@@ -732,6 +776,187 @@ async fn exercise_interactions(
         )
         .await
         .unwrap();
+    assert_eq!(
+        sink.events()
+            .iter()
+            .filter(|event| resolved_request(event, "perm_two").is_some())
+            .count(),
+        1,
+        "the echo of an automatic answer adds no second resolution"
+    );
+}
+
+fn send_event(server: &OpenCodeServerFixture, event: serde_json::Value) {
+    server.state.event_sender.send(event.to_string()).unwrap();
+}
+
+fn send_permission_request(
+    server: &OpenCodeServerFixture,
+    id: &str,
+    permission: &str,
+    patterns: &[&str],
+    always: Option<Vec<String>>,
+) {
+    send_event(
+        server,
+        json!({
+            "type": "permission.asked",
+            "properties": {
+                "id": id,
+                "sessionID": "ses_new",
+                "permission": permission,
+                "patterns": patterns,
+                "always": always,
+                "metadata": {}
+            }
+        }),
+    );
+}
+
+fn opened_request(event: &CanonicalRuntimeEvent, id: &str) -> bool {
+    matches!(&event.event, CanonicalEvent::RequestOpened(request) if request.request_id.as_str() == id)
+}
+
+fn resolved_request<'a>(
+    event: &'a CanonicalRuntimeEvent,
+    id: &str,
+) -> Option<&'a ApprovalDecision> {
+    match &event.event {
+        CanonicalEvent::RequestResolved(resolved) if resolved.request_id.as_str() == id => {
+            resolved.decision.as_ref()
+        }
+        _ => None,
+    }
+}
+
+async fn allow_for_session(
+    driver: &mut OpenCodeProviderDriver,
+    snapshot: &ProviderSessionSnapshot,
+    id: &str,
+) {
+    driver
+        .resolve_approval(
+            ResolveApprovalRequest {
+                command: command(id),
+                session_id: snapshot.session_id.clone(),
+                request_id: ChatRequestId::new(format!("approval-{id}")).unwrap(),
+                provider_request_id: ProviderRequestId::new(id).unwrap(),
+                decision: ApprovalDecision {
+                    kind: ApprovalDecisionKind::AllowSession,
+                    provider_option_id: Some("always".to_string()),
+                    updated_tool_input: None,
+                },
+            },
+            &context(id),
+        )
+        .await
+        .unwrap();
+}
+
+#[test]
+fn session_approvals_are_capped_with_a_warning_and_end_with_the_session() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("external-session-rules");
+        let server = OpenCodeServerFixture::start(workspace.path(), None, false).await;
+        let mut driver =
+            OpenCodeProviderDriver::new(external_configuration(&server.origin, true)).unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let snapshot = driver
+            .start_session(
+                start_request(workspace.path()),
+                sink.clone(),
+                &context("start"),
+            )
+            .await
+            .unwrap();
+        server.wait_for_request("GET /event?").await;
+        let trimmed = |sink: &RecordingSink| {
+            sink.events()
+                .iter()
+                .filter(|event| {
+                    matches!(&event.event, CanonicalEvent::RuntimeWarning(warning)
+                        if warning.code == "opencode_session_rules_trimmed")
+                })
+                .count()
+        };
+        for batch in 0..3 {
+            let id = format!("perm_batch_{batch}");
+            let always = (0..32)
+                .map(|index| format!("dir{batch}-{index}/**"))
+                .collect::<Vec<_>>();
+            send_permission_request(&server, &id, "edit", &["other/file"], Some(always));
+            wait_for_event(&sink, |event| opened_request(event, &id)).await;
+            allow_for_session(&mut driver, &snapshot, &id).await;
+            if batch == 1 {
+                assert_eq!(trimmed(&sink), 0, "64 rules fit");
+            }
+        }
+        assert_eq!(
+            trimmed(&sink),
+            1,
+            "rules past 64 drop the oldest with one warning"
+        );
+        send_permission_request(&server, "perm_forgotten", "edit", &["dir0-0/file"], None);
+        wait_for_event(&sink, |event| opened_request(event, "perm_forgotten")).await;
+        send_permission_request(&server, "perm_kept", "edit", &["dir2-0/file"], None);
+        wait_for_event(&sink, |event| {
+            resolved_request(event, "perm_kept").is_some()
+        })
+        .await;
+        assert!(
+            !sink
+                .events()
+                .iter()
+                .any(|event| resolved_request(event, "perm_forgotten").is_some()),
+            "a dropped rule asks again"
+        );
+
+        driver
+            .stop_session(
+                StopSessionRequest {
+                    session_id: snapshot.session_id.clone(),
+                    force: false,
+                },
+                &context("stop"),
+            )
+            .await
+            .unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let event_connections = server.state.event_connections.load(Ordering::Acquire);
+        driver
+            .start_session(
+                start_request(workspace.path()),
+                sink.clone(),
+                &context("restart"),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while server.state.event_connections.load(Ordering::Acquire) <= event_connections {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        send_permission_request(&server, "perm_after_stop", "edit", &["dir2-0/file"], None);
+        wait_for_event(&sink, |event| opened_request(event, "perm_after_stop")).await;
+        send_permission_request(&server, "perm_barrier", "bash", &["true"], None);
+        wait_for_event(&sink, |event| opened_request(event, "perm_barrier")).await;
+        assert!(
+            !sink
+                .events()
+                .iter()
+                .any(|event| resolved_request(event, "perm_after_stop").is_some()),
+            "rules are dropped at session stop"
+        );
+        assert!(
+            !server
+                .requests()
+                .iter()
+                .any(|request| request.starts_with("POST /permission/perm_after_stop/reply?"))
+        );
+        server.shutdown().await;
+    });
 }
 
 async fn wait_for_event(sink: &RecordingSink, predicate: impl Fn(&CanonicalRuntimeEvent) -> bool) {
@@ -745,4 +970,94 @@ async fn wait_for_event(sink: &RecordingSink, predicate: impl Fn(&CanonicalRunti
     })
     .await
     .unwrap();
+}
+
+#[test]
+fn a_silent_stream_during_a_turn_reconnects_then_fails_unless_idle_or_waiting_for_the_user() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("external-silent-stream");
+        let server = OpenCodeServerFixture::start(workspace.path(), None, false).await;
+        let busy_stream_timeout = Duration::from_millis(150);
+        let mut driver = OpenCodeProviderDriver::new(external_configuration(&server.origin, true))
+            .unwrap()
+            .with_busy_stream_timeout(busy_stream_timeout);
+        let sink = Arc::new(RecordingSink::default());
+        let snapshot = driver
+            .start_session(
+                start_request(workspace.path()),
+                sink.clone(),
+                &context("start"),
+            )
+            .await
+            .unwrap();
+        server.wait_for_request("GET /event?").await;
+        tokio::time::sleep(busy_stream_timeout * 4).await;
+        assert_eq!(
+            server.state.event_connections.load(Ordering::Acquire),
+            1,
+            "an idle stream is kept"
+        );
+
+        driver
+            .send_turn(
+                SendTurnRequest {
+                    command: command("send"),
+                    session_id: snapshot.session_id.clone(),
+                    turn_id: ChatTurnId::new("turn-silent").unwrap(),
+                    prompt: "Wait for the provider".to_string(),
+                    attachments: vec![],
+                    mentions: vec![],
+                    model_id: None,
+                    model_options: vec![],
+                    modes: modes(),
+                    developer_instructions: None,
+                },
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        send_permission_request(&server, "perm_waiting", "bash", &["pnpm test"], None);
+        wait_for_event(&sink, |event| opened_request(event, "perm_waiting")).await;
+        tokio::time::sleep(busy_stream_timeout * 4).await;
+        assert_eq!(
+            server.state.event_connections.load(Ordering::Acquire),
+            1,
+            "a turn waiting for the user may stay silent"
+        );
+        send_event(
+            &server,
+            json!({
+                "type": "permission.replied",
+                "properties": { "sessionID": "ses_new", "requestID": "perm_waiting", "reply": "once" }
+            }),
+        );
+        wait_for_event(&sink, |event| {
+            resolved_request(event, "perm_waiting").is_some()
+        })
+        .await;
+        let silent = |event: &CanonicalRuntimeEvent| {
+            matches!(&event.event, CanonicalEvent::RuntimeError(error)
+                if error.code == "opencode_event_stream_silent")
+        };
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !sink.events().iter().any(silent) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(server.state.event_connections.load(Ordering::Acquire) > 1);
+        assert!(
+            server
+                .requests()
+                .iter()
+                .any(|request| request.starts_with("GET /session/ses_new/message")),
+            "each reconnect reconciles history"
+        );
+        assert_eq!(
+            sink.events().iter().filter(|event| silent(event)).count(),
+            1
+        );
+        server.shutdown().await;
+    });
 }

@@ -1,0 +1,28 @@
+{
+  "absent": [
+    {
+      "scenario": "turn_interrupt_mid_tool",
+      "reason": "The Cursor scenario covers it; tool interruption runs in the shared ACP normalizer, which the flavor does not change."
+    },
+    {
+      "scenario": "queued_turn",
+      "reason": "The Cursor scenario covers it; the shared ACP driver refuses a second prompt the same way for every flavor."
+    },
+    {
+      "scenario": "exit_before_first_frame",
+      "reason": "The Cursor scenario covers it; the transport and launch failure path are shared by every flavor."
+    },
+    {
+      "scenario": "message_steering",
+      "reason": "ACP has no steering request; the driver declares no steering and refuses steer_turn as unsupported."
+    },
+    {
+      "scenario": "compaction",
+      "reason": "No ACP session update reports context compaction; the driver handles no such frame."
+    },
+    {
+      "scenario": "usage_limit",
+      "reason": "Base ACP reports context usage through usage_update, which usage_update replays, but defines no rate limit frame or usage limit error."
+    }
+  ]
+}

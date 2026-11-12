@@ -11,11 +11,14 @@ pub enum KnownProviderFamily {
     Cursor,
     Grok,
     OpenCode,
+    /// Any agent that speaks the Agent Client Protocol without a dedicated driver.
+    Acp,
 }
 
 impl KnownProviderFamily {
     pub fn id(self) -> &'static str {
         match self {
+            Self::Acp => "acp",
             Self::Codex => "codex",
             Self::Claude => "claude",
             Self::Cursor => "cursor",

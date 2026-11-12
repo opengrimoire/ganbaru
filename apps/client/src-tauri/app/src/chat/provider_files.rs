@@ -118,6 +118,10 @@ fn provider_file_specs(
     configuration: &ProviderInstanceConfig,
 ) -> ChatResult<Vec<ProviderFileSpec>> {
     let family = configuration.family_id.as_str();
+    // A generic ACP agent has no documented configuration location Ganbaru could name.
+    if family == "acp" {
+        return Ok(Vec::new());
+    }
     let home = provider_home(configuration)?;
     let mut specs = match family {
         "codex" => standard_pair(&home, "config.toml", ProviderFileFormat::Toml, "AGENTS.md"),
@@ -605,6 +609,13 @@ mod tests {
                     .any(|spec| spec.path == root.join(instruction_name.unwrap()))
             );
         }
+    }
+
+    #[test]
+    fn generic_acp_agents_expose_no_provider_files() {
+        let specs =
+            provider_file_specs(&configuration("acp", Path::new("/provider-home"))).unwrap();
+        assert!(specs.is_empty());
     }
 
     #[test]

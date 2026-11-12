@@ -2,7 +2,7 @@
 
 use super::cli::{OPENCODE_COMPATIBILITY, OpenCodeVersion};
 use super::driver::*;
-use super::permissions::permission_reply;
+use super::permissions::{MAX_OPENCODE_SESSION_RULES, permission_reply};
 use super::protocol::parse_rollback_cursor;
 use super::support::*;
 use crate::events::*;
@@ -369,44 +369,54 @@ impl ProviderDriver for OpenCodeProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             let live = self.live_mut(&request.session_id)?;
-            let active_turn_id = live
-                .route
-                .lock()
-                .map_err(|_| driver_state_error())?
-                .active_turn_id
-                .clone();
-            if active_turn_id.is_none() {
-                return Ok(operation_receipt(
-                    request.command.client_command_id.as_str(),
-                    "OpenCode turn was already settled",
-                ));
+            {
+                let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                match state.active_turn_id.as_ref() {
+                    None => {
+                        return Ok(operation_receipt(
+                            request.command.client_command_id.as_str(),
+                            "OpenCode turn was already settled",
+                        ));
+                    }
+                    Some(active) if active != &request.turn_id => {
+                        return Err(ChatError::new(
+                            ChatErrorCode::Conflict,
+                            "OpenCode interrupt does not match the active turn",
+                            false,
+                        ));
+                    }
+                    Some(_) => {
+                        state.request_interrupt();
+                    }
+                }
             }
-            if active_turn_id.as_ref() != Some(&request.turn_id) {
-                return Err(ChatError::new(
-                    ChatErrorCode::Conflict,
-                    "OpenCode interrupt does not match the active turn",
-                    false,
-                ));
+            if let Err(error) = live.client.abort(&live.provider_thread_id).await {
+                live.route
+                    .lock()
+                    .map_err(|_| driver_state_error())?
+                    .cancel_interrupt();
+                return Err(error);
             }
-            live.client.abort(&live.provider_thread_id).await?;
             if let Some(task) = live.command_task.take() {
                 task.abort();
             }
             let event = {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
-                state.active_turn_id = None;
-                state.session_state = ProviderSessionState::Ready;
-                live.normalizer.external_event(
-                    &state,
-                    "turn/interrupted",
-                    CanonicalEvent::TurnAborted(TurnAbortedEvent {
-                        state: ChatTurnState::Interrupted,
-                        reason: "Interrupted by user".to_string(),
-                        recoverable: true,
-                    }),
-                )?
+                match state.take_interrupted_turn(&request.turn_id) {
+                    Some(turn_id) => {
+                        state.session_state = ProviderSessionState::Ready;
+                        Some(live.normalizer.interrupted_turn(
+                            &state,
+                            "turn/interrupted",
+                            turn_id,
+                        )?)
+                    }
+                    None => None,
+                }
             };
-            live.sink.emit(event).await?;
+            if let Some(event) = event {
+                live.sink.emit(event).await?;
+            }
             Ok(operation_receipt(
                 request.command.client_command_id.as_str(),
                 "OpenCode turn interrupt requested",
@@ -421,24 +431,56 @@ impl ProviderDriver for OpenCodeProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             let live = self.live_mut(&request.session_id)?;
-            if !live
-                .route
-                .lock()
-                .map_err(|_| driver_state_error())?
-                .has_permission(&request.provider_request_id)
-            {
-                return Err(ChatError::new(
-                    ChatErrorCode::Conflict,
-                    "OpenCode approval is no longer pending in this session",
-                    false,
-                ));
-            }
-            live.client
+            let session_rules = {
+                let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                if !state.has_permission(&request.provider_request_id) {
+                    return Err(ChatError::new(
+                        ChatErrorCode::Conflict,
+                        "OpenCode approval is no longer pending in this session",
+                        false,
+                    ));
+                }
+                let allow_session = request.decision.kind == ApprovalDecisionKind::AllowSession;
+                state.set_session_approval(&request.provider_request_id, allow_session);
+                allow_session.then(|| state.session_rules_for(&request.provider_request_id))
+            };
+            if let Err(error) = live
+                .client
                 .reply_permission(
                     request.provider_request_id.as_str(),
                     permission_reply(request.decision.kind),
                 )
-                .await?;
+                .await
+            {
+                if let Ok(mut state) = live.route.lock() {
+                    state.set_session_approval(&request.provider_request_id, false);
+                }
+                return Err(error);
+            }
+            if let Some(session_rules) = session_rules {
+                let warning = {
+                    let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                    let dropped = state.grant_session_rules(session_rules);
+                    (dropped > 0)
+                        .then(|| {
+                            live.normalizer.external_event(
+                                &state,
+                                "permission/session_rules",
+                                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                                    code: "opencode_session_rules_trimmed".to_string(),
+                                    title: "OpenCode forgot older session approvals".to_string(),
+                                    detail: Some(format!(
+                                        "Only the latest {MAX_OPENCODE_SESSION_RULES} session approvals are kept; older ones will ask again"
+                                    )),
+                                }),
+                            )
+                        })
+                        .transpose()?
+                };
+                if let Some(warning) = warning {
+                    live.sink.emit(warning).await?;
+                }
+            }
             Ok(operation_receipt(
                 request.command.client_command_id.as_str(),
                 "OpenCode approval response accepted",
@@ -549,6 +591,10 @@ impl ProviderDriver for OpenCodeProviderDriver {
                     false,
                 ));
             }
+            live.route
+                .lock()
+                .map_err(|_| driver_state_error())?
+                .request_interrupt();
             let abort_result = live.client.abort(&live.provider_thread_id).await;
             live.expected_shutdown.store(true, Ordering::Release);
             live.event_task.abort();

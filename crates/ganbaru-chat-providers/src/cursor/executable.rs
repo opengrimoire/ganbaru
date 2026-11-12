@@ -390,7 +390,33 @@ pub fn spawn_acp_connection_process(
                 stderr_limit_bytes: CURSOR_STDERR_LIMIT_BYTES,
             })
         }
+        super::driver::AcpProviderFlavor::Generic => {
+            let environment = process_environment_for(configuration, flavor.display_name())?;
+            let executable = resolve_executable(&configuration.executable, &environment)?;
+            let arguments = generic_launch_arguments(&configuration.launch_arguments)?;
+            spawn_provider_process(ProviderProcessConfig {
+                executable,
+                arguments,
+                working_directory: working_directory.to_path_buf(),
+                environment,
+                stderr_limit_bytes: CURSOR_STDERR_LIMIT_BYTES,
+            })
+        }
     }
+}
+
+/// Passes the configured arguments of a generic ACP agent through unchanged.
+///
+/// The agent speaks ACP on standard input and output as launched, so Ganbaru adds no argument;
+/// only arguments that cannot reach a process are refused.
+pub fn generic_launch_arguments(configured: &[String]) -> ChatResult<Vec<String>> {
+    if configured.iter().any(|argument| argument.contains('\0')) {
+        return Err(ChatError::validation(
+            "launchArguments",
+            "ACP agent launch arguments cannot contain NUL characters",
+        ));
+    }
+    Ok(configured.to_vec())
 }
 
 pub fn grok_launch_arguments(configured: &[String]) -> ChatResult<Vec<String>> {
@@ -443,6 +469,9 @@ pub fn acp_continuation_group(
     if flavor == super::driver::AcpProviderFlavor::Cursor {
         return continuation_group(configuration, settings, account_identity);
     }
+    if flavor == super::driver::AcpProviderFlavor::Generic {
+        return generic_continuation_group(configuration);
+    }
     let mut digest = Sha256::new();
     digest.update(b"ganbaru-chat-grok-account-v1\0");
     if let Some(home) = configuration.provider_home.as_deref() {
@@ -451,6 +480,24 @@ pub fn acp_continuation_group(
     digest.update(b"\0");
     digest.update(account_identity.unwrap_or("default").as_bytes());
     ContinuationGroupId::new(format!("grok-account-{:x}", digest.finalize()))
+        .map_err(|_| protocol_error("continuation identity"))
+}
+
+/// Names the native session store of a generic ACP agent.
+///
+/// A generic agent reports no account, so its sessions are grouped by the configured executable
+/// and launch arguments: another agent, or the same one launched differently, cannot resume them.
+fn generic_continuation_group(
+    configuration: &ProviderInstanceConfig,
+) -> ChatResult<ContinuationGroupId> {
+    let mut digest = Sha256::new();
+    digest.update(b"ganbaru-chat-acp-agent-v1\0");
+    digest.update(configuration.executable.trim().as_bytes());
+    for argument in &configuration.launch_arguments {
+        digest.update(b"\0");
+        digest.update(argument.as_bytes());
+    }
+    ContinuationGroupId::new(format!("acp-agent-{:x}", digest.finalize()))
         .map_err(|_| protocol_error("continuation identity"))
 }
 

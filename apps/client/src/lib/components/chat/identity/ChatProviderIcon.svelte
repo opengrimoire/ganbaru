@@ -70,6 +70,11 @@
       <path d="M24 32H8V16h16v16Z" opacity="0.32" />
       <path d="M24 8H8v24h16V8Zm8 32H0V0h32v40Z" />
     </svg>
+  {:else if familyId === "acp"}
+    <svg viewBox="0 0 24 24" role="presentation">
+      <path fill-rule="evenodd" d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 2v14h16V5H4Z" />
+      <path d="m6.3 8.7 1.4-1.4 4.7 4.7-4.7 4.7-1.4-1.4 3.3-3.3-3.3-3.3ZM13 15h5v2h-5v-2Z" />
+    </svg>
   {:else}
     <span class="provider-initials">{initials || "AI"}</span>
   {/if}

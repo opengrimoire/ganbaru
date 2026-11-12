@@ -13,6 +13,7 @@
     ProviderRefreshResult,
   } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { providerFamilyDisplayName } from "$lib/chat/provider-setup";
   import {
     compareCompanyModels,
     formatModelDisplayName,
@@ -56,7 +57,10 @@
   let removeId = $state<string | null>(null);
   let directoryScrollElement = $state<HTMLElement>();
   let detailScrollElement = $state<HTMLElement>();
-  const families = $derived(chat.settings?.providerFamilies ?? []);
+  const families = $derived((chat.settings?.providerFamilies ?? []).map((family) => ({
+    ...family,
+    displayName: providerFamilyDisplayName(family, t("chat.providers.acp.name")),
+  })));
   const providers = $derived(chat.settings?.providerInstances ?? []);
   const selectedFamily = $derived(
     families.find((family) => family.familyId === selectedFamilyId) ?? families[0] ?? null,

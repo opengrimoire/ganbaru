@@ -9,7 +9,7 @@ pub struct AcpRequestedConfiguration<'a> {
 
 pub struct AcpSessionInitialization<'a> {
     pub flavor: AcpProviderFlavor,
-    pub grok_uses_api_key: bool,
+    pub auth: AcpAuthPreference<'a>,
     pub connection: &'a AcpRpcConnection,
     /// Inbound messages of `connection`, which drain the replay of a loaded session.
     pub inbound: &'a mut AcpInboundQueue,
@@ -34,7 +34,7 @@ pub async fn initialize_session(
 ) -> ChatResult<AcpStartedSession> {
     initialize_provider_session(AcpSessionInitialization {
         flavor: AcpProviderFlavor::Cursor,
-        grok_uses_api_key: false,
+        auth: AcpAuthPreference::Flavor(CURSOR_AUTH_METHOD),
         connection,
         inbound,
         workspace,
@@ -55,7 +55,7 @@ pub async fn initialize_provider_session(
 ) -> ChatResult<AcpStartedSession> {
     let AcpSessionInitialization {
         flavor,
-        grok_uses_api_key,
+        auth,
         connection,
         inbound,
         workspace,
@@ -66,70 +66,16 @@ pub async fn initialize_provider_session(
     } = initialization;
     let client = connection.client();
     let provider_name = flavor.display_name();
-    let filesystem = FileSystemCapabilities::new()
-        .read_text_file(true)
-        .write_text_file(true);
-    let capabilities = ClientCapabilities::new()
-        .fs(filesystem)
-        .terminal(true)
-        .meta(serde_json::Map::from_iter([(
-            "parameterizedModelPicker".to_string(),
-            Value::Bool(true),
-        )]));
-    let initialize_request = InitializeRequest::new(ProtocolVersion::V1)
-        .client_capabilities(capabilities)
-        .client_info(Implementation::new("ganbaru", env!("CARGO_PKG_VERSION")));
-    let initialize_request = serde_json::to_value(initialize_request)
-        .map_err(|_| protocol_error("ACP initialization request"))?;
-    let initialize_value = client
-        .request("initialize", initialize_request, context)
-        .await
-        .map_err(|error| error.to_chat_error("initialization"))?;
-    let negotiated: OfficialInitializeResponse =
-        serde_json::from_value(initialize_value.clone())
-            .map_err(|_| protocol_error("ACP initialization response"))?;
-    if negotiated.protocol_version != ProtocolVersion::V1 {
-        return Err(ChatError::new(
-            ChatErrorCode::UnsupportedVersion,
-            format!(
-                "{provider_name} negotiated unsupported ACP protocol version {}",
-                negotiated.protocol_version
-            ),
-            true,
-        ));
-    }
-    let initialize = parse_initialize(initialize_value)?;
-    let preferred_auth_method = match flavor {
-        AcpProviderFlavor::Cursor => CURSOR_AUTH_METHOD,
-        AcpProviderFlavor::Grok => {
-            if grok_uses_api_key {
-                "xai.api_key"
-            } else {
-                "cached_token"
-            }
-        }
-    };
-    if initialize
-        .auth_methods
-        .iter()
-        .any(|method| method.id == preferred_auth_method)
-    {
+    let initialize = negotiate_initialize(flavor, &client, context).await?;
+    if let Some(method) = select_auth_method(provider_name, auth, &initialize)? {
         client
-            .request(
-                "authenticate",
-                json!({ "methodId": preferred_auth_method }),
-                context,
-            )
+            .request("authenticate", json!({ "methodId": method }), context)
             .await
             .map_err(|error| authentication_error(error, "authentication"))?;
-    } else if !initialize.auth_methods.is_empty() {
-        return Err(ChatError::new(
-            ChatErrorCode::AuthenticationRequired,
-            format!("{provider_name} requires an authentication method Ganbaru does not support"),
-            true,
-        ));
     }
-    let mcp_servers = acp_mcp_servers(internal_mcp)?;
+    let accepts_http_mcp = initialize.agent_capabilities.accepts_http_mcp(flavor);
+    let host_tools_omitted = internal_mcp.is_some() && !accepts_http_mcp;
+    let mcp_servers = acp_mcp_servers(provider_name, accepts_http_mcp, internal_mcp)?;
     let (mut setup, session_id) = if let Some(session_id) = resume_session_id {
         if !initialize.agent_capabilities.load_session {
             return Err(ChatError::unsupported(format!(
@@ -175,25 +121,172 @@ pub async fn initialize_provider_session(
                 .map_err(|error| error.to_chat_error("model discovery"))?,
         )?,
         AcpProviderFlavor::Grok => parse_acp_models(&setup)?,
+        // A generic agent may offer no model catalog at all.
+        AcpProviderFlavor::Generic
+            if setup
+                .models
+                .as_ref()
+                .is_none_or(|models| models.available_models.is_empty()) =>
+        {
+            Vec::new()
+        }
+        AcpProviderFlavor::Generic => parse_acp_models(&setup)?,
     };
     Ok(AcpStartedSession {
         initialize,
         setup,
         session_id,
         models,
+        host_tools_omitted,
     })
 }
 
-fn acp_mcp_servers(config: Option<&ProviderInternalMcpConfig>) -> ChatResult<Value> {
-    let servers = config
-        .map(|server| {
-            vec![McpServer::Http(
-                McpServerHttp::new(server.name.clone(), server.url.clone()).headers(vec![
-                    HttpHeader::new("Authorization", format!("Bearer {}", server.bearer_token)),
-                ]),
-            )]
-        })
-        .unwrap_or_default();
+/// Sends `initialize` and checks the negotiated ACP protocol version.
+///
+/// This is the whole exchange an `initialize`-only probe makes: no authentication, session, or
+/// extension request follows it.
+pub async fn negotiate_initialize(
+    flavor: AcpProviderFlavor,
+    client: &AcpRpcClient,
+    context: &DriverOperationContext,
+) -> ChatResult<AcpInitializeResponse> {
+    let provider_name = flavor.display_name();
+    let filesystem = FileSystemCapabilities::new()
+        .read_text_file(true)
+        .write_text_file(true);
+    let capabilities = ClientCapabilities::new().fs(filesystem).terminal(true);
+    // The parameterized model picker is a vendor extension; a generic agent gets the base
+    // capabilities only.
+    let capabilities = if flavor.offers_structured_extensions() {
+        capabilities.meta(serde_json::Map::from_iter([(
+            "parameterizedModelPicker".to_string(),
+            Value::Bool(true),
+        )]))
+    } else {
+        capabilities
+    };
+    let initialize_request = InitializeRequest::new(ProtocolVersion::V1)
+        .client_capabilities(capabilities)
+        .client_info(Implementation::new("ganbaru", env!("CARGO_PKG_VERSION")));
+    let initialize_request = serde_json::to_value(initialize_request)
+        .map_err(|_| protocol_error("ACP initialization request"))?;
+    let initialize_value = client
+        .request("initialize", initialize_request, context)
+        .await
+        .map_err(|error| error.to_chat_error("initialization"))?;
+    let negotiated: OfficialInitializeResponse =
+        serde_json::from_value(initialize_value.clone())
+            .map_err(|_| protocol_error("ACP initialization response"))?;
+    if negotiated.protocol_version != ProtocolVersion::V1 {
+        return Err(ChatError::new(
+            ChatErrorCode::UnsupportedVersion,
+            format!(
+                "{provider_name} negotiated unsupported ACP protocol version {}",
+                negotiated.protocol_version
+            ),
+            true,
+        ));
+    }
+    parse_initialize(initialize_value)
+}
+
+/// How Ganbaru picks one of the agent's `authMethods`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AcpAuthPreference<'a> {
+    /// The method a dedicated flavor always uses.
+    Flavor(&'static str),
+    /// The method the user configured for a generic agent, if any.
+    Configured(Option<&'a str>),
+}
+
+/// The authentication preference of a flavor and its instance settings.
+pub fn auth_preference(
+    flavor: AcpProviderFlavor,
+    grok_uses_api_key: bool,
+    configured: Option<&str>,
+) -> AcpAuthPreference<'_> {
+    match flavor {
+        AcpProviderFlavor::Cursor => AcpAuthPreference::Flavor(CURSOR_AUTH_METHOD),
+        AcpProviderFlavor::Grok if grok_uses_api_key => AcpAuthPreference::Flavor("xai.api_key"),
+        AcpProviderFlavor::Grok => AcpAuthPreference::Flavor("cached_token"),
+        AcpProviderFlavor::Generic => AcpAuthPreference::Configured(configured),
+    }
+}
+
+/// The method to send in `authenticate`, or `None` when the agent advertises none.
+///
+/// The preferred method must be among the advertised ones. A generic agent without a configured
+/// method fails with the advertised names, because the driver never picks a method itself.
+pub fn select_auth_method(
+    provider_name: &str,
+    preference: AcpAuthPreference<'_>,
+    initialize: &AcpInitializeResponse,
+) -> ChatResult<Option<String>> {
+    if initialize.auth_methods.is_empty() {
+        return Ok(None);
+    }
+    let preferred = match preference {
+        AcpAuthPreference::Flavor(method) => Some(method),
+        AcpAuthPreference::Configured(method) => method,
+    };
+    if let Some(method) = preferred.filter(|method| {
+        initialize
+            .auth_methods
+            .iter()
+            .any(|advertised| advertised.id == *method)
+    }) {
+        return Ok(Some(method.to_string()));
+    }
+    Err(match preference {
+        AcpAuthPreference::Flavor(_) => unsupported_authentication(provider_name),
+        AcpAuthPreference::Configured(_) => ChatError::new(
+            ChatErrorCode::AuthenticationRequired,
+            format!(
+                "{provider_name} requires one of its authentication methods: {}",
+                initialize
+                    .auth_methods
+                    .iter()
+                    .map(|method| format!("{} ({})", method.name, method.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            true,
+        ),
+    })
+}
+
+/// The error for an agent that requires authentication Ganbaru cannot perform.
+pub fn unsupported_authentication(provider_name: &str) -> ChatError {
+    ChatError::new(
+        ChatErrorCode::AuthenticationRequired,
+        format!("{provider_name} requires an authentication method Ganbaru does not support"),
+        true,
+    )
+}
+
+/// Builds the `mcpServers` list for `session/new` or `session/load`.
+///
+/// The internal server goes only to an agent that takes HTTP MCP servers. Without that support
+/// an organizational session fails closed, because its host tools carry the assignment's
+/// authority, and a direct thread runs without host tools.
+pub(super) fn acp_mcp_servers(
+    provider_name: &str,
+    accepts_http_mcp: bool,
+    config: Option<&ProviderInternalMcpConfig>,
+) -> ChatResult<Value> {
+    let servers = match config {
+        Some(server) if accepts_http_mcp => vec![McpServer::Http(
+            McpServerHttp::new(server.name.clone(), server.url.clone()).headers(vec![
+                HttpHeader::new("Authorization", format!("Bearer {}", server.bearer_token)),
+            ]),
+        )],
+        Some(server) if server.organizational_authority => {
+            return Err(ChatError::unsupported(format!(
+                "{provider_name} did not advertise HTTP MCP servers, so it cannot use the assignment's host tools"
+            )));
+        }
+        Some(_) | None => Vec::new(),
+    };
     serde_json::to_value(servers)
         .map_err(|_| ChatError::validation("internalMcp", "ACP MCP server is invalid"))
 }
@@ -207,14 +300,22 @@ pub async fn apply_provider_configuration(
     context: &DriverOperationContext,
 ) -> ChatResult<()> {
     let provider_name = flavor.display_name();
-    if flavor == AcpProviderFlavor::Grok {
+    if matches!(flavor, AcpProviderFlavor::Grok | AcpProviderFlavor::Generic) {
         if !requested.model_options.is_empty() {
             return Err(ChatError::validation(
                 "modelOptions",
-                "Grok does not advertise model options",
+                format!("{provider_name} does not advertise model options"),
             ));
         }
-        apply_grok_model(client, session_id, setup, requested.model_id, context).await?;
+        apply_session_model(
+            client,
+            provider_name,
+            session_id,
+            setup,
+            requested.model_id,
+            context,
+        )
+        .await?;
     }
     let updates = if flavor == AcpProviderFlavor::Cursor {
         resolve_configuration_updates(
@@ -327,18 +428,25 @@ pub async fn apply_provider_configuration(
     Ok(())
 }
 
-async fn apply_grok_model(
+/// Switches the session to `model_id` through `session/set_model` when the agent advertised a
+/// model catalog and the requested model differs from the current one.
+async fn apply_session_model(
     client: &AcpRpcClient,
+    provider_name: &str,
     session_id: &str,
     setup: &mut AcpSessionSetup,
     model_id: Option<&ModelId>,
     context: &DriverOperationContext,
 ) -> ChatResult<()> {
-    let Some(model_state) = setup.models.as_mut() else {
+    let Some(model_state) = setup
+        .models
+        .as_mut()
+        .filter(|models| !models.available_models.is_empty())
+    else {
         if model_id.is_some() {
-            return Err(ChatError::unsupported(
-                "Grok did not advertise dynamic models",
-            ));
+            return Err(ChatError::unsupported(format!(
+                "{provider_name} did not advertise dynamic models"
+            )));
         }
         return Ok(());
     };
@@ -352,7 +460,7 @@ async fn apply_grok_model(
     {
         return Err(ChatError::validation(
             "modelId",
-            "Grok model is not in the advertised catalog",
+            format!("{provider_name} model is not in the advertised catalog"),
         ));
     }
     if model_state.current_model_id != requested {
@@ -366,7 +474,7 @@ async fn apply_grok_model(
             .map_err(|error| {
                 ChatError::validation(
                     "modelId",
-                    format!("Grok rejected the requested model: {error}"),
+                    format!("{provider_name} rejected the requested model: {error}"),
                 )
             })?;
         model_state.current_model_id = requested.to_string();

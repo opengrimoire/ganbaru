@@ -6,7 +6,7 @@ use super::event_stream::OpenCodeEventStream;
 use super::http_client::*;
 use super::local_server::OwnedOpenCodeServer;
 use super::normalizer::{OpenCodeEventNormalizer, OpenCodeRouteState};
-use super::permissions::permission_override;
+use super::permissions::{permission_override, permission_reply};
 use super::protocol::{OpenCodeCommand, parse_resume_cursor, resume_cursor};
 use super::support::*;
 use crate::events::*;
@@ -22,6 +22,10 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 
 const MAX_RECONNECT_ATTEMPTS: usize = 6;
+/// Longest wait for any event, heartbeats included, while a turn runs and no request waits for
+/// the user before the stream counts as silent and is reconnected. OpenCode heartbeat timing is
+/// unconfirmed, so the bound is wide and idle sessions are never timed out.
+pub(super) const OPENCODE_BUSY_STREAM_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_RECONCILIATION_PAGES: usize = 100;
 const MAX_RECONCILIATION_MESSAGES: usize = 10_000;
 
@@ -33,6 +37,9 @@ pub struct OpenCodeProviderDriver {
     pub(super) live: Option<OpenCodeLiveSession>,
     pub(super) cached_models: Option<ProviderModelCatalog>,
     pub(super) cached_commands: Vec<OpenCodeCommand>,
+    /// Silence bound of the event stream during a turn, [`OPENCODE_BUSY_STREAM_TIMEOUT`] outside
+    /// tests.
+    pub(super) busy_stream_timeout: Duration,
 }
 
 pub(super) struct OpenCodeLiveSession {
@@ -160,7 +167,15 @@ impl OpenCodeProviderDriver {
             live: None,
             cached_models: None,
             cached_commands: Vec::new(),
+            busy_stream_timeout: OPENCODE_BUSY_STREAM_TIMEOUT,
         })
+    }
+
+    /// Shortens the silence bound so tests can observe a silent stream in real time.
+    #[cfg(test)]
+    pub(super) fn with_busy_stream_timeout(mut self, timeout: Duration) -> Self {
+        self.busy_stream_timeout = timeout;
+        self
     }
 
     pub fn metadata_read() -> ProviderFamilyMetadataRead {
@@ -439,6 +454,7 @@ impl OpenCodeProviderDriver {
             expected_shutdown: Arc::clone(&expected_shutdown),
             terminal_error: Arc::clone(&terminal_error),
             session_id: provider_thread_id.clone(),
+            busy_stream_timeout: self.busy_stream_timeout,
         });
         self.live = Some(OpenCodeLiveSession {
             client,
@@ -597,6 +613,64 @@ struct EventPumpResources {
     expected_shutdown: Arc<AtomicBool>,
     terminal_error: Arc<Mutex<Option<ChatError>>>,
     session_id: String,
+    busy_stream_timeout: Duration,
+}
+
+/// Why the event pump left a stream to reconnect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamInterruption {
+    Disconnected,
+    Silent,
+}
+
+impl StreamInterruption {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Disconnected => "opencode_event_stream_disconnected",
+            Self::Silent => "opencode_event_stream_silent",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Disconnected => "OpenCode event stream disconnected",
+            Self::Silent => "OpenCode event stream stayed silent during a turn",
+        }
+    }
+}
+
+/// What one wait on the event stream produced.
+enum StreamPoll {
+    Event(Value),
+    Interrupted(StreamInterruption),
+    /// The wait ran out while no turn was running or a request waited for the user; the stream
+    /// is kept.
+    IdleWait,
+}
+
+/// Waits for the next event. A wait that began during a turn, with no request waiting for the
+/// user, and outlasts the busy timeout counts as a silent stream. Any other wait just restarts,
+/// so a turn starting or a request being answered during it is detected within twice the timeout.
+async fn next_stream_event(
+    resources: &EventPumpResources,
+    stream: &mut OpenCodeEventStream,
+) -> StreamPoll {
+    let busy = resources
+        .route
+        .lock()
+        .is_ok_and(|state| state.active_turn_id.is_some() && !state.awaiting_user());
+    match tokio::time::timeout(resources.busy_stream_timeout, stream.next()).await {
+        Ok(Ok(Some(envelope))) => StreamPoll::Event(envelope),
+        Ok(Ok(None) | Err(_)) => StreamPoll::Interrupted(StreamInterruption::Disconnected),
+        Err(_) if busy => StreamPoll::Interrupted(StreamInterruption::Silent),
+        Err(_) => StreamPoll::IdleWait,
+    }
+}
+
+/// Whether an envelope shows the stream carries session activity again. OpenCode sends
+/// `server.connected` on every subscription, so it does not end a reconnect series.
+fn resets_reconnects(envelope: &Value) -> bool {
+    envelope.get("type").and_then(Value::as_str) != Some("server.connected")
 }
 
 fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
@@ -606,31 +680,46 @@ fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
         };
         let mut reconnect_attempt = 0_usize;
         loop {
-            match stream.next().await {
-                Ok(Some(envelope)) => {
-                    reconnect_attempt = 0;
+            match next_stream_event(&resources, &mut stream).await {
+                StreamPoll::Event(envelope) => {
+                    if resets_reconnects(&envelope) {
+                        reconnect_attempt = 0;
+                    }
                     let events = resources
                         .route
                         .lock()
                         .map_err(|_| driver_state_error())
                         .and_then(|mut state| resources.normalizer.normalize(&mut state, envelope));
+                    let events = match events {
+                        Ok(events) => {
+                            let events = answer_from_session_rules(&resources, events).await;
+                            reject_unprompted_questions(&resources, events).await
+                        }
+                        Err(error) => Err(error),
+                    };
                     if emit_events(&resources.sink, events).await.is_err() {
                         settle_event_failure(
                             &resources,
+                            StreamInterruption::Disconnected.code(),
                             "OpenCode event normalization or persistence failed",
                         )
                         .await;
                         return;
                     }
                 }
-                Ok(None) | Err(_) => {
+                StreamPoll::IdleWait => {}
+                StreamPoll::Interrupted(interruption) => {
                     if resources.expected_shutdown.load(Ordering::Acquire) {
                         return;
                     }
                     reconnect_attempt += 1;
                     if reconnect_attempt > MAX_RECONNECT_ATTEMPTS {
-                        settle_event_failure(&resources, "OpenCode event stream disconnected")
-                            .await;
+                        settle_event_failure(
+                            &resources,
+                            interruption.code(),
+                            interruption.message(),
+                        )
+                        .await;
                         return;
                     }
                     if reconcile_messages(&resources).await.is_err() {
@@ -646,6 +735,75 @@ fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
             }
         }
     })
+}
+
+/// Rejects at OpenCode the questions it asked while no turn ran, so its run does not wait on an
+/// answer no one was asked for.
+///
+/// A rejection OpenCode refuses adds a warning, because the question then stays pending there.
+async fn reject_unprompted_questions(
+    resources: &EventPumpResources,
+    mut events: Vec<CanonicalRuntimeEvent>,
+) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+    let questions = resources
+        .route
+        .lock()
+        .map_err(|_| driver_state_error())?
+        .take_unprompted_questions();
+    for request_id in questions {
+        if let Err(error) = resources.client.reject_question(request_id.as_str()).await {
+            let state = resources.route.lock().map_err(|_| driver_state_error())?;
+            events.push(resources.normalizer.external_event(
+                &state,
+                "question/reject",
+                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                    code: "opencode_question_reject_failed".to_string(),
+                    title: "OpenCode kept a question asked outside a turn".to_string(),
+                    detail: Some(error.message),
+                }),
+            )?);
+        }
+    }
+    Ok(events)
+}
+
+/// Sends the `once` reply for requests a session rule covered.
+///
+/// A request whose reply OpenCode refuses loses its resolution event and stays open for the user.
+async fn answer_from_session_rules(
+    resources: &EventPumpResources,
+    mut events: Vec<CanonicalRuntimeEvent>,
+) -> Vec<CanonicalRuntimeEvent> {
+    let answers = match resources.route.lock() {
+        Ok(mut state) => state.take_auto_answers(),
+        Err(_) => return events,
+    };
+    for request_id in answers {
+        let accepted = resources
+            .client
+            .reply_permission(
+                request_id.as_str(),
+                permission_reply(ApprovalDecisionKind::AllowOnce),
+            )
+            .await
+            .is_ok();
+        if let Ok(mut state) = resources.route.lock() {
+            if accepted {
+                state.complete_auto_answer(&request_id);
+            } else {
+                state.release_auto_answer(&request_id);
+            }
+        }
+        if !accepted {
+            events.retain(|event| {
+                !matches!(
+                    &event.event,
+                    CanonicalEvent::RequestResolved(resolved) if resolved.request_id == request_id
+                )
+            });
+        }
+    }
+    events
 }
 
 async fn reconcile_messages(resources: &EventPumpResources) -> ChatResult<()> {
@@ -720,7 +878,8 @@ async fn emit_events(
     Ok(())
 }
 
-async fn settle_event_failure(resources: &EventPumpResources, message: &str) {
+/// Ends the session after the event stream failed for good, reporting `code`.
+async fn settle_event_failure(resources: &EventPumpResources, code: &str, message: &str) {
     let error = ChatError::new(ChatErrorCode::TransportUnavailable, message, true);
     if let Ok(mut terminal) = resources.terminal_error.lock() {
         *terminal = Some(error);
@@ -735,7 +894,7 @@ async fn settle_event_failure(resources: &EventPumpResources, message: &str) {
                 &state,
                 "transport/error",
                 CanonicalEvent::RuntimeError(RuntimeErrorEvent {
-                    code: "opencode_event_stream_disconnected".to_string(),
+                    code: code.to_string(),
                     message: message.to_string(),
                     recoverable: true,
                     safe_details: None,

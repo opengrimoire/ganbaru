@@ -15,6 +15,7 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { ProjectWorkingFolderRead } from "$lib/chat/contracts";
+  import { providerFamilyDisplayName } from "$lib/chat/provider-setup";
   import { onDestroy, untrack } from "svelte";
   import { adoptChatProjectPrimaryWorkingFolder, getChat } from "$lib/stores/chat.svelte";
   import * as chatApi from "$lib/api/chat";
@@ -82,7 +83,7 @@
       if (providers.some((provider) => provider.configuration.familyId === family.familyId)) continue;
       options.push({
         value: `unconfigured-family:${family.familyId}`,
-        label: family.displayName,
+        label: providerFamilyDisplayName(family, t("chat.providers.acp.name")),
         familyId: family.familyId,
         summary: family.implementationStatus === "available"
           ? t("settings.chat.providers.notConfigured")

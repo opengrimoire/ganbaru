@@ -112,3 +112,61 @@ fn a_version_refusal_carries_its_admission_and_version() {
     let plain = ChatError::new(ChatErrorCode::UnsupportedVersion, "unsupported", false);
     assert_eq!(refused_version(&plain), None);
 }
+
+#[test]
+fn the_generic_acp_family_is_listed_and_creates_its_driver() {
+    let registry = ProviderDriverRegistry;
+    let family = ProviderFamilyId::new("acp").unwrap();
+    let listed = registry
+        .list_metadata()
+        .into_iter()
+        .find(|metadata| metadata.family_id == family)
+        .unwrap();
+    assert_eq!(listed, registry.metadata(&family));
+    assert_eq!(listed.display_name, "ACP agent");
+    assert_eq!(listed.protocol_name, "acp");
+    assert_eq!(
+        listed.implementation_status,
+        ProviderImplementationStatus::Available
+    );
+    assert!(listed.default_executable_candidates.is_empty());
+    assert_eq!(listed.minimum_tested_cli_version, None);
+    let definition = PROVIDER_METADATA
+        .iter()
+        .find(|metadata| metadata.family_id == "acp")
+        .unwrap();
+    assert_eq!(
+        listed.potential_capabilities.len(),
+        definition.potential_capabilities.len()
+    );
+    for capability in definition.potential_capabilities {
+        assert!(
+            listed.potential_capabilities.contains(capability),
+            "{capability:?}"
+        );
+    }
+
+    let configuration: ProviderInstanceConfig = serde_json::from_value(serde_json::json!({
+        "schemaVersion": 1,
+        "instanceId": "acp-instance-1",
+        "familyId": "acp",
+        "label": "Agent",
+        "enabled": true,
+        "executable": "fixture-agent",
+        "providerHome": null,
+        "launchArguments": [],
+        "environment": {},
+        "credentialReferences": {},
+        "visibleModelIds": [],
+        "favoriteModelIds": [],
+        "providerConfig": { "schemaVersion": 1, "value": { "authMethod": "api-key" } }
+    }))
+    .unwrap();
+    let driver = registry.create_driver(configuration.clone()).unwrap();
+    assert_eq!(driver.metadata().family_id, family);
+
+    let mut cursor = configuration;
+    cursor.family_id = ProviderFamilyId::new("cursor").unwrap();
+    let error = registry.create_driver(cursor).err().unwrap();
+    assert_eq!(error.field.as_deref(), Some("providerConfig.authMethod"));
+}

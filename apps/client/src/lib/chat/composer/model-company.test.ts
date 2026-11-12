@@ -32,6 +32,13 @@ describe("Chat model companies", () => {
     expect(integrationCompany("opencode").name).toBe("OpenCode");
   });
 
+  it("groups unrecognized generic ACP agent models under the protocol", () => {
+    expect(integrationCompany("acp").name).toBe("ACP");
+    expect(modelCompany("acp", model("agent-small")).id).toBe("acp");
+    expect(modelCompany("acp", model("claude-sonnet-4-5")).id).toBe("anthropic");
+    expect(modelCompanyForIdentity("acp", null).id).toBe("acp");
+  });
+
   it("infers companies from stored model identities without a catalog row", () => {
     expect(modelCompanyForIdentity("opencode", "google/gemini-3-pro").id).toBe("google");
     expect(modelCompanyForIdentity("opencode", "anthropic/claude-opus-5").id).toBe("anthropic");

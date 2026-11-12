@@ -77,6 +77,8 @@ use reads::{
     read_teammate,
 };
 #[cfg(desktop)]
+pub(crate) use scheduling::validate_proposed_schedule;
+#[cfg(desktop)]
 use teammate_lifecycle::set_teammate_archived;
 #[cfg(desktop)]
 use workflow::insert_policy_revision;
@@ -884,6 +886,35 @@ pub async fn chat_schedule_message(
     request: ScheduleChatMessageCommand,
 ) -> ChatResult<ChatScheduledMessageRead> {
     scheduling::schedule_message(app, db_url, request).await
+}
+
+/// Schedules the message a person confirmed from a teammate's schedule proposal.
+#[tauri::command]
+pub async fn chat_confirm_schedule_proposal(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: ConfirmScheduleProposalCommand,
+) -> ChatResult<ChatScheduledMessageRead> {
+    scheduling::confirm_schedule_proposal(app, db_url, request).await
+}
+
+/// Hides a teammate's schedule proposal on this device. The dismissal never syncs.
+#[tauri::command]
+pub fn chat_dismiss_schedule_proposal(
+    app: tauri::AppHandle,
+    proposal_item_id: ChatConversationItemId,
+) -> ChatResult<()> {
+    scheduling::dismiss_schedule_proposal(&app, &proposal_item_id)
+}
+
+/// Reads whether each schedule proposal is pending, confirmed, or dismissed on this device.
+#[tauri::command]
+pub async fn chat_read_schedule_proposal_states(
+    app: tauri::AppHandle,
+    db_url: String,
+    proposal_item_ids: Vec<ChatConversationItemId>,
+) -> ChatResult<Vec<ChatScheduleProposalStateRead>> {
+    scheduling::read_schedule_proposal_states(app, db_url, proposal_item_ids).await
 }
 
 #[tauri::command]

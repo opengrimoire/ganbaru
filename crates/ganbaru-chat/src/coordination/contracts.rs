@@ -318,6 +318,45 @@ pub struct ChatScheduledRecurrenceRead {
     pub deferred_until: Option<UtcTimestamp>,
 }
 
+/// A person's confirmation of a teammate's schedule proposal, with the time, rule, and text
+/// they chose. The confirmed message mentions the proposing teammate in the proposal's reply
+/// thread.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmScheduleProposalCommand {
+    /// The conversation item that carries the proposal.
+    pub proposal_item_id: ChatConversationItemId,
+    /// Delivery time of a one-time message, or the anchor of a repeating one.
+    pub scheduled_for: UtcTimestamp,
+    /// Repeat rule; `None` sends the message once.
+    #[serde(default)]
+    pub recurrence: Option<RecurrenceSpec>,
+    /// Edited message text without the teammate mention the confirmation adds; `None` keeps
+    /// the proposed text.
+    #[serde(default)]
+    pub normalized_markdown: Option<String>,
+}
+
+/// Where a schedule proposal stands on this device.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatScheduleProposalState {
+    /// Nobody confirmed it and this device did not dismiss it.
+    Pending,
+    /// A person confirmed it on some device: its scheduled message exists or posted.
+    Confirmed,
+    /// This device dismissed it.
+    Dismissed,
+}
+
+/// The state of one schedule proposal.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatScheduleProposalStateRead {
+    pub proposal_item_id: ChatConversationItemId,
+    pub state: ChatScheduleProposalState,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostChatMessageResult {

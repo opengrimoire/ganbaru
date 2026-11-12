@@ -5,8 +5,14 @@
 //! row. Any device may cancel a scheduled message. A repeating message stays scheduled and posts
 //! once per occurrence.
 
+mod proposals;
 mod series;
 
+#[cfg(desktop)]
+pub(crate) use proposals::validate_proposed_schedule;
+pub(super) use proposals::{
+    confirm_schedule_proposal, dismiss_schedule_proposal, read_schedule_proposal_states,
+};
 pub(super) use series::{advance_claimed_series, finish_posted_occurrence};
 
 use super::common::{

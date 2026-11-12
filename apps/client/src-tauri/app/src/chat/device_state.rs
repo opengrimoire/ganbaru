@@ -88,6 +88,10 @@ pub struct ChatDeviceScope {
     /// quiet hours describe one device's place in a person's day.
     #[serde(default)]
     pub quiet_periods: QuietPeriodPreferences,
+    /// Schedule proposals this device dismissed, keyed by proposal item ID, with when. A
+    /// proposal is a transient suggestion, so dismissing it stays on this device.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dismissed_schedule_proposals: BTreeMap<String, UtcTimestamp>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -255,6 +259,33 @@ pub fn forget_scheduled_message_consent(
     }
 }
 
+/// Most dismissed schedule proposals one device scope keeps; the oldest beyond it is dropped.
+pub const MAX_DISMISSED_SCHEDULE_PROPOSALS: usize = 1024;
+
+/// Records that this device dismissed the schedule proposal `proposal_item_id`, dropping the
+/// oldest dismissal past [`MAX_DISMISSED_SCHEDULE_PROPOSALS`].
+pub fn record_dismissed_schedule_proposal(
+    scope: &mut ChatDeviceScope,
+    proposal_item_id: String,
+    now: UtcTimestamp,
+) {
+    scope
+        .dismissed_schedule_proposals
+        .insert(proposal_item_id.clone(), now);
+    while scope.dismissed_schedule_proposals.len() > MAX_DISMISSED_SCHEDULE_PROPOSALS {
+        let oldest = scope
+            .dismissed_schedule_proposals
+            .iter()
+            .filter(|(kept, _)| **kept != proposal_item_id)
+            .min_by_key(|(_, dismissed_at)| dismissed_at.as_str())
+            .map(|(id, _)| id.clone());
+        let Some(oldest) = oldest else {
+            break;
+        };
+        scope.dismissed_schedule_proposals.remove(&oldest);
+    }
+}
+
 pub fn read_active_device_scope<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<ChatDeviceScope, String> {
@@ -325,6 +356,40 @@ mod tests {
         record_assignment_acceptance(&mut scope, "digest:new".to_owned(), at(1));
 
         assert!(assignment_is_accepted(&scope, "digest:new"));
+    }
+
+    #[test]
+    fn dismissed_proposals_past_their_cap_drop_the_oldest_and_keep_the_newest() {
+        let mut scope = ChatDeviceScope::default();
+        for index in 0..MAX_DISMISSED_SCHEDULE_PROPOSALS {
+            record_dismissed_schedule_proposal(
+                &mut scope,
+                format!("proposal:{index}"),
+                at(index + 2),
+            );
+        }
+
+        record_dismissed_schedule_proposal(&mut scope, "proposal:new".to_owned(), at(1));
+
+        assert_eq!(
+            scope.dismissed_schedule_proposals.len(),
+            MAX_DISMISSED_SCHEDULE_PROPOSALS
+        );
+        assert!(
+            scope
+                .dismissed_schedule_proposals
+                .contains_key("proposal:new")
+        );
+        assert!(
+            !scope
+                .dismissed_schedule_proposals
+                .contains_key("proposal:0")
+        );
+        assert!(
+            scope
+                .dismissed_schedule_proposals
+                .contains_key("proposal:1")
+        );
     }
 
     #[test]

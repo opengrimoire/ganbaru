@@ -25,11 +25,12 @@ pub(super) enum HostTool {
     Report,
     RequestSecret,
     SecretStatus,
+    ProposeSchedule,
 }
 
 impl HostTool {
     /// Every host tool, in the order the tool list presents them.
-    pub(crate) const ALL: [Self; 16] = [
+    pub(crate) const ALL: [Self; 17] = [
         Self::ListReferencedChannels,
         Self::SearchChannelMessages,
         Self::ReadChannelMessages,
@@ -46,6 +47,7 @@ impl HostTool {
         Self::Report,
         Self::RequestSecret,
         Self::SecretStatus,
+        Self::ProposeSchedule,
     ];
 
     /// The wire name a provider calls the tool by.
@@ -67,6 +69,7 @@ impl HostTool {
             Self::Report => "chat_report",
             Self::RequestSecret => "chat_request_secret",
             Self::SecretStatus => "chat_secret_status",
+            Self::ProposeSchedule => "chat_propose_schedule",
         }
     }
 
@@ -92,6 +95,7 @@ impl HostTool {
             Self::Ask => HostToolClass::Ask,
             Self::Report => HostToolClass::Report,
             Self::RequestSecret | Self::SecretStatus => HostToolClass::Secret,
+            Self::ProposeSchedule => HostToolClass::Schedule,
         }
     }
 
@@ -114,7 +118,8 @@ impl HostTool {
             | Self::Report
             | Self::ReadReplyPointer
             | Self::RequestSecret
-            | Self::SecretStatus => true,
+            | Self::SecretStatus
+            | Self::ProposeSchedule => true,
         }
     }
 
@@ -125,7 +130,7 @@ impl HostTool {
     }
 
     /// Whether an organizational run calls the tool without a provider approval prompt. Only
-    /// implemented tools of the read, ask, and report classes qualify, and those classes are
+    /// implemented tools of the read, ask, report, and schedule classes qualify, and those classes are
     /// offered to every run, so the list does not depend on the run's scope.
     pub(crate) const fn pre_approved(self) -> bool {
         self.implemented() && self.class().pre_approved()
@@ -150,14 +155,7 @@ pub(super) enum HostToolClass {
     Report,
     /// Requests a secret through the private card.
     Secret,
-    /// Proposes a scheduled message. No tool is registered in this class.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the class is reserved and no tool is registered in it"
-        )
-    )]
+    /// Proposes a scheduled message for a person to confirm.
     Schedule,
 }
 
@@ -212,19 +210,21 @@ impl HostToolClass {
     }
 
     /// Whether a call can run without a provider approval prompt, because it only reads
-    /// authorized context, asks the assigner, or reports. Every other class keeps the approval
+    /// authorized context, asks the assigner, reports, or proposes a schedule that does nothing
+    /// until a person confirms it. Every other class keeps the approval
     /// the run's frozen approval policy gives it.
     pub(crate) const fn pre_approved(self) -> bool {
-        matches!(self, Self::Read | Self::Ask | Self::Report)
+        matches!(self, Self::Read | Self::Ask | Self::Report | Self::Schedule)
     }
 
     /// Whether the run's tool list carries tools of this class. Edit and destructive tools need
     /// a folder authorized at edit rank or higher. Delegation needs a run below the depth limit
     /// in a channel with another participating teammate. Secret tools need a host that can keep a
-    /// file private to the current user. No schedule tool is offered.
+    /// file private to the current user. Schedule proposals are offered to every run, because only a
+    /// person's confirmation schedules anything.
     fn offered(self, scope: &InternalMcpRunScope) -> bool {
         match self {
-            Self::Read | Self::Ask | Self::Report => true,
+            Self::Read | Self::Ask | Self::Report | Self::Schedule => true,
             Self::Secret => crate::chat::secrets::secret_files_supported(),
             Self::Edit | Self::Destructive => scope
                 .folder_sources
@@ -233,7 +233,6 @@ impl HostToolClass {
             Self::Delegate => {
                 scope.delegation_depth < MAX_DELEGATION_DEPTH && scope.delegation_target_available
             }
-            Self::Schedule => false,
         }
     }
 }

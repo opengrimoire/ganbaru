@@ -352,7 +352,8 @@ mod waker {
         /// Started assignments, which this device stops when it runs them without being their
         /// executing device.
         pub(crate) started: BTreeSet<String>,
-        /// Assignments with inputs pending delivery to the work this device runs.
+        /// Assignments with inputs pending delivery to the work this device runs, or left
+        /// pending when its turn ended, for a follow-up to continue.
         pub(crate) routed: BTreeSet<String>,
     }
 

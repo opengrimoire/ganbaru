@@ -640,6 +640,7 @@ export const chat = {
       failed: "Not delivered",
       editedAfterDelivery: "Edited after delivery",
       alreadyDelivered: "This reply already reached the teammate",
+      startsWork: "This reply started its own work, so stop that work to cancel it",
       edit: "Edit",
       cancel: "Cancel",
       save: "Save",

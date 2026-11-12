@@ -407,7 +407,9 @@
     : scheduledFor
       ? t("chat.composer.modelOverride.scheduled")
       : null);
-  const pendingRows = $derived(pendingInputRows(assignmentInputs));
+  // A reply that started work which can no longer be stopped is that work's settled trigger, not a waiting reply.
+  const pendingRows = $derived(pendingInputRows(assignmentInputs)
+    .filter((row) => activeAssignment !== null || !pendingInputStartsWork(row.input)));
   /** The latest structured plan of the running work, while some of its steps are still to do. */
   const taskProgress = $derived.by(() => {
     if (!activeAssignment) return null;
@@ -1181,6 +1183,21 @@
     restoreDraftAfterEdit();
   }
 
+  /**
+   * The explanation of an edit or cancel refused because the reply already left the list's view of
+   * it, as when it reached the teammate or started its own work after the list loaded, or null for
+   * any other failure.
+   *
+   * @param cause The failure of the edit or cancel.
+   */
+  function settledInputMessage(cause: unknown): string | null {
+    switch (chatErrorReason(cause)) {
+      case "input_already_delivered": return t("chat.composer.pendingInputs.alreadyDelivered");
+      case "input_starts_work": return t("chat.composer.pendingInputs.startsWork");
+      default: return null;
+    }
+  }
+
   async function refreshAfterInputChange(): Promise<void> {
     const replyThreadId = destinationReplyThreadId(destination);
     await Promise.all([
@@ -1202,8 +1219,9 @@
       restoreDraftAfterEdit();
       await refreshAfterInputChange();
     } catch (cause: unknown) {
-      if (chatErrorReason(cause) === "input_already_delivered") {
-        error = t("chat.composer.pendingInputs.alreadyDelivered");
+      const settled = settledInputMessage(cause);
+      if (settled) {
+        error = settled;
         restoreDraftAfterEdit();
         await refreshAfterInputChange().catch(() => undefined);
       } else {
@@ -1218,6 +1236,7 @@
     if (inputBusyId || editingInput) return;
     if (pendingInputStartsWork(row.input)) {
       await stopAssignment();
+      await refreshAfterInputChange().catch(() => undefined);
       return;
     }
     inputBusyId = row.input.inputId;
@@ -1226,10 +1245,9 @@
       await chatApi.cancelChatAssignmentInput(row.input.inputId);
       await refreshAfterInputChange();
     } catch (cause: unknown) {
-      error = chatErrorReason(cause) === "input_already_delivered"
-        ? t("chat.composer.pendingInputs.alreadyDelivered")
-        : chatErrorMessage(cause);
-      if (chatErrorReason(cause) === "input_already_delivered") await refreshAfterInputChange().catch(() => undefined);
+      const settled = settledInputMessage(cause);
+      error = settled ?? chatErrorMessage(cause);
+      if (settled) await refreshAfterInputChange().catch(() => undefined);
     } finally {
       inputBusyId = null;
     }
@@ -2027,7 +2045,7 @@
   {#if taskProgress}<ChatTaskProgressCard summary={taskProgress} />{/if}
 
   {#if pendingRows.length > 0}
-    <ChatPendingInputs rows={pendingRows} editingInputId={editingInput?.inputId ?? null} busyInputId={inputBusyId} canEdit={canEditInput} canStopWork={activeAssignment !== null} onEdit={startInputEdit} onCancel={(row) => { void cancelInput(row); }} onSave={() => { void saveInputEdit(); }} onDiscard={discardInputEdit} />
+    <ChatPendingInputs rows={pendingRows} editingInputId={editingInput?.inputId ?? null} busyInputId={inputBusyId} canEdit={canEditInput} onEdit={startInputEdit} onCancel={(row) => { void cancelInput(row); }} onSave={() => { void saveInputEdit(); }} onDiscard={discardInputEdit} />
   {/if}
 
   <div bind:this={composerRoot} class="organizational-composer" data-organizational-composer>

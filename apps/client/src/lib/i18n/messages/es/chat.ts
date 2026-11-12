@@ -643,6 +643,7 @@ export const chat = {
       failed: "No entregada",
       editedAfterDelivery: "Editada después de la entrega",
       alreadyDelivered: "Esta respuesta ya llegó al compañero",
+      startsWork: "Esta respuesta inició su propio trabajo, así que detén ese trabajo para cancelarla",
       edit: "Editar",
       cancel: "Cancelar",
       save: "Guardar",

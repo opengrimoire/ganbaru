@@ -3,7 +3,7 @@
   The replies addressed to a thread's work that wait for the run, failed to reach it, or changed
   after it received them. A waiting reply can be edited in the composer or cancelled; while one is
   edited, the list offers Save and Discard for it. A reply that started its own work is only
-  listed: its work already holds its text, so cancelling it stops that work.
+  listed while that work can stop: its work already holds its text, so cancelling it stops that work.
 -->
 <script lang="ts">
   import type { ChatAssignmentInputId, ChatAssignmentInputRoutingKind } from "$lib/chat/contracts";
@@ -15,7 +15,6 @@
     editingInputId,
     busyInputId,
     canEdit,
-    canStopWork,
     onEdit,
     onCancel,
     onSave,
@@ -28,8 +27,6 @@
     busyInputId: ChatAssignmentInputId | null;
     /** Whether the full text of a reply is loaded, so the composer can edit it. */
     canEdit: (row: PendingInputRow) => boolean;
-    /** Whether the work a reply started can still be stopped, which is how such a reply is cancelled. */
-    canStopWork: boolean;
     onEdit: (row: PendingInputRow) => void;
     onCancel: (row: PendingInputRow) => void;
     onSave: () => void;
@@ -74,11 +71,9 @@
           {#if row.status === "pending" && !startsWork && !editing && !canEdit(row)}<small>{t("chat.composer.pendingInputs.fullTextUnavailable")}</small>{/if}
         </span>
         {#if row.status === "pending" && startsWork}
-          {#if canStopWork}
-            <span class="pending-actions">
-              <button type="button" data-pending-action="cancel" disabled={busy || editingInputId !== null} aria-label={t("chat.composer.pendingInputs.cancelWork", row.input.preview)} onclick={() => onCancel(row)}>{t("chat.composer.pendingInputs.cancel")}</button>
-            </span>
-          {/if}
+          <span class="pending-actions">
+            <button type="button" data-pending-action="cancel" disabled={busy || editingInputId !== null} aria-label={t("chat.composer.pendingInputs.cancelWork", row.input.preview)} onclick={() => onCancel(row)}>{t("chat.composer.pendingInputs.cancel")}</button>
+          </span>
         {:else if row.status === "pending"}
           <span class="pending-actions">
             {#if editing}

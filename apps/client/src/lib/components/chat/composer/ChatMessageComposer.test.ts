@@ -443,6 +443,32 @@ describe("ChatMessageComposer", () => {
     expect(cancelInput).not.toHaveBeenCalled();
   });
 
+  it("explains and rereads a waiting reply that started its own work after the list loaded", async () => {
+    const inputs = vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput()]);
+    vi.spyOn(chatApi, "cancelChatAssignmentInput").mockRejectedValue({ code: "conflict", message: "This reply started its own work; stop that work instead", recoverable: true, details: { reason: "input_starts_work" } });
+    vi.spyOn(chat, "loadReplyThread").mockResolvedValue();
+    const root = mountActiveWork();
+
+    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="cancel"]')).not.toBeNull());
+    const loads = inputs.mock.calls.length;
+    root.querySelector<HTMLButtonElement>('[data-pending-action="cancel"]')?.click();
+
+    await vi.waitFor(() => expect(root.textContent).toContain("This reply started its own work, so stop that work to cancel it"));
+    expect(inputs.mock.calls.length).toBeGreaterThan(loads);
+  });
+
+  it("hides a reply that started work which can no longer stop", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput({ routingKind: "follow_up" })]);
+    const page = workingReplyThread();
+    if (!page.assignment) throw new Error("The fixture holds an assignment");
+    const root = mountActiveWork({ ...page, assignment: { ...page.assignment, state: "cancelled" } });
+
+    await tick();
+    await vi.waitFor(() => expect(chatApi.listChatAssignmentInputs).toHaveBeenCalled());
+    await tick();
+    expect(root.querySelector("[data-chat-pending-inputs]")).toBeNull();
+  });
+
   function mountWaitingWork(): { notice: HTMLElement; startHere: HTMLButtonElement } {
     const page = workingReplyThread();
     if (!page.assignment) throw new Error("The fixture holds an assignment");

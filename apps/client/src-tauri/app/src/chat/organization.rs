@@ -30,6 +30,8 @@ mod common;
 #[cfg(desktop)]
 mod context;
 #[cfg(desktop)]
+mod continuation;
+#[cfg(desktop)]
 mod dispatch;
 mod inputs;
 #[cfg(desktop)]
@@ -137,7 +139,7 @@ pub async fn chat_create_teammate(
     let role = validate_teammate_role(&request.role)?;
     validate_profile_text(
         &request.instructions,
-        dispatch::MAX_TEAMMATE_INSTRUCTIONS_BYTES,
+        continuation::MAX_TEAMMATE_INSTRUCTIONS_BYTES,
         "instructions",
     )?;
     validate_policy(&app, &request.policy)?;

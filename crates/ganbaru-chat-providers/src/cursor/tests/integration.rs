@@ -897,3 +897,173 @@ fn generic_agent_switches_only_to_advertised_models() {
         assert_eq!(error.code, ChatErrorCode::Validation);
     });
 }
+
+#[test]
+fn instructions_reach_each_native_session_once_across_resume() {
+    assert_instructions_follow_the_native_session(false);
+}
+
+#[test]
+fn generic_agent_instructions_reach_each_native_session_once_across_resume() {
+    assert_instructions_follow_the_native_session(true);
+}
+
+/// Opens, resumes, and replaces a native session the way organizational runs do and checks
+/// which prompts carry the instructions: a resume the caller reports as delivered omits them
+/// unless they change, and every new native session receives them once.
+fn assert_instructions_follow_the_native_session(generic: bool) {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("instructions-resume");
+        let (mut driver, state) = if generic {
+            generic_driver(workspace.path(), FixtureScenario::GenericAgent, None)
+        } else {
+            let state = Arc::new(AcpFixtureState::default());
+            let factory_state = Arc::clone(&state);
+            let mut driver =
+                CursorProviderDriver::new(configuration(workspace.path(), None)).unwrap();
+            driver.set_connection_factory(Arc::new(move |_workspace| {
+                Ok((
+                    fixture_connection(
+                        FixtureScenario::CompletePrompts,
+                        Arc::clone(&factory_state),
+                    ),
+                    about().into(),
+                ))
+            }));
+            (driver, state)
+        };
+        let sink = Arc::new(RecordingSink::default());
+        let rules = "Follow repository rules";
+        let start = || {
+            if generic {
+                generic_start_request(workspace.path())
+            } else {
+                start_request(workspace.path())
+            }
+        };
+
+        let first = open_session(&mut driver, &sink, SessionOpen::Start(start())).await;
+        instructed_turn(
+            &mut driver,
+            &sink,
+            &first.session_id,
+            "turn-1",
+            rules,
+            generic,
+        )
+        .await;
+        let resumed = |delivered: bool| {
+            let mut request: ResumeSessionRequest = serde_json::from_value(json!({
+                "threadId": start().thread_id,
+                "workspace": start().workspace,
+                "providerInstanceId": start().provider_instance_id,
+                "providerThreadId": first.provider_thread_id,
+                "continuationGroupId": first.continuation_group_id,
+                "resumeCursor": first.resume_cursor,
+                "modes": start().modes,
+                "developerInstructions": rules,
+            }))
+            .unwrap();
+            request.developer_instructions_delivered = delivered;
+            SessionOpen::Resume(request)
+        };
+        let mut session = first.session_id.clone();
+        for (turn, delivered, instructions) in [
+            ("turn-2", true, rules),
+            ("turn-3", true, "Ask before deleting files"),
+            ("turn-4", false, rules),
+        ] {
+            stop(&mut driver, &session).await;
+            session = open_session(&mut driver, &sink, resumed(delivered))
+                .await
+                .session_id;
+            instructed_turn(&mut driver, &sink, &session, turn, instructions, generic).await;
+        }
+        stop(&mut driver, &session).await;
+        let handoff = open_session(&mut driver, &sink, SessionOpen::Start(start())).await;
+        for turn in ["turn-5", "turn-6"] {
+            instructed_turn(
+                &mut driver,
+                &sink,
+                &handoff.session_id,
+                turn,
+                rules,
+                generic,
+            )
+            .await;
+        }
+
+        assert_eq!(
+            prompt_instruction_flags(&state),
+            [true, false, true, true, true, false],
+            "a continued native session gets no instruction text, a change or an unreported \
+             resume sends them, and a handoff session receives them once"
+        );
+    });
+}
+
+enum SessionOpen {
+    Start(StartSessionRequest),
+    Resume(ResumeSessionRequest),
+}
+
+async fn open_session(
+    driver: &mut CursorProviderDriver,
+    sink: &Arc<RecordingSink>,
+    open: SessionOpen,
+) -> ProviderSessionSnapshot {
+    let sink_trait: Arc<dyn ProviderEventSink> = sink.clone();
+    match open {
+        SessionOpen::Start(request) => {
+            driver
+                .start_session(request, sink_trait, &context("start"))
+                .await
+        }
+        SessionOpen::Resume(request) => {
+            driver
+                .resume_session(request, sink_trait, &context("resume"))
+                .await
+        }
+    }
+    .unwrap()
+}
+
+async fn stop(driver: &mut CursorProviderDriver, session_id: &ProviderSessionId) {
+    driver
+        .stop_session(
+            StopSessionRequest {
+                session_id: session_id.clone(),
+                force: false,
+            },
+            &context("stop"),
+        )
+        .await
+        .unwrap();
+}
+
+/// Sends one turn with `instructions` and waits until it completes.
+async fn instructed_turn(
+    driver: &mut CursorProviderDriver,
+    sink: &RecordingSink,
+    session_id: &ProviderSessionId,
+    turn_id: &str,
+    instructions: &str,
+    generic: bool,
+) {
+    let completed_before = completed_turns(sink);
+    let mut request = send_request(session_id);
+    request.turn_id = serde_json::from_value(json!(turn_id)).unwrap();
+    request.developer_instructions = Some(instructions.to_string());
+    if generic {
+        request.model_id = None;
+        request.modes = modes(SafetyMode::AskForApproval, InteractionMode::Build);
+    }
+    driver.send_turn(request, &context(turn_id)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while completed_turns(sink) == completed_before {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+}

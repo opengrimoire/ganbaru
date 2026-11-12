@@ -850,7 +850,8 @@ pub(super) async fn read_agent_runs(
                 run.execution_environment_id, run.scratch_generation_id,
                 run.teammate_policy_revision_id, policy.effort, run.provider_turn_id,
                 run.provider_thread_id, run.state,
-                run.run_ordinal, run.created_at, run.updated_at
+                run.run_ordinal, run.attempt_reason, run.handoff_reason, run.created_at,
+                run.updated_at
          FROM chat_agent_runs run
          JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
          JOIN chat_teammate_policy_revisions policy ON policy.id = run.teammate_policy_revision_id
@@ -908,6 +909,8 @@ pub(super) async fn read_agent_runs(
                     .map_err(identifier_error)?,
                 state: row.try_get("state").map_err(persistence_error)?,
                 run_ordinal: u64_value(row.try_get("run_ordinal").map_err(persistence_error)?)?,
+                attempt_reason: row.try_get("attempt_reason").map_err(persistence_error)?,
+                handoff_reason: row.try_get("handoff_reason").map_err(persistence_error)?,
                 created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
                 updated_at: timestamp(row.try_get("updated_at").map_err(persistence_error)?)?,
             })

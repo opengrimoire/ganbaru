@@ -2774,6 +2774,140 @@ fn context_package_sources_list_only_the_records_that_fit() {
     });
 }
 
+/// Freezes the review assignment after `author` wrote a 10 KiB older reply, and returns the
+/// pool, the frozen package id, and its serialized text.
+async fn freeze_long_older_reply(author: &str) -> (SqlitePool, String, String, String) {
+    let pool = migrated_pool().await;
+    seed_review_assignment_with_stranded_replies(&pool).await;
+    let long_reply = "Long answer. ".repeat(10 * 1024 / 13 + 1);
+    sqlx::query(
+        "INSERT INTO chat_communication_message_revisions
+             (id, message_item_id, normalized_markdown, created_at)
+         VALUES ('revision:review-reply-1-long', 'item:review-reply-1', ?,
+                 '2026-08-04T17:01:30.000Z')",
+    )
+    .bind(&long_reply)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE chat_communication_messages
+         SET current_revision_id = 'revision:review-reply-1-long', author_participant_id = ?
+         WHERE item_id = 'item:review-reply-1'",
+    )
+    .bind(author)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut transaction = pool.begin().await.unwrap();
+    super::context::freeze_context_package(
+        &mut transaction,
+        &ChatWorkAssignmentId::new("assignment:review").unwrap(),
+        &ChatReplyThreadId::new("reply-thread:review").unwrap(),
+        &ChatConversationItemId::new("item:review-reply-2").unwrap(),
+        &ChatParticipantId::new("participant:review-agent").unwrap(),
+        None,
+        &UtcTimestamp::new("2026-08-04T17:04:00.000Z").unwrap(),
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    let (package_id, serialized): (String, String) = sqlx::query_as(
+        "SELECT id, serialized_text FROM chat_assignment_context_packages
+         WHERE assignment_id = 'assignment:review'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    (pool, package_id, serialized, long_reply)
+}
+
+#[test]
+fn frozen_packages_point_to_long_teammate_replies_and_deliver_them_as_pointers() {
+    use ganbaru_chat::agent_runs::DeliveryKind;
+    tauri::async_runtime::block_on(async {
+        let (pool, package_id, serialized, long_reply) =
+            freeze_long_older_reply("participant:review-agent").await;
+
+        let records = super::continuation::read_package_records(&pool, &package_id, &serialized)
+            .await
+            .unwrap();
+        let pointer = records
+            .iter()
+            .find(|record| {
+                record
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| source.source_id == "item:review-reply-1")
+            })
+            .unwrap();
+        let record: serde_json::Value = serde_json::from_str(pointer.line).unwrap();
+        assert_eq!(record["kind"], "pointer");
+        assert_eq!(record["bytes"], long_reply.len());
+        assert!(record.get("text").is_none());
+        let source = pointer.source.as_ref().unwrap();
+        assert_eq!(source.source_kind, "thread_reply");
+        assert_eq!(
+            source.content_sha256,
+            super::common::sha256_hex(long_reply.as_bytes())
+        );
+        assert_eq!(
+            super::context::record_delivery_kind(pointer.line),
+            DeliveryKind::Pointer
+        );
+
+        let assignment_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+        let fresh = super::continuation::select_delta(
+            &assignment_id,
+            &records,
+            &super::continuation::SessionHistory::default(),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(fresh.sources.iter().any(|delivered| {
+            delivered.source_id == "item:review-reply-1" && delivered.kind == DeliveryKind::Pointer
+        }));
+        let mut history = super::continuation::SessionHistory::default();
+        history
+            .delivered
+            .insert((source.source_id.clone(), source.content_sha256.clone()));
+        let later = super::continuation::select_delta(&assignment_id, &records, &history)
+            .unwrap()
+            .unwrap();
+        assert!(
+            later
+                .sources
+                .iter()
+                .all(|delivered| delivered.source_id != "item:review-reply-1")
+        );
+        assert!(!later.text.contains("item:review-reply-1"));
+    });
+}
+
+#[test]
+fn frozen_packages_keep_long_human_replies_as_text() {
+    tauri::async_runtime::block_on(async {
+        let (pool, package_id, serialized, long_reply) =
+            freeze_long_older_reply("participant:local-owner").await;
+
+        let records = super::continuation::read_package_records(&pool, &package_id, &serialized)
+            .await
+            .unwrap();
+        let reply = records
+            .iter()
+            .find(|record| {
+                record
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| source.source_id == "item:review-reply-1")
+            })
+            .unwrap();
+        let record: serde_json::Value = serde_json::from_str(reply.line).unwrap();
+        assert_eq!(record["kind"], "thread_reply");
+        assert_eq!(record["text"], long_reply);
+    });
+}
+
 #[test]
 fn removing_a_teammate_from_a_channel_keeps_the_rows_and_hides_them_from_readers() {
     tauri::async_runtime::block_on(async {
@@ -5214,14 +5348,19 @@ fn a_local_start_claims_without_a_recorded_acceptance() {
             .unwrap()
             .expect("the post itself is the consent");
 
-        let instructions: String = sqlx::query_scalar(
-            "SELECT instructions FROM chat_teammates
-             WHERE participant_id = 'participant:review-agent'",
+        let (display_name, role, instructions): (String, String, String) = sqlx::query_as(
+            "SELECT participant.display_name, teammate.role, teammate.instructions
+             FROM chat_teammates teammate
+             JOIN chat_participants participant ON participant.id = teammate.participant_id
+             WHERE teammate.participant_id = 'participant:review-agent'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(claim.instructions, instructions);
+        assert_eq!(
+            claim.instructions,
+            super::continuation::compose_system_instructions(&display_name, &role, &instructions)
+        );
     });
 }
 

@@ -1,6 +1,8 @@
 import {
   CHAT_ACCESS_ISSUE_CODES,
   CHAT_ACCESS_PROFILE_BUILTIN_KEYS,
+  CHAT_AGENT_RUN_ATTEMPT_REASONS,
+  CHAT_AGENT_RUN_HANDOFF_REASONS,
   CHAT_ASSIGNMENT_REVIEW_OUTCOMES,
   CHAT_ASSIGNMENT_TARGET_BINDING_STATES,
   CHAT_ASSIGNMENT_TARGET_KINDS,
@@ -990,8 +992,18 @@ export function parseChatWaitingAssignments(
   return readArray(value, label, parseWaitingAssignment);
 }
 
-function parseAgentRun(value: unknown, label: string): ChatAgentRunRead {
+/** Validates an agent run read, whose handoff reason is set exactly when it started as a handoff. */
+export function parseChatAgentRun(value: unknown, label = "Chat agent run"): ChatAgentRunRead {
   const record = readRecord(value, label);
+  const attemptReason = readEnum(record.attemptReason, CHAT_AGENT_RUN_ATTEMPT_REASONS, `${label}.attemptReason`);
+  const handoffReason = readNullable(
+    record.handoffReason,
+    `${label}.handoffReason`,
+    (reason, reasonLabel) => readEnum(reason, CHAT_AGENT_RUN_HANDOFF_REASONS, reasonLabel),
+  );
+  if ((attemptReason === "handoff") !== (handoffReason !== null)) {
+    throw new Error(`${label}.handoffReason must be set exactly when the run is a handoff`);
+  }
   return {
     id: readIdentifier(record.id, `${label}.id`),
     assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
@@ -1016,6 +1028,8 @@ function parseAgentRun(value: unknown, label: string): ChatAgentRunRead {
     ),
     state: readEnum(record.state, AGENT_RUN_STATES, `${label}.state`),
     runOrdinal: readNonNegativeSafeInteger(record.runOrdinal, `${label}.runOrdinal`),
+    attemptReason,
+    handoffReason,
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
     updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
   };
@@ -1031,7 +1045,7 @@ export function parseChatReplyThreadPage(
     rootMessage: parseChatMessage(record.rootMessage, `${label}.rootMessage`),
     replies: readArray(record.replies, `${label}.replies`, parseChatMessage),
     assignment: readNullable(record.assignment, `${label}.assignment`, parseChatWorkAssignment),
-    agentRuns: readArray(record.agentRuns, `${label}.agentRuns`, parseAgentRun),
+    agentRuns: readArray(record.agentRuns, `${label}.agentRuns`, parseChatAgentRun),
     previousCursor: readNullable(record.previousCursor, `${label}.previousCursor`, readString),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
   };

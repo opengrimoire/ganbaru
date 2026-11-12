@@ -6,7 +6,7 @@ Each adapter normalizes provider-native events into stable Ganbaru contracts whi
 
 ## Shared contract
 
-Each adapter supports exactly the capabilities its metadata advertises; anything else stays absent or disabled. Ganbaru never simulates approval, continuation, cancellation, interactive input, model selection, or reasoning controls that the provider cannot truthfully perform.
+Each adapter supports exactly the capabilities its metadata advertises; anything else stays absent or disabled. Ganbaru never simulates approval, continuation, cancellation, interactive input, model selection, or reasoning controls that the provider cannot truthfully perform. Organizational runs treat a provider that silently starts a fresh session in place of the one they continue as a lost session and resend the full context package.
 
 All transports apply bounded parsing, payload limits, timeouts, cancellation, process-tree cleanup, redaction, and stable error categories. Short probes (version, account, and catalog queries) read each output stream only up to a fixed limit and stop the whole process tree once a stream exceeds it or the probe times out. Provider output is untrusted input: unknown events may be kept for diagnostics but never become typed application state without validation.
 
@@ -32,7 +32,7 @@ Claude uses its native bidirectional stream-JSON protocol. Ganbaru speaks that c
 
 ## ACP agents
 
-Cursor, Grok, and any other agent that speaks the official Agent Client Protocol (ACP v1) run on one bounded ACP runtime. Cursor and Grok keep provider-specific executable discovery, credentials, model handling, interactions, continuation, and diagnostics; a generic ACP agent instance names its own executable. Capabilities such as native resume and image input come from the initialize negotiation. Host tools reach a generic agent only when it advertises HTTP MCP server support; otherwise its sessions run without them. A status probe sends only initialize. Teammate instructions travel with a prompt once per live session, and again only when they change. Loading a native session for resume suppresses the history the agent replays, because the provider already restores its own context and the Ganbaru timeline is the history the user sees; permission requests that arrive during the load are cancelled.
+Cursor, Grok, and any other agent that speaks the official Agent Client Protocol (ACP v1) run on one bounded ACP runtime. Cursor and Grok keep provider-specific executable discovery, credentials, model handling, interactions, continuation, and diagnostics; a generic ACP agent instance names its own executable. Capabilities such as native resume and image input come from the initialize negotiation. Host tools reach a generic agent only when it advertises HTTP MCP server support; otherwise its sessions run without them. A status probe sends only initialize. Teammate instructions travel with the first prompt of each native session, and again only when they change; a session loaded to continue a reply thread under an unchanged continuation key already holds them, so its turns omit them. Loading a native session for resume suppresses the history the agent replays, because the provider already restores its own context and the Ganbaru timeline is the history the user sees; permission requests that arrive during the load are cancelled.
 
 ## OpenCode
 

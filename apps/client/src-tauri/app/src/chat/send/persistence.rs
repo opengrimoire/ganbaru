@@ -402,11 +402,12 @@ pub(super) async fn persist_user_turn(context: PersistUserTurnContext<'_>) -> Ch
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    if let Some(binding) = origin.run() {
+    if let Some((binding, launch)) = origin.assignment_run() {
         ganbaru_chat::agent_runs::insert_starting_run(
             &mut transaction,
             StartingAgentRun {
                 binding,
+                launch,
                 provider_turn_id: &request.turn_id,
                 provider_thread_id: thread_id,
                 now,
@@ -414,6 +415,51 @@ pub(super) async fn persist_user_turn(context: PersistUserTurnContext<'_>) -> Ch
         )
         .await?;
     }
+    transaction.commit().await.map_err(persistence_error)
+}
+
+/// Rewrites a starting continuation as the handoff `launch` once the provider opened a fresh
+/// native session: the run records its new attempt, the user message of `request` holds the
+/// full package `prompt` the turn now sends, and requests open from the lost session are
+/// interrupted. Fails without writing when the run already left `starting`.
+pub(super) async fn persist_fresh_session_handoff(
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+    request: &SendChatTurnCommand,
+    binding: &ganbaru_chat::agent_runs::AgentRunBinding,
+    launch: &ganbaru_chat::agent_runs::RunLaunch,
+    prompt: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    ganbaru_chat::agent_runs::record_fresh_session_handoff(
+        &mut transaction,
+        binding,
+        &launch.attempt,
+        now,
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE chat_messages SET normalized_markdown = ?, updated_at = ?
+         WHERE id = ? AND thread_id = ?",
+    )
+    .bind(prompt)
+    .bind(now.as_str())
+    .bind(request.message_id.as_str())
+    .bind(thread_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    sqlx::query(
+        "UPDATE chat_threads SET latest_preview = ?, revision = revision + 1, updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(prompt_preview(prompt))
+    .bind(now.as_str())
+    .bind(thread_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
     transaction.commit().await.map_err(persistence_error)
 }
 

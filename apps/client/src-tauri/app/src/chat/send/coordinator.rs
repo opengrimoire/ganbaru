@@ -2,8 +2,9 @@
 
 use super::checkpoints::ensure_pre_turn_checkpoint;
 use super::persistence::{
-    PersistUserTurnContext, TurnPersistenceTarget, mark_turn_dispatch_failed, persist_user_turn,
-    read_attachment_references, read_thread_runtime_data, replay_send_receipt,
+    PersistUserTurnContext, TurnPersistenceTarget, mark_turn_dispatch_failed,
+    persist_fresh_session_handoff, persist_user_turn, read_attachment_references,
+    read_thread_runtime_data, replay_send_receipt,
 };
 use super::session::{EnsureSessionContext, ensure_session_with_executable_recovery};
 use super::support::{
@@ -18,7 +19,9 @@ use crate::chat::device_state::{full_access_is_trusted, read_active_device_scope
 use crate::chat::send_commands::{SendChatTurnCommand, SendChatTurnResult};
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use crate::vault;
-use ganbaru_chat::agent_runs::{AgentRunBinding, TurnOrigin};
+use ganbaru_chat::agent_runs::{
+    AgentRunBinding, AttemptReason, RunLaunch, TurnOrigin, opened_fresh_native_session,
+};
 use ganbaru_chat::repository::receipts::{
     CommandReceiptState, complete_command_receipt, read_command_receipt,
 };
@@ -36,6 +39,57 @@ const SENT_TURN_KEYS: &[ChatProjectionKey] = &[
     ChatProjectionKey::Turns,
     ChatProjectionKey::Messages,
 ];
+
+/// Projections a continuation that handed off to a fresh native session changes.
+const HANDED_OFF_TURN_KEYS: &[ChatProjectionKey] = &[
+    ChatProjectionKey::Thread,
+    ChatProjectionKey::Messages,
+    ChatProjectionKey::PendingRequests,
+];
+
+/// Detects that the provider opened a fresh native session for a continuation instead of the
+/// stored one, which some providers do without reporting the loss, and records the run as a
+/// handoff that sends its full package. Returns the prompt and launch the turn then uses.
+///
+/// A continuation without a full package fails as a lost session, so its dispatch hands off.
+pub(super) async fn hand_off_on_fresh_session(
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+    request: &SendChatTurnCommand,
+    origin: &TurnOrigin,
+    existing: Option<&super::persistence::ThreadRuntimeData>,
+    session: &ProviderSessionSnapshot,
+) -> ChatResult<Option<(String, RunLaunch)>> {
+    let Some((binding, launch)) = origin.assignment_run() else {
+        return Ok(None);
+    };
+    if launch.attempt.reason != AttemptReason::Continuation
+        || !opened_fresh_native_session(
+            existing.and_then(|value| value.provider_thread_id.as_ref()),
+            session.provider_thread_id.as_ref(),
+        )
+    {
+        return Ok(None);
+    }
+    let (prompt, handed_off) = launch.handed_off_to_fresh_session().ok_or_else(|| {
+        ChatError::new(
+            ChatErrorCode::ResumeNotFound,
+            "The provider opened a new session in place of the one this run continues",
+            true,
+        )
+    })?;
+    persist_fresh_session_handoff(
+        pool,
+        thread_id,
+        request,
+        binding,
+        &handed_off,
+        &prompt,
+        &now_timestamp()?,
+    )
+    .await?;
+    Ok(Some((prompt, handed_off)))
+}
 
 pub(crate) async fn send_turn(
     app: tauri::AppHandle,
@@ -224,6 +278,7 @@ pub(crate) async fn send_turn(
 
     // Every step after persistence runs here, so any failure reaches the turn failure mark and
     // the launch settlement below and a persisted run never stays starting.
+    let mut handed_off = None;
     let operation = async {
         if authority_support.internal_host_tools {
             if let Some(binding) = origin.run() {
@@ -254,8 +309,32 @@ pub(crate) async fn send_turn(
             request: &request,
             authorization: origin.run(),
             developer_instructions: origin.developer_instructions(),
+            developer_instructions_delivered: origin.instructions_delivered_to_native_session(),
         })
         .await?;
+        let prompt = match hand_off_on_fresh_session(
+            &pool,
+            &thread_id,
+            &request,
+            &origin,
+            existing.as_ref(),
+            &session,
+        )
+        .await?
+        {
+            Some((prompt, launch)) => {
+                crate::chat::ingestion::notify_rows_changed(
+                    &app,
+                    &pool,
+                    &thread_id,
+                    HANDED_OFF_TURN_KEYS,
+                )
+                .await;
+                handed_off = Some(launch);
+                prompt
+            }
+            None => request.prompt.clone(),
+        };
         if origin.run().is_some() && authority_support.internal_host_tools {
             mcp_registry.wait_until_ready(&thread_id).await?;
         }
@@ -274,7 +353,7 @@ pub(crate) async fn send_turn(
                     command: request.command.clone(),
                     session_id: session.session_id,
                     turn_id: request.turn_id.clone(),
-                    prompt: request.prompt.clone(),
+                    prompt,
                     attachments: attachment_references,
                     mentions: request.mentions.clone(),
                     model_id: request.model_id.clone(),
@@ -318,15 +397,27 @@ pub(crate) async fn send_turn(
     if turn_failure_marked.is_ok() && launch_error.is_some() {
         crate::chat::ingestion::notify_rows_changed(&app, &pool, &thread_id, SENT_TURN_KEYS).await;
     }
-    if let Some(binding) = origin.run() {
+    let mut launch_settlement = None;
+    if let Some((binding, launch)) = origin.assignment_run() {
         let settlement = ganbaru_chat::agent_runs::settle_launch(
             &pool,
             binding,
+            handed_off.as_ref().unwrap_or(launch),
             launch_error.as_ref(),
             &now_timestamp()?,
         )
         .await?;
+        launch_settlement = Some(settlement);
         crate::chat::authority_epoch::bump_authority_epoch(&app);
+        if settlement == ganbaru_chat::agent_runs::LaunchSettlement::HandoffRequired {
+            crate::chat::ingestion::notify_rows_changed(
+                &app,
+                &pool,
+                &thread_id,
+                &[ChatProjectionKey::PendingRequests],
+            )
+            .await;
+        }
         if settlement.stops_session() {
             mcp_registry.revoke_run_scope(&thread_id).await;
             if let Err(error) = owner
@@ -348,6 +439,7 @@ pub(crate) async fn send_turn(
         thread: reads::read_thread_shell(&pool, &thread_id).await?,
         dispatch,
         launch_error,
+        launch_settlement,
     };
     let receipt_result = versioned_value(&result)?;
     complete_command_receipt(

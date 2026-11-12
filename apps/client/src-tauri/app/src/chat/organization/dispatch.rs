@@ -4,8 +4,14 @@ use super::assignments::read_assignment_subject;
 use super::common::{
     native_assignment_safety_mode, new_id, parse_runtime_approval_policy, this_device_id,
 };
+use super::context;
+use super::continuation::{self, CandidateRun, ContinuationKey, TransitionInput};
 use super::reads::read_policy;
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
+use ganbaru_chat::agent_runs::{
+    AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind, FullPackage, LaunchSettlement,
+    RunAttempt, RunLaunch,
+};
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, SqlitePool};
 
@@ -20,9 +26,31 @@ pub(super) async fn dispatch_assignment_job(
     let Some(claim) = claim_dispatch_job(&pool, &assignment_id, &device_id, &now).await? else {
         return Ok(());
     };
-    let result =
-        dispatch_claimed_assignment(app.clone(), db_url.clone(), &pool, &assignment_id, &claim)
-            .await;
+    let mut result = dispatch_claimed_assignment(
+        app.clone(),
+        db_url.clone(),
+        &pool,
+        &assignment_id,
+        &claim,
+        false,
+    )
+    .await;
+    if result
+        .as_ref()
+        .is_ok_and(|launch| launch.settlement == Some(LaunchSettlement::HandoffRequired))
+    {
+        // The continued native session was lost, so the next run opens a new session with the
+        // full package. That run is a handoff, which never requires another one.
+        result = dispatch_claimed_assignment(
+            app.clone(),
+            db_url.clone(),
+            &pool,
+            &assignment_id,
+            &claim,
+            true,
+        )
+        .await;
+    }
     let launch = match result {
         Ok(launch) => launch,
         Err(error) => {
@@ -42,15 +70,19 @@ pub(super) async fn dispatch_assignment_job(
 #[derive(Debug)]
 pub(super) struct AssignmentLaunch {
     pub(super) run_id: ChatAgentRunId,
-    /// Set when the provider refused or never received the turn. The launch settlement already
-    /// failed the assignment and posted its failure message.
+    /// Set when the provider refused or never received the turn. Unless the settlement asks for
+    /// a handoff, it already failed the assignment and posted its failure message.
     pub(super) launch_error: Option<ChatError>,
+    /// How the launch settled for the assignment, absent when the send replayed a receipt.
+    pub(super) settlement: Option<LaunchSettlement>,
 }
 
-/// A claimed dispatch job and the instructions its consented subject verified.
+/// A claimed dispatch job and the system-level instructions its run sends, composed from the
+/// consented subject it verified.
 #[derive(Debug)]
 pub(super) struct ClaimedDispatch {
     pub(super) token: String,
+    /// The teammate framing, the context package format, and the teammate's instructions.
     pub(super) instructions: String,
 }
 
@@ -119,7 +151,11 @@ pub(super) async fn claim_dispatch_job(
     transaction.commit().await.map_err(persistence_error)?;
     Ok(Some(ClaimedDispatch {
         token: claim_token,
-        instructions: subject.instructions,
+        instructions: continuation::compose_system_instructions(
+            &subject.display_name,
+            &subject.role,
+            &subject.instructions,
+        ),
     }))
 }
 
@@ -211,6 +247,7 @@ async fn dispatch_claimed_assignment(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
     claim: &ClaimedDispatch,
+    native_session_lost: bool,
 ) -> ChatResult<AssignmentLaunch> {
     let row = sqlx::query(
         "SELECT
@@ -218,6 +255,7 @@ async fn dispatch_claimed_assignment(
             assignment.teammate_id,
             assignment.triggering_message_item_id,
             assignment.state,
+            context.id AS context_package_id,
             context.serialized_text,
             authorization.id AS authorization_revision_id,
             authorization.teammate_policy_revision_id,
@@ -435,64 +473,52 @@ async fn dispatch_claimed_assignment(
     .map_err(identifier_error)?;
     let authorization_scope_digest: String =
         row.try_get("scope_digest").map_err(persistence_error)?;
-    let continuation = sqlx::query(
-        "SELECT thread.id, thread.revision
-         FROM chat_agent_runs run
-         JOIN chat_work_assignments previous_assignment
-           ON previous_assignment.id = run.assignment_id
-         JOIN chat_assignment_authorization_revisions previous_authorization
-           ON previous_authorization.id = run.authorization_revision_id
-          AND previous_authorization.assignment_id = run.assignment_id
-          AND previous_authorization.scope_digest = run.authorization_scope_digest
-          AND previous_authorization.decision_state = 'allowed'
-          AND previous_authorization.revoked_at IS NULL
-         JOIN chat_threads thread ON thread.id = run.provider_thread_id
-         WHERE previous_assignment.reply_thread_id = ?
-           AND previous_assignment.id != ?
-           AND previous_assignment.state = 'completed'
-           AND run.state = 'completed'
-           AND run.working_folder_id IS ?
-           AND run.scratch_generation_id IS ?
-           AND run.execution_environment_id IS ?
-           AND run.authorization_scope_digest = ?
-           AND thread.provider_instance_id = ?
-           AND thread.archived_at IS NULL
-           AND thread.state NOT IN ('closed', 'error')
-         ORDER BY previous_assignment.created_at DESC, run.run_ordinal DESC
-         LIMIT 1",
+    let run_ordinal: i64 = sqlx::query_scalar(
+        "SELECT coalesce(max(run_ordinal), 0) + 1 FROM chat_agent_runs WHERE assignment_id = ?",
     )
-    .bind(reply_thread_id.as_str())
     .bind(assignment_id.as_str())
-    .bind(
-        working_folder_id
-            .as_ref()
-            .map(ProjectWorkingFolderId::as_str),
-    )
-    .bind(&scratch_generation_id)
-    .bind(&execution_environment_id)
-    .bind(&authorization_scope_digest)
-    .bind(policy.provider_instance_id.as_str())
-    .fetch_optional(pool)
+    .fetch_one(pool)
     .await
     .map_err(persistence_error)?;
-    let existing_thread_id = continuation
-        .as_ref()
-        .map(|thread| thread.try_get::<String, _>("id"))
-        .transpose()
-        .map_err(persistence_error)?
-        .map(ChatThreadId::new)
-        .transpose()
-        .map_err(identifier_error)?;
-    let expected_thread_revision = continuation
-        .as_ref()
-        .map(|thread| thread.try_get::<i64, _>("revision"))
-        .transpose()
-        .map_err(persistence_error)?
-        .map(u64_value)
-        .transpose()?;
-    let provider_execution_thread_id = existing_thread_id
-        .clone()
-        .unwrap_or(ChatThreadId::new(new_id("provider-execution")?).map_err(identifier_error)?);
+    let key = ContinuationKey {
+        authorization_scope_digest: authorization_scope_digest.clone(),
+        provider_instance_id: policy.provider_instance_id.as_str().to_string(),
+        model_selection_sha256: continuation::model_selection_sha256(
+            policy.provider_managed_model,
+            policy.model_id.as_ref(),
+            &policy.model_options,
+        )?,
+        instructions_sha256: continuation::instructions_sha256(&claim.instructions),
+    };
+    let candidate = read_continuation_candidate(
+        pool,
+        &CandidateScope {
+            assignment_id,
+            reply_thread_id: &reply_thread_id,
+            teammate_id: &teammate_id,
+            working_folder_id: working_folder_id.as_ref(),
+            scratch_generation_id: scratch_generation_id.as_deref(),
+            execution_environment_id: execution_environment_id.as_deref(),
+        },
+    )
+    .await?;
+    let decision = continuation::decide_session_transition(&TransitionInput {
+        key: &key,
+        earlier_run_of_assignment: run_ordinal > 1,
+        candidate: candidate.as_ref().map(StoredCandidate::as_candidate),
+        native_session_lost,
+    });
+    let (existing_thread_id, expected_thread_revision) = match (decision.reuse_thread, candidate) {
+        (Some(thread_id), Some(candidate)) => (
+            Some(ChatThreadId::new(thread_id).map_err(identifier_error)?),
+            Some(candidate.revision),
+        ),
+        _ => (None, None),
+    };
+    let new_thread_id = match existing_thread_id {
+        Some(_) => None,
+        None => Some(ChatThreadId::new(new_id("provider-execution")?).map_err(identifier_error)?),
+    };
     let attachment_ids = sqlx::query_scalar::<_, String>(
         "SELECT attachment.attachment_id
          FROM chat_work_assignments assignment
@@ -539,15 +565,34 @@ async fn dispatch_claimed_assignment(
     } else {
         Vec::new()
     };
-    let run_ordinal: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(run_ordinal), 0) + 1 FROM chat_agent_runs WHERE assignment_id = ?",
-    )
-    .bind(assignment_id.as_str())
-    .fetch_one(pool)
-    .await
-    .map_err(persistence_error)?;
-    let developer_instructions = assignment_developer_instructions(&claim.instructions);
+    let developer_instructions = claim.instructions.clone();
     let project_id: String = row.try_get("project_id").map_err(persistence_error)?;
+    let context_package_id: String = row
+        .try_get("context_package_id")
+        .map_err(persistence_error)?;
+    let full_package: String = row.try_get("serialized_text").map_err(persistence_error)?;
+    let delta = match (decision.reason, existing_thread_id.as_ref()) {
+        (AttemptReason::Continuation, Some(thread_id)) => {
+            continuation::build_delta_package(
+                pool,
+                assignment_id,
+                &context_package_id,
+                &full_package,
+                thread_id.as_str(),
+            )
+            .await?
+        }
+        _ => None,
+    };
+    let full_sources = package_sources(pool, &context_package_id, &full_package).await?;
+    let delivery = choose_context_delivery(
+        decision.reason,
+        delta,
+        FullPackage {
+            prompt: full_package,
+            delivered_sources: full_sources,
+        },
+    );
     let request = super::super::send_commands::SendChatTurnCommand {
         command: ChatCommandContext {
             client_command_id: ChatCommandId::new(format!(
@@ -560,7 +605,7 @@ async fn dispatch_claimed_assignment(
         },
         working_folder_id: working_folder_id.clone(),
         thread_id: existing_thread_id,
-        new_thread_id: (continuation.is_none()).then_some(provider_execution_thread_id),
+        new_thread_id,
         execution_environment_id: execution_environment_id.clone(),
         scratch_generation_id: scratch_generation_id.clone(),
         turn_id: ChatTurnId::new(new_id("provider-turn")?).map_err(identifier_error)?,
@@ -574,9 +619,22 @@ async fn dispatch_claimed_assignment(
             resolved_runtime_approval,
             has_native_target,
         ),
-        prompt: row.try_get("serialized_text").map_err(persistence_error)?,
+        prompt: delivery.prompt,
         attachment_ids,
         mentions,
+    };
+    let launch = RunLaunch {
+        claim_token: claim.token.clone(),
+        attempt: RunAttempt {
+            reason: decision.reason,
+            instructions_sha256: Some(key.instructions_sha256),
+            model_selection_sha256: Some(key.model_selection_sha256),
+            context_delivery: delivery.context_delivery,
+            delivered_context_bytes: u64::try_from(request.prompt.len())
+                .map_err(|_| ChatError::validation("prompt", "Assignment context is too large"))?,
+            delivered_sources: delivery.delivered_sources,
+        },
+        full_prompt_on_fresh_session: delivery.full_prompt_on_fresh_session,
     };
     let run_id = ChatAgentRunId::new(new_id("agent-run")?).map_err(identifier_error)?;
     let sent = super::super::turns::send_turn(
@@ -600,6 +658,7 @@ async fn dispatch_claimed_assignment(
                     execution_environment_id,
                     run_ordinal: u64_value(run_ordinal)?,
                 }),
+                launch: Box::new(launch),
             },
         },
     )
@@ -607,7 +666,164 @@ async fn dispatch_claimed_assignment(
     Ok(AssignmentLaunch {
         run_id,
         launch_error: sent.launch_error,
+        settlement: sent.launch_settlement,
     })
+}
+
+/// What the first turn of a run sends and records as delivered.
+#[derive(Debug, Eq, PartialEq)]
+struct PlannedDelivery {
+    prompt: String,
+    context_delivery: ContextDelivery,
+    delivered_sources: Vec<DeliveredSource>,
+    /// The full package a continuation sends instead when its session turns out to be new.
+    full_prompt_on_fresh_session: Option<FullPackage>,
+}
+
+/// Chooses between the delta and the full package. A continuation with a delta sends it, and
+/// every other run, or a continuation whose delta did not fit, sends the full package. A
+/// continuation keeps the full package for a session the provider opens fresh, so that run
+/// records a handoff instead of failing.
+fn choose_context_delivery(
+    reason: AttemptReason,
+    delta: Option<continuation::DeltaPackage>,
+    full: FullPackage,
+) -> PlannedDelivery {
+    let full_prompt_on_fresh_session =
+        (reason == AttemptReason::Continuation).then(|| full.clone());
+    match (reason, delta) {
+        (AttemptReason::Continuation, Some(delta)) => PlannedDelivery {
+            prompt: delta.text,
+            context_delivery: ContextDelivery::Delta,
+            delivered_sources: delta.sources,
+            full_prompt_on_fresh_session,
+        },
+        _ => PlannedDelivery {
+            prompt: full.prompt,
+            context_delivery: ContextDelivery::Full,
+            delivered_sources: full.delivered_sources,
+            full_prompt_on_fresh_session,
+        },
+    }
+}
+
+/// The sources of the frozen context package `context_package_id`, whose text is `serialized`,
+/// in package order, as sources a launch delivers. A pointer record delivers its source as a
+/// pointer.
+async fn package_sources(
+    pool: &SqlitePool,
+    context_package_id: &str,
+    serialized: &str,
+) -> ChatResult<Vec<DeliveredSource>> {
+    Ok(
+        continuation::read_package_records(pool, context_package_id, serialized)
+            .await?
+            .into_iter()
+            .filter_map(|record| {
+                record.source.map(|source| DeliveredSource {
+                    source_id: source.source_id,
+                    content_sha256: source.content_sha256,
+                    kind: context::record_delivery_kind(record.line),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Where an assignment run executes, which a reusable earlier run must share.
+struct CandidateScope<'a> {
+    assignment_id: &'a ChatWorkAssignmentId,
+    reply_thread_id: &'a ChatReplyThreadId,
+    teammate_id: &'a ChatParticipantId,
+    working_folder_id: Option<&'a ProjectWorkingFolderId>,
+    scratch_generation_id: Option<&'a str>,
+    execution_environment_id: Option<&'a str>,
+}
+
+/// The newest completed run of an earlier assignment that a run in `CandidateScope` could
+/// continue, as stored.
+struct StoredCandidate {
+    thread_id: String,
+    revision: u64,
+    key: Option<ContinuationKey>,
+    authorization_valid: bool,
+}
+
+impl StoredCandidate {
+    fn as_candidate(&self) -> CandidateRun<'_> {
+        CandidateRun {
+            thread_id: &self.thread_id,
+            key: self.key.clone(),
+            authorization_valid: self.authorization_valid,
+        }
+    }
+}
+
+/// Reads the newest completed run of another completed assignment of the same teammate in the
+/// same reply thread and execution target whose provider thread is still open. Its key and
+/// authorization are returned rather than filtered, so the transition records why a new
+/// session starts.
+async fn read_continuation_candidate(
+    pool: &SqlitePool,
+    scope: &CandidateScope<'_>,
+) -> ChatResult<Option<StoredCandidate>> {
+    let Some(row) = sqlx::query(
+        "SELECT thread.id AS thread_id, thread.revision, thread.provider_instance_id,
+                run.authorization_scope_digest, run.model_selection_sha256,
+                run.instructions_sha256,
+                previous_authorization.id IS NOT NULL AS authorization_valid
+         FROM chat_agent_runs run
+         JOIN chat_work_assignments previous_assignment
+           ON previous_assignment.id = run.assignment_id
+         LEFT JOIN chat_assignment_authorization_revisions previous_authorization
+           ON previous_authorization.id = run.authorization_revision_id
+          AND previous_authorization.assignment_id = run.assignment_id
+          AND previous_authorization.scope_digest = run.authorization_scope_digest
+          AND previous_authorization.decision_state = 'allowed'
+          AND previous_authorization.revoked_at IS NULL
+         JOIN chat_threads thread ON thread.id = run.provider_thread_id
+         WHERE previous_assignment.reply_thread_id = ?
+           AND previous_assignment.id != ?
+           AND previous_assignment.teammate_id = ?
+           AND previous_assignment.state = 'completed'
+           AND run.state = 'completed'
+           AND run.working_folder_id IS ?
+           AND run.scratch_generation_id IS ?
+           AND run.execution_environment_id IS ?
+           AND thread.archived_at IS NULL
+           AND thread.state NOT IN ('closed', 'error')
+         ORDER BY previous_assignment.created_at DESC, run.run_ordinal DESC
+         LIMIT 1",
+    )
+    .bind(scope.reply_thread_id.as_str())
+    .bind(scope.assignment_id.as_str())
+    .bind(scope.teammate_id.as_str())
+    .bind(scope.working_folder_id.map(ProjectWorkingFolderId::as_str))
+    .bind(scope.scratch_generation_id)
+    .bind(scope.execution_environment_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(StoredCandidate {
+        thread_id: row.try_get("thread_id").map_err(persistence_error)?,
+        revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
+        key: ContinuationKey::stored(
+            row.try_get("authorization_scope_digest")
+                .map_err(persistence_error)?,
+            row.try_get("provider_instance_id")
+                .map_err(persistence_error)?,
+            row.try_get("model_selection_sha256")
+                .map_err(persistence_error)?,
+            row.try_get("instructions_sha256")
+                .map_err(persistence_error)?,
+        ),
+        authorization_valid: row
+            .try_get("authorization_valid")
+            .map_err(persistence_error)?,
+    }))
 }
 
 async fn require_live_folder_target(
@@ -785,9 +1001,13 @@ async fn fail_assignment_dispatch(
 #[derive(Debug)]
 struct PreparedAssignmentInput {
     thread_id: ChatThreadId,
+    /// The working run the input steers into.
+    run_id: ChatAgentRunId,
     prompt: String,
     /// The message revision the prompt frames, recorded as what the run received.
     revision_id: String,
+    /// The source the run receives once the steer reaches the provider.
+    delivered: DeliveredSource,
 }
 
 /// Reads the pending input `message_item_id` of `assignment_id` and frames it as a follow-up
@@ -823,8 +1043,8 @@ async fn prepare_assignment_input(
         ));
     }
     let row = sqlx::query(
-        "SELECT run.provider_thread_id, run.scratch_generation_id,
-                run.authorization_revision_id, revision.id AS revision_id,
+        "SELECT run.id AS run_id, run.provider_thread_id, run.scratch_generation_id,
+                run.authorization_revision_id, input.routing_kind, revision.id AS revision_id,
                 revision.revision, revision.normalized_markdown
          FROM chat_agent_runs run
          JOIN chat_assignment_authorization_revisions authorization
@@ -885,18 +1105,76 @@ async fn prepare_assignment_input(
         )
         .await?;
     }
-    let prompt = super::context::follow_up_context_line(
+    let run_id = ChatAgentRunId::new(
+        row.try_get::<String, _>("run_id")
+            .map_err(persistence_error)?,
+    )
+    .map_err(identifier_error)?;
+    let routing_kind: String = row.try_get("routing_kind").map_err(persistence_error)?;
+    let framed = super::context::follow_up_context_line(
         message_item_id.as_str(),
         u64_value(row.try_get("revision").map_err(persistence_error)?)?,
         row.try_get("normalized_markdown")
             .map_err(persistence_error)?,
     )?;
-    let revision_id = row.try_get("revision_id").map_err(persistence_error)?;
     Ok(Some(PreparedAssignmentInput {
         thread_id,
-        prompt,
-        revision_id,
+        run_id,
+        prompt: framed.line,
+        revision_id: row.try_get("revision_id").map_err(persistence_error)?,
+        delivered: DeliveredSource {
+            source_id: message_item_id.as_str().to_string(),
+            content_sha256: framed.content_sha256,
+            kind: live_input_delivery_kind(&routing_kind),
+        },
     }))
+}
+
+/// How a live input reaches its run: a queued continuation as the next turn, and any other
+/// input steered into the running turn.
+fn live_input_delivery_kind(routing_kind: &str) -> DeliveryKind {
+    if routing_kind == "queued_continuation" {
+        DeliveryKind::QueuedContinuation
+    } else {
+        DeliveryKind::Steer
+    }
+}
+
+/// Marks the input `message_item_id` of `assignment_id` delivered after its steer reached the
+/// provider, and records the source on the run that took it in the same transaction, so a later
+/// continuation of the session does not send it again. An input another delivery already
+/// marked records nothing.
+async fn record_assignment_input_delivered(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    message_item_id: &ChatConversationItemId,
+    prepared: &PreparedAssignmentInput,
+) -> ChatResult<()> {
+    let now = now_timestamp()?;
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let marked = sqlx::query(
+        "UPDATE chat_work_assignment_inputs
+         SET delivery_state = 'delivered', delivered_at = ?, delivered_revision_id = ?
+         WHERE assignment_id = ? AND message_item_id = ? AND delivery_state = 'pending'",
+    )
+    .bind(now.as_str())
+    .bind(&prepared.revision_id)
+    .bind(assignment_id.as_str())
+    .bind(message_item_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?
+    .rows_affected();
+    if marked > 0 {
+        ganbaru_chat::agent_runs::insert_delivered_sources(
+            &mut transaction,
+            &prepared.run_id,
+            std::slice::from_ref(&prepared.delivered),
+            &now,
+        )
+        .await?;
+    }
+    transaction.commit().await.map_err(persistence_error)
 }
 
 pub(super) async fn deliver_assignment_input(
@@ -906,11 +1184,7 @@ pub(super) async fn deliver_assignment_input(
     message_item_id: ChatConversationItemId,
 ) -> ChatResult<()> {
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
-    let Some(PreparedAssignmentInput {
-        thread_id,
-        prompt,
-        revision_id,
-    }) = prepare_assignment_input(&pool, &assignment_id, &message_item_id).await?
+    let Some(prepared) = prepare_assignment_input(&pool, &assignment_id, &message_item_id).await?
     else {
         return Ok(());
     };
@@ -927,57 +1201,14 @@ pub(super) async fn deliver_assignment_input(
                 .map_err(identifier_error)?,
                 expected_thread_revision: None,
             },
-            thread_id,
+            thread_id: prepared.thread_id.clone(),
             message_id: ChatMessageId::new(new_id("provider-steer-message")?)
                 .map_err(identifier_error)?,
-            prompt,
+            prompt: prepared.prompt.clone(),
         },
     )
     .await?;
-    sqlx::query(
-        "UPDATE chat_work_assignment_inputs
-         SET delivery_state = 'delivered', delivered_at = ?, delivered_revision_id = ?
-         WHERE assignment_id = ? AND message_item_id = ? AND delivery_state = 'pending'",
-    )
-    .bind(now_timestamp()?.as_str())
-    .bind(&revision_id)
-    .bind(assignment_id.as_str())
-    .bind(message_item_id.as_str())
-    .execute(&pool)
-    .await
-    .map_err(persistence_error)?;
-    Ok(())
-}
-
-/// Separates the context package format from the teammate's own instructions.
-const ASSIGNMENT_INSTRUCTIONS_SEPARATOR: &str = "\n\n";
-
-/// Room in the provider developer instruction cap kept for the framing that dispatch puts
-/// before a teammate's instructions. It is fixed rather than measured so the teammate limit,
-/// which the settings editor mirrors, stays put when the format description grows.
-const ASSIGNMENT_INSTRUCTIONS_FRAMING_RESERVE_BYTES: usize = 4 * 1024;
-
-const _: () = assert!(
-    super::context::CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS.len()
-        + ASSIGNMENT_INSTRUCTIONS_SEPARATOR.len()
-        <= ASSIGNMENT_INSTRUCTIONS_FRAMING_RESERVE_BYTES,
-    "the assignment instruction framing must fit its reserve"
-);
-
-/// Largest teammate instructions, in UTF-8 bytes, that still fit the provider developer
-/// instruction cap once dispatch adds the context package framing.
-pub(super) const MAX_TEAMMATE_INSTRUCTIONS_BYTES: usize =
-    MAX_DEVELOPER_INSTRUCTIONS_BYTES - ASSIGNMENT_INSTRUCTIONS_FRAMING_RESERVE_BYTES;
-
-/// Builds the developer instructions of an assignment turn: the context package format first,
-/// then the teammate's own instructions when it has any.
-fn assignment_developer_instructions(teammate_instructions: &str) -> String {
-    let format = super::context::CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS;
-    if teammate_instructions.trim().is_empty() {
-        format.to_string()
-    } else {
-        format!("{format}{ASSIGNMENT_INSTRUCTIONS_SEPARATOR}{teammate_instructions}")
-    }
+    record_assignment_input_delivered(&pool, &assignment_id, &message_item_id, &prepared).await
 }
 
 /// Chooses the turn modes for an organizational assignment. Native targets run
@@ -1006,8 +1237,7 @@ fn assignment_turn_modes(
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatApprovalPolicy, ChatErrorCode, ChatRuntimeApprovalPolicy, InteractionMode,
-        MAX_DEVELOPER_INSTRUCTIONS_BYTES, SafetyMode, assignment_developer_instructions,
+        ChatApprovalPolicy, ChatRuntimeApprovalPolicy, InteractionMode, SafetyMode,
         assignment_turn_modes,
     };
 
@@ -1076,51 +1306,226 @@ mod tests {
         }
     }
 
-    #[test]
-    fn assignment_instructions_describe_the_package_before_the_teammate_instructions() {
-        let format = super::super::context::CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS;
-        assert!(format.contains("`follow_up`"));
-        assert_eq!(assignment_developer_instructions("  \n"), format);
-        assert_eq!(
-            assignment_developer_instructions("Review carefully."),
-            format!("{format}\n\nReview carefully.")
-        );
-    }
+    /// Which earlier run a later assignment of the fixture's reply thread could continue.
+    mod context_delivery {
+        use super::super::{PlannedDelivery, choose_context_delivery};
+        use crate::chat::organization::continuation::DeltaPackage;
+        use ganbaru_chat::agent_runs::{
+            AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind, FullPackage,
+            HandoffReason,
+        };
 
-    #[test]
-    fn the_longest_valid_teammate_instructions_fit_the_provider_cap_after_framing() {
-        use super::super::common::validate_profile_text;
-        use super::MAX_TEAMMATE_INSTRUCTIONS_BYTES;
-        let ascii = "a".repeat(MAX_TEAMMATE_INSTRUCTIONS_BYTES);
-        let multibyte = "é".repeat(MAX_TEAMMATE_INSTRUCTIONS_BYTES / 'é'.len_utf8());
-        for instructions in [&ascii, &multibyte] {
-            validate_profile_text(
-                instructions,
-                MAX_TEAMMATE_INSTRUCTIONS_BYTES,
-                "instructions",
-            )
-            .unwrap();
-            assert!(
-                assignment_developer_instructions(instructions).len()
-                    <= MAX_DEVELOPER_INSTRUCTIONS_BYTES
+        fn source(source_id: &str, digit: char) -> DeliveredSource {
+            DeliveredSource {
+                source_id: source_id.to_string(),
+                content_sha256: digit.to_string().repeat(64),
+                kind: DeliveryKind::Package,
+            }
+        }
+
+        fn full() -> FullPackage {
+            FullPackage {
+                prompt: "header\nroot\nearlier\ntrigger".to_string(),
+                delivered_sources: vec![
+                    source("item:root", 'a'),
+                    source("item:earlier", 'b'),
+                    source("item:trigger", 'c'),
+                ],
+            }
+        }
+
+        fn delta() -> DeltaPackage {
+            DeltaPackage {
+                text: "continuation header\ntrigger".to_string(),
+                sources: vec![source("item:trigger", 'c')],
+            }
+        }
+
+        #[test]
+        fn a_continuation_sends_its_delta_and_keeps_the_full_package_for_a_fresh_session() {
+            assert_eq!(
+                choose_context_delivery(AttemptReason::Continuation, Some(delta()), full()),
+                PlannedDelivery {
+                    prompt: "continuation header\ntrigger".to_string(),
+                    context_delivery: ContextDelivery::Delta,
+                    delivered_sources: vec![source("item:trigger", 'c')],
+                    full_prompt_on_fresh_session: Some(full()),
+                }
             );
         }
-        let over = format!("{multibyte}é");
-        let refused = validate_profile_text(&over, MAX_TEAMMATE_INSTRUCTIONS_BYTES, "instructions")
-            .expect_err("one character over the byte bound is refused");
-        assert_eq!(refused.code, ChatErrorCode::Validation);
+
+        #[test]
+        fn a_continuation_whose_delta_did_not_fit_sends_the_full_package() {
+            assert_eq!(
+                choose_context_delivery(AttemptReason::Continuation, None, full()),
+                PlannedDelivery {
+                    prompt: full().prompt,
+                    context_delivery: ContextDelivery::Full,
+                    delivered_sources: full().delivered_sources,
+                    full_prompt_on_fresh_session: Some(full()),
+                }
+            );
+        }
+
+        #[test]
+        fn every_run_in_a_new_session_sends_the_full_package_without_a_fallback() {
+            for reason in [
+                AttemptReason::Fresh,
+                AttemptReason::Retry,
+                AttemptReason::Handoff(HandoffReason::NativeSessionLost),
+                AttemptReason::Handoff(HandoffReason::KeyChanged),
+                AttemptReason::Handoff(HandoffReason::AuthorityRevoked),
+            ] {
+                assert_eq!(
+                    choose_context_delivery(reason, Some(delta()), full()),
+                    PlannedDelivery {
+                        prompt: full().prompt,
+                        context_delivery: ContextDelivery::Full,
+                        delivered_sources: full().delivered_sources,
+                        full_prompt_on_fresh_session: None,
+                    },
+                    "{reason:?}"
+                );
+            }
+        }
     }
 
-    #[test]
-    fn the_settings_editor_mirrors_the_teammate_instruction_bound() {
-        let editor = include_str!("../../../../../src/lib/chat/teammates/draft.ts");
-        let mirrored = editor
-            .lines()
-            .find_map(|line| line.strip_prefix("export const TEAMMATE_INSTRUCTIONS_MAX_BYTES = "))
-            .and_then(|value| value.strip_suffix(';'))
-            .map(|value| value.replace('_', ""))
-            .and_then(|value| value.parse::<usize>().ok());
-        assert_eq!(mirrored, Some(super::MAX_TEAMMATE_INSTRUCTIONS_BYTES));
+    mod continuation_candidate {
+        use super::super::{CandidateScope, StoredCandidate, read_continuation_candidate};
+        use crate::chat::organization::continuation::ContinuationKey;
+        use ganbaru_chat_contracts::models::*;
+        use sqlx::SqlitePool;
+
+        const MODEL_SHA: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+        const INSTRUCTIONS_SHA: &str =
+            "2222222222222222222222222222222222222222222222222222222222222222";
+
+        /// The fixture's working run completed under a recorded key, with its assignment
+        /// completed and the queued run removed.
+        async fn completed_pool() -> SqlitePool {
+            let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "DELETE FROM chat_agent_runs WHERE id = 'run:queued';
+                 UPDATE chat_agent_runs SET state = 'starting' WHERE id = 'run:working';
+                 UPDATE chat_agent_runs
+                 SET model_selection_sha256 = '{MODEL_SHA}',
+                     instructions_sha256 = '{INSTRUCTIONS_SHA}', state = 'completed'
+                 WHERE id = 'run:working';
+                 UPDATE chat_work_assignments SET state = 'completed'
+                 WHERE id = 'assignment:folders';"
+            )))
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool
+        }
+
+        async fn candidate_for(pool: &SqlitePool, teammate: &str) -> Option<StoredCandidate> {
+            let environment: String = sqlx::query_scalar(
+                "SELECT execution_environment_id FROM chat_agent_runs WHERE id = 'run:working'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            read_continuation_candidate(
+                pool,
+                &CandidateScope {
+                    assignment_id: &ChatWorkAssignmentId::new("assignment:later").unwrap(),
+                    reply_thread_id: &ChatReplyThreadId::new("reply:folders").unwrap(),
+                    teammate_id: &ChatParticipantId::new(teammate).unwrap(),
+                    working_folder_id: Some(&ProjectWorkingFolderId::new("workspace-1").unwrap()),
+                    scratch_generation_id: None,
+                    execution_environment_id: Some(&environment),
+                },
+            )
+            .await
+            .unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_completed_run_of_the_same_teammate_is_the_candidate_with_its_stored_key() {
+            let pool = completed_pool().await;
+            let provider: String = sqlx::query_scalar(
+                "SELECT provider_instance_id FROM chat_threads WHERE id = 'thread-1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let candidate = candidate_for(&pool, "participant:folder-agent")
+                .await
+                .expect("the completed run can be continued");
+            assert_eq!(candidate.thread_id, "thread-1");
+            assert!(candidate.authorization_valid);
+            assert_eq!(
+                candidate.key,
+                Some(ContinuationKey {
+                    authorization_scope_digest: format!("{:064}", 0),
+                    provider_instance_id: provider,
+                    model_selection_sha256: MODEL_SHA.to_string(),
+                    instructions_sha256: INSTRUCTIONS_SHA.to_string(),
+                })
+            );
+        }
+
+        #[tokio::test]
+        async fn another_teammate_in_the_thread_never_continues_the_session() {
+            let pool = completed_pool().await;
+            assert!(
+                candidate_for(&pool, "participant:other-agent")
+                    .await
+                    .is_none()
+            );
+        }
+
+        #[tokio::test]
+        async fn a_revoked_authorization_or_missing_key_is_reported_not_hidden() {
+            let pool = completed_pool().await;
+            sqlx::query(
+                "UPDATE chat_assignment_authorization_revisions
+                 SET decision_state = 'revoked', revoked_at = '2026-10-20T12:05:00.000Z'
+                 WHERE id = 'authorization:working'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let candidate = candidate_for(&pool, "participant:folder-agent")
+                .await
+                .expect("a revoked candidate is still reported");
+            assert!(!candidate.authorization_valid);
+
+            let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+            sqlx::raw_sql(
+                "DELETE FROM chat_agent_runs WHERE id = 'run:queued';
+                 UPDATE chat_agent_runs SET state = 'completed' WHERE id = 'run:working';
+                 UPDATE chat_work_assignments SET state = 'completed'
+                 WHERE id = 'assignment:folders';",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let candidate = candidate_for(&pool, "participant:folder-agent")
+                .await
+                .expect("a run without a recorded key is still reported");
+            assert_eq!(candidate.key, None);
+        }
+
+        #[tokio::test]
+        async fn an_open_assignment_or_a_closed_thread_is_no_candidate() {
+            for update in [
+                "UPDATE chat_work_assignments SET state = 'working'
+                 WHERE id = 'assignment:folders'",
+                "UPDATE chat_threads SET state = 'closed' WHERE id = 'thread-1'",
+            ] {
+                let pool = completed_pool().await;
+                sqlx::query(update).execute(&pool).await.unwrap();
+                assert!(
+                    candidate_for(&pool, "participant:folder-agent")
+                        .await
+                        .is_none(),
+                    "{update}"
+                );
+            }
+        }
     }
 
     /// Launch state the launch tests share: the fixture's working run back at `starting`, its
@@ -1128,12 +1533,16 @@ mod tests {
     mod launch {
         use super::super::{
             AssignmentLaunch, fail_assignment_dispatch, mark_initial_assignment_input_delivered,
-            pending_live_input_ids, prepare_assignment_input,
+            pending_live_input_ids, prepare_assignment_input, record_assignment_input_delivered,
         };
         use crate::chat::organization::assignments::reclaim_stale_dispatch_claims;
+        use crate::chat::organization::continuation::{
+            self, CandidateRun, ContinuationKey, TransitionInput,
+        };
         use ganbaru_chat::agent_runs::{
-            AgentRunBinding, LaunchAttempt, LaunchSettlement, insert_assignment_failure_message,
-            settle_launch,
+            AgentRunBinding, AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind,
+            HandoffReason, LaunchAttempt, LaunchSettlement, RunAttempt, RunLaunch,
+            insert_assignment_failure_message, settle_launch,
         };
         use ganbaru_chat_contracts::models::*;
         use sqlx::SqlitePool;
@@ -1193,6 +1602,43 @@ mod tests {
                 execution_environment_id: Some(execution_environment_id),
                 run_ordinal: 1,
             }
+        }
+
+        fn delivered(source_id: &str, digit: char) -> DeliveredSource {
+            DeliveredSource {
+                source_id: source_id.to_string(),
+                content_sha256: digit.to_string().repeat(64),
+                kind: DeliveryKind::Package,
+            }
+        }
+
+        /// The launch of the fixture run under the fixture claim, delivering two sources.
+        fn folder_launch() -> RunLaunch {
+            RunLaunch {
+                claim_token: "claim:folders".to_string(),
+                attempt: RunAttempt {
+                    reason: AttemptReason::Fresh,
+                    instructions_sha256: None,
+                    model_selection_sha256: None,
+                    context_delivery: ContextDelivery::Full,
+                    delivered_context_bytes: 42,
+                    delivered_sources: vec![
+                        delivered("item:root", 'a'),
+                        delivered("item:folders", 'b'),
+                    ],
+                },
+                full_prompt_on_fresh_session: None,
+            }
+        }
+
+        async fn delivered_sources(pool: &SqlitePool) -> Vec<(String, String)> {
+            sqlx::query_as(
+                "SELECT source_id, delivery_kind FROM chat_agent_run_delivered_sources
+                 WHERE run_id = 'run:working' ORDER BY source_id",
+            )
+            .fetch_all(pool)
+            .await
+            .unwrap()
         }
 
         /// Posts a message by the local owner in the assignment's reply thread and records it
@@ -1322,9 +1768,15 @@ mod tests {
             let binding = working_binding(&pool).await;
             let error = launch_error();
 
-            let settlement = settle_launch(&pool, &binding, Some(&error), &at(CLAIMED_AT))
-                .await
-                .unwrap();
+            let settlement = settle_launch(
+                &pool,
+                &binding,
+                &folder_launch(),
+                Some(&error),
+                &at(CLAIMED_AT),
+            )
+            .await
+            .unwrap();
             assert_eq!(settlement, LaunchSettlement::Recorded);
             assert_eq!(failure_messages(&pool).await, 1);
             assert_eq!(assignment_and_job(&pool).await, pair("failed", "failed"));
@@ -1367,6 +1819,119 @@ mod tests {
             assert!(claim, "a claim attempt is keyed apart from the run attempt");
             assert_eq!(failure_messages(&pool).await, 2);
             assert_ne!(thread_and_conversation_revisions(&pool).await, revisions);
+        }
+
+        #[tokio::test]
+        async fn only_a_launch_that_starts_its_run_records_delivered_sources() {
+            let error = launch_error();
+            let pool = starting_pool().await;
+            let binding = working_binding(&pool).await;
+            settle_launch(
+                &pool,
+                &binding,
+                &folder_launch(),
+                Some(&error),
+                &at(CLAIMED_AT),
+            )
+            .await
+            .unwrap();
+            assert!(delivered_sources(&pool).await.is_empty(), "failed launch");
+
+            let pool = starting_pool().await;
+            let binding = working_binding(&pool).await;
+            sqlx::query(
+                "UPDATE chat_work_assignments SET state = 'cancelled',
+                     settled_at = '2026-10-20T12:01:00.000Z'
+                 WHERE id = 'assignment:folders'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let superseded =
+                settle_launch(&pool, &binding, &folder_launch(), None, &at(CLAIMED_AT))
+                    .await
+                    .unwrap();
+            assert_eq!(superseded, LaunchSettlement::Superseded);
+            assert!(
+                delivered_sources(&pool).await.is_empty(),
+                "superseded launch"
+            );
+
+            let pool = starting_pool().await;
+            let binding = working_binding(&pool).await;
+            sqlx::query("UPDATE chat_agent_runs SET state = 'failed' WHERE id = 'run:working'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let settled = settle_launch(&pool, &binding, &folder_launch(), None, &at(CLAIMED_AT))
+                .await
+                .unwrap();
+            assert_eq!(settled, LaunchSettlement::RunSettled);
+            assert!(delivered_sources(&pool).await.is_empty(), "settled run");
+
+            let pool = starting_pool().await;
+            let binding = working_binding(&pool).await;
+            let recorded = settle_launch(&pool, &binding, &folder_launch(), None, &at(CLAIMED_AT))
+                .await
+                .unwrap();
+            assert_eq!(recorded, LaunchSettlement::Recorded);
+            let expected = vec![
+                pair("item:folders", "package"),
+                pair("item:root", "package"),
+            ];
+            assert_eq!(delivered_sources(&pool).await, expected);
+
+            let mut connection = pool.acquire().await.unwrap();
+            ganbaru_chat::agent_runs::insert_delivered_sources(
+                &mut connection,
+                &binding.run_id,
+                &folder_launch().attempt.delivered_sources,
+                &at("2026-10-20T12:01:00.000Z"),
+            )
+            .await
+            .expect("a replayed delivery keeps its first record");
+            drop(connection);
+            assert_eq!(delivered_sources(&pool).await, expected);
+        }
+
+        #[tokio::test]
+        async fn a_launch_whose_claim_was_lost_settles_only_its_run() {
+            for error in [None, Some(launch_error())] {
+                let pool = starting_pool().await;
+                sqlx::query(
+                    "UPDATE chat_assignment_dispatch_jobs
+                     SET claim_token = 'claim:newer' WHERE assignment_id = 'assignment:folders'",
+                )
+                .execute(&pool)
+                .await
+                .unwrap();
+                let binding = working_binding(&pool).await;
+
+                let settlement = settle_launch(
+                    &pool,
+                    &binding,
+                    &folder_launch(),
+                    error.as_ref(),
+                    &at("2026-10-20T12:01:00.000Z"),
+                )
+                .await
+                .unwrap();
+
+                assert_eq!(settlement, LaunchSettlement::ClaimLost);
+                assert!(settlement.stops_session());
+                assert_eq!(
+                    run_and_job(&pool).await,
+                    (
+                        "cancelled".to_string(),
+                        Some("2026-10-20T12:01:00.000Z".to_string()),
+                        "claimed".to_string(),
+                        None
+                    )
+                );
+                assert_eq!(assignment_and_job(&pool).await, pair("queued", "claimed"));
+                assert_eq!(failure_messages(&pool).await, 0);
+                assert!(delivered_sources(&pool).await.is_empty());
+            }
         }
 
         #[tokio::test]
@@ -1416,6 +1981,7 @@ mod tests {
             let failed = AssignmentLaunch {
                 run_id: run_id.clone(),
                 launch_error: Some(launch_error()),
+                settlement: None,
             };
             assert!(
                 !mark_initial_assignment_input_delivered(&pool, &assignment(), &failed)
@@ -1427,6 +1993,7 @@ mod tests {
             let unstarted = AssignmentLaunch {
                 run_id: run_id.clone(),
                 launch_error: None,
+                settlement: None,
             };
             assert!(
                 !mark_initial_assignment_input_delivered(&pool, &assignment(), &unstarted)
@@ -1438,6 +2005,7 @@ mod tests {
             let missing = AssignmentLaunch {
                 run_id: ChatAgentRunId::new("run:missing").unwrap(),
                 launch_error: None,
+                settlement: None,
             };
             assert!(
                 !mark_initial_assignment_input_delivered(&pool, &assignment(), &missing)
@@ -1446,7 +2014,7 @@ mod tests {
             );
 
             let binding = working_binding(&pool).await;
-            settle_launch(&pool, &binding, None, &at(CLAIMED_AT))
+            settle_launch(&pool, &binding, &folder_launch(), None, &at(CLAIMED_AT))
                 .await
                 .unwrap();
             assert!(
@@ -1491,15 +2059,62 @@ mod tests {
                 .unwrap()
                 .expect("the working run takes the pending continuation");
             assert_eq!(prepared.thread_id.as_str(), "thread-1");
+            assert_eq!(prepared.run_id.as_str(), "run:working");
+            let framed = super::super::super::context::follow_up_context_line(
+                "item:continuation",
+                1,
+                "Then update the docs".to_string(),
+            )
+            .unwrap();
+            assert_eq!(prepared.prompt, framed.line);
             assert_eq!(
-                prepared.prompt,
-                super::super::super::context::follow_up_context_line(
-                    "item:continuation",
-                    1,
-                    "Then update the docs".to_string(),
-                )
-                .unwrap()
+                prepared.delivered,
+                DeliveredSource {
+                    source_id: "item:continuation".to_string(),
+                    content_sha256: framed.content_sha256,
+                    kind: DeliveryKind::QueuedContinuation,
+                }
             );
+        }
+
+        #[tokio::test]
+        async fn a_steered_input_records_its_delivery_on_the_run_once() {
+            let pool = starting_pool().await;
+            seed_inputs_of_every_route(&pool).await;
+            sqlx::query("UPDATE chat_agent_runs SET state = 'working' WHERE id = 'run:working'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let steer = ChatConversationItemId::new("item:steer").unwrap();
+            let prepared = prepare_assignment_input(&pool, &assignment(), &steer)
+                .await
+                .unwrap()
+                .expect("the working run takes the pending steer");
+            assert_eq!(prepared.delivered.kind, DeliveryKind::Steer);
+
+            for _ in 0..2 {
+                record_assignment_input_delivered(&pool, &assignment(), &steer, &prepared)
+                    .await
+                    .unwrap();
+            }
+
+            let rows: Vec<(String, String, String)> = sqlx::query_as(
+                "SELECT source_id, content_sha256, delivery_kind
+                 FROM chat_agent_run_delivered_sources WHERE run_id = 'run:working'",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                rows,
+                vec![(
+                    "item:steer".to_string(),
+                    prepared.delivered.content_sha256.clone(),
+                    "steer".to_string()
+                )]
+            );
+            let states = delivery_states(&pool).await;
+            assert!(states.contains(&("steer".to_string(), "delivered".to_string())));
         }
 
         async fn run_and_job(
@@ -1535,12 +2150,202 @@ mod tests {
                 )
             );
             let binding = working_binding(&pool).await;
-            let late = settle_launch(&pool, &binding, None, &at("2026-10-20T12:07:00.000Z"))
-                .await
-                .unwrap();
+            let late = settle_launch(
+                &pool,
+                &binding,
+                &folder_launch(),
+                None,
+                &at("2026-10-20T12:07:00.000Z"),
+            )
+            .await
+            .unwrap();
             assert_eq!(late, LaunchSettlement::RunSettled);
             assert_eq!(run_and_job(&pool).await.0, "failed");
             assert_eq!(assignment_and_job(&pool).await, pair("queued", "queued"));
+        }
+
+        /// The fixture launch as a continuation of an earlier native session.
+        fn continuation_launch(reason: AttemptReason) -> RunLaunch {
+            let launch = folder_launch();
+            RunLaunch {
+                attempt: RunAttempt {
+                    reason,
+                    context_delivery: ContextDelivery::Delta,
+                    ..launch.attempt
+                },
+                ..launch
+            }
+        }
+
+        fn session_lost() -> ChatError {
+            ChatError::new(
+                ChatErrorCode::ResumeNotFound,
+                "The provider session was not found",
+                true,
+            )
+        }
+
+        /// Opens an approval on the fixture provider thread, as a session that is later lost
+        /// leaves it.
+        async fn open_approval(pool: &SqlitePool) {
+            sqlx::query(
+                "INSERT INTO chat_pending_requests
+                    (id, thread_id, turn_id, provider_request_id, request_kind,
+                     safe_display_data, allowed_decisions_data, opened_sequence, opened_at)
+                 VALUES ('request:detached', 'thread-1', 'turn:working', 'native-request',
+                         'approval', '{}', '[]', 1, ?)",
+            )
+            .bind(CLAIMED_AT)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        async fn approval_state(pool: &SqlitePool) -> (String, Option<String>) {
+            sqlx::query_as(
+                "SELECT resolution_state, resolved_at FROM chat_pending_requests
+                 WHERE id = 'request:detached'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_continuation_that_lost_its_session_fails_only_its_run_and_asks_for_a_handoff() {
+            let pool = starting_pool().await;
+            open_approval(&pool).await;
+            let binding = working_binding(&pool).await;
+            let now = "2026-10-20T12:01:00.000Z";
+
+            let settlement = settle_launch(
+                &pool,
+                &binding,
+                &continuation_launch(AttemptReason::Continuation),
+                Some(&session_lost()),
+                &at(now),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(settlement, LaunchSettlement::HandoffRequired);
+            assert!(settlement.stops_session());
+            assert_eq!(
+                run_and_job(&pool).await,
+                (
+                    "failed".to_string(),
+                    Some(now.to_string()),
+                    "claimed".to_string(),
+                    None
+                )
+            );
+            assert_eq!(assignment_and_job(&pool).await, pair("queued", "claimed"));
+            assert_eq!(failure_messages(&pool).await, 0);
+            assert!(delivered_sources(&pool).await.is_empty());
+            assert_eq!(
+                approval_state(&pool).await,
+                ("interrupted".to_string(), Some(now.to_string())),
+                "an approval of the lost session is closed, never left open"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_lost_session_fails_the_assignment_once_the_run_is_no_longer_a_continuation() {
+            for reason in [
+                AttemptReason::Handoff(HandoffReason::NativeSessionLost),
+                AttemptReason::Retry,
+                AttemptReason::Fresh,
+            ] {
+                let pool = starting_pool().await;
+                let binding = working_binding(&pool).await;
+
+                let settlement = settle_launch(
+                    &pool,
+                    &binding,
+                    &continuation_launch(reason),
+                    Some(&session_lost()),
+                    &at("2026-10-20T12:01:00.000Z"),
+                )
+                .await
+                .unwrap();
+
+                assert_eq!(settlement, LaunchSettlement::Recorded, "{reason:?}");
+                assert_eq!(assignment_and_job(&pool).await, pair("failed", "failed"));
+                assert_eq!(failure_messages(&pool).await, 1);
+            }
+
+            let pool = starting_pool().await;
+            sqlx::query(
+                "UPDATE chat_work_assignments SET state = 'cancelled',
+                     settled_at = '2026-10-20T12:00:30.000Z'
+                 WHERE id = 'assignment:folders'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let binding = working_binding(&pool).await;
+            let settlement = settle_launch(
+                &pool,
+                &binding,
+                &continuation_launch(AttemptReason::Continuation),
+                Some(&session_lost()),
+                &at("2026-10-20T12:01:00.000Z"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                settlement,
+                LaunchSettlement::Superseded,
+                "a settled assignment never hands off"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_restart_that_missed_the_handoff_retries_the_assignment_in_a_new_session() {
+            let pool = starting_pool().await;
+            let binding = working_binding(&pool).await;
+            settle_launch(
+                &pool,
+                &binding,
+                &continuation_launch(AttemptReason::Continuation),
+                Some(&session_lost()),
+                &at("2026-10-20T12:01:00.000Z"),
+            )
+            .await
+            .unwrap();
+
+            // The application stops before the handoff run starts, so the claimed job is
+            // requeued once it is stale.
+            reclaim_stale_dispatch_claims(&pool, &at("2026-10-20T12:06:00.000Z"))
+                .await
+                .unwrap();
+            assert_eq!(assignment_and_job(&pool).await, pair("queued", "queued"));
+            let earlier_runs: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM chat_agent_runs WHERE assignment_id = 'assignment:folders'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(earlier_runs > 0);
+
+            let key = ContinuationKey {
+                authorization_scope_digest: format!("{:064}", 0),
+                provider_instance_id: "fake-instance".to_string(),
+                model_selection_sha256: "d".repeat(64),
+                instructions_sha256: "c".repeat(64),
+            };
+            let decision = continuation::decide_session_transition(&TransitionInput {
+                key: &key,
+                earlier_run_of_assignment: earlier_runs > 0,
+                candidate: Some(CandidateRun {
+                    thread_id: "thread-1",
+                    key: Some(key.clone()),
+                    authorization_valid: true,
+                }),
+                native_session_lost: false,
+            });
+            assert_eq!(decision.reason, AttemptReason::Retry);
+            assert_eq!(decision.reuse_thread, None);
         }
 
         #[tokio::test]

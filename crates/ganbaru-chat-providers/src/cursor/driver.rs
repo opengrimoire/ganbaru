@@ -113,8 +113,9 @@ pub(super) struct CursorLiveSession {
     pub expected_shutdown: Arc<AtomicBool>,
     pub terminal_error: Arc<Mutex<Option<ChatError>>>,
     pub session_id: ProviderSessionId,
-    /// Instructions the agent accepted in a prompt of this live session; a later turn with the
-    /// same instructions omits them.
+    /// Instructions this native session holds: accepted in a prompt of this live session, or
+    /// reported as delivered when it was loaded for resume. A later turn with the same
+    /// instructions omits them.
     pub delivered_instructions: Arc<Mutex<Option<InstructionsDigest>>>,
 }
 
@@ -192,6 +193,19 @@ impl CursorSessionInput {
 
     fn is_resume(&self) -> bool {
         matches!(self, Self::Resume(_))
+    }
+
+    /// Instructions the native session holds when it opens: those of a resume whose caller
+    /// reports them already delivered, and none for a new session.
+    fn held_instructions(&self) -> Option<InstructionsDigest> {
+        match self {
+            Self::Fresh(_) => None,
+            Self::Resume(request) if request.developer_instructions_delivered => request
+                .developer_instructions
+                .as_deref()
+                .and_then(InstructionsDigest::of_instructions),
+            Self::Resume(_) => None,
+        }
     }
 }
 
@@ -602,7 +616,7 @@ impl CursorProviderDriver {
             expected_shutdown,
             terminal_error,
             session_id: local_session_id.clone(),
-            delivered_instructions: Arc::new(Mutex::new(None)),
+            delivered_instructions: Arc::new(Mutex::new(input.held_instructions())),
         });
         Ok(ProviderSessionSnapshot {
             session_id: local_session_id,

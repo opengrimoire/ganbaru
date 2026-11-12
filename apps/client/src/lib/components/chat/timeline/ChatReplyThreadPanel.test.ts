@@ -85,6 +85,8 @@ const run: ChatAgentRunRead = {
   providerExecutionThreadId: "provider-thread:test",
   state: "completed",
   runOrdinal: 1,
+  attemptReason: "fresh",
+  handoffReason: null,
   createdAt: "2026-08-04T17:00:30.000Z",
   updatedAt: "2026-08-04T17:01:00.000Z",
 };

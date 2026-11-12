@@ -56,6 +56,16 @@ export type ChatWorkAssignmentState = (typeof CHAT_WORK_ASSIGNMENT_STATES)[numbe
 export const CHAT_ASSIGNMENT_REVIEW_OUTCOMES = ["accepted", "changes_requested"] as const;
 export type ChatAssignmentReviewOutcome = (typeof CHAT_ASSIGNMENT_REVIEW_OUTCOMES)[number];
 
+/** Why an agent run started its provider session the way it did. */
+export const CHAT_AGENT_RUN_ATTEMPT_REASONS = ["fresh", "continuation", "handoff", "retry"] as const;
+export type ChatAgentRunAttemptReason = (typeof CHAT_AGENT_RUN_ATTEMPT_REASONS)[number];
+
+/** Why a handoff run left the earlier provider session. */
+export const CHAT_AGENT_RUN_HANDOFF_REASONS = [
+  "key_changed", "authority_revoked", "native_session_lost",
+] as const;
+export type ChatAgentRunHandoffReason = (typeof CHAT_AGENT_RUN_HANDOFF_REASONS)[number];
+
 /** How a person ended ready-for-review work, recorded only on completed assignments. */
 export interface ChatAssignmentReview {
   outcome: ChatAssignmentReviewOutcome;
@@ -704,6 +714,9 @@ export interface ChatAgentRunRead {
   providerExecutionThreadId: ChatThreadId | null;
   state: "queued" | "starting" | "working" | "waiting" | "completed" | "failed" | "cancelled";
   runOrdinal: number;
+  attemptReason: ChatAgentRunAttemptReason;
+  /** Set only when `attemptReason` is `handoff`. */
+  handoffReason: ChatAgentRunHandoffReason | null;
   createdAt: UtcTimestamp;
   updatedAt: UtcTimestamp;
 }

@@ -6,7 +6,8 @@ use super::interactions::*;
 use super::normalizer::{CursorEventNormalizer, CursorRouteState};
 use super::protocol::*;
 use super::session::{
-    AcpAuthPreference, AcpInboundQueue, auth_preference, initialize_session, select_auth_method,
+    AcpAuthPreference, AcpInboundQueue, auth_preference, initialize_session,
+    require_session_loading, select_auth_method,
 };
 use super::transport::AcpInboundMessage;
 use crate::events::{CanonicalEvent, CanonicalRuntimeEvent};
@@ -882,6 +883,24 @@ fn confirmed_resume_not_found_is_narrow() {
     ));
     assert!(!confirmed_session_not_found(-32603, "Session not found"));
     assert!(!confirmed_session_not_found(-32004, "Executable not found"));
+}
+
+#[test]
+fn an_agent_that_cannot_load_sessions_reports_the_earlier_session_as_not_found() {
+    let initialize = |load_session: bool| {
+        parse_initialize(json!({
+            "protocolVersion": 1,
+            "agentCapabilities": { "loadSession": load_session }
+        }))
+        .unwrap()
+    };
+    assert!(require_session_loading(&initialize(true), "Cursor").is_ok());
+    let error = require_session_loading(&initialize(false), "Cursor").unwrap_err();
+    assert_eq!(
+        error.code,
+        ChatErrorCode::ResumeNotFound,
+        "a continuation hands off instead of failing"
+    );
 }
 
 #[test]

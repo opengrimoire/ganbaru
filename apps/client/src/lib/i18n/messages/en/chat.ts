@@ -991,4 +991,10 @@ export const chat = {
       unknown: "Notice",
     },
   },
+  runs: {
+    attemptReason: {
+      handoff: "Started a new session",
+      retry: "Retried in a new session",
+    },
+  },
 } as const;

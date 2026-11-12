@@ -70,7 +70,7 @@ fn validate_teammate_configuration(
             let role = validate_teammate_role(&profile.role)?;
             validate_profile_text(
                 &profile.instructions,
-                super::dispatch::MAX_TEAMMATE_INSTRUCTIONS_BYTES,
+                super::continuation::MAX_TEAMMATE_INSTRUCTIONS_BYTES,
                 "instructions",
             )?;
             validate_policy(app, policy)?;

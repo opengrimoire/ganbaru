@@ -3,6 +3,7 @@
 use super::executable::*;
 use super::interactions::PendingCursorRequests;
 use super::normalizer::{CursorEventNormalizer, CursorRouteState};
+use super::operations::InstructionsDigest;
 use super::protocol::*;
 use super::session::*;
 use super::transport::AcpRpcConnection;
@@ -22,10 +23,15 @@ pub const SESSION_GRACEFUL_STOP: Duration = Duration::from_millis(500);
 pub const SESSION_FORCE_STOP: Duration = Duration::from_secs(2);
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
+/// The ACP agent a driver speaks to: one with a dedicated integration, or any other agent
+/// through the base protocol alone.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AcpProviderFlavor {
     Cursor,
     Grok,
+    /// An agent the user points at, with no vendor extension, default executable, or version
+    /// range.
+    Generic,
 }
 
 impl AcpProviderFlavor {
@@ -33,6 +39,7 @@ impl AcpProviderFlavor {
         match self {
             Self::Cursor => "cursor",
             Self::Grok => "grok",
+            Self::Generic => "acp",
         }
     }
 
@@ -40,6 +47,7 @@ impl AcpProviderFlavor {
         match self {
             Self::Cursor => "Cursor",
             Self::Grok => "Grok",
+            Self::Generic => "ACP agent",
         }
     }
 
@@ -47,11 +55,31 @@ impl AcpProviderFlavor {
         match self {
             Self::Cursor => "Cursor",
             Self::Grok => "xAI",
+            Self::Generic => "ACP agent",
         }
     }
 
     pub fn turn_prefix(self) -> &'static str {
         self.family_id()
+    }
+
+    /// Whether the agent serves Ganbaru's structured extensions: question and plan requests,
+    /// todo updates, and edit diffs on tool calls.
+    pub fn offers_structured_extensions(self) -> bool {
+        matches!(self, Self::Cursor | Self::Grok)
+    }
+
+    /// Whether the agent streams reasoning as `agent_thought_chunk` from its first turn.
+    pub fn streams_reasoning(self) -> bool {
+        matches!(self, Self::Cursor | Self::Grok)
+    }
+
+    /// Whether the agent takes HTTP MCP servers without advertising `mcpCapabilities.http`.
+    ///
+    /// Cursor and Grok accept the internal HTTP server and no recorded `initialize` shows whether
+    /// they advertise it, so both keep it by flavor; any other agent needs the advertisement.
+    pub fn accepts_http_mcp_by_flavor(self) -> bool {
+        matches!(self, Self::Cursor | Self::Grok)
     }
 }
 
@@ -61,6 +89,8 @@ pub struct CursorProviderDriver {
     pub(super) flavor: AcpProviderFlavor,
     pub(super) live: Option<CursorLiveSession>,
     pub(super) cached_models: Option<ProviderModelCatalog>,
+    /// Capabilities earlier sessions of this driver showed, reported when the next one starts.
+    pub(super) observed: ObservedAcpCapabilities,
     #[cfg(test)]
     connection_factory: Option<TestConnectionFactory>,
 }
@@ -83,6 +113,9 @@ pub(super) struct CursorLiveSession {
     pub expected_shutdown: Arc<AtomicBool>,
     pub terminal_error: Arc<Mutex<Option<ChatError>>>,
     pub session_id: ProviderSessionId,
+    /// Instructions the agent accepted in a prompt of this live session; a later turn with the
+    /// same instructions omits them.
+    pub delivered_instructions: Arc<Mutex<Option<InstructionsDigest>>>,
 }
 
 impl Drop for CursorLiveSession {
@@ -171,6 +204,11 @@ impl CursorProviderDriver {
         Self::new_for(configuration, AcpProviderFlavor::Grok)
     }
 
+    /// A driver for any ACP agent, launched from the instance's executable and arguments.
+    pub fn new_generic(configuration: ProviderInstanceConfig) -> ChatResult<Self> {
+        Self::new_for(configuration, AcpProviderFlavor::Generic)
+    }
+
     fn new_for(
         configuration: ProviderInstanceConfig,
         flavor: AcpProviderFlavor,
@@ -192,6 +230,7 @@ impl CursorProviderDriver {
             flavor,
             live: None,
             cached_models: None,
+            observed: ObservedAcpCapabilities::default(),
             #[cfg(test)]
             connection_factory: None,
         })
@@ -208,6 +247,10 @@ impl CursorProviderDriver {
 
     pub fn grok_metadata_read() -> ProviderFamilyMetadataRead {
         Self::metadata_for(AcpProviderFlavor::Grok)
+    }
+
+    pub fn generic_metadata_read() -> ProviderFamilyMetadataRead {
+        Self::metadata_for(AcpProviderFlavor::Generic)
     }
 
     fn metadata_for(flavor: AcpProviderFlavor) -> ProviderFamilyMetadataRead {
@@ -230,6 +273,8 @@ impl CursorProviderDriver {
                     vec!["cursor-agent".to_string(), "agent".to_string()]
                 }
                 AcpProviderFlavor::Grok => vec!["grok".to_string()],
+                // The user names the agent's program; no command is assumed.
+                AcpProviderFlavor::Generic => Vec::new(),
             },
             implementation_status: ProviderImplementationStatus::Available,
             maturity: ProviderMaturity::Beta,
@@ -258,6 +303,13 @@ impl CursorProviderDriver {
             AcpProviderFlavor::Grok => {
                 probe_grok_about(&executable, workspace, environment).await?
             }
+            // An arbitrary agent has no known version flag, so its version comes from the
+            // `agentInfo` it sends in `initialize`.
+            AcpProviderFlavor::Generic => AcpProviderAbout {
+                version: String::new(),
+                account_label: None,
+                authenticated: None,
+            },
         };
         let process = spawn_acp_connection_process(
             &self.configuration,
@@ -285,7 +337,7 @@ impl CursorProviderDriver {
         };
         let result = initialize_provider_session(AcpSessionInitialization {
             flavor: self.flavor,
-            grok_uses_api_key: self.grok_uses_api_key(),
+            auth: self.auth_preference(),
             connection: &connection,
             inbound: &mut inbound,
             workspace: workspace.to_string_lossy().as_ref(),
@@ -312,6 +364,40 @@ impl CursorProviderDriver {
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// Spawns the agent in a probe directory, sends only `initialize`, and stops it.
+    ///
+    /// No `authenticate`, session, or extension request reaches the agent, so a probe never
+    /// creates provider state.
+    pub(super) async fn probe_initialize(
+        &self,
+        context: &DriverOperationContext,
+    ) -> ChatResult<(AcpInitializeResponse, AcpProviderAbout)> {
+        let workspace = crate::probe_directory::ProbeDirectory::create()?;
+        let (mut connection, mut about) = self.open_connection(&workspace).await?;
+        // The receiver stays alive until the stop so agent notifications never fail a write.
+        let (inbound, result) = match connection.take_inbound() {
+            Ok(receiver) => (
+                Some(receiver),
+                negotiate_initialize(self.flavor, &connection.client(), context).await,
+            ),
+            Err(error) => (None, Err(error)),
+        };
+        let stop = connection
+            .stop(SESSION_GRACEFUL_STOP, SESSION_FORCE_STOP)
+            .await;
+        drop(inbound);
+        let initialize = result?;
+        stop?;
+        if self.flavor == AcpProviderFlavor::Generic {
+            about.version = initialize
+                .agent_info
+                .as_ref()
+                .map(|agent| agent.version.clone())
+                .unwrap_or_default();
+        }
+        Ok((initialize, about))
     }
 
     pub(super) async fn open_session(
@@ -373,7 +459,7 @@ impl CursorProviderDriver {
         };
         let started = match initialize_provider_session(AcpSessionInitialization {
             flavor: self.flavor,
-            grok_uses_api_key: self.grok_uses_api_key(),
+            auth: self.auth_preference(),
             connection: &connection,
             inbound: &mut inbound,
             workspace: workspace.to_string_lossy().as_ref(),
@@ -399,8 +485,12 @@ impl CursorProviderDriver {
         let local_session_id = new_session_id_for(self.flavor, &self.configuration.instance_id)?;
         let provider_thread_id = ProviderThreadId::new(started.session_id.clone())
             .map_err(|_| protocol_error("session ID"))?;
-        let capabilities =
-            negotiated_capabilities_for(self.flavor, &started.initialize, &started.setup);
+        let capabilities = negotiated_capabilities_for(
+            self.flavor,
+            &started.initialize,
+            Some(&started.setup),
+            self.observed,
+        );
         let effective_model_id = input.model_id().cloned().or_else(|| {
             started
                 .setup
@@ -474,6 +564,22 @@ impl CursorProviderDriver {
             }),
         )?)
         .await?;
+        if started.host_tools_omitted {
+            sink.emit(normalizer.external_event(
+                &state,
+                "session/mcp",
+                None,
+                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                    code: "acp_host_tools_unavailable".to_string(),
+                    title: format!(
+                        "{} runs without Ganbaru host tools",
+                        self.flavor.display_name()
+                    ),
+                    detail: Some("The agent did not advertise HTTP MCP servers".to_string()),
+                }),
+            )?)
+            .await?;
+        }
         self.cached_models = Some(ProviderModelCatalog {
             instance_id: self.configuration.instance_id.clone(),
             models: started.models,
@@ -496,6 +602,7 @@ impl CursorProviderDriver {
             expected_shutdown,
             terminal_error,
             session_id: local_session_id.clone(),
+            delivered_instructions: Arc::new(Mutex::new(None)),
         });
         Ok(ProviderSessionSnapshot {
             session_id: local_session_id,
@@ -509,7 +616,16 @@ impl CursorProviderDriver {
         })
     }
 
-    fn grok_uses_api_key(&self) -> bool {
+    /// How this instance picks an advertised authentication method.
+    pub(super) fn auth_preference(&self) -> AcpAuthPreference<'_> {
+        auth_preference(
+            self.flavor,
+            self.grok_uses_api_key(),
+            self.settings.auth_method.as_deref(),
+        )
+    }
+
+    pub(super) fn grok_uses_api_key(&self) -> bool {
         self.flavor == AcpProviderFlavor::Grok
             && self
                 .configuration

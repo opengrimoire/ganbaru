@@ -3,12 +3,18 @@ import {
   createProviderSetupDraft,
   isSecretLikeEnvironmentName,
   providerConfigurationFromDraft,
+  providerFamilyDisplayName,
   providerInstanceIdFromLabel,
   storesPlaintextSecret,
   validateProviderSetup,
 } from "./provider-setup";
 
 describe("provider setup", () => {
+  it("localizes only the generic ACP family label", () => {
+    expect(providerFamilyDisplayName({ familyId: "acp", displayName: "ACP agent" }, "Agente ACP")).toBe("Agente ACP");
+    expect(providerFamilyDisplayName({ familyId: "opencode", displayName: "OpenCode" }, "Agente ACP")).toBe("OpenCode");
+  });
+
   it("creates stable editable instance IDs from labels", () => {
     expect(providerInstanceIdFromLabel(" Chloé's Codex ")).toBe("chloe-s-codex");
   });

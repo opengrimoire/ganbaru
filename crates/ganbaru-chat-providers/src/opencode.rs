@@ -15,4 +15,6 @@ mod support;
 pub use driver::OpenCodeProviderDriver;
 
 #[cfg(test)]
+pub(crate) mod replay;
+#[cfg(test)]
 mod tests;

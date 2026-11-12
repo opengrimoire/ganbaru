@@ -596,7 +596,7 @@ fn default_variant(provider_id: &str, variants: &[String]) -> Option<String> {
 
 fn parse_version_token(value: &str) -> Option<OpenCodeVersion> {
     let value = value.strip_prefix('v').unwrap_or(value);
-    let prefix = value.split('-').next()?;
+    let prefix = value.split(['-', '+']).next()?;
     let mut parts = prefix.split('.');
     let version = OpenCodeVersion {
         major: parts.next()?.parse().ok()?,

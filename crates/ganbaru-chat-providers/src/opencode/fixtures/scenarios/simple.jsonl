@@ -1,0 +1,17 @@
+{"type":"transcript_start","provider":"opencode","protocol":"http","cli_version":"1.14.19","scenario":"simple","generated_by":"hand-authored from the OpenCode 1.14.19 server event fixtures"}
+{"type":"expect_outbound","label":"commands","frame":{"method":"GET","path":"/command","query":{"directory":"<workspace>"}}}
+{"type":"emit_inbound","frame":{"status":200,"body":[]}}
+{"type":"expect_outbound","label":"subscribe","frame":{"method":"GET","path":"/event","query":{"directory":"<workspace>"}}}
+{"type":"emit_inbound","frame":{"status":200,"stream":true}}
+{"type":"emit_inbound","frame":{"event":{"type":"server.connected","properties":{}}}}
+{"type":"expect_outbound","label":"create","frame":{"method":"POST","path":"/session","query":{"directory":"<workspace>"},"body":{"permission":[{"permission":"*","pattern":"*","action":"ask"},{"permission":"edit","pattern":"*","action":"allow"},{"permission":"edit","pattern":".git","action":"ask"},{"permission":"edit","pattern":".git/*","action":"ask"},{"permission":"edit","pattern":"*/.git","action":"ask"},{"permission":"edit","pattern":"*/.git/*","action":"ask"},{"permission":"bash","pattern":"*","action":"ask"},{"permission":"webfetch","pattern":"*","action":"ask"},{"permission":"websearch","pattern":"*","action":"ask"},{"permission":"codesearch","pattern":"*","action":"ask"},{"permission":"external_directory","pattern":"*","action":"ask"},{"permission":"doom_loop","pattern":"*","action":"ask"},{"permission":"question","pattern":"*","action":"allow"}]}}}
+{"type":"emit_inbound","frame":{"status":200,"body":{"id":"ses_replay","directory":"<workspace>","title":"Replay","time":{"created":1,"updated":1}}}}
+{"type":"expect_outbound","label":"prompt-1","frame":{"method":"POST","path":"/session/ses_replay/prompt_async","query":{"directory":"<workspace>"},"body":{"parts":[{"type":"text","text":"Say hello"}]}}}
+{"type":"emit_inbound","frame":{"status":204}}
+{"type":"emit_inbound","frame":{"event":{"type":"session.status","properties":{"sessionID":"ses_replay","status":{"type":"busy"}}}}}
+{"type":"emit_inbound","frame":{"event":{"type":"message.updated","properties":{"sessionID":"ses_replay","info":{"id":"msg_user_1","sessionID":"ses_replay","role":"user"}}}}}
+{"type":"emit_inbound","frame":{"event":{"type":"message.updated","properties":{"sessionID":"ses_replay","info":{"id":"msg_assistant_1","sessionID":"ses_replay","role":"assistant","providerID":"openai","modelID":"gpt-5"}}}}}
+{"type":"emit_inbound","frame":{"event":{"type":"message.part.updated","properties":{"sessionID":"ses_replay","part":{"id":"part_text_1","sessionID":"ses_replay","messageID":"msg_assistant_1","type":"text","text":"Hello","time":{"start":1}}}}}}
+{"type":"emit_inbound","frame":{"event":{"type":"message.part.delta","properties":{"sessionID":"ses_replay","messageID":"msg_assistant_1","partID":"part_text_1","field":"text","delta":" there"}}}}
+{"type":"emit_inbound","frame":{"event":{"type":"message.part.updated","properties":{"sessionID":"ses_replay","part":{"id":"part_text_1","sessionID":"ses_replay","messageID":"msg_assistant_1","type":"text","text":"Hello there","time":{"start":1,"end":2}}}}}}
+{"type":"emit_inbound","frame":{"event":{"type":"session.status","properties":{"sessionID":"ses_replay","status":{"type":"idle"}}}}}

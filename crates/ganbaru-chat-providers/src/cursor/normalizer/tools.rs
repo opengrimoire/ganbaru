@@ -68,6 +68,31 @@ impl CursorEventNormalizer {
         Ok(events)
     }
 
+    /// Completes every tool item still open as interrupted, in tool call ID order, so no tool
+    /// item outlives its turn.
+    pub(super) fn interrupt_open_tools(
+        &self,
+        state: &mut CursorRouteState,
+    ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+        let mut open = state.tools.drain().collect::<Vec<_>>();
+        open.sort_by(|(left, _), (right, _)| left.cmp(right));
+        open.into_iter()
+            .map(|(item_id, tool)| {
+                self.item_event(
+                    state,
+                    "session/update/tool_interrupted",
+                    NormalizedItemInput {
+                        item_id,
+                        kind: tool.kind,
+                        status: ActivityStatus::Interrupted,
+                        title: tool.title,
+                        detail_and_metadata: None,
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn tool_content(
         &self,
         state: &CursorRouteState,

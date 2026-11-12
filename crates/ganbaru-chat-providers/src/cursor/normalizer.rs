@@ -3,9 +3,9 @@
 mod tools;
 
 use super::protocol::{
-    AcpAvailableCommand, AcpConfigOption, MAX_PROTOCOL_TEXT_BYTES, bounded_text,
-    is_valid_identifier, object, parse_available_commands_update, parse_config_options_update,
-    protocol_error, safe_shape,
+    AcpAvailableCommand, AcpConfigOption, MAX_PROTOCOL_TEXT_BYTES, ObservedAcpCapabilities,
+    bounded_text, is_valid_identifier, object, parse_available_commands_update,
+    parse_config_options_update, protocol_error, safe_shape,
 };
 use crate::events::*;
 use crate::models::*;
@@ -38,6 +38,8 @@ pub struct CursorRouteState {
     pub config_options: Vec<AcpConfigOption>,
     pub available_commands: Vec<AcpAvailableCommand>,
     pub workspace: PathBuf,
+    /// Capabilities the agent showed during this session.
+    pub observed: ObservedAcpCapabilities,
     assistant_item_id: Option<String>,
     reasoning_item_id: Option<String>,
     tools: HashMap<String, ToolState>,
@@ -60,6 +62,7 @@ impl CursorRouteState {
             config_options,
             available_commands: Vec::new(),
             workspace,
+            observed: ObservedAcpCapabilities::default(),
             assistant_item_id: None,
             reasoning_item_id: None,
             tools: HashMap::new(),
@@ -113,31 +116,62 @@ impl CursorEventNormalizer {
             text(update, "sessionUpdate").ok_or_else(|| protocol_error("session update type"))?;
         match update_type {
             "agent_message_chunk" => self.content_chunk(state, update, false),
-            "agent_thought_chunk" => self.content_chunk(state, update, true),
+            "agent_thought_chunk" => {
+                state.observed.reasoning = true;
+                self.content_chunk(state, update, true)
+            }
             "tool_call" | "tool_call_update" => self.tool_update(state, update, update_type),
             "plan" => self.plan_update(state, update, "session/update"),
             "current_mode_update" => self.mode_update(state, update),
-            "config_options_update" => self.config_update(state, update),
+            "config_option_update" => self.config_update(state, update),
             "available_commands_update" => {
                 state.available_commands = parse_available_commands_update(update)?;
+                state.observed.slash_commands |= !state.available_commands.is_empty();
                 Ok(Vec::new())
             }
             "user_message_chunk" | "session_info_update" => Ok(Vec::new()),
-            unknown => Ok(vec![self.event(
-                state,
-                "session/update",
-                None,
-                None,
-                CanonicalEvent::Unknown(UnknownEvent {
-                    source_type: format!("acp/session_update/{unknown}"),
-                    summary: format!(
-                        "{} emitted an unsupported ACP session update",
-                        self.provider_display_name
-                    ),
-                    safe_payload: Some(safe_shape(&params)),
-                }),
-            )?]),
+            "usage_update" => match usage_update(update) {
+                Some(usage) => {
+                    state.observed.usage = true;
+                    state.observed.cost |= usage.cost.is_some();
+                    Ok(vec![self.event(
+                        state,
+                        "session/update/usage",
+                        None,
+                        None,
+                        CanonicalEvent::ThreadUsageUpdated(usage),
+                    )?])
+                }
+                None => Ok(vec![self.unsupported_update(
+                    state,
+                    update_type,
+                    &params,
+                )?]),
+            },
+            unknown => Ok(vec![self.unsupported_update(state, unknown, &params)?]),
         }
+    }
+
+    fn unsupported_update(
+        &self,
+        state: &CursorRouteState,
+        update_type: &str,
+        params: &Value,
+    ) -> ChatResult<CanonicalRuntimeEvent> {
+        self.event(
+            state,
+            "session/update",
+            None,
+            None,
+            CanonicalEvent::Unknown(UnknownEvent {
+                source_type: format!("acp/session_update/{update_type}"),
+                summary: format!(
+                    "{} emitted an unsupported ACP session update",
+                    self.provider_display_name
+                ),
+                safe_payload: Some(safe_shape(params)),
+            }),
+        )
     }
 
     pub fn normalize_create_plan(
@@ -214,6 +248,7 @@ impl CursorEventNormalizer {
         stop_reason: &str,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
         let mut events = self.close_text_items(state)?;
+        events.extend(self.interrupt_open_tools(state)?);
         let turn_id = state.active_turn_id.take().ok_or_else(|| {
             ChatError::invalid_transition(format!(
                 "{} has no active turn",
@@ -255,6 +290,7 @@ impl CursorEventNormalizer {
             return Ok(Vec::new());
         }
         let mut events = self.close_text_items(state)?;
+        events.extend(self.interrupt_open_tools(state)?);
         let turn_id = state.active_turn_id.take().expect("turn checked above");
         state.session_state = ProviderSessionState::Ready;
         events.push(self.event(
@@ -631,6 +667,49 @@ fn plan_event(steps: Vec<PlanStep>) -> PlanUpdatedEvent {
         .collect::<Vec<_>>()
         .join("\n");
     PlanUpdatedEvent { markdown, steps }
+}
+
+/// Longest currency code a usage cost may carry; ISO 4217 codes have three letters.
+const MAX_COST_CURRENCY_BYTES: usize = 16;
+
+/// Reads an ACP `usage_update` as context fill and the agent's cumulative session cost.
+///
+/// `used` and `size` are required; without either the update is not usage. A malformed cost is
+/// dropped and the context fill kept, as the ACP schema reads it. Token counts the update does
+/// not carry stay unset.
+fn usage_update(update: &Map<String, Value>) -> Option<ThreadUsageUpdatedEvent> {
+    let used = update.get("used").and_then(Value::as_u64)?;
+    let size = update.get("size").and_then(Value::as_u64)?;
+    let cost = update
+        .get("cost")
+        .and_then(Value::as_object)
+        .and_then(|cost| {
+            let amount = cost
+                .get("amount")
+                .and_then(Value::as_f64)
+                .filter(|amount| amount.is_finite() && *amount >= 0.0)?;
+            let currency = text(cost, "currency").filter(|currency| {
+                !currency.is_empty()
+                    && currency.len() <= MAX_COST_CURRENCY_BYTES
+                    && currency
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric())
+            })?;
+            Some(ProviderAttributedCost {
+                amount,
+                currency: currency.to_string(),
+                provider_reported: true,
+            })
+        });
+    Some(ThreadUsageUpdatedEvent {
+        input_tokens: None,
+        output_tokens: None,
+        cached_input_tokens: None,
+        cache_write_input_tokens: None,
+        context_tokens: Some(used),
+        context_limit: Some(size),
+        cost,
+    })
 }
 
 fn text<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {

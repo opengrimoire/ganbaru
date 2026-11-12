@@ -12,7 +12,8 @@ export type ModelCompanyId =
   | "moonshot"
   | "minimax"
   | "cursor"
-  | "opencode";
+  | "opencode"
+  | "acp";
 
 export interface ModelCompanyIdentity {
   id: ModelCompanyId;
@@ -34,6 +35,7 @@ const COMPANIES: Record<ModelCompanyId, ModelCompanyIdentity> = {
   minimax: { id: "minimax", name: "MiniMax", iconFamilyId: "minimax", order: 9 },
   cursor: { id: "cursor", name: "Cursor", iconFamilyId: "cursor", order: 10 },
   opencode: { id: "opencode", name: "OpenCode", iconFamilyId: "opencode", order: 11 },
+  acp: { id: "acp", name: "ACP", iconFamilyId: "acp", order: 12 },
 };
 
 const FAMILY_DEFAULTS: Record<string, ModelCompanyId> = {
@@ -42,6 +44,7 @@ const FAMILY_DEFAULTS: Record<string, ModelCompanyId> = {
   cursor: "cursor",
   grok: "xai",
   opencode: "opencode",
+  acp: "acp",
 };
 
 const MODEL_MATCHERS: readonly [ModelCompanyId, RegExp][] = [

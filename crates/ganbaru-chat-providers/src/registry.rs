@@ -81,6 +81,20 @@ const GROK_CAPABILITIES: &[ProviderCapability] = &[
     ProviderCapability::SlashCommands,
 ];
 
+/// What any ACP agent can offer through the base protocol, without vendor extensions.
+const GENERIC_ACP_CAPABILITIES: &[ProviderCapability] = &[
+    ProviderCapability::Approvals,
+    ProviderCapability::FileReferences,
+    ProviderCapability::Images,
+    ProviderCapability::NativeResume,
+    ProviderCapability::NativePlan,
+    ProviderCapability::DynamicModelChange,
+    ProviderCapability::SlashCommands,
+    ProviderCapability::ReasoningSummaries,
+    ProviderCapability::ContextUsage,
+    ProviderCapability::CostReporting,
+];
+
 const OPENCODE_CAPABILITIES: &[ProviderCapability] = &[
     ProviderCapability::NativeResume,
     ProviderCapability::NativeRollback,
@@ -141,7 +155,7 @@ impl ProviderMetadataDefinition {
     }
 }
 
-pub const PROVIDER_METADATA: [ProviderMetadataDefinition; 5] = [
+pub const PROVIDER_METADATA: [ProviderMetadataDefinition; 6] = [
     ProviderMetadataDefinition {
         family_id: "codex",
         display_name: "OpenAI",
@@ -187,6 +201,15 @@ pub const PROVIDER_METADATA: [ProviderMetadataDefinition; 5] = [
         default_executable_candidates: &["opencode"],
         potential_capabilities: OPENCODE_CAPABILITIES,
     },
+    ProviderMetadataDefinition {
+        family_id: "acp",
+        display_name: "ACP agent",
+        configuration_schema_version: 1,
+        supported_platforms: DESKTOP_PLATFORMS,
+        minimum_tested_cli_version: None,
+        default_executable_candidates: &[],
+        potential_capabilities: GENERIC_ACP_CAPABILITIES,
+    },
 ];
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -202,6 +225,7 @@ impl ProviderDriverRegistry {
                 "claude" => ClaudeProviderDriver::metadata_read(),
                 "cursor" => CursorProviderDriver::metadata_read(),
                 "grok" => CursorProviderDriver::grok_metadata_read(),
+                "acp" => CursorProviderDriver::generic_metadata_read(),
                 "opencode" => OpenCodeProviderDriver::metadata_read(),
                 _ => metadata.to_read(),
             })
@@ -218,6 +242,7 @@ impl ProviderDriverRegistry {
                 "claude" => ClaudeProviderDriver::metadata_read(),
                 "cursor" => CursorProviderDriver::metadata_read(),
                 "grok" => CursorProviderDriver::grok_metadata_read(),
+                "acp" => CursorProviderDriver::generic_metadata_read(),
                 "opencode" => OpenCodeProviderDriver::metadata_read(),
                 _ => metadata.to_read(),
             })
@@ -244,6 +269,10 @@ impl ProviderDriverFactory for ProviderDriverRegistry {
         }
         if configuration.family_id.as_str() == "grok" {
             return CursorProviderDriver::new_grok(configuration)
+                .map(|driver| Box::new(driver) as Box<dyn ProviderDriver>);
+        }
+        if configuration.family_id.as_str() == "acp" {
+            return CursorProviderDriver::new_generic(configuration)
                 .map(|driver| Box::new(driver) as Box<dyn ProviderDriver>);
         }
         if configuration.family_id.as_str() == "opencode" {

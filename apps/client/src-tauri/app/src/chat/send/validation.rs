@@ -92,6 +92,18 @@ pub(super) async fn validate_approval_decision(
     }
 }
 
+/// Whether the driver of `family` has a native mapping for `mode`.
+///
+/// Custom permissions edit a provider's own documented files, so a generic ACP agent, which has
+/// none, cannot use them.
+pub(super) fn family_supports_safety_mode(family: &str, mode: SafetyMode) -> bool {
+    match mode {
+        SafetyMode::AskForApproval | SafetyMode::FullAccess => true,
+        SafetyMode::ApproveForMe => matches!(family, "codex" | "claude"),
+        SafetyMode::Custom => matches!(family, "codex" | "claude" | "cursor" | "grok" | "opencode"),
+    }
+}
+
 pub(super) fn validate_provider_selection(
     provider: &crate::chat::settings_commands::ProviderInstanceRead,
     request: &SendChatTurnCommand,
@@ -108,13 +120,10 @@ pub(super) fn validate_provider_selection(
             true,
         ));
     }
-    let family = provider.configuration.family_id.as_str();
-    let permission_mode_supported = match request.modes.safety_mode {
-        SafetyMode::AskForApproval | SafetyMode::FullAccess => true,
-        SafetyMode::ApproveForMe => matches!(family, "codex" | "claude"),
-        SafetyMode::Custom => matches!(family, "codex" | "claude" | "cursor" | "grok" | "opencode"),
-    };
-    if !permission_mode_supported {
+    if !family_supports_safety_mode(
+        provider.configuration.family_id.as_str(),
+        request.modes.safety_mode,
+    ) {
         return Err(ChatError::validation(
             "modes.safetyMode",
             "Selected provider cannot implement this permission mode",

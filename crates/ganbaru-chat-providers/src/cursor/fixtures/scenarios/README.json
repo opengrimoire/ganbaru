@@ -10,7 +10,7 @@
     },
     {
       "scenario": "usage_limit",
-      "reason": "Cursor ACP reports no usage or rate limit frame, and no fixture shows a usage limit error; a refused prompt surfaces as a generic prompt error."
+      "reason": "Cursor ACP reports context usage through usage_update, which the Grok and generic ACP usage_update scenarios replay, but sends no rate limit frame, and no fixture shows a usage limit error; a refused prompt surfaces as a generic prompt error."
     }
   ]
 }

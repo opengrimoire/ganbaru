@@ -446,6 +446,17 @@ fn semantic_version_range_is_explicit() {
         parse_version("opencode 1.14.19\n").unwrap().to_string(),
         "1.14.19"
     );
+    for build in [
+        "1.14.20+build.7",
+        "opencode v1.14.20+abc123\n",
+        "1.14.20-beta.1+sha.5",
+    ] {
+        assert_eq!(
+            parse_version(build).unwrap().to_string(),
+            "1.14.20",
+            "{build}"
+        );
+    }
     assert_eq!(
         ensure_supported_version(parse_version("v1.14.18").unwrap())
             .unwrap_err()
@@ -509,10 +520,7 @@ fn ask_rules_allow_workspace_edits_and_keep_broader_actions_reviewed() {
     );
     assert_eq!(permission_reply(ApprovalDecisionKind::AllowOnce), "once");
     assert_eq!(permission_override(SafetyMode::Custom), None);
-    assert_eq!(
-        permission_reply(ApprovalDecisionKind::AllowSession),
-        "always"
-    );
+    assert_eq!(permission_reply(ApprovalDecisionKind::AllowSession), "once");
     assert_eq!(permission_reply(ApprovalDecisionKind::Deny), "reject");
 }
 
@@ -949,6 +957,117 @@ fn event_fixture_normalizes_core_activity_and_deduplicates_replay() {
     );
 }
 
+/// Status transitions and deltas repeat with identical bytes, so redelivery deduplication keeps
+/// them: every turn settles on the same idle envelope and a repeated delta stays in the text.
+#[test]
+fn identical_status_and_delta_envelopes_are_not_deduplicated() {
+    let normalizer = OpenCodeEventNormalizer::new(
+        ProviderInstanceId::new("opencode-instance").unwrap(),
+        ChatThreadId::new("thread-fixture").unwrap(),
+        ProviderSessionId::new("local-session-fixture").unwrap(),
+    );
+    let mut state = OpenCodeRouteState::new(
+        "ses_fixture".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    );
+    let fixture = include_str!("fixtures/events.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let envelope = |kind: &str| {
+        fixture
+            .iter()
+            .find(|envelope| envelope.to_string().contains(kind))
+            .cloned()
+            .unwrap()
+    };
+    let (busy, idle) = (envelope(r#""type":"busy""#), envelope(r#""type":"idle""#));
+    let mut events = Vec::new();
+    for turn in ["turn-one", "turn-two"] {
+        state.active_turn_id = Some(ChatTurnId::new(turn).unwrap());
+        events.extend(normalizer.normalize(&mut state, busy.clone()).unwrap());
+        if turn == "turn-one" {
+            for envelope in [&fixture[2], &fixture[3], &fixture[4], &fixture[4]] {
+                events.extend(normalizer.normalize(&mut state, envelope.clone()).unwrap());
+            }
+        }
+        events.extend(normalizer.normalize(&mut state, idle.clone()).unwrap());
+    }
+    let count = |kind: fn(&CanonicalEvent) -> bool| {
+        events.iter().filter(|event| kind(&event.event)).count()
+    };
+    assert_eq!(
+        count(|event| matches!(event, CanonicalEvent::TurnCompleted(_))),
+        2
+    );
+    let text = events
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::ContentDelta(delta) => Some(delta.delta.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    assert_eq!(text, "Hello world world");
+}
+
+/// OpenCode reports idle for an aborted turn, often before the abort request returns, so an idle
+/// that follows an interrupt settles the turn as interrupted with its turn ID, the driver then
+/// has nothing left to settle, and a failed abort leaves the next idle completing the turn.
+#[test]
+fn idle_after_an_interrupt_settles_the_turn_as_interrupted() {
+    let normalizer = OpenCodeEventNormalizer::new(
+        ProviderInstanceId::new("opencode-instance").unwrap(),
+        ChatThreadId::new("thread-fixture").unwrap(),
+        ProviderSessionId::new("local-session-fixture").unwrap(),
+    );
+    let mut state = OpenCodeRouteState::new(
+        "ses_fixture".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    );
+    let idle = include_str!("fixtures/events.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|envelope| envelope.to_string().contains(r#""type":"idle""#))
+        .unwrap();
+    let interrupted = ChatTurnId::new("turn-interrupted").unwrap();
+    state.active_turn_id = Some(interrupted.clone());
+    assert_eq!(state.request_interrupt(), Some(interrupted.clone()));
+    let events = normalizer.normalize(&mut state, idle.clone()).unwrap();
+    let settled = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.event,
+                CanonicalEvent::TurnAborted(aborted) if aborted.state == ChatTurnState::Interrupted
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(settled.len(), 1);
+    assert_eq!(settled[0].turn_id.as_ref(), Some(&interrupted));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.event, CanonicalEvent::TurnCompleted(_)))
+    );
+    assert_eq!(state.take_interrupted_turn(&interrupted), None);
+
+    let completed = ChatTurnId::new("turn-completed").unwrap();
+    state.active_turn_id = Some(completed.clone());
+    state.request_interrupt();
+    state.cancel_interrupt();
+    let events = normalizer.normalize(&mut state, idle).unwrap();
+    assert!(events.iter().any(|event| {
+        matches!(event.event, CanonicalEvent::TurnCompleted(_))
+            && event.turn_id.as_ref() == Some(&completed)
+    }));
+}
+
 #[test]
 fn permission_session_option_is_withheld_when_its_grants_cannot_be_listed() {
     let normalizer = OpenCodeEventNormalizer::new(
@@ -1371,4 +1490,200 @@ fn opencode_reads_its_verified_configuration_paths() {
             "OpenCode never loads {never_read:?}"
         );
     }
+}
+
+fn session_rule(permission: &str, pattern: Option<&str>) -> OpenCodeSessionRule {
+    OpenCodeSessionRule {
+        permission: permission.to_string(),
+        pattern: pattern.map(str::to_string),
+    }
+}
+
+#[test]
+fn session_rule_wildcards_follow_opencode_matching() {
+    assert!(wildcard_matches("src/**", "src/lib/main.rs"));
+    assert!(wildcard_matches("*", "any/path with spaces"));
+    assert!(wildcard_matches("git status *", "git status --short"));
+    assert!(wildcard_matches("git status *", "git status"));
+    assert!(wildcard_matches("file?.txt", "file1.txt"));
+    assert!(!wildcard_matches("file?.txt", "file12.txt"));
+    assert!(!wildcard_matches("src/**", "tests/src/main.rs"));
+    assert!(!wildcard_matches("git status *", "git statusx"));
+    assert_eq!(wildcard_matches("SRC/*", "src/main.rs"), cfg!(windows));
+
+    let mut rules = OpenCodeSessionRules::default();
+    rules.grant([
+        session_rule("edit", Some("src/**")),
+        session_rule("webfetch", None),
+    ]);
+    assert!(rules.covers("edit", &["src/a.rs".to_string(), "src/b/c.rs".to_string()]));
+    assert!(
+        !rules.covers("edit", &["src/a.rs".to_string(), "docs/a.md".to_string()]),
+        "every requested pattern must be covered"
+    );
+    assert!(!rules.covers("bash", &["src/a.rs".to_string()]));
+    assert!(
+        !rules.covers("edit", &[]),
+        "a pattern rule never covers a request without patterns"
+    );
+    assert!(rules.covers("webfetch", &[]));
+    assert!(rules.covers("webfetch", &["https://example.com".to_string()]));
+}
+
+#[test]
+fn session_rules_drop_the_oldest_past_the_cap_and_ignore_duplicates() {
+    let mut rules = OpenCodeSessionRules::default();
+    let first = (0..MAX_OPENCODE_SESSION_RULES)
+        .map(|index| session_rule("edit", Some(&format!("dir{index}/**"))))
+        .collect::<Vec<_>>();
+    assert_eq!(rules.grant(first.clone()), 0);
+    assert_eq!(rules.grant(first), 0, "duplicates add nothing");
+    assert_eq!(rules.len(), MAX_OPENCODE_SESSION_RULES);
+    assert_eq!(
+        rules.grant([
+            session_rule("edit", Some("new0/**")),
+            session_rule("edit", Some("new1/**")),
+        ]),
+        2
+    );
+    assert_eq!(rules.len(), MAX_OPENCODE_SESSION_RULES);
+    assert!(!rules.covers("edit", &["dir0/a".to_string()]));
+    assert!(!rules.covers("edit", &["dir1/a".to_string()]));
+    assert!(rules.covers("edit", &["dir2/a".to_string()]));
+    assert!(rules.covers("edit", &["new1/a".to_string()]));
+}
+
+#[test]
+fn covered_permission_requests_open_and_resolve_and_drop_the_reply_echo() {
+    let normalizer = OpenCodeEventNormalizer::new(
+        ProviderInstanceId::new("opencode-instance").unwrap(),
+        ChatThreadId::new("thread-fixture").unwrap(),
+        ProviderSessionId::new("local-session-fixture").unwrap(),
+    );
+    let mut state = OpenCodeRouteState::new(
+        "ses_fixture".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    );
+    state.active_turn_id = Some(ChatTurnId::new("turn-fixture").unwrap());
+    let asked = |id: &str, pattern: &str| {
+        json!({
+            "type": "permission.asked",
+            "properties": {
+                "id": id,
+                "sessionID": "ses_fixture",
+                "permission": "edit",
+                "patterns": [pattern],
+                "always": ["src/**"],
+            }
+        })
+    };
+    let replied = |id: &str| {
+        json!({
+            "type": "permission.replied",
+            "properties": { "sessionID": "ses_fixture", "requestID": id, "reply": "once" }
+        })
+    };
+    let first = normalizer
+        .normalize(&mut state, asked("perm_first", "src/a.rs"))
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert!(state.take_auto_answers().is_empty());
+    let first_id = ProviderRequestId::new("perm_first").unwrap();
+    assert_eq!(
+        state.session_rules_for(&first_id),
+        vec![session_rule("edit", Some("src/**"))],
+        "allow for session keeps the patterns OpenCode offered for always"
+    );
+    state.set_session_approval(&first_id, true);
+    state.grant_session_rules(state.session_rules_for(&first_id));
+    let echo = normalizer
+        .normalize(&mut state, replied("perm_first"))
+        .unwrap();
+    assert!(matches!(
+        &echo[..],
+        [event] if matches!(&event.event, CanonicalEvent::RequestResolved(resolved)
+            if resolved.decision.as_ref().map(|decision| decision.kind)
+                == Some(ApprovalDecisionKind::AllowSession))
+    ));
+
+    let covered = normalizer
+        .normalize(&mut state, asked("perm_second", "src/b.rs"))
+        .unwrap();
+    assert!(matches!(
+        &covered[..],
+        [opened, resolved]
+            if matches!(opened.event, CanonicalEvent::RequestOpened(_))
+                && matches!(&resolved.event, CanonicalEvent::RequestResolved(resolved)
+                    if resolved.decision.as_ref().is_some_and(|decision| {
+                        decision.kind == ApprovalDecisionKind::AllowOnce
+                            && decision.provider_option_id.as_deref() == Some(SESSION_RULE_OPTION_ID)
+                    }))
+    ));
+    let second_id = ProviderRequestId::new("perm_second").unwrap();
+    assert_eq!(state.take_auto_answers(), vec![second_id.clone()]);
+    state.complete_auto_answer(&second_id);
+    assert!(!state.has_permission(&second_id));
+    assert!(
+        normalizer
+            .normalize(&mut state, replied("perm_second"))
+            .unwrap()
+            .is_empty(),
+        "the echo of an automatic answer is dropped"
+    );
+
+    let uncovered = normalizer
+        .normalize(&mut state, asked("perm_third", "docs/a.md"))
+        .unwrap();
+    assert_eq!(uncovered.len(), 1);
+    assert!(state.take_auto_answers().is_empty());
+}
+
+/// OpenCode can ask a question with no turn running. It becomes a notice rather than an open
+/// request, the driver is handed its ID to reject, and the rejection echo adds nothing.
+#[test]
+fn a_question_asked_outside_a_turn_is_a_notice_queued_for_rejection() {
+    let normalizer = OpenCodeEventNormalizer::new(
+        ProviderInstanceId::new("opencode-instance").unwrap(),
+        ChatThreadId::new("thread-fixture").unwrap(),
+        ProviderSessionId::new("local-session-fixture").unwrap(),
+    );
+    let mut state = OpenCodeRouteState::new(
+        "ses_fixture".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    );
+    let question = include_str!("fixtures/events.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|envelope| envelope["type"] == "question.asked")
+        .unwrap();
+    let events = normalizer.normalize(&mut state, question).unwrap();
+    assert_eq!(events.len(), 1);
+    match &events[0].event {
+        CanonicalEvent::RuntimeWarning(notice) => {
+            assert_eq!(notice.code, "opencode_question_outside_turn");
+            assert_eq!(
+                notice.detail.as_deref(),
+                Some("Which scope should be changed?")
+            );
+        }
+        other => panic!("expected a notice, got {other:?}"),
+    }
+    assert_eq!(events[0].turn_id, None);
+    assert!(!state.awaiting_user());
+    assert_eq!(
+        state.take_unprompted_questions(),
+        vec![ProviderRequestId::new("question_fixture").unwrap()]
+    );
+    assert!(state.take_unprompted_questions().is_empty());
+    let echo = json!({
+        "type": "question.rejected",
+        "properties": { "sessionID": "ses_fixture", "requestID": "question_fixture" }
+    });
+    assert!(normalizer.normalize(&mut state, echo).unwrap().is_empty());
 }

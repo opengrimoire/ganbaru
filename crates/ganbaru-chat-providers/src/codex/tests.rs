@@ -153,6 +153,7 @@ enum FixtureScenario {
     TurnNotInProgress,
     CapacityFailure,
     CapacityRetryInFlight,
+    CapacityRetryOrphan,
     UsageLimit,
     Elicitation,
     RepeatedTurnCursor,
@@ -528,6 +529,7 @@ async fn run_app_server_fixture<R, W>(
                     scenario,
                     FixtureScenario::CapacityFailure
                         | FixtureScenario::CapacityRetryInFlight
+                        | FixtureScenario::CapacityRetryOrphan
                         | FixtureScenario::UsageLimit
                 ) =>
             {
@@ -539,40 +541,59 @@ async fn run_app_server_fixture<R, W>(
                 } else {
                     json!({ "message": "Fixture failure", "codexErrorInfo": "serverOverloaded" })
                 };
-                let held = scenario == FixtureScenario::CapacityRetryInFlight && turn_starts > 1;
+                let orphan = scenario == FixtureScenario::CapacityRetryOrphan;
+                let held = (scenario == FixtureScenario::CapacityRetryInFlight && turn_starts > 1)
+                    || (orphan && turn_starts == 2);
                 if held {
                     tokio::time::sleep(Duration::from_secs(10)).await;
                 }
-                let mut frames = vec![
-                    json!({
-                        "id": id,
-                        "result": { "turn": { "id": turn_id, "status": "inProgress" } }
-                    }),
+                let failure = |turn_id: &str| {
+                    vec![
+                        json!({
+                            "method": "error",
+                            "params": {
+                                "threadId": thread_id,
+                                "turnId": turn_id,
+                                "error": error,
+                                "willRetry": false
+                            }
+                        }),
+                        json!({
+                            "method": "turn/completed",
+                            "params": {
+                                "threadId": thread_id,
+                                "turn": { "id": turn_id, "status": "failed", "items": [], "error": error }
+                            }
+                        }),
+                    ]
+                };
+                let started = |turn_id: &str| {
                     json!({
                         "method": "turn/started",
                         "params": {
                             "threadId": thread_id,
                             "turn": { "id": turn_id, "status": "inProgress" }
                         }
-                    }),
-                ];
-                if !held {
-                    frames.push(json!({
-                        "method": "error",
-                        "params": {
-                            "threadId": thread_id,
-                            "turnId": turn_id,
-                            "error": error,
-                            "willRetry": false
+                    })
+                };
+                let mut frames = vec![json!({
+                    "id": id,
+                    "result": { "turn": { "id": turn_id, "status": "inProgress" } }
+                })];
+                match (orphan, turn_starts) {
+                    // The held retry answers with its id only; its notifications arrive late.
+                    (true, 2) => {}
+                    (true, 3..) => {
+                        frames.push(started(&turn_id));
+                        frames.push(started("fixture-provider-turn-2"));
+                        frames.extend(failure("fixture-provider-turn-2"));
+                    }
+                    _ => {
+                        frames.push(started(&turn_id));
+                        if !held {
+                            frames.extend(failure(&turn_id));
                         }
-                    }));
-                    frames.push(json!({
-                        "method": "turn/completed",
-                        "params": {
-                            "threadId": thread_id,
-                            "turn": { "id": turn_id, "status": "failed", "items": [], "error": error }
-                        }
-                    }));
+                    }
                 }
                 for frame in frames {
                     write_fixture_message(&mut writer, frame).await;

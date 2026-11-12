@@ -214,7 +214,9 @@ fn check_placeholders(
                     matches!(
                         entry,
                         ReplayEntry::EmitInbound { .. } | ReplayEntry::ExpectOutbound { .. }
-                    ) && outbound_labels.iter().any(|known| known == label)
+                    ) && outbound_labels
+                        .iter()
+                        .any(|known| known == reference_label(label))
                 }
                 Some(_) => false,
                 None => {
@@ -317,6 +319,8 @@ pub struct ReplayBindings {
     pub home: Option<String>,
     pub session: Option<String>,
     references: BTreeMap<String, Value>,
+    /// The whole frame each labeled outbound entry matched, for `<ref:label/pointer>`.
+    frames: BTreeMap<String, Value>,
 }
 
 impl ReplayBindings {
@@ -328,6 +332,7 @@ impl ReplayBindings {
             home: None,
             session,
             references: BTreeMap::new(),
+            frames: BTreeMap::new(),
         }
     }
 
@@ -337,11 +342,27 @@ impl ReplayBindings {
         self
     }
 
-    /// Records the request id an outbound frame labeled `label` carries.
+    /// Records the request id an outbound frame labeled `label` carries, and the frame itself.
     pub fn remember_reference(&mut self, label: &str, frame: &Value, mask: &ReplayMask) {
         if let Some(id) = frame.pointer(mask.request_id) {
             self.references.insert(label.to_string(), id.clone());
         }
+        self.frames.insert(label.to_string(), frame.clone());
+    }
+
+    /// The value `<ref:reference>` stands for: the request id of the labeled frame, or with
+    /// `label/pointer` the value at that JSON pointer of it, such as an id the driver chose.
+    fn reference(&self, reference: &str) -> Result<Value, String> {
+        let found = match reference.split_once('/') {
+            Some((label, pointer)) => self
+                .frames
+                .get(label)
+                .and_then(|frame| frame.pointer(&format!("/{pointer}"))),
+            None => self.references.get(reference),
+        };
+        found
+            .cloned()
+            .ok_or_else(|| format!("no value was captured for reference {reference}"))
     }
 
     /// Replaces the placeholders of an inbound frame with their bound values.
@@ -371,12 +392,8 @@ impl ReplayBindings {
     /// Resolves one string. A string that is exactly one reference takes the referenced value
     /// with its JSON type, so numeric request ids stay numbers.
     pub fn resolve_string(&self, text: &str) -> Result<Value, String> {
-        if let Some(label) = whole_reference(text) {
-            return self
-                .references
-                .get(label)
-                .cloned()
-                .ok_or_else(|| format!("no request id was captured for label {label}"));
+        if let Some(reference) = whole_reference(text) {
+            return self.reference(reference);
         }
         let mut output = String::with_capacity(text.len());
         let mut rest = text;
@@ -395,10 +412,9 @@ impl ReplayBindings {
 
     fn placeholder_value(&self, token: &str) -> Result<String, String> {
         match token.split_once(':') {
-            Some((_, label)) => match self.references.get(label) {
-                Some(Value::String(text)) => Ok(text.clone()),
-                Some(other) => Ok(other.to_string()),
-                None => Err(format!("no request id was captured for label {label}")),
+            Some((_, reference)) => match self.reference(reference)? {
+                Value::String(text) => Ok(text),
+                other => Ok(other.to_string()),
             },
             None => match token {
                 WORKSPACE_PLACEHOLDER => Ok(self.workspace.clone()),
@@ -414,6 +430,13 @@ impl ReplayBindings {
             },
         }
     }
+}
+
+/// The outbound label a `<ref:label>` or `<ref:label/pointer>` argument names.
+fn reference_label(reference: &str) -> &str {
+    reference
+        .split_once('/')
+        .map_or(reference, |(label, _)| label)
 }
 
 fn whole_reference(text: &str) -> Option<&str> {
@@ -660,7 +683,7 @@ pub const CODEX_MASK: ReplayMask = ReplayMask {
     ],
 };
 
-/// Cursor ACP frames compared by presence only. Request ids are not masked, as for Codex.
+/// ACP frames of Cursor, Grok, and generic agents compared by presence only. Request ids are not masked, as for Codex.
 pub const CURSOR_MASK: ReplayMask = ReplayMask {
     request_id: "/id",
     presence_only: &[
@@ -669,12 +692,20 @@ pub const CURSOR_MASK: ReplayMask = ReplayMask {
     ],
 };
 
+/// OpenCode HTTP requests compared by presence only. A request carries no id of its own, so
+/// `<ref:label>` stands for the requested path.
+pub const OPENCODE_MASK: ReplayMask = ReplayMask {
+    request_id: "/path",
+    presence_only: &[],
+};
+
 /// The mask of the provider a transcript header names.
 pub fn mask_for_provider(provider: &str) -> Option<ReplayMask> {
     match provider {
         "claude" => Some(CLAUDE_MASK),
         "codex" => Some(CODEX_MASK),
-        "cursor" => Some(CURSOR_MASK),
+        "cursor" | "grok" | "acp" => Some(CURSOR_MASK),
+        "opencode" => Some(OPENCODE_MASK),
         _ => None,
     }
 }

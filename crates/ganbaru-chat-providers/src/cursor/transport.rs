@@ -19,7 +19,6 @@ const MAX_OUTBOUND_MESSAGES: usize = 256;
 const MAX_METHOD_BYTES: usize = 256;
 const MAX_RPC_ID_BYTES: usize = 256;
 const MAX_ERROR_BYTES: usize = 2_048;
-const CANCELLATION_POLL: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AcpRpcFailure {
@@ -116,66 +115,31 @@ impl AcpRpcClient {
         params: Value,
         context: &DriverOperationContext,
     ) -> Result<Value, AcpRpcFailure> {
-        validate_method(method)?;
-        if context.is_cancelled() {
-            return Err(AcpRpcFailure::Cancelled);
-        }
-        let id = self
-            .next_request_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let key = id.to_string();
-        let (sender, mut receiver) = oneshot::channel();
-        {
-            let mut pending = self
-                .pending
-                .lock()
-                .map_err(|_| AcpRpcFailure::Unavailable)?;
-            if pending.len() >= MAX_PENDING_REQUESTS {
-                return Err(AcpRpcFailure::Unavailable);
-            }
-            pending.insert(key.clone(), sender);
-        }
-        if let Err(error) = self
-            .send_value(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": method,
-                "params": params,
-            }))
-            .await
-        {
-            self.remove_pending(&key);
-            return Err(error);
-        }
-        loop {
-            if context.is_cancelled() {
-                self.remove_pending(&key);
-                return Err(if Instant::now() >= context.deadline {
-                    AcpRpcFailure::Timeout
-                } else {
-                    AcpRpcFailure::Cancelled
-                });
-            }
-            let remaining = context.deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                self.remove_pending(&key);
-                return Err(AcpRpcFailure::Timeout);
-            }
-            match tokio::time::timeout(remaining.min(CANCELLATION_POLL), &mut receiver).await {
-                Ok(Ok(result)) => return result,
-                Ok(Err(_)) => return Err(AcpRpcFailure::Closed),
-                Err(_) => {}
-            }
-        }
+        let (key, receiver) = self.send_request(method, params, context).await?;
+        self.await_response(&key, receiver, None, context).await
     }
 
+    /// Sends a request that may also complete through `fallback`, such as a prompt whose
+    /// result arrives as a notification before its response.
     pub async fn request_with_fallback(
         &self,
         method: &str,
         params: Value,
-        mut fallback: oneshot::Receiver<Value>,
+        fallback: oneshot::Receiver<Value>,
         context: &DriverOperationContext,
     ) -> Result<Value, AcpRpcFailure> {
+        let (key, receiver) = self.send_request(method, params, context).await?;
+        self.await_response(&key, receiver, Some(fallback), context)
+            .await
+    }
+
+    /// Registers a pending response slot and writes the request.
+    async fn send_request(
+        &self,
+        method: &str,
+        params: Value,
+        context: &DriverOperationContext,
+    ) -> Result<(String, oneshot::Receiver<Result<Value, AcpRpcFailure>>), AcpRpcFailure> {
         validate_method(method)?;
         if context.is_cancelled() {
             return Err(AcpRpcFailure::Cancelled);
@@ -184,7 +148,7 @@ impl AcpRpcClient {
             .next_request_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let key = id.to_string();
-        let (sender, mut receiver) = oneshot::channel();
+        let (sender, receiver) = oneshot::channel();
         {
             let mut pending = self
                 .pending
@@ -207,37 +171,40 @@ impl AcpRpcClient {
             self.remove_pending(&key);
             return Err(error);
         }
-        loop {
-            if context.is_cancelled() {
-                self.remove_pending(&key);
-                return Err(if Instant::now() >= context.deadline {
-                    AcpRpcFailure::Timeout
-                } else {
-                    AcpRpcFailure::Cancelled
-                });
+        Ok((key, receiver))
+    }
+
+    /// Waits for the response, the fallback completion, cancellation, or the deadline,
+    /// whichever comes first, and wakes at once on each.
+    ///
+    /// Cancellation and the deadline win over a response that is ready at the same time.
+    async fn await_response(
+        &self,
+        key: &str,
+        receiver: oneshot::Receiver<Result<Value, AcpRpcFailure>>,
+        fallback: Option<oneshot::Receiver<Value>>,
+        context: &DriverOperationContext,
+    ) -> Result<Value, AcpRpcFailure> {
+        let fallback = async move {
+            match fallback {
+                Some(fallback) => fallback.await.map_err(|_| AcpRpcFailure::Closed),
+                None => std::future::pending().await,
             }
-            let remaining = context.deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                self.remove_pending(&key);
-                return Err(AcpRpcFailure::Timeout);
-            }
-            match fallback.try_recv() {
-                Ok(completion) => {
-                    self.remove_pending(&key);
-                    return Ok(completion);
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    self.remove_pending(&key);
-                    return Err(AcpRpcFailure::Closed);
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
-            }
-            match tokio::time::timeout(remaining.min(CANCELLATION_POLL), &mut receiver).await {
-                Ok(Ok(result)) => return result,
-                Ok(Err(_)) => return Err(AcpRpcFailure::Closed),
-                Err(_) => {}
-            }
-        }
+        };
+        let deadline = tokio::time::Instant::from_std(context.deadline);
+        let outcome = tokio::select! {
+            biased;
+            () = context.cancellation.cancelled() => Err(if Instant::now() >= context.deadline {
+                AcpRpcFailure::Timeout
+            } else {
+                AcpRpcFailure::Cancelled
+            }),
+            () = tokio::time::sleep_until(deadline) => Err(AcpRpcFailure::Timeout),
+            completion = fallback => completion,
+            response = receiver => return response.unwrap_or(Err(AcpRpcFailure::Closed)),
+        };
+        self.remove_pending(key);
+        outcome
     }
 
     pub async fn notify(&self, method: &str, params: Value) -> Result<(), AcpRpcFailure> {
@@ -402,11 +369,14 @@ async fn write_messages<W>(
 ) where
     W: AsyncWrite + Send + Unpin + 'static,
 {
-    while let Err(tokio::sync::oneshot::error::TryRecvError::Empty) = shutdown.try_recv() {
-        let message = match tokio::time::timeout(CANCELLATION_POLL, outbound.recv()).await {
-            Ok(Some(message)) => message,
-            Ok(None) => break,
-            Err(_) => continue,
+    loop {
+        let message = tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            message = outbound.recv() => match message {
+                Some(message) => message,
+                None => break,
+            },
         };
         if writer.write_all(&message).await.is_err() || writer.flush().await.is_err() {
             fail_pending(&pending, AcpRpcFailure::Closed);

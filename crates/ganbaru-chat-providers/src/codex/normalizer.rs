@@ -3,7 +3,7 @@
 use crate::events::*;
 use crate::models::*;
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod diff;
@@ -87,7 +87,17 @@ pub struct CodexRouteState {
     pub rate_limits: CodexRateLimits,
     /// The capacity retry armed for the active `turn/start` turn.
     pub capacity_retry: Option<super::capacity_retry::CodexCapacityRetry>,
+    /// A retry `turn/start` is awaiting its response. The chat turn may already have settled, so
+    /// a new turn must wait until the retried provider turn is known and can be ignored.
+    pub retry_request_in_flight: bool,
+    /// Recent provider turns started by a retry after their chat turn had settled. Their late
+    /// notifications must not touch the active chat turn.
+    abandoned_provider_turn_ids: VecDeque<String>,
 }
+
+/// Abandoned retry turns remembered per session; one retry request is in flight at a time, so a
+/// few cover every late notification.
+const MAX_ABANDONED_PROVIDER_TURNS: usize = 8;
 
 impl CodexRouteState {
     pub fn new(modes: TurnModeSnapshot, model_id: Option<ModelId>) -> Self {
@@ -103,7 +113,38 @@ impl CodexRouteState {
             changed_files: Vec::new(),
             rate_limits: CodexRateLimits::default(),
             capacity_retry: None,
+            retry_request_in_flight: false,
+            abandoned_provider_turn_ids: VecDeque::new(),
         }
+    }
+
+    /// Remembers a provider turn no chat turn owns, dropping the oldest past the bound.
+    pub fn abandon_provider_turn(&mut self, provider_turn_id: &str) {
+        if self.is_abandoned(provider_turn_id) {
+            return;
+        }
+        self.abandoned_provider_turn_ids
+            .push_back(provider_turn_id.to_string());
+        while self.abandoned_provider_turn_ids.len() > MAX_ABANDONED_PROVIDER_TURNS {
+            self.abandoned_provider_turn_ids.pop_front();
+        }
+    }
+
+    /// Whether `provider_turn_id` is a retried turn abandoned after its chat turn settled.
+    pub fn is_abandoned(&self, provider_turn_id: &str) -> bool {
+        self.abandoned_provider_turn_ids
+            .iter()
+            .any(|abandoned| abandoned == provider_turn_id)
+    }
+
+    /// Whether a provider turn notification belongs to the active chat turn: it is not an
+    /// abandoned retry turn, and it matches the provider turn the session tracks when one is known.
+    pub fn owns_provider_turn(&self, provider_turn_id: &str) -> bool {
+        !self.is_abandoned(provider_turn_id)
+            && self
+                .active_provider_turn_id
+                .as_deref()
+                .is_none_or(|active| active == provider_turn_id)
     }
 }
 
@@ -144,6 +185,9 @@ impl CodexEventNormalizer {
             if expected != actual && is_child_thread_lifecycle(method) {
                 return Ok(Vec::new());
             }
+        }
+        if notification_turn_id(&params).is_some_and(|turn_id| state.is_abandoned(turn_id)) {
+            return Ok(Vec::new());
         }
         if !CODEX_NOTIFICATION_METHODS.contains(&method) {
             return self.unknown_notification(state, method, &params);
@@ -411,4 +455,12 @@ impl CodexEventNormalizer {
             self.next_fallback_id.fetch_add(1, Ordering::Relaxed)
         )
     }
+}
+
+/// The provider turn a notification names, from `turnId` or the `turn.id` of lifecycle events.
+fn notification_turn_id(params: &Value) -> Option<&str> {
+    params
+        .get("turnId")
+        .or_else(|| params.get("turn").and_then(|turn| turn.get("id")))
+        .and_then(Value::as_str)
 }

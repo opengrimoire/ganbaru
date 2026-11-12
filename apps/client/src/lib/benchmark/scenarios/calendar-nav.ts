@@ -90,7 +90,7 @@ export const calendarNavScenario: BenchmarkScenario = {
     return seedCalendarDataset(dataset, context);
   },
 
-  async cleanup(_seedHandle: { calendarId: string }): Promise<void> {
+  async cleanup(_seedHandle: BenchmarkSeedHandle): Promise<void> {
     // The isolated benchmark DB file is deleted on summary close, so
     // per-calendar deletion is unnecessary.
   },

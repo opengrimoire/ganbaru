@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
 import { withProviderStartTrust } from "$lib/api/working-folder-trust";
+import { hasTimelineReadObservers, reportTimelineSinceRead } from "$lib/chat/timeline/read-observer";
 import type {
   ChatActivityDetailRead,
   ChatActivityId,
@@ -85,12 +86,15 @@ export async function readChatTimelineSince(
   afterChange: number,
   limit = 100,
 ): Promise<ChatTimelineDeltaRead> {
-  return parseChatTimelineDelta(await invoke<unknown>("chat_read_timeline_since", {
+  const payload = await invoke<unknown>("chat_read_timeline_since", {
     dbUrl: await ensureDbUrl(),
     threadId,
     afterChange,
     limit,
-  }));
+  });
+  const delta = parseChatTimelineDelta(payload);
+  if (hasTimelineReadObservers()) reportTimelineSinceRead(payload, delta.items.length);
+  return delta;
 }
 
 /** Reads the whole detail of one activity, which timeline reads carry only as a preview. */

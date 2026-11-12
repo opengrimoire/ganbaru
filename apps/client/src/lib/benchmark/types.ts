@@ -12,6 +12,8 @@ import type { CalendarEvent } from "$lib/calendar/types";
 
 /** Fixed duration for the real held-arrow navigation benchmark action. */
 export const HELD_NAVIGATION_DURATION_MS = 3000;
+/** Longest window the Chat timeline scroll benchmark scrolls before it stops short of the start. */
+export const CHAT_TIMELINE_SCROLL_DURATION_MS = 20_000;
 /** One memory reading per second over the post-state observation window. */
 export const MEMORY_OBSERVATION_INTERVAL_MS = 1000;
 /** Total duration of memory observation windows. */
@@ -67,10 +69,32 @@ export interface DenseCalendarDatasetProfile {
   detailProfile: DenseCalendarDetailProfile;
 }
 
-export type BenchmarkDatasetProfile = DenseCalendarDatasetProfile;
+/**
+ * Chat timeline dataset shape version. Edit it in place while the shape is unrecorded; bump it
+ * only when a recorded Chat run would no longer compare with new rows.
+ */
+export const CHAT_TIMELINE_DATASET_VERSION = "v1";
+
+/**
+ * Chat timeline dataset shapes: `t5000` is one settled thread with 5000 rows (40 percent
+ * messages, 50 percent tool activities, 10 percent plans), and `flood` is one empty thread the
+ * stream flood replays into.
+ */
+export type ChatTimelineDatasetShape = "t5000" | "flood";
+
+export interface ChatTimelineDatasetProfile {
+  kind: "chat-timeline";
+  version: typeof CHAT_TIMELINE_DATASET_VERSION;
+  shape: ChatTimelineDatasetShape;
+}
+
+export type BenchmarkDatasetProfile = DenseCalendarDatasetProfile | ChatTimelineDatasetProfile;
 
 export interface BenchmarkSeedHandle {
-  calendarId: string;
+  /** Calendar grouping the dense Calendar seed created, or `null` for other datasets. */
+  calendarId: string | null;
+  /** Chat thread a Chat timeline seed created. */
+  chatThreadId?: string;
   eventCount: number;
   datasetId: string;
   dataset: BenchmarkDatasetProfile;
@@ -100,8 +124,31 @@ export const CORE_BENCHMARK_DATASETS = [
   LARGE_BENCHMARK_DATASET,
 ] as const;
 
+/** Long settled Chat thread the timeline scroll benchmark reads. */
+export const CHAT_LONG_THREAD_DATASET = {
+  kind: "chat-timeline",
+  version: CHAT_TIMELINE_DATASET_VERSION,
+  shape: "t5000",
+} as const satisfies BenchmarkDatasetProfile;
+
+/** Empty Chat thread the stream flood benchmark replays into. */
+export const CHAT_STREAM_FLOOD_DATASET = {
+  kind: "chat-timeline",
+  version: CHAT_TIMELINE_DATASET_VERSION,
+  shape: "flood",
+} as const satisfies BenchmarkDatasetProfile;
+
 export function benchmarkDatasetId(dataset: BenchmarkDatasetProfile): string {
+  if (dataset.kind === "chat-timeline") return `chat-${dataset.version}-${dataset.shape}`;
   return `dense-${dataset.version}-r${dataset.yearRadius}y-s${dataset.stackCount}-${dataset.detailProfile}`;
+}
+
+/** Narrows a dataset to a dense Calendar profile, for seeds that only build Calendar data. */
+export function requireDenseCalendarDataset(dataset: BenchmarkDatasetProfile): DenseCalendarDatasetProfile {
+  if (dataset.kind !== "dense-calendar") {
+    throw new Error(`Dataset ${benchmarkDatasetId(dataset)} is not a dense Calendar dataset`);
+  }
+  return dataset;
 }
 
 export type SampleLabel = string;
@@ -154,7 +201,7 @@ export interface BenchmarkWorkload {
   memoryMode: BenchmarkMemoryMode;
 }
 
-export type BenchmarkMetricUnit = "ms" | "count" | "percent";
+export type BenchmarkMetricUnit = "ms" | "count" | "percent" | "bytes" | "per second";
 
 export interface BenchmarkMetric {
   /** Stable row label within a scenario, e.g. `click existing event`. */
@@ -380,7 +427,7 @@ export interface BenchmarkScenario extends BenchmarkScenarioMetadata {
    * Undo whatever `seed()` created. Runs on summary close, on cancel, and
    * on stale-state cleanup at boot.
    */
-  cleanup(seedHandle: { calendarId: string }): Promise<void>;
+  cleanup(seedHandle: BenchmarkSeedHandle): Promise<void>;
 }
 
 /** A whole benchmark run after both passes complete. */

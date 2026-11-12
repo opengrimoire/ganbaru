@@ -631,6 +631,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             benchmark::select_database_target,
             benchmark::seed::benchmark_seed_pomodoro_history,
             benchmark::seed::benchmark_seed_dense_music_library,
+            benchmark::seed::benchmark_seed_chat_timeline,
+            benchmark::seed::benchmark_replay_chat_stream,
             restart_app,
             updates::updater_install_context,
             updates::updates_check,

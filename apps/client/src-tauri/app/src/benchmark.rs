@@ -1,11 +1,12 @@
 //! Desktop benchmark harness support: isolated database lifecycle, cross-restart state,
-//! process memory sampling, and dense dataset seeding.
+//! process memory sampling, dense dataset seeding, and Chat timeline datasets.
 
 use crate::db;
 use ganbaru_atomic_files::{FileAccess, FinalSymlink};
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 
+pub(crate) mod chat_timeline;
 pub(crate) mod memory;
 pub(crate) mod seed;
 

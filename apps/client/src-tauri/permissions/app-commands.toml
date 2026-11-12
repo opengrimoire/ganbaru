@@ -3,6 +3,8 @@ identifier = "app-commands"
 description = "Allows every application command registered by the desktop or Android runtime. Granted only to app-owned main and tab webviews."
 commands.allow = [
   "app_window_open_tab",
+  "benchmark_replay_chat_stream",
+  "benchmark_seed_chat_timeline",
   "benchmark_seed_dense_music_library",
   "benchmark_seed_pomodoro_history",
   "calendar_add_calendar",

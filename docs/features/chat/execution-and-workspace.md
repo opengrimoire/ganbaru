@@ -6,7 +6,7 @@ Status: Implemented on desktop. Mobile omits local coding execution.
 
 Every organizational run has exactly one execution target: an authorized project working folder, a private scratch generation owned by the initiating reply thread, or no target for conversation-only work. External folder bindings are device-local and must resolve through the project's authorization; provider-native working-directory state never authorizes a folder. Target resolution and scratch rules live in [Chat access control](../../data/access-control.md#execution-targets).
 
-Scratch output stays private until the user explicitly promotes it into a project folder, and scratch cleanup is previewed and confirmed.
+Scratch output stays private until the user explicitly promotes it into a project folder. Chat settings rank the scratch generations that are safe to reclaim on this device by size, without deleting anything, and cleanup stays previewed and confirmed.
 
 ## Runs and provider threads
 
@@ -14,7 +14,7 @@ A run links one organizational request to one provider session and its canonical
 
 A later assignment of the same teammate in the same reply thread and execution target continues the earlier native session only when its continuation key is unchanged: the authorization scope, the provider instance, the model selection, and the system-level instructions (the teammate framing with its name and role, the context package format, and the teammate's own instructions). A changed key or an authorization that is no longer allowed starts a new session with the full context package, and a retry of the same assignment always starts a new session, because a failed run may have left native state half applied. Each run records why it started (fresh, continuation, handoff, or retry) and the digests of its key. A continuation whose provider cannot find the earlier native session fails only that run, and the assignment hands off at once to a new session with the full context package. A provider that silently opens a new session instead receives the full package in place of the delta, and the run records that handoff. Approvals and questions the lost session left open close as interrupted. If the application stops before the handoff run starts, the assignment retries in a new session after restart.
 
-Cancellation targets the active run and its owned process tree. It never deletes prior events or cancels unrelated parallel work. Stop settles the turn as interrupted within a few seconds even when the provider does not confirm it, and the provider session restarts for the next turn.
+Cancellation targets the active run and its owned process tree. It never deletes prior events or cancels unrelated parallel work. Stop settles the turn as interrupted within a few seconds even when the provider does not confirm it, and the provider session restarts for the next turn. Chat settings list the provider and terminal processes Chat started and can stop one after a confirmation and an identity check ([Chat security](../../data/security/chat.md)).
 
 On Linux, provider sessions and local provider servers run inside a user systemd resource scope with low CPU and IO weight, a task ceiling, and memory ceilings that leave the desktop headroom, so a runaway provider slows or stops itself instead of the desktop. When the scope stops a provider for memory, the conversation shows a notice before the session failure. Where user systemd is unavailable, such as inside Flatpak, or a scoped launch fails, providers start directly for the rest of the app run, because the scope must never block a provider. Chat terminals and short provider probes are never scoped.
 
@@ -30,11 +30,11 @@ The Files surface is a bounded view of the authorized execution target. Reads, s
 
 ## Review and source control
 
-Review presents file changes, diffs, checkpoints, and source-control status, and commits staged changes with a message that may span several lines. The filesystem and Git remain canonical for workspace content; the vault stores runs, checkpoint metadata, and review links. Runs can checkpoint before and after risky work, and restore is an explicit authorized action that reports uncommitted or conflicting state before mutating anything.
+Review presents file changes, diffs, checkpoints, and source-control status, and commits staged changes with a message that may span several lines. The filesystem and Git remain canonical for workspace content; the vault stores runs, checkpoint metadata, and review links. Runs can checkpoint before and after risky work, and restore is an explicit authorized action that reports uncommitted or conflicting state before mutating anything. Restores are confirmed in a dialog that shows staged changes the restore would affect and whether the provider can roll back its own state.
 
 When a checkpoint pair is unavailable, review falls back to the provider-reported turn and then to the working tree. Only a typed not-found reason selects a fallback; permission and storage errors stay errors.
 
-The commit and change request forms can ask the selected thread's teammate, when it is idle in the same working folder, to draft the text from bounded Git context (changed paths, a size-capped patch, and recent subjects), stating every cut in the prompt. The draft fills the field only after the turn completes and only when the user has not edited the field since asking; otherwise it is offered, and an empty or oversized draft is refused instead of cut.
+The commit and change request forms can ask the selected thread's teammate, when it is idle in the same working folder, to draft the text from bounded Git context (changed paths, a size-capped patch, and recent subjects), stating every cut in the prompt. Drafting happens only on request, as a visible turn in that thread. The draft fills the field only after the turn completes and only when the user has not edited the field since asking; otherwise it is offered, and an empty or oversized draft is refused instead of cut.
 
 A changed file too large to review is listed with a notice instead of a diff, and it can still be staged, unstaged, or discarded as a whole.
 
@@ -42,7 +42,7 @@ A working folder may be a subdirectory of its repository. Review and source cont
 
 ## Terminal
 
-Terminals are bound to one authorized execution target and thread. The frontend receives a narrow stream and input boundary, not a generic process API. Closing a terminal view does not necessarily stop its process, and lifecycle and stop controls stay truthful. Output is bounded, untrusted text; escape sequences cannot become application commands or links without validation.
+Terminals are bound to one authorized execution target and thread. The frontend receives a narrow stream and input boundary, not a generic process API. Closing a terminal view does not necessarily stop its process, and lifecycle and stop controls stay truthful. Output is bounded, untrusted text; escape sequences cannot become application commands or links without validation. Terminals start without the app's inherited multiplexer and development server port variables, replaying a terminal view resets terminal modes such as the alternate screen and hidden cursor, and terminal history is never persisted.
 
 The first terminal for a working folder and execution environment in each app launch asks for a native confirmation that names the folder and shell. Because opening the Terminal panel starts a terminal, this usually appears the first time the panel opens for a folder after Ganbaru starts. Later terminals in that folder start without asking until the app restarts or the folder is unbound, archived, or removed.
 

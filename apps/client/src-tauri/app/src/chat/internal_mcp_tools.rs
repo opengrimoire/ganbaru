@@ -72,6 +72,16 @@ pub(crate) fn definitions(scope: &InternalMcpRunScope) -> Vec<Tool> {
         .collect()
 }
 
+/// Provider tool names, as `mcp__<server>__<tool>`, of the host tools an organizational run
+/// calls without a provider approval prompt.
+pub(crate) fn pre_approved_tool_names(server_name: &str) -> Vec<String> {
+    HostTool::ALL
+        .into_iter()
+        .filter(|tool| tool.pre_approved())
+        .map(|tool| format!("mcp__{server_name}__{}", tool.name()))
+        .collect()
+}
+
 /// The MCP declaration of an implemented tool, or `None` for a tool without a handler.
 fn definition(tool: HostTool) -> Option<Tool> {
     let name = tool.name();
@@ -717,6 +727,39 @@ mod tests {
         assert!(!HostToolClass::Report.mutates_outside_reply());
         assert!(HostToolClass::Edit.mutates_outside_reply());
         assert!(HostToolClass::Destructive.mutates_outside_reply());
+    }
+
+    #[test]
+    fn only_offered_read_ask_and_report_tools_are_pre_approved() {
+        let names = pre_approved_tool_names("ganbaru-chat");
+        let expected: Vec<String> = HostTool::ALL
+            .into_iter()
+            .filter(|tool| tool.implemented())
+            .filter(|tool| {
+                matches!(
+                    tool.class(),
+                    HostToolClass::Read | HostToolClass::Ask | HostToolClass::Report
+                )
+            })
+            .map(|tool| format!("mcp__ganbaru-chat__{}", tool.name()))
+            .collect();
+        assert_eq!(names, expected);
+        assert!(names.contains(&"mcp__ganbaru-chat__chat_read_workspace_file".to_string()));
+        for tool in HostTool::ALL {
+            let listed = names.contains(&format!("mcp__ganbaru-chat__{}", tool.name()));
+            if listed {
+                assert!(
+                    tool.offered(&working_scope(ChatFolderCapability::Read)),
+                    "{tool:?}"
+                );
+            }
+            if !matches!(
+                tool.class(),
+                HostToolClass::Read | HostToolClass::Ask | HostToolClass::Report
+            ) {
+                assert!(!listed, "{tool:?} keeps its provider approval");
+            }
+        }
     }
 
     #[tokio::test]

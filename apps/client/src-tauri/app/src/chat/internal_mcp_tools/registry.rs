@@ -122,6 +122,13 @@ impl HostTool {
     pub(crate) fn offered(self, scope: &InternalMcpRunScope) -> bool {
         self.implemented() && self.class().offered(scope)
     }
+
+    /// Whether an organizational run calls the tool without a provider approval prompt. Only
+    /// implemented tools of the read, ask, and report classes qualify, and those classes are
+    /// offered to every run, so the list does not depend on the run's scope.
+    pub(crate) const fn pre_approved(self) -> bool {
+        self.implemented() && self.class().pre_approved()
+    }
 }
 
 /// How a host tool affects the vault, which decides whether it is offered, how many calls one
@@ -201,6 +208,13 @@ impl HostToolClass {
             self,
             Self::Edit | Self::Destructive | Self::Delegate | Self::Secret
         )
+    }
+
+    /// Whether a call can run without a provider approval prompt, because it only reads
+    /// authorized context, asks the assigner, or reports. Every other class keeps the approval
+    /// the run's frozen approval policy gives it.
+    pub(crate) const fn pre_approved(self) -> bool {
+        matches!(self, Self::Read | Self::Ask | Self::Report)
     }
 
     /// Whether the run's tool list carries tools of this class. Edit and destructive tools need

@@ -8,6 +8,7 @@ use super::validation::validate_modes;
 use crate::chat::authority_epoch::current_authority_epoch;
 use crate::chat::ingestion::{ChatEventIngestor, TauriChatChangeEmitter, run_idle_flush};
 use crate::chat::internal_mcp::{InternalMcpEndpoint, InternalMcpRegistry};
+use crate::chat::internal_mcp_tools::pre_approved_tool_names;
 use crate::chat::send_commands::SendChatTurnCommand;
 use crate::chat::workspace::AuthorizedWorkingFolder;
 use ganbaru_chat::agent_runs::AgentRunBinding;
@@ -51,6 +52,11 @@ impl InternalMcpLaunch {
             url: endpoint.url,
             bearer_token: endpoint.bearer_token,
             organizational_authority: self.organizational_authority,
+            pre_approved_tools: if self.organizational_authority {
+                pre_approved_tool_names(INTERNAL_MCP_SERVER_NAME)
+            } else {
+                Vec::new()
+            },
         }
     }
 

@@ -1542,6 +1542,7 @@ mod tests {
             url: endpoint.url.clone(),
             bearer_token: token.clone(),
             organizational_authority: true,
+            pre_approved_tools: Vec::new(),
         };
         for output in [format!("{endpoint:?}"), format!("{config:?}")] {
             assert!(!output.contains(&token), "{output}");

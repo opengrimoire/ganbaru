@@ -130,6 +130,7 @@ fn organizational_configuration(home: &Path, organizational: bool) -> ProviderIn
         url: "http://127.0.0.1:41234/mcp".to_string(),
         bearer_token: "test-token".to_string(),
         organizational_authority: organizational,
+        pre_approved_tools: Vec::new(),
     });
     configuration
 }

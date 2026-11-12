@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatChannelRead } from "$lib/chat/contracts";
+import type { ChatChannelRead, ChatReviewQueueItemRead, ChatReviewQueueKind } from "$lib/chat/contracts";
 import { readChatSidebarSections, saveChatSidebarSections } from "$lib/chat/channel-sections";
 import { chatPaneEvents } from "$lib/chat/pane-events";
 import { getChat } from "$lib/stores/chat.svelte";
@@ -39,6 +39,7 @@ describe("ChatChannelRail", () => {
     chat.channelsLoading = false;
     chat.selectedChannelId = "channel-general";
     chat.channelArchiveOpen = false;
+    chat.reviewQueue = null;
     saveChatSidebarSections("project-1", [{
       id: "section-design",
       name: "Design",
@@ -686,6 +687,85 @@ describe("ChatChannelRail", () => {
     expect(readChatSidebarSections("project-1")[0]?.channelIds).toEqual(["channel-design", "channel-general"]);
     expect(selectChannel).not.toHaveBeenCalled();
   });
+
+  describe("review queue", () => {
+    function mountRail(presentation: "column" | "panel" = "column"): void {
+      component = mount(ChatChannelRail, {
+        target,
+        props: {
+          presentation,
+          expanded: true,
+          showCollapsedStrip: presentation === "column",
+          onExpand: vi.fn(),
+          onCollapse: vi.fn(),
+        },
+      });
+    }
+
+    it("is hidden while no work waits", async () => {
+      getChat().reviewQueue = { items: [], total: 0, truncated: false };
+      mountRail();
+      await tick();
+
+      expect(document.querySelector("[data-chat-review-queue]")).toBeNull();
+    });
+
+    it("counts the total and says how many items the cap leaves out", async () => {
+      getChat().reviewQueue = {
+        items: [queueItem("assignment-answer", "answer"), queueItem("assignment-review", "review")],
+        total: 205,
+        truncated: true,
+      };
+      mountRail();
+      await tick();
+
+      const queue = document.querySelector<HTMLElement>("[data-chat-review-queue]");
+      expect(queue?.getAttribute("aria-label")).toBe("Needs you, 205 items");
+      expect(queue?.querySelector(".queue-count")?.textContent?.trim()).toBe("205");
+      expect([...queue?.querySelectorAll<HTMLElement>("[data-review-kind]") ?? []].map((row) => row.dataset.reviewKind))
+        .toEqual(["answer", "review"]);
+      expect(queue?.textContent).toContain("203 more items are not shown");
+    });
+
+    it("offers selection for reviews in the docked rail and leaves it out of the phone panel", async () => {
+      getChat().reviewQueue = {
+        items: [queueItem("assignment-review", "review"), queueItem("assignment-failure", "failure")],
+        total: 2,
+        truncated: false,
+      };
+      mountRail();
+      await tick();
+
+      const docked = document.querySelector<HTMLElement>("[data-chat-review-queue]");
+      expect(docked?.querySelectorAll("input[type='checkbox']")).toHaveLength(1);
+      expect(docked?.querySelector(".queue-accept")).not.toBeNull();
+      expect(docked?.textContent).not.toContain("more item");
+
+      if (component) await unmount(component);
+      component = null;
+      mountRail("panel");
+      await tick();
+
+      const phone = document.querySelector<HTMLElement>("[data-chat-review-queue]");
+      expect(phone).not.toBeNull();
+      expect(phone?.querySelectorAll("input[type='checkbox']")).toHaveLength(0);
+      expect(phone?.querySelector(".queue-accept")).toBeNull();
+    });
+
+    it("marks channels whose work waits for the person and keeps working channels quiet", async () => {
+      const chat = getChat();
+      chat.activeChannels = [
+        { ...channel("channel-general", "general"), attentionState: "ready_for_review" },
+        { ...channel("channel-design", "design"), attentionState: "working" },
+      ];
+      mountRail();
+      await tick();
+
+      const markers = [...document.querySelectorAll<HTMLElement>(".attention-marker")];
+      expect(markers.map((marker) => marker.getAttribute("aria-label"))).toEqual(["Ready for your review"]);
+      expect(markers[0].closest("[data-chat-channel-id]")?.getAttribute("data-chat-channel-id")).toBe("channel-general");
+    });
+  });
 });
 
 function channel(id: string, name: string): ChatChannelRead {
@@ -707,5 +787,24 @@ function channel(id: string, name: string): ChatChannelRead {
     archivedAt: null,
     createdAt: timestamp,
     updatedAt: timestamp,
+  };
+}
+
+function queueItem(assignmentId: string, kind: ChatReviewQueueKind): ChatReviewQueueItemRead {
+  return {
+    assignmentId,
+    revision: 2,
+    kind,
+    projectId: "project-1",
+    projectName: "Ganbaru",
+    channelId: "channel-general",
+    channelName: "general",
+    replyThreadId: `reply-thread-${assignmentId}`,
+    teammateParticipantId: "participant-builder",
+    teammateDisplayName: "Builder",
+    stateReason: null,
+    changedFileCount: 2,
+    executedHere: true,
+    updatedAt: "2026-08-05T12:00:00.000Z",
   };
 }

@@ -647,6 +647,18 @@ pub async fn review_output(
     .map(|output| output.stdout)
 }
 
+/// Runs an internal review read capped at `maximum_output_bytes`, returning `None`
+/// when the output would exceed the cap so the caller can degrade instead of failing.
+pub async fn review_output_unless_too_large(
+    folder: GitFolder<'_>,
+    arguments: &[&str],
+    maximum_output_bytes: usize,
+) -> ChatResult<Option<Vec<u8>>> {
+    run_unless_too_large(folder, arguments, maximum_output_bytes)
+        .await
+        .map(|output| output.map(|output| output.stdout))
+}
+
 /// Runs a user-requested review mutation (stage, unstage, or discard) with
 /// the same configuration the user's terminal would apply.
 pub async fn review_action_output(

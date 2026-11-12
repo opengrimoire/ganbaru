@@ -60,6 +60,8 @@ pub struct ReviewSnapshot {
     pub git_trust: GitFolderTrust,
     pub source: ReviewDiffSource,
     pub source_label: String,
+    /// Whether the authored path filter ran when the snapshot was opened.
+    pub authored_paths: ReviewAuthoredPathsStatus,
     pub before_oid: Option<String>,
     pub after_oid: Option<String>,
     pub context_lines: u32,
@@ -146,6 +148,7 @@ pub async fn snapshot_read(
         },
         preferred_patch,
         freshness: ReviewFreshness::Current,
+        authored_paths: snapshot.authored_paths,
     })
 }
 
@@ -175,6 +178,7 @@ pub fn stale_snapshot_read(snapshot: &ReviewSnapshot) -> ChatReviewOpenRead {
         },
         preferred_patch: None,
         freshness: ReviewFreshness::Outdated,
+        authored_paths: snapshot.authored_paths,
     }
 }
 
@@ -391,12 +395,34 @@ pub fn review_revision(
     _ignore_whitespace: bool,
     _context_lines: u32,
 ) -> ChatResult<String> {
+    review_revision_in_scope(
+        thread_revision_scope(thread_id),
+        environment_id,
+        source,
+        before,
+        after,
+    )
+}
+
+/// The revision scope of a review keyed by its Chat thread, or by the workspace draft
+/// when the review has no thread.
+pub fn thread_revision_scope(thread_id: Option<&ChatThreadId>) -> &str {
+    thread_id
+        .map(ChatThreadId::as_str)
+        .unwrap_or("workspace-draft")
+}
+
+/// Hashes a review revision under an explicit scope, such as an assignment and its latest
+/// post checkpoint, so a later run invalidates an open review of the same source.
+pub fn review_revision_in_scope(
+    scope: &str,
+    environment_id: &str,
+    source: &ReviewDiffSource,
+    before: &str,
+    after: &str,
+) -> ChatResult<String> {
     let mut hasher = Sha256::new();
-    hasher.update(
-        thread_id
-            .map(ChatThreadId::as_str)
-            .unwrap_or("workspace-draft"),
-    );
+    hasher.update(scope);
     hasher.update([0]);
     hasher.update(environment_id);
     hasher.update([0]);

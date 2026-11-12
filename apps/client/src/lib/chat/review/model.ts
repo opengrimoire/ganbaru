@@ -5,6 +5,8 @@ import type {
   ChatReviewPatchHunkRead,
   ChatReviewPatchRead,
   ChatReviewSnapshotRead,
+  ChatWorkAssignmentId,
+  ChatWorkAssignmentState,
   ReviewDiffSource,
 } from "$lib/chat/contracts";
 import type { ReviewLineSelection } from "./diff-runtime";
@@ -168,6 +170,7 @@ export function reviewSourceKey(source: ReviewDiffSource): string {
     case "branch": return `${source.kind}:${source.baseRef ?? ""}:${source.headRef}:${source.comparison}`;
     case "provider_turn": return `${source.kind}:${source.turnId}`;
     case "change_request": return `${source.kind}:${source.provider}:${source.repositorySlug}:${source.number}`;
+    case "assignment": return `${source.kind}:${source.assignmentId}`;
   }
 }
 
@@ -206,6 +209,8 @@ export function reviewSourcesEqual(
         && left.provider === right.provider
         && left.repositorySlug === right.repositorySlug
         && left.number === right.number;
+    case "assignment":
+      return right.kind === "assignment" && left.assignmentId === right.assignmentId;
   }
 }
 
@@ -277,4 +282,164 @@ export function stableReviewHash(value: string): number {
     hash = Math.imul(hash, 16_777_619);
   }
   return hash >>> 0;
+}
+
+/** The open reply thread's work assignment, as the review source picker needs it. */
+export interface ReviewSourceAssignment {
+  id: ChatWorkAssignmentId;
+  state: ChatWorkAssignmentState;
+}
+
+/** One entry of the review source picker, keyed by `reviewSourceKey`. */
+export interface ReviewSourceOption {
+  value: string;
+  label: string;
+}
+
+/** What the review source picker offers. */
+export interface ReviewSourceOptionsInput {
+  /** The source the panel shows now. */
+  current: ReviewDiffSource;
+  /** The Chat thread the panel reviews, which offers checkpoint sources when present. */
+  threadId: string | null;
+  /** The open reply thread's work assignment, which offers its whole change set when present. */
+  assignment: ReviewSourceAssignment | null;
+  /** Names a source in the interface language. */
+  label: (source: ReviewDiffSource) => string;
+}
+
+/** Details of a review that cannot open here because its assignment ran on another device. */
+export interface ReviewExecutedElsewhere {
+  /** The device that ran the work, or null when the vault does not record it. */
+  executingDeviceId: string | null;
+  /** Distinct changed file names from the replicated review updates, capped by the native side. */
+  changedFiles: string[];
+  /** Whether more files changed than `changedFiles` lists. */
+  changedFilesTruncated: boolean;
+}
+
+/** Upper bound on replicated changed file names accepted from an executed elsewhere failure. */
+export const REVIEW_EXECUTED_ELSEWHERE_MAX_FILES = 200;
+
+const ASSIGNMENT_SOURCE_PREFIX = "assignment:";
+
+/**
+ * Chooses the source a review panel opens on when nothing picked one: work that waits for review shows all of its
+ * changes, a Chat thread shows its latest turn, and otherwise the working tree.
+ *
+ * @param threadId The Chat thread the panel reviews, if any.
+ * @param assignment The open reply thread's work assignment, if any.
+ */
+export function defaultReviewSource(
+  threadId: string | null,
+  assignment: ReviewSourceAssignment | null,
+): ReviewDiffSource {
+  if (assignment?.state === "ready_for_review") return { kind: "assignment", assignmentId: assignment.id };
+  return threadId
+    ? { kind: "checkpoint", range: "turn", turnId: null }
+    : { kind: "working_tree", mode: "all" };
+}
+
+/**
+ * Lists the sources the review picker offers, without repeating a key: the assignment's changes, the current turn
+ * and the entire thread for a Chat thread, the working tree modes, and the current source when it is none of those.
+ *
+ * @param input The current source and the context that decides which sources apply.
+ */
+export function reviewSourceOptions(input: ReviewSourceOptionsInput): ReviewSourceOption[] {
+  const options: ReviewSourceOption[] = [];
+  const seen = new Set<string>();
+  const add = (source: ReviewDiffSource): void => {
+    const value = reviewSourceKey(source);
+    if (seen.has(value)) return;
+    seen.add(value);
+    options.push({ value, label: input.label(source) });
+  };
+  const { current } = input;
+  if (input.assignment) add({ kind: "assignment", assignmentId: input.assignment.id });
+  if (current.kind === "checkpoint" && current.range === "turn" && current.turnId) add(current);
+  if (input.threadId) {
+    add({ kind: "checkpoint", range: "turn", turnId: null });
+    add({ kind: "checkpoint", range: "thread", turnId: null });
+  }
+  add({ kind: "working_tree", mode: "staged" });
+  add({ kind: "working_tree", mode: "unstaged" });
+  add({ kind: "working_tree", mode: "all" });
+  if (current.kind !== "checkpoint" && current.kind !== "working_tree") add(current);
+  return options;
+}
+
+/**
+ * Turns a picker key back into the source it names. Keys of custom sources, such as a commit or a specific turn,
+ * return null so the current source stays.
+ *
+ * @param value An option key from `reviewSourceOptions`.
+ */
+export function parseReviewSourceKey(value: string): ReviewDiffSource | null {
+  switch (value) {
+    case "checkpoint:turn:": return { kind: "checkpoint", range: "turn", turnId: null };
+    case "checkpoint:thread:": return { kind: "checkpoint", range: "thread", turnId: null };
+    case "working_tree:staged": return { kind: "working_tree", mode: "staged" };
+    case "working_tree:unstaged": return { kind: "working_tree", mode: "unstaged" };
+    case "working_tree:all": return { kind: "working_tree", mode: "all" };
+  }
+  if (value.startsWith(ASSIGNMENT_SOURCE_PREFIX)) {
+    const assignmentId = value.slice(ASSIGNMENT_SOURCE_PREFIX.length);
+    return assignmentId ? { kind: "assignment", assignmentId } : null;
+  }
+  return null;
+}
+
+/**
+ * Reads the details of a review failure that names an assignment executed on another device. Returns null for
+ * every other failure, and for details that do not have the expected shape.
+ *
+ * @param error The rejected value of a review open request.
+ */
+export function reviewExecutedElsewhere(error: unknown): ReviewExecutedElsewhere | null {
+  const record = unknownRecord(error);
+  const details = unknownRecord(record?.details) ?? unknownRecord(unknownRecord(record?.error)?.details);
+  if (!details || details.reason !== "executed_elsewhere") return null;
+  const { executingDeviceId, changedFiles, changedFilesTruncated } = details;
+  if (executingDeviceId !== null && executingDeviceId !== undefined && typeof executingDeviceId !== "string") return null;
+  if (!Array.isArray(changedFiles) || changedFiles.length > REVIEW_EXECUTED_ELSEWHERE_MAX_FILES) return null;
+  if (!changedFiles.every((path): path is string => typeof path === "string" && path.length > 0)) return null;
+  return {
+    executingDeviceId: executingDeviceId || null,
+    changedFiles,
+    changedFilesTruncated: changedFilesTruncated === true,
+  };
+}
+
+/**
+ * Counts the files a snapshot marks as brought in by Git operations rather than by the reviewed work. Only a
+ * snapshot whose filter ran can mark any.
+ *
+ * @param snapshot The review snapshot.
+ */
+export function reviewGitImportedCount(snapshot: ChatReviewSnapshotRead | null): number {
+  if (snapshot?.authoredPaths !== "computed") return 0;
+  return snapshot.files.filter((file) => !file.flags.authored).length;
+}
+
+/**
+ * Returns the files a review shows: every file when Git-imported files are shown or none are marked, otherwise
+ * only the files the reviewed work changed.
+ *
+ * @param snapshot The review snapshot.
+ * @param showGitImported Whether the person chose to show Git-imported files.
+ */
+export function reviewVisibleFiles(
+  snapshot: ChatReviewSnapshotRead | null,
+  showGitImported: boolean,
+): ChatReviewFileRead[] {
+  if (!snapshot) return [];
+  if (showGitImported || reviewGitImportedCount(snapshot) === 0) return snapshot.files;
+  return snapshot.files.filter((file) => file.flags.authored);
+}
+
+function unknownRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }

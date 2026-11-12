@@ -721,9 +721,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn preferences_chat_behavior_batch_keeps_paste_confirmation_on_the_device() {
+    fn preferences_chat_behavior_batch_keeps_device_fields_on_the_device() {
         let behavior = ganbaru_chat_contracts::config::ChatBehaviorPreferences {
             confirm_multiline_terminal_paste: false,
+            notification_include_content: true,
             ..Default::default()
         };
         let patches = crate::chat::configuration::behavior_patches(&behavior).unwrap();
@@ -732,12 +733,18 @@ pub(crate) mod tests {
         let plan = plan_patches(patches).unwrap();
         assert_eq!(
             plan.device,
-            [DeviceOp::Set {
-                key: "chat.behavior.confirmMultilineTerminalPaste".to_owned(),
-                value: json!(false),
-            }]
+            [
+                DeviceOp::Set {
+                    key: "chat.behavior.confirmMultilineTerminalPaste".to_owned(),
+                    value: json!(false),
+                },
+                DeviceOp::Set {
+                    key: "chat.behavior.notificationIncludeContent".to_owned(),
+                    value: json!(true),
+                },
+            ]
         );
-        assert_eq!(plan.portable.len(), fields - 1);
+        assert_eq!(plan.portable.len(), fields - 2);
     }
 
     #[tokio::test]

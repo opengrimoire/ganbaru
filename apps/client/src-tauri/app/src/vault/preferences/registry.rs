@@ -350,6 +350,11 @@ pub(crate) const REGISTRY: &[PreferenceSpec] = &[
         CHAT_IDLE_SESSION_TIMEOUT_SECONDS,
     ),
     device("chat.behavior.confirmMultilineTerminalPaste", BOOL),
+    portable("chat.behavior.notifyWaitingForYou", BOOL),
+    portable("chat.behavior.notifyReviewReady", BOOL),
+    portable("chat.behavior.notifyFailures", BOOL),
+    portable("chat.behavior.announceBackgroundWork", BOOL),
+    device("chat.behavior.notificationIncludeContent", BOOL),
     portable("music.review.autoplay", BOOL),
     portable("music.sources.localName", LABEL),
     portable("music.sources.youtubeName", LABEL),
@@ -492,6 +497,7 @@ mod tests {
             "chatSidebar.showArchivedInPickers",
             "updates.autoNotifications",
             "chat.behavior.confirmMultilineTerminalPaste",
+            "chat.behavior.notificationIncludeContent",
         ];
         for key in portable {
             assert!(portable_row(key).is_some(), "{key}");
@@ -499,8 +505,8 @@ mod tests {
         for key in device {
             assert!(device_spec(key).is_some(), "{key}");
         }
-        assert_eq!(specs(Scope::Portable).count(), 56);
-        assert_eq!(specs(Scope::Device).count(), 23);
+        assert_eq!(specs(Scope::Portable).count(), 60);
+        assert_eq!(specs(Scope::Device).count(), 24);
     }
 
     #[test]
@@ -641,7 +647,13 @@ mod tests {
         let device_fields = specs(Scope::Device)
             .filter_map(|spec| spec.path.strip_prefix("chat.behavior."))
             .collect::<Vec<_>>();
-        assert_eq!(device_fields, ["confirmMultilineTerminalPaste"]);
+        assert_eq!(
+            device_fields,
+            [
+                "confirmMultilineTerminalPaste",
+                "notificationIncludeContent"
+            ]
+        );
 
         let send_key = chat_behavior_spec("sendKey");
         for key in [ChatSendKey::Enter, ChatSendKey::ModEnter] {
@@ -692,6 +704,11 @@ mod tests {
             "showReasoningSummaries",
             "automaticallyFoldSettledWork",
             "confirmMultilineTerminalPaste",
+            "notifyWaitingForYou",
+            "notifyReviewReady",
+            "notifyFailures",
+            "announceBackgroundWork",
+            "notificationIncludeContent",
         ] {
             let rule = chat_behavior_spec(field).rule;
             assert!(

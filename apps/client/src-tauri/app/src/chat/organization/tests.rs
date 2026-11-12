@@ -5333,7 +5333,8 @@ fn a_job_whose_subject_changed_after_adoption_returns_to_start_here() {
         assert_eq!(state, "queued");
         let waiting = assignments::waiting_assignments(&pool, device, &scope)
             .await
-            .unwrap();
+            .unwrap()
+            .items;
         assert!(
             waiting.iter().any(|work| work.assignment_id == sibling),
             "the work is listed for Start here again"
@@ -5447,12 +5448,14 @@ fn waiting_work_reaches_the_device_that_runs_it_across_reply_threads() {
             assignments::waiting_assignments(&pool, phone, &scope)
                 .await
                 .unwrap()
+                .items
                 .is_empty(),
             "a device that runs no work has nothing to start"
         );
         let waiting = assignments::waiting_assignments(&pool, device, &scope)
             .await
-            .unwrap();
+            .unwrap()
+            .items;
         let mut ids: Vec<&str> = waiting
             .iter()
             .map(|row| row.assignment_id.as_str())
@@ -5485,9 +5488,37 @@ fn waiting_work_reaches_the_device_that_runs_it_across_reply_threads() {
             assignments::waiting_assignments(&pool, device, &scope)
                 .await
                 .unwrap()
+                .items
                 .is_empty(),
             "an archived channel has no thread to open"
         );
+    });
+}
+
+#[test]
+fn waiting_list_reports_the_total_above_its_cap() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:old"]);
+        let device = super::workflow::PostingDevice::this_device("device:old", &writers);
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        for index in 0..34 {
+            seed_queued_assignment_in_new_thread(
+                &pool,
+                &format!("assignment:waiting-{index:02}"),
+                &format!("item:waiting-root-{index:02}"),
+                &format!("a9{index:02}1"),
+                "participant:review-agent",
+            )
+            .await;
+        }
+
+        let waiting = assignments::waiting_assignments(&pool, device, &ChatDeviceScope::default())
+            .await
+            .unwrap();
+
+        assert_eq!(waiting.items.len(), 32, "the list stays capped");
+        assert_eq!(waiting.total, 35, "the total counts what the cap hides");
     });
 }
 
@@ -5502,14 +5533,16 @@ fn waiting_replies_leave_the_list_once_their_subject_is_accepted() {
         let waiting = assignments::waiting_assignments(&pool, device, &ChatDeviceScope::default())
             .await
             .unwrap();
-        assert_eq!(waiting.len(), 1);
-        assert_eq!(waiting[0].assignment_id.as_str(), "assignment:review");
+        assert_eq!(waiting.items.len(), 1);
+        assert_eq!(waiting.total, 1);
+        assert_eq!(waiting.items[0].assignment_id.as_str(), "assignment:review");
 
         let accepted = scope_accepting(&pool, "assignment:review").await;
         assert!(
             assignments::waiting_assignments(&pool, device, &accepted)
                 .await
                 .unwrap()
+                .items
                 .is_empty(),
             "recovery continues accepted replies unasked"
         );

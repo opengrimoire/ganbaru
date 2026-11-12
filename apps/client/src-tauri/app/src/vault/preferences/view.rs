@@ -152,4 +152,17 @@ mod tests {
         let local_choice = compose(&[row(KEY, "true")], device.as_object().unwrap());
         assert!(!behavior_from_view(&local_choice).confirm_multiline_terminal_paste);
     }
+
+    #[test]
+    fn synced_notification_content_row_has_no_effect() {
+        const KEY: &str = "chat.behavior.notificationIncludeContent";
+
+        let synced_only = compose(&[row(KEY, "true")], &Map::new());
+        assert_eq!(value_at(&synced_only, KEY), None);
+        assert!(!behavior_from_view(&synced_only).notification_include_content);
+
+        let device = json!({ KEY: true });
+        let local_choice = compose(&[], device.as_object().unwrap());
+        assert!(behavior_from_view(&local_choice).notification_include_content);
+    }
 }

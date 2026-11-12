@@ -8,10 +8,10 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-struct TestRepository(PathBuf);
+pub(super) struct TestRepository(PathBuf);
 
 impl TestRepository {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("test clock should follow the Unix epoch")
@@ -30,15 +30,15 @@ impl TestRepository {
         repository
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.0
     }
 
-    fn folder(&self) -> GitFolder<'_> {
+    pub(super) fn folder(&self) -> GitFolder<'_> {
         GitFolder::untrusted(&self.0)
     }
 
-    fn write(&self, relative_path: &str, contents: impl AsRef<[u8]>) {
+    pub(super) fn write(&self, relative_path: &str, contents: impl AsRef<[u8]>) {
         let path = self.0.join(relative_path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("test file parent should be created");
@@ -46,7 +46,7 @@ impl TestRepository {
         fs::write(path, contents).expect("test file should be written");
     }
 
-    fn run_git(&self, arguments: &[&str]) -> String {
+    pub(super) fn run_git(&self, arguments: &[&str]) -> String {
         let output = Command::new("git")
             .arg("-C")
             .arg(&self.0)
@@ -65,7 +65,7 @@ impl TestRepository {
             .to_string()
     }
 
-    fn commit_all(&self) {
+    pub(super) fn commit_all(&self) {
         self.run_git(&["add", "-A", "--", "."]);
         self.run_git(&["commit", "-q", "-m", "test: add review fixture"]);
     }
@@ -136,6 +136,7 @@ fn provider_snapshot(patch: &str) -> (Arc<ReviewSnapshot>, String) {
         git_trust: GitFolderTrust::Untrusted,
         source,
         source_label: "Provider turn".to_string(),
+        authored_paths: ReviewAuthoredPathsStatus::NotNeeded,
         before_oid: None,
         after_oid: None,
         context_lines: 3,
@@ -207,6 +208,7 @@ async fn working_snapshot_at(root: &Path, mode: ReviewWorkingTreeMode) -> Arc<Re
         git_trust: GitFolderTrust::Untrusted,
         source,
         source_label: material.label,
+        authored_paths: ReviewAuthoredPathsStatus::NotNeeded,
         before_oid: Some(material.before_oid),
         after_oid: Some(material.after_oid),
         context_lines: 3,
@@ -1023,6 +1025,7 @@ async fn discard_requires_confirmation_before_any_workspace_access() {
         git_trust: GitFolderTrust::Untrusted,
         source,
         source_label: "Unstaged changes".to_string(),
+        authored_paths: ReviewAuthoredPathsStatus::NotNeeded,
         before_oid: Some("before".to_string()),
         after_oid: Some("after".to_string()),
         context_lines: 3,
@@ -1321,5 +1324,21 @@ async fn subdirectory_folders_read_and_discard_the_reviewed_file_not_a_nested_na
     assert_eq!(
         fs::read_to_string(subdirectory.join("sub/a.txt")).expect("namesake should read"),
         "namesake change\n"
+    );
+}
+
+#[test]
+fn assignment_sources_use_the_camel_case_wire_shape() {
+    let source: ReviewDiffSource = serde_json::from_value(serde_json::json!({
+        "kind": "assignment",
+        "assignmentId": "assignment:wire",
+    }))
+    .expect("assignment source should deserialize");
+
+    assert_eq!(source.kind_wire(), "assignment");
+    assert!(source.filters_authored_paths());
+    assert_eq!(
+        serde_json::to_value(&source).expect("assignment source should serialize"),
+        serde_json::json!({ "kind": "assignment", "assignmentId": "assignment:wire" })
     );
 }

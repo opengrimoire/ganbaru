@@ -1,9 +1,9 @@
-//! Desktop native notifications for Calendar, Notes, Projects tasks, benchmarks, Focus, and the distraction blocker.
+//! Desktop native notifications for Calendar, Notes, Projects tasks, Chat, benchmarks, Focus, and the distraction blocker.
 
 #[cfg(target_os = "linux")]
 use notify_rust::Hint;
 use notify_rust::Notification;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
 use crate::sound_effects::{AppSound, AppSoundState};
@@ -338,6 +338,83 @@ pub fn show_notes_notification(
             }
         },
     );
+}
+
+/// Longest identifier a Chat notification target may carry back to the frontend.
+const MAX_CHAT_NOTIFICATION_ID_BYTES: usize = 256;
+/// Longest action label a Chat notification shows.
+const MAX_CHAT_NOTIFICATION_ACTION_CHARS: usize = 64;
+
+/// Where a Chat notification leads when it is opened: the reply thread of one assignment, or
+/// the review queue when the notification summarizes several.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ChatNotificationTarget {
+    #[serde(rename_all = "camelCase")]
+    Assignment {
+        project_id: String,
+        channel_id: String,
+        reply_thread_id: String,
+        assignment_id: String,
+    },
+    ReviewQueue,
+}
+
+impl ChatNotificationTarget {
+    /// Whether every identifier is present and bounded, so the open event carries only ids the
+    /// frontend could have sent.
+    fn is_valid(&self) -> bool {
+        match self {
+            Self::Assignment {
+                project_id,
+                channel_id,
+                reply_thread_id,
+                assignment_id,
+            } => [project_id, channel_id, reply_thread_id, assignment_id]
+                .iter()
+                .all(|id| !id.is_empty() && id.len() <= MAX_CHAT_NOTIFICATION_ID_BYTES),
+            Self::ReviewQueue => true,
+        }
+    }
+}
+
+/// Shows a Chat attention notification. Labels come from the frontend catalog; opening it emits
+/// `chat-notification-open` with the target and raises the main window.
+#[tauri::command]
+pub fn show_chat_notification(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+    open_label: String,
+    target: ChatNotificationTarget,
+    play_sound: bool,
+    app_sounds: State<'_, AppSoundState>,
+) -> Result<(), String> {
+    if !target.is_valid() {
+        return Err("Chat notification target has an empty or oversized identifier".to_owned());
+    }
+    if play_sound {
+        app_sounds.play(AppSound::EventNotification);
+    }
+    let open_label =
+        bounded_notification_text(open_label.trim(), MAX_CHAT_NOTIFICATION_ACTION_CHARS);
+    let mut notification = notification_with_text(&title, "Chat", Some(&body));
+    notification.appname("Ganbaru").timeout(15_000);
+    if !open_label.is_empty() {
+        notification.action("open", &open_label);
+    }
+    apply_linux_notification_hints(&mut notification, Some("im"), true, true);
+    spawn_notification(
+        notification,
+        "Failed to show Chat notification",
+        move |action| {
+            if action == "open" || action == "default" {
+                let _ = app.emit("chat-notification-open", target);
+                focus_main_window(app);
+            }
+        },
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -740,6 +817,54 @@ mod notification_bounds_tests {
                 "{setter} is called only by set_notification_text"
             );
         }
+    }
+
+    #[test]
+    fn chat_notification_targets_use_the_frontend_wire_shape() {
+        let assignment: ChatNotificationTarget = serde_json::from_value(serde_json::json!({
+            "kind": "assignment",
+            "projectId": "project-1",
+            "channelId": "channel-1",
+            "replyThreadId": "thread-1",
+            "assignmentId": "assignment-1",
+        }))
+        .unwrap();
+        assert_eq!(
+            assignment,
+            ChatNotificationTarget::Assignment {
+                project_id: "project-1".to_owned(),
+                channel_id: "channel-1".to_owned(),
+                reply_thread_id: "thread-1".to_owned(),
+                assignment_id: "assignment-1".to_owned(),
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&assignment).unwrap()["replyThreadId"],
+            "thread-1"
+        );
+        let queue: ChatNotificationTarget =
+            serde_json::from_value(serde_json::json!({ "kind": "reviewQueue" })).unwrap();
+        assert_eq!(queue, ChatNotificationTarget::ReviewQueue);
+        assert!(
+            serde_json::from_value::<ChatNotificationTarget>(
+                serde_json::json!({ "kind": "thread" })
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn chat_notification_targets_refuse_empty_or_oversized_ids() {
+        let target = |assignment_id: String| ChatNotificationTarget::Assignment {
+            project_id: "project-1".to_owned(),
+            channel_id: "channel-1".to_owned(),
+            reply_thread_id: "thread-1".to_owned(),
+            assignment_id,
+        };
+        assert!(target("a".repeat(MAX_CHAT_NOTIFICATION_ID_BYTES)).is_valid());
+        assert!(!target("a".repeat(MAX_CHAT_NOTIFICATION_ID_BYTES + 1)).is_valid());
+        assert!(!target(String::new()).is_valid());
+        assert!(ChatNotificationTarget::ReviewQueue.is_valid());
     }
 
     #[test]

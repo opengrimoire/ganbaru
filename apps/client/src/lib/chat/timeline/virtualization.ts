@@ -1,15 +1,20 @@
 import type { ChatTimelineItemRead, ChatTimelinePageRead } from "$lib/chat/contracts";
 import type { TimelineActivityRow, TimelineDisplayRow, TimelineMessageRow } from "./model";
 
-export interface TimelineVirtualItem {
-  row: TimelineDisplayRow;
+/** A row with the stable ID that keys its measured height. */
+export interface VirtualRow {
+  id: string;
+}
+
+export interface TimelineVirtualItem<Row extends VirtualRow = TimelineDisplayRow> {
+  row: Row;
   index: number;
   top: number;
   height: number;
 }
 
-export interface TimelineVirtualWindow {
-  items: TimelineVirtualItem[];
+export interface TimelineVirtualWindow<Row extends VirtualRow = TimelineDisplayRow> {
+  items: TimelineVirtualItem<Row>[];
   startIndex: number;
   endIndex: number;
   totalHeight: number;
@@ -54,9 +59,9 @@ export function timelineMinimapRows(
 }
 
 /**
- * Computes the visible timeline window from stable row measurements.
+ * Computes the visible window of a virtualized list from stable row measurements.
  *
- * @param rows Timeline display rows in sequence order.
+ * @param rows Rows in display order, each with a stable ID.
  * @param measuredHeights Known row heights keyed by stable row ID.
  * @param scrollTop Current scroll offset.
  * @param viewportHeight Visible container height.
@@ -64,14 +69,14 @@ export function timelineMinimapRows(
  * @param overscanPx Extra pixels rendered above and below the viewport.
  * @returns Bounded virtual rows and spacer dimensions.
  */
-export function computeTimelineVirtualWindow(
-  rows: readonly TimelineDisplayRow[],
+export function computeTimelineVirtualWindow<Row extends VirtualRow>(
+  rows: readonly Row[],
   measuredHeights: ReadonlyMap<string, number>,
   scrollTop: number,
   viewportHeight: number,
   estimatedHeight = 88,
   overscanPx = 500,
-): TimelineVirtualWindow {
+): TimelineVirtualWindow<Row> {
   const safeEstimate = positiveDimension(estimatedHeight, 88);
   const safeViewport = Math.max(0, viewportHeight);
   const startOffset = Math.max(0, scrollTop - Math.max(0, overscanPx));
@@ -86,7 +91,7 @@ export function computeTimelineVirtualWindow(
   const totalHeight = offsets.at(-1) ?? 0;
   const startIndex = lowerBound(offsets, startOffset, rows.length);
   const endIndex = Math.min(rows.length, Math.max(startIndex, lowerBound(offsets, endOffset, rows.length) + 1));
-  const items: TimelineVirtualItem[] = [];
+  const items: TimelineVirtualItem<Row>[] = [];
   for (let index = startIndex; index < endIndex; index += 1) {
     const row = rows[index];
     if (!row) continue;
@@ -107,6 +112,29 @@ export function computeTimelineVirtualWindow(
     paddingTop,
     paddingBottom: Math.max(0, totalHeight - renderedBottom),
   };
+}
+
+/**
+ * Returns the top offset a row has in the virtual layout, or `null` when the row is not in the list.
+ *
+ * @param rows Rows in display order, each with a stable ID.
+ * @param rowId ID of the row to locate.
+ * @param measuredHeights Known row heights keyed by stable row ID.
+ * @param estimatedHeight Height used until a row is measured.
+ */
+export function virtualRowTop<Row extends VirtualRow>(
+  rows: readonly Row[],
+  rowId: string,
+  measuredHeights: ReadonlyMap<string, number>,
+  estimatedHeight = 88,
+): number | null {
+  const safeEstimate = positiveDimension(estimatedHeight, 88);
+  let top = 0;
+  for (const row of rows) {
+    if (row.id === rowId) return top;
+    top += positiveDimension(measuredHeights.get(row.id), safeEstimate);
+  }
+  return null;
 }
 
 /** Preserves the same visible anchor after timeline geometry changes. */

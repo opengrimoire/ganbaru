@@ -7,10 +7,14 @@
   import type { ChatAgentRunRead, ChatThreadShellRead, ChatTimelinePageRead } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import {
+    exactExecutionReadKey,
+    exactExecutionRuns,
     exactRunPresentationsReady,
     latestRenderableAgentRun,
+    planExactExecutionReads,
     replyThreadRenderEntries,
     shouldGroupReplyMessages,
+    type CachedExactExecution,
   } from "$lib/chat/timeline/reply-thread-model";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { organizationalScrollFollowsEnd } from "$lib/chat/timeline/organizational-scroll";
@@ -57,7 +61,9 @@
   let executionSelectionRequest = 0;
   let executionThreadScope = $state<string | null>(null);
   let exactExecutionScope = "";
-  let exactExecutionRequest = 0;
+  let exactExecutionThreadId: string | null = null;
+  let exactExecutionCache = new Map<string, CachedExactExecution<ExactExecutionRead>>();
+  const exactExecutionReadsInFlight = new Set<string>();
   let exactExecutions = $state<Record<string, ExactExecutionRead>>({});
   let exactExecutionError = $state<string | null>(null);
   let scratchManagerOpen = $state(false);
@@ -180,38 +186,46 @@
     });
   }
 
+  /** Reads the exact turns of runs that are new or changed and merges them into the panel's read cache. */
   async function loadExactExecutions(
     runs: readonly ChatAgentRunRead[],
-    request: number,
-    scope: string,
+    threadId: string,
   ): Promise<void> {
+    const keys = runs.map(exactExecutionReadKey);
+    for (const key of keys) exactExecutionReadsInFlight.add(key);
     const threadReads = new Map<string, Promise<ChatThreadShellRead>>();
     const results = await Promise.allSettled(runs.map(async (run) => {
-      const threadId = run.providerExecutionThreadId;
-      if (!threadId) throw new Error("This execution has not started yet");
-      let threadRead = threadReads.get(threadId);
+      const executionThreadId = run.providerExecutionThreadId;
+      if (!executionThreadId) throw new Error("This execution has not started yet");
+      let threadRead = threadReads.get(executionThreadId);
       if (!threadRead) {
-        threadRead = chatApi.readChatThreadShell(threadId);
-        threadReads.set(threadId, threadRead);
+        threadRead = chatApi.readChatThreadShell(executionThreadId);
+        threadReads.set(executionThreadId, threadRead);
       }
       const [timelinePage, thread] = await Promise.all([
-        chatApi.readChatTimelineTurn(threadId, run.providerExecutionTurnId),
+        chatApi.readChatTimelineTurn(executionThreadId, run.providerExecutionTurnId),
         threadRead,
       ]);
-      return [run.id, { timelinePage, thread }] as const;
+      return { run, read: { timelinePage, thread } };
     }));
-    if (request !== exactExecutionRequest || scope !== exactExecutionScope) return;
-    const reads: Record<string, ExactExecutionRead> = {};
+    for (const key of keys) exactExecutionReadsInFlight.delete(key);
+    if (threadId !== exactExecutionThreadId) return;
     const failures: string[] = [];
     for (const result of results) {
       if (result.status === "fulfilled") {
-        reads[result.value[0]] = result.value[1];
+        const { run, read } = result.value;
+        const cached = exactExecutionCache.get(run.id);
+        if (!cached || cached.updatedAt <= run.updatedAt) {
+          exactExecutionCache.set(run.id, { updatedAt: run.updatedAt, read });
+        }
       } else {
         failures.push(result.reason instanceof Error ? result.reason.message : String(result.reason));
       }
     }
-    exactExecutions = reads;
-    exactExecutionError = failures[0] ?? null;
+    const plan = planExactExecutionReads(exactExecutionRuns(page?.agentRuns ?? []), exactExecutionCache, exactExecutionReadsInFlight);
+    exactExecutionCache = plan.cache;
+    exactExecutions = plan.visible;
+    if (failures.length > 0) exactExecutionError = failures[0] ?? null;
   }
 
   $effect(() => {
@@ -225,21 +239,23 @@
 
   $effect(() => {
     const currentPage = page;
-    const exactRuns = (currentPage?.agentRuns ?? []).filter((run) => (
-      run.providerExecutionThreadId !== null
-      && (run.scratchGenerationId !== null
-        || ["completed", "failed", "cancelled"].includes(run.state))
-    ));
-    const scope = currentPage
-      ? `${currentPage.thread.id}:${exactRuns.map((run) => `${run.id}:${run.updatedAt}`).join("|")}`
-      : "";
+    const exactRuns = exactExecutionRuns(currentPage?.agentRuns ?? []);
+    const threadId = currentPage?.thread.id ?? null;
+    const scope = threadId === null
+      ? ""
+      : `${threadId}:${exactRuns.map(exactExecutionReadKey).join("|")}`;
     if (scope === exactExecutionScope) return;
     exactExecutionScope = scope;
-    const request = ++exactExecutionRequest;
-    exactExecutions = {};
+    if (threadId !== exactExecutionThreadId) {
+      exactExecutionThreadId = threadId;
+      exactExecutionCache = new Map();
+    }
     exactExecutionError = null;
-    if (exactRuns.length > 0) {
-      void loadExactExecutions(exactRuns, request, scope);
+    const plan = planExactExecutionReads(exactRuns, exactExecutionCache, exactExecutionReadsInFlight);
+    exactExecutionCache = plan.cache;
+    exactExecutions = plan.visible;
+    if (threadId !== null && plan.toRead.length > 0) {
+      void loadExactExecutions(plan.toRead, threadId);
     }
   });
 

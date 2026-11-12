@@ -1,7 +1,7 @@
 use super::callbacks::{create_acp_terminal, plan_write_refusal, validate_terminal_command};
 use super::{
-    AcpTerminalCallbacks, AcpTerminalState, append_terminal_bytes, atomic_write_text,
-    verified_existing_file, verified_write_path,
+    AcpTerminalCallbacks, AcpTerminalState, TerminalStreamDecoder, append_terminal_bytes,
+    atomic_write_text, verified_existing_file, verified_write_path,
 };
 use crate::models::{ChatErrorCode, InteractionMode};
 use agent_client_protocol::schema::v1::CreateTerminalRequest;
@@ -77,6 +77,48 @@ fn terminal_callbacks_bound_output_and_session_ownership() {
     };
     append_terminal_bytes(&mut state, b"abcdef");
     assert_eq!(state.output, b"cdef");
+    assert!(state.truncated);
+}
+
+fn terminal_state(output_limit: usize) -> AcpTerminalState {
+    AcpTerminalState {
+        output: Vec::new(),
+        output_limit,
+        truncated: false,
+        exit_status: None,
+    }
+}
+
+/// A character split across reads of one stream survives bytes the other stream writes between
+/// the two reads, and an unfinished character at the end of a stream stays visible.
+#[test]
+fn terminal_streams_keep_characters_split_across_interleaved_reads() {
+    let mut state = terminal_state(1024);
+    let mut stdout = TerminalStreamDecoder::default();
+    let mut stderr = TerminalStreamDecoder::default();
+    let snowman = "\u{2603}".as_bytes();
+    stdout.append(&mut state, &[b'a', snowman[0]]);
+    stderr.append(&mut state, b"x");
+    stdout.append(&mut state, &snowman[1..2]);
+    stderr.append(&mut state, &[0xc3]);
+    stdout.append(&mut state, &snowman[2..]);
+    stderr.append(&mut state, &[0xa9, 0xff, b'y']);
+    stdout.append(&mut state, &[0xe2, 0x82]);
+    stdout.finish(&mut state);
+    stderr.finish(&mut state);
+    assert_eq!(
+        String::from_utf8_lossy(&state.output),
+        "ax\u{2603}\u{e9}\u{fffd}y\u{fffd}"
+    );
+    assert!(!state.truncated);
+}
+
+/// Truncating the front of the output never leaves half a character behind.
+#[test]
+fn terminal_truncation_drops_whole_characters() {
+    let mut state = terminal_state(4);
+    append_terminal_bytes(&mut state, "\u{e9}\u{e9}a".as_bytes());
+    assert_eq!(state.output, "\u{e9}a".as_bytes());
     assert!(state.truncated);
 }
 

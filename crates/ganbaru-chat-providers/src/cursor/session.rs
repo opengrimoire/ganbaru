@@ -42,7 +42,8 @@ mod router;
 
 #[cfg(test)]
 use callbacks::{
-    append_terminal_bytes, atomic_write_text, verified_existing_file, verified_write_path,
+    TerminalStreamDecoder, append_terminal_bytes, atomic_write_text, verified_existing_file,
+    verified_write_path,
 };
 use callbacks::{callback_permission_error, require_acp_session};
 #[cfg(test)]

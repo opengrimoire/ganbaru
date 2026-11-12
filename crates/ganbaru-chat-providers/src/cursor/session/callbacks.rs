@@ -345,13 +345,59 @@ pub(super) async fn capture_terminal_output<R: tokio::io::AsyncRead + Unpin>(
     state: Arc<Mutex<AcpTerminalState>>,
 ) {
     let mut buffer = [0u8; 8 * 1024];
+    let mut stream = TerminalStreamDecoder::default();
     loop {
         let read = match reader.read(&mut buffer).await {
             Ok(0) | Err(_) => break,
             Ok(read) => read,
         };
-        let Ok(mut state) = state.lock() else { break };
-        append_terminal_bytes(&mut state, &buffer[..read]);
+        let Ok(mut state) = state.lock() else { return };
+        stream.append(&mut state, &buffer[..read]);
+    }
+    if let Ok(mut state) = state.lock() {
+        stream.finish(&mut state);
+    }
+}
+
+/// The bytes of one terminal stream that end in an incomplete UTF-8 character.
+///
+/// Stdout and stderr share one output buffer, so a character split across two reads of one
+/// stream is held back until its last byte arrives instead of being interleaved with the other
+/// stream's bytes and decoded as replacement characters.
+#[derive(Default)]
+pub(super) struct TerminalStreamDecoder {
+    pending: Vec<u8>,
+}
+
+impl TerminalStreamDecoder {
+    /// Appends every complete character of `bytes`, keeping an incomplete trailing one pending.
+    pub(super) fn append(&mut self, state: &mut AcpTerminalState, bytes: &[u8]) {
+        self.pending.extend_from_slice(bytes);
+        let complete = complete_utf8_prefix(&self.pending);
+        append_terminal_bytes(state, &self.pending[..complete]);
+        self.pending.drain(..complete);
+    }
+
+    /// Appends the bytes still pending when the stream ended; they decode as replacement
+    /// characters because the character never completed.
+    pub(super) fn finish(&mut self, state: &mut AcpTerminalState) {
+        append_terminal_bytes(state, &self.pending);
+        self.pending.clear();
+    }
+}
+
+/// The length of `bytes` without a trailing UTF-8 sequence that more bytes could still complete.
+/// Invalid sequences count as complete, so they decode as replacement characters right away.
+fn complete_utf8_prefix(bytes: &[u8]) -> usize {
+    let mut offset = 0;
+    loop {
+        match std::str::from_utf8(&bytes[offset..]) {
+            Ok(_) => return bytes.len(),
+            Err(error) => match error.error_len() {
+                Some(invalid) => offset += error.valid_up_to() + invalid,
+                None => return offset + error.valid_up_to(),
+            },
+        }
     }
 }
 
@@ -359,9 +405,18 @@ pub(super) fn append_terminal_bytes(state: &mut AcpTerminalState, bytes: &[u8]) 
     state.output.extend_from_slice(bytes);
     let excess = state.output.len().saturating_sub(state.output_limit);
     if excess > 0 {
-        state.output.drain(..excess);
+        // Dropping the start of a character would leave its continuation bytes behind.
+        let boundary = state.output[excess..]
+            .iter()
+            .position(|byte| !is_utf8_continuation(*byte))
+            .map_or(state.output.len(), |position| excess + position);
+        state.output.drain(..boundary);
         state.truncated = true;
     }
+}
+
+fn is_utf8_continuation(byte: u8) -> bool {
+    byte & 0b1100_0000 == 0b1000_0000
 }
 
 pub(super) fn terminal_output_response(terminal: &AcpTerminal) -> ChatResult<Value> {

@@ -83,7 +83,12 @@ impl OpenCodeEventNormalizer {
                         }),
                     )?);
                 }
+                let interrupted = state.interrupt_requested.take();
                 if let Some(turn_id) = state.active_turn_id.take() {
+                    if interrupted.as_ref() == Some(&turn_id) {
+                        events.push(self.interrupted_turn(state, "session.status", turn_id)?);
+                        return Ok(events);
+                    }
                     events.push(self.event(
                         state,
                         "session.status",

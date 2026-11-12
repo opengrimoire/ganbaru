@@ -1013,6 +1013,61 @@ fn identical_status_and_delta_envelopes_are_not_deduplicated() {
     assert_eq!(text, "Hello world world");
 }
 
+/// OpenCode reports idle for an aborted turn, often before the abort request returns, so an idle
+/// that follows an interrupt settles the turn as interrupted with its turn ID, the driver then
+/// has nothing left to settle, and a failed abort leaves the next idle completing the turn.
+#[test]
+fn idle_after_an_interrupt_settles_the_turn_as_interrupted() {
+    let normalizer = OpenCodeEventNormalizer::new(
+        ProviderInstanceId::new("opencode-instance").unwrap(),
+        ChatThreadId::new("thread-fixture").unwrap(),
+        ProviderSessionId::new("local-session-fixture").unwrap(),
+    );
+    let mut state = OpenCodeRouteState::new(
+        "ses_fixture".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    );
+    let idle = include_str!("fixtures/events.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|envelope| envelope.to_string().contains(r#""type":"idle""#))
+        .unwrap();
+    let interrupted = ChatTurnId::new("turn-interrupted").unwrap();
+    state.active_turn_id = Some(interrupted.clone());
+    assert_eq!(state.request_interrupt(), Some(interrupted.clone()));
+    let events = normalizer.normalize(&mut state, idle.clone()).unwrap();
+    let settled = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.event,
+                CanonicalEvent::TurnAborted(aborted) if aborted.state == ChatTurnState::Interrupted
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(settled.len(), 1);
+    assert_eq!(settled[0].turn_id.as_ref(), Some(&interrupted));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.event, CanonicalEvent::TurnCompleted(_)))
+    );
+    assert_eq!(state.take_interrupted_turn(&interrupted), None);
+
+    let completed = ChatTurnId::new("turn-completed").unwrap();
+    state.active_turn_id = Some(completed.clone());
+    state.request_interrupt();
+    state.cancel_interrupt();
+    let events = normalizer.normalize(&mut state, idle).unwrap();
+    assert!(events.iter().any(|event| {
+        matches!(event.event, CanonicalEvent::TurnCompleted(_))
+            && event.turn_id.as_ref() == Some(&completed)
+    }));
+}
+
 #[test]
 fn permission_session_option_is_withheld_when_its_grants_cannot_be_listed() {
     let normalizer = OpenCodeEventNormalizer::new(

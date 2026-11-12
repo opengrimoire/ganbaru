@@ -33,6 +33,9 @@ pub const SESSION_RULE_OPTION_ID: &str = "session_rule";
 pub struct OpenCodeRouteState {
     pub provider_thread_id: String,
     pub active_turn_id: Option<ChatTurnId>,
+    /// The turn the user interrupted or stopped; when OpenCode reports idle for it before the abort
+    /// returns, the turn settles as interrupted rather than completed.
+    interrupt_requested: Option<ChatTurnId>,
     pub session_state: ProviderSessionState,
     pub modes: TurnModeSnapshot,
     message_roles: HashMap<String, String>,
@@ -72,6 +75,7 @@ impl OpenCodeRouteState {
         Self {
             provider_thread_id,
             active_turn_id: None,
+            interrupt_requested: None,
             session_state: ProviderSessionState::Ready,
             modes,
             message_roles: HashMap::new(),
@@ -97,6 +101,27 @@ impl OpenCodeRouteState {
     /// for as long as the user takes to answer.
     pub fn awaiting_user(&self) -> bool {
         !self.pending_permissions.is_empty() || !self.pending_questions.is_empty()
+    }
+
+    /// Marks the active turn as interrupted by the user and returns it, or returns `None` when
+    /// no turn is active.
+    pub fn request_interrupt(&mut self) -> Option<ChatTurnId> {
+        self.interrupt_requested = self.active_turn_id.clone();
+        self.interrupt_requested.clone()
+    }
+
+    /// Clears an interrupt mark after the abort request failed, so a later idle completes the turn.
+    pub fn cancel_interrupt(&mut self) {
+        self.interrupt_requested = None;
+    }
+
+    /// Takes the active turn when it is still the interrupted one, so the caller settles it.
+    pub fn take_interrupted_turn(&mut self, turn_id: &ChatTurnId) -> Option<ChatTurnId> {
+        if self.active_turn_id.as_ref() != Some(turn_id) {
+            return None;
+        }
+        self.interrupt_requested = None;
+        self.active_turn_id.take()
     }
 
     /// Session rules an allow-for-session answer to a pending request would grant.
@@ -383,6 +408,26 @@ impl OpenCodeEventNormalizer {
         event: CanonicalEvent,
     ) -> ChatResult<CanonicalRuntimeEvent> {
         self.event(state, source, None, None, event)
+    }
+
+    /// Settles a turn the user interrupted.
+    pub fn interrupted_turn(
+        &self,
+        state: &OpenCodeRouteState,
+        source: &str,
+        turn_id: ChatTurnId,
+    ) -> ChatResult<CanonicalRuntimeEvent> {
+        self.event(
+            state,
+            source,
+            None,
+            Some(turn_id),
+            CanonicalEvent::TurnAborted(TurnAbortedEvent {
+                state: ChatTurnState::Interrupted,
+                reason: "Interrupted by user".to_string(),
+                recoverable: true,
+            }),
+        )
     }
 
     fn item_event(

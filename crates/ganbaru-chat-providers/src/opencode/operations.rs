@@ -369,44 +369,54 @@ impl ProviderDriver for OpenCodeProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             let live = self.live_mut(&request.session_id)?;
-            let active_turn_id = live
-                .route
-                .lock()
-                .map_err(|_| driver_state_error())?
-                .active_turn_id
-                .clone();
-            if active_turn_id.is_none() {
-                return Ok(operation_receipt(
-                    request.command.client_command_id.as_str(),
-                    "OpenCode turn was already settled",
-                ));
+            {
+                let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                match state.active_turn_id.as_ref() {
+                    None => {
+                        return Ok(operation_receipt(
+                            request.command.client_command_id.as_str(),
+                            "OpenCode turn was already settled",
+                        ));
+                    }
+                    Some(active) if active != &request.turn_id => {
+                        return Err(ChatError::new(
+                            ChatErrorCode::Conflict,
+                            "OpenCode interrupt does not match the active turn",
+                            false,
+                        ));
+                    }
+                    Some(_) => {
+                        state.request_interrupt();
+                    }
+                }
             }
-            if active_turn_id.as_ref() != Some(&request.turn_id) {
-                return Err(ChatError::new(
-                    ChatErrorCode::Conflict,
-                    "OpenCode interrupt does not match the active turn",
-                    false,
-                ));
+            if let Err(error) = live.client.abort(&live.provider_thread_id).await {
+                live.route
+                    .lock()
+                    .map_err(|_| driver_state_error())?
+                    .cancel_interrupt();
+                return Err(error);
             }
-            live.client.abort(&live.provider_thread_id).await?;
             if let Some(task) = live.command_task.take() {
                 task.abort();
             }
             let event = {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
-                state.active_turn_id = None;
-                state.session_state = ProviderSessionState::Ready;
-                live.normalizer.external_event(
-                    &state,
-                    "turn/interrupted",
-                    CanonicalEvent::TurnAborted(TurnAbortedEvent {
-                        state: ChatTurnState::Interrupted,
-                        reason: "Interrupted by user".to_string(),
-                        recoverable: true,
-                    }),
-                )?
+                match state.take_interrupted_turn(&request.turn_id) {
+                    Some(turn_id) => {
+                        state.session_state = ProviderSessionState::Ready;
+                        Some(live.normalizer.interrupted_turn(
+                            &state,
+                            "turn/interrupted",
+                            turn_id,
+                        )?)
+                    }
+                    None => None,
+                }
             };
-            live.sink.emit(event).await?;
+            if let Some(event) = event {
+                live.sink.emit(event).await?;
+            }
             Ok(operation_receipt(
                 request.command.client_command_id.as_str(),
                 "OpenCode turn interrupt requested",
@@ -581,6 +591,10 @@ impl ProviderDriver for OpenCodeProviderDriver {
                     false,
                 ));
             }
+            live.route
+                .lock()
+                .map_err(|_| driver_state_error())?
+                .request_interrupt();
             let abort_result = live.client.abort(&live.provider_thread_id).await;
             live.expected_shutdown.store(true, Ordering::Release);
             live.event_task.abort();

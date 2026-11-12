@@ -733,7 +733,8 @@ pub(super) const CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS: &str = "Channel context ar
 Lines records with `kind`, `id`, and `text` fields, where `thread_root`, `thread_reply`, \
 `channel_message`, and `trigger` records hold message text, `truncated_from_bytes` marks text \
 that was cut, a `pointer` record stands for a long earlier teammate reply with its \
-`revision`, its size in `bytes`, and only an `opening` ending in `[shortened]`, a `coverage` \
+`revision`, its size in `bytes`, and only an `opening` ending in `[shortened]` (call \
+`chat_read_reply_pointer` with its `id` when you need the whole reply), a `coverage` \
 record counts the replies and channel messages left out, a `follow_up` record is a newer message from the same thread sent while you work, a \
 `continuation` record opens a turn that continues your session in this reply thread, so the \
 records after it are only what changed since your last turn and `omitted_delivered` counts the \

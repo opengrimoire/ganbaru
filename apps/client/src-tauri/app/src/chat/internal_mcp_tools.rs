@@ -14,6 +14,7 @@ mod audit;
 mod authorization;
 mod channels;
 pub(super) mod delegation;
+mod pointers;
 mod registry;
 mod reports;
 mod workspace;
@@ -210,7 +211,12 @@ fn definition(tool: HostTool) -> Option<Tool> {
             reports::report_properties(),
             false,
         ),
-        HostTool::ReadReplyPointer | HostTool::RequestSecret | HostTool::SecretStatus => {
+        HostTool::ReadReplyPointer => read_tool(
+            name,
+            "Read the whole text of an earlier reply that a pointer record shortened",
+            pointers::properties(),
+        ),
+        HostTool::RequestSecret | HostTool::SecretStatus => {
             return None;
         }
     };
@@ -367,9 +373,8 @@ async fn dispatch(
         }
         HostTool::Ask => reports::ask(context, arguments).await,
         HostTool::Report => reports::report(context, arguments).await,
-        HostTool::ReadReplyPointer | HostTool::RequestSecret | HostTool::SecretStatus => {
-            Err(generic_denial_error())
-        }
+        HostTool::ReadReplyPointer => pointers::read_reply_pointer(context, arguments).await,
+        HostTool::RequestSecret | HostTool::SecretStatus => Err(generic_denial_error()),
     }
 }
 
@@ -856,7 +861,7 @@ mod tests {
         );
         for tool in [
             None,
-            Some(HostTool::ReadReplyPointer),
+            Some(HostTool::RequestSecret),
             Some(HostTool::WriteWorkspaceFile),
         ] {
             let error = authorize_call(&pool, &thread_id, &reading, tool)
@@ -869,6 +874,35 @@ mod tests {
         let error = authorize_call(&pool, &thread_id, &stale, Some(HostTool::ReadWorkspaceFile))
             .await
             .unwrap_err();
+        assert_eq!(error.message, GENERIC_DENIAL);
+    }
+
+    #[tokio::test]
+    async fn a_teammate_removed_from_the_channel_cannot_expand_a_pointer() {
+        let pool = pool_with_folder_runs().await;
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        let reading = working_scope(ChatFolderCapability::Read);
+        authorize_call(
+            &pool,
+            &thread_id,
+            &reading,
+            Some(HostTool::ReadReplyPointer),
+        )
+        .await
+        .expect("offered while the scope is live");
+        sqlx::query("UPDATE chat_teammate_channel_memberships SET removed_at = ?")
+            .bind("2026-11-12T09:00:00.000Z")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let error = authorize_call(
+            &pool,
+            &thread_id,
+            &reading,
+            Some(HostTool::ReadReplyPointer),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.message, GENERIC_DENIAL);
     }
 

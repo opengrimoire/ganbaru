@@ -1090,7 +1090,7 @@
   .chat-timeline-scrollbar-thumb:hover, .chat-timeline-scrollbar-thumb.dragging { background-color: var(--app-scrollbar-thumb-hover); }
   .chat-timeline-row { --chat-participant-gap: 0.75rem; border-radius: 0.4rem; }
   .chat-timeline-row.optimistic { animation: chat-message-in 140ms ease-out; }
-  .chat-timeline-row.participant-start { margin-top: 1.1rem; }
+  .chat-timeline-row.participant-start { margin-top: var(--chat-participant-start-space, 1.1rem); }
   .chat-timeline-row:first-child { margin-top: 0; }
   .chat-participant-row { display: grid; min-width: 0; grid-template-columns: 36px minmax(0, 1fr); align-items: start; gap: var(--chat-participant-gap); }
   .chat-participant-content { --chat-message-action-anchor-bottom:1.25rem; position:relative; min-width:0; transform:translateY(-4px); }

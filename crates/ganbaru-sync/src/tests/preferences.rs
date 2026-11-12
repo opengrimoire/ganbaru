@@ -140,6 +140,13 @@ fn preferences_chat_behavior_replicates_and_reports_its_key() {
             EARLY,
         )
         .await;
+        set(
+            &mut replicas[0],
+            "chat.behavior.timelineDensity",
+            "\"compact\"",
+            EARLY,
+        )
+        .await;
         replicas[0].seal().await.unwrap();
         let mut notices = pull_notices(&mut replicas, 1, 0).await;
         notices.sort_by(|a, b| a.key.cmp(&b.key));
@@ -147,7 +154,8 @@ fn preferences_chat_behavior_replicates_and_reports_its_key() {
             notices,
             [
                 notice("chat.behavior.sendKey"),
-                notice("chat.behavior.terminalScrollbackLines")
+                notice("chat.behavior.terminalScrollbackLines"),
+                notice("chat.behavior.timelineDensity")
             ]
         );
         assert_eq!(
@@ -170,6 +178,12 @@ fn preferences_chat_behavior_replicates_and_reports_its_key() {
                     .await
                     .as_deref(),
                 Some(format!("2000@{EARLY}").as_str())
+            );
+            assert_eq!(
+                value(replica, "chat.behavior.timelineDensity")
+                    .await
+                    .as_deref(),
+                Some(format!("\"compact\"@{EARLY}").as_str())
             );
         }
     });

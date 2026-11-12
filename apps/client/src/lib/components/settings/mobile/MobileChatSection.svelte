@@ -2,15 +2,18 @@
   import { onMount } from "svelte";
   import type { ChatBehaviorPreferences } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { readTimelineDensity, timelineDensityOptions } from "$lib/chat/timeline/density";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
 
   const chat = getChat();
   const { t } = getLocalization();
   const behavior = $derived(chat.settings?.configuration.behavior ?? null);
+  const densityOptions = $derived(timelineDensityOptions(t));
   let loading = $state(!chat.loaded);
   let saving = $state(false);
   let error = $state<string | null>(null);
@@ -61,6 +64,14 @@
       <Loading layout="rows" rows={3} />
     {:else if behavior}
       <div class="flex flex-col gap-3">
+        <Select
+          label={t("settings.chat.behavior.timelineDensity")}
+          description={t("settings.chat.behavior.timelineDensityDescription")}
+          value={behavior.timelineDensity}
+          options={densityOptions}
+          onChange={(value) => void update({ timelineDensity: readTimelineDensity(value) })}
+          disabled={saving}
+        />
         <SwitchField
           label={t("settings.chat.behavior.restoreThread")}
           description={t("settings.chat.behavior.restoreThreadDescription")}

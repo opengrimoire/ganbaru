@@ -141,7 +141,7 @@ fn behavior_writes_one_preference_per_field() {
         .map(|patch| patch.path.join("."))
         .collect::<Vec<_>>();
 
-    assert_eq!(patches.len(), 7);
+    assert_eq!(patches.len(), 8);
     assert!(patches.iter().all(|patch| !patch.remove));
     assert!(paths.iter().all(|path| path.starts_with("chat.behavior.")));
     assert!(paths.contains(&"chat.behavior.confirmMultilineTerminalPaste".to_owned()));

@@ -6,8 +6,9 @@
 //! the sources it has not already received.
 
 use super::common::{MAX_MESSAGE_BYTES, sha256_hex, truncate_utf8};
+use super::context::SHORTENED_MARKER;
 use super::persistence_error;
-use ganbaru_chat::agent_runs::{AttemptReason, DeliveredSource, DeliveryKind, HandoffReason};
+use ganbaru_chat::agent_runs::{AttemptReason, DeliveredSource, HandoffReason};
 use ganbaru_chat_contracts::models::*;
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -175,9 +176,6 @@ const MAX_FRAMED_NAME_BYTES: usize = 160 * 4;
 /// boundary and marked, so the framing stays within its reserve.
 const MAX_FRAMED_ROLE_BYTES: usize = 1536;
 
-/// Marks a framed value that was cut to its bound.
-const SHORTENED_MARKER: &str = " [shortened]";
-
 /// Separates the framing, the context package format, and the teammate's instructions.
 const INSTRUCTIONS_SEPARATOR: &str = "\n\n";
 
@@ -332,7 +330,7 @@ pub(super) fn select_delta(
         sources.push(DeliveredSource {
             source_id: source.source_id.clone(),
             content_sha256: source.content_sha256.clone(),
-            kind: DeliveryKind::Package,
+            kind: super::context::record_delivery_kind(record.line),
         });
     }
     let header = continuation_header_line(assignment_id, omitted_delivered)?;
@@ -368,7 +366,7 @@ fn continuation_header_line(
 
 /// Pairs the records of the frozen package `context_package_id`, whose text is `serialized`,
 /// with the sources it recorded. A source row's ordinal is the index of its record.
-async fn read_package_records<'a>(
+pub(super) async fn read_package_records<'a>(
     pool: &SqlitePool,
     context_package_id: &str,
     serialized: &'a str,
@@ -769,6 +767,7 @@ mod tests {
         use crate::chat::organization::context::{
             TestPackageRecord, follow_up_context_line, test_package_records,
         };
+        use ganbaru_chat::agent_runs::DeliveryKind;
         use serde_json::Value;
 
         /// Largest bytes a full package adds around a lone trigger's text. Raising it is a

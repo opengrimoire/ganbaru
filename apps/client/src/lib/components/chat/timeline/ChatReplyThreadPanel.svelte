@@ -7,6 +7,7 @@
   import type { ChatAgentRunRead, ChatThreadShellRead, ChatTimelinePageRead } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import {
+    agentRunRestart,
     exactRunPresentationsReady,
     latestRenderableAgentRun,
     replyThreadRenderEntries,
@@ -105,6 +106,15 @@
 
   function entryCreatedAt(entry: (typeof renderEntries)[number]): string {
     return entry.kind === "message" ? entry.message.createdAt : entry.run.createdAt;
+  }
+
+  /** Names how a run restarted its provider session, or `null` for an ordinary start. */
+  function runRestartLabel(run: ChatAgentRunRead): string | null {
+    switch (agentRunRestart(run)) {
+      case "handoff": return t("chat.runs.attemptReason.handoff");
+      case "retry": return t("chat.runs.attemptReason.retry");
+      case null: return null;
+    }
   }
 
   function preventMiddleButtonScroll(event: MouseEvent): void {
@@ -368,6 +378,8 @@
           />
         {:else}
           {@const exactExecution = exactExecutions[entry.run.id]}
+          {@const restartLabel = runRestartLabel(entry.run)}
+          {#if restartLabel}<p class="run-restart" data-run-restart>{restartLabel}</p>{/if}
           <ChatExecutionTimeline
             embedded
             hideUserMessages
@@ -416,6 +428,7 @@
   .thread-scroll { min-height:0; flex:1; overflow-y:scroll; overscroll-behavior:contain; padding-block:0.4rem; }
   .date-divider { display:flex; align-items:center; gap:0.5rem; margin:0.75rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .date-divider::before,.date-divider::after { height:1px; flex:1; background:var(--border); content:""; }
+  .run-restart { margin:0.25rem 0.75rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .thread-request { flex:0 0 auto; border-top:1px solid var(--border); padding:0.5rem; }
   .thread-composer { display:flex; flex:0 0 auto; justify-content:center; padding:0.5rem 0.5rem 0.75rem; }
   .reply-thread-panel :global(.thread-error) { padding:0.6rem; font-size: calc(0.7rem * var(--type-scale)); }

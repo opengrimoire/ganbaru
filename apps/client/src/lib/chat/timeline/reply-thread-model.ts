@@ -112,3 +112,8 @@ function fallbackRunPosition(ordered: readonly ChatMessageRead[], createdAt: str
   if (following !== null) return following - 0.5;
   return -0.5;
 }
+
+/** Returns how a run restarted its provider session, or `null` when it opened or continued one as planned. */
+export function agentRunRestart(run: ChatAgentRunRead): "handoff" | "retry" | null {
+  return run.attemptReason === "handoff" || run.attemptReason === "retry" ? run.attemptReason : null;
+}

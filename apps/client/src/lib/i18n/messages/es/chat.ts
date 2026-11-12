@@ -989,4 +989,10 @@ export const chat = {
       unknown: "Aviso",
     },
   },
+  runs: {
+    attemptReason: {
+      handoff: "Se inició una sesión nueva",
+      retry: "Se reintentó en una sesión nueva",
+    },
+  },
 } as const satisfies MessageShape<typeof enChat>;

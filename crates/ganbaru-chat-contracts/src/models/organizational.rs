@@ -993,6 +993,10 @@ pub struct ChatAgentRunRead {
     pub provider_execution_thread_id: Option<ChatThreadId>,
     pub state: String,
     pub run_ordinal: u64,
+    /// Why this run exists: `fresh`, `retry`, or `handoff`.
+    pub attempt_reason: String,
+    /// Why a handoff run replaced its native session; set exactly when the run is a handoff.
+    pub handoff_reason: Option<String>,
     pub created_at: UtcTimestamp,
     pub updated_at: UtcTimestamp,
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import utcTimestamps from "../../../test-fixtures/utc-timestamps.json";
 import {
   defaultChatConfiguration,
+  parseChatAgentRun,
   parseChatChannel,
   parseChatChannelPage,
   parsePostChatMessageResult,
@@ -905,6 +906,41 @@ describe("Chat read and error contracts", () => {
     };
     expect(parseChatDiagnosticsRead(fixture)).toEqual(fixture);
     expect(() => parseChatDiagnosticsRead({ ...fixture, preferences: { captureEnabled: true, retentionDays: 31 } })).toThrow("between 1 and 30");
+  });
+
+  it("parses each agent run attempt reason and rejects unknown or inconsistent ones", () => {
+    const fixture = {
+      id: "run:1",
+      assignmentId: "assignment:1",
+      projectId: "project-1",
+      workingFolderId: "workspace-1",
+      executionEnvironmentId: "current-folder:workspace-1",
+      scratchGenerationId: null,
+      teammatePolicyRevisionId: "policy:1",
+      effort: null,
+      providerExecutionTurnId: "turn-1",
+      providerExecutionThreadId: "thread-1",
+      state: "completed",
+      runOrdinal: 1,
+      attemptReason: "fresh",
+      handoffReason: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    for (const attemptReason of ["fresh", "continuation", "retry"]) {
+      expect(parseChatAgentRun({ ...fixture, attemptReason })).toEqual({ ...fixture, attemptReason });
+    }
+    for (const handoffReason of ["key_changed", "authority_revoked", "native_session_lost"]) {
+      const handoff = { ...fixture, attemptReason: "handoff", handoffReason };
+      expect(parseChatAgentRun(handoff)).toEqual(handoff);
+    }
+    expect(() => parseChatAgentRun({ ...fixture, attemptReason: "resumed" })).toThrow("attemptReason has an unsupported value");
+    expect(() => parseChatAgentRun({ ...fixture, attemptReason: undefined })).toThrow("attemptReason");
+    expect(() => parseChatAgentRun({
+      ...fixture, attemptReason: "handoff", handoffReason: "provider_changed",
+    })).toThrow("handoffReason has an unsupported value");
+    expect(() => parseChatAgentRun({ ...fixture, attemptReason: "handoff" })).toThrow("set exactly when");
+    expect(() => parseChatAgentRun({ ...fixture, handoffReason: "key_changed" })).toThrow("set exactly when");
   });
 
   it("parses lightweight thread shells without message history", () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatAgentRunRead, ChatMessageRead, VersionedJson } from "$lib/chat/contracts";
 import {
+  agentRunRestart,
   exactRunPresentationsReady,
   latestRenderableAgentRun,
   replyThreadRenderEntries,
@@ -26,6 +27,8 @@ function agentRun(id: string, providerExecutionThreadId: string | null): ChatAge
     providerExecutionThreadId,
     state: "working",
     runOrdinal: 1,
+    attemptReason: "fresh",
+    handoffReason: null,
     createdAt: "2026-08-02T08:00:00Z",
     updatedAt: "2026-08-02T08:00:01Z",
   };
@@ -196,5 +199,17 @@ describe("reply thread message grouping", () => {
       unattributed,
       message("attributed", "teammate-1", "2026-08-02T08:01:00Z"),
     )).toBe(false);
+  });
+});
+
+describe("reply thread run restarts", () => {
+  it("labels only runs that handed off or retried in a new session", () => {
+    const run = agentRun("run-1", "thread-1");
+    expect(agentRunRestart({ ...run, attemptReason: "fresh" })).toBeNull();
+    expect(agentRunRestart({ ...run, attemptReason: "continuation" })).toBeNull();
+    expect(agentRunRestart({ ...run, attemptReason: "retry" })).toBe("retry");
+    expect(agentRunRestart({
+      ...run, attemptReason: "handoff", handoffReason: "native_session_lost",
+    })).toBe("handoff");
   });
 });

@@ -4,6 +4,7 @@ use super::assignments::read_assignment_subject;
 use super::common::{
     native_assignment_safety_mode, new_id, parse_runtime_approval_policy, this_device_id,
 };
+use super::context;
 use super::continuation::{self, CandidateRun, ContinuationKey, TransitionInput};
 use super::reads::read_policy;
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
@@ -579,12 +580,13 @@ async fn dispatch_claimed_assignment(
         }
         _ => None,
     };
+    let full_sources = package_sources(pool, &context_package_id, &full_package).await?;
     let delivery = choose_context_delivery(
         decision.reason,
         delta,
         FullPackage {
             prompt: full_package,
-            delivered_sources: package_sources(pool, &context_package_id).await?,
+            delivered_sources: full_sources,
         },
     );
     let request = super::super::send_commands::SendChatTurnCommand {
@@ -701,29 +703,27 @@ fn choose_context_delivery(
     }
 }
 
-/// The sources of the frozen context package `context_package_id`, in package order, as
-/// sources a launch delivers.
+/// The sources of the frozen context package `context_package_id`, whose text is `serialized`,
+/// in package order, as sources a launch delivers. A pointer record delivers its source as a
+/// pointer.
 async fn package_sources(
     pool: &SqlitePool,
     context_package_id: &str,
+    serialized: &str,
 ) -> ChatResult<Vec<DeliveredSource>> {
-    sqlx::query_as::<_, (String, String)>(
-        "SELECT source_id, content_sha256 FROM chat_assignment_context_sources
-         WHERE context_package_id = ? ORDER BY ordinal",
-    )
-    .bind(context_package_id)
-    .fetch_all(pool)
-    .await
-    .map_err(persistence_error)
-    .map(|rows| {
-        rows.into_iter()
-            .map(|(source_id, content_sha256)| DeliveredSource {
-                source_id,
-                content_sha256,
-                kind: DeliveryKind::Package,
+    Ok(
+        continuation::read_package_records(pool, context_package_id, serialized)
+            .await?
+            .into_iter()
+            .filter_map(|record| {
+                record.source.map(|source| DeliveredSource {
+                    source_id: source.source_id,
+                    content_sha256: source.content_sha256,
+                    kind: context::record_delivery_kind(record.line),
+                })
             })
-            .collect()
-    })
+            .collect(),
+    )
 }
 
 /// Where an assignment run executes, which a reusable earlier run must share.

@@ -8,7 +8,7 @@ use super::continuation::{self, CandidateRun, ContinuationKey, TransitionInput};
 use super::reads::read_policy;
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
 use ganbaru_chat::agent_runs::{
-    ContextDelivery, DeliveredSource, DeliveryKind, RunAttempt, RunLaunch,
+    AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind, RunAttempt, RunLaunch,
 };
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, SqlitePool};
@@ -536,6 +536,31 @@ async fn dispatch_claimed_assignment(
     };
     let developer_instructions = claim.instructions.clone();
     let project_id: String = row.try_get("project_id").map_err(persistence_error)?;
+    let context_package_id: String = row
+        .try_get("context_package_id")
+        .map_err(persistence_error)?;
+    let full_package: String = row.try_get("serialized_text").map_err(persistence_error)?;
+    let delta = match (decision.reason, existing_thread_id.as_ref()) {
+        (AttemptReason::Continuation, Some(thread_id)) => {
+            continuation::build_delta_package(
+                pool,
+                assignment_id,
+                &context_package_id,
+                &full_package,
+                thread_id.as_str(),
+            )
+            .await?
+        }
+        _ => None,
+    };
+    let (prompt, context_delivery, delivered_sources) = match delta {
+        Some(delta) => (delta.text, ContextDelivery::Delta, delta.sources),
+        None => (
+            full_package,
+            ContextDelivery::Full,
+            package_sources(pool, &context_package_id).await?,
+        ),
+    };
     let request = super::super::send_commands::SendChatTurnCommand {
         command: ChatCommandContext {
             client_command_id: ChatCommandId::new(format!(
@@ -562,23 +587,20 @@ async fn dispatch_claimed_assignment(
             resolved_runtime_approval,
             has_native_target,
         ),
-        prompt: row.try_get("serialized_text").map_err(persistence_error)?,
+        prompt,
         attachment_ids,
         mentions,
     };
-    let context_package_id: String = row
-        .try_get("context_package_id")
-        .map_err(persistence_error)?;
     let launch = RunLaunch {
         claim_token: claim.token.clone(),
         attempt: RunAttempt {
             reason: decision.reason,
             instructions_sha256: Some(key.instructions_sha256),
             model_selection_sha256: Some(key.model_selection_sha256),
-            context_delivery: ContextDelivery::Full,
+            context_delivery,
             delivered_context_bytes: u64::try_from(request.prompt.len())
                 .map_err(|_| ChatError::validation("prompt", "Assignment context is too large"))?,
-            delivered_sources: package_sources(pool, &context_package_id).await?,
+            delivered_sources,
         },
     };
     let run_id = ChatAgentRunId::new(new_id("agent-run")?).map_err(identifier_error)?;
@@ -910,7 +932,11 @@ async fn fail_assignment_dispatch(
 #[derive(Debug)]
 struct PreparedAssignmentInput {
     thread_id: ChatThreadId,
+    /// The working run the input steers into.
+    run_id: ChatAgentRunId,
     prompt: String,
+    /// The source the run receives once the steer reaches the provider.
+    delivered: DeliveredSource,
 }
 
 /// Reads the pending input `message_item_id` of `assignment_id` and frames it as a follow-up
@@ -946,8 +972,8 @@ async fn prepare_assignment_input(
         ));
     }
     let row = sqlx::query(
-        "SELECT run.provider_thread_id, run.scratch_generation_id,
-                run.authorization_revision_id, revision.revision,
+        "SELECT run.id AS run_id, run.provider_thread_id, run.scratch_generation_id,
+                run.authorization_revision_id, input.routing_kind, revision.revision,
                 revision.normalized_markdown
          FROM chat_agent_runs run
          JOIN chat_assignment_authorization_revisions authorization
@@ -1008,13 +1034,73 @@ async fn prepare_assignment_input(
         )
         .await?;
     }
-    let prompt = super::context::follow_up_context_line(
+    let run_id = ChatAgentRunId::new(
+        row.try_get::<String, _>("run_id")
+            .map_err(persistence_error)?,
+    )
+    .map_err(identifier_error)?;
+    let routing_kind: String = row.try_get("routing_kind").map_err(persistence_error)?;
+    let framed = super::context::follow_up_context_line(
         message_item_id.as_str(),
         u64_value(row.try_get("revision").map_err(persistence_error)?)?,
         row.try_get("normalized_markdown")
             .map_err(persistence_error)?,
     )?;
-    Ok(Some(PreparedAssignmentInput { thread_id, prompt }))
+    Ok(Some(PreparedAssignmentInput {
+        thread_id,
+        run_id,
+        prompt: framed.line,
+        delivered: DeliveredSource {
+            source_id: message_item_id.as_str().to_string(),
+            content_sha256: framed.content_sha256,
+            kind: live_input_delivery_kind(&routing_kind),
+        },
+    }))
+}
+
+/// How a live input reaches its run: a queued continuation as the next turn, and any other
+/// input steered into the running turn.
+fn live_input_delivery_kind(routing_kind: &str) -> DeliveryKind {
+    if routing_kind == "queued_continuation" {
+        DeliveryKind::QueuedContinuation
+    } else {
+        DeliveryKind::Steer
+    }
+}
+
+/// Marks the input `message_item_id` of `assignment_id` delivered after its steer reached the
+/// provider, and records the source on the run that took it in the same transaction, so a later
+/// continuation of the session does not send it again. An input another delivery already
+/// marked records nothing.
+async fn record_assignment_input_delivered(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    message_item_id: &ChatConversationItemId,
+    prepared: &PreparedAssignmentInput,
+) -> ChatResult<()> {
+    let now = now_timestamp()?;
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let marked = sqlx::query(
+        "UPDATE chat_work_assignment_inputs SET delivery_state = 'delivered', delivered_at = ?
+         WHERE assignment_id = ? AND message_item_id = ? AND delivery_state = 'pending'",
+    )
+    .bind(now.as_str())
+    .bind(assignment_id.as_str())
+    .bind(message_item_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?
+    .rows_affected();
+    if marked > 0 {
+        ganbaru_chat::agent_runs::insert_delivered_sources(
+            &mut transaction,
+            &prepared.run_id,
+            std::slice::from_ref(&prepared.delivered),
+            &now,
+        )
+        .await?;
+    }
+    transaction.commit().await.map_err(persistence_error)
 }
 
 pub(super) async fn deliver_assignment_input(
@@ -1024,8 +1110,7 @@ pub(super) async fn deliver_assignment_input(
     message_item_id: ChatConversationItemId,
 ) -> ChatResult<()> {
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
-    let Some(PreparedAssignmentInput { thread_id, prompt }) =
-        prepare_assignment_input(&pool, &assignment_id, &message_item_id).await?
+    let Some(prepared) = prepare_assignment_input(&pool, &assignment_id, &message_item_id).await?
     else {
         return Ok(());
     };
@@ -1042,24 +1127,14 @@ pub(super) async fn deliver_assignment_input(
                 .map_err(identifier_error)?,
                 expected_thread_revision: None,
             },
-            thread_id,
+            thread_id: prepared.thread_id.clone(),
             message_id: ChatMessageId::new(new_id("provider-steer-message")?)
                 .map_err(identifier_error)?,
-            prompt,
+            prompt: prepared.prompt.clone(),
         },
     )
     .await?;
-    sqlx::query(
-        "UPDATE chat_work_assignment_inputs SET delivery_state = 'delivered', delivered_at = ?
-         WHERE assignment_id = ? AND message_item_id = ? AND delivery_state = 'pending'",
-    )
-    .bind(now_timestamp()?.as_str())
-    .bind(assignment_id.as_str())
-    .bind(message_item_id.as_str())
-    .execute(&pool)
-    .await
-    .map_err(persistence_error)?;
-    Ok(())
+    record_assignment_input_delivered(&pool, &assignment_id, &message_item_id, &prepared).await
 }
 
 /// Chooses the turn modes for an organizational assignment. Native targets run
@@ -1301,7 +1376,7 @@ mod tests {
     mod launch {
         use super::super::{
             AssignmentLaunch, fail_assignment_dispatch, mark_initial_assignment_input_delivered,
-            pending_live_input_ids, prepare_assignment_input,
+            pending_live_input_ids, prepare_assignment_input, record_assignment_input_delivered,
         };
         use crate::chat::organization::assignments::reclaim_stale_dispatch_claims;
         use ganbaru_chat::agent_runs::{
@@ -1820,15 +1895,62 @@ mod tests {
                 .unwrap()
                 .expect("the working run takes the pending continuation");
             assert_eq!(prepared.thread_id.as_str(), "thread-1");
+            assert_eq!(prepared.run_id.as_str(), "run:working");
+            let framed = super::super::super::context::follow_up_context_line(
+                "item:continuation",
+                1,
+                "Then update the docs".to_string(),
+            )
+            .unwrap();
+            assert_eq!(prepared.prompt, framed.line);
             assert_eq!(
-                prepared.prompt,
-                super::super::super::context::follow_up_context_line(
-                    "item:continuation",
-                    1,
-                    "Then update the docs".to_string(),
-                )
-                .unwrap()
+                prepared.delivered,
+                DeliveredSource {
+                    source_id: "item:continuation".to_string(),
+                    content_sha256: framed.content_sha256,
+                    kind: DeliveryKind::QueuedContinuation,
+                }
             );
+        }
+
+        #[tokio::test]
+        async fn a_steered_input_records_its_delivery_on_the_run_once() {
+            let pool = starting_pool().await;
+            seed_inputs_of_every_route(&pool).await;
+            sqlx::query("UPDATE chat_agent_runs SET state = 'working' WHERE id = 'run:working'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let steer = ChatConversationItemId::new("item:steer").unwrap();
+            let prepared = prepare_assignment_input(&pool, &assignment(), &steer)
+                .await
+                .unwrap()
+                .expect("the working run takes the pending steer");
+            assert_eq!(prepared.delivered.kind, DeliveryKind::Steer);
+
+            for _ in 0..2 {
+                record_assignment_input_delivered(&pool, &assignment(), &steer, &prepared)
+                    .await
+                    .unwrap();
+            }
+
+            let rows: Vec<(String, String, String)> = sqlx::query_as(
+                "SELECT source_id, content_sha256, delivery_kind
+                 FROM chat_agent_run_delivered_sources WHERE run_id = 'run:working'",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                rows,
+                vec![(
+                    "item:steer".to_string(),
+                    prepared.delivered.content_sha256.clone(),
+                    "steer".to_string()
+                )]
+            );
+            let states = delivery_states(&pool).await;
+            assert!(states.contains(&("steer".to_string(), "delivered".to_string())));
         }
 
         async fn run_and_job(

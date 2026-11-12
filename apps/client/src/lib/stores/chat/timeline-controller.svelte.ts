@@ -114,15 +114,15 @@ export class ChatTimelineController {
     try {
       if (this.changeCursor !== null) {
         for (let pass = 0; pass < MAX_SINCE_READ_PASSES; pass += 1) {
-          const sent = this.changeCursor;
+          const sent: number = this.changeCursor;
           const delta = await chatApi.readChatTimelineSince(threadId, sent);
           if (!this.isCurrentRefresh(generation, refresh, threadId)) return;
           if (delta.resetRequired) break;
           this.applyPages(mergeTimelineDelta(this.pages, delta, this.holdsNewest), selectedSequence);
           // An older page that landed during the read lowered the cursor; changes after that lower cursor may touch
           // the page and the delta did not cover them, so the next pass reads from the lower cursor.
-          const held = this.changeCursor;
-          const lowered = held !== null && held < sent;
+          const held: number | null = this.changeCursor;
+          const lowered: boolean = held !== null && held < sent;
           this.changeCursor = lowered ? Math.min(held, delta.changeCursor) : delta.changeCursor;
           if (!delta.hasMore && !lowered) return;
         }

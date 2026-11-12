@@ -109,12 +109,10 @@ impl HostTool {
             | Self::CreateWorkspaceFile
             | Self::PatchWorkspaceFile
             | Self::DeleteWorkspaceFile
-            | Self::DelegateAssignment => true,
-            Self::ReadReplyPointer
+            | Self::DelegateAssignment
             | Self::Ask
-            | Self::Report
-            | Self::RequestSecret
-            | Self::SecretStatus => false,
+            | Self::Report => true,
+            Self::ReadReplyPointer | Self::RequestSecret | Self::SecretStatus => false,
         }
     }
 

@@ -1,6 +1,7 @@
 //! Assignment dispatch and live provider delivery.
 
 use super::assignments::read_assignment_subject;
+use super::common::MAX_MESSAGE_BYTES;
 use super::common::{
     native_assignment_safety_mode, new_id, parse_runtime_approval_policy, this_device_id,
 };
@@ -13,6 +14,7 @@ use ganbaru_chat::agent_runs::{
     AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind, FullPackage, LaunchSettlement,
     RunAttempt, RunLaunch,
 };
+use ganbaru_chat::coordination::reports::{AnsweredQuestion, read_answered_question};
 use ganbaru_chat::coordination::revocation::PARENT_AUTHORITY_REVOKED_REASON;
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, SqlitePool};
@@ -95,6 +97,8 @@ pub(super) struct AssignmentLaunch {
     pub(super) launch_error: Option<ChatError>,
     /// How the launch settled for the assignment, absent when the send replayed a receipt.
     pub(super) settlement: Option<LaunchSettlement>,
+    /// The pending answers to a host question that the first turn of the run carried.
+    pub(super) answered_input_ids: Vec<String>,
 }
 
 /// A claimed dispatch job and the system-level instructions its run sends, composed from the
@@ -212,8 +216,9 @@ async fn delegated_authority_lost(
     }
 }
 
-/// Marks the trigger and follow-up inputs of `assignment_id`, which its context package
-/// carries, delivered once `launch` started its run. Returns whether the run started.
+/// Marks the trigger and follow-up inputs of `assignment_id`, which its context package carries,
+/// and the answers the first turn carried, delivered once `launch` started its run. Returns
+/// whether the run started.
 ///
 /// A failed launch, or a run that settled before it started, delivered nothing, so its inputs
 /// stay pending for Retry.
@@ -237,6 +242,7 @@ async fn mark_initial_assignment_input_delivered(
         return Ok(false);
     }
     let now = now_timestamp()?;
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
     sqlx::query(
         "UPDATE chat_work_assignment_inputs
          SET delivery_state = 'delivered', delivered_at = ?
@@ -245,9 +251,25 @@ async fn mark_initial_assignment_input_delivered(
     )
     .bind(now.as_str())
     .bind(assignment_id.as_str())
-    .execute(pool)
+    .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
+    for message_item_id in &launch.answered_input_ids {
+        sqlx::query(
+            "UPDATE chat_work_assignment_inputs
+             SET delivery_state = 'delivered', delivered_at = ?
+             WHERE assignment_id = ? AND message_item_id = ?
+               AND routing_kind IN ('steer', 'queued_continuation')
+               AND delivery_state = 'pending'",
+        )
+        .bind(now.as_str())
+        .bind(assignment_id.as_str())
+        .bind(message_item_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
+    }
+    transaction.commit().await.map_err(persistence_error)?;
     Ok(true)
 }
 
@@ -539,21 +561,31 @@ async fn dispatch_claimed_assignment(
         )?,
         instructions_sha256: continuation::instructions_sha256(&claim.instructions),
     };
-    let candidate = read_continuation_candidate(
-        pool,
-        &CandidateScope {
-            assignment_id,
-            reply_thread_id: &reply_thread_id,
-            teammate_id: &teammate_id,
-            working_folder_id: working_folder_id.as_ref(),
-            scratch_generation_id: scratch_generation_id.as_deref(),
-            execution_environment_id: execution_environment_id.as_deref(),
-        },
-    )
-    .await?;
+    let answered = if run_ordinal > 1 {
+        let mut connection = pool.acquire().await.map_err(persistence_error)?;
+        read_answered_question(&mut connection, assignment_id.as_str()).await?
+    } else {
+        None
+    };
+    let candidate_scope = CandidateScope {
+        assignment_id,
+        reply_thread_id: &reply_thread_id,
+        teammate_id: &teammate_id,
+        working_folder_id: working_folder_id.as_ref(),
+        scratch_generation_id: scratch_generation_id.as_deref(),
+        execution_environment_id: execution_environment_id.as_deref(),
+    };
+    // Work that asked a question and completed its run continues that run's session, which holds
+    // the question, so the answer reaches the session that asked it.
+    let candidate = match answered.as_ref() {
+        Some(answered) => {
+            read_own_continuation_candidate(pool, &candidate_scope, &answered.asking_run_id).await?
+        }
+        None => read_continuation_candidate(pool, &candidate_scope).await?,
+    };
     let decision = continuation::decide_session_transition(&TransitionInput {
         key: &key,
-        earlier_run_of_assignment: run_ordinal > 1,
+        unfinished_earlier_run: run_ordinal > 1 && answered.is_none(),
         candidate: candidate.as_ref().map(StoredCandidate::as_candidate),
         native_session_lost,
     });
@@ -620,28 +652,47 @@ async fn dispatch_claimed_assignment(
         .try_get("context_package_id")
         .map_err(persistence_error)?;
     let full_package: String = row.try_get("serialized_text").map_err(persistence_error)?;
-    let delta = match (decision.reason, existing_thread_id.as_ref()) {
-        (AttemptReason::Continuation, Some(thread_id)) => {
+    let full = FullPackage {
+        delivered_sources: package_sources(pool, &context_package_id, &full_package).await?,
+        prompt: full_package,
+    };
+    let answer = answered
+        .as_ref()
+        .map(frame_answered_question)
+        .transpose()?
+        .filter(|answer| answer.fits_after(&full.prompt));
+    let delta = match (
+        decision.reason,
+        existing_thread_id.as_ref(),
+        answer.as_ref(),
+    ) {
+        (AttemptReason::Continuation, Some(_), Some(answer)) => continuation::answer_delta(
+            assignment_id,
+            u64::try_from(full.delivered_sources.len()).unwrap_or(u64::MAX),
+            &answer.answers,
+            answer.sources.clone(),
+        )?,
+        (AttemptReason::Continuation, Some(thread_id), None) => {
             continuation::build_delta_package(
                 pool,
                 assignment_id,
                 &context_package_id,
-                &full_package,
+                &full.prompt,
                 thread_id.as_str(),
             )
             .await?
         }
         _ => None,
     };
-    let full_sources = package_sources(pool, &context_package_id, &full_package).await?;
-    let delivery = choose_context_delivery(
-        decision.reason,
-        delta,
-        FullPackage {
-            prompt: full_package,
-            delivered_sources: full_sources,
-        },
-    );
+    let answered_input_ids = answer
+        .as_ref()
+        .map(|answer| answer.input_ids.clone())
+        .unwrap_or_default();
+    let full = match answer {
+        Some(answer) => answer.after_package(full),
+        None => full,
+    };
+    let delivery = choose_context_delivery(decision.reason, delta, full);
     let request = super::super::send_commands::SendChatTurnCommand {
         command: ChatCommandContext {
             client_command_id: ChatCommandId::new(format!(
@@ -716,6 +767,70 @@ async fn dispatch_claimed_assignment(
         run_id,
         launch_error: sent.launch_error,
         settlement: sent.launch_settlement,
+        answered_input_ids,
+    })
+}
+
+/// A person's answers to a host question, framed for the first turn of the run that continues
+/// the work.
+#[derive(Debug)]
+struct FramedAnswer {
+    /// The question as a thread reply record, which a new session needs to read the answers.
+    question: String,
+    /// The answers as follow-up records, in posting order.
+    answers: String,
+    sources: Vec<DeliveredSource>,
+    input_ids: Vec<String>,
+}
+
+impl FramedAnswer {
+    /// Whether the question and answers fit after `package` in one turn.
+    fn fits_after(&self, package: &str) -> bool {
+        package.len() + self.question.len() + self.answers.len() <= MAX_MESSAGE_BYTES
+    }
+
+    /// The full package followed by the question and the answers, as a new session receives
+    /// them.
+    fn after_package(self, full: FullPackage) -> FullPackage {
+        let mut delivered_sources = full.delivered_sources;
+        delivered_sources.extend(self.sources);
+        FullPackage {
+            prompt: format!("{}{}{}", full.prompt, self.question, self.answers),
+            delivered_sources,
+        }
+    }
+}
+
+/// Frames `answered` as context records: the question once, and each answer as the follow-up a
+/// queued continuation would deliver.
+fn frame_answered_question(answered: &AnsweredQuestion) -> ChatResult<FramedAnswer> {
+    let question = context::asked_question_context_line(
+        &answered.question.item_id,
+        answered.question.revision,
+        answered.question.markdown.clone(),
+    )?;
+    let mut answers = String::new();
+    let mut sources = Vec::with_capacity(answered.answers.len());
+    let mut input_ids = Vec::with_capacity(answered.answers.len());
+    for answer in &answered.answers {
+        let framed = context::follow_up_context_line(
+            &answer.item_id,
+            answer.revision,
+            answer.markdown.clone(),
+        )?;
+        answers.push_str(&framed.line);
+        sources.push(DeliveredSource {
+            source_id: answer.item_id.clone(),
+            content_sha256: framed.content_sha256,
+            kind: DeliveryKind::QueuedContinuation,
+        });
+        input_ids.push(answer.item_id.clone());
+    }
+    Ok(FramedAnswer {
+        question,
+        answers,
+        sources,
+        input_ids,
     })
 }
 
@@ -856,7 +971,55 @@ async fn read_continuation_candidate(
     else {
         return Ok(None);
     };
-    Ok(Some(StoredCandidate {
+    stored_candidate(&row).map(Some)
+}
+
+/// Reads `asking_run_id`, the completed run of the same assignment that asked a question, when
+/// its provider thread is still open and it ran on the same execution target, so the answer
+/// continues the session that asked.
+async fn read_own_continuation_candidate(
+    pool: &SqlitePool,
+    scope: &CandidateScope<'_>,
+    asking_run_id: &str,
+) -> ChatResult<Option<StoredCandidate>> {
+    let Some(row) = sqlx::query(
+        "SELECT thread.id AS thread_id, thread.revision, thread.provider_instance_id,
+                run.authorization_scope_digest, run.model_selection_sha256,
+                run.instructions_sha256,
+                run_authorization.id IS NOT NULL AS authorization_valid
+         FROM chat_agent_runs run
+         LEFT JOIN chat_assignment_authorization_revisions run_authorization
+           ON run_authorization.id = run.authorization_revision_id
+          AND run_authorization.assignment_id = run.assignment_id
+          AND run_authorization.scope_digest = run.authorization_scope_digest
+          AND run_authorization.decision_state = 'allowed'
+          AND run_authorization.revoked_at IS NULL
+         JOIN chat_threads thread ON thread.id = run.provider_thread_id
+         WHERE run.id = ?
+           AND run.assignment_id = ?
+           AND run.state = 'completed'
+           AND run.working_folder_id IS ?
+           AND run.scratch_generation_id IS ?
+           AND run.execution_environment_id IS ?
+           AND thread.archived_at IS NULL
+           AND thread.state NOT IN ('closed', 'error')",
+    )
+    .bind(asking_run_id)
+    .bind(scope.assignment_id.as_str())
+    .bind(scope.working_folder_id.map(ProjectWorkingFolderId::as_str))
+    .bind(scope.scratch_generation_id)
+    .bind(scope.execution_environment_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?
+    else {
+        return Ok(None);
+    };
+    stored_candidate(&row).map(Some)
+}
+
+fn stored_candidate(row: &sqlx::sqlite::SqliteRow) -> ChatResult<StoredCandidate> {
+    Ok(StoredCandidate {
         thread_id: row.try_get("thread_id").map_err(persistence_error)?,
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
         key: ContinuationKey::stored(
@@ -872,7 +1035,7 @@ async fn read_continuation_candidate(
         authorization_valid: row
             .try_get("authorization_valid")
             .map_err(persistence_error)?,
-    }))
+    })
 }
 
 async fn require_live_folder_target(
@@ -1221,6 +1384,14 @@ async fn record_assignment_input_delivered(
             &prepared.run_id,
             std::slice::from_ref(&prepared.delivered),
             &now,
+        )
+        .await?;
+        // A person's answer that reached the asking run while it still works resumes the work.
+        ganbaru_chat::coordination::reports::resume_answered_question(
+            &mut transaction,
+            assignment_id.as_str(),
+            message_item_id.as_str(),
+            now.as_str(),
         )
         .await?;
     }
@@ -2032,6 +2203,7 @@ mod tests {
                 run_id: run_id.clone(),
                 launch_error: Some(launch_error()),
                 settlement: None,
+                answered_input_ids: Vec::new(),
             };
             assert!(
                 !mark_initial_assignment_input_delivered(&pool, &assignment(), &failed)
@@ -2044,6 +2216,7 @@ mod tests {
                 run_id: run_id.clone(),
                 launch_error: None,
                 settlement: None,
+                answered_input_ids: Vec::new(),
             };
             assert!(
                 !mark_initial_assignment_input_delivered(&pool, &assignment(), &unstarted)
@@ -2056,6 +2229,7 @@ mod tests {
                 run_id: ChatAgentRunId::new("run:missing").unwrap(),
                 launch_error: None,
                 settlement: None,
+                answered_input_ids: Vec::new(),
             };
             assert!(
                 !mark_initial_assignment_input_delivered(&pool, &assignment(), &missing)
@@ -2386,7 +2560,7 @@ mod tests {
             };
             let decision = continuation::decide_session_transition(&TransitionInput {
                 key: &key,
-                earlier_run_of_assignment: earlier_runs > 0,
+                unfinished_earlier_run: earlier_runs > 0,
                 candidate: Some(CandidateRun {
                     thread_id: "thread-1",
                     key: Some(key.clone()),
@@ -2420,6 +2594,90 @@ mod tests {
                 run_and_job(&pool).await,
                 ("working".to_string(), None, "queued".to_string(), None)
             );
+        }
+    }
+
+    mod answered_question {
+        use super::super::{
+            AnsweredQuestion, AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind,
+            FullPackage, MAX_MESSAGE_BYTES, choose_context_delivery, continuation,
+            frame_answered_question,
+        };
+        use ganbaru_chat::coordination::reports::ThreadMessage;
+        use ganbaru_chat_contracts::models::ChatWorkAssignmentId;
+
+        fn message(item_id: &str, markdown: &str) -> ThreadMessage {
+            ThreadMessage {
+                item_id: item_id.to_owned(),
+                revision: 1,
+                markdown: markdown.to_owned(),
+            }
+        }
+
+        fn answered(answer: &str) -> AnsweredQuestion {
+            AnsweredQuestion {
+                asking_run_id: "run:1".to_owned(),
+                question: message("item:question", "Keep the old page?"),
+                answers: vec![message("item:answer", answer)],
+            }
+        }
+
+        fn package() -> FullPackage {
+            FullPackage {
+                prompt: "{\"kind\":\"trigger\",\"text\":\"tidy the docs\"}\n".to_owned(),
+                delivered_sources: vec![DeliveredSource {
+                    source_id: "item:root".to_owned(),
+                    content_sha256: "a".repeat(64),
+                    kind: DeliveryKind::Package,
+                }],
+            }
+        }
+
+        #[test]
+        fn a_continued_session_receives_only_the_answers_and_a_new_one_the_question_too() {
+            let framed = frame_answered_question(&answered("Keep it")).unwrap();
+            assert!(framed.fits_after(&package().prompt));
+            assert_eq!(framed.input_ids, ["item:answer"]);
+            let assignment_id = ChatWorkAssignmentId::new("assignment:1".to_owned()).unwrap();
+            let delta = continuation::answer_delta(
+                &assignment_id,
+                1,
+                &framed.answers,
+                framed.sources.clone(),
+            )
+            .unwrap();
+            let full = framed.after_package(package());
+            let planned = choose_context_delivery(AttemptReason::Continuation, delta, full);
+
+            assert_eq!(planned.context_delivery, ContextDelivery::Delta);
+            assert!(planned.prompt.contains("Keep it"));
+            assert!(
+                !planned.prompt.contains("tidy the docs"),
+                "the session holds the trigger"
+            );
+            assert!(!planned.prompt.contains("Keep the old page?"));
+            assert_eq!(
+                planned
+                    .delivered_sources
+                    .iter()
+                    .map(|source| (source.source_id.as_str(), source.kind))
+                    .collect::<Vec<_>>(),
+                [("item:answer", DeliveryKind::QueuedContinuation)]
+            );
+
+            let fresh = planned.full_prompt_on_fresh_session.unwrap();
+            let trigger = fresh.prompt.find("tidy the docs").unwrap();
+            let question = fresh.prompt.find("Keep the old page?").unwrap();
+            let answer = fresh.prompt.find("Keep it").unwrap();
+            assert!(trigger < question && question < answer);
+            assert_eq!(fresh.delivered_sources.len(), 2);
+        }
+
+        #[test]
+        fn answers_that_do_not_fit_after_the_package_stay_pending() {
+            let framed =
+                frame_answered_question(&answered(&"x".repeat(MAX_MESSAGE_BYTES))).unwrap();
+            assert!(!framed.fits_after(&package().prompt));
         }
     }
 }

@@ -27,6 +27,7 @@ use crate::chat::sync::SyncedAssignmentWork;
 use ganbaru_chat::coordination::acceptance::{AcceptanceSubject, acceptance_digest};
 use ganbaru_chat::coordination::contracts::PostChatMessageCommand;
 use ganbaru_chat::coordination::delegation::{outcome_item_id, post_delegation_outcome};
+use ganbaru_chat::coordination::reports::requeue_answered_assignment;
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeSet;
@@ -48,6 +49,9 @@ pub(super) async fn recover_assignment_dispatch_jobs(
         Err(error) => eprintln!("Chat work recovery could not read this device's scope: {error}"),
     }
     reclaim_stale_dispatch_claims(&pool, &now).await?;
+    if let Err(error) = requeue_answered_work(&pool, &device_id).await {
+        eprintln!("Chat answered work recovery stopped: {error}");
+    }
     // Reclaiming fails stale starting runs, which ends their live authority.
     crate::chat::authority_epoch::bump_authority_epoch(&app);
     let working_assignment_ids = sqlx::query_scalar::<_, String>(
@@ -1795,6 +1799,122 @@ fn route_pending_outcomes(app: &tauri::AppHandle, parents: ChatResult<BTreeSet<S
     }
 }
 
+/// Starts a new run for the work on the provider thread `thread_id` whose asking turn just
+/// ended after a person already answered, since the answer found no working run to reach.
+pub(crate) fn resume_answered_work_of_thread(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+) {
+    let app = app.clone();
+    let pool = pool.clone();
+    let thread_id = thread_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let waiting = sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT assignment.id
+             FROM chat_agent_runs run
+             JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
+             WHERE run.provider_thread_id = ? AND assignment.state = 'waiting_for_answer'",
+        )
+        .bind(thread_id.as_str())
+        .fetch_all(&pool)
+        .await
+        .map_err(persistence_error);
+        let result = match waiting {
+            Ok(assignment_ids) => {
+                let db_url = format!("sqlite:{}", crate::vault::APP_SQLITE_FILE);
+                resume_answered_assignments(app, db_url, assignment_ids).await
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
+            eprintln!("Answered Chat work did not continue: {error}");
+        }
+    });
+}
+
+/// Starts a new run for each of `assignment_ids` that this device runs and that waits for an
+/// answer a person posted after its asking run ended. Other work is left as it is.
+pub(super) async fn resume_answered_assignments(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_ids: impl IntoIterator<Item = String>,
+) -> ChatResult<()> {
+    let device_id = this_device_id(&app)?;
+    let pool = chat_pool(app.clone(), db_url.clone()).await?;
+    for assignment_id in assignment_ids {
+        let assignment_id = ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
+        if !requeue_answered(&pool, &assignment_id, &device_id).await? {
+            continue;
+        }
+        if let Err(error) =
+            dispatch_assignment_job(app.clone(), db_url.clone(), assignment_id.clone()).await
+        {
+            eprintln!(
+                "Answered Chat assignment {} did not start: {error}",
+                assignment_id.as_str()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Queues `assignment_id` again on the device `device_id` when it waits for an answer that
+/// arrived after its asking run ended, reporting whether it did.
+async fn requeue_answered(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    device_id: &str,
+) -> ChatResult<bool> {
+    let now = now_timestamp()?;
+    let mut transaction = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(persistence_error)?;
+    let queued = requeue_answered_assignment(
+        &mut transaction,
+        assignment_id.as_str(),
+        device_id,
+        now.as_str(),
+    )
+    .await?;
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(queued)
+}
+
+/// Queues again the answered work this device runs whose asking run ended, so the recovery pass
+/// that follows starts it. Returns how many it queued.
+async fn requeue_answered_work(pool: &SqlitePool, device_id: &str) -> ChatResult<u32> {
+    let waiting = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT assignment.id
+         FROM chat_work_assignments assignment
+         JOIN chat_work_assignment_inputs input ON input.assignment_id = assignment.id
+         WHERE assignment.state = 'waiting_for_answer'
+           AND coalesce(assignment.executing_device_id, ?1) = ?1
+           AND input.routing_kind IN ('steer', 'queued_continuation')
+           AND input.delivery_state = 'pending'
+         ORDER BY assignment.id LIMIT ?2",
+    )
+    .bind(device_id)
+    .bind(i64::from(TAKEOVER_BATCH_SIZE))
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)?;
+    let mut queued = 0_u32;
+    for raw_id in waiting {
+        let outcome = match ChatWorkAssignmentId::new(raw_id.as_str()) {
+            Ok(assignment_id) => requeue_answered(pool, &assignment_id, device_id).await,
+            Err(error) => Err(identifier_error(error)),
+        };
+        match outcome {
+            Ok(true) => queued = queued.saturating_add(1),
+            Ok(false) => {}
+            Err(error) => skip_recovery_row("Chat answered work recovery", &raw_id, &error),
+        }
+    }
+    Ok(queued)
+}
+
 /// Reads the delegated assignments whose runs used the provider thread `thread_id`.
 async fn delegated_assignments_of_thread(
     pool: &SqlitePool,
@@ -1979,8 +2099,9 @@ async fn run_synced_assignment_work(
             ),
         }
     }
-    for assignment_id in routed {
-        let assignment_id = ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
+    for assignment_id in &routed {
+        let assignment_id =
+            ChatWorkAssignmentId::new(assignment_id.clone()).map_err(identifier_error)?;
         if let Err(error) =
             deliver_pending_assignment_inputs(app.clone(), db_url.clone(), &pool, &assignment_id)
                 .await
@@ -1991,7 +2112,8 @@ async fn run_synced_assignment_work(
             );
         }
     }
-    Ok(())
+    // An answer posted on another device reaches work whose asking run already ended.
+    resume_answered_assignments(app, db_url, routed).await
 }
 
 /// Reports the outcome of the delegated `child_id` that settled on another device when this

@@ -770,6 +770,23 @@ pub(super) fn follow_up_context_line(
     })
 }
 
+/// Frames the question a teammate asked in its reply thread as one thread reply record, so a new
+/// session that receives the person's answer also reads what it answers.
+pub(super) fn asked_question_context_line(
+    message_item_id: &str,
+    revision: u64,
+    text: String,
+) -> ChatResult<String> {
+    let source = ContextSource {
+        id: message_item_id.to_string(),
+        kind: THREAD_REPLY_SOURCE_KIND.to_string(),
+        revision,
+        text,
+        teammate_authored: true,
+    };
+    Ok(bounded_context_source_line(&source, MAX_MESSAGE_BYTES)?.line)
+}
+
 /// One record of a test package, with the `(id, kind, content_sha256)` of the source it
 /// carries; the coverage record carries none.
 #[cfg(test)]

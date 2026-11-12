@@ -45,7 +45,7 @@ mod workflow;
 #[cfg(desktop)]
 pub(crate) use assignments::{
     deliver_delegation_outcomes_of_assignments, deliver_delegation_outcomes_of_thread,
-    start_synced_assignment_work,
+    resume_answered_work_of_thread, start_synced_assignment_work,
 };
 use common::{
     AttachmentSource, PageCursor, ScheduledPostTarget, chat_writers, conversation_item_id,
@@ -382,12 +382,22 @@ pub(super) async fn post_message(
             let input_message_id = posted.item_id.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = deliver_assignment_input(
-                    dispatch_app,
-                    dispatch_db_url,
-                    assignment_id,
+                    dispatch_app.clone(),
+                    dispatch_db_url.clone(),
+                    assignment_id.clone(),
                     input_message_id,
                 )
                 .await;
+                // An answer to a question whose asking run ended needs a new run to reach.
+                if let Err(error) = assignments::resume_answered_assignments(
+                    dispatch_app,
+                    dispatch_db_url,
+                    [assignment_id.as_str().to_owned()],
+                )
+                .await
+                {
+                    eprintln!("Answered Chat work did not continue: {error}");
+                }
             });
         } else if posted.assignment_write.awaits_acceptance {
             assignments::start_unattended_assignment(&app, &assignment_id);

@@ -197,7 +197,7 @@ fn parse_input(arguments: &Map<String, Value>) -> ChatResult<DelegationInput> {
 
 /// A trimmed, non-empty text of at most `maximum_chars` characters. Line breaks and tabs are
 /// allowed, since an objective is prose; other control characters are not.
-fn required_text(
+pub(super) fn required_text(
     arguments: &Map<String, Value>,
     name: &str,
     maximum_chars: usize,

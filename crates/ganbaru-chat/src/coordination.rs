@@ -8,4 +8,5 @@ pub mod delegation;
 #[cfg(feature = "native-runtime")]
 pub mod projection;
 pub mod reductions;
+pub mod reports;
 pub mod revocation;

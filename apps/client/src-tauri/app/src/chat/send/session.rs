@@ -583,6 +583,9 @@ impl ProviderEventSink for DurableChatEventSink {
                 crate::chat::organization::deliver_delegation_outcomes_of_thread(
                     &self.app, &self.pool, thread_id,
                 );
+                crate::chat::organization::resume_answered_work_of_thread(
+                    &self.app, &self.pool, thread_id,
+                );
             }
             if let Some((thread_id, turn_id)) = settled_turn {
                 self.app

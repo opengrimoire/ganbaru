@@ -1,6 +1,7 @@
 //! Closed-world organizational host tools for provider assignments.
 
 use super::internal_mcp::{InternalMcpRunScope, generate_opaque_handle};
+use ganbaru_chat::coordination::reports::HostReportRefusal;
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatFolderCapability, ChatResult};
 use rmcp::model::{Tool, ToolAnnotations};
 use serde_json::{Map, Value, json};
@@ -14,6 +15,7 @@ mod authorization;
 mod channels;
 pub(super) mod delegation;
 mod registry;
+mod reports;
 mod workspace;
 
 use audit::{
@@ -196,11 +198,21 @@ fn definition(tool: HostTool) -> Option<Tool> {
             delegation::properties(),
             false,
         ),
-        HostTool::ReadReplyPointer
-        | HostTool::Ask
-        | HostTool::Report
-        | HostTool::RequestSecret
-        | HostTool::SecretStatus => return None,
+        HostTool::Ask => mutating_tool(
+            name,
+            "Ask the person who assigned this work a question and wait for their answer in the reply thread",
+            reports::ask_properties(),
+            false,
+        ),
+        HostTool::Report => mutating_tool(
+            name,
+            "Post a plan, a revised plan, or the result of this work in the reply thread",
+            reports::report_properties(),
+            false,
+        ),
+        HostTool::ReadReplyPointer | HostTool::RequestSecret | HostTool::SecretStatus => {
+            return None;
+        }
     };
     Some(definition)
 }
@@ -280,21 +292,12 @@ pub(crate) async fn call(
             Ok(value)
         }
         Err(error) => {
-            // A delegation refusal changed nothing, so its code is both the audit category and
-            // the error the teammate sees, which lets it adjust its next call.
-            if let Some(refusal) = tool
-                .filter(|tool| *tool == HostTool::DelegateAssignment)
-                .and_then(|_| delegation::DelegationRefusal::from_error(&error))
-            {
-                complete_audit_denied(
-                    context.pool,
-                    context.scope,
-                    &invocation_id,
-                    refusal.code(),
-                    false,
-                )
-                .await?;
-                return Err(refusal.into_error());
+            // A typed refusal changed nothing, so its code is both the audit category and the
+            // error the teammate sees, which lets it adjust its next call.
+            if let Some((code, refusal)) = typed_refusal(tool, &error) {
+                complete_audit_denied(context.pool, context.scope, &invocation_id, code, false)
+                    .await?;
+                return Err(refusal);
             }
             complete_audit_denied(
                 context.pool,
@@ -310,6 +313,18 @@ pub(crate) async fn call(
             .await?;
             Err(generic_denial_error())
         }
+    }
+}
+
+/// The stable code and tool error of a refusal the teammate may act on, when `error` is one
+/// for `tool`.
+fn typed_refusal(tool: Option<HostTool>, error: &ChatError) -> Option<(&'static str, ChatError)> {
+    match tool? {
+        HostTool::DelegateAssignment => delegation::DelegationRefusal::from_error(error)
+            .map(|refusal| (refusal.code(), refusal.into_error())),
+        HostTool::Ask | HostTool::Report => HostReportRefusal::from_error(error)
+            .map(|refusal| (refusal.code(), refusal.into_error())),
+        _ => None,
     }
 }
 
@@ -350,11 +365,11 @@ async fn dispatch(
                     delegation::DelegationCallError::Failed(error) => error,
                 })
         }
-        HostTool::ReadReplyPointer
-        | HostTool::Ask
-        | HostTool::Report
-        | HostTool::RequestSecret
-        | HostTool::SecretStatus => Err(generic_denial_error()),
+        HostTool::Ask => reports::ask(context, arguments).await,
+        HostTool::Report => reports::report(context, arguments).await,
+        HostTool::ReadReplyPointer | HostTool::RequestSecret | HostTool::SecretStatus => {
+            Err(generic_denial_error())
+        }
     }
 }
 
@@ -464,7 +479,7 @@ fn configured_tool(
     let properties = properties.as_object().cloned().unwrap_or_default();
     let required = properties
         .keys()
-        .filter(|key| !matches!(key.as_str(), "cursor" | "limit" | "folders"))
+        .filter(|key| !matches!(key.as_str(), "cursor" | "limit" | "folders" | "choices"))
         .cloned()
         .map(Value::String)
         .collect::<Vec<_>>();
@@ -739,9 +754,37 @@ mod tests {
             .collect();
         assert!(listed.iter().all(|name| {
             HostTool::from_name(name).is_some_and(|tool| {
-                matches!(tool.class(), HostToolClass::Read | HostToolClass::Delegate)
+                matches!(
+                    tool.class(),
+                    HostToolClass::Read
+                        | HostToolClass::Delegate
+                        | HostToolClass::Ask
+                        | HostToolClass::Report
+                )
             })
         }));
+        assert!(listed.contains(&"chat_ask".to_owned()));
+        assert!(listed.contains(&"chat_report".to_owned()));
+    }
+
+    #[test]
+    fn ask_and_report_require_all_but_the_choices() {
+        let required = |tool: HostTool| -> Vec<String> {
+            let definition = definition(tool).expect("implemented");
+            let mut names: Vec<String> = definition.input_schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|name| name.as_str().unwrap().to_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(required(HostTool::Ask), ["clientRequestId", "question"]);
+        assert_eq!(
+            required(HostTool::Report),
+            ["body", "clientRequestId", "kind"]
+        );
     }
 
     /// The audit column's CHECK accepts exactly the classes the registry knows.
@@ -813,7 +856,7 @@ mod tests {
         );
         for tool in [
             None,
-            Some(HostTool::Ask),
+            Some(HostTool::ReadReplyPointer),
             Some(HostTool::WriteWorkspaceFile),
         ] {
             let error = authorize_call(&pool, &thread_id, &reading, tool)

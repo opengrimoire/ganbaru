@@ -4,7 +4,7 @@ use super::common::{
     MAX_MESSAGE_BYTES, chat_writers, new_id, parse_folder_capability,
     parse_runtime_approval_policy, this_device_id, wire_work_state,
 };
-use super::context::{GrantedAccess, freeze_context_package, read_granted_access};
+use super::context::{FreezeOutcome, GrantedAccess, freeze_context_package, read_granted_access};
 use super::dispatch::{deliver_pending_assignment_inputs, dispatch_assignment_job};
 use super::reads::{read_active_or_latest_assignment, read_assignment};
 use super::workflow::{
@@ -394,6 +394,7 @@ async fn reroute_assignment(
             executing_device_id: device.id,
             execution_target: None,
             poster_participant_id: LOCAL_PARTICIPANT_ID,
+            delegation: None,
         },
         device,
         now,
@@ -537,6 +538,7 @@ async fn recover_follow_up(
             executing_device_id: device.id,
             execution_target: requested_target.as_ref(),
             poster_participant_id: LOCAL_PARTICIPANT_ID,
+            delegation: None,
         },
         device,
         now,
@@ -926,7 +928,7 @@ async fn queue_dispatch_here(
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?;
-        freeze_context_package(
+        let outcome = freeze_context_package(
             transaction,
             assignment_id,
             &reply_thread_id,
@@ -936,6 +938,9 @@ async fn queue_dispatch_here(
             now,
         )
         .await?;
+        if outcome == FreezeOutcome::ParentAuthorityRevoked {
+            return Ok(());
+        }
     }
     let consented_digest = read_assignment_subject(transaction, assignment_id)
         .await?
@@ -1946,6 +1951,7 @@ pub(super) async fn persist_started_assignment(
             executing_device_id: device.id,
             execution_target: None,
             poster_participant_id: LOCAL_PARTICIPANT_ID,
+            delegation: None,
         },
         device,
         now,

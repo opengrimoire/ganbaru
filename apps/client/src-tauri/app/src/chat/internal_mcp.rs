@@ -96,6 +96,11 @@ pub struct InternalMcpRunScope {
     pub runtime_approval_policy: ChatRuntimeApprovalPolicy,
     pub channel_sources: Vec<InternalMcpChannelSource>,
     pub folder_sources: Vec<InternalMcpFolderSource>,
+    /// Delegation depth of the run's assignment: 0 for work a person started.
+    pub delegation_depth: u8,
+    /// Whether another teammate participated in the destination channel when the run started,
+    /// which decides whether the delegation tool is offered.
+    pub delegation_target_available: bool,
 }
 
 #[derive(Default)]
@@ -1711,6 +1716,8 @@ mod tests {
                 runtime_approval_policy: ChatRuntimeApprovalPolicy::Ask,
                 channel_sources: Vec::new(),
                 folder_sources: Vec::new(),
+                delegation_depth: 0,
+                delegation_target_available: false,
             }));
         assert!(state.active_scope().await.unwrap().is_some());
         *state.access.write().await = EndpointAccessState::OrganizationalRevoked;

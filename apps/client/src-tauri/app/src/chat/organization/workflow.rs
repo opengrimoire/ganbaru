@@ -11,7 +11,7 @@ use super::common::{
 #[cfg(desktop)]
 use super::common::{wire_approval_policy, wire_work_state};
 #[cfg(desktop)]
-use super::context::freeze_context_package;
+use super::context::{FreezeOutcome, freeze_context_package};
 #[cfg(desktop)]
 use super::now_timestamp;
 use super::reads::{
@@ -246,7 +246,7 @@ impl<'a> PostingDevice<'a> {
 /// none, so the post records the mention only and a desktop starts the work later. A home
 /// device that a handoff turned into a replica, or that was unlinked, is passed over, since an
 /// assignment it executes would stay queued forever.
-async fn new_assignment_executing_device(
+pub(super) async fn new_assignment_executing_device(
     transaction: &mut Transaction<'_, Sqlite>,
     teammate_id: &ChatParticipantId,
     device: PostingDevice<'_>,
@@ -406,6 +406,7 @@ pub(super) async fn persist_assignment_routing(
             executing_device_id: &executing_device_id,
             execution_target,
             poster_participant_id: LOCAL_PARTICIPANT_ID,
+            delegation: None,
         },
         device,
         now,
@@ -433,6 +434,20 @@ pub(super) struct NewAssignment<'a> {
     /// Participant who posted the trigger, recorded as the reviewer when the new assignment
     /// follows reviewed work.
     pub(super) poster_participant_id: &'a str,
+    /// The delegation that creates it, when a teammate delegated it.
+    pub(super) delegation: Option<DelegationWrite<'a>>,
+}
+
+/// The fixed delegation fields of an assignment a teammate delegated.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct DelegationWrite<'a> {
+    pub(super) parent_assignment_id: &'a ChatWorkAssignmentId,
+    /// Levels below work a person started: 1 or 2.
+    pub(super) depth: u8,
+    pub(super) objective: &'a str,
+    pub(super) expected_result: &'a str,
+    /// JSON array of `{workingFolderId, capability}`, the most the child may ever hold.
+    pub(super) folder_ceiling: &'a str,
 }
 
 /// Writes the queued assignment `assignment` with its trigger input, settling a reviewed
@@ -480,8 +495,10 @@ pub(super) async fn create_assignment(
     sqlx::query(
         "INSERT INTO chat_work_assignments
             (id, reply_thread_id, teammate_id, triggering_message_item_id,
-             previous_assignment_id, executing_device_id, state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+             previous_assignment_id, executing_device_id, state, created_at, updated_at,
+             parent_assignment_id, delegation_depth, delegation_objective,
+             delegation_expected_result, delegation_folder_ceiling)
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(assignment_id.as_str())
     .bind(assignment.reply_thread_id.as_str())
@@ -491,6 +508,27 @@ pub(super) async fn create_assignment(
     .bind(assignment.executing_device_id)
     .bind(now.as_str())
     .bind(now.as_str())
+    .bind(
+        assignment
+            .delegation
+            .map(|delegation| delegation.parent_assignment_id.as_str()),
+    )
+    .bind(i64::from(
+        assignment
+            .delegation
+            .map_or(0, |delegation| delegation.depth),
+    ))
+    .bind(assignment.delegation.map(|delegation| delegation.objective))
+    .bind(
+        assignment
+            .delegation
+            .map(|delegation| delegation.expected_result),
+    )
+    .bind(
+        assignment
+            .delegation
+            .map(|delegation| delegation.folder_ceiling),
+    )
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
@@ -745,7 +783,8 @@ pub(super) async fn drop_input_requested_targets(
 }
 
 /// Freezes the context of assignment `assignment_id` and queues its dispatch on this device,
-/// with the job consenting to the subject the post or Start agreed to run.
+/// with the job consenting to the subject the post or Start agreed to run. Delegated work whose
+/// parent lost its authority is cancelled by the freeze instead, and queues nothing.
 #[cfg(desktop)]
 pub(super) async fn queue_assignment_dispatch(
     transaction: &mut Transaction<'_, Sqlite>,
@@ -756,7 +795,7 @@ pub(super) async fn queue_assignment_dispatch(
     execution_target: Option<&ChatExecutionTarget>,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
-    freeze_context_package(
+    let outcome = freeze_context_package(
         transaction,
         assignment_id,
         reply_thread_id,
@@ -766,6 +805,9 @@ pub(super) async fn queue_assignment_dispatch(
         now,
     )
     .await?;
+    if outcome == FreezeOutcome::ParentAuthorityRevoked {
+        return Ok(());
+    }
     let consented_digest = read_assignment_subject(transaction, assignment_id)
         .await?
         .digest();
@@ -786,7 +828,27 @@ pub(super) async fn queue_assignment_dispatch(
     Ok(())
 }
 
+/// Who writes a communication message.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum MessageAuthor<'a> {
+    /// The person using this device.
+    LocalPerson,
+    /// A teammate, as when it delegates work in its channel.
+    #[cfg_attr(mobile, allow(dead_code))]
+    Teammate(&'a ChatParticipantId),
+}
+
+impl MessageAuthor<'_> {
+    fn participant_id(&self) -> &str {
+        match self {
+            Self::LocalPerson => LOCAL_PARTICIPANT_ID,
+            Self::Teammate(teammate_id) => teammate_id.as_str(),
+        }
+    }
+}
+
 pub(super) struct CommunicationMessageWrite<'a> {
+    pub(super) author: MessageAuthor<'a>,
     pub(super) item_id: &'a ChatConversationItemId,
     pub(super) revision_id: &'a ChatMessageRevisionId,
     pub(super) conversation_id: &'a ChatConversationId,
@@ -823,7 +885,7 @@ pub(super) async fn insert_communication_message(
     )
     .bind(write.item_id.as_str())
     .bind(write.now.as_str())
-    .bind(LOCAL_PARTICIPANT_ID)
+    .bind(write.author.participant_id())
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
@@ -1341,6 +1403,7 @@ pub(super) async fn insert_channel_copy(
     insert_communication_message(
         transaction,
         CommunicationMessageWrite {
+            author: MessageAuthor::LocalPerson,
             item_id: &item_id,
             revision_id: &revision_id,
             conversation_id,
@@ -1410,11 +1473,14 @@ pub(super) async fn require_reply_thread(
     Ok(reply_thread_id.clone())
 }
 
-pub(super) async fn require_participating_teammate(
-    pool: &SqlitePool,
+pub(super) async fn require_participating_teammate<'e, E>(
+    executor: E,
     conversation_id: &ChatConversationId,
     teammate_id: &ChatParticipantId,
-) -> ChatResult<()> {
+) -> ChatResult<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let row = sqlx::query(
         "SELECT membership.removed_at, participant.archived_at,
                 policy.id AS policy_revision_id, ai_membership.participate,
@@ -1436,7 +1502,7 @@ pub(super) async fn require_participating_teammate(
     )
     .bind(conversation_id.as_str())
     .bind(teammate_id.as_str())
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(persistence_error)?
     .ok_or_else(|| {

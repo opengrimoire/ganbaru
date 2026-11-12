@@ -60,7 +60,8 @@ pub(crate) async fn revoke_active_run_authorizations(
     let now = now_timestamp();
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let rows = sqlx::query(
-        "SELECT DISTINCT authorization.id, assignment.teammate_id
+        "SELECT DISTINCT authorization.id, assignment.teammate_id,
+                assignment.id AS assignment_id
          FROM chat_agent_runs run
          JOIN chat_assignment_authorization_revisions authorization
            ON authorization.id = run.authorization_revision_id
@@ -118,6 +119,13 @@ pub(crate) async fn revoke_active_run_authorizations(
         .execute(&mut *transaction)
         .await
         .map_err(persistence_error)?;
+        let assignment_id: String = row.try_get("assignment_id").map_err(persistence_error)?;
+        ganbaru_chat::coordination::revocation::revoke_delegated_authorizations(
+            &mut transaction,
+            &assignment_id,
+            &now,
+        )
+        .await?;
     }
     transaction.commit().await.map_err(persistence_error)?;
     Ok(!rows.is_empty())
@@ -1146,6 +1154,8 @@ pub(crate) mod tests {
                     runtime_approval_policy: ChatRuntimeApprovalPolicy::Ask,
                     channel_sources: Vec::new(),
                     folder_sources: Vec::new(),
+                    delegation_depth: 0,
+                    delegation_target_available: false,
                 },
             ));
             host.owned_threads

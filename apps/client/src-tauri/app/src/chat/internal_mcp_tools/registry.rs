@@ -1,6 +1,7 @@
 //! The closed set of internal host tools and the class that decides how each one is offered,
 //! limited, and audited.
 
+use super::delegation::{MAX_DELEGATION_DEPTH, MAX_OPEN_CHILDREN_PER_ASSIGNMENT};
 use crate::chat::internal_mcp::InternalMcpRunScope;
 use ganbaru_chat_contracts::models::ChatFolderCapability;
 
@@ -107,9 +108,9 @@ impl HostTool {
             | Self::WriteWorkspaceFile
             | Self::CreateWorkspaceFile
             | Self::PatchWorkspaceFile
-            | Self::DeleteWorkspaceFile => true,
+            | Self::DeleteWorkspaceFile
+            | Self::DelegateAssignment => true,
             Self::ReadReplyPointer
-            | Self::DelegateAssignment
             | Self::Ask
             | Self::Report
             | Self::RequestSecret
@@ -218,7 +219,8 @@ impl HostToolClass {
     }
 
     /// Whether the run's tool list carries tools of this class. Edit and destructive tools need
-    /// a folder authorized at edit rank or higher. No delegation or schedule tool is offered.
+    /// a folder authorized at edit rank or higher. Delegation needs a run below the depth limit
+    /// in a channel with another participating teammate. No schedule tool is offered.
     fn offered(self, scope: &InternalMcpRunScope) -> bool {
         match self {
             Self::Read | Self::Ask | Self::Report | Self::Secret => true,
@@ -226,10 +228,10 @@ impl HostToolClass {
                 .folder_sources
                 .iter()
                 .any(|source| source.capability.rank() >= ChatFolderCapability::Edit.rank()),
-            Self::Delegate | Self::Schedule => false,
+            Self::Delegate => {
+                scope.delegation_depth < MAX_DELEGATION_DEPTH && scope.delegation_target_available
+            }
+            Self::Schedule => false,
         }
     }
 }
-
-/// Open delegated children one assignment may hold, which also bounds its delegation calls.
-pub(crate) const MAX_OPEN_CHILDREN_PER_ASSIGNMENT: u32 = 4;

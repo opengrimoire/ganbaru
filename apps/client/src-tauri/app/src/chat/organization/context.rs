@@ -7,6 +7,10 @@ use super::common::{
     parse_runtime_approval_policy, sha256_hex, teammate_runtime_approval, truncate_utf8,
     wire_runtime_approval_policy,
 };
+use super::delegation::{
+    DelegationBound, DelegationCeiling, cancel_for_revoked_parent, clamp_approval,
+    read_delegation_bound,
+};
 use super::{
     MAX_CHANNEL_CONTEXT_MESSAGES, MAX_THREAD_CONTEXT_REPLIES, i64_value, identifier_error,
     persistence_error, u64_value,
@@ -27,7 +31,15 @@ pub(super) async fn freeze_context_package(
     teammate_id: &ChatParticipantId,
     explicit_execution_target: Option<&ChatExecutionTarget>,
     now: &UtcTimestamp,
-) -> ChatResult<()> {
+) -> ChatResult<FreezeOutcome> {
+    let bound = match read_delegation_bound(transaction, assignment_id.as_str()).await? {
+        DelegationBound::Revoked => {
+            cancel_for_revoked_parent(transaction, assignment_id.as_str(), now).await?;
+            return Ok(FreezeOutcome::ParentAuthorityRevoked);
+        }
+        DelegationBound::Undelegated => None,
+        DelegationBound::Bound(ceiling) => Some(ceiling),
+    };
     let thread_row = sqlx::query(
         "SELECT thread.conversation_id, thread.root_item_id, root_item.order_key AS root_order_key,
                 channel.project_id
@@ -250,20 +262,35 @@ pub(super) async fn freeze_context_package(
         &access.maximum_folder_capability,
     )
     .await?;
-    let referenced_folder_ids =
+    let grants = match &bound {
+        Some(ceiling) => bounded_grants(grants, ceiling)?,
+        None => grants,
+    };
+    let mut referenced_folder_ids =
         read_referenced_folder_ids(transaction, triggering_message_item_id).await?;
     let referenced_execution_environments =
         read_referenced_execution_environments(transaction, triggering_message_item_id).await?;
     for working_folder_id in &referenced_folder_ids {
         require_granted_folder(&grants, working_folder_id)?;
     }
+    if bound.is_some() {
+        for grant in &grants {
+            if !referenced_folder_ids.contains(&grant.working_folder_id) {
+                referenced_folder_ids.push(grant.working_folder_id.clone());
+            }
+        }
+    }
+    let requester_participant_id = bound
+        .as_ref()
+        .and_then(|ceiling| ceiling.requester_participant_id.clone())
+        .unwrap_or_else(|| access.requester_participant_id.clone());
     let target = resolve_execution_target(
         transaction,
         ResolveExecutionTargetInput {
             reply_thread_id,
             destination_conversation_id: &conversation_id,
             teammate_id,
-            requester_participant_id: &access.requester_participant_id,
+            requester_participant_id: &requester_participant_id,
             explicit: explicit_execution_target,
             grants: &grants,
             referenced_folder_ids: &referenced_folder_ids,
@@ -276,7 +303,7 @@ pub(super) async fn freeze_context_package(
         transaction,
         triggering_message_item_id,
         &conversation_id,
-        &access.requester_participant_id,
+        &requester_participant_id,
         teammate_id,
     )
     .await?;
@@ -305,9 +332,9 @@ pub(super) async fn freeze_context_package(
                 .and(access.scratch_runtime_approval_policy.as_ref())
         })
         .or(access.channel_runtime_approval_policy.as_ref());
-    let resolved_runtime_approval_policy =
+    let mut resolved_runtime_approval_policy =
         access.effective_runtime_approval(granted_runtime_approval_policy)?;
-    let folder_runtime_approval_policies = authorized_folders
+    let mut folder_runtime_approval_policies = authorized_folders
         .iter()
         .map(|grant| {
             access.effective_runtime_approval(
@@ -318,9 +345,30 @@ pub(super) async fn freeze_context_package(
             )
         })
         .collect::<ChatResult<Vec<_>>>()?;
+    if let Some(ceiling) = &bound {
+        let target_rank = target
+            .working_folder_id
+            .as_deref()
+            .and_then(|working_folder_id| ceiling.folders.get(working_folder_id))
+            .map_or(ceiling.approval_rank, |folder| folder.approval_rank);
+        resolved_runtime_approval_policy = clamp_approval(
+            resolved_runtime_approval_policy,
+            ceiling.approval_rank.min(target_rank),
+        );
+        for (grant, policy) in authorized_folders
+            .iter()
+            .zip(folder_runtime_approval_policies.iter_mut())
+        {
+            let rank = ceiling
+                .folders
+                .get(&grant.working_folder_id)
+                .map_or(0, |folder| folder.approval_rank);
+            *policy = clamp_approval(policy, rank);
+        }
+    }
     let scope_data = serde_json::json!({
         "destinationConversationId": conversation_id.as_str(),
-        "requesterParticipantId": access.requester_participant_id.as_str(),
+        "requesterParticipantId": requester_participant_id.as_str(),
         "teammateId": teammate_id.as_str(),
         "teammateAccessRevision": access.access_revision,
         "teammatePolicyRevisionId": access.policy_revision_id.as_str(),
@@ -367,7 +415,7 @@ pub(super) async fn freeze_context_package(
     )
     .bind(authorization_id.as_str())
     .bind(assignment_id.as_str())
-    .bind(access.requester_participant_id.as_str())
+    .bind(requester_participant_id.as_str())
     .bind(access.policy_revision_id.as_str())
     .bind(i64_value(access.access_revision)?)
     .bind(conversation_id.as_str())
@@ -428,7 +476,38 @@ pub(super) async fn freeze_context_package(
         .map_err(persistence_error)?;
     }
     let _ = (project_id, context_id);
-    Ok(())
+    Ok(FreezeOutcome::Frozen)
+}
+
+/// What freezing an assignment's context did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FreezeOutcome {
+    /// The context and authorization are frozen.
+    Frozen,
+    /// The assignment was delegated and an ancestor lost its authority, so it was cancelled
+    /// instead.
+    ParentAuthorityRevoked,
+}
+
+/// `grants` narrowed to a delegation ceiling: only ceiling folders, each at most at the
+/// ceiling capability, without folders that end at no capability.
+fn bounded_grants(
+    grants: Vec<FolderGrant>,
+    ceiling: &DelegationCeiling,
+) -> ChatResult<Vec<FolderGrant>> {
+    let mut bounded = Vec::with_capacity(grants.len());
+    for mut grant in grants {
+        let Some(limit) = ceiling.folders.get(&grant.working_folder_id) else {
+            continue;
+        };
+        let rank = capability_rank(&grant.capability)?.min(limit.capability_rank);
+        if rank == 0 {
+            continue;
+        }
+        grant.capability = capability_for_rank(rank)?.to_owned();
+        bounded.push(grant);
+    }
+    Ok(bounded)
 }
 
 /// Room kept after the sources for the coverage record.

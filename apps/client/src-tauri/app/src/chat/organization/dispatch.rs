@@ -6,12 +6,14 @@ use super::common::{
 };
 use super::context;
 use super::continuation::{self, CandidateRun, ContinuationKey, TransitionInput};
+use super::delegation;
 use super::reads::read_policy;
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
 use ganbaru_chat::agent_runs::{
     AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind, FullPackage, LaunchSettlement,
     RunAttempt, RunLaunch,
 };
+use ganbaru_chat::coordination::revocation::PARENT_AUTHORITY_REVOKED_REASON;
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, SqlitePool};
 
@@ -135,6 +137,24 @@ pub(super) async fn claim_dispatch_job(
         transaction.commit().await.map_err(persistence_error)?;
         return Ok(None);
     };
+    if delegated_authority_lost(&mut transaction, assignment_id).await? {
+        delegation::cancel_for_revoked_parent(&mut transaction, assignment_id.as_str(), now)
+            .await?;
+        sqlx::query("DELETE FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?")
+            .bind(assignment_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(persistence_error)?;
+        ganbaru_chat::coordination::revocation::revoke_assignment_authorizations(
+            &mut transaction,
+            assignment_id.as_str(),
+            now.as_str(),
+            PARENT_AUTHORITY_REVOKED_REASON,
+        )
+        .await?;
+        transaction.commit().await.map_err(persistence_error)?;
+        return Ok(None);
+    }
     let claim_token = new_id("dispatch-claim")?;
     sqlx::query(
         "UPDATE chat_assignment_dispatch_jobs
@@ -157,6 +177,21 @@ pub(super) async fn claim_dispatch_job(
             &subject.instructions,
         ),
     }))
+}
+
+/// Whether `assignment_id` was delegated and no longer fits its ancestors' authority: an
+/// ancestor was revoked or cancelled, or its frozen authorization now exceeds what they hold.
+async fn delegated_authority_lost(
+    connection: &mut sqlx::SqliteConnection,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<bool> {
+    match delegation::read_delegation_bound(connection, assignment_id.as_str()).await? {
+        delegation::DelegationBound::Undelegated => Ok(false),
+        delegation::DelegationBound::Revoked => Ok(true),
+        delegation::DelegationBound::Bound(ceiling) => {
+            delegation::frozen_authority_exceeds(connection, assignment_id.as_str(), &ceiling).await
+        }
+    }
 }
 
 /// Marks the trigger and follow-up inputs of `assignment_id`, which its context package

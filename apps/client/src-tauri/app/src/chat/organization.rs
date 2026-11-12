@@ -32,6 +32,8 @@ mod context;
 #[cfg(desktop)]
 mod continuation;
 #[cfg(desktop)]
+mod delegation;
+#[cfg(desktop)]
 mod dispatch;
 #[cfg(desktop)]
 mod primary_folder;
@@ -59,6 +61,8 @@ use common::{
     validate_profile_text, validate_teammate_role,
 };
 #[cfg(desktop)]
+pub(crate) use delegation::{DelegatedFolder, DelegationRequest, delegate_assignment};
+#[cfg(desktop)]
 use dispatch::{deliver_assignment_input, dispatch_assignment_job};
 pub(crate) use reads::read_memberships_for_conversation;
 use reads::{
@@ -70,7 +74,7 @@ use teammate_lifecycle::set_teammate_archived;
 #[cfg(desktop)]
 use workflow::insert_policy_revision;
 use workflow::{
-    AssignmentWrite, ChannelCopy, CommunicationMessageWrite, PostingDevice,
+    AssignmentWrite, ChannelCopy, CommunicationMessageWrite, MessageAuthor, PostingDevice,
     REVIEW_REFUSED_NO_EXECUTING_DEVICE, insert_channel_copy, insert_communication_message,
     next_item_order_key, persist_assignment_routing, read_post_receipt,
     require_continuation_scope_is_unchanged, require_reply_thread, require_reviewable_assignment,
@@ -585,6 +589,7 @@ async fn persist_post_with(
     insert_communication_message(
         &mut transaction,
         CommunicationMessageWrite {
+            author: MessageAuthor::LocalPerson,
             item_id: &item_id,
             revision_id: &revision_id,
             conversation_id: &channel.conversation_id,

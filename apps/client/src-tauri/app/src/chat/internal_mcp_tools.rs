@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 mod audit;
 mod authorization;
 mod channels;
+pub(super) mod delegation;
 mod registry;
 mod workspace;
 
@@ -189,8 +190,13 @@ fn definition(tool: HostTool) -> Option<Tool> {
             }),
             true,
         ),
+        HostTool::DelegateAssignment => mutating_tool(
+            name,
+            "Hand bounded work to another teammate of this channel within this assignment's folders and ranks",
+            delegation::properties(),
+            false,
+        ),
         HostTool::ReadReplyPointer
-        | HostTool::DelegateAssignment
         | HostTool::Ask
         | HostTool::Report
         | HostTool::RequestSecret
@@ -274,6 +280,22 @@ pub(crate) async fn call(
             Ok(value)
         }
         Err(error) => {
+            // A delegation refusal changed nothing, so its code is both the audit category and
+            // the error the teammate sees, which lets it adjust its next call.
+            if let Some(refusal) = tool
+                .filter(|tool| *tool == HostTool::DelegateAssignment)
+                .and_then(|_| delegation::DelegationRefusal::from_error(&error))
+            {
+                complete_audit_denied(
+                    context.pool,
+                    context.scope,
+                    &invocation_id,
+                    refusal.code(),
+                    false,
+                )
+                .await?;
+                return Err(refusal.into_error());
+            }
             complete_audit_denied(
                 context.pool,
                 context.scope,
@@ -320,8 +342,15 @@ async fn dispatch(
         HostTool::CreateWorkspaceFile => write_workspace_file(context, arguments, true).await,
         HostTool::PatchWorkspaceFile => patch_workspace_file(context, arguments).await,
         HostTool::DeleteWorkspaceFile => delete_workspace_file(context, arguments).await,
+        HostTool::DelegateAssignment => {
+            delegation::delegate(context, arguments)
+                .await
+                .map_err(|error| match error {
+                    delegation::DelegationCallError::Refused(refusal) => refusal.into_error(),
+                    delegation::DelegationCallError::Failed(error) => error,
+                })
+        }
         HostTool::ReadReplyPointer
-        | HostTool::DelegateAssignment
         | HostTool::Ask
         | HostTool::Report
         | HostTool::RequestSecret
@@ -435,7 +464,7 @@ fn configured_tool(
     let properties = properties.as_object().cloned().unwrap_or_default();
     let required = properties
         .keys()
-        .filter(|key| !matches!(key.as_str(), "cursor" | "limit"))
+        .filter(|key| !matches!(key.as_str(), "cursor" | "limit" | "folders"))
         .cloned()
         .map(Value::String)
         .collect::<Vec<_>>();
@@ -680,6 +709,8 @@ mod tests {
                 is_execution_target: true,
                 runtime_approval_policy: ChatRuntimeApprovalPolicy::Ask,
             }],
+            delegation_depth: 0,
+            delegation_target_available: true,
         }
     }
 
@@ -707,7 +738,9 @@ mod tests {
             .map(|tool| tool.name.to_string())
             .collect();
         assert!(listed.iter().all(|name| {
-            HostTool::from_name(name).is_some_and(|tool| tool.class() == HostToolClass::Read)
+            HostTool::from_name(name).is_some_and(|tool| {
+                matches!(tool.class(), HostToolClass::Read | HostToolClass::Delegate)
+            })
         }));
     }
 

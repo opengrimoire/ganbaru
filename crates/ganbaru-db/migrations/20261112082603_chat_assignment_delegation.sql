@@ -24,9 +24,8 @@ CREATE INDEX idx_chat_work_assignments_parent
 ON chat_work_assignments(parent_assignment_id)
 WHERE parent_assignment_id IS NOT NULL;
 
--- The fields are all set or all absent, a child is never its own parent, and a child sits
--- exactly one level below its parent. The trigger also runs while sync applies remote rows,
--- because a replica cannot otherwise see the parent's depth when it validates a child.
+-- The fields are all set or all absent, and a child is never its own parent. This rule reads
+-- only the new row, so it also runs while sync applies remote rows.
 CREATE TRIGGER chat_work_assignment_delegation_insert
 BEFORE INSERT ON chat_work_assignments
 WHEN (
@@ -45,13 +44,24 @@ WHEN (
         OR NEW.delegation_expected_result IS NULL
         OR NEW.delegation_folder_ceiling IS NULL
         OR NEW.parent_assignment_id = NEW.id
-        OR EXISTS (
-            SELECT 1 FROM chat_work_assignments parent
-            WHERE parent.id = NEW.parent_assignment_id
-              AND parent.delegation_depth + 1 <> NEW.delegation_depth
-        )
     )
 )
+BEGIN
+    SELECT RAISE(ABORT, 'A delegated assignment needs every delegation field and another parent');
+END;
+
+-- A local child sits exactly one level below its parent. Apply cannot order a child after its
+-- parent within one table, so a replica instead checks the whole chain before it delegates
+-- from an assignment.
+CREATE TRIGGER chat_work_assignment_delegation_depth_insert
+BEFORE INSERT ON chat_work_assignments
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NEW.delegation_depth <> 0
+    AND EXISTS (
+        SELECT 1 FROM chat_work_assignments parent
+        WHERE parent.id = NEW.parent_assignment_id
+          AND parent.delegation_depth + 1 <> NEW.delegation_depth
+    )
 BEGIN
     SELECT RAISE(ABORT, 'A delegated assignment must sit one level below its parent');
 END;

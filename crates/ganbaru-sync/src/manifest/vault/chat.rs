@@ -1666,7 +1666,10 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
             )
         },
     ],
-    triggers: &[applier_visible("chat_work_assignment_delegation_insert")],
+    triggers: &[
+        applier_visible("chat_work_assignment_delegation_insert"),
+        gated("chat_work_assignment_delegation_depth_insert"),
+    ],
     local_columns: &[REVISION],
     revision_column: Some("revision"),
     resolutions: &[within(

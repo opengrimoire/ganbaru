@@ -367,6 +367,36 @@ async fn delegation_refuses_a_level_below_the_depth_limit() {
 }
 
 #[tokio::test]
+async fn delegation_refuses_a_synced_parent_whose_depth_disagrees_with_its_chain() {
+    let pool = pool_with_helper().await;
+    let child = delegate(&pool, &Caller::root(), HELPER, &parent_folders(), "level-1")
+        .await
+        .unwrap();
+    let child = start_working(&pool, &child.child.assignment_id).await;
+    let grandchild = delegate(&pool, &child, PARENT_TEAMMATE, &parent_folders(), "level-2")
+        .await
+        .unwrap();
+    let grandchild = start_working(&pool, &grandchild.child.assignment_id).await;
+    // Apply does not compare a child's depth with its parent's, so a forged row can claim less.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+         UPDATE chat_work_assignments SET delegation_depth = 1 WHERE id = '{}';
+         UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;",
+        grandchild.parent.as_str()
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        delegate(&pool, &grandchild, HELPER, &parent_folders(), "level-3")
+            .await
+            .unwrap_err(),
+        DelegationRefusal::ParentInactive
+    );
+}
+
+#[tokio::test]
 async fn delegation_refuses_a_fifth_open_child() {
     let pool = pool_with_helper().await;
     let caller = Caller::root();

@@ -465,6 +465,9 @@ async fn read_working_parent(
     let depth = row
         .try_get::<i64, _>("delegation_depth")
         .map_err(persistence_error)?;
+    if delegation_chain_length(connection, request.parent_assignment_id).await? != Some(depth) {
+        return Ok(Err(DelegationRefusal::ParentInactive));
+    }
     Ok(Ok(WorkingParent {
         teammate_id: ChatParticipantId::new(
             row.try_get::<String, _>("teammate_id")
@@ -474,6 +477,35 @@ async fn read_working_parent(
         depth: u8::try_from(depth).map_err(|_| stored_value_error("delegation depth"))?,
         unattended: approval.as_deref() == Some("unattended"),
     }))
+}
+
+/// How many delegations separate `assignment_id` from the root of its chain, or `None` when an
+/// ancestor is missing or the chain is longer than [`MAX_DELEGATION_DEPTH`].
+///
+/// Sync applies remote assignments without checking a child's depth against its parent, so a
+/// device walks the stored chain before it trusts a depth that bounds further delegation.
+async fn delegation_chain_length(
+    connection: &mut SqliteConnection,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<Option<i64>> {
+    let (length, complete): (Option<i64>, Option<bool>) = sqlx::query_as(
+        "WITH RECURSIVE chain(id, parent_id, hops) AS (
+           SELECT id, parent_assignment_id, 0 FROM chat_work_assignments WHERE id = ?
+           UNION ALL
+           SELECT ancestor.id, ancestor.parent_assignment_id, chain.hops + 1
+           FROM chat_work_assignments ancestor
+           JOIN chain ON ancestor.id = chain.parent_id
+           WHERE chain.hops <= ?
+         )
+         SELECT max(hops), max(hops) = max(CASE WHEN parent_id IS NULL THEN hops END)
+         FROM chain",
+    )
+    .bind(assignment_id.as_str())
+    .bind(i64::from(MAX_DELEGATION_DEPTH))
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    Ok(length.filter(|hops| complete == Some(true) && *hops <= i64::from(MAX_DELEGATION_DEPTH)))
 }
 
 struct DelegationTarget {

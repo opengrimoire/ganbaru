@@ -457,6 +457,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::threads::chat_restore_thread,
             chat::threads::chat_delete_thread_permanently,
             chat::git::chat_git_status,
+            chat::git::chat_read_commit_draft_context,
+            chat::git::chat_read_change_request_draft_context,
             chat::git::chat_git_stage,
             chat::git::chat_git_unstage,
             chat::git::chat_git_commit,

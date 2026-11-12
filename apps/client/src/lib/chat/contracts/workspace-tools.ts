@@ -156,6 +156,19 @@ export interface GitStatusRead {
   files: GitChangedPathRead[];
 }
 
+/** Bounded changes a teammate drafts commit or change request text from; every cut is reported. */
+export interface ChatCommitDraftContextRead {
+  /** Changed repository-relative paths, staged for a commit or in the branch range for a change request. */
+  stagedPaths: string[];
+  patch: string;
+  /** Whether the patch was cut at its byte limit or left out because Git output passed its bound. */
+  patchTruncated: boolean;
+  /** Changed paths left out of `stagedPaths`. */
+  omittedFiles: number;
+  /** Commit subjects, newest first. */
+  recentSubjects: string[];
+}
+
 export interface GitRemoteRead {
   name: string;
   fetchUrl: string | null;

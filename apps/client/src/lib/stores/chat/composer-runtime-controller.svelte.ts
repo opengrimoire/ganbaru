@@ -20,6 +20,7 @@ import type {
   ChatSettingsRead,
   ChatThreadId,
   ChatThreadShellRead,
+  ChatTurnId,
   InteractionMode,
   ModelId,
   ProjectWorkingFolderId,
@@ -34,6 +35,12 @@ import type { TimelineMessageRow } from "$lib/chat/timeline/model";
 export interface ChatComposerSendOptions {
   promptOverride?: string;
   omitComposerContext?: boolean;
+}
+
+/** A turn sent in a provider thread. */
+export interface ChatThreadTurnRef {
+  threadId: ChatThreadId;
+  turnId: ChatTurnId;
 }
 
 export interface ChatComposerRuntimeControllerOptions {
@@ -308,6 +315,42 @@ export class ChatComposerRuntimeController {
       console.error("Chat composer selection could not be remembered after sending", error);
     }
     await this.refreshInteraction(result.thread.id);
+  }
+
+  /**
+   * Sends `prompt` as a turn in the selected thread with that thread's own provider, model, and modes.
+   * The composer draft, attachments, and mentions stay untouched, and no thread is created.
+   *
+   * @param prompt Turn text, shown in the thread like any other turn.
+   * @returns The thread and turn that carry the request.
+   */
+  async sendThreadTurn(prompt: string): Promise<ChatThreadTurnRef> {
+    const thread = this.options.selectedThread();
+    const workingFolderId = thread?.workingFolderId ?? null;
+    if (!thread || !workingFolderId) throw new Error("A Chat thread is required before sending a turn");
+    const turnId = crypto.randomUUID();
+    const result = await chatApi.sendChatTurn({
+      command: { clientCommandId: crypto.randomUUID(), expectedThreadRevision: thread.revision },
+      workingFolderId,
+      threadId: thread.id,
+      newThreadId: null,
+      executionEnvironmentId: null,
+      turnId,
+      messageId: crypto.randomUUID(),
+      providerInstanceId: thread.providerInstanceId,
+      providerManagedModel: thread.modelId === null,
+      modelId: thread.modelId,
+      modelOptions: thread.modelOptions,
+      modes: thread.modes,
+      prompt,
+      attachmentIds: [],
+      mentions: [],
+    });
+    this.options.upsertThread(result.thread);
+    if (result.launchError) throw new Error(result.launchError.message);
+    await this.options.refreshTimeline(thread.id);
+    await this.refreshInteraction(thread.id);
+    return { threadId: thread.id, turnId };
   }
 
   async retryFailedSend(): Promise<void> {

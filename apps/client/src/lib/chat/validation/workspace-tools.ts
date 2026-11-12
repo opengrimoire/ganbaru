@@ -1,5 +1,6 @@
 import {
   type ChatChangedFileRead,
+  type ChatCommitDraftContextRead,
   type ChatExecutionEnvironmentRead,
   type ChatReviewFileAction,
   type ChatReviewFileRead,
@@ -67,6 +68,10 @@ const MAX_REVIEW_COMMENTS = 256;
 const MAX_REVIEW_SELECTION_CHARS = 1024 * 1024;
 const MAX_REVIEW_COMMENT_CHARS = 65_536;
 const MAX_REVIEW_METADATA_CHARS = 4_096;
+// Native draft context bounds: 64 KiB of patch (at most as many UTF-16 units), 200 paths, and 20 subjects.
+const MAX_DRAFT_CONTEXT_PATCH_CHARS = 64 * 1024;
+const MAX_DRAFT_CONTEXT_FILES = 200;
+const MAX_DRAFT_CONTEXT_SUBJECTS = 20;
 
 function array<T>(value: unknown, label: string, parse: (entry: unknown, label: string) => T): T[] {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
@@ -521,6 +526,28 @@ function parseGitChangedPath(value: unknown, label: string): GitChangedPathRead 
     worktreeStatus: readString(record.worktreeStatus, `${label}.worktreeStatus`),
     untracked: readBoolean(record.untracked, `${label}.untracked`),
     ignored: readBoolean(record.ignored, `${label}.ignored`),
+  };
+}
+
+/**
+ * Validates a draft context against the native bounds, so an oversized read is refused rather than embedded.
+ *
+ * @param value Untrusted command response.
+ * @returns The typed draft context.
+ */
+export function parseChatCommitDraftContext(value: unknown): ChatCommitDraftContextRead {
+  const record = readRecord(value, "commitDraftContext");
+  return {
+    stagedPaths: boundedArray(record.stagedPaths, "commitDraftContext.stagedPaths", MAX_DRAFT_CONTEXT_FILES, relativePath),
+    patch: boundedString(record.patch, "commitDraftContext.patch", MAX_DRAFT_CONTEXT_PATCH_CHARS),
+    patchTruncated: readBoolean(record.patchTruncated, "commitDraftContext.patchTruncated"),
+    omittedFiles: readNonNegativeSafeInteger(record.omittedFiles, "commitDraftContext.omittedFiles"),
+    recentSubjects: boundedArray(
+      record.recentSubjects,
+      "commitDraftContext.recentSubjects",
+      MAX_DRAFT_CONTEXT_SUBJECTS,
+      (entry, label) => boundedString(entry, label, MAX_REVIEW_METADATA_CHARS),
+    ),
   };
 }
 

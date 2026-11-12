@@ -3,7 +3,7 @@
 use super::workspace::mutation::ChatWorkspaceMutationRegistry;
 use super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation};
 use crate::db;
-use ganbaru_chat::git::{self, GitStatusRead};
+use ganbaru_chat::git::{self, ChatCommitDraftContextRead, GitStatusRead};
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
 };
@@ -37,6 +37,46 @@ pub async fn chat_git_status(
     .await?;
     let folder = authorized.git_folder();
     git::status(folder).await
+}
+
+/// Reads the bounded staged changes and recent subjects a teammate drafts a commit message from.
+#[tauri::command]
+pub async fn chat_read_commit_draft_context(
+    app: tauri::AppHandle,
+    db_url: String,
+    working_folder_id: ProjectWorkingFolderId,
+    execution_environment_id: Option<String>,
+) -> ChatResult<ChatCommitDraftContextRead> {
+    let authorized = authorized_folder(
+        &app,
+        &db_url,
+        &working_folder_id,
+        execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::Git,
+    )
+    .await?;
+    git::commit_draft_context(authorized.git_folder()).await
+}
+
+/// Reads the bounded branch range changes and subjects a teammate drafts change request text from.
+#[tauri::command]
+pub async fn chat_read_change_request_draft_context(
+    app: tauri::AppHandle,
+    db_url: String,
+    working_folder_id: ProjectWorkingFolderId,
+    base: String,
+    head: String,
+    execution_environment_id: Option<String>,
+) -> ChatResult<ChatCommitDraftContextRead> {
+    let authorized = authorized_folder(
+        &app,
+        &db_url,
+        &working_folder_id,
+        execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::Git,
+    )
+    .await?;
+    git::change_request_draft_context(authorized.git_folder(), &base, &head).await
 }
 
 #[tauri::command]

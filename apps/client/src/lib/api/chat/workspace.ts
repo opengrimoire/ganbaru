@@ -4,6 +4,7 @@ import { withWorkingFolderTrust } from "$lib/api/working-folder-trust";
 import { translate } from "$lib/i18n/translator.svelte";
 import type {
   ChatAttachmentRead,
+  ChatCommitDraftContextRead,
   ProjectWorkingFolderDirectoryRead,
   ProjectWorkingFolderFilePreview,
   ChatTerminalCloseResult,
@@ -34,6 +35,7 @@ import type {
 } from "$lib/chat/contracts";
 import {
   parseChatAttachmentRead,
+  parseChatCommitDraftContext,
   parseProjectWorkingFolderDirectory,
   parseProjectWorkingFolderFilePreview,
   parseChatTerminalCloseResult,
@@ -507,6 +509,48 @@ export async function readGitStatus(workingFolderId: ProjectWorkingFolderId, exe
   return parseGitStatus(await invoke<unknown>("chat_git_status", {
     dbUrl: await ensureDbUrl(),
     workingFolderId,
+    executionEnvironmentId,
+  }));
+}
+
+/**
+ * Reads the bounded staged changes and recent commit subjects a teammate drafts a commit message from.
+ *
+ * @param workingFolderId Working folder whose staged changes are read.
+ * @param executionEnvironmentId Execution environment of the folder, or null for the folder itself.
+ * @returns The validated draft context.
+ */
+export async function readCommitDraftContext(
+  workingFolderId: ProjectWorkingFolderId,
+  executionEnvironmentId: string | null = null,
+): Promise<ChatCommitDraftContextRead> {
+  return parseChatCommitDraftContext(await invoke<unknown>("chat_read_commit_draft_context", {
+    dbUrl: await ensureDbUrl(),
+    workingFolderId,
+    executionEnvironmentId,
+  }));
+}
+
+/**
+ * Reads the bounded changes and commit subjects `head` adds over `base`, for drafting change request text.
+ *
+ * @param workingFolderId Working folder whose repository is read.
+ * @param base Branch the change request merges into.
+ * @param head Branch the change request proposes.
+ * @param executionEnvironmentId Execution environment of the folder, or null for the folder itself.
+ * @returns The validated draft context.
+ */
+export async function readChangeRequestDraftContext(
+  workingFolderId: ProjectWorkingFolderId,
+  base: string,
+  head: string,
+  executionEnvironmentId: string | null = null,
+): Promise<ChatCommitDraftContextRead> {
+  return parseChatCommitDraftContext(await invoke<unknown>("chat_read_change_request_draft_context", {
+    dbUrl: await ensureDbUrl(),
+    workingFolderId,
+    base,
+    head,
     executionEnvironmentId,
   }));
 }

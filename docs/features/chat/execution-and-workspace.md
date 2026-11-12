@@ -32,6 +32,8 @@ Review presents file changes, diffs, checkpoints, and source-control status, and
 
 When a checkpoint pair is unavailable, review falls back to the provider-reported turn and then to the working tree. Only a typed not-found reason selects a fallback; permission and storage errors stay errors.
 
+The commit and change request forms can ask the selected thread's teammate, when it is idle in the same working folder, to draft the text from bounded Git context (changed paths, a size-capped patch, and recent subjects), stating every cut in the prompt. The draft fills the field only after the turn completes and only when the user has not edited the field since asking; otherwise it is offered, and an empty or oversized draft is refused instead of cut.
+
 A changed file too large to review is listed with a notice instead of a diff, and it can still be staged, unstaged, or discarded as a whole.
 
 A working folder may be a subdirectory of its repository. Review and source control then list paths from the repository root, and staging, unstaging, discarding, and diffs act on exactly the listed file, as the user's own `git` would from that folder.

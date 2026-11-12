@@ -11,13 +11,15 @@
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Trash2 from "@lucide/svelte/icons/trash";
   import * as chatApi from "$lib/api/chat";
-  import type { ChatExecutionEnvironmentRead, GitChangedPathRead, GitStatusRead, HostedChangeRequestRead, HostedSourceControlRead } from "$lib/chat/contracts";
+  import type { ChatCommitDraftContextRead, ChatExecutionEnvironmentRead, GitChangedPathRead, GitStatusRead, HostedChangeRequestRead, HostedSourceControlRead } from "$lib/chat/contracts";
   import { subscribeChatWorkspaceChanges } from "$lib/chat/workspace/observer-client";
   import { COMMIT_MESSAGE_MAX_BYTES, commitMessageTooLong } from "$lib/chat/workspace/commit-message";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import ChatTeammateDraftAction from "./ChatTeammateDraftAction.svelte";
+  import type { DraftExtraction } from "$lib/chat/source-control/draft-extraction";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
@@ -126,6 +128,33 @@
   function scopeMatches(workingFolderId: string | null, executionEnvironmentId: string | null): boolean {
     return workspace === workingFolderId
       && chat.selectedExecutionEnvironmentId === executionEnvironmentId;
+  }
+
+  async function readCommitDraftContext(): Promise<ChatCommitDraftContextRead> {
+    const workingFolderId = workspace;
+    if (!workingFolderId) throw new Error(t("chat.sourceControl.teammateDraftUnavailable"));
+    return chatApi.readCommitDraftContext(workingFolderId, chat.selectedExecutionEnvironmentId);
+  }
+
+  async function readChangeRequestDraftContext(): Promise<ChatCommitDraftContextRead> {
+    const workingFolderId = workspace;
+    if (!workingFolderId) throw new Error(t("chat.sourceControl.teammateDraftUnavailable"));
+    return chatApi.readChangeRequestDraftContext(
+      workingFolderId,
+      changeRequestBase.trim(),
+      changeRequestHead.trim(),
+      chat.selectedExecutionEnvironmentId,
+    );
+  }
+
+  function applyCommitDraft(draft: Extract<DraftExtraction, { ok: true }>): void {
+    if (draft.kind === "commit") commitMessage = draft.message;
+  }
+
+  function applyChangeRequestDraft(draft: Extract<DraftExtraction, { ok: true }>): void {
+    if (draft.kind !== "change_request") return;
+    changeRequestTitle = draft.title;
+    changeRequestBody = draft.body;
   }
 
   function isStaged(file: GitChangedPathRead): boolean {
@@ -588,6 +617,16 @@
         <input class="field" bind:value={changeRequestTitle} maxlength="1024" placeholder={t("chat.sourceControl.changeRequestTitle")} aria-label={t("chat.sourceControl.changeRequestTitle")} />
         <div><input class="field" bind:value={changeRequestBase} maxlength="1024" placeholder={t("chat.sourceControl.baseBranch")} aria-label={t("chat.sourceControl.baseBranch")} /><input class="field" bind:value={changeRequestHead} maxlength="1024" placeholder={t("chat.sourceControl.headBranch")} aria-label={t("chat.sourceControl.headBranch")} /></div>
         <textarea class="field" bind:value={changeRequestBody} maxlength="262144" rows="3" placeholder={t("chat.sourceControl.changeRequestBody")} aria-label={t("chat.sourceControl.changeRequestBody")}></textarea>
+        <ChatTeammateDraftAction
+          kind="change_request"
+          scopeKey={`${workspace ?? ""}\n${chat.selectedExecutionEnvironmentId ?? ""}`}
+          fieldValue={`${changeRequestTitle}\n${changeRequestBody}`}
+          allowed={changeRequestBase.trim().length > 0 && changeRequestHead.trim().length > 0 && operation === null}
+          base={changeRequestBase.trim()}
+          head={changeRequestHead.trim()}
+          readContext={readChangeRequestDraftContext}
+          onDraft={applyChangeRequestDraft}
+        />
         <label><Checkbox bind:checked={isChangeRequestDraft} />{t("chat.sourceControl.draftChangeRequest")}</label>
         <button type="submit" class="chat-primary-button" disabled={!changeRequestTitle.trim() || !changeRequestBase.trim() || !changeRequestHead.trim() || operation !== null}>{t("chat.sourceControl.createChangeRequest")}</button>
       </form>
@@ -659,6 +698,14 @@
       <label for="chat-commit-message">{t("chat.sourceControl.commitMessage")}</label>
       <textarea class="field" id="chat-commit-message" maxlength={COMMIT_MESSAGE_MAX_BYTES} rows="3" bind:value={commitMessage} placeholder={t("chat.sourceControl.commitPlaceholder")} aria-describedby={commitTooLong ? "chat-commit-message-error" : undefined} aria-invalid={commitTooLong ? "true" : undefined}></textarea>
       {#if commitTooLong}<small id="chat-commit-message-error" class="field-error" role="alert">{t("chat.sourceControl.commitMessageTooLong")}</small>{/if}
+      <ChatTeammateDraftAction
+        kind="commit"
+        scopeKey={`${workspace ?? ""}\n${chat.selectedExecutionEnvironmentId ?? ""}`}
+        fieldValue={commitMessage}
+        allowed={staged.length > 0 && operation === null}
+        readContext={readCommitDraftContext}
+        onDraft={applyCommitDraft}
+      />
       <button type="submit" class="chat-primary-button" disabled={!commitMessage.trim() || commitTooLong || staged.length === 0 || operation !== null}><Check size={14} />{t("chat.sourceControl.commit")}</button>
     </form>
   {/if}

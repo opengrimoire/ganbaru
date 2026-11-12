@@ -373,3 +373,48 @@ async fn wait_for_closed(state: &AcpFixtureState) {
     .await
     .unwrap();
 }
+
+#[test]
+fn pending_requests_wake_on_cancellation_and_deadline() {
+    crate::test_block_on(async {
+        let (application, agent) = tokio::io::duplex(64 * 1024);
+        let (application_reader, application_writer) = tokio::io::split(application);
+        let (agent_reader, _agent_writer) = tokio::io::split(agent);
+        let mut connection = AcpRpcConnection::from_test_io(application_reader, application_writer);
+        let mut reader = BufReader::new(agent_reader);
+
+        let cancelled = context("cancelled");
+        let cancellation = cancelled.cancellation.clone();
+        let client = connection.client();
+        let request = tokio::spawn(async move {
+            client
+                .request("never_answered", json!({}), &cancelled)
+                .await
+        });
+        assert_eq!(
+            read_json_line(&mut reader).await["method"],
+            "never_answered"
+        );
+        let started = std::time::Instant::now();
+        cancellation.cancel();
+        let result = request.await.unwrap();
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert_eq!(result, Err(AcpRpcFailure::Cancelled));
+
+        let mut expiring = context("expiring");
+        expiring.deadline = std::time::Instant::now() + Duration::from_millis(20);
+        let (_fallback_sender, fallback) = tokio::sync::oneshot::channel();
+        let started = std::time::Instant::now();
+        let result = connection
+            .client()
+            .request_with_fallback("never_answered", json!({}), fallback, &expiring)
+            .await;
+        assert_eq!(result, Err(AcpRpcFailure::Timeout));
+        assert!(started.elapsed() < Duration::from_millis(500));
+
+        connection
+            .stop(Duration::from_millis(20), Duration::from_millis(20))
+            .await
+            .unwrap();
+    });
+}

@@ -5,6 +5,7 @@
 //! the caller captured once, together with the device's Focus state, and never read a clock.
 
 use chrono::Weekday;
+use ganbaru_sync_contracts::chat_recurrence;
 use serde::{Deserialize, Serialize};
 
 pub mod quiet_periods;
@@ -22,10 +23,10 @@ pub use recurrence::{
 };
 
 /// Last minute of a local day, counted from midnight.
-pub const LAST_MINUTE_OF_DAY: u16 = 1439;
+pub const LAST_MINUTE_OF_DAY: u16 = chat_recurrence::LAST_LOCAL_MINUTE;
 
 /// Mask with every weekday bit set.
-const ALL_WEEKDAYS_MASK: u8 = 0b0111_1111;
+const ALL_WEEKDAYS_MASK: u8 = chat_recurrence::ALL_WEEKDAYS_MASK;
 
 /// A set of weekdays: bit 0 is Monday through bit 6 for Sunday.
 ///

@@ -5,12 +5,14 @@
 //! device outranks progress the executing device reports concurrently, a review travels
 //! whole with the completion it judges while a concurrent cancel outranks it, a delivery of an
 //! input outranks a concurrent cancel of it, concurrent creates with model overrides keep
-//! one whole override, and a concurrent narrowing of a parent grant cancels a child delegated
-//! against the old authority.
+//! one whole override, a concurrent narrowing of a parent grant cancels a child delegated
+//! against the old authority, and a cancel of a repeating scheduled message ends its series
+//! over any progress the executing device records concurrently.
 
 use super::*;
 use crate::manifest::vault::chat::{
-    ASSIGNMENT_INPUT_KEY_PREFIX, INPUTS_TABLE, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
+    ASSIGNMENT_INPUT_KEY_PREFIX, INPUTS_TABLE, RECURRENCE_KEY_PREFIX, SCHEDULED_TABLE,
+    SEMANTIC_UPDATES_TABLE,
 };
 use crate::tests::replica::pair;
 
@@ -950,5 +952,165 @@ fn chat_concurrent_overridden_starts_keep_one_whole_override() {
             created.iter().all(|row| *row == created[0]),
             "every device agrees on the override: {created:?}"
         );
+    });
+}
+
+/// Seeds of the cancel against recurrence progress scenario.
+const RECURRENCE_SEEDS: u64 = 8;
+
+/// Rounds of one cancel against recurrence progress scenario.
+const RECURRENCE_ROUNDS: usize = 5;
+
+/// SQL repeating [`SCHEDULED`] every two hours, deferred through quiet periods.
+fn recurrence_sql() -> String {
+    format!(
+        "INSERT INTO chat_scheduled_message_recurrences
+            (id, scheduled_message_id, rule_kind, interval_minutes, time_zone, quiet_policy,
+             next_occurrence_at, fired_count, created_at, updated_at)
+         VALUES ({id}, {scheduled}, 'interval', 120, 'America/Mexico_City', 'defer', {due}, 0,
+                 {created}, {created});",
+        id = quoted(&key(RECURRENCE_KEY_PREFIX, &[SCHEDULED])),
+        scheduled = quoted(SCHEDULED),
+        due = quoted(&at(30, 0)),
+        created = quoted(CREATED),
+    )
+}
+
+/// SQL recording that [`SCHEDULED`] posted `fired` occurrences, the next one due at `next`.
+fn advance_sql(fired: usize, next: &str, updated_at: &str) -> String {
+    format!(
+        "UPDATE chat_scheduled_message_recurrences
+         SET next_occurrence_at = {next}, fired_count = {fired}, updated_at = {updated_at}
+         WHERE scheduled_message_id = {scheduled};",
+        next = quoted(next),
+        updated_at = quoted(updated_at),
+        scheduled = quoted(SCHEDULED),
+    )
+}
+
+/// [`SCHEDULED`]'s recurrence as `rule fired_count`, or `None` once it is gone.
+async fn recurrence_progress(replica: &mut Replica) -> Option<String> {
+    replica
+        .scalar_text(
+            "SELECT recurrence.rule_kind || ' ' || recurrence.fired_count
+             FROM chat_scheduled_message_recurrences recurrence
+             JOIN chat_scheduled_messages message
+               ON message.id = recurrence.scheduled_message_id",
+        )
+        .await
+}
+
+#[test]
+fn chat_scheduled_recurrences_round_trip_and_leave_with_their_message() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0]
+            .exec(&format!("{}{}", scheduled_sql(), recurrence_sql()))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        assert_eq!(
+            replicas[1]
+                .scalar_text(
+                    "SELECT id || ' ' || interval_minutes || ' ' || time_zone || ' '
+                            || quiet_policy || ' ' || next_occurrence_at
+                     FROM chat_scheduled_message_recurrences",
+                )
+                .await,
+            Some(format!(
+                "{} 120 America/Mexico_City defer {}",
+                key(RECURRENCE_KEY_PREFIX, &[SCHEDULED]),
+                at(30, 0)
+            ))
+        );
+
+        replicas[0]
+            .exec(&advance_sql(1, &at(150, 0), &at(31, 0)))
+            .await;
+        converge(&mut replicas).await;
+        assert_eq!(
+            recurrence_progress(&mut replicas[1]).await.as_deref(),
+            Some("interval 1")
+        );
+
+        replicas[1]
+            .exec("DELETE FROM chat_scheduled_messages WHERE id = 'scheduled:reminder'")
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        assert_eq!(
+            replicas[0]
+                .count("SELECT count(*) FROM chat_scheduled_message_recurrences")
+                .await,
+            0,
+            "a cancel removes the series with its message"
+        );
+    });
+}
+
+/// The executing device advances a series while the other devices cancel it at random; a
+/// cancel anywhere ends the series on every device whatever the exchange order, and without
+/// one every device shows the executing device's last advance.
+#[test]
+fn chat_simulated_cancel_against_recurrence_progress_keeps_the_cancel() {
+    block_on(async {
+        for seed in 0..RECURRENCE_SEEDS {
+            let mut rng = Rng(seed ^ 0x5e71);
+            let mut replicas = conversation_replicas(3).await;
+            replicas[0]
+                .exec(&format!("{}{}", scheduled_sql(), recurrence_sql()))
+                .await;
+            converge(&mut replicas).await;
+            let mut cancelled = false;
+            let mut fired = 0;
+            for round in 0..RECURRENCE_ROUNDS {
+                let executor_has_series = recurrence_progress(&mut replicas[0]).await.is_some();
+                if executor_has_series && rng.chance(80) {
+                    fired += 1;
+                    replicas[0]
+                        .exec(&advance_sql(
+                            fired,
+                            &at(30 + 120 * fired, 0),
+                            &at(round + 1, rng.below(60)),
+                        ))
+                        .await;
+                }
+                for replica in replicas.iter_mut().skip(1) {
+                    if recurrence_progress(replica).await.is_some() && rng.chance(15) {
+                        replica
+                            .exec(
+                                "DELETE FROM chat_scheduled_messages
+                                 WHERE id = 'scheduled:reminder'",
+                            )
+                            .await;
+                        cancelled = true;
+                    }
+                }
+                if rng.chance(50) {
+                    converge(&mut replicas).await;
+                }
+            }
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            let expected = (!cancelled).then(|| format!("interval {fired}"));
+            for replica in &mut replicas {
+                assert_eq!(
+                    recurrence_progress(replica).await,
+                    expected,
+                    "seed {seed} replica {}",
+                    replica.index
+                );
+                if cancelled {
+                    assert_eq!(
+                        replica
+                            .count("SELECT count(*) FROM chat_scheduled_message_recurrences")
+                            .await,
+                        0,
+                        "seed {seed} replica {}",
+                        replica.index
+                    );
+                }
+            }
+        }
     });
 }

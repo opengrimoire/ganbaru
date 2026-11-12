@@ -9,15 +9,16 @@
 use std::fmt;
 
 use chrono::{Datelike, Days, NaiveTime};
+use ganbaru_sync_contracts::chat_recurrence;
 use serde::{Deserialize, Serialize};
 
 use super::{LAST_MINUTE_OF_DAY, WeekdaySet};
 use crate::models::ChatError;
 
 /// Shortest interval between occurrences of an interval rule.
-pub const MIN_RECURRENCE_INTERVAL_MINUTES: u32 = 60;
+pub const MIN_RECURRENCE_INTERVAL_MINUTES: u32 = chat_recurrence::MIN_INTERVAL_MINUTES;
 /// Longest interval between occurrences of an interval rule (30 days).
-pub const MAX_RECURRENCE_INTERVAL_MINUTES: u32 = 43_200;
+pub const MAX_RECURRENCE_INTERVAL_MINUTES: u32 = chat_recurrence::MAX_INTERVAL_MINUTES;
 /// How late an occurrence may still post; an occurrence missed by more is skipped and counted.
 pub const MISSED_OCCURRENCE_GRACE_MINUTES: i64 = 10;
 /// Most repeating scheduled messages one channel may hold.
@@ -57,8 +58,8 @@ impl RecurrenceRule {
     /// Returns the stored rule kind: `interval` or `fixed_time`.
     pub const fn kind(&self) -> &'static str {
         match self {
-            Self::Interval { .. } => "interval",
-            Self::FixedTime { .. } => "fixed_time",
+            Self::Interval { .. } => chat_recurrence::INTERVAL_RULE,
+            Self::FixedTime { .. } => chat_recurrence::FIXED_TIME_RULE,
         }
     }
 }
@@ -78,16 +79,16 @@ impl QuietPolicy {
     /// Returns the stored policy name.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Defer => "defer",
-            Self::Ignore => "ignore",
+            Self::Defer => chat_recurrence::DEFER_QUIET_POLICY,
+            Self::Ignore => chat_recurrence::IGNORE_QUIET_POLICY,
         }
     }
 
     /// Parses a stored policy name.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "defer" => Some(Self::Defer),
-            "ignore" => Some(Self::Ignore),
+            chat_recurrence::DEFER_QUIET_POLICY => Some(Self::Defer),
+            chat_recurrence::IGNORE_QUIET_POLICY => Some(Self::Ignore),
             _ => None,
         }
     }
@@ -215,6 +216,9 @@ pub fn occurrence_key(scheduled_message_id: &str, occurrence_ms: i64) -> String 
 }
 
 fn resolve_zone(name: &str) -> Result<jiff::tz::TimeZone, RecurrenceError> {
+    if name.is_empty() || name.chars().count() > chat_recurrence::MAX_TIME_ZONE_CHARS {
+        return Err(RecurrenceError::UnknownTimeZone);
+    }
     ganbaru_civil_time::zone(name).map_err(|_| RecurrenceError::UnknownTimeZone)
 }
 

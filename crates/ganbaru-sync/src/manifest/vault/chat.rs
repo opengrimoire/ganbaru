@@ -1,4 +1,4 @@
-//! Chat: table ids 352 to 399.
+//! Chat: table ids 352 to 447.
 //!
 //! The identity and policy tables replicate: participants, AI teammates, teammate policy
 //! revisions, access profiles, and access profile revisions (tables 352 to 356). Teammates and
@@ -25,18 +25,20 @@
 //! resource rows stay `Local`; the Chat hook creates them for applied references, and the
 //! attachment rows keep their files alive while queued or unsent work names them.
 //!
-//! Scheduled messages, work assignments, assignment inputs, and semantic updates replicate
-//! (tables 390 and 395 to 397). A scheduled message owns its attachment and mention references
-//! and names the device that sends it; an assignment names the device that executes it. Input
-//! ids derive from their message, so concurrent routing of one message converges, and a settled
-//! assignment state wins over a concurrent active one.
+//! Scheduled messages, their recurrences, work assignments, assignment inputs, and semantic
+//! updates replicate (tables 390, 401, and 395 to 397). A scheduled message owns its attachment
+//! and mention references and names the device that sends it, and a repeating one keeps its rule
+//! and progress in a recurrence row deleted with it. An assignment names the device that
+//! executes it. Input ids derive from their message, so concurrent routing of one message
+//! converges, and a settled assignment state wins over a concurrent active one.
 //!
 //! Execution, drafts, review history, provider state, receipts, dispatch claims, cleanup jobs,
 //! and the access and audience counters stay on the device as `Local` tables, and message search
 //! is `Derived`. Replicas write Chat like the owner; device-local state never leaves the device.
-//! Ids 357 to 359, 365 to 369, 382 to 389, 391 to 394, 398, and 399 are reserved.
+//! Ids 357 to 359, 365 to 369, 382 to 389, 391 to 394, 398 to 400, and 402 to 447 are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
+use ganbaru_sync_contracts::chat_recurrence;
 use ganbaru_sync_contracts::{GroupId, TableId};
 
 use ganbaru_sync_contracts::bounds::MAX_ORDER_KEY_BYTES;
@@ -112,6 +114,8 @@ pub const CONVERSATION_CURSORS_TABLE: TableId = TableId(380);
 pub const REPLY_CURSORS_TABLE: TableId = TableId(381);
 /// `chat_scheduled_messages`.
 pub const SCHEDULED_TABLE: TableId = TableId(390);
+/// `chat_scheduled_message_recurrences`.
+pub const RECURRENCES_TABLE: TableId = TableId(401);
 /// `chat_work_assignments`.
 pub const ASSIGNMENTS_TABLE: TableId = TableId(395);
 /// `chat_work_assignment_inputs`.
@@ -133,6 +137,8 @@ pub const CONVERSATION_CURSOR_KEY_PREFIX: &str = "conversation-read-cursor";
 pub const REPLY_CURSOR_KEY_PREFIX: &str = "reply-thread-read-cursor";
 /// Prefix of assignment input ids, over the routed message.
 pub const ASSIGNMENT_INPUT_KEY_PREFIX: &str = "assignment-input";
+/// Prefix of scheduled message recurrence ids, over the scheduled message.
+pub const RECURRENCE_KEY_PREFIX: &str = "scheduled-recurrence";
 
 /// Participant field groups.
 pub mod participant_group {
@@ -349,6 +355,25 @@ pub mod scheduled_group {
     pub const FAILURE: GroupId = group_id(2);
     /// `updated_at`.
     pub const UPDATED: GroupId = group_id(3);
+}
+
+/// Scheduled message recurrence field groups.
+pub mod recurrence_group {
+    use super::{GroupId, group_id};
+
+    /// `scheduled_message_id`.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `created_at`.
+    pub const CREATED: GroupId = group_id(1);
+    /// `rule_kind`, `interval_minutes`, `local_minute`, `weekdays_mask`, `time_zone`, and
+    /// `quiet_policy`.
+    pub const RULE: GroupId = group_id(2);
+    /// `next_occurrence_at` and `fired_count`, written by the executing device.
+    pub const PROGRESS: GroupId = group_id(3);
+    /// `updated_at`.
+    pub const UPDATED: GroupId = group_id(4);
+    /// Whether the row exists.
+    pub const EXISTS: GroupId = group_id(5);
 }
 
 /// Work assignment field groups.
@@ -1594,6 +1619,75 @@ pub const SCHEDULED: TableSpec = TableSpec {
     ..BASE
 };
 
+/// An optional integer from `min` to `max`.
+const fn optional_bounded(name: &'static str, min: i64, max: i64) -> ColumnSpec {
+    ColumnSpec {
+        name,
+        ty: ColumnType::OptionalInteger { min, max },
+    }
+}
+
+/// `chat_scheduled_message_recurrences`, one per repeating scheduled message under an id derived
+/// from it, and deleted with it, so a cancel wins over a concurrent rule edit or advance. Only
+/// the scheduled message's executing device advances the progress, so its register has one
+/// writer. Rules are checked for shape on admission; the executing device resolves the zone.
+pub const RECURRENCES: TableSpec = TableSpec {
+    id: RECURRENCES_TABLE,
+    name: "chat_scheduled_message_recurrences",
+    groups: &[
+        identity(
+            recurrence_group::IDENTITY,
+            &[row_key("scheduled_message_id")],
+            &[cascade("scheduled_message_id", SCHEDULED_TABLE)],
+        ),
+        register(
+            recurrence_group::CREATED,
+            "created",
+            &[timestamp("created_at")],
+        ),
+        register(
+            recurrence_group::RULE,
+            "rule",
+            &[
+                text("rule_kind", MAX_ENUM_CHARS),
+                optional_bounded(
+                    "interval_minutes",
+                    chat_recurrence::MIN_INTERVAL_MINUTES as i64,
+                    chat_recurrence::MAX_INTERVAL_MINUTES as i64,
+                ),
+                optional_bounded("local_minute", 0, chat_recurrence::LAST_LOCAL_MINUTE as i64),
+                optional_bounded(
+                    "weekdays_mask",
+                    1,
+                    chat_recurrence::ALL_WEEKDAYS_MASK as i64,
+                ),
+                trimmed("time_zone", chat_recurrence::MAX_TIME_ZONE_CHARS),
+                text("quiet_policy", MAX_ENUM_CHARS),
+            ],
+        ),
+        register(
+            recurrence_group::PROGRESS,
+            "progress",
+            &[timestamp("next_occurrence_at"), integer("fired_count", 0)],
+        ),
+        updated(recurrence_group::UPDATED),
+        exists(recurrence_group::EXISTS),
+    ],
+    resolutions: &[
+        within(&["rule_kind", "interval_minutes"], recurrence_group::RULE),
+        within(
+            &["rule_kind", "local_minute", "weekdays_mask"],
+            recurrence_group::RULE,
+        ),
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: recurrence_group::EXISTS,
+        prefix: Some(RECURRENCE_KEY_PREFIX),
+        key_inputs: &["scheduled_message_id"],
+    }),
+    ..BASE
+};
+
 /// `chat_work_assignments`. Only the executing device dispatches an assignment and writes its
 /// active states; any device may settle it. Concurrent states resolve to the most restrictive
 /// ending: cancelled, then failed, then completed, then a review request, then the other active
@@ -1760,7 +1854,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     name: DOMAIN_NAME,
     table_ids: TableIdRange {
         first: 352,
-        last: 399,
+        last: 447,
     },
     tables: &[
         PARTICIPANTS,
@@ -1786,6 +1880,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         CONVERSATION_CURSORS,
         REPLY_CURSORS,
         SCHEDULED,
+        RECURRENCES,
         ASSIGNMENTS,
         INPUTS,
         SEMANTIC_UPDATES,

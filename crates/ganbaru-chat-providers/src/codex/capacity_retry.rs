@@ -100,7 +100,11 @@ pub(super) async fn begin_capacity_retry(
             .and_then(Value::as_str)
             .zip(state.provider_thread_id.as_deref())
             .is_some_and(|(actual, expected)| actual != expected);
-        if other_thread {
+        let other_turn = turn
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !state.owns_provider_turn(id));
+        if other_thread || other_turn {
             return Ok(false);
         }
         let Some(chat_turn) = state.active_chat_turn_id.clone() else {
@@ -162,7 +166,7 @@ async fn run_capacity_retry(
         () = retry.cancellation.cancelled() => return,
         () = tokio::time::sleep(backoff(attempt)) => {}
     }
-    if !retry_is_current(&resources, &chat_turn, &retry) {
+    if !begin_retry_request(&resources, &chat_turn, &retry) {
         return;
     }
     let context = DriverOperationContext {
@@ -191,33 +195,44 @@ async fn run_capacity_retry(
                 ))
             }
         });
-    match accepted {
-        Ok(provider_turn_id) => {
-            if !retry_is_current(&resources, &chat_turn, &retry) {
-                // The turn settled while the request was in flight, so Codex runs a turn nobody
-                // watches; stop it.
-                abandon_started_retry(&resources, &retry, provider_turn_id).await;
-                return;
-            }
-            if let Ok(mut state) = resources.route.lock() {
-                // A later failure may already have absorbed this turn into the next attempt.
-                let still_this_attempt = state
-                    .capacity_retry
-                    .as_ref()
-                    .is_some_and(|current| current.attempts == attempt);
-                if state.active_chat_turn_id.as_ref() == Some(&chat_turn)
-                    && state.active_provider_turn_id.is_none()
-                    && still_this_attempt
-                {
-                    state.active_provider_turn_id = Some(provider_turn_id);
+    let (current, abandoned) = match resources.route.lock() {
+        Ok(mut state) => {
+            state.retry_request_in_flight = false;
+            let current = retry_is_current_in(&state, &resources, &chat_turn, &retry);
+            let abandoned = match &accepted {
+                Ok(provider_turn_id) if current => {
+                    // A later failure may already have absorbed this turn into the next attempt.
+                    let still_this_attempt = state
+                        .capacity_retry
+                        .as_ref()
+                        .is_some_and(|current| current.attempts == attempt);
+                    if state.active_provider_turn_id.is_none() && still_this_attempt {
+                        state.active_provider_turn_id = Some(provider_turn_id.clone());
+                    }
+                    None
                 }
-            }
+                // An interrupt that saw this turn start already stopped it for its chat turn.
+                Ok(provider_turn_id)
+                    if state.active_provider_turn_id.as_deref() == Some(provider_turn_id) =>
+                {
+                    None
+                }
+                Ok(provider_turn_id) => {
+                    // The chat turn settled while the request was in flight, so Codex runs a turn
+                    // nobody watches; its late notifications are ignored and it is stopped.
+                    state.abandon_provider_turn(provider_turn_id);
+                    Some(provider_turn_id.clone())
+                }
+                Err(_) => None,
+            };
+            (current, abandoned)
         }
-        Err(error) => {
-            if retry_is_current(&resources, &chat_turn, &retry) {
-                let _ = settle_retry(&resources, ChatTurnState::Failed, Some(error.message)).await;
-            }
-        }
+        Err(_) => return,
+    };
+    if let Some(provider_turn_id) = abandoned {
+        abandon_started_retry(&resources, &retry, provider_turn_id).await;
+    } else if let (Err(error), true) = (accepted, current) {
+        let _ = settle_retry(&resources, ChatTurnState::Failed, Some(error.message)).await;
     }
 }
 
@@ -241,25 +256,53 @@ async fn abandon_started_retry(
         "turnId": provider_turn_id,
     });
     // A refused interrupt leaves nothing to settle: the chat turn already ended and the
-    // provider turn's own completion is routed like any other.
+    // abandoned turn's notifications are ignored.
     let _ = resources
         .client
         .request("turn/interrupt", params, &context)
         .await;
 }
 
+/// Marks the retry request in flight when the session still runs `chat_turn` with this retry.
+/// Returns false, leaving the state unchanged, when the retry is no longer current.
+fn begin_retry_request(
+    resources: &CodexRetryResources,
+    chat_turn: &ChatTurnId,
+    retry: &CodexCapacityRetry,
+) -> bool {
+    let Ok(mut state) = resources.route.lock() else {
+        return false;
+    };
+    let current = retry_is_current_in(&state, resources, chat_turn, retry);
+    if current {
+        state.retry_request_in_flight = true;
+    }
+    current
+}
+
 /// Whether the session still runs `chat_turn` with this retry armed and not cancelled.
-fn retry_is_current(
+fn retry_is_current_in(
+    state: &CodexRouteState,
     resources: &CodexRetryResources,
     chat_turn: &ChatTurnId,
     retry: &CodexCapacityRetry,
 ) -> bool {
     !retry.cancellation.is_cancelled()
         && !resources.expected_shutdown.load(Ordering::Acquire)
-        && resources
-            .route
-            .lock()
-            .is_ok_and(|state| state.active_chat_turn_id.as_ref() == Some(chat_turn))
+        && state.active_chat_turn_id.as_ref() == Some(chat_turn)
+}
+
+/// Refuses to start a turn while a retry request is in flight, because the retried provider turn
+/// is not known yet and could not be told apart from the new one.
+pub(super) fn ensure_no_retry_in_flight(state: &CodexRouteState) -> ChatResult<()> {
+    if state.retry_request_in_flight {
+        return Err(ChatError::new(
+            ChatErrorCode::Busy,
+            "Codex is still stopping a retried turn",
+            true,
+        ));
+    }
+    Ok(())
 }
 
 /// Settles the active chat turn while no provider turn runs, as an interrupt during a backoff or

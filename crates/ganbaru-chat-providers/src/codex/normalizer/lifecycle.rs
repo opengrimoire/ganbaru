@@ -162,6 +162,15 @@ impl CodexEventNormalizer {
             .and_then(Value::as_object)
             .ok_or_else(|| protocol_error("turn/started.turn"))?;
         let provider_turn_id = required_text(turn, "id")?.to_string();
+        if state.is_abandoned(&provider_turn_id) {
+            return Ok(Vec::new());
+        }
+        if state.retry_request_in_flight && state.active_chat_turn_id.is_none() {
+            // The retry's chat turn settled while its request was in flight, and no new turn
+            // starts until it resolves, so this turn has no owner.
+            state.abandon_provider_turn(&provider_turn_id);
+            return Ok(Vec::new());
+        }
         state.active_provider_turn_id = Some(provider_turn_id.clone());
         state.session_state = ProviderSessionState::Active;
         state.changed_files.clear();
@@ -195,6 +204,9 @@ impl CodexEventNormalizer {
             .and_then(Value::as_object)
             .ok_or_else(|| protocol_error("turn/completed.turn"))?;
         let provider_turn_id = required_text(turn, "id")?;
+        if !state.owns_provider_turn(provider_turn_id) {
+            return Ok(Vec::new());
+        }
         let provider_turn = provider_identifier::<ProviderTurnId>(provider_turn_id);
         let status = required_text(turn, "status")?;
         let turn_state = match status {

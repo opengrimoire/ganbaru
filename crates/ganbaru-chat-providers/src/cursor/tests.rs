@@ -6,7 +6,7 @@ use super::interactions::*;
 use super::normalizer::{CursorEventNormalizer, CursorRouteState};
 use super::protocol::*;
 use super::session::{
-    AcpInboundQueue, authentication_is_ready, initialize_session, preferred_auth_method,
+    AcpAuthPreference, AcpInboundQueue, auth_preference, initialize_session, select_auth_method,
 };
 use super::transport::AcpInboundMessage;
 use crate::events::{CanonicalEvent, CanonicalRuntimeEvent};
@@ -119,6 +119,7 @@ fn executable_probe_parses_versions_accounts_and_protected_arguments() {
 
     let settings = CursorProviderSettings {
         api_endpoint: Some("https://cursor.example.test/api".to_string()),
+        auth_method: None,
     };
     assert_eq!(
         launch_arguments(&["--verbose".to_string()], &settings).unwrap(),
@@ -1313,35 +1314,79 @@ fn cursor_versions_admit_against_the_tested_range() {
 }
 
 #[test]
-fn probe_readiness_follows_advertised_auth_methods() {
+fn auth_selection_follows_advertised_methods() {
+    let select = |preference, initialize: &AcpInitializeResponse| {
+        select_auth_method("Agent", preference, initialize)
+    };
+    let cursor_preference = auth_preference(AcpProviderFlavor::Cursor, false, None);
+    let grok_cached = auth_preference(AcpProviderFlavor::Grok, false, None);
+    let grok_api_key = auth_preference(AcpProviderFlavor::Grok, true, None);
+
     let none = minimal_initialize(json!({}));
-    assert!(authentication_is_ready(
-        &none,
-        preferred_auth_method(AcpProviderFlavor::Cursor, false)
-    ));
+    assert_eq!(select(cursor_preference, &none).unwrap(), None);
+    assert_eq!(
+        select(AcpAuthPreference::Configured(None), &none).unwrap(),
+        None
+    );
+
     let cursor = parse_initialize(initialize_response(true)).unwrap();
-    assert!(authentication_is_ready(
-        &cursor,
-        preferred_auth_method(AcpProviderFlavor::Cursor, false)
-    ));
-    assert!(!authentication_is_ready(
-        &cursor,
-        preferred_auth_method(AcpProviderFlavor::Grok, true)
-    ));
+    assert_eq!(
+        select(cursor_preference, &cursor).unwrap().as_deref(),
+        Some(CURSOR_AUTH_METHOD)
+    );
+    assert_eq!(
+        select(grok_api_key, &cursor).unwrap_err().code,
+        ChatErrorCode::AuthenticationRequired
+    );
+
     let grok = parse_initialize(json!({
         "protocolVersion": 1,
         "agentCapabilities": {},
         "authMethods": [{ "id": "cached_token", "name": "Cached token" }]
     }))
     .unwrap();
-    assert!(authentication_is_ready(
-        &grok,
-        preferred_auth_method(AcpProviderFlavor::Grok, false)
-    ));
-    assert!(!authentication_is_ready(
-        &grok,
-        preferred_auth_method(AcpProviderFlavor::Grok, true)
-    ));
+    assert_eq!(
+        select(grok_cached, &grok).unwrap().as_deref(),
+        Some("cached_token")
+    );
+    assert!(select(grok_api_key, &grok).is_err());
+}
+
+#[test]
+fn generic_auth_uses_only_the_configured_method() {
+    let generic = parse_initialize(json!({
+        "protocolVersion": 1,
+        "agentCapabilities": {},
+        "authMethods": [
+            { "id": "oauth", "name": "Browser sign in" },
+            { "id": "api-key", "name": "API key" }
+        ]
+    }))
+    .unwrap();
+    assert_eq!(
+        select_auth_method(
+            "ACP agent",
+            auth_preference(AcpProviderFlavor::Generic, false, Some("api-key")),
+            &generic
+        )
+        .unwrap()
+        .as_deref(),
+        Some("api-key")
+    );
+    for configured in [None, Some("password")] {
+        let error = select_auth_method(
+            "ACP agent",
+            auth_preference(AcpProviderFlavor::Generic, false, configured),
+            &generic,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::AuthenticationRequired);
+        assert!(
+            error.message.contains("Browser sign in (oauth)"),
+            "{error:?}"
+        );
+        assert!(error.message.contains("API key (api-key)"), "{error:?}");
+    }
 }
 
 #[test]
@@ -1357,4 +1402,59 @@ fn probe_capabilities_keep_session_dependent_entries_potential() {
     assert!(capabilities.supports(ProviderCapability::DynamicModelChange));
     assert!(!capabilities.supports(ProviderCapability::NativeResume));
     assert!(!capabilities.supports(ProviderCapability::Images));
+}
+
+#[test]
+fn generic_capability_table_omits_vendor_extensions() {
+    let generic = acp_capability_kinds(AcpProviderFlavor::Generic);
+    for vendor_only in [
+        ProviderCapability::StructuredQuestions,
+        ProviderCapability::StructuredPlans,
+        ProviderCapability::ProviderDiffs,
+    ] {
+        assert!(!generic.contains(&vendor_only), "{vendor_only:?}");
+        assert!(
+            acp_capability_kinds(AcpProviderFlavor::Cursor).contains(&vendor_only),
+            "{vendor_only:?}"
+        );
+    }
+    for standard in [
+        ProviderCapability::Approvals,
+        ProviderCapability::DynamicModelChange,
+        ProviderCapability::FileReferences,
+        ProviderCapability::NativeResume,
+        ProviderCapability::ContextUsage,
+        ProviderCapability::CostReporting,
+    ] {
+        assert!(generic.contains(&standard), "{standard:?}");
+    }
+}
+
+#[test]
+fn resource_links_stay_inside_the_workspace() {
+    let workspace = TestDirectory::new("resource-link");
+    let link =
+        super::operations::resource_link(workspace.path(), "docs/read me.md", "ACP agent").unwrap();
+    let expected = reqwest::Url::from_file_path(workspace.path().join("docs/read me.md")).unwrap();
+    assert_eq!(link["type"], "resource_link");
+    assert_eq!(link["uri"], expected.as_str());
+    assert!(expected.as_str().contains("read%20me.md"));
+    assert_eq!(link["name"], "read me.md");
+    assert_eq!(link["title"], "docs/read me.md");
+    for escaping in [
+        "../secret",
+        "/etc/passwd",
+        "docs/../../secret",
+        "./main.rs",
+        "a\0b",
+        "",
+    ] {
+        assert_eq!(
+            super::operations::resource_link(workspace.path(), escaping, "ACP agent")
+                .unwrap_err()
+                .code,
+            ChatErrorCode::Validation,
+            "{escaping:?}"
+        );
+    }
 }

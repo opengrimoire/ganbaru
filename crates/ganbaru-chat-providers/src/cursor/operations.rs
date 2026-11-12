@@ -31,6 +31,7 @@ impl ProviderDriver for CursorProviderDriver {
         match self.flavor {
             AcpProviderFlavor::Cursor => Self::metadata_read(),
             AcpProviderFlavor::Grok => Self::grok_metadata_read(),
+            AcpProviderFlavor::Generic => Self::generic_metadata_read(),
         }
     }
 
@@ -51,6 +52,8 @@ impl ProviderDriver for CursorProviderDriver {
     /// `.claude/settings.json`, Cursor hooks from `.cursor/hooks.json`, and Claude Code skills,
     /// agents, and other assets. Claude compatibility is documented without a file list, so
     /// every Claude path stays listed, and `.cursorrules` stays with the rest of Cursor's files.
+    ///
+    /// A generic agent may load any of them and documents none, so every known path is listed.
     fn project_configuration_paths(&self) -> &'static [ProviderConfigurationPath] {
         match self.flavor {
             AcpProviderFlavor::Cursor => &[
@@ -75,6 +78,7 @@ impl ProviderDriver for CursorProviderDriver {
                 ProviderConfigurationPath::Cursor,
                 ProviderConfigurationPath::Grok,
             ],
+            AcpProviderFlavor::Generic => ProviderConfigurationPath::ALL,
         }
     }
 
@@ -131,16 +135,16 @@ impl ProviderDriver for CursorProviderDriver {
     ) -> DriverFuture<'a, ProviderProbeResult> {
         Box::pin(async move {
             let checked_at = now_utc()?;
-            let auth_method = preferred_auth_method(self.flavor, self.grok_uses_api_key());
             let outcome = self
                 .probe_initialize(context)
                 .await
                 .and_then(|(initialize, about)| {
-                    if authentication_is_ready(&initialize, auth_method) {
-                        Ok((initialize, about))
-                    } else {
-                        Err(unsupported_authentication(self.flavor.display_name()))
-                    }
+                    select_auth_method(
+                        self.flavor.display_name(),
+                        self.auth_preference(),
+                        &initialize,
+                    )?;
+                    Ok((initialize, about))
                 });
             match outcome {
                 Ok((initialize, about)) => {
@@ -149,7 +153,9 @@ impl ProviderDriver for CursorProviderDriver {
                             &CURSOR_COMPATIBILITY,
                             &about.version,
                         )?),
-                        AcpProviderFlavor::Grok => None,
+                        // Grok has no stable version format and generic agents have unrelated
+                        // version schemes, so neither has a range.
+                        AcpProviderFlavor::Grok | AcpProviderFlavor::Generic => None,
                     };
                     let capabilities =
                         negotiated_capabilities_for(self.flavor, &initialize, None, self.observed);
@@ -162,7 +168,7 @@ impl ProviderDriver for CursorProviderDriver {
                     Ok(ProviderProbeResult {
                         instance_id: self.configuration.instance_id.clone(),
                         state: ProbeState::Healthy,
-                        version: Some(about.version),
+                        version: Some(about.version).filter(|version| !version.is_empty()),
                         negotiated_protocol_version: Some(initialize.protocol_version.to_string()),
                         account_label: about.account_label,
                         capabilities,
@@ -186,7 +192,7 @@ impl ProviderDriver for CursorProviderDriver {
                         capabilities: potential_capabilities_for(self.flavor),
                         authority_support: self.authority_support(),
                         checked_at,
-                        detail: Some(probe_detail(self.flavor, error.code)),
+                        detail: Some(probe_detail(self.flavor, &error)),
                         version_admission: refusal.map(|(admission, _)| admission),
                     })
                 }
@@ -269,15 +275,24 @@ impl ProviderDriver for CursorProviderDriver {
         Box::pin(async move {
             let flavor = self.flavor;
             let provider_name = flavor.display_name();
-            let delivered = *self
-                .live_mut(&request.session_id)?
-                .delivered_instructions
-                .lock()
-                .map_err(|_| driver_state_error())?;
+            let (delivered, workspace) = {
+                let live = self.live_mut(&request.session_id)?;
+                let delivered = *live
+                    .delivered_instructions
+                    .lock()
+                    .map_err(|_| driver_state_error())?;
+                let workspace = live
+                    .route
+                    .lock()
+                    .map_err(|_| driver_state_error())?
+                    .workspace
+                    .clone();
+                (delivered, workspace)
+            };
             let AcpPrompt {
                 content: prompt,
                 instructions: sent_instructions,
-            } = build_prompt(&request, flavor, delivered).await?;
+            } = build_prompt(&request, flavor, &workspace, delivered).await?;
             let live = self.live_mut(&request.session_id)?;
             if live
                 .prompt_task
@@ -780,9 +795,13 @@ pub(super) struct AcpPrompt {
 /// ACP has no session instruction field the current agents advertise, so developer instructions
 /// ride in the prompt text, once per live session: they are omitted when `delivered` already
 /// names the same normalized text, and sent again when they change or the session is new.
+///
+/// Cursor and Grok read `@path` mentions in the text. A generic agent gets each mention as a
+/// `resource_link` block under `workspace`, which every ACP agent must accept.
 pub(super) async fn build_prompt(
     request: &SendTurnRequest,
     flavor: AcpProviderFlavor,
+    workspace: &Path,
     delivered: Option<InstructionsDigest>,
 ) -> ChatResult<AcpPrompt> {
     let provider_name = flavor.display_name();
@@ -793,7 +812,16 @@ pub(super) async fn build_prompt(
         ));
     }
     let mut text = request.prompt.clone();
-    if !request.mentions.is_empty() {
+    let resource_links = if flavor == AcpProviderFlavor::Generic {
+        request
+            .mentions
+            .iter()
+            .map(|mention| resource_link(workspace, &mention.relative_path, provider_name))
+            .collect::<ChatResult<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    if !request.mentions.is_empty() && flavor != AcpProviderFlavor::Generic {
         text.push_str("\n\nReferenced workspace paths:\n");
         text.push_str(
             &request
@@ -825,6 +853,7 @@ pub(super) async fn build_prompt(
     if !text.trim().is_empty() {
         content.push(json!({ "type": "text", "text": text }));
     }
+    content.extend(resource_links);
     for attachment in &request.attachments {
         match attachment.kind.as_str() {
             "image" => content.push(image_content(attachment, flavor).await?),
@@ -860,6 +889,39 @@ pub(super) async fn build_prompt(
         content,
         instructions: sent_instructions,
     })
+}
+
+/// A `resource_link` prompt block for a workspace-relative mention.
+pub(super) fn resource_link(
+    workspace: &Path,
+    relative_path: &str,
+    provider_name: &str,
+) -> ChatResult<Value> {
+    let invalid = || {
+        ChatError::validation(
+            "mentions",
+            format!("{provider_name} file reference is outside the workspace"),
+        )
+    };
+    let relative = Path::new(relative_path);
+    if relative_path.contains('\0')
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(invalid());
+    }
+    let uri = reqwest::Url::from_file_path(workspace.join(relative)).map_err(|()| invalid())?;
+    let name = relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(invalid)?;
+    Ok(json!({
+        "type": "resource_link",
+        "uri": uri.as_str(),
+        "name": name,
+        "title": relative_path,
+    }))
 }
 
 async fn image_content(
@@ -954,9 +1016,14 @@ fn probe_state(code: ChatErrorCode) -> ProbeState {
     }
 }
 
-fn probe_detail(flavor: AcpProviderFlavor, code: ChatErrorCode) -> String {
+/// The probe detail of a failure; a generic agent's authentication refusal keeps the advertised
+/// method names so the user can configure one.
+fn probe_detail(flavor: AcpProviderFlavor, error: &ChatError) -> String {
     let provider_name = flavor.display_name();
-    match code {
+    match error.code {
+        ChatErrorCode::AuthenticationRequired if flavor == AcpProviderFlavor::Generic => {
+            error.message.clone()
+        }
         ChatErrorCode::ExecutableMissing => {
             format!("{provider_name} executable is unavailable")
         }

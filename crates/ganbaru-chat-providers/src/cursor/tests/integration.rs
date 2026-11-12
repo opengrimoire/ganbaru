@@ -620,3 +620,280 @@ fn prompt_instruction_flags(state: &AcpFixtureState) -> Vec<bool> {
         })
         .collect()
 }
+
+/// Starts a generic ACP driver over the fixture `scenario`.
+fn generic_driver(
+    workspace: &std::path::Path,
+    scenario: FixtureScenario,
+    auth_method: Option<&str>,
+) -> (CursorProviderDriver, Arc<AcpFixtureState>) {
+    let state = Arc::new(AcpFixtureState::default());
+    let factory_state = Arc::clone(&state);
+    let mut driver =
+        CursorProviderDriver::new_generic(generic_configuration(workspace, auth_method)).unwrap();
+    driver.set_connection_factory(Arc::new(move |_workspace| {
+        Ok((
+            fixture_connection(scenario, Arc::clone(&factory_state)),
+            about().into(),
+        ))
+    }));
+    (driver, state)
+}
+
+fn generic_start_request(workspace: &std::path::Path) -> StartSessionRequest {
+    let mut request = start_request(workspace);
+    request.provider_instance_id = serde_json::from_value(json!("acp-instance-1")).unwrap();
+    request.model_id = None;
+    request
+}
+
+#[test]
+fn generic_agent_uses_only_standard_acp_calls() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("generic-agent");
+        let (mut driver, state) =
+            generic_driver(workspace.path(), FixtureScenario::GenericAgent, None);
+        let sink = Arc::new(RecordingSink::default());
+        let sink_trait: Arc<dyn ProviderEventSink> = sink.clone();
+        let session = driver
+            .start_session(
+                generic_start_request(workspace.path()),
+                sink_trait,
+                &context("start"),
+            )
+            .await
+            .unwrap();
+        for absent in [
+            ProviderCapability::StructuredQuestions,
+            ProviderCapability::StructuredPlans,
+            ProviderCapability::ProviderDiffs,
+            ProviderCapability::DynamicModelChange,
+        ] {
+            assert!(!session.capabilities.supports(absent), "{absent:?}");
+        }
+
+        let mut request = send_request(&session.session_id);
+        request.model_id = None;
+        request.modes = modes(SafetyMode::AskForApproval, InteractionMode::Build);
+        driver.send_turn(request, &context("send")).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while completed_turns(&sink) == 0 || unknown_sources(&sink).len() < 3 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let expected_sources = GENERIC_EXTENSION_CALLS
+            .iter()
+            .map(|(method, request_id)| match request_id {
+                Some(_) => format!("acp/request/{method}"),
+                None => format!("acp/notification/{method}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(unknown_sources(&sink), expected_sources);
+
+        let received = state.received();
+        let methods = request_methods(&received);
+        assert!(!methods.contains(&"authenticate"), "{methods:?}");
+        assert!(
+            methods
+                .iter()
+                .all(|method| !method.starts_with("cursor/") && *method != "session/set_model"),
+            "{methods:?}"
+        );
+        for (_, request_id) in GENERIC_EXTENSION_CALLS {
+            let Some(request_id) = request_id else {
+                continue;
+            };
+            let response = received
+                .iter()
+                .find(|message| message["id"] == request_id && message.get("method").is_none())
+                .unwrap();
+            assert_eq!(response["error"]["code"], -32601);
+        }
+
+        let prompt = received
+            .iter()
+            .find(|message| message["method"] == "session/prompt")
+            .unwrap();
+        let link = prompt["params"]["prompt"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["type"] == "resource_link")
+            .unwrap();
+        let expected_uri = reqwest::Url::from_file_path(workspace.path().join("src/main.rs"))
+            .unwrap()
+            .to_string();
+        assert_eq!(link["uri"], expected_uri.as_str());
+        assert_eq!(link["name"], "main.rs");
+        assert_eq!(link["title"], "src/main.rs");
+        assert!(
+            prompt["params"]["prompt"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|block| block["text"].as_str())
+                .all(|text| !text.contains("@src/main.rs"))
+        );
+    });
+}
+
+#[test]
+fn generic_agent_authenticates_only_with_the_configured_method() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("generic-auth");
+        for configured in [None, Some("password")] {
+            let (mut driver, state) = generic_driver(
+                workspace.path(),
+                FixtureScenario::GenericAgentWithAuth,
+                configured,
+            );
+            let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+            let error = driver
+                .start_session(
+                    generic_start_request(workspace.path()),
+                    sink,
+                    &context("start"),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ChatErrorCode::AuthenticationRequired);
+            for (id, name) in GENERIC_AUTH_METHODS {
+                assert!(
+                    error.message.contains(&format!("{name} ({id})")),
+                    "{error:?}"
+                );
+            }
+            assert!(!request_methods(&state.received()).contains(&"authenticate"));
+        }
+
+        let (mut driver, state) = generic_driver(
+            workspace.path(),
+            FixtureScenario::GenericAgentWithAuth,
+            Some(GENERIC_AUTH_METHODS[1].0),
+        );
+        let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+        driver
+            .start_session(
+                generic_start_request(workspace.path()),
+                sink,
+                &context("start"),
+            )
+            .await
+            .unwrap();
+        let received = state.received();
+        let authenticate = received
+            .iter()
+            .find(|message| message["method"] == "authenticate")
+            .unwrap();
+        assert_eq!(
+            authenticate["params"]["methodId"],
+            GENERIC_AUTH_METHODS[1].0
+        );
+    });
+}
+
+/// Source types of the unknown events the sink received, in order.
+fn unknown_sources(sink: &RecordingSink) -> Vec<String> {
+    sink.events()
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::Unknown(unknown) => Some(unknown.source_type.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn generic_probe_reports_the_agent_version_without_a_range() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("generic-probe");
+        let (mut driver, state) =
+            generic_driver(workspace.path(), FixtureScenario::GenericAgent, None);
+        let probe = driver.probe(&context("probe")).await.unwrap();
+        wait_for_closed(&state).await;
+        assert_eq!(request_methods(&state.received()), ["initialize"]);
+        assert_eq!(probe.state, ProbeState::Healthy);
+        assert_eq!(probe.version.as_deref(), Some("0.4.0"));
+        assert_eq!(probe.version_admission, None);
+        assert_eq!(probe.detail, None);
+
+        let (mut driver, state) = generic_driver(
+            workspace.path(),
+            FixtureScenario::GenericAgentWithAuth,
+            None,
+        );
+        let probe = driver.probe(&context("probe")).await.unwrap();
+        wait_for_closed(&state).await;
+        assert_eq!(request_methods(&state.received()), ["initialize"]);
+        assert_eq!(probe.state, ProbeState::AuthenticationRequired);
+        let detail = probe.detail.unwrap();
+        for (id, name) in GENERIC_AUTH_METHODS {
+            assert!(detail.contains(&format!("{name} ({id})")), "{detail}");
+        }
+    });
+}
+
+#[test]
+fn generic_agent_switches_only_to_advertised_models() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("generic-model");
+        let model = |id: &str| serde_json::from_value::<ModelId>(json!(id)).unwrap();
+
+        let (mut driver, state) =
+            generic_driver(workspace.path(), FixtureScenario::GenericAgent, None);
+        let mut request = generic_start_request(workspace.path());
+        request.model_id = Some(model(GENERIC_MODELS[1]));
+        let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+        let error = driver
+            .start_session(request, sink, &context("start"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::CapabilityUnsupported);
+        assert!(!request_methods(&state.received()).contains(&"session/set_model"));
+
+        for (requested, switches) in [(GENERIC_MODELS[0], false), (GENERIC_MODELS[1], true)] {
+            let (mut driver, state) = generic_driver(
+                workspace.path(),
+                FixtureScenario::GenericAgentWithModels,
+                None,
+            );
+            let mut request = generic_start_request(workspace.path());
+            request.model_id = Some(model(requested));
+            let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+            let session = driver
+                .start_session(request, sink, &context("start"))
+                .await
+                .unwrap();
+            assert!(
+                session
+                    .capabilities
+                    .supports(ProviderCapability::DynamicModelChange)
+            );
+            let received = state.received();
+            let set_model = received
+                .iter()
+                .find(|message| message["method"] == "session/set_model");
+            assert_eq!(set_model.is_some(), switches, "{requested}");
+            if let Some(set_model) = set_model {
+                assert_eq!(set_model["params"]["modelId"], requested);
+            }
+        }
+
+        let (mut driver, _state) = generic_driver(
+            workspace.path(),
+            FixtureScenario::GenericAgentWithModels,
+            None,
+        );
+        let mut request = generic_start_request(workspace.path());
+        request.model_id = Some(model("agent-unknown"));
+        let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+        let error = driver
+            .start_session(request, sink, &context("start"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation);
+    });
+}

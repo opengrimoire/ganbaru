@@ -48,9 +48,9 @@ use callbacks::{callback_permission_error, require_acp_session};
 #[cfg(test)]
 pub use configuration::initialize_session;
 pub use configuration::{
-    AcpRequestedConfiguration, AcpSessionInitialization, apply_provider_configuration,
-    authentication_is_ready, initialize_provider_session, negotiate_initialize,
-    preferred_auth_method, unsupported_authentication,
+    AcpAuthPreference, AcpRequestedConfiguration, AcpSessionInitialization,
+    apply_provider_configuration, auth_preference, initialize_provider_session,
+    negotiate_initialize, select_auth_method,
 };
 pub use load_replay::AcpInboundQueue;
 pub use router::{restore_pending, spawn_cursor_router, take_pending};

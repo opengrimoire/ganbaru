@@ -26,11 +26,18 @@ pub const CURSOR_COMPATIBILITY: crate::registry::ProviderCompatibilityRange =
 pub const CURSOR_AUTH_METHOD: &str = "cursor_login";
 pub const MAX_PROTOCOL_TEXT_BYTES: usize = 64 * 1024;
 const MAX_MODELS: usize = 256;
+/// Longest authentication method id an agent advertises or an instance configures.
+const MAX_AUTH_METHOD_ID_BYTES: usize = 128;
+/// Longest `agentInfo` name, title, or version Ganbaru keeps.
+const MAX_AGENT_INFO_BYTES: usize = 256;
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct CursorProviderSettings {
     pub api_endpoint: Option<String>,
+    /// The `authMethods` id a generic ACP agent authenticates with. Ganbaru never picks one
+    /// itself, because a method can open a browser or write credentials.
+    pub auth_method: Option<String>,
 }
 
 impl CursorProviderSettings {
@@ -64,6 +71,26 @@ impl CursorProviderSettings {
                 "providerConfig.apiEndpoint",
                 format!("{provider_name} does not support a custom API endpoint"),
             ));
+        }
+        settings.auth_method = settings
+            .auth_method
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if let Some(method) = settings.auth_method.as_deref() {
+            if configuration.family_id.as_str()
+                != super::driver::AcpProviderFlavor::Generic.family_id()
+            {
+                return Err(ChatError::validation(
+                    "providerConfig.authMethod",
+                    format!("{provider_name} chooses its own authentication method"),
+                ));
+            }
+            if !is_valid_identifier(method, MAX_AUTH_METHOD_ID_BYTES) {
+                return Err(ChatError::validation(
+                    "providerConfig.authMethod",
+                    format!("{provider_name} authentication method is invalid"),
+                ));
+            }
         }
         Ok(settings)
     }
@@ -293,8 +320,15 @@ pub struct ResolvedConfigUpdate {
 }
 
 pub fn parse_initialize(value: Value) -> ChatResult<AcpInitializeResponse> {
-    let response: AcpInitializeResponse =
+    let mut response: AcpInitializeResponse =
         serde_json::from_value(value).map_err(|_| protocol_error("initialize response"))?;
+    // `agentInfo` is informational, so an implausible one is dropped instead of failing.
+    response.agent_info = response.agent_info.filter(|agent| {
+        [agent.name.as_str(), agent.version.as_str()]
+            .into_iter()
+            .chain(agent.title.as_deref())
+            .all(|text| text.len() <= MAX_AGENT_INFO_BYTES && !text.chars().any(char::is_control))
+    });
     if response.protocol_version != ACP_PROTOCOL_VERSION {
         return Err(ChatError::new(
             ChatErrorCode::UnsupportedVersion,
@@ -304,7 +338,7 @@ pub fn parse_initialize(value: Value) -> ChatResult<AcpInitializeResponse> {
     }
     if response.auth_methods.len() > 32
         || response.auth_methods.iter().any(|method| {
-            !is_valid_identifier(&method.id, 128)
+            !is_valid_identifier(&method.id, MAX_AUTH_METHOD_ID_BYTES)
                 || method.name.len() > 256
                 || method.name.chars().any(char::is_control)
         })
@@ -521,7 +555,10 @@ pub fn resume_cursor(session_id: &str) -> VersionedJson {
     }
 }
 
-pub fn acp_capability_kinds(_flavor: super::driver::AcpProviderFlavor) -> Vec<ProviderCapability> {
+/// Capabilities an agent of `flavor` can hold; vendor extensions only for flavors that serve
+/// them.
+pub fn acp_capability_kinds(flavor: super::driver::AcpProviderFlavor) -> Vec<ProviderCapability> {
+    let extensions = flavor.offers_structured_extensions();
     [
         Some(ProviderCapability::NativeResume),
         Some(ProviderCapability::NativePlan),
@@ -529,10 +566,10 @@ pub fn acp_capability_kinds(_flavor: super::driver::AcpProviderFlavor) -> Vec<Pr
         Some(ProviderCapability::Images),
         Some(ProviderCapability::FileReferences),
         Some(ProviderCapability::Approvals),
-        Some(ProviderCapability::StructuredQuestions),
+        extensions.then_some(ProviderCapability::StructuredQuestions),
         Some(ProviderCapability::ReasoningSummaries),
-        Some(ProviderCapability::StructuredPlans),
-        Some(ProviderCapability::ProviderDiffs),
+        extensions.then_some(ProviderCapability::StructuredPlans),
+        extensions.then_some(ProviderCapability::ProviderDiffs),
         Some(ProviderCapability::SlashCommands),
         Some(ProviderCapability::ContextUsage),
         Some(ProviderCapability::CostReporting),
@@ -584,7 +621,10 @@ pub fn negotiated_capabilities_for(
         super::driver::AcpProviderFlavor::Cursor => {
             model_config_option(&setup.config_options).is_some()
         }
-        super::driver::AcpProviderFlavor::Grok => setup.models.is_some(),
+        super::driver::AcpProviderFlavor::Grok | super::driver::AcpProviderFlavor::Generic => setup
+            .models
+            .as_ref()
+            .is_some_and(|models| !models.available_models.is_empty()),
     });
     let supports_plan = setup.is_none_or(|setup| {
         setup

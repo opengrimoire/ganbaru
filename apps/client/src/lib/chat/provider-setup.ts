@@ -61,6 +61,26 @@ const SECRET_NAME_SEGMENTS: ReadonlySet<string> = new Set([
   "TOKEN",
 ]);
 
+/** Family identifier of the generic Agent Client Protocol integration. */
+export const GENERIC_ACP_FAMILY_ID: ProviderFamilyId = "acp";
+
+/**
+ * Returns the label presented for a provider family.
+ *
+ * Vendor families keep the brand name their driver reports. The generic ACP family has no brand,
+ * so it uses the localized label supplied by the caller.
+ *
+ * @param family - Provider family metadata reported by the backend.
+ * @param genericAcpName - Localized label for the generic ACP family.
+ * @returns The label shown in settings and pickers.
+ */
+export function providerFamilyDisplayName(
+  family: { familyId: string; displayName: string },
+  genericAcpName: string,
+): string {
+  return family.familyId === GENERIC_ACP_FAMILY_ID ? genericAcpName : family.displayName;
+}
+
 /** Whether an environment variable name looks like it holds a secret, compared per underscore segment. */
 export function isSecretLikeEnvironmentName(name: string): boolean {
   return name.split("_").some((segment) => SECRET_NAME_SEGMENTS.has(segment.toUpperCase()));

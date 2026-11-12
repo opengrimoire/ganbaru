@@ -70,7 +70,9 @@ async fn handle_notification(
             "session/update" => resources
                 .normalizer
                 .normalize_session_update(&mut state, params)?,
-            "cursor/update_todos" => vec![resources.normalizer.normalize_todos(&state, &params)?],
+            "cursor/update_todos" if resources.flavor.offers_structured_extensions() => {
+                vec![resources.normalizer.normalize_todos(&state, &params)?]
+            }
             _ => vec![resources.normalizer.external_event(
                 &state,
                 method,
@@ -159,13 +161,15 @@ async fn handle_request(
         "terminal/wait_for_exit" => handle_terminal_wait(resources, rpc_id, params).await,
         "terminal/kill" => handle_terminal_kill(resources, rpc_id, params).await,
         "terminal/release" => handle_terminal_release(resources, rpc_id, params).await,
-        "cursor/ask_question" => handle_question(resources, rpc_id, params).await,
+        "cursor/ask_question" if resources.flavor.offers_structured_extensions() => {
+            handle_question(resources, rpc_id, params).await
+        }
         "x.ai/ask_user_question" | "_x.ai/ask_user_question"
             if resources.flavor == AcpProviderFlavor::Grok =>
         {
             handle_xai_question(resources, rpc_id, params).await
         }
-        "cursor/create_plan" => {
+        "cursor/create_plan" if resources.flavor.offers_structured_extensions() => {
             let event = {
                 let state = resources.route.lock().map_err(|_| driver_state_error())?;
                 resources

@@ -3,10 +3,13 @@
   import Trash2 from "@lucide/svelte/icons/trash";
   import type { ChatScheduledMessageRead } from "$lib/chat/contracts";
   import { chatReferenceTextSegments } from "$lib/chat/composer/message-references";
+  import { chatScheduledNextDelivery } from "$lib/chat/composer/message-scheduling";
+  import { chatRecurrenceSummary } from "$lib/chat/composer/recurrence-presentation";
   import ProfileAvatar from "$lib/components/profile/ProfileAvatar.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { localTimezone } from "$lib/stores/calendar/event-payloads";
   import { getPreferences } from "$lib/stores/preferences.svelte";
 
   let {
@@ -28,6 +31,19 @@
   const { t } = localization;
   const preferences = getPreferences();
   const userDisplayName = $derived(preferences.profileDisplayName || t("chat.timeline.you"));
+  const recurrence = $derived(message.recurrence);
+  const repeatSummary = $derived(recurrence
+    ? chatRecurrenceSummary(recurrence, {
+      t,
+      locale: localization.locale,
+      timeFormat: preferences.calendarTimeFormat,
+      localTimeZone: localTimezone(),
+    })
+    : null);
+
+  function formatInstant(value: string): string {
+    return formatDateTime(localization.locale, Date.parse(value), { dateStyle: "medium", timeStyle: "short" });
+  }
   const messageSegments = $derived(chatReferenceTextSegments(
     message.normalizedMarkdown,
     message.references,
@@ -64,7 +80,9 @@
         <span>
           {message.state === "dispatching"
             ? t("chat.organization.sendingScheduledMessage")
-            : t("chat.organization.scheduledDelivery", formatDateTime(localization.locale, Date.parse(message.scheduledFor), { dateStyle: "medium", timeStyle: "short" }))}
+            : recurrence
+              ? t("chat.organization.repeat.nextDelivery", formatInstant(chatScheduledNextDelivery(message)))
+              : t("chat.organization.scheduledDelivery", formatInstant(message.scheduledFor))}
         </span>
       {/if}
       <div class="message-actions">
@@ -74,6 +92,14 @@
         <button class="cancel-action" type="button" disabled={pending || message.state === "dispatching"} onclick={onCancel}><Trash2 size={13} />{t("chat.organization.cancelScheduledMessage")}</button>
       </div>
     </div>
+    {#if recurrence}
+      <div class="message-context">
+        <span>{repeatSummary}</span>
+        {#if recurrence.firedCount > 0}<span>{t("chat.organization.repeat.firedCount", recurrence.firedCount)}</span>{/if}
+        {#if recurrence.skippedOccurrences > 0}<span>{t("chat.organization.repeat.skippedCount", recurrence.skippedOccurrences)}</span>{/if}
+      </div>
+      {#if recurrence.deferredUntil}<Notice class="delivery-notice delivery-notice-detail" role="status" message={t("chat.organization.repeat.deferredUntil", formatInstant(recurrence.deferredUntil))} />{/if}
+    {/if}
     {#if message.lastError && message.state !== "failed"}<Notice class="delivery-notice delivery-notice-detail" role="status" message={message.lastError} />{/if}
   </div>
 </article>

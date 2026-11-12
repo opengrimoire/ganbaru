@@ -6,6 +6,7 @@
   import { getChat } from "$lib/stores/chat.svelte";
   import type { ChatProviderSetupTarget, ChatSettingsSubsection } from "$lib/settings/types";
   import ChatBehaviorSettings from "$lib/components/settings/chat/ChatBehaviorSettings.svelte";
+  import ChatQuietPeriodsSettings from "$lib/components/settings/chat/ChatQuietPeriodsSettings.svelte";
   import ChatPermissionsSettings from "$lib/components/settings/chat/ChatPermissionsSettings.svelte";
   import ChatProvidersSettings from "$lib/components/settings/chat/ChatProvidersSettings.svelte";
   import ChatTeammatesSettings from "$lib/components/settings/chat/ChatTeammatesSettings.svelte";
@@ -126,7 +127,7 @@
   {:else if activeTab === "permissions"}
     <div data-chat-settings-subsection="permissions"><ChatPermissionsSettings /></div>
   {:else}
-    <div data-chat-settings-subsection="behavior"><ChatBehaviorSettings /></div>
+    <div class="flex flex-col gap-6" data-chat-settings-subsection="behavior"><ChatBehaviorSettings /><ChatQuietPeriodsSettings /></div>
   {/if}
 </div>
 

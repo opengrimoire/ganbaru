@@ -92,6 +92,57 @@ describe("chatAgentUpdatePresentation", () => {
     expect(isHostToolUpdate(outcome(settled))).toBe(false);
   });
 
+  it("reads a host schedule proposal and refuses malformed or provider proposals", () => {
+    const recurrence = {
+      rule: { kind: "fixed_time", localMinute: 540, weekdays: 31 },
+      timeZone: "Europe/Madrid",
+      quietPolicy: "defer",
+    };
+    const proposal = (payload: JsonValue) => content({
+      type: "agent_update",
+      updateKind: "schedule_proposal",
+      assignmentId: "assignment:1",
+      agentRunId: "run:1",
+      payload,
+    });
+    const valid = {
+      message: " Post the standup summary ",
+      firstAt: "2026-11-13T08:00:00Z",
+      recurrence,
+      reason: " Mornings ",
+      source: "host_tool",
+    };
+
+    expect(chatAgentUpdatePresentation(proposal(valid))).toEqual({
+      kind: "schedule_proposal",
+      assignmentId: "assignment:1",
+      proposal: {
+        message: "Post the standup summary",
+        firstAt: "2026-11-13T08:00:00Z",
+        recurrence,
+        reason: "Mornings",
+      },
+    });
+    expect(chatAgentUpdatePresentation(proposal({ ...valid, recurrence: null }))).toMatchObject({
+      proposal: { recurrence: null },
+    });
+    expect(isHostToolUpdate(proposal(valid))).toBe(true);
+    expect(chatAgentUpdatePresentation(proposal({ ...valid, source: "provider" }))).toBeNull();
+    expect(chatAgentUpdatePresentation(proposal({ ...valid, message: "  " }))).toBeNull();
+    expect(chatAgentUpdatePresentation(proposal({ ...valid, firstAt: "tomorrow" }))).toBeNull();
+    expect(chatAgentUpdatePresentation(proposal({ ...valid, reason: "x".repeat(501) }))).toBeNull();
+    expect(chatAgentUpdatePresentation(proposal({
+      ...valid,
+      recurrence: { ...recurrence, rule: { kind: "interval", minutes: 5 } },
+    }))).toBeNull();
+    expect(chatAgentUpdatePresentation(proposal({
+      message: valid.message,
+      firstAt: valid.firstAt,
+      reason: valid.reason,
+      source: valid.source,
+    }))).toBeNull();
+  });
+
   it("returns null for plain messages and malformed rich content", () => {
     expect(chatAgentUpdatePresentation(content({}))).toBeNull();
     expect(chatAgentUpdatePresentation(content([]))).toBeNull();

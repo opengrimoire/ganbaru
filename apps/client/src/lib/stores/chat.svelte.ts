@@ -788,6 +788,16 @@ export class ChatStore {
     return scheduled;
   }
 
+  /** Schedules the message a person confirmed from a teammate's schedule proposal in the selected channel. */
+  async confirmScheduleProposal(
+    request: import("$lib/chat/contracts").ConfirmScheduleProposalRequest,
+  ): Promise<ChatScheduledMessageRead> {
+    const channelId = this.selectedChannelId;
+    const scheduled = await this.organizationalController.confirmScheduleProposal(request);
+    this.publishChannelChange(channelId);
+    return scheduled;
+  }
+
   async sendScheduledOrganizationalMessageNow(
     id: ChatScheduledMessageId,
   ): Promise<import("$lib/chat/contracts").PostChatMessageResult> {

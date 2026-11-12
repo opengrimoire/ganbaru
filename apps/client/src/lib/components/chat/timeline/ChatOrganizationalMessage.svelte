@@ -208,6 +208,12 @@
     {#if agentUpdate?.kind === "delegation_outcome"}
       <div class="message-context" data-delegation-outcome><span>{t(`chat.delegation.states.${agentUpdate.state}`)}</span></div>
     {/if}
+    {#if agentUpdate?.kind === "schedule_proposal"}
+      {@const proposal = agentUpdate.proposal}
+      {#await import("./ChatScheduleProposalCard.svelte") then module}
+        <module.default proposalItemId={message.itemId} {proposal} />
+      {/await}
+    {/if}
     {#if onChooseAnswer && answerChoices.length > 0}
       <div class="answer-choices" role="group" aria-label={t("chat.questions.choices")} data-answer-choices>
         {#each answerChoices as choice (choice)}

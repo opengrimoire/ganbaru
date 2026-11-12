@@ -1,10 +1,12 @@
 import {
   CHAT_WORK_ASSIGNMENT_STATES,
   type ChatMessageRead,
+  type ChatScheduleProposal,
   type ChatWorkAssignmentRead,
   type ChatWorkAssignmentState,
   type VersionedJson,
 } from "$lib/chat/contracts";
+import { parseChatScheduleProposal } from "$lib/chat/validation";
 import { compareOrderKeyThenId } from "$lib/utils/order-key";
 
 /** Payload source a host tool call writes on the agent updates it posts. */
@@ -20,6 +22,7 @@ export type HostReportKind = (typeof HOST_REPORT_KINDS)[number];
 export type ChatAgentUpdatePresentation =
   | { kind: "host_question"; assignmentId: string; choices: string[] }
   | { kind: "host_report"; assignmentId: string; reportKind: HostReportKind }
+  | { kind: "schedule_proposal"; assignmentId: string; proposal: ChatScheduleProposal }
   | {
     kind: "delegation_outcome";
     parentAssignmentId: string;
@@ -44,14 +47,20 @@ export function chatAgentUpdatePresentation(richContent: VersionedJson): ChatAge
   if (updateKind === "question") {
     return { kind: "host_question", assignmentId, choices: questionChoices(payload.choices) };
   }
+  if (updateKind === "schedule_proposal") {
+    const proposal = scheduleProposal(payload);
+    return proposal ? { kind: "schedule_proposal", assignmentId, proposal } : null;
+  }
   const reportKind = HOST_REPORT_KINDS.find((candidate) => candidate === updateKind);
   return reportKind ? { kind: "host_report", assignmentId, reportKind } : null;
 }
 
 /** Returns whether the rich content is an update a host tool call posted. */
 export function isHostToolUpdate(richContent: VersionedJson): boolean {
-  const presentation = chatAgentUpdatePresentation(richContent);
-  return presentation?.kind === "host_question" || presentation?.kind === "host_report";
+  const value = objectRecord(richContent.value);
+  return value?.type === "agent_update"
+    && value.updateKind !== "delegation"
+    && objectRecord(value.payload)?.source === HOST_TOOL_UPDATE_SOURCE;
 }
 
 function delegationOutcome(payload: Record<string, unknown>): ChatAgentUpdatePresentation | null {
@@ -62,6 +71,15 @@ function delegationOutcome(payload: Record<string, unknown>): ChatAgentUpdatePre
     return null;
   }
   return { kind: "delegation_outcome", parentAssignmentId, childAssignmentId, state };
+}
+
+/** Reads a proposal payload another device wrote, or `null` when any field is malformed. */
+function scheduleProposal(payload: Record<string, unknown>): ChatScheduleProposal | null {
+  try {
+    return parseChatScheduleProposal(payload);
+  } catch {
+    return null;
+  }
 }
 
 /** Keeps the distinct, nonblank text choices, in order. */

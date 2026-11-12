@@ -4,3 +4,4 @@ export * from "./coordination";
 export * from "./session";
 export * from "./conflicts";
 export * from "./provenance";
+export * from "./scheduling";

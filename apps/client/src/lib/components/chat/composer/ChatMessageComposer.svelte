@@ -36,6 +36,7 @@
     ChatParticipantId,
     ChatParticipantRead,
     ChatPromptCatalogEntry,
+    ChatRecurrenceSpec,
     ChatScheduledMessageRead,
     ChatTeammateAccessRead,
     ChatWorkAssignmentId,
@@ -221,6 +222,7 @@
   let ScheduleMenu = $state<ScheduleMenuComponent | null>(null);
   let scheduleMenuLoad = $state<Promise<void> | null>(null);
   let scheduledFor = $state<string | null>(initialDraft.scheduledFor);
+  let scheduledRecurrence = $state<ChatRecurrenceSpec | null>(initialDraft.recurrence);
   let scheduledMessages = $state<ChatScheduledMessageRead[]>([]);
   let scheduledMessagesRequest = 0;
   let alsoSendToChannel = $state(false);
@@ -357,6 +359,10 @@
   const nextScheduledMessage = $derived(
     scheduledMessages.find((message) => message.state !== "failed") ?? scheduledMessages[0] ?? null,
   );
+  // A repeating message next posts at its pending occurrence, later when that occurrence waits for a quiet period.
+  const nextScheduledDelivery = $derived(nextScheduledMessage
+    ? nextScheduledMessage.recurrence?.deferredUntil ?? nextScheduledMessage.recurrence?.nextOccurrenceAt ?? nextScheduledMessage.scheduledFor
+    : null);
   const stopShortcut = formatShortcut("Mod + .");
   const threadAssignment = $derived(threadComposer ? chat.replyThread?.assignment ?? null : null);
   /** The teammate a post starts or continues work for: the mentioned one, else the thread's. */
@@ -583,6 +589,7 @@
       selectionStart,
       selectionEnd,
       scheduledFor,
+      recurrence: scheduledRecurrence,
     };
     chat.setOrganizationalDraft(destination, draft);
   }
@@ -1506,6 +1513,7 @@
     selectionEnd = 0;
     alsoSendToChannel = false;
     scheduledFor = null;
+    scheduledRecurrence = null;
     teammateAccess = null;
     assignmentTargets = [];
     modelOverrideId = null;
@@ -1727,8 +1735,9 @@
     if (scheduleMenuOpen) void loadScheduleMenu();
   }
 
-  function selectSchedule(nextScheduledFor: string): void {
+  function selectSchedule(nextScheduledFor: string, nextRecurrence: ChatRecurrenceSpec | null): void {
     scheduledFor = nextScheduledFor;
+    scheduledRecurrence = nextRecurrence;
     scheduleMenuOpen = false;
     persist();
     void tick().then(() => editorController?.focus());
@@ -1736,6 +1745,7 @@
 
   function clearSchedule(): void {
     scheduledFor = null;
+    scheduledRecurrence = null;
     scheduleMenuOpen = false;
     persist();
   }
@@ -2004,7 +2014,7 @@
   {#if nextScheduledMessage}
     <div class="scheduled-summary">
       <Clock3 size={13} />
-      <span>{t("chat.organization.scheduledMessageSummary", scheduledMessages.length, formatScheduledInstant(nextScheduledMessage.scheduledFor))}</span>
+      <span>{t("chat.organization.scheduledMessageSummary", scheduledMessages.length, formatScheduledInstant(nextScheduledDelivery ?? nextScheduledMessage.scheduledFor))}</span>
       <div bind:this={scheduledMessagesAnchor} class="scheduled-summary-anchor">
         <button type="button" aria-haspopup="dialog" aria-expanded={scheduledMessagesOpen} onpointerenter={() => { void loadScheduleMenu(); }} onfocus={() => { void loadScheduleMenu(); }} onclick={toggleScheduledMessages}>{t("chat.organization.viewScheduledMessages", scheduledMessages.length)}</button>
         {#if scheduledMessagesOpen}
@@ -2135,7 +2145,7 @@
           {#if scheduleMenuOpen}
             {#if ScheduleMenu}
               {@const LoadedScheduleMenu = ScheduleMenu}
-              <LoadedScheduleMenu mode="choose" selectedScheduledFor={scheduledFor} disabled={sending} onSelect={selectSchedule} onClear={clearSchedule} onClose={() => { scheduleMenuOpen = false; }} />
+              <LoadedScheduleMenu mode="choose" selectedScheduledFor={scheduledFor} selectedRecurrence={scheduledRecurrence} disabled={sending} onSelect={selectSchedule} onClear={clearSchedule} onClose={() => { scheduleMenuOpen = false; }} />
             {:else}<div class="composer-menu schedule-loading surface-floating surface-floating-body"><Loading layout="fill" /></div>{/if}
           {/if}
         </div>

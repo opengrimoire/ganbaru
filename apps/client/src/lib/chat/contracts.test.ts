@@ -9,6 +9,11 @@ import {
   parseChatMessageSearchResults,
   parseChatScheduledMessage,
   parseChatScheduledMessageDispatch,
+  parseChatQuietPeriodPreferences,
+  parseChatQuietState,
+  parseChatRecurrenceSpec,
+  parseChatScheduleProposal,
+  parseChatScheduleProposalStates,
   parseChatTeammateAccess,
   parseChatConfiguration,
   parseCanonicalRuntimeEvent,
@@ -283,8 +288,23 @@ describe("Chat provider contracts", () => {
       scheduledFor: timestamp,
       lastError: null,
       createdAt: timestamp,
+      recurrence: null,
     };
     expect(parseChatScheduledMessage(scheduled)).toEqual(scheduled);
+    const repeating = {
+      ...scheduled,
+      recurrence: {
+        rule: { kind: "fixed_time", localMinute: 480, weekdays: 31 },
+        timeZone: "Europe/Madrid",
+        quietPolicy: "defer",
+        nextOccurrenceAt: timestamp,
+        firedCount: 3,
+        skippedOccurrences: 1,
+        deferredUntil: null,
+      },
+    };
+    expect(parseChatScheduledMessage(repeating)).toEqual(repeating);
+    expect(() => parseChatScheduledMessage({ ...scheduled, recurrence: undefined })).toThrow("recurrence");
     expect(parseChatScheduledMessageDispatch({
       processedCount: 2,
       dispatchedCount: 1,
@@ -1056,5 +1076,69 @@ describe("Chat read and error contracts", () => {
       ...access,
       channels: [{ ...channel, groupId: "" }],
     })).toThrow("groupId");
+  });
+});
+
+describe("chat scheduling contracts", () => {
+  const interval = { rule: { kind: "interval", minutes: 90 }, timeZone: "UTC", quietPolicy: "ignore" };
+  const fixedTime = { rule: { kind: "fixed_time", localMinute: 1_439, weekdays: 127 }, timeZone: "America/Mexico_City", quietPolicy: "defer" };
+
+  it("accepts repeat rules at the backend bounds", () => {
+    expect(parseChatRecurrenceSpec(interval)).toEqual(interval);
+    expect(parseChatRecurrenceSpec(fixedTime)).toEqual(fixedTime);
+    expect(parseChatRecurrenceSpec({ ...interval, rule: { kind: "interval", minutes: 43_200 } }).rule)
+      .toEqual({ kind: "interval", minutes: 43_200 });
+  });
+
+  it("refuses repeat rules outside the backend bounds", () => {
+    expect(() => parseChatRecurrenceSpec({ ...interval, rule: { kind: "interval", minutes: 59 } })).toThrow("minutes");
+    expect(() => parseChatRecurrenceSpec({ ...interval, rule: { kind: "interval", minutes: 43_201 } })).toThrow("minutes");
+    expect(() => parseChatRecurrenceSpec({ ...fixedTime, rule: { ...fixedTime.rule, localMinute: 1_440 } })).toThrow("localMinute");
+    expect(() => parseChatRecurrenceSpec({ ...fixedTime, rule: { ...fixedTime.rule, weekdays: 0 } })).toThrow("weekdays");
+    expect(() => parseChatRecurrenceSpec({ ...fixedTime, rule: { ...fixedTime.rule, weekdays: 128 } })).toThrow("weekdays");
+    expect(() => parseChatRecurrenceSpec({ ...interval, rule: { kind: "monthly" } })).toThrow("kind");
+    expect(() => parseChatRecurrenceSpec({ ...interval, timeZone: " " })).toThrow("timeZone");
+    expect(() => parseChatRecurrenceSpec({ ...interval, timeZone: "Z".repeat(65) })).toThrow("timeZone");
+    expect(() => parseChatRecurrenceSpec({ ...interval, quietPolicy: "skip" })).toThrow("quietPolicy");
+  });
+
+  it("validates quiet windows and their count", () => {
+    const window = { weekdays: 31, startMinute: 1_320, endMinute: 420 };
+    expect(parseChatQuietPeriodPreferences({ windows: [window] })).toEqual({ windows: [window] });
+    expect(() => parseChatQuietPeriodPreferences({ windows: [{ ...window, endMinute: 1_320 }] })).toThrow("another minute");
+    expect(() => parseChatQuietPeriodPreferences({ windows: Array.from({ length: 9 }, () => window) })).toThrow("at most 8");
+    expect(() => parseChatQuietPeriodPreferences({ windows: [{ ...window, weekdays: 0 }] })).toThrow("weekdays");
+  });
+
+  it("requires a quiet state to name its reason exactly when quiet", () => {
+    expect(parseChatQuietState({ quiet: false, reason: null, endsAt: null })).toEqual({ quiet: false, reason: null, endsAt: null });
+    expect(parseChatQuietState({ quiet: true, reason: "focus", endsAt: timestamp }))
+      .toEqual({ quiet: true, reason: "focus", endsAt: timestamp });
+    expect(parseChatQuietState({ quiet: true, reason: "window", endsAt: null }).endsAt).toBeNull();
+    expect(() => parseChatQuietState({ quiet: true, reason: null, endsAt: null })).toThrow("reason");
+    expect(() => parseChatQuietState({ quiet: false, reason: "window", endsAt: null })).toThrow("reason");
+    expect(() => parseChatQuietState({ quiet: false, reason: null, endsAt: timestamp })).toThrow("reason");
+  });
+
+  it("parses schedule proposals and refuses malformed ones", () => {
+    const proposal = { message: " Post the summary ", firstAt: timestamp, recurrence: fixedTime, reason: " You asked ", source: "host_tool" };
+    expect(parseChatScheduleProposal(proposal)).toEqual({
+      message: "Post the summary",
+      firstAt: timestamp,
+      recurrence: fixedTime,
+      reason: "You asked",
+    });
+    expect(parseChatScheduleProposal({ ...proposal, recurrence: null, reason: "" }).recurrence).toBeNull();
+    expect(() => parseChatScheduleProposal({ ...proposal, message: "  " })).toThrow("message");
+    expect(() => parseChatScheduleProposal({ ...proposal, message: "é".repeat(4_001) })).toThrow("message");
+    expect(() => parseChatScheduleProposal({ ...proposal, reason: "a".repeat(501) })).toThrow("reason");
+    expect(() => parseChatScheduleProposal({ ...proposal, firstAt: "tomorrow" })).toThrow("firstAt");
+    expect(() => parseChatScheduleProposal({ ...proposal, recurrence: undefined })).toThrow("recurrence");
+  });
+
+  it("parses proposal states", () => {
+    const states = [{ proposalItemId: "item:a", state: "pending" }, { proposalItemId: "item:b", state: "dismissed" }];
+    expect(parseChatScheduleProposalStates(states)).toEqual(states);
+    expect(() => parseChatScheduleProposalStates([{ proposalItemId: "item:a", state: "expired" }])).toThrow("state");
   });
 });

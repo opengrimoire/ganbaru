@@ -1,19 +1,23 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import Check from "@lucide/svelte/icons/check";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import Clock3 from "@lucide/svelte/icons/clock-3";
   import X from "@lucide/svelte/icons/x";
   import { Temporal } from "@js-temporal/polyfill";
-  import type { ChatScheduledMessageId, ChatScheduledMessageRead } from "$lib/chat/contracts";
+  import type { ChatRecurrenceSpec, ChatScheduledMessageId, ChatScheduledMessageRead } from "$lib/chat/contracts";
   import {
+    chatRecurrenceFromRepeat,
+    chatRepeatFromRecurrence,
     chatScheduleIsFuture,
     chatScheduleSuggestions,
     chatScheduleUtc,
     defaultChatScheduleSelection,
     type ChatScheduleSelection,
     type ChatScheduleSuggestion,
+    type ChatRepeatSelection,
   } from "$lib/chat/composer/message-scheduling";
+  import { chatRecurrenceSummary } from "$lib/chat/composer/recurrence-presentation";
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import TimePicker from "$lib/components/ui/TimePicker.svelte";
@@ -28,6 +32,7 @@
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import ChatScheduledMessagePreview from "./ChatScheduledMessagePreview.svelte";
+  import ChatScheduleRepeatControl from "./ChatScheduleRepeatControl.svelte";
 
   type ScheduleMenuMode = "choose" | "manage";
 
@@ -35,6 +40,9 @@
     mode = "choose",
     align = "left",
     selectedScheduledFor = null,
+    selectedRecurrence = null,
+    startCustom = false,
+    allowClear = true,
     scheduledMessages = [],
     disabled = false,
     onSelect = () => {},
@@ -45,9 +53,15 @@
     mode?: ScheduleMenuMode;
     align?: "left" | "right";
     selectedScheduledFor?: string | null;
+    /** Repeat rule of the current selection; it is sent unchanged until the person changes the time or the repeat choice. */
+    selectedRecurrence?: ChatRecurrenceSpec | null;
+    /** Opens on the date and time view instead of the quick suggestions. */
+    startCustom?: boolean;
+    /** Offers clearing the selection to send immediately. */
+    allowClear?: boolean;
     scheduledMessages?: ChatScheduledMessageRead[];
     disabled?: boolean;
-    onSelect?: (scheduledFor: string) => void;
+    onSelect?: (scheduledFor: string, recurrence: ChatRecurrenceSpec | null) => void;
     onClear?: () => void;
     onClose?: () => void;
     onMessagesChange?: (messages: ChatScheduledMessageRead[]) => void;
@@ -65,7 +79,7 @@
   const FLOATING_PANEL_GAP = 6;
   const FLOATING_PANEL_MARGIN = 8;
 
-  let customScheduleOpen = $state(false);
+  let customScheduleOpen = $state(untrack(() => startCustom));
   let scheduleTimePickerOpen = $state(false);
   let scheduleTimeTrigger = $state<HTMLButtonElement | undefined>();
   let scheduleDate = $state(initialSelection.date);
@@ -74,12 +88,29 @@
   let scheduleSuggestions = $state<ChatScheduleSuggestion[]>(chatScheduleSuggestions(initialNow));
   let pendingMessageIds = $state<Set<ChatScheduledMessageId>>(new Set());
   let error = $state<string | null>(null);
+  let repeat = $state(untrack(() => chatRepeatFromRecurrence(selectedRecurrence)));
+  let repeatTouched = $state(false);
 
   const customScheduledFor = $derived(chatScheduleUtc(
     { date: scheduleDate, time: scheduleTime },
     localTimezone(),
   ));
   const customScheduleValid = $derived(chatScheduleIsFuture(customScheduledFor));
+  const keepsSelectedRecurrence = $derived(
+    !repeatTouched && selectedRecurrence !== null && sameMinute(customScheduledFor, selectedScheduledFor),
+  );
+  const repeatSummary = $derived.by(() => {
+    const spec = keepsSelectedRecurrence
+      ? selectedRecurrence
+      : chatRecurrenceFromRepeat(repeat, { date: scheduleDate, time: scheduleTime }, localTimezone());
+    if (!spec || (!customScheduleOpen && !keepsSelectedRecurrence && spec.rule.kind === "fixed_time")) return null;
+    return chatRecurrenceSummary(spec, {
+      t,
+      locale: localization.locale,
+      timeFormat: preferences.calendarTimeFormat,
+      localTimeZone: localTimezone(),
+    });
+  });
 
   onMount(() => {
     const now = Temporal.Now.plainDateTimeISO();
@@ -120,6 +151,32 @@
     return `${dateLabel}, ${formatTimeLabel(time, preferences.calendarTimeFormat)}`;
   }
 
+  /** Whether two instants fall in the same minute, so a proposed time with seconds still matches its picker value. */
+  function sameMinute(left: string | null, right: string | null): boolean {
+    if (!left || !right) return false;
+    try {
+      const minute = (value: string) => Math.floor(Temporal.Instant.from(value).epochMilliseconds / 60_000);
+      return minute(left) === minute(right);
+    } catch {
+      return false;
+    }
+  }
+
+  /** The rule a selection sends: the selected rule while untouched, else the one the repeat control builds. */
+  function recurrenceFor(selection: ChatScheduleSelection, scheduledFor: string): ChatRecurrenceSpec | null | undefined {
+    if (!repeatTouched && selectedRecurrence !== null && sameMinute(scheduledFor, selectedScheduledFor)) {
+      return selectedRecurrence;
+    }
+    if (repeat.choice === "none") return null;
+    return chatRecurrenceFromRepeat(repeat, selection, localTimezone()) ?? undefined;
+  }
+
+  function changeRepeat(next: ChatRepeatSelection): void {
+    repeat = next;
+    repeatTouched = true;
+    error = null;
+  }
+
   function isSelected(selection: ChatScheduleSelection): boolean {
     const scheduledFor = chatScheduleUtc(selection, localTimezone());
     return scheduledFor !== null && scheduledFor === selectedScheduledFor;
@@ -132,7 +189,12 @@
       error = t("chat.organization.invalidScheduleTime");
       return;
     }
-    onSelect(scheduledFor);
+    const recurrence = recurrenceFor(selection, scheduledFor);
+    if (recurrence === undefined) {
+      error = t("chat.organization.repeat.invalid");
+      return;
+    }
+    onSelect(scheduledFor, recurrence);
     onClose();
   }
 
@@ -255,7 +317,7 @@
         <button class="header-icon" type="button" aria-label={t("chat.organization.backToScheduleOptions")} onclick={() => { customScheduleOpen = false; scheduleTimePickerOpen = false; }}><ChevronLeft size={14} /></button>
       {/if}
       <strong>{t("chat.organization.scheduleMessage")}</strong>
-      {#if selectedScheduledFor && !customScheduleOpen}
+      {#if allowClear && selectedScheduledFor && !customScheduleOpen}
         <button class="clear-schedule" type="button" onclick={clearSchedule}>{t("chat.organization.sendNowInstead")}</button>
       {/if}
     </div>
@@ -307,6 +369,7 @@
             />
           </div>
         {/if}
+        <ChatScheduleRepeatControl {repeat} summary={repeatSummary} {disabled} onChange={changeRepeat} />
         <button
           type="button"
           class="schedule-submit"
@@ -328,6 +391,8 @@
           {#if selectedScheduledFor && !scheduleSuggestions.some(isSelected)}<Check size={14} />{/if}
         </button>
       </div>
+      <div class="menu-separator" role="separator"></div>
+      <ChatScheduleRepeatControl {repeat} summary={repeatSummary} {disabled} onChange={changeRepeat} />
     {/if}
   {/if}
   {#if error}<Notice class="schedule-error" message={error} />{/if}

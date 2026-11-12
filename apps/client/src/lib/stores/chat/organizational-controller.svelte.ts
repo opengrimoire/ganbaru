@@ -6,6 +6,7 @@ import type {
   ChatExecutionTarget,
   ChatFollowupRouting,
   ChatMessageReference,
+  ChatRecurrenceSpec,
   ChatReplyThreadId,
   ChatScheduledMessageDispatchRead,
   ChatScheduledMessageId,
@@ -25,6 +26,8 @@ export interface ChatOrganizationalDraft {
   selectionStart: number;
   selectionEnd: number;
   scheduledFor: UtcTimestamp | null;
+  /** Repeat rule of the scheduled delivery; `null` sends it once. */
+  recurrence: ChatRecurrenceSpec | null;
 }
 
 /** Options a post carries beyond its draft. */
@@ -134,6 +137,7 @@ export class ChatOrganizationalController {
         executionTarget: draft.executionTarget ? cloneData(draft.executionTarget) : null,
         alsoSendToChannel: options.alsoSendToChannel ?? false,
       },
+      recurrence: draft.recurrence ? cloneData(draft.recurrence) : null,
     });
     this.setDraft(destination, emptyOrganizationalDraft());
     this.scheduledMessagesVersion += 1;
@@ -149,6 +153,15 @@ export class ChatOrganizationalController {
   async cancelScheduled(id: ChatScheduledMessageId): Promise<void> {
     await chatApi.cancelScheduledChatMessage(id);
     this.scheduledMessagesVersion += 1;
+  }
+
+  /** Schedules the message a person confirmed from a teammate's schedule proposal. */
+  async confirmScheduleProposal(
+    request: import("$lib/chat/contracts").ConfirmScheduleProposalRequest,
+  ): Promise<ChatScheduledMessageRead> {
+    const scheduled = await chatApi.confirmChatScheduleProposal(request);
+    this.scheduledMessagesVersion += 1;
+    return scheduled;
   }
 
   async retryScheduled(id: ChatScheduledMessageId): Promise<ChatScheduledMessageRead> {
@@ -232,5 +245,6 @@ function emptyOrganizationalDraft(): ChatOrganizationalDraft {
     selectionStart: 0,
     selectionEnd: 0,
     scheduledFor: null,
+    recurrence: null,
   };
 }

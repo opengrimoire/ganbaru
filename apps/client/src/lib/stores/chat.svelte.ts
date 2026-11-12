@@ -46,6 +46,7 @@ import type {
   VersionedJson,
 } from "$lib/chat/contracts";
 import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
+import type { ChatOpenReviewDetail } from "$lib/chat/workspace/events";
 import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
 import { listenForChatChanges, publishChatChanges, type ChatWindowChanges } from "$lib/chat/window-sync";
 import { listenForChatSyncChanges, onChatSyncChanged } from "$lib/chat/sync-events";
@@ -945,6 +946,23 @@ export class ChatStore {
   /** Opens the reply thread of a review queue item, where its question, approval, review, or failure lives. */
   async openReviewItem(item: ChatReviewQueueItemRead): Promise<void> {
     await this.openAssignmentReplyThread(item);
+  }
+
+  /**
+   * Builds the request that opens the whole change set of an assignment in the review panel. When the open reply
+   * thread ran that assignment here, the review reads the working folder its execution thread used.
+   *
+   * @param assignmentId Assignment whose authored changes the review shows.
+   */
+  async assignmentReviewDetail(assignmentId: ChatWorkAssignmentId): Promise<ChatOpenReviewDetail> {
+    const detail: ChatOpenReviewDetail = { source: { kind: "assignment", assignmentId }, relativePath: null };
+    const assignment = this.replyThread?.assignment;
+    const executionThreadId = assignment?.id === assignmentId ? assignment.latestRunProviderThreadId : null;
+    if (!executionThreadId) return detail;
+    const thread = [...this.activeThreads, ...this.archivedThreads].find((entry) => entry.id === executionThreadId)
+      ?? await chatApi.readChatThreadShell(executionThreadId);
+    if (thread.workingFolderId === null) return detail;
+    return { ...detail, sourceThreadId: thread.id, sourceWorkingFolderId: thread.workingFolderId };
   }
 
   /** Selects the project and channel of an assignment and opens its reply thread. */

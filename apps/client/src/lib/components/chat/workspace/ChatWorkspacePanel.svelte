@@ -38,6 +38,7 @@
   import SquareTerminal from "@lucide/svelte/icons/square-terminal";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
+  import { defaultReviewSource, type ReviewSourceAssignment } from "$lib/chat/review/model";
   import type { ChatInspectorTab, ChatTerminalRead, ReviewDiffSource } from "$lib/chat/contracts";
   import {
     CHAT_WORKSPACE_PANEL_TAB_NAME_MAX_LENGTH,
@@ -197,14 +198,17 @@
     };
   });
 
+  function replyAssignment(): ReviewSourceAssignment | null {
+    const assignment = chat.openReplyThreadId ? chat.replyThread?.assignment : null;
+    return assignment ? { id: assignment.id, state: assignment.state } : null;
+  }
+
   function openReview(detail: ChatOpenReviewDetail | null): void {
     if (!detail) {
       reviewOpenRequest += 1;
       openPanel("review");
       update({
-        reviewSource: chat.selectedThreadId
-          ? { kind: "checkpoint", range: "turn", turnId: null }
-          : { kind: "working_tree", mode: "all" },
+        reviewSource: defaultReviewSource(chat.selectedThreadId, replyAssignment()),
         selectedFile: null,
         reviewThreadId: null,
         reviewWorkingFolderId: null,

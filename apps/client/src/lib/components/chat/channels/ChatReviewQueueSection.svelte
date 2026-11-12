@@ -1,10 +1,12 @@
 <script lang="ts">
+  import FileDiff from "@lucide/svelte/icons/file-diff";
   import RotateCw from "@lucide/svelte/icons/rotate-cw";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import type { ChatReviewQueueItemRead, ChatWorkAssignmentId } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
   import {
     batchAcceptCandidates,
     reviewQueueCount,
@@ -32,6 +34,7 @@
 
   const localExecutionAvailable = platformHasCapability(BUILD_PLATFORM_PROFILE, "chat.local-execution");
   const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const { t } = getLocalization();
 
   let selectedIds = $state<ChatWorkAssignmentId[]>([]);
@@ -59,6 +62,19 @@
     actionError = null;
     try {
       await chat.openReviewItem(item);
+      onOpened?.();
+    } catch (error: unknown) {
+      actionError = chatErrorMessage(error);
+    }
+  }
+
+  /** Opens the reply thread of a review, then the whole change set of its work in the review panel. */
+  async function reviewChanges(item: ChatReviewQueueItemRead): Promise<void> {
+    actionError = null;
+    try {
+      await chat.openReviewItem(item);
+      const detail = await chat.assignmentReviewDetail(item.assignmentId);
+      paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-review", { detail }));
       onOpened?.();
     } catch (error: unknown) {
       actionError = chatErrorMessage(error);
@@ -123,6 +139,9 @@
               {#if item.projectId !== chat.selectedChannel?.projectId}<span class="truncate">{item.projectName}</span>{/if}
             </span>
           </button>
+          {#if localExecutionAvailable && item.kind === "review"}
+            <button type="button" class="explorer-icon" aria-label={t("chat.reviewQueue.reviewChanges")} data-app-tooltip={t("chat.reviewQueue.reviewChanges")} onclick={() => void reviewChanges(item)}><FileDiff size={14} /></button>
+          {/if}
           {#if localExecutionAvailable && item.kind === "failure" && item.executedHere}
             <button type="button" class="explorer-icon" aria-label={t("chat.reviewQueue.retry")} data-app-tooltip={t("chat.reviewQueue.retry")} onclick={() => void retry(item)}><RotateCw size={14} /></button>
           {/if}

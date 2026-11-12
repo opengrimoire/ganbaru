@@ -79,5 +79,6 @@ function snapshot(): ChatReviewSnapshotRead {
     totals: { files: 0, additions: 0, deletions: 0 },
     preferredPatch: null,
     freshness: "current",
+    authoredPaths: "not_needed",
   };
 }

@@ -168,6 +168,7 @@ function snapshot(): ChatReviewSnapshotRead {
         providerReported: true,
         gitObserved: true,
         readOnly: false,
+        authored: true,
       },
       capabilities: {
         stage: true,
@@ -181,5 +182,6 @@ function snapshot(): ChatReviewSnapshotRead {
     totals: { files: 1, additions: 1, deletions: 0 },
     preferredPatch: null,
     freshness: "current",
+    authoredPaths: "not_needed",
   };
 }

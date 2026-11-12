@@ -93,6 +93,12 @@ impl OpenCodeRouteState {
         self.pending_permissions.contains_key(request_id.as_str())
     }
 
+    /// Whether a permission or question is waiting for the user, so the session may stay silent
+    /// for as long as the user takes to answer.
+    pub fn awaiting_user(&self) -> bool {
+        !self.pending_permissions.is_empty() || !self.pending_questions.is_empty()
+    }
+
     /// Session rules an allow-for-session answer to a pending request would grant.
     ///
     /// The rules follow the patterns OpenCode offered for `always`, then the requested patterns,

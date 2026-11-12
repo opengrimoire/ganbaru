@@ -973,7 +973,7 @@ async fn wait_for_event(sink: &RecordingSink, predicate: impl Fn(&CanonicalRunti
 }
 
 #[test]
-fn a_silent_stream_during_a_turn_reconnects_then_fails_while_an_idle_one_is_kept() {
+fn a_silent_stream_during_a_turn_reconnects_then_fails_unless_idle_or_waiting_for_the_user() {
     crate::test_block_on(async {
         let workspace = TestDirectory::new("external-silent-stream");
         let server = OpenCodeServerFixture::start(workspace.path(), None, false).await;
@@ -1016,6 +1016,25 @@ fn a_silent_stream_during_a_turn_reconnects_then_fails_while_an_idle_one_is_kept
             )
             .await
             .unwrap();
+        send_permission_request(&server, "perm_waiting", "bash", &["pnpm test"], None);
+        wait_for_event(&sink, |event| opened_request(event, "perm_waiting")).await;
+        tokio::time::sleep(busy_stream_timeout * 4).await;
+        assert_eq!(
+            server.state.event_connections.load(Ordering::Acquire),
+            1,
+            "a turn waiting for the user may stay silent"
+        );
+        send_event(
+            &server,
+            json!({
+                "type": "permission.replied",
+                "properties": { "sessionID": "ses_new", "requestID": "perm_waiting", "reply": "once" }
+            }),
+        );
+        wait_for_event(&sink, |event| {
+            resolved_request(event, "perm_waiting").is_some()
+        })
+        .await;
         let silent = |event: &CanonicalRuntimeEvent| {
             matches!(&event.event, CanonicalEvent::RuntimeError(error)
                 if error.code == "opencode_event_stream_silent")

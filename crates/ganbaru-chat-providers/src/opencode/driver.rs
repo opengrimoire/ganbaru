@@ -22,9 +22,9 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 
 const MAX_RECONNECT_ATTEMPTS: usize = 6;
-/// Longest wait for any event, heartbeats included, while a turn runs before the stream counts
-/// as silent and is reconnected. OpenCode heartbeat timing is unconfirmed, so the bound is wide
-/// and idle sessions are never timed out.
+/// Longest wait for any event, heartbeats included, while a turn runs and no request waits for
+/// the user before the stream counts as silent and is reconnected. OpenCode heartbeat timing is
+/// unconfirmed, so the bound is wide and idle sessions are never timed out.
 pub(super) const OPENCODE_BUSY_STREAM_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_RECONCILIATION_PAGES: usize = 100;
 const MAX_RECONCILIATION_MESSAGES: usize = 10_000;
@@ -643,13 +643,14 @@ impl StreamInterruption {
 enum StreamPoll {
     Event(Value),
     Interrupted(StreamInterruption),
-    /// The wait ran out while no turn was running; the stream is kept.
+    /// The wait ran out while no turn was running or a request waited for the user; the stream
+    /// is kept.
     IdleWait,
 }
 
-/// Waits for the next event. A wait that began during a turn and outlasts the busy timeout
-/// counts as a silent stream; one that began idle just restarts, so a turn starting during it
-/// is detected within twice the timeout.
+/// Waits for the next event. A wait that began during a turn, with no request waiting for the
+/// user, and outlasts the busy timeout counts as a silent stream. Any other wait just restarts,
+/// so a turn starting or a request being answered during it is detected within twice the timeout.
 async fn next_stream_event(
     resources: &EventPumpResources,
     stream: &mut OpenCodeEventStream,
@@ -657,7 +658,7 @@ async fn next_stream_event(
     let busy = resources
         .route
         .lock()
-        .is_ok_and(|state| state.active_turn_id.is_some());
+        .is_ok_and(|state| state.active_turn_id.is_some() && !state.awaiting_user());
     match tokio::time::timeout(resources.busy_stream_timeout, stream.next()).await {
         Ok(Ok(Some(envelope))) => StreamPoll::Event(envelope),
         Ok(Ok(None) | Err(_)) => StreamPoll::Interrupted(StreamInterruption::Disconnected),

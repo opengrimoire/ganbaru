@@ -138,7 +138,7 @@ pub const REPLY_CURSOR_KEY_PREFIX: &str = "reply-thread-read-cursor";
 /// Prefix of assignment input ids, over the routed message.
 pub const ASSIGNMENT_INPUT_KEY_PREFIX: &str = "assignment-input";
 /// Prefix of scheduled message recurrence ids, over the scheduled message.
-pub const RECURRENCE_KEY_PREFIX: &str = "scheduled-recurrence";
+pub const RECURRENCE_KEY_PREFIX: &str = chat_recurrence::RECURRENCE_KEY_PREFIX;
 
 /// Participant field groups.
 pub mod participant_group {

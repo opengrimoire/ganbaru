@@ -1,6 +1,7 @@
 //! Stable wire contracts for organizational Chat commands.
 
 use super::super::models::*;
+use crate::scheduling::RecurrenceSpec;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -270,8 +271,51 @@ pub enum ChatFollowupRouting {
 #[serde(rename_all = "camelCase")]
 pub struct ScheduleChatMessageCommand {
     pub scheduled_message_id: ChatScheduledMessageId,
+    /// Delivery time of a one-time message, or the anchor of a repeating one: its first
+    /// occurrence is the first the rule names at or after this time.
     pub scheduled_for: UtcTimestamp,
     pub message: PostChatMessageCommand,
+    /// Repeat rule; `None` sends the message once.
+    #[serde(default)]
+    pub recurrence: Option<RecurrenceSpec>,
+}
+
+/// A message waiting to be sent, once or on a repeat rule.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatScheduledMessageRead {
+    pub id: ChatScheduledMessageId,
+    pub channel_id: ChatChannelId,
+    pub reply_thread_id: Option<ChatReplyThreadId>,
+    pub normalized_markdown: String,
+    pub rich_content: VersionedJson,
+    pub attachment_ids: Vec<ChatAttachmentId>,
+    pub references: Vec<ChatMessageReference>,
+    pub also_send_to_channel: bool,
+    pub state: String,
+    /// Delivery time of a one-time message, or the anchor of a repeating one.
+    pub scheduled_for: UtcTimestamp,
+    pub last_error: Option<String>,
+    pub created_at: UtcTimestamp,
+    /// Repeat rule and progress, or `None` for a one-time message.
+    pub recurrence: Option<ChatScheduledRecurrenceRead>,
+}
+
+/// The repeat rule of a scheduled message and how far its series has come.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatScheduledRecurrenceRead {
+    /// Rule, zone, and quiet policy.
+    #[serde(flatten)]
+    pub spec: RecurrenceSpec,
+    /// When the next occurrence is due.
+    pub next_occurrence_at: UtcTimestamp,
+    /// Occurrences the series has posted.
+    pub fired_count: u64,
+    /// Occurrences this device skipped because they were missed or quiet; device-local.
+    pub skipped_occurrences: u64,
+    /// End of the quiet period the pending occurrence waits for on this device, if any.
+    pub deferred_until: Option<UtcTimestamp>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

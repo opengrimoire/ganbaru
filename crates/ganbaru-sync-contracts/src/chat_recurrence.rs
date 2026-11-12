@@ -25,3 +25,5 @@ pub const DEFER_QUIET_POLICY: &str = "defer";
 pub const IGNORE_QUIET_POLICY: &str = "ignore";
 /// Quiet policies.
 pub const QUIET_POLICIES: [&str; 2] = [DEFER_QUIET_POLICY, IGNORE_QUIET_POLICY];
+/// Derived key prefix of a recurrence row, over its scheduled message id.
+pub const RECURRENCE_KEY_PREFIX: &str = "scheduled-recurrence";

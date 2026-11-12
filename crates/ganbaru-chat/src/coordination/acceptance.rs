@@ -1,11 +1,14 @@
 //! Digests of what a local acceptance of synced Chat work covers.
 
+use crate::scheduling::{RecurrenceRule, RecurrenceSpec};
 use sha2::{Digest, Sha256};
 
 /// Domain of an assignment acceptance digest.
 pub const ACCEPTANCE_DOMAIN: &[u8] = b"ganbaru-assignment-acceptance-v1";
 /// Domain of a scheduled message consent digest, so neither kind satisfies the other.
 pub const SCHEDULED_CONSENT_DOMAIN: &[u8] = b"ganbaru-scheduled-consent-v1";
+/// Domain of a repeating scheduled message consent digest.
+pub const SCHEDULED_SERIES_CONSENT_DOMAIN: &[u8] = b"ganbaru-scheduled-series-consent-v1";
 
 /// One folder a teammate could run in, with the access it would hold there.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +56,34 @@ pub fn scheduled_consent_digest(scheduled_message_id: &str, request_data: &str) 
     hasher.update(SCHEDULED_CONSENT_DOMAIN);
     absorb(&mut hasher, scheduled_message_id);
     absorb(&mut hasher, request_data);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Hex digest of the stored request `request_data` of the repeating scheduled message
+/// `scheduled_message_id` together with its recurrence `spec`, so a consent covers one request
+/// on one schedule and never satisfies the one-time digest of the same request.
+pub fn scheduled_series_consent_digest(
+    scheduled_message_id: &str,
+    request_data: &str,
+    spec: &RecurrenceSpec,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(SCHEDULED_SERIES_CONSENT_DOMAIN);
+    absorb(&mut hasher, scheduled_message_id);
+    absorb(&mut hasher, request_data);
+    absorb(&mut hasher, spec.rule.kind());
+    match spec.rule {
+        RecurrenceRule::Interval { minutes } => hasher.update(minutes.to_be_bytes()),
+        RecurrenceRule::FixedTime {
+            local_minute,
+            weekdays,
+        } => {
+            hasher.update(local_minute.to_be_bytes());
+            hasher.update([weekdays.mask()]);
+        }
+    }
+    absorb(&mut hasher, &spec.time_zone);
+    absorb(&mut hasher, spec.quiet_policy.as_str());
     format!("{:x}", hasher.finalize())
 }
 
@@ -173,6 +204,53 @@ mod tests {
         assert_ne!(
             scheduled_consent_digest("message:a", "{}"),
             scheduled_consent_digest("message:a", "{\"changed\":true}")
+        );
+    }
+
+    #[test]
+    fn scheduled_series_consent_digest_covers_the_schedule() {
+        use crate::scheduling::{QuietPolicy, WeekdaySet};
+        let spec = RecurrenceSpec {
+            rule: RecurrenceRule::FixedTime {
+                local_minute: 540,
+                weekdays: WeekdaySet::ALL,
+            },
+            time_zone: "Europe/Madrid".to_owned(),
+            quiet_policy: QuietPolicy::Defer,
+        };
+        let digest = scheduled_series_consent_digest("message:a", "{}", &spec);
+        assert_ne!(digest, scheduled_consent_digest("message:a", "{}"));
+        let changed = [
+            RecurrenceSpec {
+                rule: RecurrenceRule::FixedTime {
+                    local_minute: 541,
+                    weekdays: WeekdaySet::ALL,
+                },
+                ..spec.clone()
+            },
+            RecurrenceSpec {
+                rule: RecurrenceRule::Interval { minutes: 540 },
+                ..spec.clone()
+            },
+            RecurrenceSpec {
+                time_zone: "Europe/Lisbon".to_owned(),
+                ..spec.clone()
+            },
+            RecurrenceSpec {
+                quiet_policy: QuietPolicy::Ignore,
+                ..spec.clone()
+            },
+        ];
+        for other in &changed {
+            assert_ne!(
+                digest,
+                scheduled_series_consent_digest("message:a", "{}", other),
+                "{other:?}"
+            );
+        }
+        assert_ne!(
+            digest,
+            scheduled_series_consent_digest("message:a", "{\"changed\":true}", &spec)
         );
     }
 }

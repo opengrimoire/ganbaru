@@ -58,14 +58,49 @@ describe("ChatOrganizationalMessage", () => {
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatOrganizationalMessage, { target, props: { message } });
+    await tick();
 
     const copy = target.querySelector<HTMLElement>(".message-copy");
     const mention = copy?.querySelector<HTMLButtonElement>(".mention-trigger");
     expect(mention?.textContent).toBe("@Atlas");
-    expect(copy?.textContent).toBe("Ask @Atlas now");
+    expect(copy?.querySelector("p")?.textContent).toBe("Ask @Atlas now");
 
     mention?.click();
     await tick();
     expect(document.body.querySelector(".identity-card")?.textContent).toContain("Atlas");
+  });
+
+  it("renders Markdown with references mounted in place and code kept literal", async () => {
+    const text = "**See #general** and `@Atlas`\n- @Atlas";
+    const channelStart = text.indexOf("#general");
+    const mentionStart = text.lastIndexOf("@Atlas");
+    const atlas = message.references[0];
+    if (atlas?.kind !== "participant") throw new Error("The fixture needs a participant reference.");
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatOrganizationalMessage, {
+      target,
+      props: {
+        message: {
+          ...message,
+          normalizedMarkdown: text,
+          references: [
+            {
+              kind: "channel",
+              channelId: "conversation:general",
+              metadata: { referenceId: "reference:general", labelSnapshot: "general", startOffset: channelStart, endOffset: channelStart + 8, plainTextProjection: "#general" },
+            },
+            { ...atlas, metadata: { ...atlas.metadata, startOffset: mentionStart, endOffset: mentionStart + 6 } },
+          ],
+        },
+      },
+    });
+    await tick();
+
+    const copy = target.querySelector<HTMLElement>(".message-copy");
+    expect(copy?.querySelector("strong .inline-reference")?.textContent).toBe("#general");
+    expect(copy?.querySelector("p code")?.textContent).toBe("@Atlas");
+    expect(copy?.querySelector("li .mention-trigger")?.textContent).toBe("@Atlas");
+    expect(copy?.querySelectorAll(".mention-trigger")).toHaveLength(1);
   });
 });

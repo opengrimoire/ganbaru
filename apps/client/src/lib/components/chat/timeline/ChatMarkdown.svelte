@@ -11,6 +11,7 @@
   import { openChatExternalUrl } from "$lib/api/chat";
   import { renderChatMarkdownBlocks } from "$lib/chat/timeline/markdown";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import "./chat-markdown.css";
 
   let { markdown, renderKey, onError = () => {} }: {
     markdown: string;
@@ -84,24 +85,3 @@
 </script>
 
 <div bind:this={root} class="chat-markdown" data-selectable-content>{#each blocks as block (block.key)}{@html block.html}{/each}</div>
-
-<style>
-  .chat-markdown { overflow-wrap:anywhere; line-height:inherit; }
-  .chat-markdown :global(p + p), .chat-markdown :global(p + ul), .chat-markdown :global(p + ol), .chat-markdown :global(ul + p), .chat-markdown :global(ol + p), .chat-markdown :global(pre + p), .chat-markdown :global(table + p), .chat-markdown :global(blockquote + p) { margin-top:var(--chat-conversation-flow-space,0.5rem); }
-  .chat-markdown :global(pre:not(:first-child)), .chat-markdown :global(table:not(:first-child)), .chat-markdown :global(blockquote:not(:first-child)) { margin-top:var(--chat-conversation-block-space,0.65rem); }
-  .chat-markdown :global(h1), .chat-markdown :global(h2), .chat-markdown :global(h3) { font-weight:650; }
-  .chat-markdown :global(h1:not(:first-child)), .chat-markdown :global(h2:not(:first-child)), .chat-markdown :global(h3:not(:first-child)) { margin-top:0.8rem; }
-  .chat-markdown :global(ul), .chat-markdown :global(ol) { padding-left: 1.4rem; }
-  .chat-markdown :global(ul) { list-style: disc; }
-  .chat-markdown :global(ol) { list-style: decimal; }
-  .chat-markdown :global(blockquote) { border-left: 2px solid var(--border); padding-left: 0.8rem; color: var(--muted-foreground); }
-  .chat-markdown :global(pre) { overflow-x:auto; border:1px solid var(--border); border-radius:0.5rem; background:var(--muted); padding:0.6rem; font-size: calc(0.8rem * var(--type-scale)); }
-  .chat-markdown :global(pre.chat-code-wrap code) { white-space: pre-wrap; overflow-wrap: anywhere; }
-  .chat-markdown :global(.chat-code-toolbar) { display:flex; align-items:center; gap:0.5rem; margin:-0.3rem -0.3rem 0.4rem; color:var(--muted-foreground); font-family:sans-serif; font-size: calc(0.75rem * var(--type-scale)); }
-  .chat-markdown :global(.chat-code-toolbar span) { margin-right: auto; }
-  .chat-markdown :global(.chat-code-toolbar button) { border-radius: 0.25rem; padding: 0.15rem 0.35rem; }
-  .chat-markdown :global(.chat-code-toolbar button:hover) { background: var(--accent); color: var(--foreground); }
-  .chat-markdown :global(table) { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
-  .chat-markdown :global(th), .chat-markdown :global(td) { border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: left; }
-  .chat-markdown :global(a) { color: var(--primary); text-decoration: underline; text-underline-offset: 2px; }
-</style>

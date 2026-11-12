@@ -3,7 +3,9 @@
   import type { ChatMessageRead, ChatMessageReference, ChatParticipantRead } from "$lib/chat/contracts";
   import { organizationalMessageActionTarget } from "$lib/chat/timeline/message-action-target";
   import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
-  import { chatReferenceTextSegments } from "$lib/chat/composer/message-references";
+  import { getAllContexts, mount, unmount, untrack } from "svelte";
+  import { openChatExternalUrl } from "$lib/api/chat";
+  import { ORGANIZATIONAL_REFERENCE_SLOT_ATTRIBUTE, renderOrganizationalMarkdown } from "$lib/chat/timeline/organizational-markdown";
   import { isTruncatedChatMessage } from "$lib/chat/timeline/organizational-message-model";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -15,6 +17,7 @@
   import ChatMessageReactionList from "./ChatMessageReactionList.svelte";
   import { heldMessageActionsKey, messageTouchActions } from "./message-touch-actions.svelte";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
+  import "./chat-markdown.css";
 
   let {
     message,
@@ -46,7 +49,9 @@
     t("chat.timeline.you"),
   ) : ""));
   const actionTarget = $derived(organizationalMessageActionTarget(message));
-  const messageSegments = $derived(chatReferenceTextSegments(message.normalizedMarkdown, message.references));
+  const contexts = getAllContexts();
+  let copy: HTMLDivElement | undefined = $state();
+  const renderedCopy = $derived(renderOrganizationalMarkdown(message.normalizedMarkdown, message.references));
   const truncated = $derived(isTruncatedChatMessage(message));
 
   function participantForReference(reference: Extract<ChatMessageReference, { kind: "participant" }>): ChatParticipantRead {
@@ -89,6 +94,61 @@
     }
   }
 
+  $effect(() => {
+    const root = copy;
+    const { slots } = renderedCopy;
+    if (!root) return;
+    const mounted: ReturnType<typeof mount>[] = [];
+    untrack(() => {
+      for (const slot of slots) {
+        const target = root.querySelector(`[${ORGANIZATIONAL_REFERENCE_SLOT_ATTRIBUTE}="${slot.index}"]`);
+        if (!(target instanceof HTMLElement)) continue;
+        const reference = slot.reference;
+        if (reference.kind === "participant") {
+          mounted.push(mount(ChatIdentityButton, {
+            target,
+            context: contexts,
+            props: {
+              get participant() { return participantForReference(reference); },
+              presentation: "mention",
+              triggerLabel: slot.text,
+              get currentResponseSettings() { return currentResponseSettings; },
+            },
+          }));
+        } else {
+          target.append(referenceButton(reference, slot.text));
+        }
+      }
+    });
+    return () => {
+      for (const component of mounted) void unmount(component);
+    };
+  });
+
+  $effect(() => {
+    const root = copy;
+    if (!root) return;
+    root.addEventListener("click", openExternalLink);
+    return () => root.removeEventListener("click", openExternalLink);
+  });
+
+  /** Builds the inline control for a channel, working folder, path, or environment reference. */
+  function referenceButton(reference: ChatMessageReference, text: string): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "inline-reference";
+    button.textContent = text;
+    button.addEventListener("click", () => openReference(reference));
+    return button;
+  }
+
+  function openExternalLink(event: MouseEvent): void {
+    const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[data-chat-external-link]") : null;
+    if (!link) return;
+    event.preventDefault();
+    void openChatExternalUrl(link.href).catch((error: unknown) => onActionError?.(error));
+  }
+
 </script>
 
 <article
@@ -118,7 +178,7 @@
         <time datetime={message.createdAt}>{formatDateTime(localization.locale, Date.parse(message.createdAt), { timeStyle: "short" })}</time>
       </header>
     {/if}
-    <div class="message-copy" data-selectable-content>{#each messageSegments as segment, index (`${segment.kind}:${index}`)}{#if segment.kind === "reference"}{#if segment.reference.kind === "participant"}<ChatIdentityButton participant={participantForReference(segment.reference)} presentation="mention" triggerLabel={segment.text} {currentResponseSettings} />{:else}<button type="button" class="inline-reference" onclick={() => openReference(segment.reference)}>{segment.text}</button>{/if}{:else}{segment.text}{/if}{/each}</div>
+    <div bind:this={copy} class="message-copy chat-markdown" data-selectable-content>{@html renderedCopy.html}</div>
     {#if truncated}<p class="message-elision">{t("chat.organization.truncatedMessage")}</p>{/if}
     {#if message.attachmentIds.length > 0}
       <div class="message-context">
@@ -154,9 +214,9 @@
   .message-row:not(.grouped) .message-body { transform:translateY(-4px); }
   header { display:flex; min-height:1.3rem; align-items:baseline; gap:0.4rem; }
   header strong { font-size:var(--chat-organizational-font-size,calc(0.875rem * var(--type-scale))); } header time { color:var(--muted-foreground); font-size:var(--chat-organizational-time-font-size,calc(0.6875rem * var(--type-scale))); }
-  .message-copy { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--foreground); font-size:var(--chat-organizational-font-size,calc(0.875rem * var(--type-scale))); line-height:var(--chat-organizational-line-height,calc(1.3125rem * var(--type-scale))); }
-  .inline-reference { display:inline; border-radius:0.25rem; background:color-mix(in srgb,var(--primary) 10%,transparent); padding-inline:0.1rem; color:color-mix(in srgb,var(--primary) 76%,var(--foreground)); font:inherit; }
-  .inline-reference:hover,.inline-reference:focus-visible { text-decoration:underline; }
+  .message-copy { overflow-wrap:anywhere; color:var(--foreground); font-size:var(--chat-organizational-font-size,calc(0.875rem * var(--type-scale))); line-height:var(--chat-organizational-line-height,calc(1.3125rem * var(--type-scale))); }
+  .message-copy :global(.inline-reference) { display:inline; border-radius:0.25rem; background:color-mix(in srgb,var(--primary) 10%,transparent); padding-inline:0.1rem; color:color-mix(in srgb,var(--primary) 76%,var(--foreground)); font:inherit; }
+  .message-copy :global(.inline-reference:hover),.message-copy :global(.inline-reference:focus-visible) { text-decoration:underline; }
   .message-elision { margin-top:0.2rem; color:var(--muted-foreground); font-size:var(--chat-organizational-time-font-size,calc(0.6875rem * var(--type-scale))); font-style:italic; }
   .message-context { display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.3rem; }
   .message-context span { border-radius:999px; background:var(--accent); padding:0.15rem 0.4rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }

@@ -30,9 +30,10 @@ const CHAT_MARKDOWN_RENDERER: RendererObject = {
 
   link({ href, title, tokens }): string {
     const label = this.parser.parseInline(tokens);
-    if (!safeExternalUrl(href)) return label;
-    const safeHref = escapeAttribute(href);
-    const safeTitle = title ? ` title="${escapeAttribute(title)}"` : "";
+    const target = resolveLinkAttribute(href);
+    if (!safeExternalUrl(target)) return label;
+    const safeHref = escapeAttribute(target);
+    const safeTitle = title ? ` title="${escapeAttribute(resolveLinkAttribute(title))}"` : "";
     return `<a href="${safeHref}" data-chat-external-link="true"${safeTitle}>${label}</a>`;
   },
 
@@ -47,12 +48,44 @@ const parser = new Marked({
   renderer: CHAT_MARKDOWN_RENDERER,
 });
 
+/** Channel messages keep the single line breaks people type. */
+const organizationalParser = new Marked({
+  gfm: true,
+  breaks: true,
+  renderer: CHAT_MARKDOWN_RENDERER,
+});
+
+/** Rewrites a link destination or title during one synchronous parse, before the URL is validated. */
+let resolveLinkAttribute: (value: string) => string = (value) => value;
+
 /**
  * Parses normalized assistant Markdown and sanitizes the generated fragment.
  */
 export function renderChatMarkdown(markdown: string): string {
   const bounded = boundChatMarkdown(markdown);
   return renderBoundedChatMarkdown(bounded);
+}
+
+/**
+ * Parses channel message Markdown, keeping single line breaks, and sanitizes the fragment.
+ *
+ * @param markdown Untrusted message text.
+ * @param resolveAttribute Rewrites each link destination and title before the destination is
+ * validated, so text substituted into a link can never bypass the URL check.
+ * @returns Sanitized HTML.
+ */
+export function renderOrganizationalChatMarkdown(
+  markdown: string,
+  resolveAttribute: (value: string) => string = (value) => value,
+): string {
+  const bounded = boundChatMarkdown(markdown);
+  const previous = resolveLinkAttribute;
+  resolveLinkAttribute = resolveAttribute;
+  try {
+    return sanitizeChatMarkdownHtml(organizationalParser.parse(bounded, { async: false }));
+  } finally {
+    resolveLinkAttribute = previous;
+  }
 }
 
 /** One top-level Markdown block rendered to sanitized HTML. */

@@ -98,6 +98,17 @@ pub fn configuration(home: &Path, endpoint: Option<&str>) -> ProviderInstanceCon
     .unwrap()
 }
 
+/// An `acp` instance for a plain ACP agent, with the authentication method it should use.
+pub fn generic_configuration(home: &Path, auth_method: Option<&str>) -> ProviderInstanceConfig {
+    let mut config = configuration(home, None);
+    config.family_id = serde_json::from_value(json!("acp")).unwrap();
+    config.instance_id = serde_json::from_value(json!("acp-instance-1")).unwrap();
+    config.label = "Fixture agent".to_string();
+    config.executable = "fixture-agent".to_string();
+    config.provider_config.value = json!({ "authMethod": auth_method });
+    config
+}
+
 pub fn config_options() -> Value {
     json!([
         {
@@ -214,10 +225,45 @@ pub enum FixtureScenario {
     AuthenticationRequired,
     ResumeMissing,
     RejectFastMode,
-    /// `session/load` replays history, a command list, and a permission request before and
-    /// after its response.
+    /// `session/load` replays history, a command list, mode and configuration updates, and a
+    /// permission request before and after its response.
     ReplayOnLoad,
+    /// Every `session/prompt` reports usage with a cost and ends its turn at once.
+    CompletePrompts,
+    /// A plain ACP agent: no vendor metadata or models, and a prompt that also sends Cursor
+    /// extension calls the generic flavor must refuse.
+    GenericAgent,
+    /// A plain ACP agent that advertises the `GENERIC_AUTH_METHODS` for `authenticate`.
+    /// A plain ACP agent whose sessions advertise the `GENERIC_MODELS` catalog.
+    GenericAgentWithModels,
+    GenericAgentWithAuth,
 }
+
+impl FixtureScenario {
+    /// Whether the fixture plays a plain ACP agent instead of Cursor.
+    fn is_generic(self) -> bool {
+        matches!(
+            self,
+            Self::GenericAgent | Self::GenericAgentWithAuth | Self::GenericAgentWithModels
+        )
+    }
+}
+
+/// Context tokens the `CompletePrompts` fixture reports in use.
+pub const FIXTURE_USAGE_USED: u64 = 1_200;
+/// Context window the `CompletePrompts` fixture reports.
+pub const FIXTURE_USAGE_SIZE: u64 = 200_000;
+/// Authentication methods the `GenericAgentWithAuth` fixture advertises, as id and name.
+pub const GENERIC_AUTH_METHODS: [(&str, &str); 2] =
+    [("oauth", "Browser sign in"), ("api-key", "API key")];
+/// Models the `GenericAgentWithModels` fixture advertises; the first is current.
+pub const GENERIC_MODELS: [&str; 2] = ["agent-small", "agent-large"];
+/// Cursor extension calls the generic fixture sends during a prompt, as method and request id.
+pub const GENERIC_EXTENSION_CALLS: [(&str, Option<&str>); 3] = [
+    ("cursor/update_todos", None),
+    ("cursor/ask_question", Some("generic-question")),
+    ("cursor/create_plan", Some("generic-plan")),
+];
 
 /// Replayed updates the `ReplayOnLoad` fixture sends, more than the inbound channel holds.
 pub const LOAD_REPLAY_UPDATES: usize = 300;
@@ -228,6 +274,10 @@ pub const REPLAYED_PERMISSION_ID: &str = "replayed-permission";
 /// Delay between the `session/load` response and the last replayed update, shorter than the
 /// quiet period tests use.
 pub const LATE_REPLAY_DELAY: Duration = Duration::from_millis(50);
+/// Mode the `ReplayOnLoad` fixture replays before and after its response.
+pub const REPLAYED_MODE_ID: &str = "ask";
+/// Last mode the `ReplayOnLoad` fixture reports after its response.
+pub const LATE_MODE_ID: &str = "plan";
 
 #[derive(Default)]
 pub struct AcpFixtureState {
@@ -302,8 +352,60 @@ async fn run_fixture<R, W>(
         };
         let id = message.get("id").cloned();
         match method {
+            "initialize" if scenario.is_generic() => {
+                let methods = if scenario == FixtureScenario::GenericAgentWithAuth {
+                    GENERIC_AUTH_METHODS
+                        .iter()
+                        .map(|(id, name)| json!({ "id": id, "name": name }))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                write_result(
+                    &mut writer,
+                    id,
+                    json!({
+                        "protocolVersion": 1,
+                        "agentCapabilities": { "loadSession": true },
+                        "authMethods": methods,
+                        "agentInfo": { "name": "fixture-agent", "version": "0.4.0" }
+                    }),
+                )
+                .await;
+            }
             "initialize" => {
                 write_result(&mut writer, id, initialize_response(true)).await;
+            }
+            "session/new" if scenario.is_generic() => {
+                let mut setup = json!({ "sessionId": "cursor-session-fixture" });
+                if scenario == FixtureScenario::GenericAgentWithModels {
+                    setup["models"] = json!({
+                        "currentModelId": GENERIC_MODELS[0],
+                        "availableModels": GENERIC_MODELS
+                            .iter()
+                            .map(|model| json!({ "modelId": model, "name": model }))
+                            .collect::<Vec<_>>()
+                    });
+                }
+                write_result(&mut writer, id, setup).await;
+            }
+            "session/prompt" if scenario.is_generic() => {
+                for (extension, request_id) in GENERIC_EXTENSION_CALLS {
+                    let mut call = json!({ "jsonrpc": "2.0", "method": extension, "params": {} });
+                    if let Some(request_id) = request_id {
+                        call["id"] = json!(request_id);
+                    }
+                    write_message(&mut writer, call).await;
+                }
+                write_message(
+                    &mut writer,
+                    session_update(json!({
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": { "type": "text", "text": "Fixture response" }
+                    })),
+                )
+                .await;
+                write_result(&mut writer, id, json!({ "stopReason": "end_turn" })).await;
             }
             "authenticate" if scenario == FixtureScenario::AuthenticationRequired => {
                 write_error(&mut writer, id, -32000, "Login required").await;
@@ -346,9 +448,20 @@ async fn run_fixture<R, W>(
                     }),
                 )
                 .await;
+                write_message(&mut writer, mode_update(REPLAYED_MODE_ID)).await;
                 write_result(&mut writer, id, session_setup(None, options.clone())).await;
                 tokio::time::sleep(LATE_REPLAY_DELAY).await;
                 write_message(&mut writer, replayed_text_update()).await;
+                write_message(
+                    &mut writer,
+                    session_update(json!({
+                        "sessionUpdate": "config_option_update",
+                        "configOptions": config_options()
+                    })),
+                )
+                .await;
+                write_message(&mut writer, mode_update(REPLAYED_MODE_ID)).await;
+                write_message(&mut writer, mode_update(LATE_MODE_ID)).await;
             }
             "session/load" => {
                 write_result(&mut writer, id, session_setup(None, options.clone())).await;
@@ -372,6 +485,19 @@ async fn run_fixture<R, W>(
             "session/set_mode" => write_result(&mut writer, id, json!({})).await,
             "cursor/list_available_models" => {
                 write_result(&mut writer, id, models_response()).await;
+            }
+            "session/prompt" if scenario == FixtureScenario::CompletePrompts => {
+                write_message(
+                    &mut writer,
+                    session_update(json!({
+                        "sessionUpdate": "usage_update",
+                        "used": FIXTURE_USAGE_USED,
+                        "size": FIXTURE_USAGE_SIZE,
+                        "cost": { "amount": 0.25, "currency": "USD" }
+                    })),
+                )
+                .await;
+                write_result(&mut writer, id, json!({ "stopReason": "end_turn" })).await;
             }
             "session/prompt" => {
                 pending_prompt = id;
@@ -463,6 +589,10 @@ fn session_update(update: Value) -> Value {
         "method": "session/update",
         "params": { "sessionId": "cursor-session-fixture", "update": update }
     })
+}
+
+fn mode_update(mode_id: &str) -> Value {
+    session_update(json!({ "sessionUpdate": "current_mode_update", "currentModeId": mode_id }))
 }
 
 fn replayed_text_update() -> Value {

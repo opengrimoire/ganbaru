@@ -217,6 +217,8 @@ fn a_failing_replay_names_the_line_label_and_diff() {
         load_transcript(&text).unwrap(),
         &ReplayScript {
             organizational: false,
+            real_time: false,
+            busy_stream_timeout: None,
             steps: vec![ReplayStep::Start {
                 safety: SafetyMode::AskForApproval,
                 interaction: InteractionMode::Build,
@@ -248,6 +250,8 @@ fn unconsumed_expectations_fail_the_replay() {
         load_transcript(&text).unwrap(),
         &ReplayScript {
             organizational: false,
+            real_time: false,
+            busy_stream_timeout: None,
             steps: Vec::new(),
         },
     )
@@ -263,6 +267,8 @@ fn unexpected_outbound_frames_fail_the_replay() {
         load_transcript(&transcript(&[])).unwrap(),
         &ReplayScript {
             organizational: false,
+            real_time: false,
+            busy_stream_timeout: None,
             steps: vec![ReplayStep::Start {
                 safety: SafetyMode::AskForApproval,
                 interaction: InteractionMode::Build,

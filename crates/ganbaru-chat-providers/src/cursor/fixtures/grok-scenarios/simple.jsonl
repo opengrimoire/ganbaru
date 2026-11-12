@@ -1,0 +1,10 @@
+{"type":"transcript_start","provider":"grok","protocol":"acp","cli_version":"0.1.0","scenario":"simple","generated_by":"authored"}
+{"type":"expect_outbound","label":"initialize","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true,"_meta":{"parameterizedModelPicker":true}},"clientInfo":{"name":"ganbaru","version":"<redacted>"}}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:initialize>","result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":true,"audio":false,"embeddedContext":true},"mcpCapabilities":{"http":true,"sse":false}},"authMethods":[{"id":"cached_token","name":"Cached sign in"},{"id":"xai.api_key","name":"xAI API key"}],"agentInfo":{"name":"grok","title":"Grok","version":"0.1.0"}}}}
+{"type":"expect_outbound","label":"authenticate","frame":{"jsonrpc":"2.0","id":2,"method":"authenticate","params":{"methodId":"cached_token"}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:authenticate>","result":{}}}
+{"type":"expect_outbound","label":"session-new","frame":{"jsonrpc":"2.0","id":3,"method":"session/new","params":{"cwd":"<workspace>","mcpServers":[]}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:session-new>","result":{"sessionId":"grok-session-fixture","models":{"currentModelId":"grok-build","availableModels":[{"modelId":"grok-build","name":"Grok Build"}]}}}}
+{"type":"expect_outbound","label":"prompt","frame":{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"grok-session-fixture","prompt":[{"type":"text","text":"Say hello"}],"_meta":{"promptId":"grok-turn-1"}}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"grok-session-fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Fixture response"}}}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:prompt>","result":{"stopReason":"end_turn"}}}

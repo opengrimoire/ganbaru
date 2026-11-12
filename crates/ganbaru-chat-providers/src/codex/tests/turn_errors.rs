@@ -224,6 +224,132 @@ fn interrupt_during_retry_request_stops_the_started_turn() {
     });
 }
 
+/// An operation context whose deadline follows the paused test clock, which runs ahead of the
+/// wall clock once a test has waited out backoffs.
+fn virtual_context(operation_id: &str) -> DriverOperationContext {
+    DriverOperationContext {
+        deadline: tokio::time::Instant::now().into_std() + Duration::from_secs(2),
+        ..context(operation_id)
+    }
+}
+
+fn interrupt_request(session_id: &ProviderSessionId, turn_id: &str) -> InterruptTurnRequest {
+    InterruptTurnRequest {
+        command: ChatCommandContext {
+            client_command_id: identifier("interrupt-command", ChatCommandId::new),
+            expected_thread_revision: Some(3),
+        },
+        session_id: session_id.clone(),
+        turn_id: identifier(turn_id, ChatTurnId::new),
+    }
+}
+
+#[test]
+fn an_orphaned_retry_turn_never_touches_the_next_chat_turn() {
+    crate::test_block_on(async {
+        tokio::time::pause();
+        let workspace = TestDirectory::new("driver-capacity-orphan");
+        let (mut driver, fixture, sink, snapshot) =
+            start_fixture_session(workspace.path(), FixtureScenario::CapacityRetryOrphan, None)
+                .await;
+        driver
+            .send_turn(
+                fixture_turn(&snapshot.session_id, "build"),
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        wait_until(|| turn_starts(&fixture).len() == 2).await;
+        driver
+            .interrupt_turn(
+                interrupt_request(&snapshot.session_id, "chat-turn-fixture"),
+                &context("interrupt"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            completed_turns(&sink).len(),
+            1,
+            "the interrupt settles locally"
+        );
+
+        let mut next_turn = fixture_turn(&snapshot.session_id, "build");
+        next_turn.turn_id = identifier("chat-turn-next", ChatTurnId::new);
+        let refused = driver
+            .send_turn(next_turn.clone(), &context("send-early"))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ChatErrorCode::Busy);
+        assert_eq!(
+            turn_starts(&fixture).len(),
+            2,
+            "no turn starts while the retry is in flight"
+        );
+
+        wait_until(|| {
+            fixture
+                .received()
+                .iter()
+                .any(|message| message["method"] == "turn/interrupt")
+        })
+        .await;
+        driver
+            .send_turn(next_turn, &virtual_context("send-next"))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        assert_eq!(
+            warnings(&sink, "codex_capacity_retry"),
+            1,
+            "the orphan's capacity failure is not retried for the next turn"
+        );
+        let next_terminals = sink
+            .events()
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.event,
+                    CanonicalEvent::TurnCompleted(_) | CanonicalEvent::RuntimeError(_)
+                ) && event.turn_id.as_ref().map(ChatTurnId::as_str) == Some("chat-turn-next")
+            })
+            .count();
+        assert_eq!(
+            next_terminals, 0,
+            "orphan notifications never fail or settle the next turn"
+        );
+        assert!(
+            !sink.events().iter().any(|event| {
+                matches!(event.event, CanonicalEvent::RuntimeError(_))
+                    && event.provider_turn_id.as_ref().map(ProviderTurnId::as_str)
+                        == Some("fixture-provider-turn-2")
+            }),
+            "the orphan's error is dropped instead of failing the session"
+        );
+        driver
+            .interrupt_turn(
+                interrupt_request(&snapshot.session_id, "chat-turn-next"),
+                &virtual_context("interrupt-next"),
+            )
+            .await
+            .unwrap();
+        let interrupts = fixture
+            .received()
+            .into_iter()
+            .filter(|message| message["method"] == "turn/interrupt")
+            .map(|message| message["params"]["turnId"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            interrupts,
+            vec![
+                json!("fixture-provider-turn-2"),
+                json!("fixture-provider-turn-3")
+            ],
+            "the next turn keeps its own provider turn id"
+        );
+    });
+}
+
 #[test]
 fn usage_limit_never_retries() {
     crate::test_block_on(async {

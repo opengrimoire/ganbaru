@@ -36,6 +36,11 @@ export const chat = {
   deletePermanently: "Delete permanently",
   cancel: "Cancel",
   save: "Save",
+  providers: {
+    acp: {
+      name: "ACP agent",
+    },
+  },
   sync: {
     participantConflicts: (count: number) =>
       `${count} ${count === 1 ? "name was" : "names were"} edited on two devices. Open the Chat settings to choose what to keep.`,

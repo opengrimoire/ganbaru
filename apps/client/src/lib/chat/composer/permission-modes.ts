@@ -1,4 +1,5 @@
 import type { ProviderFamilyId, SafetyMode } from "$lib/chat/contracts";
+import { GENERIC_ACP_FAMILY_ID } from "$lib/chat/provider-setup";
 
 /**
  * Reports whether a provider can faithfully implement a permission mode.
@@ -14,7 +15,7 @@ export function providerSupportsPermissionMode(
   if (familyId === null) return false;
   if (mode === "ask_for_approval" || mode === "full_access") return true;
   if (mode === "approve_for_me") return familyId === "codex" || familyId === "claude";
-  return true;
+  return familyId !== GENERIC_ACP_FAMILY_ID;
 }
 
 /** Returns the documented user configuration filename that owns provider permissions. */

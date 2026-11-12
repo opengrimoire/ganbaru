@@ -13,6 +13,7 @@
   import {
     createProviderSetupDraft,
     providerConfigurationFromDraft,
+    providerFamilyDisplayName,
     providerInstanceIdFromLabel,
     storesPlaintextSecret,
     validateProviderSetup,
@@ -142,7 +143,7 @@
         if (providerFamily?.implementationStatus === "available") {
           initializeFamily(
             providerFamily.familyId,
-            providerFamily.displayName,
+            providerFamilyDisplayName(providerFamily, t("chat.providers.acp.name")),
             providerFamily.defaultExecutableCandidates[0] ?? "",
           );
         } else {
@@ -485,8 +486,8 @@
   function editorTitle(): string {
     if (!family) return target.mode === "edit" ? t("settings.chat.setup.editTitle") : t("settings.chat.setup.title");
     return target.mode === "edit"
-      ? t("settings.chat.setup.editConfigurationTitle", family.displayName)
-      : t("settings.chat.setup.addConfigurationTitle", family.displayName);
+      ? t("settings.chat.setup.editConfigurationTitle", providerFamilyDisplayName(family, t("chat.providers.acp.name")))
+      : t("settings.chat.setup.addConfigurationTitle", providerFamilyDisplayName(family, t("chat.providers.acp.name")));
   }
 </script>
 

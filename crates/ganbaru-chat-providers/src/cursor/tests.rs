@@ -5,12 +5,15 @@ use super::executable::*;
 use super::interactions::*;
 use super::normalizer::{CursorEventNormalizer, CursorRouteState};
 use super::protocol::*;
-use super::session::{AcpInboundQueue, initialize_session};
+use super::session::{
+    AcpAuthPreference, AcpInboundQueue, auth_preference, initialize_session, select_auth_method,
+};
 use super::transport::AcpInboundMessage;
 use crate::events::{CanonicalEvent, CanonicalRuntimeEvent};
 use crate::models::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use support::*;
@@ -116,6 +119,7 @@ fn executable_probe_parses_versions_accounts_and_protected_arguments() {
 
     let settings = CursorProviderSettings {
         api_endpoint: Some("https://cursor.example.test/api".to_string()),
+        auth_method: None,
     };
     assert_eq!(
         launch_arguments(&["--verbose".to_string()], &settings).unwrap(),
@@ -255,7 +259,12 @@ fn negotiated_capabilities_and_model_traits_are_truthful() {
         true,
     )
     .unwrap();
-    let capabilities = negotiated_capabilities_for(AcpProviderFlavor::Cursor, &initialize, &setup);
+    let capabilities = negotiated_capabilities_for(
+        AcpProviderFlavor::Cursor,
+        &initialize,
+        Some(&setup),
+        ObservedAcpCapabilities::default(),
+    );
     for capability in [
         ProviderCapability::NativeResume,
         ProviderCapability::NativePlan,
@@ -289,25 +298,325 @@ fn negotiated_capabilities_and_model_traits_are_truthful() {
             }
         }))
         .unwrap(),
-        &parse_session_setup(
-            json!({
-                "sessionId": "limited",
-                "configOptions": [{
-                    "id": "thinking",
-                    "name": "Thinking",
-                    "type": "boolean",
-                    "currentValue": false,
-                    "options": []
-                }]
-            }),
-            true,
-        )
-        .unwrap(),
+        Some(
+            &parse_session_setup(
+                json!({
+                    "sessionId": "limited",
+                    "configOptions": [{
+                        "id": "thinking",
+                        "name": "Thinking",
+                        "type": "boolean",
+                        "currentValue": false,
+                        "options": []
+                    }]
+                }),
+                true,
+            )
+            .unwrap(),
+        ),
+        ObservedAcpCapabilities::default(),
     );
     assert!(!disabled.supports(ProviderCapability::NativeResume));
     assert!(!disabled.supports(ProviderCapability::NativePlan));
     assert!(!disabled.supports(ProviderCapability::DynamicModelChange));
     assert!(!disabled.supports(ProviderCapability::Images));
+}
+
+fn minimal_initialize(agent_capabilities: Value) -> AcpInitializeResponse {
+    parse_initialize(json!({ "protocolVersion": 1, "agentCapabilities": agent_capabilities }))
+        .unwrap()
+}
+
+#[test]
+fn every_acp_capability_has_a_source() {
+    let initialize = minimal_initialize(json!({}));
+    let setup = parse_session_setup(json!({ "sessionId": "minimal" }), true).unwrap();
+    for flavor in [AcpProviderFlavor::Cursor, AcpProviderFlavor::Grok] {
+        let capabilities = negotiated_capabilities_for(
+            flavor,
+            &initialize,
+            Some(&setup),
+            ObservedAcpCapabilities::default(),
+        );
+        for capability in [
+            ProviderCapability::Approvals,
+            ProviderCapability::FileReferences,
+            ProviderCapability::StructuredQuestions,
+            ProviderCapability::StructuredPlans,
+            ProviderCapability::ProviderDiffs,
+            ProviderCapability::ReasoningSummaries,
+        ] {
+            assert!(
+                capabilities.supports(capability),
+                "{flavor:?} {capability:?}"
+            );
+        }
+        for capability in [
+            ProviderCapability::NativeResume,
+            ProviderCapability::NativePlan,
+            ProviderCapability::Images,
+            ProviderCapability::DynamicModelChange,
+            ProviderCapability::SlashCommands,
+        ] {
+            assert!(
+                !capabilities.supports(capability),
+                "{flavor:?} {capability:?}"
+            );
+        }
+        assert!(
+            capabilities
+                .entries
+                .iter()
+                .filter(|entry| !entry.supported)
+                .all(|entry| entry.explanation.is_some())
+        );
+    }
+}
+
+#[test]
+fn observed_capabilities_turn_on_at_the_next_session_start() {
+    let initialize = minimal_initialize(json!({}));
+    let setup = parse_session_setup(json!({ "sessionId": "observed" }), true).unwrap();
+    let mut observed = ObservedAcpCapabilities::default();
+    observed.merge(ObservedAcpCapabilities {
+        slash_commands: true,
+        ..ObservedAcpCapabilities::default()
+    });
+    observed.merge(ObservedAcpCapabilities::default());
+    assert!(observed.slash_commands);
+    let capabilities = negotiated_capabilities_for(
+        AcpProviderFlavor::Cursor,
+        &initialize,
+        Some(&setup),
+        observed,
+    );
+    assert!(capabilities.supports(ProviderCapability::SlashCommands));
+}
+
+#[test]
+fn route_state_records_commands_and_reasoning_the_agent_sends() {
+    let normalizer = CursorEventNormalizer::new_for_provider(
+        ProviderInstanceId::new("cursor-instance").unwrap(),
+        ChatThreadId::new("thread").unwrap(),
+        ProviderSessionId::new("session").unwrap(),
+        "cursor",
+        "Cursor",
+    );
+    let mut state = CursorRouteState::new(
+        "provider-thread".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+        None,
+        Vec::new(),
+        std::env::temp_dir(),
+    );
+    let update = |update: Value| json!({ "sessionId": "provider-thread", "update": update });
+    normalizer
+        .normalize_session_update(
+            &mut state,
+            update(
+                json!({ "sessionUpdate": "available_commands_update", "availableCommands": [] }),
+            ),
+        )
+        .unwrap();
+    assert!(!state.observed.slash_commands);
+    normalizer
+        .normalize_session_update(
+            &mut state,
+            update(json!({
+                "sessionUpdate": "available_commands_update",
+                "availableCommands": [{ "name": "review", "description": "Review changes" }]
+            })),
+        )
+        .unwrap();
+    assert!(state.observed.slash_commands);
+    normalizer
+        .normalize_session_update(
+            &mut state,
+            update(
+                json!({ "sessionUpdate": "available_commands_update", "availableCommands": [] }),
+            ),
+        )
+        .unwrap();
+    assert!(state.observed.slash_commands);
+    assert!(!state.observed.reasoning);
+    let _ = normalizer.normalize_session_update(
+        &mut state,
+        update(json!({
+            "sessionUpdate": "agent_thought_chunk",
+            "content": { "type": "text", "text": "Thinking" }
+        })),
+    );
+    assert!(state.observed.reasoning);
+}
+
+#[test]
+fn config_option_updates_replace_the_route_options() {
+    let normalizer = test_normalizer();
+    let mut state = test_route_state();
+    let events = normalizer
+        .normalize_session_update(
+            &mut state,
+            json!({
+                "sessionId": "provider-thread",
+                "update": { "sessionUpdate": "config_option_update", "configOptions": config_options() }
+            }),
+        )
+        .unwrap();
+    assert!(events.is_empty());
+    assert_eq!(
+        state
+            .config_options
+            .iter()
+            .map(|option| option.id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "model",
+            "reasoning",
+            "context_size",
+            "fast",
+            "thinking",
+            "mode"
+        ]
+    );
+}
+
+#[test]
+fn usage_updates_map_context_and_keep_only_valid_costs() {
+    let normalizer = test_normalizer();
+    let mut state = test_route_state();
+    let usage = |update: Value, state: &mut CursorRouteState| {
+        normalizer
+            .normalize_session_update(
+                state,
+                json!({ "sessionId": "provider-thread", "update": update }),
+            )
+            .unwrap()
+    };
+
+    let events = usage(
+        json!({ "sessionUpdate": "usage_update", "used": 42, "size": 1000 }),
+        &mut state,
+    );
+    let [event] = events.as_slice() else {
+        panic!("one usage event");
+    };
+    let CanonicalEvent::ThreadUsageUpdated(update) = &event.event else {
+        panic!("usage event");
+    };
+    assert_eq!(update.context_tokens, Some(42));
+    assert_eq!(update.context_limit, Some(1000));
+    assert!(update.cost.is_none());
+    assert!(state.observed.usage);
+    assert!(
+        !state.observed.cost,
+        "a usage update without a cost reports no cost"
+    );
+
+    for invalid_cost in [
+        json!({ "amount": -1.0, "currency": "USD" }),
+        json!({ "amount": 1.0, "currency": "" }),
+        json!({ "amount": 1.0, "currency": "U$D" }),
+        json!("free"),
+    ] {
+        let events = usage(
+            json!({ "sessionUpdate": "usage_update", "used": 1, "size": 2, "cost": invalid_cost }),
+            &mut state,
+        );
+        let CanonicalEvent::ThreadUsageUpdated(update) = &events[0].event else {
+            panic!("usage event");
+        };
+        assert!(update.cost.is_none());
+    }
+    assert!(!state.observed.cost);
+
+    let events = usage(
+        json!({ "sessionUpdate": "usage_update", "used": 7, "size": 9, "cost": { "amount": 0.5, "currency": "EUR" } }),
+        &mut state,
+    );
+    let CanonicalEvent::ThreadUsageUpdated(update) = &events[0].event else {
+        panic!("usage event");
+    };
+    let cost = update.cost.as_ref().unwrap();
+    assert_eq!((cost.amount, cost.currency.as_str()), (0.5, "EUR"));
+    assert!(state.observed.cost);
+
+    for malformed in [
+        json!({ "sessionUpdate": "usage_update", "used": "many", "size": 2 }),
+        json!({ "sessionUpdate": "usage_update", "used": 1 }),
+        json!({ "sessionUpdate": "usage_update", "used": -1, "size": 2 }),
+    ] {
+        let events = usage(malformed, &mut state);
+        assert!(
+            matches!(events.as_slice(), [event] if matches!(event.event, CanonicalEvent::Unknown(_))),
+            "a malformed usage update stays visible as an unknown event"
+        );
+    }
+}
+
+fn test_normalizer() -> CursorEventNormalizer {
+    CursorEventNormalizer::new_for_provider(
+        ProviderInstanceId::new("cursor-instance").unwrap(),
+        ChatThreadId::new("thread").unwrap(),
+        ProviderSessionId::new("session").unwrap(),
+        "cursor",
+        "Cursor",
+    )
+}
+
+fn test_route_state() -> CursorRouteState {
+    CursorRouteState::new(
+        "provider-thread".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+        None,
+        Vec::new(),
+        std::env::temp_dir(),
+    )
+}
+
+#[test]
+fn mcp_capabilities_parse_tolerantly() {
+    for (agent_capabilities, http, sse) in [
+        (json!({}), false, false),
+        (
+            json!({ "mcpCapabilities": { "http": false } }),
+            false,
+            false,
+        ),
+        (json!({ "mcpCapabilities": { "http": true } }), true, false),
+        (
+            json!({ "mcpCapabilities": { "http": true, "sse": true } }),
+            true,
+            true,
+        ),
+        (
+            json!({ "mcpCapabilities": { "http": "yes" } }),
+            false,
+            false,
+        ),
+        (json!({ "mcpCapabilities": "http" }), false, false),
+        (json!({ "mcpCapabilities": null }), false, false),
+    ] {
+        let parsed = minimal_initialize(agent_capabilities.clone());
+        assert_eq!(
+            parsed.agent_capabilities.mcp_capabilities,
+            AcpMcpCapabilities { http, sse },
+            "{agent_capabilities}"
+        );
+    }
+}
+
+#[test]
+fn cursor_and_grok_keep_http_mcp_by_flavor() {
+    let silent = minimal_initialize(json!({}));
+    for flavor in [AcpProviderFlavor::Cursor, AcpProviderFlavor::Grok] {
+        assert!(silent.agent_capabilities.accepts_http_mcp(flavor));
+    }
 }
 
 #[test]
@@ -692,6 +1001,73 @@ fn session_start_auth_resume_and_configuration_rollback_are_bounded() {
 }
 
 #[test]
+fn turn_end_closes_open_tool_items_so_none_reach_the_next_turn() {
+    let normalizer = CursorEventNormalizer::new_for_provider(
+        ProviderInstanceId::new("cursor-instance-1".to_string()).unwrap(),
+        ChatThreadId::new("thread-1".to_string()).unwrap(),
+        ProviderSessionId::new("session-1".to_string()).unwrap(),
+        "cursor",
+        "Cursor",
+    );
+    let mut state = CursorRouteState::new(
+        "cursor-session-fixture".to_string(),
+        modes(SafetyMode::AskForApproval, InteractionMode::Build),
+        None,
+        Vec::new(),
+        PathBuf::from("/fixture/workspace"),
+    );
+    let tool_call = |id: &str| {
+        json!({
+            "sessionId": "cursor-session-fixture",
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": id,
+                "title": "Run tests",
+                "kind": "execute",
+                "status": "in_progress"
+            }
+        })
+    };
+    let interrupted_items = |events: &[CanonicalRuntimeEvent]| {
+        events
+            .iter()
+            .filter_map(|event| match &event.event {
+                CanonicalEvent::ItemCompleted(item)
+                    if item.status == ActivityStatus::Interrupted =>
+                {
+                    Some(item.item_id.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    state.active_turn_id = Some(ChatTurnId::new("turn-1".to_string()).unwrap());
+    normalizer
+        .normalize_session_update(&mut state, tool_call("tool-b"))
+        .unwrap();
+    normalizer
+        .normalize_session_update(&mut state, tool_call("tool-a"))
+        .unwrap();
+    let completed = normalizer.finish_turn(&mut state, "end_turn").unwrap();
+    assert_eq!(interrupted_items(&completed), ["tool-a", "tool-b"]);
+    assert!(matches!(
+        completed.last().map(|event| &event.event),
+        Some(CanonicalEvent::TurnCompleted(_))
+    ));
+
+    state.active_turn_id = Some(ChatTurnId::new("turn-2".to_string()).unwrap());
+    let aborted = normalizer
+        .interrupted(&mut state, "transport closed")
+        .unwrap();
+    assert!(interrupted_items(&aborted).is_empty());
+    assert!(matches!(
+        aborted.last().map(|event| &event.event),
+        Some(CanonicalEvent::TurnAborted(_))
+    ));
+}
+
+#[test]
 fn session_load_drains_replayed_history_and_keeps_live_updates() {
     crate::test_block_on(async {
         let state = Arc::new(AcpFixtureState::default());
@@ -754,6 +1130,31 @@ fn session_load_drains_replayed_history_and_keeps_live_updates() {
             AcpInboundMessage::Notification { params, .. }
                 if params["update"]["sessionUpdate"] == "available_commands_update"
         ));
+        assert!(
+            routed.iter().all(|message| !matches!(
+                message,
+                AcpInboundMessage::Notification { params, .. }
+                    if matches!(
+                        params["update"]["sessionUpdate"].as_str(),
+                        Some("current_mode_update" | "config_option_update")
+                    )
+            )),
+            "late mode and configuration updates are folded into the setup: {routed:?}"
+        );
+        let mode_requests = state
+            .received()
+            .into_iter()
+            .filter(|message| {
+                message["method"] == "session/set_config_option"
+                    && message["params"]["configId"] == "mode"
+            })
+            .map(|message| message["params"]["value"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mode_requests,
+            [json!("code")],
+            "the requested Build mode is applied over the late {LATE_MODE_ID} mode"
+        );
         prompt.abort();
         connection
             .stop(Duration::ZERO, Duration::from_millis(20))
@@ -909,5 +1310,151 @@ fn cursor_versions_admit_against_the_tested_range() {
                 "{version}"
             ),
         }
+    }
+}
+
+#[test]
+fn auth_selection_follows_advertised_methods() {
+    let select = |preference, initialize: &AcpInitializeResponse| {
+        select_auth_method("Agent", preference, initialize)
+    };
+    let cursor_preference = auth_preference(AcpProviderFlavor::Cursor, false, None);
+    let grok_cached = auth_preference(AcpProviderFlavor::Grok, false, None);
+    let grok_api_key = auth_preference(AcpProviderFlavor::Grok, true, None);
+
+    let none = minimal_initialize(json!({}));
+    assert_eq!(select(cursor_preference, &none).unwrap(), None);
+    assert_eq!(
+        select(AcpAuthPreference::Configured(None), &none).unwrap(),
+        None
+    );
+
+    let cursor = parse_initialize(initialize_response(true)).unwrap();
+    assert_eq!(
+        select(cursor_preference, &cursor).unwrap().as_deref(),
+        Some(CURSOR_AUTH_METHOD)
+    );
+    assert_eq!(
+        select(grok_api_key, &cursor).unwrap_err().code,
+        ChatErrorCode::AuthenticationRequired
+    );
+
+    let grok = parse_initialize(json!({
+        "protocolVersion": 1,
+        "agentCapabilities": {},
+        "authMethods": [{ "id": "cached_token", "name": "Cached token" }]
+    }))
+    .unwrap();
+    assert_eq!(
+        select(grok_cached, &grok).unwrap().as_deref(),
+        Some("cached_token")
+    );
+    assert!(select(grok_api_key, &grok).is_err());
+}
+
+#[test]
+fn generic_auth_uses_only_the_configured_method() {
+    let generic = parse_initialize(json!({
+        "protocolVersion": 1,
+        "agentCapabilities": {},
+        "authMethods": [
+            { "id": "oauth", "name": "Browser sign in" },
+            { "id": "api-key", "name": "API key" }
+        ]
+    }))
+    .unwrap();
+    assert_eq!(
+        select_auth_method(
+            "ACP agent",
+            auth_preference(AcpProviderFlavor::Generic, false, Some("api-key")),
+            &generic
+        )
+        .unwrap()
+        .as_deref(),
+        Some("api-key")
+    );
+    for configured in [None, Some("password")] {
+        let error = select_auth_method(
+            "ACP agent",
+            auth_preference(AcpProviderFlavor::Generic, false, configured),
+            &generic,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::AuthenticationRequired);
+        assert!(
+            error.message.contains("Browser sign in (oauth)"),
+            "{error:?}"
+        );
+        assert!(error.message.contains("API key (api-key)"), "{error:?}");
+    }
+}
+
+#[test]
+fn probe_capabilities_keep_session_dependent_entries_potential() {
+    let initialize = minimal_initialize(json!({}));
+    let capabilities = negotiated_capabilities_for(
+        AcpProviderFlavor::Cursor,
+        &initialize,
+        None,
+        ObservedAcpCapabilities::default(),
+    );
+    assert!(capabilities.supports(ProviderCapability::NativePlan));
+    assert!(capabilities.supports(ProviderCapability::DynamicModelChange));
+    assert!(!capabilities.supports(ProviderCapability::NativeResume));
+    assert!(!capabilities.supports(ProviderCapability::Images));
+}
+
+#[test]
+fn generic_capability_table_omits_vendor_extensions() {
+    let generic = acp_capability_kinds(AcpProviderFlavor::Generic);
+    for vendor_only in [
+        ProviderCapability::StructuredQuestions,
+        ProviderCapability::StructuredPlans,
+        ProviderCapability::ProviderDiffs,
+    ] {
+        assert!(!generic.contains(&vendor_only), "{vendor_only:?}");
+        assert!(
+            acp_capability_kinds(AcpProviderFlavor::Cursor).contains(&vendor_only),
+            "{vendor_only:?}"
+        );
+    }
+    for standard in [
+        ProviderCapability::Approvals,
+        ProviderCapability::DynamicModelChange,
+        ProviderCapability::FileReferences,
+        ProviderCapability::NativeResume,
+        ProviderCapability::ContextUsage,
+        ProviderCapability::CostReporting,
+    ] {
+        assert!(generic.contains(&standard), "{standard:?}");
+    }
+}
+
+#[test]
+fn resource_links_stay_inside_the_workspace() {
+    let workspace = TestDirectory::new("resource-link");
+    let link =
+        super::operations::resource_link(workspace.path(), "docs/read me.md", "ACP agent").unwrap();
+    let expected = reqwest::Url::from_file_path(workspace.path().join("docs/read me.md")).unwrap();
+    assert_eq!(link["type"], "resource_link");
+    assert_eq!(link["uri"], expected.as_str());
+    assert!(expected.as_str().contains("read%20me.md"));
+    assert_eq!(link["name"], "read me.md");
+    assert_eq!(link["title"], "docs/read me.md");
+    for escaping in [
+        "../secret",
+        "/etc/passwd",
+        "docs/../../secret",
+        "./main.rs",
+        "a\0b",
+        "",
+    ] {
+        assert_eq!(
+            super::operations::resource_link(workspace.path(), escaping, "ACP agent")
+                .unwrap_err()
+                .code,
+            ChatErrorCode::Validation,
+            "{escaping:?}"
+        );
     }
 }

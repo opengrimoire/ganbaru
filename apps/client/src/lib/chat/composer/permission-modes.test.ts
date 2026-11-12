@@ -3,7 +3,7 @@ import { providerPermissionFileName, providerSupportsPermissionMode } from "./pe
 
 describe("Chat permission modes", () => {
   it("exposes manual approval and Full access for every provider transport", () => {
-    for (const family of ["codex", "claude", "cursor", "grok", "opencode"]) {
+    for (const family of ["codex", "claude", "cursor", "grok", "opencode", "acp"]) {
       expect(providerSupportsPermissionMode(family, "ask_for_approval")).toBe(true);
       expect(providerSupportsPermissionMode(family, "full_access")).toBe(true);
     }
@@ -21,6 +21,13 @@ describe("Chat permission modes", () => {
       expect(providerSupportsPermissionMode(family, "custom")).toBe(true);
     }
     expect(providerSupportsPermissionMode(null, "custom")).toBe(false);
+  });
+
+  it("limits generic ACP agents to manual approval and Full access", () => {
+    expect(providerSupportsPermissionMode("acp", "ask_for_approval")).toBe(true);
+    expect(providerSupportsPermissionMode("acp", "full_access")).toBe(true);
+    expect(providerSupportsPermissionMode("acp", "approve_for_me")).toBe(false);
+    expect(providerSupportsPermissionMode("acp", "custom")).toBe(false);
   });
 
   it("uses each provider's documented permission filename", () => {

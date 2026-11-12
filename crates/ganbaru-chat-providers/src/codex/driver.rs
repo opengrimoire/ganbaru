@@ -1,6 +1,6 @@
 //! Codex provider driver over app-server stdio.
 
-use super::capacity_retry::CodexCapacityRetry;
+use super::capacity_retry::{CodexCapacityRetry, ensure_no_retry_in_flight};
 use super::home::*;
 use super::normalizer::{CodexEventNormalizer, CodexRouteState};
 use super::organizational::*;
@@ -379,6 +379,7 @@ impl ProviderDriver for CodexProviderDriver {
                 .ok_or_else(|| protocol_identifier_error("provider thread"))?;
             {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                ensure_no_retry_in_flight(&state)?;
                 if state.active_chat_turn_id.is_some() {
                     return Err(ChatError::new(
                         ChatErrorCode::Busy,
@@ -604,6 +605,9 @@ impl ProviderDriver for CodexProviderDriver {
         Box::pin(async move {
             let endpoint = self.configuration.internal_mcp.clone();
             let live = self.live_mut(&request.session_id)?;
+            // Refuse before any preparatory request; the check under the turn route lock below
+            // stays authoritative.
+            ensure_no_retry_in_flight(&*live.route.lock().map_err(|_| driver_state_error())?)?;
             let client = live.connection.client();
             let command = if live.organizational {
                 None
@@ -666,6 +670,7 @@ impl ProviderDriver for CodexProviderDriver {
             let network_access = sandbox_network_access(&params);
             {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                ensure_no_retry_in_flight(&state)?;
                 // A second turn/start would replace the running turn's route and its armed retry.
                 if state.active_chat_turn_id.is_some() {
                     return Err(ChatError::new(
@@ -866,6 +871,7 @@ impl ProviderDriver for CodexProviderDriver {
             let live = self.live_mut(&request.session_id)?;
             let provider_thread_id = {
                 let route = live.route.lock().map_err(|_| driver_state_error())?;
+                ensure_no_retry_in_flight(&route)?;
                 if route.active_chat_turn_id.is_some() || route.active_provider_turn_id.is_some() {
                     return Err(ChatError::new(
                         ChatErrorCode::Busy,

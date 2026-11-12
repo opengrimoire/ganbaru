@@ -34,6 +34,9 @@ pub(crate) enum ReplayStep {
     AwaitEvent { kind: &'static str, count: usize },
     /// Waits until the transcript has no entries left to play.
     AwaitTranscript,
+    /// Lets `seconds` pass on the paused clock while the transcript plays, for scenarios whose
+    /// provider stays silent longer than a step may wait.
+    Elapse { seconds: u64 },
     /// Stops the session.
     Stop,
 }
@@ -50,6 +53,7 @@ impl ReplayStep {
             Self::Resolve { .. } => "resolve_approval",
             Self::AwaitEvent { .. } => "await_event",
             Self::AwaitTranscript => "await_transcript",
+            Self::Elapse { .. } => "elapse",
             Self::Stop => "stop_session",
         }
     }
@@ -60,6 +64,12 @@ impl ReplayStep {
 pub(crate) struct ReplayScript {
     /// Whether the driver runs with organizational authority.
     pub(crate) organizational: bool,
+    /// Whether the replay runs on the wall clock instead of the paused one, for scenarios
+    /// whose driver waits on real processes or sockets.
+    pub(crate) real_time: bool,
+    /// The silence bound of a busy event stream, in place of the driver default, for HTTP
+    /// scenarios that replay a stalled stream.
+    pub(crate) busy_stream_timeout: Option<std::time::Duration>,
     pub(crate) steps: Vec<ReplayStep>,
 }
 
@@ -99,7 +109,17 @@ pub(super) const fn awaited(kind: &'static str, count: usize) -> ReplayStep {
 pub(super) fn direct(steps: Vec<ReplayStep>) -> ReplayScript {
     ReplayScript {
         organizational: false,
+        real_time: false,
+        busy_stream_timeout: None,
         steps,
+    }
+}
+
+/// A script on a direct thread that runs on the wall clock.
+pub(super) fn real_time(steps: Vec<ReplayStep>) -> ReplayScript {
+    ReplayScript {
+        real_time: true,
+        ..direct(steps)
     }
 }
 
@@ -107,6 +127,8 @@ pub(super) fn direct(steps: Vec<ReplayStep>) -> ReplayScript {
 pub(super) fn organizational(steps: Vec<ReplayStep>) -> ReplayScript {
     ReplayScript {
         organizational: true,
+        real_time: false,
+        busy_stream_timeout: None,
         steps,
     }
 }
@@ -117,6 +139,9 @@ pub(crate) fn script(provider: ReplayProvider, scenario: &str) -> Option<ReplayS
         ReplayProvider::Claude => claude::script(scenario),
         ReplayProvider::Codex => codex::script(scenario),
         ReplayProvider::Cursor => cursor::script(scenario),
+        ReplayProvider::Grok => grok::script(scenario),
+        ReplayProvider::Acp => acp::script(scenario),
+        ReplayProvider::OpenCode => opencode::script(scenario),
     }
 }
 
@@ -140,6 +165,9 @@ macro_rules! replay_scenarios {
     };
 }
 
+mod acp;
 mod claude;
 mod codex;
 mod cursor;
+mod grok;
+mod opencode;

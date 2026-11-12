@@ -1,0 +1,1844 @@
+{
+  "calls": [
+    {
+      "call": "start_session",
+      "result": "ok"
+    },
+    {
+      "call": "send_turn",
+      "result": "ok"
+    }
+  ],
+  "events": [
+    {
+      "type": "session_started",
+      "state": "ready"
+    },
+    {
+      "type": "session_configured"
+    },
+    {
+      "type": "turn_started",
+      "turn": "turn-1",
+      "state": "active"
+    },
+    {
+      "type": "item_started",
+      "turn": "turn-1",
+      "kind": "assistant_message",
+      "status": "active"
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 1 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 2 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 3 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 4 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 5 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 6 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 7 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 8 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 9 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 10 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 11 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 12 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 13 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 14 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 15 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 16 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 17 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 18 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 19 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 20 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 21 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 22 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 23 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 24 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 25 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 26 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 27 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 28 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 29 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 30 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 31 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 32 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 33 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 34 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 35 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 36 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 37 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 38 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 39 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 40 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 41 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 42 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 43 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 44 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 45 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 46 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 47 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 48 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 49 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 50 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 51 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 52 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 53 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 54 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 55 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 56 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 57 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 58 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 59 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 60 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 61 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 62 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 63 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 64 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 65 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 66 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 67 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 68 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 69 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 70 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 71 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 72 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 73 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 74 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 75 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 76 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 77 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 78 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 79 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 80 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 81 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 82 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 83 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 84 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 85 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 86 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 87 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 88 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 89 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 90 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 91 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 92 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 93 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 94 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 95 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 96 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 97 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 98 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 99 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 100 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 101 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 102 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 103 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 104 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 105 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 106 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 107 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 108 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 109 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 110 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 111 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 112 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 113 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 114 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 115 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 116 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 117 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 118 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 119 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 120 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 121 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 122 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 123 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 124 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 125 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 126 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 127 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 128 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 129 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 130 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 131 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 132 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 133 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 134 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 135 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 136 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 137 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 138 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 139 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 140 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 141 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 142 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 143 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 144 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 145 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 146 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 147 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 148 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 149 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 150 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 151 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 152 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 153 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 154 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 155 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 156 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 157 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 158 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 159 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 160 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 161 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 162 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 163 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 164 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 165 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 166 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 167 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 168 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 169 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 170 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 171 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 172 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 173 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 174 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 175 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 176 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 177 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 178 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 179 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 180 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 181 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 182 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 183 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 184 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 185 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 186 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 187 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 188 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 189 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 190 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 191 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 192 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 193 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 194 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 195 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 196 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 197 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 198 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 199 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 200 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 201 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 202 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 203 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 204 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 205 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 206 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 207 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 208 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 209 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 210 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 211 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 212 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 213 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 214 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 215 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 216 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 217 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 218 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 219 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 220 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 221 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 222 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 223 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 224 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 225 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 226 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 227 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 228 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 229 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 230 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 231 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 232 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 233 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 234 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 235 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 236 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 237 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 238 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 239 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 240 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 241 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 242 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 243 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 244 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 245 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 246 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 247 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 248 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 249 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 250 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 251 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 252 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 253 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 254 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 255 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 256 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 257 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 258 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 259 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 260 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 261 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 262 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 263 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 264 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 265 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 266 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 267 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 268 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 269 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 270 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 271 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 272 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 273 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 274 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 275 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 276 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 277 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 278 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 279 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 280 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 281 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 282 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 283 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 284 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 285 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 286 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 287 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 288 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 289 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 290 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 291 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 292 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 293 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 294 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 295 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 296 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 297 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 298 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 299 "
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "part 300 "
+    },
+    {
+      "type": "item_completed",
+      "turn": "turn-1",
+      "kind": "assistant_message",
+      "status": "completed"
+    },
+    {
+      "type": "turn_completed",
+      "turn": "turn-1",
+      "state": "completed",
+      "stopReason": "end_turn"
+    }
+  ]
+}

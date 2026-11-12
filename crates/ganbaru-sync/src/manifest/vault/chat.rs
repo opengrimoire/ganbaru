@@ -1897,6 +1897,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
             ],
         ),
         device("chat_agent_run_delivered_sources", &[]),
+        device("chat_agent_run_usage", &[]),
         device(
             "chat_agent_runs",
             &[
@@ -1906,6 +1907,8 @@ pub const DOMAIN: DomainManifest = DomainManifest {
                 gated("chat_agent_run_authorization_target_insert"),
                 gated("chat_agent_run_execution_target_insert"),
                 applier_visible("chat_agent_run_id_immutable"),
+                gated("chat_agent_run_usage_working_insert"),
+                gated("chat_agent_run_usage_working_update"),
             ],
         ),
         device(

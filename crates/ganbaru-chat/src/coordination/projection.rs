@@ -11,6 +11,7 @@ use super::super::models::{
 use super::reports::{
     TeammateUpdate, insert_teammate_update, run_asked_host_question, run_result_report,
 };
+use crate::usage_counters::record_run_usage;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, Sqlite, Transaction};
@@ -87,6 +88,23 @@ pub async fn project_provider_event_in_transaction(
         reply_thread_id: &reply_thread_id,
         teammate_id: &teammate_id,
     };
+    // Usage folds before any exit of the event arms, so a turn that settles only its run, or
+    // that finds its assignment already settled, still counts what it spent.
+    let usage = match &runtime.event {
+        CanonicalEvent::ThreadUsageUpdated(usage) => Some(usage),
+        CanonicalEvent::TurnCompleted(completed) => completed.usage.as_ref(),
+        _ => None,
+    };
+    if let Some(usage) = usage {
+        record_run_usage(
+            transaction,
+            &run_id,
+            runtime.thread_id.as_str(),
+            usage,
+            runtime.created_at.as_str(),
+        )
+        .await?;
+    }
     let projected = match &runtime.event {
         CanonicalEvent::PlanUpdated(event) => {
             insert_projected_teammate_message(

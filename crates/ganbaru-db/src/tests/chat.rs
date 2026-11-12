@@ -197,6 +197,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_assignment_context_sources",
             "chat_agent_runs",
             "chat_agent_run_delivered_sources",
+            "chat_agent_run_usage",
             "chat_secret_requests",
             "chat_agent_run_attempt_immutable",
             "chat_assignment_dispatch_jobs",
@@ -1797,6 +1798,65 @@ fn delivered_sources_follow_their_run_and_accept_only_known_kinds() {
             .unwrap();
         let remaining: i64 =
             sqlx::query_scalar("SELECT count(*) FROM chat_agent_run_delivered_sources")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, 0);
+    });
+}
+
+#[test]
+fn run_usage_schema_starts_with_the_run_checks_counts_and_follows_its_run() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let (counted, since): (i64, Option<String>) = sqlx::query_as(
+            "SELECT counted_tokens, working_since FROM chat_agent_run_usage
+             WHERE run_id = 'run-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(counted, 0);
+        assert_eq!(since.as_deref(), Some("2026-10-23T00:00:00.000Z"));
+
+        for invalid in [
+            "UPDATE chat_agent_run_usage SET input_tokens = 5 WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET input_tokens = -1, counted_tokens = -1
+             WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET cost_amount = 0.5 WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET cost_amount = 0.5, cost_currency = ''
+             WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET thread_input_tokens_last = 3 WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET scope_unknown_logged = 2 WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET working_seconds = -1 WHERE run_id = 'run-1'",
+        ] {
+            assert!(
+                sqlx::query(AssertSqlSafe(invalid))
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{invalid}"
+            );
+        }
+        sqlx::query(
+            "UPDATE chat_agent_run_usage
+             SET input_tokens = 10, cached_input_tokens = 90, cache_write_input_tokens = 2,
+                 output_tokens = 5, counted_tokens = 17, cost_amount = 0.5, cost_currency = 'USD',
+                 thread_input_tokens_last = 10, thread_cached_input_tokens_last = 90,
+                 thread_cache_write_input_tokens_last = 2, thread_output_tokens_last = 5
+             WHERE run_id = 'run-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("DELETE FROM chat_agent_runs WHERE id = 'run-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_agent_run_usage WHERE run_id = 'run-1'")
                 .fetch_one(&pool)
                 .await
                 .unwrap();

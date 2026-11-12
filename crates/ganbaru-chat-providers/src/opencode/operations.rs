@@ -2,7 +2,7 @@
 
 use super::cli::{OPENCODE_COMPATIBILITY, OpenCodeVersion};
 use super::driver::*;
-use super::permissions::permission_reply;
+use super::permissions::{MAX_OPENCODE_SESSION_RULES, permission_reply};
 use super::protocol::parse_rollback_cursor;
 use super::support::*;
 use crate::events::*;
@@ -421,24 +421,56 @@ impl ProviderDriver for OpenCodeProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             let live = self.live_mut(&request.session_id)?;
-            if !live
-                .route
-                .lock()
-                .map_err(|_| driver_state_error())?
-                .has_permission(&request.provider_request_id)
-            {
-                return Err(ChatError::new(
-                    ChatErrorCode::Conflict,
-                    "OpenCode approval is no longer pending in this session",
-                    false,
-                ));
-            }
-            live.client
+            let session_rules = {
+                let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                if !state.has_permission(&request.provider_request_id) {
+                    return Err(ChatError::new(
+                        ChatErrorCode::Conflict,
+                        "OpenCode approval is no longer pending in this session",
+                        false,
+                    ));
+                }
+                let allow_session = request.decision.kind == ApprovalDecisionKind::AllowSession;
+                state.set_session_approval(&request.provider_request_id, allow_session);
+                allow_session.then(|| state.session_rules_for(&request.provider_request_id))
+            };
+            if let Err(error) = live
+                .client
                 .reply_permission(
                     request.provider_request_id.as_str(),
                     permission_reply(request.decision.kind),
                 )
-                .await?;
+                .await
+            {
+                if let Ok(mut state) = live.route.lock() {
+                    state.set_session_approval(&request.provider_request_id, false);
+                }
+                return Err(error);
+            }
+            if let Some(session_rules) = session_rules {
+                let warning = {
+                    let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                    let dropped = state.grant_session_rules(session_rules);
+                    (dropped > 0)
+                        .then(|| {
+                            live.normalizer.external_event(
+                                &state,
+                                "permission/session_rules",
+                                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                                    code: "opencode_session_rules_trimmed".to_string(),
+                                    title: "OpenCode forgot older session approvals".to_string(),
+                                    detail: Some(format!(
+                                        "Only the latest {MAX_OPENCODE_SESSION_RULES} session approvals are kept; older ones will ask again"
+                                    )),
+                                }),
+                            )
+                        })
+                        .transpose()?
+                };
+                if let Some(warning) = warning {
+                    live.sink.emit(warning).await?;
+                }
+            }
             Ok(operation_receipt(
                 request.command.client_command_id.as_str(),
                 "OpenCode approval response accepted",

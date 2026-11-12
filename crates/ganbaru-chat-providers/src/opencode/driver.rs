@@ -6,7 +6,7 @@ use super::event_stream::OpenCodeEventStream;
 use super::http_client::*;
 use super::local_server::OwnedOpenCodeServer;
 use super::normalizer::{OpenCodeEventNormalizer, OpenCodeRouteState};
-use super::permissions::permission_override;
+use super::permissions::{permission_override, permission_reply};
 use super::protocol::{OpenCodeCommand, parse_resume_cursor, resume_cursor};
 use super::support::*;
 use crate::events::*;
@@ -614,6 +614,10 @@ fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
                         .lock()
                         .map_err(|_| driver_state_error())
                         .and_then(|mut state| resources.normalizer.normalize(&mut state, envelope));
+                    let events = match events {
+                        Ok(events) => Ok(answer_from_session_rules(&resources, events).await),
+                        Err(error) => Err(error),
+                    };
                     if emit_events(&resources.sink, events).await.is_err() {
                         settle_event_failure(
                             &resources,
@@ -646,6 +650,45 @@ fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
             }
         }
     })
+}
+
+/// Sends the `once` reply for requests a session rule covered.
+///
+/// A request whose reply OpenCode refuses loses its resolution event and stays open for the user.
+async fn answer_from_session_rules(
+    resources: &EventPumpResources,
+    mut events: Vec<CanonicalRuntimeEvent>,
+) -> Vec<CanonicalRuntimeEvent> {
+    let answers = match resources.route.lock() {
+        Ok(mut state) => state.take_auto_answers(),
+        Err(_) => return events,
+    };
+    for request_id in answers {
+        let accepted = resources
+            .client
+            .reply_permission(
+                request_id.as_str(),
+                permission_reply(ApprovalDecisionKind::AllowOnce),
+            )
+            .await
+            .is_ok();
+        if let Ok(mut state) = resources.route.lock() {
+            if accepted {
+                state.complete_auto_answer(&request_id);
+            } else {
+                state.release_auto_answer(&request_id);
+            }
+        }
+        if !accepted {
+            events.retain(|event| {
+                !matches!(
+                    &event.event,
+                    CanonicalEvent::RequestResolved(resolved) if resolved.request_id == request_id
+                )
+            });
+        }
+    }
+    events
 }
 
 async fn reconcile_messages(resources: &EventPumpResources) -> ChatResult<()> {

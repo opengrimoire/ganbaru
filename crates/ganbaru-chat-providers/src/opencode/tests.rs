@@ -509,10 +509,7 @@ fn ask_rules_allow_workspace_edits_and_keep_broader_actions_reviewed() {
     );
     assert_eq!(permission_reply(ApprovalDecisionKind::AllowOnce), "once");
     assert_eq!(permission_override(SafetyMode::Custom), None);
-    assert_eq!(
-        permission_reply(ApprovalDecisionKind::AllowSession),
-        "always"
-    );
+    assert_eq!(permission_reply(ApprovalDecisionKind::AllowSession), "once");
     assert_eq!(permission_reply(ApprovalDecisionKind::Deny), "reject");
 }
 
@@ -1371,4 +1368,153 @@ fn opencode_reads_its_verified_configuration_paths() {
             "OpenCode never loads {never_read:?}"
         );
     }
+}
+
+fn session_rule(permission: &str, pattern: Option<&str>) -> OpenCodeSessionRule {
+    OpenCodeSessionRule {
+        permission: permission.to_string(),
+        pattern: pattern.map(str::to_string),
+    }
+}
+
+#[test]
+fn session_rule_wildcards_follow_opencode_matching() {
+    assert!(wildcard_matches("src/**", "src/lib/main.rs"));
+    assert!(wildcard_matches("*", "any/path with spaces"));
+    assert!(wildcard_matches("git status *", "git status --short"));
+    assert!(wildcard_matches("git status *", "git status"));
+    assert!(wildcard_matches("file?.txt", "file1.txt"));
+    assert!(!wildcard_matches("file?.txt", "file12.txt"));
+    assert!(!wildcard_matches("src/**", "tests/src/main.rs"));
+    assert!(!wildcard_matches("git status *", "git statusx"));
+    assert_eq!(wildcard_matches("SRC/*", "src/main.rs"), cfg!(windows));
+
+    let mut rules = OpenCodeSessionRules::default();
+    rules.grant([
+        session_rule("edit", Some("src/**")),
+        session_rule("webfetch", None),
+    ]);
+    assert!(rules.covers("edit", &["src/a.rs".to_string(), "src/b/c.rs".to_string()]));
+    assert!(
+        !rules.covers("edit", &["src/a.rs".to_string(), "docs/a.md".to_string()]),
+        "every requested pattern must be covered"
+    );
+    assert!(!rules.covers("bash", &["src/a.rs".to_string()]));
+    assert!(
+        !rules.covers("edit", &[]),
+        "a pattern rule never covers a request without patterns"
+    );
+    assert!(rules.covers("webfetch", &[]));
+    assert!(rules.covers("webfetch", &["https://example.com".to_string()]));
+}
+
+#[test]
+fn session_rules_drop_the_oldest_past_the_cap_and_ignore_duplicates() {
+    let mut rules = OpenCodeSessionRules::default();
+    let first = (0..MAX_OPENCODE_SESSION_RULES)
+        .map(|index| session_rule("edit", Some(&format!("dir{index}/**"))))
+        .collect::<Vec<_>>();
+    assert_eq!(rules.grant(first.clone()), 0);
+    assert_eq!(rules.grant(first), 0, "duplicates add nothing");
+    assert_eq!(rules.len(), MAX_OPENCODE_SESSION_RULES);
+    assert_eq!(
+        rules.grant([
+            session_rule("edit", Some("new0/**")),
+            session_rule("edit", Some("new1/**")),
+        ]),
+        2
+    );
+    assert_eq!(rules.len(), MAX_OPENCODE_SESSION_RULES);
+    assert!(!rules.covers("edit", &["dir0/a".to_string()]));
+    assert!(!rules.covers("edit", &["dir1/a".to_string()]));
+    assert!(rules.covers("edit", &["dir2/a".to_string()]));
+    assert!(rules.covers("edit", &["new1/a".to_string()]));
+}
+
+#[test]
+fn covered_permission_requests_open_and_resolve_and_drop_the_reply_echo() {
+    let normalizer = OpenCodeEventNormalizer::new(
+        ProviderInstanceId::new("opencode-instance").unwrap(),
+        ChatThreadId::new("thread-fixture").unwrap(),
+        ProviderSessionId::new("local-session-fixture").unwrap(),
+    );
+    let mut state = OpenCodeRouteState::new(
+        "ses_fixture".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    );
+    state.active_turn_id = Some(ChatTurnId::new("turn-fixture").unwrap());
+    let asked = |id: &str, pattern: &str| {
+        json!({
+            "type": "permission.asked",
+            "properties": {
+                "id": id,
+                "sessionID": "ses_fixture",
+                "permission": "edit",
+                "patterns": [pattern],
+                "always": ["src/**"],
+            }
+        })
+    };
+    let replied = |id: &str| {
+        json!({
+            "type": "permission.replied",
+            "properties": { "sessionID": "ses_fixture", "requestID": id, "reply": "once" }
+        })
+    };
+    let first = normalizer
+        .normalize(&mut state, asked("perm_first", "src/a.rs"))
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert!(state.take_auto_answers().is_empty());
+    let first_id = ProviderRequestId::new("perm_first").unwrap();
+    assert_eq!(
+        state.session_rules_for(&first_id),
+        vec![session_rule("edit", Some("src/**"))],
+        "allow for session keeps the patterns OpenCode offered for always"
+    );
+    state.set_session_approval(&first_id, true);
+    state.grant_session_rules(state.session_rules_for(&first_id));
+    let echo = normalizer
+        .normalize(&mut state, replied("perm_first"))
+        .unwrap();
+    assert!(matches!(
+        &echo[..],
+        [event] if matches!(&event.event, CanonicalEvent::RequestResolved(resolved)
+            if resolved.decision.as_ref().map(|decision| decision.kind)
+                == Some(ApprovalDecisionKind::AllowSession))
+    ));
+
+    let covered = normalizer
+        .normalize(&mut state, asked("perm_second", "src/b.rs"))
+        .unwrap();
+    assert!(matches!(
+        &covered[..],
+        [opened, resolved]
+            if matches!(opened.event, CanonicalEvent::RequestOpened(_))
+                && matches!(&resolved.event, CanonicalEvent::RequestResolved(resolved)
+                    if resolved.decision.as_ref().is_some_and(|decision| {
+                        decision.kind == ApprovalDecisionKind::AllowOnce
+                            && decision.provider_option_id.as_deref() == Some(SESSION_RULE_OPTION_ID)
+                    }))
+    ));
+    let second_id = ProviderRequestId::new("perm_second").unwrap();
+    assert_eq!(state.take_auto_answers(), vec![second_id.clone()]);
+    state.complete_auto_answer(&second_id);
+    assert!(!state.has_permission(&second_id));
+    assert!(
+        normalizer
+            .normalize(&mut state, replied("perm_second"))
+            .unwrap()
+            .is_empty(),
+        "the echo of an automatic answer is dropped"
+    );
+
+    let uncovered = normalizer
+        .normalize(&mut state, asked("perm_third", "docs/a.md"))
+        .unwrap();
+    assert_eq!(uncovered.len(), 1);
+    assert!(state.take_auto_answers().is_empty());
 }

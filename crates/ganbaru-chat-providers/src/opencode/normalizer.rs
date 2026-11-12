@@ -1,5 +1,6 @@
 //! OpenCode event normalization into provider-neutral Chat events.
 
+use super::permissions::{OpenCodeSessionRule, OpenCodeSessionRules};
 use super::protocol::{MAX_EVENT_DATA_BYTES, protocol_error, validate_identifier};
 use crate::events::*;
 use crate::models::*;
@@ -25,6 +26,8 @@ const MAX_OPTIONS: usize = 64;
 const MAX_SESSION_GRANT_PATTERNS: usize = 32;
 /// Longest "always" pattern the prompt shows as a session grant.
 const MAX_SESSION_GRANT_PATTERN_BYTES: usize = 4096;
+/// Provider option recorded on approvals the driver answered from a session rule.
+pub const SESSION_RULE_OPTION_ID: &str = "session_rule";
 
 #[derive(Clone, Debug)]
 pub struct OpenCodeRouteState {
@@ -36,10 +39,25 @@ pub struct OpenCodeRouteState {
     rollback_message_id: Option<String>,
     part_text: HashMap<String, String>,
     completed_parts: HashSet<String>,
-    pending_permissions: HashSet<String>,
+    pending_permissions: HashMap<String, OpenCodePendingPermission>,
+    session_rules: OpenCodeSessionRules,
+    /// Requests the driver answered from a session rule; their `permission.replied` echo is dropped.
+    auto_answered_permissions: HashSet<String>,
+    /// Requests a session rule covers that still need their `once` reply sent.
+    auto_answer_queue: Vec<ProviderRequestId>,
+    /// Requests the user allowed for the session; OpenCode echoes their reply as `once`.
+    session_approved_permissions: HashSet<String>,
     pending_questions: HashMap<String, Vec<OpenCodeQuestionMapping>>,
     deduplication_order: VecDeque<String>,
     deduplication_set: HashSet<String>,
+}
+
+/// A permission request still waiting for an answer.
+#[derive(Clone, Debug)]
+struct OpenCodePendingPermission {
+    permission: String,
+    patterns: Vec<String>,
+    always: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -60,7 +78,11 @@ impl OpenCodeRouteState {
             rollback_message_id: None,
             part_text: HashMap::new(),
             completed_parts: HashSet::new(),
-            pending_permissions: HashSet::new(),
+            pending_permissions: HashMap::new(),
+            session_rules: OpenCodeSessionRules::default(),
+            auto_answered_permissions: HashSet::new(),
+            auto_answer_queue: Vec::new(),
+            session_approved_permissions: HashSet::new(),
             pending_questions: HashMap::new(),
             deduplication_order: VecDeque::new(),
             deduplication_set: HashSet::new(),
@@ -68,7 +90,67 @@ impl OpenCodeRouteState {
     }
 
     pub fn has_permission(&self, request_id: &ProviderRequestId) -> bool {
-        self.pending_permissions.contains(request_id.as_str())
+        self.pending_permissions.contains_key(request_id.as_str())
+    }
+
+    /// Session rules an allow-for-session answer to a pending request would grant.
+    ///
+    /// The rules follow the patterns OpenCode offered for `always`, then the requested patterns,
+    /// then the bare permission.
+    pub fn session_rules_for(&self, request_id: &ProviderRequestId) -> Vec<OpenCodeSessionRule> {
+        let Some(pending) = self.pending_permissions.get(request_id.as_str()) else {
+            return Vec::new();
+        };
+        let patterns = if pending.always.is_empty() {
+            &pending.patterns
+        } else {
+            &pending.always
+        };
+        if patterns.is_empty() {
+            return vec![OpenCodeSessionRule {
+                permission: pending.permission.clone(),
+                pattern: None,
+            }];
+        }
+        patterns
+            .iter()
+            .map(|pattern| OpenCodeSessionRule {
+                permission: pending.permission.clone(),
+                pattern: Some(pattern.clone()),
+            })
+            .collect()
+    }
+
+    /// Marks a pending request as allowed for the session, or clears the mark when the reply
+    /// failed, so the reply echo keeps the session decision.
+    pub fn set_session_approval(&mut self, request_id: &ProviderRequestId, approved: bool) {
+        if approved {
+            self.session_approved_permissions
+                .insert(request_id.as_str().to_string());
+        } else {
+            self.session_approved_permissions
+                .remove(request_id.as_str());
+        }
+    }
+
+    /// Remembers session approvals and returns how many older rules were dropped.
+    pub fn grant_session_rules(&mut self, rules: Vec<OpenCodeSessionRule>) -> usize {
+        self.session_rules.grant(rules)
+    }
+
+    /// Requests a session rule answered during the last normalization, in arrival order.
+    pub fn take_auto_answers(&mut self) -> Vec<ProviderRequestId> {
+        std::mem::take(&mut self.auto_answer_queue)
+    }
+
+    /// Returns an automatically answered request to the user after its reply failed.
+    pub fn release_auto_answer(&mut self, request_id: &ProviderRequestId) {
+        self.auto_answered_permissions.remove(request_id.as_str());
+    }
+
+    /// Forgets a request answered from a session rule once OpenCode accepted the reply.
+    pub fn complete_auto_answer(&mut self, request_id: &ProviderRequestId) {
+        self.pending_permissions.remove(request_id.as_str());
     }
 
     pub fn question_answers(

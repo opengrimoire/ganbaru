@@ -538,6 +538,8 @@ mod tests {
             runtime_approval_policy: ChatRuntimeApprovalPolicy::AutoApprove,
             channel_sources: Vec::new(),
             folder_sources: Vec::new(),
+            delegation_depth: 0,
+            delegation_target_available: false,
         };
         let source = InternalMcpFolderSource {
             root_handle: format!("{:032}", 3),

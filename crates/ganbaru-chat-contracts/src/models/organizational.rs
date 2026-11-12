@@ -988,6 +988,9 @@ pub struct ChatWorkAssignmentRead {
     pub previous_assignment_id: Option<ChatWorkAssignmentId>,
     pub state: ChatWorkAssignmentState,
     pub state_reason: Option<String>,
+    /// Where this work came from when another teammate delegated it; absent for work a person
+    /// started.
+    pub delegation: Option<ChatAssignmentDelegationRead>,
     pub revision: u64,
     pub settled_at: Option<UtcTimestamp>,
     pub created_at: UtcTimestamp,
@@ -1021,6 +1024,33 @@ pub struct ChatAssignmentAcceptanceOfferRead {
     pub provider_instance_id: String,
     pub folders: Vec<ChatAssignmentAcceptanceFolderRead>,
     pub scratch_runtime_approval: ChatRuntimeApprovalPolicy,
+}
+
+/// Where delegated work came from and what it was asked to return.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentDelegationRead {
+    pub parent_assignment_id: ChatWorkAssignmentId,
+    /// Reply thread of the parent work, absent while the parent row has not reached this device.
+    pub parent_reply_thread_id: Option<ChatReplyThreadId>,
+    /// How many delegations separate this work from work a person started, from 1.
+    pub depth: u8,
+    pub objective: String,
+    pub expected_result: String,
+}
+
+/// Work a teammate delegated from an assignment, with its live state.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatDelegatedChildRead {
+    pub assignment_id: ChatWorkAssignmentId,
+    pub parent_assignment_id: ChatWorkAssignmentId,
+    pub reply_thread_id: ChatReplyThreadId,
+    pub teammate: ChatParticipantRead,
+    pub objective: String,
+    pub state: ChatWorkAssignmentState,
+    pub state_reason: Option<String>,
+    pub created_at: UtcTimestamp,
 }
 
 /// Work that waits for a local action on the reading device, wherever its reply thread is.
@@ -1097,6 +1127,8 @@ pub struct ChatReplyThreadPageRead {
     pub replies: Vec<ChatMessageRead>,
     pub assignment: Option<ChatWorkAssignmentRead>,
     pub agent_runs: Vec<ChatAgentRunRead>,
+    /// Work delegated from this reply thread's assignments, oldest first, with its live state.
+    pub delegated_children: Vec<ChatDelegatedChildRead>,
     pub previous_cursor: Option<String>,
     pub revision: u64,
 }

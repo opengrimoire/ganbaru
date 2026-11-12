@@ -522,6 +522,12 @@ pub async fn settle_launch(
             now,
         )
         .await?;
+        crate::coordination::delegation::post_delegation_outcome(
+            &mut transaction,
+            binding.assignment_id.as_str(),
+            now.as_str(),
+        )
+        .await?;
     }
     transaction.commit().await.map_err(persistence_error)?;
     Ok(settlement)

@@ -49,6 +49,8 @@ pub(crate) mod revocation;
 #[cfg(desktop)]
 pub(crate) mod scratch;
 #[cfg(desktop)]
+pub mod secrets;
+#[cfg(desktop)]
 pub(crate) mod send;
 #[cfg(desktop)]
 pub mod send_commands;

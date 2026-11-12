@@ -193,6 +193,7 @@ fn an_organizational_claude_session_launches_with_the_locked_down_arguments() {
         url: "http://127.0.0.1:41234/mcp".to_string(),
         bearer_token: "replay-token".to_string(),
         organizational_authority: true,
+        pre_approved_tools: Vec::new(),
     });
     let mut driver = driver(configuration);
     let snapshot = block_on(async {

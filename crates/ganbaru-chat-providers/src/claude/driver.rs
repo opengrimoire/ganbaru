@@ -225,6 +225,7 @@ impl ClaudeProviderDriver {
                 organizational: server.filter(|server| server.organizational_authority).map(
                     |server| ClaudeOrganizationalLaunch {
                         internal_server_name: &server.name,
+                        pre_approved_tools: &server.pre_approved_tools,
                     },
                 ),
                 cli_version: Some(version),

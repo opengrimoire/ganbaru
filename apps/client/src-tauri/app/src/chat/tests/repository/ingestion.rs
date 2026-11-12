@@ -473,3 +473,127 @@ fn idle_flush_ticker_stores_a_held_delta_and_stops_with_the_ingestor() {
             .unwrap();
     });
 }
+
+struct FixedSecrets(Vec<Arc<RegisteredSecret>>);
+
+impl SecretRedactor for FixedSecrets {
+    fn registered(&self, thread_id: &ChatThreadId) -> Vec<Arc<RegisteredSecret>> {
+        if thread_id.as_str() == "thread-1" {
+            self.0.clone()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+const PROVIDED_SECRET: &str = "pk-live-7f3a9c";
+
+fn secret_ingestor(pool: &sqlx::SqlitePool) -> ChatEventIngestor {
+    let secret = RegisteredSecret::new(
+        "API key",
+        ganbaru_chat::credentials::SecretValue::new(PROVIDED_SECRET).unwrap(),
+    );
+    ChatEventIngestor::new(pool.clone(), Arc::new(RecordingEmitter::default()))
+        .with_secret_redactor(Arc::new(FixedSecrets(vec![Arc::new(secret)])))
+}
+
+async fn assistant_text(pool: &sqlx::SqlitePool) -> String {
+    sqlx::query_scalar(
+        "SELECT normalized_markdown FROM chat_messages WHERE id = 'assistant-message-1'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn ingestion_redacts_a_provided_secret_split_across_deltas() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let mut ingestor = secret_ingestor(&pool);
+        for (index, piece) in ["The key is pk-", "live-", "7f3a9c, keep it safe"]
+            .iter()
+            .enumerate()
+        {
+            ingestor
+                .ingest(content_event(&format!("event-split-{index}"), piece))
+                .await
+                .unwrap();
+            ingestor.flush().await.unwrap();
+        }
+        ingestor.flush().await.unwrap();
+        assert_eq!(
+            assistant_text(&pool).await,
+            "The key is pk-live-7f3a9c, keep it safe".replace(PROVIDED_SECRET, "[secret: API key]")
+        );
+        assert!(!stored_text(&pool).await.contains(PROVIDED_SECRET));
+    });
+}
+
+#[test]
+fn ingestion_keeps_a_held_secret_prefix_that_never_completes() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let mut ingestor = secret_ingestor(&pool);
+        ingestor
+            .ingest(content_event("event-prefix-1", "Values start with pk-li"))
+            .await
+            .unwrap();
+        ingestor.flush().await.unwrap();
+        assert_eq!(assistant_text(&pool).await, "Values start with ");
+        ingestor
+            .ingest(content_event("event-prefix-2", "pk-"))
+            .await
+            .unwrap();
+        ingestor
+            .ingest(canonical_request(
+                "event-prefix-complete",
+                None,
+                CanonicalEvent::ItemCompleted(ItemLifecycleEvent {
+                    item_id: "assistant-message-1".to_string(),
+                    kind: CanonicalItemKind::AssistantMessage,
+                    status: ActivityStatus::Completed,
+                    title: None,
+                    detail: None,
+                    safe_metadata: None,
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(assistant_text(&pool).await, "Values start with pk-lipk-");
+    });
+}
+
+#[test]
+fn ingestion_redacts_a_provided_secret_in_every_provider_field() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let mut ingestor = secret_ingestor(&pool);
+        let mut request = canonical_request(
+            "event-fields",
+            None,
+            CanonicalEvent::ItemCompleted(ItemLifecycleEvent {
+                item_id: "command-1".to_string(),
+                kind: CanonicalItemKind::CommandExecution,
+                status: ActivityStatus::Completed,
+                title: Some(format!("curl -H 'Authorization: {PROVIDED_SECRET}'")),
+                detail: Some(format!("sent {PROVIDED_SECRET}")),
+                safe_metadata: None,
+            }),
+        );
+        request.runtime.provider_reference = Some(VersionedJson {
+            schema_version: 1,
+            value: serde_json::json!({ "argv": ["curl", PROVIDED_SECRET] }),
+        });
+        request.runtime.redacted_diagnostic = Some(VersionedJson {
+            schema_version: 1,
+            value: serde_json::json!({ "detail": format!("echo {PROVIDED_SECRET}") }),
+        });
+        request.diagnostic_expires_at = Some(UtcTimestamp::new("2026-07-21T12:00:00Z").unwrap());
+        ingestor.ingest(request).await.unwrap();
+        ingestor.flush().await.unwrap();
+        let stored = stored_text(&pool).await;
+        assert!(stored.contains("[secret: API key]"));
+        assert!(!stored.contains(PROVIDED_SECRET));
+    });
+}

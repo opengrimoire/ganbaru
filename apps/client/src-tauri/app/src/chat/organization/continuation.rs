@@ -1,9 +1,10 @@
 //! Continuation keys, session transitions, and teammate framing of assignment runs.
 //!
-//! A native provider session is reused only for a later assignment of the same reply thread
-//! whose continuation key is unchanged; any other case starts a new session with the full
-//! context package and records why. A reused session receives a delta of that package: only
-//! the sources it has not already received.
+//! A native provider session is reused only for a later assignment of the same reply thread, or
+//! for the next run of an assignment whose run completed after asking a question, whose
+//! continuation key is unchanged; any other case starts a new session with the full context
+//! package and records why. A reused session receives a delta of that package: only the sources
+//! it has not already received.
 
 use super::common::{MAX_MESSAGE_BYTES, sha256_hex, truncate_utf8};
 use super::context::SHORTENED_MARKER;
@@ -94,8 +95,8 @@ pub(super) struct CandidateRun<'a> {
 #[derive(Debug)]
 pub(super) struct TransitionInput<'a> {
     pub(super) key: &'a ContinuationKey,
-    /// Whether the assignment already has a run, so this run retries it.
-    pub(super) earlier_run_of_assignment: bool,
+    /// Whether the assignment already has a run that did not complete, so this run retries it.
+    pub(super) unfinished_earlier_run: bool,
     pub(super) candidate: Option<CandidateRun<'a>>,
     /// Whether the provider reported that the session this run tried to continue is gone.
     pub(super) native_session_lost: bool,
@@ -122,8 +123,9 @@ impl SessionDecision {
 /// also the precedence of the recorded attempt reason:
 ///
 /// 1. A lost native session hands off to a new session.
-/// 2. A second run of one assignment retries in a new session, because a failed or cancelled
-///    run may have left native state half applied.
+/// 2. A run after an earlier run of the assignment that did not complete retries in a new
+///    session, because a failed or cancelled run may have left native state half applied. A
+///    run after a completed run that asked a question continues like a later assignment.
 /// 3. Without a candidate the run starts fresh.
 /// 4. A candidate whose authorization is no longer valid hands off.
 /// 5. A candidate whose key is missing or differs hands off.
@@ -134,7 +136,7 @@ pub(super) fn decide_session_transition(input: &TransitionInput<'_>) -> SessionD
             HandoffReason::NativeSessionLost,
         ));
     }
-    if input.earlier_run_of_assignment {
+    if input.unfinished_earlier_run {
         return SessionDecision::new_session(AttemptReason::Retry);
     }
     let Some(candidate) = input.candidate.as_ref() else {
@@ -344,6 +346,26 @@ pub(super) fn select_delta(
     }))
 }
 
+/// The delta a run sends when it continues the session of its own completed run that asked a
+/// question: the continuation header, counting the `omitted_delivered` package sources that
+/// session received, then the `answers` records. Returns `None` when it does not fit
+/// `MAX_MESSAGE_BYTES`, so the run sends the full package instead.
+pub(super) fn answer_delta(
+    assignment_id: &ChatWorkAssignmentId,
+    omitted_delivered: u64,
+    answers: &str,
+    sources: Vec<DeliveredSource>,
+) -> ChatResult<Option<DeltaPackage>> {
+    let header = continuation_header_line(assignment_id, omitted_delivered)?;
+    if header.len() + answers.len() > MAX_MESSAGE_BYTES {
+        return Ok(None);
+    }
+    Ok(Some(DeltaPackage {
+        text: format!("{header}{answers}"),
+        sources,
+    }))
+}
+
 fn continuation_header_line(
     assignment_id: &ChatWorkAssignmentId,
     omitted_delivered: u64,
@@ -506,13 +528,13 @@ mod tests {
     }
 
     fn decide(
-        earlier_run_of_assignment: bool,
+        unfinished_earlier_run: bool,
         candidate: Option<CandidateRun<'_>>,
         native_session_lost: bool,
     ) -> SessionDecision {
         decide_session_transition(&TransitionInput {
             key: &key(),
-            earlier_run_of_assignment,
+            unfinished_earlier_run,
             candidate,
             native_session_lost,
         })
@@ -887,7 +909,8 @@ mod tests {
                 &[("item:steer", steer_text)],
                 0,
             );
-            let steered = follow_up_context_line("item:steer", 1, steer_text.to_string()).unwrap();
+            let steered =
+                follow_up_context_line("item:steer", 1, steer_text.to_string(), false).unwrap();
             let history = SessionHistory {
                 delivered: HashSet::from([
                     ("item:steer".to_string(), steered.content_sha256),

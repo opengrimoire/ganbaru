@@ -176,6 +176,7 @@ const page: ChatReplyThreadPageRead = {
   replies: [message("reply:test", agentParticipant, "Projected answer", 1)],
   assignment: null,
   agentRuns: [run],
+  delegatedChildren: [],
   previousCursor: null,
   revision: 1,
 };
@@ -192,6 +193,7 @@ describe("ChatReplyThreadPanel", () => {
 
   beforeEach(() => {
     vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+    vi.spyOn(chatApi, "listChatSecretRequests").mockResolvedValue([]);
     vi.stubGlobal("CSS", { escape: (value: string) => value });
     vi.stubGlobal("matchMedia", vi.fn(() => ({
       matches: false,
@@ -447,5 +449,94 @@ describe("ChatReplyThreadPanel", () => {
       expect(target?.querySelector('button[aria-label="Inspect private scratch"]')).not.toBeNull();
       expect(target?.textContent).toContain("Scratch result");
     });
+  });
+
+  it("shows delegated work and where it came from, and fills the composer from a suggested answer", async () => {
+    const assignment = {
+      id: "assignment:test",
+      replyThreadId: page.thread.id,
+      teammate: agentParticipant,
+      triggeringMessageItemId: "root:test",
+      previousAssignmentId: null,
+      state: "waiting_for_answer",
+      stateReason: null,
+      revision: 2,
+      settledAt: null,
+      createdAt: "2026-08-04T17:00:00.000Z",
+      updatedAt: "2026-08-04T17:01:00.000Z",
+      review: null,
+      localAcceptance: null,
+      latestRunProviderThreadId: null,
+      delegation: {
+        parentAssignmentId: "assignment:parent",
+        parentReplyThreadId: "reply-thread:parent",
+        depth: 1,
+        objective: "Check the build",
+        expectedResult: "A short report",
+      },
+    } satisfies ChatReplyThreadPageRead["assignment"];
+    const question = {
+      ...message("question:test", agentParticipant, "Which branch?", 1),
+      richContent: {
+        schemaVersion: 1,
+        value: {
+          type: "agent_update",
+          updateKind: "question",
+          assignmentId: assignment.id,
+          agentRunId: "run:test",
+          payload: { question: "Which branch?", choices: ["main", "dev"], source: "host_tool" },
+        },
+      },
+    };
+    const delegatedPage: ChatReplyThreadPageRead = {
+      ...page,
+      replies: [question],
+      assignment,
+      agentRuns: [],
+      delegatedChildren: [{
+        assignmentId: "assignment:child",
+        parentAssignmentId: assignment.id,
+        replyThreadId: "reply-thread:child",
+        teammate: agentParticipant,
+        objective: "Run the tests",
+        state: "working",
+        stateReason: null,
+        createdAt: "2026-08-04T17:02:00.000Z",
+      }],
+    };
+    chat.openReplyThreadId = delegatedPage.thread.id;
+    chat.replyThread = delegatedPage;
+    chat.replyThreadPages = [delegatedPage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    const openReplyThread = vi.spyOn(chat, "openReplyThread").mockResolvedValue();
+    const setDraft = vi.spyOn(chat, "setOrganizationalDraft");
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+    await tick();
+
+    const origin = target.querySelector<HTMLElement>("[data-delegation-origin]");
+    expect(origin?.textContent).toContain("Check the build");
+    expect(origin?.textContent).toContain("A short report");
+    origin?.querySelector("button")?.click();
+    expect(openReplyThread).toHaveBeenCalledWith("reply-thread:parent");
+
+    const child = target.querySelector<HTMLElement>('[data-delegated-child="assignment:child"]');
+    expect(child?.textContent).toContain("Run the tests");
+    expect(child?.textContent).toContain("Working");
+    child?.querySelector("button")?.click();
+    expect(openReplyThread).toHaveBeenCalledWith("reply-thread:child");
+
+    target.querySelectorAll<HTMLButtonElement>("[data-answer-choices] button")[1]?.click();
+    expect(setDraft).toHaveBeenCalledWith(`reply-thread:${delegatedPage.thread.id}`, expect.objectContaining({
+      normalizedMarkdown: "dev",
+      selectionStart: 3,
+      selectionEnd: 3,
+    }));
   });
 });

@@ -32,6 +32,7 @@ fn options(modes: TurnModeSnapshot, organizational: bool) -> ClaudeLaunchOptions
         internal_mcp: Some(internal_server()),
         organizational: organizational.then_some(ClaudeOrganizationalLaunch {
             internal_server_name: SERVER_NAME,
+            pre_approved_tools: &[],
         }),
         system_prompt: None,
         cli_version: None,
@@ -42,7 +43,7 @@ fn ask(interaction_mode: InteractionMode) -> TurnModeSnapshot {
     modes(SafetyMode::AskForApproval, interaction_mode)
 }
 
-fn launch(configured: &[&str], options: ClaudeLaunchOptions<'static>) -> ChatResult<Vec<String>> {
+fn launch(configured: &[&str], options: ClaudeLaunchOptions<'_>) -> ChatResult<Vec<String>> {
     let configured = configured
         .iter()
         .map(|argument| argument.to_string())
@@ -132,7 +133,11 @@ fn direct_launch_keeps_accept_edits() {
     assert!(!direct.iter().any(|argument| {
         matches!(
             argument.as_str(),
-            "--restricted" | "--strict-mcp-config" | "--tools" | "--disallowed-tools"
+            "--restricted"
+                | "--strict-mcp-config"
+                | "--allowedTools"
+                | "--tools"
+                | "--disallowed-tools"
         )
     }));
 }
@@ -143,6 +148,10 @@ fn organizational_launch_refuses_every_configured_argument() {
         vec!["--verbose"],
         vec!["--fallback-model", "sonnet"],
         vec!["--tools", "default"],
+        vec![
+            "--allowedTools",
+            "mcp__ganbaru-chat__chat_delete_workspace_file",
+        ],
         vec!["--debug"],
         vec!["prompt text"],
     ] {
@@ -238,11 +247,68 @@ fn organizational_launch_requires_the_matching_internal_server() {
     let mut renamed = options(ask(InteractionMode::Build), true);
     renamed.organizational = Some(ClaudeOrganizationalLaunch {
         internal_server_name: "other-server",
+        pre_approved_tools: &[],
     });
     assert_eq!(
         launch(&[], renamed).unwrap_err().code,
         ChatErrorCode::Permission
     );
+}
+
+fn pre_approving(tools: &[String]) -> ClaudeLaunchOptions<'_> {
+    let mut options = options(ask(InteractionMode::Build), true);
+    options.organizational = Some(ClaudeOrganizationalLaunch {
+        internal_server_name: SERVER_NAME,
+        pre_approved_tools: tools,
+    });
+    options
+}
+
+#[test]
+fn organizational_launch_pre_approves_only_the_listed_internal_tools() {
+    let tools = [
+        "mcp__ganbaru-chat__chat_read_workspace_file".to_string(),
+        "mcp__ganbaru-chat__chat_report".to_string(),
+    ];
+    let arguments = launch(&[], pre_approving(&tools)).unwrap();
+    let allowed = arguments
+        .iter()
+        .position(|argument| argument == "--allowedTools")
+        .expect("organizational launches pass the pre-approved tools");
+    assert_eq!(
+        arguments[allowed + 1],
+        "mcp__ganbaru-chat__chat_read_workspace_file,mcp__ganbaru-chat__chat_report"
+    );
+    assert_eq!(
+        arguments[allowed + 2],
+        "--tools",
+        "the variadic list ends at the built-in tool allowlist: {arguments:?}"
+    );
+    assert_eq!(
+        arguments
+            .iter()
+            .filter(|argument| *argument == "--allowedTools")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn organizational_launch_refuses_pre_approving_anything_but_internal_tools() {
+    for tool in [
+        "Bash",
+        "mcp__other-server__chat_read_workspace_file",
+        "mcp__ganbaru-chat__",
+        "mcp__ganbaru-chat__chat_read_workspace_file,Bash",
+        "mcp__ganbaru-chat__chat read",
+    ] {
+        let tools = [
+            "mcp__ganbaru-chat__chat_report".to_string(),
+            tool.to_string(),
+        ];
+        let error = launch(&[], pre_approving(&tools)).unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Permission, "{tool}");
+    }
 }
 
 #[test]

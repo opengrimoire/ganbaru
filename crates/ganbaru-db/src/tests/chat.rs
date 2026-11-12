@@ -197,6 +197,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_assignment_context_sources",
             "chat_agent_runs",
             "chat_agent_run_delivered_sources",
+            "chat_secret_requests",
             "chat_agent_run_attempt_immutable",
             "chat_assignment_dispatch_jobs",
             "chat_assignment_requested_targets",
@@ -243,6 +244,8 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_teammate_channel_memberships_teammate",
             "idx_chat_assignment_authorization_revisions_active",
             "idx_chat_host_tool_invocations_authorization",
+            "idx_chat_secret_requests_run",
+            "idx_chat_secret_requests_assignment",
             "idx_chat_preview_tool_invocations_turn",
             "idx_chat_scratch_generations_active",
             "idx_chat_scratch_promotions_generation",
@@ -1422,6 +1425,140 @@ fn assignment_review_columns_accept_only_known_outcomes_and_full_timestamps() {
 }
 
 #[test]
+fn delegated_assignments_sit_one_level_below_a_bounded_parent() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let ceiling = r#"[{"workingFolderId":"folder-managed","capability":"read"}]"#;
+        let delegate = |id: &str,
+                        parent: Option<&str>,
+                        depth: i64,
+                        objective: Option<String>,
+                        ceiling: Option<&str>| {
+            sqlx::query(
+                "INSERT INTO chat_work_assignments
+                     (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+                      parent_assignment_id, delegation_depth, delegation_objective,
+                      delegation_expected_result, delegation_folder_ceiling, created_at,
+                      updated_at)
+                 VALUES (?, 'reply-thread', 'participant-teammate', 'item-root', 'queued',
+                         ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(id.to_owned())
+            .bind(parent.map(str::to_owned))
+            .bind(depth)
+            .bind(objective)
+            .bind(parent.map(|_| "A short report".to_owned()))
+            .bind(ceiling.map(str::to_owned))
+            .bind(NOW)
+            .bind(NOW)
+            .execute(&pool)
+        };
+        let objective = || Some("Read the logs".to_owned());
+
+        let stored: (Option<String>, i64) = sqlx::query_as(
+            "SELECT parent_assignment_id, delegation_depth
+             FROM chat_work_assignments WHERE id = 'assignment-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, (None, 0), "undelegated work defaults to depth 0");
+
+        assert!(
+            delegate("skip", Some("assignment-1"), 2, objective(), Some(ceiling))
+                .await
+                .is_err(),
+            "a child sits exactly one level below its parent"
+        );
+        assert!(
+            delegate("orphan-fields", None, 0, objective(), None)
+                .await
+                .is_err(),
+            "undelegated work carries no delegation fields"
+        );
+        assert!(
+            delegate("partial", Some("assignment-1"), 1, None, Some(ceiling))
+                .await
+                .is_err(),
+            "delegation fields are all set together"
+        );
+        assert!(
+            delegate("self", Some("self"), 1, objective(), Some(ceiling))
+                .await
+                .is_err(),
+            "an assignment is never its own parent"
+        );
+        assert!(
+            delegate("missing", Some("absent"), 1, objective(), Some(ceiling))
+                .await
+                .is_err(),
+            "the parent must exist"
+        );
+        for invalid in ["{}", "not json"] {
+            assert!(
+                delegate(
+                    "ceiling",
+                    Some("assignment-1"),
+                    1,
+                    objective(),
+                    Some(invalid)
+                )
+                .await
+                .is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(
+            delegate(
+                "long",
+                Some("assignment-1"),
+                1,
+                Some("o".repeat(4001)),
+                Some(ceiling)
+            )
+            .await
+            .is_err()
+        );
+
+        delegate("child", Some("assignment-1"), 1, objective(), Some(ceiling))
+            .await
+            .unwrap();
+        delegate("grandchild", Some("child"), 2, objective(), Some("[]"))
+            .await
+            .unwrap();
+        assert!(
+            delegate("too-deep", Some("grandchild"), 3, objective(), Some("[]"))
+                .await
+                .is_err(),
+            "delegation stops at depth 2"
+        );
+        assert!(
+            sqlx::query(
+                "UPDATE chat_work_assignments SET delegation_objective = 'Other'
+                 WHERE id = 'child'"
+            )
+            .execute(&pool)
+            .await
+            .is_err(),
+            "delegation fields are fixed at creation"
+        );
+
+        sqlx::query("DELETE FROM chat_work_assignments WHERE id = 'assignment-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_work_assignments WHERE id IN ('child', 'grandchild')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0, "children are deleted with their parent");
+    });
+}
+
+#[test]
 fn assignment_model_override_schema_keeps_version_and_selection_together() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
@@ -1463,6 +1600,52 @@ fn assignment_model_override_schema_keeps_version_and_selection_together() {
                 .await
                 .is_err()
         );
+    });
+}
+
+#[test]
+fn semantic_updates_accept_the_delegation_and_proposal_kinds() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let insert = |item: &str, kind: &str, order_key: &str| {
+            let item = item.to_owned();
+            let order_key = order_key.to_owned();
+            let kind = kind.to_owned();
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO chat_conversation_items
+                         (id, conversation_id, item_kind, order_key, created_at)
+                     VALUES (?, 'conversation-general', 'work_update', ?, ?)",
+                )
+                .bind(item.clone())
+                .bind(order_key)
+                .bind(NOW)
+                .execute(&pool)
+                .await
+                .unwrap();
+                sqlx::query(
+                    "INSERT INTO chat_work_semantic_updates
+                         (item_id, assignment_id, update_kind, payload_data, created_at)
+                     VALUES (?, 'assignment-1', ?, '{}', ?)",
+                )
+                .bind(item)
+                .bind(kind)
+                .bind(NOW)
+                .execute(&pool)
+                .await
+            }
+        };
+        for (index, kind) in ["review", "delegation", "schedule_proposal", "note_proposal"]
+            .into_iter()
+            .enumerate()
+        {
+            insert(&format!("item-{kind}"), kind, &format!("c10{index}"))
+                .await
+                .unwrap();
+        }
+        assert!(insert("item-summary", "summary", "c109").await.is_err());
     });
 }
 
@@ -1903,5 +2086,62 @@ fn stored_relative_paths_reject_any_backslash_and_trailing_parent_segments() {
         .await
         .unwrap_err();
         assert!(error.to_string().contains(shape_error), "{error}");
+    });
+}
+
+#[test]
+fn host_tool_invocations_record_only_known_tool_classes() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let request_hash = "a".repeat(64);
+        let record = |id: &str, tool_class: &str| {
+            sqlx::query(
+                "INSERT INTO chat_host_tool_invocations
+                    (id, authorization_revision_id, tool_name, tool_class, request_hash,
+                     decision_state, created_at)
+                 VALUES (?, 'authorization-1', 'chat_tool', ?, ?, 'allowed', ?)",
+            )
+            .bind(id.to_owned())
+            .bind(tool_class.to_owned())
+            .bind(request_hash.clone())
+            .bind(NOW)
+            .execute(&pool)
+        };
+        for tool_class in [
+            "read",
+            "edit",
+            "destructive",
+            "delegate",
+            "ask",
+            "report",
+            "secret",
+            "schedule",
+        ] {
+            record(&format!("invocation-{tool_class}"), tool_class)
+                .await
+                .unwrap();
+        }
+        assert!(record("invocation-unknown", "write").await.is_err());
+        assert!(record("invocation-upper", "Read").await.is_err());
+
+        sqlx::query(
+            "INSERT INTO chat_host_tool_invocations
+                (id, authorization_revision_id, tool_name, request_hash, decision_state,
+                 created_at)
+             VALUES ('invocation-default', 'authorization-1', 'chat_tool', ?, 'allowed', ?)",
+        )
+        .bind(&request_hash)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let defaulted: String = sqlx::query_scalar(
+            "SELECT tool_class FROM chat_host_tool_invocations WHERE id = 'invocation-default'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(defaulted, "read");
     });
 }

@@ -32,6 +32,13 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatRequestPanel from "./ChatRequestPanel.svelte";
+  import { answerableHostQuestion } from "$lib/chat/timeline/agent-update";
+  import { chatComposerDocumentFromText, chatComposerDocumentVersioned, chatComposerMarkdown } from "$lib/chat/composer/rich-text";
+  import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
+  import ChatDelegatedWorkList from "./ChatDelegatedWorkList.svelte";
+  import ChatDelegationOrigin from "./ChatDelegationOrigin.svelte";
+  import ChatSecretRequests from "./ChatSecretRequests.svelte";
 
   interface ExactExecutionRead {
     timelinePage: ChatTimelinePageRead;
@@ -105,6 +112,32 @@
   const destination = $derived(chat.openReplyThreadId
     ? `reply-thread:${chat.openReplyThreadId}`
     : "reply-thread:none");
+  const preferences = getPreferences();
+  /** Changes to remount the composer after its draft was replaced from outside, such as by an answer choice. */
+  let composerRevision = $state(0);
+  const answerableQuestion = $derived(answerableHostQuestion(page?.replies ?? [], assignment));
+  const executionTeammateName = $derived(executionTeammate
+    ? chatParticipantDisplayName(executionTeammate, preferences.profileDisplayName, t("chat.timeline.you"))
+    : null);
+
+  /** Replaces the composer text with a suggested answer, keeping its attachments and target. */
+  function chooseAnswer(choice: string): void {
+    const document = chatComposerDocumentFromText(choice);
+    const current = chat.organizationalDraft(destination);
+    chat.setOrganizationalDraft(destination, {
+      ...current,
+      normalizedMarkdown: chatComposerMarkdown(document),
+      richContent: chatComposerDocumentVersioned(document),
+      references: [],
+      selectionStart: choice.length,
+      selectionEnd: choice.length,
+    });
+    composerRevision += 1;
+  }
+
+  function openThread(replyThreadId: string): void {
+    void chat.openReplyThread(replyThreadId).catch(reportMessageActionError);
+  }
 
   function isSameDay(left: string, right: string): boolean {
     return new Date(left).toDateString() === new Date(right).toDateString();
@@ -378,6 +411,7 @@
       {#if page.previousCursor}<button type="button" class="load-older" onclick={() => void chat.loadOlderReplyThreadMessages()}>{t("chat.organization.loadOlder")}</button>{/if}
       <div class="date-divider"><span>{formatDateTime(localization.locale, Date.parse(page.rootMessage.createdAt), { dateStyle: "full" })}</span></div>
       <ChatOrganizationalMessage message={page.rootMessage} showReplyStrip={false} currentResponseSettings onActionError={reportMessageActionError} />
+      {#if assignment?.delegation}<ChatDelegationOrigin delegation={assignment.delegation} onOpenThread={openThread} />{/if}
       {#each renderEntries as entry, index (entry.key)}
         {@const previousEntry = renderEntries[index - 1]}
         {@const previousCreatedAt = previousEntry ? entryCreatedAt(previousEntry) : page.rootMessage.createdAt}
@@ -391,6 +425,8 @@
             currentResponseSettings
             grouped={previousEntry?.kind === "message" && shouldGroupReplyMessages(previousEntry.message, entry.message)}
             onActionError={reportMessageActionError}
+            answerChoices={answerableQuestion?.messageItemId === entry.message.itemId ? answerableQuestion.choices : []}
+            onChooseAnswer={answerableQuestion?.messageItemId === entry.message.itemId ? chooseAnswer : undefined}
           />
         {:else}
           {@const exactExecution = exactExecutions[entry.run.id]}
@@ -406,6 +442,7 @@
           />
         {/if}
       {/each}
+      {#if page.delegatedChildren.length > 0}<ChatDelegatedWorkList delegatedChildren={page.delegatedChildren} onOpenThread={openThread} />{/if}
     {:else if chat.replyThreadLoading || page}
       <Loading layout="fill" />
     {/if}
@@ -413,8 +450,11 @@
 
   {#if page && !chat.selectedChannel?.archivedAt}
     {#if chat.interaction?.pendingRequest}<div class="thread-request"><ChatRequestPanel pending={chat.interaction.pendingRequest} /></div>{/if}
+    {#if localExecutionAvailable && chat.openReplyThreadId}
+      <div class="thread-secrets"><ChatSecretRequests replyThreadId={chat.openReplyThreadId} refreshKey={page} teammateName={executionTeammateName} /></div>
+    {/if}
     <div class="thread-composer">
-      {#key destination}
+      {#key `${destination}:${composerRevision}`}
         <ChatMessageComposer {destination} threadComposer placeholder={t("chat.organization.replyInThread")} onRequestScrollToBottom={scrollToBottomForUserAction} />
       {/key}
     </div>
@@ -446,6 +486,8 @@
   .date-divider::before,.date-divider::after { height:1px; flex:1; background:var(--border); content:""; }
   .run-restart { margin:0.25rem 0.75rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .thread-request { flex:0 0 auto; border-top:1px solid var(--border); padding:0.5rem; }
+  .thread-secrets { flex:0 0 auto; padding:0 0.5rem; }
+  .thread-secrets:empty { display:none; }
   .thread-composer { display:flex; flex:0 0 auto; justify-content:center; padding:0.5rem 0.5rem 0.75rem; }
   .reply-thread-panel :global(.thread-error) { padding:0.6rem; font-size: calc(0.7rem * var(--type-scale)); }
   .thread-failure { height:100%; font-size: calc(0.7rem * var(--type-scale)); }

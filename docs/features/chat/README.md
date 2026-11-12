@@ -1,6 +1,6 @@
 # Chat
 
-Status: Partial. Project channels and messaging are implemented on desktop and Android; local coding-agent execution is desktop-only. Direct messages, task discussions, delegation, and human collaboration are planned.
+Status: Partial. Project channels and messaging are implemented on desktop and Android; local coding-agent execution is desktop-only. Direct messages, task discussions, and human collaboration are planned.
 
 Chat is Ganbaru's project communication and coding-work surface. It combines durable human-readable conversations with bounded provider runs, review, files, terminals, and checkpoints without making provider threads the organizational source of truth.
 
@@ -14,7 +14,8 @@ Chat is Ganbaru's project communication and coding-work surface. It combines dur
 | Interactive requests, cancellation, inspector, file browser and editor, review, terminals, browser previews, and Git checkpoints | Implemented |
 | AI agents with per-channel access profiles, folder grants, and frozen context packages | Implemented |
 | Private scratch execution with explicit promotion and cleanup | Implemented |
-| Structured delegation, budgets, quiet periods, and task-linked assignments | Planned |
+| Structured delegation | Implemented |
+| Budgets, quiet periods, and task-linked assignments | Planned |
 | Direct messages and task discussions | Planned; the schema reserves these conversation kinds |
 | Human members, invitations, and encrypted sync | Planned; the experience is designed in [Contacts and invitations](../collaboration/README.md) |
 

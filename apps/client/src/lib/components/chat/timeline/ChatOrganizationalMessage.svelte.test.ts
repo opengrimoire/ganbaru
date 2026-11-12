@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { mount, tick, unmount } from "svelte";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessageRead, ChatParticipantRead } from "$lib/chat/contracts";
 import ChatOrganizationalMessage from "./ChatOrganizationalMessage.svelte";
 
@@ -137,5 +137,52 @@ describe("ChatOrganizationalMessage", () => {
     expect(copy?.querySelectorAll(".inline-reference")).toHaveLength(1);
     expect(copy?.querySelectorAll(".mention-trigger")).toHaveLength(1);
     expect(copy?.querySelector("p")?.textContent).toBe("See #general and @Atlas!");
+  });
+
+  it("offers suggested answers as chips and names a delegation outcome's state", async () => {
+    const onChooseAnswer = vi.fn();
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatOrganizationalMessage, {
+      target,
+      props: {
+        message: { ...message, references: [], normalizedMarkdown: "Which?" },
+        answerChoices: ["Keep", "Drop"],
+        onChooseAnswer,
+      },
+    });
+    await tick();
+
+    const chips = [...target.querySelectorAll<HTMLButtonElement>("[data-answer-choices] button")];
+    expect(chips.map((chip) => chip.textContent)).toEqual(["Keep", "Drop"]);
+    chips[1]?.click();
+    expect(onChooseAnswer).toHaveBeenCalledWith("Drop");
+    await unmount(component);
+
+    component = mount(ChatOrganizationalMessage, {
+      target,
+      props: {
+        message: {
+          ...message,
+          references: [],
+          normalizedMarkdown: "Done",
+          richContent: {
+            schemaVersion: 1,
+            value: {
+              type: "agent_update",
+              updateKind: "delegation",
+              assignmentId: "assignment:parent",
+              agentRunId: null,
+              payload: { phase: "settled", childAssignmentId: "assignment:child", parentAssignmentId: "assignment:parent", state: "completed" },
+            },
+          },
+        },
+        answerChoices: ["Keep"],
+      },
+    });
+    await tick();
+
+    expect(target.querySelector("[data-answer-choices]")).toBeNull();
+    expect(target.querySelector("[data-delegation-outcome]")?.textContent).toBe("Completed");
   });
 });

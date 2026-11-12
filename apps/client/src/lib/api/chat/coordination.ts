@@ -48,6 +48,7 @@ import type {
   ChatScheduledMessageId,
   ChatScheduledMessageRead,
   ChatWaitingAssignmentRead,
+  ChatSecretRequestRead,
   CreateChatChannelRequest,
   UpdateChatChannelDetailsRequest,
   ProjectWorkingFolderId,
@@ -76,6 +77,7 @@ import {
   parseChatReplyThreadPage,
   parseChatMessageSearchResults,
   parseChatWaitingAssignments,
+  parseChatSecretRequests,
   parsePostChatMessageResult,
   parseChatScheduledMessage,
   parseChatScheduledMessageDispatch,
@@ -478,6 +480,46 @@ export async function listChatWaitingAssignments(): Promise<ChatWaitingAssignmen
 
 export async function recoverChatAssignmentDispatchJobs(): Promise<number> {
   return invoke<number>("chat_recover_assignment_dispatch_jobs", { dbUrl: await ensureDbUrl() });
+}
+
+/**
+ * Lists the secret requests still open in a reply thread. Secret requests come from local runs, so a
+ * device without local execution has none.
+ */
+export async function listChatSecretRequests(
+  replyThreadId: ChatReplyThreadId,
+): Promise<ChatSecretRequestRead[]> {
+  if (!localExecutionAvailable) return [];
+  return parseChatSecretRequests(await invoke<unknown>("chat_list_secret_requests", {
+    dbUrl: await ensureDbUrl(), replyThreadId,
+  }));
+}
+
+/**
+ * Hands a secret value to the run that asked for it. The value goes to a private file for the run and
+ * is never stored in the vault.
+ *
+ * @throws When this device cannot run agents, or when the backend refuses the value with a secret refusal code.
+ */
+export async function provideChatSecret(requestId: string, value: string): Promise<void> {
+  requireLocalSecretRequests();
+  await invoke<unknown>("chat_provide_secret", { dbUrl: await ensureDbUrl(), requestId, value });
+}
+
+/**
+ * Declines a secret request so the run continues without the value.
+ *
+ * @throws When this device cannot run agents, or when the request is no longer open.
+ */
+export async function declineChatSecret(requestId: string): Promise<void> {
+  requireLocalSecretRequests();
+  await invoke<unknown>("chat_decline_secret", { dbUrl: await ensureDbUrl(), requestId });
+}
+
+function requireLocalSecretRequests(): void {
+  if (!localExecutionAvailable) {
+    throw new Error("Chat secret requests need local execution on this device");
+  }
 }
 
 /** Lists the replies addressed to one assignment, in delivery order. */

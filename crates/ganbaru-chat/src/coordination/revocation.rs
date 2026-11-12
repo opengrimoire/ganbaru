@@ -31,23 +31,115 @@ impl<'a> RevocationScope<'a> {
     }
 }
 
+/// State reason of a delegated assignment cancelled because an ancestor lost the authority it
+/// was delegated under.
+pub const PARENT_AUTHORITY_REVOKED_REASON: &str = "parent_authority_revoked";
+
 /// Revokes every allowed, unrevoked authorization of `teammate_id` and queues one access
-/// revocation job for each, unless a queued or claimed job already covers it.
+/// revocation job for each, unless a queued or claimed job already covers it. Work delegated
+/// from the teammate's assignments loses its authorizations too, with
+/// [`PARENT_AUTHORITY_REVOKED_REASON`], since a child never holds more than its parent.
 ///
-/// `now` is the revocation and job timestamp. Returns the number of authorizations revoked.
+/// `now` is the revocation and job timestamp. Returns the number of authorizations revoked,
+/// the delegated ones included.
 pub async fn revoke_teammate_authorizations(
     connection: &mut SqliteConnection,
     teammate_id: &str,
     now: &str,
     reason: &str,
 ) -> ChatResult<u64> {
-    revoke_authorizations(
+    let revoked = revoke_authorizations(
         connection,
         RevocationScope::Teammate(teammate_id),
         now,
         reason,
     )
-    .await
+    .await?;
+    let delegated =
+        revoke_descendants(connection, RevocationScope::Teammate(teammate_id), now).await?;
+    Ok(revoked + delegated)
+}
+
+/// Revokes the allowed, unrevoked authorizations of the work delegated from `assignment_id`,
+/// down to the delegation depth limit, with [`PARENT_AUTHORITY_REVOKED_REASON`], and queues one
+/// access revocation job for each unless a queued or claimed job already covers it.
+///
+/// `now` is the revocation and job timestamp. Returns the number of authorizations revoked.
+pub async fn revoke_delegated_authorizations(
+    connection: &mut SqliteConnection,
+    assignment_id: &str,
+    now: &str,
+) -> ChatResult<u64> {
+    revoke_descendants(connection, RevocationScope::Assignment(assignment_id), now).await
+}
+
+/// The ids of the assignments delegated from the assignments `scope` covers, through
+/// `parent_assignment_id`, bound by the depth the schema allows. Binds `?3` (teammate) and
+/// `?4` (assignment) like [`revoke_authorizations`].
+const DELEGATED_DESCENDANTS_SQL: &str = "WITH RECURSIVE descendants(id, depth) AS (
+       SELECT child.id, 1
+       FROM chat_work_assignments child
+       JOIN chat_work_assignments parent ON parent.id = child.parent_assignment_id
+       WHERE (?3 IS NULL OR parent.teammate_id = ?3)
+         AND (?4 IS NULL OR parent.id = ?4)
+       UNION
+       SELECT child.id, descendants.depth + 1
+       FROM chat_work_assignments child
+       JOIN descendants ON child.parent_assignment_id = descendants.id
+       WHERE descendants.depth < 2
+     )";
+
+async fn revoke_descendants(
+    connection: &mut SqliteConnection,
+    scope: RevocationScope<'_>,
+    now: &str,
+) -> ChatResult<u64> {
+    let update = format!(
+        "{DELEGATED_DESCENDANTS_SQL}
+         UPDATE chat_assignment_authorization_revisions
+         SET decision_state = 'revoked', reason = ?1, revoked_at = ?2
+         WHERE assignment_id IN (SELECT id FROM descendants)
+           AND decision_state = 'allowed' AND revoked_at IS NULL"
+    );
+    let revoked = sqlx::query(sqlx::AssertSqlSafe(update))
+        .bind(PARENT_AUTHORITY_REVOKED_REASON)
+        .bind(now)
+        .bind(scope.teammate_id())
+        .bind(scope.assignment_id())
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?
+        .rows_affected();
+    if revoked == 0 {
+        return Ok(0);
+    }
+    let jobs = format!(
+        "{DELEGATED_DESCENDANTS_SQL}
+         INSERT INTO chat_access_revocation_jobs
+            (id, teammate_id, authorization_revision_id, reason,
+             available_at, created_at, updated_at)
+         SELECT 'access-revocation:' || lower(hex(randomblob(16))), assignment.teammate_id,
+                authorization.id, ?1, ?2, ?2, ?2
+         FROM chat_assignment_authorization_revisions authorization
+         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
+         WHERE assignment.id IN (SELECT id FROM descendants)
+           AND authorization.revoked_at = ?2
+           AND authorization.reason = ?1
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_access_revocation_jobs existing
+               WHERE existing.authorization_revision_id = authorization.id
+                 AND existing.state IN ('queued', 'claimed')
+           )"
+    );
+    sqlx::query(sqlx::AssertSqlSafe(jobs))
+        .bind(PARENT_AUTHORITY_REVOKED_REASON)
+        .bind(now)
+        .bind(scope.teammate_id())
+        .bind(scope.assignment_id())
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
+    Ok(revoked)
 }
 
 /// Revokes every allowed, unrevoked authorization of the work assignment `assignment_id` and

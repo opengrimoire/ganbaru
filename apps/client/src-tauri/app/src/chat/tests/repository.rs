@@ -1,4 +1,6 @@
-use crate::chat::ingestion::{ChatChangeEmitter, ChatEventIngestor};
+use crate::chat::ingestion::{
+    ChatChangeEmitter, ChatEventIngestor, RegisteredSecret, SecretRedactor,
+};
 use crate::chat::workspace::CreateProjectWorkingFolderRequest;
 #[cfg(unix)]
 use ganbaru_chat::repository::attachments::read_managed_attachment_bytes;
@@ -191,4 +193,36 @@ pub(crate) fn canonical_request(
         ingested_at: UtcTimestamp::new(NOW).unwrap(),
         diagnostic_expires_at: None,
     }
+}
+
+/// Every text value stored in any table, so a test can prove a value reached none of them.
+pub(crate) async fn stored_text(pool: &sqlx::SqlitePool) -> String {
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    let mut text = String::new();
+    for table in tables {
+        let columns: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT name FROM pragma_table_info('{table}')"
+        )))
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        for column in columns {
+            let values: Vec<Option<Vec<u8>>> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT CAST(\"{column}\" AS BLOB) FROM \"{table}\""
+            )))
+            .fetch_all(pool)
+            .await
+            .unwrap();
+            for value in values.into_iter().flatten() {
+                text.push_str(&String::from_utf8_lossy(&value));
+                text.push('\n');
+            }
+        }
+    }
+    text
 }

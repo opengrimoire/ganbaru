@@ -3290,6 +3290,7 @@ fn channel_reference_ranges_break_equal_order_keys_at_both_ends() {
         super::workflow::insert_communication_message(
             &mut transaction,
             super::workflow::CommunicationMessageWrite {
+                author: super::workflow::MessageAuthor::LocalPerson,
                 item_id: &ChatConversationItemId::new("item:review-reference").unwrap(),
                 revision_id: &ChatMessageRevisionId::new("revision:review-reference").unwrap(),
                 conversation_id: &ChatConversationId::new("conversation:review").unwrap(),

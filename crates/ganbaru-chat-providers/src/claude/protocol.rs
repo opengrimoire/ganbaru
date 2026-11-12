@@ -273,6 +273,39 @@ pub struct ClaudeInternalMcpLaunch<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct ClaudeOrganizationalLaunch<'a> {
     pub internal_server_name: &'a str,
+    /// Internal server tools the run calls without an approval prompt, passed as
+    /// `--allowedTools`. Each one names a tool of the internal server.
+    pub pre_approved_tools: &'a [String],
+}
+
+/// The comma-joined `--allowedTools` value of an organizational launch, or `None` when it
+/// pre-approves nothing.
+///
+/// The list is built by the host, but it may only name tools of the internal server, so it can
+/// never pre-approve a built-in tool or another server's tool.
+fn pre_approved_tools_argument(
+    organizational: ClaudeOrganizationalLaunch<'_>,
+) -> ChatResult<Option<String>> {
+    if organizational.pre_approved_tools.is_empty() {
+        return Ok(None);
+    }
+    let prefix = format!("mcp__{}__", organizational.internal_server_name);
+    let names_internal_tool = |tool: &String| {
+        tool.strip_prefix(&prefix).is_some_and(|name| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        })
+    };
+    if !organizational
+        .pre_approved_tools
+        .iter()
+        .all(names_internal_tool)
+    {
+        return Err(organizational_permission_error());
+    }
+    Ok(Some(organizational.pre_approved_tools.join(",")))
 }
 
 /// Built-in tools an organizational Claude run may load, passed as `--tools`.
@@ -319,7 +352,9 @@ pub fn launch_arguments(
         Some(organizational) => {
             validate_organizational_launch_arguments(configured)?;
             match options.internal_mcp {
-                Some(server) if server.name == organizational.internal_server_name => Some(server),
+                Some(server) if server.name == organizational.internal_server_name => {
+                    Some((server, pre_approved_tools_argument(organizational)?))
+                }
                 _ => return Err(organizational_permission_error()),
             }
         }
@@ -389,7 +424,7 @@ pub fn launch_arguments(
         arguments.push("--settings".to_string());
         arguments.push(settings);
     }
-    if let Some(server) = organizational_server {
+    if let Some((server, pre_approved_tools)) = organizational_server {
         // Configured arguments never reach an organizational launch, so nothing follows the
         // variadic deny list.
         arguments.extend([
@@ -402,6 +437,9 @@ pub fn launch_arguments(
         ]);
         if let Some(system_prompt) = options.system_prompt {
             arguments.extend(system_prompt_arguments(system_prompt, options.cli_version)?);
+        }
+        if let Some(pre_approved_tools) = pre_approved_tools {
+            arguments.extend(["--allowedTools".to_string(), pre_approved_tools]);
         }
         arguments.extend([
             "--tools".to_string(),

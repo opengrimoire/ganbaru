@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatAgentRunRead, ChatMessageRead, VersionedJson } from "$lib/chat/contracts";
+import type { ChatAgentRunRead, ChatMessageRead, JsonValue, VersionedJson } from "$lib/chat/contracts";
 import {
   agentRunRestart,
   exactExecutionReadKey,
@@ -126,6 +126,31 @@ describe("reply thread execution placement", () => {
     expect(replyThreadRenderEntries(replies, [olderRun, currentRun], new Set([olderRun.id, currentRun.id]))
       .map((entry) => entry.key))
       .toEqual(["execution:run-1", "retry", "execution:run-2"]);
+  });
+
+  it("keeps host tool updates of the rendered run visible beside its exact turn", () => {
+    const hostUpdate = (kind: string): JsonValue => ({
+      type: "agent_update",
+      updateKind: kind,
+      assignmentId: "assignment-1",
+      agentRunId: "run-1",
+      payload: kind === "question"
+        ? { question: "Which?", choices: ["A"], source: "host_tool" }
+        : { kind, source: "host_tool" },
+    });
+    const replies = [
+      message("plan", "teammate-1", "2026-08-02T08:00:00Z", hostUpdate("plan"), 1),
+      message("projection", "teammate-1", "2026-08-02T08:01:00Z", { type: "agent_update", agentRunId: "run-1" }, 2),
+      message("question", "teammate-1", "2026-08-02T08:02:00Z", hostUpdate("question"), 3),
+    ];
+    const run = agentRun("run-1", "thread-1");
+
+    expect(replyThreadRenderEntries(replies, [run], new Set([run.id])).map((entry) => entry.key))
+      .toEqual(["plan", "execution:run-1", "question"]);
+    expect(repliesWithoutRenderedRunProjection(replies, "run-1").map((reply) => reply.itemId))
+      .toEqual(["plan", "question"]);
+    expect(shouldGroupReplyMessages(replies[0] ?? null, message("next", "teammate-1", "2026-08-02T08:00:30Z")))
+      .toBe(false);
   });
 
   it("orders replies that share an order key by item id before placing runs", () => {

@@ -59,6 +59,13 @@ const MAX_ACP_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_ACP_FILE_LINES: u32 = 100_000;
 const DEFAULT_ACP_TERMINAL_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_ACP_TERMINAL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+/// How long a terminal waits for its output pipes to close after the command exits.
+const ACP_TERMINAL_OUTPUT_DRAIN: std::time::Duration = std::time::Duration::from_millis(250);
+/// Loader variables an agent may not set on a terminal, since they inject code into every
+/// process the command starts.
+const ACP_TERMINAL_ENVIRONMENT_DENYLIST: &[&str] = &["LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH"];
+/// Loader variable prefixes an agent may not set on a terminal.
+const ACP_TERMINAL_ENVIRONMENT_DENYLIST_PREFIXES: &[&str] = &["DYLD_"];
 static NEXT_ACP_FILE_WRITE: AtomicU64 = AtomicU64::new(1);
 static NEXT_ACP_TERMINAL: AtomicU64 = AtomicU64::new(1);
 
@@ -98,6 +105,17 @@ struct AcpTerminal {
     state: Arc<Mutex<AcpTerminalState>>,
     kill: mpsc::Sender<()>,
     completed: Arc<Notify>,
+    /// Process group or job of the command, signaled on kill, release, and session stop so
+    /// background descendants never outlive the terminal.
+    tree: Arc<crate::process::ProcessTree>,
+}
+
+impl AcpTerminal {
+    /// Stops every process of the terminal, even after the command itself exited.
+    fn terminate(&self) {
+        self.tree.terminate();
+        let _ = self.kill.try_send(());
+    }
 }
 
 #[derive(Clone, Default)]
@@ -133,7 +151,7 @@ impl AcpTerminalCallbacks {
     fn shutdown(&self) {
         if let Ok(mut terminals) = self.terminals.lock() {
             for terminal in terminals.values() {
-                let _ = terminal.kill.try_send(());
+                terminal.terminate();
             }
             terminals.clear();
         }

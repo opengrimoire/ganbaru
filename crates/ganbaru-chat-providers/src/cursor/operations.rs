@@ -16,7 +16,6 @@ use crate::{
 };
 use base64::{Engine as _, engine::general_purpose};
 use serde_json::{Value, json};
-use std::fs;
 use std::path::Path;
 use std::sync::{Arc, atomic::Ordering};
 use std::time::{Duration, Instant};
@@ -269,7 +268,7 @@ impl ProviderDriver for CursorProviderDriver {
         Box::pin(async move {
             let flavor = self.flavor;
             let provider_name = flavor.display_name();
-            let prompt = build_prompt(&request, flavor)?;
+            let prompt = build_prompt(&request, flavor).await?;
             let live = self.live_mut(&request.session_id)?;
             if live
                 .prompt_task
@@ -734,7 +733,10 @@ impl ProviderDriver for CursorProviderDriver {
     }
 }
 
-fn build_prompt(request: &SendTurnRequest, flavor: AcpProviderFlavor) -> ChatResult<Vec<Value>> {
+async fn build_prompt(
+    request: &SendTurnRequest,
+    flavor: AcpProviderFlavor,
+) -> ChatResult<Vec<Value>> {
     let provider_name = flavor.display_name();
     if request.prompt.len() > MAX_PROMPT_BYTES || request.prompt.contains('\0') {
         return Err(ChatError::validation(
@@ -770,7 +772,7 @@ fn build_prompt(request: &SendTurnRequest, flavor: AcpProviderFlavor) -> ChatRes
     }
     for attachment in &request.attachments {
         match attachment.kind.as_str() {
-            "image" => content.push(image_content(attachment, flavor)?),
+            "image" => content.push(image_content(attachment, flavor).await?),
             "text_snippet" => {
                 let text = attachment.text_content.as_deref().ok_or_else(|| {
                     ChatError::validation(
@@ -802,7 +804,7 @@ fn build_prompt(request: &SendTurnRequest, flavor: AcpProviderFlavor) -> ChatRes
     Ok(content)
 }
 
-fn image_content(
+async fn image_content(
     attachment: &PromptAttachmentReference,
     flavor: AcpProviderFlavor,
 ) -> ChatResult<Value> {
@@ -814,7 +816,7 @@ fn image_content(
         )
     })?;
     let path = Path::new(path);
-    let metadata = fs::metadata(path).map_err(|_| {
+    let metadata = tokio::fs::metadata(path).await.map_err(|_| {
         ChatError::validation(
             "attachments",
             format!("{provider_name} image attachment is unavailable"),
@@ -841,7 +843,7 @@ fn image_content(
                 format!("{provider_name} image type is unsupported"),
             )
         })?;
-    let bytes = fs::read(path).map_err(|_| {
+    let bytes = tokio::fs::read(path).await.map_err(|_| {
         ChatError::validation(
             "attachments",
             format!("{provider_name} image attachment could not be read"),

@@ -61,6 +61,7 @@ pub(super) async fn handle_write_text_file(
     let result = (|| {
         let (workspace, session_id) = route_workspace(resources)?;
         require_acp_session(&request.session_id.to_string(), &session_id)?;
+        refuse_write_in_plan(resources)?;
         if request.content.len() as u64 > MAX_ACP_FILE_BYTES || request.content.contains('\0') {
             return Err(ChatError::validation(
                 "content",
@@ -194,10 +195,7 @@ pub(super) async fn handle_terminal_kill(
         let terminal = resources
             .terminal_callbacks
             .terminal(&request.terminal_id.to_string())?;
-        terminal
-            .kill
-            .try_send(())
-            .map_err(|_| callback_permission_error())?;
+        terminal.terminate();
         serde_json::to_value(KillTerminalResponse::new())
             .map_err(|_| protocol_error("ACP terminal kill response"))
     })();
@@ -233,7 +231,7 @@ pub(super) async fn handle_terminal_release(
             .map_err(|_| driver_state_error())?
             .remove(&request.terminal_id.to_string())
             .ok_or_else(callback_permission_error)?;
-        let _ = terminal.kill.try_send(());
+        terminal.terminate();
         serde_json::to_value(ReleaseTerminalResponse::new())
             .map_err(|_| protocol_error("ACP terminal release response"))
     })();
@@ -273,6 +271,7 @@ pub(super) async fn create_acp_terminal(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    crate::process::configure_process_tree(&mut command);
     let mut child = command.spawn().map_err(|_| {
         ChatError::new(
             ChatErrorCode::DriverUnavailable,
@@ -280,8 +279,11 @@ pub(super) async fn create_acp_terminal(
             true,
         )
     })?;
-    let stdout = child.stdout.take().ok_or_else(callback_permission_error)?;
-    let stderr = child.stderr.take().ok_or_else(callback_permission_error)?;
+    let tree = Arc::new(crate::process::ProcessTree::claim_tokio(&mut child)?);
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        tree.terminate();
+        return Err(callback_permission_error());
+    };
     let terminal_id = format!(
         "ganbaru-acp-terminal-{}",
         NEXT_ACP_TERMINAL.fetch_add(1, Ordering::Relaxed)
@@ -298,31 +300,35 @@ pub(super) async fn create_acp_terminal(
         state: Arc::clone(&state),
         kill,
         completed: Arc::clone(&completed),
+        tree: Arc::clone(&tree),
     };
-    callbacks
-        .terminals
-        .lock()
-        .map_err(|_| driver_state_error())?
-        .insert(terminal_id.clone(), terminal);
+    match callbacks.terminals.lock() {
+        Ok(mut terminals) => {
+            terminals.insert(terminal_id.clone(), terminal);
+        }
+        Err(_) => {
+            tree.terminate();
+            return Err(driver_state_error());
+        }
+    }
     let stdout_task = tokio::spawn(capture_terminal_output(stdout, Arc::clone(&state)));
     let stderr_task = tokio::spawn(capture_terminal_output(stderr, Arc::clone(&state)));
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(40));
-        let status = loop {
-            tokio::select! {
-                _ = kill_receiver.recv() => {
-                    let _ = child.kill().await;
-                    break child.wait().await.ok();
-                }
-                _ = interval.tick() => match child.try_wait() {
-                    Ok(Some(status)) => break Some(status),
-                    Ok(None) => {}
-                    Err(_) => break None,
-                }
+        let status = tokio::select! {
+            status = child.wait() => status.ok(),
+            _ = kill_receiver.recv() => {
+                tree.terminate();
+                let _ = child.kill().await;
+                child.wait().await.ok()
             }
         };
-        let _ = stdout_task.await;
-        let _ = stderr_task.await;
+        // Background descendants can hold the pipes open after the command exits, so the
+        // exit status is recorded without waiting for them to close.
+        let _ = tokio::time::timeout(ACP_TERMINAL_OUTPUT_DRAIN, async {
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+        })
+        .await;
         if let Ok(mut state) = state.lock() {
             state.exit_status = Some(match status.and_then(|status| status.code()) {
                 Some(code) if code >= 0 => TerminalExitStatus::new().exit_code(code as u32),
@@ -392,7 +398,34 @@ pub(super) fn validate_terminal_command(request: &CreateTerminalRequest) -> Chat
             "ACP terminal command is invalid",
         ));
     }
+    if let Some(variable) = request
+        .env
+        .iter()
+        .find(|value| is_denied_terminal_variable(&value.name))
+    {
+        return Err(ChatError::new(
+            ChatErrorCode::Permission,
+            format!(
+                "acp_terminal_environment_refused: ACP terminals cannot set {}",
+                variable.name
+            ),
+            true,
+        ));
+    }
     Ok(())
+}
+
+/// Whether a terminal environment variable could load code into the command's processes.
+fn is_denied_terminal_variable(name: &str) -> bool {
+    ACP_TERMINAL_ENVIRONMENT_DENYLIST
+        .iter()
+        .any(|denied| name.eq_ignore_ascii_case(denied))
+        || ACP_TERMINAL_ENVIRONMENT_DENYLIST_PREFIXES
+            .iter()
+            .any(|prefix| {
+                name.get(..prefix.len())
+                    .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+            })
 }
 
 pub(super) fn verified_directory(workspace: &Path, requested: &Path) -> ChatResult<PathBuf> {
@@ -408,6 +441,24 @@ pub(super) fn verified_directory(workspace: &Path, requested: &Path) -> ChatResu
 pub(super) fn route_workspace(resources: &CursorRouterResources) -> ChatResult<(PathBuf, String)> {
     let route = resources.route.lock().map_err(|_| driver_state_error())?;
     Ok((route.workspace.clone(), route.provider_thread_id.clone()))
+}
+
+/// Refuses agent file writes while the turn runs in Plan mode, the read-only interaction mode.
+pub(super) fn refuse_write_in_plan(resources: &CursorRouterResources) -> ChatResult<()> {
+    let route = resources.route.lock().map_err(|_| driver_state_error())?;
+    plan_write_refusal(route.modes.interaction_mode)
+}
+
+/// The refusal for a file write in `interaction_mode`, if any.
+pub(super) fn plan_write_refusal(interaction_mode: InteractionMode) -> ChatResult<()> {
+    if interaction_mode == InteractionMode::Plan {
+        return Err(ChatError::new(
+            ChatErrorCode::Permission,
+            "acp_write_refused_in_plan: Plan mode does not allow file writes",
+            true,
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn require_acp_session(actual: &str, expected: &str) -> ChatResult<()> {

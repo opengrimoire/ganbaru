@@ -353,7 +353,7 @@ impl ProcessTree {
 
     /// Claims the tree of a child spawned from a command prepared with
     /// `configure_process_tree`. On failure the child is killed.
-    fn claim_tokio(child: &mut Child) -> ChatResult<Self> {
+    pub(crate) fn claim_tokio(child: &mut Child) -> ChatResult<Self> {
         #[cfg(unix)]
         {
             let process_group_id = child
@@ -523,7 +523,9 @@ pub fn configure_std_process_tree(command: &mut std::process::Command) {
     let _ = command;
 }
 
-fn configure_process_tree(command: &mut Command) {
+/// Prepares a Tokio command so its descendants form one process tree that
+/// [`ProcessTree::claim_tokio`] can claim after spawning.
+pub(crate) fn configure_process_tree(command: &mut Command) {
     configure_std_process_tree(command.as_std_mut());
 }
 

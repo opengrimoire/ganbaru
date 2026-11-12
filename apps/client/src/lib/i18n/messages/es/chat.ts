@@ -1078,6 +1078,22 @@ export const chat = {
       unknown: "Aviso",
     },
   },
+  restoreDialog: {
+    title: "Restaurar al estado anterior a este mensaje",
+    description: "Los archivos de la carpeta de trabajo vuelven a como estaban antes de este mensaje y los turnos posteriores salen de la conversación.",
+    files: (count: number) => count === 1 ? "Cambia 1 archivo" : `Cambian ${count} archivos`,
+    noFiles: "No cambia ningún archivo.",
+    renamedFrom: (path: string) => `Renombrado desde ${path}`,
+    binary: "Binario",
+    stagingRestored: "Los cambios preparados también vuelven al punto de control.",
+    stagingUnchanged: "Los cambios preparados se mantienen como están.",
+    providerRollback: "El proveedor revierte su propio historial.",
+    providerFork: "La conversación continúa como una bifurcación.",
+    expiresIn: (relative: string) => `Esta vista previa caduca ${relative}.`,
+    expired: "Esta vista previa caducó, así que actualízala para ver los cambios actuales.",
+    restore: "Restaurar",
+    refresh: "Actualizar",
+  },
   runs: {
     attemptReason: {
       handoff: "Se inició una sesión nueva",

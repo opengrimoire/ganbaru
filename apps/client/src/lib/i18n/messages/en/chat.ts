@@ -1075,6 +1075,22 @@ export const chat = {
       unknown: "Notice",
     },
   },
+  restoreDialog: {
+    title: "Restore to before this message",
+    description: "Files in the working folder return to how they were before this message, and later turns leave the conversation.",
+    files: (count: number) => count === 1 ? "1 file changes" : `${count} files change`,
+    noFiles: "No files change.",
+    renamedFrom: (path: string) => `Renamed from ${path}`,
+    binary: "Binary",
+    stagingRestored: "Staged changes also return to the checkpoint.",
+    stagingUnchanged: "Staged changes stay as they are.",
+    providerRollback: "The provider rolls back its own history.",
+    providerFork: "The conversation continues as a fork.",
+    expiresIn: (relative: string) => `This preview expires ${relative}.`,
+    expired: "This preview expired, so refresh it to see the current changes.",
+    restore: "Restore",
+    refresh: "Refresh",
+  },
   runs: {
     attemptReason: {
       handoff: "Started a new session",

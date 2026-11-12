@@ -370,6 +370,9 @@ export interface ChatChangedFileRead {
   gitObserved: boolean;
 }
 
+/** Consequence of a checkpoint restore that the confirmation dialog explains. */
+export type ChatRestoreWarningCode = "staging_restored" | "provider_fork_required";
+
 export interface ChatRestorePreviewRead {
   previewId: string;
   checkpointId: ChatCheckpointId;
@@ -377,7 +380,7 @@ export interface ChatRestorePreviewRead {
   files: ChatChangedFileRead[];
   stagedChanges: boolean;
   providerRollback: "supported" | "unsupported";
-  warnings: string[];
+  warnings: ChatRestoreWarningCode[];
 }
 
 export interface ChatRestoreResultRead {

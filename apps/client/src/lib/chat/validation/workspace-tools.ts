@@ -8,6 +8,7 @@ import {
   type ChatReviewSnapshotRead,
   type ChatReviewCommentRead,
   type ChatRestorePreviewRead,
+  type ChatRestoreWarningCode,
   type ChatRestoreResultRead,
   type ChatTerminalLayoutRead,
   type ChatTerminalPanelLayout,
@@ -52,6 +53,7 @@ const HOSTED_SOURCE_CONTROL_KINDS = ["github", "gitlab", "azure_devops", "bitbuc
 const TERMINAL_PLACEMENTS = ["inspector", "bottom"] as const;
 const TERMINAL_SPLIT_DIRECTIONS = ["horizontal", "vertical"] as const;
 const WORKSPACE_OBSERVER_MODES = ["native", "polling", "unavailable"] as const;
+const RESTORE_WARNING_CODES = ["staging_restored", "provider_fork_required"] as const satisfies readonly ChatRestoreWarningCode[];
 
 const MAX_RELATIVE_PATH_CHARS = 4_096;
 const MAX_DIRECTORY_ENTRIES = 5_000;
@@ -495,7 +497,7 @@ export function parseChatRestorePreview(value: unknown): ChatRestorePreviewRead 
     files: array(record.files, "restorePreview.files", parseChangedFile),
     stagedChanges: readBoolean(record.stagedChanges, "restorePreview.stagedChanges"),
     providerRollback: readEnum(record.providerRollback, ["supported", "unsupported"] as const, "restorePreview.providerRollback"),
-    warnings: array(record.warnings, "restorePreview.warnings", readString),
+    warnings: array(record.warnings, "restorePreview.warnings", (entry, label) => readEnum(entry, RESTORE_WARNING_CODES, label)),
   };
 }
 

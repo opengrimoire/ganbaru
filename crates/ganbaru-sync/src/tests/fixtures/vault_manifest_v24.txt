@@ -774,6 +774,7 @@ table 395 chat_work_assignments replicated key id rule any
   group 3 max updated_at:timestamp
   group 4 immutable parent_assignment_id:optional_row_key->395:cascade delegation_depth:integer(0..=2) delegation_objective:optional_text(..=4000) delegation_expected_result:optional_text(..=2000) delegation_folder_ceiling:optional_text(..=16384)
   check override_model_selection_schema_version,override_model_selection_data within 0
+  check state,review_outcome,reviewed_at,reviewed_by_participant_id within 2
 table 396 chat_work_assignment_inputs replicated key id rule any
   derived key exists 4 inputs message_item_id prefix assignment-input
   group 0 immutable message_item_id:row_key->372:cascade

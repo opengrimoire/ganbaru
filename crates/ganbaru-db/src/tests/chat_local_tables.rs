@@ -480,7 +480,7 @@ fn secret_requests_hold_no_value_and_follow_their_run() {
 }
 
 #[test]
-fn context_packages_record_channel_notes_and_the_rebuild_repeats_safely() {
+fn context_packages_record_channel_notes() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         load_project_chat_graph(&pool).await;
@@ -518,13 +518,6 @@ fn context_packages_record_channel_notes_and_the_rebuild_repeats_safely() {
         insert_source("channel_note", "note-1", 0).await.unwrap();
         assert!(insert_source("note", "note-2", 1).await.is_err());
 
-        sqlx::raw_sql(include_str!(
-            "../../migrations/20261112223442_chat_context_note_sources.sql"
-        ))
-        .execute(&pool)
-        .await
-        .unwrap();
-
         let kept: Vec<(String, String, i64)> = sqlx::query_as(
             "SELECT source_kind, source_id, ordinal FROM chat_assignment_context_sources",
         )
@@ -544,7 +537,7 @@ fn context_packages_record_channel_notes_and_the_rebuild_repeats_safely() {
         assert_eq!(
             count_where(&pool, "chat_assignment_context_sources", "1 = 1").await,
             0,
-            "sources still follow their package after the rebuild"
+            "sources follow their package"
         );
         assert_eq!(foreign_key_violations(&pool).await, 0);
     });

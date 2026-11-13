@@ -1428,6 +1428,63 @@ fn assignment_review_columns_accept_only_known_outcomes_and_full_timestamps() {
 }
 
 #[test]
+fn assignment_reviews_are_whole_and_only_on_completed_assignments() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let set = |state: &str,
+                   outcome: Option<&str>,
+                   reviewed_at: Option<&str>,
+                   reviewer: Option<&str>| {
+            sqlx::query(
+                "UPDATE chat_work_assignments
+                 SET state = ?, settled_at = ?, review_outcome = ?, reviewed_at = ?,
+                     reviewed_by_participant_id = ?
+                 WHERE id = 'assignment-1'",
+            )
+            .bind(state.to_owned())
+            .bind(NOW)
+            .bind(outcome.map(str::to_owned))
+            .bind(reviewed_at.map(str::to_owned))
+            .bind(reviewer.map(str::to_owned))
+            .execute(&pool)
+        };
+        let owner = Some("participant:local-owner");
+        let refused = |result: Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error>| {
+            let error = result.expect_err("the table constraint refuses the review");
+            assert!(
+                error.to_string().contains("CHECK constraint failed"),
+                "{error}"
+            );
+        };
+
+        for state in ["working", "failed", "cancelled"] {
+            refused(set(state, Some("accepted"), Some(NOW), owner).await);
+        }
+        for (outcome, reviewed_at, reviewer) in [
+            (Some("accepted"), None, None),
+            (Some("accepted"), Some(NOW), None),
+            (None, Some(NOW), owner),
+            (None, None, owner),
+        ] {
+            refused(set("completed", outcome, reviewed_at, reviewer).await);
+        }
+
+        set("completed", Some("accepted"), Some(NOW), owner)
+            .await
+            .unwrap();
+        refused(
+            sqlx::query(
+                "UPDATE chat_work_assignments SET state = 'working' WHERE id = 'assignment-1'",
+            )
+            .execute(&pool)
+            .await,
+        );
+        set("completed", None, None, None).await.unwrap();
+    });
+}
+
+#[test]
 fn delegated_assignments_sit_one_level_below_a_bounded_parent() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
@@ -1603,6 +1660,50 @@ fn assignment_model_override_schema_keeps_version_and_selection_together() {
                 .await
                 .is_err()
         );
+    });
+}
+
+#[test]
+fn mention_override_schema_keeps_version_and_selection_together() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::raw_sql("PRAGMA foreign_keys=OFF")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        let selection = r#"{"modelId":"gpt-5","modelOptions":[]}"#;
+        for (id, version, data, accepted) in [
+            ("reference:default", None, None, true),
+            ("reference:override", Some(1_i64), Some(selection), true),
+            ("reference:version-only", Some(1), None, false),
+            ("reference:data-only", None, Some(selection), false),
+        ] {
+            let result = sqlx::query(
+                "INSERT INTO chat_participant_reference_targets
+                    (reference_id, participant_id, override_model_selection_schema_version,
+                     override_model_selection_data)
+                 VALUES (?, 'participant-teammate', ?, ?)",
+            )
+            .bind(id)
+            .bind(version)
+            .bind(data)
+            .execute(&mut *connection)
+            .await;
+            if accepted {
+                result.unwrap();
+            } else {
+                let error = result.expect_err(id);
+                assert!(
+                    error.to_string().contains("CHECK constraint failed"),
+                    "{id}: {error}"
+                );
+            }
+        }
+        sqlx::raw_sql("PRAGMA foreign_keys=ON")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
     });
 }
 

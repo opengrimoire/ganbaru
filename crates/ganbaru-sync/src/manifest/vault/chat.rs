@@ -1896,13 +1896,24 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
     ],
     local_columns: &[REVISION],
     revision_column: Some("revision"),
-    resolutions: &[within(
-        &[
-            "override_model_selection_schema_version",
-            "override_model_selection_data",
-        ],
-        assignment_group::CREATED,
-    )],
+    resolutions: &[
+        within(
+            &[
+                "override_model_selection_schema_version",
+                "override_model_selection_data",
+            ],
+            assignment_group::CREATED,
+        ),
+        within(
+            &[
+                "state",
+                "review_outcome",
+                "reviewed_at",
+                "reviewed_by_participant_id",
+            ],
+            assignment_group::STATE,
+        ),
+    ],
     ..BASE
 };
 

@@ -19,7 +19,6 @@
   import { untrack } from "svelte";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import Bold from "@lucide/svelte/icons/bold";
-  import Bot from "@lucide/svelte/icons/bot";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Clock3 from "@lucide/svelte/icons/clock-3";
   import Feather from "@lucide/svelte/icons/feather";
@@ -61,7 +60,6 @@
     chatMessageIn,
     chatPickerNarrowed,
     chatPickerShown,
-    chatPreviewShown,
     chatReplyIn,
     chatReplyStripShown,
     chatSent,
@@ -149,7 +147,6 @@
   const working = $derived(chatWorking(elapsed));
   const pickerShown = $derived(chatPickerShown(elapsed));
   const narrowed = $derived(chatPickerNarrowed(elapsed));
-  const previewShown = $derived(chatPreviewShown(elapsed));
   const messageIn = $derived(chatMessageIn(elapsed));
   const threadShown = $derived(chatThreadShown(elapsed));
   const replyIn = $derived(chatReplyIn(elapsed));
@@ -185,9 +182,6 @@
 
   /** The picker's rows: the channel's agents, then the project's working folder, narrowed by the typed query. */
   const pickerAgents = $derived(narrowed ? [CHAT_SCENE_MENTIONED] : CHAT_SCENE_AGENTS);
-
-  /** The assignment preview's measured height, which it grows into above the composer as it shows. */
-  let previewH = $state(0);
 
   /** Whether the desktop pointer has left the canvas, where it hovers the named parts under it. A phone has touches and no hover. */
   const cursorAway = $derived(welcomeCursorFrame(CHAT_CURSOR, elapsed).away);
@@ -410,21 +404,6 @@
 
             <div class="channel-composer-dock">
               <div class="relative w-full">
-                {#if previewShown > 0}
-                  <div class="overflow-hidden" style:height={previewShown < 1 ? `${previewH * previewShown}px` : undefined} style:opacity={previewShown}>
-                    <div bind:offsetHeight={previewH} class="pb-[0.4rem]">
-                      <section class="assignment-preview">
-                        <Bot size={13} />
-                        <div>
-                          <strong>{projectName}</strong>
-                          <span>{t("chat.organization.noSecondaryFolders")}</span>
-                        </div>
-                        <span class="approval-pill">{t("settings.chat.teammates.runtime.ask")}</span>
-                      </section>
-                    </div>
-                  </div>
-                {/if}
-
                 <div class="organizational-composer">
                   <div class="editor-frame" data-cursor="chat-editor">
                     <div class={cn("organizational-editor", draftEmpty && "empty")} data-placeholder={t("chat.organization.messageChannel")}>
@@ -527,14 +506,8 @@
   .reply-strip.hovered { background: color-mix(in srgb, var(--accent) 45%, transparent); }
   .reply-avatars { display: flex; align-items: center; gap: 0.25rem; padding-left: 0.2rem; --chat-participant-avatar-radius: 0.2rem; }
 
-  /* The composer, its assignment preview, and its reference picker, as the organizational composer draws them. */
+  /* The composer and its reference picker, as the organizational composer draws them. */
   .channel-composer-dock { display: flex; flex: 0 0 auto; justify-content: center; padding: 0.5rem var(--gutter) 0.75rem; background: linear-gradient(to bottom, transparent, var(--cal-bg) 18%); }
-  .assignment-preview { display: grid; min-height: 2.45rem; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.5rem; margin-inline: 0.4rem; border: 1px solid color-mix(in srgb, var(--border) 68%, transparent); border-radius: 0.65rem; background: color-mix(in srgb, var(--card) 80%, transparent); padding: 0.35rem 0.55rem; color: var(--muted-foreground); }
-  .assignment-preview > div { display: grid; min-width: 0; }
-  .assignment-preview strong, .assignment-preview span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .assignment-preview strong { color: var(--foreground); font-size: 0.68rem; }
-  .assignment-preview span { font-size: 0.6rem; }
-  .approval-pill { border-radius: 999px; background: var(--accent); padding: 0.18rem 0.4rem; color: var(--foreground); }
   .organizational-composer { position: relative; width: 100%; border: 1px solid color-mix(in srgb, var(--border) 88%, transparent); border-radius: 1.3rem; background: var(--card); box-shadow: 0 8px 22px -18px rgb(0 0 0 / 0.24), 0 1px 4px -3px rgb(0 0 0 / 0.16); }
   .editor-frame { position: relative; padding: 1rem 1.25rem 0.4rem; }
   .organizational-editor { position: relative; min-height: 2.625rem; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--foreground); font-size: 0.875rem; line-height: 1.3125rem; }

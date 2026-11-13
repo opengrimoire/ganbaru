@@ -325,7 +325,8 @@ pub enum ChatAssignmentTargetLifecycleState {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatAssignmentTargetRead {
-    /// `None` identifies a scratch fallback that will be created lazily.
+    /// The existing environment this target names. Discovery lists only environments that exist, so it is set on
+    /// every listed target.
     pub execution_target: Option<ChatExecutionTarget>,
     pub kind: ChatAssignmentTargetKind,
     pub display_name: String,

@@ -141,7 +141,7 @@ pub async fn chat_list_assignment_targets(
             });
         }
     }
-    let scratch = read_scratch_assignment_target(
+    if let Some(scratch) = read_scratch_assignment_target(
         &app,
         &pool,
         &request.teammate_id,
@@ -150,8 +150,10 @@ pub async fn chat_list_assignment_targets(
         channel_access.runtime_approval_override,
         access.teammate_default_runtime_approval,
     )
-    .await?;
-    targets.push(scratch);
+    .await?
+    {
+        targets.push(scratch);
+    }
     targets.sort_by(|left, right| {
         right
             .is_default
@@ -164,6 +166,8 @@ pub async fn chat_list_assignment_targets(
     Ok(targets)
 }
 
+/// Reads the teammate's active scratch generation in the reply thread, or `None` when none exists, so the
+/// listed targets never name a scratch that is not there.
 async fn read_scratch_assignment_target(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
@@ -172,7 +176,7 @@ async fn read_scratch_assignment_target(
     scratch_override: Option<ChatRuntimeApprovalPolicy>,
     channel_override: Option<ChatRuntimeApprovalPolicy>,
     teammate_default: ChatRuntimeApprovalPolicy,
-) -> ChatResult<ChatAssignmentTargetRead> {
+) -> ChatResult<Option<ChatAssignmentTargetRead>> {
     let row = match reply_thread_id {
         Some(reply_thread_id) => sqlx::query(
             "SELECT scope.id AS scratch_scope_id, generation.id AS scratch_generation_id,
@@ -250,14 +254,9 @@ async fn read_scratch_assignment_target(
                 binding_state,
             )
         }
-        None => (
-            None,
-            ChatAssignmentTargetLifecycleState::Available,
-            false,
-            ChatAssignmentTargetBindingState::Ready,
-        ),
+        None => return Ok(None),
     };
-    Ok(ChatAssignmentTargetRead {
+    Ok(Some(ChatAssignmentTargetRead {
         execution_target,
         kind: ChatAssignmentTargetKind::Scratch,
         display_name: "Private scratch".to_string(),
@@ -278,7 +277,7 @@ async fn read_scratch_assignment_target(
         unavailable_reason: (binding_state
             == ChatAssignmentTargetBindingState::UnavailableOnThisDevice)
             .then(|| "Private scratch is unavailable on this device".to_string()),
-    })
+    }))
 }
 
 fn parse_assignment_target_lifecycle(

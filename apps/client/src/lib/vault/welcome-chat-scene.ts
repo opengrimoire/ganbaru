@@ -71,7 +71,6 @@ export const CHAT_STILL = B.end;
 /** How long the reference picker and the assignment preview take to rise in, and the picker to fade out. */
 export const CHAT_PICKER_ENTER_MS = 160;
 export const CHAT_PICKER_EXIT_MS = 100;
-export const CHAT_PREVIEW_ENTER_MS = 180;
 
 /** How long the reply thread takes to open, as the workspace moves its panels. */
 export const CHAT_THREAD_OPEN_MS = 320;
@@ -145,12 +144,6 @@ export function chatPickerShown(elapsed: number): number {
 /** Whether the picker lists only what matches the typed query: Claude, once a letter of its name follows the at sign. */
 export function chatPickerNarrowed(elapsed: number): boolean {
   return chatComposerDraft(elapsed, "").query.length > 1;
-}
-
-/** How far the assignment preview shows above the composer, from 0 to 1: from the mention until the message is sent. */
-export function chatPreviewShown(elapsed: number): number {
-  if (chatSent(elapsed)) return 0;
-  return easeInOutCubic(filmSpan(elapsed, B.pick, B.pick + CHAT_PREVIEW_ENTER_MS));
 }
 
 /** How far the sent message has risen into the channel, from 0 to 1. */

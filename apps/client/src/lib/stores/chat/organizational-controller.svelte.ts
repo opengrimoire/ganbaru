@@ -2,9 +2,6 @@ import * as chatApi from "$lib/api/chat";
 import type {
   ChatChannelId,
   ChatChannelRead,
-  ChatAssignmentBudgetInput,
-  ChatAssignmentModelOverride,
-  ChatExecutionTarget,
   ChatFollowupRouting,
   ChatMessageReference,
   ChatRecurrenceSpec,
@@ -23,7 +20,6 @@ export interface ChatOrganizationalDraft {
   richContent: VersionedJson;
   attachmentIds: string[];
   references: ChatMessageReference[];
-  executionTarget: ChatExecutionTarget | null;
   selectionStart: number;
   selectionEnd: number;
   scheduledFor: UtcTimestamp | null;
@@ -36,10 +32,6 @@ export interface ChatOrganizationalPostOptions {
   alsoSendToChannel?: boolean;
   /** How a reply reaches active work in its thread. */
   followupRouting?: ChatFollowupRouting;
-  /** Model for the new work the post starts, over the teammate default. */
-  modelOverride?: ChatAssignmentModelOverride;
-  /** Budget for the new work the post starts, over the teammate default. */
-  budget?: ChatAssignmentBudgetInput;
 }
 
 export interface ChatOrganizationalControllerOptions {
@@ -108,11 +100,9 @@ export class ChatOrganizationalController {
       richContent: draft.richContent,
       attachmentIds: [...draft.attachmentIds],
       references: cloneData(draft.references),
-      executionTarget: draft.executionTarget ? cloneData(draft.executionTarget) : null,
+      executionTarget: null,
       alsoSendToChannel: options.alsoSendToChannel ?? false,
       ...(options.followupRouting ? { followupRouting: options.followupRouting } : {}),
-      ...(options.modelOverride ? { modelOverride: cloneData(options.modelOverride) } : {}),
-      ...(options.budget ? { budget: { ...options.budget } } : {}),
     });
     this.setDraft(destination, emptyOrganizationalDraft());
     await this.options.loadChannelMessages(channel.id, true);
@@ -141,7 +131,7 @@ export class ChatOrganizationalController {
         richContent: draft.richContent,
         attachmentIds: [...draft.attachmentIds],
         references: cloneData(draft.references),
-        executionTarget: draft.executionTarget ? cloneData(draft.executionTarget) : null,
+        executionTarget: null,
         alsoSendToChannel: options.alsoSendToChannel ?? false,
       },
       recurrence: draft.recurrence ? cloneData(draft.recurrence) : null,
@@ -248,7 +238,6 @@ function emptyOrganizationalDraft(): ChatOrganizationalDraft {
     richContent: { schemaVersion: 1, value: { type: "document", children: [] } },
     attachmentIds: [],
     references: [],
-    executionTarget: null,
     selectionStart: 0,
     selectionEnd: 0,
     scheduledFor: null,

@@ -2,7 +2,6 @@
   import { onMount, tick, untrack } from "svelte";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import Bold from "@lucide/svelte/icons/bold";
-  import Bot from "@lucide/svelte/icons/bot";
   import CircleAlert from "@lucide/svelte/icons/circle-alert";
   import Clock3 from "@lucide/svelte/icons/clock-3";
   import FileIcon from "@lucide/svelte/icons/file";
@@ -23,12 +22,10 @@
     ChatAttachmentRead,
     ChatAssignmentInputRead,
     ChatAssignmentBudgetInput,
-    ChatAssignmentModelOverride,
     ChatAssignmentReviewRequest,
     ChatAssignmentTargetRead,
     ChatChannelRead,
     ChatChannelRosterRead,
-    ChatExecutionTarget,
     ChatFolderCapability,
     ChatFollowupRouting,
     ChatInteractionStateRead,
@@ -88,16 +85,13 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatAssignmentBudgetBar from "$lib/components/chat/timeline/ChatAssignmentBudgetBar.svelte";
   import ChatAssignmentReviewCard from "./ChatAssignmentReviewCard.svelte";
-  import ChatBudgetControl from "./ChatBudgetControl.svelte";
   import ChatComposerFrame from "./ChatComposerFrame.svelte";
   import ChatComposerInfoPanel from "./ChatComposerInfoPanel.svelte";
   import ChatComposerSuggestionMenu from "./ChatComposerSuggestionMenu.svelte";
-  import ChatModelOverrideControl from "./ChatModelOverrideControl.svelte";
   import ChatPendingInputs from "./ChatPendingInputs.svelte";
   import ChatTaskProgressCard from "./ChatTaskProgressCard.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { isAppFloatingSurfaceTarget } from "$lib/utils";
-  import { cloneData } from "$lib/utils/clone";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { chatReferencePickerPosition } from "./reference-picker-position";
 
@@ -205,7 +199,6 @@
     initialDraft.references,
   ));
   let attachmentIds = $state([...initialDraft.attachmentIds]);
-  let executionTarget = $state<ChatExecutionTarget | null>(initialDraft.executionTarget);
   let selectionStart = $state(initialDraft.selectionStart);
   let selectionEnd = $state(initialDraft.selectionEnd);
   let isBoldActive = $state(false);
@@ -252,6 +245,8 @@
   let assignmentTargets = $state<ChatAssignmentTargetRead[]>([]);
   let assignmentPreviewLoading = $state(false);
   let assignmentPreviewRequest = 0;
+  /** The assignment preview read in flight, which a send waits for before checking its blockers. */
+  let assignmentPreviewPending: Promise<void> | null = null;
   let navigationChannels = $state<ChatChannelRead[]>([]);
   let navigationChannelsLoaded = false;
   let promptMenuKind = $state<"skill" | "command" | null>(null);
@@ -266,11 +261,6 @@
   let interactionState = $state<ChatInteractionStateRead | null>(null);
   let interactionRequest = 0;
   let routingNotice = $state<string | null>(null);
-  let modelOverrideId = $state<string | null>(null);
-  /** The teammate the chosen model belongs to, so a model never carries over to another teammate. */
-  let modelOverrideTeammateId: string | null = null;
-  /** Limits chosen for the new work of a post, or `null` for the teammate default; reset with the model. */
-  let budgetOverride = $state<ChatAssignmentBudgetInput | null>(null);
   let assignmentInputs = $state<ChatAssignmentInputRead[]>([]);
   let assignmentInputsRequest = 0;
   /** The waiting reply the editor holds; the destination draft stays in the store until the edit ends. */
@@ -319,34 +309,21 @@
     const provider = chat.settings?.providerInstances.find(
       (entry) => entry.configuration.instanceId === offer.providerInstanceId,
     )?.configuration.label ?? offer.providerInstanceId;
-    const access = formatList(localization.locale, [
-      ...offer.folders.map((folder) => t(
-        "chat.organization.workAccessFolder",
-        folderCapabilityLabel(folder.capability),
-        folder.displayName,
-        runtimeApprovalLabel(folder.runtimeApproval),
-      )),
-      t("chat.organization.workAccessScratch", runtimeApprovalLabel(offer.scratchRuntimeApproval)),
-    ], { style: "long", type: "conjunction" });
+    const folders = offer.folders.map((folder) => t(
+      "chat.organization.workAccessFolder",
+      folderCapabilityLabel(folder.capability),
+      folder.displayName,
+      runtimeApprovalLabel(folder.runtimeApproval),
+    ));
+    const access = folders.length > 0
+      ? formatList(localization.locale, folders, { style: "long", type: "conjunction" })
+      : t("chat.organization.workAccessConversation");
     return `${t("chat.organization.workAwaitsStart")} ${t("chat.organization.workAwaitsStartAccess", provider, access)}`;
   });
   const inferredTarget = $derived.by(() => inferAssignmentTarget(
-    executionTarget,
     editorReferences,
     assignmentTargets,
   ));
-  const secondaryFolderNames = $derived.by(() => {
-    const targetFolderId = inferredTarget?.executionTarget?.kind === "workingFolder"
-      ? inferredTarget.executionTarget.workingFolderId
-      : null;
-    const ids = new Set(editorReferences.flatMap((reference) => {
-      if (reference.kind !== "workingFolder" && reference.kind !== "workspacePath") return [];
-      return reference.workingFolderId === targetFolderId ? [] : [reference.workingFolderId];
-    }));
-    return [...ids].map((id) => (
-      chat.workingFolders.find((folder) => folder.workingFolder.id === id)?.workingFolder.displayName ?? id
-    ));
-  });
   const providerBlockers = $derived.by(() => assignmentProviderBlockers(
     mentionedTeammateId,
     inferredTarget,
@@ -354,14 +331,6 @@
     teammateAccess,
     assignmentTargets,
   ));
-  const executionTargetOptions = $derived([
-    { value: "", label: t("chat.organization.automaticTarget") },
-    ...assignmentTargets.flatMap((target) => target.executionTarget ? [{
-      value: target.executionTarget.executionEnvironmentId,
-      label: `${target.displayName}${target.isDefault ? ` · ${t("chat.organization.defaultTarget")}` : ""}`,
-      disabled: !target.eligible,
-    }] : []),
-  ]);
   const pickerGroups = $derived.by(() => groupReferenceCandidates(pickerEntries));
   const nextScheduledMessage = $derived(
     scheduledMessages.find((message) => message.state !== "failed") ?? scheduledMessages[0] ?? null,
@@ -415,16 +384,6 @@
     { value: "steer", label: t("chat.composer.routing.steer") },
     { value: "queue", label: t("chat.composer.routing.queue") },
   ]);
-  const modelOverrideDisabledReason = $derived(activeAssignment
-    ? t("chat.composer.modelOverride.activeWork")
-    : scheduledFor
-      ? t("chat.composer.modelOverride.scheduled")
-      : null);
-  const budgetDisabledReason = $derived(activeAssignment
-    ? t("chat.composer.budget.activeWork")
-    : scheduledFor
-      ? t("chat.composer.budget.scheduled")
-      : null);
   /** The limit a failed assignment of this thread stopped at, when its budget stopped it. */
   const budgetStop = $derived(threadAssignment ? budgetStoppedAt(threadAssignment, chat.replyThread?.replies ?? []) : null);
   /** The provider limit that stopped or holds the work of this thread, with its reset time when known. */
@@ -484,16 +443,6 @@
       releaseReviewNote();
       editorController = null;
     };
-  });
-
-  $effect(() => {
-    const teammateId = targetTeammateId;
-    untrack(() => {
-      if (teammateId === modelOverrideTeammateId) return;
-      modelOverrideTeammateId = teammateId;
-      modelOverrideId = null;
-      budgetOverride = null;
-    });
   });
 
   $effect(() => {
@@ -568,12 +517,12 @@
       teammateAccess = null;
       assignmentTargets = [];
       assignmentPreviewLoading = false;
-      executionTarget = null;
+      assignmentPreviewPending = null;
       return;
     }
     teammateAccess = null;
     assignmentTargets = [];
-    void loadAssignmentPreview(teammateId, channelId, replyThreadId);
+    assignmentPreviewPending = loadAssignmentPreview(teammateId, channelId, replyThreadId);
   });
 
   $effect(() => {
@@ -607,7 +556,6 @@
       richContent: chatComposerDocumentVersioned(editorDocument),
       attachmentIds: [...attachmentIds],
       references,
-      executionTarget: executionTarget ? cloneData(executionTarget) : null,
       selectionStart,
       selectionEnd,
       scheduledFor,
@@ -1132,12 +1080,12 @@
   /** What the status panel shows about the provider session of the thread's latest run. */
   function teammateComposerStatus(): ComposerStatusRead {
     const policy = targetTeammate?.latestPolicy ?? null;
-    const modelId = modelOverrideId ?? policy?.modelId ?? null;
+    const modelId = policy?.modelId ?? null;
     return {
       providerLabel: targetProvider?.configuration.label ?? null,
       sessionId: interactionState?.sessionId ?? null,
       sessionState: interactionState?.sessionState ?? "stopped",
-      modelLabel: policy?.providerManagedModel && !modelOverrideId
+      modelLabel: policy?.providerManagedModel
         ? null
         : targetProvider?.modelCatalog?.models.find((entry) => entry.id === modelId)?.displayName ?? null,
       accountLabel: interactionState?.accountStatus?.accountLabel ?? null,
@@ -1408,10 +1356,6 @@
       ) return;
       teammateAccess = access;
       assignmentTargets = targets;
-      if (executionTarget && !targets.some((target) => sameExecutionTarget(target.executionTarget, executionTarget))) {
-        executionTarget = null;
-        persist();
-      }
     } catch (cause: unknown) {
       if (
         requestId === assignmentPreviewRequest
@@ -1530,7 +1474,6 @@
     normalizedMarkdown = "";
     editorReferences = [];
     attachmentIds = [];
-    executionTarget = null;
     selectionStart = 0;
     selectionEnd = 0;
     alsoSendToChannel = false;
@@ -1538,8 +1481,6 @@
     scheduledRecurrence = null;
     teammateAccess = null;
     assignmentTargets = [];
-    modelOverrideId = null;
-    budgetOverride = null;
     disclosureBlocker = null;
     dismissedMentionSuggestions = [];
     editorController?.setDocument(editorDocument, []);
@@ -1552,6 +1493,8 @@
       return;
     }
     if (sending || !hasMessageContent) return;
+    await waitForAssignmentPreview();
+    if (!hasMessageContent) return;
     if (validation || providerBlockers.length > 0 || messageTooLarge) {
       await focusBlocker();
       return;
@@ -1579,13 +1522,9 @@
           .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor));
       } else {
         const routing = activeAssignment ? followupRouting : null;
-        const modelOverride = postModelOverride();
-        const budget = postBudget();
         const result = await chat.postOrganizationalMessage(destination, {
           alsoSendToChannel: threadComposer && alsoSendToChannel,
           ...(routing ? { followupRouting: routing } : {}),
-          ...(modelOverride ? { modelOverride } : {}),
-          ...(budget ? { budget } : {}),
         });
         routingNotice = routing === "steer" && result.routedAs === "queue"
           ? t("chat.composer.routing.downgraded")
@@ -1594,21 +1533,24 @@
       }
       clearComposerAfterDelivery();
     } catch (cause: unknown) {
-      error = postRefusalMessage(cause);
+      error = chatErrorMessage(cause);
     } finally {
       sending = false;
     }
   }
 
-  /** The model a post asks its new work to run with, when the user chose one and the post can carry it. */
-  function postModelOverride(): ChatAssignmentModelOverride | null {
-    if (modelOverrideDisabledReason || !modelOverrideId || !targetTeammateId) return null;
-    return { providerManagedModel: false, modelId: modelOverrideId, modelOptions: [] };
-  }
-
-  /** The budget a post asks its new work to start with, when the user chose one and the post can carry it. */
-  function postBudget(): ChatAssignmentBudgetInput | null {
-    return budgetDisabledReason || !targetTeammateId ? null : budgetOverride;
+  /**
+   * Waits for the mentioned teammate's access and targets so a send checks its blockers against them instead of
+   * flashing a resolving state; the send stays busy meanwhile so a second send cannot start.
+   */
+  async function waitForAssignmentPreview(): Promise<void> {
+    if (!assignmentPreviewLoading || !assignmentPreviewPending) return;
+    sending = true;
+    try {
+      while (assignmentPreviewLoading && assignmentPreviewPending) await assignmentPreviewPending;
+    } finally {
+      sending = false;
+    }
   }
 
   /** Saves new limits for the work of this thread; `null` removes its budget. */
@@ -1621,19 +1563,6 @@
     return resetsAt === null
       ? t("chat.composer.budget.providerLimitUntimed")
       : t("chat.composer.budget.providerLimit", formatDateTime(localization.locale, Date.parse(resetsAt), { hour: "numeric", minute: "2-digit" }));
-  }
-
-  /** The localized reason a post was refused, or the failure message when the refusal names no known reason. */
-  function postRefusalMessage(cause: unknown): string {
-    switch (chatErrorReason(cause)) {
-      case "model_override_on_active_work": return t("chat.composer.postRefusals.modelOverrideOnActiveWork");
-      case "model_override_without_teammate": return t("chat.composer.postRefusals.modelOverrideWithoutTeammate");
-      case "model_override_needs_mention": return t("chat.composer.postRefusals.modelOverrideNeedsMention");
-      case "budget_on_active_work": return t("chat.composer.postRefusals.budgetOnActiveWork");
-      case "budget_without_teammate": return t("chat.composer.postRefusals.budgetWithoutTeammate");
-      case "budget_needs_new_work": return t("chat.composer.postRefusals.budgetNeedsNewWork");
-      default: return chatErrorMessage(cause);
-    }
   }
 
   async function focusBlocker(): Promise<void> {
@@ -1885,14 +1814,9 @@
   }
 
   function inferAssignmentTarget(
-    explicit: ChatExecutionTarget | null,
     references: readonly ChatMessageReference[],
     targets: readonly ChatAssignmentTargetRead[],
   ): ChatAssignmentTargetRead | null {
-    if (explicit) {
-      const selected = targets.find((target) => sameExecutionTarget(target.executionTarget, explicit));
-      if (selected) return selected;
-    }
     const referencedEnvironmentIds = new Set(references.flatMap((reference) => (
       reference.kind === "executionEnvironment" ? [reference.executionEnvironmentId] : []
     )));
@@ -1903,17 +1827,7 @@
       ));
       if (target) return target;
     }
-    return targets.find((target) => target.isDefault && target.eligible)
-      ?? targets.find((target) => target.kind === "scratch" && target.eligible)
-      ?? null;
-  }
-
-  function sameExecutionTarget(
-    left: ChatExecutionTarget | null,
-    right: ChatExecutionTarget | null,
-  ): boolean {
-    if (!left || !right || left.kind !== right.kind) return false;
-    return left.executionEnvironmentId === right.executionEnvironmentId;
+    return targets.find((target) => target.isDefault && target.eligible) ?? null;
   }
 
   function assignmentProviderBlockers(
@@ -1926,12 +1840,10 @@
     if (!teammateId) return [];
     const teammate = chat.teammates.find((candidate) => candidate.participant.id === teammateId);
     const blockers: string[] = [];
-    if (assignmentPreviewLoading) blockers.push(t("chat.organization.assignmentStillResolving"));
     if (!teammate?.latestPolicy) blockers.push(t("chat.organization.providerNotConfigured"));
     if (teammate && teammate.configurationState !== "healthy") {
       blockers.push(t("chat.organization.teammateNeedsSetup", teammate.participant.displayName));
     }
-    if (!assignmentPreviewLoading && !target) blockers.push(t("chat.organization.noEligibleTarget"));
     if (target && !target.eligible) {
       blockers.push(target.unavailableReason ?? t("chat.organization.targetUnavailable"));
     }
@@ -2061,31 +1973,6 @@
     </div>
   {/if}
 
-  {#if mentionedTeammateId}
-    <section class="assignment-preview" aria-label={t("chat.organization.assignmentPreview")}>
-      <Bot size={13} />
-      <div>
-        <strong>{#if assignmentPreviewLoading}<Loading layout="inline" label={t("chat.organization.resolvingAssignment")} />{:else}{inferredTarget?.displayName ?? t("chat.organization.privateScratch")}{/if}</strong>
-        <span>{secondaryFolderNames.length ? t("chat.organization.secondaryFolders", secondaryFolderNames.join(", ")) : t("chat.organization.noSecondaryFolders")}</span>
-      </div>
-      {#if inferredTarget}<span class="approval-pill">{runtimeApprovalLabel(inferredTarget.effectiveRuntimeApproval)}</span>{/if}
-      {#if assignmentTargets.length > 0}
-        <Select
-          inline
-          class="assignment-target-select"
-          ariaLabel={t("chat.organization.executionTarget")}
-          value={executionTarget?.executionEnvironmentId ?? ""}
-          options={executionTargetOptions}
-          onChange={(value) => {
-            const selected = assignmentTargets.find((target) => target.executionTarget?.executionEnvironmentId === value);
-            executionTarget = selected?.executionTarget ? cloneData(selected.executionTarget) : null;
-            persist();
-          }}
-        />
-      {/if}
-    </section>
-  {/if}
-
   {#if taskProgress}<ChatTaskProgressCard summary={taskProgress} />{/if}
 
   {#if pendingRows.length > 0}
@@ -2186,10 +2073,6 @@
         {#if threadComposer}<button type="button" class="tool-button" class:active={alsoSendToChannel} aria-label={t("chat.organization.shareReplyToChannel", channelName)} disabled={editLockReason !== null} aria-pressed={alsoSendToChannel} title={editLockReason ?? t("chat.organization.shareReplyToChannel", channelName)} onclick={() => { alsoSendToChannel = !alsoSendToChannel; }}><MessageSquareShare size={15} /></button>{/if}
       {/snippet}
       {#snippet trailing()}
-        {#if targetTeammate?.latestPolicy}
-          <ChatModelOverrideControl provider={targetProvider} policy={targetTeammate.latestPolicy} modelId={modelOverrideId} disabledReason={modelOverrideDisabledReason} onChange={(modelId) => { modelOverrideId = modelId; }} />
-          <ChatBudgetControl budget={budgetOverride} teammateDefaultTokens={targetTeammate.latestPolicy.defaultAssignmentTokenLimit} disabledReason={budgetDisabledReason} onChange={(budget) => { budgetOverride = budget; }} />
-        {/if}
         {#if followupRouting && !scheduledFor && !editingInput}
           <span class="routing-select" data-chat-followup-routing>
             <Select inline appearance="quiet" class="routing-select-control" ariaLabel={t("chat.composer.routing.label")} value={followupRouting} options={routingOptions} onChange={(value) => { if (value === "steer" || value === "queue") chat.setOrganizationalFollowupRouting(destination, value); }} />
@@ -2229,12 +2112,6 @@
   .scheduled-summary button { min-height:1.75rem; border-radius:0.4rem; padding:0.2rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); font-weight:500; }
   .scheduled-summary { background:color-mix(in srgb,var(--accent) 58%,transparent); color:var(--muted-foreground); }
   .scheduled-summary-anchor,.menu-anchor { position:relative; }
-  .assignment-preview { display:grid; min-height:2.45rem; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:0.5rem; margin:0 0.4rem 0.4rem; border:1px solid color-mix(in srgb,var(--border) 68%,transparent); border-radius:0.65rem; background:color-mix(in srgb,var(--card) 80%,transparent); padding:0.35rem 0.55rem; color:var(--muted-foreground); }
-  .assignment-preview > div { display:grid; min-width:0; }
-  .assignment-preview strong,.assignment-preview span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .assignment-preview strong { color:var(--foreground); font-size:calc(0.68rem * var(--type-scale)); }.assignment-preview span { font-size:calc(0.6rem * var(--type-scale)); }
-  .assignment-preview :global(.assignment-target-select) { width:auto; max-width:12rem; }
-  .approval-pill { border-radius:999px; background:var(--accent); padding:0.18rem 0.4rem; color:var(--foreground); }
   .organizational-composer { --composer-button-size:1.9rem; position:relative; width:100%; }
   .reference-picker { z-index:100; display:flex; flex-direction:column; overflow:hidden; }
   .reference-picker-scroll { min-height:0; flex:1 1 auto; overflow-y:auto; }
@@ -2253,7 +2130,6 @@
   .composer-blocker { display:flex; gap:0.45rem; margin:0 0.65rem 0.5rem; border-radius:0.5rem; background:color-mix(in srgb,var(--destructive) 8%,transparent); padding:0.45rem 0.55rem; color:var(--destructive); outline:none; }.composer-blocker:focus-visible { outline:2px solid var(--ring); }.composer-blocker > div { display:grid; gap:0.2rem; }.composer-blocker p { font-size:calc(0.68rem * var(--type-scale)); }.composer-blocker span { display:flex; flex-wrap:wrap; gap:0.25rem; }.composer-blocker button { min-height:1.75rem; border-radius:0.35rem; padding:0.2rem 0.4rem; font-size:calc(0.62rem * var(--type-scale)); font-weight:600; }.composer-blocker button:hover { background:color-mix(in srgb,var(--destructive) 10%,transparent); }
   .composer-stack :global(.composer-error) { padding:0 0.5rem 0.5rem; font-size:calc(0.7rem * var(--type-scale)); }
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
-  @media (max-width:42rem) { .assignment-preview { grid-template-columns:auto minmax(0,1fr); }.assignment-preview :global(.assignment-target-select),.approval-pill { grid-column:2; }}
   @media (pointer:coarse) { .tool-button,.send-button,.stop-button { min-width:2.75rem; min-height:2.75rem; } }
   @media (prefers-reduced-motion:reduce) { .send-button { transition:none; } }
 </style>

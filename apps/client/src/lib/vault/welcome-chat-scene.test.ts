@@ -19,7 +19,6 @@ import {
   chatPickerNarrowed,
   chatPickerOpen,
   chatPickerShown,
-  chatPreviewShown,
   chatReplyIn,
   chatReplyStripShown,
   chatSent,
@@ -52,7 +51,6 @@ describe("welcome chat scene", () => {
     for (const elapsed of moments()) {
       const values = [
         chatPickerShown(elapsed),
-        chatPreviewShown(elapsed),
         chatMessageIn(elapsed),
         chatThreadShown(elapsed),
         chatReplyIn(elapsed),
@@ -85,14 +83,12 @@ describe("welcome chat scene", () => {
     expect(chatPickerShown(B.pick - 1)).toBe(1);
   });
 
-  it("turns the query into a mention as the agent is accepted, closing the picker and showing the assignment", () => {
+  it("turns the query into a mention as the agent is accepted, closing the picker", () => {
     expect(chatMentioned(B.pick - 1)).toBe(false);
-    expect(chatPreviewShown(B.pick - 1)).toBe(0);
     expect(chatMentioned(B.pick)).toBe(true);
     expect(chatPickerOpen(B.pick)).toBe(false);
     expect(chatComposerDraft(B.pick, QUESTION)).toEqual({ query: "", mention: true, text: "" });
     expect(chatPickerShown(B.typeStart)).toBe(0);
-    expect(chatPreviewShown(B.typeStart)).toBe(1);
   });
 
   it("types the question after the mention, steady caret while typing, and clears the composer as it sends", () => {
@@ -103,7 +99,6 @@ describe("welcome chat scene", () => {
     expect(chatSent(B.sendTap)).toBe(true);
     expect(chatComposerDraft(B.sendTap, QUESTION)).toEqual({ query: "", mention: false, text: "" });
     expect(chatComposerCaretOn(B.sendTap)).toBe(false);
-    expect(chatPreviewShown(B.sendTap)).toBe(0);
   });
 
   it("posts the message, then opens its thread, where the reply starts and the channel shows its reply strip", () => {
@@ -163,7 +158,6 @@ describe("welcome chat scene", () => {
     expect(chatStepsFolded(CHAT_STILL)).toBe(1);
     expect(chatReplyStripShown(CHAT_STILL)).toBe(true);
     expect(chatPickerShown(CHAT_STILL)).toBe(0);
-    expect(chatPreviewShown(CHAT_STILL)).toBe(0);
     expect(chatWorking(CHAT_STILL)).toBe(false);
     expect(Object.values(chatTouches(CHAT_STILL)).every((touch) => touch === 0)).toBe(true);
   });

@@ -3,6 +3,7 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
+  ChatAssignmentAcceptanceFolderRead,
   ChatAssignmentInputRead,
   ChatFollowupRouting,
   ChatMessageReference,
@@ -216,7 +217,7 @@ describe("ChatMessageComposer", () => {
     send?.click();
     await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
     expect(post.mock.calls[0]?.[1]).toMatchObject({ followupRouting: "steer" });
-    expect(post.mock.calls[0]?.[1]).not.toHaveProperty("modelOverride");
+    expect(post.mock.calls[0]?.[1]).toEqual({ alsoSendToChannel: false, followupRouting: "steer" });
   });
 
   it("queues a reply when the user chose Queue and explains a steer the work queued", async () => {
@@ -239,44 +240,6 @@ describe("ChatMessageComposer", () => {
     await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2));
     expect(post.mock.calls[1]?.[1]).toMatchObject({ followupRouting: "queue" });
     expect(root.textContent).not.toContain("Queued, because the teammate");
-  });
-
-  it("disables the model choice while the thread's work is active", async () => {
-    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
-    const initialTeammates = chat.teammates;
-    chat.teammates = [{
-      participant: teammate,
-      role: "Coding teammate",
-      instructions: "",
-      configurationState: "healthy",
-      latestPolicy: {
-        id: "policy:atlas:1",
-        teammateId: teammate.id,
-        revision: 1,
-        providerInstanceId: "codex-local",
-        safetyMode: "ask_for_approval",
-        providerManagedModel: false,
-        modelId: "gpt-5.6-terra",
-        modelOptions: [],
-        effort: null,
-        speed: null,
-        providerOptions: { schemaVersion: 1, value: {} },
-        defaultAssignmentTokenLimit: null,
-        createdAt: "2026-08-16T12:00:00.000Z",
-      },
-      channelCount: 1,
-      activeAssignmentCount: 1,
-    }];
-    try {
-      const root = mountActiveWork();
-      await tick();
-
-      const control = root.querySelector<HTMLElement>("[data-chat-model-override]");
-      expect(control?.getAttribute("title")).toBe("Stop the current work to choose another model");
-      expect(control?.querySelector("button")?.disabled).toBe(true);
-    } finally {
-      chat.teammates = initialTeammates;
-    }
   });
 
   it("edits a waiting reply in the composer and restores the draft after saving", async () => {
@@ -473,7 +436,9 @@ describe("ChatMessageComposer", () => {
     expect(root.querySelector("[data-chat-pending-inputs]")).toBeNull();
   });
 
-  function mountWaitingWork(): { notice: HTMLElement; startHere: HTMLButtonElement } {
+  function mountWaitingWork(
+    folders: ChatAssignmentAcceptanceFolderRead[] = [{ displayName: "Website", capability: "edit", runtimeApproval: "ask" }],
+  ): { notice: HTMLElement; startHere: HTMLButtonElement } {
     const page = workingReplyThread();
     if (!page.assignment) throw new Error("The fixture holds an assignment");
     chat.replyThread = {
@@ -484,7 +449,7 @@ describe("ChatMessageComposer", () => {
         localAcceptance: {
           digest: "digest-seen",
           providerInstanceId: "codex-phone",
-          folders: [{ displayName: "Website", capability: "edit", runtimeApproval: "ask" }],
+          folders,
           scratchRuntimeApproval: "autoApprove",
         },
       },
@@ -511,7 +476,13 @@ describe("ChatMessageComposer", () => {
 
     expect(notice.textContent).toContain("It would run with codex-phone");
     expect(notice.textContent).toContain("Edit in Website (");
-    expect(notice.textContent).toContain("Private scratch (");
+    expect(notice.textContent).not.toContain("scratch");
+  });
+
+  it("names conversation only for waiting work without folder access", () => {
+    const { notice } = mountWaitingWork([]);
+
+    expect(notice.textContent).toContain("It would run with codex-phone: Conversation only.");
   });
 
   it("starts waiting work with the digest the user saw", async () => {

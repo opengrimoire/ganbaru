@@ -23,6 +23,7 @@ mod budgets;
 mod model_override;
 mod review;
 mod routing;
+mod targetless_dispatch;
 
 #[test]
 fn teammate_effort_accepts_every_catalog_reasoning_level() {

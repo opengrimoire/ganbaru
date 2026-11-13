@@ -338,81 +338,7 @@ async fn dispatch_claimed_assignment(
     claim: &ClaimedDispatch,
     native_session_lost: bool,
 ) -> ChatResult<AssignmentLaunch> {
-    let row = sqlx::query(
-        "SELECT
-            assignment.reply_thread_id,
-            assignment.teammate_id,
-            assignment.triggering_message_item_id,
-            assignment.state,
-            assignment.override_model_selection_data,
-            context.id AS context_package_id,
-            context.serialized_text,
-            authorization.id AS authorization_revision_id,
-            authorization.teammate_policy_revision_id,
-            authorization.requester_participant_id,
-            authorization.destination_conversation_id,
-            authorization.working_folder_id,
-            authorization.execution_environment_id,
-            authorization.resolved_runtime_approval_policy,
-            authorization.scope_digest,
-            authorization.decision_state,
-            authorization.revoked_at AS authorization_revoked_at,
-            channel.project_id,
-            project.status AS project_status,
-            environment.scratch_generation_id,
-            participant.archived_at,
-            job.claim_token
-         FROM chat_work_assignments assignment
-         JOIN chat_assignment_context_packages context
-           ON context.assignment_id = assignment.id AND context.revision = 1
-         JOIN chat_assignment_authorization_revisions authorization
-           ON authorization.assignment_id = assignment.id
-          AND authorization.revision = (
-            SELECT max(candidate.revision)
-            FROM chat_assignment_authorization_revisions candidate
-            WHERE candidate.assignment_id = assignment.id
-          )
-         JOIN chat_teammate_policy_revisions policy
-           ON policy.id = authorization.teammate_policy_revision_id
-         JOIN chat_teammates teammate ON teammate.participant_id = assignment.teammate_id
-         JOIN chat_participants participant ON participant.id = assignment.teammate_id
-         JOIN chat_channels channel
-           ON channel.conversation_id = authorization.destination_conversation_id
-         JOIN projects project ON project.id = channel.project_id
-         JOIN chat_execution_environments environment
-           ON environment.id = authorization.execution_environment_id
-          AND environment.lifecycle_state = 'available'
-          AND environment.archived_at IS NULL
-         JOIN chat_conversation_memberships membership
-           ON membership.conversation_id = authorization.destination_conversation_id
-          AND membership.participant_id = assignment.teammate_id
-          AND membership.removed_at IS NULL
-         JOIN chat_teammate_channel_memberships channel_access
-           ON channel_access.conversation_id = membership.conversation_id
-          AND channel_access.teammate_id = membership.participant_id
-          AND channel_access.removed_at IS NULL
-         JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         JOIN chat_access_profile_effective_revisions profile_revision
-           ON profile_revision.access_profile_id = profile.id
-         JOIN chat_assignment_dispatch_jobs job ON job.assignment_id = assignment.id
-         WHERE assignment.id = ?
-           AND CASE
-                 WHEN channel_access.participate_inherits_profile = 1
-                   THEN profile_revision.default_participate
-                 ELSE channel_access.participate AND profile_revision.default_participate
-               END = 1",
-    )
-    .bind(assignment_id.as_str())
-    .fetch_optional(pool)
-    .await
-    .map_err(persistence_error)?
-    .ok_or_else(|| {
-        ChatError::new(
-            ChatErrorCode::NotFound,
-            "Work assignment was not found",
-            true,
-        )
-    })?;
+    let row = read_dispatch_row(pool, assignment_id).await?;
     if row
         .try_get::<String, _>("claim_token")
         .map_err(persistence_error)?
@@ -795,6 +721,91 @@ async fn dispatch_claimed_assignment(
         launch_error: sent.launch_error,
         settlement: sent.launch_settlement,
         answered_input_ids,
+    })
+}
+
+/// Reads the frozen context, latest authorization, teammate access, and dispatch job that the
+/// dispatch of `assignment_id` starts from. Conversation-only work has no execution
+/// environment; an authorization that names one starts only while it is available.
+pub(super) async fn read_dispatch_row(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<sqlx::sqlite::SqliteRow> {
+    sqlx::query(
+        "SELECT
+            assignment.reply_thread_id,
+            assignment.teammate_id,
+            assignment.triggering_message_item_id,
+            assignment.state,
+            assignment.override_model_selection_data,
+            context.id AS context_package_id,
+            context.serialized_text,
+            authorization.id AS authorization_revision_id,
+            authorization.teammate_policy_revision_id,
+            authorization.requester_participant_id,
+            authorization.destination_conversation_id,
+            authorization.working_folder_id,
+            authorization.execution_environment_id,
+            authorization.resolved_runtime_approval_policy,
+            authorization.scope_digest,
+            authorization.decision_state,
+            authorization.revoked_at AS authorization_revoked_at,
+            channel.project_id,
+            project.status AS project_status,
+            environment.scratch_generation_id,
+            participant.archived_at,
+            job.claim_token
+         FROM chat_work_assignments assignment
+         JOIN chat_assignment_context_packages context
+           ON context.assignment_id = assignment.id AND context.revision = 1
+         JOIN chat_assignment_authorization_revisions authorization
+           ON authorization.assignment_id = assignment.id
+          AND authorization.revision = (
+            SELECT max(candidate.revision)
+            FROM chat_assignment_authorization_revisions candidate
+            WHERE candidate.assignment_id = assignment.id
+          )
+         JOIN chat_teammate_policy_revisions policy
+           ON policy.id = authorization.teammate_policy_revision_id
+         JOIN chat_teammates teammate ON teammate.participant_id = assignment.teammate_id
+         JOIN chat_participants participant ON participant.id = assignment.teammate_id
+         JOIN chat_channels channel
+           ON channel.conversation_id = authorization.destination_conversation_id
+         JOIN projects project ON project.id = channel.project_id
+         LEFT JOIN chat_execution_environments environment
+           ON environment.id = authorization.execution_environment_id
+          AND environment.lifecycle_state = 'available'
+          AND environment.archived_at IS NULL
+         JOIN chat_conversation_memberships membership
+           ON membership.conversation_id = authorization.destination_conversation_id
+          AND membership.participant_id = assignment.teammate_id
+          AND membership.removed_at IS NULL
+         JOIN chat_teammate_channel_memberships channel_access
+           ON channel_access.conversation_id = membership.conversation_id
+          AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.removed_at IS NULL
+         JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
+         JOIN chat_access_profile_effective_revisions profile_revision
+           ON profile_revision.access_profile_id = profile.id
+         JOIN chat_assignment_dispatch_jobs job ON job.assignment_id = assignment.id
+         WHERE assignment.id = ?
+           AND (authorization.execution_environment_id IS NULL OR environment.id IS NOT NULL)
+           AND CASE
+                 WHEN channel_access.participate_inherits_profile = 1
+                   THEN profile_revision.default_participate
+                 ELSE channel_access.participate AND profile_revision.default_participate
+               END = 1",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?
+    .ok_or_else(|| {
+        ChatError::new(
+            ChatErrorCode::NotFound,
+            "Work assignment was not found",
+            true,
+        )
     })
 }
 

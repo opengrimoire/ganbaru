@@ -42,7 +42,7 @@ struct ResolvedChannelAccess {
     folder_grants: Vec<ChatFolderGrantInput>,
 }
 
-struct ValidatedTeammateConfiguration {
+pub(super) struct ValidatedTeammateConfiguration {
     display_name: String,
     role: String,
     instructions: String,
@@ -239,8 +239,22 @@ pub async fn chat_replace_teammate_access(
         request.policy.as_ref(),
     )?;
     let pool = chat_pool(app.clone(), db_url).await?;
+    if write_teammate_access(&pool, &request, validated_configuration).await? {
+        super::super::revocation::drain_access_revocation_jobs(&app, &pool).await?;
+    }
+    read_teammate_access(&pool, &request.teammate_id).await
+}
+
+/// Saves the access draft of `request`, with its profile and policy change when
+/// `validated_configuration` carries one, and returns whether the draft reduced the teammate's
+/// access, which revoked its authorizations and queued revocation jobs for the caller to drain.
+pub(super) async fn write_teammate_access(
+    pool: &SqlitePool,
+    request: &ReplaceChatTeammateAccessCommand,
+    validated_configuration: Option<ValidatedTeammateConfiguration>,
+) -> ChatResult<bool> {
     let preview = preview_teammate_access(
-        &pool,
+        pool,
         &request.teammate_id,
         request.expected_access_revision,
         request.policy.as_ref(),
@@ -253,8 +267,8 @@ pub async fn chat_replace_teammate_access(
             issue.message.clone(),
         ));
     }
-    let current = read_teammate_access(&pool, &request.teammate_id).await?;
-    let resolved = resolve_channel_access(&pool, &request.teammate_id, &request.channels)
+    let current = read_teammate_access(pool, &request.teammate_id).await?;
+    let resolved = resolve_channel_access(pool, &request.teammate_id, &request.channels)
         .await?
         .0;
     let has_reduction = teammate_access_has_reduction(
@@ -482,10 +496,7 @@ pub async fn chat_replace_teammate_access(
         .await?;
     }
     transaction.commit().await.map_err(persistence_error)?;
-    if has_reduction {
-        super::super::revocation::drain_access_revocation_jobs(&app, &pool).await?;
-    }
-    read_teammate_access(&pool, &request.teammate_id).await
+    Ok(has_reduction)
 }
 
 /// Replaces the active folder grants of one AI channel membership: revokes every active grant,

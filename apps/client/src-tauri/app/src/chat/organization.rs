@@ -157,6 +157,21 @@ pub async fn chat_create_teammate(
     db_url: String,
     request: CreateChatTeammateCommand,
 ) -> ChatResult<ChatAiTeammateRead> {
+    validate_policy(&app, &request.policy)?;
+    let home_device_id = crate::sync::devices::stable_device_id(&app)
+        .map_err(crate::chat::settings::device_state_error)?;
+    let pool = chat_pool(app, db_url).await?;
+    create_teammate(&pool, &request, &home_device_id).await
+}
+
+/// Stores the teammate of `request`, with `home_device_id` as its home device, and its first
+/// policy revision. The caller has checked the policy against this device's providers.
+#[cfg(desktop)]
+async fn create_teammate(
+    pool: &SqlitePool,
+    request: &CreateChatTeammateCommand,
+    home_device_id: &str,
+) -> ChatResult<ChatAiTeammateRead> {
     let display_name = validate_display_name(&request.display_name)?;
     let role = validate_teammate_role(&request.role)?;
     validate_profile_text(
@@ -164,11 +179,7 @@ pub async fn chat_create_teammate(
         continuation::MAX_TEAMMATE_INSTRUCTIONS_BYTES,
         "instructions",
     )?;
-    validate_policy(&app, &request.policy)?;
     let avatar_data = json_object(&request.avatar, "avatar")?;
-    let home_device_id = crate::sync::devices::stable_device_id(&app)
-        .map_err(crate::chat::settings::device_state_error)?;
-    let pool = chat_pool(app, db_url).await?;
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     require_unused_teammate_name(
@@ -214,7 +225,7 @@ pub async fn chat_create_teammate(
     )
     .await?;
     transaction.commit().await.map_err(persistence_error)?;
-    read_teammate(&pool, &request.teammate_id).await
+    read_teammate(pool, &request.teammate_id).await
 }
 
 #[tauri::command]

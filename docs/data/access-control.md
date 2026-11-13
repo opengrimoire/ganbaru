@@ -80,10 +80,10 @@ Provider output, changed-file reports, terminal output, model labels, protocol e
 Planning and discussion may remain targetless. Native filesystem, terminal, Git, checkpoint, restore, preview, or process work requires exactly one execution target, resolved in this order:
 
 1. Retain the locked target of an active compatible continuation.
-2. Use the target explicitly selected during assignment review.
+2. Use a target the request names explicitly. The composer names none, because the channel grant decides where work runs.
 3. Infer a target only when all executable references resolve to one eligible environment.
 4. Use the membership's valid default folder when one exists.
-5. Otherwise remain targetless and request a choice before native work.
+5. Otherwise remain targetless, so the run is conversation only.
 
 A run cannot combine a working folder and a scratch generation as coequal roots. Any future secondary folder access requires its own explicit capability and path boundary and must not be smuggled through attachments, links, environment variables, or provider configuration.
 

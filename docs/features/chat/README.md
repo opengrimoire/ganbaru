@@ -13,7 +13,7 @@ Chat is Ganbaru's project communication and coding-work surface. It combines dur
 | Codex, Claude, Cursor, Grok, OpenCode, and generic ACP agent execution | Implemented |
 | Interactive requests, cancellation, inspector, file browser and editor, review, terminals, browser previews, and Git checkpoints | Implemented |
 | AI agents with per-channel access profiles, folder grants, and frozen context packages | Implemented |
-| Private scratch execution with explicit promotion and cleanup | Implemented |
+| Private scratch execution with explicit promotion and cleanup | Partial; the native target exists, but no composer surface starts scratch work |
 | Structured delegation | Implemented |
 | Repeating schedules and quiet periods | Implemented |
 | Budgets and task-linked assignments | Planned |

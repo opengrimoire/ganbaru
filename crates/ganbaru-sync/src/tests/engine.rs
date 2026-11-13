@@ -2865,6 +2865,8 @@ fn recovery_root_tables_follow_cascades_and_leave_out_derived_keys() {
             // Messages carry recoverable content, and the timeline items they are keyed by root
             // their offers.
             crate::manifest::vault::chat::ITEMS_TABLE,
+            // Channel notes carry a recoverable body, so a losing concurrent wording is offered.
+            crate::manifest::vault::chat::CHANNEL_NOTES_TABLE,
             crate::manifest::vault::chat::MESSAGES_TABLE,
             ITEMS_TABLE,
             CYCLE_A_TABLE,

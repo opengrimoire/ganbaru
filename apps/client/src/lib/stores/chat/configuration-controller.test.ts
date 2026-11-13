@@ -42,6 +42,11 @@ const behavior: ChatBehaviorPreferences = {
   terminalScrollbackLines: 1000,
   idleSessionTimeoutSeconds: 600,
   confirmMultilineTerminalPaste: true,
+  notifyWaitingForYou: true,
+  notifyReviewReady: true,
+  notifyFailures: true,
+  announceBackgroundWork: true,
+  notificationIncludeContent: false,
 };
 
 async function settled(): Promise<void> {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseChatReviewPatchPage,
+  parseChatReviewSnapshot,
   parseChatRestorePreview,
   parseChatWorkspaceChangeBatch,
   parseProjectWorkingFolderDirectory,
@@ -40,6 +41,23 @@ describe("Chat workspace response validation", () => {
         continuationCursor: null,
       }),
     ).toThrow("reviewPatchPage.patches must contain at most 64 entries");
+  });
+
+  it("accepts assignment review snapshots and rejects unknown authored path states", () => {
+    const snapshot = {
+      snapshotId: "snapshot-1",
+      reviewRevision: "revision-1",
+      source: { kind: "assignment", assignmentId: "assignment-1" },
+      sourceLabel: "Assignment",
+      files: [],
+      totals: { files: 0, additions: 0, deletions: 0 },
+      preferredPatch: null,
+      freshness: "current",
+      authoredPaths: "computed",
+    };
+    expect(parseChatReviewSnapshot(snapshot).source).toEqual({ kind: "assignment", assignmentId: "assignment-1" });
+    expect(() => parseChatReviewSnapshot({ ...snapshot, authoredPaths: "partial" })).toThrow("reviewSnapshot.authoredPaths");
+    expect(() => parseChatReviewSnapshot({ ...snapshot, source: { kind: "assignment" } })).toThrow();
   });
 
   it("accepts typed restore warnings and rejects untyped warning text", () => {

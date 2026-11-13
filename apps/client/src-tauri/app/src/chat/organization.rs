@@ -6,6 +6,10 @@ use super::channels::{
     chat_pool, i64_value, identifier_error, now_timestamp, optional_timestamp, persistence_error,
     timestamp, u64_value,
 };
+pub use channel_notes::{
+    AcceptChatNoteProposalCommand, ChatNoteProposalStateRead, CreateChatChannelNoteCommand,
+    DeleteChatChannelNoteCommand, DismissChatNoteProposalCommand, UpdateChatChannelNoteCommand,
+};
 pub use ganbaru_chat::coordination::contracts::*;
 use ganbaru_chat_contracts::models::*;
 use serde::{Deserialize, Serialize};
@@ -26,6 +30,7 @@ const MAX_SEARCH_RESULTS: u32 = 100;
 pub mod access;
 #[cfg(desktop)]
 mod assignments;
+mod channel_notes;
 mod common;
 #[cfg(desktop)]
 mod context;
@@ -39,6 +44,7 @@ mod inputs;
 #[cfg(desktop)]
 mod primary_folder;
 mod reads;
+pub(crate) mod review_queue;
 mod scheduling;
 mod teammate_lifecycle;
 mod workflow;
@@ -917,6 +923,77 @@ pub async fn chat_read_schedule_proposal_states(
     scheduling::read_schedule_proposal_states(app, db_url, proposal_item_ids).await
 }
 
+/// Lists the live notes of a channel the local person belongs to, newest updated first.
+#[tauri::command]
+pub async fn chat_list_channel_notes(
+    app: tauri::AppHandle,
+    db_url: String,
+    channel_id: ChatChannelId,
+) -> ChatResult<Vec<ChatChannelNoteRead>> {
+    channel_notes::list_channel_notes(&chat_pool(app, db_url).await?, &channel_id).await
+}
+
+/// Saves a note a person wrote in a channel.
+#[tauri::command]
+pub async fn chat_create_channel_note(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: CreateChatChannelNoteCommand,
+) -> ChatResult<ChatChannelNoteRead> {
+    channel_notes::create_channel_note(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Rewords a channel note at the revision the person saw.
+#[tauri::command]
+pub async fn chat_update_channel_note(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: UpdateChatChannelNoteCommand,
+) -> ChatResult<ChatChannelNoteRead> {
+    channel_notes::update_channel_note(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Deletes a channel note at the revision the person saw.
+#[tauri::command]
+pub async fn chat_delete_channel_note(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: DeleteChatChannelNoteCommand,
+) -> ChatResult<()> {
+    channel_notes::delete_channel_note(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Saves a teammate's note proposal as a channel note, as suggested or with the person's text.
+#[tauri::command]
+pub async fn chat_accept_note_proposal(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: AcceptChatNoteProposalCommand,
+) -> ChatResult<ChatChannelNoteRead> {
+    channel_notes::accept_note_proposal(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Dismisses a teammate's note proposal so no device saves it.
+#[tauri::command]
+pub async fn chat_dismiss_note_proposal(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: DismissChatNoteProposalCommand,
+) -> ChatResult<()> {
+    channel_notes::dismiss_note_proposal(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Reads whether each note proposal is pending, saved, or dismissed on every linked device.
+#[tauri::command]
+pub async fn chat_read_note_proposal_states(
+    app: tauri::AppHandle,
+    db_url: String,
+    proposal_item_ids: Vec<ChatConversationItemId>,
+) -> ChatResult<Vec<ChatNoteProposalStateRead>> {
+    channel_notes::read_note_proposal_states(&chat_pool(app, db_url).await?, proposal_item_ids)
+        .await
+}
+
 #[tauri::command]
 pub async fn chat_list_scheduled_messages(
     app: tauri::AppHandle,
@@ -1222,8 +1299,19 @@ pub async fn chat_accept_assignment_here(
 pub async fn chat_list_waiting_assignments(
     app: tauri::AppHandle,
     db_url: String,
-) -> ChatResult<Vec<ChatWaitingAssignmentRead>> {
+) -> ChatResult<ChatWaitingAssignmentsRead> {
     assignments::list_waiting_assignments(app, db_url).await
+}
+
+/// Lists the assignments that wait for the person in every channel, or in one project's
+/// channels, by priority and recency, with how many match in all.
+#[tauri::command]
+pub async fn chat_list_review_queue(
+    app: tauri::AppHandle,
+    db_url: String,
+    project_id: Option<String>,
+) -> ChatResult<ChatReviewQueueRead> {
+    review_queue::list_review_queue(app, db_url, project_id).await
 }
 
 /// Lists the replies routed to an assignment after the message that started it, with their

@@ -32,10 +32,13 @@
 //! executes it. Input ids derive from their message, so concurrent routing of one message
 //! converges, and a settled assignment state wins over a concurrent active one.
 //!
+//! Channel notes replicate (table 400). People write them, a teammate only proposes one, and a
+//! deletion wins over a concurrent edit, so a dismissed proposal stays dismissed.
+//!
 //! Execution, drafts, review history, provider state, receipts, dispatch claims, cleanup jobs,
 //! and the access and audience counters stay on the device as `Local` tables, and message search
 //! is `Derived`. Replicas write Chat like the owner; device-local state never leaves the device.
-//! Ids 357 to 359, 365 to 369, 382 to 389, 391 to 394, 398 to 400, and 402 to 447 are reserved.
+//! Ids 357 to 359, 365 to 369, 382 to 389, 391 to 394, 398, 399, and 402 to 447 are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
 use ganbaru_sync_contracts::chat_recurrence;
@@ -46,13 +49,14 @@ use ganbaru_sync_contracts::bounds::MAX_ORDER_KEY_BYTES;
 use crate::assets::{AssetClass, LocalAssetColumn, LocalDigest};
 use crate::domains::chat::{
     MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_ID_CHARS, MAX_ATTACHMENT_MIME_CHARS,
-    MAX_ATTACHMENT_NAME_CHARS, MAX_CHANNEL_NAME_CHARS, MAX_CHANNEL_TOPIC_CHARS,
-    MAX_DELEGATION_DEPTH, MAX_DELEGATION_EXPECTED_RESULT_CHARS, MAX_DELEGATION_OBJECTIVE_CHARS,
-    MAX_DISPLAY_NAME_CHARS, MAX_ENUM_CHARS, MAX_ENVIRONMENT_ID_CHARS, MAX_ID_CHARS,
-    MAX_INSTRUCTIONS_CHARS, MAX_JSON_CHARS, MAX_LABEL_CHARS, MAX_MESSAGE_ATTACHMENTS,
-    MAX_MESSAGE_MARKDOWN_BYTES, MAX_PROVIDER_INSTANCE_CHARS, MAX_REASON_CHARS,
-    MAX_RELATIVE_PATH_CHARS, MAX_RICH_CONTENT_BYTES, MAX_ROLE_CHARS, MAX_SCHEDULED_REFERENCES,
-    MAX_SCHEDULED_REQUEST_BYTES, MAX_SEMANTIC_PAYLOAD_BYTES, SHA256_HEX_CHARS,
+    MAX_ATTACHMENT_NAME_CHARS, MAX_CHANNEL_NAME_CHARS, MAX_CHANNEL_NOTE_CHARS,
+    MAX_CHANNEL_TOPIC_CHARS, MAX_DELEGATION_DEPTH, MAX_DELEGATION_EXPECTED_RESULT_CHARS,
+    MAX_DELEGATION_OBJECTIVE_CHARS, MAX_DISPLAY_NAME_CHARS, MAX_ENUM_CHARS,
+    MAX_ENVIRONMENT_ID_CHARS, MAX_ID_CHARS, MAX_INSTRUCTIONS_CHARS, MAX_JSON_CHARS,
+    MAX_LABEL_CHARS, MAX_MESSAGE_ATTACHMENTS, MAX_MESSAGE_MARKDOWN_BYTES,
+    MAX_PROVIDER_INSTANCE_CHARS, MAX_REASON_CHARS, MAX_RELATIVE_PATH_CHARS, MAX_RICH_CONTENT_BYTES,
+    MAX_ROLE_CHARS, MAX_SCHEDULED_REFERENCES, MAX_SCHEDULED_REQUEST_BYTES,
+    MAX_SEMANTIC_PAYLOAD_BYTES, SHA256_HEX_CHARS,
 };
 use crate::manifest::vault::projects::{FOLDERS_TABLE, PROJECTS_TABLE};
 use crate::manifest::{
@@ -88,6 +92,8 @@ pub const CHANNEL_MEMBERSHIPS_TABLE: TableId = TableId(362);
 pub const FOLDER_GRANTS_TABLE: TableId = TableId(363);
 /// `chat_channels`.
 pub const CHANNELS_TABLE: TableId = TableId(364);
+/// `chat_channel_notes`.
+pub const CHANNEL_NOTES_TABLE: TableId = TableId(400);
 /// `chat_reply_threads`.
 pub const REPLY_THREADS_TABLE: TableId = TableId(370);
 /// `chat_conversation_items`.
@@ -276,6 +282,23 @@ pub mod channel_group {
     pub const LIFECYCLE: GroupId = group_id(2);
     /// `updated_at`.
     pub const UPDATED: GroupId = group_id(3);
+}
+
+/// Channel note field groups.
+pub mod channel_note_group {
+    use super::{GroupId, group_id};
+
+    /// `channel_id` and `created_at`.
+    pub const CREATED: GroupId = group_id(0);
+    /// `source_item_id` and `proposed_by_participant_id`, set when a note comes from a teammate
+    /// proposal.
+    pub const PROVENANCE: GroupId = group_id(1);
+    /// `body` and `edited_by_participant_id`, the person who wrote the current wording.
+    pub const BODY: GroupId = group_id(2);
+    /// `deleted_at`.
+    pub const LIFECYCLE: GroupId = group_id(3);
+    /// `updated_at`.
+    pub const UPDATED: GroupId = group_id(4);
 }
 
 /// Reply thread field groups.
@@ -1133,6 +1156,60 @@ pub const CHANNELS: TableSpec = TableSpec {
     ..BASE
 };
 
+/// `chat_channel_notes`. Only a person writes a note, which local triggers check; a note from a
+/// teammate proposal takes an id derived from the proposal item, so devices that accept or
+/// dismiss one proposal concurrently write one row. Concurrent wording edits surface a
+/// conflict, and a deletion wins over a concurrent edit.
+pub const CHANNEL_NOTES: TableSpec = TableSpec {
+    id: CHANNEL_NOTES_TABLE,
+    name: "chat_channel_notes",
+    groups: &[
+        immutable(
+            channel_note_group::CREATED,
+            &[row_key("channel_id"), timestamp("created_at")],
+            &[cascade("channel_id", CHANNELS_TABLE)],
+        ),
+        referencing(
+            register(
+                channel_note_group::PROVENANCE,
+                "provenance",
+                &[
+                    optional_row_key("source_item_id"),
+                    optional_row_key("proposed_by_participant_id"),
+                ],
+            ),
+            &[
+                set_null("source_item_id", ITEMS_TABLE),
+                set_null("proposed_by_participant_id", PARTICIPANTS_TABLE),
+            ],
+        ),
+        surfaced(bumps(referencing(
+            register(
+                channel_note_group::BODY,
+                "body",
+                &[
+                    trimmed("body", MAX_CHANNEL_NOTE_CHARS),
+                    optional_row_key("edited_by_participant_id"),
+                ],
+            ),
+            &[set_null("edited_by_participant_id", PARTICIPANTS_TABLE)],
+        ))),
+        bumps(coupled(
+            channel_note_group::LIFECYCLE,
+            "lifecycle",
+            &[optional_timestamp("deleted_at")],
+        )),
+        updated(channel_note_group::UPDATED),
+    ],
+    local_columns: &[REVISION],
+    revision_column: Some("revision"),
+    triggers: &[
+        gated("chat_channel_notes_editor_is_person_insert"),
+        gated("chat_channel_notes_editor_is_person_update"),
+    ],
+    ..BASE
+};
+
 /// `chat_reply_threads`. The id derives from the root item, so devices that open a thread on one
 /// message concurrently create one row. Activity keeps the latest time.
 pub const REPLY_THREADS: TableSpec = TableSpec {
@@ -1869,6 +1946,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         CHANNELS,
         REPLY_THREADS,
         ITEMS,
+        CHANNEL_NOTES,
         MESSAGES,
         REVISIONS,
         REFERENCES,

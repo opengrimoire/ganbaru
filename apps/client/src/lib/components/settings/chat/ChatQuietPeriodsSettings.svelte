@@ -17,6 +17,7 @@
   } from "$lib/chat/composer/quiet-periods";
   import { chatQuietWindowSummary } from "$lib/chat/composer/recurrence-presentation";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { announceChatQuietPeriodsSaved } from "$lib/chat/notifications/quiet-status.svelte";
   import { formatTimeLabel } from "$lib/calendar/utils";
   import ChatWeekdayToggles from "$lib/components/chat/composer/ChatWeekdayToggles.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -75,6 +76,7 @@
     error = null;
     try {
       windows = (await saveChatQuietPeriods({ windows: next })).windows;
+      announceChatQuietPeriodsSaved();
       quietState = await readChatQuietState();
     } catch (cause: unknown) {
       windows = previous;

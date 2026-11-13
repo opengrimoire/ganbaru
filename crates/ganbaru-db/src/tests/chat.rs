@@ -2205,3 +2205,172 @@ fn host_tool_invocations_record_only_known_tool_classes() {
         assert_eq!(defaulted, "read");
     });
 }
+
+/// Inserts channel note `id` in the general channel with `body` written by `editor`.
+async fn insert_channel_note(
+    pool: &sqlx::SqlitePool,
+    id: &str,
+    body: &str,
+    editor: Option<&str>,
+) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO chat_channel_notes
+             (id, channel_id, body, edited_by_participant_id, created_at, updated_at)
+         VALUES (?, 'channel-general', ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(body)
+    .bind(editor)
+    .bind(NOW)
+    .bind(NOW)
+    .execute(pool)
+    .await
+}
+
+async fn set_sync_applying(pool: &sqlx::SqlitePool, applying: bool) {
+    sqlx::query("UPDATE sync_apply_state SET applying = ? WHERE singleton = 1")
+        .bind(i64::from(applying))
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// Whether `error` is a refusal of a stored value, by the table's CHECK or by the sync value
+/// trigger that runs before it.
+fn is_value_refusal(error: &str) -> bool {
+    error.contains("CHECK constraint failed") || error.contains("Replicated row values are invalid")
+}
+
+#[test]
+fn channel_notes_are_indexed_by_channel_and_bound_their_body() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let index: String = sqlx::query_scalar(
+            "SELECT group_concat(name, ',') FROM pragma_index_info('idx_chat_channel_notes_channel')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(index, "channel_id,deleted_at,updated_at");
+
+        let owner = Some("participant:local-owner");
+        insert_channel_note(&pool, "note-longest", &"n".repeat(1000), owner)
+            .await
+            .unwrap();
+        for (id, body) in [
+            ("note-empty", "   ".to_owned()),
+            ("note-long", "n".repeat(1001)),
+        ] {
+            let error = insert_channel_note(&pool, id, &body, owner)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(is_value_refusal(&error), "{error}");
+        }
+        let error = insert_channel_note(&pool, &"k".repeat(129), "Fact", owner)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(is_value_refusal(&error), "{error}");
+
+        sqlx::query("DELETE FROM chat_channels WHERE id = 'channel-general'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let notes: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_channel_notes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(notes, 0, "notes are deleted with their channel");
+    });
+}
+
+#[test]
+fn channel_notes_are_written_only_by_people_outside_the_sync_applier() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        sqlx::query(
+            "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
+             VALUES ('participant-person', 'human', 'Ana', ?, ?)",
+        )
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let refused = "Channel notes are edited by people";
+
+        for editor in [
+            Some("participant-teammate"),
+            None,
+            Some("participant-missing"),
+        ] {
+            let error = insert_channel_note(&pool, "note-agent", "Fact", editor)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(refused), "{editor:?}: {error}");
+        }
+        insert_channel_note(&pool, "note-owner", "Fact", Some("participant:local-owner"))
+            .await
+            .unwrap();
+        insert_channel_note(&pool, "note-person", "Fact", Some("participant-person"))
+            .await
+            .unwrap();
+
+        for update in [
+            "UPDATE chat_channel_notes SET body = 'Changed',
+                 edited_by_participant_id = 'participant-teammate' WHERE id = 'note-owner'",
+            "UPDATE chat_channel_notes SET deleted_at = '2026-07-20T12:05:00.000Z',
+                 edited_by_participant_id = 'participant-teammate' WHERE id = 'note-owner'",
+            "UPDATE chat_channel_notes SET edited_by_participant_id = NULL, body = 'Changed'
+             WHERE id = 'note-owner'",
+        ] {
+            let error = sqlx::query(update)
+                .execute(&pool)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(refused), "{error}");
+        }
+        sqlx::query(
+            "UPDATE chat_channel_notes SET body = 'Changed', updated_at = '2026-07-20T12:05:00.000Z'
+             WHERE id = 'note-owner'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        set_sync_applying(&pool, true).await;
+        insert_channel_note(&pool, "note-applied", "Fact", Some("participant-teammate"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE chat_channel_notes SET body = 'Applied', edited_by_participant_id = NULL
+             WHERE id = 'note-owner'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        set_sync_applying(&pool, false).await;
+
+        sqlx::query("DELETE FROM chat_participants WHERE id = 'participant-person'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let kept: Option<String> = sqlx::query_scalar(
+            "SELECT body FROM chat_channel_notes
+             WHERE id = 'note-person' AND edited_by_participant_id IS NULL",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            kept.as_deref(),
+            Some("Fact"),
+            "removing a person keeps their notes"
+        );
+    });
+}

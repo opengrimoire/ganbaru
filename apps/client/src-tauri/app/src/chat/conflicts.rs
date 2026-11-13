@@ -1,5 +1,5 @@
 //! Chat sync conflicts: participant names, teammate roles and instructions, channel names and
-//! topics, and message edits.
+//! topics, channel note wording, and message edits.
 //!
 //! Concurrent edits from linked devices whose values differ leave one displayed value on every
 //! device and the others as versions to choose from. Resolving writes the chosen version's
@@ -8,7 +8,8 @@
 
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult};
 use ganbaru_sync::manifest::vault::chat::{
-    self as chat_manifest, channel_group, message_group, participant_group, teammate_group,
+    self as chat_manifest, channel_group, channel_note_group, message_group, participant_group,
+    teammate_group,
 };
 use ganbaru_sync::manifest::{GroupStorage, TableSpec};
 use ganbaru_sync::{ConflictVersion, DeviceNames, DeviceRef, Engine, local};
@@ -28,15 +29,18 @@ pub enum ChatConflictTarget {
     Teammate,
     /// A channel's name and topic.
     Channel,
+    /// A channel note's wording.
+    ChannelNote,
     /// A message's current revision.
     Message,
 }
 
 impl ChatConflictTarget {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::Participant,
         Self::Teammate,
         Self::Channel,
+        Self::ChannelNote,
         Self::Message,
     ];
 
@@ -45,6 +49,7 @@ impl ChatConflictTarget {
             Self::Participant => &chat_manifest::PARTICIPANTS,
             Self::Teammate => &chat_manifest::TEAMMATES,
             Self::Channel => &chat_manifest::CHANNELS,
+            Self::ChannelNote => &chat_manifest::CHANNEL_NOTES,
             Self::Message => &chat_manifest::MESSAGES,
         }
     }
@@ -55,6 +60,7 @@ impl ChatConflictTarget {
             Self::Participant => participant_group::PROFILE,
             Self::Teammate => teammate_group::PROFILE,
             Self::Channel => channel_group::DETAILS,
+            Self::ChannelNote => channel_note_group::BODY,
             Self::Message => message_group::CONTENT,
         }
     }
@@ -71,7 +77,7 @@ pub struct ChatConflictVersion {
     edited_at_ms: u64,
     /// Whether this version is the one every device shows.
     displayed: bool,
-    /// Main text: a name, a role, or message Markdown.
+    /// Main text: a name, a role, a note, or message Markdown.
     text: String,
     /// Secondary text: a teammate's instructions or a channel's topic.
     detail: Option<String>,
@@ -83,7 +89,8 @@ pub struct ChatConflictVersion {
 pub struct ChatConflict {
     target: ChatConflictTarget,
     id: String,
-    /// Where the row is, for a message its channel name, or `None` when the row names itself.
+    /// Where the row is, for a message or a channel note its channel name, or `None` when the row
+    /// names itself.
     context: Option<String>,
     versions: Vec<ChatConflictVersion>,
 }
@@ -169,7 +176,7 @@ async fn version_read(
     devices: &DeviceNames,
 ) -> ChatResult<ChatConflictVersion> {
     let (text, detail) = match target {
-        ChatConflictTarget::Participant => {
+        ChatConflictTarget::Participant | ChatConflictTarget::ChannelNote => {
             (text_field(&version.value, 0).unwrap_or_default(), None)
         }
         ChatConflictTarget::Teammate | ChatConflictTarget::Channel => (
@@ -207,6 +214,20 @@ async fn message_channel_name(
     .map_err(persistence("Read a conflicted Chat message channel"))
 }
 
+/// The name of the channel holding note `note_id`.
+async fn note_channel_name(
+    tx: &mut Transaction<'_, Sqlite>,
+    note_id: &str,
+) -> ChatResult<Option<String>> {
+    sqlx::query_scalar(
+        "SELECT c.name FROM chat_channel_notes n JOIN chat_channels c ON c.id = n.channel_id WHERE n.id = ?",
+    )
+    .bind(note_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(persistence("Read a conflicted Chat channel note channel"))
+}
+
 /// Every open Chat conflict of the vault. A vault that does not sync has none, so views can
 /// read them unconditionally.
 pub(crate) async fn conflicts_from_pool(
@@ -242,6 +263,7 @@ pub(crate) async fn conflicts_from_pool(
             }
             let context = match target {
                 ChatConflictTarget::Message => message_channel_name(&mut tx, &row.row_key).await?,
+                ChatConflictTarget::ChannelNote => note_channel_name(&mut tx, &row.row_key).await?,
                 _ => None,
             };
             conflicts.push(ChatConflict {

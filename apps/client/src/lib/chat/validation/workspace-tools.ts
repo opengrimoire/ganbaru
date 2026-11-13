@@ -1,4 +1,5 @@
 import {
+  CHAT_REVIEW_AUTHORED_PATHS_STATUSES,
   type ChatChangedFileRead,
   type ChatCommitDraftContextRead,
   type ChatExecutionEnvironmentRead,
@@ -45,7 +46,15 @@ import {
 const FILE_KINDS = ["file", "directory"] as const;
 const FILE_STATUSES = ["added", "modified", "deleted", "renamed", "type_changed", "unknown"] as const;
 const REVIEW_STATES = ["open", "resolved"] as const;
-const REVIEW_SOURCE_KINDS = ["working_tree", "checkpoint", "commit", "branch", "provider_turn", "change_request"] as const;
+const REVIEW_SOURCE_KINDS = [
+  "working_tree",
+  "checkpoint",
+  "commit",
+  "branch",
+  "provider_turn",
+  "change_request",
+  "assignment",
+] as const;
 const REVIEW_COMMENT_SOURCE_KINDS = ["file", ...REVIEW_SOURCE_KINDS] as const;
 const REVIEW_PATCH_STATES = ["complete", "partial", "binary", "oversized_hunk", "unavailable"] as const;
 const REVIEW_FRESHNESS = ["current", "outdated"] as const;
@@ -287,6 +296,8 @@ function parseReviewDiffSource(value: unknown, label = "reviewSource"): ReviewDi
         ),
         number: readNonNegativeSafeInteger(record.number, `${label}.number`),
       };
+    case "assignment":
+      return { kind, assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`) };
   }
 }
 
@@ -329,6 +340,7 @@ function parseReviewFile(value: unknown, label: string): ChatReviewFileRead {
       providerReported: readBoolean(flags.providerReported, `${label}.flags.providerReported`),
       gitObserved: readBoolean(flags.gitObserved, `${label}.flags.gitObserved`),
       readOnly: readBoolean(flags.readOnly, `${label}.flags.readOnly`),
+      authored: readBoolean(flags.authored, `${label}.flags.authored`),
     },
     capabilities: {
       stage: readBoolean(capabilities.stage, `${label}.capabilities.stage`),
@@ -390,6 +402,11 @@ export function parseChatReviewSnapshot(value: unknown): ChatReviewSnapshotRead 
     },
     preferredPatch: readNullable(record.preferredPatch, "reviewSnapshot.preferredPatch", parseReviewPatch),
     freshness: readEnum(record.freshness, REVIEW_FRESHNESS, "reviewSnapshot.freshness"),
+    authoredPaths: readEnum(
+      record.authoredPaths,
+      CHAT_REVIEW_AUTHORED_PATHS_STATUSES,
+      "reviewSnapshot.authoredPaths",
+    ),
   };
 }
 

@@ -42,6 +42,8 @@ const MAX_PATCHES_PER_RESPONSE: usize = 64;
 const PATCH_RESPONSE_ENVELOPE_BYTES: usize = 4 * 1024;
 
 mod actions;
+mod assignment;
+mod authored;
 mod authorization;
 mod contracts;
 mod material;

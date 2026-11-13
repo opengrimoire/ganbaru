@@ -2,6 +2,7 @@ import type {
   ChatCheckpointId,
   ChatThreadId,
   ChatTurnId,
+  ChatWorkAssignmentId,
   ProjectWorkingFolderId,
   UtcTimestamp,
 } from "./common";
@@ -20,7 +21,13 @@ export type ReviewDiffSource =
     provider: "github" | "gitlab" | "azure_devops" | "bitbucket";
     repositorySlug: string;
     number: number;
-  };
+  }
+  /** Every run of one work assignment, from its first pre checkpoint to its last settled post checkpoint. */
+  | { kind: "assignment"; assignmentId: ChatWorkAssignmentId };
+
+/** Whether the filter that marks files brought in by Git operations ran for a review snapshot. */
+export const CHAT_REVIEW_AUTHORED_PATHS_STATUSES = ["not_needed", "computed", "unavailable"] as const;
+export type ChatReviewAuthoredPathsStatus = (typeof CHAT_REVIEW_AUTHORED_PATHS_STATUSES)[number];
 
 export interface OpenChatReviewRequest {
   threadId: ChatThreadId | null;
@@ -51,6 +58,11 @@ export interface ChatReviewFileFlags {
   providerReported: boolean;
   gitObserved: boolean;
   readOnly: boolean;
+  /**
+   * The reviewed work changed this file, rather than a pull, merge, or other Git operation during it. True whenever
+   * the filter was not needed or could not run.
+   */
+  authored: boolean;
 }
 
 export type ChatReviewFileAction = "stage" | "unstage" | "discard" | "comment" | "openEditor";
@@ -103,6 +115,7 @@ export interface ChatReviewSnapshotRead {
   totals: ChatReviewTotalsRead;
   preferredPatch: ChatReviewPatchRead | null;
   freshness: "current" | "outdated";
+  authoredPaths: ChatReviewAuthoredPathsStatus;
 }
 
 export interface ReadChatReviewPatchesRequest {

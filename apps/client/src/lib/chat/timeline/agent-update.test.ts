@@ -92,6 +92,26 @@ describe("chatAgentUpdatePresentation", () => {
     expect(isHostToolUpdate(outcome(settled))).toBe(false);
   });
 
+  it("reads a host note proposal and refuses provider or mismatched ones", () => {
+    const proposal = (payload: JsonValue, assignmentId: JsonValue = "assignment:1") => content({
+      type: "agent_update",
+      updateKind: "note_proposal",
+      assignmentId,
+      agentRunId: "run:1",
+      payload,
+    });
+    const valid = { kind: "note_proposal", source: "host_tool" };
+
+    expect(chatAgentUpdatePresentation(proposal(valid))).toEqual({
+      kind: "note_proposal",
+      assignmentId: "assignment:1",
+    });
+    expect(isHostToolUpdate(proposal(valid))).toBe(true);
+    expect(chatAgentUpdatePresentation(proposal({ kind: "note_proposal" }))).toBeNull();
+    expect(chatAgentUpdatePresentation(proposal({ ...valid, kind: "plan" }))).toBeNull();
+    expect(chatAgentUpdatePresentation(proposal(valid, " "))).toBeNull();
+  });
+
   it("reads a host schedule proposal and refuses malformed or provider proposals", () => {
     const recurrence = {
       rule: { kind: "fixed_time", localMinute: 540, weekdays: 31 },

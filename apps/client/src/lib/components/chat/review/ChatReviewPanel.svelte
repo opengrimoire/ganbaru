@@ -28,10 +28,13 @@
     ChatReviewCommentRead,
     ChatReviewFileRead,
     ChatReviewPatchRead,
+    ChatWorkAssignmentId,
     ReviewDiffSource,
   } from "$lib/chat/contracts";
   import {
+    defaultReviewSource,
     findReviewSearchMatches,
+    parseReviewSourceKey,
     reviewCommentIsOutdated,
     reviewCommentMatchesSnapshot,
     reviewFileActionVisible,
@@ -41,12 +44,19 @@
     resolveReviewDiffStyle,
     resolveReviewLayout,
     retainReviewFile,
+    reviewExecutedElsewhere,
+    reviewGitImportedCount,
     reviewSourceKey,
+    reviewSourceOptions as buildReviewSourceOptions,
+    reviewVisibleFiles,
     selectedReviewHunkIds,
     stableReviewHash,
     type ReviewDiffPreference,
+    type ReviewExecutedElsewhere,
     type ReviewLayoutPreference,
+    type ReviewSourceAssignment,
   } from "$lib/chat/review/model";
+  import { getSyncAuthority } from "$lib/api/sync";
   import {
     ChatReviewSession,
     reviewSessionScopeToken,
@@ -130,6 +140,10 @@
   let workspaceScopeKey = "";
   let commentAttachmentIds: Record<string, string> = $state({});
   let destroyed = false;
+  let executedElsewhere = $state<ReviewExecutedElsewhere | null>(null);
+  let executingDeviceLabel = $state<string | null>(null);
+  let executedElsewhereRequest = 0;
+  let showGitImported = $state(false);
 
   const threadId = $derived(sourceThreadId ?? chat.selectedThreadId);
   const workingFolderId = $derived(sourceThreadId
@@ -138,30 +152,19 @@
   const executionEnvironmentId = $derived(sourceThreadId
     ? sourceExecutionEnvironmentId
     : chat.selectedExecutionEnvironmentId);
-  const effectiveSource = $derived.by<ReviewDiffSource>(() => source
-    ?? (threadId
-      ? { kind: "checkpoint", range: "turn", turnId: null }
-      : { kind: "working_tree", mode: "all" }));
-  const reviewSourceOptions = $derived.by(() => {
-    const options: { value: string; label: string }[] = [];
-    const currentKey = reviewSourceKey(effectiveSource);
-    if (effectiveSource.kind === "checkpoint" && effectiveSource.range === "turn" && effectiveSource.turnId) {
-      options.push({ value: currentKey, label: sourceOptionLabel(effectiveSource) });
-    }
-    if (threadId) {
-      options.push({ value: "checkpoint:turn:", label: t("chat.inspector.currentTurn") });
-      options.push({ value: "checkpoint:thread:", label: t("chat.inspector.entireThread") });
-    }
-    options.push(
-      { value: "working_tree:staged", label: t("chat.review.stagedChanges") },
-      { value: "working_tree:unstaged", label: t("chat.review.unstagedChanges") },
-      { value: "working_tree:all", label: t("chat.review.allChanges") },
-    );
-    if (effectiveSource.kind !== "checkpoint" && effectiveSource.kind !== "working_tree") {
-      options.push({ value: currentKey, label: sourceOptionLabel(effectiveSource) });
-    }
-    return options;
+  /** The open reply thread's work, whose whole change set the picker offers. */
+  const replyAssignment = $derived.by<ReviewSourceAssignment | null>(() => {
+    const assignment = chat.openReplyThreadId ? chat.replyThread?.assignment : null;
+    return assignment ? { id: assignment.id, state: assignment.state } : null;
   });
+  // An assignment review needs the working folder its execution used, which only the workspace open request resolves.
+  const effectiveSource = $derived.by<ReviewDiffSource>(() => source ?? defaultReviewSource(threadId, null));
+  const reviewSourceOptions = $derived(buildReviewSourceOptions({
+    current: effectiveSource,
+    threadId,
+    assignment: replyAssignment,
+    label: sourceOptionLabel,
+  }));
   const reviewSession = new ChatReviewSession({
     scope: currentReviewScope,
     hasPendingEdit: () => Boolean(commentDraft.trim() || selection),
@@ -172,7 +175,11 @@
       commentDraft = "";
       viewport?.clearSelection();
     },
-    onError: (reason) => { error = message(reason); },
+    onError: (reason) => {
+      const elsewhere = reviewExecutedElsewhere(reason);
+      if (elsewhere) showExecutedElsewhere(elsewhere);
+      else error = message(reason);
+    },
     timeoutMessage: () => t("chat.review.loadTimedOut"),
   });
   const snapshot = $derived(reviewSession.snapshot);
@@ -180,7 +187,9 @@
   const loadingInitial = $derived(reviewSession.loadingInitial);
   const refreshing = $derived(reviewSession.refreshing);
   const loadingPatchIds = $derived(reviewSession.loadingPatchIds);
-  const selectedReviewFile = $derived(snapshot ? retainReviewFile(snapshot, null, selectedFile) : null);
+  const gitImportedCount = $derived(reviewGitImportedCount(snapshot));
+  const visibleFiles = $derived(reviewVisibleFiles(snapshot, showGitImported));
+  const selectedReviewFile = $derived(snapshot ? retainReviewFile({ ...snapshot, files: visibleFiles }, null, selectedFile) : null);
   const resolvedLayout = $derived(resolveReviewLayout(
     layoutPreference,
     panelWidth,
@@ -192,8 +201,8 @@
     const query = fileFilter.trim().toLocaleLowerCase();
     const currentSnapshot = snapshot;
     return query && currentSnapshot
-      ? currentSnapshot.files.filter((file) => file.relativePath.toLocaleLowerCase().includes(query))
-      : currentSnapshot?.files ?? [];
+      ? visibleFiles.filter((file) => file.relativePath.toLocaleLowerCase().includes(query))
+      : currentSnapshot ? visibleFiles : [];
   });
   const changedFiles = $derived(filteredFiles.map(reviewFileAsChangedFile));
   const visibleComments = $derived(includeResolved ? comments : comments.filter((comment) => comment.state === "open"));
@@ -236,7 +245,7 @@
     }
     return itemList;
   });
-  const searchMatches = $derived(findReviewSearchMatches(snapshot?.files ?? [], patches, settledDiffQuery));
+  const searchMatches = $derived(findReviewSearchMatches(visibleFiles, patches, settledDiffQuery));
   const selectedPatch = $derived.by<ChatReviewPatchRead | null>(() => {
     if (!selectedReviewFile) return null;
     const pages = patches.filter((patch) => patch.fileId === selectedReviewFile.fileId);
@@ -408,6 +417,9 @@
 
   function openReview(preserveVisible: boolean): Promise<void> {
     error = null;
+    executedElsewhereRequest += 1;
+    executedElsewhere = null;
+    executingDeviceLabel = null;
     return reviewSession.open(preserveVisible);
   }
 
@@ -439,11 +451,47 @@
    * @param value Option key produced by `reviewSourceKey` or one of the fixed source keys.
    */
   function chooseSourceKey(value: string): void {
-    if (value === "checkpoint:turn:") chooseSource({ kind: "checkpoint", range: "turn", turnId: null });
-    else if (value === "checkpoint:thread:") chooseSource({ kind: "checkpoint", range: "thread", turnId: null });
-    else if (value === "working_tree:staged") chooseSource({ kind: "working_tree", mode: "staged" });
-    else if (value === "working_tree:unstaged") chooseSource({ kind: "working_tree", mode: "unstaged" });
-    else if (value === "working_tree:all") chooseSource({ kind: "working_tree", mode: "all" });
+    const next = parseReviewSourceKey(value);
+    if (next?.kind === "assignment") void openAssignmentSource(next.assignmentId);
+    else if (next) chooseSource(next);
+  }
+
+  /** Reopens the review on an assignment through the workspace, which resolves the folder its execution used. */
+  async function openAssignmentSource(assignmentId: ChatWorkAssignmentId): Promise<void> {
+    try {
+      const detail = await chat.assignmentReviewDetail(assignmentId);
+      if (!destroyed) paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-review", { detail }));
+    } catch (reason: unknown) {
+      if (!destroyed) error = message(reason);
+    }
+  }
+
+  /**
+   * Replaces the diff with a notice naming the device that ran the work, since its changes live only there.
+   *
+   * @param elsewhere Validated details from the executed elsewhere review error.
+   */
+  function showExecutedElsewhere(elsewhere: ReviewExecutedElsewhere): void {
+    reviewSession.reset();
+    error = null;
+    executedElsewhere = elsewhere;
+    executingDeviceLabel = null;
+    const request = ++executedElsewhereRequest;
+    void resolveExecutingDeviceLabel(elsewhere.executingDeviceId).then((label) => {
+      if (!destroyed && request === executedElsewhereRequest) executingDeviceLabel = label;
+    });
+  }
+
+  /** Reads the name of the device that ran the work; null when this device does not know it. */
+  async function resolveExecutingDeviceLabel(deviceId: string | null): Promise<string | null> {
+    if (!deviceId) return null;
+    try {
+      const authority = await getSyncAuthority();
+      return authority?.devices.find((candidate) => candidate.device.deviceId === deviceId)?.device.deviceLabel ?? null;
+    } catch {
+      // The device name only labels the notice, so an unreadable authority leaves the generic wording.
+      return null;
+    }
   }
 
   function selectFile(file: ChatChangedFileRead): void {
@@ -657,6 +705,7 @@
     if (value.kind === "commit") return t("chat.review.commitSource", value.revision);
     if (value.kind === "branch") return t("chat.review.branchSource", value.headRef);
     if (value.kind === "provider_turn") return t("chat.review.providerTurnSource");
+    if (value.kind === "assignment") return t("chat.review.assignmentSource");
     return t("chat.review.changeRequestSource", value.number);
   }
 
@@ -745,10 +794,25 @@
   {#if snapshot?.freshness === "outdated" || refreshing}
     <p role="status" class="freshness"><RefreshCw size={12} class={refreshing ? "spinning" : undefined} />{refreshing ? t("chat.review.updating") : t("chat.review.outdated")}</p>
   {/if}
+  {#if snapshot?.authoredPaths === "unavailable"}
+    <Notice class="review-error" role="status" tone="warning" copy={false} message={t("chat.review.authoredPathsUnavailable")} />
+  {/if}
 
+  {#if executedElsewhere}
+    <div data-mobile-scroll-fade class="executed-elsewhere">
+      <Notice role="status" copy={false} message={executingDeviceLabel ? t("chat.review.executedElsewhere", executingDeviceLabel) : t("chat.review.executedElsewhereUnknownDevice")} />
+      {#if executedElsewhere.changedFiles.length > 0}
+        <ul aria-label={t("chat.review.changedFiles")}>
+          {#each executedElsewhere.changedFiles as path (path)}<li title={path}><ChatFileIcon path={path} /><span>{path}</span></li>{/each}
+        </ul>
+      {/if}
+      {#if executedElsewhere.changedFilesTruncated}<p>{t("chat.review.executedElsewhereTruncated")}</p>{/if}
+    </div>
+  {:else}
   <div class="review-workspace" class:comments-open={commentsVisible}>
     <div class="review-main">
       <aside data-mobile-scroll-fade class="review-file-list" aria-label={t("chat.review.changedFiles")}>
+        {#if gitImportedCount > 0}<label class="git-imported-toggle"><Checkbox bind:checked={showGitImported} />{t("chat.review.showGitImportedFiles", gitImportedCount)}</label>{/if}
         {#if loadingInitial && !snapshot}
           <Loading layout="rows" rows={3} />
         {:else if changedFiles.length > 0}
@@ -872,6 +936,7 @@
       </aside>
     {/if}
   </div>
+  {/if}
 </section>
 
 <style>
@@ -902,6 +967,12 @@
   .review-main { display: grid; min-width: 0; min-height: 0; grid-template-columns: 13.5rem minmax(0, 1fr); overflow: hidden; }
   .review-file-list { min-width: 0; min-height: 0; overflow: auto; border-right: 1px solid var(--border); padding: 0.35rem; }
   .review-file-list > p { padding: 0.7rem; color: var(--muted-foreground); text-align: center; font-size: calc(0.7rem * var(--type-scale)); }
+  .git-imported-toggle { display: flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.35rem 0.45rem; color: var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); }
+  .executed-elsewhere { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 0.5rem; overflow: auto; padding: 0.55rem; }
+  .executed-elsewhere ul { display: flex; flex-direction: column; gap: 0.15rem; }
+  .executed-elsewhere li { display: flex; min-width: 0; align-items: center; gap: 0.4rem; font-size: calc(0.7rem * var(--type-scale)); }
+  .executed-elsewhere li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .executed-elsewhere > p { color: var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); }
   .review-content { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; }
   .file-toolbar { min-height: 2.45rem; }
   .file-toolbar strong { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "SF Mono", "SFMono-Regular", Consolas, monospace; font-size: calc(0.7rem * var(--type-scale)); font-weight: 500; }

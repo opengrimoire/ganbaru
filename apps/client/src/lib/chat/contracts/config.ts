@@ -48,7 +48,8 @@ export interface ChatPanelPreferences {
 
 /**
  * Chat behavior, stored as `chat.behavior.*` preferences. Fields are portable vault preferences
- * that replicate, except `confirmMultilineTerminalPaste`, which is stored per device.
+ * that replicate, except `confirmMultilineTerminalPaste` and `notificationIncludeContent`, which
+ * are stored per device.
  */
 export interface ChatBehaviorPreferences {
   sendKey: ChatSendKey;
@@ -59,6 +60,16 @@ export interface ChatBehaviorPreferences {
   terminalScrollbackLines: number;
   idleSessionTimeoutSeconds: number;
   confirmMultilineTerminalPaste: boolean;
+  /** Sends a system notification when work waits for an answer or an approval. */
+  notifyWaitingForYou: boolean;
+  /** Sends a system notification when work is ready for review. */
+  notifyReviewReady: boolean;
+  /** Sends a system notification when work fails. */
+  notifyFailures: boolean;
+  /** Announces attention changes of reply threads that are not selected to screen readers. */
+  announceBackgroundWork: boolean;
+  /** Includes the failure reason in notifications; stored per device for lock screen privacy. */
+  notificationIncludeContent: boolean;
 }
 
 /**

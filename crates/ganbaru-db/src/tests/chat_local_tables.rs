@@ -478,3 +478,74 @@ fn secret_requests_hold_no_value_and_follow_their_run() {
         assert_eq!(foreign_key_violations(&pool).await, 0);
     });
 }
+
+#[test]
+fn context_packages_record_channel_notes_and_the_rebuild_repeats_safely() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        sqlx::raw_sql(
+            "INSERT INTO chat_assignment_context_packages
+                (id, assignment_id, revision, triggering_message_item_id, serialized_text,
+                 serialized_bytes, sha256, created_at)
+             VALUES ('context-1', 'assignment-1', 1, 'item-root', '', 0,
+                     'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+                     '2026-10-23T00:00:00.000Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let excluded: i64 = sqlx::query_scalar(
+            "SELECT excluded_channel_note_count FROM chat_assignment_context_packages
+             WHERE id = 'context-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(excluded, 0);
+        let insert_source = |kind: &str, id: &str, ordinal: i64| {
+            sqlx::query(
+                "INSERT INTO chat_assignment_context_sources
+                    (context_package_id, source_kind, source_id, content_sha256, ordinal)
+                 VALUES ('context-1', ?, ?, ?, ?)",
+            )
+            .bind(kind.to_owned())
+            .bind(id.to_owned())
+            .bind("a".repeat(64))
+            .bind(ordinal)
+            .execute(&pool)
+        };
+        insert_source("channel_note", "note-1", 0).await.unwrap();
+        assert!(insert_source("note", "note-2", 1).await.is_err());
+
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20261112223442_chat_context_note_sources.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let kept: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT source_kind, source_id, ordinal FROM chat_assignment_context_sources",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            kept,
+            [("channel_note".to_string(), "note-1".to_string(), 0)]
+        );
+        assert!(insert_source("channel_note", "note-1", 1).await.is_err());
+        assert!(insert_source("trigger", "item-root", 0).await.is_err());
+        sqlx::query("DELETE FROM chat_assignment_context_packages WHERE id = 'context-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            count_where(&pool, "chat_assignment_context_sources", "1 = 1").await,
+            0,
+            "sources still follow their package after the rebuild"
+        );
+        assert_eq!(foreign_key_violations(&pool).await, 0);
+    });
+}

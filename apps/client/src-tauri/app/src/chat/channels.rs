@@ -18,6 +18,60 @@ const MAX_CHANNEL_NAME_CHARS: usize = 80;
 const MAX_CHANNEL_TOPIC_CHARS: usize = 250;
 const MAX_CHANNEL_RESULTS: u32 = 500;
 
+/// Days a failed assignment keeps asking for attention after it settled. Failures have no
+/// review outcome, so they age out instead; Retry and a successor end them sooner, and the
+/// reply thread keeps the failure in its history.
+pub(crate) const REVIEW_QUEUE_FAILURE_WINDOW_DAYS: i64 = 7;
+
+/// States of an assignment that waits for the person, in attention priority order.
+pub(crate) const PERSON_ATTENTION_STATES_SQL: &str =
+    "'waiting_for_answer', 'waiting_for_approval', 'ready_for_review', 'failed'";
+
+/// Whether the assignment aliased `assignment` still asks for attention: no later assignment
+/// continues it, and a failure settled at or after the failure window start, the one bound
+/// parameter, unless it is delegated work whose parent is still open, since that parent
+/// receives the failure as its outcome and decides what follows.
+pub(crate) const ASSIGNMENT_ATTENTION_PREDICATE_SQL: &str = "NOT EXISTS (
+        SELECT 1 FROM chat_work_assignments successor
+        WHERE successor.previous_assignment_id = assignment.id
+    )
+    AND (
+        assignment.state <> 'failed'
+        OR (
+            coalesce(assignment.settled_at, assignment.updated_at) >= ?
+            AND NOT EXISTS (
+                SELECT 1 FROM chat_work_assignments parent
+                WHERE parent.id = assignment.parent_assignment_id
+                  AND parent.state IN (
+                      'queued', 'working', 'waiting_for_answer', 'waiting_for_approval'
+                  )
+            )
+        )
+    )";
+
+/// Attention priority of the assignment aliased `assignment`: answer, approval, review,
+/// failure, working, then queued.
+pub(crate) const ASSIGNMENT_ATTENTION_PRIORITY_SQL: &str = "CASE assignment.state
+        WHEN 'waiting_for_answer' THEN 1
+        WHEN 'waiting_for_approval' THEN 2
+        WHEN 'ready_for_review' THEN 3
+        WHEN 'failed' THEN 4
+        WHEN 'working' THEN 5
+        ELSE 6
+    END";
+
+/// The earliest settle time at which a failure still asks for attention at `now`, in the stored
+/// timestamp format so it compares as text.
+pub(crate) fn failure_window_start(now: DateTime<Utc>) -> String {
+    (now - chrono::Duration::days(REVIEW_QUEUE_FAILURE_WINDOW_DAYS))
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+/// The failure window start at the current time.
+pub(crate) fn current_failure_window_start() -> String {
+    failure_window_start(DateTime::<Utc>::from(SystemTime::now()))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateChatChannelCommand {
@@ -296,6 +350,7 @@ pub(crate) async fn read_channel(
     channel_id: &ChatChannelId,
 ) -> ChatResult<ChatChannelRead> {
     let row = sqlx::query(AssertSqlSafe(channel_read_query("channel.id = ?", None)))
+        .bind(current_failure_window_start())
         .bind(channel_id.as_str())
         .fetch_optional(pool)
         .await
@@ -328,7 +383,8 @@ async fn read_channels(
         &format!("{archive_clause}{project_clause}"),
         Some("channel.is_default DESC, channel.name COLLATE NOCASE, channel.id LIMIT ?"),
     );
-    let mut prepared = sqlx::query(AssertSqlSafe(query.as_str()));
+    let mut prepared =
+        sqlx::query(AssertSqlSafe(query.as_str())).bind(current_failure_window_start());
     if let Some(project_id) = project_id {
         prepared = prepared.bind(project_id);
     }
@@ -346,7 +402,8 @@ async fn read_channels(
 
 fn channel_read_query(predicate: &str, order: Option<&str>) -> String {
     format!(
-        "SELECT
+        "{}
+         SELECT
             channel.id,
             channel.conversation_id,
             channel.project_id,
@@ -389,31 +446,39 @@ fn channel_read_query(predicate: &str, order: Option<&str>) -> String {
                AND item.reply_thread_id IS NULL
                AND message.deleted_at IS NULL
              ORDER BY item.order_key DESC, item.id DESC LIMIT 1) AS latest_preview,
-            (SELECT assignment.state
-             FROM chat_work_assignments assignment
-             JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
-             WHERE thread.conversation_id = channel.conversation_id
-               AND assignment.state IN (
-                    'queued', 'working', 'waiting_for_answer',
-                    'waiting_for_approval', 'ready_for_review', 'failed'
-               )
-             ORDER BY
-               CASE assignment.state
-                 WHEN 'waiting_for_answer' THEN 1
-                 WHEN 'waiting_for_approval' THEN 2
-                 WHEN 'ready_for_review' THEN 3
-                 WHEN 'failed' THEN 4
-                 WHEN 'working' THEN 5
-                 ELSE 6
-               END,
-               assignment.updated_at DESC
-             LIMIT 1) AS attention_state
+            attention.state AS attention_state
          FROM chat_channels channel
          JOIN chat_conversations conversation ON conversation.id = channel.conversation_id
+         LEFT JOIN open_assignment_attention attention
+           ON attention.conversation_id = channel.conversation_id AND attention.attention_rank = 1
          WHERE {predicate}{}",
+        open_assignment_attention_cte(),
         order
             .map(|value| format!(" ORDER BY {value}"))
             .unwrap_or_default(),
+    )
+}
+
+/// The `open_assignment_attention` common table expression: every open assignment that still
+/// asks for attention, ranked per conversation by priority, then newest update, then id, so
+/// rank 1 is the channel's attention state. It binds the failure window start.
+fn open_assignment_attention_cte() -> String {
+    format!(
+        "WITH open_assignment_attention AS (
+            SELECT conversation_id, state,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY conversation_id
+                       ORDER BY priority, updated_at DESC, id
+                   ) AS attention_rank
+            FROM (
+                SELECT thread.conversation_id, assignment.state, assignment.updated_at,
+                       assignment.id, {ASSIGNMENT_ATTENTION_PRIORITY_SQL} AS priority
+                FROM chat_work_assignments assignment
+                JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
+                WHERE assignment.state IN ('queued', 'working', {PERSON_ATTENTION_STATES_SQL})
+                  AND {ASSIGNMENT_ATTENTION_PREDICATE_SQL}
+            )
+         )"
     )
 }
 
@@ -592,7 +657,8 @@ fn normalized_topic(value: &str) -> ChatResult<String> {
     Ok(normalized)
 }
 
-fn validate_project_id(value: &str) -> ChatResult<()> {
+/// Rejects a project id that is empty, too long, or holds control characters.
+pub(crate) fn validate_project_id(value: &str) -> ChatResult<()> {
     if value.trim().is_empty() || value.len() > 1024 || value.chars().any(char::is_control) {
         return Err(ChatError::validation("projectId", "Project ID is invalid"));
     }
@@ -948,5 +1014,222 @@ mod tests {
             read_channel(&pool, &channel_id).await.unwrap().unread_count,
             0
         );
+    }
+
+    mod attention {
+        use super::super::{read_channel, read_channels};
+        use crate::chat::tests::attention::{
+            SeedAssignment, days_ago, seed_assignment, seed_channel, seed_reply_thread,
+            seed_teammate,
+        };
+        use ganbaru_chat_contracts::models::{ChatChannelId, ChatWorkAssignmentState};
+
+        const TEAMMATE: &str = "participant:attention-agent";
+
+        /// A channel of the seeded project with `threads` reply threads and a teammate.
+        async fn channel_with_threads(
+            pool: &sqlx::SqlitePool,
+            channel_id: &str,
+            threads: &[&str],
+        ) -> ChatChannelId {
+            let conversation_id =
+                seed_channel(pool, "project-chat", channel_id, channel_id, false).await;
+            for thread in threads {
+                seed_reply_thread(pool, &conversation_id, thread).await;
+            }
+            ChatChannelId::new(channel_id).unwrap()
+        }
+
+        async fn attention_of(
+            pool: &sqlx::SqlitePool,
+            channel_id: &ChatChannelId,
+        ) -> Option<ChatWorkAssignmentState> {
+            read_channel(pool, channel_id)
+                .await
+                .unwrap()
+                .attention_state
+        }
+
+        #[tokio::test]
+        async fn attention_prefers_answer_over_approval_over_review_over_failure() {
+            let pool = crate::chat::tests::repository::pool_with_thread().await;
+            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            let channel = channel_with_threads(
+                &pool,
+                "channel:priority",
+                &["thread:a", "thread:b", "thread:c", "thread:d"],
+            )
+            .await;
+            let mut failed =
+                SeedAssignment::new("assignment:d", "thread:d", TEAMMATE, "failed", 40);
+            failed.settled_at = Some(days_ago(1));
+            seed_assignment(&pool, &failed).await;
+            assert_eq!(
+                attention_of(&pool, &channel).await,
+                Some(ChatWorkAssignmentState::Failed)
+            );
+
+            let expected = [
+                (
+                    "assignment:c",
+                    "thread:c",
+                    "ready_for_review",
+                    ChatWorkAssignmentState::ReadyForReview,
+                ),
+                (
+                    "assignment:b",
+                    "thread:b",
+                    "waiting_for_approval",
+                    ChatWorkAssignmentState::WaitingForApproval,
+                ),
+                (
+                    "assignment:a",
+                    "thread:a",
+                    "waiting_for_answer",
+                    ChatWorkAssignmentState::WaitingForAnswer,
+                ),
+            ];
+            for (id, thread, state, attention) in expected {
+                seed_assignment(&pool, &SeedAssignment::new(id, thread, TEAMMATE, state, 1)).await;
+                assert_eq!(attention_of(&pool, &channel).await, Some(attention));
+            }
+        }
+
+        #[tokio::test]
+        async fn a_failure_continued_by_a_later_assignment_asks_for_nothing() {
+            let pool = crate::chat::tests::repository::pool_with_thread().await;
+            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            let channel = channel_with_threads(&pool, "channel:successor", &["thread:a"]).await;
+            let mut failed =
+                SeedAssignment::new("assignment:failed", "thread:a", TEAMMATE, "failed", 1);
+            failed.settled_at = Some(days_ago(1));
+            seed_assignment(&pool, &failed).await;
+            let mut successor =
+                SeedAssignment::new("assignment:successor", "thread:a", TEAMMATE, "completed", 2);
+            successor.previous_assignment_id = Some("assignment:failed");
+            seed_assignment(&pool, &successor).await;
+
+            assert_eq!(attention_of(&pool, &channel).await, None);
+        }
+
+        #[tokio::test]
+        async fn a_failure_stops_asking_for_attention_after_the_window() {
+            let pool = crate::chat::tests::repository::pool_with_thread().await;
+            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            let old = channel_with_threads(&pool, "channel:old", &["thread:old"]).await;
+            let recent = channel_with_threads(&pool, "channel:recent", &["thread:recent"]).await;
+            let mut eight_days =
+                SeedAssignment::new("assignment:old", "thread:old", TEAMMATE, "failed", 1);
+            eight_days.settled_at = Some(days_ago(8));
+            seed_assignment(&pool, &eight_days).await;
+            let mut six_days =
+                SeedAssignment::new("assignment:recent", "thread:recent", TEAMMATE, "failed", 1);
+            six_days.settled_at = Some(days_ago(6));
+            seed_assignment(&pool, &six_days).await;
+
+            assert_eq!(attention_of(&pool, &old).await, None);
+            assert_eq!(
+                attention_of(&pool, &recent).await,
+                Some(ChatWorkAssignmentState::Failed)
+            );
+        }
+
+        #[tokio::test]
+        async fn a_delegated_failure_waits_on_its_open_parent() {
+            let pool = crate::chat::tests::repository::pool_with_thread().await;
+            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            let parent_channel =
+                channel_with_threads(&pool, "channel:parent", &["thread:parent"]).await;
+            let child_channel =
+                channel_with_threads(&pool, "channel:child", &["thread:child"]).await;
+            seed_assignment(
+                &pool,
+                &SeedAssignment::new("assignment:parent", "thread:parent", TEAMMATE, "working", 1),
+            )
+            .await;
+            let mut child =
+                SeedAssignment::new("assignment:child", "thread:child", TEAMMATE, "failed", 2);
+            child.settled_at = Some(days_ago(1));
+            child.parent_assignment_id = Some("assignment:parent");
+            seed_assignment(&pool, &child).await;
+
+            assert_eq!(
+                attention_of(&pool, &parent_channel).await,
+                Some(ChatWorkAssignmentState::Working)
+            );
+            assert_eq!(
+                attention_of(&pool, &child_channel).await,
+                None,
+                "the parent receives the failure as its outcome"
+            );
+
+            sqlx::query(
+                "UPDATE chat_work_assignments SET state = 'completed', settled_at = ?
+                 WHERE id = 'assignment:parent'",
+            )
+            .bind(days_ago(0))
+            .execute(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                attention_of(&pool, &child_channel).await,
+                Some(ChatWorkAssignmentState::Failed),
+                "a settled parent no longer handles the failure"
+            );
+        }
+
+        #[tokio::test]
+        async fn many_assignments_read_as_one_row_per_channel() {
+            let pool = crate::chat::tests::repository::pool_with_thread().await;
+            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            for (channel, state) in [
+                ("channel:busy-a", "ready_for_review"),
+                ("channel:busy-b", "working"),
+            ] {
+                let conversation_id = sqlx::query_scalar::<_, String>(
+                    "SELECT conversation_id FROM chat_channels WHERE id = ?",
+                )
+                .bind(channel_with_threads(&pool, channel, &[]).await.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                for index in 0..300 {
+                    let thread = format!("thread:{channel}:{index}");
+                    seed_reply_thread(&pool, &conversation_id, &thread).await;
+                    let id = format!("assignment:{channel}:{index}");
+                    let state = if index == 150 { state } else { "completed" };
+                    seed_assignment(
+                        &pool,
+                        &SeedAssignment::new(&id, &thread, TEAMMATE, state, index),
+                    )
+                    .await;
+                }
+            }
+
+            let channels = read_channels(&pool, Some("project-chat"), false)
+                .await
+                .unwrap();
+
+            let busy = channels
+                .iter()
+                .filter(|channel| channel.id.as_str().starts_with("channel:busy"))
+                .map(|channel| (channel.id.as_str(), channel.attention_state))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                busy,
+                [
+                    (
+                        "channel:busy-a",
+                        Some(ChatWorkAssignmentState::ReadyForReview)
+                    ),
+                    ("channel:busy-b", Some(ChatWorkAssignmentState::Working)),
+                ]
+            );
+            assert_eq!(
+                channels.len(),
+                3,
+                "the default channel and the two busy channels"
+            );
+        }
     }
 }

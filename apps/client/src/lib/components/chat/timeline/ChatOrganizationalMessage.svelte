@@ -214,6 +214,11 @@
         <module.default proposalItemId={message.itemId} {proposal} />
       {/await}
     {/if}
+    {#if agentUpdate?.kind === "note_proposal"}
+      {#await import("./ChatNoteProposalCard.svelte") then module}
+        <module.default proposalItemId={message.itemId} body={message.normalizedMarkdown} />
+      {/await}
+    {/if}
     {#if onChooseAnswer && answerChoices.length > 0}
       <div class="answer-choices" role="group" aria-label={t("chat.questions.choices")} data-answer-choices>
         {#each answerChoices as choice (choice)}

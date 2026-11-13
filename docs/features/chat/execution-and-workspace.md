@@ -36,6 +36,8 @@ When a checkpoint pair is unavailable, review falls back to the provider-reporte
 
 The commit and change request forms can ask the selected thread's teammate, when it is idle in the same working folder, to draft the text from bounded Git context (changed paths, a size-capped patch, and recent subjects), stating every cut in the prompt. Drafting happens only on request, as a visible turn in that thread. The draft fills the field only after the turn completes and only when the user has not edited the field since asking; otherwise it is offered, and an empty or oversized draft is refused instead of cut.
 
+Review can cover a whole assignment across its runs, which is the default for work ready for review. Files the assignment did not author, such as files brought in by a merge or pull, are flagged and hidden until shown. The assignment diff reads the working folder on the executing device; on another device review names that device and lists the changed files instead.
+
 A changed file too large to review is listed with a notice instead of a diff, and it can still be staged, unstaged, or discarded as a whole.
 
 A working folder may be a subdirectory of its repository. Review and source control then list paths from the repository root, and staging, unstaging, discarding, and diffs act on exactly the listed file, as the user's own `git` would from that folder.

@@ -151,7 +151,7 @@ pub(super) enum HostToolClass {
     Delegate,
     /// Asks the person who assigned the work.
     Ask,
-    /// Posts a plan, replan, or result report.
+    /// Posts a plan, replan, result, or channel note proposal.
     Report,
     /// Requests a secret through the private card.
     Secret,

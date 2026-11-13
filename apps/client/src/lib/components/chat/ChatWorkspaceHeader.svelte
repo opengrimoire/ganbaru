@@ -34,6 +34,7 @@
   import ChatProjectNavigator from "$lib/components/chat/channels/ChatProjectNavigator.svelte";
   import { createHoverMenu } from "$lib/utils/menu-aim";
   import { CHAT_OPEN_MEMBERS_EVENT, readChatOpenMembersDetail } from "$lib/components/chat/channels/members-panel-events";
+  import { CHAT_OPEN_CHANNEL_NOTES_EVENT, readChatOpenChannelNotesDetail } from "$lib/components/chat/channels/channel-notes-panel-events";
   import ChatTitleEditor from "./ChatTitleEditor.svelte";
   import MobileContextSwitcher from "$lib/components/mobile/MobileContextSwitcher.svelte";
 
@@ -87,6 +88,10 @@
   let MembersPanel = $state<ChatChannelMembersPanelComponent | null>(null);
   let membersPanelLoad: Promise<void> | null = null;
   let membersTrigger = $state<HTMLButtonElement | null>(null);
+  type ChatChannelNotesPanelComponent =
+    typeof import("$lib/components/chat/channels/ChatChannelNotesPanel.svelte").default;
+  let notesChannelId = $state<string | null>(null);
+  let NotesPanel = $state<ChatChannelNotesPanelComponent | null>(null);
   let navigatorMode = $state<ChatNavigatorMode>("groups");
   let navigatorAnchorElement = $state<HTMLButtonElement | null>(null);
   let groupTriggerElement = $state<HTMLButtonElement | null>(null);
@@ -237,6 +242,26 @@
     };
     paneEvents.addEventListener(CHAT_OPEN_MEMBERS_EVENT, openMembers);
     return () => paneEvents.removeEventListener(CHAT_OPEN_MEMBERS_EVENT, openMembers);
+  });
+
+  const notesOpen = $derived(notesChannelId !== null && notesChannelId === chat.selectedChannelId);
+
+  /** Opens the notes panel the members panel asked for, loading it on first use. */
+  $effect(() => {
+    const openNotes = (event: Event): void => {
+      const detail = readChatOpenChannelNotesDetail(event);
+      if (!detail || detail.channelId !== chat.selectedChannelId) return;
+      notesChannelId = detail.channelId;
+      if (NotesPanel) return;
+      import("$lib/components/chat/channels/ChatChannelNotesPanel.svelte")
+        .then((module) => { NotesPanel = module.default; })
+        .catch((error: unknown) => {
+          console.error("Load Chat channel notes panel failed", error);
+          notesChannelId = null;
+        });
+    };
+    paneEvents.addEventListener(CHAT_OPEN_CHANNEL_NOTES_EVENT, openNotes);
+    return () => paneEvents.removeEventListener(CHAT_OPEN_CHANNEL_NOTES_EVENT, openNotes);
   });
 
   async function commitTitle(title: string): Promise<void> {
@@ -404,6 +429,11 @@
 {#if membersOpen && selectedChannel && MembersPanel}
   {@const LoadedMembersPanel = MembersPanel}
   <LoadedMembersPanel anchor={membersTrigger} channel={selectedChannel} mobileLayout={mobilePresentation} initialPickerOpen={membersPickerOnOpen} onClose={closeChannelMembers} />
+{/if}
+
+{#if notesOpen && selectedChannel && NotesPanel}
+  {@const LoadedNotesPanel = NotesPanel}
+  <LoadedNotesPanel anchor={membersTrigger} channel={selectedChannel} mobileLayout={mobilePresentation} onClose={() => { notesChannelId = null; }} />
 {/if}
 
 <style>

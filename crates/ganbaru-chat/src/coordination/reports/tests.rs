@@ -187,7 +187,11 @@ fn report_kinds_and_refusals_round_trip_their_wire_names() {
     for kind in ReportKind::ALL {
         assert_eq!(ReportKind::from_name(kind.as_str()), Some(kind));
     }
-    assert_eq!(ReportKind::from_name("note_proposal"), None);
+    assert_eq!(
+        ReportKind::from_name("note_proposal"),
+        Some(ReportKind::NoteProposal)
+    );
+    assert_eq!(ReportKind::from_name("schedule_proposal"), None);
     for refusal in HostReportRefusal::ALL {
         assert_eq!(
             HostReportRefusal::from_error(&refusal.into_error()),
@@ -200,16 +204,114 @@ fn report_kinds_and_refusals_round_trip_their_wire_names() {
 
 #[test]
 fn report_bodies_are_trimmed_and_bounded() {
-    assert_eq!(validate_report_body("  Plan  "), Ok("Plan"));
     assert_eq!(
-        validate_report_body(" \n "),
+        validate_report_body(ReportKind::Plan, "  Plan  "),
+        Ok("Plan")
+    );
+    assert_eq!(
+        validate_report_body(ReportKind::Plan, " \n "),
         Err(HostReportRefusal::EmptyBody)
     );
     let limit = "a".repeat(MAX_REPORT_BODY_BYTES);
-    assert_eq!(validate_report_body(&limit), Ok(limit.as_str()));
     assert_eq!(
-        validate_report_body(&format!("{limit}a")),
+        validate_report_body(ReportKind::Plan, &limit),
+        Ok(limit.as_str())
+    );
+    assert_eq!(
+        validate_report_body(ReportKind::Plan, &format!("{limit}a")),
         Err(HostReportRefusal::BodyTooLarge)
+    );
+}
+
+#[test]
+fn note_proposal_bodies_are_bounded_by_the_channel_note_length() {
+    let note = ReportKind::NoteProposal;
+    assert_eq!(
+        validate_report_body(note, " \t "),
+        Err(HostReportRefusal::EmptyBody)
+    );
+    let limit = "é".repeat(MAX_CHANNEL_NOTE_CHARS);
+    assert_eq!(validate_report_body(note, &limit), Ok(limit.as_str()));
+    assert_eq!(
+        validate_report_body(note, &format!("{limit}e")),
+        Err(HostReportRefusal::BodyTooLarge)
+    );
+    let plan_sized = "a".repeat(MAX_CHANNEL_NOTE_CHARS + 1);
+    assert_eq!(
+        validate_report_body(ReportKind::Plan, &plan_sized),
+        Ok(plan_sized.as_str())
+    );
+}
+
+#[tokio::test]
+async fn a_run_posts_at_most_three_note_proposals() {
+    let pool = migrated_pool().await;
+    seed(&pool, "working", "working").await;
+    for index in 0..MAX_NOTE_PROPOSALS_PER_RUN {
+        report(
+            &pool,
+            &format!("note-{index}"),
+            ReportKind::NoteProposal,
+            &format!("Fact {index}"),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        refusal(report(&pool, "note-extra", ReportKind::NoteProposal, "One more").await),
+        Some(HostReportRefusal::TooManyNoteProposals)
+    );
+    assert_eq!(
+        report(&pool, "note-0", ReportKind::NoteProposal, "Fact 0")
+            .await
+            .unwrap(),
+        HostCallOutcome::Replayed
+    );
+    report(&pool, "plan-1", ReportKind::Plan, "Keep going")
+        .await
+        .unwrap();
+    let kinds: Vec<String> = updates(&pool)
+        .await
+        .into_iter()
+        .map(|(kind, _)| kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        ["note_proposal", "note_proposal", "note_proposal", "plan"]
+    );
+
+    let digest = "a".repeat(64);
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+         UPDATE chat_agent_runs SET state = 'completed' WHERE id = '{RUN}';
+         INSERT INTO chat_agent_runs
+            (id, assignment_id, project_id, teammate_policy_revision_id,
+             authorization_revision_id, authorization_scope_digest, provider_turn_id,
+             provider_thread_id, state, run_ordinal, created_at, updated_at)
+         VALUES ('run:reports-2', '{ASSIGNMENT}', '{PROJECT_ID}', 'policy:reports',
+                 'authorization:reports', '{digest}', 'turn:reports-2', 'thread:reports',
+                 'working', 2, '{LATER}', '{LATER}');
+         UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let next_run = HostCall {
+        run_id: "run:reports-2",
+        ..call("note-next-run")
+    };
+    let mut connection = pool.acquire().await.unwrap();
+    assert_eq!(
+        record_host_report(
+            &mut connection,
+            next_run,
+            ReportKind::NoteProposal,
+            "A later run may propose again",
+            LATER
+        )
+        .await
+        .unwrap(),
+        HostCallOutcome::Posted
     );
 }
 

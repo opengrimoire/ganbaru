@@ -46,9 +46,10 @@ impl ProviderDriver for OpenCodeProviderDriver {
 
     /// An owned local server enforces organizational scopes through session permission rules
     /// that outrank agent and configuration rules, with project configuration, formatters, and
-    /// language servers off. Reads and edits stay in the working directory, the shell is
-    /// denied or asks the person for every command, and commands run unconfined. An external
-    /// server's configuration is outside Ganbaru's control, so it supports nothing.
+    /// language servers off. Reads and edits stay in the working directory, web tools, subagents,
+    /// and other MCP servers are denied, and the shell is denied or asks the person for every
+    /// command, which then runs unconfined. An external server's configuration is outside
+    /// Ganbaru's control, so it supports nothing.
     fn authority_support(&self) -> ProviderAuthoritySupport {
         if self.settings.is_external() {
             return ProviderAuthoritySupport::default();
@@ -60,7 +61,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
             read_only_root: true,
             writable_root: true,
             confined_commands: false,
-            network_boundary: false,
+            network_boundary: true,
             classified_publish: false,
             person_approved_commands: true,
         }

@@ -260,9 +260,8 @@ pub(super) async fn create_acp_terminal(
         .and_then(|limit| usize::try_from(limit).ok())
         .unwrap_or(DEFAULT_ACP_TERMINAL_OUTPUT_BYTES)
         .clamp(1, MAX_ACP_TERMINAL_OUTPUT_BYTES);
-    let mut command = Command::new(&request.command);
+    let mut command = terminal_command(&request)?;
     command
-        .args(&request.args)
         .current_dir(cwd)
         .envs(request.env.iter().map(|value| (&value.name, &value.value)))
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -323,6 +322,97 @@ pub(super) async fn create_acp_terminal(
         completed,
     ));
     Ok(terminal_id)
+}
+
+/// How a terminal request names the process it runs.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum TerminalInvocation<'a> {
+    /// `command` is one command line for the platform shell to parse.
+    Shell(&'a str),
+    /// `command` is a program that runs directly with these arguments.
+    Exec(&'a str, &'a [String]),
+}
+
+/// Chooses how a terminal request runs.
+///
+/// ACP makes `args` optional, and agents written against shell-backed clients (Grok among
+/// them) send a whole command line such as `/bin/bash -lc 'ls'` as `command` with no
+/// arguments. A request without arguments therefore runs through the platform shell, while a
+/// request with arguments keeps exec semantics, so its arguments are never reparsed.
+pub(super) fn terminal_invocation(request: &CreateTerminalRequest) -> TerminalInvocation<'_> {
+    if request.args.is_empty() {
+        TerminalInvocation::Shell(&request.command)
+    } else {
+        TerminalInvocation::Exec(&request.command, &request.args)
+    }
+}
+
+/// Builds the process for a terminal request without its working directory, environment, or
+/// pipes.
+fn terminal_command(request: &CreateTerminalRequest) -> ChatResult<Command> {
+    match terminal_invocation(request) {
+        TerminalInvocation::Exec(program, args) => {
+            let mut command = Command::new(program);
+            command.args(args);
+            Ok(command)
+        }
+        TerminalInvocation::Shell(line) => shell_command(line),
+    }
+}
+
+/// Runs `line` through `/bin/sh -c`, the shell POSIX guarantees.
+#[cfg(unix)]
+fn shell_command(line: &str) -> ChatResult<Command> {
+    let mut command = Command::new("/bin/sh");
+    command.arg("-c").arg(line);
+    Ok(command)
+}
+
+/// Runs `line` through `cmd.exe /d /s /c`, passing it unescaped because `cmd.exe` does not
+/// follow `CommandLineToArgvW` quoting; `/s` strips only the surrounding quotes.
+#[cfg(windows)]
+fn shell_command(line: &str) -> ChatResult<Command> {
+    let shell = windows_command_shell(
+        std::env::var_os("ComSpec").as_deref(),
+        std::env::var_os("SystemRoot").as_deref(),
+    )
+    .ok_or_else(|| {
+        ChatError::new(
+            ChatErrorCode::DriverUnavailable,
+            "ACP terminal command could not be started because no command shell was found",
+            true,
+        )
+    })?;
+    let mut command = Command::new(shell);
+    command.raw_arg(format!("/d /s /c \"{line}\""));
+    Ok(command)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn shell_command(_line: &str) -> ChatResult<Command> {
+    Err(ChatError::new(
+        ChatErrorCode::CapabilityUnsupported,
+        "ACP terminal command lines need a platform shell",
+        true,
+    ))
+}
+
+/// Resolves the Windows command shell by absolute path, because `CreateProcessW` completes a
+/// bare application name from the current directory. Uses `ComSpec` when it is absolute,
+/// otherwise `cmd.exe` in the system directory under `SystemRoot`.
+#[cfg(any(windows, test))]
+pub(super) fn windows_command_shell(
+    comspec: Option<&std::ffi::OsStr>,
+    system_root: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    comspec
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            system_root
+                .map(|root| PathBuf::from(root).join("System32").join("cmd.exe"))
+                .filter(|path| path.is_absolute())
+        })
 }
 
 /// Records the exit of a terminal command, then holds its process tree until the terminal is
@@ -526,7 +616,7 @@ pub(super) fn terminal_output_response(terminal: &AcpTerminal) -> ChatResult<Val
 }
 
 pub(super) fn validate_terminal_command(request: &CreateTerminalRequest) -> ChatResult<()> {
-    if request.command.is_empty()
+    if request.command.trim().is_empty()
         || request.command.len() > 4_096
         || request.command.chars().any(|character| character == '\0')
         || request.args.len() > 10_000

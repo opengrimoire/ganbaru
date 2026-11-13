@@ -1,4 +1,7 @@
-use super::callbacks::{create_acp_terminal, plan_write_refusal, validate_terminal_command};
+use super::callbacks::{
+    TerminalInvocation, create_acp_terminal, plan_write_refusal, terminal_invocation,
+    validate_terminal_command, windows_command_shell,
+};
 use super::{
     AcpTerminalCallbacks, AcpTerminalState, TerminalStreamDecoder, append_terminal_bytes,
     atomic_write_text, verified_existing_file, verified_write_path,
@@ -200,6 +203,137 @@ fn terminal_environment_refuses_loader_variables() {
     assert!(
         validate_terminal_command(&terminal_request("true", &[], &[("RUST_LOG", "debug")])).is_ok()
     );
+}
+
+#[test]
+fn terminal_requests_without_arguments_run_as_shell_command_lines() {
+    let grok = terminal_request("/bin/bash -lc 'ls'", &[], &[]);
+    assert_eq!(
+        terminal_invocation(&grok),
+        TerminalInvocation::Shell("/bin/bash -lc 'ls'")
+    );
+    let omitted: CreateTerminalRequest = serde_json::from_value(serde_json::json!({
+        "sessionId": "session-a",
+        "command": "git status --short",
+    }))
+    .expect("a request without args should parse");
+    assert_eq!(
+        terminal_invocation(&omitted),
+        TerminalInvocation::Shell("git status --short")
+    );
+    let exec = terminal_request("sh", &["-c", "exit 3"], &[]);
+    assert_eq!(
+        terminal_invocation(&exec),
+        TerminalInvocation::Exec("sh", &["-c".to_string(), "exit 3".to_string()])
+    );
+}
+
+#[test]
+fn terminal_commands_refuse_blank_and_nul_command_lines() {
+    for command in ["", "   ", "\t\n", "ls\0rm"] {
+        let error = validate_terminal_command(&terminal_request(command, &[], &[]))
+            .expect_err("command should be refused");
+        assert_eq!(error.code, ChatErrorCode::Validation);
+    }
+    assert!(validate_terminal_command(&terminal_request(" ", &["-c", "true"], &[])).is_err());
+    assert!(validate_terminal_command(&terminal_request(&"x".repeat(4_097), &[], &[])).is_err());
+    assert!(validate_terminal_command(&terminal_request("ls -la", &[], &[])).is_ok());
+}
+
+#[test]
+fn windows_command_shell_requires_an_absolute_path() {
+    use std::ffi::OsStr;
+    let comspec = PathBuf::from("/opt/shell/cmd.exe");
+    assert_eq!(
+        windows_command_shell(Some(comspec.as_os_str()), Some(OsStr::new("/windows"))),
+        Some(comspec)
+    );
+    assert_eq!(
+        windows_command_shell(Some(OsStr::new("cmd.exe")), Some(OsStr::new("/windows"))),
+        Some(PathBuf::from("/windows").join("System32").join("cmd.exe"))
+    );
+    assert_eq!(
+        windows_command_shell(Some(OsStr::new("cmd.exe")), Some(OsStr::new("windows"))),
+        None
+    );
+    assert_eq!(windows_command_shell(None, None), None);
+}
+
+#[cfg(unix)]
+async fn finished_output(
+    callbacks: &AcpTerminalCallbacks,
+    request: CreateTerminalRequest,
+) -> (String, Option<u32>) {
+    let id = create_acp_terminal(callbacks, request)
+        .await
+        .expect("terminal should start");
+    let terminal = callbacks.terminal(&id).unwrap();
+    let status = reported_exit(&terminal).await;
+    let output = String::from_utf8_lossy(&terminal.state.lock().unwrap().output).into_owned();
+    (output, status.exit_code)
+}
+
+#[cfg(unix)]
+#[test]
+fn terminal_command_lines_run_through_the_shell_in_the_workspace() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new();
+        let callbacks = AcpTerminalCallbacks::new(workspace.0.clone(), "session-a".into());
+        let (output, code) = finished_output(
+            &callbacks,
+            terminal_request("sh -c 'printf \"%s|\" \"one two\" three; exit 4'", &[], &[]),
+        )
+        .await;
+        assert_eq!(output, "one two|three|");
+        assert_eq!(code, Some(4));
+
+        let (output, code) = finished_output(
+            &callbacks,
+            terminal_request(
+                "printf '%s' \"$GANBARU_PROBE\" && pwd -P",
+                &[],
+                &[("GANBARU_PROBE", "env|")],
+            ),
+        )
+        .await;
+        let canonical = fs::canonicalize(&workspace.0).unwrap();
+        assert_eq!(output.trim_end(), format!("env|{}", canonical.display()));
+        assert_eq!(code, Some(0));
+
+        let (_, code) =
+            finished_output(&callbacks, terminal_request("'unbalanced", &[], &[])).await;
+        assert_ne!(
+            code,
+            Some(0),
+            "a malformed command line should fail in the shell"
+        );
+        callbacks.shutdown();
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn terminal_arguments_are_never_reparsed_by_a_shell() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new();
+        let callbacks = AcpTerminalCallbacks::new(workspace.0.clone(), "session-a".into());
+        let literal = "$(echo injected); 'quoted' \"double\" *";
+        let (output, code) = finished_output(
+            &callbacks,
+            terminal_request("printf", &["%s", literal], &[]),
+        )
+        .await;
+        assert_eq!(output, literal);
+        assert_eq!(code, Some(0));
+        let error = create_acp_terminal(
+            &callbacks,
+            terminal_request("printf %s", &["exec form"], &[]),
+        )
+        .await
+        .expect_err("a program name with arguments is not split into words");
+        assert_eq!(error.code, ChatErrorCode::DriverUnavailable);
+        callbacks.shutdown();
+    });
 }
 
 #[test]

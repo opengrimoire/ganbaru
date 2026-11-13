@@ -37,6 +37,10 @@ pub(super) fn script(scenario: &str) -> Option<ReplayScript> {
             send("turn-1", "Say hello"),
             awaited("turn_aborted", 1),
         ]),
+        // The terminal runs a real command, so the replay runs on the wall clock.
+        "terminal_command_line" => {
+            real_time(vec![START, send("turn-1", "List the files"), settled(1)])
+        }
         _ => return None,
     })
 }
@@ -49,4 +53,5 @@ replay_scenarios!(
     prompt_complete,
     usage_update,
     malformed_frame,
+    terminal_command_line,
 );

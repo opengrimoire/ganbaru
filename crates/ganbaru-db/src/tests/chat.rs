@@ -198,6 +198,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_agent_runs",
             "chat_agent_run_delivered_sources",
             "chat_agent_run_usage",
+            "chat_teammate_usage_daily",
             "chat_secret_requests",
             "chat_agent_run_attempt_immutable",
             "chat_assignment_dispatch_jobs",
@@ -1861,6 +1862,80 @@ fn run_usage_schema_starts_with_the_run_checks_counts_and_follows_its_run() {
                 .await
                 .unwrap();
         assert_eq!(remaining, 0);
+    });
+}
+
+#[test]
+fn teammate_usage_days_check_dates_and_counts_and_follow_their_teammate() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let insert = |id: &str, date: &str, tokens: i64, seconds: i64, runs: i64| {
+            sqlx::query(
+                "INSERT INTO chat_teammate_usage_daily
+                     (id, device_id, teammate_id, local_date, counted_tokens, working_seconds,
+                      run_count)
+                 VALUES (?, 'device-a', 'participant-teammate', ?, ?, ?, ?)",
+            )
+            .bind(id.to_owned())
+            .bind(date.to_owned())
+            .bind(tokens)
+            .bind(seconds)
+            .bind(runs)
+            .execute(&pool)
+        };
+        insert("usage-1", "2026-11-12", 10, 60, 1).await.unwrap();
+        assert!(insert("usage-2", "2026/11/12", 0, 0, 0).await.is_err());
+        assert!(insert("usage-3", "2026-11-1", 0, 0, 0).await.is_err());
+        assert!(insert("usage-4", "2026-11-13", -1, 0, 0).await.is_err());
+        assert!(
+            insert("usage-5", "2026-11-13", 0, 8_640_001, 0)
+                .await
+                .is_err()
+        );
+        assert!(
+            insert("usage-6", "2026-11-13", 0, 0, 100_001)
+                .await
+                .is_err()
+        );
+
+        for invalid in [
+            "UPDATE chat_agent_run_usage SET summarized_counted_tokens = -1 WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET summarized_working_seconds = -1 WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET summarized_run = 2 WHERE run_id = 'run-1'",
+        ] {
+            assert!(
+                sqlx::query(AssertSqlSafe(invalid))
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{invalid}"
+            );
+        }
+
+        for statement in [
+            "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
+             VALUES ('participant-idle', 'ai_teammate', 'Idle',
+                     '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z')",
+            "INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
+             VALUES ('participant-idle', 'Waits', '2026-10-23T00:00:00.000Z',
+                     '2026-10-23T00:00:00.000Z')",
+            "INSERT INTO chat_teammate_usage_daily
+                 (id, device_id, teammate_id, local_date, counted_tokens, working_seconds, run_count)
+             VALUES ('usage-idle', 'device-a', 'participant-idle', '2026-11-12', 1, 1, 1)",
+            "DELETE FROM chat_teammates WHERE participant_id = 'participant-idle'",
+        ] {
+            sqlx::query(AssertSqlSafe(statement))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM chat_teammate_usage_daily ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, ["usage-1"]);
     });
 }
 

@@ -35,13 +35,20 @@
 //! Channel notes replicate (table 400). People write them, a teammate only proposes one, and a
 //! deletion wins over a concurrent edit, so a dismissed proposal stays dismissed.
 //!
+//! Daily teammate usage summaries replicate (table 399): one row per device, teammate, and local
+//! day that only the device it names writes and whose counts only grow.
+//!
 //! Execution, drafts, review history, provider state, receipts, dispatch claims, cleanup jobs,
 //! and the access and audience counters stay on the device as `Local` tables, and message search
 //! is `Derived`. Replicas write Chat like the owner; device-local state never leaves the device.
-//! Ids 357 to 359, 365 to 369, 382 to 389, 391 to 394, 398, 399, and 402 to 447 are reserved.
+//! Ids 357 to 359, 365 to 369, 382 to 389, 391 to 394, 398, and 402 to 447 are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
 use ganbaru_sync_contracts::chat_recurrence;
+use ganbaru_sync_contracts::chat_usage::{
+    LOCAL_DATE_CHARS, MAX_DAILY_COUNTED_TOKENS, MAX_DAILY_RUNS, MAX_DAILY_WORKING_SECONDS,
+    TEAMMATE_USAGE_OWNER_PREFIX,
+};
 use ganbaru_sync_contracts::{GroupId, TableId};
 
 use ganbaru_sync_contracts::bounds::MAX_ORDER_KEY_BYTES;
@@ -63,7 +70,7 @@ use crate::manifest::{
     Collation, ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable, DomainManifest,
     DomainTrigger, GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound,
     OwnedCodec, OwnedOrder, OwnedReference, OwnedTable, ReferenceColumn, Resolution, RowKeyRule,
-    SYNC_KEY_COLUMN, TableIdRange, TableSpec, TriggerPolicy, group_id,
+    RowOwner, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Chat.
@@ -128,6 +135,8 @@ pub const ASSIGNMENTS_TABLE: TableId = TableId(395);
 pub const INPUTS_TABLE: TableId = TableId(396);
 /// `chat_work_semantic_updates`.
 pub const SEMANTIC_UPDATES_TABLE: TableId = TableId(397);
+/// `chat_teammate_usage_daily`.
+pub const TEAMMATE_USAGE_DAILY_TABLE: TableId = TableId(399);
 
 /// Prefix of conversation membership keys, over the conversation and participant.
 pub const MEMBERSHIP_KEY_PREFIX: &str = "conversation-membership";
@@ -442,6 +451,20 @@ pub mod semantic_update_group {
 
     /// Every column, fixed when the update is posted.
     pub const CREATED: GroupId = group_id(0);
+}
+
+/// Daily teammate usage field groups.
+pub mod teammate_usage_group {
+    use super::{GroupId, group_id};
+
+    /// `device_id`, `teammate_id`, and `local_date`, the key inputs.
+    pub const BUCKET: GroupId = group_id(0);
+    /// `counted_tokens`.
+    pub const TOKENS: GroupId = group_id(1);
+    /// `working_seconds`.
+    pub const WORKING: GroupId = group_id(2);
+    /// `run_count`.
+    pub const RUNS: GroupId = group_id(3);
 }
 
 /// A hidden, non-recoverable group without references.
@@ -1916,6 +1939,63 @@ pub const SEMANTIC_UPDATES: TableSpec = TableSpec {
     ..BASE
 };
 
+/// A daily usage count that only grows.
+const fn daily_count(name: &'static str, max: i64) -> ColumnSpec {
+    ColumnSpec {
+        name,
+        ty: ColumnType::Integer { min: 0, max },
+    }
+}
+
+/// `chat_teammate_usage_daily`, the usage one device's runs of one teammate recorded during one
+/// local day, keyed by the owner tag of the device followed by a digest of those three values,
+/// under [`TEAMMATE_USAGE_OWNER_PREFIX`]. Only the device the row names may write it, which every
+/// replica enforces from the key, and its counts only grow, so `Max` converges. Rows are never
+/// deleted while their teammate exists, so the table declares no existence group and the
+/// retention window is a read filter.
+pub const TEAMMATE_USAGE_DAILY: TableSpec = TableSpec {
+    id: TEAMMATE_USAGE_DAILY_TABLE,
+    name: "chat_teammate_usage_daily",
+    owner: Some(RowOwner::KeyTag {
+        prefix: TEAMMATE_USAGE_OWNER_PREFIX,
+        device_column: "device_id",
+    }),
+    groups: &[
+        GroupSpec {
+            references: &[cascade("teammate_id", TEAMMATES_TABLE)],
+            ..group(
+                teammate_usage_group::BUCKET,
+                "bucket",
+                MergeKind::Immutable,
+                &[
+                    trimmed("device_id", MAX_DEVICE_ID_BYTES),
+                    row_key("teammate_id"),
+                    text("local_date", LOCAL_DATE_CHARS),
+                ],
+            )
+        },
+        group(
+            teammate_usage_group::TOKENS,
+            "tokens",
+            MergeKind::Max,
+            &[daily_count("counted_tokens", MAX_DAILY_COUNTED_TOKENS)],
+        ),
+        group(
+            teammate_usage_group::WORKING,
+            "working",
+            MergeKind::Max,
+            &[daily_count("working_seconds", MAX_DAILY_WORKING_SECONDS)],
+        ),
+        group(
+            teammate_usage_group::RUNS,
+            "runs",
+            MergeKind::Max,
+            &[daily_count("run_count", MAX_DAILY_RUNS)],
+        ),
+    ],
+    ..BASE
+};
+
 /// A device table with its triggers.
 const fn device(name: &'static str, triggers: &'static [DomainTrigger]) -> DeviceTable {
     DeviceTable {
@@ -1962,6 +2042,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         ASSIGNMENTS,
         INPUTS,
         SEMANTIC_UPDATES,
+        TEAMMATE_USAGE_DAILY,
     ],
     derived: &["chat_communication_search_fts"],
     local: &[

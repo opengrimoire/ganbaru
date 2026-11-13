@@ -91,6 +91,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::channels::chat_set_channel_read,
             chat::organization::chat_list_teammates,
             chat::organization::chat_read_teammate,
+            chat::usage_summaries::chat_read_teammate_usage,
             chat::organization::chat_read_mobile_channel_roster,
             chat::organization::chat_post_message,
             chat::organization::chat_schedule_message,

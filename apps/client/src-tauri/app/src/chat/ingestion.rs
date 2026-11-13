@@ -1,7 +1,7 @@
 //! Tauri change delivery for the core Chat event ingestor.
 
 use ganbaru_chat_contracts::models::{
-    ChatChangeNotification, ChatError, ChatErrorCode, ChatResult,
+    ChatChangeNotification, ChatError, ChatErrorCode, ChatProjectionKey, ChatResult,
 };
 use tauri::{Emitter, Runtime};
 
@@ -19,6 +19,12 @@ impl<R: Runtime> TauriChatChangeEmitter<R> {
 
 impl<R: Runtime> ChatChangeEmitter for TauriChatChangeEmitter<R> {
     fn emit(&self, notification: &ChatChangeNotification) -> ChatResult<()> {
+        if notification
+            .changed_projection_keys
+            .contains(&ChatProjectionKey::Organizational)
+        {
+            super::usage_summaries::wake(&self.app);
+        }
         self.app.emit(CHAT_CHANGE_EVENT, notification).map_err(|_| {
             ChatError::new(
                 ChatErrorCode::Internal,

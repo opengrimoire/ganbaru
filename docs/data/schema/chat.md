@@ -49,6 +49,8 @@ Working-folder identity is portable. Managed paths are relative to the active va
 
 Scratch generations have logical identity, ownership, lifecycle, provenance, and cleanup state. Their native paths remain device-local. Promotion into a managed folder is an explicit transfer, not a target mutation.
 
+Daily teammate usage (`chat_teammate_usage_daily`, table 399) replicates one row per executing device, teammate, and local date, keyed by the device so only that device writes it. Its counted tokens, working seconds, and run count only grow and merge by maximum, and a row follows its teammate when the teammate is deleted. The executing device adds the increase since its last flush every minute and when a run stops working; the `summarized_*` columns of `chat_agent_run_usage` record what each run already added, so a flush counts nothing twice. Usage lands on the device's local date at flush time, and reads sum the devices for each day within the last 90 local days.
+
 ## Access profiles and authorization revisions
 
 Portable rows store participants, memberships, channel capabilities, history cutoffs, reusable access profiles, immutable or historically interpretable profile revisions, exact resource grants, assignments, approvals, authorization revisions, and revocations. Command receipts stay device-local, because a retry happens on the device that sent the command.

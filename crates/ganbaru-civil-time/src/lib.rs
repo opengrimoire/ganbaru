@@ -53,6 +53,15 @@ pub fn instant_to_local(epoch_ms: i64, zone: &TimeZone) -> Result<NaiveDateTime,
     .ok_or_else(|| "Calendar timezone conversion produced an invalid civil time".into())
 }
 
+/// The `YYYY-MM-DD` civil date of an instant in a captured zone, the form daily usage buckets
+/// carry.
+pub fn local_date_key(epoch_ms: i64, zone: &TimeZone) -> Result<String, String> {
+    Ok(instant_to_local(epoch_ms, zone)?
+        .date()
+        .format("%Y-%m-%d")
+        .to_string())
+}
+
 /// Resolve an explicit civil DTSTART/RDATE: earlier fold, pre-transition offset in a gap.
 pub fn explicit_instant(value: NaiveDateTime, zone: &TimeZone) -> Result<i64, String> {
     zone.to_ambiguous_zoned(jiff_civil(value)?)
@@ -86,6 +95,19 @@ mod tests {
 
     fn instant(value: &str) -> i64 {
         value.parse::<Timestamp>().unwrap().as_millisecond()
+    }
+
+    #[test]
+    fn local_date_keys_follow_the_zone_across_midnight() {
+        let zone = zone("America/Mexico_City").unwrap();
+        assert_eq!(
+            local_date_key(instant("2026-11-13T05:59:59Z"), &zone).unwrap(),
+            "2026-11-12"
+        );
+        assert_eq!(
+            local_date_key(instant("2026-11-13T06:00:00Z"), &zone).unwrap(),
+            "2026-11-13"
+        );
     }
 
     #[test]

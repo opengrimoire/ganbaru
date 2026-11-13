@@ -14,6 +14,7 @@ pub mod certificate;
 pub mod charter;
 pub mod chat_channel_notes;
 pub mod chat_recurrence;
+pub mod chat_usage;
 pub mod codec;
 pub mod crypto;
 pub mod hlc;

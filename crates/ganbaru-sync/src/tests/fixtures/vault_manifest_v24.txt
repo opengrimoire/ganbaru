@@ -784,3 +784,9 @@ table 396 chat_work_assignment_inputs replicated key id rule any
 table 397 chat_work_semantic_updates replicated key item_id rule any
   key parent 371
   group 0 immutable assignment_id:row_key->395:cascade update_kind:text(..=32) payload_schema_version:integer(1..=9223372036854775807) payload_data:text(..=196608) created_at:timestamp
+table 399 chat_teammate_usage_daily replicated key id rule any
+  owner key tag chat-usage: device_id
+  group 0 immutable device_id:trimmed_text(1..=160) teammate_id:row_key->353:cascade local_date:text(..=10)
+  group 1 max counted_tokens:integer(0..=1000000000000)
+  group 2 max working_seconds:integer(0..=8640000)
+  group 3 max run_count:integer(0..=100000)

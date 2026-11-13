@@ -72,6 +72,7 @@ pub mod terminal_commands;
 pub mod threads;
 #[cfg(desktop)]
 pub(crate) mod turns;
+pub mod usage_summaries;
 #[cfg(desktop)]
 pub mod workspace;
 // Mobile registers provider-free settings under the same command path as desktop.

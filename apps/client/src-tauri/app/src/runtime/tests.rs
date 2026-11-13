@@ -494,3 +494,11 @@ fn desktop_runtime_starts_the_chat_cleanup_service() {
         "permanently deleted Chat files are removed only while the cleanup service runs"
     );
 }
+
+#[test]
+fn desktop_runtime_starts_the_chat_usage_summary_flush() {
+    assert!(
+        DESKTOP_RUNTIME.contains("chat::usage_summaries::start(app.handle());"),
+        "teammate usage reaches other devices only while the flush loop runs"
+    );
+}

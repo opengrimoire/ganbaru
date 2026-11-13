@@ -157,6 +157,7 @@ commands.allow = [
   "chat_read_review_patches",
   "chat_read_settings",
   "chat_read_teammate",
+  "chat_read_teammate_usage",
   "chat_read_teammate_access",
   "chat_read_activity_detail",
   "chat_read_terminal_layout",

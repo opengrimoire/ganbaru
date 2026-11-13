@@ -114,13 +114,26 @@ pub struct RunUsage {
     pub thread_last: Option<ThreadTotals>,
 }
 
-/// Why a usage report was not counted.
+/// Why usage was not counted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UsageCountError {
     /// The report does not say what its counts cover.
     UnknownScope,
     /// A thread total fell below the total this run already counted.
     TotalWentBackwards,
+    /// Adding to a daily teammate summary would pass the bound every replica accepts.
+    SummaryOverflow,
+}
+
+impl UsageCountError {
+    /// The diagnostic code logged for this error; it names no content.
+    pub fn diagnostic(self) -> &'static str {
+        match self {
+            Self::UnknownScope => "usage_scope_unknown",
+            Self::TotalWentBackwards => "usage_total_went_backwards",
+            Self::SummaryOverflow => "usage_summary_overflow",
+        }
+    }
 }
 
 /// Whether `event` reports any token count.
@@ -448,8 +461,11 @@ pub async fn record_run_usage(
                 .map_err(persistence_error)?;
             }
         }
-        Err(UsageCountError::TotalWentBackwards) => {
-            eprintln!("Chat usage: a thread total went backwards; the counted usage is kept");
+        Err(error) => {
+            eprintln!(
+                "Chat usage: {}; the counted usage is kept",
+                error.diagnostic()
+            );
         }
     }
     Ok(())

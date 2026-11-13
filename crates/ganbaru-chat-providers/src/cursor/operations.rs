@@ -92,6 +92,14 @@ impl ProviderDriver for CursorProviderDriver {
 
     /// Boundaries any ACP agent of this flavor can hold; a probe narrows `internal_host_tools` to
     /// the agent's HTTP MCP support.
+    ///
+    /// No flavor holds a folder boundary. Cursor writes files itself without a permission
+    /// request or a client file callback, in every mode and with `--sandbox`, and a project
+    /// `.cursor/cli.json` allowlist runs the shell unasked. Grok routes its own shell and writes
+    /// through the client callbacks, but its subagents and workflows write files directly, and
+    /// `agent stdio` ignores the tool deny, removal, and subagent switches. A trusted Grok
+    /// folder also starts project hooks and MCP servers outside the callbacks. A generic agent
+    /// documents nothing.
     fn authority_support(&self) -> ProviderAuthoritySupport {
         ProviderAuthoritySupport {
             isolated_conversation: true,

@@ -1311,6 +1311,40 @@ fn cursor_and_grok_read_their_verified_configuration_paths() {
     }
 }
 
+/// Cursor writes files and, under a permissive project allowlist, runs the shell without asking
+/// the client, and Grok subagents write files directly, so no ACP flavor may claim a folder
+/// boundary and the coordinator refuses every folder scope for them.
+#[test]
+fn acp_flavors_hold_conversation_boundaries_only() {
+    use crate::ProviderDriver;
+
+    let home = TestDirectory::new("authority-support");
+    let cursor = CursorProviderDriver::new(configuration(home.path(), None)).unwrap();
+    let mut grok_configuration = configuration(home.path(), None);
+    grok_configuration.family_id = ProviderFamilyId::new("grok").unwrap();
+    let grok = CursorProviderDriver::new_grok(grok_configuration).unwrap();
+    let generic =
+        CursorProviderDriver::new_generic(generic_configuration(home.path(), None)).unwrap();
+
+    for driver in [&cursor, &grok, &generic] {
+        let name = driver.metadata().display_name;
+        let support = driver.authority_support();
+        assert!(support.isolated_conversation, "{name}");
+        assert!(support.internal_host_tools, "{name}");
+        for (flag, held) in [
+            ("deny_shell", support.deny_shell),
+            ("read_only_root", support.read_only_root),
+            ("writable_root", support.writable_root),
+            ("confined_commands", support.confined_commands),
+            ("network_boundary", support.network_boundary),
+            ("classified_publish", support.classified_publish),
+            ("person_approved_commands", support.person_approved_commands),
+        ] {
+            assert!(!held, "{name} must not claim {flag}");
+        }
+    }
+}
+
 #[test]
 fn cursor_versions_admit_against_the_tested_range() {
     use crate::registry::{admits_sessions, refused_version};

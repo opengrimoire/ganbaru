@@ -6,7 +6,10 @@ use super::event_stream::OpenCodeEventStream;
 use super::http_client::*;
 use super::local_server::OwnedOpenCodeServer;
 use super::normalizer::{OpenCodeEventNormalizer, OpenCodeRouteState};
-use super::permissions::{permission_override, permission_reply};
+use super::permissions::{
+    OpenCodeOrganizationalPolicy, OpenCodePermissionRule, organizational_permission_error,
+    organizational_rules, permission_override, permission_reply,
+};
 use super::protocol::{OpenCodeCommand, parse_resume_cursor, resume_cursor};
 use super::support::*;
 use crate::events::*;
@@ -54,6 +57,9 @@ pub(super) struct OpenCodeLiveSession {
     pub session_id: ProviderSessionId,
     pub provider_thread_id: String,
     pub command_task: Option<JoinHandle<()>>,
+    /// The session rules last sent to an organizational session, which each turn re-derives
+    /// from its modes; none for a direct session.
+    pub organizational_rules: Option<Vec<OpenCodePermissionRule>>,
 }
 
 impl Drop for OpenCodeLiveSession {
@@ -333,6 +339,10 @@ impl OpenCodeProviderDriver {
         }
         let workspace = canonical_workspace(input.workspace())?;
         self.require_external_workspace_confirmation()?;
+        let organizational_scope = self.organizational_scope()?;
+        let organizational_rules = organizational_scope
+            .map(|scope| self.organizational_rules_for(scope, input.modes()))
+            .transpose()?;
         let continuation_group_id = continuation_group(&self.settings, None)?;
         if input
             .expected_continuation()
@@ -363,6 +373,16 @@ impl OpenCodeProviderDriver {
             .ok_or_else(driver_state_error)?;
         let password = server_password(&owned_server, self.external_password.as_ref());
         let client = OpenCodeHttpClient::new(origin, &workspace, password)?;
+        if organizational_rules.is_some() {
+            let admitted = match client.health().await {
+                Ok(health) => ensure_organizational_version(&health),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = admitted {
+                stop_owned_server(&mut owned_server).await;
+                return Err(error);
+            }
+        }
         if registers_internal_mcp(&self.settings.connection, password) {
             if let Some(server) = &self.configuration.internal_mcp {
                 if let Err(error) = client
@@ -383,7 +403,9 @@ impl OpenCodeProviderDriver {
                 return Err(error);
             }
         };
-        let rules = permission_override(input.modes().safety_mode);
+        let rules = organizational_rules
+            .clone()
+            .or_else(|| permission_override(input.modes().safety_mode));
         let resolved = match resolve_native_session(
             &client,
             resume_session_id.as_deref(),
@@ -402,10 +424,15 @@ impl OpenCodeProviderDriver {
         let local_session_id = new_local_session_id(&self.configuration.instance_id)?;
         let provider_thread = ProviderThreadId::new(provider_thread_id.clone())
             .map_err(|_| super::protocol::protocol_error("session ID"))?;
-        let route = Arc::new(Mutex::new(OpenCodeRouteState::new(
-            provider_thread_id.clone(),
-            input.modes(),
-        )));
+        let mut route_state = OpenCodeRouteState::new(provider_thread_id.clone(), input.modes());
+        if let (Some(scope), Some(server)) = (
+            organizational_scope,
+            self.configuration.internal_mcp.as_ref(),
+        ) {
+            route_state = route_state
+                .with_organizational(OpenCodeOrganizationalPolicy::new(scope, &server.name));
+        }
+        let route = Arc::new(Mutex::new(route_state));
         let normalizer = Arc::new(OpenCodeEventNormalizer::new(
             self.configuration.instance_id.clone(),
             input.thread_id().clone(),
@@ -468,6 +495,7 @@ impl OpenCodeProviderDriver {
             session_id: local_session_id.clone(),
             provider_thread_id,
             command_task: None,
+            organizational_rules,
         });
         Ok(ProviderSessionSnapshot {
             session_id: local_session_id,
@@ -548,6 +576,33 @@ impl OpenCodeProviderDriver {
             return Err(error);
         }
         Ok(live)
+    }
+
+    /// The scope an organizational launch enforces, or none for direct runs. Only the internal
+    /// server's organizational flag selects it, and a flagged server without a scope fails
+    /// closed.
+    pub(super) fn organizational_scope(&self) -> ChatResult<Option<ProviderOrganizationalScope>> {
+        match self.configuration.internal_mcp.as_ref() {
+            Some(server) if server.organizational_authority => server
+                .organizational_scope
+                .map(Some)
+                .ok_or_else(organizational_permission_error),
+            _ => Ok(None),
+        }
+    }
+
+    /// The session rules of an organizational run in `scope` under `modes`.
+    pub(super) fn organizational_rules_for(
+        &self,
+        scope: ProviderOrganizationalScope,
+        modes: TurnModeSnapshot,
+    ) -> ChatResult<Vec<OpenCodePermissionRule>> {
+        let server = self
+            .configuration
+            .internal_mcp
+            .as_ref()
+            .ok_or_else(organizational_permission_error)?;
+        organizational_rules(scope, modes, &server.name, &server.pre_approved_tools)
     }
 
     fn require_external_workspace_confirmation(&self) -> ChatResult<()> {
@@ -693,7 +748,10 @@ fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
                     let events = match events {
                         Ok(events) => {
                             let events = answer_from_session_rules(&resources, events).await;
-                            reject_unprompted_questions(&resources, events).await
+                            match reject_outside_scope(&resources, events).await {
+                                Ok(events) => reject_unprompted_questions(&resources, events).await,
+                                Err(error) => Err(error),
+                            }
                         }
                         Err(error) => Err(error),
                     };
@@ -759,6 +817,43 @@ async fn reject_unprompted_questions(
                 CanonicalEvent::RuntimeWarning(NotificationEvent {
                     code: "opencode_question_reject_failed".to_string(),
                     title: "OpenCode kept a question asked outside a turn".to_string(),
+                    detail: Some(error.message),
+                }),
+            )?);
+        }
+    }
+    Ok(events)
+}
+
+/// Rejects at OpenCode the permission requests an organizational scope cannot need, which never
+/// reach the person.
+///
+/// A rejection OpenCode refuses adds a warning, because the tool call then waits there.
+async fn reject_outside_scope(
+    resources: &EventPumpResources,
+    mut events: Vec<CanonicalRuntimeEvent>,
+) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+    let rejections = resources
+        .route
+        .lock()
+        .map_err(|_| driver_state_error())?
+        .take_auto_rejections();
+    for request_id in rejections {
+        if let Err(error) = resources
+            .client
+            .reply_permission(
+                request_id.as_str(),
+                permission_reply(ApprovalDecisionKind::Deny),
+            )
+            .await
+        {
+            let state = resources.route.lock().map_err(|_| driver_state_error())?;
+            events.push(resources.normalizer.external_event(
+                &state,
+                "permission/reject",
+                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                    code: "opencode_scope_reject_failed".to_string(),
+                    title: "OpenCode kept a request outside the teammate scope".to_string(),
                     detail: Some(error.message),
                 }),
             )?);

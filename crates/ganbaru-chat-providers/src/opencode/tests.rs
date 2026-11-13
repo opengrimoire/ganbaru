@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 
 mod driver;
+mod organizational;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

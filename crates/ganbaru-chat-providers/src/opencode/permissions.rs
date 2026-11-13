@@ -1,6 +1,9 @@
 //! Canonical safety-mode mappings for OpenCode permission rules.
 
-use crate::models::{ApprovalDecisionKind, SafetyMode};
+use crate::models::{
+    ApprovalDecisionKind, ChatError, ChatErrorCode, ChatResult, InteractionMode,
+    ProviderFolderCapability, ProviderOrganizationalScope, SafetyMode, TurnModeSnapshot,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -23,6 +26,195 @@ pub struct OpenCodePermissionRule {
 pub enum OpenCodePermissionAction {
     Allow,
     Ask,
+    /// OpenCode fails the call, and a `*` deny drops the tool from the model's tool list.
+    Deny,
+}
+
+/// Native permissions an organizational run uses without asking: workspace reads and searches,
+/// its own task list, and questions to the person. Reads outside the working directory ask
+/// `external_directory` first, which organizational rules deny.
+const ORGANIZATIONAL_READ_PERMISSIONS: &[&str] =
+    &["read", "glob", "grep", "list", "todowrite", "question"];
+
+/// Native permissions no organizational run uses: paths outside the working directory, network
+/// tools, subagents, skills, language servers, and agent switches. Listed last so a later rule
+/// never reopens them.
+const ORGANIZATIONAL_DENIED_PERMISSIONS: &[&str] = &[
+    "external_directory",
+    "webfetch",
+    "websearch",
+    "codesearch",
+    "task",
+    "skill",
+    "lsp",
+    "plan_enter",
+    "plan_exit",
+    "doom_loop",
+];
+
+/// The session rules of an organizational run, which OpenCode evaluates after the agent and
+/// configuration rules so the last match here decides.
+///
+/// Every permission starts denied. Reads stay inside the working directory, edits ask inside
+/// it in Build in a scope that edits, repository metadata edits are denied, and the shell asks
+/// in a scope that runs commands, which requires AskForApproval. Internal host tools ask unless
+/// the launch pre-approves them; OpenCode names an MCP tool `<server>_<tool>`.
+pub fn organizational_rules(
+    scope: ProviderOrganizationalScope,
+    modes: TurnModeSnapshot,
+    internal_server: &str,
+    pre_approved_tools: &[String],
+) -> ChatResult<Vec<OpenCodePermissionRule>> {
+    let runs_commands = organizational_runs_commands(scope);
+    if runs_commands && modes.safety_mode != SafetyMode::AskForApproval {
+        return Err(organizational_permission_error());
+    }
+    let mut rules = vec![rule("*", OpenCodePermissionAction::Deny)];
+    rules.extend(
+        ORGANIZATIONAL_READ_PERMISSIONS
+            .iter()
+            .map(|permission| rule(permission, OpenCodePermissionAction::Allow)),
+    );
+    if organizational_edits(scope, modes) {
+        rules.push(rule("edit", OpenCodePermissionAction::Ask));
+        rules.extend(REPOSITORY_METADATA_EDIT_PATTERNS.iter().map(|pattern| {
+            OpenCodePermissionRule {
+                permission: "edit".to_string(),
+                pattern: (*pattern).to_string(),
+                action: OpenCodePermissionAction::Deny,
+            }
+        }));
+    }
+    if runs_commands {
+        rules.push(rule("bash", OpenCodePermissionAction::Ask));
+    }
+    let server = opencode_tool_key_part(internal_server);
+    rules.push(rule(&format!("{server}_*"), OpenCodePermissionAction::Ask));
+    let claude_prefix = format!("mcp__{internal_server}__");
+    rules.extend(
+        pre_approved_tools
+            .iter()
+            .filter_map(|tool| tool.strip_prefix(&claude_prefix))
+            .filter(|tool| !tool.is_empty())
+            .map(|tool| {
+                rule(
+                    &format!("{server}_{}", opencode_tool_key_part(tool)),
+                    OpenCodePermissionAction::Allow,
+                )
+            }),
+    );
+    rules.extend(
+        ORGANIZATIONAL_DENIED_PERMISSIONS
+            .iter()
+            .map(|permission| rule(permission, OpenCodePermissionAction::Deny)),
+    );
+    Ok(rules)
+}
+
+/// Whether the scope loads the shell, whose every command the person approves.
+pub fn organizational_runs_commands(scope: ProviderOrganizationalScope) -> bool {
+    matches!(
+        scope,
+        ProviderOrganizationalScope::Folder {
+            capability: ProviderFolderCapability::Execute | ProviderFolderCapability::Publish,
+        } | ProviderOrganizationalScope::Scratch
+    )
+}
+
+/// Whether a Build turn in the scope may propose file edits. Plan turns never edit.
+pub fn organizational_edits(scope: ProviderOrganizationalScope, modes: TurnModeSnapshot) -> bool {
+    modes.interaction_mode == InteractionMode::Build
+        && match scope {
+            ProviderOrganizationalScope::Conversation
+            | ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Read,
+            } => false,
+            ProviderOrganizationalScope::Folder { .. } | ProviderOrganizationalScope::Scratch => {
+                true
+            }
+        }
+}
+
+/// OpenCode's tool key form of a server or tool name: every character outside ASCII letters,
+/// digits, `_`, and `-` becomes `_`.
+fn opencode_tool_key_part(name: &str) -> String {
+    name.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// The error of an organizational OpenCode run whose boundary cannot be proven.
+pub fn organizational_permission_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Permission,
+        "OpenCode could not prove the required organizational authority boundary",
+        false,
+    )
+}
+
+/// Host-side routing of an organizational session's permission requests, as defense in depth
+/// behind the session rules: a request the scope cannot need is rejected before it reaches the
+/// person, and nothing grants a session-wide rule.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenCodeOrganizationalPolicy {
+    scope: ProviderOrganizationalScope,
+    internal_prefix: String,
+}
+
+impl OpenCodeOrganizationalPolicy {
+    pub fn new(scope: ProviderOrganizationalScope, internal_server: &str) -> Self {
+        Self {
+            scope,
+            internal_prefix: format!("{}_", opencode_tool_key_part(internal_server)),
+        }
+    }
+
+    /// Whether a permission request may reach the person: an internal host tool, a shell
+    /// command in a scope that runs commands, or an edit of relative workspace paths outside
+    /// repository metadata in a scope and turn that edit.
+    pub fn admits(&self, permission: &str, patterns: &[String], modes: TurnModeSnapshot) -> bool {
+        if permission.len() > self.internal_prefix.len()
+            && permission.starts_with(&self.internal_prefix)
+        {
+            return true;
+        }
+        match permission {
+            "bash" => organizational_runs_commands(self.scope),
+            "edit" => {
+                organizational_edits(self.scope, modes)
+                    && !patterns.is_empty()
+                    && patterns
+                        .iter()
+                        .all(|pattern| workspace_edit_pattern(pattern))
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Whether an edit pattern names a path inside the working directory and outside repository
+/// metadata. OpenCode reports edit targets relative to the worktree.
+fn workspace_edit_pattern(pattern: &str) -> bool {
+    let path = std::path::Path::new(pattern);
+    !pattern.is_empty()
+        && !pattern.starts_with('~')
+        && !pattern.contains('\0')
+        && path.is_relative()
+        && path.components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+        && !REPOSITORY_METADATA_EDIT_PATTERNS
+            .iter()
+            .any(|metadata| wildcard_matches(metadata, pattern))
 }
 
 pub fn permission_override(mode: SafetyMode) -> Option<Vec<OpenCodePermissionRule>> {

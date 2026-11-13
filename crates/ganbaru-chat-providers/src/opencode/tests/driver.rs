@@ -53,6 +53,7 @@ struct OpenCodeServerState {
     event_connections: AtomicUsize,
     event_sender: broadcast::Sender<String>,
     stopping: AtomicBool,
+    health_version: &'static str,
 }
 
 impl OpenCodeServerFixture {
@@ -60,6 +61,16 @@ impl OpenCodeServerFixture {
         workspace: &std::path::Path,
         resume_directory: Option<String>,
         close_first_event: bool,
+    ) -> Self {
+        Self::start_reporting(workspace, resume_directory, close_first_event, "1.14.19").await
+    }
+
+    /// Starts a server whose health check reports `health_version`.
+    async fn start_reporting(
+        workspace: &std::path::Path,
+        resume_directory: Option<String>,
+        close_first_event: bool,
+        health_version: &'static str,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -72,6 +83,7 @@ impl OpenCodeServerFixture {
             event_connections: AtomicUsize::new(0),
             event_sender,
             stopping: AtomicBool::new(false),
+            health_version,
         });
         let server_state = Arc::clone(&state);
         let task = tokio::spawn(async move {
@@ -171,7 +183,7 @@ fn route_response(method: &str, path: &str, state: &OpenCodeServerState) -> Stri
     match (method, path) {
         ("GET", "/global/health") => json_response(json!({
             "healthy": true,
-            "version": "1.14.19"
+            "version": state.health_version
         })),
         ("GET", "/command") => json_response(json!([{
             "name": "release",
@@ -189,6 +201,7 @@ fn route_response(method: &str, path: &str, state: &OpenCodeServerState) -> Stri
         ("POST", "/session/ses_resume/fork") => session_response("ses_fork", &state.workspace),
         ("PATCH", "/session/ses_resume") => session_response("ses_resume", &state.workspace),
         ("PATCH", "/session/ses_fork") => session_response("ses_fork", &state.workspace),
+        ("PATCH", "/session/ses_new") => session_response("ses_new", &state.workspace),
         ("POST", "/session/ses_new/prompt_async")
         | ("POST", "/session/ses_resume/prompt_async")
         | ("POST", "/session/ses_fork/prompt_async") => empty_response(204, "No Content"),
@@ -1060,6 +1073,278 @@ fn a_silent_stream_during_a_turn_reconnects_then_fails_unless_idle_or_waiting_fo
         assert_eq!(
             sink.events().iter().filter(|event| silent(event)).count(),
             1
+        );
+        server.shutdown().await;
+    });
+}
+
+fn organizational_configuration(
+    origin: &str,
+    scope: Option<ProviderOrganizationalScope>,
+) -> ProviderInstanceConfig {
+    let mut configuration = external_configuration(origin, true);
+    configuration.internal_mcp = Some(super::organizational::internal_mcp(scope));
+    configuration
+}
+
+fn turn_request(
+    snapshot: &ProviderSessionSnapshot,
+    turn: &str,
+    prompt: &str,
+    modes: TurnModeSnapshot,
+) -> SendTurnRequest {
+    SendTurnRequest {
+        command: command(turn),
+        session_id: snapshot.session_id.clone(),
+        turn_id: ChatTurnId::new(turn).unwrap(),
+        prompt: prompt.to_string(),
+        attachments: vec![],
+        mentions: vec![],
+        model_id: None,
+        model_options: vec![],
+        modes,
+        developer_instructions: None,
+    }
+}
+
+const EDIT_SCOPE: ProviderOrganizationalScope = ProviderOrganizationalScope::Folder {
+    capability: ProviderFolderCapability::Edit,
+};
+
+#[test]
+fn organizational_session_sends_scope_rules_and_rejects_requests_outside_the_scope() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("organizational-driver");
+        let server =
+            OpenCodeServerFixture::start_reporting(workspace.path(), None, false, "1.19.5").await;
+        let mut driver = OpenCodeProviderDriver::new(organizational_configuration(
+            &server.origin,
+            Some(EDIT_SCOPE),
+        ))
+        .unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let snapshot = driver
+            .start_session(
+                start_request(workspace.path()),
+                sink.clone(),
+                &context("start"),
+            )
+            .await
+            .unwrap();
+        let requests = server.requests();
+        let health = requests
+            .iter()
+            .position(|request| request.starts_with("GET /global/health?"))
+            .expect("the version is checked");
+        let create = requests
+            .iter()
+            .position(|request| request.starts_with("POST /session?"))
+            .unwrap();
+        assert!(
+            health < create,
+            "the version is checked before the session exists"
+        );
+        assert!(
+            requests[create]
+                .contains(r#"{"permission":[{"permission":"*","pattern":"*","action":"deny"}"#)
+        );
+        assert!(!requests[create].contains(r#""permission":"bash""#));
+
+        driver
+            .send_turn(
+                turn_request(&snapshot, "turn-command", "/release now", modes()),
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        server
+            .wait_for_request("POST /session/ses_new/prompt_async?")
+            .await;
+        assert!(
+            !server
+                .requests()
+                .iter()
+                .any(|request| request.starts_with("POST /session/ses_new/command")),
+            "provider commands are sent as text"
+        );
+        assert!(
+            !server
+                .requests()
+                .iter()
+                .any(|request| request.starts_with("PATCH /session/ses_new?")),
+            "unchanged modes keep the session rules"
+        );
+
+        send_permission_request(&server, "perm_bash", "bash", &["touch marker"], None);
+        server
+            .wait_for_request("POST /permission/perm_bash/reply?")
+            .await;
+        assert!(server.requests().iter().any(|request| {
+            request.starts_with("POST /permission/perm_bash/reply?")
+                && request.contains(r#"{"reply":"reject"}"#)
+        }));
+        send_permission_request(
+            &server,
+            "perm_edit",
+            "edit",
+            &["src/lib.rs"],
+            Some(vec!["*".to_string()]),
+        );
+        wait_for_event(&sink, |event| opened_request(event, "perm_edit")).await;
+        assert!(
+            !sink
+                .events()
+                .iter()
+                .any(|event| opened_request(event, "perm_bash"))
+        );
+        let error = driver
+            .resolve_approval(
+                ResolveApprovalRequest {
+                    command: command("session-grant"),
+                    session_id: snapshot.session_id.clone(),
+                    request_id: ChatRequestId::new("approval-edit").unwrap(),
+                    provider_request_id: ProviderRequestId::new("perm_edit").unwrap(),
+                    decision: ApprovalDecision {
+                        kind: ApprovalDecisionKind::AllowSession,
+                        provider_option_id: Some("always".to_string()),
+                        updated_tool_input: None,
+                    },
+                },
+                &context("session-grant"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation);
+        assert!(
+            !server
+                .requests()
+                .iter()
+                .any(|request| request.starts_with("POST /permission/perm_edit/reply?")),
+            "a refused session grant sends no reply"
+        );
+        server.shutdown().await;
+    });
+}
+
+#[test]
+fn organizational_turns_resend_rules_when_modes_change_and_refuse_unenforceable_modes() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("organizational-modes");
+        let server =
+            OpenCodeServerFixture::start_reporting(workspace.path(), None, false, "1.19.5").await;
+        let mut driver = OpenCodeProviderDriver::new(organizational_configuration(
+            &server.origin,
+            Some(ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Execute,
+            }),
+        ))
+        .unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let snapshot = driver
+            .start_session(
+                start_request(workspace.path()),
+                sink.clone(),
+                &context("start"),
+            )
+            .await
+            .unwrap();
+        let error = driver
+            .send_turn(
+                turn_request(
+                    &snapshot,
+                    "turn-approve",
+                    "Run the tests",
+                    TurnModeSnapshot {
+                        safety_mode: SafetyMode::ApproveForMe,
+                        interaction_mode: InteractionMode::Build,
+                    },
+                ),
+                &context("approve"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Permission);
+        assert!(
+            !server
+                .requests()
+                .iter()
+                .any(|request| request.contains("/prompt_async")),
+            "a refused turn reaches no prompt"
+        );
+        driver
+            .send_turn(
+                turn_request(
+                    &snapshot,
+                    "turn-plan",
+                    "Plan the change",
+                    TurnModeSnapshot {
+                        safety_mode: SafetyMode::AskForApproval,
+                        interaction_mode: InteractionMode::Plan,
+                    },
+                ),
+                &context("plan"),
+            )
+            .await
+            .unwrap();
+        let requests = server.requests();
+        let patch = requests
+            .iter()
+            .position(|request| request.starts_with("PATCH /session/ses_new?"))
+            .expect("Plan rules are sent");
+        let prompt = requests
+            .iter()
+            .position(|request| request.starts_with("POST /session/ses_new/prompt_async?"))
+            .unwrap();
+        assert!(patch < prompt, "rules change before the prompt");
+        assert!(requests[patch].contains(r#""permission":"bash","pattern":"*","action":"ask""#));
+        assert!(!requests[patch].contains(r#""permission":"edit","pattern":"*","action":"ask""#));
+        server.shutdown().await;
+    });
+}
+
+#[test]
+fn organizational_sessions_fail_closed_before_creating_a_session() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("organizational-refusals");
+        let server = OpenCodeServerFixture::start(workspace.path(), None, false).await;
+        let cases: [(
+            Option<ProviderOrganizationalScope>,
+            TurnModeSnapshot,
+            ChatErrorCode,
+        ); 3] = [
+            (None, modes(), ChatErrorCode::Permission),
+            (Some(EDIT_SCOPE), modes(), ChatErrorCode::UnsupportedVersion),
+            (
+                Some(ProviderOrganizationalScope::Scratch),
+                TurnModeSnapshot {
+                    safety_mode: SafetyMode::FullAccess,
+                    interaction_mode: InteractionMode::Build,
+                },
+                ChatErrorCode::Permission,
+            ),
+        ];
+        for (scope, start_modes, code) in cases {
+            let mut driver =
+                OpenCodeProviderDriver::new(organizational_configuration(&server.origin, scope))
+                    .unwrap();
+            let mut request = start_request(workspace.path());
+            request.modes = start_modes;
+            let error = driver
+                .start_session(
+                    request,
+                    Arc::new(RecordingSink::default()),
+                    &context("start"),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, code, "{scope:?}");
+        }
+        assert!(
+            !server
+                .requests()
+                .iter()
+                .any(|request| request.starts_with("POST /session?")),
+            "no refused launch creates a session"
         );
         server.shutdown().await;
     });

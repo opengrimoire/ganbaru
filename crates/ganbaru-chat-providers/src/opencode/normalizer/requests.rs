@@ -19,6 +19,23 @@ impl OpenCodeEventNormalizer {
         {
             return Err(protocol_error("permission patterns"));
         }
+        let requested_patterns = patterns
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let organizational = state.organizational.is_some();
+        if state
+            .organizational
+            .as_ref()
+            .is_some_and(|policy| !policy.admits(permission, &requested_patterns, state.modes))
+        {
+            let request_id = ProviderRequestId::new(id.to_string())
+                .map_err(|_| protocol_error("permission ID"))?;
+            state.auto_answered_permissions.insert(id.to_string());
+            state.auto_reject_queue.push(request_id);
+            return Ok(Vec::new());
+        }
         let mut decisions = vec![
             ApprovalDecisionOption {
                 id: "once".to_string(),
@@ -33,7 +50,11 @@ impl OpenCodeEventNormalizer {
                 description: None,
             },
         ];
-        let session_grants = always_grants(permission, properties.get("always"));
+        let session_grants = if organizational {
+            Vec::new()
+        } else {
+            always_grants(permission, properties.get("always"))
+        };
         if !session_grants.is_empty() {
             decisions.insert(
                 1,
@@ -53,12 +74,8 @@ impl OpenCodeEventNormalizer {
             .join("\n");
         let request_id =
             ProviderRequestId::new(id.to_string()).map_err(|_| protocol_error("permission ID"))?;
-        let requested_patterns = patterns
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let covered = state.session_rules.covers(permission, &requested_patterns);
+        let covered =
+            !organizational && state.session_rules.covers(permission, &requested_patterns);
         state.pending_permissions.insert(
             id.to_string(),
             OpenCodePendingPermission {

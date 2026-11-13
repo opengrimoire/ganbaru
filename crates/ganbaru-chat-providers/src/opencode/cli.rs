@@ -120,18 +120,70 @@ pub fn process_environment(
 /// Environment of a local server. A restricted server asks OpenCode to skip
 /// project configuration as defense in depth; the switch is not verified with
 /// the pinned version, so the trust gate never relies on it.
+///
+/// A server for an organizational run always skips project configuration, which
+/// keeps project plugins, tools, MCP servers, agents, commands, and instructions
+/// out, whatever the folder's trust, and turns off formatters and language
+/// servers, which run project programs after an edit without a permission
+/// request. Both are verified with OpenCode 1.19.5 and override any configured
+/// value.
 pub fn server_environment(
     configuration: &ProviderInstanceConfig,
     project_configuration: ProjectConfigurationAccess,
 ) -> ChatResult<BTreeMap<String, String>> {
     let mut environment = process_environment(configuration)?;
-    if project_configuration == ProjectConfigurationAccess::Restricted {
+    let organizational = configuration
+        .internal_mcp
+        .as_ref()
+        .is_some_and(|server| server.organizational_authority);
+    if organizational || project_configuration == ProjectConfigurationAccess::Restricted {
         environment.insert(
             OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT.to_string(),
             "1".to_string(),
         );
     }
+    if organizational {
+        environment.insert(
+            OPENCODE_CONFIG_CONTENT_ENVIRONMENT.to_string(),
+            ORGANIZATIONAL_CONFIG_CONTENT.to_string(),
+        );
+    }
     Ok(environment)
+}
+
+/// Environment variable whose JSON OpenCode merges into its configuration last.
+pub const OPENCODE_CONFIG_CONTENT_ENVIRONMENT: &str = "OPENCODE_CONFIG_CONTENT";
+/// Configuration an organizational server merges last: no formatters and no language servers.
+pub const ORGANIZATIONAL_CONFIG_CONTENT: &str = r#"{"formatter":false,"lsp":false}"#;
+
+/// The oldest OpenCode whose session rules, project configuration switch, and configuration
+/// merge were verified to hold an organizational run inside its scope.
+pub const MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION: OpenCodeVersion = OpenCodeVersion {
+    major: 1,
+    minor: 19,
+    patch: 5,
+};
+
+/// Refuses an organizational run on an OpenCode older than
+/// [`MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION`] or one that reports no readable version.
+pub fn ensure_organizational_version(health: &Value) -> ChatResult<()> {
+    let text = health
+        .get("version")
+        .and_then(Value::as_str)
+        .ok_or_else(super::permissions::organizational_permission_error)?;
+    let version =
+        parse_version(text).map_err(|_| super::permissions::organizational_permission_error())?;
+    if version < MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION {
+        return Err(version_refusal(
+            ProviderVersionAdmission::BelowMinimum,
+            &version.to_string(),
+            format!(
+                "OpenCode {version} cannot run teammates; version {MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION} or newer is required"
+            ),
+            true,
+        ));
+    }
+    Ok(())
 }
 
 pub fn resolve_executable(

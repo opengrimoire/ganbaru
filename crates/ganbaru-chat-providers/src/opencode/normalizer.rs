@@ -1,6 +1,6 @@
 //! OpenCode event normalization into provider-neutral Chat events.
 
-use super::permissions::{OpenCodeSessionRule, OpenCodeSessionRules};
+use super::permissions::{OpenCodeOrganizationalPolicy, OpenCodeSessionRule, OpenCodeSessionRules};
 use super::protocol::{MAX_EVENT_DATA_BYTES, protocol_error, validate_identifier};
 use crate::events::*;
 use crate::models::*;
@@ -50,6 +50,11 @@ pub struct OpenCodeRouteState {
     auto_answer_queue: Vec<ProviderRequestId>,
     /// Requests the user allowed for the session; OpenCode echoes their reply as `once`.
     session_approved_permissions: HashSet<String>,
+    /// Host-side routing of an organizational session, which offers no session grants and
+    /// rejects requests outside the scope before they reach the person.
+    organizational: Option<OpenCodeOrganizationalPolicy>,
+    /// Requests outside the organizational scope that still need their `reject` reply sent.
+    auto_reject_queue: Vec<ProviderRequestId>,
     pending_questions: HashMap<String, Vec<OpenCodeQuestionMapping>>,
     /// Questions OpenCode asked while no turn ran, waiting for their rejection to be sent.
     unprompted_questions: Vec<ProviderRequestId>,
@@ -91,12 +96,31 @@ impl OpenCodeRouteState {
             auto_answered_permissions: HashSet::new(),
             auto_answer_queue: Vec::new(),
             session_approved_permissions: HashSet::new(),
+            organizational: None,
+            auto_reject_queue: Vec::new(),
             pending_questions: HashMap::new(),
             unprompted_questions: Vec::new(),
             unprompted_question_ids: HashSet::new(),
             deduplication_order: VecDeque::new(),
             deduplication_set: HashSet::new(),
         }
+    }
+
+    /// Routes the session's permission requests through an organizational policy.
+    pub fn with_organizational(mut self, policy: OpenCodeOrganizationalPolicy) -> Self {
+        self.organizational = Some(policy);
+        self
+    }
+
+    /// Whether the session runs under an organizational policy.
+    pub fn is_organizational(&self) -> bool {
+        self.organizational.is_some()
+    }
+
+    /// Requests outside the organizational scope seen during the last normalization, in arrival
+    /// order, which the driver rejects at OpenCode.
+    pub fn take_auto_rejections(&mut self) -> Vec<ProviderRequestId> {
+        std::mem::take(&mut self.auto_reject_queue)
     }
 
     pub fn has_permission(&self, request_id: &ProviderRequestId) -> bool {

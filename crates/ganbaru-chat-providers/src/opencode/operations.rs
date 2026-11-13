@@ -2,7 +2,9 @@
 
 use super::cli::{OPENCODE_COMPATIBILITY, OpenCodeVersion};
 use super::driver::*;
-use super::permissions::{MAX_OPENCODE_SESSION_RULES, permission_reply};
+use super::permissions::{
+    MAX_OPENCODE_SESSION_RULES, organizational_permission_error, permission_reply,
+};
 use super::protocol::parse_rollback_cursor;
 use super::support::*;
 use crate::events::*;
@@ -42,6 +44,11 @@ impl ProviderDriver for OpenCodeProviderDriver {
         capabilities()
     }
 
+    /// An owned local server enforces organizational scopes through session permission rules
+    /// that outrank agent and configuration rules, with project configuration, formatters, and
+    /// language servers off. Reads and edits stay in the working directory, the shell is
+    /// denied or asks the person for every command, and commands run unconfined. An external
+    /// server's configuration is outside Ganbaru's control, so it supports nothing.
     fn authority_support(&self) -> ProviderAuthoritySupport {
         if self.settings.is_external() {
             return ProviderAuthoritySupport::default();
@@ -49,13 +56,13 @@ impl ProviderDriver for OpenCodeProviderDriver {
         ProviderAuthoritySupport {
             isolated_conversation: true,
             internal_host_tools: true,
-            deny_shell: false,
-            read_only_root: false,
-            writable_root: false,
+            deny_shell: true,
+            read_only_root: true,
+            writable_root: true,
             confined_commands: false,
             network_boundary: false,
             classified_publish: false,
-            person_approved_commands: false,
+            person_approved_commands: true,
         }
     }
 
@@ -219,8 +226,20 @@ impl ProviderDriver for OpenCodeProviderDriver {
     ) -> DriverFuture<'a, TurnDispatchReceipt> {
         Box::pin(async move {
             let prompt = prompt(&request)?;
-            let provider_command = provider_command(&request, &self.cached_commands);
+            let organizational_rules = self
+                .organizational_scope()?
+                .map(|scope| self.organizational_rules_for(scope, request.modes))
+                .transpose()?;
+            // Command templates can run shell commands while they expand, outside any
+            // permission request, so an organizational run sends every prompt as text.
+            let provider_command = match organizational_rules {
+                Some(_) => None,
+                None => provider_command(&request, &self.cached_commands),
+            };
             let live = self.live_mut(&request.session_id)?;
+            if organizational_rules.is_some() != live.organizational_rules.is_some() {
+                return Err(organizational_permission_error());
+            }
             if live
                 .command_task
                 .as_ref()
@@ -238,6 +257,27 @@ impl ProviderDriver for OpenCodeProviderDriver {
             let provider_turn_id =
                 ProviderTurnId::new(format!("opencode-{}", request.turn_id.as_str()))
                     .map_err(|_| super::protocol::protocol_error("turn ID"))?;
+            if live
+                .route
+                .lock()
+                .map_err(|_| driver_state_error())?
+                .active_turn_id
+                .is_some()
+            {
+                return Err(ChatError::new(
+                    ChatErrorCode::Busy,
+                    "OpenCode already has an active turn; steer or queue the prompt",
+                    true,
+                ));
+            }
+            if let Some(rules) = organizational_rules
+                && live.organizational_rules.as_ref() != Some(&rules)
+            {
+                live.client
+                    .update_permission(&live.provider_thread_id, &rules)
+                    .await?;
+                live.organizational_rules = Some(rules);
+            }
             let started = {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 if state.active_turn_id.is_some() {
@@ -442,6 +482,12 @@ impl ProviderDriver for OpenCodeProviderDriver {
                     ));
                 }
                 let allow_session = request.decision.kind == ApprovalDecisionKind::AllowSession;
+                if allow_session && state.is_organizational() {
+                    return Err(ChatError::validation(
+                        "decision",
+                        "A teammate run approves each request once",
+                    ));
+                }
                 state.set_session_approval(&request.provider_request_id, allow_session);
                 allow_session.then(|| state.session_rules_for(&request.provider_request_id))
             };

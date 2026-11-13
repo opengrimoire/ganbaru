@@ -235,6 +235,7 @@ pub(super) fn validate_policy(
             return Err(ChatError::validation("speed", "Teammate speed is invalid"));
         }
     }
+    super::budgets::validate_default_token_limit(policy.default_assignment_token_limit)?;
     super::super::settings_commands::read_provider(app, &policy.provider_instance_id)?;
     Ok(())
 }
@@ -299,6 +300,9 @@ pub(super) fn validate_message_request(request: &PostChatMessageCommand) -> Chat
     }
     if let Some(model_override) = &request.model_override {
         serialize_model_override(model_override)?;
+    }
+    if let Some(budget) = &request.budget {
+        super::budgets::validate_budget(budget)?;
     }
     let mut ranges = Vec::with_capacity(request.references.len());
     let mut reference_ids = BTreeSet::new();

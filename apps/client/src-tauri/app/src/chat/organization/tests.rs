@@ -19,6 +19,7 @@ use ganbaru_chat::coordination::acceptance::scheduled_consent_digest;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
 
+mod budgets;
 mod model_override;
 mod review;
 mod routing;
@@ -47,6 +48,67 @@ pub(super) async fn migrated_pool() -> SqlitePool {
         .await
         .unwrap();
     pool
+}
+
+/// Saves a copy of `teammate_id`'s policy revision `revision_id` with the default assignment
+/// token limit `token_limit` and makes it current, as a synced policy save would.
+pub(super) async fn save_policy_with_default_token_limit(
+    pool: &SqlitePool,
+    teammate_id: &str,
+    revision_id: &str,
+    token_limit: Option<i64>,
+) {
+    let saved_id = format!("{revision_id}:default");
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "CREATE TEMP TABLE saved_policy AS
+         SELECT * FROM chat_teammate_policy_revisions WHERE 0",
+    )
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO saved_policy SELECT * FROM chat_teammate_policy_revisions WHERE id = ?",
+    )
+    .bind(revision_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE saved_policy SET id = ?, default_assignment_token_limit = ?")
+        .bind(&saved_id)
+        .bind(token_limit)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO chat_teammate_policy_revisions SELECT * FROM saved_policy;
+         DROP TABLE saved_policy;",
+    )
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE chat_teammates
+         SET current_policy_revision_id = ?1,
+             current_policy_safety_mode = (
+                 SELECT safety_mode FROM chat_teammate_policy_revisions WHERE id = ?1
+             )
+         WHERE participant_id = ?2",
+    )
+    .bind(&saved_id)
+    .bind(teammate_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1")
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
 }
 
 async fn seed_unused_teammate(pool: &SqlitePool, teammate_id: &str, policy_id: &str) {
@@ -145,6 +207,7 @@ pub(super) fn message(markdown: &str) -> PostChatMessageCommand {
         also_send_to_channel: false,
         followup_routing: None,
         model_override: None,
+        budget: None,
     }
 }
 

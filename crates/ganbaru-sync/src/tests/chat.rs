@@ -2116,5 +2116,6 @@ fn chat_a_crash_while_sealing_or_applying_attachment_references_leaves_nothing_p
 }
 
 mod assignments;
+mod budgets;
 mod channel_notes;
 mod teammate_usage;

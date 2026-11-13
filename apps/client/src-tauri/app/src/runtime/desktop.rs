@@ -458,6 +458,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_list_review_queue,
             chat::organization::chat_edit_assignment_input,
             chat::organization::chat_cancel_assignment_input,
+            chat::organization::chat_set_assignment_budget,
+            chat::organization::chat_clear_assignment_budget,
             chat::organization::chat_review_assignment,
             chat::organization::chat_retry_assignment,
             chat::organization::chat_start_mentioned_assignment,

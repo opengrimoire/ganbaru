@@ -38,16 +38,20 @@
 //! Daily teammate usage summaries replicate (table 399): one row per device, teammate, and local
 //! day that only the device it names writes and whose counts only grow.
 //!
+//! Assignment budgets replicate (table 398): one row per assignment, keyed by it, whose limits
+//! are a register and whose used amounts only grow.
+//!
 //! Execution, drafts, review history, provider state, receipts, dispatch claims, cleanup jobs,
 //! and the access and audience counters stay on the device as `Local` tables, and message search
 //! is `Derived`. Replicas write Chat like the owner; device-local state never leaves the device.
-//! Ids 357 to 359, 365 to 369, 382 to 389, 391 to 394, 398, and 402 to 447 are reserved.
+//! Ids 357 to 359, 365 to 369, 382 to 389, 391 to 394, and 402 to 447 are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
 use ganbaru_sync_contracts::chat_recurrence;
 use ganbaru_sync_contracts::chat_usage::{
-    LOCAL_DATE_CHARS, MAX_DAILY_COUNTED_TOKENS, MAX_DAILY_RUNS, MAX_DAILY_WORKING_SECONDS,
-    TEAMMATE_USAGE_OWNER_PREFIX,
+    ASSIGNMENT_BUDGET_KEY_PREFIX, LOCAL_DATE_CHARS, MAX_DAILY_COUNTED_TOKENS, MAX_DAILY_RUNS,
+    MAX_DAILY_WORKING_SECONDS, MAX_TOKEN_LIMIT, MAX_WORKING_SECONDS_LIMIT, MIN_TOKEN_LIMIT,
+    MIN_WORKING_SECONDS_LIMIT, TEAMMATE_USAGE_OWNER_PREFIX,
 };
 use ganbaru_sync_contracts::{GroupId, TableId};
 
@@ -135,6 +139,8 @@ pub const ASSIGNMENTS_TABLE: TableId = TableId(395);
 pub const INPUTS_TABLE: TableId = TableId(396);
 /// `chat_work_semantic_updates`.
 pub const SEMANTIC_UPDATES_TABLE: TableId = TableId(397);
+/// `chat_assignment_budgets`.
+pub const ASSIGNMENT_BUDGETS_TABLE: TableId = TableId(398);
 /// `chat_teammate_usage_daily`.
 pub const TEAMMATE_USAGE_DAILY_TABLE: TableId = TableId(399);
 
@@ -154,6 +160,8 @@ pub const REPLY_CURSOR_KEY_PREFIX: &str = "reply-thread-read-cursor";
 pub const ASSIGNMENT_INPUT_KEY_PREFIX: &str = "assignment-input";
 /// Prefix of scheduled message recurrence ids, over the scheduled message.
 pub const RECURRENCE_KEY_PREFIX: &str = chat_recurrence::RECURRENCE_KEY_PREFIX;
+/// Derived key prefix of an assignment budget.
+pub const BUDGET_KEY_PREFIX: &str = ASSIGNMENT_BUDGET_KEY_PREFIX;
 
 /// Participant field groups.
 pub mod participant_group {
@@ -451,6 +459,23 @@ pub mod semantic_update_group {
 
     /// Every column, fixed when the update is posted.
     pub const CREATED: GroupId = group_id(0);
+}
+
+/// Assignment budget field groups.
+pub mod budget_group {
+    use super::{GroupId, group_id};
+
+    /// `assignment_id`, the key input.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `token_limit`, `working_seconds_limit`, `set_by_participant_id`, and `set_at`, so the
+    /// latest choice of limits wins whole.
+    pub const LIMITS: GroupId = group_id(1);
+    /// `used_counted_tokens`.
+    pub const USED_TOKENS: GroupId = group_id(2);
+    /// `used_working_seconds`.
+    pub const USED_WORKING: GroupId = group_id(3);
+    /// Whether the row exists.
+    pub const EXISTS: GroupId = group_id(4);
 }
 
 /// Daily teammate usage field groups.
@@ -831,6 +856,11 @@ pub const POLICY_REVISIONS: TableSpec = TableSpec {
             text("interaction_mode", MAX_ENUM_CHARS),
             timestamp("created_at"),
             text("safety_mode", MAX_ENUM_CHARS),
+            optional_bounded(
+                "default_assignment_token_limit",
+                MIN_TOKEN_LIMIT,
+                MAX_TOKEN_LIMIT,
+            ),
         ],
         &[cascade("teammate_id", TEAMMATES_TABLE)],
     )],
@@ -1939,6 +1969,71 @@ pub const SEMANTIC_UPDATES: TableSpec = TableSpec {
     ..BASE
 };
 
+/// An amount from zero to `max`.
+const fn bounded_amount(name: &'static str, max: i64) -> ColumnSpec {
+    ColumnSpec {
+        name,
+        ty: ColumnType::Integer { min: 0, max },
+    }
+}
+
+/// `chat_assignment_budgets`, the limits a person set on one assignment and what its executing
+/// device recorded as used. The id derives from the assignment, so devices that set a budget
+/// concurrently create one row; clearing deletes it and setting again brings it back. The limits
+/// are one register, so the latest choice wins, and only the executing device writes the used
+/// amounts, which only grow.
+pub const ASSIGNMENT_BUDGETS: TableSpec = TableSpec {
+    id: ASSIGNMENT_BUDGETS_TABLE,
+    name: "chat_assignment_budgets",
+    groups: &[
+        identity(
+            budget_group::IDENTITY,
+            &[row_key("assignment_id")],
+            &[cascade("assignment_id", ASSIGNMENTS_TABLE)],
+        ),
+        register(
+            budget_group::LIMITS,
+            "limits",
+            &[
+                optional_bounded("token_limit", MIN_TOKEN_LIMIT, MAX_TOKEN_LIMIT),
+                optional_bounded(
+                    "working_seconds_limit",
+                    MIN_WORKING_SECONDS_LIMIT,
+                    MAX_WORKING_SECONDS_LIMIT,
+                ),
+                optional_text("set_by_participant_id", MAX_ID_CHARS),
+                timestamp("set_at"),
+            ],
+        ),
+        group(
+            budget_group::USED_TOKENS,
+            "used_tokens",
+            MergeKind::Max,
+            &[bounded_amount("used_counted_tokens", MAX_TOKEN_LIMIT)],
+        ),
+        group(
+            budget_group::USED_WORKING,
+            "used_working",
+            MergeKind::Max,
+            &[bounded_amount(
+                "used_working_seconds",
+                MAX_WORKING_SECONDS_LIMIT,
+            )],
+        ),
+        exists(budget_group::EXISTS),
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: budget_group::EXISTS,
+        prefix: Some(BUDGET_KEY_PREFIX),
+        key_inputs: &["assignment_id"],
+    }),
+    resolutions: &[within(
+        &["token_limit", "working_seconds_limit"],
+        budget_group::LIMITS,
+    )],
+    ..BASE
+};
+
 /// A daily usage count that only grows.
 const fn daily_count(name: &'static str, max: i64) -> ColumnSpec {
     ColumnSpec {
@@ -2042,6 +2137,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         ASSIGNMENTS,
         INPUTS,
         SEMANTIC_UPDATES,
+        ASSIGNMENT_BUDGETS,
         TEAMMATE_USAGE_DAILY,
     ],
     derived: &["chat_communication_search_fts"],

@@ -405,6 +405,7 @@ pub(super) async fn reroute_assignment(
             poster_participant_id: LOCAL_PARTICIPANT_ID,
             delegation: None,
             model_override: None,
+            budget: None,
         },
         device,
         now,
@@ -560,6 +561,7 @@ async fn recover_follow_up(
             poster_participant_id: LOCAL_PARTICIPANT_ID,
             delegation: None,
             model_override: None,
+            budget: None,
         },
         device,
         now,
@@ -706,6 +708,7 @@ pub(super) async fn review_note_request(
         also_send_to_channel: false,
         followup_routing: None,
         model_override: None,
+        budget: None,
     })
 }
 
@@ -2407,6 +2410,7 @@ pub(super) async fn persist_started_assignment(
             poster_participant_id: LOCAL_PARTICIPANT_ID,
             delegation: None,
             model_override: requested_model_override.as_ref(),
+            budget: None,
         },
         device,
         now,

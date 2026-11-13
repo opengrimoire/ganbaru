@@ -16,9 +16,9 @@ use crate::manifest::vault::chat::{
 };
 use crate::tests::replica::pair;
 
-const ASSIGNMENT: &str = "assignment:review";
+pub(super) const ASSIGNMENT: &str = "assignment:review";
 const FOLLOW_UP: &str = "assignment:follow-up";
-const MENTION: &str = "item:mention";
+pub(super) const MENTION: &str = "item:mention";
 const UPDATE: &str = "item:update";
 const SCHEDULED: &str = "scheduled:reminder";
 const EXECUTOR: &str = "device-0";
@@ -83,7 +83,7 @@ fn input_sql(message: &str, assignment: &str, ordinal: i64, kind: &str) -> Strin
 
 /// SQL posting the thread, the mention, the assignment with its trigger input, and a plan
 /// update.
-fn coordination_sql() -> String {
+pub(super) fn coordination_sql() -> String {
     format!(
         "{}{}{}{}{}
          INSERT INTO chat_conversation_items

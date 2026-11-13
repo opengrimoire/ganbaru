@@ -30,6 +30,7 @@ const MAX_SEARCH_RESULTS: u32 = 100;
 pub mod access;
 #[cfg(desktop)]
 mod assignments;
+mod budgets;
 mod channel_notes;
 mod common;
 #[cfg(desktop)]
@@ -626,6 +627,9 @@ async fn persist_post_with(
     if request.model_override.is_some() && resolved_invocation.is_none() {
         return Err(model_override_without_teammate());
     }
+    if request.budget.is_some() && resolved_invocation.is_none() {
+        return Err(budgets::budget_without_teammate());
+    }
     let now = now_timestamp()?;
     let (item_id, revision_id) = match scheduled {
         Some(scheduled) => {
@@ -752,6 +756,7 @@ async fn persist_post_with(
                     execution_target: request.execution_target.as_ref(),
                     followup_routing: request.followup_routing,
                     model_override: request.model_override.as_ref(),
+                    budget: request.budget.as_ref(),
                 },
                 device,
                 &now,
@@ -1344,6 +1349,38 @@ pub async fn chat_cancel_assignment_input(
     input_id: ChatAssignmentInputId,
 ) -> ChatResult<ChatAssignmentInputRead> {
     inputs::cancel_assignment_input_command(app, db_url, input_id).await
+}
+
+/// Sets the token and working time limits of an assignment as the person here, keeping what
+/// its work already used. Any device can set them, including on work a limit stopped.
+#[tauri::command]
+pub async fn chat_set_assignment_budget(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+    token_limit: Option<u64>,
+    working_seconds_limit: Option<u64>,
+) -> ChatResult<ChatAssignmentBudgetRead> {
+    budgets::set_assignment_budget_command(
+        app,
+        db_url,
+        assignment_id,
+        ChatAssignmentBudgetInput {
+            token_limit,
+            working_seconds_limit,
+        },
+    )
+    .await
+}
+
+/// Clears the budget of an assignment, so its work runs without a limit.
+#[tauri::command]
+pub async fn chat_clear_assignment_budget(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+) -> ChatResult<()> {
+    budgets::clear_assignment_budget_command(app, db_url, assignment_id).await
 }
 
 /// Starts the work of a mention whose post recorded no assignment, running it on this device.

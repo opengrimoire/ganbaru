@@ -131,6 +131,8 @@ fn mobile_runtime_registers_portable_core_commands() {
         "chat::organization::chat_list_review_queue",
         "chat::organization::chat_edit_assignment_input",
         "chat::organization::chat_cancel_assignment_input",
+        "chat::organization::chat_set_assignment_budget",
+        "chat::organization::chat_clear_assignment_budget",
         "chat::settings_commands::chat_read_settings",
     ] {
         assert!(

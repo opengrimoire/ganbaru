@@ -218,6 +218,7 @@ pub(super) async fn persist_delegation(
                 folder_ceiling: &ceiling,
             }),
             model_override: None,
+            budget: None,
         },
         device,
         &now,
@@ -583,6 +584,7 @@ fn delegation_message(
         also_send_to_channel: false,
         followup_routing: None,
         model_override: None,
+        budget: None,
     })
 }
 

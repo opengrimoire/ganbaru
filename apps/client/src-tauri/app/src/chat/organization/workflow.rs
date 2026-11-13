@@ -2,6 +2,10 @@
 
 #[cfg(desktop)]
 use super::assignments::read_assignment_subject;
+use super::budgets::{
+    NewAssignmentBudget, budget_needs_new_work, budget_on_active_work, budget_without_teammate,
+    write_new_assignment_budget,
+};
 use super::common::{
     AttachmentSource, ScheduledPostIds, assignment_input_id, conversation_item_id,
     has_thread_eligible_mention, insert_revision_attachments, json_object, message_revision_id,
@@ -330,6 +334,8 @@ pub(super) struct PostRoutingChoices<'a> {
     pub(super) followup_routing: Option<ChatFollowupRouting>,
     /// The model the new assignment the post starts runs with, over the teammate's default.
     pub(super) model_override: Option<&'a ChatAssignmentModelOverride>,
+    /// The budget the new assignment the post starts runs under, over the teammate's default.
+    pub(super) budget: Option<&'a ChatAssignmentBudgetInput>,
 }
 
 /// Refuses a model override on a post that reaches work already under way, whose model was
@@ -402,16 +408,23 @@ pub(super) async fn persist_assignment_routing(
         execution_target,
         followup_routing,
         model_override,
+        budget,
     } = choices;
     let Some(invocation) = invocation else {
         if model_override.is_some() {
             return Err(model_override_without_teammate());
+        }
+        if budget.is_some() {
+            return Err(budget_without_teammate());
         }
         return Ok(AssignmentWrite::NONE);
     };
     if let Some(active) = &invocation.active_assignment {
         if model_override.is_some() {
             return Err(model_override_on_active_work());
+        }
+        if budget.is_some() {
+            return Err(budget_on_active_work());
         }
         if device.leaves_existing_work() {
             // By design an unattended reply on active work stays a plain message: it would
@@ -448,6 +461,9 @@ pub(super) async fn persist_assignment_routing(
         if model_override.is_some() {
             return Err(model_override_on_active_work());
         }
+        if budget.is_some() {
+            return Err(budget_on_active_work());
+        }
         append_assignment_input(
             transaction,
             &reviewed.id,
@@ -477,6 +493,9 @@ pub(super) async fn persist_assignment_routing(
         if model_override.is_some() && !invocation.mentioned {
             return Err(model_override_needs_mention());
         }
+        if budget.is_some() {
+            return Err(budget_needs_new_work());
+        }
         return Ok(AssignmentWrite::NONE);
     };
     let assignment_id = create_assignment(
@@ -491,6 +510,7 @@ pub(super) async fn persist_assignment_routing(
             poster_participant_id: LOCAL_PARTICIPANT_ID,
             delegation: None,
             model_override,
+            budget,
         },
         device,
         now,
@@ -538,6 +558,9 @@ pub(super) struct NewAssignment<'a> {
     /// The model the assignment runs with over the teammate's default; `None` keeps the
     /// override of the assignment it follows, if any.
     pub(super) model_override: Option<&'a ChatAssignmentModelOverride>,
+    /// The budget the assignment runs under; `None` takes it from its delegating parent, the
+    /// work it follows, or the teammate's default.
+    pub(super) budget: Option<&'a ChatAssignmentBudgetInput>,
 }
 
 /// The fixed delegation fields of an assignment a teammate delegated.
@@ -745,6 +768,21 @@ pub(super) async fn create_assignment(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
+    write_new_assignment_budget(
+        transaction,
+        NewAssignmentBudget {
+            assignment_id: &assignment_id,
+            teammate_id: assignment.teammate_id,
+            chosen: assignment.budget,
+            chosen_by: assignment.poster_participant_id,
+            delegating_parent_id: assignment
+                .delegation
+                .map(|delegation| delegation.parent_assignment_id),
+            previous_id,
+        },
+        now,
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO chat_work_assignment_inputs
             (id, assignment_id, message_item_id, ordinal, routing_kind, created_at)
@@ -1803,8 +1841,8 @@ pub(super) async fn insert_policy_revision(
              safety_mode,
              model_selection_schema_version, model_selection_data, effort, speed,
              provider_options_schema_version, provider_options_data,
-             interaction_mode, created_at)
-         VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'build', ?)",
+             interaction_mode, created_at, default_assignment_token_limit)
+         VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'build', ?, ?)",
     )
     .bind(policy_revision_id.as_str())
     .bind(teammate_id.as_str())
@@ -1816,6 +1854,12 @@ pub(super) async fn insert_policy_revision(
     .bind(i64::from(policy.provider_options.schema_version))
     .bind(json_object(&policy.provider_options, "providerOptions")?)
     .bind(now.as_str())
+    .bind(
+        policy
+            .default_assignment_token_limit
+            .map(i64_value)
+            .transpose()?,
+    )
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;

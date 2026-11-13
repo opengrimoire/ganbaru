@@ -6,10 +6,12 @@ use super::{
     ChatAssignmentTargetRead, ChatError, ChatErrorCode, ChatExecutionEnvironmentId,
     ChatExecutionTarget, ChatFolderCapability, ChatParticipantId, ChatReplyThreadId, ChatResult,
     ChatRuntimeApprovalPolicy, ChatScratchGenerationId, ChatScratchScopeId,
-    ListChatAssignmentTargetsCommand,
+    ListChatAssignmentTargetsCommand, ProjectWorkingFolderId,
 };
 use crate::chat::channels::{chat_pool, identifier_error, persistence_error};
-use crate::chat::organization::common::effective_runtime_approval;
+use crate::chat::organization::common::{
+    ImpliedFolderCandidate, effective_runtime_approval, implied_working_folder,
+};
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeMap;
 
@@ -52,6 +54,25 @@ pub async fn chat_list_assignment_targets(
         crate::chat::channels::ChatDefaultsScope::Project(&channel.project_id),
     )
     .await?;
+    let project_working_folder_id =
+        ganbaru_chat::repository::workspaces::resolve_primary_workspace(&pool, &channel.project_id)
+            .await?
+            .map(|folder| folder.id);
+    let candidates = channel_access
+        .folder_grants
+        .iter()
+        .filter(|grant| grant.capability != ChatFolderCapability::None)
+        .map(|grant| ImpliedFolderCandidate {
+            working_folder_id: grant.working_folder_id.as_str(),
+            is_default: grant.is_default,
+        })
+        .collect::<Vec<_>>();
+    let implied_folder_id = implied_working_folder(
+        &candidates,
+        project_working_folder_id
+            .as_ref()
+            .map(ProjectWorkingFolderId::as_str),
+    );
     let mut targets = Vec::new();
     for grant in &channel_access.folder_grants {
         let rows = sqlx::query(
@@ -128,7 +149,8 @@ pub async fn chat_list_assignment_targets(
                         .or(channel_access.runtime_approval_override)
                         .unwrap_or(access.teammate_default_runtime_approval),
                 ),
-                is_default: grant.is_default && !is_worktree,
+                is_default: implied_folder_id == Some(grant.working_folder_id.as_str())
+                    && !is_worktree,
                 binding_state,
                 lifecycle_state,
                 is_busy: is_busy != 0,

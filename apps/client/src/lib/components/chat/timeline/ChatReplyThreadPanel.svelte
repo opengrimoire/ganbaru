@@ -8,7 +8,8 @@
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import {
     agentRunRestart,
-    agentRunWorkingFolderName,
+    agentRunLocation,
+    channelHasFolderGrants,
     exactExecutionReadKey,
     exactExecutionRuns,
     exactRunPresentationsReady,
@@ -90,7 +91,16 @@
   const hasPrivateScratch = $derived((page?.agentRuns ?? []).some((run) => (
     run.scratchGenerationId !== null
   )));
-  const workingFolderName = $derived(agentRunWorkingFolderName(page?.agentRuns ?? [], chat.workingFolders));
+  const runLocation = $derived(agentRunLocation(page?.agentRuns ?? [], chat.workingFolders));
+  /** Whether the run's teammate holds a folder grant in this channel, read only when its newest run is conversation only. */
+  let conversationOnlyHasGrants = $state(false);
+  let conversationOnlyAccessRequest = 0;
+  const conversationOnlyTeammateId = $derived(runLocation?.kind === "conversation" ? executionTeammate?.id ?? null : null);
+  const runLocationLabel = $derived(runLocation?.kind === "folder"
+    ? t("chat.organization.workingIn", runLocation.name)
+    : runLocation?.kind === "conversation" && conversationOnlyHasGrants
+      ? t("chat.organization.conversationOnlyNoDefaultFolder")
+      : null);
   const loadedExecutionTurnIds = $derived(new Set([
     ...chat.timelineItems.flatMap((item) => item.turnId ? [item.turnId] : []),
     ...chat.timelinePages.flatMap((timelinePage) => timelinePage.turns.map((turn) => turn.turnId)),
@@ -305,6 +315,24 @@
   });
 
   $effect(() => {
+    const teammateId = conversationOnlyTeammateId;
+    const channelId = chat.selectedChannel?.id ?? null;
+    const request = ++conversationOnlyAccessRequest;
+    conversationOnlyHasGrants = false;
+    if (teammateId === null || channelId === null) return;
+    void chatApi.readChatTeammateAccess(teammateId)
+      .then((access) => {
+        if (request === conversationOnlyAccessRequest) {
+          conversationOnlyHasGrants = channelHasFolderGrants(access, channelId);
+        }
+      })
+      .catch((cause: unknown) => {
+        // The line only explains conversation-only work, so a failed read leaves it out.
+        console.warn("Could not read teammate access for the reply location", cause);
+      });
+  });
+
+  $effect(() => {
     const agentRun = executionRun;
     if (!agentRun || chat.selectedExecutionRunId === agentRun.id) return;
     const request = ++executionSelectionRequest;
@@ -414,7 +442,7 @@
       <div class="date-divider"><span>{formatDateTime(localization.locale, Date.parse(page.rootMessage.createdAt), { dateStyle: "full" })}</span></div>
       <ChatOrganizationalMessage message={page.rootMessage} showReplyStrip={false} currentResponseSettings onActionError={reportMessageActionError} />
       {#if assignment?.delegation}<ChatDelegationOrigin delegation={assignment.delegation} onOpenThread={openThread} />{/if}
-      {#if workingFolderName}<p class="run-location" data-run-location>{t("chat.organization.workingIn", workingFolderName)}</p>{/if}
+      {#if runLocationLabel}<p class="run-location" data-run-location>{runLocationLabel}</p>{/if}
       {#each renderEntries as entry, index (entry.key)}
         {@const previousEntry = renderEntries[index - 1]}
         {@const previousCreatedAt = previousEntry ? entryCreatedAt(previousEntry) : page.rootMessage.createdAt}

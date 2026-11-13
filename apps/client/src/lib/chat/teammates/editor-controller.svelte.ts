@@ -19,6 +19,7 @@ import type {
 } from "$lib/chat/contracts";
 import { chatErrorCode, chatErrorField, chatErrorMessage } from "$lib/chat/error-presentation";
 import {
+  impliedFolderGrantId,
   teammateAccessConfirmationImpact,
   teammateAccessDraftErrors,
   teammateAccessDraftSnapshot,
@@ -42,7 +43,7 @@ import type { getChat } from "$lib/stores/chat.svelte";
 export interface TeammateEditorOptions {
   chat: Pick<
     ReturnType<typeof getChat>,
-    "teammates" | "archivedTeammates" | "settings" | "refreshTeammates" | "workingFolders"
+    "teammates" | "archivedTeammates" | "settings" | "refreshTeammates" | "workingFolders" | "primaryWorkingFolder"
   >;
   t: Translate;
   initialChannelId: () => string | null;
@@ -610,13 +611,29 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     return null;
   }
 
+  /**
+   * The working folder the send gate treats as the channel project's: the stored primary folder when it is known for
+   * that project, else the project's managed folder.
+   */
+  function channelProjectWorkingFolderId(channelId: string): string | null {
+    const projectId = navigationChannels.find((channel) => channel.id === channelId)?.projectId ?? null;
+    if (projectId === null) return null;
+    if (chat.primaryWorkingFolder?.projectId === projectId) return chat.primaryWorkingFolder.workingFolderId;
+    return chat.workingFolders.find((folder) => (
+      folder.workingFolder.projectId === projectId
+        && folder.workingFolder.kind === "managed"
+        && folder.workingFolder.archivedAt === null
+    ))?.workingFolder.id ?? null;
+  }
+
   function providerResourceIssuesForChannel(channel: ChatTeammateChannelAccessInput): string[] {
     const grants = channel.folderGrants.filter((grant) => grant.capability !== "none");
+    const impliedFolderId = impliedFolderGrantId(grants, channelProjectWorkingFolderId(channel.channelId));
     const issues = grants.flatMap((grant) => {
-      const issue = providerGrantIssue(grant.capability, grant.isDefault);
+      const issue = providerGrantIssue(grant.capability, grant.workingFolderId === impliedFolderId);
       return issue ? [issue] : [];
     });
-    if (grants.some((grant) => !grant.isDefault) && !providerAuthoritySupport?.internalHostTools) {
+    if (grants.some((grant) => grant.workingFolderId !== impliedFolderId) && !providerAuthoritySupport?.internalHostTools) {
       issues.push(t("settings.chat.teammates.providerNeedsHostTools"));
     }
     return issues.filter((issue, index) => issues.indexOf(issue) === index);

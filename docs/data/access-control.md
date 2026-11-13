@@ -82,8 +82,12 @@ Planning and discussion may remain targetless. Native filesystem, terminal, Git,
 1. Retain the locked target of an active compatible continuation.
 2. Use a target the request names explicitly. The composer names none, because the channel grant decides where work runs.
 3. Infer a target only when all executable references resolve to one eligible environment.
-4. Use the membership's valid default folder when one exists.
-5. Otherwise remain targetless, so the run is conversation only.
+4. Use the membership's default folder grant when one exists.
+5. Otherwise use the channel project's primary working folder when the membership grants it.
+6. Otherwise use the only granted folder when the membership grants exactly one.
+7. Otherwise remain targetless, so the run is conversation only, and the reply says so when the membership holds folder grants that none of these steps picked.
+
+Steps 4 to 6 accept any granted capability above none, so the implied target can be read only; inference from references (step 3) needs execute or publish. The target listing marks the same implied folder as the default, so the composer and the send gate agree.
 
 A run cannot combine a working folder and a scratch generation as coequal roots. Any future secondary folder access requires its own explicit capability and path boundary and must not be smuggled through attachments, links, environment variables, or provider configuration.
 

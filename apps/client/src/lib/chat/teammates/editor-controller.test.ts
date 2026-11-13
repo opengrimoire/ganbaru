@@ -78,6 +78,7 @@ function setup(teammates = [teammate()], overrides: Partial<TeammateEditorOption
     archivedTeammates: [],
     settings: null,
     workingFolders: [],
+    primaryWorkingFolder: null,
     refreshTeammates: vi.fn(async () => {}),
     ...overrides,
   };

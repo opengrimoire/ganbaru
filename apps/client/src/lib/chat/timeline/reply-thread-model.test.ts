@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { ChatAgentRunRead, ChatMessageRead, JsonValue, VersionedJson } from "$lib/chat/contracts";
+import type { ChatAgentRunRead, ChatFolderGrant, ChatMessageRead, JsonValue, VersionedJson } from "$lib/chat/contracts";
 import {
   agentRunRestart,
-  agentRunWorkingFolderName,
+  agentRunLocation,
+  channelHasFolderGrants,
   exactExecutionReadKey,
   exactExecutionRuns,
   exactRunPresentationsReady,
@@ -297,7 +298,8 @@ describe("reply thread exact execution reads", () => {
   });
 });
 
-describe("agentRunWorkingFolderName", () => {
+
+describe("agentRunLocation", () => {
   const folders = [
     { workingFolder: { id: "folder-1", displayName: "Website" } },
     { workingFolder: { id: "folder-2", displayName: "Mobile app" } },
@@ -306,19 +308,51 @@ describe("agentRunWorkingFolderName", () => {
   it("names the folder of the newest run", () => {
     const runs = [agentRun("run-1", "thread-1"), { ...agentRun("run-2", "thread-1"), workingFolderId: "folder-2" }];
 
-    expect(agentRunWorkingFolderName(runs, folders)).toBe("Mobile app");
+    expect(agentRunLocation(runs, folders)).toEqual({ kind: "folder", name: "Mobile app" });
   });
 
-  it("names nothing when the newest run has no folder, even after an earlier folder run", () => {
+  it("reads a newest run without folder or scratch as conversation only, even after an earlier folder run", () => {
     const conversation = { ...agentRun("run-2", "thread-1"), workingFolderId: null };
-    const scratch = { ...conversation, scratchGenerationId: "scratch-1" };
 
-    expect(agentRunWorkingFolderName([agentRun("run-1", "thread-1"), conversation], folders)).toBeNull();
-    expect(agentRunWorkingFolderName([scratch], folders)).toBeNull();
+    expect(agentRunLocation([agentRun("run-1", "thread-1"), conversation], folders)).toEqual({ kind: "conversation" });
   });
 
-  it("names nothing without runs or when the folder is not known here", () => {
-    expect(agentRunWorkingFolderName([], folders)).toBeNull();
-    expect(agentRunWorkingFolderName([{ ...agentRun("run-1", null), workingFolderId: "folder-9" }], folders)).toBeNull();
+  it("names nothing for private scratch, without runs, or when the folder is not known here", () => {
+    const scratch = { ...agentRun("run-1", "thread-1"), workingFolderId: null, scratchGenerationId: "scratch-1" };
+
+    expect(agentRunLocation([scratch], folders)).toBeNull();
+    expect(agentRunLocation([], folders)).toBeNull();
+    expect(agentRunLocation([{ ...agentRun("run-1", null), workingFolderId: "folder-9" }], folders)).toBeNull();
+  });
+});
+
+describe("channelHasFolderGrants", () => {
+  function grant(overrides: Partial<ChatFolderGrant> = {}): ChatFolderGrant {
+    return {
+      workingFolderId: "folder-1",
+      displayName: "Website",
+      capability: "execute",
+      isDefault: false,
+      runtimeApprovalOverride: null,
+      revision: 1,
+      revokedAt: null,
+      ...overrides,
+    };
+  }
+
+  function access(channelId: string, grants: ChatFolderGrant[], removedAt: string | null = null) {
+    return { channels: [{ channelId, removedAt, folderGrants: grants }] };
+  }
+
+  it("finds an active grant in the channel", () => {
+    expect(channelHasFolderGrants(access("channel-1", [grant()]), "channel-1")).toBe(true);
+  });
+
+  it("ignores revoked grants, grants without capability, other channels, and removed memberships", () => {
+    expect(channelHasFolderGrants(access("channel-1", [grant({ revokedAt: "2026-11-13T00:00:00Z" })]), "channel-1")).toBe(false);
+    expect(channelHasFolderGrants(access("channel-1", [grant({ capability: "none" })]), "channel-1")).toBe(false);
+    expect(channelHasFolderGrants(access("channel-2", [grant()]), "channel-1")).toBe(false);
+    expect(channelHasFolderGrants(access("channel-1", [grant()], "2026-11-13T00:00:00Z"), "channel-1")).toBe(false);
+    expect(channelHasFolderGrants(null, "channel-1")).toBe(false);
   });
 });

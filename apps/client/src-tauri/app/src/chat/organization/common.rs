@@ -199,6 +199,39 @@ pub(super) const ACTIVE_FOLDER_GRANTS_SQL: &str = "SELECT grant_row.working_fold
    AND folder.project_id = conversation.project_id
  ORDER BY is_default DESC, folder.sort_order, folder.display_name, folder.id";
 
+/// One active folder grant, as the implied execution target sees it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ImpliedFolderCandidate<'a> {
+    pub(super) working_folder_id: &'a str,
+    pub(super) is_default: bool,
+}
+
+/// Picks the folder a membership's work runs in when nothing in the request names one: the
+/// default grant, else the channel project's working folder when it is granted, else the only
+/// granted folder. `None` means the work runs conversation only.
+///
+/// `candidates` must hold only grants that carry folder authority, so a grant with no capability
+/// never becomes the target.
+pub(super) fn implied_working_folder<'a>(
+    candidates: &[ImpliedFolderCandidate<'a>],
+    project_working_folder_id: Option<&str>,
+) -> Option<&'a str> {
+    if let Some(default) = candidates.iter().find(|candidate| candidate.is_default) {
+        return Some(default.working_folder_id);
+    }
+    if let Some(project) = project_working_folder_id.and_then(|project_folder_id| {
+        candidates
+            .iter()
+            .find(|candidate| candidate.working_folder_id == project_folder_id)
+    }) {
+        return Some(project.working_folder_id);
+    }
+    match candidates {
+        [only] => Some(only.working_folder_id),
+        _ => None,
+    }
+}
+
 pub(super) fn has_thread_eligible_mention(request: &PostChatMessageCommand) -> bool {
     request.references.iter().any(|reference| {
         matches!(
@@ -1018,5 +1051,57 @@ pub(super) fn map_command_receipt_error(error: sqlx::Error) -> ChatError {
         )
     } else {
         persistence_error(error)
+    }
+}
+
+#[cfg(test)]
+mod implied_folder_tests {
+    use super::{ImpliedFolderCandidate, implied_working_folder};
+
+    fn grant(working_folder_id: &str, is_default: bool) -> ImpliedFolderCandidate<'_> {
+        ImpliedFolderCandidate {
+            working_folder_id,
+            is_default,
+        }
+    }
+
+    #[test]
+    fn the_default_grant_wins_over_the_project_folder() {
+        let grants = [grant("project", false), grant("docs", true)];
+
+        assert_eq!(
+            implied_working_folder(&grants, Some("project")),
+            Some("docs")
+        );
+    }
+
+    #[test]
+    fn the_granted_project_folder_is_used_without_a_default() {
+        let grants = [grant("docs", false), grant("project", false)];
+
+        assert_eq!(
+            implied_working_folder(&grants, Some("project")),
+            Some("project")
+        );
+    }
+
+    #[test]
+    fn an_ungranted_project_folder_falls_back_to_the_only_grant() {
+        let grants = [grant("docs", false)];
+
+        assert_eq!(
+            implied_working_folder(&grants, Some("project")),
+            Some("docs")
+        );
+        assert_eq!(implied_working_folder(&grants, None), Some("docs"));
+    }
+
+    #[test]
+    fn several_grants_without_a_default_or_project_folder_run_conversation_only() {
+        let grants = [grant("docs", false), grant("site", false)];
+
+        assert_eq!(implied_working_folder(&grants, Some("project")), None);
+        assert_eq!(implied_working_folder(&grants, None), None);
+        assert_eq!(implied_working_folder(&[], Some("project")), None);
     }
 }

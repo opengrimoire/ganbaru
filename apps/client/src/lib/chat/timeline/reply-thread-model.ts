@@ -1,6 +1,7 @@
 import type {
   ChatAgentRunRead,
   ChatMessageRead,
+  ChatTeammateChannelAccess,
   ProjectWorkingFolder,
   VersionedJson,
 } from "$lib/chat/contracts";
@@ -188,15 +189,36 @@ export function agentRunRestart(run: ChatAgentRunRead): "handoff" | "retry" | nu
   return run.attemptReason === "handoff" || run.attemptReason === "retry" ? run.attemptReason : null;
 }
 
+/** Where the newest run of a reply thread works. */
+export type AgentRunLocation =
+  | { kind: "folder"; name: string }
+  | { kind: "conversation" };
+
 /**
- * Returns the name of the working folder the thread's newest run works in, or `null` when that run works without
- * one (conversation only or private scratch) or the folder is not known here.
+ * Returns where the thread's newest run works: the named working folder, or conversation only when it has neither a
+ * folder nor a private scratch. Returns `null` without runs, for private scratch, or when the folder is not known here.
  */
-export function agentRunWorkingFolderName(
+export function agentRunLocation(
   runs: readonly ChatAgentRunRead[],
   folders: readonly { workingFolder: Pick<ProjectWorkingFolder, "id" | "displayName"> }[],
-): string | null {
-  const folderId = runs.at(-1)?.workingFolderId ?? null;
-  if (folderId === null) return null;
-  return folders.find((folder) => folder.workingFolder.id === folderId)?.workingFolder.displayName ?? null;
+): AgentRunLocation | null {
+  const run = runs.at(-1);
+  if (!run) return null;
+  if (run.workingFolderId === null) {
+    return run.scratchGenerationId === null ? { kind: "conversation" } : null;
+  }
+  const name = folders.find((folder) => folder.workingFolder.id === run.workingFolderId)?.workingFolder.displayName;
+  return name === undefined ? null : { kind: "folder", name };
+}
+
+/**
+ * Returns whether the teammate holds a folder grant in the channel, so conversation-only work there means no grant
+ * was implied rather than that the teammate has no folder access at all.
+ */
+export function channelHasFolderGrants(
+  access: { channels: readonly Pick<ChatTeammateChannelAccess, "channelId" | "removedAt" | "folderGrants">[] } | null,
+  channelId: string | null,
+): boolean {
+  const channel = access?.channels.find((entry) => entry.channelId === channelId && entry.removedAt === null);
+  return channel?.folderGrants.some((grant) => grant.revokedAt === null && grant.capability !== "none") ?? false;
 }

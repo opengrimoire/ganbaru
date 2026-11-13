@@ -6,6 +6,7 @@ import {
   capabilitiesForPreset,
   channelCapabilityPreset,
   folderCapabilityFits,
+  impliedFolderGrantId,
   resolveRuntimeApproval,
   selectionState,
   teammateAccessConfirmationImpact,
@@ -182,5 +183,30 @@ describe("teammate access", () => {
       [draft],
       new Map([["profile:build", "execute"]]),
     )).toEqual([]);
+  });
+});
+
+describe("impliedFolderGrantId", () => {
+  function grant(workingFolderId: string, isDefault = false, capability: "execute" | "none" = "execute") {
+    return { workingFolderId, capability, isDefault };
+  }
+
+  it("prefers the default grant over the project folder", () => {
+    expect(impliedFolderGrantId([grant("project"), grant("docs", true)], "project")).toBe("docs");
+  });
+
+  it("uses the granted project folder without a default", () => {
+    expect(impliedFolderGrantId([grant("docs"), grant("project")], "project")).toBe("project");
+  });
+
+  it("falls back to the only grant when the project folder is not granted", () => {
+    expect(impliedFolderGrantId([grant("docs")], "project")).toBe("docs");
+    expect(impliedFolderGrantId([grant("docs"), grant("site", false, "none")], null)).toBe("docs");
+  });
+
+  it("implies nothing for several grants without a default or project grant", () => {
+    expect(impliedFolderGrantId([grant("docs"), grant("site")], "project")).toBeNull();
+    expect(impliedFolderGrantId([grant("site", true, "none")], null)).toBeNull();
+    expect(impliedFolderGrantId([], "project")).toBeNull();
   });
 });

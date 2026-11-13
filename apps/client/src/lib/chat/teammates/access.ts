@@ -257,3 +257,19 @@ export function teammateAccessDraftErrors(
   }
   return errors;
 }
+
+/**
+ * Returns the folder a channel membership's work runs in when a post names none, matching the native target order:
+ * the default grant, else the channel project's working folder when it is granted, else the only granted folder.
+ * Returns `null` when the work runs conversation only. Grants without a capability never become the target.
+ */
+export function impliedFolderGrantId(
+  grants: readonly Pick<ChatTeammateChannelAccessInput["folderGrants"][number], "workingFolderId" | "capability" | "isDefault">[],
+  projectWorkingFolderId: string | null,
+): string | null {
+  const candidates = grants.filter((grant) => grant.capability !== "none");
+  const implied = candidates.find((grant) => grant.isDefault)
+    ?? candidates.find((grant) => grant.workingFolderId === projectWorkingFolderId)
+    ?? (candidates.length === 1 ? candidates[0] : undefined);
+  return implied?.workingFolderId ?? null;
+}

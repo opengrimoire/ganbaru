@@ -60,10 +60,13 @@ pub async fn read_workspace(
 /// Folder rows replicate between devices, so a candidate that does not parse is logged and
 /// skipped like a missing one, as [`list_workspaces`] leaves it out, and the next candidate is
 /// tried. `None` means no candidate is readable on this replica. Query errors stay fatal.
-pub async fn resolve_primary_workspace(
-    pool: &SqlitePool,
+pub async fn resolve_primary_workspace<'e, E>(
+    executor: E,
     project_id: &str,
-) -> ChatResult<Option<ProjectWorkingFolder>> {
+) -> ChatResult<Option<ProjectWorkingFolder>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     let rows = sqlx::query(
         "SELECT folder.id, folder.project_id, folder.display_name, folder.kind,
                 folder.managed_relative_path, folder.sort_order, folder.repository_kind,
@@ -79,7 +82,7 @@ pub async fn resolve_primary_workspace(
          ORDER BY primary_folder.project_id IS NULL, folder.sort_order, folder.id",
     )
     .bind(project_id)
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await
     .map_err(persistence_error)?;
     for row in rows {

@@ -227,6 +227,7 @@ export const chat = {
     openTeammateSettings: "Agent settings",
     openScratchInspector: "Inspect private scratch",
     workingIn: (folder: string) => `Working in ${folder}`,
+    conversationOnlyNoDefaultFolder: "Conversation only: no default folder",
     oneAgentOnly: "An assignment can mention only one AI agent.",
     referencesPasted: (count: number) => `${count} ${count === 1 ? "reference" : "references"} pasted`,
     referenceResults: (count: number) => `${count} ${count === 1 ? "reference result" : "reference results"}`,

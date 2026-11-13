@@ -2,10 +2,10 @@
 
 use super::super::internal_mcp::generate_opaque_handle;
 use super::common::{
-    MAX_MESSAGE_BYTES, TeammateHistoryAccess,
-    effective_runtime_approval as narrower_runtime_approval, new_id, parse_approval_policy,
-    parse_runtime_approval_policy, sha256_hex, teammate_runtime_approval, truncate_utf8,
-    wire_runtime_approval_policy,
+    ImpliedFolderCandidate, MAX_MESSAGE_BYTES, TeammateHistoryAccess,
+    effective_runtime_approval as narrower_runtime_approval, implied_working_folder, new_id,
+    parse_approval_policy, parse_runtime_approval_policy, sha256_hex, teammate_runtime_approval,
+    truncate_utf8, wire_runtime_approval_policy,
 };
 use super::delegation::{
     DelegationBound, DelegationCeiling, cancel_for_revoked_parent, clamp_approval,
@@ -290,6 +290,13 @@ pub(super) async fn freeze_context_package(
             }
         }
     }
+    let project_working_folder_id =
+        ganbaru_chat::repository::workspaces::resolve_primary_workspace(
+            &mut **transaction,
+            &project_id,
+        )
+        .await?
+        .map(|folder| folder.id.as_str().to_string());
     let requester_participant_id = bound
         .as_ref()
         .and_then(|ceiling| ceiling.requester_participant_id.clone())
@@ -305,6 +312,7 @@ pub(super) async fn freeze_context_package(
             grants: &grants,
             referenced_folder_ids: &referenced_folder_ids,
             referenced_execution_environments: &referenced_execution_environments,
+            project_working_folder_id: project_working_folder_id.as_deref(),
             now,
         },
     )
@@ -1220,6 +1228,8 @@ struct ResolveExecutionTargetInput<'a> {
     grants: &'a [FolderGrant],
     referenced_folder_ids: &'a [String],
     referenced_execution_environments: &'a [ReferencedExecutionEnvironment],
+    /// The channel project's effective primary working folder, when this replica has one.
+    project_working_folder_id: Option<&'a str>,
     now: &'a UtcTimestamp,
 }
 
@@ -1523,6 +1533,7 @@ async fn resolve_execution_target(
         grants,
         referenced_folder_ids,
         referenced_execution_environments,
+        project_working_folder_id,
         now,
     } = input;
     let referenced_execution_environment =
@@ -1617,10 +1628,14 @@ async fn resolve_execution_target(
     let selected = if inferred.len() == 1 {
         inferred.pop()
     } else {
-        grants
+        let candidates = grants
             .iter()
-            .find(|grant| grant.is_default)
-            .map(|grant| grant.working_folder_id.clone())
+            .map(|grant| ImpliedFolderCandidate {
+                working_folder_id: &grant.working_folder_id,
+                is_default: grant.is_default,
+            })
+            .collect::<Vec<_>>();
+        implied_working_folder(&candidates, project_working_folder_id).map(str::to_string)
     };
     if let Some(working_folder_id) = selected {
         let execution_environment_id = current_folder_environment_id(&working_folder_id);
